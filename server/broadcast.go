@@ -72,6 +72,53 @@ func broadcast_inbound_class(last, bseq int64) string {
 // define their own sentinel and extend nack_reason_from_error.
 var ErrBroadcastGap = errors.New("broadcast gap")
 
+// broadcast_stall_age is how long a stream may keep gapping on the same
+// received watermark before it warns: a healing stream's watermark
+// advances between gap events as resync replies land, so an unmoved
+// watermark across hours of gap events means resync is not working.
+// The News feed wedge (2026-07-06 to 2026-07-15) spent 9 days in
+// exactly that state with no signal. var (not const) so tests can
+// lower it. broadcast_stall_repeat is the re-warn cadence while the
+// stall persists.
+var broadcast_stall_age int64 = 6 * 3600
+var broadcast_stall_repeat int64 = 86400
+
+type broadcast_stall struct {
+	first     int64 // when this watermark value first produced a gap
+	watermark int64 // received.last at that moment
+	warned    int64 // last warn unix, 0 = not yet warned
+}
+
+// broadcast_stalls tracks gapping streams by user|app|peer|key. Entries
+// reset whenever the watermark moves and are only ever touched from the
+// gap path, which the per-(user, app) worker serialises — no lock needed
+// on the struct fields. Healed streams leave a stale entry behind; it is
+// reset (not trusted) on the next gap because its watermark no longer
+// matches, so it can never cause a false warn.
+var broadcast_stalls sync.Map
+
+// broadcast_stall_note is called from the events.go gap branch on every
+// buffered or NACKed gap event. It warns once the same watermark has
+// been gapping for broadcast_stall_age, then once per repeat window.
+func broadcast_stall_note(user, app, peer, key string, watermark, sequence int64) {
+	id := user + "|" + app + "|" + peer + "|" + key
+	now := now()
+	v, ok := broadcast_stalls.Load(id)
+	if !ok || v.(*broadcast_stall).watermark != watermark {
+		broadcast_stalls.Store(id, &broadcast_stall{first: now, watermark: watermark})
+		return
+	}
+	stall := v.(*broadcast_stall)
+	if now-stall.first < broadcast_stall_age {
+		return
+	}
+	if stall.warned != 0 && now-stall.warned < broadcast_stall_repeat {
+		return
+	}
+	stall.warned = now
+	warn("Broadcast stream stalled: (peer=%q, key=%q) for user %q app %q has been gapping for %.1f hours with the received watermark stuck at %d (incoming sequence %d); resync is not healing it.", peer, key, user, app, float64(now-stall.first)/3600, watermark, sequence)
+}
+
 // ErrBroadcastPendingFull signals the receiver's per-stream pending
 // buffer was full and a gapped event could not be stored. The sender
 // must NOT drop the row: this is a transient backpressure condition
@@ -299,8 +346,36 @@ func broadcast_log_append(db *DB, key, peer, event string, data []byte) int64 {
 
 // broadcast_log_age_trim deletes log rows older than the age cap for
 // the given (key, peer). Called on send; no-op when nothing's aged out.
+// broadcast_log_age_maximum is the hard retention cap: a lagging
+// subscriber's ack floor protects rows past broadcast_log_age, but only
+// this long — beyond it one dead subscriber would grow the log forever.
+// Evicting past a live floor is alerted: that subscriber's next resync
+// gets a broadcast/floor skip and its app re-fetches.
+const broadcast_log_age_maximum = 4 * broadcast_log_age
+
 func broadcast_log_age_trim(db *DB, key, peer string) {
-	db.exec("delete from log where key=? and peer=? and created < ?", key, peer, now()-broadcast_log_age)
+	// The age trim respects the lowest acknowledged subscriber floor:
+	// trimming rows a live subscriber still needs converts its fillable
+	// gap into an unfillable one (the 2026-07 News feed wedge became
+	// permanent exactly this way). Rows below every floor age out
+	// normally; rows a laggard pins survive to the hard cap. Streams
+	// with no acknowledged subscriber at all keep the plain age trim —
+	// there is no floor to respect.
+	floor := int64(0)
+	if row, _ := db.row("select min(last) as m from acknowledged where key=? and peer=?", key, peer); row != nil {
+		if m, ok := row["m"].(int64); ok && m > 0 {
+			floor = m
+		}
+	}
+	if floor == 0 {
+		db.exec("delete from log where key=? and peer=? and created < ?", key, peer, now()-broadcast_log_age)
+		return
+	}
+	db.exec("delete from log where key=? and peer=? and created < ? and sequence <= ?", key, peer, now()-broadcast_log_age, floor)
+	if pinned, _ := db.exists("select 1 from log where key=? and peer=? and created < ? limit 1", key, peer, now()-broadcast_log_age_maximum); pinned {
+		warn("Broadcast log for (key=%q, peer=%q) evicting rows past the hard retention cap that a subscriber at ack floor %d still needs; that subscriber will skip the lost span and re-fetch on its next resync.", key, peer, floor)
+		db.exec("delete from log where key=? and peer=? and created < ?", key, peer, now()-broadcast_log_age_maximum)
+	}
 }
 
 // broadcast_log_ack_trim deletes log rows below the min ack across all
@@ -632,6 +707,36 @@ func (e *Event) broadcast_resync(a *App, av *AppVersion) error {
 		return nil
 	}
 
+	// Floor signal: when the requester asks for sequences below the
+	// retained log, the gap below the floor is PROVABLY unfillable —
+	// replaying from the floor would only feed the requester more
+	// far-future events to buffer against a hole that can never fill
+	// (the 2026-07 News feed wedge ground for 9 days in exactly that
+	// state). Tell the requester where the log starts so it can skip
+	// the lost span now and hand its app the broadcast/gap re-fetch.
+	// A fully-trimmed log floors at head+1: everything is unfillable,
+	// the requester re-anchors at the head.
+	floor := int64(0)
+	if row, _ := e.db.row("select min(sequence) as low from log where key=? and peer=?", key, peer); row != nil {
+		if low, ok := row["low"].(int64); ok {
+			floor = low
+		}
+	}
+	if floor == 0 {
+		if row, _ := e.db.row("select last from sequence where key=? and peer=?", key, peer); row != nil {
+			if head, ok := row["last"].(int64); ok && head > 0 {
+				floor = head + 1
+			}
+		}
+	}
+	if floor > 0 && after+1 < floor {
+		m := message(e.to, e.from, e.service, "broadcast/floor")
+		m.FromApp = a.id
+		m.Services = app_services(a, e.user)
+		m.content = map[string]any{"key": key, "peer": peer, "floor": floor}
+		m.send_peer_priority(e.peer, priority_replay)
+	}
+
 	rows, _ := e.db.rows("select sequence, event, data from log where key=? and peer=? and sequence > ? order by sequence limit ?", key, peer, after, broadcast_replay_limit)
 	if len(rows) == 0 {
 		return nil
@@ -689,6 +794,64 @@ func (e *Event) broadcast_acknowledge() error {
 	broadcast_acknowledged_table_create(e.db)
 	e.db.exec("insert into acknowledged (key, peer, subscriber, last) values (?, ?, ?, ?) on conflict(key, peer, subscriber) do update set last = max(acknowledged.last, excluded.last)", key, peer, e.from, sequence)
 	broadcast_log_ack_trim(e.db, key, peer)
+	return nil
+}
+
+// broadcast_skip_warned throttles the unfillable-gap warns to one per
+// stream per day, shared by the floor handler and the pending GC.
+var broadcast_skip_warned sync.Map // user|app|peer|key -> last warn unix
+
+// broadcast_skip_warn emits the throttled operator alert for a skipped
+// unfillable gap.
+func broadcast_skip_warn(user, app, peer, key string, first, last int64) {
+	id := user + "|" + app + "|" + peer + "|" + key
+	now := now()
+	if v, ok := broadcast_skip_warned.Load(id); ok && now-v.(int64) < 86400 {
+		return
+	}
+	broadcast_skip_warned.Store(id, now)
+	warn("Broadcast stream skipped unfillable sequences %d..%d on (peer=%q, key=%q) for user %q app %q: the origin's replay log no longer holds them; the app was told to re-fetch.", first, last, peer, key, user, app)
+}
+
+// broadcast_floor handles an inbound broadcast/floor event: the stream
+// origin's answer to a resync request that asked for sequences below its
+// retained log. The gap below the floor is provably unfillable — the log
+// rows are trimmed — so waiting recovers nothing: skip to floor-1 now,
+// drain whatever chains onto it, alert the operator, and hand the app
+// its broadcast/gap error for a full re-fetch. Without this signal the
+// receiver grinds until the pending-GC TTL (the News feed wedge spent 9
+// days there, 2026-07). Only the origin is authoritative about its own
+// log, so the event must arrive from the peer it names — which for the
+// self-loop is this host itself. A forged floor from the real origin
+// peer is equivalent to that origin trimming its log: it can only move
+// its own stream.
+func (e *Event) broadcast_floor(a *App) error {
+	key, _ := e.content["key"].(string)
+	peer, _ := e.content["peer"].(string)
+	floor := event_int64(e.content["floor"])
+	if key == "" || peer == "" || floor <= 1 {
+		return fmt.Errorf("broadcast/floor requires key, peer, and floor")
+	}
+	if peer != e.peer {
+		info("Event dropping broadcast/floor for peer %q arriving from %q", peer, e.peer)
+		return fmt.Errorf("floor event must arrive from its own peer")
+	}
+	last := broadcast_received_get(e.db, peer, key)
+	if floor-1 <= last {
+		return nil // already at or past the floor; nothing lost
+	}
+	first := last + 1
+	broadcast_advance_local(e.db, peer, key, floor-1)
+	audit_broadcast_pending_purged(e.user.UID, a.id, peer, key, first, floor-1, floor-1-last)
+	broadcast_skip_warn(e.user.UID, a.id, peer, key, first, floor-1)
+	svc := ""
+	if svcs := app_services(a, e.user); len(svcs) > 0 {
+		svc = svcs[0]
+	}
+	k, p, f, l := key, peer, first, floor-1
+	error_dispatch(e.user, a, error_code_broadcast_gap, "unfillable", svc, k, nil, func() map[string]any {
+		return map[string]any{"peer": p, "key": k, "first": f, "last": l}
+	})
 	return nil
 }
 

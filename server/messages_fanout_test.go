@@ -37,6 +37,10 @@ func TestSendWorkFansOutToAllPeers(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 	defer stub_message_attempt_send()()
+	// Entity resolution is strict about the ownership check since the
+	// 2026-07 fail-safe: entity_local errors (no entities table) resolve
+	// to nothing rather than falling through to directory routes.
+	setup_users_test_schema()
 
 	// Directory: entity has 3 active locations.
 	entity := "uid-target-entity"
@@ -73,6 +77,10 @@ func TestSendWorkUnknownEntityKeepsRetryRow(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 	defer stub_message_attempt_send()()
+	// Entity resolution is strict about the ownership check since the
+	// 2026-07 fail-safe: entity_local errors (no entities table) resolve
+	// to nothing rather than falling through to directory routes.
+	setup_users_test_schema()
 
 	m := message("from-entity", "uid-unknown-entity", "service", "event")
 	m.send_work()
@@ -95,6 +103,10 @@ func TestSendPeerKeepsSingleRow(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 	defer stub_message_attempt_send()()
+	// Entity resolution is strict about the ownership check since the
+	// 2026-07 fail-safe: entity_local errors (no entities table) resolve
+	// to nothing rather than falling through to directory routes.
+	setup_users_test_schema()
 
 	// Directory has 3 locations — but send_peer shouldn't care.
 	add_directory_location(t, "uid-x", "peer-A", now())
@@ -121,6 +133,10 @@ func TestSendPeerKeepsSingleRow(t *testing.T) {
 func TestQueueSendDirectExpandsEmptyTargetRow(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
+	// Entity resolution is strict about the ownership check since the
+	// 2026-07 fail-safe: entity_local errors (no entities table) resolve
+	// to nothing rather than falling through to directory routes.
+	setup_users_test_schema()
 
 	entity := "uid-late-resolution"
 	add_directory_location(t, entity, "peer-1", now())

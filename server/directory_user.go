@@ -53,7 +53,9 @@ func directory_user_learn(user *User, entity string, peer string) {
 		return
 	}
 	// Local entities resolve locally; a learned row would be stale noise.
-	if local, _ := db_open("db/users.db").exists("select 1 from entities where id=?", entity); local {
+	// Fail-safe on an errored ownership check: refuse the learn rather
+	// than admit a foreign route for what may be a local entity.
+	if local, ok := entity_local(entity); !ok || local {
 		return
 	}
 	db := db_user(user, "user")

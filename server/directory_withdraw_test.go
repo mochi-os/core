@@ -101,6 +101,33 @@ func TestEntryStoreKeepsLiveSelfRow(t *testing.T) {
 	}
 }
 
+// TestEntryStoreRefusesForeignRowForLocalEntity confirms a row naming a
+// DIFFERENT peer for an entity this host owns is refused before signature
+// verification (owner-authoritative): clones and restored backups hold the
+// entity's keys, so their rows VERIFY — ownership, not the signature, is
+// the deciding check. Storing one would offer delivery fan-out a foreign
+// route for a local subscriber (the 2026-07-06 News feed wedge trigger).
+func TestEntryStoreRefusesForeignRowForLocalEntity(t *testing.T) {
+	cleanup := create_test_directory_db(t)
+	defer cleanup()
+
+	owned := withdraw_test_entity(t)
+	users := db_open("db/users.db")
+	users.exec("insert into users (uid, username) values ('u-own', 'own@example.com')")
+	users.exec("insert into entities (id, private, fingerprint, user, class, name) values (?, '', ?, 'u-own', 'person', 'Owned')", owned, fingerprint(owned))
+
+	ts := now()
+	foreign := &Entry{Entity: owned, Peer: "12D3KooWSomeForeignClonePeer", Name: "Owned", Class: "person", Version: ts, Created: ts, Seen: ts}
+	if entry_store(foreign, "test") {
+		t.Error("foreign row for a locally-owned entity must be refused")
+	}
+	db := db_open("db/directory.db")
+	exists, _ := db.exists("select 1 from entries where entity=? and peer<>?", owned, net_id)
+	if exists {
+		t.Error("foreign row for a locally-owned entity must not be stored")
+	}
+}
+
 // TestEntryStoreWithdrawalRateLimited confirms repeated echoes of the
 // same ghost within the window trigger only one withdrawal.
 func TestEntryStoreWithdrawalRateLimited(t *testing.T) {

@@ -27,6 +27,10 @@ import (
 func setup_directory_test(t *testing.T) func() {
 	cleanup := setup_replication_test(t) // sets data_dir + net_id="self"
 	protocol2_init()                     // canonical_encoder for the signables
+	// entry_store and entity resolution are strict about the ownership
+	// check since the 2026-07 fail-safe: an errored check (no entities
+	// table) refuses the row instead of falling through.
+	setup_users_test_schema()
 	db := db_open("db/directory.db")
 	db.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', primary key ( entity, peer ) )")
 	return cleanup

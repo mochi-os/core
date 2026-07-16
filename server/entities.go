@@ -290,11 +290,32 @@ func entity_peer(id string) string {
 	return ""
 }
 
+// entity_local reports whether `id` is owned by a user on this host, with
+// ok=false when the check itself failed. Callers MUST fail their resolution
+// on !ok rather than fall through to remote routes: a transient users.db
+// error swallowed here silently demotes a locally-owned entity to remote
+// resolution, sending its events to whatever stale peer the directory still
+// advertises — and for sequenced broadcasts, permanently skipping those
+// sequences on the real, local subscriber (the probable trigger of the
+// 2026-07-06 News feed wedge: a ~16-event window that never healed).
+func entity_local(id string) (local bool, ok bool) {
+	exists, err := db_open("db/users.db").exists("select 1 from entities where id=?", id)
+	if err != nil {
+		info("Entity resolution: ownership check failed for %q: %v", id, err)
+		return false, false
+	}
+	return exists, true
+}
+
 // entity_peers returns every active peer hosting `id`, ordered most-recent
 // first. Empty for local entities or unknown ones (the caller should fall
 // back to a broadcast directory request).
 func entity_peers(id string) []string {
-	if local, _ := db_open("db/users.db").exists("select 1 from entities where id=?", id); local {
+	local, ok := entity_local(id)
+	if !ok {
+		return nil
+	}
+	if local {
 		return []string{net_id}
 	}
 	rows, _ := db_open("db/directory.db").rows("select peer from entries where entity=? and peer!=? and seen > ? order by seen desc", id, net_id, now()-30*86400)
@@ -316,7 +337,11 @@ func entity_peers(id string) []string {
 // directory_user.go). Sends with no resolvable owner (system, anonymous)
 // degrade to the public directory alone.
 func entity_peers_for(from string, id string) []string {
-	if local, _ := db_open("db/users.db").exists("select 1 from entities where id=?", id); local {
+	local, ok := entity_local(id)
+	if !ok {
+		return nil // check failed — never fall through to remote routes
+	}
+	if local {
 		return []string{net_id}
 	}
 	type located struct {
@@ -381,7 +406,11 @@ func entity_peers_for(from string, id string) []string {
 //
 // Local entity short-circuits to [self].
 func entity_peers_failover(id string) []string {
-	if local, _ := db_open("db/users.db").exists("select 1 from entities where id=?", id); local {
+	local, ok := entity_local(id)
+	if !ok {
+		return nil // check failed — never fall through to remote routes
+	}
+	if local {
 		return []string{net_id}
 	}
 	db := db_open("db/directory.db")

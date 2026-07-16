@@ -187,6 +187,21 @@ func entry_store(en *Entry, source string) bool {
 		}
 		return false
 	}
+	// Owner-authoritative: this host is the single home of the entities in
+	// its users.db, so a row naming a DIFFERENT peer for a locally-owned
+	// entity is stale — a restored backup, a cloned test instance, or a
+	// pre-migration host. A clone holds the entity's keys, so its rows
+	// VERIFY; ownership, not the signature, is what makes them wrong.
+	// Storing one offers delivery fan-out a foreign route for a local
+	// subscriber (the 2026-07-06 News feed wedge trigger class). The
+	// fail-safe entity_local refuses the store when the check itself
+	// errors; the row is re-gossiped later.
+	if local, ok := entity_local(en.Entity); !ok || local {
+		if local {
+			debug("Directory dropping foreign row for locally-owned %q (peer=%q) from %s", en.Entity, en.Peer, source)
+		}
+		return false
+	}
 	if !entry_verify(en) {
 		info("Directory dropping row with bad content signature: entity=%q peer=%q from %s", en.Entity, en.Peer, source)
 		return false
@@ -679,6 +694,21 @@ func directory_manager() {
 				if !exists {
 					debug("Directory withdrawing orphaned local row %q", id)
 					entry_delete_self(id)
+				}
+			}
+
+			// Owner-authoritative purge: drop foreign-peer rows for
+			// entities this host owns. Clones and restored backups sign
+			// valid rows for our entities (they hold the keys); ownership,
+			// not the signature, is what makes them wrong. entry_store
+			// refuses new ones; this clears any stored before that guard
+			// existed (e.g. the 2026-07 failover-drill ghosts).
+			rows, _ = db.rows("select distinct entity from entries where peer<>?", net_id)
+			for _, row := range rows {
+				id := row["entity"].(string)
+				if local, ok := entity_local(id); ok && local {
+					debug("Directory dropping foreign rows for locally-owned %q", id)
+					db.exec("delete from entries where entity=? and peer<>?", id, net_id)
 				}
 			}
 		}

@@ -39,7 +39,13 @@ const broadcast_pending_max = 1000
 // - if the sender pruned the gap from its log, no amount of patience
 // will fill it. Overridable via setting
 // `broadcast.pending.unfillable_ttl_days`.
-const broadcast_pending_gc_default_ttl_days = 7
+// 2 days: the stall watchdog and queue watchdog alert within hours, so
+// the operator has a full working day to intervene before the skip; a
+// fillable gap heals via resync in minutes, and an unfillable one gets
+// its broadcast/floor skip at the next resync anyway — this TTL is only
+// the backstop for streams with no inbound traffic to trigger either.
+// (Was 7: the 2026-07 News feed wedge ground for a week under it.)
+const broadcast_pending_gc_default_ttl_days = 2
 
 // broadcast_pending_gc_period_seconds is how often broadcast_manager
 // wakes to run the GC pass. Hourly - the TTL is days, no point
@@ -337,6 +343,52 @@ func broadcast_pending_stalled_db(user, app, db_path string) []BroadcastStalledS
 	return out
 }
 
+// broadcast_pending_skip_stream unsticks one stream: it loops skip +
+// drain until the stream has no TTL-old unfillable hole left, returning
+// the final received.last. A sparse buffer against a large gap means
+// thousands of holes; skipping one per hourly GC pass never converges —
+// the 2026-07 News feed wedge crawled 1-3 sequences an hour for days
+// while production raced ahead. Each iteration re-reads fresh state:
+// the drain behind each skip applies buffered chains and deletes their
+// rows, moving the next hole into view. force bypasses the per-hole
+// age gate (the admin force-skip).
+func broadcast_pending_skip_stream(sysdb *DB, user, app, peer, key string, start, cutoff int64, force bool) int64 {
+	last := start
+	for iterations := 0; iterations < 10000; iterations++ {
+		row, _ := sysdb.row("select min(sequence) as low, min(received) as oldest from pending where peer=? and key=? and sequence > ?", peer, key, last)
+		if row == nil {
+			break
+		}
+		low, ok := row["low"].(int64)
+		if !ok || low == 0 {
+			break // buffer empty above the cursor
+		}
+		if low <= last+1 {
+			break // drains naturally on the next arrival
+		}
+		if oldest, ok := row["oldest"].(int64); !force && (!ok || oldest >= cutoff) {
+			break // younger holes wait out their own TTL
+		}
+		skip_to := low - 1
+		broadcast_advance_local(sysdb, peer, key, skip_to)
+		// Sweep any orphan pending rows below the new cursor. The
+		// chain-drain only deletes rows it actually dispatched; rows
+		// that were never re-dispatched (left over from older buggy
+		// code paths) survive and distort the next GC pass's classifier
+		// (the bug that caused the wasabi-self feeds stream to escape
+		// detection on the first force-skip attempt).
+		new_last := broadcast_received_get(sysdb, peer, key)
+		sysdb.exec("delete from pending where peer=? and key=? and sequence<=?",
+			peer, key, new_last)
+		audit_broadcast_pending_purged(user, app, peer, key, last+1, skip_to, skip_to-last)
+		if new_last <= last {
+			break // no forward progress; avoid spinning
+		}
+		last = new_last
+	}
+	return last
+}
+
 // broadcast_pending_gc skips the unfillable gap on every stalled
 // stream whose pending buffer has been stuck longer than the TTL. The
 // skip advances received.last to min(pending.sequence)-1; the standard
@@ -385,24 +437,13 @@ func broadcast_pending_gc(force bool) int {
 		if sysdb == nil {
 			continue
 		}
-		skip_to := s.MinPending - 1
-		gap_size := skip_to - s.Last
-		if gap_size <= 0 {
+		last := broadcast_pending_skip_stream(sysdb, s.User, s.App, s.Peer, s.Key, s.Last, cutoff, force)
+		if last <= s.Last {
 			continue
 		}
-		broadcast_advance_local(sysdb, s.Peer, s.Key, skip_to)
-		// Sweep any orphan pending rows below the new cursor. The
-		// chain-drain only deletes rows it actually dispatched; rows
-		// that were never re-dispatched (left over from older buggy
-		// code paths) survive and distort the next GC pass's classifier
-		// (the bug that caused the wasabi-self feeds stream to escape
-		// detection on the first force-skip attempt).
-		new_last := broadcast_received_get(sysdb, s.Peer, s.Key)
-		sysdb.exec("delete from pending where peer=? and key=? and sequence<=?",
-			s.Peer, s.Key, new_last)
-		info("Broadcast pending GC: skipped gap user=%q app=%q peer=%q key=%q from_seq=%d to_seq=%d gap=%d age=%ds",
-			s.User, s.App, s.Peer, s.Key, s.Last+1, skip_to, gap_size, now()-s.Oldest)
-		audit_broadcast_pending_purged(s.User, s.App, s.Peer, s.Key, s.Last+1, skip_to, gap_size)
+		info("Broadcast pending GC: skipped gap user=%q app=%q peer=%q key=%q from_seq=%d to_seq=%d age=%ds",
+			s.User, s.App, s.Peer, s.Key, s.Last+1, last, now()-s.Oldest)
+		broadcast_skip_warn(s.User, s.App, s.Peer, s.Key, s.Last+1, last)
 
 		// Tell the subscribing app it permanently lost events on this
 		// stream, so it can do a full state re-fetch — broadcast/resync
@@ -413,9 +454,9 @@ func broadcast_pending_gc(force bool) int {
 		if svcs := app_services(a, u); len(svcs) > 0 {
 			svc = svcs[0]
 		}
-		peer, key, first, last := s.Peer, s.Key, s.Last+1, skip_to
+		peer, key, first, final := s.Peer, s.Key, s.Last+1, last
 		error_dispatch(u, a, error_code_broadcast_gap, "unfillable", svc, key, nil, func() map[string]any {
-			return map[string]any{"peer": peer, "key": key, "first": first, "last": last}
+			return map[string]any{"peer": peer, "key": key, "first": first, "last": final}
 		})
 		skipped++
 	}

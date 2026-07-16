@@ -38,6 +38,9 @@ func init() {
 }
 
 func debug(message string, values ...any) {
+	if !log_repeat_allow(message) {
+		return
+	}
 	out := fmt.Sprintf(message, values...)
 	if len(out) > 1000 {
 		log.Print(out[:1000] + "...\n")
@@ -47,6 +50,9 @@ func debug(message string, values ...any) {
 }
 
 func info(message string, values ...any) {
+	if !log_repeat_allow(message) {
+		return
+	}
 	log.Printf(message+"\n", values...)
 }
 
@@ -88,6 +94,50 @@ func server_hostname() string {
 		}
 	}
 	return name
+}
+
+// log_repeat_threshold / log_repeat_window: a format string emitting more
+// than threshold lines inside one window is suppressed for the rest of that
+// window, ending with a single rollup line when the window rolls. A flooding
+// diagnostic call site otherwise destroys journal retention — the 2026-07
+// broadcast gap flood wrote ~60 lines/sec and cut yuzu's journald to ~35
+// minutes of history, evicting the evidence needed to diagnose it. warn()
+// is exempt: warns are rare, important, and already email-throttled. var
+// (not const) so tests can lower them.
+var log_repeat_threshold = 20
+var log_repeat_window int64 = 60
+
+type log_repeat_record struct {
+	start int64
+	count int
+}
+
+var (
+	log_repeat_state = map[string]*log_repeat_record{}
+	log_repeat_mutex sync.Mutex
+)
+
+// log_repeat_allow reports whether a line with this format may print now.
+// Keyed by format string, not formatted output: the arguments vary per
+// line, the template is the call site's identity (same scheme as
+// warn_email_allow below). When a window that suppressed lines rolls over,
+// the first line of the new window is preceded by a rollup naming the
+// format and the suppressed count. A format that stops flooding entirely
+// emits its final rollup on its next line, whenever that is.
+func log_repeat_allow(format string) bool {
+	now := now()
+	log_repeat_mutex.Lock()
+	defer log_repeat_mutex.Unlock()
+	record, ok := log_repeat_state[format]
+	if !ok || now-record.start >= log_repeat_window {
+		if ok && record.count > log_repeat_threshold {
+			log.Printf("(suppressed %d further lines of %q over %ds)\n", record.count-log_repeat_threshold, format, now-record.start)
+		}
+		log_repeat_state[format] = &log_repeat_record{start: now, count: 1}
+		return true
+	}
+	record.count++
+	return record.count <= log_repeat_threshold
 }
 
 type warn_email_record struct {

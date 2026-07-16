@@ -247,7 +247,7 @@ func (e *Event) route() error {
 	// System broadcast events. Handled internally, bypassing app-level
 	// event registration since every subscription app gets the same
 	// mechanism for free.
-	if e.event == "broadcast/resync" || e.event == "broadcast/acknowledge" {
+	if e.event == "broadcast/resync" || e.event == "broadcast/acknowledge" || e.event == "broadcast/floor" {
 		if e.from == "" {
 			info("Event dropping unsigned broadcast event %q to app %q", e.event, a.id)
 			return fmt.Errorf("unsigned broadcast event")
@@ -273,6 +273,8 @@ func (e *Event) route() error {
 			return e.broadcast_resync(a, av)
 		case "broadcast/acknowledge":
 			return e.broadcast_acknowledge()
+		case "broadcast/floor":
+			return e.broadcast_floor(a)
 		}
 	}
 
@@ -392,6 +394,7 @@ func (e *Event) route() error {
 		// broadcast_inbound_class for the anchor rationale.
 		if class == "gap" {
 			debug("Broadcast gap seq=%d > last+1=%d for (peer=%s, key=%s); buffering + requesting resync", bseq, last+1, e.peer, bkey)
+			broadcast_stall_note(e.user.UID, a.id, e.peer, bkey, last, bseq)
 			go broadcast_request_resync(e.user, a, e.to, e.from, bkey, e.peer, last)
 			stored := broadcast_pending_insert(bdb, e.peer, bkey, bseq,
 				e.from, e.to, e.service, e.event, e.msg_id, e.sender_app,
@@ -422,6 +425,17 @@ func (e *Event) route() error {
 	if broadcast_check && handler_err == nil {
 		broadcast_advance_local(bdb, e.peer, bkey, bseq)
 		broadcast_send_ack(e.user, a, e.to, e.from, bkey, e.peer, bseq)
+		// Continuation: this apply (often the tail of a replay batch)
+		// advanced the watermark but buffered rows remain above the new
+		// cursor — request the next batch now. Without it, catch-up on a
+		// quiet stream stalls after each batch until the next live event
+		// happens to trip the gap detector. The in-flight gate (just
+		// cleared by the advance) dedups concurrent continuations.
+		if last := broadcast_received_get(bdb, e.peer, bkey); last >= bseq {
+			if pending, _ := bdb.exists("select 1 from pending where peer=? and key=? and sequence > ? limit 1", e.peer, bkey, last); pending {
+				go broadcast_request_resync(e.user, a, e.to, e.from, bkey, e.peer, last)
+			}
+		}
 	}
 	return handler_err
 }

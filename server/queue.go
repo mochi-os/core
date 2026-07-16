@@ -245,6 +245,83 @@ func queue_next_retry(attempts int) int64 {
 	return now() + delay + jitter
 }
 
+// queue_warn_rows / queue_warn_age / queue_warn_attempts are the
+// pending-backlog thresholds past which queue_watchdog warns for a
+// (target, service) bucket. The News feed self-loop wedge (2026-07-06
+// to 2026-07-15) accumulated 1.4M undeliverable rows over a week with
+// the WAL watchdog firing as the only, indirect signal; any one of
+// these thresholds surfaces that class within hours of onset. var
+// (not const) so tests can lower them.
+var queue_warn_rows int64 = 10000
+var queue_warn_age int64 = 7 * 86400
+var queue_warn_attempts int64 = 100
+
+// queue_warn_repeat is the re-warn cadence: a bucket warns on the tick
+// it first trips a threshold, then once per repeat window while the
+// condition persists, instead of every tick.
+var queue_warn_repeat int64 = 86400
+
+var queue_warned sync.Map // target+"|"+service -> last warn unix
+
+// queue_park_attempts is the retry budget before queue_fail parks a row
+// (status='parked', outside every claim path) instead of rescheduling
+// it. With the backoff ladder capped at an hour, 50 attempts is roughly
+// two days of failures — long past transient, days before the age
+// budget deletes the data. var (not const) so tests can lower it.
+var queue_park_attempts = 50
+
+var queue_park_warned sync.Map // target+"|"+service -> last park warn unix
+
+// queue_watchdog runs every db_manager tick. It groups pending queue
+// rows by (target, service) and warns when a bucket's row count,
+// oldest-row age, or attempt count says deliveries to that destination
+// are not draining. Retries make a transient outage invisible, which
+// also makes a permanent failure invisible — each individual retry is
+// routine, so undeliverable rows accumulate with no signal until
+// something downstream (disk, WAL churn) breaks. This is the direct
+// signal.
+func queue_watchdog() {
+	db := db_open("db/queue.db")
+	if db == nil {
+		return
+	}
+	var buckets []struct {
+		Target   string `db:"target"`
+		Service  string `db:"service"`
+		Total    int64  `db:"total"`
+		Oldest   int64  `db:"oldest"`
+		Attempts int64  `db:"attempts"`
+	}
+	err := db.scans(&buckets, "select target, service, count(*) as total, min(created) as oldest, max(attempts) as attempts from queue where status in ('pending', 'parked') group by target, service")
+	if err != nil {
+		return
+	}
+	now := now()
+	unhealthy := map[string]bool{}
+	for _, bucket := range buckets {
+		key := bucket.Target + "|" + bucket.Service
+		age := now - bucket.Oldest
+		if bucket.Total < queue_warn_rows && age < queue_warn_age && bucket.Attempts < queue_warn_attempts {
+			queue_warned.Delete(key)
+			continue
+		}
+		unhealthy[key] = true
+		if v, ok := queue_warned.Load(key); ok && now-v.(int64) < queue_warn_repeat {
+			continue
+		}
+		queue_warned.Store(key, now)
+		warn("Queue backlog: %d pending rows for (target=%q, service=%q), oldest %.1f days old, attempts up to %d; deliveries to this destination are not draining.", bucket.Total, bucket.Target, bucket.Service, float64(age)/86400, bucket.Attempts)
+	}
+	// Buckets that drained entirely no longer appear in the query; drop
+	// their re-warn tracking so a future recurrence warns fresh.
+	queue_warned.Range(func(key, _ any) bool {
+		if !unhealthy[key.(string)] {
+			queue_warned.Delete(key)
+		}
+		return true
+	})
+}
+
 // Add a direct message to the queue. Caller can override the default
 // (service+event)-derived priority by calling queue_add_direct_priority
 // instead — used by broadcast_resync to ship replies in the priority_replay
@@ -488,6 +565,12 @@ func queue_error_dispatch_real(q *QueueEntry, code, reason string) {
 	if code == error_code_message_unknown || code == error_code_message_timeout {
 		to := q.ToEntity
 		detail = func() map[string]any {
+			if _, ok := entity_local(to); !ok {
+				// The ownership check itself failed; "unknown" must not
+				// read as "gone" — locations == 0 tells apps the entity
+				// has no host left (feeds deletes the subscriber on it).
+				return map[string]any{"locations": int64(1)}
+			}
 			return map[string]any{"locations": int64(len(entity_peers(to)))}
 		}
 	}
@@ -572,6 +655,11 @@ func queue_resurrect_peer(target string) {
 	db := db_open("db/queue.db")
 	t := now()
 	db.exec_bg("queue resurrect peer", "update queue set next_retry = ? where target = ? and status = 'pending' and next_retry > ?", t, target, t)
+	// Parked rows (retry budget spent while the peer was away) revive on
+	// reconnect: the peer coming back is exactly the condition parking
+	// waited for. Attempts stay — if the peer is back but deliveries
+	// still fail, the first failure re-parks instead of re-grinding.
+	db.exec_bg("queue resurrect parked", "update queue set status = 'pending', next_retry = ? where target = ? and status = 'parked'", t, target)
 	queue_wake()
 }
 
@@ -599,6 +687,21 @@ func queue_fail(id string, err string) {
 			}
 		}
 		queue_error_dispatch(&q, error_code_message_timeout, "timeout")
+	} else if attempts >= queue_park_attempts {
+		// Retry budget exhausted while the row is still inside its age
+		// budget: park it instead of grinding hourly retries for the
+		// remaining days (1.4M wedged rows at attempts up to 157 were
+		// the write churn that starved queue.db's WAL checkpoint,
+		// 2026-07-15). Parked rows keep their data — they revive when
+		// the target peer reconnects (queue_resurrect_peer) and age out
+		// through the queue_cleanup sweep, which is status-blind.
+		db.exec_bg("queue fail park", "update queue set status = 'parked', attempts = ?, last_error = ? where id = ?", attempts, err, id)
+		key := q.Target + "|" + q.Service
+		now := now()
+		if v, ok := queue_park_warned.Load(key); !ok || now-v.(int64) >= queue_warn_repeat {
+			queue_park_warned.Store(key, now)
+			warn("Queue parking deliveries for (target=%q, service=%q) after %d failed attempts (latest: %s); rows keep their data, revive if the peer reconnects, and are reaped after %d days.", q.Target, q.Service, attempts, err, queue_max_age/86400)
+		}
 	} else {
 		// Schedule retry
 		next := queue_next_retry(attempts)

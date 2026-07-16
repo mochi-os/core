@@ -1021,6 +1021,7 @@ func db_manager() {
 		now := now()
 		db_wal_watchdog()
 		db_integrity_watchdog()
+		queue_watchdog()
 		pass := now-db_vacuum_last >= db_vacuum_period
 
 		// Collect under the lock, but vacuum and close outside it: both

@@ -700,7 +700,13 @@ func queue_fail(id string, err string) {
 		now := now()
 		if v, ok := queue_park_warned.Load(key); !ok || now-v.(int64) >= queue_warn_repeat {
 			queue_park_warned.Store(key, now)
-			warn("Queue parking deliveries for (target=%q, service=%q) after %d failed attempts (latest: %s); rows keep their data, revive if the peer reconnects, and are reaped after %d days.", q.Target, q.Service, attempts, err, queue_max_age/86400)
+			if q.Target == "" {
+				// No peer to reconnect: the recipient entity never resolved
+				// to any host, so these rows only age out.
+				warn("Queue parking deliveries for (service=%q) with no resolvable recipient after %d failed attempts (latest: %s); rows keep their data and are reaped after %d days.", q.Service, attempts, err, queue_max_age/86400)
+			} else {
+				warn("Queue parking deliveries for (target=%q, service=%q) after %d failed attempts (latest: %s); rows keep their data, revive if the peer reconnects, and are reaped after %d days.", q.Target, q.Service, attempts, err, queue_max_age/86400)
+			}
 		}
 	} else {
 		// Schedule retry

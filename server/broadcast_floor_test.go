@@ -152,4 +152,15 @@ func TestBroadcastFloorSkips(t *testing.T) {
 	if last := broadcast_received_get(db, "peer1", "key1"); last != 49 {
 		t.Errorf("watermark after stale floor: got %d, want 49 (unchanged)", last)
 	}
+
+	// A floor past the buffered rows sweeps them: the skipped events are
+	// stale duplicates the chain-drain never dispatches, and without the
+	// sweep they linger below the cursor forever.
+	e.content["floor"] = int64(150)
+	if err := e.broadcast_floor(&App{id: "appA"}); err != nil {
+		t.Fatalf("broadcast_floor sweep: %v", err)
+	}
+	if n := db.integer("select count(*) from pending where peer='peer1' and key='key1'"); n != 0 {
+		t.Errorf("floor skip must sweep below-cursor pending rows; %d remain", n)
+	}
 }

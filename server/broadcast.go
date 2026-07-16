@@ -894,6 +894,12 @@ func (e *Event) broadcast_floor(a *App) error {
 	}
 	first := last + 1
 	broadcast_advance_local(e.db, peer, key, floor-1)
+	// Sweep the orphaned buffer rows the skip jumped over: the chain-drain
+	// only deletes rows it dispatches, so below-cursor rows would linger
+	// as permanent sediment (same sweep the pending-GC runs after its
+	// skips). Sweep to the fresh watermark — the drain may have chained
+	// past floor-1.
+	e.db.exec("delete from pending where peer=? and key=? and sequence<=?", peer, key, broadcast_received_get(e.db, peer, key))
 	audit_broadcast_pending_purged(e.user.UID, a.id, peer, key, first, floor-1, floor-1-last)
 	broadcast_skip_warn(e.user.UID, a.id, peer, key, first, floor-1)
 	svc := ""

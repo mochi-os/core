@@ -582,15 +582,14 @@ func db_app(u *User, app *App) *DB {
 		}
 	}
 
-	// Create the core-managed infrastructure tables on this data DB eagerly at
-	// open — like db_app_system's access/attachments setup — not lazily on
-	// first use (#424). Idempotent; covers both fresh and pre-existing files,
-	// and runs once per process per (path, version).
-	broadcast_sequence_table_create(db)
-	broadcast_received_table_create(db)
-	broadcast_log_table_create(db)
-	broadcast_acknowledged_table_create(db)
-	broadcast_pending_table_create(db)
+	// Create the core-managed commit-hook table on this data DB eagerly at
+	// open — not lazily on first use (#424). Idempotent; covers both fresh
+	// and pre-existing files, and runs once per process per (path, version).
+	// The broadcast tables do NOT belong here: their live copies moved to
+	// the per-app SYSTEM DB (db_app_system creates them eagerly), and
+	// creating them on the data DB kept regenerating the stale duplicates
+	// that misled the 2026-07 News wedge diagnosis — the per-app migrations
+	// dropping those duplicates rely on this not re-creating them.
 	commits_table_create(db)
 
 	// Schema and infra tables are in place; open the reused fast-path. Never
@@ -632,6 +631,14 @@ func db_app_system(u *User, app *App) *DB {
 
 	db.access_setup()
 	db.attachments_setup()
+	// Broadcast state lives on the system DB; create its tables eagerly
+	// here (#424) rather than only via the send/receive paths' defensive
+	// creates.
+	broadcast_sequence_table_create(db)
+	broadcast_received_table_create(db)
+	broadcast_log_table_create(db)
+	broadcast_acknowledged_table_create(db)
+	broadcast_pending_table_create(db)
 	db.system_setup = true
 
 	return db

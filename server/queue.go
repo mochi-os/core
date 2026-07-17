@@ -250,10 +250,13 @@ func queue_next_retry(attempts int) int64 {
 // (target, service) bucket. The News feed self-loop wedge (2026-07-06
 // to 2026-07-15) accumulated 1.4M undeliverable rows over a week with
 // the WAL watchdog firing as the only, indirect signal; any one of
-// these thresholds surfaces that class within hours of onset. var
-// (not const) so tests can lower them.
+// these thresholds surfaces that class within hours of onset. The age
+// threshold sits well below queue_max_age (7d): warning only as the
+// reaper starts deleting the rows is too late to act on (the first
+// live age warns fired at exactly 7.0 days, for buckets already being
+// reaped). var (not const) so tests can lower them.
 var queue_warn_rows int64 = 10000
-var queue_warn_age int64 = 7 * 86400
+var queue_warn_age int64 = 2 * 86400
 var queue_warn_attempts int64 = 100
 
 // queue_warn_repeat is the re-warn cadence: a bucket warns on the tick

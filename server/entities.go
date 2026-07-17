@@ -459,6 +459,18 @@ func entity_private_local_foreign(from string, id string) bool {
 // lack. Learned rows are the only lead for a private entity, so they
 // are tried regardless of age.
 func entity_peers_failover_for(from string, id string) []string {
+	// A locally-owned entity's only correct route is the self-loop;
+	// appending the caller's learned rows would offer ghost peers that
+	// advertised it (drill/clone residue), and remote_reach can pick one
+	// when the self-dial doesn't instantly win — a stream to a dead peer
+	// returns EOF (the 2026-07-17 "unable to read segment: EOF" viewing a
+	// local feed). entity_peers_failover already returns [net_id] here;
+	// stop before the learned-row merge. Mirrors the entity_peers_for
+	// guard on the delivery path. The fail-safe local check refuses to
+	// fall through on a users.db error.
+	if local, ok := entity_local(id); !ok || local {
+		return entity_peers_failover(id)
+	}
 	out := entity_peers_failover(id)
 	if from == "" {
 		return out

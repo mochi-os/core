@@ -677,7 +677,14 @@ func directory_manager() {
 
 	directory_sync()
 
-	cleanup := now()
+	// Zero, not now(): the cleanup must run on the FIRST tick after start
+	// and then daily. Anchoring it to process start meant a host restarted
+	// daily (yuzu, during active release periods) never reached the 24h
+	// mark and never cleaned at all — stale-entry expiry, ghost
+	// withdrawal, and the owner-authoritative foreign-claim purge all sit
+	// behind this gate. The sweep is idempotent and cheap; running it
+	// minutes after boot is strictly better than maybe-never.
+	cleanup := int64(0)
 	for range time.Tick(5 * time.Minute) {
 		directory_sync()
 		if now()-cleanup > 24*60*60 {

@@ -144,6 +144,39 @@ func TestEntityPeersForMerge(t *testing.T) {
 	}
 }
 
+// A locally-owned entity must resolve to the self-loop only, on BOTH the
+// delivery (entity_peers_for) and RPC/stream (entity_peers_failover_for)
+// paths — never appending the caller's learned rows. Pre-fix, a stale
+// learned ghost row for a local feed made entity_peers_failover_for offer a
+// dead peer, and a synchronous remote.request to it opened a stream that
+// returned EOF (the 2026-07-17 "unable to read segment: EOF" on a local
+// feed view). directory_user_learn refuses local entities now, so the stale
+// row is inserted directly to model a pre-guard learned row.
+func TestLocalEntityResolutionIgnoresLearnedGhosts(t *testing.T) {
+	orig := net_id
+	net_id = "self"
+	defer func() { net_id = orig }()
+	user, cleanup := test_directory_user(t)
+	defer cleanup()
+	udb := db_open("db/users.db")
+	udb.exec("insert into users (uid, username) values ('u-dir', 'dir@test')")
+	viewer := strings.Repeat("e", 50)
+	udb.exec("insert into entities (id, user, class) values (?, 'u-dir', 'person')", viewer)
+
+	// A locally-owned feed, and a stale ghost row the viewer learned before
+	// the learn-guard shipped.
+	feed := strings.Repeat("a", 50)
+	udb.exec("insert into entities (id, user, class, privacy) values (?, 'owner', 'feed', 'public')", feed)
+	db_user(user, "user").exec("insert into directory (entity, peer, created, seen) values (?, '12D3KooWGhostDrill', ?, ?)", feed, now(), now())
+
+	if got := entity_peers_failover_for(viewer, feed); len(got) != 1 || got[0] != net_id {
+		t.Errorf("RPC/stream resolution to a local feed must be self-loop only, got %v", got)
+	}
+	if got := entity_peers_for(viewer, feed); len(got) != 1 || got[0] != net_id {
+		t.Errorf("delivery to a local feed must be self-loop only, got %v", got)
+	}
+}
+
 // mochi.remote.ping's gate predicate: a private local entity is "foreign" to an
 // unrelated caller (blocked), but not to its owner; public entities and remote
 // entities are never foreign. request/stream and delivery are NOT gated — only

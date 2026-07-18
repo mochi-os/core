@@ -75,6 +75,7 @@ func TestErrorCatalogue(t *testing.T) {
 		error_code_message_timeout,
 		error_code_message_rejected,
 		error_code_broadcast_gap,
+		error_code_subscriber_unreachable,
 	}
 	if len(error_catalogue) != len(want) {
 		t.Errorf("catalogue size = %d, want %d", len(error_catalogue), len(want))

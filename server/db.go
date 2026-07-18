@@ -84,7 +84,7 @@ const (
 )
 
 const (
-	schema_version = 1
+	schema_version = 2
 )
 
 var (
@@ -367,6 +367,13 @@ func db_create() {
 	// transport ACK lands so journal_delivery can advance. Co-located with
 	// the ack delete so the resolve is a same-DB lookup.
 	queue.exec("create table if not exists journal_inflight (id text primary key, user text not null, peer text not null, stream text not null, sequence integer not null, created integer not null)")
+	// Per-recipient delivery health: the queue's memory of failure per
+	// RECIPIENT entity rather than per row. Rows exist only for recipients
+	// with a failure history (health_success is a bare update). Suspended
+	// recipients get no broadcast fan-out rows beyond a periodic probe,
+	// and after queue_evict_age the owning apps are told to drop the
+	// subscriber (see health_gate in queue.go).
+	queue.exec("create table if not exists health ( recipient text not null primary key, failures integer not null default 0, denials integer not null default 0, success integer not null default 0, since integer not null default 0, suspended integer not null default 0, probed integer not null default 0 )")
 
 	// Domains
 	domains := db_open("db/domains.db")
@@ -1215,12 +1222,22 @@ func db_upgrade() {
 		// Future migrations: add `case N: db_upgrade_N()` here, bump
 		// schema_version, and provide the matching db_upgrade_N function.
 		// History before the 2026-07 baseline squash is in git.
+		case 2:
+			db_upgrade_2()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
 		setting_set("schema", fmt.Sprintf("%d", next))
 		schema = next
 	}
+}
+
+// db_upgrade_2 adds the per-recipient delivery health table to queue.db
+// on existing installs; db_create carries the same table for fresh ones
+// and transient rebuilds.
+func db_upgrade_2() {
+	queue := db_open("db/queue.db")
+	queue.exec("create table if not exists health ( recipient text not null primary key, failures integer not null default 0, denials integer not null default 0, success integer not null default 0, since integer not null default 0, suspended integer not null default 0, probed integer not null default 0 )")
 }
 
 func (db *DB) close() {

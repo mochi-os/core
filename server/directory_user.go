@@ -52,6 +52,10 @@ func directory_user_learn(user *User, entity string, peer string) {
 	if user == nil || entity == "" || peer == "" || peer == net_id || !valid(entity, "entity") {
 		return
 	}
+	// Claim-verified inbound contact from the entity is liveness
+	// evidence: clear any delivery-failure streak (unsuspends a
+	// recipient whose host just came back and contacted us first).
+	health_success(entity)
 	// Local entities resolve locally; a learned row would be stale noise.
 	// Fail-safe on an errored ownership check: refuse the learn rather
 	// than admit a foreign route for what may be a local entity.

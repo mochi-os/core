@@ -27,19 +27,21 @@ import (
 // The fixed error catalogue. Each message/* code is named after the
 // mochi.X.send namespace whose send failed.
 const (
-	error_code_message_unknown  = "message/unknown"  // a host of the recipient reported unknown_user
-	error_code_message_timeout  = "message/timeout"  // a send aged out of the queue undelivered
-	error_code_message_rejected = "message/rejected" // authoritative refusal from the receiver
-	error_code_broadcast_gap    = "broadcast/gap"    // an unfillable broadcast gap was skipped
+	error_code_message_unknown        = "message/unknown"        // a host of the recipient reported unknown_user
+	error_code_message_timeout        = "message/timeout"        // a send aged out of the queue undelivered
+	error_code_message_rejected       = "message/rejected"       // authoritative refusal from the receiver
+	error_code_broadcast_gap          = "broadcast/gap"          // an unfillable broadcast gap was skipped
+	error_code_subscriber_unreachable = "subscriber/unreachable" // a subscriber has been suspended past the evict age
 )
 
 // error_catalogue is the set of codes core emits, used for app-load
 // validation (warn on a declared key that isn't here — almost always a typo).
 var error_catalogue = map[string]bool{
-	error_code_message_unknown:  true,
-	error_code_message_timeout:  true,
-	error_code_message_rejected: true,
-	error_code_broadcast_gap:    true,
+	error_code_message_unknown:        true,
+	error_code_message_timeout:        true,
+	error_code_message_rejected:       true,
+	error_code_broadcast_gap:          true,
+	error_code_subscriber_unreachable: true,
 }
 
 // ErrorEvent is the Starlark object bound as `e` in an error handler. The

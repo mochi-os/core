@@ -275,6 +275,138 @@ var queue_park_attempts = 50
 
 var queue_park_warned sync.Map // target+"|"+service -> last park warn unix
 
+// Per-recipient delivery health. The queue's rows each re-learn a dead
+// recipient from scratch — fifty dials per event, forever, until the
+// directory forgets the recipient's host (30 days, and a re-announcing
+// ghost resets that clock). The health table remembers per RECIPIENT:
+// exhausting a full retry budget with no contradicting success suspends
+// them, suspension stops broadcast fan-out enqueueing anything beyond a
+// periodic probe, and after queue_evict_age the owning app is told to
+// drop the subscriber. Scope: the gate applies ONLY to broadcast-class
+// fan-out (api_broadcast_send), where the resync/floor catch-up makes
+// skipped events recoverable — direct correspondence (chat invites,
+// interactive requests) always queues normally.
+//
+// queue_denial_limit is the fast path: an authoritative unknown_user
+// answer means the host is alive and says the recipient does not exist
+// there — three of those beat fifty timeouts. queue_probe_interval
+// exceeds the ~2 days a probe row takes to burn its ladder, so probes
+// never overlap. var (not const) so tests can lower them.
+var queue_denial_limit int64 = 3
+var queue_probe_interval int64 = 3 * 86400
+var queue_evict_age int64 = 30 * 86400
+
+// health_success records evidence the recipient is alive — a delivered
+// row, a broadcast ack, or inbound verified contact — clearing any
+// failure streak and suspension. A bare update: healthy recipients
+// carry no health row at all.
+func health_success(recipient string) {
+	if recipient == "" {
+		return
+	}
+	db := db_open("db/queue.db")
+	// Point read before the write: the healthy common case has no
+	// health row, and this runs on delivery hot paths (queue_ack, the
+	// self-loop dispatch) where an unconditional write transaction
+	// per message would be a real cost. The read-to-write race is
+	// harmless — a row inserted in between records a fresh failure
+	// the next ack clears.
+	if ok, _ := db.exists("select 1 from health where recipient=?", recipient); !ok {
+		return
+	}
+	db.exec_bg("health success", "update health set failures=0, denials=0, success=?, suspended=0 where recipient=?", now(), recipient)
+}
+
+// health_failure records a row that exhausted its whole retry budget
+// (parked) against the recipient. Suspends when the ladder ran with no
+// contradicting success: the row burned every backoff step since
+// `created` and nothing from this recipient landed in that window. A
+// success mid-window (success >= created) blocks suspension — mixed
+// outcomes are a per-message problem, not a dead recipient.
+func health_failure(recipient string, created int64) {
+	if recipient == "" {
+		return
+	}
+	db := db_open("db/queue.db")
+	moment := now()
+	db.exec_bg("health failure", "insert into health (recipient, failures, since) values (?, 1, ?) on conflict(recipient) do update set failures = health.failures + 1, since = case when health.failures = 0 then excluded.since else health.since end", recipient, moment)
+	db.exec_bg("health suspend", "update health set suspended=? where recipient=? and suspended=0 and success < ?", moment, recipient, created)
+}
+
+// health_denial records an authoritative unknown_user answer: the
+// recipient's host responded and stated the recipient does not exist
+// there. Stronger than silence — queue_denial_limit consecutive denials
+// suspend immediately.
+func health_denial(recipient string) {
+	if recipient == "" {
+		return
+	}
+	db := db_open("db/queue.db")
+	moment := now()
+	db.exec_bg("health denial", "insert into health (recipient, denials, since) values (?, 1, ?) on conflict(recipient) do update set denials = health.denials + 1, since = case when health.denials = 0 and health.failures = 0 then excluded.since else health.since end", recipient, moment)
+	db.exec_bg("health suspend on denial", "update health set suspended=? where recipient=? and suspended=0 and denials >= ?", moment, recipient, queue_denial_limit)
+}
+
+// health_gate is consulted by broadcast fan-out per subscriber. Healthy
+// recipients (no row, or not suspended) pass. Suspended recipients are
+// skipped — their streams catch up via resync when they return — except
+// one probe row per queue_probe_interval, which passes through as a
+// normal send: its ack unsuspends, its park re-confirms. Past
+// queue_evict_age the caller should stop probing and tell the owning
+// app to drop the subscriber instead.
+func health_gate(recipient string) (skip bool, evict bool) {
+	db := db_open("db/queue.db")
+	var h struct {
+		Suspended int64 `db:"suspended"`
+		Probed    int64 `db:"probed"`
+	}
+	if !db.scan(&h, "select suspended, probed from health where recipient=?", recipient) {
+		return false, false
+	}
+	if h.Suspended == 0 {
+		return false, false
+	}
+	moment := now()
+	if moment-h.Suspended > queue_evict_age {
+		return true, true
+	}
+	if moment-h.Probed > queue_probe_interval {
+		db.exec_bg("health probe", "update health set probed=? where recipient=?", moment, recipient)
+		return false, false
+	}
+	return true, false
+}
+
+var health_evict_warned sync.Map // app.id+"|"+recipient -> last dispatch unix
+
+// health_evict_dispatch tells the owning app — once per day per (app,
+// recipient) — that a subscriber has been unreachable past
+// queue_evict_age, so it can drop the subscriber row. Fired lazily from
+// the fan-out gate: exactly where the cost recurs and where app context
+// exists, so no scheduler is involved. Apps without a handler no-op.
+func health_evict_dispatch(user *User, app *App, service, recipient string) {
+	key := app.id + "|" + recipient
+	moment := now()
+	if v, ok := health_evict_warned.Load(key); ok && moment-v.(int64) < 86400 {
+		return
+	}
+	health_evict_warned.Store(key, moment)
+	db := db_open("db/queue.db")
+	var h struct {
+		Since     int64 `db:"since"`
+		Suspended int64 `db:"suspended"`
+	}
+	_ = db.scan(&h, "select since, suspended from health where recipient=?", recipient)
+	target := recipient
+	subscriber_dispatch(user, app, error_code_subscriber_unreachable, "unreachable", service, target, nil, func() map[string]any {
+		return map[string]any{"subscriber": target, "since": h.Since, "suspended": h.Suspended}
+	})
+}
+
+// subscriber_dispatch is error_dispatch behind a var so tests can
+// capture eviction dispatches without standing up an app registry.
+var subscriber_dispatch = error_dispatch
+
 // queue_watchdog runs every db_manager tick. It groups pending queue
 // rows by (target, service) and warns when a bucket's row count,
 // oldest-row age, or attempt count says deliveries to that destination
@@ -364,9 +496,12 @@ func queue_add_broadcast(id, from_entity, to_entity, service, event, from_app st
 func queue_ack(id string) {
 	db := db_open("db/queue.db")
 	var q QueueEntry
-	if db.scan(&q, "select from_entity, to_entity, target from queue where id = ?", id) && q.Target != "" {
-		if user := user_owning_entity(q.FromEntity); user != nil {
-			directory_user_confirm(user, q.ToEntity, q.Target)
+	if db.scan(&q, "select from_entity, to_entity, target from queue where id = ?", id) {
+		health_success(q.ToEntity)
+		if q.Target != "" {
+			if user := user_owning_entity(q.FromEntity); user != nil {
+				directory_user_confirm(user, q.ToEntity, q.Target)
+			}
 		}
 	}
 	db.exec_bg("queue ack delete", "delete from queue where id = ?", id)
@@ -484,6 +619,10 @@ func queue_ack_flush(ids []string) {
 		placeholders = append(placeholders, '?')
 		args[i] = id
 	}
+	// Delivery success clears any failure streak for these recipients
+	// before the rows disappear — one set-based update; a no-op for
+	// recipients with no health row (the healthy common case).
+	db.exec_bg("health success flush", "update health set failures=0, denials=0, success=?, suspended=0 where recipient in (select to_entity from queue where id in ("+string(placeholders)+"))", append([]any{now()}, args...)...)
 	db.exec_bg("queue ack flush", "delete from queue where id in ("+string(placeholders)+")", args...)
 }
 
@@ -531,6 +670,11 @@ func queue_drop(id, reason string) {
 	// handler never runs while the row is being removed. unknown/rejected
 	// map to a code; fail_dedup and unmapped reasons dispatch nothing.
 	if have {
+		if reason == fail_unknown_user {
+			// The recipient's host answered and said they don't exist
+			// there — authoritative evidence for the health record.
+			health_denial(q.ToEntity)
+		}
 		if code, errReason, ok := error_code_for_nack(reason); ok {
 			queue_error_dispatch(&q, code, errReason)
 		}
@@ -699,6 +843,9 @@ func queue_fail(id string, err string) {
 		// the target peer reconnects (queue_resurrect_peer) and age out
 		// through the queue_cleanup sweep, which is status-blind.
 		db.exec_bg("queue fail park", "update queue set status = 'parked', attempts = ?, last_error = ? where id = ?", attempts, err, id)
+		// A parked row is a full retry budget burned against this
+		// recipient — feed the per-recipient health record.
+		health_failure(q.ToEntity, q.Created)
 		key := q.Target + "|" + q.Service
 		now := now()
 		if v, ok := queue_park_warned.Load(key); !ok || now-v.(int64) >= queue_warn_repeat {
@@ -1208,6 +1355,12 @@ func queue_cleanup() {
 		seen[key] = true
 		queue_error_dispatch(q, error_code_message_timeout, "timeout")
 	}
+
+	// Health residue: a recipient suspended past twice the evict age has
+	// had a month of eviction dispatches — every owning app has dropped
+	// them, so no fan-out consults the row again. If the host ever
+	// returns, inbound contact rebuilds state from scratch anyway.
+	db.exec_bg("health cleanup", "delete from health where suspended != 0 and suspended < ?", now()-2*queue_evict_age)
 }
 
 // Drain queue before shutdown (wait for pending sends to complete)

@@ -456,9 +456,16 @@ type local_reply struct {
 	id      string
 	service string
 	event   string
+	to      string
 }
 
-func (l local_reply) ack() {}
+// ack has no queue row to delete, but an in-process delivery is still a
+// delivery success: clear any health streak for the recipient (a
+// suspended recipient whose account moved onto this host must not stay
+// gated). health_success is a no-op point read for healthy recipients.
+func (l local_reply) ack() {
+	health_success(l.to)
+}
 
 func (l local_reply) fail(reason string) {
 	if reason == "" {
@@ -554,7 +561,7 @@ func message_self_loop_dispatch(m *Message, content []byte) bool {
 			Data:     m.data,
 		},
 		peer:  net_id,
-		reply: local_reply{id: m.ID, service: m.Service, event: m.Event},
+		reply: local_reply{id: m.ID, service: m.Service, event: m.Event, to: to},
 	}
 
 	// Lookup-only non-blocking enqueue. Two miss cases both fall back

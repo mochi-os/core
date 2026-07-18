@@ -666,6 +666,20 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		if owner := user_owning_entity(sub); owner != nil && owner.UID == user.UID {
 			continue
 		}
+		// Recipient health gate: a suspended subscriber (a full retry
+		// budget burned with no contradicting success) gets no fan-out
+		// rows — their stream catches up via resync when they return —
+		// except one probe row per interval. Past the evict age the
+		// owning app is told to drop the subscriber instead. Applies to
+		// broadcast fan-out only; direct correspondence never gates.
+		skip, evict := health_gate(sub)
+		if evict {
+			health_evict_dispatch(user, app, service, sub)
+			continue
+		}
+		if skip {
+			continue
+		}
 		m := message(from, sub, service, event)
 		m.FromApp = app.id
 		m.Services = services
@@ -846,6 +860,8 @@ func (e *Event) broadcast_acknowledge() error {
 	broadcast_acknowledged_table_create(e.db)
 	e.db.exec("insert into acknowledged (key, peer, subscriber, last) values (?, ?, ?, ?) on conflict(key, peer, subscriber) do update set last = max(acknowledged.last, excluded.last)", key, peer, e.from, sequence)
 	broadcast_log_ack_trim(e.db, key, peer)
+	// A subscriber acking is alive: clear any failure streak.
+	health_success(e.from)
 	return nil
 }
 

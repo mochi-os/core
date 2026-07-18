@@ -91,6 +91,7 @@ func setup_replication_test(t *testing.T) func() {
 	// and are torn down with the temp dir.
 	queue := db_open("db/queue.db")
 	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20 )")
+	queue.exec("create table if not exists health ( recipient text not null primary key, failures integer not null default 0, denials integer not null default 0, success integer not null default 0, since integer not null default 0, suspended integer not null default 0, probed integer not null default 0 )")
 
 	return func() {
 		// Drain any /mochi/2 self-loop workers spawned by this test before we

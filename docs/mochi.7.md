@@ -4,11 +4,11 @@
 
 # NAME
 
-mochi - decentralised social platform
+mochi - distributed app platform
 
 # DESCRIPTION
 
-Mochi is a decentralised social platform where every server is a first-class
+Mochi is a distributed app platform where every server is a first-class
 participant in a global mesh, rather than a tenant of someone else's
 service. There is no central server, no required account at a hosting
 provider, and no DNS-name dependency for users to reach each other; nodes

@@ -4,7 +4,7 @@
 
 # NAME
 
-mochi-server - Mochi decentralised social platform server
+mochi-server - Mochi distributed app platform server
 
 # SYNOPSIS
 
@@ -12,8 +12,8 @@ mochi-server - Mochi decentralised social platform server
 
 # DESCRIPTION
 
-**mochi-server** is the Mochi server daemon: a libp2p-based decentralised
-social platform. Each instance is one node in a global mesh of independent
+**mochi-server** is the Mochi server daemon: a libp2p-based distributed
+app platform. Each instance is one node in a global mesh of independent
 servers, hosting one or more user accounts and the apps they install (feeds,
 forums, wiki, chat, etc.).
 

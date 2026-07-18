@@ -1,6 +1,6 @@
 #!/bin/bash
 # Mochi server uninstaller for macOS.
-# Copyright Alistair Cunningham 2026
+# Copyright © 2026 Mochisoft OÜ
 #
 # A .pkg has no uninstall hook, so this script is installed alongside the
 # server and removes everything the installer placed — EXCEPT the data

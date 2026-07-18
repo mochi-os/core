@@ -1,6 +1,6 @@
 Package: mochi-server
 Version: _VERSION_
 Architecture: amd64
-Maintainer: Mochi developers <developers@mochi-os.com>
+Maintainer: Mochi developers <developers@mochi-os.org>
 Description: The distributed app platform
  This package contains the server.

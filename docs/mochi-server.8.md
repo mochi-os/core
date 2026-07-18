@@ -1,10 +1,10 @@
-% MOCHI-SERVER(8) Mochi | Mochi P2P Server
-% Alistair Cunningham
+% MOCHI-SERVER(8) Mochi | Mochi Server
+% Mochisoft OÜ
 % 2026
 
 # NAME
 
-mochi-server - Mochi peer-to-peer social platform server
+mochi-server - Mochi decentralised social platform server
 
 # SYNOPSIS
 
@@ -12,7 +12,7 @@ mochi-server - Mochi peer-to-peer social platform server
 
 # DESCRIPTION
 
-**mochi-server** is the Mochi server daemon: a libp2p-based peer-to-peer
+**mochi-server** is the Mochi server daemon: a libp2p-based decentralised
 social platform. Each instance is one node in a global mesh of independent
 servers, hosting one or more user accounts and the apps they install (feeds,
 forums, wiki, chat, etc.).
@@ -20,11 +20,12 @@ forums, wiki, chat, etc.).
 The server maintains:
 
 - An ed25519 libp2p identity (one per data directory) that is the node's
-  permanent address in the P2P mesh.
+  permanent address in the mesh.
 - One or more user accounts, each with their own per-app SQLite databases
   and on-disk files (attachments, app state, etc.).
 - A web frontend on configurable HTTP/HTTPS ports.
-- A peer-to-peer transport on a libp2p port (default 1443, TCP and QUIC/UDP).
+- A transport between servers on a libp2p port (default 1443, TCP and
+  QUIC/UDP).
 - An admin Unix domain socket at *<data_dir>*/run/admin.sock for
   **mochictl**(1).
 
@@ -68,7 +69,7 @@ public CA chain.
 a working directory without going through the publisher pipeline.
 
 Every key may be overridden by an environment variable of the form
-**MOCHI_<SECTION>_<KEY>**, uppercased. Example: *[email] host = albatross*
+**MOCHI\_<SECTION>\_<KEY>**, uppercased. Example: *[email] host = albatross*
 becomes *MOCHI_EMAIL_HOST=albatross*. Env vars take precedence over the
 file. Sensitive keys (anything whose name contains *password*, *secret*,
 *key*, or *token*) are redacted from **mochictl config show** output.

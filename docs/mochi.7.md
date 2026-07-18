@@ -1,14 +1,14 @@
 % MOCHI(7) Mochi | Mochi project overview
-% Alistair Cunningham
+% Mochisoft OÜ
 % 2026
 
 # NAME
 
-mochi - decentralised peer-to-peer social platform
+mochi - decentralised social platform
 
 # DESCRIPTION
 
-Mochi is a peer-to-peer social platform where every server is a first-class
+Mochi is a decentralised social platform where every server is a first-class
 participant in a global mesh, rather than a tenant of someone else's
 service. There is no central server, no required account at a hosting
 provider, and no DNS-name dependency for users to reach each other; nodes
@@ -16,7 +16,7 @@ find each other via libp2p's Kademlia DHT and direct connect over TCP or
 QUIC.
 
 A single binary, **mochi-server**(8), runs the whole stack: peer discovery,
-peer-to-peer transport, web server, app loader, database, and admin
+transport between servers, web server, app loader, database, and admin
 listener. The companion CLI is **mochictl**(1).
 
 # ARCHITECTURE
@@ -31,7 +31,7 @@ identity in the mesh; treat the data directory as essential for backups.
 Peers find each other through:
 
 - **Bootstrap peers** — a small list of well-known servers (currently
-  Mochi-org-operated nodes) that new peers connect to first.
+  Mochisoft-operated nodes) that new peers connect to first.
 - **Kademlia DHT** — once connected to even one peer, a node joins the
   global DHT and can resolve any other peer's reachable addresses.
 - **Multicast DNS** — for peers on the same LAN, mDNS short-circuits the

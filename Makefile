@@ -119,8 +119,10 @@ mochictl-darwin-arm64: $(bin)/mochictl-darwin-arm64
 
 # Man page: docs/mochictl.1.md -> $(bin)/mochictl.1 via pandoc.
 # Requires: apt install pandoc
+# raw_html is disabled so <placeholder> text renders literally instead of
+# being dropped as an unknown HTML tag.
 $(bin)/mochictl.1: docs/mochictl.1.md | $(bin)
-	pandoc -s -t man docs/mochictl.1.md -o $(bin)/mochictl.1
+	pandoc -s -f markdown-raw_html -t man docs/mochictl.1.md -o $(bin)/mochictl.1
 	@mkdir -p $(HOME)/.local/share/man/man1 && \
 	    cp $(bin)/mochictl.1 $(HOME)/.local/share/man/man1/mochictl.1 && \
 	    echo "  installed to $(HOME)/.local/share/man/man1/mochictl.1 (run \`man mochictl\` to view)"
@@ -129,7 +131,7 @@ mochictl.1: $(bin)/mochictl.1
 
 # mochi-server(8) man page — same pandoc-to-roff flow, but section 8.
 $(bin)/mochi-server.8: docs/mochi-server.8.md | $(bin)
-	pandoc -s -t man docs/mochi-server.8.md -o $(bin)/mochi-server.8
+	pandoc -s -f markdown-raw_html -t man docs/mochi-server.8.md -o $(bin)/mochi-server.8
 	@mkdir -p $(HOME)/.local/share/man/man8 && \
 	    cp $(bin)/mochi-server.8 $(HOME)/.local/share/man/man8/mochi-server.8 && \
 	    echo "  installed to $(HOME)/.local/share/man/man8/mochi-server.8 (run \`man mochi-server\` to view)"
@@ -138,7 +140,7 @@ mochi-server.8: $(bin)/mochi-server.8
 
 # mochi.conf(5) — file-format reference for /etc/mochi/mochi.conf.
 $(bin)/mochi.conf.5: docs/mochi.conf.5.md | $(bin)
-	pandoc -s -t man docs/mochi.conf.5.md -o $(bin)/mochi.conf.5
+	pandoc -s -f markdown-raw_html -t man docs/mochi.conf.5.md -o $(bin)/mochi.conf.5
 	@mkdir -p $(HOME)/.local/share/man/man5 && \
 	    cp $(bin)/mochi.conf.5 $(HOME)/.local/share/man/man5/mochi.conf.5 && \
 	    echo "  installed to $(HOME)/.local/share/man/man5/mochi.conf.5 (run \`man mochi.conf\` to view)"
@@ -147,7 +149,7 @@ mochi.conf.5: $(bin)/mochi.conf.5
 
 # mochi(7) — high-level overview of the project: peers, entities, apps.
 $(bin)/mochi.7: docs/mochi.7.md | $(bin)
-	pandoc -s -t man docs/mochi.7.md -o $(bin)/mochi.7
+	pandoc -s -f markdown-raw_html -t man docs/mochi.7.md -o $(bin)/mochi.7
 	@mkdir -p $(HOME)/.local/share/man/man7 && \
 	    cp $(bin)/mochi.7 $(HOME)/.local/share/man/man7/mochi.7 && \
 	    echo "  installed to $(HOME)/.local/share/man/man7/mochi.7 (run \`man 7 mochi\` to view)"

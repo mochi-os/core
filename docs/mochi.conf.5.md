@@ -1,5 +1,5 @@
 % MOCHI.CONF(5) Mochi | Mochi server configuration
-% Alistair Cunningham
+% Mochisoft OÜ
 % 2026
 
 # NAME
@@ -17,7 +17,7 @@ pairs within each section. Comments begin with `#` or `;` and run to end of
 line. Whitespace around the `=` is ignored.
 
 Every key may also be set through an environment variable named
-**MOCHI_<SECTION>_<KEY>**, uppercased. Environment values take precedence
+**MOCHI\_<SECTION>\_<KEY>**, uppercased. Environment values take precedence
 over file values; both override the built-in defaults. This is the primary
 way to configure Mochi inside Docker.
 
@@ -161,7 +161,7 @@ output, so the effective configuration is safe to copy into bug reports.
 # ENVIRONMENT OVERRIDES
 
 Every key has an environment-variable counterpart of the form
-**MOCHI_<SECTION>_<KEY>**, uppercased. Examples:
+**MOCHI\_<SECTION>\_<KEY>**, uppercased. Examples:
 
 | File entry              | Environment variable |
 |-------------------------|----------------------|

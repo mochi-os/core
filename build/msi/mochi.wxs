@@ -4,7 +4,7 @@
              Name="Mochi Server"
              Language="1033"
              Version="$(var.Version)"
-             Manufacturer="Mochi"
+             Manufacturer="Mochisoft OÜ"
              UpgradeCode="8D5E5A7B-9F3C-4D2E-A1B0-7C8E9F0A1B2C">
 
         <Package InstallerVersion="200"

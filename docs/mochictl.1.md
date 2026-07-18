@@ -1,5 +1,5 @@
 % MOCHICTL(1) Mochi | Mochi Server Admin/Ops CLI
-% Alistair Cunningham
+% Mochisoft OÜ
 % 2026
 
 # NAME

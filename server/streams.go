@@ -179,7 +179,9 @@ func (s *Stream) read(v any) error {
 	}
 	err := s.decoder.Decode(v)
 	if err != nil {
-		return fmt.Errorf("stream %d unable to read segment: %v", s.id, err)
+		// %w so callers can errors.Is the EOF class (a far end that
+		// closed without answering) apart from decode corruption.
+		return fmt.Errorf("stream %d unable to read segment: %w", s.id, err)
 	}
 
 	// debug("Stream %d read segment: %+v", s.id, v)

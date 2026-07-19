@@ -8,6 +8,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -237,28 +238,36 @@ func api_remote_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	// Connect to remote
 	peer, err := remote_connect(user.Identity.ID, entity_id, peer)
 	if err != nil {
-		return sl_encode(map[string]any{"error": err.Error(), "code": 502}), nil
+		return sl_encode(map[string]any{"error": err.Error(), "code": 502, "transport": true}), nil
 	}
 
 	// Create stream
 	from := user.Identity.ID
 	s, err := stream_to_peer(peer, from, entity_id, service, event, from_app, services)
 	if err != nil {
-		return sl_encode(map[string]any{"error": err.Error(), "code": 502}), nil
+		return sl_encode(map[string]any{"error": err.Error(), "code": 502, "transport": true}), nil
 	}
 	defer s.close()
 
 	// Send payload
 	err = s.write(sl_decode(payload))
 	if err != nil {
-		return sl_encode(map[string]any{"error": fmt.Sprintf("failed to send: %v", err), "code": 502}), nil
+		return sl_encode(map[string]any{"error": fmt.Sprintf("failed to send: %v", err), "code": 502, "transport": true}), nil
 	}
 
 	// Read response
 	var response any
 	err = s.read(&response)
 	if err != nil {
-		return sl_encode(map[string]any{"error": fmt.Sprintf("failed to read response: %v", err), "code": 504}), nil
+		// A clean EOF means the far end closed without answering (its
+		// handler failed before the error-segment fix, or it died
+		// mid-request). Say that in operator terms; the stream id and
+		// raw error stay in the log for correlation.
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			info("Remote request %s/%s to %q: far end closed without answering: %v", service, event, entity_id, err)
+			return sl_encode(map[string]any{"error": "remote host closed the stream without answering", "code": 504, "transport": true}), nil
+		}
+		return sl_encode(map[string]any{"error": fmt.Sprintf("failed to read response: %v", err), "code": 504, "transport": true}), nil
 	}
 
 	return sl_encode(response), nil

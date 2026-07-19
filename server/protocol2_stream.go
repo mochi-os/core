@@ -20,6 +20,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"time"
 
 	p2p_network "github.com/libp2p/go-libp2p/core/network"
 )
@@ -200,10 +201,36 @@ func stream_dispatch(st *Stream, open *Frame, user *User, to, peer string) {
 	}
 
 	if err := e.route(); err != nil {
-		debug("Stream dispatch: handler error service=%q event=%q: %v",
+		info("Stream dispatch: handler error service=%q event=%q: %v",
 			open.Service, open.Event, err)
+		// Answer with a generic error segment instead of a bare close:
+		// without it the requester reads EOF and cannot tell a crashed
+		// handler from a dead connection (the 2026-07-17/19 "unable to
+		// read segment: EOF" reports). No internal detail crosses the
+		// host boundary — this host's log carries it.
+		stream_answer_error(st, map[string]any{"error": "remote handler failed", "code": 500, "transport": true})
 	}
 	st.close()
+}
+
+// stream_answer_error best-effort writes a final error segment. The write
+// must never block the dispatch: on a self-loop pipe a peer that only
+// WRITES (a one-way push whose far handler failed) is not reading, so a
+// bare st.write would deadlock this goroutine against the sender's next
+// write — with the sender being an app handler holding an open DB
+// transaction (the forums event_subscribe 45s stall, 2026-07-19). Write
+// in a goroutine with a short grace; on timeout the close() below the
+// call site unblocks both ends exactly as the pre-answer behaviour did.
+func stream_answer_error(st *Stream, answer map[string]any) {
+	done := make(chan struct{})
+	go func() {
+		st.write(answer)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+	}
 }
 
 // stream_self_loop is the in-process /mochi/2/stream loopback for
@@ -239,6 +266,10 @@ func stream_self_loop(from, to, service, event, from_app string, services []stri
 		if !ok {
 			debug("Stream self-loop: unknown user for to=%q service=%q event=%q",
 				open.To, open.Service, open.Event)
+			// The wire receiver answers this with a fail_unknown_user
+			// frame at the open handshake; the loopback skips the
+			// handshake, so answer in-band instead of a bare close.
+			stream_answer_error(far, map[string]any{"error": fail_unknown_user, "code": 404, "transport": true})
 			far.close()
 			return
 		}

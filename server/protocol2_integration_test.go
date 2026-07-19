@@ -616,3 +616,44 @@ func TestQueueSendDirectUnreachablePeerFails(t *testing.T) {
 		t.Error("row left marked 'sending' after unreachable peer; queue_unsending should have rolled it back")
 	}
 }
+
+// TestStreamSelfLoopAnswersErrors: the loopback answers failures in-band
+// instead of a bare close — a requester must be able to tell "the far
+// side refused or failed" from "the connection died" (the 2026-07-17/19
+// "unable to read segment: EOF" class). The wire receiver answers the
+// unknown-user case at the open handshake; the loopback skips the
+// handshake, so both cases answer with an error segment.
+func TestStreamSelfLoopAnswersErrors(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+
+	// Unknown user: in-band unknown_user, not EOF.
+	s := stream_self_loop("", "no-such-entity", "feeds", "view", "", nil)
+	var response map[string]any
+	if err := s.read(&response); err != nil {
+		t.Fatalf("unknown-user loopback must answer in-band, got read error: %v", err)
+	}
+	if response["error"] != fail_unknown_user {
+		t.Fatalf("unknown-user answer = %v", response)
+	}
+	s.close()
+
+	// Handler failure (here: no app handles the service): a generic
+	// in-band error with no internal detail.
+	users := db_open("db/users.db")
+	users.exec("insert into users (uid, username) values ('u-stream', 'stream@x')")
+	entity := test_entity_id('s')
+	users.exec("insert into entities (id, private, fingerprint, user, class, name) values (?, '', ?, 'u-stream', 'person', 'S')", entity, fingerprint(entity))
+	s = stream_self_loop("", entity, "no-such-service", "view", "", nil)
+	if err := s.write(map[string]any{}); err != nil {
+		t.Fatalf("payload write: %v", err)
+	}
+	if err := s.read(&response); err != nil {
+		t.Fatalf("handler-error loopback must answer in-band, got read error: %v", err)
+	}
+	if response["error"] != "remote handler failed" {
+		t.Fatalf("handler-error answer = %v", response)
+	}
+	s.close()
+}

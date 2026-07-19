@@ -280,6 +280,11 @@ func TestValid(t *testing.T) {
 		{"entity valid 51", strings.Repeat("a", 51), "entity", true},
 		{"entity too short", strings.Repeat("a", 48), "entity", false},
 		{"entity too long", strings.Repeat("a", 52), "entity", false},
+		// traversal must be rejected — the git builtins validate their entity
+		// argument as "entity" before using it as a repo directory name.
+		{"entity traversal dotdot", "../../../../tmp/x", "entity", false},
+		{"entity traversal slash", strings.Repeat("a", 24) + "/" + strings.Repeat("b", 24), "entity", false},
+		{"entity traversal backslash", strings.Repeat("a", 48) + `\.`, "entity", false},
 
 		// fingerprint pattern
 		{"fingerprint valid", "ABCDEF123", "fingerprint", true},

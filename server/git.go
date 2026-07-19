@@ -127,18 +127,18 @@ func (m *git_diff_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs 
 // users/<uid>/<app-name>/<repo-entity>/. The literal "repositories" string
 // was a pre-v54 accident that worked on dev (app.id == "repositories") but
 // diverged from convention on every published deployment.
-func git_repo_path(owner *User, app *App, entity_id string) string {
-	return fmt.Sprintf("%s/users/%s/%s/%s", data_dir, owner.UID, app.id, entity_id)
+func git_repo_path(owner *User, app *App, entity string) string {
+	return fmt.Sprintf("%s/users/%s/%s/%s", data_dir, owner.UID, app.id, entity)
 }
 
 // Open a repository
-func git_open(owner *User, app *App, entity_id string) (*git.Repository, error) {
-	path := git_repo_path(owner, app, entity_id)
+func git_open(owner *User, app *App, entity string) (*git.Repository, error) {
+	path := git_repo_path(owner, app, entity)
 	return git.PlainOpen(path)
 }
 
 // git_can_write reports whether the thread's authenticated identity holds
-// repository/<entity_id> write in owner's repositories ACL. This is the same
+// repository/<entity> write in owner's repositories ACL. This is the same
 // check the git Smart-HTTP receive-pack path applies (see the access_check in
 // git_http_handler), so performing a merge or mutating a branch through the
 // Starlark git API requires exactly what a `git push` to that repository
@@ -148,8 +148,8 @@ func git_open(owner *User, app *App, entity_id string) (*git.Repository, error) 
 // entity owner, so callers that must authorize a remote initiator (e.g. the
 // repositories merge event) check that initiator's verified `from` themselves
 // before reaching here - this is the same-host backstop, not that gate.
-func git_can_write(t *sl.Thread, owner *User, app *App, entity_id string) bool {
-	if owner == nil || app == nil || entity_id == "" {
+func git_can_write(t *sl.Thread, owner *User, app *App, entity string) bool {
+	if owner == nil || app == nil || entity == "" {
 		return false
 	}
 	user, _ := t.Local("user").(*User)
@@ -172,19 +172,19 @@ func git_can_write(t *sl.Thread, owner *User, app *App, entity_id string) bool {
 	if app_db == nil {
 		return false
 	}
-	return app_db.access_check(owner, identity_id, user.Role, "repository/"+entity_id, "write")
+	return app_db.access_check(owner, identity_id, user.Role, "repository/"+entity, "write")
 }
 
 // git_can_read reports whether the thread's authenticated identity - or anyone,
-// for a repository carrying a public "*" read grant - holds repository/<entity_id>
+// for a repository carrying a public "*" read grant - holds repository/<entity>
 // read in owner's repositories ACL. It gates the diff and merge-check read
 // primitives so another app cannot preview a private repository's diff or
 // conflict-check without read access. Unlike git_can_write it does NOT fail
 // closed on a missing identity: an empty identity is passed through to
 // access_check, where it still matches a public "*" read grant - preserving
 // anonymous read of public repositories.
-func git_can_read(t *sl.Thread, owner *User, app *App, entity_id string) bool {
-	if owner == nil || app == nil || entity_id == "" {
+func git_can_read(t *sl.Thread, owner *User, app *App, entity string) bool {
+	if owner == nil || app == nil || entity == "" {
 		return false
 	}
 	identity_id := ""
@@ -201,12 +201,12 @@ func git_can_read(t *sl.Thread, owner *User, app *App, entity_id string) bool {
 	if app_db == nil {
 		return false
 	}
-	return app_db.access_check(owner, identity_id, role, "repository/"+entity_id, "read")
+	return app_db.access_check(owner, identity_id, role, "repository/"+entity, "read")
 }
 
 // Initialize a new bare repository
-func git_init(owner *User, app *App, entity_id string) error {
-	path := git_repo_path(owner, app, entity_id)
+func git_init(owner *User, app *App, entity string) error {
+	path := git_repo_path(owner, app, entity)
 
 	// Create parent directory if needed
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -260,14 +260,14 @@ func git_init(owner *User, app *App, entity_id string) error {
 }
 
 // Delete a repository
-func git_delete(owner *User, app *App, entity_id string) error {
-	path := git_repo_path(owner, app, entity_id)
+func git_delete(owner *User, app *App, entity string) error {
+	path := git_repo_path(owner, app, entity)
 	return os.RemoveAll(path)
 }
 
 // Get repository size in bytes
-func git_size(owner *User, app *App, entity_id string) (int64, error) {
-	path := git_repo_path(owner, app, entity_id)
+func git_size(owner *User, app *App, entity string) (int64, error) {
+	path := git_repo_path(owner, app, entity)
 	var size int64
 
 	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
@@ -339,15 +339,15 @@ func git_resolve_ref(repo *git.Repository, ref string) (*plumbing.Hash, error) {
 	return nil, fmt.Errorf("cannot resolve ref %q", ref)
 }
 
-// mochi.git.init(entity_id) -> bool: Initialize a bare git repository
+// mochi.git.init(entity) -> bool: Initialize a bare git repository
 func api_git_init(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <entity_id: string>")
+		return sl_error(fn, "syntax: <entity: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	owner := t.Local("owner").(*User)
@@ -356,8 +356,8 @@ func api_git_init(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "no owner")
 	}
 
-	defer git_replicate_after(owner, app, entity_id)()
-	err := git_init(owner, app, entity_id)
+	defer git_replicate_after(owner, app, entity)()
+	err := git_init(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to initialize repository: %v", err)
 	}
@@ -365,15 +365,15 @@ func api_git_init(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	return sl.True, nil
 }
 
-// mochi.git.delete(entity_id) -> bool: Delete a git repository
+// mochi.git.delete(entity) -> bool: Delete a git repository
 func api_git_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <entity_id: string>")
+		return sl_error(fn, "syntax: <entity: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	owner := t.Local("owner").(*User)
@@ -382,7 +382,7 @@ func api_git_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "no owner")
 	}
 
-	err := git_delete(owner, app, entity_id)
+	err := git_delete(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to delete repository: %v", err)
 	}
@@ -390,15 +390,15 @@ func api_git_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	return sl.True, nil
 }
 
-// mochi.git.path(entity_id) -> string: Get the filesystem path to a repository
+// mochi.git.path(entity) -> string: Get the filesystem path to a repository
 func api_git_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <entity_id: string>")
+		return sl_error(fn, "syntax: <entity: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	owner := t.Local("owner").(*User)
@@ -407,18 +407,18 @@ func api_git_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "no owner")
 	}
 
-	return sl.String(git_repo_path(owner, app, entity_id)), nil
+	return sl.String(git_repo_path(owner, app, entity)), nil
 }
 
-// mochi.git.size(entity_id) -> int: Get repository size in bytes
+// mochi.git.size(entity) -> int: Get repository size in bytes
 func api_git_size(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <entity_id: string>")
+		return sl_error(fn, "syntax: <entity: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	owner := t.Local("owner").(*User)
@@ -427,7 +427,7 @@ func api_git_size(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "no owner")
 	}
 
-	size, err := git_size(owner, app, entity_id)
+	size, err := git_size(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to get size: %v", err)
 	}
@@ -435,15 +435,15 @@ func api_git_size(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	return sl.MakeInt64(size), nil
 }
 
-// mochi.git.refs(entity_id) -> list: List all refs (branches and tags)
+// mochi.git.refs(entity) -> list: List all refs (branches and tags)
 func api_git_refs(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <entity_id: string>")
+		return sl_error(fn, "syntax: <entity: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	owner := t.Local("owner").(*User)
@@ -452,7 +452,7 @@ func api_git_refs(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -495,15 +495,15 @@ func api_git_refs(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	return sl_encode(refs), nil
 }
 
-// mochi.git.branches(entity_id) -> list: List branches
+// mochi.git.branches(entity) -> list: List branches
 func api_git_branches(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <entity_id: string>")
+		return sl_error(fn, "syntax: <entity: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	owner := t.Local("owner").(*User)
@@ -512,7 +512,7 @@ func api_git_branches(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -538,15 +538,15 @@ func api_git_branches(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl_encode(branches), nil
 }
 
-// mochi.git.tags(entity_id) -> list: List tags
+// mochi.git.tags(entity) -> list: List tags
 func api_git_tags(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <entity_id: string>")
+		return sl_error(fn, "syntax: <entity: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	owner := t.Local("owner").(*User)
@@ -555,7 +555,7 @@ func api_git_tags(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -591,15 +591,15 @@ func api_git_tags(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	return sl_encode(tags), nil
 }
 
-// mochi.git.branch.create(entity_id, name, ref) -> bool: Create a new branch
+// mochi.git.branch.create(entity, name, ref) -> bool: Create a new branch
 func api_git_branch_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
-		return sl_error(fn, "syntax: <entity_id: string>, <name: string>, <ref: string>")
+		return sl_error(fn, "syntax: <entity: string>, <name: string>, <ref: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	name, ok := sl.AsString(args[1])
@@ -618,12 +618,12 @@ func api_git_branch_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no owner")
 	}
 
-	if !git_can_write(t, owner, app, entity_id) {
+	if !git_can_write(t, owner, app, entity) {
 		return sl_error(fn, "permission denied: repository write required to create a branch")
 	}
-	defer git_replicate_after(owner, app, entity_id)()
+	defer git_replicate_after(owner, app, entity)()
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -643,15 +643,15 @@ func api_git_branch_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl.True, nil
 }
 
-// mochi.git.branch.delete(entity_id, name) -> bool: Delete a branch
+// mochi.git.branch.delete(entity, name) -> bool: Delete a branch
 func api_git_branch_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
-		return sl_error(fn, "syntax: <entity_id: string>, <name: string>")
+		return sl_error(fn, "syntax: <entity: string>, <name: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	name, ok := sl.AsString(args[1])
@@ -665,11 +665,11 @@ func api_git_branch_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no owner")
 	}
 
-	if !git_can_write(t, owner, app, entity_id) {
+	if !git_can_write(t, owner, app, entity) {
 		return sl_error(fn, "permission denied: repository write required to delete a branch")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -683,15 +683,15 @@ func api_git_branch_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl.True, nil
 }
 
-// mochi.git.branch.default.get(entity_id) -> string: Get default branch name
+// mochi.git.branch.default.get(entity) -> string: Get default branch name
 func api_git_branch_default_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <entity_id: string>")
+		return sl_error(fn, "syntax: <entity: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	owner := t.Local("owner").(*User)
@@ -700,7 +700,7 @@ func api_git_branch_default_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -714,15 +714,15 @@ func api_git_branch_default_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	return sl.String(head.Name().Short()), nil
 }
 
-// mochi.git.branch.default.set(entity_id, name) -> bool: Set default branch
+// mochi.git.branch.default.set(entity, name) -> bool: Set default branch
 func api_git_branch_default_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
-		return sl_error(fn, "syntax: <entity_id: string>, <name: string>")
+		return sl_error(fn, "syntax: <entity: string>, <name: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	name, ok := sl.AsString(args[1])
@@ -736,12 +736,12 @@ func api_git_branch_default_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 		return sl_error(fn, "no owner")
 	}
 
-	if !git_can_write(t, owner, app, entity_id) {
+	if !git_can_write(t, owner, app, entity) {
 		return sl_error(fn, "permission denied: repository write required to set the default branch")
 	}
-	defer git_replicate_after(owner, app, entity_id)()
+	defer git_replicate_after(owner, app, entity)()
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -762,15 +762,15 @@ func api_git_branch_default_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	return sl.True, nil
 }
 
-// mochi.git.commit.list(entity_id, ref, limit, offset) -> list: List commits
+// mochi.git.commit.list(entity, ref, limit, offset) -> list: List commits
 func api_git_commit_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 4 {
-		return sl_error(fn, "syntax: <entity_id: string>, [ref: string], [limit: int], [offset: int]")
+		return sl_error(fn, "syntax: <entity: string>, [ref: string], [limit: int], [offset: int]")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	ref := "HEAD"
@@ -794,7 +794,7 @@ func api_git_commit_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -844,15 +844,15 @@ func api_git_commit_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(commits), nil
 }
 
-// mochi.git.commit.get(entity_id, sha) -> dict: Get a single commit
+// mochi.git.commit.get(entity, sha) -> dict: Get a single commit
 func api_git_commit_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
-		return sl_error(fn, "syntax: <entity_id: string>, <sha: string>")
+		return sl_error(fn, "syntax: <entity: string>, <sha: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	sha, ok := sl.AsString(args[1])
@@ -866,7 +866,7 @@ func api_git_commit_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -893,15 +893,15 @@ func api_git_commit_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}), nil
 }
 
-// mochi.git.commit.log(entity_id, ref, path, limit) -> list: Commits affecting a path
+// mochi.git.commit.log(entity, ref, path, limit) -> list: Commits affecting a path
 func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 3 || len(args) > 4 {
-		return sl_error(fn, "syntax: <entity_id: string>, <ref: string>, <path: string>, [limit: int]")
+		return sl_error(fn, "syntax: <entity: string>, <ref: string>, <path: string>, [limit: int]")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	ref, ok := sl.AsString(args[1])
@@ -925,7 +925,7 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -966,15 +966,15 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl_encode(commits), nil
 }
 
-// mochi.git.commit.between(entity_id, base, head) -> list: Commits between refs
+// mochi.git.commit.between(entity, base, head) -> list: Commits between refs
 func api_git_commit_between(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
-		return sl_error(fn, "syntax: <entity_id: string>, <base: string>, <head: string>")
+		return sl_error(fn, "syntax: <entity: string>, <base: string>, <head: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	base, ok := sl.AsString(args[1])
@@ -993,7 +993,7 @@ func api_git_commit_between(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -1049,15 +1049,15 @@ func api_git_commit_between(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	return sl_encode(commits), nil
 }
 
-// mochi.git.tree(entity_id, ref, path) -> list: List directory contents
+// mochi.git.tree(entity, ref, path) -> list: List directory contents
 func api_git_tree(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 3 {
-		return sl_error(fn, "syntax: <entity_id: string>, [ref: string], [path: string]")
+		return sl_error(fn, "syntax: <entity: string>, [ref: string], [path: string]")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	ref := "HEAD"
@@ -1076,7 +1076,7 @@ func api_git_tree(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -1146,15 +1146,15 @@ func api_git_tree(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	return sl_encode(entries), nil
 }
 
-// mochi.git.blob.content(entity_id, ref, path) -> string: Get file contents
+// mochi.git.blob.content(entity, ref, path) -> string: Get file contents
 func api_git_blob_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
-		return sl_error(fn, "syntax: <entity_id: string>, <ref: string>, <path: string>")
+		return sl_error(fn, "syntax: <entity: string>, <ref: string>, <path: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	ref, ok := sl.AsString(args[1])
@@ -1173,7 +1173,7 @@ func api_git_blob_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -1201,15 +1201,15 @@ func api_git_blob_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.String(content), nil
 }
 
-// mochi.git.blob.get(entity_id, ref, path) -> dict: Get file metadata
+// mochi.git.blob.get(entity, ref, path) -> dict: Get file metadata
 func api_git_blob_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
-		return sl_error(fn, "syntax: <entity_id: string>, <ref: string>, <path: string>")
+		return sl_error(fn, "syntax: <entity: string>, <ref: string>, <path: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	ref, ok := sl.AsString(args[1])
@@ -1228,7 +1228,7 @@ func api_git_blob_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -1272,15 +1272,15 @@ func api_git_blob_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}), nil
 }
 
-// mochi.git.diff(entity_id, base, head) -> string: Get unified diff
+// mochi.git.diff(entity, base, head) -> string: Get unified diff
 func api_git_diff(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
-		return sl_error(fn, "syntax: <entity_id: string>, <base: string>, <head: string>")
+		return sl_error(fn, "syntax: <entity: string>, <base: string>, <head: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	base, ok := sl.AsString(args[1])
@@ -1299,11 +1299,11 @@ func api_git_diff(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "no owner")
 	}
 
-	if !git_can_read(t, owner, app, entity_id) {
+	if !git_can_read(t, owner, app, entity) {
 		return sl_error(fn, "permission denied: repository read required to diff")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -1351,15 +1351,15 @@ func api_git_diff(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	return sl.String(patch.String()), nil
 }
 
-// mochi.git.diff.stats(entity_id, base, head) -> dict: Get diff statistics
+// mochi.git.diff.stats(entity, base, head) -> dict: Get diff statistics
 func api_git_diff_stats(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
-		return sl_error(fn, "syntax: <entity_id: string>, <base: string>, <head: string>")
+		return sl_error(fn, "syntax: <entity: string>, <base: string>, <head: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	base, ok := sl.AsString(args[1])
@@ -1378,11 +1378,11 @@ func api_git_diff_stats(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no owner")
 	}
 
-	if !git_can_read(t, owner, app, entity_id) {
+	if !git_can_read(t, owner, app, entity) {
 		return sl_error(fn, "permission denied: repository read required to diff")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -1449,15 +1449,15 @@ func api_git_diff_stats(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}), nil
 }
 
-// mochi.git.merge.base(entity_id, ref1, ref2) -> string: Find common ancestor
+// mochi.git.merge.base(entity, ref1, ref2) -> string: Find common ancestor
 func api_git_merge_base(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
-		return sl_error(fn, "syntax: <entity_id: string>, <ref1: string>, <ref2: string>")
+		return sl_error(fn, "syntax: <entity: string>, <ref1: string>, <ref2: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	ref1, ok := sl.AsString(args[1])
@@ -1476,7 +1476,7 @@ func api_git_merge_base(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -1513,15 +1513,15 @@ func api_git_merge_base(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl.String(bases[0].Hash.String()), nil
 }
 
-// mochi.git.merge.check(entity_id, source, target) -> dict: Check if merge is possible
+// mochi.git.merge.check(entity, source, target) -> dict: Check if merge is possible
 func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
-		return sl_error(fn, "syntax: <entity_id: string>, <source: string>, <target: string>")
+		return sl_error(fn, "syntax: <entity: string>, <source: string>, <target: string>")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	source, ok := sl.AsString(args[1])
@@ -1540,11 +1540,11 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no owner")
 	}
 
-	if !git_can_read(t, owner, app, entity_id) {
+	if !git_can_read(t, owner, app, entity) {
 		return sl_error(fn, "permission denied: repository read required to check merge")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -1655,15 +1655,15 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}), nil
 }
 
-// mochi.git.merge.perform(entity_id, source, target, message, author_name, author_email) -> dict: Perform a merge
+// mochi.git.merge.perform(entity, source, target, message, author_name, author_email) -> dict: Perform a merge
 func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 6 || len(args) > 7 {
-		return sl_error(fn, "syntax: <entity_id: string>, <source: string>, <target: string>, <message: string>, <author_name: string>, <author_email: string>, [method: string]")
+		return sl_error(fn, "syntax: <entity: string>, <source: string>, <target: string>, <message: string>, <author_name: string>, <author_email: string>, [method: string]")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	source, ok := sl.AsString(args[1])
@@ -1705,12 +1705,12 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no owner")
 	}
 
-	if !git_can_write(t, owner, app, entity_id) {
+	if !git_can_write(t, owner, app, entity) {
 		return sl_error(fn, "permission denied: repository write required to merge")
 	}
-	defer git_replicate_after(owner, app, entity_id)()
+	defer git_replicate_after(owner, app, entity)()
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -2217,15 +2217,15 @@ func git_store_tree(repo *git.Repository, node *git_dir_node) (plumbing.Hash, er
 	return hash, nil
 }
 
-// mochi.git.archive(entity_id, ref, format, [prefix], [stream]) -> int: Stream a tree archive to the action's HTTP response (default) or to a Stream
+// mochi.git.archive(entity, ref, format, [prefix], [stream]) -> int: Stream a tree archive to the action's HTTP response (default) or to a Stream
 func api_git_archive(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 3 || len(args) > 5 {
-		return sl_error(fn, "syntax: <entity_id: string>, <ref: string>, <format: string>, [prefix: string], [stream: Stream]")
+		return sl_error(fn, "syntax: <entity: string>, <ref: string>, <format: string>, [prefix: string], [stream: Stream]")
 	}
 
-	entity_id, ok := sl.AsString(args[0])
-	if !ok || entity_id == "" {
-		return sl_error(fn, "invalid entity_id")
+	entity, ok := sl.AsString(args[0])
+	if !ok || !valid(entity, "entity") {
+		return sl_error(fn, "invalid entity")
 	}
 
 	ref, ok := sl.AsString(args[1])
@@ -2260,7 +2260,7 @@ func api_git_archive(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "no owner")
 	}
 
-	repo, err := git_open(owner, app, entity_id)
+	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
@@ -2478,8 +2478,8 @@ func git_archive_write_tar(w io.Writer, tree *object.Tree, prefix string, mtime 
 // refs); deletions (branch delete, gc repack) reconcile at the next bootstrap. The
 // hooks/ dir is skipped (server-side executables, not git content). Meant to run async
 // off the push handler.
-func git_replicate_repo_delta(owner *User, app *App, entity_id, repo_path string, since time.Time) {
-	if owner == nil || app == nil || entity_id == "" {
+func git_replicate_repo_delta(owner *User, app *App, entity, repo_path string, since time.Time) {
+	if owner == nil || app == nil || entity == "" {
 		return
 	}
 	emit := func(rel string) {
@@ -2521,14 +2521,14 @@ func git_replicate_repo_delta(owner *User, app *App, entity_id, repo_path string
 // the top of a mochi.git write API, live-replicates the repo's new objects/refs to the
 // host set once the write returns (#105) — the web-UI equivalent of the receive-pack
 // hook, since those APIs open their own storer (git.PlainOpen) and don't pass through
-// git_http_handler. Use: defer git_replicate_after(owner, app, entity_id)()
-func git_replicate_after(owner *User, app *App, entity_id string) func() {
+// git_http_handler. Use: defer git_replicate_after(owner, app, entity)()
+func git_replicate_after(owner *User, app *App, entity string) func() {
 	since := time.Now().Add(-2 * time.Second)
 	repo_path := ""
 	if owner != nil && app != nil {
-		repo_path = git_repo_path(owner, app, entity_id)
+		repo_path = git_repo_path(owner, app, entity)
 	}
-	return func() { go git_replicate_repo_delta(owner, app, entity_id, repo_path, since) }
+	return func() { go git_replicate_repo_delta(owner, app, entity, repo_path, since) }
 }
 
 func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo string, path string) bool {

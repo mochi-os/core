@@ -239,7 +239,9 @@ func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.String(token), nil
 }
 
-// mochi.token.delete(hash) -> bool: Delete a token by its hash
+// mochi.token.delete(token) -> bool: Delete a token by its hash or the token
+// itself. An app that only kept the token string (not the hash) can still
+// revoke it; a raw token carries the "mochi-" prefix, a hash never does.
 func api_token_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {
@@ -252,12 +254,16 @@ func api_token_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	if len(args) != 1 {
-		return sl_error(fn, "syntax: <hash: string>")
+		return sl_error(fn, "syntax: <token or hash: string>")
 	}
 
 	hash, ok := sl.AsString(args[0])
 	if !ok {
-		return sl_error(fn, "hash must be a string")
+		return sl_error(fn, "token must be a string")
+	}
+	// Accept the token itself, not just its hash.
+	if len(hash) >= 6 && hash[:6] == "mochi-" {
+		hash = token_hash(hash)
 	}
 
 	// Verify the token belongs to this user and app

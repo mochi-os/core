@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	sl "go.starlark.net/starlark"
 )
 
 // Test token generation format
@@ -342,5 +344,56 @@ func TestTokenCascadeDelete(t *testing.T) {
 	exists, _ = db.exists("SELECT 1 FROM tokens WHERE hash = ?", hash)
 	if exists {
 		t.Error("Token should be deleted when user is deleted (cascade)")
+	}
+}
+
+// TestTokenDeleteByTokenStringAndAppScope verifies mochi.token.delete accepts
+// the token itself (not only its hash) — so an app that kept only the token
+// string can revoke it — and that the delete stays scoped to the owning app.
+func TestTokenDeleteByTokenStringAndAppScope(t *testing.T) {
+	tmp, err := os.MkdirTemp("", "mochi_tokendel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmp)
+	orig := data_dir
+	data_dir = tmp
+	defer func() { data_dir = orig }()
+
+	db := db_open("db/users.db")
+	db.exec(`create table tokens (hash text primary key, user text not null, app text not null, name text not null default '', scopes text not null default '', created integer not null default 0, expires integer not null default 0)`)
+	db_open("db/sessions.db").exec(`create table accesses (hash text primary key, user text not null, used integer not null default 0)`)
+
+	// token_create returns the token STRING (not the hash), stamped app="feeds".
+	token := token_create("u1", "feeds", "rss", []string{"rss"}, 0)
+	if token == "" || token_lookup(token) == nil {
+		t.Fatal("token_create/lookup failed")
+	}
+
+	user := &User{UID: "u1"}
+	del := sl.NewBuiltin("mochi.token.delete", api_token_delete)
+
+	// A different app must NOT be able to delete it, even holding the token.
+	thForums := &sl.Thread{Name: "test"}
+	thForums.SetLocal("user", user)
+	thForums.SetLocal("app", &App{id: "forums"})
+	_, _ = api_token_delete(thForums, del, sl.Tuple{sl.String(token)}, nil)
+	if token_lookup(token) == nil {
+		t.Fatal("forums must not be able to delete feeds' token")
+	}
+
+	// The owning app deletes it by the token STRING (the new behaviour).
+	thFeeds := &sl.Thread{Name: "test"}
+	thFeeds.SetLocal("user", user)
+	thFeeds.SetLocal("app", &App{id: "feeds"})
+	res, err := api_token_delete(thFeeds, del, sl.Tuple{sl.String(token)}, nil)
+	if err != nil {
+		t.Fatalf("delete by token string failed: %v", err)
+	}
+	if res != sl.True {
+		t.Errorf("expected True, got %v", res)
+	}
+	if token_lookup(token) != nil {
+		t.Error("token should be gone after delete-by-string")
 	}
 }

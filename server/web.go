@@ -405,6 +405,10 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 				return true
 			}
 			web_cache_static(c, file, aa.Cache)
+			if strings.HasSuffix(strings.ToLower(aa.File), ".svg") {
+				web_serve_svg(c, file)
+				return true
+			}
 			c.File(file)
 			return true
 		}
@@ -618,13 +622,20 @@ func web_auth(c *gin.Context) *User {
 }
 
 // Ask browser to cache static files
-// web_serve_svg reads an SVG file, sanitizes it, and serves the result.
+// web_serve_svg reads an SVG file, sanitizes it, and serves the result. App
+// SVGs are attacker-controlled under the untrusted-app model, and an SVG opened
+// as a top-level document runs its scripts in this server's origin. The regex
+// sanitizer below is best-effort and bypassable, so the real guarantee is the
+// Content-Security-Policy: scripts, plugins, frames and network fetches are all
+// blocked even if a payload slips past svg_sanitize. Inline styles and data:
+// images are allowed so ordinary self-contained SVGs still render.
 func web_serve_svg(c *gin.Context, path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		c.Status(http.StatusNotFound)
 		return
 	}
+	c.Header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:")
 	c.Data(http.StatusOK, "image/svg+xml", svg_sanitize(data))
 }
 

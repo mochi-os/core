@@ -14,8 +14,10 @@ import (
 var (
 	// Match dangerous elements and their content (case-insensitive, dotall)
 	svg_re_dangerous = regexp.MustCompile(`(?is)<\s*(script|foreignObject|iframe|embed|object)\b[^>]*>.*?</\s*(script|foreignObject|iframe|embed|object)\s*>`)
-	// Match self-closing dangerous elements
-	svg_re_dangerous_sc = regexp.MustCompile(`(?i)<\s*(script|foreignObject|iframe|embed|object)\b[^/]*/\s*>`)
+	// Match self-closing dangerous elements. Use [^>]*? (not [^/]*) so a "/" in
+	// an attribute value (e.g. href="https://…") doesn't end the match early
+	// and let the element survive.
+	svg_re_dangerous_sc = regexp.MustCompile(`(?i)<\s*(script|foreignObject|iframe|embed|object)\b[^>]*?/\s*>`)
 	// Match on* event handler attributes (onclick, onload, onerror, etc.)
 	svg_re_on_attr = regexp.MustCompile(`(?i)\s+on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)`)
 	// Match javascript: in href/xlink:href attributes

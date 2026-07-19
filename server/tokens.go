@@ -128,8 +128,10 @@ func token_useds(user string) map[string]int64 {
 	return out
 }
 
-// Validate a token and return its info, or nil if invalid
-func token_validate(token string) *Token {
+// token_lookup returns a token's info, or nil if invalid, WITHOUT recording
+// use. Introspection (mochi.token.*) uses this so that merely inspecting a
+// token does not bump its used timestamp.
+func token_lookup(token string) *Token {
 	if token == "" || len(token) < 7 || token[:6] != "mochi-" {
 		return nil
 	}
@@ -150,13 +152,24 @@ func token_validate(token string) *Token {
 	// Parse scopes
 	json.Unmarshal([]byte(t.ScopesDB), &t.Scopes)
 
+	return &t
+}
+
+// token_validate validates a token and records its use (bumps the used
+// timestamp). Used by the request-auth paths where the token is exercised.
+func token_validate(token string) *Token {
+	t := token_lookup(token)
+	if t == nil {
+		return nil
+	}
+
 	// Update used timestamp in sessions.db (cold reference store stays cold).
 	// Self-healing: if the accesses row was lost (sessions.db wiped), upsert
 	// recreates it so the token keeps tracking.
 	db_open("db/sessions.db").exec("insert into accesses (hash, user, used) values (?, ?, ?) on conflict(hash) do update set used=excluded.used",
-		hash, t.User, now())
+		t.Hash, t.User, now())
 
-	return &t
+	return t
 }
 
 // Check if a token has a specific scope
@@ -296,8 +309,12 @@ func api_token_scope(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "scope must be a string")
 	}
 
-	token := token_validate(token_str)
-	if token == nil {
+	// Scope to the calling app's own tokens: an app must not be able to
+	// introspect tokens minted for a different app. token_lookup (not
+	// token_validate) so inspecting a token does not bump its used timestamp.
+	app, _ := t.Local("app").(*App)
+	token := token_lookup(token_str)
+	if token == nil || app == nil || token.App != app.id {
 		return sl.False, nil
 	}
 
@@ -318,8 +335,9 @@ func api_token_user(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "token must be a string")
 	}
 
-	token := token_validate(token_str)
-	if token == nil {
+	app, _ := t.Local("app").(*App)
+	token := token_lookup(token_str)
+	if token == nil || app == nil || token.App != app.id {
 		return sl.None, nil
 	}
 
@@ -337,8 +355,9 @@ func api_token_validate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "token must be a string")
 	}
 
-	token := token_validate(token_str)
-	if token == nil {
+	app, _ := t.Local("app").(*App)
+	token := token_lookup(token_str)
+	if token == nil || app == nil || token.App != app.id {
 		return sl.None, nil
 	}
 

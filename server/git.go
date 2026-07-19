@@ -9,6 +9,7 @@ package main
 import (
 	"archive/tar"
 	"archive/zip"
+	"bufio"
 	"compress/gzip"
 	"context"
 	"fmt"
@@ -2790,6 +2791,21 @@ func git_service_rpc(c *gin.Context, repo_path string, service string) bool {
 		defer gz_reader.Close()
 		reader = gz_reader
 	}
+
+	// A request whose body exceeds the client's http.postBuffer cannot be
+	// replayed on an authentication challenge, so git first sends a probe
+	// request containing a single flush packet to settle authentication.
+	// git-http-backend answers it with an empty success; go-git's decoders
+	// reject the bare flush, so answer it here before dispatching.
+	buffered := bufio.NewReader(reader)
+	head, _ := buffered.Peek(4)
+	if string(head) == "0000" {
+		c.Status(http.StatusOK)
+		c.Header("Content-Type", fmt.Sprintf("application/x-%s-result", service))
+		c.Header("Cache-Control", "no-cache")
+		return true
+	}
+	reader = io.NopCloser(buffered)
 
 	if service == "git-upload-pack" {
 		return git_upload_pack(c, repo_path, reader)

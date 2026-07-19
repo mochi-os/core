@@ -376,7 +376,11 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		}
 	}
 	if !from_valid {
-		info("message.send: invalid from header - from=%q user.UID=%d user.Identity=%v", headers["from"], user.UID, user.Identity)
+		identity := ""
+		if user.Identity != nil {
+			identity = user.Identity.ID
+		}
+		info("message.send: invalid from header - from=%q user=%q identity=%q", headers["from"], user.UID, identity)
 		return sl_error(fn, "invalid from header")
 	}
 
@@ -463,7 +467,11 @@ func api_message_send_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		}
 	}
 	if !from_valid {
-		info("message.send.peer: invalid from header - from=%q user.UID=%d user.Identity=%v", headers["from"], user.UID, user.Identity)
+		identity := ""
+		if user.Identity != nil {
+			identity = user.Identity.ID
+		}
+		info("message.send.peer: invalid from header - from=%q user=%q identity=%q", headers["from"], user.UID, identity)
 		return sl_error(fn, "invalid from header")
 	}
 

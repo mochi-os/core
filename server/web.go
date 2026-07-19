@@ -29,20 +29,23 @@ import (
 var (
 	match_react = regexp.MustCompile(`assets/.*-[\w-]{8}\.(js|css)$`)
 	web_https   = false
-	// Redact bearer tokens passed as ?token= (websockets, sandboxed-iframe
-	// resources) so the access log never holds credentials.
-	web_token_query = regexp.MustCompile(`token=[^&]*`)
+	// Redact credential-bearing query values so the access log never holds
+	// replayable secrets: ?token= (bearer tokens on websocket upgrades and
+	// sandboxed-iframe resource fetches) and the OAuth provider callback's
+	// ?code= (authorization code, exchangeable for tokens) and ?state= (CSRF
+	// nonce). Anchored to a query delimiter so it only touches those exact
+	// keys, never substrings like ?barcode=.
+	web_log_secret_query = regexp.MustCompile(`([?&](?:token|code|state)=)[^&]*`)
 )
 
-// Redact the bearer token from a request path before it reaches the access
-// log. Tokens arrive as ?token=<jwt> on websocket upgrades and sandboxed-iframe
-// resource fetches; gin's logger includes the query string, so without this
-// the log would hold replayable credentials.
+// Redact credential query values from a request path before it reaches the
+// access log. gin's logger includes the query string, so without this the log
+// would hold replayable credentials.
 func web_log_redact(path string) string {
-	if !strings.Contains(path, "token=") {
+	if !strings.Contains(path, "=") {
 		return path
 	}
-	return web_token_query.ReplaceAllString(path, "token=redacted")
+	return web_log_secret_query.ReplaceAllString(path, "${1}redacted")
 }
 
 // Call a web action

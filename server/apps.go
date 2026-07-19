@@ -781,6 +781,12 @@ func app_download_version(id, version string) bool {
 	}
 
 	zip := fmt.Sprintf("%s/tmp/app_%s_%s.zip", cache_dir, id, version)
+	// Defence in depth: version is validated by valid(..., "version"), but
+	// this path is built with Sprintf, so confirm it stays under cache_dir/tmp.
+	tmp_root := filepath.Clean(fmt.Sprintf("%s/tmp", cache_dir))
+	if !strings.HasPrefix(filepath.Clean(zip), tmp_root+"/") {
+		return false
+	}
 	if !file_write_from_reader(zip, s.raw_reader()) {
 		_ = os.Remove(zip)
 		return false
@@ -1320,6 +1326,14 @@ func app_install(id string, version string, file string, check_only bool, peer .
 	}
 
 	av.base = fmt.Sprintf("%s/apps/%s/%s", data_dir, id, av.Version)
+	// Defence in depth: av.Version is validated by valid(..., "version"),
+	// but these paths are built with Sprintf and no os.Root, so confirm the
+	// resolved path stays under data_dir/apps before any RemoveAll/Rename.
+	apps_root := filepath.Clean(fmt.Sprintf("%s/apps", data_dir))
+	if !strings.HasPrefix(filepath.Clean(av.base), apps_root+"/") {
+		_ = os.RemoveAll(tmp)
+		return nil, fmt.Errorf("refusing to install %q outside apps directory", av.Version)
+	}
 	if file_exists(av.base) {
 		debug("App %q removing old copy of version %q in %q", id, av.Version, av.base)
 		if err := os.RemoveAll(av.base); err != nil {

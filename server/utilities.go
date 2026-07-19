@@ -495,7 +495,17 @@ func valid(s string, match string) bool {
 		}
 		match = "^[\\w\\-\\/:%@.+?&;=~]*$"
 	case "version":
-		match = "^[0-9a-zA-Z.-_]{1,20}$"
+		// Reject traversal sequences: a version becomes a path component
+		// under data_dir/apps, so ".." must never pass.
+		if strings.Contains(s, "..") {
+			return false
+		}
+		// First char alphanumeric (no leading ".", "-" or "_" — mirrors the
+		// filepath validator, blocks a bare "."). Hyphen last so it is a
+		// literal, not a range endpoint: the old "[0-9a-zA-Z.-_]" made ".-_"
+		// a range (0x2E-0x5F) that matched "/", "\\" and ":", allowing path
+		// traversal in app install.
+		match = "^[0-9a-zA-Z][0-9a-zA-Z._-]{0,19}$"
 	}
 
 	return regex_cached(match).MatchString(s)

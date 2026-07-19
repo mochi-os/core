@@ -355,6 +355,24 @@ func TestValid(t *testing.T) {
 		{"locale 1-letter rejected", "e", "locale", false},
 		{"locale empty rejected", "", "locale", false},
 		{"locale subtag too long rejected", "en-toolongsubtag", "locale", false},
+
+		// version pattern (app version; becomes a path component under
+		// data_dir/apps, so it must reject path traversal)
+		{"version semver", "1.2.3", "version", true},
+		{"version keyword", "minor", "version", true},
+		{"version numeric", "0.102", "version", true},
+		{"version with hyphen", "1.0.0-beta", "version", true},
+		{"version leading v", "v1", "version", true},
+		{"version traversal slash", "../../../tmp/x", "version", false},
+		{"version dotdot", "..", "version", false},
+		{"version dotdot embedded", "1..2", "version", false},
+		{"version forward slash", "a/b", "version", false},
+		{"version backslash", "a\\b", "version", false},
+		{"version colon", "a:b", "version", false},
+		{"version bare dot", ".", "version", false},
+		{"version leading dot", ".5", "version", false},
+		{"version too long", strings.Repeat("1", 21), "version", false},
+		{"version empty", "", "version", false},
 	}
 
 	for _, tt := range tests {

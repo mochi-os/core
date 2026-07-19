@@ -156,6 +156,30 @@ func TestHealthQueueIntegration(t *testing.T) {
 	}
 }
 
+// TestHealthCleanupReap: the age sweep is the failure signal for rows
+// whose attempts never climb (a gossip-announced ghost peer with no
+// reachable addresses short-circuits before queue_fail) — reaping must
+// suspend the recipient even though no row ever parked.
+func TestHealthCleanupReap(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	db := db_open("db/queue.db")
+	aged := now() - queue_max_age - 3600
+	for _, id := range []string{"reap-1", "reap-2"} {
+		db.exec("insert into queue (id, target, from_entity, to_entity, service, event, next_retry, created, attempts) values (?, 'peer-ghost', 'e-from', 'r-frozen', 'projects', 'event/test', 0, ?, 1)", id, aged)
+	}
+	queue_cleanup()
+
+	if n := db.integer("select count(*) from queue where to_entity='r-frozen'"); n != 0 {
+		t.Fatalf("aged rows must be reaped, %d remain", n)
+	}
+	failures, _, _, suspended, _ := health_row(t, "r-frozen")
+	if failures != 1 || suspended == 0 {
+		t.Fatalf("reap must record one failure per recipient and suspend: failures=%d suspended=%d", failures, suspended)
+	}
+}
+
 // TestBroadcastSendHealthGate drives the real api_broadcast_send: a
 // suspended subscriber gets no queue row, a due probe passes one through,
 // and past the evict age the app is dispatched to instead.

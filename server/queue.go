@@ -1356,6 +1356,26 @@ func queue_cleanup() {
 		queue_error_dispatch(q, error_code_message_timeout, "timeout")
 	}
 
+	// A row that burned its whole retention window undelivered is at
+	// least as strong a failure signal as a park — and it is the ONLY
+	// signal for rows whose attempts never climb: a gossip-announced
+	// ghost peer with no reachable addresses short-circuits before
+	// queue_fail, freezing attempts below the park threshold, so without
+	// this hook such recipients never suspend and every fan-out mints
+	// fresh rows forever. One call per recipient per sweep, on the
+	// newest reaped row; suspension still requires no delivery success
+	// since that row was created.
+	reaped := map[string]int64{}
+	for i := range old {
+		q := &old[i]
+		if q.Created > reaped[q.ToEntity] {
+			reaped[q.ToEntity] = q.Created
+		}
+	}
+	for recipient, created := range reaped {
+		health_failure(recipient, created)
+	}
+
 	// Health residue: a recipient suspended past twice the evict age has
 	// had a month of eviction dispatches — every owning app has dropped
 	// them, so no fan-out consults the row again. If the host ever

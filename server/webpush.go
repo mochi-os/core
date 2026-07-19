@@ -7,6 +7,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"sync"
 
@@ -21,6 +23,23 @@ var webpush_allowed = []string{
 	"https://fcm.googleapis.com/",
 	"https://updates.push.services.mozilla.com/",
 	"https://web.push.apple.com/",
+}
+
+// webpush_endpoint_redact reduces a push endpoint to a non-secret identifier
+// for logging. The endpoint path carries a per-subscription bearer token -
+// anyone holding it can push notifications to the user's device - so the log
+// records only the push-service host plus a short stable hash that still
+// distinguishes subscriptions without exposing the token.
+func webpush_endpoint_redact(endpoint string) string {
+	host := endpoint
+	if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+3:]
+	}
+	if i := strings.IndexByte(host, '/'); i >= 0 {
+		host = host[:i]
+	}
+	sum := sha256.Sum256([]byte(endpoint))
+	return host + "#" + hex.EncodeToString(sum[:])[:8]
 }
 
 // VAPID keys (auto-generated and stored in settings)
@@ -111,7 +130,7 @@ func api_webpush_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	user, _ := t.Local("user").(*User)
 	if event_id != "" && user != nil {
 		if webpush_already_delivered(user, endpoint, event_id) {
-			debug("webpush dedup: event_id=%q endpoint=%q already delivered", event_id, endpoint)
+			debug("webpush dedup: event_id=%q endpoint=%q already delivered", event_id, webpush_endpoint_redact(endpoint))
 			return sl.Bool(true), nil
 		}
 	}

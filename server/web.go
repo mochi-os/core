@@ -341,40 +341,6 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		return true
 	}
 
-	// Serve attachment - ID comes from :id parameter
-	if aa.Feature == "attachment" || aa.Feature == "attachment/thumbnail" {
-		attachment := aa.parameters["id"]
-		entity := ""
-		if e != nil {
-			entity = e.ID
-		} else if aa.parameters["entity"] != "" {
-			// Generic entity parameter (preferred)
-			entity = aa.parameters["entity"]
-		} else if aa.parameters["wiki"] != "" {
-			entity = aa.parameters["wiki"]
-		} else if aa.parameters["feed"] != "" {
-			entity = aa.parameters["feed"]
-		} else if aa.parameters["forum"] != "" {
-			entity = aa.parameters["forum"]
-		}
-		// Anonymous callers reach public attachment routes as the entity owner,
-		// and web_serve_attachment looks the attachment up by id alone in the
-		// owner's DB — so without a check they could fetch attachments of a
-		// private entity by guessing/obtaining an id. Require the entity to grant
-		// anonymous ("*") view access. Authenticated requests are intentionally
-		// left unchanged: their app's own access (feed subscribers, forum members,
-		// owner-via-entity) is richer than the raw access table, so checking it
-		// here would over-deny; that path keeps today's behaviour.
-		if user == nil && e != nil && owner != nil {
-			sysdb := db_app_system(owner, a)
-			if sysdb == nil || !sysdb.access_check(owner, "", "", e.Class+"/"+e.ID, "view") {
-				respond_error(c, http.StatusForbidden, "access_denied", "errors.access_denied", nil)
-				return true
-			}
-		}
-		return web_serve_attachment(c, a, owner, entity, attachment, aa.Feature == "attachment/thumbnail")
-	}
-
 	// Handle git Smart HTTP protocol
 	if aa.Feature == "git" {
 		repo := aa.parameters["repository"]

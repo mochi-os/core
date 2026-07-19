@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
@@ -1596,7 +1597,7 @@ func web_sitemap(c *gin.Context) {
 	c.Data(http.StatusOK, "application/xml; charset=utf-8", []byte(`<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://`+c.Request.Host+`/</loc>
+    <loc>https://`+html.EscapeString(c.Request.Host)+`/</loc>
   </url>
 </urlset>
 `))

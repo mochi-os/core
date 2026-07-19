@@ -212,11 +212,25 @@ func auth_complete_login(c *gin.Context, user *User) {
 	c.JSON(http.StatusOK, response)
 }
 
+// redirect_local returns target only if it is a safe same-site relative path,
+// otherwise "". The post-login redirect target is client-supplied (the OAuth
+// begin body), so without this check an attacker could point the redirect at
+// an external origin (open redirect / phishing) once the session is
+// established. A single leading "/" that is not "//" or "/\" keeps it on this
+// origin; anything else falls back to the caller's default.
+func redirect_local(target string) string {
+	if strings.HasPrefix(target, "/") && !strings.HasPrefix(target, "//") && !strings.HasPrefix(target, "/\\") {
+		return target
+	}
+	return ""
+}
+
 // auth_redirect_login creates a full session and redirects the browser to the
 // given target. Used by OAuth callback flows where the response is a browser
 // redirect rather than an XHR JSON body.
 func auth_redirect_login(c *gin.Context, user *User, target string) {
 	auth_establish_session(c, user)
+	target = redirect_local(target)
 	if target == "" {
 		if user.Identity == nil || user.Identity.Name == "" {
 			target = "/login/identity"

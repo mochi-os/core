@@ -168,3 +168,32 @@ func BenchmarkJwtCreateWithSecret(b *testing.B) {
 		jwt_create_with_secret(user_id, secret)
 	}
 }
+
+// TestRedirectLocal verifies the OAuth post-login redirect target is confined
+// to a same-site relative path — external / protocol-relative / backslash
+// targets must be rejected (open-redirect defence).
+func TestRedirectLocal(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		// allowed same-site paths
+		{"/", "/"},
+		{"/login/identity", "/login/identity"},
+		{"/settings/?tab=oauth", "/settings/?tab=oauth"},
+		{"/feeds/abc/-/posts", "/feeds/abc/-/posts"},
+		// rejected -> "" (caller applies its own default)
+		{"", ""},
+		{"https://evil.example/x", ""},
+		{"//evil.example/x", ""},
+		{"/\\evil.example/x", ""},
+		{"http:/evil", ""},
+		{"javascript:alert(1)", ""},
+		{"evil.example", ""},
+	}
+	for _, tc := range cases {
+		if got := redirect_local(tc.in); got != tc.want {
+			t.Errorf("redirect_local(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

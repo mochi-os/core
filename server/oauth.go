@@ -459,6 +459,7 @@ func oauth_link(c *gin.Context, provider string, p *oauth_profile, user_id strin
 	if row, _ := db.row("select user from oauth where provider=? and subject=?", provider, p.Subject); row != nil {
 		owner, _ = row["user"].(string)
 	}
+	target = redirect_local(target)
 	if target == "" {
 		target = "/login/settings/oauth"
 	}

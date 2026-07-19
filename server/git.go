@@ -2733,25 +2733,29 @@ func git_info_refs(c *gin.Context, repo_path string, service string) bool {
 	if service == "git-upload-pack" {
 		session, err := git_transport.NewUploadPackSession(ep, nil)
 		if err != nil {
-			c.String(http.StatusInternalServerError, "Failed to create session: %v", err)
+			info("git_info_refs: upload-pack session failed for %s: %v", repo_path, err)
+			c.String(http.StatusInternalServerError, "Failed to create session")
 			return true
 		}
 		defer session.Close()
 		refs, err = session.AdvertisedReferencesContext(ctx)
 		if err != nil {
-			c.String(http.StatusInternalServerError, "Failed to get refs: %v", err)
+			info("git_info_refs: upload-pack advertise refs failed for %s: %v", repo_path, err)
+			c.String(http.StatusInternalServerError, "Failed to get refs")
 			return true
 		}
 	} else {
 		session, err := git_transport.NewReceivePackSession(ep, nil)
 		if err != nil {
-			c.String(http.StatusInternalServerError, "Failed to create session: %v", err)
+			info("git_info_refs: receive-pack session failed for %s: %v", repo_path, err)
+			c.String(http.StatusInternalServerError, "Failed to create session")
 			return true
 		}
 		defer session.Close()
 		refs, err = session.AdvertisedReferencesContext(ctx)
 		if err != nil {
-			c.String(http.StatusInternalServerError, "Failed to get refs: %v", err)
+			info("git_info_refs: receive-pack advertise refs failed for %s: %v", repo_path, err)
+			c.String(http.StatusInternalServerError, "Failed to get refs")
 			return true
 		}
 	}
@@ -2800,7 +2804,8 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 
 	session, err := git_transport.NewUploadPackSession(ep, nil)
 	if err != nil {
-		c.String(http.StatusInternalServerError, "Failed to create session: %v", err)
+		info("git_upload_pack: session failed for %s: %v", repo_path, err)
+		c.String(http.StatusInternalServerError, "Failed to create session")
 		return true
 	}
 	defer session.Close()
@@ -2815,7 +2820,8 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 	// Process the upload-pack request
 	resp, err := session.UploadPack(ctx, req)
 	if err != nil {
-		c.String(http.StatusInternalServerError, "Upload pack failed: %v", err)
+		info("git_upload_pack: failed for %s: %v", repo_path, err)
+		c.String(http.StatusInternalServerError, "Upload pack failed")
 		return true
 	}
 	defer resp.Close()
@@ -2840,7 +2846,7 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser) bo
 	session, err := git_transport.NewReceivePackSession(ep, nil)
 	if err != nil {
 		info("git_receive_pack: failed to create session for %s: %v", repo_path, err)
-		c.String(http.StatusInternalServerError, "Failed to create session: %v", err)
+		c.String(http.StatusInternalServerError, "Failed to create session")
 		return true
 	}
 	defer session.Close()
@@ -2873,7 +2879,7 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser) bo
 
 	// No status report at all — something went very wrong
 	if err != nil {
-		c.String(http.StatusInternalServerError, "Receive pack failed: %v", err)
+		c.String(http.StatusInternalServerError, "Receive pack failed")
 	}
 
 	return true

@@ -183,7 +183,7 @@ func email_send_html(to string, subject string, html string) {
 // distinct so the dedup never blocks a legitimate later code.
 func email_login_code(user *User, to string, code string, language string) {
 	if user != nil && email_already_delivered(user, to, "login:"+code) {
-		debug("email_login_code dedup: address=%q code=%q already delivered", to, code)
+		debug("email_login_code dedup: address=%q already delivered", to)
 		return
 	}
 

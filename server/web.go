@@ -508,6 +508,21 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 	}
 
+	// Read the entire multipart body BEFORE running the action: uploads
+	// arrive at the client's network speed, and parsing them lazily inside
+	// a.file() charged the transfer time against the Starlark timeout — a
+	// 22 MB app upload over a slow uplink died at the 90 s cap before the
+	// handler had run at all. Parsing here spools large parts to disk and
+	// the action then reads them at disk speed, so the timeout stays a pure
+	// compute cap. Parts over 32 MB spill from memory to temp files, which
+	// net/http removes after the response. A parse error is left for the
+	// handler's own a.file()/form call to surface, preserving behaviour.
+	if strings.HasPrefix(content_type, "multipart/form-data") {
+		if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+			debug("Multipart parse: %v", err)
+		}
+	}
+
 	// Check which engine the app uses, and run it
 	switch av.Architecture.Engine {
 	case "": // Internal app
@@ -1834,6 +1849,35 @@ func web_serve_attachment_remote(c *gin.Context, app *App, user *User, entity, i
 		return true
 	}
 
+	// The remote fetch gives us bytes with no filename/extension, so the cache
+	// path carries no type hint and c.File would let Go sniff the content —
+	// labelling an HTML/SVG payload text/html and rendering it inline in this
+	// server's origin (stored XSS). Sniff it ourselves and only serve inline
+	// for known-safe media types; force download for everything else. Mirrors
+	// the local-path guard in web_serve_attachment.
+	ct := file_content_type(path)
+	disposition := "attachment"
+	if (strings.HasPrefix(ct, "image/") && ct != "image/svg+xml") ||
+		strings.HasPrefix(ct, "video/") || strings.HasPrefix(ct, "audio/") ||
+		ct == "application/pdf" {
+		disposition = "inline"
+		c.Header("X-Frame-Options", "")
+	}
+	c.Header("Content-Type", ct)
+	c.Header("Content-Disposition", disposition)
 	c.File(path)
 	return true
+}
+
+// file_content_type sniffs a file's content type from its leading bytes, used
+// when no filename/extension is available to guide it (remote attachments).
+func file_content_type(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return "application/octet-stream"
+	}
+	defer f.Close()
+	buffer := make([]byte, 512)
+	n, _ := f.Read(buffer)
+	return http.DetectContentType(buffer[:n])
 }

@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -307,5 +309,41 @@ func TestWebPathRemainingPath(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Errorf("Path %s: expected status 200, got %d", tt.path, w.Code)
 		}
+	}
+}
+
+// TestFileContentTypeDisposition verifies the remote-attachment guard: a real
+// media payload sniffs to a type served inline, while HTML/SVG/script/text
+// payloads sniff to a type that forces download — preventing stored XSS when
+// the remote fetch gives us bytes with no filename to guide the content type.
+func TestFileContentTypeDisposition(t *testing.T) {
+	cases := []struct {
+		name       string
+		content    []byte
+		wantInline bool
+	}{
+		{"png", []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"), true},
+		{"gif", []byte("GIF89a\x01\x00\x01\x00"), true},
+		{"pdf", []byte("%PDF-1.7\n%\xe2\xe3\xcf\xd3\n"), true},
+		{"html", []byte("<!DOCTYPE html><html><body><script>alert(1)</script></body></html>"), false},
+		{"svg", []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`), false},
+		{"plaintext", []byte("just some text"), false},
+	}
+
+	dir := t.TempDir()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name)
+			if err := os.WriteFile(path, tc.content, 0644); err != nil {
+				t.Fatal(err)
+			}
+			ct := file_content_type(path)
+			inline := (strings.HasPrefix(ct, "image/") && ct != "image/svg+xml") ||
+				strings.HasPrefix(ct, "video/") || strings.HasPrefix(ct, "audio/") ||
+				ct == "application/pdf"
+			if inline != tc.wantInline {
+				t.Errorf("file_content_type(%s)=%q inline=%v, want inline=%v", tc.name, ct, inline, tc.wantInline)
+			}
+		})
 	}
 }

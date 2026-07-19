@@ -310,11 +310,15 @@ func (w *ActionWrite) Type() string          { return "module" }
 func (w *ActionWrite) Freeze()               {}
 func (w *ActionWrite) Truth() sl.Bool        { return sl.True }
 func (w *ActionWrite) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
-func (w *ActionWrite) AttrNames() []string   { return []string{"asset", "file", "stream"} }
+func (w *ActionWrite) AttrNames() []string {
+	return []string{"asset", "attachment", "file", "stream"}
+}
 func (w *ActionWrite) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "asset":
 		return sl.NewBuiltin("write.asset", w.action.sl_write_asset), nil
+	case "attachment":
+		return sl.NewBuiltin("write.attachment", w.action.sl_write_attachment), nil
 	case "file":
 		return sl.NewBuiltin("write.file", w.action.sl_write_file), nil
 	case "stream":
@@ -775,6 +779,43 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 
 	t.SetLocal("file_serving", true)
 	a.web.File(file)
+	return sl.None, nil
+}
+
+// a.write.attachment(id, entity=None, thumbnail=False) -> None: Serve an
+// attachment (or its thumbnail) to the HTTP response by id. The calling action
+// MUST authorise the request first — gate on a.user against the app's own
+// access rules (subscriber/member/privacy) — because core serves the bytes
+// without any access check of its own. `entity` defaults to the route entity
+// and is used only to fetch not-yet-local attachments from a remote peer (e.g.
+// a subscribed feed). Content type and disposition are set safely by core
+// (inline only for known media, download otherwise) to prevent stored XSS.
+func (a *Action) sl_write_attachment(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var id string
+	var entity string
+	var thumbnail bool
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "id", &id, "entity?", &entity, "thumbnail?", &thumbnail); err != nil {
+		return nil, err
+	}
+
+	owner, _ := t.Local("owner").(*User)
+	app, _ := t.Local("app").(*App)
+	if owner == nil || app == nil {
+		a.error(500, "No owner")
+		return sl.None, nil
+	}
+
+	if entity == "" {
+		if re, ok := t.Local("route_entity").(string); ok {
+			entity = re
+		}
+	}
+
+	// web_serve_attachment validates the id, serves from the owner's storage
+	// (fetching from the remote entity when not yet local), and applies the
+	// safe content-type/disposition guard. It performs no access check.
+	t.SetLocal("file_serving", true)
+	web_serve_attachment(a.web, app, owner, entity, id, thumbnail)
 	return sl.None, nil
 }
 

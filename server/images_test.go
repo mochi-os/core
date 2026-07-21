@@ -62,29 +62,32 @@ func TestIsImage(t *testing.T) {
 	}
 }
 
-// Test thumbnail_name function
-func TestThumbnailName(t *testing.T) {
+// Test variant_name function
+func TestVariantName(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
+		variant  string
 		expected string
 	}{
-		{"simple png", "image.png", "image_thumbnail.png"},
-		{"simple jpg", "photo.jpg", "photo_thumbnail.jpg"},
-		{"simple gif", "animation.gif", "animation_thumbnail.gif"},
-		{"with spaces", "my photo.jpg", "my photo_thumbnail.jpg"},
-		{"with underscores", "my_image.png", "my_image_thumbnail.png"},
-		{"with dashes", "my-image.png", "my-image_thumbnail.png"},
-		{"multiple dots", "file.name.png", "file.name_thumbnail.png"},
-		{"no extension", "README", "README_thumbnail"},
-		{"empty string", "", "_thumbnail"},
+		{"simple png", "image.png", "thumbnail", "image_thumbnail.png"},
+		{"simple jpg", "photo.jpg", "thumbnail", "photo_thumbnail.jpg"},
+		{"simple gif", "animation.gif", "thumbnail", "animation_thumbnail.gif"},
+		{"with spaces", "my photo.jpg", "thumbnail", "my photo_thumbnail.jpg"},
+		{"with underscores", "my_image.png", "thumbnail", "my_image_thumbnail.png"},
+		{"with dashes", "my-image.png", "thumbnail", "my-image_thumbnail.png"},
+		{"multiple dots", "file.name.png", "thumbnail", "file.name_thumbnail.png"},
+		{"no extension", "README", "thumbnail", "README_thumbnail"},
+		{"empty string", "", "thumbnail", "_thumbnail"},
+		{"preview png", "image.png", "preview", "image_preview.png"},
+		{"preview jpg", "photo.jpg", "preview", "photo_preview.jpg"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := thumbnail_name(tt.input)
+			result := variant_name(tt.input, tt.variant)
 			if result != tt.expected {
-				t.Errorf("thumbnail_name(%q) = %q, want %q", tt.input, result, tt.expected)
+				t.Errorf("variant_name(%q, %q) = %q, want %q", tt.input, tt.variant, result, tt.expected)
 			}
 		})
 	}
@@ -218,19 +221,19 @@ func BenchmarkIsImage(b *testing.B) {
 	}
 }
 
-// Test thumbnail_create function
-func TestThumbnailCreate(t *testing.T) {
+// Test variant_create function
+func TestVariantCreate(t *testing.T) {
 	// Create temp directory
-	tmp_dir, err := os.MkdirTemp("", "thumbnail_test")
+	tmp_dir, err := os.MkdirTemp("", "variant_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmp_dir)
 
-	// Create a test image (500x300 PNG)
-	img := image.NewRGBA(image.Rect(0, 0, 500, 300))
-	for y := 0; y < 300; y++ {
-		for x := 0; x < 500; x++ {
+	// Create a test image (1500x900 PNG, larger than both variant sizes)
+	img := image.NewRGBA(image.Rect(0, 0, 1500, 900))
+	for y := 0; y < 900; y++ {
+		for x := 0; x < 1500; x++ {
 			img.Set(x, y, color.RGBA{uint8(x % 256), uint8(y % 256), 128, 255})
 		}
 	}
@@ -246,65 +249,71 @@ func TestThumbnailCreate(t *testing.T) {
 	}
 	f.Close()
 
-	// Test thumbnail creation
-	thumb_path, err := thumbnail_create(img_path)
-	if err != nil {
-		t.Fatalf("thumbnail_create failed: %v", err)
-	}
+	for _, tt := range []struct {
+		variant   string
+		directory string
+		suffix    string
+		size      int
+	}{
+		{"thumbnail", "thumbnails", "_thumbnail", 250},
+		{"preview", "previews", "_preview", 1280},
+	} {
+		thumb_path, err := variant_create(img_path, tt.variant)
+		if err != nil {
+			t.Fatalf("variant_create(%s) failed: %v", tt.variant, err)
+		}
+		if thumb_path == "" {
+			t.Fatalf("variant_create(%s) returned empty path", tt.variant)
+		}
 
-	// Verify thumbnail was created
-	if thumb_path == "" {
-		t.Fatal("thumbnail_create returned empty path")
-	}
+		expected_thumb := filepath.Join(tmp_dir, tt.directory, "test_image"+tt.suffix+".png")
+		if thumb_path != expected_thumb {
+			t.Errorf("Expected %s path %q, got %q", tt.variant, expected_thumb, thumb_path)
+		}
 
-	expected_thumb := filepath.Join(tmp_dir, "thumbnails", "test_image_thumbnail.png")
-	if thumb_path != expected_thumb {
-		t.Errorf("Expected thumbnail path %q, got %q", expected_thumb, thumb_path)
-	}
+		// Verify file exists
+		if _, err := os.Stat(thumb_path); os.IsNotExist(err) {
+			t.Fatalf("%s file was not created", tt.variant)
+		}
 
-	// Verify file exists
-	if _, err := os.Stat(thumb_path); os.IsNotExist(err) {
-		t.Fatal("Thumbnail file was not created")
-	}
+		// Verify dimensions fit the variant's bounding box
+		thumb_f, err := os.Open(thumb_path)
+		if err != nil {
+			t.Fatalf("Failed to open %s: %v", tt.variant, err)
+		}
+		thumb_img, _, err := image.Decode(thumb_f)
+		thumb_f.Close()
+		if err != nil {
+			t.Fatalf("Failed to decode %s: %v", tt.variant, err)
+		}
 
-	// Verify thumbnail dimensions (should be max 250x250)
-	thumb_f, err := os.Open(thumb_path)
-	if err != nil {
-		t.Fatalf("Failed to open thumbnail: %v", err)
-	}
-	defer thumb_f.Close()
+		bounds := thumb_img.Bounds()
+		if bounds.Dx() > tt.size || bounds.Dy() > tt.size {
+			t.Errorf("%s too large: %dx%d", tt.variant, bounds.Dx(), bounds.Dy())
+		}
+		if bounds.Dx() == 0 || bounds.Dy() == 0 {
+			t.Errorf("%s has zero dimension", tt.variant)
+		}
 
-	thumb_img, _, err := image.Decode(thumb_f)
-	if err != nil {
-		t.Fatalf("Failed to decode thumbnail: %v", err)
-	}
+		// Test that calling again returns the cached variant
+		thumb_path2, err := variant_create(img_path, tt.variant)
+		if err != nil {
+			t.Fatalf("Second variant_create(%s) failed: %v", tt.variant, err)
+		}
+		if thumb_path2 != thumb_path {
+			t.Errorf("Expected cached path %q, got %q", thumb_path, thumb_path2)
+		}
 
-	bounds := thumb_img.Bounds()
-	if bounds.Dx() > 250 || bounds.Dy() > 250 {
-		t.Errorf("Thumbnail too large: %dx%d", bounds.Dx(), bounds.Dy())
-	}
-	if bounds.Dx() == 0 || bounds.Dy() == 0 {
-		t.Error("Thumbnail has zero dimension")
-	}
-
-	// Test that calling again returns cached thumbnail
-	thumb_path2, err := thumbnail_create(img_path)
-	if err != nil {
-		t.Fatalf("Second thumbnail_create failed: %v", err)
-	}
-	if thumb_path2 != thumb_path {
-		t.Errorf("Expected cached path %q, got %q", thumb_path, thumb_path2)
-	}
-
-	// Verify no temp file left behind
-	tmp_file := thumb_path + ".tmp"
-	if _, err := os.Stat(tmp_file); !os.IsNotExist(err) {
-		t.Errorf("Temp file %q should not exist", tmp_file)
+		// Verify no temp file left behind
+		tmp_file := thumb_path + ".tmp"
+		if _, err := os.Stat(tmp_file); !os.IsNotExist(err) {
+			t.Errorf("Temp file %q should not exist", tmp_file)
+		}
 	}
 }
 
-// Benchmark thumbnail_name
-func BenchmarkThumbnailName(b *testing.B) {
+// Benchmark variant_name
+func BenchmarkVariantName(b *testing.B) {
 	inputs := []string{
 		"image.png",
 		"my photo with spaces.jpg",
@@ -313,6 +322,6 @@ func BenchmarkThumbnailName(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		thumbnail_name(inputs[i%len(inputs)])
+		variant_name(inputs[i%len(inputs)], "thumbnail")
 	}
 }

@@ -40,9 +40,27 @@ func is_image(file string) bool {
 	return false
 }
 
-func thumbnail_create(path string) (string, error) {
+// Image variant sizes (longest side, never upscaled). Thumbnails suit small
+// chips and lists; previews suit full-width card and gallery tiles on
+// high-density displays.
+const (
+	thumbnail_size = 250
+	preview_size   = 1280
+)
+
+func variant_size(variant string) uint {
+	if variant == "preview" {
+		return preview_size
+	}
+	return thumbnail_size
+}
+
+// variant_create generates a downscaled copy of an image ("thumbnail" or
+// "preview") on demand, storing it beside the original in a per-variant
+// subdirectory ("thumbnails/", "previews/") with a matching filename suffix.
+func variant_create(path string, variant string) (string, error) {
 	dir, file := filepath.Split(path)
-	thumb := dir + "thumbnails/" + thumbnail_name(file)
+	thumb := dir + variant + "s/" + variant_name(file, variant)
 	tmp := thumb + ".tmp"
 
 	// Clean up any leftover temp file from a previous failed attempt
@@ -54,7 +72,7 @@ func thumbnail_create(path string) (string, error) {
 
 	f, err := os.Open(path)
 	if err != nil {
-		warn("Unable to open image file %q to create thumbnail: %v", path, err)
+		warn("Unable to open image file %q to create %s variant: %v", path, variant, err)
 		return "", err
 	}
 	defer f.Close()
@@ -62,7 +80,7 @@ func thumbnail_create(path string) (string, error) {
 	// Read the file into memory so we can inspect EXIF and decode the image
 	b, err := io.ReadAll(f)
 	if err != nil {
-		info("Unable to decode image file %q to create thumbnail: %v", path, err)
+		info("Unable to decode image file %q to create %s variant: %v", path, variant, err)
 		return "", err
 	}
 
@@ -81,7 +99,7 @@ func thumbnail_create(path string) (string, error) {
 		// A decode failure reflects the input bytes (corrupt/truncated upload, or
 		// an image-extensioned file in a format the decoder doesn't support), not
 		// an admin-actionable server fault, so info() rather than warn() (no email).
-		info("Unable to decode image file %q to create thumbnail: %v", path, err)
+		info("Unable to decode image file %q to create %s variant: %v", path, variant, err)
 		return "", err
 	}
 
@@ -90,16 +108,17 @@ func thumbnail_create(path string) (string, error) {
 		i = fix_orientation(i, orientation)
 	}
 
-	t := resize.Thumbnail(250, 250, i, resize.Lanczos3)
+	size := variant_size(variant)
+	t := resize.Thumbnail(size, size, i, resize.Lanczos3)
 
 	if err := os.MkdirAll(filepath.Dir(thumb), 0755); err != nil {
-		warn("Unable to create thumbnail directory %q: %v", filepath.Dir(thumb), err)
+		warn("Unable to create %s variant directory %q: %v", variant, filepath.Dir(thumb), err)
 		return "", err
 	}
 
 	o, err := os.Create(tmp)
 	if err != nil {
-		warn("Unable to create temp thumbnail file %q: %v", tmp, err)
+		warn("Unable to create temp %s variant file %q: %v", variant, tmp, err)
 		return "", err
 	}
 	// ensure tmp is closed and removed on error
@@ -126,28 +145,28 @@ func thumbnail_create(path string) (string, error) {
 
 	if err != nil {
 		close_and_remove_tmp(true)
-		info("Unable to encode image file %q to create thumbnail: %v", path, err)
+		info("Unable to encode image file %q to create %s variant: %v", path, variant, err)
 		return "", err
 	}
 
 	if err := o.Close(); err != nil {
 		_ = os.Remove(tmp)
-		info("Unable to close thumbnail file %q: %v", tmp, err)
+		info("Unable to close %s variant file %q: %v", variant, tmp, err)
 		return "", err
 	}
 
 	if err := os.Rename(tmp, thumb); err != nil {
 		_ = os.Remove(tmp)
-		info("Unable to move thumbnail into place %q: %v", thumb, err)
+		info("Unable to move %s variant into place %q: %v", variant, thumb, err)
 		return "", err
 	}
 
 	return thumb, nil
 }
 
-func thumbnail_name(name string) string {
+func variant_name(name string, variant string) string {
 	ext := filepath.Ext(name)
-	return strings.TrimSuffix(name, ext) + "_thumbnail" + ext
+	return strings.TrimSuffix(name, ext) + "_" + variant + ext
 }
 
 func fix_orientation(img image.Image, orientation int) image.Image {

@@ -1700,8 +1700,9 @@ func web_start() {
 	}
 }
 
-// Serve an attachment or thumbnail
-func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id string, thumbnail bool) bool {
+// Serve an attachment or one of its image variants ("thumbnail" or "preview";
+// "" serves the original bytes)
+func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id string, variant string) bool {
 	if !valid(id, "id") {
 		respond_error(c, http.StatusBadRequest, "invalid_attachment_id", "errors.invalid_attachment_id", nil)
 		return true
@@ -1713,7 +1714,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 			respond_error(c, http.StatusNotFound, "entity_not_found", "errors.entity_not_found", nil)
 			return true
 		}
-		return web_serve_attachment_remote(c, app, nil, entity, id, thumbnail)
+		return web_serve_attachment_remote(c, app, nil, entity, id, variant)
 	}
 
 	db := db_app_system(user, app)
@@ -1727,7 +1728,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 		// Attachment record not in local database — try remote if entity is available
 		// (e.g., subscribed feed whose attachments haven't been piggybacked)
 		if entity != "" && (valid(entity, "entity") || valid(entity, "fingerprint")) {
-			return web_serve_attachment_remote(c, app, user, entity, id, thumbnail)
+			return web_serve_attachment_remote(c, app, user, entity, id, variant)
 		}
 		respond_error(c, http.StatusNotFound, "attachment_not_found", "errors.attachment_not_found", nil)
 		return true
@@ -1747,7 +1748,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 			if user.Identity != nil {
 				from = user.Identity.ID
 			}
-			cached := attachment_fetch_remote(app, from, fetch_entity, id)
+			cached := attachment_fetch_remote(app, from, fetch_entity, id, "")
 			if cached == "" {
 				respond_error(c, http.StatusNotFound, "file_not_found", "errors.file_not_found", nil)
 				return true
@@ -1777,8 +1778,8 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 		return true
 	}
 
-	if thumbnail && is_image(att.Name) {
-		if thumb, err := thumbnail_create(path); err == nil && thumb != "" {
+	if variant != "" && is_image(att.Name) {
+		if thumb, err := variant_create(path, variant); err == nil && thumb != "" {
 			c.File(thumb)
 			return true
 		}
@@ -1804,22 +1805,26 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 }
 
 // Serve an attachment from a remote entity (for bookmarked wikis, etc.)
-func web_serve_attachment_remote(c *gin.Context, app *App, user *User, entity, id string, thumbnail bool) bool {
+func web_serve_attachment_remote(c *gin.Context, app *App, user *User, entity, id string, variant string) bool {
 	from := ""
 	if user != nil && user.Identity != nil {
 		from = user.Identity.ID
 	}
-	// Fetch from remote (thumbnail generated on remote side if requested)
-	path := attachment_fetch_remote(app, from, entity, id, thumbnail)
+	// Fetch from remote (image variant generated on remote side if requested)
+	path := attachment_fetch_remote(app, from, entity, id, variant)
 	if path == "" {
 		respond_error(c, http.StatusNotFound, "attachment_not_found", "errors.attachment_not_found", nil)
 		return true
 	}
 
-	// ETag cache validation
+	// ETag cache validation ("-thumb" predates the preview variant and is kept
+	// so browser caches of existing thumbnails stay valid)
 	suffix := ""
-	if thumbnail {
+	switch variant {
+	case "thumbnail":
 		suffix = "-thumb"
+	case "preview":
+		suffix = "-preview"
 	}
 	etag := fmt.Sprintf(`"%s%s"`, id, suffix)
 	c.Header("ETag", etag)

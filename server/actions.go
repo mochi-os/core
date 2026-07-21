@@ -782,20 +782,31 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	return sl.None, nil
 }
 
-// a.write.attachment(id, entity=None, thumbnail=False) -> None: Serve an
-// attachment (or its thumbnail) to the HTTP response by id. The calling action
-// MUST authorise the request first — gate on a.user against the app's own
-// access rules (subscriber/member/privacy) — because core serves the bytes
-// without any access check of its own. `entity` defaults to the route entity
-// and is used only to fetch not-yet-local attachments from a remote peer (e.g.
-// a subscribed feed). Content type and disposition are set safely by core
-// (inline only for known media, download otherwise) to prevent stored XSS.
+// a.write.attachment(id, entity=None, variant="") -> None: Serve an attachment
+// (or a downscaled image variant, "thumbnail" or "preview") to the HTTP
+// response by id. The calling action MUST authorise the request first — gate
+// on a.user against the app's own access rules (subscriber/member/privacy) —
+// because core serves the bytes without any access check of its own. `entity`
+// defaults to the route entity and is used only to fetch not-yet-local
+// attachments from a remote peer (e.g. a subscribed feed). Content type and
+// disposition are set safely by core (inline only for known media, download
+// otherwise) to prevent stored XSS. thumbnail=True is the deprecated form of
+// variant="thumbnail", kept for already-deployed app versions.
 func (a *Action) sl_write_attachment(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var id string
 	var entity string
 	var thumbnail bool
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "id", &id, "entity?", &entity, "thumbnail?", &thumbnail); err != nil {
+	var variant string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "id", &id, "entity?", &entity, "thumbnail?", &thumbnail, "variant?", &variant); err != nil {
 		return nil, err
+	}
+
+	if variant == "" && thumbnail {
+		variant = "thumbnail"
+	}
+	if variant != "" && variant != "thumbnail" && variant != "preview" {
+		a.error(400, "Invalid variant")
+		return sl.None, nil
 	}
 
 	owner, _ := t.Local("owner").(*User)
@@ -815,7 +826,7 @@ func (a *Action) sl_write_attachment(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 	// (fetching from the remote entity when not yet local), and applies the
 	// safe content-type/disposition guard. It performs no access check.
 	t.SetLocal("file_serving", true)
-	web_serve_attachment(a.web, app, owner, entity, id, thumbnail)
+	web_serve_attachment(a.web, app, owner, entity, id, variant)
 	return sl.None, nil
 }
 

@@ -54,6 +54,7 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 	"data":      sl.NewBuiltin("mochi.attachment.data", api_attachment_data),
 	"path":      sl.NewBuiltin("mochi.attachment.path", api_attachment_path),
 	"thumbnail": sl.NewBuiltin("mochi.attachment.thumbnail", api_attachment_thumbnail),
+	"preview":   sl.NewBuiltin("mochi.attachment.preview", api_attachment_preview),
 	"store":     sl.NewBuiltin("mochi.attachment.store", api_attachment_store),
 	"sync":      sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
 	"fetch":     sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
@@ -125,6 +126,17 @@ func attachment_filename(id string, name string) string {
 		safe_name = "file"
 	}
 	return fmt.Sprintf("%s_%s", id, safe_name)
+}
+
+// Remove an attachment's file and any generated image variants (thumbnail,
+// preview) from the app's files root.
+func attachment_files_remove(root *os.Root, id string, name string) {
+	filename := attachment_filename(id, name)
+	root.Remove(filename)
+	ext := filepath.Ext(filename)
+	stem := filename[:len(filename)-len(ext)]
+	root.Remove("thumbnails/" + stem + "_thumbnail" + ext)
+	root.Remove("previews/" + stem + "_preview" + ext)
 }
 
 // Get the next rank for an object
@@ -235,6 +247,7 @@ func (a *Attachment) to_map(paths ...string) map[string]any {
 		m["url"] = a.attachment_url(app_path, action_path, entity)
 		if is_image(a.Name) {
 			m["thumbnail_url"] = a.attachment_url(app_path, action_path, entity) + "/thumbnail"
+			m["preview_url"] = a.attachment_url(app_path, action_path, entity) + "/preview"
 		}
 	}
 	return m
@@ -1033,16 +1046,11 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl.False, nil
 	}
 
-	// Delete file and thumbnail using os.Root for traversal protection
+	// Delete file and image variants using os.Root for traversal protection
 	base := attachment_files_base(owner.UID, app.id)
 	root, err := os.OpenRoot(base)
 	if err == nil {
-		filename := attachment_filename(att.ID, att.Name)
-		root.Remove(filename)
-		// Thumbnail is stored in thumbnails subdirectory with _thumbnail suffix before extension
-		ext := filepath.Ext(filename)
-		thumbname := "thumbnails/" + filename[:len(filename)-len(ext)] + "_thumbnail" + ext
-		root.Remove(thumbname)
+		attachment_files_remove(root, att.ID, att.Name)
 		root.Close()
 	}
 
@@ -1097,17 +1105,12 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		warn("Database error loading attachments for deletion: %v", err)
 	}
 
-	// Delete files using os.Root for traversal protection
+	// Delete files and image variants using os.Root for traversal protection
 	base := attachment_files_base(owner.UID, app.id)
 	root, err := os.OpenRoot(base)
 	if err == nil {
 		for _, att := range attachments {
-			filename := attachment_filename(att.ID, att.Name)
-			root.Remove(filename)
-			// Also remove thumbnail if it exists
-			ext := filepath.Ext(filename)
-			thumbname := "thumbnails/" + filename[:len(filename)-len(ext)] + "_thumbnail" + ext
-			root.Remove(thumbname)
+			attachment_files_remove(root, att.ID, att.Name)
 		}
 		root.Close()
 	}
@@ -1279,7 +1282,7 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		if owner.Identity != nil {
 			from = owner.Identity.ID
 		}
-		path := attachment_fetch_remote(app, from, att.Entity, id)
+		path := attachment_fetch_remote(app, from, att.Entity, id, "")
 		if path != "" {
 			data, err := os.ReadFile(path)
 			if err != nil {
@@ -1365,6 +1368,16 @@ func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 // non-image attachments, remote attachments (served by the web layer instead),
 // or on errors.
 func api_attachment_thumbnail(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return api_attachment_variant(t, fn, args, "thumbnail")
+}
+
+// mochi.attachment.preview(id) -> string or None: As mochi.attachment.thumbnail,
+// for the larger preview variant.
+func api_attachment_preview(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return api_attachment_variant(t, fn, args, "preview")
+}
+
+func api_attachment_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, variant string) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
 	}
@@ -1400,20 +1413,20 @@ func api_attachment_thumbnail(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl.None, nil
 	}
 
-	// Only images have thumbnails; decoding a video/PDF/etc would fail
+	// Only images have variants; decoding a video/PDF/etc would fail
 	if !is_image(att.Name) {
 		return sl.None, nil
 	}
 
 	path := filepath.Join(data_dir, attachment_path(owner.UID, app.id, att.ID, att.Name))
-	thumb, err := thumbnail_create(path)
+	thumb, err := variant_create(path, variant)
 	if err != nil || thumb == "" {
 		return sl.None, nil
 	}
 
 	// Return relative path from app's files directory
-	// The thumbnail is at: data_dir/users/{user}/app/files/thumbnails/id_name_thumbnail.ext
-	// We need to return: thumbnails/id_name_thumbnail.ext
+	// The variant is at: data_dir/users/{user}/app/files/thumbnails/id_name_thumbnail.ext
+	// (previews/id_name_preview.ext for previews); we return that subdirectory path.
 	base := filepath.Join(data_dir, "users", owner.UID, app.id, "files")
 	rel, err := filepath.Rel(base, thumb)
 	if err != nil {
@@ -1587,15 +1600,20 @@ func attachment_notify_clear(app *App, owner *User, object string, notify []stri
 	}
 }
 
-// Federation: fetch attachment data from remote entity, returns cache file path
-func attachment_fetch_remote(app *App, from string, entity string, id string, thumbnail ...bool) string {
+// Federation: fetch attachment data from remote entity, returns cache file
+// path. variant is "" for the original bytes, "thumbnail" or "preview" for a
+// downscaled image variant (generated on the remote side).
+func attachment_fetch_remote(app *App, from string, entity string, id string, variant string) string {
 	//debug("attachment_fetch_remote: fetching %s from entity %s via app %s", id, entity, app.id)
-	want_thumbnail := len(thumbnail) > 0 && thumbnail[0]
 
-	// Cache path for remote attachments (thumbnails cached separately)
+	// Cache path for remote attachments (variants cached separately; ".thumb"
+	// predates the preview variant and is kept so existing caches stay valid)
 	cache_path := fmt.Sprintf("%s/attachments/%s/%s/%s", cache_dir, entity, app.id, id)
-	if want_thumbnail {
+	switch variant {
+	case "thumbnail":
 		cache_path += ".thumb"
+	case "preview":
+		cache_path += ".preview"
 	}
 	if fi, err := os.Stat(cache_path); err == nil {
 		if time.Since(fi.ModTime()) > cache_max_age {
@@ -1619,10 +1637,17 @@ func attachment_fetch_remote(app *App, from string, entity string, id string, th
 	}
 	defer s.close()
 
-	//debug("attachment_fetch_remote: sending id=%s thumbnail=%v", id, want_thumbnail)
+	//debug("attachment_fetch_remote: sending id=%s variant=%q", id, variant)
+	// The wire flags are separate booleans rather than a variant field so old
+	// receivers keep honouring thumbnail requests; a receiver that predates
+	// previews ignores the preview flag and answers with the original bytes,
+	// which still displays correctly.
 	content := map[string]string{"id": id}
-	if want_thumbnail {
+	switch variant {
+	case "thumbnail":
 		content["thumbnail"] = "true"
+	case "preview":
+		content["preview"] = "true"
 	}
 	s.write(content)
 
@@ -1907,17 +1932,12 @@ func (e *Event) attachment_event_delete() {
 		e.db.exec("delete from attachments where id = ?", id)
 		e.db.attachment_shift_down(object, att.Rank)
 
-		// Delete local file and thumbnail using os.Root for traversal protection
+		// Delete local file and image variants using os.Root for traversal protection
 		if e.user != nil && e.app != nil {
 			base := attachment_files_base(e.user.UID, e.app.id)
 			root, err := os.OpenRoot(base)
 			if err == nil {
-				filename := attachment_filename(att.ID, att.Name)
-				root.Remove(filename)
-				// Also remove thumbnail if it exists
-				ext := filepath.Ext(filename)
-				thumbname := "thumbnails/" + filename[:len(filename)-len(ext)] + "_thumbnail" + ext
-				root.Remove(thumbname)
+				attachment_files_remove(root, att.ID, att.Name)
 				root.Close()
 			}
 		}
@@ -1980,7 +2000,13 @@ func (e *Event) attachment_event_data() {
 		e.stream.write(map[string]string{"status": "400"})
 		return
 	}
-	thumbnail := e.get("thumbnail", "") == "true"
+	variant := ""
+	if e.get("thumbnail", "") == "true" {
+		variant = "thumbnail"
+	}
+	if e.get("preview", "") == "true" {
+		variant = "preview"
+	}
 
 	//debug("attachment_event_data: looking up attachment id=%s", id)
 	var att Attachment
@@ -2006,7 +2032,7 @@ func (e *Event) attachment_event_data() {
 			if e.user.Identity != nil {
 				from = e.user.Identity.ID
 			}
-			cached := attachment_fetch_remote(e.app, from, att.Entity, id)
+			cached := attachment_fetch_remote(e.app, from, att.Entity, id, "")
 			if cached == "" {
 				e.stream.write(map[string]string{"status": "404"})
 				return
@@ -2039,9 +2065,9 @@ func (e *Event) attachment_event_data() {
 	}
 	defer root.Close()
 
-	// Serve thumbnail if requested and the file is an image
-	if thumbnail && is_image(att.Name) {
-		thumb, err := thumbnail_create(path)
+	// Serve the requested image variant if the file is an image
+	if variant != "" && is_image(att.Name) {
+		thumb, err := variant_create(path, variant)
 		if err == nil && thumb != "" {
 			f, err := os.Open(thumb)
 			if err == nil {

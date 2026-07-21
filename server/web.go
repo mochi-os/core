@@ -73,14 +73,7 @@ func web_server(addr string, handler http.Handler) *http.Server {
 // topology is unchanged; the only differences are the retained GetCertificate
 // and the connection limits from web_server.
 func web_serve_tls(handler http.Handler) error {
-	tls_config := &tls.Config{
-		// acme-tls/1 must stay advertised or TLS-ALPN-01 validation breaks:
-		// autocert answers those challenges through GetCertificate, and
-		// domains_get_certificate falls through to the manager for any domain
-		// without a manual certificate — which is exactly where they land.
-		GetCertificate: domains_get_certificate,
-		NextProtos:     []string{"h2", "http/1.1", acme.ALPNProto},
-	}
+	tls_config := web_tls_config()
 
 	errors := make(chan error, 2)
 
@@ -97,6 +90,24 @@ func web_serve_tls(handler http.Handler) error {
 	}()
 
 	return <-errors
+}
+
+// web_tls_config builds the TLS configuration the HTTPS listener serves with.
+// Separated from web_serve_tls so a test can exercise the configuration the
+// server actually uses, rather than a copy of it that could drift.
+func web_tls_config() *tls.Config {
+	return &tls.Config{
+		// Retaining domains_get_certificate is the whole point: it tries a
+		// manually installed certificate first and only then falls through to
+		// ACME. autotls used to replace this with the bare autocert manager's,
+		// silently discarding every manual certificate.
+		GetCertificate: domains_get_certificate,
+		// acme-tls/1 must stay advertised or TLS-ALPN-01 validation breaks:
+		// autocert answers those challenges through GetCertificate, and
+		// domains_get_certificate falls through to the manager for any domain
+		// without a manual certificate — which is exactly where they land.
+		NextProtos: []string{"h2", "http/1.1", acme.ALPNProto},
+	}
 }
 
 // web_redirect_https sends a plain-HTTP request to the same URL over HTTPS.

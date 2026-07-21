@@ -61,23 +61,30 @@ func restore_cleanup_orphans() {
 	}
 }
 
-// restore_upload_default is the out-of-box compressed-bundle upload cap for an
-// ordinary signup-with-restore (2 GiB). Covers typical accounts; operators
-// whose users migrate larger accounts raise the restore_upload_maximum
-// setting. restore_upload_administrator is the ceiling for the first-user
-// bootstrap, which only runs on an empty server and may carry a large operator
-// account.
-const (
-	restore_upload_default       int64 = 2 * 1024 * 1024 * 1024
-	restore_upload_administrator int64 = 50 * 1024 * 1024 * 1024
-)
+// restore_upload_default is the out-of-box compressed-bundle upload cap for a
+// signup-with-restore (2 GiB). Covers typical accounts; operators whose users
+// migrate larger accounts raise the restore_upload_maximum setting.
+const restore_upload_default int64 = 2 * 1024 * 1024 * 1024
 
-// restore_upload_maximum returns the compressed-upload cap for ordinary
-// signups (bytes). Operator-tunable via the restore_upload_maximum setting,
-// deliberately separate from the account storage quota so it tracks the host's
-// disk headroom, not the amount a restored account may eventually store.
+// restore_setting_bytes reads a byte-valued setting, returning 0 when it is
+// unset or not a positive integer.
+func restore_setting_bytes(name string) int64 {
+	if v, err := strconv.ParseInt(setting_get(name, ""), 10, 64); err == nil && v > 0 {
+		return v
+	}
+	return 0
+}
+
+// restore_upload_maximum returns the compressed-upload cap for a signup (bytes).
+// Operator-tunable via the restore_upload_maximum setting, deliberately separate
+// from the account storage quota so it tracks the host's disk headroom, not the
+// amount a restored account may eventually store. The same default applies on an
+// empty (not-yet-bootstrapped) server — a fresh public endpoint must not expose
+// a large spool. An operator who genuinely needs a larger first-user bootstrap
+// raises restore_upload_bootstrap explicitly (a deliberate setup-time action);
+// it is only consulted while the server has no users.
 func restore_upload_maximum() int64 {
-	if v, err := strconv.ParseInt(setting_get("restore_upload_maximum", ""), 10, 64); err == nil && v > 0 {
+	if v := restore_setting_bytes("restore_upload_maximum"); v > 0 {
 		return v
 	}
 	return restore_upload_default
@@ -105,14 +112,19 @@ func web_auth_restore(c *gin.Context) {
 	// (web_body_limit), so without it an unauthenticated client could spool an
 	// arbitrarily large body. The upload cap is a separate operator setting,
 	// not derived from the quota, so it can be tuned to the host's disk
-	// headroom independently. Administrators are the first-user bootstrap
-	// (only reachable on an empty server) and may carry a large operator
-	// account, so both ceilings are generous for them.
+	// headroom independently.
 	restore_cap := file_max_storage
 	upload_max := restore_upload_maximum()
+	// First-user bootstrap (empty server): keep the ordinary public caps by
+	// default so a fresh, not-yet-bootstrapped server never exposes a large
+	// unauthenticated spool. Lift both only when the operator has explicitly
+	// set restore_upload_bootstrap — a deliberate setup-time action for
+	// restoring a large operator account.
 	if role == "administrator" {
-		restore_cap = restore_upload_administrator
-		upload_max = restore_upload_administrator
+		if boot := restore_setting_bytes("restore_upload_bootstrap"); boot > 0 {
+			upload_max = boot
+			restore_cap = boot
+		}
 	}
 
 	// The headroom covers multipart framing and per-file zip overhead.

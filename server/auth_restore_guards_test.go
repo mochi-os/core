@@ -136,3 +136,45 @@ func TestRestoreUploadCap(t *testing.T) {
 		t.Errorf("small body must pass the cap: got %d, want 400", w.Code)
 	}
 }
+
+// An empty (not-yet-bootstrapped) server keeps the ordinary 2 GiB public cap by
+// default — it does NOT hand the unauthenticated first-user path a large spool
+// allowance — and only lifts it when the operator sets restore_upload_bootstrap.
+func TestRestoreUploadCapBootstrap(t *testing.T) {
+	cleanup := create_test_users_db(t)
+	defer cleanup()
+	// No users inserted: web_auth_restore takes the administrator/bootstrap path.
+	settings := db_open("db/settings.db")
+	settings.exec("create table settings (name text primary key, value text not null)")
+
+	oversized := func() *gin.Context {
+		body := &bytes.Buffer{}
+		writer := multipart.NewWriter(body)
+		writer.WriteField("email", "boot@example.com")
+		writer.Close()
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("POST", "/_/auth/restore", body)
+		c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+		// Just over the 2 GiB default + framing headroom.
+		c.Request.ContentLength = 3*1024*1024*1024 + 1
+		return c
+	}
+
+	// Default: the bootstrap path is capped at the ordinary 2 GiB, so 3 GiB is
+	// rejected before any spool — no fresh-server 50 GiB allowance.
+	c := oversized()
+	web_auth_restore(c)
+	if c.Writer.Status() != http.StatusRequestEntityTooLarge {
+		t.Errorf("empty-server default: got %d, want 413 (no large bootstrap allowance)", c.Writer.Status())
+	}
+
+	// Operator opts in to a larger bootstrap: the same 3 GiB is now admitted
+	// past the size gate (and fails later on its own validation, not on size).
+	setting_set("restore_upload_bootstrap", "8589934592") // 8 GiB
+	c = oversized()
+	web_auth_restore(c)
+	if c.Writer.Status() == http.StatusRequestEntityTooLarge {
+		t.Error("with restore_upload_bootstrap set, the larger bootstrap upload must pass the size gate")
+	}
+}

@@ -192,7 +192,7 @@ func auth_establish_session(c *gin.Context, user *User) {
 	// completed factor must not: resetting there let an attacker who held
 	// one factor restart with a clean counter for every guess at the next.
 	rate_limit_login.reset(rate_limit_client_ip(c))
-	rate_limit_account.reset(user.UID)
+	account_login.reset(user.UID)
 	session := login_create(user.UID, c.ClientIP(), c.GetHeader("User-Agent"))
 	web_cookie_set(c, "session", session)
 	db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.UID, now())
@@ -322,18 +322,19 @@ func web_auth_totp(c *gin.Context) {
 	}
 
 	// Six-digit codes are guessable and the per-IP limiter alone is defeated
-	// by rotating source addresses, so throttle per account — a progressive
-	// delay that never hard-blocks a correct code (see rate_limit_account).
-	rate_limit_account_throttle(user)
+	// by rotating source addresses, so throttle per account (see account_gate).
+	if !account_gate_guard(c, user.UID) {
+		return
+	}
 
 	// Verify TOTP code
 	if !totp_verify(user.UID, input.Code) {
-		rate_limit_account_fail(user)
+		account_login.fail(user.UID)
 		audit_login_failed(input.Email, rate_limit_client_ip(c), "invalid_totp")
 		respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
 		return
 	}
-	rate_limit_account.reset(user.UID)
+	account_login.reset(user.UID)
 
 	// Check for remaining MFA methods after TOTP, folding this factor into
 	// any pending partial rather than starting over.
@@ -682,9 +683,11 @@ func web_auth_mfa(c *gin.Context) {
 	}
 
 	// MFA continuations verify guessable codes (six-digit authenticator);
-	// holding a partial does not exempt the caller. Throttle per account with
-	// a progressive delay that never hard-blocks a correct code.
-	rate_limit_account_throttle(user)
+	// holding a partial does not exempt the caller. Throttle per account
+	// (see account_gate).
+	if !account_gate_guard(c, user.UID) {
+		return
+	}
 
 	remaining := strings.Split(row["remaining"].(string), ",")
 	completed := row["completed"].(string)
@@ -750,13 +753,13 @@ func web_auth_mfa(c *gin.Context) {
 		switch method {
 		case "email":
 			if !email_code_check(user.Username, code) {
-				rate_limit_account_fail(user)
+				account_login.fail(user.UID)
 				respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
 				return
 			}
 		case "totp":
 			if !totp_verify(user.UID, code) {
-				rate_limit_account_fail(user)
+				account_login.fail(user.UID)
 				respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
 				return
 			}
@@ -765,7 +768,7 @@ func web_auth_mfa(c *gin.Context) {
 			return
 		}
 	}
-	rate_limit_account.reset(user.UID)
+	account_login.reset(user.UID)
 
 	// All validations passed - now consume the codes
 	for _, method := range methods {
@@ -1231,10 +1234,10 @@ func web_recovery_login(c *gin.Context) {
 	}
 	user_id, _ := row["uid"].(string)
 
-	// Throttle guessing across all source addresses with a progressive delay
-	// that never hard-blocks a correct code.
-	throttled := &User{UID: user_id}
-	rate_limit_account_throttle(throttled)
+	// Throttle guessing across all source addresses (see account_gate).
+	if !account_gate_guard(c, user_id) {
+		return
+	}
 
 	// Check recovery codes
 	rows, _ := db.rows("select id, hash from recovery where user=?", user_id)
@@ -1248,12 +1251,12 @@ func web_recovery_login(c *gin.Context) {
 	}
 
 	if matched < 0 {
-		rate_limit_account_fail(throttled)
+		account_login.fail(user_id)
 		audit_login_failed(input.Username, rate_limit_client_ip(c), "invalid_recovery_code")
 		respond_error(c, http.StatusUnauthorized, "invalid_credentials", "errors.invalid_credentials", nil)
 		return
 	}
-	rate_limit_account.reset(user_id)
+	account_login.reset(user_id)
 
 	// Load user with identity
 	user := user_by_uid(user_id)

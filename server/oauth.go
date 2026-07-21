@@ -1264,7 +1264,7 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 		// This path bypasses auth_establish_session, so clear the brute-force
 		// counters here too.
 		rate_limit_login.reset(rate_limit_client_ip(c))
-		rate_limit_account.reset(user.UID)
+		account_login.reset(user.UID)
 		session := login_create(user.UID, c.ClientIP(), c.GetHeader("User-Agent"))
 		db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.UID, now())
 		audit_login(user.Username, rate_limit_client_ip(c))

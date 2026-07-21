@@ -8,6 +8,7 @@ package main
 
 import (
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -32,23 +33,6 @@ var (
 		entries: make(map[string]*rate_limit_entry),
 		limit:   1000,
 		window:  60,
-	}
-
-	// Per-account failed-attempt counter for the guessable login factors
-	// (authenticator, MFA, recovery codes), keyed by user uid so the throttle
-	// follows the account across rotating source addresses (the per-IP limiter
-	// alone does not). It is deliberately NOT a hard gate: rejecting before
-	// verification would let anyone lock a known account out for the whole
-	// window with a few bad guesses, since /_/auth/begin identifies accounts.
-	// Instead each accumulated failure adds a progressive delay before the
-	// next verification (account_backoff); a correct credential always
-	// verifies and clears the count, so a legitimate user is at most briefly
-	// delayed, never locked out, while an attacker's guess rate collapses.
-	// The limit only bounds how high the count climbs (the delay caps sooner).
-	rate_limit_account = &rate_limiter{
-		entries: make(map[string]*rate_limit_entry),
-		limit:   12,
-		window:  900,
 	}
 
 	rate_limit_login = &rate_limiter{
@@ -152,19 +136,6 @@ func (r *rate_limiter) reset(key string) {
 	delete(r.entries, key)
 }
 
-// count returns the current count for a key, or 0 if absent/expired. Unlike
-// allow it neither increments nor enforces the limit — used to size the
-// per-account login backoff.
-func (r *rate_limiter) count(key string) int {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-	entry := r.entries[key]
-	if entry == nil || now() >= entry.reset {
-		return 0
-	}
-	return entry.count
-}
-
 // Clean up expired entries
 func (r *rate_limiter) cleanup() {
 	r.lock.Lock()
@@ -197,45 +168,139 @@ func rate_limit_api_middleware(c *gin.Context) {
 	c.Next()
 }
 
-// The first few failures are free (honest fat-fingering must not be punished);
-// beyond that the delay doubles per failure up to a cap. Vars, not consts, so
-// tests can neutralise the sleep.
+// Per-account login throttle for the guessable factors (authenticator, MFA,
+// recovery codes), keyed by user uid so it follows the account across rotating
+// source addresses (the per-IP limiter alone does not).
+//
+// It is a reservation gate, NOT a read-then-sleep: each attempt atomically
+// claims the next verification slot under the lock, so concurrent guesses
+// against one account are serialised into distinct future slots and cannot all
+// slip through the free tier at once (the bug a plain "read count, sleep,
+// verify" has — every concurrent request observes the same pre-failure count).
+// It is also NOT a hard window: a correct credential submitted in a quiet
+// period reserves an immediate slot, verifies, and clears the account, so a
+// legitimate user is never locked out. Only when an account's reserved queue
+// already stretches past account_wait_max is a request refused (429) rather
+// than held — which both bounds the guess rate per account and caps how many
+// handler goroutines ever sleep at once.
+type account_gate_entry struct {
+	failures int
+	next     int64 // unix seconds: earliest the next attempt may verify
+	seen     int64 // last activity, for cleanup
+}
+
+type account_gate struct {
+	lock    sync.Mutex
+	entries map[string]*account_gate_entry
+}
+
+var account_login = &account_gate{entries: make(map[string]*account_gate_entry)}
+
+// Tunables (vars, not consts, so tests can adjust them). The first few
+// failures reserve at the floor spacing; beyond that the spacing doubles up to
+// account_wait_max, which is also the deepest queue a request will wait in
+// before being refused outright.
 var (
-	account_backoff_free = 3
-	account_backoff_cap  = 8 * time.Second
+	account_gate_free  = 3
+	account_gate_floor int64 = 1    // seconds between consecutive slots at minimum
+	account_wait_max   int64 = 8    // seconds: refuse rather than wait/hold longer
+	account_gate_ttl   int64 = 900  // seconds idle before an entry is dropped
 )
 
-// account_backoff is the delay owed before the next guess given the account's
-// accumulated failure count.
-func account_backoff(failures int) time.Duration {
-	steps := failures - account_backoff_free
+// account_gate_spacing is the gap (seconds) reserved between consecutive
+// verification slots given the failures seen so far — always at least the
+// floor, so even a burst with no failures yet is serialised.
+func account_gate_spacing(failures int) int64 {
+	steps := failures - account_gate_free
 	if steps <= 0 {
-		return 0
+		return account_gate_floor
 	}
 	if steps > 20 { // guard the shift below from overflowing
-		return account_backoff_cap
+		return account_wait_max
 	}
-	delay := time.Second << (steps - 1) // 1s, 2s, 4s, ...
-	if delay <= 0 || delay > account_backoff_cap {
-		return account_backoff_cap
+	gap := int64(1) << (steps - 1) // 1, 2, 4, 8, ...
+	if gap > account_wait_max {
+		return account_wait_max
 	}
-	return delay
+	if gap < account_gate_floor {
+		return account_gate_floor
+	}
+	return gap
 }
 
-// rate_limit_account_throttle sleeps for the backoff currently owed by the
-// account before a guessable factor is verified, so repeated wrong guesses
-// slow to a crawl. A correct credential is verified after the same (bounded)
-// delay and still succeeds — this throttles, it never locks out.
-func rate_limit_account_throttle(user *User) {
-	if delay := account_backoff(rate_limit_account.count(user.UID)); delay > 0 {
-		time.Sleep(delay)
+// reserve atomically assigns this attempt a verification slot. It returns the
+// seconds the caller must wait before verifying, and false when the account's
+// reserved queue is already deeper than account_wait_max — in which case the
+// caller rejects (429) instead of holding a goroutine. Serialising the slot
+// assignment under the lock is what stops parallel guesses bypassing the
+// throttle.
+func (g *account_gate) reserve(uid string) (int64, bool) {
+	g.lock.Lock()
+	defer g.lock.Unlock()
+	now := now()
+	entry := g.entries[uid]
+	if entry == nil {
+		entry = &account_gate_entry{}
+		g.entries[uid] = entry
+	}
+	entry.seen = now
+	start := entry.next
+	if start < now {
+		start = now
+	}
+	wait := start - now
+	if wait > account_wait_max {
+		return wait, false
+	}
+	entry.next = start + account_gate_spacing(entry.failures)
+	return wait, true
+}
+
+// fail records a wrong guess, widening the spacing owed on later attempts.
+func (g *account_gate) fail(uid string) {
+	g.lock.Lock()
+	defer g.lock.Unlock()
+	if entry := g.entries[uid]; entry != nil {
+		entry.failures++
+		entry.seen = now()
 	}
 }
 
-// rate_limit_account_fail records one failed verification of a guessable
-// factor, raising the backoff owed on the next attempt.
-func rate_limit_account_fail(user *User) {
-	rate_limit_account.allow(user.UID)
+// reset clears an account's throttle after a correct credential.
+func (g *account_gate) reset(uid string) {
+	g.lock.Lock()
+	defer g.lock.Unlock()
+	delete(g.entries, uid)
+}
+
+func (g *account_gate) cleanup() {
+	g.lock.Lock()
+	defer g.lock.Unlock()
+	now := now()
+	for uid, entry := range g.entries {
+		if now-entry.seen > account_gate_ttl && entry.next <= now {
+			delete(g.entries, uid)
+		}
+	}
+}
+
+// account_gate_guard reserves a slot for a guessable-factor verification and
+// waits out the (bounded) delay. It returns false after answering 429 when the
+// account's queue is already too deep; the caller just returns. On the normal
+// path the caller verifies, then calls account_login.fail on a wrong guess or
+// account_login.reset on success.
+func account_gate_guard(c *gin.Context, uid string) bool {
+	wait, ok := account_login.reserve(uid)
+	if !ok {
+		audit_rate_limit(rate_limit_client_ip(c), "account")
+		c.Header("Retry-After", strconv.FormatInt(wait, 10))
+		respond_error(c, http.StatusTooManyRequests, "too_many_login_attempts_please_try_again_later", "errors.too_many_logins", nil)
+		return false
+	}
+	if wait > 0 {
+		time.Sleep(time.Duration(wait) * time.Second)
+	}
+	return true
 }
 
 // Middleware for login rate limiting (stricter)
@@ -257,7 +322,7 @@ func rate_limit_login_middleware(c *gin.Context) {
 func ratelimit_manager() {
 	for range time.Tick(time.Minute) {
 		rate_limit_api.cleanup()
-		rate_limit_account.cleanup()
+		account_login.cleanup()
 		rate_limit_login.cleanup()
 		rate_limit_p2p.cleanup()
 		rate_limit_pubsub_in.cleanup()

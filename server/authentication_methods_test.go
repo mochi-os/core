@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -232,31 +231,70 @@ func TestPartialContinue(t *testing.T) {
 	}
 }
 
-// TestAccountBackoff checks the delay curve: the first few failures are free,
-// then it doubles per failure and caps.
-func TestAccountBackoff(t *testing.T) {
-	saved := account_backoff_cap
-	account_backoff_cap = 8 * time.Second
-	defer func() { account_backoff_cap = saved }()
-
-	if d := account_backoff(account_backoff_free); d != 0 {
-		t.Errorf("free tier delay = %v, want 0", d)
+// TestAccountGateSpacing checks the reserved-slot spacing curve: the first few
+// failures reserve at the floor, then the gap doubles per failure and caps.
+func TestAccountGateSpacing(t *testing.T) {
+	if g := account_gate_spacing(0); g != account_gate_floor {
+		t.Errorf("free tier spacing = %d, want floor %d", g, account_gate_floor)
 	}
-	if d := account_backoff(account_backoff_free + 1); d != time.Second {
-		t.Errorf("first paid failure = %v, want 1s", d)
+	if g := account_gate_spacing(account_gate_free); g != account_gate_floor {
+		t.Errorf("last free spacing = %d, want floor %d", g, account_gate_floor)
 	}
-	if d := account_backoff(account_backoff_free + 2); d != 2*time.Second {
-		t.Errorf("second paid failure = %v, want 2s", d)
+	if g := account_gate_spacing(account_gate_free + 2); g != 2 {
+		t.Errorf("second paid spacing = %d, want 2", g)
 	}
-	if d := account_backoff(1000); d != account_backoff_cap {
-		t.Errorf("far past the cap = %v, want %v", d, account_backoff_cap)
+	if g := account_gate_spacing(1000); g != account_wait_max {
+		t.Errorf("far past the cap = %d, want %d", g, account_wait_max)
 	}
 }
 
-// TestAccountRateLimit verifies the per-account throttle on guessable factors
-// does NOT hard-lock an account: wrong codes stay 401 well past the counter
-// limit (never a 429 that a third party could hold a known account in),
-// failures accumulate to drive the backoff, and they are keyed per account.
+// TestAccountGateReserve is the anti-parallel test the old (read-count, sleep,
+// verify) throttle failed: concurrent guesses all serialise through the gate
+// lock, so calling reserve repeatedly on one account (which is exactly what N
+// concurrent requests do — one at a time under the lock) hands out DISTINCT,
+// increasing wait slots, not the same free-tier slot to everyone. Past the
+// max-wait depth the gate refuses rather than queue, bounding both the guess
+// rate per account and the number of handlers that ever sleep.
+func TestAccountGateReserve(t *testing.T) {
+	gate := &account_gate{entries: make(map[string]*account_gate_entry)}
+
+	// A burst of reservations (no failures recorded yet) gets floor-spaced,
+	// increasing slots — never all zero.
+	var waits []int64
+	for i := 0; i < 20; i++ {
+		wait, ok := gate.reserve("u1")
+		if !ok {
+			break
+		}
+		waits = append(waits, wait)
+	}
+	if len(waits) < 2 || waits[0] != 0 || waits[1] < account_gate_floor {
+		t.Fatalf("burst did not serialise: %v (want 0, then >= floor, increasing)", waits)
+	}
+	for i := 1; i < len(waits); i++ {
+		if waits[i] <= waits[i-1] {
+			t.Errorf("slot %d (%d) not after slot %d (%d) — parallel bypass", i, waits[i], i-1, waits[i-1])
+		}
+	}
+	// Beyond the max-wait depth the gate refuses rather than hold a goroutine.
+	if _, ok := gate.reserve("u1"); ok {
+		t.Error("a queue past account_wait_max must be refused (429), not queued")
+	}
+	// A different account is unaffected: its first slot is immediate.
+	if wait, ok := gate.reserve("u2"); !ok || wait != 0 {
+		t.Errorf("separate account: wait=%d ok=%v, want immediate slot", wait, ok)
+	}
+	// A correct credential (reset) clears the queue.
+	gate.reset("u1")
+	if wait, ok := gate.reserve("u1"); !ok || wait != 0 {
+		t.Errorf("after reset: wait=%d ok=%v, want cleared", wait, ok)
+	}
+}
+
+// TestAccountRateLimit verifies the per-account throttle does NOT hard-lock an
+// account: with spacing neutralised (so serial attempts don't sleep), wrong
+// codes stay 401 indefinitely — never a 429 that a third party could hold a
+// known account in — and a correct credential is never blocked.
 func TestAccountRateLimit(t *testing.T) {
 	cleanup := create_test_users_db(t)
 	defer cleanup()
@@ -265,14 +303,14 @@ func TestAccountRateLimit(t *testing.T) {
 	users.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, created integer not null)")
 	users.exec("insert into users (uid, username, methods) values ('u-limit', 'limit@example.com', 'totp')")
 	users.exec("insert into totp (user, secret, verified, created) values ('u-limit', 'JBSWY3DPEHPK3PXP', 1, 1)")
-	users.exec("insert into users (uid, username, methods) values ('u-other', 'other@example.com', 'totp')")
-	defer rate_limit_account.reset("u-limit")
+	defer account_login.reset("u-limit")
 
-	// Neutralise the sleep so the test is fast; the delay curve is covered by
-	// TestAccountBackoff.
-	saved := account_backoff_cap
-	account_backoff_cap = 0
-	defer func() { account_backoff_cap = saved }()
+	// Neutralise spacing (floor 0 AND a free tier past the attempt count) so
+	// serial attempts reserve immediate slots and never sleep; the spacing and
+	// serialisation are covered by TestAccountGateReserve.
+	savedFloor, savedFree := account_gate_floor, account_gate_free
+	account_gate_floor, account_gate_free = 0, 1_000_000
+	defer func() { account_gate_floor, account_gate_free = savedFloor, savedFree }()
 
 	attempt := func() int {
 		w := httptest.NewRecorder()
@@ -283,16 +321,12 @@ func TestAccountRateLimit(t *testing.T) {
 		return w.Code
 	}
 
-	for i := 0; i < rate_limit_account.limit+5; i++ {
+	for i := 0; i < 25; i++ {
 		if code := attempt(); code != http.StatusUnauthorized {
 			t.Fatalf("wrong attempt %d: got %d, want 401 (never a hard 429 lockout)", i, code)
 		}
 	}
-	if rate_limit_account.count("u-limit") == 0 {
-		t.Error("failures should accumulate to drive the backoff")
-	}
-	// Keyed per account: another account inherits none of these failures.
-	if n := rate_limit_account.count("u-other"); n != 0 {
-		t.Errorf("other account carries %d failures, want 0", n)
+	if account_login.entries["u-limit"] == nil || account_login.entries["u-limit"].failures == 0 {
+		t.Error("failures should accumulate")
 	}
 }

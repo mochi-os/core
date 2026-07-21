@@ -589,3 +589,40 @@ func TestUrlIsCloudMetadata(t *testing.T) {
 		})
 	}
 }
+
+// allow_private_for_test lets a test reach an httptest server on 127.0.0.1
+// through url_request, which otherwise refuses non-public destinations. Scoped
+// to the calling test so the SSRF guard stays on everywhere else.
+func allow_private_for_test(t *testing.T) {
+	t.Helper()
+	previous := url_allow_private
+	url_allow_private = true
+	t.Cleanup(func() { url_allow_private = previous })
+}
+
+// TestURLAddressBlocked pins the SSRF guard: app-supplied URLs must not be able
+// to reach loopback, private, link-local (including the cloud metadata address,
+// by whatever notation), unspecified or multicast destinations.
+func TestURLAddressBlocked(t *testing.T) {
+	blocked := []string{
+		"127.0.0.1:80", "[::1]:80", // loopback
+		"10.1.2.3:80", "192.168.1.1:80", "172.16.0.1:80", // RFC 1918
+		"[fc00::1]:80",                // IPv6 unique-local
+		"169.254.169.254:80",          // cloud metadata
+		"[::ffff:169.254.169.254]:80", // 4-in-6 metadata
+		"[fe80::1]:80",                // IPv6 link-local
+		"0.0.0.0:80", "[::]:80",       // unspecified
+		"224.0.0.1:80", // multicast
+	}
+	for _, address := range blocked {
+		if err := url_address_allowed(address); err == nil {
+			t.Errorf("url_address_allowed(%q) allowed a non-public destination", address)
+		}
+	}
+
+	for _, address := range []string{"93.184.216.34:80", "[2606:2800:220:1:248:1893:25c8:1946]:443"} {
+		if err := url_address_allowed(address); err != nil {
+			t.Errorf("url_address_allowed(%q) blocked a public destination: %v", address, err)
+		}
+	}
+}

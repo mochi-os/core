@@ -15,6 +15,9 @@ import (
 
 // Test that URL response size is limited
 func TestURLResponseSizeLimit(t *testing.T) {
+	// Serves from httptest on 127.0.0.1; url_request blocks non-public
+	// destinations by default.
+	allow_private_for_test(t)
 	// Create a test server that returns more than the limit
 	oversized := make([]byte, url_max_response_size+1000)
 	for i := range oversized {

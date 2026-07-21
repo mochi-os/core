@@ -22,6 +22,7 @@ import (
 	"github.com/microcosm-cc/bluemonday"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,6 +30,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -350,6 +352,65 @@ func url_is_cloud_metadata(url string) bool {
 		strings.Contains(url, "metadata.google.internal")
 }
 
+// url_allow_private permits outbound requests to loopback, private, and
+// link-local addresses. Off by default: mochi.url.*, RSS fetching, link
+// previews and mochi.remote.peer() all take an app-supplied URL, so an
+// unrestricted client is an SSRF pivot into whatever the host can reach.
+// Peer-to-peer traffic is unaffected — libp2p dials multiaddrs directly and
+// never goes through url_request — so this only constrains app-driven HTTP.
+// Tests that serve from httptest (127.0.0.1) set it, as may a deployment that
+// genuinely federates over a LAN.
+var url_allow_private = false
+
+// url_address_allowed reports whether a resolved dial address is a permitted
+// outbound destination. It is called from the dialer with the address actually
+// being connected to, after DNS resolution, so unlike inspecting the request
+// URL it also covers hostnames that resolve inward, alternate textual or
+// numeric IP forms, DNS rebinding between validation and connection, and
+// redirects into internal ranges.
+func url_address_allowed(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("blocked outbound request to unresolvable address %q", address)
+	}
+	if url_allow_private {
+		return nil
+	}
+	// IsPrivate covers RFC 1918 and RFC 4193 unique-local; IsLinkLocalUnicast
+	// covers 169.254.0.0/16 (so the cloud metadata service, whatever hostname
+	// or notation reaches it) and fe80::/10. Each of these handles the
+	// IPv4-in-IPv6 form, so ::ffff:169.254.169.254 is caught too.
+	switch {
+	case ip.IsLoopback(), ip.IsPrivate(), ip.IsUnspecified(),
+		ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast(),
+		ip.IsInterfaceLocalMulticast(), ip.IsMulticast():
+		return fmt.Errorf("blocked outbound request to non-public address %s", ip)
+	}
+	return nil
+}
+
+// url_transport is the shared outbound transport for every app-driven HTTP
+// request. The dialer's Control hook runs per connection, so the check applies
+// to the initial request and to every redirect hop on the same client.
+var url_transport = &http.Transport{
+	Proxy: http.ProxyFromEnvironment,
+	DialContext: (&net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control: func(network string, address string, _ syscall.RawConn) error {
+			return url_address_allowed(address)
+		},
+	}).DialContext,
+	MaxIdleConns:          100,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+}
+
 // Make an HTTP request to a URL.
 // If allowed_domains is non-empty, redirect targets are validated against them.
 func url_request(method string, url string, options map[string]string, headers map[string]string, body any, allowed_domains ...string) (*http.Response, error) {
@@ -397,30 +458,30 @@ func url_request(method string, url string, options map[string]string, headers m
 		}
 	}
 
-	c := &http.Client{Timeout: timeout}
+	c := &http.Client{Timeout: timeout, Transport: url_transport}
 
-	// When allowed domains are specified, validate redirect targets
-	if len(allowed_domains) > 0 {
-		c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			if url_is_cloud_metadata(req.URL.String()) {
-				return fmt.Errorf("redirect to cloud metadata service is blocked")
-			}
-			redirect_host := strings.ToLower(req.URL.Hostname())
-			matched := false
-			for _, domain := range allowed_domains {
-				if domain_matches(domain, redirect_host) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				return fmt.Errorf("redirect to %s not allowed by granted url permissions", redirect_host)
-			}
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
+	// Redirects are validated for every caller, not only those that passed
+	// allowed domains: RSS fetching, link previews and peer discovery supply
+	// none, and previously followed redirects entirely unchecked. The dialer
+	// already refuses non-public destinations on each hop; these checks add the
+	// metadata-name, hop-count and granted-domain limits on top.
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if url_is_cloud_metadata(req.URL.String()) {
+			return fmt.Errorf("redirect to cloud metadata service is blocked")
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		if len(allowed_domains) == 0 {
 			return nil
 		}
+		redirect_host := strings.ToLower(req.URL.Hostname())
+		for _, domain := range allowed_domains {
+			if domain_matches(domain, redirect_host) {
+				return nil
+			}
+		}
+		return fmt.Errorf("redirect to %s not allowed by granted url permissions", redirect_host)
 	}
 
 	return c.Do(r)

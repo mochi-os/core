@@ -17,6 +17,9 @@ import (
 // Test peer_connect_url HTTP request and JSON parsing
 // Note: These tests verify the HTTP/JSON handling but can't test actual Net connection
 func TestPeerConnectUrlHttpHandling(t *testing.T) {
+	// Serves from httptest on 127.0.0.1; url_request blocks non-public
+	// destinations by default.
+	allow_private_for_test(t)
 	tests := []struct {
 		name           string
 		handler        http.HandlerFunc
@@ -102,6 +105,9 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 
 // Test that peer_connect_url correctly constructs the info URL
 func TestPeerConnectUrlPath(t *testing.T) {
+	// Serves from httptest on 127.0.0.1; url_request blocks non-public
+	// destinations by default.
+	allow_private_for_test(t)
 	var requestedPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestedPath = r.URL.Path
@@ -118,6 +124,9 @@ func TestPeerConnectUrlPath(t *testing.T) {
 
 // Test URL normalization (adding https:// when no scheme present)
 func TestPeerConnectUrlNormalizesScheme(t *testing.T) {
+	// Serves from httptest on 127.0.0.1; url_request blocks non-public
+	// destinations by default.
+	allow_private_for_test(t)
 	// We can't easily test the https normalization without a real HTTPS server,
 	// but we can verify the logic by checking that http:// URLs work
 	var receivedHost string

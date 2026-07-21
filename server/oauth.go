@@ -544,8 +544,10 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target, expe
 		rate_limit_login.reset(rate_limit_client_ip(c))
 
 		// OAuth proves a linked account, not the email factor, so any methods
-		// the user requires must still be completed as MFA.
-		remaining := auth_remaining_oauth(user)
+		// the user requires must still be completed as MFA. Fold this factor
+		// into any pending partial — an OAuth round-trip from the /codes page
+		// continues the sequence begun by another factor.
+		_, remaining := partial_continue(c, user, "oauth")
 		if len(remaining) > 0 {
 			// If email is one of them, send the code now, as the other
 			// non-email first factors (TOTP, passkey) do.
@@ -555,9 +557,6 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target, expe
 					break
 				}
 			}
-			partial := random_alphanumeric(32)
-			partial_create(db_open("db/sessions.db"), partial, user.UID, "oauth", strings.Join(remaining, ","), now()+300)
-			web_cookie_set(c, "login_partial", partial)
 			c.Redirect(http.StatusFound, "/login/codes")
 			return
 		}

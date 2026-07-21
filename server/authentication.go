@@ -85,15 +85,10 @@ func web_login_verify(c *gin.Context) {
 	// Reset rate limit on successful login
 	rate_limit_login.reset(rate_limit_client_ip(c))
 
-	// Check for remaining MFA methods
-	remaining := auth_remaining_methods(user, "email")
+	// Check for remaining MFA methods, folding this factor into any pending
+	// partial (a passkey- or OAuth-first flow) rather than starting over.
+	partial, remaining := partial_continue(c, user, "email")
 	if len(remaining) > 0 {
-		// Create partial session for MFA
-		partial := random_alphanumeric(32)
-		partial_create(db_open("db/sessions.db"), partial, user.UID, "email", strings.Join(remaining, ","), now()+300)
-		// Mirror the partial into a cookie so /codes can recover this MFA
-		// continuation after a full-page navigation or refresh (web_auth_partial).
-		web_cookie_set(c, "login_partial", partial)
 		c.JSON(http.StatusOK, gin.H{
 			"mfa":       true,
 			"partial":   partial,
@@ -157,15 +152,21 @@ func auth_methods_allowed_list() []string {
 // system-required, so it's the only policy addition here. Returned in
 // canonical order.
 func auth_remaining_methods(user *User, completed string) []string {
+	return auth_remaining_after(user, map[string]bool{completed: true})
+}
+
+// auth_remaining_after returns the required factors still outstanding once
+// every method in completed is done: the user's own required factors plus the
+// system email floor, minus completed, in canonical order.
+func auth_remaining_after(user *User, completed map[string]bool) []string {
 	required := methods_parse(user.Methods)
 	if auth_method_state("email") == "required" {
 		required["email"] = true
 	}
-	delete(required, completed)
 
 	var remaining []string
 	for _, m := range auth_method_list {
-		if required[m] {
+		if required[m] && !completed[m] {
 			remaining = append(remaining, m)
 		}
 	}
@@ -328,8 +329,9 @@ func web_auth_totp(c *gin.Context) {
 	// Reset rate limit on successful verification
 	rate_limit_login.reset(rate_limit_client_ip(c))
 
-	// Check for remaining MFA methods after TOTP
-	remaining := auth_remaining_methods(user, "totp")
+	// Check for remaining MFA methods after TOTP, folding this factor into
+	// any pending partial rather than starting over.
+	partial, remaining := partial_continue(c, user, "totp")
 	if len(remaining) > 0 {
 		// If email is required, send the code now
 		for _, method := range remaining {
@@ -338,12 +340,6 @@ func web_auth_totp(c *gin.Context) {
 				break
 			}
 		}
-
-		// Create partial session for remaining MFA
-		partial := random_alphanumeric(32)
-		partial_create(db_open("db/sessions.db"), partial, user.UID, "totp", strings.Join(remaining, ","), now()+300)
-		// Cookie-mirror the partial for /codes recovery (see web_auth_partial).
-		web_cookie_set(c, "login_partial", partial)
 		c.JSON(http.StatusOK, gin.H{
 			"mfa":       true,
 			"partial":   partial,
@@ -1337,4 +1333,47 @@ func partial_create(sdb *DB, partialID, userUID, completed, remaining string, ex
 // 32-char id is globally unique).
 func partial_delete(sdb *DB, partialID string) {
 	sdb.exec("delete from partial where id=?", partialID)
+}
+
+// partial_continue records a just-completed login factor. When the caller's
+// login_partial cookie names a live partial for the same user, the factor is
+// folded into it — so factors complete in any order, and the passkey and
+// OAuth endpoints continue a sequence begun by a code factor instead of
+// minting a fresh partial that forgets the ones already done (which made an
+// account requiring both a code factor and a passkey or OAuth impossible to
+// sign in to). Otherwise a fresh partial is created. Returns the partial id
+// and the factors still remaining; when none remain the partial is deleted
+// and the empty id tells the caller to create the full session.
+func partial_continue(c *gin.Context, user *User, method string) (string, []string) {
+	sdb := db_open("db/sessions.db")
+	completed := map[string]bool{method: true}
+	partial := ""
+	if cookie, err := c.Cookie("login_partial"); err == nil && cookie != "" {
+		row, _ := sdb.row("select user, completed from partial where id=? and expires>?", cookie, now())
+		if row != nil && row["user"].(string) == user.UID {
+			partial = cookie
+			for m := range methods_parse(row["completed"].(string)) {
+				completed[m] = true
+			}
+		}
+	}
+
+	remaining := auth_remaining_after(user, completed)
+	if len(remaining) == 0 {
+		if partial != "" {
+			partial_delete(sdb, partial)
+		}
+		return "", nil
+	}
+
+	if partial == "" {
+		partial = random_alphanumeric(32)
+		partial_create(sdb, partial, user.UID, methods_join(completed), strings.Join(remaining, ","), now()+300)
+	} else {
+		sdb.exec("update partial set completed=?, remaining=?, expires=? where id=?",
+			methods_join(completed), strings.Join(remaining, ","), now()+300, partial)
+	}
+	// Cookie-mirror the partial for /codes recovery (see web_auth_partial).
+	web_cookie_set(c, "login_partial", partial)
+	return partial, remaining
 }

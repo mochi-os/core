@@ -331,8 +331,10 @@ func web_passkey_login_finish(c *gin.Context) {
 	// Reset rate limit on successful login
 	rate_limit_login.reset(rate_limit_client_ip(c))
 
-	// Check for remaining MFA methods
-	remaining := auth_remaining_methods(user, "passkey")
+	// Check for remaining MFA methods, folding this factor into any pending
+	// partial — a passkey completed from the /codes page continues the
+	// sequence begun by another factor instead of starting over.
+	partial, remaining := partial_continue(c, user, "passkey")
 	if len(remaining) > 0 {
 		// If email is required, send the code now
 		for _, method := range remaining {
@@ -342,11 +344,6 @@ func web_passkey_login_finish(c *gin.Context) {
 			}
 		}
 
-		// Create partial session
-		partial := random_alphanumeric(32)
-		partial_create(db, partial, user.UID, "passkey", strings.Join(remaining, ","), now()+300)
-		// Cookie-mirror the partial for /codes recovery (see web_auth_partial).
-		web_cookie_set(c, "login_partial", partial)
 		c.JSON(http.StatusOK, gin.H{
 			"mfa":       true,
 			"partial":   partial,

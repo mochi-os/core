@@ -5,7 +5,13 @@
 
 package main
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+)
 
 // TestUserMethodsConfigure covers the per-method tri-state setter: valid
 // transitions (required <-> allowed <-> disabled), the operator policy
@@ -150,5 +156,76 @@ func TestUserMethodStateOperatorClamp(t *testing.T) {
 	setting_set("auth_email", "required")
 	if s := user_method_state(load(), "email"); s != "required" {
 		t.Errorf("email state with auth_email=required = %q, want required", s)
+	}
+}
+
+// TestPartialContinue verifies MFA factors converge onto one partial in any
+// completion order: a factor completed with a live login_partial cookie folds
+// into that partial instead of minting a fresh one (which forgot the factors
+// already done and made accounts requiring a code factor plus passkey or
+// OAuth impossible to sign in to), a satisfied partial is deleted, and
+// another user's cookie is never merged.
+func TestPartialContinue(t *testing.T) {
+	cleanup := create_test_sessions_db(t)
+	defer cleanup()
+
+	sessions := db_open("db/sessions.db")
+	request := func(cookie string) *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest("POST", "/_/auth/verify", nil)
+		if cookie != "" {
+			c.Request.AddCookie(&http.Cookie{Name: "login_partial", Value: cookie})
+		}
+		return c
+	}
+
+	// First factor without a cookie: a fresh partial holding just it.
+	alice := &User{UID: "u-alice", Username: "alice@example.com", Methods: "email,passkey"}
+	partial, remaining := partial_continue(request(""), alice, "email")
+	if partial == "" || len(remaining) != 1 || remaining[0] != "passkey" {
+		t.Fatalf("first factor: partial=%q remaining=%v, want fresh partial remaining [passkey]", partial, remaining)
+	}
+
+	// Second factor with the cookie: folds in, satisfies, deletes the partial.
+	done, left := partial_continue(request(partial), alice, "passkey")
+	if done != "" || left != nil {
+		t.Errorf("second factor: partial=%q remaining=%v, want completion", done, left)
+	}
+	if exists, _ := sessions.exists("select 1 from partial where id=?", partial); exists {
+		t.Error("satisfied partial should be deleted")
+	}
+
+	// Three factors: the middle completion updates the same partial in place,
+	// storing the completed set in canonical order.
+	carol := &User{UID: "u-carol", Username: "carol@example.com", Methods: "email,passkey,totp"}
+	first, left := partial_continue(request(""), carol, "passkey")
+	if first == "" || len(left) != 2 {
+		t.Fatalf("carol first factor: partial=%q remaining=%v", first, left)
+	}
+	second, left := partial_continue(request(first), carol, "email")
+	if second != first {
+		t.Errorf("second factor minted a new partial %q, want in-place update of %q", second, first)
+	}
+	if len(left) != 1 || left[0] != "totp" {
+		t.Errorf("carol remaining = %v, want [totp]", left)
+	}
+	row, _ := sessions.row("select completed from partial where id=?", first)
+	if row == nil || row["completed"].(string) != "email,passkey" {
+		t.Errorf("completed = %v, want canonical email,passkey", row)
+	}
+
+	// A cookie naming another user's partial is never merged: bob gets his
+	// own fresh partial and carol's row stays untouched.
+	bob := &User{UID: "u-bob", Username: "bob@example.com", Methods: "email,totp"}
+	other, left := partial_continue(request(first), bob, "email")
+	if other == "" || other == first {
+		t.Errorf("cross-user cookie merged: got %q (carol's %q)", other, first)
+	}
+	if len(left) != 1 || left[0] != "totp" {
+		t.Errorf("bob remaining = %v, want [totp]", left)
+	}
+	row, _ = sessions.row("select completed from partial where id=?", first)
+	if row == nil || row["completed"].(string) != "email,passkey" {
+		t.Errorf("carol's partial mutated by bob's completion: %v", row)
 	}
 }

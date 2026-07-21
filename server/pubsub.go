@@ -44,6 +44,17 @@ var (
 	pubsub_published atomic.Int64
 	pubsub_received  atomic.Int64
 	pubsub_last      atomic.Int64
+	// pubsub_dropped counts inbound messages discarded by the rate limiter.
+	// Counted rather than logged because the drop log line is repeat-
+	// suppressed after log_repeat_threshold occurrences per window, so the
+	// log undercounts a burst by design — and because the limiter runs
+	// before the frame is parsed, so naming the discarded topic would mean
+	// parsing every excess message, making a flood cost more rather than
+	// less. Read as a snapshot either side of an operation to tell whether
+	// drops coincided with it. Process-wide, not per peer: a non-zero delta
+	// means messages were being discarded, not necessarily from the peer the
+	// caller cared about.
+	pubsub_dropped atomic.Int64
 )
 
 // Domain separator and freshness window for /mochi/2 pubsub entity
@@ -95,6 +106,7 @@ func pubsub_manager() {
 		// Rate limit inbound per peer. Bootstrap and paired peers are
 		// trusted and skip the limit.
 		if !peer_is_bootstrap(peer) && !rate_limit_pubsub_in.allow(peer) {
+			pubsub_dropped.Add(1)
 			debug("Pubsub rate limited peer %q", peer)
 			continue
 		}

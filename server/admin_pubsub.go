@@ -24,6 +24,7 @@ type PubsubTopic struct {
 	Peers     int    `json:"peers"`     // live GossipSub mesh peer count (ListPeers)
 	Published int64  `json:"published"` // messages this host has flooded
 	Received  int64  `json:"received"`  // messages this host has accepted for decode
+	Dropped   int64  `json:"dropped"`   // messages discarded by the inbound rate limiter
 	Last      int64  `json:"last"`      // unix time of the last received message, 0 if none
 }
 
@@ -50,6 +51,7 @@ func admin_pubsub_status(c *gin.Context) {
 				Peers:     pubsub_topic_peers(net_pubsub),
 				Published: pubsub_published.Load(),
 				Received:  pubsub_received.Load(),
+				Dropped:   pubsub_dropped.Load(),
 				Last:      pubsub_last.Load(),
 			},
 		},

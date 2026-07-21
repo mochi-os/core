@@ -123,13 +123,26 @@ func remote_reach(candidates []string) string {
 			return p
 		}
 	}
+	requested := false
 	for _, p := range candidates {
-		peer_request_addresses(p)
+		if peer_request_addresses(p) {
+			requested = true
+		}
 	}
+	// The answer to that request arrives over pubsub, which drops inbound
+	// messages once a peer exceeds rate_limit_pubsub_in — and the limiter
+	// does not distinguish these address announcements from ordinary
+	// application traffic. Snapshot the drop counter so a failure below can
+	// say whether messages were being discarded while we waited, rather than
+	// leaving "unreachable" indistinguishable from a peer that is genuinely
+	// absent.
+	dropped := pubsub_dropped.Load()
 	deadline := time.Now().Add(remote_address_wait)
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
+			debug("Remote gave up waiting %s for addresses for %v (request broadcast: %t, pubsub messages dropped while waiting: %d)",
+				remote_address_wait, candidates, requested, pubsub_dropped.Load()-dropped)
 			return ""
 		}
 		// Wake early when the primary candidate's addresses arrive.

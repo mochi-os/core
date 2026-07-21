@@ -62,6 +62,16 @@ output, so the effective configuration is safe to copy into bug reports.
 :   Bind address, e.g. *127.0.0.1* to limit to loopback. Defaults to all
     interfaces.
 
+**connections** = *integer*
+:   Maximum connections accepted at once, across every listener. Past it
+    further connections wait in the kernel's backlog rather than being
+    accepted, so they consume no file descriptor here. Not a throughput
+    limit: HTTP/2 carries a browser's whole session over one connection,
+    so the default of **32768** is far above normal use and exists to
+    bound what a flood can occupy. **0** disables the limit. Raising it
+    much beyond the default needs *LimitNOFILE* raised to match, and
+    enough memory for the buffers each connection holds.
+
 **compress** = **auto** | **gzip** | **br** | **none**
 :   Response compression. **auto** picks per-request based on the
     client's `Accept-Encoding` header. Defaults to **auto**.

@@ -15,6 +15,7 @@ import (
 	"html"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ import (
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
 	"golang.org/x/crypto/acme"
+	"golang.org/x/net/netutil"
 )
 
 var (
@@ -60,6 +62,49 @@ func web_server(addr string, handler http.Handler) *http.Server {
 	}
 }
 
+// Default ceiling on simultaneously accepted connections. Half the fd budget
+// the packaged unit grants (LimitNOFILE=65535), leaving the rest for
+// databases, peer connections and app files.
+//
+// It is not a throughput limit and never binds in normal operation: HTTP/2
+// multiplexes a browser onto one connection per origin, iframed apps included
+// since they are same-origin, so this is on the order of sixteen thousand
+// simultaneous users against a steady state of ten connections. Everything
+// above legitimate use is only room for an attacker to occupy before
+// backpressure starts, which is why it is a fixed ceiling rather than as high
+// as the machine could bear.
+const web_connections_default = 32768
+
+// web_listen opens a listener bounded by the configured connection ceiling.
+//
+// The timeouts on web_server bound one connection's header phase and its gap
+// between requests; nothing bounded how many could exist at once, and each one
+// costs a goroutine, a file descriptor and read and write buffers.
+//
+// The bound is applied to the raw TCP listener, so a connection counts from
+// accept rather than from the end of any TLS handshake. Past the ceiling
+// LimitListener stops accepting: excess connections wait in the kernel's
+// backlog, holding no descriptor of ours, and the kernel refuses them itself
+// once that fills. That is cheaper than accepting in order to refuse, which
+// would spend a descriptor to send the rejection.
+func web_listen(addr string, maximum int) (net.Listener, error) {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if maximum <= 0 {
+		return listener, nil
+	}
+	return netutil.LimitListener(listener, maximum), nil
+}
+
+// web_connections_maximum is the configured ceiling, zero or below meaning
+// unlimited. Read separately from web_listen so the ceiling can be chosen
+// without opening a socket, and a listener tested without global config.
+func web_connections_maximum() int {
+	return ini_int("web", "connections", web_connections_default)
+}
+
 // web_serve_tls serves HTTPS on :443 and ACME/redirect on :80. It replaces
 // autotls.RunWithManagerAndTLSConfig, which overwrote the tls.Config's
 // GetCertificate with the bare autocert manager's — silently discarding
@@ -80,13 +125,25 @@ func web_serve_tls(handler http.Handler) error {
 	// HTTP-01 challenges and the plain-HTTP redirect, as autotls served them.
 	go func() {
 		s := web_server(":80", domains_acme_manager.HTTPHandler(http.HandlerFunc(web_redirect_https)))
-		errors <- s.ListenAndServe()
+		listener, err := web_listen(":80", web_connections_maximum())
+		if err != nil {
+			errors <- err
+			return
+		}
+		errors <- s.Serve(listener)
 	}()
 
 	go func() {
 		s := web_server(":443", handler)
 		s.TLSConfig = tls_config
-		errors <- s.ListenAndServeTLS("", "")
+		listener, err := web_listen(":443", web_connections_maximum())
+		if err != nil {
+			errors <- err
+			return
+		}
+		// The bound counts connections from accept, so one stalled in the TLS
+		// handshake occupies a slot exactly as a completed one does.
+		errors <- s.ServeTLS(listener, "", "")
 	}()
 
 	return <-errors
@@ -1829,10 +1886,15 @@ func web_start() {
 				info("Web listening on %s (HTTP)", addr)
 			}
 			s := web_server(addr, r)
+			listener, err := web_listen(addr, web_connections_maximum())
+			if err != nil {
+				warn("Unable to listen on %s: %v", addr, err)
+				continue
+			}
 			if last {
-				must(s.ListenAndServe())
+				must(s.Serve(listener))
 			} else {
-				go must(s.ListenAndServe())
+				go must(s.Serve(listener))
 			}
 		}
 	}

@@ -8,6 +8,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -227,5 +228,44 @@ func TestPartialContinue(t *testing.T) {
 	row, _ = sessions.row("select completed from partial where id=?", first)
 	if row == nil || row["completed"].(string) != "email,passkey" {
 		t.Errorf("carol's partial mutated by bob's completion: %v", row)
+	}
+}
+
+// TestAccountRateLimit verifies the per-account attempt limit on guessable
+// factors: hammering TOTP against one account answers 429 after the limit
+// regardless of source address, while other accounts stay unaffected.
+func TestAccountRateLimit(t *testing.T) {
+	cleanup := create_test_users_db(t)
+	defer cleanup()
+
+	users := db_open("db/users.db")
+	users.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, created integer not null)")
+	users.exec("insert into users (uid, username, methods) values ('u-limit', 'limit@example.com', 'totp')")
+	users.exec("insert into totp (user, secret, verified, created) values ('u-limit', 'JBSWY3DPEHPK3PXP', 1, 1)")
+	users.exec("insert into users (uid, username, methods) values ('u-other', 'other@example.com', 'totp')")
+	users.exec("insert into totp (user, secret, verified, created) values ('u-other', 'JBSWY3DPEHPK3PXP', 1, 1)")
+	defer rate_limit_account.reset("u-limit")
+	defer rate_limit_account.reset("u-other")
+
+	attempt := func(email string) int {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("POST", "/_/auth/totp", strings.NewReader(`{"email":"`+email+`","code":"000000"}`))
+		c.Request.Header.Set("Content-Type", "application/json")
+		web_auth_totp(c)
+		return w.Code
+	}
+
+	for i := 1; i <= rate_limit_account.limit; i++ {
+		if code := attempt("limit@example.com"); code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: got %d, want 401", i, code)
+		}
+	}
+	if code := attempt("limit@example.com"); code != http.StatusTooManyRequests {
+		t.Errorf("over-limit attempt: got %d, want 429", code)
+	}
+	// The limit is per account, not global: another account still verifies.
+	if code := attempt("other@example.com"); code != http.StatusUnauthorized {
+		t.Errorf("other account: got %d, want 401", code)
 	}
 }

@@ -541,8 +541,6 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target, expe
 		oauth_update_profile(db, provider, p)
 		oauth_verification_record(db, provider, p.Subject, user.UID)
 
-		rate_limit_login.reset(rate_limit_client_ip(c))
-
 		// OAuth proves a linked account, not the email factor, so any methods
 		// the user requires must still be completed as MFA. Fold this factor
 		// into any pending partial — an OAuth round-trip from the /codes page
@@ -606,8 +604,6 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target, expe
 		user.UID, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now())
 	oauth_verification_record(db, provider, p.Subject, user.UID)
 	oauth_replicate(db, provider, p.Subject)
-
-	rate_limit_login.reset(rate_limit_client_ip(c))
 
 	// Seed the mochi_me cookie with the provider's name and email so the
 	// /login/identity form can prefill the name input. The cookie is read by
@@ -1240,7 +1236,6 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 
 		oauth_update_profile(db, provider, p)
 		oauth_verification_record(db, provider, p.Subject, user.UID)
-		rate_limit_login.reset(rate_limit_client_ip(c))
 
 		remaining := auth_remaining_oauth(user)
 		if len(remaining) > 0 {
@@ -1266,6 +1261,10 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 		}
 
 		// Full login. Create the session now so the exchange just hands it back.
+		// This path bypasses auth_establish_session, so clear the brute-force
+		// counters here too.
+		rate_limit_login.reset(rate_limit_client_ip(c))
+		rate_limit_account.reset(user.UID)
 		session := login_create(user.UID, c.ClientIP(), c.GetHeader("User-Agent"))
 		db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.UID, now())
 		audit_login(user.Username, rate_limit_client_ip(c))

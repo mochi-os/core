@@ -82,9 +82,6 @@ func web_login_verify(c *gin.Context) {
 		return
 	}
 
-	// Reset rate limit on successful login
-	rate_limit_login.reset(rate_limit_client_ip(c))
-
 	// Check for remaining MFA methods, folding this factor into any pending
 	// partial (a passkey- or OAuth-first flow) rather than starting over.
 	partial, remaining := partial_continue(c, user, "email")
@@ -191,6 +188,11 @@ func auth_establish_session(c *gin.Context, user *User) {
 	if user != nil && user.Identity == nil {
 		user.Identity = user.identity()
 	}
+	// A full login (all factors) clears the brute-force counters. A single
+	// completed factor must not: resetting there let an attacker who held
+	// one factor restart with a clean counter for every guess at the next.
+	rate_limit_login.reset(rate_limit_client_ip(c))
+	rate_limit_account.reset(user.UID)
 	session := login_create(user.UID, c.ClientIP(), c.GetHeader("User-Agent"))
 	web_cookie_set(c, "session", session)
 	db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.UID, now())
@@ -319,15 +321,18 @@ func web_auth_totp(c *gin.Context) {
 		return
 	}
 
+	// Per-account attempt limit: six-digit codes are guessable and the
+	// per-IP limiter alone is defeated by rotating source addresses.
+	if !rate_limit_account_allow(c, user) {
+		return
+	}
+
 	// Verify TOTP code
 	if !totp_verify(user.UID, input.Code) {
 		audit_login_failed(input.Email, rate_limit_client_ip(c), "invalid_totp")
 		respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
 		return
 	}
-
-	// Reset rate limit on successful verification
-	rate_limit_login.reset(rate_limit_client_ip(c))
 
 	// Check for remaining MFA methods after TOTP, folding this factor into
 	// any pending partial rather than starting over.
@@ -672,6 +677,13 @@ func web_auth_mfa(c *gin.Context) {
 	}
 	if user.Status == "suspended" {
 		respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
+		return
+	}
+
+	// Per-account attempt limit: MFA continuations verify guessable codes
+	// (six-digit authenticator), and holding a partial does not exempt the
+	// caller from it.
+	if !rate_limit_account_allow(c, user) {
 		return
 	}
 
@@ -1217,6 +1229,11 @@ func web_recovery_login(c *gin.Context) {
 	}
 	user_id, _ := row["uid"].(string)
 
+	// Per-account attempt limit across all source addresses.
+	if !rate_limit_account_allow(c, &User{UID: user_id}) {
+		return
+	}
+
 	// Check recovery codes
 	rows, _ := db.rows("select id, hash from recovery where user=?", user_id)
 	var matched int64 = -1
@@ -1254,9 +1271,6 @@ func web_recovery_login(c *gin.Context) {
 
 	// Delete used code (after suspension check to avoid consuming codes for suspended users)
 	db.exec("delete from recovery where id=?", matched)
-
-	// Reset rate limit on successful login
-	rate_limit_login.reset(rate_limit_client_ip(c))
 
 	// Recovery bypasses all MFA - create full session directly
 	auth_complete_login(c, user)

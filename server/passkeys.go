@@ -328,9 +328,6 @@ func web_passkey_login_finish(c *gin.Context) {
 		return
 	}
 
-	// Reset rate limit on successful login
-	rate_limit_login.reset(rate_limit_client_ip(c))
-
 	// Check for remaining MFA methods, folding this factor into any pending
 	// partial — a passkey completed from the /codes page continues the
 	// sequence begun by another factor instead of starting over.

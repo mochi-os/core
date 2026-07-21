@@ -35,6 +35,17 @@ var (
 	}
 
 	// Login rate limiter: 20 attempts per 5 minutes
+	// Per-account login-attempt limiter, keyed by user uid. The per-IP
+	// limiter alone is defeated by rotating source addresses, which matters
+	// for the guessable factors (six-digit authenticator codes); this bounds
+	// attempts against one account across all sources. Reset only on a full
+	// login (auth_establish_session), never on a single completed factor.
+	rate_limit_account = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   10,
+		window:  900,
+	}
+
 	rate_limit_login = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
 		limit:   20,
@@ -168,6 +179,18 @@ func rate_limit_api_middleware(c *gin.Context) {
 	c.Next()
 }
 
+// rate_limit_account_allow enforces the per-account attempt limit on the
+// guessable login factors (authenticator, MFA, recovery codes). Returns
+// false after answering 429; the caller just returns.
+func rate_limit_account_allow(c *gin.Context, user *User) bool {
+	if rate_limit_account.allow(user.UID) {
+		return true
+	}
+	audit_rate_limit(rate_limit_client_ip(c), "account")
+	respond_error(c, http.StatusTooManyRequests, "too_many_login_attempts_please_try_again_later", "errors.too_many_logins", nil)
+	return false
+}
+
 // Middleware for login rate limiting (stricter)
 func rate_limit_login_middleware(c *gin.Context) {
 	ip := rate_limit_client_ip(c)
@@ -187,6 +210,7 @@ func rate_limit_login_middleware(c *gin.Context) {
 func ratelimit_manager() {
 	for range time.Tick(time.Minute) {
 		rate_limit_api.cleanup()
+		rate_limit_account.cleanup()
 		rate_limit_login.cleanup()
 		rate_limit_p2p.cleanup()
 		rate_limit_pubsub_in.cleanup()

@@ -777,7 +777,7 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	app := t.Local("app").(*App)
 	file := api_file_path(owner, app, path)
 
-	starlark_serving_set(t)
+	starlark_serving_set(t, a.web.Writer)
 	a.web.File(file)
 	return sl.None, nil
 }
@@ -825,7 +825,7 @@ func (a *Action) sl_write_attachment(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 	// web_serve_attachment validates the id, serves from the owner's storage
 	// (fetching from the remote entity when not yet local), and applies the
 	// safe content-type/disposition guard. It performs no access check.
-	starlark_serving_set(t)
+	starlark_serving_set(t, a.web.Writer)
 	web_serve_attachment(a.web, app, owner, entity, id, variant)
 	return sl.None, nil
 }
@@ -871,7 +871,7 @@ func (a *Action) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 		a.web.Header("Content-Type", file_name_type(path))
 	}
 
-	starlark_serving_set(t)
+	starlark_serving_set(t, a.web.Writer)
 	a.web.File(file)
 	return sl.None, nil
 }
@@ -888,7 +888,7 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	}
 
 	// Mark as file serving so the timeout handler waits for I/O to complete
-	starlark_serving_set(t)
+	starlark_serving_set(t, a.web.Writer)
 
 	// Get the raw reader (includes any buffered bytes from CBOR decoder)
 	reader := stream.raw_reader()

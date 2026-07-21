@@ -408,6 +408,27 @@ docker-stage: $(bin)/mochi-server-docker-amd64 $(bin)/mochi-server-docker-arm64 
 docker-local: docker-stage
 	docker build -t $(docker_image):dev .
 
+# Reachability-aware vulnerability scan of the Go code. Unlike a version
+# comparison, this builds the call graph and reports only advisories this
+# code can actually reach, so a finding here is a real exposure. Mirrors the
+# govulncheck job in .github/workflows/security.yml — run it locally before
+# pushing a dependency change rather than discovering the failure in CI.
+vulnerability-scan:
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+# Advisory scan of the module graph. Complements vulnerability-scan: no
+# reachability analysis, but it sees every module and catches advisories the
+# Go vulnerability database has not picked up. Mirrors the dependencies job
+# in .github/workflows/security.yml.
+dependency-scan:
+	docker run --rm -v $(CURDIR):/src:ro \
+	    -v $(HOME)/.cache/trivy:/root/.cache/trivy \
+	    -v $(CURDIR)/.trivyignore:/.trivyignore:ro \
+	    aquasec/trivy:latest fs \
+	    --scanners vuln --severity HIGH,CRITICAL \
+	    --exit-code 1 --no-progress --timeout 10m \
+	    --ignorefile /.trivyignore /src
+
 # Run Trivy against the locally-built image. Fails (exit 1) on any HIGH or
 # CRITICAL finding — useful as a manual pre-release check, intentionally NOT
 # wired into make release because Trivy occasionally flags transitive deps

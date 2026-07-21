@@ -7,8 +7,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"reflect"
 	"sync/atomic"
 	"time"
@@ -21,6 +23,11 @@ const starlark_max_steps = 1000000000 // 1 billion steps
 
 // How long to wait for a cancelled call to actually stop before abandoning it.
 const starlark_cancel_grace = 5 * time.Second
+
+// How long a call may wait for a concurrency slot before giving up. Generous,
+// so a burst queues rather than failing, but finite so saturation surfaces as
+// an error instead of an unbounded wait.
+const starlark_queue_timeout = 60 * time.Second
 
 // Default bound for a call that is streaming a response to the client.
 const starlark_file_default = 900 * time.Second
@@ -387,9 +394,22 @@ func sl_error(fn *sl.Builtin, e any, values ...any) (sl.Value, error) {
 // work is done and only HTTP I/O remains. The flag is an atomic because the
 // call's own goroutine sets it while Starlark.call may be reading it after the
 // compute timeout has fired.
-func starlark_serving_set(t *sl.Thread) {
+//
+// Also bounds the write. The listener deliberately sets no WriteTimeout — it
+// would cut off legitimate git packs and large attachment transfers — so
+// without a deadline here a client that simply stops reading blocks the write
+// forever. That is the one blocking operation in a Starlark call whose
+// duration an outside party chooses, and the call holds a concurrency slot
+// throughout. The budget matches starlark_file_timeout, so the deadline the
+// writer enforces and the bound Starlark.call waits for are the same number.
+func starlark_serving_set(t *sl.Thread, writer http.ResponseWriter) {
 	if serving, ok := t.Local("file_serving").(*atomic.Bool); ok {
 		serving.Store(true)
+	}
+	if writer != nil {
+		// Fails only on a writer with no deadline support, where there is
+		// nothing to bound; the call-level timeout still applies.
+		_ = http.NewResponseController(writer).SetWriteDeadline(time.Now().Add(starlark_file_timeout))
 	}
 }
 
@@ -397,6 +417,21 @@ func starlark_serving_set(t *sl.Thread) {
 func starlark_serving_get(t *sl.Thread) bool {
 	serving, ok := t.Local("file_serving").(*atomic.Bool)
 	return ok && serving.Load()
+}
+
+// starlark_context returns the calling thread's context, cancelled when the
+// call times out. Builtins that block inside Go — database queries above all —
+// must pass it down, because thread.Cancel is only observed between
+// interpreter steps: a statement that has already entered SQLite runs to
+// completion no matter how long the call has overrun. The driver honours
+// context cancellation, so this is what actually stops it.
+//
+// Falls back to a background context for calls made outside Starlark.call.
+func starlark_context(t *sl.Thread) context.Context {
+	if ctx, ok := t.Local("context").(context.Context); ok && ctx != nil {
+		return ctx
+	}
+	return context.Background()
 }
 
 // Call a Starlark function
@@ -410,15 +445,41 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 		kw = kwargs[0]
 	}
 
-	// Acquire semaphore to limit concurrency. It is released by the goroutine
-	// below, NOT here: a call abandoned on timeout keeps running and keeps
-	// consuming resources, so it must keep occupying its slot until it really
-	// finishes. Releasing it on return let abandoned calls push the process
-	// past its configured concurrency limit.
-	starlark_sem <- struct{}{}
+	// Acquire a concurrency slot, released on return.
+	//
+	// The release belongs to the caller, not to the goroutine below, because
+	// Starlark calls nest: mochi.service.call dispatches into another app,
+	// commit hooks fire from inside a handler, and a database migration runs
+	// on first use from inside a mochi.db builtin. Each of those runs a second
+	// Starlark.call while the first still holds its slot. Releasing from the
+	// goroutine instead means that when every slot is taken, a nested acquire
+	// blocks forever — and because a channel send is not interrupted by
+	// thread.Cancel, the holder can never reach its release, so the slot is
+	// lost for good. Lose them all and the engine stops: the acquire runs
+	// before any timeout handling, so callers wait with nothing to rescue
+	// them. Releasing here keeps that self-healing, at the known cost that an
+	// abandoned call no longer counts against the cap while it winds down.
+	//
+	// The bound is a backstop for the same shape of problem: a slot held by a
+	// call stuck in an uncancellable builtin is not recoverable, so waiting
+	// for one must fail loudly rather than hang a request forever.
+	select {
+	case starlark_sem <- struct{}{}:
+	case <-time.After(starlark_queue_timeout):
+		return nil, fmt.Errorf("starlark: no concurrency slot available after %s", starlark_queue_timeout)
+	}
+	defer func() { <-starlark_sem }()
 
 	//debug("Starlark running %q: %+v", function, args)
 	s.thread.SetLocal("function", function)
+
+	// Cancelled when this call returns, including when it returns because it
+	// timed out and abandoned its goroutine. That is what interrupts a query
+	// still running inside SQLite; without it the abandoned call keeps a
+	// connection and a concurrency slot for as long as the statement takes.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.thread.SetLocal("context", ctx)
 
 	// file_serving is set mid-call by the a.write.* builtins, and read here
 	// after a timeout — while the call may still be running. An atomic
@@ -464,7 +525,6 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 				s.thread.SetLocal("streams", nil)
 			}
 			transaction_close(s.thread)
-			<-starlark_sem
 			done <- out
 		}()
 		value, err := sl.Call(s.thread, f, args, kw)

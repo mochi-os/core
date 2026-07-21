@@ -558,7 +558,24 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 	// net/http removes after the response. A parse error is left for the
 	// handler's own a.file()/form call to surface, preserving behaviour.
 	if strings.HasPrefix(content_type, "multipart/form-data") {
+		// Bound the body before parsing it. Content-Length is a hint a client
+		// controls, so it only saves us reading a body we already know is too
+		// big; MaxBytesReader is what actually enforces the ceiling.
+		maximum := web_multipart_maximum(user)
+		if c.Request.ContentLength > maximum {
+			respond_error(c, http.StatusRequestEntityTooLarge, "body_too_large", "errors.body_too_large", nil)
+			return true
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maximum)
 		if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+			// Only the size failure is answered here. Every other parse error
+			// is still left for the handler's own a.file()/form call to
+			// surface, preserving existing behaviour.
+			var exceeded *http.MaxBytesError
+			if errors.As(err, &exceeded) {
+				respond_error(c, http.StatusRequestEntityTooLarge, "body_too_large", "errors.body_too_large", nil)
+				return true
+			}
 			debug("Multipart parse: %v", err)
 		}
 	}
@@ -781,14 +798,60 @@ func web_security_headers(c *gin.Context) {
 	c.Next()
 }
 
+// The ceiling on a request body that carries no file upload. Multipart and git
+// pack bodies are exempt here because uploads legitimately exceed it; they are
+// bounded separately, by web_multipart_maximum and the git RPC respectively.
+const web_body_maximum = 1 << 20 // 1MB
+
+// Allowance for multipart framing — boundaries and per-part headers — on top of
+// the payload a caller is entitled to send. Roughly 200 bytes per part, so this
+// covers a form with several hundred of them.
+const web_multipart_framing = 64 << 10 // 64KB
+
 // Request body size limit middleware (skip multipart/form-data for file uploads
 // and git pack data for push operations)
 func web_body_limit(c *gin.Context) {
 	ct := c.GetHeader("Content-Type")
 	if !strings.HasPrefix(ct, "multipart/form-data") && !strings.HasPrefix(ct, "application/x-git-") {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20) // 1MB
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, web_body_maximum)
 	}
 	c.Next()
+}
+
+// web_multipart_maximum returns the largest multipart body this caller may
+// send. Derived rather than fixed, so it tracks the storage limits instead of
+// drifting from them: whatever a caller is allowed to store, they are allowed
+// to upload, plus framing.
+//
+// The limit exists because multipart is exempt from web_body_limit and
+// ParseMultipartForm spools the whole body before the handler runs — and it
+// spools to os.TempDir(), which on a systemd host is usually a tmpfs, so an
+// unbounded body is consumed as memory rather than disk.
+//
+// Gated on the authenticated user, never on the entity owner: an anonymous
+// request to a public action runs as the owner, so reading a quota from the
+// owner would hand every anonymous caller the owner's upload budget.
+func web_multipart_maximum(user *User) int64 {
+	// An anonymous caller has no storage quota and nothing holding them
+	// accountable, and so gets no more room for a multipart body than for any
+	// other body.
+	if user == nil {
+		return web_body_maximum + web_multipart_framing
+	}
+	remaining, err := user_storage_remaining(user)
+	// Unmeasurable or already at quota: allow a minimal body so the handler
+	// can answer with its own quota error rather than the caller seeing a
+	// truncated upload.
+	if err != nil || remaining <= 0 {
+		return web_body_maximum + web_multipart_framing
+	}
+	// Administrators are quota-exempt (MaxInt64). Give them a finite ceiling
+	// anyway — unbounded is the thing being fixed — sized at the per-user
+	// quota, which is far beyond any real single upload.
+	if remaining > file_max_storage {
+		remaining = file_max_storage
+	}
+	return remaining + web_multipart_framing
 }
 
 // Serve HTML file with dynamic Open Graph meta tags

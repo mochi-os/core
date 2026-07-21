@@ -613,6 +613,22 @@ func TestURLAddressBlocked(t *testing.T) {
 		"[fe80::1]:80",                // IPv6 link-local
 		"0.0.0.0:80", "[::]:80",       // unspecified
 		"224.0.0.1:80", // multicast
+		// Special-purpose ranges the standard library's helpers do not
+		// classify. Carrier-grade NAT is the one that bites in practice:
+		// hosting providers and mesh VPNs run internal services there.
+		"100.64.0.1:80",          // RFC 6598 carrier-grade NAT
+		"100.127.255.255:80",     // RFC 6598 upper bound
+		"[::ffff:100.64.0.1]:80", // 4-in-6 carrier-grade NAT
+		"192.0.0.1:80",           // IETF protocol assignments
+		"198.18.0.1:80",          // benchmarking
+		"192.0.2.1:80",           // TEST-NET-1
+		"198.51.100.1:80",        // TEST-NET-2
+		"203.0.113.1:80",         // TEST-NET-3
+		"240.0.0.1:80",           // reserved
+		"255.255.255.255:80",     // broadcast
+		"[64:ff9b::7f00:1]:80",   // NAT64-mapped loopback
+		"[100::1]:80",            // discard-only
+		"[2001:db8::1]:80",       // documentation
 	}
 	for _, address := range blocked {
 		if err := url_address_allowed(address); err == nil {

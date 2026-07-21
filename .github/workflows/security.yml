@@ -1,0 +1,90 @@
+name: Security
+
+# Vulnerability scanning, split from the Test workflow so a dependency advisory
+# published overnight is visible as its own red job rather than as a confusing
+# failure in a workflow named "Test".
+#
+# The container scan runs on a schedule rather than per-PR: base-image CVEs
+# appear without anyone touching this repository, and the scan needs a full
+# cross-arch build, which is too slow to sit in front of every pull request.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Mondays 04:17 UTC. Off the hour so this does not join the stampede of
+    # jobs every scheduler fires at :00.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Vulnerability scan (govulncheck)
+        # Reports only vulnerabilities this code can actually reach, by
+        # building the call graph rather than comparing module versions, so a
+        # failure here is a real exposure and not advisory noise.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependency scan (Trivy)
+        # Complements govulncheck: no build, no reachability analysis, but it
+        # sees every module in the graph and catches advisories the Go
+        # vulnerability database has not picked up. Invoked through the
+        # container rather than a marketplace action so this runs the same
+        # command as `make dependency-scan`, and so a renamed or retagged
+        # action cannot silently change what executes here.
+        run: |
+          docker run --rm -v "$PWD":/src:ro \
+            -v "$PWD/.trivyignore":/.trivyignore:ro \
+            aquasec/trivy:latest fs \
+            --scanners vuln --severity HIGH,CRITICAL \
+            --exit-code 1 --no-progress --timeout 10m \
+            --ignorefile /.trivyignore /src
+
+  container:
+    # Scheduled and manual only: needs the full cross-arch build, and its
+    # findings come from the base image rather than from any change in a PR.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build image
+        # docker-stage cross-compiles the binaries the Dockerfile COPYs in.
+        run: |
+          make docker-stage
+          docker build -t mochi-server:scan .
+
+      - name: Container scan (Trivy)
+        # Same severity gate and ignore file as `make docker-scan`, so a
+        # finding accepted locally is accepted here too.
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD/.trivyignore":/.trivyignore:ro \
+            aquasec/trivy:latest image \
+            --severity HIGH,CRITICAL --exit-code 1 --no-progress \
+            --timeout 15m --ignorefile /.trivyignore \
+            mochi-server:scan

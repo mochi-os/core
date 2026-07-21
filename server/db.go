@@ -213,7 +213,6 @@ func db_authorise_lifecycle(action sqlite3.AuthorizerActionCode, name3rd, name4t
 	return db_authorise_starlark(action, name3rd, name4th, schema, inner)
 }
 
-
 func db_create() {
 	db_migrating.Add(1)
 	defer db_migrating.Add(-1)
@@ -1471,7 +1470,6 @@ func (db *DB) exec_bg(context, query string, values ...any) ExecResult {
 	return ExecWrote
 }
 
-
 func (db *DB) exists(query string, values ...any) (bool, error) {
 	var r *sql.Rows
 	var err error
@@ -1674,7 +1672,6 @@ func db_user_for_thread(t *sl.Thread) (*User, error) {
 	return user, nil
 }
 
-
 // starlark_db runs one of the app's database lifecycle functions
 // (database_create / database_upgrade / database_downgrade) and stamps
 // user_version, both inside a single transaction on a dedicated connection.
@@ -1809,14 +1806,19 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 	as = flat
 
-	ctx := context.Background()
 	// Inside a database lifecycle function, statements run on the dedicated
 	// lifecycle connection so they join its transaction (and don't re-enter
 	// db_app, whose lock this goroutine holds — #227). Its rollback is owned
 	// by starlark_db, not the per-call defensive rollback below.
 	conn := db_lifecycle_conn(t)
 	lifecycle := conn != nil
+	// Migrations keep a background context deliberately: a schema rebuild on a
+	// large database can legitimately outrun the call timeout, and interrupting
+	// one halfway is far worse than letting it finish. Ordinary queries take
+	// the call's context so a timed-out call stops its statement.
+	ctx := context.Background()
 	if !lifecycle {
+		ctx = starlark_context(t)
 		db, err := db_for_thread(t)
 		if err != nil {
 			return sl_error(fn, "%v", err)
@@ -1956,7 +1958,6 @@ func db_starlark_sql_blocked(query string) string {
 // transaction, plus commit and rollback. Forgetting to call commit() is safe —
 // the cleanup hook in starlark.go rolls back any uncommitted handles when the
 // Starlark thread tears down (script return, error, or timeout).
-//
 type TransactionHandle struct {
 	tx     *sqlx.Tx
 	closed bool
@@ -2415,4 +2416,3 @@ func sql_is_mutating(sql string) bool {
 	}
 	return false
 }
-

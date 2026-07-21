@@ -390,14 +390,56 @@ func url_address_allowed(address string) error {
 		ip.IsInterfaceLocalMulticast(), ip.IsMulticast():
 		return fmt.Errorf("blocked outbound request to non-public address %s", ip)
 	}
+	// The standard library's helpers stop at the well-known private ranges,
+	// which leaves the rest of the special-purpose registry reachable. Carrier
+	// -grade NAT is the one that matters in practice: hosting providers and
+	// mesh VPNs put internal services on 100.64.0.0/10, so a host there is
+	// every bit as internal as a 10.0.0.0/8 one.
+	for _, block := range url_blocked_networks {
+		if block.Contains(ip) {
+			return fmt.Errorf("blocked outbound request to non-public address %s", ip)
+		}
+	}
 	return nil
 }
+
+// Special-purpose ranges (IANA IPv4/IPv6 special-purpose address registries)
+// that net.IP's classification helpers do not cover. IPv4 entries also match
+// their IPv4-in-IPv6 form, because net.IP stores a parsed ::ffff:a.b.c.d as
+// the 4-byte address.
+var url_blocked_networks = func() []*net.IPNet {
+	blocks := []*net.IPNet{}
+	for _, cidr := range []string{
+		"100.64.0.0/10",   // RFC 6598 carrier-grade NAT / shared address space
+		"192.0.0.0/24",    // RFC 6890 IETF protocol assignments
+		"192.0.2.0/24",    // RFC 5737 documentation (TEST-NET-1)
+		"198.18.0.0/15",   // RFC 2544 benchmarking
+		"198.51.100.0/24", // RFC 5737 documentation (TEST-NET-2)
+		"203.0.113.0/24",  // RFC 5737 documentation (TEST-NET-3)
+		"240.0.0.0/4",     // RFC 1112 reserved, includes 255.255.255.255
+		"64:ff9b::/96",    // RFC 6052 IPv4/IPv6 translation
+		"100::/64",        // RFC 6666 discard-only
+		"2001:db8::/32",   // RFC 3849 documentation
+	} {
+		_, block, err := net.ParseCIDR(cidr)
+		if err != nil {
+			panic("url_blocked_networks: bad CIDR " + cidr)
+		}
+		blocks = append(blocks, block)
+	}
+	return blocks
+}()
 
 // url_transport is the shared outbound transport for every app-driven HTTP
 // request. The dialer's Control hook runs per connection, so the check applies
 // to the initial request and to every redirect hop on the same client.
 var url_transport = &http.Transport{
-	Proxy: http.ProxyFromEnvironment,
+	// No proxy, deliberately. With one configured the dialer connects to the
+	// proxy and the Control hook below sees the proxy's address, not the
+	// destination — so HTTP_PROXY in the server's environment would silently
+	// void the whole guard and hand apps a route to any internal host. Mochi
+	// has no egress-proxy configuration, so nothing legitimately relies on it.
+	Proxy: nil,
 	DialContext: (&net.Dialer{
 		Timeout:   10 * time.Second,
 		KeepAlive: 30 * time.Second,

@@ -2607,12 +2607,12 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 	if strings.HasSuffix(path, "info/refs") {
 		return git_info_refs(c, repo_path, service)
 	} else if strings.HasSuffix(path, "git-upload-pack") {
-		return git_service_rpc(c, repo_path, "git-upload-pack")
+		return git_service_rpc(c, repo_path, "git-upload-pack", owner)
 	} else if strings.HasSuffix(path, "git-receive-pack") {
 		// Capture the push start (minus filesystem mtime granularity slack), run the
 		// push, then live-replicate the objects/refs it wrote to the host set (#105).
 		since := time.Now().Add(-2 * time.Second)
-		handled := git_service_rpc(c, repo_path, "git-receive-pack")
+		handled := git_service_rpc(c, repo_path, "git-receive-pack", owner)
 		go git_replicate_repo_delta(owner, a, id, repo_path, since)
 		return handled
 	}
@@ -2684,11 +2684,11 @@ func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e 
 	if path == "info/refs" {
 		return git_info_refs(c, repo_path, service)
 	} else if path == "git-upload-pack" {
-		return git_service_rpc(c, repo_path, "git-upload-pack")
+		return git_service_rpc(c, repo_path, "git-upload-pack", owner)
 	} else if path == "git-receive-pack" {
 		// Live-replicate the pushed objects/refs to the host set (#105).
 		since := time.Now().Add(-2 * time.Second)
-		handled := git_service_rpc(c, repo_path, "git-receive-pack")
+		handled := git_service_rpc(c, repo_path, "git-receive-pack", owner)
 		go git_replicate_repo_delta(owner, a, e.ID, repo_path, since)
 		return handled
 	}
@@ -2778,8 +2778,68 @@ func git_info_refs(c *gin.Context, repo_path string, service string) bool {
 	return true
 }
 
+// Ceiling on a git-upload-pack request body. It carries want/have negotiation
+// lines only — never repository content — so it stays small however large the
+// repository is: at roughly 50 bytes a line this allows hundreds of thousands
+// of them.
+const git_negotiation_maximum = 16 << 20 // 16MB
+
+// git_limited_reader fails once more than remaining bytes have been read,
+// rather than truncating the way io.LimitReader does. Truncation would surface
+// as a corrupt-object error from the pack decoder, hiding a size refusal behind
+// a confusing failure.
+type git_limited_reader struct {
+	reader    io.Reader
+	remaining int64
+}
+
+func (r *git_limited_reader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, fmt.Errorf("git request body exceeds the maximum accepted size")
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	n, err := r.reader.Read(p)
+	r.remaining -= int64(n)
+	return n, err
+}
+
+// git_request_maximum returns the largest request body this service may send.
+// A receive-pack body becomes repository content, so it is bounded by the
+// storage the owner may consume; an upload-pack body is negotiation that is
+// never stored, so it gets the much smaller fixed ceiling above.
+func git_request_maximum(service string, owner *User) int64 {
+	// user_storage_remaining dereferences the user to locate its storage
+	// directory, so a missing owner must not reach it. Falling back to the
+	// negotiation ceiling also fails safe: no owner means nothing that could
+	// legitimately accept a large push.
+	if service != "git-receive-pack" || owner == nil {
+		return git_negotiation_maximum
+	}
+	remaining, err := user_storage_remaining(owner)
+	if err != nil || remaining <= 0 {
+		return git_negotiation_maximum
+	}
+	// Administrators are quota-exempt (MaxInt64); clamp so the ceiling stays
+	// finite, since unbounded is the thing being fixed.
+	if remaining > file_max_storage {
+		remaining = file_max_storage
+	}
+	return remaining
+}
+
 // git_service_rpc handles POST /git-upload-pack and /git-receive-pack
-func git_service_rpc(c *gin.Context, repo_path string, service string) bool {
+func git_service_rpc(c *gin.Context, repo_path string, service string, owner *User) bool {
+	// Bound the request body. git pack bodies are exempt from web_body_limit
+	// because a push legitimately exceeds it, which left both the compressed
+	// body and — with Content-Encoding: gzip — its decompressed expansion
+	// unbounded. A small gzip bomb from any client allowed to fetch (public
+	// repositories permit anonymous reads) would otherwise expand without
+	// limit. Same class as the zstd frame bomb on the peer protocol.
+	maximum := git_request_maximum(service, owner)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maximum)
+
 	// Handle gzip compressed request body
 	var reader io.ReadCloser = c.Request.Body
 	if c.GetHeader("Content-Encoding") == "gzip" {
@@ -2789,7 +2849,9 @@ func git_service_rpc(c *gin.Context, repo_path string, service string) bool {
 			return true
 		}
 		defer gz_reader.Close()
-		reader = gz_reader
+		// Bound the decompressed stream too: the cap above limits what the
+		// client sends, not what it expands to.
+		reader = io.NopCloser(&git_limited_reader{reader: gz_reader, remaining: maximum})
 	}
 
 	// A request whose body exceeds the client's http.postBuffer cannot be

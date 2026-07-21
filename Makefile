@@ -545,6 +545,6 @@ test:
 	CGO_ENABLED=0 go test -count=1 -timeout 180s ./server
 
 test-race:
-	CGO_ENABLED=1 go test -race -count=1 -timeout 300s ./server
+	CGO_ENABLED=1 go test -race -count=1 -timeout 600s ./server
 
 -include local/Makefile

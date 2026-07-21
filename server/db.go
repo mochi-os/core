@@ -425,10 +425,18 @@ func db_apps() *DB {
 func db_user(u *User, name string) *DB {
 	path := fmt.Sprintf("users/%s/%s.db", u.UID, name)
 	db := db_open(path)
-	db.user = u
+	// Bind under databases_lock via db_bind, exactly as db_app does. These
+	// fields live on the shared cached handle, so assigning them directly
+	// races with any concurrent opener of the same user database — the race
+	// detector caught two parallel Message.send goroutines both writing
+	// db.user here, via entity_peers_for -> user_owning_entity ->
+	// user_preferences_load. db_bind is write-once, so the first binder wins
+	// and later callers (same UID, same path) leave it alone.
+	kind := ""
 	if name == "user" {
-		db.kind = db_kind_user_core
+		kind = db_kind_user_core
 	}
+	db_bind(db, u, nil, kind)
 
 	// Create tables for user.db
 	if name == "user" {

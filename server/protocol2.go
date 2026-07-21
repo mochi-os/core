@@ -180,7 +180,14 @@ func protocol2_init() {
 			panic(fmt.Sprintf("protocol2: zstd encoder init failed: %v", err))
 		}
 		zstd_decoder, err = zstd.NewReader(nil,
-			zstd.WithDecoderConcurrency(0))
+			zstd.WithDecoderConcurrency(0),
+			// Bound the DECOMPRESSED size. frame_maximum caps a frame on the
+			// wire, but without this a small, highly compressible frame (a
+			// zstd bomb) expands without limit and exhausts process memory —
+			// remotely, before the claimed entity is ever authenticated. A
+			// compressed frame must not decode to more than an uncompressed
+			// frame is allowed to be, so the same cap applies to the output.
+			zstd.WithDecoderMaxMemory(frame_maximum))
 		if err != nil {
 			panic(fmt.Sprintf("protocol2: zstd decoder init failed: %v", err))
 		}
@@ -278,6 +285,12 @@ func frame_decompress(payload []byte, codec byte) ([]byte, error) {
 		out, err := zstd_decoder.DecodeAll(payload, make([]byte, 0, len(payload)*2))
 		if err != nil {
 			return nil, fmt.Errorf("frame: zstd decode failed: %w", err)
+		}
+		// The decoder is built with WithDecoderMaxMemory(frame_maximum), so
+		// this should be unreachable; keep it so the invariant is enforced at
+		// the call site too and survives a decoder-construction change.
+		if len(out) > frame_maximum {
+			return nil, fmt.Errorf("frame: decompressed %d > %d", len(out), frame_maximum)
 		}
 		return out, nil
 	}

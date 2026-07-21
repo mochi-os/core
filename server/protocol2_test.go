@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"github.com/klauspost/compress/zstd"
 	"io"
 	"testing"
 
@@ -417,5 +418,52 @@ func TestFramePriorityForMapsQueueTiers(t *testing.T) {
 		if got := frame_priority_for(c.queue); got != c.want {
 			t.Errorf("frame_priority_for(%d): got %d, want %d", c.queue, got, c.want)
 		}
+	}
+}
+
+// TestFrameDecompressBounded pins the zstd-bomb defence: a frame that is tiny
+// on the wire but expands past frame_maximum must be rejected rather than
+// allocated. Without the decoder's size cap a single such frame — sendable by
+// any peer that can open a stream, before its claimed entity is authenticated —
+// exhausts process memory.
+func TestFrameDecompressBounded(t *testing.T) {
+	protocol2_init()
+
+	// Zeros compress to almost nothing, so this is the classic bomb shape:
+	// far over the cap decompressed, far under it compressed.
+	oversized := make([]byte, frame_maximum+(1<<20))
+	encoder, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatalf("zstd writer: %v", err)
+	}
+	bomb := encoder.EncodeAll(oversized, nil)
+	encoder.Close()
+
+	if len(bomb) >= frame_maximum {
+		t.Fatalf("compressed bomb is %d bytes, not under the %d wire cap — test is not exercising the expansion path", len(bomb), frame_maximum)
+	}
+
+	_, err = frame_decompress(bomb, codec_zstd)
+	if err == nil {
+		t.Fatalf("frame_decompress accepted a payload expanding to %d bytes (cap %d)", len(oversized), frame_maximum)
+	}
+	// The rejection must come from the decoder's own size cap, which refuses
+	// before allocating. The post-hoc length check in frame_decompress would
+	// also reject, but only after the memory has already been committed - so
+	// asserting on the sentinel proves the actual DoS defence is the one that
+	// fired, not the backstop.
+	if !errors.Is(err, zstd.ErrDecoderSizeExceeded) {
+		t.Errorf("expected the decoder size cap to reject before allocating, got: %v", err)
+	}
+
+	// A frame that stays within the cap must still round-trip.
+	ordinary := bytes.Repeat([]byte("mochi"), 1024)
+	good := encoder.EncodeAll(ordinary, nil)
+	out, err := frame_decompress(good, codec_zstd)
+	if err != nil {
+		t.Fatalf("frame_decompress rejected an in-bounds payload: %v", err)
+	}
+	if !bytes.Equal(out, ordinary) {
+		t.Fatal("in-bounds payload did not round-trip")
 	}
 }

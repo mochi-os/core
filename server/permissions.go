@@ -49,6 +49,7 @@ var permissions = []Permission{
 	{"accounts/ai", false, false},
 	{"accounts/mcp", false, false},
 	{"groups/manage", false, false},
+	{"microphone", false, false},
 	{"interests/read", false, false},
 	{"interests/write", false, false},
 	{"user/authentication/read", false, false},

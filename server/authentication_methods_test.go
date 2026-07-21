@@ -280,14 +280,64 @@ func TestAccountGateReserve(t *testing.T) {
 	if _, ok := gate.reserve("u1"); ok {
 		t.Error("a queue past account_wait_max must be refused (429), not queued")
 	}
+	// The reserved queue never climbs past the window, so recovery after a
+	// flood is bounded by account_wait_max — not 2x it, and never unbounded
+	// under sustained load.
+	if depth := gate.entries["u1"].next - now(); depth > account_wait_max {
+		t.Errorf("queue depth %ds exceeds account_wait_max %ds — recovery not bounded", depth, account_wait_max)
+	}
 	// A different account is unaffected: its first slot is immediate.
 	if wait, ok := gate.reserve("u2"); !ok || wait != 0 {
 		t.Errorf("separate account: wait=%d ok=%v, want immediate slot", wait, ok)
 	}
-	// A correct credential (reset) clears the queue.
-	gate.reset("u1")
-	if wait, ok := gate.reserve("u1"); !ok || wait != 0 {
-		t.Errorf("after reset: wait=%d ok=%v, want cleared", wait, ok)
+}
+
+// TestAccountGateDone is the regression for the reset race: a correct
+// credential settling WHILE other reservations are still sleeping must not
+// rewind the timeline (which would let new requests reserve slots overlapping
+// the sleepers, and lose the sleepers' failure accounting). It clears the
+// penalty but keeps the reserved slots until the last in-flight attempt
+// settles; only then is the entry fully dropped.
+func TestAccountGateDone(t *testing.T) {
+	gate := &account_gate{entries: make(map[string]*account_gate_entry)}
+
+	// Three concurrent attempts reserve distinct slots and are "sleeping".
+	gate.reserve("u")
+	gate.reserve("u")
+	_, last := gate.reserve("u")
+	if !last {
+		t.Fatal("third reservation should still fit under the cap")
+	}
+	entry := gate.entries["u"]
+	if entry.pending != 3 {
+		t.Fatalf("pending = %d, want 3", entry.pending)
+	}
+	nextBefore := entry.next
+
+	// The first attempt succeeds mid-flight. The entry must survive (two still
+	// pending), the timeline must not move, and the penalty must clear.
+	gate.done("u", true)
+	entry = gate.entries["u"]
+	if entry == nil {
+		t.Fatal("entry deleted while reservations still pending — timeline rewound")
+	}
+	if entry.next != nextBefore {
+		t.Errorf("next moved on a mid-flight success: %d != %d", entry.next, nextBefore)
+	}
+	if entry.pending != 2 || entry.failures != 0 {
+		t.Errorf("after mid-flight success: pending=%d failures=%d, want 2 / 0", entry.pending, entry.failures)
+	}
+	// A new request still lands after the sleepers — no overlap.
+	if wait, ok := gate.reserve("u"); !ok || wait == 0 {
+		t.Errorf("new reservation overlapped the sleepers: wait=%d ok=%v", wait, ok)
+	}
+
+	// Drain the rest; the last settle clears the entry entirely.
+	gate.done("u", false)
+	gate.done("u", false)
+	gate.done("u", true)
+	if gate.entries["u"] != nil {
+		t.Error("entry should be cleared once the last reservation settles")
 	}
 }
 

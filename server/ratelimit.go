@@ -205,6 +205,7 @@ func rate_limit_api_middleware(c *gin.Context) {
 // handler goroutines ever sleep at once.
 type account_gate_entry struct {
 	failures int
+	pending  int   // reservations issued but not yet settled (in-flight attempts)
 	next     int64 // unix seconds: earliest the next attempt may verify
 	seen     int64 // last activity, for cleanup
 }
@@ -269,24 +270,52 @@ func (g *account_gate) reserve(uid string) (int64, bool) {
 		start = now
 	}
 	wait := start - now
-	if wait > account_wait_max {
+	// Accept only when this attempt's whole slot (its wait plus the spacing it
+	// reserves) fits inside the window, so entry.next never climbs past
+	// now+account_wait_max. That bounds recovery after a flood to at most
+	// account_wait_max (a slot that started at the window edge cannot push next
+	// a further spacing beyond it) and stops next ratcheting away under
+	// sustained load. A front-of-queue attempt (wait 0) always fits, so a
+	// correct credential on a quiet account is never refused.
+	gap := account_gate_spacing(entry.failures)
+	if wait+gap > account_wait_max {
 		return wait, false
 	}
-	entry.next = start + account_gate_spacing(entry.failures)
+	entry.next = start + gap
+	entry.pending++
 	return wait, true
 }
 
-// fail records a wrong guess, widening the spacing owed on later attempts.
-func (g *account_gate) fail(uid string) {
+// done settles a reservation from reserve. ok reports whether the credential
+// verified. A wrong guess widens the spacing owed on later attempts. A correct
+// credential clears the accumulated penalty — but only drops the whole entry
+// (rewinding the slot timeline) when this was the last in-flight attempt;
+// while other reservations are still sleeping it keeps their reserved slots so
+// a mid-flight success cannot rewind next and let new requests overlap them.
+func (g *account_gate) done(uid string, ok bool) {
 	g.lock.Lock()
 	defer g.lock.Unlock()
-	if entry := g.entries[uid]; entry != nil {
-		entry.failures++
-		entry.seen = now()
+	entry := g.entries[uid]
+	if entry == nil {
+		return
 	}
+	if entry.pending > 0 {
+		entry.pending--
+	}
+	entry.seen = now()
+	if !ok {
+		entry.failures++
+		return
+	}
+	if entry.pending == 0 {
+		delete(g.entries, uid)
+		return
+	}
+	entry.failures = 0
 }
 
-// reset clears an account's throttle after a correct credential.
+// reset drops an account's throttle unconditionally (test cleanup only —
+// handlers settle through done so in-flight reservations are respected).
 func (g *account_gate) reset(uid string) {
 	g.lock.Lock()
 	defer g.lock.Unlock()
@@ -298,7 +327,7 @@ func (g *account_gate) cleanup() {
 	defer g.lock.Unlock()
 	now := now()
 	for uid, entry := range g.entries {
-		if now-entry.seen > account_gate_ttl && entry.next <= now {
+		if entry.pending == 0 && now-entry.seen > account_gate_ttl && entry.next <= now {
 			delete(g.entries, uid)
 		}
 	}
@@ -307,8 +336,9 @@ func (g *account_gate) cleanup() {
 // account_gate_guard reserves a slot for a guessable-factor verification and
 // waits out the (bounded) delay. It returns false after answering 429 when the
 // account's queue is already too deep; the caller just returns. On the normal
-// path the caller verifies, then calls account_login.fail on a wrong guess or
-// account_login.reset on success.
+// path the caller MUST settle the reservation exactly once with
+// account_login.done(uid, verified) — a deferred done(uid, false) is the safe
+// pattern, flipped to true once the credential verifies.
 func account_gate_guard(c *gin.Context, uid string) bool {
 	wait, ok := account_login.reserve(uid)
 	if !ok {

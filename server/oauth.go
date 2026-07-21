@@ -1261,10 +1261,10 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 		}
 
 		// Full login. Create the session now so the exchange just hands it back.
-		// This path bypasses auth_establish_session, so clear the brute-force
-		// counters here too.
+		// This path bypasses auth_establish_session, so clear the per-IP counter
+		// here too. OAuth never engages the per-account throttle (it is not a
+		// guessable factor), so there is nothing to settle there.
 		rate_limit_login.reset(rate_limit_client_ip(c))
-		account_login.reset(user.UID)
 		session := login_create(user.UID, c.ClientIP(), c.GetHeader("User-Agent"))
 		db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.UID, now())
 		audit_login(user.Username, rate_limit_client_ip(c))

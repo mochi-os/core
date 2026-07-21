@@ -35,8 +35,8 @@ output, so the effective configuration is safe to copy into bug reports.
 
 **data** = *path*
 :   Data directory. Defaults to */var/lib/mochi*. Holds peer identity,
-    SQLite databases, attachments, and installed app code. Treat as
-    essential for backups.
+    the ACME account key and issued TLS certificates, SQLite databases,
+    attachments, and installed app code. Treat as essential for backups.
 
 **ensure** = **true** | **false**
 :   When **true**, the server starts as root, creates and chowns the

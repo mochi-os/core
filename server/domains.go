@@ -107,12 +107,88 @@ type delegation struct {
 	Updated int64  `db:"updated"`
 }
 
+// domains_certificates is where autocert keeps the ACME account key and the
+// issued certificates.
+//
+// Under data_dir, not cache_dir, because neither is a cache. /var/cache is for
+// data the server can regenerate locally and lose without harm; an ACME account
+// key is a long-lived credential whose deletion is data loss, and a certificate
+// can only be reobtained from an external service that rate-limits, needs
+// inbound reachability, and can fail. They belong with data_dir/p2p/private.key,
+// the other cryptographic identity the server registers once and keeps.
+//
+// This was cache_dir/certs, where cache_cleanup deleted both every seven days
+// (files.go) — silently, because autocert also caches in memory, so the loss
+// only surfaced on the next restart, when every domain had to be issued again
+// at once and a new ACME account registered.
+func domains_certificates() string {
+	return filepath.Join(data_dir, "certificates")
+}
+
 // domains_init_acme initializes the Let's Encrypt autocert manager
 func domains_init_acme() {
+	domains_certificates_migrate()
 	domains_acme_manager = &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
 		HostPolicy: domains_host_policy,
-		Cache:      autocert.DirCache(filepath.Join(cache_dir, "certs")),
+		Cache:      autocert.DirCache(domains_certificates()),
+	}
+}
+
+// domains_certificates_migrate copies an existing autocert cache from its old
+// home under cache_dir to domains_certificates(), once, on first start after
+// the move. Without it every install would re-issue every certificate and
+// register a fresh ACME account on upgrade — the exact burst the move exists
+// to prevent.
+//
+// Deliberately cautious: it does nothing unless the destination is absent or
+// empty, it never deletes the destination, and any failure is a warning rather
+// than fatal. The worst case of giving up is an empty cache, which autocert
+// refills by issuing — the same position the old behaviour left every restart
+// in anyway.
+func domains_certificates_migrate() {
+	destination := domains_certificates()
+	if entries, err := os.ReadDir(destination); err == nil && len(entries) > 0 {
+		return // already migrated, or in use
+	}
+	source := filepath.Join(cache_dir, "certs")
+	entries, err := os.ReadDir(source)
+	if err != nil || len(entries) == 0 {
+		return // nothing to bring across
+	}
+
+	if err := os.MkdirAll(destination, 0o700); err != nil {
+		warn("Certificates: unable to create %s: %v", destination, err)
+		return
+	}
+	moved := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		// 0600: the account key and the certificate private keys are in here.
+		content, err := os.ReadFile(filepath.Join(source, entry.Name()))
+		if err != nil {
+			warn("Certificates: unable to read %s: %v", entry.Name(), err)
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(destination, entry.Name()), content, 0o600); err != nil {
+			warn("Certificates: unable to write %s: %v", entry.Name(), err)
+			continue
+		}
+		moved++
+	}
+	if moved == 0 {
+		return
+	}
+	info("Certificates: moved %d file(s) from %s to %s, where the cache sweeper cannot delete them", moved, source, destination)
+	// Only remove the source once everything is safely across; leaving it
+	// would be harmless (the sweeper reaches it eventually) but it holds key
+	// material in a directory that is deleted on a timer.
+	if moved == len(entries) {
+		if err := os.RemoveAll(source); err != nil {
+			warn("Certificates: unable to remove %s after migrating: %v", source, err)
+		}
 	}
 }
 

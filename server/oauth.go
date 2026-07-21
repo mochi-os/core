@@ -557,7 +557,13 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target, expe
 					break
 				}
 			}
-			c.Redirect(http.StatusFound, "/login/codes")
+			// Carry the requested destination through the MFA hop so the
+			// /codes page can honour it after the last factor completes.
+			codes := "/login/codes"
+			if local := redirect_local(target); local != "" && local != "/" {
+				codes += "?redirect=" + url.QueryEscape(local)
+			}
+			c.Redirect(http.StatusFound, codes)
 			return
 		}
 

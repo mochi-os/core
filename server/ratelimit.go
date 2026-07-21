@@ -48,10 +48,30 @@ var (
 		window:  1,
 	}
 
-	// Pubsub inbound rate limiter: 20 per second per peer
+	// Pubsub inbound rate limiter: 20 per second per peer. Applies to
+	// application traffic — directory announcements and lookups — whose
+	// volume follows user activity.
 	rate_limit_pubsub_in = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
 		limit:   20,
+		window:  1,
+	}
+
+	// Pubsub inbound control-plane rate limiter: 10 per second per peer,
+	// for the peers service only. Separate from rate_limit_pubsub_in so
+	// application traffic cannot starve the messages hosts use to learn
+	// each other's addresses — a synchronous remote request blocks on one
+	// of those answers, and losing it reports an online peer as unreachable.
+	//
+	// A peer's legitimate control traffic is a few messages per minute, not
+	// per second: senders self-limit to one address request and one relayed
+	// record per minute per target (rate_limit_peer_request,
+	// rate_limit_record_relay) and re-announce hourly. 10 per second is
+	// therefore orders of magnitude of headroom for a burst while still
+	// bounding what a flooder can push through this path.
+	rate_limit_pubsub_control = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   10,
 		window:  1,
 	}
 
@@ -326,6 +346,7 @@ func ratelimit_manager() {
 		rate_limit_login.cleanup()
 		rate_limit_p2p.cleanup()
 		rate_limit_pubsub_in.cleanup()
+		rate_limit_pubsub_control.cleanup()
 		rate_limit_peer_request.cleanup()
 		rate_limit_record_relay.cleanup()
 		rate_limit_entry_withdraw.cleanup()

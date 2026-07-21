@@ -83,6 +83,24 @@ const (
 	pubsub_expires_max = 2 * pubsub_expires_ttl
 )
 
+// pubsub_limiter chooses which inbound budget a message is charged against.
+//
+// The peers service is the control plane: the messages by which hosts learn
+// each other's addresses, and which a synchronous remote request blocks on
+// for remote_address_wait. It gets its own budget so the application plane —
+// directory announcements and lookups, whose volume follows user activity and
+// is effectively unbounded — cannot starve it, which it previously did
+// exactly when a host was busiest and address resolution mattered most.
+//
+// Separated from pubsub_manager so the routing decision is testable; the loop
+// itself only runs against a live subscription.
+func pubsub_limiter(service string) *rate_limiter {
+	if service == "peers" {
+		return rate_limit_pubsub_control
+	}
+	return rate_limit_pubsub_in
+}
+
 // pubsub_manager subscribes to the /mochi/2 topic and dispatches each
 // inbound message. One goroutine for the process, started from net_start
 // once the topic is joined.
@@ -103,11 +121,36 @@ func pubsub_manager() {
 		if peer == net_id {
 			continue
 		}
-		// Rate limit inbound per peer. Bootstrap and paired peers are
-		// trusted and skip the limit.
-		if !peer_is_bootstrap(peer) && !rate_limit_pubsub_in.allow(peer) {
+		// Decode before rate limiting, so the limit can tell peer control
+		// traffic apart from an application flood. Only the cheap half of
+		// the work moves ahead of the limit: frame_read rejects anything
+		// over frame_maximum before allocating and then CBOR-decodes, and
+		// pubsub_frame_valid is a handful of string checks. The expensive
+		// part — the entity signature verification in pubsub_receive —
+		// stays behind it, so what an unauthenticated flooder can force is
+		// one bounded decode rather than a public-key operation.
+		f, err := frame_read(bytes.NewReader(m.Data))
+		if err != nil {
 			pubsub_dropped.Add(1)
-			debug("Pubsub rate limited peer %q", peer)
+			info("Pubsub frame read error from peer %q: %v", peer, err)
+			continue
+		}
+		if f.Type != frame_type_message {
+			continue // pubsub carries only message frames
+		}
+		if !pubsub_frame_valid(f) {
+			pubsub_dropped.Add(1)
+			info("Pubsub received invalid frame from peer %q", peer)
+			continue
+		}
+
+		// Rate limit inbound per peer, against the budget for this
+		// message's plane. Bootstrap and paired peers are trusted and skip
+		// the limit.
+		limiter := pubsub_limiter(f.Service)
+		if !peer_is_bootstrap(peer) && !limiter.allow(peer) {
+			pubsub_dropped.Add(1)
+			debug("Pubsub rate limited peer %q service %q", peer, f.Service)
 			continue
 		}
 		pubsub_received.Add(1)
@@ -118,7 +161,7 @@ func pubsub_manager() {
 		// a flooded message (peers/publish address announcements) read it
 		// from Event.origin; ReceivedFrom stays the identity for rate
 		// limiting and neighbour discovery.
-		pubsub_receive(m.Data, peer, m.GetFrom().String())
+		pubsub_receive(f, peer, m.GetFrom().String())
 		peer_discovered(peer)
 		peer_connect(peer)
 	}
@@ -133,20 +176,10 @@ func pubsub_manager() {
 // origin is the GossipSub-authenticated originating peer (may equal
 // peer when the originator is a direct mesh neighbour); "" when the
 // caller has no authenticated originator.
-func pubsub_receive(data []byte, peer, origin string) {
-	f, err := frame_read(bytes.NewReader(data))
-	if err != nil {
-		info("Pubsub frame read error from peer %q: %v", peer, err)
-		return
-	}
-	if f.Type != frame_type_message {
-		return // pubsub carries only message frames
-	}
-	if !pubsub_frame_valid(f) {
-		info("Pubsub received invalid frame from peer %q", peer)
-		return
-	}
-
+// The frame arrives already decoded and shape-checked: pubsub_manager needs
+// the service to choose a rate limit, so it decodes first and passes the
+// result rather than having it parsed twice.
+func pubsub_receive(f *Frame, peer, origin string) {
 	// Freshness bounds replay within the signed window.
 	if !pubsub_fresh(f.Expires) {
 		debug("Pubsub dropping frame with out-of-window expires %q from peer %q", f.Expires, peer)

@@ -34,15 +34,20 @@ var (
 		window:  60,
 	}
 
-	// Login rate limiter: 20 attempts per 5 minutes
-	// Per-account login-attempt limiter, keyed by user uid. The per-IP
-	// limiter alone is defeated by rotating source addresses, which matters
-	// for the guessable factors (six-digit authenticator codes); this bounds
-	// attempts against one account across all sources. Reset only on a full
-	// login (auth_establish_session), never on a single completed factor.
+	// Per-account failed-attempt counter for the guessable login factors
+	// (authenticator, MFA, recovery codes), keyed by user uid so the throttle
+	// follows the account across rotating source addresses (the per-IP limiter
+	// alone does not). It is deliberately NOT a hard gate: rejecting before
+	// verification would let anyone lock a known account out for the whole
+	// window with a few bad guesses, since /_/auth/begin identifies accounts.
+	// Instead each accumulated failure adds a progressive delay before the
+	// next verification (account_backoff); a correct credential always
+	// verifies and clears the count, so a legitimate user is at most briefly
+	// delayed, never locked out, while an attacker's guess rate collapses.
+	// The limit only bounds how high the count climbs (the delay caps sooner).
 	rate_limit_account = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
-		limit:   10,
+		limit:   12,
 		window:  900,
 	}
 
@@ -147,6 +152,19 @@ func (r *rate_limiter) reset(key string) {
 	delete(r.entries, key)
 }
 
+// count returns the current count for a key, or 0 if absent/expired. Unlike
+// allow it neither increments nor enforces the limit — used to size the
+// per-account login backoff.
+func (r *rate_limiter) count(key string) int {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	entry := r.entries[key]
+	if entry == nil || now() >= entry.reset {
+		return 0
+	}
+	return entry.count
+}
+
 // Clean up expired entries
 func (r *rate_limiter) cleanup() {
 	r.lock.Lock()
@@ -179,16 +197,45 @@ func rate_limit_api_middleware(c *gin.Context) {
 	c.Next()
 }
 
-// rate_limit_account_allow enforces the per-account attempt limit on the
-// guessable login factors (authenticator, MFA, recovery codes). Returns
-// false after answering 429; the caller just returns.
-func rate_limit_account_allow(c *gin.Context, user *User) bool {
-	if rate_limit_account.allow(user.UID) {
-		return true
+// The first few failures are free (honest fat-fingering must not be punished);
+// beyond that the delay doubles per failure up to a cap. Vars, not consts, so
+// tests can neutralise the sleep.
+var (
+	account_backoff_free = 3
+	account_backoff_cap  = 8 * time.Second
+)
+
+// account_backoff is the delay owed before the next guess given the account's
+// accumulated failure count.
+func account_backoff(failures int) time.Duration {
+	steps := failures - account_backoff_free
+	if steps <= 0 {
+		return 0
 	}
-	audit_rate_limit(rate_limit_client_ip(c), "account")
-	respond_error(c, http.StatusTooManyRequests, "too_many_login_attempts_please_try_again_later", "errors.too_many_logins", nil)
-	return false
+	if steps > 20 { // guard the shift below from overflowing
+		return account_backoff_cap
+	}
+	delay := time.Second << (steps - 1) // 1s, 2s, 4s, ...
+	if delay <= 0 || delay > account_backoff_cap {
+		return account_backoff_cap
+	}
+	return delay
+}
+
+// rate_limit_account_throttle sleeps for the backoff currently owed by the
+// account before a guessable factor is verified, so repeated wrong guesses
+// slow to a crawl. A correct credential is verified after the same (bounded)
+// delay and still succeeds — this throttles, it never locks out.
+func rate_limit_account_throttle(user *User) {
+	if delay := account_backoff(rate_limit_account.count(user.UID)); delay > 0 {
+		time.Sleep(delay)
+	}
+}
+
+// rate_limit_account_fail records one failed verification of a guessable
+// factor, raising the backoff owed on the next attempt.
+func rate_limit_account_fail(user *User) {
+	rate_limit_account.allow(user.UID)
 }
 
 // Middleware for login rate limiting (stricter)

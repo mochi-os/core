@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -231,9 +232,31 @@ func TestPartialContinue(t *testing.T) {
 	}
 }
 
-// TestAccountRateLimit verifies the per-account attempt limit on guessable
-// factors: hammering TOTP against one account answers 429 after the limit
-// regardless of source address, while other accounts stay unaffected.
+// TestAccountBackoff checks the delay curve: the first few failures are free,
+// then it doubles per failure and caps.
+func TestAccountBackoff(t *testing.T) {
+	saved := account_backoff_cap
+	account_backoff_cap = 8 * time.Second
+	defer func() { account_backoff_cap = saved }()
+
+	if d := account_backoff(account_backoff_free); d != 0 {
+		t.Errorf("free tier delay = %v, want 0", d)
+	}
+	if d := account_backoff(account_backoff_free + 1); d != time.Second {
+		t.Errorf("first paid failure = %v, want 1s", d)
+	}
+	if d := account_backoff(account_backoff_free + 2); d != 2*time.Second {
+		t.Errorf("second paid failure = %v, want 2s", d)
+	}
+	if d := account_backoff(1000); d != account_backoff_cap {
+		t.Errorf("far past the cap = %v, want %v", d, account_backoff_cap)
+	}
+}
+
+// TestAccountRateLimit verifies the per-account throttle on guessable factors
+// does NOT hard-lock an account: wrong codes stay 401 well past the counter
+// limit (never a 429 that a third party could hold a known account in),
+// failures accumulate to drive the backoff, and they are keyed per account.
 func TestAccountRateLimit(t *testing.T) {
 	cleanup := create_test_users_db(t)
 	defer cleanup()
@@ -243,29 +266,33 @@ func TestAccountRateLimit(t *testing.T) {
 	users.exec("insert into users (uid, username, methods) values ('u-limit', 'limit@example.com', 'totp')")
 	users.exec("insert into totp (user, secret, verified, created) values ('u-limit', 'JBSWY3DPEHPK3PXP', 1, 1)")
 	users.exec("insert into users (uid, username, methods) values ('u-other', 'other@example.com', 'totp')")
-	users.exec("insert into totp (user, secret, verified, created) values ('u-other', 'JBSWY3DPEHPK3PXP', 1, 1)")
 	defer rate_limit_account.reset("u-limit")
-	defer rate_limit_account.reset("u-other")
 
-	attempt := func(email string) int {
+	// Neutralise the sleep so the test is fast; the delay curve is covered by
+	// TestAccountBackoff.
+	saved := account_backoff_cap
+	account_backoff_cap = 0
+	defer func() { account_backoff_cap = saved }()
+
+	attempt := func() int {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest("POST", "/_/auth/totp", strings.NewReader(`{"email":"`+email+`","code":"000000"}`))
+		c.Request = httptest.NewRequest("POST", "/_/auth/totp", strings.NewReader(`{"email":"limit@example.com","code":"000000"}`))
 		c.Request.Header.Set("Content-Type", "application/json")
 		web_auth_totp(c)
 		return w.Code
 	}
 
-	for i := 1; i <= rate_limit_account.limit; i++ {
-		if code := attempt("limit@example.com"); code != http.StatusUnauthorized {
-			t.Fatalf("attempt %d: got %d, want 401", i, code)
+	for i := 0; i < rate_limit_account.limit+5; i++ {
+		if code := attempt(); code != http.StatusUnauthorized {
+			t.Fatalf("wrong attempt %d: got %d, want 401 (never a hard 429 lockout)", i, code)
 		}
 	}
-	if code := attempt("limit@example.com"); code != http.StatusTooManyRequests {
-		t.Errorf("over-limit attempt: got %d, want 429", code)
+	if rate_limit_account.count("u-limit") == 0 {
+		t.Error("failures should accumulate to drive the backoff")
 	}
-	// The limit is per account, not global: another account still verifies.
-	if code := attempt("other@example.com"); code != http.StatusUnauthorized {
-		t.Errorf("other account: got %d, want 401", code)
+	// Keyed per account: another account inherits none of these failures.
+	if n := rate_limit_account.count("u-other"); n != 0 {
+		t.Errorf("other account carries %d failures, want 0", n)
 	}
 }

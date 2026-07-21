@@ -321,18 +321,19 @@ func web_auth_totp(c *gin.Context) {
 		return
 	}
 
-	// Per-account attempt limit: six-digit codes are guessable and the
-	// per-IP limiter alone is defeated by rotating source addresses.
-	if !rate_limit_account_allow(c, user) {
-		return
-	}
+	// Six-digit codes are guessable and the per-IP limiter alone is defeated
+	// by rotating source addresses, so throttle per account — a progressive
+	// delay that never hard-blocks a correct code (see rate_limit_account).
+	rate_limit_account_throttle(user)
 
 	// Verify TOTP code
 	if !totp_verify(user.UID, input.Code) {
+		rate_limit_account_fail(user)
 		audit_login_failed(input.Email, rate_limit_client_ip(c), "invalid_totp")
 		respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
 		return
 	}
+	rate_limit_account.reset(user.UID)
 
 	// Check for remaining MFA methods after TOTP, folding this factor into
 	// any pending partial rather than starting over.
@@ -680,12 +681,10 @@ func web_auth_mfa(c *gin.Context) {
 		return
 	}
 
-	// Per-account attempt limit: MFA continuations verify guessable codes
-	// (six-digit authenticator), and holding a partial does not exempt the
-	// caller from it.
-	if !rate_limit_account_allow(c, user) {
-		return
-	}
+	// MFA continuations verify guessable codes (six-digit authenticator);
+	// holding a partial does not exempt the caller. Throttle per account with
+	// a progressive delay that never hard-blocks a correct code.
+	rate_limit_account_throttle(user)
 
 	remaining := strings.Split(row["remaining"].(string), ",")
 	completed := row["completed"].(string)
@@ -751,11 +750,13 @@ func web_auth_mfa(c *gin.Context) {
 		switch method {
 		case "email":
 			if !email_code_check(user.Username, code) {
+				rate_limit_account_fail(user)
 				respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
 				return
 			}
 		case "totp":
 			if !totp_verify(user.UID, code) {
+				rate_limit_account_fail(user)
 				respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
 				return
 			}
@@ -764,6 +765,7 @@ func web_auth_mfa(c *gin.Context) {
 			return
 		}
 	}
+	rate_limit_account.reset(user.UID)
 
 	// All validations passed - now consume the codes
 	for _, method := range methods {
@@ -1229,10 +1231,10 @@ func web_recovery_login(c *gin.Context) {
 	}
 	user_id, _ := row["uid"].(string)
 
-	// Per-account attempt limit across all source addresses.
-	if !rate_limit_account_allow(c, &User{UID: user_id}) {
-		return
-	}
+	// Throttle guessing across all source addresses with a progressive delay
+	// that never hard-blocks a correct code.
+	throttled := &User{UID: user_id}
+	rate_limit_account_throttle(throttled)
 
 	// Check recovery codes
 	rows, _ := db.rows("select id, hash from recovery where user=?", user_id)
@@ -1246,10 +1248,12 @@ func web_recovery_login(c *gin.Context) {
 	}
 
 	if matched < 0 {
+		rate_limit_account_fail(throttled)
 		audit_login_failed(input.Username, rate_limit_client_ip(c), "invalid_recovery_code")
 		respond_error(c, http.StatusUnauthorized, "invalid_credentials", "errors.invalid_credentials", nil)
 		return
 	}
+	rate_limit_account.reset(user_id)
 
 	// Load user with identity
 	user := user_by_uid(user_id)

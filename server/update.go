@@ -13,6 +13,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +23,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -32,14 +35,80 @@ const (
 	update_timeout          = 30 * time.Second
 	update_install_timeout  = 10 * time.Minute
 	update_install_pre_wait = 5 // seconds before msiexec runs, lets the service exit cleanly
+
+	// Ceilings on what a manifest can make us read. The manifest is a few
+	// hundred bytes and the MSI is tens of megabytes; these bound the damage
+	// if the package host is compromised or simply wrong, since a download
+	// that fills the data volume takes the server down with it.
+	update_manifest_maximum = 1 << 20   // 1 MiB
+	update_artifact_maximum = 256 << 20 // 256 MiB
 )
 
 // update_install_lock guards against concurrent install attempts (e.g. an
 // admin clicking the button twice).
 var update_install_lock sync.Mutex
 
+// update_versions is the per-platform versions.json. Releases is keyed by
+// version string and carries the integrity data the self-installer verifies
+// before it hands an artifact to the system installer.
 type update_versions struct {
-	Tracks map[string]string `json:"tracks"`
+	Tracks   map[string]string         `json:"tracks"`
+	Releases map[string]update_release `json:"releases"`
+}
+
+// update_release describes one downloadable artifact. File is relative to the
+// platform directory, so the manifest names the exact file rather than the
+// self-installer guessing it.
+type update_release struct {
+	File   string `json:"file"`
+	Size   int64  `json:"size"`
+	Sha256 string `json:"sha256"`
+}
+
+// update_base is the platform's directory on the package host, without a
+// trailing slash. Empty when the running build has no known package subtree.
+func update_base() string {
+	path := update_url_path()
+	if path == "" {
+		return ""
+	}
+	return "https://packages.mochi-os.org/" + path
+}
+
+// update_manifest fetches and parses the running platform's versions.json.
+func update_manifest() (*update_versions, error) {
+	base := update_base()
+	if base == "" {
+		return nil, fmt.Errorf("no URL path for build_platform=%q", build_platform)
+	}
+	url := base + "/versions.json"
+
+	ctx, cancel := context.WithTimeout(context.Background(), update_timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch %s: status %d", url, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, update_manifest_maximum))
+	if err != nil {
+		return nil, fmt.Errorf("read body: %v", err)
+	}
+
+	var v update_versions
+	if err := json.Unmarshal(body, &v); err != nil {
+		return nil, fmt.Errorf("parse %s: %v", url, err)
+	}
+	return &v, nil
 }
 
 // update_manager polls packages.mochi-os.org once a day and notifies admins
@@ -84,49 +153,15 @@ func update_install_clear_on_match() {
 // update_check fetches the per-platform versions.json, compares the
 // production track to build_version, and dispatches notifications when newer.
 func update_check() {
-	path := update_url_path()
-	if path == "" {
-		warn("Server update: no URL path for build_platform=%q", build_platform)
-		return
-	}
-
-	url := "https://packages.mochi-os.org/" + path + "/versions.json"
-
-	ctx, cancel := context.WithTimeout(context.Background(), update_timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	v, err := update_manifest()
 	if err != nil {
-		warn("Server update: build request: %v", err)
-		return
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		info("Server update: fetch %s: %v", url, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		info("Server update: fetch %s: status %d", url, resp.StatusCode)
-		return
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		info("Server update: read body: %v", err)
-		return
-	}
-
-	var v update_versions
-	if err := json.Unmarshal(body, &v); err != nil {
-		info("Server update: parse %s: %v", url, err)
+		info("Server update: %v", err)
 		return
 	}
 
 	latest, ok := v.Tracks[update_track]
 	if !ok || latest == "" {
-		info("Server update: no %q track in %s", update_track, url)
+		info("Server update: no %q track in the %s manifest", update_track, build_platform)
 		return
 	}
 
@@ -244,7 +279,25 @@ func update_install_start(version string) error {
 // if msiexec's Stop arrives slowly. The 5-second pre-wait inside the cmd
 // invocation ensures we're stopped before msiexec tries to replace files.
 func update_install_run(version string) error {
-	url := "https://packages.mochi-os.org/windows/mochi-server.msi"
+	// Re-read the manifest rather than trusting the daily check's cached
+	// version: it names the exact artifact for this version and carries the
+	// digest we verify below, and it may have moved on since the last poll.
+	v, err := update_manifest()
+	if err != nil {
+		return fmt.Errorf("manifest: %v", err)
+	}
+	release, ok := v.Releases[version]
+	if !ok {
+		return fmt.Errorf("manifest has no release entry for %q", version)
+	}
+	if release.File == "" || release.Sha256 == "" || release.Size <= 0 {
+		return fmt.Errorf("manifest entry for %q is incomplete", version)
+	}
+	if strings.ContainsAny(release.File, "/\\") {
+		return fmt.Errorf("manifest entry for %q names a path, not a file: %q", version, release.File)
+	}
+
+	url := update_base() + "/" + release.File
 	dir := filepath.Join(data_dir, "tmp")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %v", dir, err)
@@ -252,7 +305,7 @@ func update_install_run(version string) error {
 	path := filepath.Join(dir, "mochi-server-"+version+".msi")
 
 	info("Server update: downloading %s to %s", url, path)
-	if err := update_install_download(url, path); err != nil {
+	if err := update_install_download(url, path, release); err != nil {
 		return fmt.Errorf("download: %v", err)
 	}
 
@@ -274,9 +327,20 @@ func update_install_run(version string) error {
 	return nil
 }
 
-// update_install_download streams a URL to disk with a generous timeout —
-// MSIs are tens of megabytes and corporate links can be slow.
-func update_install_download(url, dest string) error {
+// update_install_download streams a URL to disk with a generous timeout — MSIs
+// are tens of megabytes and corporate links can be slow — and refuses to
+// publish the result unless it is exactly the artifact the manifest described.
+//
+// The digest is what makes the whole path safe to hand to msiexec, which runs
+// the file as LocalSystem with no verification of its own. It also catches the
+// benign case: a release landing between the version check and this download
+// leaves the manifest and the artifact briefly out of step, and installing
+// whatever bytes arrive would silently install a version nobody chose.
+func update_install_download(url, dest string, release update_release) error {
+	if release.Size > update_artifact_maximum {
+		return fmt.Errorf("manifest size %d exceeds maximum %d", release.Size, update_artifact_maximum)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), update_install_timeout)
 	defer cancel()
 
@@ -298,16 +362,40 @@ func update_install_download(url, dest string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	// Remove the partial on every failure path, including the verification
+	// failures below — a rejected artifact must not survive on disk where a
+	// later attempt might mistake it for a good download.
+	complete := false
+	defer func() {
+		if !complete {
+			os.Remove(tmp)
+		}
+	}()
+
+	// One byte past the declared size, so a body that is longer than the
+	// manifest claims is detected rather than silently truncated to a
+	// plausible-looking file.
+	digest := sha256.New()
+	written, err := io.Copy(io.MultiWriter(f, digest), io.LimitReader(resp.Body, release.Size+1))
+	if err != nil {
 		f.Close()
-		os.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, dest)
+	if written != release.Size {
+		return fmt.Errorf("size %d does not match manifest size %d", written, release.Size)
+	}
+	if sum := hex.EncodeToString(digest.Sum(nil)); !strings.EqualFold(sum, release.Sha256) {
+		return fmt.Errorf("sha256 %s does not match manifest sha256 %s", sum, release.Sha256)
+	}
+
+	if err := os.Rename(tmp, dest); err != nil {
+		return err
+	}
+	complete = true
+	return nil
 }
 
 // update_notify_admins dispatches one Mochi notification per administrator

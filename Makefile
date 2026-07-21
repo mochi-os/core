@@ -509,8 +509,18 @@ release-publish:
 	cp $(rpm_x86_64) $(rpm_aarch64) $(rpm_armv7hl) ../packages/rpm/Packages
 	@t=$$(date +%s); ./build/scripts/rpm-repository-update ../packages/rpm && echo ">>> rpm reindex (createrepo): $$(($$(date +%s)-t))s" | tee -a $(timing)
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/rpm/versions.json
+	# Two copies: the stable name for humans clicking a download link, and a
+	# version-stamped name for the self-updater. The self-updater must fetch
+	# the exact version it decided to install — the stable path is overwritten
+	# in place every release, and this rsync is not atomic, so a server that
+	# read versions.json seconds earlier could otherwise download a different
+	# build than the one it recorded. Pruned like the apt pool: current only.
+	rm -f ../packages/windows/mochi-server-*.msi
 	cp $(msi) ../packages/windows/mochi-server.msi
-	echo '{"tracks": {"production": "$(version)"}}' > ../packages/windows/versions.json
+	cp $(msi) ../packages/windows/mochi-server-$(version).msi
+	@sha=`sha256sum $(msi) | cut -d' ' -f1`; size=`wc -c < $(msi) | tr -d ' '`; \
+	  printf '{"tracks": {"production": "%s"}, "releases": {"%s": {"file": "mochi-server-%s.msi", "size": %s, "sha256": "%s"}}}\n' \
+	  '$(version)' '$(version)' '$(version)' "$$size" "$$sha" > ../packages/windows/versions.json
 	cp $(pkg_amd64) ../packages/macos/mochi-server-amd64.pkg
 	cp $(pkg_arm64) ../packages/macos/mochi-server-arm64.pkg
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/macos/versions.json

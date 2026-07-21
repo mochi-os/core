@@ -449,6 +449,7 @@ var (
 		{"1SWnPXg9xpT2Cxemw2aw8CLZCP5yDatQ6ebF9dHoMTXQNFKLuw", "Repositories", nil},
 		{"1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky", "Settings", []struct{ Permission, Object string }{
 			{"settings/write", ""},
+			{"server/update", ""},
 			{"users/read", ""},
 			{"accounts/read", ""},
 			{"accounts/manage", ""},

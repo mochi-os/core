@@ -61,6 +61,7 @@ var permissions = []Permission{
 	{"accounts/notify", true, false},
 	{"notifications/send", true, false},
 	{"permissions/manage", true, false},
+	{"server/update", true, true},
 	{"settings/write", true, true},
 	{"user/export", true, false},
 	{"users/read", true, true},

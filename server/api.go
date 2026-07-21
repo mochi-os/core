@@ -711,9 +711,13 @@ func api_server_update_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 // Windows. Returns {pending: <version>} on success. Errors on platforms
 // that don't support self-install (currently anything except Windows).
 //
-// Caller is responsible for admin-gating; the settings app's action
-// wrapper does this via require_admin.
+// Requires the restricted, administrator-only server/update permission:
+// this replaces the running server and restarts the service, so it must
+// not be reachable from an app just because a user has it installed.
 func api_server_update_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "server/update"); err != nil {
+		return nil, err
+	}
 	var version string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "version?", &version); err != nil {
 		return nil, err

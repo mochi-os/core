@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/autotls"
 	"github.com/gin-gonic/gin"
@@ -37,6 +38,27 @@ var (
 	// keys, never substrings like ?barcode=.
 	web_log_secret_query = regexp.MustCompile(`([?&](?:token|code|state)=)[^&]*`)
 )
+
+// web_server builds a listener with explicit connection limits. gin's r.Run
+// leaves every timeout unset, so any client can open a connection, dribble
+// headers (or send nothing at all) and hold a goroutine and file descriptor
+// indefinitely — slowloris, needing no authentication.
+//
+// ReadTimeout and WriteTimeout are deliberately NOT set. They bound the entire
+// request and entire response, which would break every path that legitimately
+// takes a long time: git pack upload/receive, restore-bundle uploads, large
+// attachment transfers, and websocket upgrades that stay open for the life of
+// the session. ReadHeaderTimeout bounds only the header phase and IdleTimeout
+// only the gap between keep-alive requests, so neither touches those.
+func web_server(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+}
 
 // Redact credential query values from a request path before it reaches the
 // access log. gin's logger includes the query string, so without this the log
@@ -1691,10 +1713,11 @@ func web_start() {
 			} else {
 				info("Web listening on %s (HTTP)", addr)
 			}
+			s := web_server(addr, r)
 			if last {
-				must(r.Run(addr))
+				must(s.ListenAndServe())
 			} else {
-				go must(r.Run(addr))
+				go must(s.ListenAndServe())
 			}
 		}
 	}

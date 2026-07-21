@@ -22,9 +22,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/autotls"
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
+	"golang.org/x/crypto/acme"
 )
 
 var (
@@ -58,6 +58,50 @@ func web_server(addr string, handler http.Handler) *http.Server {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
+}
+
+// web_serve_tls serves HTTPS on :443 and ACME/redirect on :80. It replaces
+// autotls.RunWithManagerAndTLSConfig, which overwrote the tls.Config's
+// GetCertificate with the bare autocert manager's — silently discarding
+// domains_get_certificate and with it every manually installed certificate.
+// Wildcards can only ever be manual (ACME issues none over TLS-ALPN-01 or
+// HTTP-01), so those domains fell through to autocert and failed to serve.
+// The domain, verification and TLS-enabled checks were not lost with it: the
+// manager's HostPolicy (domains_host_policy) already enforces all three.
+//
+// Ports match autotls exactly (:443 and :80, all interfaces) so the listener
+// topology is unchanged; the only differences are the retained GetCertificate
+// and the connection limits from web_server.
+func web_serve_tls(handler http.Handler) error {
+	tls_config := &tls.Config{
+		// acme-tls/1 must stay advertised or TLS-ALPN-01 validation breaks:
+		// autocert answers those challenges through GetCertificate, and
+		// domains_get_certificate falls through to the manager for any domain
+		// without a manual certificate — which is exactly where they land.
+		GetCertificate: domains_get_certificate,
+		NextProtos:     []string{"h2", "http/1.1", acme.ALPNProto},
+	}
+
+	errors := make(chan error, 2)
+
+	// HTTP-01 challenges and the plain-HTTP redirect, as autotls served them.
+	go func() {
+		s := web_server(":80", domains_acme_manager.HTTPHandler(http.HandlerFunc(web_redirect_https)))
+		errors <- s.ListenAndServe()
+	}()
+
+	go func() {
+		s := web_server(":443", handler)
+		s.TLSConfig = tls_config
+		errors <- s.ListenAndServeTLS("", "")
+	}()
+
+	return <-errors
+}
+
+// web_redirect_https sends a plain-HTTP request to the same URL over HTTPS.
+func web_redirect_https(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "https://"+r.Host+r.RequestURI, http.StatusMovedPermanently)
 }
 
 // Redact credential query values from a request path before it reaches the
@@ -1697,14 +1741,11 @@ func web_start() {
 				continue
 			}
 			web_https = true
-			tls_config := &tls.Config{
-				GetCertificate: domains_get_certificate,
-			}
 			info("Web listening on %s:443 (HTTPS)", listen)
 			if last {
-				must(autotls.RunWithManagerAndTLSConfig(r, domains_acme_manager, tls_config))
+				must(web_serve_tls(r))
 			} else {
-				go must(autotls.RunWithManagerAndTLSConfig(r, domains_acme_manager, tls_config))
+				go must(web_serve_tls(r))
 			}
 		} else {
 			addr := fmt.Sprintf("%s:%d", listen, port)

@@ -21,7 +21,6 @@ require (
 	github.com/disintegration/imaging v1.6.2
 	github.com/dsnet/compress v0.0.1
 	github.com/fxamacker/cbor/v2 v2.9.0
-	github.com/gin-gonic/autotls v1.1.3
 	github.com/gin-gonic/gin v1.10.0
 	github.com/go-git/go-billy/v5 v5.9.0
 	github.com/go-git/go-git/v5 v5.19.0

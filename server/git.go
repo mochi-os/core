@@ -2290,7 +2290,7 @@ func api_git_archive(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		if !ok || action == nil {
 			return sl_error(fn, "called from non-action and no stream provided")
 		}
-		t.SetLocal("file_serving", true)
+		starlark_serving_set(t)
 		if !action.web.Writer.Written() {
 			action.web.Status(http.StatusOK)
 		}

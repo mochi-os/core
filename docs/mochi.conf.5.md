@@ -132,6 +132,14 @@ output, so the effective configuration is safe to copy into bug reports.
 :   Maximum wall-clock seconds any single Starlark invocation may run
     before being aborted. Defaults to **90**.
 
+**file_timeout** = *integer*
+:   Maximum wall-clock seconds an invocation that is streaming a file to
+    the client may continue after **timeout** has passed. Such an
+    invocation has finished its Starlark work and is only sending bytes,
+    so aborting it at **timeout** would truncate large downloads on slow
+    connections. Values below **timeout** are raised to it. Defaults to
+    **900**.
+
 ## [development]
 
 **apps** = *path*

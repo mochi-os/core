@@ -86,6 +86,7 @@ func main_serve(ready func()) int {
 	if err := run_dir_create(); err != nil {
 		warn("Unable to create runtime state directory %s: %v", run_dir(), err)
 	}
+	temporary_configure()
 	// Confirm the data directory is writable. On Windows, the MSI
 	// installer creates %ProgramData%\Mochi\data owned by SYSTEM with
 	// restrictive ACLs so the auto-installed mochi-server service

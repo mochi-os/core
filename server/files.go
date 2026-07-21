@@ -473,6 +473,42 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	return sl.None, nil
 }
 
+// temporary_configure points the process's temporary directory at
+// cache_dir/tmp.
+//
+// Go spools the part of a multipart upload that exceeds its in-memory
+// threshold to os.TempDir(), which is $TMPDIR or /tmp. On a systemd host /tmp
+// is usually a tmpfs, so "spilling to a temp file" spends RAM rather than
+// relieving it, and a large upload competes with the server's own memory. On
+// yuzu /tmp is a 31 GB tmpfs while cache_dir is on disk.
+//
+// Set here rather than in the unit file so it follows directories.cache from
+// mochi.conf instead of drifting from it, and applies to every install without
+// per-host configuration. os.TempDir() re-reads the environment on each call,
+// so this reaches uploads parsed later. cache_dir/tmp rather than data_dir/tmp
+// because these files are disposable: cache_cleanup sweeps whatever leaks, and
+// nothing transient reaches the backups.
+//
+// Failure is not fatal — the server falls back to the system default, which is
+// where it wrote before.
+func temporary_configure() {
+	temporary := filepath.Join(cache_dir, "tmp")
+	if err := os.MkdirAll(temporary, 0o700); err != nil {
+		warn("Unable to create temporary directory %s, falling back to the system default: %v", temporary, err)
+		return
+	}
+	// Tighten explicitly: MkdirAll leaves an existing directory's mode alone,
+	// and this one predates this function — app staging created it 0755. The
+	// spooled parts of an upload land here, so other local users have no
+	// business listing it.
+	if err := os.Chmod(temporary, 0o700); err != nil {
+		warn("Unable to restrict permissions on %s: %v", temporary, err)
+	}
+	if err := os.Setenv("TMPDIR", temporary); err != nil {
+		warn("Unable to set TMPDIR to %s: %v", temporary, err)
+	}
+}
+
 // Periodically clean expired cache files
 func cache_manager() {
 	for range time.Tick(1 * time.Hour) {

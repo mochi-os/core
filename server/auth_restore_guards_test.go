@@ -17,9 +17,15 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestRestoreUnzipGuards(t *testing.T) {
@@ -59,5 +65,72 @@ func TestRestoreUnzipGuards(t *testing.T) {
 	// Within the cap it extracts cleanly.
 	if _, err := restore_unzip(makeZip(map[string]int{"top/small.bin": 256}), t.TempDir(), 1024); err != nil {
 		t.Errorf("within-cap bundle must extract: %v", err)
+	}
+}
+
+// The public restore upload is capped before multipart parsing (the route is
+// exempt from the global body limit): an oversized declared Content-Length is
+// rejected outright, and a body that exceeds the cap without declaring a
+// length is cut off by MaxBytesReader during the parse. Both answer 413.
+func TestRestoreUploadCap(t *testing.T) {
+	cleanup := create_test_users_db(t)
+	defer cleanup()
+	db := db_open("db/users.db")
+	db.exec("insert into users (uid, username) values ('u1', 'first@example.com')")
+
+	original := file_max_storage
+	file_max_storage = 1 << 20
+	defer func() { file_max_storage = original }()
+	limit := file_max_storage + 64*1024*1024
+
+	form := func(email string, payload int) (*bytes.Buffer, string) {
+		body := &bytes.Buffer{}
+		writer := multipart.NewWriter(body)
+		if email != "" {
+			writer.WriteField("email", email)
+		}
+		writer.WriteField("passphrase", "pp")
+		part, err := writer.CreateFormFile("bundle", "bundle.zip")
+		if err != nil {
+			t.Fatal(err)
+		}
+		part.Write(bytes.Repeat([]byte("a"), payload))
+		writer.Close()
+		return body, writer.FormDataContentType()
+	}
+
+	// Declared Content-Length past the cap: rejected before any read.
+	body, content := form("new@example.com", 16)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/_/auth/restore", body)
+	c.Request.Header.Set("Content-Type", content)
+	c.Request.ContentLength = limit + 1
+	web_auth_restore(c)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("oversized Content-Length: got %d, want 413", w.Code)
+	}
+
+	// Undeclared length with an oversized body: cut off during the parse.
+	body, content = form("new@example.com", int(limit)+(1<<20))
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/_/auth/restore", struct{ io.Reader }{body})
+	c.Request.Header.Set("Content-Type", content)
+	web_auth_restore(c)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("oversized undeclared-length body: got %d, want 413", w.Code)
+	}
+
+	// A small upload parses cleanly through the cap and fails on its own
+	// validation (missing email), not on size.
+	body, content = form("", 64)
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/_/auth/restore", body)
+	c.Request.Header.Set("Content-Type", content)
+	web_auth_restore(c)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("small body must pass the cap: got %d, want 400", w.Code)
 	}
 }

@@ -25,6 +25,7 @@ import (
 	"archive/zip"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -62,6 +63,45 @@ func restore_cleanup_orphans() {
 // web_auth_restore is POST /_/auth/restore.
 // multipart/form-data: email, passphrase, bundle (file).
 func web_auth_restore(c *gin.Context) {
+	// First-user-becomes-administrator, exactly as user_create and
+	// auth_replicate do — role is never taken from the bundle. Decided up
+	// front because the role sets the storage ceiling, and the ceiling must
+	// be in place before anything touches the form: the first PostForm call
+	// parses — and spools to disk — the entire multipart body.
+	udb := db_open("db/users.db")
+	role := "user"
+	if has, _ := udb.exists("select uid from users limit 1"); !has {
+		role = "administrator"
+	}
+
+	// Cap the bundle at the per-user storage quota — the restored account is
+	// subject to it anyway. Administrators are quota-exempt (the first-user
+	// bootstrap can be a large operator account), so they get a generous
+	// finite ceiling, which still guards against a zip-bomb. The same cap
+	// bounds the upload itself: this route is public and multipart is exempt
+	// from the global 1MB body limit (web_body_limit), so without it an
+	// unauthenticated client could stream an arbitrarily large body to disk.
+	// The headroom covers multipart framing and per-file zip overhead.
+	restore_cap := file_max_storage
+	if role == "administrator" {
+		restore_cap = 50 * 1024 * 1024 * 1024
+	}
+	limit := restore_cap + 64*1024*1024
+	if c.Request.ContentLength > limit {
+		respond_error(c, http.StatusRequestEntityTooLarge, "bundle_too_large", "errors.bundle_too_large", nil)
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+		var exceeded *http.MaxBytesError
+		if errors.As(err, &exceeded) {
+			respond_error(c, http.StatusRequestEntityTooLarge, "bundle_too_large", "errors.bundle_too_large", nil)
+		} else {
+			respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
+		}
+		return
+	}
+
 	email := strings.TrimSpace(c.PostForm("email"))
 	passphrase := c.PostForm("passphrase")
 
@@ -84,7 +124,6 @@ func web_auth_restore(c *gin.Context) {
 		return
 	}
 
-	udb := db_open("db/users.db")
 	if taken, _ := udb.exists("select 1 from users where username=?", email); taken {
 		respond_error(c, http.StatusConflict, "username_taken", "errors.username_taken", nil)
 		return
@@ -92,12 +131,7 @@ func web_auth_restore(c *gin.Context) {
 
 	// Create the placeholder with a fresh destination-side uid. The source
 	// uid in the bundle is informational only; the destination's uid is
-	// canonical. First-user-becomes-administrator, exactly as user_create
-	// and auth_replicate do — role is never taken from the bundle.
-	role := "user"
-	if has, _ := udb.exists("select uid from users limit 1"); !has {
-		role = "administrator"
-	}
+	// canonical.
 	uid := uid()
 	udb.exec("insert into users (uid, username, role, methods, status) values (?, ?, ?, '', 'pending-restore')", uid, email, role)
 
@@ -126,14 +160,6 @@ func web_auth_restore(c *gin.Context) {
 	}
 
 	staging := filepath.Join(restore_dir, "staging")
-	// Cap the decompressed bundle at the per-user storage quota — the restored
-	// account is subject to it anyway. Administrators are quota-exempt (the
-	// first-user bootstrap can be a large operator account), so they get a
-	// generous finite ceiling, which still guards against a zip-bomb.
-	restore_cap := file_max_storage
-	if role == "administrator" {
-		restore_cap = 50 * 1024 * 1024 * 1024
-	}
 	bundle, err := restore_unzip(zip_path, staging, restore_cap)
 	if err != nil {
 		user_delete(uid)

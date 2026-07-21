@@ -32,7 +32,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"filippo.io/age"
@@ -61,74 +60,36 @@ func restore_cleanup_orphans() {
 	}
 }
 
-// restore_upload_default is the out-of-box compressed-bundle upload cap for a
-// signup-with-restore (2 GiB). Covers typical accounts; operators whose users
-// migrate larger accounts raise the restore_upload_maximum setting.
-const restore_upload_default int64 = 2 * 1024 * 1024 * 1024
-
-// restore_setting_bytes reads a byte-valued setting, returning 0 when it is
-// unset or not a positive integer.
-func restore_setting_bytes(name string) int64 {
-	if v, err := strconv.ParseInt(setting_get(name, ""), 10, 64); err == nil && v > 0 {
-		return v
-	}
-	return 0
-}
-
-// restore_upload_maximum returns the compressed-upload cap for a signup (bytes).
-// Operator-tunable via the restore_upload_maximum setting, deliberately separate
-// from the account storage quota so it tracks the host's disk headroom, not the
-// amount a restored account may eventually store. The same default applies on an
-// empty (not-yet-bootstrapped) server — a fresh public endpoint must not expose
-// a large spool. An operator who genuinely needs a larger first-user bootstrap
-// raises restore_upload_bootstrap explicitly (a deliberate setup-time action);
-// it is only consulted while the server has no users.
-func restore_upload_maximum() int64 {
-	if v := restore_setting_bytes("restore_upload_maximum"); v > 0 {
-		return v
-	}
-	return restore_upload_default
-}
+// restore_upload_maximum bounds the compressed account-restore bundle a single
+// unauthenticated POST /_/auth/restore may spool to disk before any validation
+// runs (the route is public and multipart is exempt from the global body
+// limit). A fixed internal DoS bound — deliberately NOT an operator setting;
+// it is separate from the per-user storage quota (file_max_storage) so it
+// tracks the host's disk headroom, not the amount a restored account may
+// eventually store. The same cap covers the first-user path, so a fresh server
+// never exposes a large unauthenticated spool. A var, not a const, only so
+// tests can lower it.
+var restore_upload_maximum int64 = 2 * 1024 * 1024 * 1024 // 2 GiB
 
 // web_auth_restore is POST /_/auth/restore.
 // multipart/form-data: email, passphrase, bundle (file).
 func web_auth_restore(c *gin.Context) {
 	// First-user-becomes-administrator, exactly as user_create and
-	// auth_replicate do — role is never taken from the bundle. Decided up
-	// front because the role sets the storage ceiling, and the ceiling must
-	// be in place before anything touches the form: the first PostForm call
-	// parses — and spools to disk — the entire multipart body.
+	// auth_replicate do — role is never taken from the bundle. Used when the
+	// placeholder is created below.
 	udb := db_open("db/users.db")
 	role := "user"
 	if has, _ := udb.exists("select uid from users limit 1"); !has {
 		role = "administrator"
 	}
 
-	// Two independent caps. The decompressed-content cap (restore_cap) is the
-	// per-user storage quota the restored account is subject to anyway, and is
-	// the zip-bomb guard passed to restore_unzip. The compressed-UPLOAD cap
-	// (upload_max) bounds the bundle on the wire and on disk: this route is
-	// public and multipart is exempt from the global 1MB body limit
-	// (web_body_limit), so without it an unauthenticated client could spool an
-	// arbitrarily large body. The upload cap is a separate operator setting,
-	// not derived from the quota, so it can be tuned to the host's disk
-	// headroom independently.
-	restore_cap := file_max_storage
-	upload_max := restore_upload_maximum()
-	// First-user bootstrap (empty server): keep the ordinary public caps by
-	// default so a fresh, not-yet-bootstrapped server never exposes a large
-	// unauthenticated spool. Lift both only when the operator has explicitly
-	// set restore_upload_bootstrap — a deliberate setup-time action for
-	// restoring a large operator account.
-	if role == "administrator" {
-		if boot := restore_setting_bytes("restore_upload_bootstrap"); boot > 0 {
-			upload_max = boot
-			restore_cap = boot
-		}
-	}
-
+	// Cap the compressed bundle before the first PostForm call parses — and
+	// spools to disk — the multipart body. restore_upload_maximum bounds the
+	// upload itself; the separate decompressed-content cap (restore_cap, the
+	// account's storage quota) is the zip-bomb guard passed to restore_unzip.
 	// The headroom covers multipart framing and per-file zip overhead.
-	limit := upload_max + 64*1024*1024
+	restore_cap := file_max_storage
+	limit := restore_upload_maximum + 64*1024*1024
 	if c.Request.ContentLength > limit {
 		respond_error(c, http.StatusRequestEntityTooLarge, "bundle_too_large", "errors.bundle_too_large", nil)
 		return

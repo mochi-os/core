@@ -336,22 +336,6 @@ var system_settings = map[string]SystemSetting{
 		UserReadable: true,
 		ReadOnly:     false,
 	},
-	"restore_upload_maximum": {
-		Name:         "restore_upload_maximum",
-		Pattern:      "integer",
-		Default:      "2147483648",
-		Description:  "Maximum size, in bytes, of a compressed account-restore bundle accepted at signup (POST /_/auth/restore). Bounds the disk a single unauthenticated upload may spool, and is deliberately separate from the per-user storage quota so it tracks the host's disk headroom rather than the amount a restored account may eventually store. Default 2147483648 (2 GiB); raise it for users migrating larger accounts.",
-		UserReadable: false,
-		ReadOnly:     false,
-	},
-	"restore_upload_bootstrap": {
-		Name:         "restore_upload_bootstrap",
-		Pattern:      "integer",
-		Default:      "",
-		Description:  "Maximum size, in bytes, of the restore bundle accepted for the first-user bootstrap, consulted only while the server has no users. Leave empty to keep the ordinary restore_upload_maximum cap on a fresh server; set it to permit a larger operator-account restore during initial setup.",
-		UserReadable: false,
-		ReadOnly:     false,
-	},
 }
 
 var api_setting = sls.FromStringDict(sl.String("mochi.setting"), sl.StringDict{

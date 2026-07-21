@@ -78,10 +78,12 @@ func TestRestoreUploadCap(t *testing.T) {
 	db := db_open("db/users.db")
 	db.exec("insert into users (uid, username) values ('u1', 'first@example.com')")
 
-	original := file_max_storage
-	file_max_storage = 1 << 20
-	defer func() { file_max_storage = original }()
-	limit := file_max_storage + 64*1024*1024
+	// The upload cap is the operator setting (not the storage quota); a real
+	// user exists so the ordinary-user cap applies, not the admin ceiling.
+	settings := db_open("db/settings.db")
+	settings.exec("create table settings (name text primary key, value text not null)")
+	setting_set("restore_upload_maximum", "1048576") // 1 MiB
+	limit := int64(1<<20) + 64*1024*1024
 
 	form := func(email string, payload int) (*bytes.Buffer, string) {
 		body := &bytes.Buffer{}

@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"filippo.io/age"
@@ -60,6 +61,28 @@ func restore_cleanup_orphans() {
 	}
 }
 
+// restore_upload_default is the out-of-box compressed-bundle upload cap for an
+// ordinary signup-with-restore (2 GiB). Covers typical accounts; operators
+// whose users migrate larger accounts raise the restore_upload_maximum
+// setting. restore_upload_administrator is the ceiling for the first-user
+// bootstrap, which only runs on an empty server and may carry a large operator
+// account.
+const (
+	restore_upload_default       int64 = 2 * 1024 * 1024 * 1024
+	restore_upload_administrator int64 = 50 * 1024 * 1024 * 1024
+)
+
+// restore_upload_maximum returns the compressed-upload cap for ordinary
+// signups (bytes). Operator-tunable via the restore_upload_maximum setting,
+// deliberately separate from the account storage quota so it tracks the host's
+// disk headroom, not the amount a restored account may eventually store.
+func restore_upload_maximum() int64 {
+	if v, err := strconv.ParseInt(setting_get("restore_upload_maximum", ""), 10, 64); err == nil && v > 0 {
+		return v
+	}
+	return restore_upload_default
+}
+
 // web_auth_restore is POST /_/auth/restore.
 // multipart/form-data: email, passphrase, bundle (file).
 func web_auth_restore(c *gin.Context) {
@@ -74,19 +97,26 @@ func web_auth_restore(c *gin.Context) {
 		role = "administrator"
 	}
 
-	// Cap the bundle at the per-user storage quota — the restored account is
-	// subject to it anyway. Administrators are quota-exempt (the first-user
-	// bootstrap can be a large operator account), so they get a generous
-	// finite ceiling, which still guards against a zip-bomb. The same cap
-	// bounds the upload itself: this route is public and multipart is exempt
-	// from the global 1MB body limit (web_body_limit), so without it an
-	// unauthenticated client could stream an arbitrarily large body to disk.
-	// The headroom covers multipart framing and per-file zip overhead.
+	// Two independent caps. The decompressed-content cap (restore_cap) is the
+	// per-user storage quota the restored account is subject to anyway, and is
+	// the zip-bomb guard passed to restore_unzip. The compressed-UPLOAD cap
+	// (upload_max) bounds the bundle on the wire and on disk: this route is
+	// public and multipart is exempt from the global 1MB body limit
+	// (web_body_limit), so without it an unauthenticated client could spool an
+	// arbitrarily large body. The upload cap is a separate operator setting,
+	// not derived from the quota, so it can be tuned to the host's disk
+	// headroom independently. Administrators are the first-user bootstrap
+	// (only reachable on an empty server) and may carry a large operator
+	// account, so both ceilings are generous for them.
 	restore_cap := file_max_storage
+	upload_max := restore_upload_maximum()
 	if role == "administrator" {
-		restore_cap = 50 * 1024 * 1024 * 1024
+		restore_cap = restore_upload_administrator
+		upload_max = restore_upload_administrator
 	}
-	limit := restore_cap + 64*1024*1024
+
+	// The headroom covers multipart framing and per-file zip overhead.
+	limit := upload_max + 64*1024*1024
 	if c.Request.ContentLength > limit {
 		respond_error(c, http.StatusRequestEntityTooLarge, "bundle_too_large", "errors.bundle_too_large", nil)
 		return
@@ -101,6 +131,14 @@ func web_auth_restore(c *gin.Context) {
 		}
 		return
 	}
+	// Remove any multipart parts spooled to a temp file once the handler
+	// returns — SaveUploadedFile has copied the bundle to zip_path by then, so
+	// the spool is no longer needed and should not linger on disk.
+	defer func() {
+		if c.Request.MultipartForm != nil {
+			c.Request.MultipartForm.RemoveAll()
+		}
+	}()
 
 	email := strings.TrimSpace(c.PostForm("email"))
 	passphrase := c.PostForm("passphrase")

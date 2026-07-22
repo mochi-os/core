@@ -1,10 +1,43 @@
 #!/bin/sh
 set -e
 
-if [ $# -lt 1 ]; then
-    echo "Syntax: $0 <root directory of repository>"
+if [ $# -lt 2 ]; then
+    echo "Syntax: $0 <root directory of repository> <gpg key id>"
     exit 1
 fi
 
-cd $1
+root=$1
+key=$2
+
+# Sign every package before indexing. Without this the channel offered no
+# integrity guarantee at all: dnf was told gpgcheck=0, and the packages carried
+# no signature to check even if it had been asked to. The apt counterpart has
+# signed its index from the beginning, so an rpm user was getting materially
+# weaker guarantees than a deb user on the same release, without being told.
+#
+# Re-signing an already-signed package replaces the signature, so re-running a
+# release is safe.
+rpmsign --define "_gpg_name $key" --addsign "$root"/Packages/*.rpm
+
+# Refuse to publish anything unsigned. A package that slipped through would
+# install without complaint on a client still configured with gpgcheck=0, and
+# fail confusingly on one that has been switched over.
+# Query every signature tag, not just one: an ed25519 signature lands in
+# OPENPGP, while RSA lands in the older SIGPGP/RSAHEADER tags, so checking a
+# single tag reports a correctly signed package as unsigned.
+for package in "$root"/Packages/*.rpm; do
+    signature=$(rpm -qp --qf '%{OPENPGP:pgpsig}%{SIGPGP:pgpsig}%{RSAHEADER:pgpsig}' \
+        "$package" 2>/dev/null | sed 's/(none)//g')
+    if [ -z "$signature" ]; then
+        echo "$0: $package is unsigned after rpmsign" >&2
+        exit 1
+    fi
+done
+
+cd "$root"
 createrepo_c --update .
+
+# Sign the metadata as well. Package signatures prove each package is ours;
+# this proves the index listing them is, which is what stops a stripped or
+# rolled-back package list. apt gets the equivalent from its signed InRelease.
+gpg --batch --yes --default-key "$key" --detach-sign --armor repodata/repomd.xml

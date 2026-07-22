@@ -528,7 +528,7 @@ release-publish:
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/apt/versions.json
 	rm -f ../packages/rpm/Packages/mochi-server-*.rpm
 	cp $(rpm_x86_64) $(rpm_aarch64) $(rpm_armv7hl) ../packages/rpm/Packages
-	@t=$$(date +%s); ./build/scripts/rpm-repository-update ../packages/rpm && echo ">>> rpm reindex (createrepo): $$(($$(date +%s)-t))s" | tee -a $(timing)
+	@t=$$(date +%s); ./build/scripts/rpm-repository-update ../packages/rpm `cat local/gpg.txt | tr -d '\n'` && echo ">>> rpm reindex (createrepo): $$(($$(date +%s)-t))s" | tee -a $(timing)
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/rpm/versions.json
 	# Two copies: the stable name for humans clicking a download link, and a
 	# version-stamped name for the self-updater. The self-updater must fetch
@@ -537,6 +537,7 @@ release-publish:
 	# read versions.json seconds earlier could otherwise download a different
 	# build than the one it recorded. Pruned like the apt pool: current only.
 	rm -f ../packages/windows/mochi-server-*.msi
+	gpg --armor --export `cat local/gpg.txt | tr -d '\n'` > ../packages/mochi.asc
 	cp $(msi) ../packages/windows/mochi-server.msi
 	cp $(msi) ../packages/windows/mochi-server-$(version).msi
 	@sha=`sha256sum $(msi) | cut -d' ' -f1`; size=`wc -c < $(msi) | tr -d ' '`; \

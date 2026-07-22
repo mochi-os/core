@@ -9,7 +9,10 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"golang.org/x/crypto/acme/autocert"
 )
 
 // certificates_dirs points cache_dir and data_dir at temporary directories for
@@ -139,4 +142,89 @@ func within(path, directory string) bool {
 	}
 	return relative != ".." && !filepath.IsAbs(relative) &&
 		(len(relative) < 2 || relative[:2] != "..")
+}
+
+// TestCertificatesSeparateByAuthority pins that a non-default ACME directory
+// gets its own cache.
+//
+// A staging certificate is signed by a root no browser trusts. If one landed
+// in the production cache and were served, every visitor would get a full-page
+// security error - a worse outcome than the expiry the surrounding work exists
+// to prevent. The ACME account key is cached alongside the certificates and
+// belongs to exactly one authority, so it must not be shared either.
+func TestCertificatesSeparateByAuthority(t *testing.T) {
+	certificates_dirs(t)
+	production := domains_certificates()
+
+	staging := "https://acme-staging-v02.api.letsencrypt.org/directory"
+	ini_acme_for_test(t, staging)
+	alternate := domains_certificates()
+
+	if alternate == production {
+		t.Fatalf("a staging directory shares the production cache at %q: an untrusted certificate could be served to real visitors", alternate)
+	}
+	if !within(alternate, production) {
+		t.Errorf("staging cache %q is not under the certificates directory %q", alternate, production)
+	}
+	if !strings.Contains(alternate, "acme-staging-v02.api.letsencrypt.org") {
+		t.Errorf("staging cache %q is not named for its authority, so two authorities could collide", alternate)
+	}
+}
+
+// TestAuthorityNameIsPathSafe pins that a directory URL cannot escape the
+// certificates directory or produce an unusable path.
+func TestAuthorityNameIsPathSafe(t *testing.T) {
+	for _, directory := range []string{
+		"https://acme-staging-v02.api.letsencrypt.org/directory",
+		"https://example.com:14000/dir",
+		"https://../../etc/directory",
+		"not a url at all",
+		"",
+	} {
+		name := domains_authority(directory)
+		if name == "" {
+			t.Errorf("%q produced an empty authority name", directory)
+		}
+		if strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") {
+			t.Errorf("%q produced %q, which escapes the certificates directory", directory, name)
+		}
+	}
+}
+
+// TestACMEManagerUsesConfiguredDirectory pins the wiring, not just the path
+// helper: the manager the server builds must actually issue from the
+// configured authority and cache into that authority's directory.
+func TestACMEManagerUsesConfiguredDirectory(t *testing.T) {
+	certificates_dirs(t)
+
+	// Default: no client, so autocert uses its built-in production directory.
+	domains_init_acme()
+	if domains_acme_manager.Client != nil {
+		t.Errorf("a client was configured by default: %+v", domains_acme_manager.Client)
+	}
+
+	staging := "https://acme-staging-v02.api.letsencrypt.org/directory"
+	ini_acme_for_test(t, staging)
+	domains_init_acme()
+	if domains_acme_manager.Client == nil {
+		t.Fatal("no ACME client configured, so issuance would still go to the default authority")
+	}
+	if got := domains_acme_manager.Client.DirectoryURL; got != staging {
+		t.Errorf("directory URL is %q, want %q", got, staging)
+	}
+	cache, ok := domains_acme_manager.Cache.(autocert.DirCache)
+	if !ok {
+		t.Fatalf("cache is %T, not a DirCache", domains_acme_manager.Cache)
+	}
+	if !strings.Contains(string(cache), "acme-staging-v02.api.letsencrypt.org") {
+		t.Errorf("cache is %q, not the authority's own directory: staging certificates could be served as real ones", string(cache))
+	}
+}
+
+// ini_acme_for_test points the ACME directory setting at a value for one test.
+func ini_acme_for_test(t *testing.T, directory string) {
+	t.Helper()
+	original := domains_acme_directory_override
+	domains_acme_directory_override = directory
+	t.Cleanup(func() { domains_acme_directory_override = original })
 }

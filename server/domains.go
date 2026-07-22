@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
+	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 	"gopkg.in/ini.v1"
 )
@@ -122,7 +124,63 @@ type delegation struct {
 // only surfaced on the next restart, when every domain had to be issued again
 // at once and a new ACME account registered.
 func domains_certificates() string {
+	directory := domains_acme_directory()
+	if directory == "" {
+		return domains_certificates_base()
+	}
+	// Certificates from another authority get their own directory. A staging
+	// certificate is signed by a root no browser trusts, so one served to a
+	// real visitor is a full-page security error - worse than the expiry this
+	// whole area exists to prevent. The ACME account key lives here too, and
+	// an account belongs to exactly one authority.
+	return filepath.Join(domains_certificates_base(), domains_authority(directory))
+}
+
+// domains_certificates_base is where the default authority's certificates
+// live. Kept separate from domains_certificates so the one-time migration
+// below always targets the production location, whatever directory is
+// configured now.
+func domains_certificates_base() string {
 	return filepath.Join(data_dir, "certificates")
+}
+
+// domains_acme_directory_override lets a test choose the authority without a
+// configuration file. Empty means read the configured value; nothing in the
+// server sets it.
+var domains_acme_directory_override string
+
+// domains_acme_directory is the ACME service to issue from, empty for the
+// authority autocert defaults to (Let's Encrypt production).
+func domains_acme_directory() string {
+	if domains_acme_directory_override != "" {
+		return domains_acme_directory_override
+	}
+	return strings.TrimSpace(ini_string("web", "acme", ""))
+}
+
+// domains_authority reduces a directory URL to a name usable as a directory,
+// so two authorities cannot share a cache.
+func domains_authority(directory string) string {
+	host := ""
+	if parsed, err := url.Parse(directory); err == nil {
+		host = parsed.Host
+	}
+	if host == "" {
+		host = "alternate"
+	}
+	name := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-':
+			return r
+		}
+		return '-'
+	}, host)
+	// A URL whose authority is "." or ".." survives the filter above but would
+	// walk out of the certificates directory once joined to it.
+	if name == "" || name == "." || strings.Contains(name, "..") {
+		return "alternate"
+	}
+	return name
 }
 
 // domains_init_acme initializes the Let's Encrypt autocert manager
@@ -132,6 +190,13 @@ func domains_init_acme() {
 		Prompt:     autocert.AcceptTOS,
 		HostPolicy: domains_host_policy,
 		Cache:      autocert.DirCache(domains_certificates()),
+	}
+	if directory := domains_acme_directory(); directory != "" {
+		domains_acme_manager.Client = &acme.Client{DirectoryURL: directory}
+		// Loud on purpose. The reason to configure this is a staging
+		// authority, whose certificates no browser trusts, so a production
+		// server left pointing at one serves an error page to every visitor.
+		warn("ACME directory is %q, not the default authority - certificates issued here may not be trusted by browsers", directory)
 	}
 }
 
@@ -147,7 +212,7 @@ func domains_init_acme() {
 // refills by issuing — the same position the old behaviour left every restart
 // in anyway.
 func domains_certificates_migrate() {
-	destination := domains_certificates()
+	destination := domains_certificates_base()
 	if entries, err := os.ReadDir(destination); err == nil && len(entries) > 0 {
 		return // already migrated, or in use
 	}

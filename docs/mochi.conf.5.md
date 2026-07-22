@@ -62,6 +62,17 @@ output, so the effective configuration is safe to copy into bug reports.
 :   Bind address, e.g. *127.0.0.1* to limit to loopback. Defaults to all
     interfaces.
 
+**acme** = *url*
+:   ACME directory to obtain certificates from. Defaults to empty, meaning
+    Let's Encrypt's production service. Set it to a staging directory to
+    exercise issuance and renewal without consuming the production rate
+    limits, which are low enough that a failing test can leave a domain
+    unable to obtain a working certificate for days. Certificates from a
+    non-default authority are cached separately, under a directory named
+    for that authority, because they are signed by a root browsers do not
+    trust and must never be served in place of real ones. A server using
+    one says so in its log at every start.
+
 **connections** = *integer*
 :   Maximum connections accepted at once, across every listener. Past it
     further connections wait in the kernel's backlog rather than being

@@ -9,6 +9,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
@@ -453,9 +454,39 @@ var url_transport = &http.Transport{
 	ExpectContinueTimeout: 1 * time.Second,
 }
 
+// url_max_timeout caps an app-supplied request timeout. A Starlark call is
+// already bounded by the compute timeout through the context below, so this
+// only stops an app naming an absurd value; it is set above the default
+// compute timeout so it never trims a legitimate request inside that window.
+const url_max_timeout = 300 * time.Second
+
+// url_timeout selects the request timeout from options: the app's value when it
+// is a positive integer, the 30s default otherwise, clamped to url_max_timeout.
+// Separated so the clamp can be asserted directly.
+func url_timeout(options map[string]string) time.Duration {
+	timeout := 30 * time.Second
+	if seconds, err := strconv.Atoi(options["timeout"]); err == nil && seconds > 0 {
+		timeout = time.Duration(seconds) * time.Second
+	}
+	if timeout > url_max_timeout {
+		timeout = url_max_timeout
+	}
+	return timeout
+}
+
 // Make an HTTP request to a URL.
+//
+// ctx cancels the request when the calling Starlark action ends, including when
+// it ends by timing out. Without it an app could start a request with a long
+// timeout, have its action abandoned at the compute timeout, and leave the
+// request running with no concurrency slot (released to the caller) and no
+// cancellation — accumulating. Non-Starlark callers pass context.Background().
+//
 // If allowed_domains is non-empty, redirect targets are validated against them.
-func url_request(method string, url string, options map[string]string, headers map[string]string, body any, allowed_domains ...string) (*http.Response, error) {
+func url_request(ctx context.Context, method string, url string, options map[string]string, headers map[string]string, body any, allowed_domains ...string) (*http.Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if url_is_cloud_metadata(url) {
 		return nil, fmt.Errorf("access to cloud metadata service is blocked")
 	}
@@ -482,7 +513,7 @@ func url_request(method string, url string, options map[string]string, headers m
 		}
 	}
 
-	r, err := http.NewRequest(strings.ToUpper(method), url, br)
+	r, err := http.NewRequestWithContext(ctx, strings.ToUpper(method), url, br)
 	if err != nil {
 		return nil, err
 	}
@@ -491,16 +522,7 @@ func url_request(method string, url string, options map[string]string, headers m
 		r.Header.Set(k, v)
 	}
 
-	timeout := 30 * time.Second
-	t, found := options["timeout"]
-	if found {
-		seconds, err := strconv.Atoi(t)
-		if err == nil && seconds > 0 {
-			timeout = time.Duration(seconds) * time.Second
-		}
-	}
-
-	c := &http.Client{Timeout: timeout, Transport: url_transport}
+	c := &http.Client{Timeout: url_timeout(options), Transport: url_transport}
 
 	// Redirects are validated for every caller, not only those that passed
 	// allowed domains: RSS fetching, link previews and peer discovery supply

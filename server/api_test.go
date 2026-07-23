@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,7 +31,7 @@ func TestURLResponseSizeLimit(t *testing.T) {
 	defer server.Close()
 
 	// Make the request
-	resp, err := url_request("GET", server.URL, nil, nil, nil)
+	resp, err := url_request(context.Background(), "GET", server.URL, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("url_request failed: %v", err)
 	}

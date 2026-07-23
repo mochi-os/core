@@ -1149,7 +1149,7 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	parts := strings.Split(fn.Name(), ".")
-	r, err := url_request(parts[len(parts)-1], url, options, headers, body, url_domains...)
+	r, err := url_request(starlark_context(t), parts[len(parts)-1], url, options, headers, body, url_domains...)
 	if err != nil {
 		return sl_encode(map[string]any{"status": 0, "headers": map[string]string{}, "body": ""}), nil
 	}
@@ -1259,7 +1259,7 @@ func api_url_preview(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	// rather than a stripped/anti-bot variant. The self-identifying URL lets
 	// responsible operators throttle deliberately without us trying to evade
 	// detection.
-	r, err := url_request("GET", rawurl,
+	r, err := url_request(starlark_context(t), "GET", rawurl,
 		map[string]string{"timeout": "10"},
 		map[string]string{
 			"User-Agent": "Mozilla/5.0 (compatible; MochiBot/1.0; +https://mochi-os.org)",

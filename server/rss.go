@@ -62,8 +62,10 @@ func api_rss_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		"items":   []any{},
 	}
 
-	// Fetch the feed
-	r, err := url_request("GET", url, nil, headers, nil)
+	// Fetch the feed. Pass the calling action's context so an abandoned RSS
+	// fetch is cancelled at the compute timeout like any other outbound call,
+	// rather than relying on the fixed request timeout alone.
+	r, err := url_request(starlark_context(t), "GET", url, nil, headers, nil)
 	if err != nil {
 		return sl_encode(empty), nil
 	}

@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -62,7 +63,7 @@ func peer_connect_url(url string) (string, error) {
 
 	// Fetch Net info from the server
 	info_url := strings.TrimSuffix(url, "/") + "/_/p2p/info"
-	resp, err := url_request("GET", info_url, nil, nil, nil)
+	resp, err := url_request(context.Background(), "GET", info_url, nil, nil, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch net info: %v", err)
 	}

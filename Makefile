@@ -548,6 +548,21 @@ release-publish:
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/macos/versions.json
 	mkdir -p ../packages/docker
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/docker/versions.json
+	# Sign every versions.json with the release key. The server verifies this
+	# detached ed25519 signature against a public key pinned in its binary
+	# before trusting anything in the manifest, so a compromise of this host
+	# cannot substitute an update: the digests inside the manifest only bind
+	# the artifacts to it, and the signature is what binds it to us. Done here,
+	# after every manifest is written and before the single rsync below, so the
+	# .sig files ship in the same atomic push and no manifest is ever published
+	# without its signature. Ed25519, so openssl needs -rawin (3.0+).
+	@for platform in apt rpm windows macos docker; do \
+	    openssl pkeyutl -sign -rawin -inkey local/update-signing.key \
+	        -in ../packages/$$platform/versions.json \
+	        | base64 -w0 > ../packages/$$platform/versions.json.sig \
+	        && echo "signed $$platform/versions.json" \
+	        || exit 1; \
+	done
 	# Publish to yuzu by name (not the packages.mochi-os.org alias) so the
 	# target is deterministic regardless of where that record points. Wasabi is
 	# frozen as a pre-decouple backup and receives no packages.

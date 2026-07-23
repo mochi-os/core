@@ -13,7 +13,9 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -48,6 +50,19 @@ const (
 // admin clicking the button twice).
 var update_install_lock sync.Mutex
 
+// update_manifest_public_key is the release-signing public key, ed25519, base64
+// of its 32 raw bytes. Its private half lives only on the release machine
+// (core/local/update-signing.key).
+//
+// Pinned in the binary rather than fetched, which is the whole point: the
+// manifest carries a SHA-256 of each artifact, but that digest and the artifact
+// come from the same host, so a host or pipeline compromise could rewrite both
+// in lockstep and the digest would still match. A signature the server checks
+// against a key it already carries cannot be forged that way — the attacker can
+// serve any versions.json they like but cannot sign it. Rotating the key is a
+// code change and a release, which is correct for a trust anchor.
+const update_manifest_public_key = "e8W9tRQLNhmcqDAxIYSuKyXGPSThMC90FWSQMCktMAA="
+
 // update_versions is the per-platform versions.json. Releases is keyed by
 // version string and carries the integrity data the self-installer verifies
 // before it hands an artifact to the system installer.
@@ -75,14 +90,8 @@ func update_base() string {
 	return "https://packages.mochi-os.org/" + path
 }
 
-// update_manifest fetches and parses the running platform's versions.json.
-func update_manifest() (*update_versions, error) {
-	base := update_base()
-	if base == "" {
-		return nil, fmt.Errorf("no URL path for build_platform=%q", build_platform)
-	}
-	url := base + "/versions.json"
-
+// update_fetch retrieves one URL, bounded, returning its body.
+func update_fetch(url string, maximum int64) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), update_timeout)
 	defer cancel()
 
@@ -98,15 +107,58 @@ func update_manifest() (*update_versions, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch %s: status %d", url, resp.StatusCode)
 	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, update_manifest_maximum))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maximum))
 	if err != nil {
-		return nil, fmt.Errorf("read body: %v", err)
+		return nil, fmt.Errorf("read %s: %v", url, err)
+	}
+	return body, nil
+}
+
+// update_manifest_verify checks the detached signature over the manifest bytes
+// against the pinned public key. It is what turns the manifest from
+// same-origin (a digest that a host compromise could rewrite alongside the
+// artifact) into authentic (a signature that host cannot forge). A malformed
+// pinned key is a build mistake, so it fails closed rather than skipping.
+func update_manifest_verify(manifest, signature []byte) error {
+	key, err := base64.StdEncoding.DecodeString(update_manifest_public_key)
+	if err != nil || len(key) != ed25519.PublicKeySize {
+		return fmt.Errorf("update manifest key is not a valid ed25519 public key")
+	}
+	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(signature)))
+	if err != nil {
+		return fmt.Errorf("manifest signature is not valid base64: %v", err)
+	}
+	if !ed25519.Verify(ed25519.PublicKey(key), manifest, sig) {
+		return fmt.Errorf("manifest signature does not verify against the release key")
+	}
+	return nil
+}
+
+// update_manifest fetches the running platform's versions.json, verifies its
+// signature, and parses it. Nothing in the manifest is trusted until the
+// signature checks: the digests it carries only bind the artifacts to the
+// manifest, and the signature is what binds the manifest to us.
+func update_manifest() (*update_versions, error) {
+	base := update_base()
+	if base == "" {
+		return nil, fmt.Errorf("no URL path for build_platform=%q", build_platform)
+	}
+
+	body, err := update_fetch(base+"/versions.json", update_manifest_maximum)
+	if err != nil {
+		return nil, err
+	}
+	signature, err := update_fetch(base+"/versions.json.sig", update_manifest_maximum)
+	if err != nil {
+		return nil, fmt.Errorf("signature: %v", err)
+	}
+	if err := update_manifest_verify(body, signature); err != nil {
+		return nil, err
 	}
 
 	var v update_versions
 	if err := json.Unmarshal(body, &v); err != nil {
-		return nil, fmt.Errorf("parse %s: %v", url, err)
+		return nil, fmt.Errorf("parse manifest: %v", err)
 	}
 	return &v, nil
 }

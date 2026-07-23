@@ -22,8 +22,12 @@ func TestAccountsMigrate(t *testing.T) {
 
 	db.accounts_migrate()
 
-	if db.has_column("accounts", "id") {
-		// id stays — but it must now be text, not integer autoincrement.
+	// id stays — but it must now be text, not integer autoincrement.
+	if exists, _ := db.exists("select 1 from pragma_table_info('accounts') where name='id'"); !exists {
+		t.Fatal("migrated accounts table lost its id column")
+	}
+	if exists, _ := db.exists("select 1 from pragma_table_info('accounts') where name='id' and lower(type)='text'"); !exists {
+		t.Error("migrated id column is not text (must not stay integer autoincrement)")
 	}
 	var first struct{ Id string }
 	if !db.scan(&first, "select id from accounts where type='email'") {

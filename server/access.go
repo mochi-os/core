@@ -46,23 +46,6 @@ func (db *DB) access_setup() {
 	db.exec("create index if not exists access_subject on access( subject )")
 }
 
-
-// has_column reports whether table has the named column.
-func (db *DB) has_column(table string, column string) bool {
-	rows, err := db.internal.Query("select name from pragma_table_info('" + table + "')")
-	if err != nil {
-		return false
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var name string
-		if rows.Scan(&name) == nil && name == column {
-			return true
-		}
-	}
-	return false
-}
-
 // access_upsert applies one allow / deny write.
 func (db *DB) access_upsert(subject string, resource string, operation string, grant int, granter string) {
 	db.exec("insert into access ( subject, resource, operation, grant, granter, created ) values ( ?, ?, ?, ?, ?, ? ) on conflict ( subject, resource, operation ) do update set grant=excluded.grant, granter=excluded.granter, created=excluded.created", subject, resource, operation, grant, granter, now())

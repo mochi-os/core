@@ -273,7 +273,17 @@ var queue_warned sync.Map // target+"|"+service -> last warn unix
 // budget deletes the data. var (not const) so tests can lower it.
 var queue_park_attempts = 50
 
-var queue_park_warned sync.Map // target+"|"+service -> last park warn unix
+// queue_warn_suspended is the count of distinct suspended recipients past
+// which queue_watchdog warns. A handful of suspensions is the normal
+// residue of departed peers and wiped dev instances, each already being
+// probed and evicted by the health machinery below; many at once means
+// resolution or connectivity is broken for recipients that are probably
+// fine, which no per-recipient machinery will fix.
+var queue_warn_suspended int64 = 10
+
+// queue_suspended_warned is the last unix time the breadth warn fired.
+// Only queue_watchdog's manager goroutine touches it.
+var queue_suspended_warned int64
 
 // Per-recipient delivery health. The queue's rows each re-learn a dead
 // recipient from scratch — fifty dials per event, forever, until the
@@ -377,7 +387,26 @@ func health_gate(recipient string) (skip bool, evict bool) {
 	return true, false
 }
 
-var health_evict_warned sync.Map // app.id+"|"+recipient -> last dispatch unix
+// health_evict_record tracks eviction dispatches per (app, recipient):
+// `last` throttles the dispatch to once per day, `first` and `warned`
+// back the overdue warn below. In-memory — a restart resets the overdue
+// clock, delaying the warn by at most another window.
+type health_evict_record struct {
+	first  int64
+	last   int64
+	warned bool
+}
+
+var health_evict_state sync.Map // app.id+"|"+recipient -> health_evict_record
+
+// health_evict_overdue is how long an (app, recipient) pair may keep
+// receiving daily eviction dispatches before the app is presumed to be
+// ignoring them and the operator is warned. A handling app drops the
+// subscriber on the first dispatch, which ends the fan-out consults that
+// trigger dispatching — still being here a week later means the app has
+// no subscriber/unreachable handler and its ghost will recycle forever,
+// invisibly, once the health residue is cleaned.
+var health_evict_overdue int64 = 7 * 86400
 
 // health_evict_dispatch tells the owning app — once per day per (app,
 // recipient) — that a subscriber has been unreachable past
@@ -387,10 +416,19 @@ var health_evict_warned sync.Map // app.id+"|"+recipient -> last dispatch unix
 func health_evict_dispatch(user *User, app *App, service, recipient string) {
 	key := app.id + "|" + recipient
 	moment := now()
-	if v, ok := health_evict_warned.Load(key); ok && moment-v.(int64) < 86400 {
+	record := health_evict_record{first: moment}
+	if v, ok := health_evict_state.Load(key); ok {
+		record = v.(health_evict_record)
+	}
+	if record.last != 0 && moment-record.last < 86400 {
 		return
 	}
-	health_evict_warned.Store(key, moment)
+	record.last = moment
+	if !record.warned && moment-record.first >= health_evict_overdue {
+		record.warned = true
+		warn("App %q has been dispatched %s for subscriber %q daily for %d days and has not dropped it; the app is probably missing a handler for that event.", app.id, error_code_subscriber_unreachable, recipient, (moment-record.first)/86400)
+	}
+	health_evict_state.Store(key, record)
 	db := db_open("db/queue.db")
 	var h struct {
 		Since     int64 `db:"since"`
@@ -415,6 +453,16 @@ var subscriber_dispatch = error_dispatch
 // routine, so undeliverable rows accumulate with no signal until
 // something downstream (disk, WAL churn) breaks. This is the direct
 // signal.
+//
+// Scope: only rows the system has NOT yet classified. Parked rows and
+// rows for suspended recipients are excluded — the health machinery owns
+// those (probe, evict, reap) and re-warning about them daily until the
+// reaper deletes the evidence is noise (the 2026-07 ghost-subscriber
+// emails). A destination warns while its failure is still unexplained
+// and goes quiet the moment health classifies it dead. The complement is
+// the breadth warn at the end: many recipients suspended at once is no
+// longer routine residue but a systemic resolution failure, and that
+// aggregate — not the individual parks — is the operator signal.
 func queue_watchdog() {
 	db := db_open("db/queue.db")
 	if db == nil {
@@ -427,7 +475,7 @@ func queue_watchdog() {
 		Oldest   int64  `db:"oldest"`
 		Attempts int64  `db:"attempts"`
 	}
-	err := db.scans(&buckets, "select target, service, count(*) as total, min(created) as oldest, max(attempts) as attempts from queue where status in ('pending', 'parked') group by target, service")
+	err := db.scans(&buckets, "select target, service, count(*) as total, min(created) as oldest, max(attempts) as attempts from queue where status = 'pending' and to_entity not in (select recipient from health where suspended != 0) group by target, service")
 	if err != nil {
 		return
 	}
@@ -455,6 +503,19 @@ func queue_watchdog() {
 		}
 		return true
 	})
+
+	// Breadth: each suspension is routine on its own, so crossing the
+	// threshold is the first moment anything emails about them at all.
+	suspended := int64(db.integer("select count(*) from health where suspended != 0"))
+	if suspended < queue_warn_suspended {
+		queue_suspended_warned = 0
+		return
+	}
+	if queue_suspended_warned != 0 && now-queue_suspended_warned < queue_warn_repeat {
+		return
+	}
+	queue_suspended_warned = now
+	warn("Queue health: %d recipients are suspended as unreachable (threshold %d). A few is the normal residue of departed peers; this many at once suggests directory resolution or connectivity is broken for recipients that may be fine.", suspended, queue_warn_suspended)
 }
 
 // Add a direct message to the queue. Caller can override the default
@@ -844,19 +905,19 @@ func queue_fail(id string, err string) {
 		// through the queue_cleanup sweep, which is status-blind.
 		db.exec_bg("queue fail park", "update queue set status = 'parked', attempts = ?, last_error = ? where id = ?", attempts, err, id)
 		// A parked row is a full retry budget burned against this
-		// recipient — feed the per-recipient health record.
+		// recipient — feed the per-recipient health record. The park
+		// itself is the machinery working, not an operator problem:
+		// health_failure suspends the recipient, the sending app hears
+		// via message/timeout and subscriber/unreachable dispatches, and
+		// queue_watchdog emails only for unclassified or systemic
+		// failures. Log for forensics, no admin email.
 		health_failure(q.ToEntity, q.Created)
-		key := q.Target + "|" + q.Service
-		now := now()
-		if v, ok := queue_park_warned.Load(key); !ok || now-v.(int64) >= queue_warn_repeat {
-			queue_park_warned.Store(key, now)
-			if q.Target == "" {
-				// No peer to reconnect: the recipient entity never resolved
-				// to any host, so these rows only age out.
-				warn("Queue parking deliveries for (service=%q) with no resolvable recipient after %d failed attempts (latest: %s); rows keep their data and are reaped after %d days.", q.Service, attempts, err, queue_max_age/86400)
-			} else {
-				warn("Queue parking deliveries for (target=%q, service=%q) after %d failed attempts (latest: %s); rows keep their data, revive if the peer reconnects, and are reaped after %d days.", q.Target, q.Service, attempts, err, queue_max_age/86400)
-			}
+		if q.Target == "" {
+			// No peer to reconnect: the recipient entity never resolved
+			// to any host, so these rows only age out.
+			info("Queue parked a delivery for (service=%q) with no resolvable recipient after %d failed attempts (latest: %s); rows keep their data and are reaped after %d days.", q.Service, attempts, err, queue_max_age/86400)
+		} else {
+			info("Queue parked a delivery for (target=%q, service=%q) after %d failed attempts (latest: %s); rows keep their data, revive if the peer reconnects, and are reaped after %d days.", q.Target, q.Service, attempts, err, queue_max_age/86400)
 		}
 	} else {
 		// Schedule retry

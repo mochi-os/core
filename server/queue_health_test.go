@@ -263,3 +263,64 @@ func TestBroadcastSendHealthGate(t *testing.T) {
 		t.Fatalf("evict dispatch must throttle per day, got %d", len(dispatched))
 	}
 }
+
+// TestHealthEvictOverdue — an (app, recipient) pair still receiving daily
+// eviction dispatches health_evict_overdue after the first one means the
+// app is ignoring them (missing subscriber/unreachable handler) and its
+// ghost will recycle invisibly; the operator is warned once.
+func TestHealthEvictOverdue(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	var dispatched int
+	original := subscriber_dispatch
+	subscriber_dispatch = func(u *User, a *App, code, reason, service, entity string, orig map[string]any, detail func() map[string]any) {
+		dispatched++
+	}
+	defer func() { subscriber_dispatch = original }()
+
+	app := &App{id: "testapp"}
+	key := app.id + "|r-ignored"
+	record := func() health_evict_record {
+		t.Helper()
+		v, ok := health_evict_state.Load(key)
+		if !ok {
+			t.Fatal("expected an eviction record")
+		}
+		return v.(health_evict_record)
+	}
+
+	// Fresh pair: dispatches, not yet overdue.
+	health_evict_dispatch(nil, app, "feeds", "r-ignored")
+	if dispatched != 1 {
+		t.Fatalf("first dispatch must go through, got %d", dispatched)
+	}
+	if record().warned {
+		t.Fatal("fresh pair must not be marked warned")
+	}
+
+	// Same day: throttled.
+	health_evict_dispatch(nil, app, "feeds", "r-ignored")
+	if dispatched != 1 {
+		t.Fatalf("same-day dispatch must be throttled, got %d", dispatched)
+	}
+
+	// Backdate past the overdue window with the daily throttle open: the
+	// dispatch goes through and the overdue warn is recorded.
+	health_evict_state.Store(key, health_evict_record{first: now() - health_evict_overdue - 10, last: now() - 86400 - 10})
+	health_evict_dispatch(nil, app, "feeds", "r-ignored")
+	if dispatched != 2 {
+		t.Fatalf("overdue dispatch must go through, got %d", dispatched)
+	}
+	if !record().warned {
+		t.Fatal("overdue pair must be marked warned")
+	}
+
+	// The flag persists across later dispatches, so the warn cannot
+	// re-fire for this pair.
+	health_evict_state.Store(key, health_evict_record{first: now() - health_evict_overdue - 10, last: now() - 86400 - 10, warned: true})
+	health_evict_dispatch(nil, app, "feeds", "r-ignored")
+	if dispatched != 3 || !record().warned {
+		t.Fatalf("later dispatches must keep the warned flag, dispatched=%d", dispatched)
+	}
+}

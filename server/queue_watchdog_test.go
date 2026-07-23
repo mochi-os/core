@@ -89,6 +89,86 @@ func TestQueueWatchdog(t *testing.T) {
 	}
 }
 
+// TestQueueWatchdogClassified — rows the health machinery has already
+// classified are outside the watchdog's scope: parked rows and pending
+// rows for suspended recipients must not warn however old they are,
+// while an unclassified recipient's old rows still do. Re-warning about
+// classified rows until the reaper deleted them was ~5 admin emails per
+// day per ghost subscriber (2026-07).
+func TestQueueWatchdogClassified(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	db := db_open("db/queue.db")
+	add := func(id, target, recipient, service, status string) {
+		db.exec("insert into queue (id, target, from_entity, to_entity, service, event, next_retry, created, status) values (?, ?, 'e-from', ?, ?, 'event/test', 0, ?, ?)", id, target, recipient, service, now()-queue_warn_age-10, status)
+	}
+
+	// Parked rows never warn: parking is the classification.
+	add("row-parked", "peer-parked", "r-parked", "feeds", "parked")
+	// Pending rows for a suspended recipient never warn: the health
+	// machinery owns them (probe, evict, reap).
+	db.exec("insert into health (recipient, suspended, since) values ('r-gated', ?, ?)", now(), now())
+	add("row-gated", "peer-gated", "r-gated", "forums", "pending")
+	// Old pending rows for an unclassified recipient still warn.
+	add("row-live", "peer-live", "r-live", "wikis", "pending")
+
+	queue_watchdog()
+	if _, ok := queue_warned.Load("peer-parked|feeds"); ok {
+		t.Error("parked bucket must not warn")
+	}
+	if _, ok := queue_warned.Load("peer-gated|forums"); ok {
+		t.Error("suspended recipient's bucket must not warn")
+	}
+	if _, ok := queue_warned.Load("peer-live|wikis"); !ok {
+		t.Error("unclassified bucket over queue_warn_age must warn")
+	}
+}
+
+// TestQueueWatchdogSuspendedBreadth — individual suspensions are silent,
+// so crossing queue_warn_suspended is the first email about them at all:
+// that breadth is a systemic resolution failure, not ghost residue.
+func TestQueueWatchdogSuspendedBreadth(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	limit := queue_warn_suspended
+	queue_warn_suspended = 3
+	defer func() { queue_warn_suspended = limit; queue_suspended_warned = 0 }()
+
+	db := db_open("db/queue.db")
+	suspend := func(recipient string) {
+		db.exec("insert into health (recipient, suspended, since) values (?, ?, ?)", recipient, now(), now())
+	}
+
+	suspend("r-1")
+	suspend("r-2")
+	queue_watchdog()
+	if queue_suspended_warned != 0 {
+		t.Fatal("below the threshold the breadth warn must not fire")
+	}
+
+	suspend("r-3")
+	queue_watchdog()
+	first := queue_suspended_warned
+	if first == 0 {
+		t.Fatal("at the threshold the breadth warn must fire")
+	}
+
+	// Repeat window: an immediate second pass must not re-stamp.
+	queue_watchdog()
+	if queue_suspended_warned != first {
+		t.Error("breadth warn re-fired within queue_warn_repeat")
+	}
+
+	// Recovery clears the tracking so a future recurrence warns fresh.
+	db.exec("delete from health")
+	queue_watchdog()
+	if queue_suspended_warned != 0 {
+		t.Error("recovery must clear the breadth warn tracking")
+	}
+}
+
 // TestQueueFailParksAtAttemptCap — a row that exhausts queue_park_attempts
 // is parked (status='parked', outside every claim path) instead of being
 // rescheduled forever, and queue_resurrect_peer revives it when its target
@@ -117,13 +197,10 @@ func TestQueueFailParksAtAttemptCap(t *testing.T) {
 		t.Fatalf("attempts below cap: status = %q, want pending", got)
 	}
 
-	// At the cap: parked, and the bucket's park warn is stamped.
+	// At the cap: parked.
 	queue_fail("stuck", "transient") // attempts -> 3 == cap
 	if got := status(); got != "parked" {
 		t.Fatalf("attempts at cap: status = %q, want parked", got)
-	}
-	if _, ok := queue_park_warned.Load("peer-p|feeds"); !ok {
-		t.Error("parking must stamp the bucket's park warn")
 	}
 
 	// Parked rows are invisible to the claim paths.

@@ -528,6 +528,13 @@ release-publish:
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/apt/versions.json
 	rm -f ../packages/rpm/Packages/mochi-server-*.rpm
 	cp $(rpm_x86_64) $(rpm_aarch64) $(rpm_armv7hl) ../packages/rpm/Packages
+	# Publish the repo definition from source, not from a hand-edited file left
+	# in the untracked packages tree. It carries gpgcheck=1 / repo_gpgcheck=1 /
+	# gpgkey, the settings that make the package signing above mean anything, so
+	# a tree wipe or an old-backup restore silently reverting it to gpgcheck=0 —
+	# no error, no diff, verification just off — is exactly the regression this
+	# copy prevents. Reproducible like versions.json and mochi.asc.
+	cp build/rpm/mochi.repo ../packages/rpm/mochi.repo
 	@t=$$(date +%s); ./build/scripts/rpm-repository-update ../packages/rpm `cat local/gpg.txt | tr -d '\n'` && echo ">>> rpm reindex (createrepo): $$(($$(date +%s)-t))s" | tee -a $(timing)
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/rpm/versions.json
 	# Two copies: the stable name for humans clicking a download link, and a

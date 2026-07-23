@@ -149,6 +149,28 @@ func (r *rate_limiter) allow(key string) bool {
 	return true
 }
 
+// since reports how long ago the current window for key began — i.e. how long
+// ago the first (and, for a limit-1 limiter, only) allowed action in this
+// window happened. Returns a large sentinel when there is no live window, so a
+// caller treating "no recent action" as "long ago" needs no special case.
+//
+// Used by remote_reach: when an address request for a target was suppressed
+// because one already went out this minute, this says how stale that request
+// is, so the wait for its answer can be bounded by when it was actually sent
+// rather than restarting a full window.
+func (r *rate_limiter) since(key string) time.Duration {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	entry := r.entries[key]
+	if entry == nil || now() >= entry.reset {
+		return time.Duration(1<<62) * time.Nanosecond
+	}
+	// The window began at reset - r.window; its age is now minus that.
+	began := entry.reset - r.window
+	return time.Duration(now()-began) * time.Second
+}
+
 // Reset counter for a key (e.g., on successful login)
 func (r *rate_limiter) reset(key string) {
 	r.lock.Lock()

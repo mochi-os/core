@@ -130,19 +130,42 @@ func remote_reach(candidates []string) string {
 		}
 	}
 	// The answer to that request arrives over pubsub, which drops inbound
-	// messages once a peer exceeds rate_limit_pubsub_in — and the limiter
-	// does not distinguish these address announcements from ordinary
-	// application traffic. Snapshot the drop counter so a failure below can
-	// say whether messages were being discarded while we waited, rather than
-	// leaving "unreachable" indistinguishable from a peer that is genuinely
-	// absent.
+	// messages once a peer exceeds its budget. Peer control traffic has its
+	// own budget (rate_limit_pubsub_control) so an application flood can no
+	// longer starve these announcements, but a flood on the control plane
+	// itself, or a genuinely absent peer, can still leave us empty-handed.
+	// Snapshot the drop counter so a failure below can say whether messages
+	// were being discarded while we waited, rather than leaving "unreachable"
+	// indistinguishable from a peer that never answered.
 	dropped := pubsub_dropped.Load()
-	deadline := time.Now().Add(remote_address_wait)
+
+	// Bound the wait. remote_address_wait is sized for a fresh request's answer
+	// to arrive. When we broadcast one, wait the full window. When every
+	// candidate was suppressed because a request already went out this minute,
+	// wait only for the remainder of that request's answer window, measured
+	// from when it was actually sent: exactly one broadcast happens per minute
+	// per target, so once its window has elapsed no answer is coming until the
+	// next, and sitting the full remote_address_wait is the pointless delay
+	// that turned a rate-limited cold probe into a multi-second hang.
+	budget := remote_address_wait
+	if !requested {
+		freshest := remote_address_wait
+		for _, p := range candidates {
+			if age := rate_limit_peer_request.since(p); age < freshest {
+				freshest = age
+			}
+		}
+		budget = remote_address_wait - freshest
+		if budget < 0 {
+			budget = 0
+		}
+	}
+	deadline := time.Now().Add(budget)
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			debug("Remote gave up waiting %s for addresses for %v (request broadcast: %t, pubsub messages dropped while waiting: %d)",
-				remote_address_wait, candidates, requested, pubsub_dropped.Load()-dropped)
+				budget, candidates, requested, pubsub_dropped.Load()-dropped)
 			return ""
 		}
 		// Wake early when the primary candidate's addresses arrive.

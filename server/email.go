@@ -60,17 +60,13 @@ func email_already_delivered(u *User, address, event_id string) bool {
 	return exists
 }
 
-// email_mark_delivered records (address, event_id), fans out to the
-// user's replication set so other replicas short-circuit their sends,
-// and opportunistically prunes stale rows.
+// email_mark_delivered records (address, event_id) and opportunistically
+// prunes stale rows.
 func email_mark_delivered(u *User, address, event_id string) {
 	ts := now()
 	db := email_dedup_db(u)
 	db.exec("insert or ignore into email_delivered (address, event_id, ts) values (?, ?, ?)", address, event_id, ts)
 	db.exec("delete from email_delivered where ts < ?", ts-email_dedup_ttl)
-
-	if u.UID != "" {
-	}
 }
 
 // Dedup TTL — same 24h window as webpush_dedup so the two backends'

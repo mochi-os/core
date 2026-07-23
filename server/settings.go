@@ -7,8 +7,6 @@
 package main
 
 import (
-	"strings"
-
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 )
@@ -516,11 +514,8 @@ func user_preferences_load(u *User) map[string]string {
 	}
 	for _, obsolete := range []string{"style_preset", "border_radius"} {
 		if _, exists := prefs[obsolete]; exists {
-			// Local hard-delete, not a replicated tombstone: these are deprecated
-			// keys no longer written by any code (so nothing can resurrect them, and
-			// each host cleans its own copy on load), and user_preferences_load is
-			// reachable from the replication_emit_to package-var initializer, so a
-			// replicated write here would form an initialisation cycle.
+			// Deprecated keys no longer written by any code — nothing can
+			// resurrect them, and each host cleans its own copy on load.
 			db.exec("delete from preferences where name = ?", obsolete)
 			delete(prefs, obsolete)
 		}
@@ -572,35 +567,9 @@ func setting_get(name string, def string) string {
 	return def
 }
 
-// setting_local reports whether a setting is host-LOCAL — per-host state that
-// must never replicate to (or be accepted from) a pair member. `schema` is the
-// critical one: it is each host's own DB migration progress, so replicating it
-// makes the host that deploys SECOND adopt the first's bumped version and SKIP
-// its own migrations (#75 — the production primary silently skipped two
-// migrations). `server_started` is likewise per-host. Gates both the emit
-// (setting_set) and the apply (replication_system_set_apply_settings).
-func setting_local(name string) bool {
-	switch name {
-	case "schema", "server_started":
-		return true
-	}
-	// replica.join.* is THIS host's in-flight pair-join state (which source it is
-	// joining, the poll state/reason). It is meaningless on another member and no
-	// request-serving path reads it, so it must not replicate — otherwise an
-	// already-paired host initiating a join fans its join-state to existing
-	// members (who then show a phantom in-flight join), and setting_delete never
-	// emitting leaves those phantoms forever (#150).
-	if strings.HasPrefix(name, "replica.join.") {
-		return true
-	}
-	return false
-}
-
 func setting_set(name string, value string) {
 	db := db_open("db/settings.db")
 	db.exec("replace into settings ( name, value ) values ( ?, ? )", name, value)
-	if !setting_local(name) {
-	}
 }
 
 // setting_delete removes a setting row entirely. Distinguished from

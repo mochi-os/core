@@ -74,15 +74,8 @@ func token_create(user string, app string, name string, scopes []string, expires
 
 // Delete a token by its hash
 func token_delete(hash string) bool {
-	// Find the user before deleting so we can sign the cross-host emit.
-	var owner string
-	if row, _ := db_open("db/users.db").row("select user from tokens where hash=?", hash); row != nil {
-		owner, _ = row["user"].(string)
-	}
 	db_open("db/users.db").exec("delete from tokens where hash = ?", hash)
 	db_open("db/sessions.db").exec("delete from accesses where hash = ?", hash)
-	if owner != "" {
-	}
 	return true
 }
 

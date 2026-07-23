@@ -463,13 +463,6 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "unable to write file")
 	}
 
-	// Replicate the write to the user's host set so other replicas see
-	// the same file content. Push-based — the queue worker reads the
-	// file from disk and streams it via the file/push event handler.
-	// No size threshold.
-	if user.UID != "" {
-	}
-
 	return sl.None, nil
 }
 

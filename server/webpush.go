@@ -173,17 +173,13 @@ func webpush_already_delivered(u *User, endpoint, event_id string) bool {
 	return exists
 }
 
-// webpush_mark_delivered records (endpoint, event_id) as delivered now,
-// fans the row out to the user's replication set so other replicas
-// short-circuit their sends, and opportunistically prunes stale rows.
+// webpush_mark_delivered records (endpoint, event_id) as delivered now and
+// opportunistically prunes stale rows.
 func webpush_mark_delivered(u *User, endpoint, event_id string) {
 	ts := now()
 	db := webpush_dedup_db(u)
 	db.exec("insert or ignore into webpush_delivered (endpoint, event_id, ts) values (?, ?, ?)", endpoint, event_id, ts)
 	db.exec("delete from webpush_delivered where ts < ?", ts-webpush_dedup_ttl)
-
-	if u.UID != "" {
-	}
 }
 
 // webpush_dedup_db opens the per-user notifications DB and lazily

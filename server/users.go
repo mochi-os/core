@@ -151,11 +151,6 @@ func code_send(email string, c *gin.Context) string {
 	expires := now() + 3600
 	sessions.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, expires)
 	u := user_by_username(email)
-	// Replicate to the user's host set so the click-through can land
-	// on any host. Skip if the user doesn't exist yet (brand-new
-	// signup — single-host flow until first login).
-	if u != nil {
-	}
 	email_login_code(u, email, code, request_language(c, u))
 	return ""
 }
@@ -165,8 +160,6 @@ func code_send(email string, c *gin.Context) string {
 // unexpired. Used for step-up re-authentication (data export): the
 // session already identifies the user, so the code is matched to their
 // username and an attacker can't burn a different user's pending code.
-// Mirrors user_from_code's peer fan-out so paired hosts drop the code
-// too — prevents replay on a second host within the TTL.
 func code_consume(user *User, code string) bool {
 	if user == nil || code == "" {
 		return false
@@ -263,28 +256,11 @@ func login_create(user string, address string, agent string) string {
 	db := db_open("db/sessions.db")
 	db.exec("replace into sessions (user, code, secret, expires, created, accessed, address, agent) values (?, ?, ?, ?, ?, ?, ?, ?)", user, code, secret, expires, created, created, address, agent)
 
-	// Replicate the new session to every peer in the user's host set so a
-	// cookie issued here is honoured by every replica.
-	if user != "" {
-	}
-
 	return code
 }
 
 func login_delete(code string) {
-	db := db_open("db/sessions.db")
-
-	// Look up the owning user_uid before deletion so we can fan out a
-	// replicated revoke. After the delete the join is impossible.
-	var userUID string
-	if row, _ := db.row("select user from sessions where code=?", code); row != nil {
-		userUID, _ = row["user"].(string)
-	}
-
-	db.exec("delete from sessions where code=?", code)
-
-	if userUID != "" {
-	}
+	db_open("db/sessions.db").exec("delete from sessions where code=?", code)
 }
 
 // sessions_manager periodically cleans up expired sessions and related data
@@ -401,9 +377,6 @@ func user_from_code(code string) (*User, string) {
 	db := db_open("db/users.db")
 	var u User
 	if db.scan(&u, "select uid, username, role, methods, disabled, status from users where username=?", c.Username) {
-		// Fan the consume out to peers so other hosts in the user's
-		// host set drop their copy of the code too — prevents replay
-		// on a second host within the 1-hour TTL.
 		if u.Status == "suspended" {
 			return nil, "suspended"
 		}
@@ -441,11 +414,6 @@ func user_create(username string) (*User, string) {
 	var u User
 	if db.scan(&u, "select uid, username, role, methods, disabled, status from users where username=?", username) {
 		u.Preferences = user_preferences_load(&u)
-		// Seed the bare user row to operator-paired hosts. A brand-new signup
-		// has no entity yet, so the signed keys-transfer / per-user paths can't
-		// carry it; without this the row is absent on the partner and a
-		// replicated session won't resolve there under active-active / failover
-		// (#34). Entity-bearing replication later carries the full identity.
 		return &u, ""
 	}
 
@@ -1479,9 +1447,8 @@ func api_user_session_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	return sl.MakeInt(count), nil
 }
 
-// sessions_revoke_all deletes every session for a user, fanning out a
-// replicated session-delete op for each so the revocation reaches every host
-// in the user's set. Returns the number of sessions revoked.
+// sessions_revoke_all deletes every session for a user. Returns the number of
+// sessions revoked.
 func sessions_revoke_all(uid string) int {
 	db := db_open("db/sessions.db")
 	codes, err := db.rows("select code from sessions where user=?", uid)
@@ -1489,10 +1456,6 @@ func sessions_revoke_all(uid string) int {
 		return 0
 	}
 	db.exec("delete from sessions where user=?", uid)
-	for _, row := range codes {
-		if code, ok := row["code"].(string); ok && code != "" {
-		}
-	}
 	return len(codes)
 }
 

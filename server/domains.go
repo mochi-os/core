@@ -401,8 +401,7 @@ func domain_list() []domain {
 	return domains
 }
 
-// domain_register creates a new domain entry. Emits a system-row op
-// so pair members converge on the domain registry.
+// domain_register creates a new domain entry.
 func domain_register(name string) (*domain, error) {
 	if domain_get(name) != nil {
 		return nil, fmt.Errorf("domain already exists")
@@ -454,8 +453,7 @@ func domains_seed_config() {
 // Valid column names for domain updates
 var domain_update_columns = map[string]bool{"verified": true, "tls": true}
 
-// domain_update updates a domain entry. Reads the row back after the
-// update and emits the full post-update row via system-row.
+// domain_update updates a domain entry.
 func domain_update(name string, updates map[string]any) error {
 	if len(updates) == 0 {
 		return nil
@@ -476,18 +474,12 @@ func domain_update(name string, updates map[string]any) error {
 	args = append(args, name)
 
 	db.exec("update domains set "+strings.Join(sets, ", ")+" where domain=?", args...)
-
-	if d := domain_get(name); d != nil {
-	}
 	return nil
 }
 
-// domain_delete removes a domain and its routes. Emits a system-row
-// delete op so pair members drop their copy too.
+// domain_delete removes a domain and its routes.
 func domain_delete(name string) error {
 	db := db_open("db/domains.db")
-	// Capture the routes before deleting so we can replicate their removal. The
-	// domains FK's ON DELETE CASCADE drops the local routes, but the pair
 	db.exec("delete from routes where domain=?", name)
 	db.exec("delete from domains where domain=?", name)
 
@@ -516,8 +508,6 @@ func domain_verify(name string) (bool, error) {
 			db := db_open("db/domains.db")
 			n := now()
 			db.exec("update domains set verified=1, updated=? where domain=?", n, name)
-			if updated := domain_get(name); updated != nil {
-			}
 			return true, nil
 		}
 	}
@@ -583,8 +573,7 @@ func route_create(domain_name, path, method, target, context string, owner strin
 // Valid column names for route updates
 var route_update_columns = map[string]bool{"method": true, "target": true, "context": true, "priority": true, "enabled": true}
 
-// route_update updates a route. Reads the row back and emits the full
-// post-update state via system-row.
+// route_update updates a route.
 func route_update(domain_name, path string, updates map[string]any) error {
 	if len(updates) == 0 {
 		return nil
@@ -606,9 +595,6 @@ func route_update(domain_name, path string, updates map[string]any) error {
 	args = append(args, path)
 
 	db.exec("update routes set "+strings.Join(sets, ", ")+" where domain=? and path=?", args...)
-
-	if r := route_get(domain_name, path); r != nil {
-	}
 	return nil
 }
 

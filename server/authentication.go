@@ -1033,19 +1033,8 @@ func email_code_check(username string, code string) bool {
 }
 
 // email_code_consume deletes an email code after successful validation
-// and fans the delete out to peers so the code can't be replayed on
-// another host in the user's host set.
 func email_code_consume(code string) {
-	sessions := db_open("db/sessions.db")
-	// Look up the username before deleting so we can resolve the user
-	// for the cross-host emit (codes is keyed on (code, username)).
-	var username string
-	if row, _ := sessions.row("select username from codes where code=?", code); row != nil {
-		username, _ = row["username"].(string)
-	}
-	sessions.exec("delete from codes where code=?", code)
-	if u := user_by_username(username); u != nil {
-	}
+	db_open("db/sessions.db").exec("delete from codes where code=?", code)
 }
 
 // totp_verify checks a TOTP code for a user (used by MFA endpoint)

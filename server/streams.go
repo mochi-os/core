@@ -512,12 +512,6 @@ func (s *Stream) sl_read_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	s.close_read()
 	// debug("Stream %d read %d bytes to file", s.id, n)
 
-	// Replicate the write to the user's host set, same as mochi.file.write —
-	// this lands bytes in the per-user files tree (api_file_base), so without
-	// the push the file is present on this host and absent on the replicas.
-	if user.UID != "" {
-	}
-
 	return sl.MakeInt64(n), nil
 }
 

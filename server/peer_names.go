@@ -76,11 +76,11 @@ func peer_name_valid(name string) bool {
 // Empty when the administrator has turned `hostname_publish` off or the
 // resolved name is invalid.
 func peer_names_announce() string {
-	if setting_get("hostname_publish", "true") != "true" {
+	if setting_effective("hostname_publish") != "true" {
 		return ""
 	}
 
-	name := strings.ToLower(strings.TrimSpace(setting_get("hostname", "")))
+	name := strings.ToLower(strings.TrimSpace(setting_effective("hostname")))
 	if name == "" {
 		if h, err := os.Hostname(); err == nil {
 			name = strings.ToLower(strings.TrimSpace(h))

@@ -1255,7 +1255,7 @@ func account_test_unifiedpush(data map[string]any, language string, account_labe
 // UNREGISTERED / INVALID_ARGUMENT) so the caller can drop it — same
 // semantics as the production-push path in api_account_notify.
 func account_test_fcm(data map[string]any, language string, account_label string) (AccountTestResult, bool) {
-	if setting_get("fcm.service_account", "") == "" {
+	if setting_effective("fcm.service_account") == "" {
 		return AccountTestResult{Success: false, Message: "FCM not configured"}, false
 	}
 	title := resolve_core_label(language, "push.test.title", nil)

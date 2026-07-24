@@ -168,7 +168,7 @@ func relay_resources() relay.Resources {
 // serve as a relay. Default on; the `relay` system setting is the
 // opt-out.
 func relay_offered() bool {
-	return setting_get("relay", "true") == "true"
+	return setting_effective("relay") == "true"
 }
 
 // relay_enabled reports whether our relay service is currently running —

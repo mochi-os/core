@@ -87,7 +87,7 @@ func warn(message string, values ...any) {
 // hostname. Unlike peer_names_announce it ignores hostname_publish — the admin
 // email goes only to the operator, who already knows which box it is.
 func server_hostname() string {
-	name := strings.TrimSpace(setting_get("hostname", ""))
+	name := strings.TrimSpace(setting_effective("hostname"))
 	if name == "" {
 		if h, err := os.Hostname(); err == nil {
 			name = strings.TrimSpace(h)

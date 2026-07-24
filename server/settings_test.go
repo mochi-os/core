@@ -355,6 +355,44 @@ func TestSettingSet(t *testing.T) {
 	}
 }
 
+// setting_effective must resolve exactly as the settings API and UI do: the
+// stored value if present, else the registered default. Enforcement sites
+// reading a different default than the registration silently split policy
+// between what admins see and what the server does (the apps_install_user
+// and domains_verification bugs).
+func TestSettingEffective(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_settings_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	db := db_open("db/settings.db")
+	db.exec("create table settings (name text primary key, value text not null)")
+
+	// No stored row: the registered default applies
+	for name, definition := range system_settings {
+		if got := setting_effective(name); got != definition.Default {
+			t.Errorf("setting_effective(%q) with no stored row = %q, want registered default %q", name, got, definition.Default)
+		}
+	}
+
+	// Stored row wins over the registered default
+	setting_set("apps_install_user", "false")
+	if got := setting_effective("apps_install_user"); got != "false" {
+		t.Errorf("setting_effective('apps_install_user') with stored row = %q, want 'false'", got)
+	}
+
+	// Unregistered names fall back to empty
+	if got := setting_effective("no_such_setting"); got != "" {
+		t.Errorf("setting_effective('no_such_setting') = %q, want ''", got)
+	}
+}
+
 // Test system_settings map has required fields
 func TestSystemSettingsDefinitions(t *testing.T) {
 	required_settings := []string{

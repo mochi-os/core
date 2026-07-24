@@ -526,6 +526,7 @@ func TestDomainMatchLongestPrefix(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
+	domain_update("example.com", map[string]any{"verified": 1})
 	route_create("example.com", "/", "app", "root", "", "", 0)
 	route_create("example.com", "/blog", "app", "blog", "", "", 0)
 	route_create("example.com", "/blog/posts", "app", "posts", "", "", 0)
@@ -570,6 +571,7 @@ func TestDomainMatchSkipsDisabled(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
+	domain_update("example.com", map[string]any{"verified": 1})
 	route_create("example.com", "/blog", "app", "myapp", "", "", 0)
 	route_update("example.com", "/blog", map[string]any{"enabled": 0})
 
@@ -585,6 +587,7 @@ func TestDomainMatchWildcard(t *testing.T) {
 	defer cleanup()
 
 	domain_register("*.example.com")
+	domain_update("*.example.com", map[string]any{"verified": 1})
 	route_create("*.example.com", "/", "app", "wildcard", "", "", 0)
 
 	match := domain_match("blog.example.com", "/test")
@@ -652,6 +655,7 @@ func TestDomainMatchPathBoundary(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
+	domain_update("example.com", map[string]any{"verified": 1})
 	route_create("example.com", "/blog", "app", "blog", "", "", 0)
 
 	// Should match /blog/anything
@@ -679,6 +683,7 @@ func TestDomainMatchEmptyPath(t *testing.T) {
 	defer cleanup()
 
 	domain_register("example.com")
+	domain_update("example.com", map[string]any{"verified": 1})
 	route_create("example.com", "", "app", "root", "", "", 0)
 
 	match := domain_match("example.com", "/anything/here")

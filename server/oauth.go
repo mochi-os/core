@@ -100,7 +100,7 @@ func oauth_providers() map[string]*oauth_provider {
 			display: "Microsoft",
 			oidc:    true,
 			discovery: func() string {
-				tenant := setting_get("oauth_microsoft_tenant", "common")
+				tenant := setting_effective("oauth_microsoft_tenant")
 				return "https://login.microsoftonline.com/" + tenant + "/v2.0"
 			},
 			scopes: []string{oidc.ScopeOpenID, "email", "profile"},
@@ -139,10 +139,10 @@ func oauth_enabled(name string) bool {
 	if !auth_method_allowed("oauth") {
 		return false
 	}
-	if setting_get("oauth_"+name+"_client_id", "") == "" {
+	if setting_effective("oauth_"+name+"_client_id") == "" {
 		return false
 	}
-	if setting_get("oauth_"+name+"_client_secret", "") == "" {
+	if setting_effective("oauth_"+name+"_client_secret") == "" {
 		return false
 	}
 	return true
@@ -153,8 +153,8 @@ func oauth_enabled(name string) bool {
 // document; for plain OAuth2 providers it comes from the static registry.
 func oauth_client_config(p *oauth_provider, redirect string) (*oauth2.Config, *oidc.Provider, error) {
 	cfg := &oauth2.Config{
-		ClientID:     setting_get("oauth_"+p.name+"_client_id", ""),
-		ClientSecret: setting_get("oauth_"+p.name+"_client_secret", ""),
+		ClientID:     setting_effective("oauth_" + p.name + "_client_id"),
+		ClientSecret: setting_effective("oauth_" + p.name + "_client_secret"),
 		RedirectURL:  redirect,
 		Scopes:       p.scopes,
 	}
@@ -195,7 +195,7 @@ func oauth_oidc_provider(issuer string) (*oidc.Provider, error) {
 // oauth_redirect returns the absolute callback URL for a provider, using
 // oauth_public_url if set, otherwise deriving from the request host.
 func oauth_redirect(c *gin.Context, provider string) string {
-	base := setting_get("oauth_public_url", "")
+	base := setting_effective("oauth_public_url")
 	if base != "" {
 		return strings.TrimRight(base, "/") + "/_/auth/oauth/" + provider + "/callback"
 	}

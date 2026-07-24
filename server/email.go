@@ -111,7 +111,7 @@ func email_send(to string, subject string, body string) {
 	}
 	m := gm.NewMsg()
 
-	from := setting_get("email_from", "mochi-server@localhost")
+	from := setting_effective("email_from")
 	err := m.From(from)
 	if err != nil {
 		info("Email failed to set from address %q: %v", from, err)
@@ -145,7 +145,7 @@ func email_send_html(to string, subject string, html string) {
 	}
 	m := gm.NewMsg()
 
-	from := setting_get("email_from", "mochi-server@localhost")
+	from := setting_effective("email_from")
 	err := m.From(from)
 	if err != nil {
 		info("Email failed to set from address %q: %v", from, err)
@@ -242,7 +242,7 @@ func email_send_multipart(to string, subject string, text string, html string) {
 	}
 	m := gm.NewMsg()
 
-	from := setting_get("email_from", "mochi-server@localhost")
+	from := setting_effective("email_from")
 	err := m.From(from)
 	if err != nil {
 		info("Email failed to set from address %q: %v", from, err)

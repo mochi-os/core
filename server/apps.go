@@ -937,7 +937,7 @@ func app_for_service_fallback(user *User, service string) *App {
 // on a development and a published install), which is what stopped the
 // published-install redirect loop in ticket #414.
 func app_login_path() string {
-	return setting_get("login_app", "login")
+	return setting_effective("login_app")
 }
 
 // app_login resolves the app bound to the login role: the app serving

@@ -89,7 +89,7 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app, id st
 		return false, true, "Account has no token"
 	}
 
-	sa_raw := setting_get("fcm.service_account", "")
+	sa_raw := setting_effective("fcm.service_account")
 	if sa_raw == "" {
 		debug("FCM: account_deliver_fcm called but fcm.service_account is empty")
 		return false, false, "FCM service account not configured"

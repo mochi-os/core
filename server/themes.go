@@ -206,7 +206,7 @@ func web_user_theme_style(user *User) string {
 	user_font := user_preference_get(user, "font", "theme")
 
 	var t *AppTheme
-	if theme_pref := user_preference_get(user, "theme", setting_get("default_theme", system_settings["default_theme"].Default)); theme_pref != "" {
+	if theme_pref := user_preference_get(user, "theme", setting_effective("default_theme")); theme_pref != "" {
 		if parts := strings.SplitN(theme_pref, ":", 2); len(parts) == 2 {
 			t = app_theme_get(user, parts[0], parts[1])
 		}

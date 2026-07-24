@@ -645,6 +645,9 @@ func export_source_server(host string) string {
 			return "https://" + domain
 		}
 	}
+	// Deliberately not setting_effective: the registered email_from default
+	// (mochi-server@localhost) would fabricate https://localhost here; only
+	// an explicitly configured address yields a usable public domain.
 	if from := setting_get("email_from", ""); strings.Contains(from, "@") {
 		return "https://" + from[strings.LastIndex(from, "@")+1:]
 	}

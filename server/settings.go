@@ -489,7 +489,7 @@ func api_setting_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 // setting_signup_enabled returns whether new user signup is enabled
 func setting_signup_enabled() bool {
-	return setting_get("signup_enabled", "true") == "true"
+	return setting_effective("signup_enabled") == "true"
 }
 
 // reg_preferences is the user.db preferences register: a (name → value) versioned

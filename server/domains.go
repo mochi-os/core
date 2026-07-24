@@ -264,7 +264,7 @@ func domains_host_policy(ctx context.Context, host string) error {
 		return fmt.Errorf("unknown domain: %s", host)
 	}
 
-	if setting_get("domains_verification", "false") == "true" && d.Verified == 0 {
+	if setting_effective("domains_verification") == "true" && d.Verified == 0 {
 		return fmt.Errorf("unverified domain: %s", host)
 	}
 
@@ -522,7 +522,7 @@ func domain_match(host, path string) *route_match {
 		return nil
 	}
 
-	if setting_get("domains_verification", "false") == "true" && d.Verified == 0 {
+	if setting_effective("domains_verification") == "true" && d.Verified == 0 {
 		return nil
 	}
 

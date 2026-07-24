@@ -105,7 +105,11 @@ func web_login_verify(c *gin.Context) {
 // legacy "required" stored on any other method is treated as "allowed", since
 // requiring a credential a user may not have would lock them out.
 func auth_method_state(method string) string {
-	state := setting_get("auth_"+method, "allowed")
+	state := setting_effective("auth_" + method)
+	if state == "" {
+		// Not a registered method setting; keep the documented contract.
+		state = "allowed"
+	}
 	if method != "email" && state == "required" {
 		return "allowed"
 	}

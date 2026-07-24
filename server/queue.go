@@ -273,12 +273,16 @@ var queue_warned sync.Map // target+"|"+service -> last warn unix
 // budget deletes the data. var (not const) so tests can lower it.
 var queue_park_attempts = 50
 
-// queue_warn_suspended is the count of distinct suspended recipients past
-// which queue_watchdog warns. A handful of suspensions is the normal
-// residue of departed peers and wiped dev instances, each already being
-// probed and evicted by the health machinery below; many at once means
-// resolution or connectivity is broken for recipients that are probably
-// fine, which no per-recipient machinery will fix.
+// queue_warn_suspended is the count of recipients suspended WITHIN THE
+// PAST DAY past which queue_watchdog warns. The signal is the burst —
+// systemic resolution or connectivity breakage suspends many recipients
+// at once, which no per-recipient machinery will fix. The stock of
+// older suspensions is deliberately excluded: handled residue (departed
+// peers, wiped dev instances, test churn) accumulates on any long-lived
+// server and stays above any useful threshold forever (88 on the dev
+// rig and 14 on production within a day of this warn first shipping,
+// all of it residue), which would re-email daily about ghosts the
+// health machinery already owns.
 var queue_warn_suspended int64 = 10
 
 // queue_suspended_warned is the last unix time the breadth warn fired.
@@ -506,7 +510,8 @@ func queue_watchdog() {
 
 	// Breadth: each suspension is routine on its own, so crossing the
 	// threshold is the first moment anything emails about them at all.
-	suspended := int64(db.integer("select count(*) from health where suspended != 0"))
+	// Only the past day's suspensions count — see queue_warn_suspended.
+	suspended := int64(db.integer("select count(*) from health where suspended >= ?", now-86400))
 	if suspended < queue_warn_suspended {
 		queue_suspended_warned = 0
 		return
@@ -515,7 +520,7 @@ func queue_watchdog() {
 		return
 	}
 	queue_suspended_warned = now
-	warn("Queue health: %d recipients are suspended as unreachable (threshold %d). A few is the normal residue of departed peers; this many at once suggests directory resolution or connectivity is broken for recipients that may be fine.", suspended, queue_warn_suspended)
+	warn("Queue health: %d recipients were suspended as unreachable within the past day (threshold %d). A few is the normal residue of departed peers; this many at once suggests directory resolution or connectivity is broken for recipients that may be fine.", suspended, queue_warn_suspended)
 }
 
 // Add a direct message to the queue. Caller can override the default

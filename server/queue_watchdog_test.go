@@ -141,11 +141,16 @@ func TestQueueWatchdogSuspendedBreadth(t *testing.T) {
 		db.exec("insert into health (recipient, suspended, since) values (?, ?, ?)", recipient, now(), now())
 	}
 
+	// Residue suspended before the day window never counts: without the
+	// window this old row would make the r-1/r-2 pass reach the
+	// threshold of 3 and fire.
+	db.exec("insert into health (recipient, suspended, since) values ('r-old', ?, ?)", now()-2*86400, now()-2*86400)
+
 	suspend("r-1")
 	suspend("r-2")
 	queue_watchdog()
 	if queue_suspended_warned != 0 {
-		t.Fatal("below the threshold the breadth warn must not fire")
+		t.Fatal("below the threshold the breadth warn must not fire (old residue must not count)")
 	}
 
 	suspend("r-3")

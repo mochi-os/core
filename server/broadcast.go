@@ -865,28 +865,85 @@ func (e *Event) broadcast_acknowledge() error {
 	return nil
 }
 
-// broadcast_skip_warned throttles the unfillable-gap warns to one per
-// stream per day, shared by the floor handler and the pending GC.
-var broadcast_skip_warned sync.Map // user|app|peer|key -> last warn unix
+// A skipped unfillable gap is self-healing — the floor handler and the
+// pending GC both tell the app to re-fetch — so a single skip is a log
+// line, not an admin email. The operator signals are recurrence (the
+// same stream skipping again within broadcast_skip_recurrence: re-fetch
+// is not settling it) and breadth (broadcast_skip_breadth distinct
+// streams skipping within one day: origins are trimming replay logs
+// faster than subscribers catch up generally, which no per-stream
+// re-fetch fixes). var (not const) so tests can lower them.
+var broadcast_skip_recurrence int64 = 7 * 86400
+var broadcast_skip_breadth int64 = 25
 
-// broadcast_skip_warn emits the throttled operator alert for a skipped
-// unfillable gap.
+// broadcast_skip_record tracks skips per stream: `last` backs the
+// recurrence check, `warned` throttles its warn to one per day. State is
+// in-memory — a restart forgets prior skips, delaying escalation by at
+// most one recurrence window.
+type broadcast_skip_record struct {
+	last   int64
+	warned int64
+}
+
+var broadcast_skip_state sync.Map // user|app|peer|key -> broadcast_skip_record
+
+// broadcast_skip_breadth_warned is the last unix time the breadth warn
+// fired, stored under a fixed key in its own map so concurrent floor
+// handlers race benignly at worst (a duplicate email, which
+// warn_email_allow absorbs).
+var broadcast_skip_breadth_warned sync.Map // "breadth" -> last warn unix
+
+// broadcast_skip_warn records a skipped unfillable gap, logs it, and
+// escalates to an operator email only on recurrence or breadth. Shared
+// by the floor handler and the pending GC.
 func broadcast_skip_warn(user, app, peer, key string, first, last int64) {
 	id := user + "|" + app + "|" + peer + "|" + key
-	now := now()
-	if v, ok := broadcast_skip_warned.Load(id); ok && now-v.(int64) < 86400 {
+	moment := now()
+	info("Broadcast stream skipped unfillable sequences %d..%d on (peer=%q, key=%q) for user %q app %q: the origin's replay log no longer holds them; the app was told to re-fetch.", first, last, peer, key, user, app)
+
+	record := broadcast_skip_record{}
+	if v, ok := broadcast_skip_state.Load(id); ok {
+		record = v.(broadcast_skip_record)
+	}
+	if record.last != 0 && moment-record.last < broadcast_skip_recurrence && moment-record.warned >= 86400 {
+		record.warned = moment
+		warn("Broadcast stream skipped unfillable sequences %d..%d on (peer=%q, key=%q) for user %q app %q again within %d days: re-fetch is not settling this stream; the origin trims its replay log faster than this subscriber catches up.", first, last, peer, key, user, app, broadcast_skip_recurrence/86400)
+	}
+	record.last = moment
+	broadcast_skip_state.Store(id, record)
+
+	// Breadth across distinct streams in the past day, pruning entries
+	// past the recurrence window in the same pass so churn (dev test
+	// runs mint fresh streams constantly) cannot grow the map without
+	// bound.
+	streams := int64(0)
+	broadcast_skip_state.Range(func(k, v any) bool {
+		r := v.(broadcast_skip_record)
+		switch {
+		case moment-r.last < 86400:
+			streams++
+		case moment-r.last >= broadcast_skip_recurrence:
+			broadcast_skip_state.Delete(k)
+		}
+		return true
+	})
+	if streams < broadcast_skip_breadth {
 		return
 	}
-	broadcast_skip_warned.Store(id, now)
-	warn("Broadcast stream skipped unfillable sequences %d..%d on (peer=%q, key=%q) for user %q app %q: the origin's replay log no longer holds them; the app was told to re-fetch.", first, last, peer, key, user, app)
+	if v, ok := broadcast_skip_breadth_warned.Load("breadth"); ok && moment-v.(int64) < 86400 {
+		return
+	}
+	broadcast_skip_breadth_warned.Store("breadth", moment)
+	warn("Broadcast streams skipped unfillable sequences on %d distinct streams within a day (threshold %d): origins are trimming replay logs faster than subscribers catch up; per-stream re-fetch will not fix this.", streams, broadcast_skip_breadth)
 }
 
 // broadcast_floor handles an inbound broadcast/floor event: the stream
 // origin's answer to a resync request that asked for sequences below its
 // retained log. The gap below the floor is provably unfillable — the log
 // rows are trimmed — so waiting recovers nothing: skip to floor-1 now,
-// drain whatever chains onto it, alert the operator, and hand the app
-// its broadcast/gap error for a full re-fetch. Without this signal the
+// drain whatever chains onto it, record the skip (escalating to the
+// operator only on recurrence or breadth), and hand the app its
+// broadcast/gap error for a full re-fetch. Without this signal the
 // receiver grinds until the pending-GC TTL (the News feed wedge spent 9
 // days there, 2026-07). Only the origin is authoritative about its own
 // log, so the event must arrive from the peer it names — which for the

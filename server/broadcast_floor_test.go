@@ -15,7 +15,81 @@
 
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+// TestBroadcastSkipEscalation — a single unfillable skip is a log line
+// only; the operator email fires on recurrence (the same stream again
+// inside broadcast_skip_recurrence) and on breadth (broadcast_skip_breadth
+// distinct streams inside a day), and records past the recurrence window
+// are pruned in passing.
+func TestBroadcastSkipEscalation(t *testing.T) {
+	breadth := broadcast_skip_breadth
+	broadcast_skip_breadth = 3
+	defer func() {
+		broadcast_skip_breadth = breadth
+		broadcast_skip_breadth_warned.Delete("breadth")
+		broadcast_skip_state.Range(func(k, _ any) bool {
+			if strings.HasPrefix(k.(string), "u-skip|") {
+				broadcast_skip_state.Delete(k)
+			}
+			return true
+		})
+	}()
+
+	record := func(id string) broadcast_skip_record {
+		t.Helper()
+		v, ok := broadcast_skip_state.Load(id)
+		if !ok {
+			t.Fatalf("expected a skip record for %q", id)
+		}
+		return v.(broadcast_skip_record)
+	}
+
+	// First skip: recorded, no recurrence warn.
+	broadcast_skip_warn("u-skip", "feeds", "p1", "k1", 2, 3)
+	if r := record("u-skip|feeds|p1|k1"); r.warned != 0 {
+		t.Fatal("a first skip must not warn")
+	}
+
+	// A repeat inside the recurrence window warns.
+	broadcast_skip_warn("u-skip", "feeds", "p1", "k1", 4, 5)
+	first := record("u-skip|feeds|p1|k1").warned
+	if first == 0 {
+		t.Fatal("a repeat skip inside the recurrence window must warn")
+	}
+
+	// Same-day repeats keep the stamp: one recurrence warn per day.
+	broadcast_skip_warn("u-skip", "feeds", "p1", "k1", 6, 7)
+	if record("u-skip|feeds|p1|k1").warned != first {
+		t.Error("recurrence warn must throttle to one per day")
+	}
+
+	// A prior skip past the recurrence window does not escalate.
+	stale := "u-skip|feeds|p2|k2"
+	broadcast_skip_state.Store(stale, broadcast_skip_record{last: now() - broadcast_skip_recurrence - 10})
+	broadcast_skip_warn("u-skip", "feeds", "p2", "k2", 2, 2)
+	if record(stale).warned != 0 {
+		t.Error("a skip after the recurrence window must not warn")
+	}
+
+	// Breadth: a third distinct stream within a day trips the aggregate.
+	broadcast_skip_breadth_warned.Delete("breadth")
+	broadcast_skip_warn("u-skip", "feeds", "p3", "k3", 2, 2)
+	if _, ok := broadcast_skip_breadth_warned.Load("breadth"); !ok {
+		t.Fatal("breadth threshold must warn")
+	}
+
+	// Records older than the recurrence window are pruned in passing.
+	dead := "u-skip|feeds|p4|k4"
+	broadcast_skip_state.Store(dead, broadcast_skip_record{last: now() - broadcast_skip_recurrence - 10})
+	broadcast_skip_warn("u-skip", "feeds", "p5", "k5", 2, 2)
+	if _, ok := broadcast_skip_state.Load(dead); ok {
+		t.Error("stale records must be pruned")
+	}
+}
 
 // TestBroadcastPendingSkipStreamConverges — a sparse buffer with many holes
 // unsticks in ONE pass: the loop skips each hole, the drain applies the run

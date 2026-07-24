@@ -121,27 +121,24 @@ func worker_dispatch(user, app string, wf *worker_frame) {
 	w.inbox <- wf
 }
 
-// worker_inbox_offer is a try-once non-blocking enqueue into an
-// already-existing worker's inbox. Returns:
+// worker_inbox_offer is a try-once non-blocking enqueue into the
+// (user, app) worker's inbox, creating the worker if absent. Returns:
 //
 //	true  — frame accepted; worker will process it
-//	false — no worker for (user, app), OR inbox full
+//	false — inbox full
 //
-// Used by message_self_loop_dispatch. Does NOT create a worker, because
-// the worker-create path (worker_create → go w.run() → ...) statically
-// reaches the replication emit chain, which would form an init-cycle
-// through `var replication_emit_to = replication_emit_to_real`. Falling
-// through to the queue.db path on cache miss is fine — the first
-// queue_select pick uses worker_dispatch (which DOES create) and from
-// then on the worker is hot, so direct-dispatch hits on every
-// subsequent send.
+// Used by message_self_loop_dispatch. The enqueue is deliberately
+// non-blocking: a full inbox means the worker is saturated, and the
+// caller is inside a send path — spilling to queue.db's at-least-once
+// machinery is better than blocking the sender behind a slow app
+// handler, and the backlog stays visible as queue depth.
 func worker_inbox_offer(user, app string, wf *worker_frame) bool {
 	key := user_app_key{user: user, app: app}
 	app_workers_lock.RLock()
 	w, ok := app_workers[key]
 	app_workers_lock.RUnlock()
 	if !ok || w == nil {
-		return false
+		w = worker_create(key)
 	}
 	w.last_used.Store(now())
 	select {
@@ -491,6 +488,8 @@ func (l local_reply) fail(reason string) {
 //
 //   - m.target is not net_id (caller should use the normal queue path)
 //   - m has a file payload (queue.db owns large-payload tracking)
+//   - the recipient does not resolve to a local user (queue.db owns
+//     resolution and failure handling for that case)
 //   - the worker inbox is full (caller falls back to queue.db so the
 //     row gets the usual at-least-once retry semantics)
 //
@@ -545,6 +544,12 @@ func message_self_loop_dispatch(m *Message, content []byte) bool {
 			user = u.UID
 		}
 	}
+	if user == "" {
+		// Recipient did not resolve to a local user. queue.db owns
+		// resolution and failure handling for that case; creating a
+		// worker keyed on an empty user would strand the frame here.
+		return false
+	}
 
 	wf := &worker_frame{
 		frame: &Frame{
@@ -564,13 +569,10 @@ func message_self_loop_dispatch(m *Message, content []byte) bool {
 		reply: local_reply{id: m.ID, service: m.Service, event: m.Event, to: to},
 	}
 
-	// Lookup-only non-blocking enqueue. Two miss cases both fall back
-	// to queue.db:
-	//
-	//   1. No worker yet for (user, app). The queue.db path will create
-	//      one on first pick; subsequent sends hit this hot path.
-	//   2. Inbox full. The worker is saturated; back-pressure shows up
-	//      as queue depth (visible via `mochictl pipelining status` and
-	//      queue length metrics) rather than as a blocked send call.
+	// Non-blocking enqueue, creating the worker on first use. The one
+	// remaining miss is a full inbox: the worker is saturated, so the
+	// frame falls back to queue.db and the back-pressure shows up as
+	// queue depth (visible via `mochictl pipelining status` and queue
+	// length metrics) rather than as a blocked send call.
 	return worker_inbox_offer(user, m.Service, wf)
 }

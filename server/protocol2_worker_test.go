@@ -33,24 +33,24 @@ func reset_workers(t *testing.T) {
 	app_workers_lock.Unlock()
 }
 
-// --- worker_inbox_offer (self-loop direct-dispatch lookup) --------------
+// --- worker_inbox_offer (self-loop direct dispatch) ---------------------
 
-// TestWorkerInboxOfferNoWorker: lookup-only path returns false when no
-// worker exists for (user, app). Caller (message_self_loop_dispatch)
-// then falls back to queue.db so the message isn't dropped.
-func TestWorkerInboxOfferNoWorker(t *testing.T) {
+// TestWorkerInboxOfferCreatesWorker: a miss creates the worker and the
+// frame lands on its inbox — the self-loop fast path takes no queue.db
+// detour for the first send to a cold (user, app).
+func TestWorkerInboxOfferCreatesWorker(t *testing.T) {
 	reset_workers(t)
 	defer reset_workers(t)
 	ok := worker_inbox_offer("nobody", "no-such-app", &worker_frame{
 		frame: &Frame{Type: frame_type_message, ID: "x"},
 		reply: local_reply{id: "x"},
 	})
-	if ok {
-		t.Error("worker_inbox_offer with no worker returned true; want false")
+	if !ok {
+		t.Error("worker_inbox_offer with no worker returned false; want true (creates it)")
 	}
 	workers, _ := worker_count()
-	if workers != 0 {
-		t.Errorf("worker_inbox_offer must not create a worker, found %d", workers)
+	if workers != 1 {
+		t.Errorf("worker_inbox_offer should have created one worker, found %d", workers)
 	}
 }
 
@@ -60,8 +60,7 @@ func TestWorkerInboxOfferNoWorker(t *testing.T) {
 func TestWorkerInboxOfferAcceptsWhenWorkerExists(t *testing.T) {
 	reset_workers(t)
 	defer reset_workers(t)
-	// Seed a worker via the create-path (the only legitimate way; the
-	// direct-dispatch lookup-only path doesn't create).
+	// Seed a worker via worker_dispatch, then offer to it.
 	worker_dispatch("user-a", "app-a", &worker_frame{
 		frame: &Frame{Type: frame_type_message, ID: "seed"},
 		reply: queue_reply{id: "seed"},

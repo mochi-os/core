@@ -2635,7 +2635,7 @@ func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
-	if !user.administrator() && setting_get("apps_install_user", "") != "true" {
+	if !user.administrator() && setting_effective("apps_install_user") != "true" {
 		return sl_error(fn, "not administrator")
 	}
 
@@ -3123,7 +3123,7 @@ func api_app_version_download(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
-	if !user.administrator() && setting_get("apps_install_user", "") != "true" {
+	if !user.administrator() && setting_effective("apps_install_user") != "true" {
 		return sl_error(fn, "not allowed to install apps")
 	}
 	if len(args) != 2 {

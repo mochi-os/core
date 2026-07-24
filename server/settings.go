@@ -567,6 +567,19 @@ func setting_get(name string, def string) string {
 	return def
 }
 
+// setting_effective resolves a setting the way the settings API and UI do:
+// the stored value if present, else the setting's registered default.
+// Enforcement sites must use this rather than setting_get with an inline
+// default, which can silently disagree with the declared default
+// (apps_install_user was enforced as "" while registered as "true").
+func setting_effective(name string) string {
+	definition, exists := system_settings[name]
+	if !exists {
+		return setting_get(name, "")
+	}
+	return setting_get(name, definition.Default)
+}
+
 func setting_set(name string, value string) {
 	db := db_open("db/settings.db")
 	db.exec("replace into settings ( name, value ) values ( ?, ? )", name, value)

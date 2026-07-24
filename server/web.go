@@ -706,7 +706,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 				})
 				return true
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": path_scrub(err.Error())})
 			return true
 		}
 		if !c.Writer.Written() {

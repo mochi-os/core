@@ -642,3 +642,31 @@ func TestURLAddressBlocked(t *testing.T) {
 		}
 	}
 }
+
+// path_scrub must drop the data_dir root and per-user segment while keeping
+// the app-relative remainder, so client-visible errors stay fully diagnostic
+// without revealing the server's disk layout or the owning user's id.
+func TestPathScrub(t *testing.T) {
+	orig := data_dir
+	data_dir = "/srv/mochi"
+	defer func() { data_dir = orig }()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"user database path", "unable to open database file: /srv/mochi/users/8f3a9c/feeds/db/posts.db", "unable to open database file: feeds/db/posts.db"},
+		{"core database path", "database is locked: /srv/mochi/db/sessions.db", "database is locked: db/sessions.db"},
+		{"no path", "no such table: posts", "no such table: posts"},
+		{"two paths", "/srv/mochi/users/u1/a/x -> /srv/mochi/users/u2/b/y", "a/x -> b/y"},
+		{"user directory itself", "stat /srv/mochi/users/u1", "stat users/u1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := path_scrub(tt.input); got != tt.want {
+				t.Errorf("path_scrub(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

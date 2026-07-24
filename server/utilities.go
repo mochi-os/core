@@ -646,3 +646,28 @@ func regex_cached(pattern string) *regexp.Regexp {
 	regex_cache[pattern] = re
 	return re
 }
+
+// path_scrub removes the server's filesystem prefix from a message bound for
+// an HTTP client. The data_dir root and the per-user path segment reveal the
+// server's disk layout and the owning user's id while explaining nothing to
+// the caller; the app-relative remainder (which database or file failed) is
+// kept so the message stays fully diagnostic.
+func path_scrub(message string) string {
+	if data_dir == "" {
+		return message
+	}
+	root := data_dir + "/"
+	for {
+		i := strings.Index(message, root)
+		if i < 0 {
+			return message
+		}
+		rest := message[i+len(root):]
+		if strings.HasPrefix(rest, "users/") {
+			if j := strings.Index(rest[len("users/"):], "/"); j >= 0 {
+				rest = rest[len("users/")+j+1:]
+			}
+		}
+		message = message[:i] + rest
+	}
+}

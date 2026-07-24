@@ -178,6 +178,11 @@ func action_id() int64 {
 func (a *Action) dump(values ...any) {
 	debug("Web dump: %+v", values...)
 
+	// Explicit status and type: actions run under gin's NoRoute handler, which
+	// pre-sets 404, and responses carry X-Content-Type-Options: nosniff, so
+	// neither may be left implicit.
+	a.web.Status(200)
+	a.web.Header("Content-Type", "text/html; charset=utf-8")
 	a.web.Writer.WriteString("<html><head><title>Dump</title></head><body><pre>")
 
 	for i, v := range values {
@@ -207,6 +212,7 @@ func (a *Action) error(code int, message string, values ...any) {
 	}
 
 	a.web.Status(code)
+	a.web.Header("Content-Type", "text/html; charset=utf-8")
 	a.web.Writer.WriteString("<html><head><title>Error</title></head><body>")
 	a.web.Writer.WriteString(fmt.Sprintf("<h1>Error %d</h1>", code))
 	a.web.Writer.WriteString("<pre>")

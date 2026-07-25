@@ -84,7 +84,7 @@ const (
 )
 
 const (
-	schema_version = 3
+	schema_version = 4
 )
 
 var (
@@ -327,13 +327,11 @@ func db_create() {
 	// of one entity, asserted by that host alone. There are no global rows;
 	// a host may only publish or delete rows naming itself. Rows are
 	// self-verifying: `signature` is the entity's ed25519 signature over the
-	// content facts, `attestation` is the asserting host's libp2p-key
-	// signature over the claim, and `binding` is the entity's signature over
-	// the whole row INCLUDING peer — the only one of the three that
-	// authorises a host rather than merely asserting content or liveness. So
-	// any row can be re-served and verified regardless of how it arrived.
+	// whole row, peer included, so only the entity's key can name a host for
+	// it and any row can be re-served and verified regardless of how it
+	// arrived.
 	directory := db_open("db/directory.db")
-	directory.exec("create table if not exists entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', binding text not null default '', primary key ( entity, peer ) )")
+	directory.exec("create table if not exists entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, message text not null default '', expires text not null default '', signature text not null default '', primary key ( entity, peer ) )")
 	directory.exec("create index if not exists entries_name on entries( name )")
 	directory.exec("create index if not exists entries_class on entries( class )")
 	directory.exec("create index if not exists entries_fingerprint on entries( fingerprint )")
@@ -1235,6 +1233,8 @@ func db_upgrade() {
 			db_upgrade_2()
 		case 3:
 			db_upgrade_3()
+		case 4:
+			db_upgrade_4()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1251,15 +1251,32 @@ func db_upgrade_2() {
 	queue.exec("create table if not exists health ( recipient text not null primary key, failures integer not null default 0, denials integer not null default 0, success integer not null default 0, since integer not null default 0, suspended integer not null default 0, probed integer not null default 0 )")
 }
 
-// db_upgrade_3 adds the directory binding column on existing installs —
-// the entity's signature over the whole row, which is what authorises a
-// host to serve an entity. Existing rows keep an empty binding and stay
-// valid: entry_store requires one only once an entity is known to issue
-// them, so each entity ratchets closed as its own host re-publishes.
+// db_upgrade_3 added a separate directory binding column. It shipped in
+// 0.4.219 and ran on production, so the version number is spent and cannot be
+// redefined — db_upgrade_4 immediately drops the column again. Kept as the
+// historical no-op it now is so a server still at schema 2 walks the same
+// path production did.
 func db_upgrade_3() {
+}
+
+// db_upgrade_4 collapses the directory row's three signatures into one: the
+// entity now signs the whole row, peer included, so the host-key attestation
+// and the short-lived separate binding are both redundant. Stored rows keep
+// routing (they are verified only on arrival); rows from hosts that have not
+// upgraded fail the new check and age out of the active window.
+func db_upgrade_4() {
 	directory := db_open("db/directory.db")
-	if have, _ := directory.exists("select 1 from pragma_table_info('entries') where name='binding'"); !have {
-		directory.exec("alter table entries add column binding text not null default ''")
+	for _, column := range []string{"attestation", "binding"} {
+		if have, _ := directory.exists("select 1 from pragma_table_info('entries') where name=?", column); have {
+			directory.exec("alter table entries drop column " + column)
+		}
+	}
+	// The row now stores the announcement it came from, so it can be
+	// re-verified and re-served without a second signature.
+	for _, column := range []string{"message", "expires"} {
+		if have, _ := directory.exists("select 1 from pragma_table_info('entries') where name=?", column); !have {
+			directory.exec("alter table entries add column " + column + " text not null default ''")
+		}
 	}
 }
 

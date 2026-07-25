@@ -7,19 +7,26 @@
 // queue's broadcast re-flood via queue_send_broadcast). See
 // claude/plans/pubsub.md.
 //
-// Each message is a self-contained protocol-2 Frame carrying an Expires
-// freshness bound and — for producers that sign their envelope — a
-// domain-separated entity signature over the canonical
-// {v, from, service, event, expires, content}. pubsub_publish floods one
-// Frame; receivers dedup a re-flood or multi-path delivery via
-// message_seen_mark.
+// Each message is a self-contained Announcement. When it carries a from —
+// the entity the message is ABOUT — that entity signs the whole thing:
+// canonical {v, id, from, service, event, expires, content}, everything but
+// the signature itself. A from that fails to verify is dropped, never
+// downgraded to anonymous, because an identity is either proven or it is a
+// claim by an attacker. Receivers dedup a re-flood or multi-path delivery
+// via message_seen_mark.
+//
+// Every field a receiver acts on is signed or refused. An addressee is
+// refused outright (a broadcast has none, and an unsigned one would let a
+// relay re-target routing), and segment data cannot ride at all. That is
+// what lets a directory row's subject be its from rather than a field read
+// out of content: the row is proven, not asserted, and because the row
+// stores the announcement it arrived as, the same signature re-verifies
+// when it is re-served over the sync stream.
 //
 // Pubsub is best-effort and one-way: no per-message challenge, no
 // ack/nack, no reply writer. GossipSub's StrictSign authenticates the
-// relaying peer at the mesh layer. Directory rows authenticate themselves:
-// the payload carries an entity signature over the content and a host-key
-// attestation over the claim, verified by entry_store regardless of which
-// mesh peer relayed the frame — so directory frames ride anonymously here.
+// relaying peer at the mesh layer, which is a different question from who
+// the message is about — hence the entity signature above.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
@@ -29,7 +36,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
@@ -83,6 +89,51 @@ const (
 	pubsub_expires_max = 2 * pubsub_expires_ttl
 )
 
+// Announcement is the /mochi/2 pubsub wire shape. Pubsub carries exactly one
+// kind of message and GossipSub delivers it whole, so unlike the stream
+// protocol's Frame it needs neither a type discriminator nor a length prefix:
+// the topic says what this is, and the transport says where it ends.
+type Announcement struct {
+	ID        string         `cbor:"id,omitempty"`
+	From      string         `cbor:"from,omitempty"`
+	Service   string         `cbor:"service,omitempty"`
+	Event     string         `cbor:"event,omitempty"`
+	Expires   string         `cbor:"expires,omitempty"`
+	Content   map[string]any `cbor:"content,omitempty"`
+	Signature []byte         `cbor:"signature,omitempty"`
+}
+
+// announcement_read decodes one flooded announcement, bounding the payload
+// before allocating so a flooder cannot force a large decode.
+func announcement_read(data []byte) (*Announcement, error) {
+	if len(data) > frame_maximum {
+		return nil, fmt.Errorf("announcement: oversized %d > %d", len(data), frame_maximum)
+	}
+	var a Announcement
+	if err := cbor_decode_mode.Unmarshal(data, &a); err != nil {
+		return nil, fmt.Errorf("announcement: cbor decode failed: %w", err)
+	}
+	return &a, nil
+}
+
+// announcement_valid runs the envelope-level checks: well-formed from,
+// service, event and id. Content is validated by the event handler.
+func announcement_valid(a *Announcement) bool {
+	if a.From != "" && !valid(a.From, "entity") {
+		return false
+	}
+	if a.Service != "" && !valid(a.Service, "constant") {
+		return false
+	}
+	if a.Event != "" && !valid(a.Event, "constant") {
+		return false
+	}
+	if a.ID != "" && len(a.ID) > max_id_length {
+		return false
+	}
+	return true
+}
+
 // pubsub_limiter chooses which inbound budget a message is charged against.
 //
 // The peers service is the control plane: the messages by which hosts learn
@@ -123,24 +174,25 @@ func pubsub_manager() {
 		}
 		// Decode before rate limiting, so the limit can tell peer control
 		// traffic apart from an application flood. Only the cheap half of
-		// the work moves ahead of the limit: frame_read rejects anything
-		// over frame_maximum before allocating and then CBOR-decodes, and
-		// pubsub_frame_valid is a handful of string checks. The expensive
+		// the work moves ahead of the limit: announcement_read bounds the
+		// payload before allocating and then CBOR-decodes, and
+		// announcement_valid is a handful of string checks. The expensive
 		// part — the entity signature verification in pubsub_receive —
 		// stays behind it, so what an unauthenticated flooder can force is
 		// one bounded decode rather than a public-key operation.
-		f, err := frame_read(bytes.NewReader(m.Data))
+		f, err := announcement_read(m.Data)
 		if err != nil {
 			pubsub_dropped.Add(1)
-			info("Pubsub frame read error from peer %q: %v", peer, err)
+			// Name the ORIGINATOR, not the relay: GossipSub forwards at the
+			// mesh layer whether or not we can decode, so peer here is just
+			// the last hop and blaming it sends an operator after the wrong
+			// server — during a format change every relay looks guilty.
+			info("Pubsub read error, originator %q via peer %q: %v", m.GetFrom().String(), peer, err)
 			continue
 		}
-		if f.Type != frame_type_message {
-			continue // pubsub carries only message frames
-		}
-		if !pubsub_frame_valid(f) {
+		if !announcement_valid(f) {
 			pubsub_dropped.Add(1)
-			info("Pubsub received invalid frame from peer %q", peer)
+			info("Pubsub received invalid announcement from peer %q", peer)
 			continue
 		}
 
@@ -167,7 +219,7 @@ func pubsub_manager() {
 	}
 }
 
-// pubsub_receive decodes one /mochi/2 pubsub Frame and routes it. The
+// pubsub_receive routes one decoded /mochi/2 announcement. The
 // frame is self-contained: routing envelope, an Expires freshness bound,
 // and (for signed announcements) the entity signature all travel in the
 // one message — there is no stream or handshake context. Best-effort and
@@ -179,21 +231,22 @@ func pubsub_manager() {
 // The frame arrives already decoded and shape-checked: pubsub_manager needs
 // the service to choose a rate limit, so it decodes first and passes the
 // result rather than having it parsed twice.
-func pubsub_receive(f *Frame, peer, origin string) {
+func pubsub_receive(f *Announcement, peer, origin string) {
 	// Freshness bounds replay within the signed window.
 	if !pubsub_fresh(f.Expires) {
 		debug("Pubsub dropping frame with out-of-window expires %q from peer %q", f.Expires, peer)
 		return
 	}
 
-	// Entity signature (signed envelopes only). On failure, clear From so
-	// the event is treated as anonymous and the handler's Anonymous gate
-	// decides. Directory frames are always anonymous here — their payloads
-	// self-verify in entry_store.
+	// A from names the entity the message is ABOUT and is an identity claim,
+	// so it must be proven, not downgraded: a frame that claims one and fails
+	// verification is hostile or corrupt and is dropped outright. An absent
+	// from is simply anonymous, and the handler's Anonymous gate decides.
 	if f.From != "" {
 		strcontent, ok := pubsub_string_content(f.Content)
-		if !ok || pubsub_verify(f.From, f.Service, f.Event, f.Expires, strcontent, f.Signature) != nil {
-			f.From = ""
+		if !ok || pubsub_verify(f.ID, f.From, f.Service, f.Event, f.Expires, strcontent, f.Signature) != nil {
+			info("Pubsub dropping frame with bad signature: from=%q service=%q event=%q peer=%q", f.From, f.Service, f.Event, peer)
+			return
 		}
 	}
 
@@ -204,32 +257,11 @@ func pubsub_receive(f *Frame, peer, origin string) {
 		return
 	}
 
-	e := Event{id: event_id(), msg_id: f.ID, from: f.From, to: f.To, service: f.Service, event: f.Event, peer: peer, origin: origin, content: f.Content}
+	e := Event{id: event_id(), msg_id: f.ID, from: f.From, service: f.Service, event: f.Event,
+		peer: peer, origin: origin, content: f.Content, expires: f.Expires, signature: f.Signature}
 	if err := e.route(); err != nil {
 		debug("Pubsub frame route error for service %q event %q from peer %q: %v", f.Service, f.Event, peer, err)
 	}
-}
-
-// pubsub_frame_valid runs the envelope-level checks on a received frame:
-// well-formed from / to / service / event / id. Content is validated by
-// the event handler (valid(id,"entity") etc.).
-func pubsub_frame_valid(f *Frame) bool {
-	if f.From != "" && !valid(f.From, "entity") {
-		return false
-	}
-	if f.To != "" && !valid(f.To, "entity") && !valid(f.To, "fingerprint") {
-		return false
-	}
-	if f.Service != "" && !valid(f.Service, "constant") {
-		return false
-	}
-	if f.Event != "" && !valid(f.Event, "constant") {
-		return false
-	}
-	if f.ID != "" && len(f.ID) > max_id_length {
-		return false
-	}
-	return true
 }
 
 // pubsub_fresh reports whether an Expires timestamp (absolute Unix
@@ -241,15 +273,15 @@ func pubsub_fresh(expires string) bool {
 }
 
 // pubsub_publish floods one message to the /mochi/2 topic as a
-// self-contained Frame. Producers (directory / peer announcements via
+// self-contained announcement. Producers (directory / peer announcements via
 // Message.publish, the queue's broadcast re-flood via
-// queue_send_broadcast) call this. The Frame carries the routing
+// queue_send_broadcast) call this. The announcement carries the routing
 // envelope, an Expires freshness bound, and — for a signed announcement
 // (from != "") — a domain-separated entity signature over the canonical
 // {v, from, service, event, expires, content}. Expires and the signature
 // are recomputed on every (re-)flood, so a queue-held broadcast re-floods
 // with a fresh, still-valid window.
-func pubsub_publish(from, to, service, event, id string, content, data []byte) {
+func pubsub_publish(from, service, event, id string, content []byte) {
 	if net_pubsub == nil {
 		return
 	}
@@ -271,24 +303,22 @@ func pubsub_publish(from, to, service, event, id string, content, data []byte) {
 			warn("Pubsub refusing to sign non-string content for %q", from)
 			return
 		}
-		sig = pubsub_sign(from, service, event, expires, strcontent)
+		sig = pubsub_sign(id, from, service, event, expires, strcontent)
+		if sig == nil {
+			warn("Pubsub refusing to flood unsigned announcement for %q", from)
+			return
+		}
 	}
 
-	f := &Frame{
-		Type: frame_type_message, From: from, To: to,
-		Service: service, Event: event, ID: id,
+	body := cbor_encode(&Announcement{
+		ID: id, From: from, Service: service, Event: event,
 		Expires: expires, Content: cmap, Signature: sig,
-	}
-	if len(data) > 0 {
-		f.Data = data
-	}
-
-	var buf bytes.Buffer
-	if err := frame_write(&buf, f); err != nil {
-		warn("Pubsub frame write failed: %v", err)
+	})
+	if len(body) > frame_maximum {
+		warn("Pubsub refusing to flood oversized announcement %d > %d", len(body), frame_maximum)
 		return
 	}
-	net_pubsub.Publish(net_context, buf.Bytes())
+	net_pubsub.Publish(net_context, body)
 	pubsub_published.Add(1)
 }
 
@@ -314,12 +344,20 @@ func pubsub_string_content(content map[string]any) (map[string]string, bool) {
 }
 
 // pubsub_signable returns the canonical CBOR an entity signs for a pubsub
-// announcement: {v, from, service, event, expires, content} sorted
+// announcement: every frame field except the signature itself, sorted
 // bytewise-lexical. Mirrors claim_signable; any schema change MUST bump
 // pubsub_domain.
-func pubsub_signable(from, service, event, expires string, content map[string]string) ([]byte, error) {
+//
+// Nothing meaningful is left out. id is covered so a captured message cannot
+// be re-flooded under fresh ids to defeat dedup, and expires is covered so the
+// sender owns the replay window rather than whoever relays it — an unsigned
+// expires makes pubsub_expires_max decorative, since an attacker simply
+// rewrites it every window. The frame type is NOT covered: pubsub carries only
+// message frames, so v already implies it.
+func pubsub_signable(id, from, service, event, expires string, content map[string]string) ([]byte, error) {
 	payload := map[string]any{
 		"v":       pubsub_domain,
+		"id":      id,
 		"from":    from,
 		"service": service,
 		"event":   event,
@@ -336,8 +374,8 @@ func pubsub_signable(from, service, event, expires string, content map[string]st
 // pubsub_sign produces the entity signature for a signed announcement.
 // Returns nil if the entity isn't local or its key can't be loaded — the
 // caller then floods unsigned and receivers treat it as anonymous.
-func pubsub_sign(from, service, event, expires string, content map[string]string) []byte {
-	signable, err := pubsub_signable(from, service, event, expires, content)
+func pubsub_sign(id, from, service, event, expires string, content map[string]string) []byte {
+	signable, err := pubsub_signable(id, from, service, event, expires, content)
 	if err != nil {
 		warn("pubsub_sign canonical encode failed for %q: %v", from, err)
 		return nil
@@ -352,7 +390,7 @@ func pubsub_sign(from, service, event, expires string, content map[string]string
 // pubsub_verify reconstructs the signable from a received frame and checks
 // the entity signature. The entity id IS the base58 ed25519 public key —
 // no directory lookup, as in claim_verify. Returns nil on success.
-func pubsub_verify(from, service, event, expires string, content map[string]string, signature []byte) error {
+func pubsub_verify(id, from, service, event, expires string, content map[string]string, signature []byte) error {
 	if from == "" {
 		return errors.New("pubsub: empty from")
 	}
@@ -363,7 +401,7 @@ func pubsub_verify(from, service, event, expires string, content map[string]stri
 	if len(signature) != ed25519.SignatureSize {
 		return fmt.Errorf("pubsub: invalid signature length %d", len(signature))
 	}
-	signable, err := pubsub_signable(from, service, event, expires, content)
+	signable, err := pubsub_signable(id, from, service, event, expires, content)
 	if err != nil {
 		return err
 	}

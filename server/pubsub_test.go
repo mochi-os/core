@@ -113,7 +113,7 @@ func TestPubsubSignableDeterministic(t *testing.T) {
 	expires := i64toa(now() + pubsub_expires_ttl)
 	content := map[string]string{"id": from, "name": "Alice", "version": "100", "created": "1000"}
 
-	direct, err := pubsub_signable(from, "directory", "publish", expires, content)
+	direct, err := pubsub_signable("m1", from, "directory", "publish", expires, content)
 	if err != nil {
 		t.Fatalf("signable (direct): %v", err)
 	}
@@ -128,7 +128,7 @@ func TestPubsubSignableDeterministic(t *testing.T) {
 	if !ok {
 		t.Fatal("projection of round-tripped content failed")
 	}
-	roundtrip, err := pubsub_signable(from, "directory", "publish", expires, proj)
+	roundtrip, err := pubsub_signable("m1", from, "directory", "publish", expires, proj)
 	if err != nil {
 		t.Fatalf("signable (round-trip): %v", err)
 	}
@@ -151,58 +151,80 @@ func TestPubsubSignVerify(t *testing.T) {
 	expires := i64toa(now() + pubsub_expires_ttl)
 	content := map[string]string{"id": id, "name": "Alice", "version": "100"}
 
-	sig := pubsub_sign(id, "directory", "publish", expires, content)
+	sig := pubsub_sign("m1", id, "directory", "publish", expires, content)
 	if len(sig) != ed25519.SignatureSize {
 		t.Fatalf("pubsub_sign returned %d-byte signature, want %d", len(sig), ed25519.SignatureSize)
 	}
 
-	if err := pubsub_verify(id, "directory", "publish", expires, content, sig); err != nil {
+	if err := pubsub_verify("m1", id, "directory", "publish", expires, content, sig); err != nil {
 		t.Errorf("verify of untampered signature failed: %v", err)
 	}
 
 	tampered := map[string]string{"id": id, "name": "Mallory", "version": "100"}
-	if err := pubsub_verify(id, "directory", "publish", expires, tampered, sig); err == nil {
+	if err := pubsub_verify("m1", id, "directory", "publish", expires, tampered, sig); err == nil {
 		t.Error("verify accepted tampered content")
 	}
 	// Rewriting expires to extend the window must fail (expires is signed).
-	if err := pubsub_verify(id, "directory", "publish", i64toa(now()+pubsub_expires_max), content, sig); err == nil {
+	if err := pubsub_verify("m1", id, "directory", "publish", i64toa(now()+pubsub_expires_max), content, sig); err == nil {
 		t.Error("verify accepted tampered expires")
 	}
-	if err := pubsub_verify(id, "directory", "delete", expires, content, sig); err == nil {
+	if err := pubsub_verify("m1", id, "directory", "delete", expires, content, sig); err == nil {
 		t.Error("verify accepted tampered event")
 	}
 	other, _ := new_entity_keys(t)
-	if err := pubsub_verify(other, "directory", "publish", expires, content, sig); err == nil {
+	if err := pubsub_verify("m1", other, "directory", "publish", expires, content, sig); err == nil {
 		t.Error("verify accepted signature under the wrong entity")
 	}
 }
 
-// directory_row_frame builds the wire bytes of an anonymous directory
-// publish Frame carrying a self-verifying row, with an explicit Expires.
-func directory_row_frame(t *testing.T, en *Entry, expires string) []byte {
-	t.Helper()
-	f := &Frame{
-		Type:    frame_type_message,
-		Service: "directory", Event: "publish", ID: uid(),
-		Expires: expires,
-		Content: map[string]any{
-			"entity": en.Entity, "peer": en.Peer, "name": en.Name,
-			"class": en.Class, "data": en.Data,
-			"version": i64toa(en.Version), "created": i64toa(en.Created), "seen": i64toa(en.Seen),
-			"signature": en.Signature, "attestation": en.Attestation,
-		},
+// TestPubsubSignCoversId: id is signed so a captured announcement cannot be
+// re-flooded under fresh ids to defeat dedup. The frame type is deliberately
+// not signed — pubsub carries only message frames, so the domain implies it.
+func TestPubsubSignCoversId(t *testing.T) {
+	protocol2_init()
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	id, _ := new_entity_keys(t)
+
+	expires := i64toa(now() + pubsub_expires_ttl)
+	content := map[string]string{"peer": "12D3KooW", "name": "Alice"}
+	sig := pubsub_sign("msg-1", id, "directory", "publish", expires, content)
+
+	if err := pubsub_verify("msg-1", id, "directory", "publish", expires, content, sig); err != nil {
+		t.Fatalf("verify of untampered signature failed: %v", err)
 	}
-	var buf bytes.Buffer
-	if err := frame_write(&buf, f); err != nil {
-		t.Fatalf("frame_write: %v", err)
+	if err := pubsub_verify("msg-2", id, "directory", "publish", expires, content, sig); err == nil {
+		t.Error("verify accepted a rewritten id — dedup could be defeated by re-flooding under fresh ids")
 	}
-	return buf.Bytes()
 }
 
-// TestPubsubReceiveRoutesDirectory: an anonymous directory publish Frame
+// directory_announcement builds a directory publish announcement: the entity
+// rides as the from and signs the whole message, so the row is proven by
+// identity rather than asserted in content.
+func directory_announcement(t *testing.T, en *Entry, key ed25519.PrivateKey, expires string) *Announcement {
+	t.Helper()
+	id := uid()
+	content := entry_content(en)
+	signable, err := pubsub_signable(id, en.Entity, "directory", "publish", expires, content)
+	if err != nil {
+		t.Fatalf("pubsub_signable: %v", err)
+	}
+	any_content := map[string]any{}
+	for k, v := range content {
+		any_content[k] = v
+	}
+	return &Announcement{
+		ID: id, From: en.Entity, Service: "directory", Event: "publish",
+		Expires: expires, Content: any_content,
+		Signature: ed25519.Sign(key, signable),
+	}
+}
+
+// TestPubsubReceiveRoutesDirectory: a signed directory publish announcement
 // carrying a self-verifying row decodes, routes, verifies in entry_store,
 // and lands in directory.db; a lower-version row is dropped by LWW; an
-// expired Frame is dropped before routing. Exercises the whole /mochi/2
+// expired announcement is dropped before routing. Exercises the whole /mochi/2
 // receive path with the payload-borne trust model.
 func TestPubsubReceiveRoutesDirectory(t *testing.T) {
 	protocol2_init()
@@ -210,7 +232,7 @@ func TestPubsubReceiveRoutesDirectory(t *testing.T) {
 	defer cleanup()
 	setup_users_test_schema()
 	ddb := db_open("db/directory.db")
-	ddb.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', binding text not null default '', primary key ( entity, peer ) )")
+	ddb.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, message text not null default '', expires text not null default '', signature text not null default '', primary key ( entity, peer ) )")
 
 	entity, ek := test_identity(t)
 	peer, hk := test_host(t)
@@ -226,33 +248,20 @@ func TestPubsubReceiveRoutesDirectory(t *testing.T) {
 	}
 
 	// Newer row (version 200) routes, verifies, and writes.
-	pubsub_receive(pubsub_test_frame(t, directory_row_frame(t, test_entry(t, entity, ek, peer, hk, "Alice Smith", 200, 50, base), fresh)), "relayZ", "")
+	pubsub_receive(directory_announcement(t, test_entry(t, entity, ek, peer, hk, "Alice Smith", 200, 50, base), ek, fresh), "relayZ", "")
 	if name, ver := name_at(); name != "Alice Smith" || ver != 200 {
 		t.Fatalf("after v200 frame: name=%q version=%d, want Alice Smith/200", name, ver)
 	}
 
 	// Older row (version 100) is dropped by LWW.
-	pubsub_receive(pubsub_test_frame(t, directory_row_frame(t, test_entry(t, entity, ek, peer, hk, "Alice", 100, 50, base+1), fresh)), "relayZ", "")
+	pubsub_receive(directory_announcement(t, test_entry(t, entity, ek, peer, hk, "Alice", 100, 50, base+1), ek, fresh), "relayZ", "")
 	if name, ver := name_at(); name != "Alice Smith" || ver != 200 {
 		t.Errorf("stale v100 frame clobbered record: name=%q version=%d, want Alice Smith/200", name, ver)
 	}
 
 	// Expired frame is dropped at the freshness check, before routing.
-	pubsub_receive(pubsub_test_frame(t, directory_row_frame(t, test_entry(t, entity, ek, peer, hk, "Expired", 300, 50, base+2), i64toa(now()-1))), "relayZ", "")
+	pubsub_receive(directory_announcement(t, test_entry(t, entity, ek, peer, hk, "Expired", 300, 50, base+2), ek, i64toa(now()-1)), "relayZ", "")
 	if name, ver := name_at(); name != "Alice Smith" || ver != 200 {
 		t.Errorf("expired v300 frame was applied: name=%q version=%d, want Alice Smith/200", name, ver)
 	}
-}
-
-// pubsub_test_frame decodes the wire bytes a test builds into the Frame that
-// pubsub_receive takes. pubsub_manager decodes before rate limiting, so that
-// it can tell peer control traffic from application traffic, and passes the
-// result on rather than having it parsed twice.
-func pubsub_test_frame(t *testing.T, data []byte) *Frame {
-	t.Helper()
-	f, err := frame_read(bytes.NewReader(data))
-	if err != nil {
-		t.Fatalf("decode frame: %v", err)
-	}
-	return f
 }

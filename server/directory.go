@@ -7,22 +7,12 @@
 // deletion converges per host: each host deletes its own row as it purges,
 // the same way the data layer converges.
 //
-// Rows are self-verifying. `signature` is the entity's ed25519 signature
-// over the content facts (the entity id IS the public key); `attestation`
-// is the asserting host's libp2p-key signature over the claim (the peer id
-// self-certifies); `binding` is the entity's signature over the WHOLE row,
-// peer and seen included. Receivers verify them from the payload, so trust
-// never depends on the arrival path — pubsub relays, the sync stream, and
-// bootstrap peers are all untrusted carriers.
-//
-// Only `binding` authorises a host. The content signature deliberately
-// excludes peer so every host serving an entity can share it, and the
-// attestation is made with the claiming host's own key — so between them a
-// stranger could replay an entity's public content signature, attest the
-// claim as itself, and be stored as a host for an entity it holds no keys
-// for, then win routing on freshness. See directory_binding_required for
-// the rollout: a binding is required per entity as soon as that entity is
-// known to issue them, so each ratchets closed as its host upgrades.
+// Rows are self-verifying: `signature` is the entity's ed25519 signature
+// over the whole row, peer included (the entity id IS the public key). Only
+// the entity's key can name a host for it, so trust never depends on the
+// arrival path — pubsub relays, the sync stream, and bootstrap peers are all
+// untrusted carriers. Covering seen as well means a captured row cannot be
+// re-flooded with a fresher timestamp to outrank the real host.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
@@ -32,7 +22,6 @@
 package main
 
 import (
-	"crypto/ed25519"
 	"time"
 
 	sl "go.starlark.net/starlark"
@@ -50,45 +39,14 @@ type Entry struct {
 	Version     int64
 	Created     int64
 	Seen        int64
-	Signature   string
-	Attestation string
-	Binding     string
+	Message     string // the announcement's frame id
+	Expires     string // the announcement's signed freshness bound
+	Signature   string // the entity's signature over the whole announcement
 }
 
-// Domain separators for the signables. Any schema change MUST bump the
-// corresponding domain, same rule as pubsub_domain.
-const (
-	entry_domain        = "mochi/2/entry"
-	entry_attest_domain = "mochi/2/entry/attest"
-	entry_delete_domain = "mochi/2/entry/delete"
-	entry_bind_domain   = "mochi/2/entry/bind"
-)
-
-// directory_binding_required gates whether a row must carry a valid binding
-// — the entity's signature over the WHOLE row, peer included — to be stored.
-//
-// Neither of the older signatures authorises a host. `signature` covers only
-// content facts and deliberately excludes peer, so it is identical on every
-// host serving the entity; `attestation` is made with the asserting host's
-// OWN key. A peer can therefore replay an entity's publicly gossiped content
-// signature, attach its own attestation naming itself, and be stored as a
-// host for an entity it has no keys for — then win routing, because
-// entity_peers_failover orders by seen and remote_reach takes the first
-// peer that answers. The binding closes that: only the entity's key can
-// name a host, and covering seen stops a rogue re-flooding a captured row
-// with a fresher timestamp.
-//
-// Left false until every peer in the fleet emits bindings: flipping it early
-// drops every legacy row and empties the directory.
-//
-// While false the fleet is NOT simply unprotected, because a rogue would
-// otherwise just omit the binding and be accepted down the legacy path.
-// entry_store ratchets per entity instead: once any stored row for an entity
-// carries a binding, every row for that entity must carry one. An entity is
-// therefore protected the moment its own host upgrades, with no fleet-wide
-// coordination, and a rogue row already present is refused at its next
-// refresh and ages out of the active window within the hour.
-var directory_binding_required = false
+// A row's own signature is the pubsub announcement's, so it carries
+// pubsub_domain. Only the host-key withdrawal needs a domain of its own.
+const entry_delete_domain = "mochi/2/entry/delete"
 
 var api_directory = sls.FromStringDict(sl.String("mochi.directory"), sl.StringDict{
 	"get":    sl.NewBuiltin("mochi.directory.get", api_directory_get),
@@ -106,139 +64,28 @@ func init() {
 	a.event_anonymous("push", directory_push_event)
 }
 
-// entry_signable returns the canonical CBOR the entity signs over a row's
-// content facts. Excludes peer/seen: content is host-independent, so every
-// host serving the entity carries the same signature for the same version.
-func entry_signable(entity, name, class, data string, version int64) ([]byte, error) {
-	return canonical_encoder.Marshal(map[string]any{
-		"v":       entry_domain,
-		"entity":  entity,
-		"name":    name,
-		"class":   class,
-		"data":    data,
-		"version": i64toa(version),
-	})
-}
-
-// entry_sign produces the content signature with the entity's key.
-// Empty on failure (entity not local or key unavailable).
-func entry_sign(entity, name, class, data string, version int64) string {
-	signable, err := entry_signable(entity, name, class, data, version)
-	if err != nil {
-		warn("Directory entry canonical encode failed for %q: %v", entity, err)
-		return ""
+// entry_content projects a row back to the content map its announcement
+// carried. The entity is NOT in content — it is the announcement's from,
+// which is what makes the row self-signing rather than self-asserted.
+func entry_content(en *Entry) map[string]string {
+	return map[string]string{
+		"peer":    en.Peer,
+		"name":    en.Name,
+		"class":   en.Class,
+		"data":    en.Data,
+		"version": i64toa(en.Version),
+		"created": i64toa(en.Created),
+		"seen":    i64toa(en.Seen),
 	}
-	return entity_sign(entity, string(signable))
 }
 
-// entry_verify checks a row's content signature against the entity id,
-// which is the base58 ed25519 public key.
+// entry_verify checks a row against the entity signature its announcement
+// carried. The row stores the whole signed announcement, so this works
+// identically for one that arrived by flood and one re-served from the
+// database over a sync stream — there is no second signature.
 func entry_verify(en *Entry) bool {
-	public := base58_decode(en.Entity, "")
-	if len(public) != ed25519.PublicKeySize {
-		return false
-	}
-	sig := base58_decode(en.Signature, "")
-	if len(sig) != ed25519.SignatureSize {
-		return false
-	}
-	signable, err := entry_signable(en.Entity, en.Name, en.Class, en.Data, en.Version)
-	if err != nil {
-		return false
-	}
-	return ed25519.Verify(public, signable, sig)
-}
-
-// entry_attest_signable returns the canonical CBOR the asserting host signs
-// over a row's claim. Includes version (a relay can't graft a fresh
-// attestation onto stale content) and created (the anti-impersonation
-// ordering must not ride unsigned).
-func entry_attest_signable(entity, peer string, version, created, seen int64) ([]byte, error) {
-	return canonical_encoder.Marshal(map[string]any{
-		"v":       entry_attest_domain,
-		"entity":  entity,
-		"peer":    peer,
-		"version": i64toa(version),
-		"created": i64toa(created),
-		"seen":    i64toa(seen),
-	})
-}
-
-// entry_attest produces this host's claim attestation for a row.
-func entry_attest(entity string, version, created, seen int64) string {
-	signable, err := entry_attest_signable(entity, net_id, version, created, seen)
-	if err != nil {
-		warn("Directory attestation canonical encode failed for %q: %v", entity, err)
-		return ""
-	}
-	return base58_encode(server_sign(signable))
-}
-
-// entry_attest_verify checks a row's claim attestation against the peer id
-// it names.
-func entry_attest_verify(en *Entry) bool {
-	signable, err := entry_attest_signable(en.Entity, en.Peer, en.Version, en.Created, en.Seen)
-	if err != nil {
-		return false
-	}
-	return server_verify(en.Peer, signable, base58_decode(en.Attestation, ""))
-}
-
-// entry_bind_signable returns the canonical CBOR the entity signs over the
-// WHOLE row. Unlike entry_signable it covers peer — which is what makes it
-// a hosting authorisation rather than a content assertion — and seen, so a
-// captured row cannot be re-flooded with a fresher timestamp to outrank the
-// real host.
-func entry_bind_signable(entity, peer, name, class, data string, version, created, seen int64) ([]byte, error) {
-	return canonical_encoder.Marshal(map[string]any{
-		"v":       entry_bind_domain,
-		"entity":  entity,
-		"peer":    peer,
-		"name":    name,
-		"class":   class,
-		"data":    data,
-		"version": i64toa(version),
-		"created": i64toa(created),
-		"seen":    i64toa(seen),
-	})
-}
-
-// entry_bind produces the binding for a row this host serves. Empty when the
-// entity is not local or its key is unavailable — only the entity's key can
-// authorise a host, so a relay can never mint one.
-func entry_bind(entity, peer, name, class, data string, version, created, seen int64) string {
-	signable, err := entry_bind_signable(entity, peer, name, class, data, version, created, seen)
-	if err != nil {
-		warn("Directory binding canonical encode failed for %q: %v", entity, err)
-		return ""
-	}
-	return entity_sign(entity, string(signable))
-}
-
-// entry_bind_verify checks a row's binding against the entity id, which is
-// the base58 ed25519 public key.
-func entry_bind_verify(en *Entry) bool {
-	public := base58_decode(en.Entity, "")
-	if len(public) != ed25519.PublicKeySize {
-		return false
-	}
-	sig := base58_decode(en.Binding, "")
-	if len(sig) != ed25519.SignatureSize {
-		return false
-	}
-	signable, err := entry_bind_signable(en.Entity, en.Peer, en.Name, en.Class, en.Data, en.Version, en.Created, en.Seen)
-	if err != nil {
-		return false
-	}
-	return ed25519.Verify(public, signable, sig)
-}
-
-// entry_bound reports whether any stored row for this entity already carries
-// a binding. Once one does, every row for that entity must — otherwise a
-// rogue would simply omit the binding and be accepted down the legacy path.
-func entry_bound(db *DB, entity string) bool {
-	found, _ := db.exists("select 1 from entries where entity=? and binding!=''", entity)
-	return found
+	return pubsub_verify(en.Message, en.Entity, "directory", "publish",
+		en.Expires, entry_content(en), base58_decode(en.Signature, "")) == nil
 }
 
 // entry_delete_signable returns the canonical CBOR a host signs to delete
@@ -271,8 +118,9 @@ func entry_store(en *Entry, source string) bool {
 	// to the daily orphan sweep (which scans only the local table), and only
 	// this host's key can withdraw it. Answer the echo with a deletion. The
 	// existence check protects every live entity, and a row naming this peer
-	// cannot be forged (it carries this host's attestation), so the echo is
-	// always a claim a previous incarnation of this server really made.
+	// cannot be forged (only the entity's key can sign one, and this host
+	// held it), so the echo is always a claim a previous incarnation of this
+	// server really made.
 	if en.Peer == net_id {
 		users := db_open("db/users.db")
 		exists, _ := users.exists("select 1 from entities where id=?", en.Entity)
@@ -298,30 +146,11 @@ func entry_store(en *Entry, source string) bool {
 		return false
 	}
 	if !entry_verify(en) {
-		info("Directory dropping row with bad content signature: entity=%q peer=%q from %s", en.Entity, en.Peer, source)
-		return false
-	}
-	if !entry_attest_verify(en) {
-		info("Directory dropping row with bad attestation: entity=%q peer=%q from %s", en.Entity, en.Peer, source)
+		info("Directory dropping row with bad signature: entity=%q peer=%q from %s", en.Entity, en.Peer, source)
 		return false
 	}
 
 	db := db_open("db/directory.db")
-
-	// Only the entity's key can name a host. A present binding is always
-	// verified, and is REQUIRED once this entity is known to issue them (or
-	// once the fleet-wide flip is on) — otherwise omitting it would be a
-	// downgrade back to the self-asserted claim this exists to stop.
-	if en.Binding != "" {
-		if !entry_bind_verify(en) {
-			info("Directory dropping row with bad binding: entity=%q peer=%q from %s", en.Entity, en.Peer, source)
-			return false
-		}
-	} else if directory_binding_required || entry_bound(db, en.Entity) {
-		info("Directory dropping unbound row for bound entity %q: peer=%q from %s", en.Entity, en.Peer, source)
-		return false
-	}
-
 	row, _ := db.row("select version, seen from entries where entity=? and peer=?", en.Entity, en.Peer)
 	if row != nil {
 		version, _ := row["version"].(int64)
@@ -333,19 +162,19 @@ func entry_store(en *Entry, source string) bool {
 	}
 
 	// Fingerprint is derived locally, never trusted from the wire.
-	db.exec("replace into entries (entity, peer, name, class, data, fingerprint, version, created, seen, signature, attestation, binding) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		en.Entity, en.Peer, en.Name, en.Class, en.Data, fingerprint(en.Entity), en.Version, en.Created, en.Seen, en.Signature, en.Attestation, en.Binding)
+	db.exec("replace into entries (entity, peer, name, class, data, fingerprint, version, created, seen, message, expires, signature) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		en.Entity, en.Peer, en.Name, en.Class, en.Data, fingerprint(en.Entity), en.Version, en.Created, en.Seen, en.Message, en.Expires, en.Signature)
 
 	go queue_check_entity(en.Entity)
 	return true
 }
 
 // directory_create builds or refreshes this host's row for a local entity.
-// Unchanged content keeps its version and signature and re-issues only the
-// attestation with a fresh seen — the cheap hourly heartbeat. Changed
-// content takes version = now() and a new content signature; a rename also
-// resets created, so an impersonator can't inherit an old entity's seniority
-// in search ordering.
+// The signature covers seen, so every heartbeat re-signs — the key is local
+// and ed25519 signing is negligible beside the hourly cadence. Unchanged
+// content keeps its version; changed content takes version = now(), and a
+// rename also resets created, so an impersonator can't inherit an old
+// entity's seniority in search ordering.
 func directory_create(e *Entity) {
 	debug("Directory creating entry %q %q", e.ID, e.Name)
 	now := now()
@@ -356,34 +185,27 @@ func directory_create(e *Entity) {
 
 	version := now
 	created := now
-	signature := ""
 	if have && existing.Name == e.Name && existing.Class == e.Class && existing.Data == e.Data {
 		version = existing.Version
 		created = existing.Created
-		signature = existing.Signature
 	} else if have && existing.Name == e.Name {
 		created = existing.Created
 	}
-	if signature == "" {
-		signature = entry_sign(e.ID, e.Name, e.Class, e.Data, version)
-		if signature == "" {
-			warn("Directory unable to sign entry for %q", e.ID)
-			return
-		}
-	}
 
-	// The binding covers seen, so unlike the content signature it cannot be
-	// carried over from the existing row — every heartbeat re-signs it. That
-	// is the cost of making the row's host unforgeable; the key is local and
-	// ed25519 signing is negligible beside the hourly cadence.
-	binding := entry_bind(e.ID, net_id, e.Name, e.Class, e.Data, version, created, now)
-	if binding == "" {
-		warn("Directory unable to bind entry for %q", e.ID)
+	// Mint the announcement this row IS: the same signed artifact the network
+	// receives, kept so the sync stream can re-serve it without re-signing.
+	en := Entry{Entity: e.ID, Peer: net_id, Name: e.Name, Class: e.Class, Data: e.Data,
+		Version: version, Created: created, Seen: now,
+		Message: uid(), Expires: i64toa(now + pubsub_expires_ttl)}
+	sig := pubsub_sign(en.Message, en.Entity, "directory", "publish", en.Expires, entry_content(&en))
+	if sig == nil {
+		warn("Directory unable to sign entry for %q", e.ID)
 		return
 	}
+	en.Signature = base58_encode(sig)
 
-	db.exec("replace into entries (entity, peer, name, class, data, fingerprint, version, created, seen, signature, attestation, binding) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		e.ID, net_id, e.Name, e.Class, e.Data, fingerprint(e.ID), version, created, now, signature, entry_attest(e.ID, version, created, now), binding)
+	db.exec("replace into entries (entity, peer, name, class, data, fingerprint, version, created, seen, message, expires, signature) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		en.Entity, en.Peer, en.Name, en.Class, en.Data, fingerprint(en.Entity), en.Version, en.Created, en.Seen, en.Message, en.Expires, en.Signature)
 }
 
 // directory_publish broadcasts this host's row for a local entity to the
@@ -398,10 +220,12 @@ func directory_publish(e *Entity, allow_queue bool) {
 		}
 	}
 
-	m := message("", "", "directory", "publish")
-	m.set("entity", en.Entity, "peer", en.Peer, "name", en.Name, "class", en.Class, "data", en.Data,
-		"version", i64toa(en.Version), "created", i64toa(en.Created), "seen", i64toa(en.Seen),
-		"signature", en.Signature, "attestation", en.Attestation, "binding", en.Binding)
+	// The entity signs its own announcement, so it rides as the from — an
+	// identity the receiver proves, not a field it reads out of content.
+	m := message(en.Entity, "", "directory", "publish")
+	for k, v := range entry_content(&en) {
+		m.set(k, v)
+	}
 	m.publish(allow_queue)
 }
 
@@ -427,18 +251,21 @@ func entry_delete_self(entity string) {
 // Received a directory publish from the network: one host's row for one
 // entity, verified entirely from the payload.
 func directory_publish_event(e *Event) {
+	// from is the entity, already proven by pubsub_receive. It is never read
+	// out of content: an identity you read is asserted, one you verify is
+	// proven, and that difference is the whole point of the signature.
 	en := Entry{
-		Entity:      e.get("entity", ""),
-		Peer:        e.get("peer", ""),
-		Name:        e.get("name", ""),
-		Class:       e.get("class", ""),
-		Data:        e.get("data", ""),
-		Version:     atoi(e.get("version", ""), 0),
-		Created:     atoi(e.get("created", ""), 0),
-		Seen:        atoi(e.get("seen", ""), 0),
-		Signature:   e.get("signature", ""),
-		Attestation: e.get("attestation", ""),
-		Binding:     e.get("binding", ""),
+		Entity:    e.from,
+		Peer:      e.get("peer", ""),
+		Name:      e.get("name", ""),
+		Class:     e.get("class", ""),
+		Data:      e.get("data", ""),
+		Version:   atoi(e.get("version", ""), 0),
+		Created:   atoi(e.get("created", ""), 0),
+		Seen:      atoi(e.get("seen", ""), 0),
+		Message:   e.msg_id,
+		Expires:   e.expires,
+		Signature: base58_encode(e.signature),
 	}
 	entry_store(&en, "publish")
 }
@@ -770,7 +597,7 @@ func directory_manager() {
 	// and let republish + sync repopulate. Self-heal the schema so a wiped
 	// file doesn't strand the server until the next migration.
 	db := db_open("db/directory.db")
-	db.exec("create table if not exists entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', primary key ( entity, peer ) )")
+	db.exec("create table if not exists entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, message text not null default '', expires text not null default '', signature text not null default '', primary key ( entity, peer ) )")
 	db.exec("create index if not exists entries_name on entries( name )")
 	db.exec("create index if not exists entries_class on entries( class )")
 	db.exec("create index if not exists entries_fingerprint on entries( fingerprint )")

@@ -135,14 +135,22 @@ func (m *Message) publish(allow_queue bool) {
 		m.ID = uid()
 	}
 
+	// A flood is signed over its content only, so a data segment would ride
+	// unsigned and a relay could swap it. Nothing broadcasts segments today;
+	// refuse loudly rather than drop them silently if that ever changes.
+	if len(m.data) > 0 {
+		warn("Pubsub refusing to broadcast %q/%q with %d bytes of unsigned segment data", m.Service, m.Event, len(m.data))
+		return
+	}
+
 	content := cbor_encode(m.content)
 
 	if allow_queue {
-		queue_add_broadcast(m.ID, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.expires)
+		queue_add_broadcast(m.ID, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, nil, m.expires)
 	}
 
 	if peers_sufficient() {
-		pubsub_publish(m.From, m.To, m.Service, m.Event, m.ID, content, m.data)
+		pubsub_publish(m.From, m.Service, m.Event, m.ID, content)
 
 		if allow_queue {
 			queue_ack(m.ID)

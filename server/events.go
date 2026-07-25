@@ -28,6 +28,8 @@ type Event struct {
 	peer            string
 	origin          string // pubsub only: signature-verified originating peer (GetFrom); "" for direct streams
 	content         map[string]any
+	expires         string // pubsub only: the signed freshness bound, so a handler can persist the announcement verbatim
+	signature       []byte // pubsub only: the entity signature over the whole frame, verified before routing
 	user            *User
 	app             *App
 	db              *DB
@@ -704,6 +706,7 @@ func (e *Event) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "invalid header %q", header)
 	}
 }
+
 // split_services is a small helper to split a comma-separated services
 // string into a slice; same logic queue_send_direct uses inline.
 func split_services(s string) []string {

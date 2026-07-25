@@ -1448,7 +1448,7 @@ func TestDbCreateIdempotentOverPreservedDB(t *testing.T) {
 	// Simulate the restore having preserved directory.db with its (full) entries
 	// table — schema matches db_create so its indexes resolve.
 	d := db_open("db/directory.db")
-	d.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', binding text not null default '', primary key ( entity, peer ) )")
+	d.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, message text not null default '', expires text not null default '', signature text not null default '', primary key ( entity, peer ) )")
 
 	// Used to panic on the preserved entries table; must complete now.
 	db_create()

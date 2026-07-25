@@ -32,7 +32,7 @@ func setup_directory_test(t *testing.T) func() {
 	// table) refuses the row instead of falling through.
 	setup_users_test_schema()
 	db := db_open("db/directory.db")
-	db.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', binding text not null default '', primary key ( entity, peer ) )")
+	db.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, message text not null default '', expires text not null default '', signature text not null default '', primary key ( entity, peer ) )")
 	return cleanup
 }
 
@@ -60,54 +60,36 @@ func test_host(t *testing.T) (string, p2p_crypto.PrivKey) {
 	return id.String(), private
 }
 
-// test_entry builds a fully-signed row: content signed with the entity key,
-// claim attested with the host key.
+// test_entry builds a row as its signed announcement: the entity signs the
+// whole message, and the row stores the id/expires/signature so it verifies
+// identically off-frame. host is accepted so callers can mint a peer that
+// does NOT hold the entity key, which the hijack test needs.
 func test_entry(t *testing.T, entity string, key ed25519.PrivateKey, peer string, host p2p_crypto.PrivKey, name string, version, created, seen int64) *Entry {
 	t.Helper()
-	signable, err := entry_signable(entity, name, "person", "x", version)
+	en := &Entry{
+		Entity:  entity,
+		Peer:    peer,
+		Name:    name,
+		Class:   "person",
+		Data:    "x",
+		Version: version,
+		Created: created,
+		Seen:    seen,
+		Message: "msg-" + peer,
+		Expires: i64toa(now() + pubsub_expires_ttl),
+	}
+	signable, err := pubsub_signable(en.Message, entity, "directory", "publish", en.Expires, entry_content(en))
 	if err != nil {
-		t.Fatalf("entry_signable: %v", err)
+		t.Fatalf("pubsub_signable: %v", err)
 	}
-	attestable, err := entry_attest_signable(entity, peer, version, created, seen)
-	if err != nil {
-		t.Fatalf("entry_attest_signable: %v", err)
-	}
-	attestation, err := host.Sign(attestable)
-	if err != nil {
-		t.Fatalf("host sign: %v", err)
-	}
-	return &Entry{
-		Entity:      entity,
-		Peer:        peer,
-		Name:        name,
-		Class:       "person",
-		Data:        "x",
-		Version:     version,
-		Created:     created,
-		Seen:        seen,
-		Signature:   base58_encode(ed25519.Sign(key, signable)),
-		Attestation: base58_encode(attestation),
-	}
-}
-
-// test_bind adds the entity's binding — its signature over the whole row,
-// peer included — to an already-signed entry.
-func test_bind(t *testing.T, en *Entry, key ed25519.PrivateKey) *Entry {
-	t.Helper()
-	signable, err := entry_bind_signable(en.Entity, en.Peer, en.Name, en.Class, en.Data, en.Version, en.Created, en.Seen)
-	if err != nil {
-		t.Fatalf("entry_bind_signable: %v", err)
-	}
-	en.Binding = base58_encode(ed25519.Sign(key, signable))
+	en.Signature = base58_encode(ed25519.Sign(key, signable))
 	return en
 }
 
-// TestEntryStoreHostHijack: the content signature deliberately excludes peer
-// and is public, and the attestation is made with the asserting host's OWN
-// key — so neither stops a stranger claiming to host someone else's entity.
-// Once the real host issues bindings, a rogue row for that entity must be
-// refused however it is dressed up: without a binding (the downgrade), or
-// with one it cannot forge.
+// TestEntryStoreHostHijack: the signature covers peer, so a stranger cannot
+// claim to host an entity it holds no keys for. Replaying a genuine row with
+// its own peer id substituted must fail, and so must signing that claim with
+// its own entity key.
 func TestEntryStoreHostHijack(t *testing.T) {
 	defer setup_directory_test(t)()
 
@@ -115,68 +97,36 @@ func TestEntryStoreHostHijack(t *testing.T) {
 	real_peer, real_host := test_host(t)
 	rogue_peer, rogue_host := test_host(t)
 
-	// The entity's real host publishes a bound row.
-	real_row := test_bind(t, test_entry(t, entity, key, real_peer, real_host, "Real", 100, 100, 100), key)
+	real_row := test_entry(t, entity, key, real_peer, real_host, "Real", 100, 100, 100)
 	if !entry_store(real_row, "test") {
-		t.Fatal("the entity's own bound row must be stored")
+		t.Fatal("the entity's own row must be stored")
 	}
 
-	// The rogue replays the entity's genuine content signature — it is
-	// public — and attests the claim with its own host key, exactly as a
-	// legitimate second host would. Both legacy signatures verify.
-	rogue := test_entry(t, entity, key, rogue_peer, rogue_host, "Real", 100, 100, 200)
-	if !entry_verify(rogue) || !entry_attest_verify(rogue) {
-		t.Fatal("premise: the rogue row must pass both legacy signature checks")
-	}
-	if entry_store(rogue, "test") {
-		t.Error("an unbound row for a bound entity must be refused, not accepted down the legacy path")
+	// Replay the genuine row with ONLY the peer substituted — every other
+	// field, and the signature itself, byte-identical. If the signable did
+	// not cover peer this would verify and be stored under the rogue's peer,
+	// which is the whole attack.
+	replay := *real_row
+	replay.Peer = rogue_peer
+	if entry_store(&replay, "test") {
+		t.Error("a row whose peer was swapped must be refused")
 	}
 
-	// Forging a binding requires the entity's private key, which the rogue
-	// does not have. Signing with its own entity key must not verify.
+	// Signing the claim with a key the rogue does control proves nothing:
+	// verification is against the entity id, not the signer's choice.
 	_, other := test_identity(t)
-	forged := test_bind(t, test_entry(t, entity, key, rogue_peer, rogue_host, "Real", 100, 100, 200), other)
+	forged := test_entry(t, entity, other, rogue_peer, rogue_host, "Real", 100, 100, 200)
 	if entry_store(forged, "test") {
-		t.Error("a row bound with the wrong key must be refused")
+		t.Error("a row signed with the wrong key must be refused")
 	}
 
-	// The real host still owns the routing.
 	db := db_open("db/directory.db")
 	var peer string
-	row, _ := db.row("select peer from entries where entity=?", entity)
-	if row != nil {
+	if row, _ := db.row("select peer from entries where entity=?", entity); row != nil {
 		peer, _ = row["peer"].(string)
 	}
 	if peer != real_peer {
 		t.Errorf("entity should still resolve to its real host, got peer %q", peer)
-	}
-}
-
-// TestEntryStoreBindingRatchet: before any binding is seen for an entity,
-// legacy rows are still accepted — the fleet upgrades gradually and flipping
-// early would empty the directory. The entity ratchets closed the moment its
-// own host issues one.
-func TestEntryStoreBindingRatchet(t *testing.T) {
-	defer setup_directory_test(t)()
-
-	entity, key := test_identity(t)
-	legacy_peer, legacy_host := test_host(t)
-	other_peer, other_host := test_host(t)
-
-	legacy := test_entry(t, entity, key, legacy_peer, legacy_host, "Legacy", 100, 100, 100)
-	if !entry_store(legacy, "test") {
-		t.Fatal("an unbound row must be accepted while the entity has issued no binding")
-	}
-
-	bound := test_bind(t, test_entry(t, entity, key, legacy_peer, legacy_host, "Legacy", 100, 100, 200), key)
-	if !entry_store(bound, "test") {
-		t.Fatal("the entity's bound row must be stored")
-	}
-
-	// Ratchet engaged: unbound rows for this entity are now refused.
-	late := test_entry(t, entity, key, other_peer, other_host, "Legacy", 100, 100, 300)
-	if entry_store(late, "test") {
-		t.Error("once an entity is bound, later unbound rows must be refused")
 	}
 }
 

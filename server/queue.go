@@ -1101,7 +1101,7 @@ func queue_send_broadcast(q *QueueEntry) bool {
 		return false
 	}
 
-	pubsub_publish(q.FromEntity, q.ToEntity, q.Service, q.Event, q.ID, q.Content, q.Data)
+	pubsub_publish(q.FromEntity, q.Service, q.Event, q.ID, q.Content)
 	return true
 }
 

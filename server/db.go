@@ -84,7 +84,7 @@ const (
 )
 
 const (
-	schema_version = 2
+	schema_version = 3
 )
 
 var (
@@ -328,10 +328,12 @@ func db_create() {
 	// a host may only publish or delete rows naming itself. Rows are
 	// self-verifying: `signature` is the entity's ed25519 signature over the
 	// content facts, `attestation` is the asserting host's libp2p-key
-	// signature over the claim, so any row can be re-served and verified
-	// regardless of how it arrived.
+	// signature over the claim, and `binding` is the entity's signature over
+	// the whole row INCLUDING peer — the only one of the three that
+	// authorises a host rather than merely asserting content or liveness. So
+	// any row can be re-served and verified regardless of how it arrived.
 	directory := db_open("db/directory.db")
-	directory.exec("create table if not exists entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', primary key ( entity, peer ) )")
+	directory.exec("create table if not exists entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', binding text not null default '', primary key ( entity, peer ) )")
 	directory.exec("create index if not exists entries_name on entries( name )")
 	directory.exec("create index if not exists entries_class on entries( class )")
 	directory.exec("create index if not exists entries_fingerprint on entries( fingerprint )")
@@ -1231,6 +1233,8 @@ func db_upgrade() {
 		// History before the 2026-07 baseline squash is in git.
 		case 2:
 			db_upgrade_2()
+		case 3:
+			db_upgrade_3()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1245,6 +1249,18 @@ func db_upgrade() {
 func db_upgrade_2() {
 	queue := db_open("db/queue.db")
 	queue.exec("create table if not exists health ( recipient text not null primary key, failures integer not null default 0, denials integer not null default 0, success integer not null default 0, since integer not null default 0, suspended integer not null default 0, probed integer not null default 0 )")
+}
+
+// db_upgrade_3 adds the directory binding column on existing installs —
+// the entity's signature over the whole row, which is what authorises a
+// host to serve an entity. Existing rows keep an empty binding and stay
+// valid: entry_store requires one only once an entity is known to issue
+// them, so each entity ratchets closed as its own host re-publishes.
+func db_upgrade_3() {
+	directory := db_open("db/directory.db")
+	if have, _ := directory.exists("select 1 from pragma_table_info('entries') where name='binding'"); !have {
+		directory.exec("alter table entries add column binding text not null default ''")
+	}
 }
 
 func (db *DB) close() {

@@ -210,7 +210,7 @@ func TestPubsubReceiveRoutesDirectory(t *testing.T) {
 	defer cleanup()
 	setup_users_test_schema()
 	ddb := db_open("db/directory.db")
-	ddb.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', primary key ( entity, peer ) )")
+	ddb.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, signature text not null default '', attestation text not null default '', binding text not null default '', primary key ( entity, peer ) )")
 
 	entity, ek := test_identity(t)
 	peer, hk := test_host(t)

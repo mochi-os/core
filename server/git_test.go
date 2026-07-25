@@ -7,6 +7,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -747,5 +748,38 @@ func TestGitReadAccessControl(t *testing.T) {
 		if got := git_can_read(thread(c.user), owner, test_app, c.repo); got != c.want {
 			t.Errorf("%s: git_can_read = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// The upload-pack negotiation section follows the want section: "have" lines
+// with interleaved flush packets, ended by "done" (final round) or end of body
+// (exploratory round). A pkt-line is "%04x" length-prefixed.
+func TestGitUploadPackNegotiation(t *testing.T) {
+	pkt := func(s string) string { return fmt.Sprintf("%04x%s", len(s)+4, s) }
+	a := "722cd9468569ef931a61b731279583fa268254b2"
+	b := "562d8c4b0d0b5da858a17cee1887bd93686b874d"
+
+	cases := []struct {
+		name  string
+		body  string
+		haves int
+		done  bool
+	}{
+		{"empty body", "", 0, false},
+		{"exploratory round", pkt("have "+a+"\n") + pkt("have "+b+"\n") + "0000", 2, false},
+		{"final round", pkt("have "+a+"\n") + "0000" + pkt("done\n"), 1, true},
+		{"done without haves", pkt("done\n"), 0, true},
+		{"flush only", "0000", 0, false},
+	}
+
+	for _, c := range cases {
+		haves, done := git_upload_pack_negotiation(strings.NewReader(c.body))
+		if len(haves) != c.haves || done != c.done {
+			t.Errorf("%s: got %d haves done=%v, want %d done=%v", c.name, len(haves), done, c.haves, c.done)
+		}
+	}
+	haves, _ := git_upload_pack_negotiation(strings.NewReader(pkt("have " + a + "\n") + "0000"))
+	if len(haves) != 1 || haves[0] != plumbing.NewHash(a) {
+		t.Errorf("hash not parsed: %v", haves)
 	}
 }

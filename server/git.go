@@ -28,6 +28,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/format/pktline"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
 	"github.com/go-git/go-git/v5/plumbing/storer"
@@ -2895,7 +2896,52 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 		return true
 	}
 
-	// Process the upload-pack request
+	// req.Decode is the embedded UploadRequest.Decode: it consumes only the
+	// want section, up to its flush packet. The negotiation section — "have"
+	// lines, flush packets, and a final "done" — is still unread. Parse it
+	// here: without the haves every fetch shipped the full repository, and a
+	// negotiation round without "done" was answered with a packfile the
+	// client wasn't expecting, which it fatals on with "bad line length
+	// character: PACK" — breaking every incremental fetch of a repository
+	// large enough that the client's first round doesn't already end in
+	// "done".
+	haves, done := git_upload_pack_negotiation(reader)
+
+	// Keep only the haves this repository holds: the client legitimately
+	// offers commits from its other branches, and UploadPack's revlist walk
+	// fails outright on an unknown hash.
+	var known []plumbing.Hash
+	if storage, err := (&git_loader{}).Load(ep); err == nil {
+		for _, have := range haves {
+			if storage.HasEncodedObject(have) == nil {
+				known = append(known, have)
+			}
+		}
+	}
+	req.Haves = known
+
+	c.Header("Content-Type", "application/x-git-upload-pack-result")
+	c.Header("Cache-Control", "no-cache")
+
+	if !done {
+		// An exploratory round: the client is discovering common history and
+		// expects only acknowledgement lines, never a packfile. Always NAK:
+		// a bare "ACK <sha>" (the advertisement carries no multi_ack) means
+		// "negotiation over" in the native-stream semantics this emulates, so
+		// the client would drop its accumulated haves from the final request
+		// and expect a packfile with no acknowledgement line at all. After
+		// NAKs the client keeps offering, then sends "done" with every have
+		// repeated — which is what lets the pack below exclude common
+		// history.
+		c.Status(http.StatusOK)
+		e := pktline.NewEncoder(c.Writer)
+		e.Encodef("NAK\n")
+		return true
+	}
+
+	// Process the upload-pack request. UploadPack excludes objects reachable
+	// from req.Haves (revlist tolerates haves we don't hold), so the packfile
+	// carries only what the client is missing.
 	resp, err := session.UploadPack(ctx, req)
 	if err != nil {
 		info("git_upload_pack: failed for %s: %v", repo_path, err)
@@ -2905,8 +2951,6 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 	defer resp.Close()
 
 	c.Status(http.StatusOK)
-	c.Header("Content-Type", "application/x-git-upload-pack-result")
-	c.Header("Cache-Control", "no-cache")
 
 	// Encode the response
 	if err := resp.Encode(c.Writer); err != nil {
@@ -2914,6 +2958,26 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 	}
 
 	return true
+}
+
+// git_upload_pack_negotiation parses the negotiation section of an
+// upload-pack request: "have" lines with interleaved flush packets, ended by
+// "done" (the final round) or the end of the body (an exploratory round).
+func git_upload_pack_negotiation(reader io.Reader) ([]plumbing.Hash, bool) {
+	var haves []plumbing.Hash
+	scanner := pktline.NewScanner(reader)
+	for scanner.Scan() {
+		line := strings.TrimSuffix(string(scanner.Bytes()), "\n")
+		if line == "done" {
+			return haves, true
+		}
+		if rest, ok := strings.CutPrefix(line, "have "); ok {
+			if hash := plumbing.NewHash(rest); !hash.IsZero() {
+				haves = append(haves, hash)
+			}
+		}
+	}
+	return haves, false
 }
 
 // git_receive_pack handles the git-receive-pack service (push)

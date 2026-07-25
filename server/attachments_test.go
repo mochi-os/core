@@ -16,8 +16,6 @@ import (
 	"github.com/fxamacker/cbor/v2"
 )
 
-
-
 // setup_attachment_move_test opens a fresh attachments DB under a
 // throwaway data_dir, seeds three rows (id=a,b,c with ranks 1,2,3)
 // scoped to the given entity, and returns the DB plus a cleanup
@@ -688,5 +686,55 @@ func BenchmarkAttachmentToMap(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		att.to_map()
+	}
+}
+
+// setup_attachment_conflict_test opens a fresh attachments DB holding one row,
+// id "shared" bound to object "chat/A/msg1".
+func setup_attachment_conflict_test(t *testing.T) (*DB, func()) {
+	t.Helper()
+	tmp, err := os.MkdirTemp("", "mochi_attach_conflict_test")
+	if err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	orig_data_dir := data_dir
+	data_dir = tmp
+
+	db := db_open("db/attachments.db")
+	db.exec("create table if not exists attachments ( id text not null primary key, object text not null, entity text not null default '', name text not null, size integer not null, content_type text not null default '', creator text not null default '', caption text not null default '', description text not null default '', rank integer not null default 0, created integer not null )")
+	db.exec("insert into attachments (id, object, entity, name, size, rank, created) values (?, ?, ?, ?, ?, ?, ?)", "shared", "chat/A/msg1", "", "photo.jpg", int64(10), int64(1), int64(1700000000))
+
+	cleanup := func() {
+		os.RemoveAll(tmp)
+		data_dir = orig_data_dir
+	}
+	return db, cleanup
+}
+
+// TestAttachmentConflictRejectsForeignObject covers the store path's collision
+// guard: peers supply the attachment id, and the write is a `replace`, so an id
+// already bound elsewhere must not be repointed.
+func TestAttachmentConflictRejectsForeignObject(t *testing.T) {
+	db, cleanup := setup_attachment_conflict_test(t)
+	defer cleanup()
+
+	// A member of chat B quotes chat A's attachment id.
+	held, conflict := attachment_conflict(db, "shared", "chat/B/msg9")
+	if !conflict {
+		t.Fatalf("expected a conflict for an id bound to another object")
+	}
+	if held != "chat/A/msg1" {
+		t.Fatalf("expected the holding object to be reported, got %q", held)
+	}
+
+	// Its own object may still rewrite the row - metadata updates and the
+	// sync path depend on that.
+	if _, conflict := attachment_conflict(db, "shared", "chat/A/msg1"); conflict {
+		t.Fatalf("re-storing an attachment under its own object must be allowed")
+	}
+
+	// An id nobody holds is free.
+	if _, conflict := attachment_conflict(db, "fresh", "chat/B/msg9"); conflict {
+		t.Fatalf("an unused id must not report a conflict")
 	}
 }

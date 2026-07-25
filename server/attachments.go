@@ -2095,6 +2095,25 @@ func (e *Event) attachment_event_data() {
 	//debug("attachment_event_data: done")
 }
 
+// attachment_conflict reports whether id already exists bound to a different
+// object, returning the object currently holding it.
+//
+// The store path takes ids from the sending peer and writes them with
+// `replace`, so an id that already exists would otherwise be overwritten -
+// object and entity included. A member of one container can read the
+// attachment ids it holds and quote one back in a message to another,
+// repointing the row and detaching the attachment from the message it really
+// belongs to. Re-storing an id under its OWN object stays allowed: that is an
+// ordinary metadata update, and the sync path relies on it.
+func attachment_conflict(db *DB, id string, object string) (string, bool) {
+	existing, _ := db.row("select object from attachments where id = ?", id)
+	if existing == nil {
+		return "", false
+	}
+	held, _ := existing["object"].(string)
+	return held, held != object
+}
+
 // mochi.attachment.store(attachments, entity, object?) -> int: Store remote attachment metadata without downloading files
 func api_attachment_store(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
@@ -2150,6 +2169,14 @@ func api_attachment_store(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		if object == "" {
 			object, _ = att["object"].(string)
 		}
+
+		// A collision with a different object is skipped, not fatal, so one
+		// hostile entry can't discard a legitimate message's attachments.
+		if held, conflict := attachment_conflict(db, id, object); conflict {
+			warn("Attachment %q already belongs to %q; refusing to repoint it at %q", id, held, object)
+			continue
+		}
+
 		name, _ := att["name"].(string)
 		content_type, _ := att["content_type"].(string)
 		creator, _ := att["creator"].(string)

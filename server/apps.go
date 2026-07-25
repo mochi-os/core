@@ -2599,11 +2599,12 @@ func api_app_package_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}), nil
 }
 
-// mochi.app.package.install(id, file, check_only?, peer?) -> string: Install an app from a .zip file, returns version
+// mochi.app.package.install(id, file, check_only?, peer?, version?) -> string: Install an app from a .zip file, returns version
+// Pass version to require the package to declare that exact version.
 // Requires administrator role, or apps_install_user setting to be "true"
 func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 2 || len(args) > 4 {
-		return sl_error(fn, "syntax: <app id: string>, <file: string>, [check only: boolean], [peer: string]")
+	if len(args) < 2 || len(args) > 5 {
+		return sl_error(fn, "syntax: <app id: string>, <file: string>, [check only: boolean], [peer: string], [version: string]")
 	}
 
 	id, ok := sl.AsString(args[0])
@@ -2631,6 +2632,19 @@ func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	if len(args) > 3 {
 		peer, _ = sl.AsString(args[3])
 	}
+
+	// Expected version. When the caller asked a publisher for a specific
+	// version, passing it here makes app_install reject a package whose
+	// app.json declares a different one, so a publisher cannot answer a
+	// request for version X with the bytes of version Y.
+	version := ""
+	if len(args) > 4 {
+		version, _ = sl.AsString(args[4])
+		if version != "" && !valid(version, "version") {
+			return sl_error(fn, "invalid version %q", version)
+		}
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -2644,7 +2658,7 @@ func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "no app")
 	}
 
-	av, err := app_install(id, "", api_file_path(user, a, file), check_only, peer)
+	av, err := app_install(id, version, api_file_path(user, a, file), check_only, peer)
 	if err != nil {
 		return sl_error(fn, fmt.Sprintf("App install failed: '%v'", err))
 	}

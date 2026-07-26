@@ -87,6 +87,29 @@ func (m *attachment_create_module) CallInternal(thread *sl.Thread, args sl.Tuple
 	return api_attachment_create(thread, nil, args, kwargs)
 }
 
+// attachment_user resolves whose store an attachment builtin operates on. It
+// deliberately matches mochi.db's resolution (db_user_for_thread): the
+// requesting user when there is one, otherwise the entity owner. Before this,
+// the attachment builtins read t.Local("owner") directly, so a user acting on
+// an entity someone else owns had mochi.db.* and mochi.attachment.* pointing at
+// two DIFFERENT users' databases inside one handler - a subscriber's resync
+// reconciliation then read the owner's attachment rows while deleting its own
+// objects, and serve_attachment validated an owner-store row against
+// requesting-user objects. In event context nothing changes: events set only
+// "owner", which db_user_for_thread falls back to.
+//
+// Metadata rows and their files must always resolve to the SAME user, so every
+// builtin here uses this for the database, the files base, and the URL path.
+// Byte serving (a.write.attachment) stays entity/owner-based on purpose, so a
+// subscriber's remote-attachment URLs still fetch from the owning host.
+func attachment_user(t *sl.Thread) *User {
+	user, err := db_user_for_thread(t)
+	if err != nil {
+		return nil
+	}
+	return user
+}
+
 // reg_attachments is the upsert definition for attachment metadata rows in the
 // app-system app.db. `entity` (the owned-vs-foreign pointer) and `rank`
 // (maintained by reorder arithmetic) are kept out of the payload so whole-row
@@ -316,7 +339,7 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -491,7 +514,7 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -631,7 +654,7 @@ func api_attachment_create_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -775,7 +798,7 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -892,7 +915,7 @@ func api_attachment_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -948,7 +971,7 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -1028,7 +1051,7 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -1087,7 +1110,7 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -1153,7 +1176,7 @@ func api_attachment_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -1194,7 +1217,7 @@ func api_attachment_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -1229,7 +1252,7 @@ func api_attachment_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -1260,7 +1283,7 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -1332,7 +1355,7 @@ func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -1392,7 +1415,7 @@ func api_attachment_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, variant
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -2153,7 +2176,7 @@ func api_attachment_store(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -2263,7 +2286,7 @@ func api_attachment_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -2318,7 +2341,7 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := attachment_user(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}

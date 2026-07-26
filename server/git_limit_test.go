@@ -180,3 +180,82 @@ func TestGitStorageMetersDecodedObjects(t *testing.T) {
 		t.Errorf("unmetered store = %v, want success", err)
 	}
 }
+
+// The meter counts DECODED object bytes while the quota it is charged against
+// measures compressed bytes on disk, so it necessarily refuses a little early.
+// This pins how early: it stores a realistic, compressible blob and reports the
+// decoded total against what actually landed, so the conservatism is a measured
+// number rather than an assumption. It also pins the boundary itself - a push
+// that exactly fills the budget must succeed, and one byte more must not, since
+// an off-by-one here refuses a push that legitimately fits.
+func TestGitStorageBudgetBoundary(t *testing.T) {
+	user, _, cleanup := create_git_test_env(t)
+	defer cleanup()
+	if err := git_init(user, test_app, "repo1"); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	path := git_repo_path(user, test_app, "repo1")
+	endpoint := &transport.Endpoint{Path: path}
+
+	store := func(s storer.Storer, body []byte) error {
+		obj := s.NewEncodedObject()
+		obj.SetType(plumbing.BlobObject)
+		w, err := obj.Writer()
+		if err != nil {
+			return err
+		}
+		w.Write(body)
+		w.Close()
+		_, err = s.SetEncodedObject(obj)
+		return err
+	}
+
+	// Exactly at the budget: must be accepted.
+	const size = 4096
+	exact, err := (&git_loader{budget: size}).Load(endpoint)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := store(exact, make([]byte, size)); err != nil {
+		t.Errorf("a push exactly filling the budget was refused: %v", err)
+	}
+
+	// One byte over: must be refused.
+	tight, err := (&git_loader{budget: size - 1}).Load(endpoint)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := store(tight, make([]byte, size)); err == nil {
+		t.Error("a push one byte over the budget was accepted")
+	}
+
+	// How conservative is it in practice? Store compressible content and
+	// compare what the meter charged against what reached the disk.
+	before, err := git_size(user, test_app, "repo1")
+	if err != nil {
+		t.Fatalf("git_size: %v", err)
+	}
+	body := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog\n"), 4096)
+	unmetered, err := (&git_loader{}).Load(endpoint)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := store(unmetered, body); err != nil {
+		t.Fatalf("unmetered store: %v", err)
+	}
+	after, err := git_size(user, test_app, "repo1")
+	if err != nil {
+		t.Fatalf("git_size: %v", err)
+	}
+	charged, landed := int64(len(body)), after-before
+	if landed <= 0 {
+		t.Fatalf("nothing measurable landed on disk (%d bytes)", landed)
+	}
+	t.Logf("meter charges %d bytes for content occupying %d bytes on disk (%.1fx conservative)",
+		charged, landed, float64(charged)/float64(landed))
+	// Guard the property, not the exact ratio: the meter must never charge
+	// LESS than the disk cost, or the quota could be overrun.
+	if charged < landed {
+		t.Errorf("meter charged %d for %d bytes on disk - it must never under-count", charged, landed)
+	}
+}

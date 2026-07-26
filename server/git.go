@@ -12,6 +12,7 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -34,6 +35,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/server"
+	"github.com/go-git/go-git/v5/storage"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
@@ -75,8 +77,12 @@ var api_git = sls.FromStringDict(sl.String("mochi.git"), sl.StringDict{
 	}),
 })
 
-// git_loader implements server.Loader to load repository storage from filesystem paths
-type git_loader struct{}
+// git_loader implements server.Loader to load repository storage from filesystem paths.
+// budget, when positive, is the number of decoded object bytes a push may add
+// (see git_storage).
+type git_loader struct {
+	budget int64
+}
 
 // Load loads a storer.Storer for the given endpoint path
 func (l *git_loader) Load(ep *transport.Endpoint) (storer.Storer, error) {
@@ -88,16 +94,47 @@ func (l *git_loader) Load(ep *transport.Endpoint) (storer.Storer, error) {
 	// packfile.UpdateObjectStorage takes a raw-copy path that can't resolve
 	// thin pack deltas (base objects not included in the pack). The wrapper
 	// forces the parser path which looks up base objects from the storer.
-	return &git_storage{filesystem.NewStorage(fs, cache.NewObjectLRUDefault())}, nil
+	return &git_storage{
+		Storer:    filesystem.NewStorage(fs, cache.NewObjectLRUDefault()),
+		remaining: l.budget,
+		metered:   l.budget > 0,
+	}, nil
 }
 
 // git_storage wraps storer.Storer to hide PackfileWriter, forcing the packfile
-// parser to resolve thin pack delta references from the existing object store
+// parser to resolve thin pack delta references from the existing object store.
+//
+// That parser path is also why a push needs a second, decoded limit. Bounding
+// the request body bounds only the pack as sent, and a pack stores its objects
+// deltified against each other: a base object plus many small deltas decodes
+// into that many separate full objects, so a modest pack can land a far larger
+// footprint than its own size. The parser hands every decoded object to
+// SetEncodedObject, so metering there is the one place that sees the true
+// total, and it fails the push before receive-pack updates any ref.
+//
+// The meter counts decoded bytes while the quota it is charged against measures
+// bytes on disk, where objects are compressed - so it is deliberately
+// conservative: a push is refused a little before the owner's quota is truly
+// exhausted, never after.
 type git_storage struct {
 	storer.Storer
+	remaining int64 // decoded bytes still allowed, when metered
+	metered   bool
 }
 
-// git_transport is the go-git server transport for handling git protocol
+func (s *git_storage) SetEncodedObject(obj plumbing.EncodedObject) (plumbing.Hash, error) {
+	if s.metered {
+		s.remaining -= obj.Size()
+		if s.remaining < 0 {
+			return plumbing.ZeroHash, fmt.Errorf("push exceeds the storage available to this account")
+		}
+	}
+	return s.Storer.SetEncodedObject(obj)
+}
+
+// git_transport is the go-git server transport for handling git protocol.
+// Unmetered: it serves fetches and ref advertisements, which store nothing.
+// Pushes build their own transport carrying the owner's remaining storage.
 var git_transport = server.NewServer(&git_loader{})
 
 // git_diff_module is a callable module that also has a .stats method
@@ -179,12 +216,20 @@ func git_can_write(t *sl.Thread, owner *User, app *App, entity string) bool {
 
 // git_can_read reports whether the thread's authenticated identity - or anyone,
 // for a repository carrying a public "*" read grant - holds repository/<entity>
-// read in owner's repositories ACL. It gates the diff and merge-check read
-// primitives so another app cannot preview a private repository's diff or
-// conflict-check without read access. Unlike git_can_write it does NOT fail
+// read in owner's repositories ACL. Every read primitive calls it (refs,
+// branches, tags, commits, tree, blob, merge base, archive, size, diff,
+// merge-check) so the server boundary fails closed rather than trusting each
+// Starlark caller to have checked first. Unlike git_can_write it does NOT fail
 // closed on a missing identity: an empty identity is passed through to
 // access_check, where it still matches a public "*" read grant - preserving
 // anonymous read of public repositories.
+//
+// What this cannot see, and what therefore still needs a gate in the app: core
+// runs an anonymous request to a `public: true` action as the entity OWNER
+// (web.go), and a cross-app service call as the CALLING user - both of which
+// hold the owner's grant here. So this stops an authenticated third party whose
+// identity has no grant; it does not stop an anonymous caller reaching a
+// private repository through a public action. That one is the app's to refuse.
 func git_can_read(t *sl.Thread, owner *User, app *App, entity string) bool {
 	if owner == nil || app == nil || entity == "" {
 		return false
@@ -285,6 +330,56 @@ func git_size(owner *User, app *App, entity string) (int64, error) {
 	return size, err
 }
 
+// git_branch_reference builds refs/heads/<name> and validates it before any
+// storer sees it. plumbing concatenates without checking, and the filesystem
+// storer joins the result onto the repository directory, so a name containing
+// ".." is cleaned into a path that escapes the ref namespace: "../../config"
+// becomes refs/heads/../../config, which resolves to the bare repository's own
+// config file. Creating such a branch overwrote it with a hash and deleting one
+// removed it; HEAD, packed-refs and loose object paths are reachable the same
+// way. go-billy's chroot stops the path leaving the repository directory, so
+// the damage is contained to the repository - but corrupting or destroying it
+// is well within what a write-permission holder could do. ReferenceName's own
+// Validate rejects these names; nothing was calling it.
+func git_branch_reference(name string) (plumbing.ReferenceName, error) {
+	reference := plumbing.NewBranchReferenceName(name)
+	if err := reference.Validate(); err != nil {
+		return "", fmt.Errorf("invalid branch name %q: %v", name, err)
+	}
+	return reference, nil
+}
+
+// git_tag_reference is the tag-namespace counterpart of git_branch_reference.
+func git_tag_reference(name string) (plumbing.ReferenceName, error) {
+	reference := plumbing.NewTagReferenceName(name)
+	if err := reference.Validate(); err != nil {
+		return "", fmt.Errorf("invalid tag name %q: %v", name, err)
+	}
+	return reference, nil
+}
+
+// git_update_branch points branch at hash, but only while the branch still
+// holds expected. A merge resolves its target tip, then does tree work that can
+// take a while on a large repository; an unconditional SetReference at the end
+// would overwrite - and silently discard - any push that landed in the
+// meantime. CheckAndSetReference re-reads the stored value under the ref lock
+// and returns storage.ErrReferenceHasChanged instead, which surfaces to the
+// caller as a failed merge it can retry against the new tip.
+func git_update_branch(repo *git.Repository, branch string, expected plumbing.Hash, hash plumbing.Hash) error {
+	name, err := git_branch_reference(branch)
+	if err != nil {
+		return err
+	}
+	err = repo.Storer.CheckAndSetReference(
+		plumbing.NewHashReference(name, hash),
+		plumbing.NewHashReference(name, expected),
+	)
+	if errors.Is(err, storage.ErrReferenceHasChanged) {
+		return fmt.Errorf("branch %q changed while the merge was in progress - retry against its new tip", branch)
+	}
+	return err
+}
+
 // Resolve a reference string to a commit hash
 func git_resolve_ref(repo *git.Repository, ref string) (*plumbing.Hash, error) {
 	if ref == "" || ref == "HEAD" {
@@ -305,29 +400,32 @@ func git_resolve_ref(repo *git.Repository, ref string) (*plumbing.Hash, error) {
 		return nil, err
 	}
 
-	// Try as a branch
-	branch_ref, err := repo.Reference(plumbing.NewBranchReferenceName(ref), true)
-	if err == nil {
-		hash := branch_ref.Hash()
-		return &hash, nil
+	// Try as a branch. An invalid name is skipped rather than fatal: the ref
+	// may still be a raw SHA, handled below.
+	if name, err := git_branch_reference(ref); err == nil {
+		if branch_ref, err := repo.Reference(name, true); err == nil {
+			hash := branch_ref.Hash()
+			return &hash, nil
+		}
 	}
 
-	// Try as a tag
-	tag_ref, err := repo.Reference(plumbing.NewTagReferenceName(ref), true)
-	if err == nil {
-		// For annotated tags, dereference to get the commit hash
-		tag_obj, err := repo.TagObject(tag_ref.Hash())
-		if err == nil {
-			// Annotated tag - get the commit it points to
-			commit, err := tag_obj.Commit()
+	// Try as a tag, likewise skipped when the name is not a valid ref.
+	if name, err := git_tag_reference(ref); err == nil {
+		if tag_ref, err := repo.Reference(name, true); err == nil {
+			// For annotated tags, dereference to get the commit hash
+			tag_obj, err := repo.TagObject(tag_ref.Hash())
 			if err == nil {
-				hash := commit.Hash
-				return &hash, nil
+				// Annotated tag - get the commit it points to
+				commit, err := tag_obj.Commit()
+				if err == nil {
+					hash := commit.Hash
+					return &hash, nil
+				}
 			}
+			// Lightweight tag or failed to dereference - use tag hash directly
+			hash := tag_ref.Hash()
+			return &hash, nil
 		}
-		// Lightweight tag or failed to dereference - use tag hash directly
-		hash := tag_ref.Hash()
-		return &hash, nil
 	}
 
 	// Try as a commit hash
@@ -429,6 +527,10 @@ func api_git_size(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "no owner")
 	}
 
+	if !git_can_read(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository read required to read the repository size")
+	}
+
 	size, err := git_size(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to get size: %v", err)
@@ -452,6 +554,10 @@ func api_git_refs(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_read(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository read required to list refs")
 	}
 
 	repo, err := git_open(owner, app, entity)
@@ -514,6 +620,10 @@ func api_git_branches(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "no owner")
 	}
 
+	if !git_can_read(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository read required to list branches")
+	}
+
 	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
@@ -555,6 +665,10 @@ func api_git_tags(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_read(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository read required to list tags")
 	}
 
 	repo, err := git_open(owner, app, entity)
@@ -635,7 +749,10 @@ func api_git_branch_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "failed to resolve ref: %v", err)
 	}
 
-	branch_ref := plumbing.NewBranchReferenceName(name)
+	branch_ref, err := git_branch_reference(name)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	new_reference := plumbing.NewHashReference(branch_ref, *hash)
 	err = repo.Storer.SetReference(new_reference)
 	if err != nil {
@@ -676,7 +793,10 @@ func api_git_branch_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
 
-	branch_ref := plumbing.NewBranchReferenceName(name)
+	branch_ref, err := git_branch_reference(name)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	err = repo.Storer.RemoveReference(branch_ref)
 	if err != nil {
 		return sl_error(fn, "failed to delete branch: %v", err)
@@ -700,6 +820,10 @@ func api_git_branch_default_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_read(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository read required to read the default branch")
 	}
 
 	repo, err := git_open(owner, app, entity)
@@ -749,7 +873,11 @@ func api_git_branch_default_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 
 	// Verify the branch exists
-	branch_ref, err := repo.Reference(plumbing.NewBranchReferenceName(name), true)
+	branch_name, err := git_branch_reference(name)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	branch_ref, err := repo.Reference(branch_name, true)
 	if err != nil {
 		return sl_error(fn, "branch %q does not exist", name)
 	}
@@ -794,6 +922,10 @@ func api_git_commit_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_read(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository read required to list commits")
 	}
 
 	repo, err := git_open(owner, app, entity)
@@ -868,6 +1000,10 @@ func api_git_commit_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no owner")
 	}
 
+	if !git_can_read(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository read required to read a commit")
+	}
+
 	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
@@ -925,6 +1061,10 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_read(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository read required to read the commit log")
 	}
 
 	repo, err := git_open(owner, app, entity)
@@ -993,6 +1133,10 @@ func api_git_commit_between(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_read(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository read required to list commits")
 	}
 
 	repo, err := git_open(owner, app, entity)
@@ -1076,6 +1220,10 @@ func api_git_tree(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_read(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository read required to browse the tree")
 	}
 
 	repo, err := git_open(owner, app, entity)
@@ -1175,6 +1323,10 @@ func api_git_blob_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "no owner")
 	}
 
+	if !git_can_read(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository read required to read file content")
+	}
+
 	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
@@ -1228,6 +1380,10 @@ func api_git_blob_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_read(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository read required to read a file")
 	}
 
 	repo, err := git_open(owner, app, entity)
@@ -1476,6 +1632,10 @@ func api_git_merge_base(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_read(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository read required to find the merge base")
 	}
 
 	repo, err := git_open(owner, app, entity)
@@ -1751,9 +1911,7 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 			return git_merge_squash(repo, source_commit, target_hash, target, message, author_name, author_email)
 		}
 		// Merge and rebase: fast-forward
-		target_ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName(target), *source_hash)
-		err = repo.Storer.SetReference(target_ref)
-		if err != nil {
+		if err := git_update_branch(repo, target, *target_hash, *source_hash); err != nil {
 			return sl_error(fn, "failed to fast-forward: %v", err)
 		}
 		return sl_encode(map[string]any{
@@ -1901,9 +2059,7 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		if err != nil {
 			return sl_error(fn, "failed to store squash commit: %v", err)
 		}
-		target_ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName(target), commit_hash)
-		err = repo.Storer.SetReference(target_ref)
-		if err != nil {
+		if err := git_update_branch(repo, target, *target_hash, commit_hash); err != nil {
 			return sl_error(fn, "failed to update target branch: %v", err)
 		}
 		return sl_encode(map[string]any{
@@ -1935,9 +2091,7 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		if err != nil {
 			return sl_error(fn, "failed to store merge commit: %v", err)
 		}
-		target_ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName(target), commit_hash)
-		err = repo.Storer.SetReference(target_ref)
-		if err != nil {
+		if err := git_update_branch(repo, target, *target_hash, commit_hash); err != nil {
 			return sl_error(fn, "failed to update target branch: %v", err)
 		}
 		return sl_encode(map[string]any{
@@ -1968,8 +2122,7 @@ func git_merge_squash(repo *git.Repository, source_commit *object.Commit, target
 	if err != nil {
 		return sl_error(nil, "failed to store squash commit: %v", err)
 	}
-	target_ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName(target), commit_hash)
-	if err := repo.Storer.SetReference(target_ref); err != nil {
+	if err := git_update_branch(repo, target, *target_hash, commit_hash); err != nil {
 		return sl_error(nil, "failed to update target branch: %v", err)
 	}
 	return sl_encode(map[string]any{
@@ -2089,8 +2242,7 @@ func git_merge_rebase(repo *git.Repository, source_commit *object.Commit, base_h
 	}
 
 	// Update target branch ref
-	target_ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName(target), current_parent)
-	if err := repo.Storer.SetReference(target_ref); err != nil {
+	if err := git_update_branch(repo, target, *target_hash, current_parent); err != nil {
 		return sl_error(nil, "failed to update target branch: %v", err)
 	}
 
@@ -2260,6 +2412,10 @@ func api_git_archive(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_read(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository read required to download an archive")
 	}
 
 	repo, err := git_open(owner, app, entity)
@@ -2560,14 +2716,20 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 		return true
 	}
 
-	// Determine operation
-	service := c.Query("service")
-	if service == "" {
-		if strings.HasSuffix(path, "git-upload-pack") {
-			service = "git-upload-pack"
-		} else if strings.HasSuffix(path, "git-receive-pack") {
-			service = "git-receive-pack"
-		}
+	// Determine operation. An RPC endpoint IS the operation, so it is taken
+	// from the path alone: the ?service= query is caller-controlled, and
+	// honouring it here let POST .../git-receive-pack?service=git-upload-pack
+	// be authorised as a read and then dispatched as a push - anonymous write
+	// access to any public repository. Only info/refs, which advertises refs
+	// for a service the client names in the query, may read it, and then only
+	// after git_service_name rejects anything but the two known services.
+	service := ""
+	if strings.HasSuffix(path, "git-upload-pack") {
+		service = "git-upload-pack"
+	} else if strings.HasSuffix(path, "git-receive-pack") {
+		service = "git-receive-pack"
+	} else if strings.HasSuffix(path, "info/refs") {
+		service = git_service_name(c.Query("service"))
 	}
 
 	// Determine if this is a read or write operation
@@ -2637,14 +2799,15 @@ func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e 
 		return true
 	}
 
-	// Determine operation
-	service := c.Query("service")
-	if service == "" {
-		if path == "git-upload-pack" {
-			service = "git-upload-pack"
-		} else if path == "git-receive-pack" {
-			service = "git-receive-pack"
-		}
+	// Determine operation from the path, never the caller-controlled query.
+	// See git_http_handler above for what honouring the query allowed.
+	service := ""
+	if path == "git-upload-pack" {
+		service = "git-upload-pack"
+	} else if path == "git-receive-pack" {
+		service = "git-receive-pack"
+	} else if path == "info/refs" {
+		service = git_service_name(c.Query("service"))
 	}
 
 	// Determine if this is a read or write operation
@@ -2720,6 +2883,17 @@ func git_authenticate(c *gin.Context, a *App) *User {
 }
 
 // git_info_refs handles GET /info/refs?service=git-upload-pack|git-receive-pack
+// git_service_name returns the requested service only when it names one of the
+// two git services, and "" otherwise. info/refs is the one endpoint whose
+// service legitimately comes from the query string, so the value is whitelisted
+// before it can decide whether the request is authorised as a read or a write.
+func git_service_name(requested string) string {
+	if requested == "git-upload-pack" || requested == "git-receive-pack" {
+		return requested
+	}
+	return ""
+}
+
 func git_info_refs(c *gin.Context, repo_path string, service string) bool {
 	if service != "git-upload-pack" && service != "git-receive-pack" {
 		c.String(http.StatusForbidden, "Service not enabled")
@@ -2806,28 +2980,43 @@ func (r *git_limited_reader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// git_request_maximum returns the largest request body this service may send.
-// A receive-pack body becomes repository content, so it is bounded by the
-// storage the owner may consume; an upload-pack body is negotiation that is
-// never stored, so it gets the much smaller fixed ceiling above.
-func git_request_maximum(service string, owner *User) int64 {
+// git_storage_budget returns the storage the owner may still consume, clamped
+// to a finite value (administrators are quota-exempt and report MaxInt64, but
+// unbounded is the thing being bounded here). It returns 0 when there is no
+// owner or the figure cannot be established, which callers read as "no push".
+func git_storage_budget(owner *User) int64 {
 	// user_storage_remaining dereferences the user to locate its storage
-	// directory, so a missing owner must not reach it. Falling back to the
-	// negotiation ceiling also fails safe: no owner means nothing that could
-	// legitimately accept a large push.
-	if service != "git-receive-pack" || owner == nil {
-		return git_negotiation_maximum
+	// directory, so a missing owner must not reach it.
+	if owner == nil {
+		return 0
 	}
 	remaining, err := user_storage_remaining(owner)
 	if err != nil || remaining <= 0 {
-		return git_negotiation_maximum
+		return 0
 	}
-	// Administrators are quota-exempt (MaxInt64); clamp so the ceiling stays
-	// finite, since unbounded is the thing being fixed.
 	if remaining > file_max_storage {
 		remaining = file_max_storage
 	}
 	return remaining
+}
+
+// git_request_maximum returns the largest request body this service may send,
+// given the owner's remaining storage as computed by git_storage_budget. A
+// receive-pack body becomes repository content, so it is bounded by that
+// storage; an upload-pack body is negotiation that is never stored, so it gets
+// the much smaller fixed ceiling above. This bounds only the pack as sent -
+// git_storage meters what it decodes to.
+func git_request_maximum(service string, budget int64) int64 {
+	if service != "git-receive-pack" {
+		return git_negotiation_maximum
+	}
+	// No owner, or no room left, still has to allow the small bodies: the
+	// flush-packet authentication probe and a delete-only push carry no pack.
+	// The decode meter is what refuses content in that state.
+	if budget <= 0 {
+		return git_negotiation_maximum
+	}
+	return budget
 }
 
 // git_service_rpc handles POST /git-upload-pack and /git-receive-pack
@@ -2838,7 +3027,10 @@ func git_service_rpc(c *gin.Context, repo_path string, service string, owner *Us
 	// unbounded. A small gzip bomb from any client allowed to fetch (public
 	// repositories permit anonymous reads) would otherwise expand without
 	// limit. Same class as the zstd frame bomb on the peer protocol.
-	maximum := git_request_maximum(service, owner)
+	// Measured once: it walks the owner's storage directory, and both the body
+	// ceiling and the decode meter are charged against the same figure.
+	budget := git_storage_budget(owner)
+	maximum := git_request_maximum(service, budget)
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maximum)
 
 	// Handle gzip compressed request body
@@ -2873,7 +3065,7 @@ func git_service_rpc(c *gin.Context, repo_path string, service string, owner *Us
 	if service == "git-upload-pack" {
 		return git_upload_pack(c, repo_path, reader)
 	}
-	return git_receive_pack(c, repo_path, reader)
+	return git_receive_pack(c, repo_path, reader, budget)
 }
 
 // git_upload_pack handles the git-upload-pack service (fetch/clone)
@@ -2980,12 +3172,20 @@ func git_upload_pack_negotiation(reader io.Reader) ([]plumbing.Hash, bool) {
 	return haves, false
 }
 
-// git_receive_pack handles the git-receive-pack service (push)
-func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser) bool {
+// git_receive_pack handles the git-receive-pack service (push). budget is the
+// decoded object bytes the owner may still store; the session gets its own
+// transport so that meter is per-push rather than shared.
+func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, budget int64) bool {
 	ep := &transport.Endpoint{Path: repo_path}
 	ctx := context.Background()
 
-	session, err := git_transport.NewReceivePackSession(ep, nil)
+	// A budget of 0 would read as "unmetered", and a push with no room left
+	// must store nothing at all: meter it at one byte, which every real object
+	// exceeds.
+	if budget <= 0 {
+		budget = 1
+	}
+	session, err := server.NewServer(&git_loader{budget: budget}).NewReceivePackSession(ep, nil)
 	if err != nil {
 		info("git_receive_pack: failed to create session for %s: %v", repo_path, err)
 		c.String(http.StatusInternalServerError, "Failed to create session")

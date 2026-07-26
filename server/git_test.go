@@ -783,3 +783,105 @@ func TestGitUploadPackNegotiation(t *testing.T) {
 		t.Errorf("hash not parsed: %v", haves)
 	}
 }
+
+// ============ Review Fix Tests ============
+
+// A branch name is joined onto the repository directory by the filesystem
+// storer, so one containing ".." is cleaned into a path outside the ref
+// namespace. Creating such a branch overwrote the bare repository's own config
+// file with a hash and deleting one removed it.
+func TestGitBranchReferenceRejectsTraversal(t *testing.T) {
+	for _, name := range []string{"../../config", "../HEAD", "../../packed-refs", "a/../../../x"} {
+		if _, err := git_branch_reference(name); err == nil {
+			t.Errorf("git_branch_reference(%q) was accepted, want rejection", name)
+		}
+	}
+	for _, name := range []string{"main", "feature/login", "release-1.2", "a/b/c"} {
+		reference, err := git_branch_reference(name)
+		if err != nil {
+			t.Errorf("git_branch_reference(%q) = %v, want acceptance", name, err)
+			continue
+		}
+		if want := "refs/heads/" + name; reference.String() != want {
+			t.Errorf("git_branch_reference(%q) = %q, want %q", name, reference, want)
+		}
+	}
+}
+
+// The whole point of validating: the repository's own files must survive a
+// branch name that tries to address them.
+func TestGitBranchTraversalLeavesRepositoryIntact(t *testing.T) {
+	user, _, cleanup := create_git_test_env(t)
+	defer cleanup()
+
+	repo := create_repo_with_commit(t, user, "repo1")
+	config_path := filepath.Join(git_repo_path(user, test_app, "repo1"), "config")
+	before, err := os.ReadFile(config_path)
+	if err != nil {
+		t.Fatalf("reading config: %v", err)
+	}
+
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+
+	name, err := git_branch_reference("../../config")
+	if err == nil {
+		// Validation is the fix; if it ever regresses, prove the consequence.
+		repo.Storer.SetReference(plumbing.NewHashReference(name, head.Hash()))
+	}
+
+	after, err := os.ReadFile(config_path)
+	if err != nil {
+		t.Fatalf("config missing after traversing branch name: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("repository config was overwritten via a branch name: %q -> %q", before, after)
+	}
+}
+
+// A merge resolves the target tip, then does tree work; an unconditional write
+// at the end would discard any push that landed meanwhile.
+func TestGitUpdateBranchRefusesChangedTarget(t *testing.T) {
+	user, _, cleanup := create_git_test_env(t)
+	defer cleanup()
+
+	repo := create_repo_with_commit(t, user, "repo1")
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+	current := head.Hash()
+	other := plumbing.NewHash("1111111111111111111111111111111111111111")
+	next := plumbing.NewHash("2222222222222222222222222222222222222222")
+
+	// Target no longer holds what the merge read: refuse.
+	if err := git_update_branch(repo, "main", other, next); err == nil {
+		t.Error("git_update_branch overwrote a branch that had moved, want refusal")
+	}
+	reference, err := repo.Reference(plumbing.NewBranchReferenceName("main"), false)
+	if err != nil {
+		t.Fatalf("Reference: %v", err)
+	}
+	if reference.Hash() != current {
+		t.Errorf("branch was moved despite the refusal: %v", reference.Hash())
+	}
+
+	// Target still holds what the merge read: proceed.
+	if err := git_update_branch(repo, "main", current, next); err != nil {
+		t.Errorf("git_update_branch on an unchanged branch = %v, want success", err)
+	}
+	reference, err = repo.Reference(plumbing.NewBranchReferenceName("main"), false)
+	if err != nil {
+		t.Fatalf("Reference: %v", err)
+	}
+	if reference.Hash() != next {
+		t.Errorf("branch = %v, want %v", reference.Hash(), next)
+	}
+
+	// An invalid target name is refused rather than written.
+	if err := git_update_branch(repo, "../../config", next, next); err == nil {
+		t.Error("git_update_branch accepted a traversing branch name")
+	}
+}

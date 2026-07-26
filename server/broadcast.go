@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -248,7 +249,6 @@ func broadcast_acknowledged_table_create(db *DB) {
 	db.exec("create table if not exists acknowledged (key text not null, peer text not null, subscriber text not null, last integer not null default 0, primary key (key, peer, subscriber))")
 }
 
-
 // broadcast_next_local allocates and returns the next outbound sequence
 // number on the given DB for (key, peer). Per-(key, peer) PK gives each
 // paired host its own sequence space.
@@ -361,6 +361,70 @@ func broadcast_advance_local_simple(db *DB, sender, key string, sequence int64) 
 
 // broadcast_log_append writes one log row in the same transaction as
 // the sequence bump. Returns the allocated sequence.
+// broadcast_payload_decode reads a stored broadcast-log payload back, keeping
+// whole numbers whole.
+//
+// The log stores the payload as JSON, and JSON has no integer type: a plain
+// Unmarshal into `any` turns every number into a float64, so a replayed
+// timestamp reaches the app as 1.7534e+09 rather than 1753400000. Apps
+// validate such a field by pattern (`str(value)` against an integer regex),
+// which the exponent form fails - so the handler returned early and the row
+// was silently dropped, on the one path that exists to repair missed
+// deliveries. Chat lost every gap-recovered message and edit this way
+// (2026-07-25), and the same shape is live in projects, crm, chess, go and
+// words.
+//
+// The live path carries CBOR, which preserves int64. Decoding with UseNumber
+// and restoring integers here makes replay match delivery, without changing
+// what is already written to disk.
+func broadcast_payload_decode(raw string, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader([]byte(raw)))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	value = json_integers_restore(value)
+
+	switch out := target.(type) {
+	case *any:
+		*out = value
+	case *map[string]any:
+		mapped, _ := value.(map[string]any)
+		*out = mapped
+	default:
+		return fmt.Errorf("unsupported decode target %T", target)
+	}
+	return nil
+}
+
+// json_integers_restore walks a decoded JSON value and turns every
+// json.Number back into an int64 where it is integral, a float64 otherwise.
+func json_integers_restore(value any) any {
+	switch v := value.(type) {
+	case json.Number:
+		if whole, err := v.Int64(); err == nil {
+			return whole
+		}
+		fractional, err := v.Float64()
+		if err != nil {
+			return v.String()
+		}
+		return fractional
+	case map[string]any:
+		for key, item := range v {
+			v[key] = json_integers_restore(item)
+		}
+		return v
+	case []any:
+		for i, item := range v {
+			v[i] = json_integers_restore(item)
+		}
+		return v
+	}
+	return value
+}
+
 func broadcast_log_append(db *DB, key, peer, event string, data []byte) int64 {
 	broadcast_log_table_create(db)
 	broadcast_log_age_trim(db, key, peer)
@@ -742,7 +806,7 @@ func api_broadcast_replay(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		event_name, _ := row["event"].(string)
 		data_raw, _ := row["data"].(string)
 		var data any
-		_ = json.Unmarshal([]byte(data_raw), &data)
+		_ = broadcast_payload_decode(data_raw, &data)
 		out = append(out, sl_encode(map[string]any{
 			"sequence": sequence,
 			"event":    event_name,
@@ -814,7 +878,7 @@ func (e *Event) broadcast_resync(a *App, av *AppVersion) error {
 		event_name, _ := row["event"].(string)
 		data_raw, _ := row["data"].(string)
 		var payload map[string]any
-		_ = json.Unmarshal([]byte(data_raw), &payload)
+		_ = broadcast_payload_decode(data_raw, &payload)
 		if payload == nil {
 			payload = map[string]any{}
 		}

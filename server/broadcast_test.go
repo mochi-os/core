@@ -13,6 +13,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -162,7 +163,6 @@ func TestNackShouldDrop(t *testing.T) {
 	}
 }
 
-
 // TestPriorityReplayAbovesInteractive locks in the relative ordering
 // of the priority tiers (task #96). queue_select orders desc by
 // priority, so for resync replies to overtake the live-broadcast
@@ -259,5 +259,64 @@ func TestBroadcastInboundClass(t *testing.T) {
 		if got := broadcast_inbound_class(c.last, c.bseq); got != c.want {
 			t.Errorf("%s: broadcast_inbound_class(%d, %d) = %q, want %q", c.name, c.last, c.bseq, got, c.want)
 		}
+	}
+}
+
+// TestBroadcastPayloadDecodeKeepsIntegers covers the resync data loss: the
+// broadcast log stores JSON, where every number is a double, so a replayed
+// timestamp used to arrive as float64. Apps validate such fields by pattern
+// against str(value), and "1.7534e+09" fails an integer regex - so the handler
+// dropped the row on the one path that repairs missed deliveries.
+func TestBroadcastPayloadDecodeKeepsIntegers(t *testing.T) {
+	raw := `{"created":1753400000,"edited":0,"body":"hello","score":1.5,` +
+		`"nested":{"seen":1753400001},"list":[1753400002,2]}`
+
+	var payload map[string]any
+	if err := broadcast_payload_decode(raw, &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	created, ok := payload["created"].(int64)
+	if !ok {
+		t.Fatalf("created should decode as int64, got %T (%v)", payload["created"], payload["created"])
+	}
+	if created != 1753400000 {
+		t.Fatalf("created = %d, want 1753400000", created)
+	}
+	// The shape the apps actually check.
+	if got := fmt.Sprintf("%v", created); got != "1753400000" {
+		t.Fatalf("created renders as %q, want the plain integer", got)
+	}
+	// A plain Unmarshal is what used to happen - assert it really did differ,
+	// so this test fails for the right reason if the helper is reverted.
+	var legacy map[string]any
+	if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
+		t.Fatalf("legacy decode: %v", err)
+	}
+	if _, wasFloat := legacy["created"].(float64); !wasFloat {
+		t.Fatalf("expected the plain Unmarshal to yield float64, got %T", legacy["created"])
+	}
+
+	if zero, ok := payload["edited"].(int64); !ok || zero != 0 {
+		t.Fatalf("edited = %v (%T), want int64 0", payload["edited"], payload["edited"])
+	}
+	if body, _ := payload["body"].(string); body != "hello" {
+		t.Fatalf("body = %q, want hello", body)
+	}
+	// Genuinely fractional values stay float64.
+	if score, ok := payload["score"].(float64); !ok || score != 1.5 {
+		t.Fatalf("score = %v (%T), want float64 1.5", payload["score"], payload["score"])
+	}
+	// Nested maps and slices are walked too.
+	nested, _ := payload["nested"].(map[string]any)
+	if seen, ok := nested["seen"].(int64); !ok || seen != 1753400001 {
+		t.Fatalf("nested.seen = %v (%T), want int64", nested["seen"], nested["seen"])
+	}
+	list, _ := payload["list"].([]any)
+	if len(list) != 2 {
+		t.Fatalf("list length %d, want 2", len(list))
+	}
+	if first, ok := list[0].(int64); !ok || first != 1753400002 {
+		t.Fatalf("list[0] = %v (%T), want int64", list[0], list[0])
 	}
 }

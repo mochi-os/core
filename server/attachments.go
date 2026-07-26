@@ -1740,6 +1740,17 @@ func (e *Event) attachment_event_create() {
 		if !valid(id, "id") {
 			continue
 		}
+
+		// replace-into overwrites by primary key, so a colliding id would let
+		// this sender hijack an attachment we own (entity="") or hold from a
+		// different peer. Only overwrite a row that is already ours from this
+		// same source; skip an id owned by anyone else.
+		if row, _ := e.db.row("select entity from attachments where id = ?", id); row != nil {
+			if held, _ := row["entity"].(string); held != source {
+				continue
+			}
+		}
+
 		name, _ := att["name"].(string)
 
 		e.db.exec(`replace into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1926,10 +1937,17 @@ func (e *Event) attachment_event_delete() {
 		return
 	}
 
-	// Get attachment before deleting (may have empty entity if stored locally)
+	// Only delete an attachment we hold FROM THIS SENDER. entity records the
+	// source a federated attachment was stored from, so `entity = source`
+	// authorises the delete: a sender may retract what it sent us and nothing
+	// else. A locally-owned attachment has entity="" and so is never deletable
+	// over P2P, and one federated from a different peer keeps that peer's id.
+	// Without this a peer could delete any attachment by id alone, across the
+	// recipient's whole store (confirmed cross-instance). Matches the guard
+	// _attachment/update, /move and /clear already apply.
 	var att Attachment
-	if e.db.scan(&att, "select * from attachments where id = ?", id) {
-		e.db.exec("delete from attachments where id = ?", id)
+	if e.db.scan(&att, "select * from attachments where id = ? and entity = ?", id, source) {
+		e.db.exec("delete from attachments where id = ? and entity = ?", id, source)
 		e.db.attachment_shift_down(object, att.Rank)
 
 		// Delete local file and image variants using os.Root for traversal protection

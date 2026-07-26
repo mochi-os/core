@@ -379,6 +379,24 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		return false
 	}
 
+	// A token may be bound to one action and entity. This is the check that
+	// makes a feed URL a feed URL: presenting it satisfies the app-JWT
+	// requirement below and routing ignores the method, so without this an
+	// RSS token was equally good on the app's delete action. Matched on the
+	// action pattern (":wiki/-/rss"), not the requested path, so the entity is
+	// compared separately rather than by string. Unbound tokens stay app-wide.
+	if api_token != nil {
+		entity_id := ""
+		if e != nil {
+			entity_id = e.ID
+		}
+		if !token_allows(api_token, aa.name, entity_id) {
+			debug("403 token not valid for action: app=%s action=%s entity=%q token_action=%q token_entity=%q", a.id, aa.name, entity_id, api_token.Action, api_token.Entity)
+			respond_error(c, http.StatusForbidden, "token_not_valid_for_this_action", "errors.app_token_action", nil)
+			return true
+		}
+	}
+
 	// Compute owner based on entity, domain route owner, or authenticated user
 	var owner *User = user
 	if e != nil {

@@ -16,7 +16,11 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 )
 
-// Token represents an API token
+// Token represents an API token. Action and Entity bind the token to a single
+// route: an empty Action means the token is valid across the whole app, which
+// is what a user-created API token is for. A bound token names the action
+// pattern it may call (":wiki/-/rss") and the entity it may name; an empty
+// Entity is a class-level route that carries no entity.
 type Token struct {
 	Hash     string   `db:"hash"`
 	User     string   `db:"user"`
@@ -24,6 +28,8 @@ type Token struct {
 	Name     string   `db:"name"`
 	Scopes   []string `db:"-"`
 	ScopesDB string   `db:"scopes"`
+	Action   string   `db:"action"`
+	Entity   string   `db:"entity"`
 	Created  int64    `db:"created"`
 	Used     int64    `db:"used"`
 	Expires  int64    `db:"expires"`
@@ -54,8 +60,10 @@ func token_hash(token string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// Create a new token for a user and return the plaintext token
-func token_create(user string, app string, name string, scopes []string, expires int64) string {
+// Create a new token for a user and return the plaintext token. An empty
+// action leaves the token valid across the whole app; naming an action binds
+// it to that route and entity alone.
+func token_create(user string, app string, name string, scopes []string, expires int64, action string, entity string) string {
 	token := token_generate()
 	if token == "" {
 		return ""
@@ -65,8 +73,8 @@ func token_create(user string, app string, name string, scopes []string, expires
 	scopes_json, _ := json.Marshal(scopes)
 
 	created := now()
-	db_open("db/users.db").exec("insert into tokens (hash, user, app, name, scopes, created, expires) values (?, ?, ?, ?, ?, ?, ?)",
-		hash, user, app, name, string(scopes_json), created, expires)
+	db_open("db/users.db").exec("insert into tokens (hash, user, app, name, scopes, action, entity, created, expires) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		hash, user, app, name, string(scopes_json), action, entity, created, expires)
 	db_open("db/sessions.db").exec("insert into accesses (hash, user, used) values (?, ?, 0)", hash, user)
 
 	return token
@@ -82,7 +90,7 @@ func token_delete(hash string) bool {
 // Return all tokens for a user and app (without the actual token values)
 func token_list(user string, app string) []map[string]any {
 	db := db_open("db/users.db")
-	rows, _ := db.rows("select hash, name, scopes, created, expires from tokens where user = ? and app = ?", user, app)
+	rows, _ := db.rows("select hash, name, scopes, action, entity, created, expires from tokens where user = ? and app = ?", user, app)
 
 	useds := token_useds(user)
 
@@ -97,6 +105,8 @@ func token_list(user string, app string) []map[string]any {
 			"hash":    row["hash"],
 			"name":    row["name"],
 			"scopes":  scopes,
+			"action":  row["action"],
+			"entity":  row["entity"],
 			"created": row["created"],
 			"used":    useds[hash],
 			"expires": row["expires"],
@@ -133,7 +143,7 @@ func token_lookup(token string) *Token {
 	db := db_open("db/users.db")
 
 	var t Token
-	if !db.scan(&t, "select hash, user, app, name, scopes, created, expires from tokens where hash = ?", hash) {
+	if !db.scan(&t, "select hash, user, app, name, scopes, action, entity, created, expires from tokens where hash = ?", hash) {
 		return nil
 	}
 
@@ -165,6 +175,21 @@ func token_validate(token string) *Token {
 	return t
 }
 
+// token_allows reports whether a token may be used for a given action pattern
+// and entity. A token with no action binding is valid across its whole app,
+// which is what a user-created API token is for. A bound token matches one
+// action and one entity exactly, so the URL that reads a wiki's RSS feed
+// cannot also call that wiki's delete action, nor read a different wiki.
+func token_allows(t *Token, action string, entity string) bool {
+	if t == nil {
+		return false
+	}
+	if t.Action == "" {
+		return true
+	}
+	return t.Action == action && t.Entity == entity
+}
+
 // Check if a token has a specific scope
 func token_has_scope(t *Token, scope string) bool {
 	if t == nil {
@@ -182,7 +207,12 @@ func token_has_scope(t *Token, scope string) bool {
 	return false
 }
 
-// mochi.token.create(name, scopes?, expires?) -> string: Create a new token, returns plaintext token
+// mochi.token.create(name, scopes?, expires?, action?, entity?) -> string:
+// Create a new token, returns plaintext token. Naming an action binds the
+// token to that action pattern and entity alone, so a token minted for a feed
+// URL cannot be replayed against the app's other actions; omitting it leaves
+// the token valid across the whole app, which is what a user-created API
+// token wants.
 func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {
@@ -195,7 +225,7 @@ func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	if len(args) < 1 {
-		return sl_error(fn, "syntax: <name: string>, [scopes: list], [expires: int]")
+		return sl_error(fn, "syntax: <name: string>, [scopes: list], [expires: int], [action: string], [entity: string]")
 	}
 
 	name, ok := sl.AsString(args[0])
@@ -224,7 +254,30 @@ func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		expires, _ = exp.Int64()
 	}
 
-	token := token_create(user.UID, current_app.id, name, scopes, expires)
+	var action string
+	if len(args) > 3 && args[3] != sl.None {
+		action, ok = sl.AsString(args[3])
+		if !ok {
+			return sl_error(fn, "action must be a string")
+		}
+	}
+
+	var entity string
+	if len(args) > 4 && args[4] != sl.None {
+		entity, ok = sl.AsString(args[4])
+		if !ok {
+			return sl_error(fn, "entity must be a string")
+		}
+	}
+
+	// An entity without an action would bind nothing: the action is what the
+	// check keys on, so accepting this silently would produce an app-wide
+	// token the caller believes is confined to one entity.
+	if action == "" && entity != "" {
+		return sl_error(fn, "entity requires an action")
+	}
+
+	token := token_create(user.UID, current_app.id, name, scopes, expires, action, entity)
 	if token == "" {
 		return sl_error(fn, "failed to create token")
 	}
@@ -365,6 +418,8 @@ func api_token_validate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		"app":     token.App,
 		"name":    token.Name,
 		"scopes":  token.Scopes,
+		"action":  token.Action,
+		"entity":  token.Entity,
 		"created": token.Created,
 		"used":    token.Used,
 		"expires": token.Expires,

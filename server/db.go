@@ -84,7 +84,7 @@ const (
 )
 
 const (
-	schema_version = 4
+	schema_version = 5
 )
 
 var (
@@ -263,7 +263,7 @@ func db_create() {
 	// API token definitions. Hot per-request "used" timestamp lives in
 	// sessions.db.accesses; here we keep just the definition so token loss
 	// doesn't follow sessions.db corruption.
-	users.exec("create table if not exists tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', created integer not null, expires integer not null default 0)")
+	users.exec("create table if not exists tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0)")
 	users.exec("create index if not exists tokens_user on tokens(user)")
 	users.exec("create index if not exists tokens_app on tokens(app)")
 
@@ -1235,6 +1235,8 @@ func db_upgrade() {
 			db_upgrade_3()
 		case 4:
 			db_upgrade_4()
+		case 5:
+			db_upgrade_5()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1278,6 +1280,42 @@ func db_upgrade_4() {
 			directory.exec("alter table entries add column " + column + " text not null default ''")
 		}
 	}
+}
+
+// db_upgrade_5 binds an API token to a single action and entity. A query
+// token satisfies the app-JWT requirement (web.go) and routing is
+// method-agnostic, while the scopes recorded at creation were never enforced
+// anywhere - so an RSS feed URL was a permanent full-privilege credential for
+// its whole app, and a GET of the delete action carrying that token in the
+// query string destroyed the wiki.
+//
+// Stored tokens carry no binding. Scoped ones are the RSS family minted by
+// wikis, feeds, forums and notifications: they are revoked here and the next
+// "Copy RSS URL" mints a bound replacement, which also retires any feed URL
+// already leaked. Unscoped ones are the deliberate user-created API tokens
+// (repositories) where app-wide access is the point, so they keep working.
+func db_upgrade_5() {
+	users := db_open("db/users.db")
+	for _, column := range []string{"action", "entity"} {
+		if have, _ := users.exists("select 1 from pragma_table_info('tokens') where name=?", column); !have {
+			users.exec("alter table tokens add column " + column + " text not null default ''")
+		}
+	}
+
+	rows, _ := users.rows("select hash from tokens where scopes not in ('', '[]', 'null')")
+	if len(rows) == 0 {
+		return
+	}
+	sessions := db_open("db/sessions.db")
+	for _, row := range rows {
+		hash, _ := row["hash"].(string)
+		if hash == "" {
+			continue
+		}
+		users.exec("delete from tokens where hash = ?", hash)
+		sessions.exec("delete from accesses where hash = ?", hash)
+	}
+	info("Revoked %d scoped API token(s) that predate action binding; feed URLs will be reissued on next use", len(rows))
 }
 
 func (db *DB) close() {

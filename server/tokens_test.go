@@ -361,11 +361,11 @@ func TestTokenDeleteByTokenStringAndAppScope(t *testing.T) {
 	defer func() { data_dir = orig }()
 
 	db := db_open("db/users.db")
-	db.exec(`create table tokens (hash text primary key, user text not null, app text not null, name text not null default '', scopes text not null default '', created integer not null default 0, expires integer not null default 0)`)
+	db.exec(`create table tokens (hash text primary key, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null default 0, expires integer not null default 0)`)
 	db_open("db/sessions.db").exec(`create table accesses (hash text primary key, user text not null, used integer not null default 0)`)
 
 	// token_create returns the token STRING (not the hash), stamped app="feeds".
-	token := token_create("u1", "feeds", "rss", []string{"rss"}, 0)
+	token := token_create("u1", "feeds", "rss", []string{"rss"}, 0, ":feed/-/rss", "e1")
 	if token == "" || token_lookup(token) == nil {
 		t.Fatal("token_create/lookup failed")
 	}

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/go-git/go-git/v5"
@@ -883,5 +884,59 @@ func TestGitUpdateBranchRefusesChangedTarget(t *testing.T) {
 	// An invalid target name is refused rather than written.
 	if err := git_update_branch(repo, "../../config", next, next); err == nil {
 		t.Error("git_update_branch accepted a traversing branch name")
+	}
+}
+
+// Genuine concurrency, not a simulated stale hash: every worker reads the same
+// tip and then tries to move the branch, which is exactly the shape of a merge
+// that resolved its target before a push landed. Compare-and-swap must let
+// precisely one through - two winners would mean a silently discarded update,
+// the bug this replaced.
+func TestGitUpdateBranchConcurrentWritersLoseAtMostOne(t *testing.T) {
+	user, _, cleanup := create_git_test_env(t)
+	defer cleanup()
+
+	repo := create_repo_with_commit(t, user, "repo1")
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+	start := head.Hash()
+
+	const writers = 8
+	var wg sync.WaitGroup
+	results := make([]error, writers)
+	candidates := make([]plumbing.Hash, writers)
+	for i := 0; i < writers; i++ {
+		candidates[i] = plumbing.NewHash(fmt.Sprintf("%040x", i+1))
+	}
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = git_update_branch(repo, "main", start, candidates[i])
+		}(i)
+	}
+	wg.Wait()
+
+	won := []int{}
+	for i, err := range results {
+		if err == nil {
+			won = append(won, i)
+		}
+	}
+	if len(won) != 1 {
+		t.Fatalf("%d of %d concurrent writers succeeded, want exactly 1 (more than one means a lost update)", len(won), writers)
+	}
+
+	reference, err := repo.Reference(plumbing.NewBranchReferenceName("main"), false)
+	if err != nil {
+		t.Fatalf("Reference: %v", err)
+	}
+	if reference.Hash() != candidates[won[0]] {
+		t.Errorf("branch = %v, want the winner's hash %v", reference.Hash(), candidates[won[0]])
+	}
+	if reference.Hash() == start {
+		t.Error("branch never moved, so the winner's write was lost")
 	}
 }

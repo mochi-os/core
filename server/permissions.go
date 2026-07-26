@@ -62,6 +62,11 @@ var permissions = []Permission{
 	{"accounts/notify", true, false},
 	{"notifications/send", true, false},
 	{"permissions/manage", true, false},
+	// Repository content is the user's private source code, and the write side
+	// can merge branches, so both sit with the permissions a user has to enable
+	// deliberately rather than ones any app may ask for in passing.
+	{"repositories/read", true, false},
+	{"repositories/write", true, false},
 	{"server/update", true, true},
 	{"settings/write", true, true},
 	{"user/export", true, false},

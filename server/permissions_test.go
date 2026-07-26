@@ -9,6 +9,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	sl "go.starlark.net/starlark"
@@ -1916,6 +1917,79 @@ func TestPermissionCatalogAndName(t *testing.T) {
 		got := permission_name(c.lang, c.code)
 		if got != c.want {
 			t.Errorf("permission_name(%q, %q) = %q, want %q", c.lang, c.code, got, c.want)
+		}
+	}
+}
+
+// =============================================================================
+// Repositories Service Permission Tests
+// =============================================================================
+
+// The repositories service exposes private source code and, through merge, can
+// rewrite branches. Both sides are registered so api_service_call has something
+// to enforce, and both are restricted so an app cannot pick them up casually.
+func TestPermissionRepositoriesRegistered(t *testing.T) {
+	want := map[string]bool{"repositories/read": false, "repositories/write": false}
+	for _, p := range permissions {
+		if _, ok := want[p.Name]; !ok {
+			continue
+		}
+		want[p.Name] = true
+		if !p.Restricted {
+			t.Errorf("%s is not restricted; repository content should require deliberate enabling", p.Name)
+		}
+		if p.AdminOnly {
+			t.Errorf("%s is administrator-only; a normal user owns their own repositories", p.Name)
+		}
+	}
+	for name, found := range want {
+		if !found {
+			t.Errorf("%s is not in the permission catalogue, so no name or level resolves for it", name)
+		}
+	}
+}
+
+// Projects calls the repositories service (list, branches, merge check, diff,
+// merge) from its merge-request UI, so it must hold both sides by default or
+// that integration breaks the moment the app starts requiring them.
+func TestPermissionProjectsHoldsRepositoriesDefaults(t *testing.T) {
+	defaults := apps_default_get("Projects")
+	held := map[string]bool{}
+	for _, p := range defaults {
+		held[p.Permission] = true
+	}
+	for _, name := range []string{"repositories/read", "repositories/write"} {
+		if !held[name] {
+			t.Errorf("Projects default permissions lack %s: %v", name, defaults)
+		}
+	}
+}
+
+// A permission granted by default that no longer exists in the catalogue is
+// dead weight, and a typo in either list is invisible until an integration
+// fails at runtime. url is excluded: it is a dynamic permission whose object
+// carries the domain.
+func TestPermissionDefaultsAreRegistered(t *testing.T) {
+	registered := map[string]bool{"url": true}
+	for _, p := range permissions {
+		registered[p.Name] = true
+	}
+	for _, app := range apps_default {
+		for _, p := range app.Permissions {
+			if !registered[p.Permission] {
+				t.Errorf("app %q is granted %q by default, which is not a registered permission", app.Name, p.Permission)
+			}
+		}
+	}
+}
+
+// Every registered permission needs a name a user can read, in English at
+// minimum: an unresolved label surfaces the raw key in the permissions UI.
+func TestPermissionCatalogueHasNames(t *testing.T) {
+	for _, p := range permissions {
+		name := permission_name("en", p.Name)
+		if name == "" || strings.Contains(name, "permissions.") {
+			t.Errorf("permission %q has no English name (got %q)", p.Name, name)
 		}
 	}
 }

@@ -444,7 +444,13 @@ var (
 			{"user/identity/write", ""},
 			{"users/read", ""},
 		}},
-		{"12cTM7noFHaHkdv3JyWw3Dq9eP8iBaQFveu6JTrvVuuEEH8F8Bg", "Projects", nil},
+		// Projects reads repositories (list, branches, diff, merge check) and
+		// performs merges from its merge-request UI, so it needs both sides of
+		// the repositories service permission.
+		{"12cTM7noFHaHkdv3JyWw3Dq9eP8iBaQFveu6JTrvVuuEEH8F8Bg", "Projects", []struct{ Permission, Object string }{
+			{"repositories/read", ""},
+			{"repositories/write", ""},
+		}},
 		{"12nG95Lzt5SbKcmAqweB3vEWcz6oXUd7i9vf3nCXfBxuyqG9wJ3", "Publisher", nil},
 		{"1SWnPXg9xpT2Cxemw2aw8CLZCP5yDatQ6ebF9dHoMTXQNFKLuw", "Repositories", nil},
 		{"1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky", "Settings", []struct{ Permission, Object string }{

@@ -2879,6 +2879,18 @@ func git_authenticate(c *gin.Context, a *App) *User {
 		return nil
 	}
 
+	// ...and minted for git. A git client authenticates over Basic, where no
+	// api_token is parsed, so the action binding web_action enforces before
+	// dispatch is never consulted here - that binding is what stops a git
+	// credential being replayed as a Bearer token against the app's management
+	// actions, and this scope is the matching gate in the other direction,
+	// stopping a token minted for something else (an RSS feed, say) from
+	// cloning or pushing. Tokens carrying no scopes still mean "all", so
+	// credentials minted before scoping keep working.
+	if !token_has_scope(token, "git") {
+		return nil
+	}
+
 	return user_by_uid(token.User)
 }
 

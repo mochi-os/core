@@ -463,7 +463,6 @@ func api_git_init(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "no owner")
 	}
 
-	defer git_replicate_after(owner, app, entity)()
 	err := git_init(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to initialize repository: %v", err)
@@ -752,7 +751,6 @@ func api_git_branch_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if !git_can_write(t, owner, app, entity) {
 		return sl_error(fn, "permission denied: repository write required to create a branch")
 	}
-	defer git_replicate_after(owner, app, entity)()
 
 	repo, err := git_open(owner, app, entity)
 	if err != nil {
@@ -880,7 +878,6 @@ func api_git_branch_default_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	if !git_can_write(t, owner, app, entity) {
 		return sl_error(fn, "permission denied: repository write required to set the default branch")
 	}
-	defer git_replicate_after(owner, app, entity)()
 
 	repo, err := git_open(owner, app, entity)
 	if err != nil {
@@ -1298,15 +1295,11 @@ func api_git_tree(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		entries = append(entries, e)
 	}
 
-	// Sort: directories first, then alphabetically
-	sort.Slice(entries, func(i, j int) bool {
-		i_dir := entries[i]["type"] == "dir"
-		j_dir := entries[j]["type"] == "dir"
-		if i_dir != j_dir {
-			return i_dir
-		}
-		return entries[i]["name"].(string) < entries[j]["name"].(string)
-	})
+	// Deliberately unsorted by name. A raw < is byte order, which puts "cafe"
+	// after "z" once accents are involved and is locale-blind, and the project
+	// rule is that the consumer sorts user-facing strings - the web already
+	// re-sorts these with naturalCompare, grouping directories first. Entries
+	// arrive in git's own tree order.
 
 	return sl_encode(entries), nil
 }
@@ -1885,7 +1878,6 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if !git_can_write(t, owner, app, entity) {
 		return sl_error(fn, "permission denied: repository write required to merge")
 	}
-	defer git_replicate_after(owner, app, entity)()
 
 	repo, err := git_open(owner, app, entity)
 	if err != nil {
@@ -2642,67 +2634,6 @@ func git_archive_write_tar(w io.Writer, tree *object.Tree, prefix string, mtime 
 
 // git_http_handler handles the Smart HTTP protocol for git clone/push/fetch
 // Path format: /info/refs, /git-upload-pack, /git-receive-pack
-// git_replicate_repo_delta streams every file in the bare git repo at repo_path that
-// was written at or after `since` to the user's host set, app-rooted so the bytes land
-// at <user>/<app>/<entity>/... on each replica — the same eager file streaming
-// attachments use, extended to the repositories app's git trees, which live outside
-// files/ and so were previously carried only by the periodic bulk bootstrap, never
-// live (#105). Covers additions + updates (new loose objects, packfiles, advanced
-// refs); deletions (branch delete, gc repack) reconcile at the next bootstrap. The
-// hooks/ dir is skipped (server-side executables, not git content). Meant to run async
-// off the push handler.
-func git_replicate_repo_delta(owner *User, app *App, entity, repo_path string, since time.Time) {
-	if owner == nil || app == nil || entity == "" {
-		return
-	}
-	emit := func(rel string) {
-	}
-	// Always (re)ship the small top-level pointers even if they predate `since`: a new
-	// repo's HEAD/config are written at init, before any push, so a pure mtime delta
-	// would carry the first push's objects/refs but leave the replica without a HEAD
-	// (an unclonable repo). Cheap — a few tiny files, idempotent on the receiver.
-	for _, name := range []string{"HEAD", "config", "packed-refs"} {
-		if st, err := os.Stat(filepath.Join(repo_path, name)); err == nil && !st.IsDir() {
-			emit(name)
-		}
-	}
-	// Everything written during this operation — new loose objects, packfiles,
-	// advanced refs. hooks/ is skipped (server-side executables, not git content).
-	filepath.Walk(repo_path, func(p string, info os.FileInfo, err error) error {
-		if err != nil || info == nil {
-			return nil
-		}
-		if info.IsDir() {
-			if info.Name() == "hooks" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if info.ModTime().Before(since) {
-			return nil
-		}
-		rel, err := filepath.Rel(repo_path, p)
-		if err != nil {
-			return nil
-		}
-		emit(rel)
-		return nil
-	})
-}
-
-// git_replicate_after captures the current time and returns a closure that, deferred at
-// the top of a mochi.git write API, live-replicates the repo's new objects/refs to the
-// host set once the write returns (#105) — the web-UI equivalent of the receive-pack
-// hook, since those APIs open their own storer (git.PlainOpen) and don't pass through
-// git_http_handler. Use: defer git_replicate_after(owner, app, entity)()
-func git_replicate_after(owner *User, app *App, entity string) func() {
-	since := time.Now().Add(-2 * time.Second)
-	repo_path := ""
-	if owner != nil && app != nil {
-		repo_path = git_repo_path(owner, app, entity)
-	}
-	return func() { go git_replicate_repo_delta(owner, app, entity, repo_path, since) }
-}
 
 func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo string, path string) bool {
 	if owner == nil {
@@ -2797,12 +2728,7 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 	} else if strings.HasSuffix(path, "git-upload-pack") {
 		return git_service_rpc(c, repo_path, "git-upload-pack", owner)
 	} else if strings.HasSuffix(path, "git-receive-pack") {
-		// Capture the push start (minus filesystem mtime granularity slack), run the
-		// push, then live-replicate the objects/refs it wrote to the host set (#105).
-		since := time.Now().Add(-2 * time.Second)
-		handled := git_service_rpc(c, repo_path, "git-receive-pack", owner)
-		go git_replicate_repo_delta(owner, a, id, repo_path, since)
-		return handled
+		return git_service_rpc(c, repo_path, "git-receive-pack", owner)
 	}
 
 	c.String(http.StatusNotFound, "Not found")
@@ -2879,11 +2805,7 @@ func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e 
 	} else if path == "git-upload-pack" {
 		return git_service_rpc(c, repo_path, "git-upload-pack", owner)
 	} else if path == "git-receive-pack" {
-		// Live-replicate the pushed objects/refs to the host set (#105).
-		since := time.Now().Add(-2 * time.Second)
-		handled := git_service_rpc(c, repo_path, "git-receive-pack", owner)
-		go git_replicate_repo_delta(owner, a, e.ID, repo_path, since)
-		return handled
+		return git_service_rpc(c, repo_path, "git-receive-pack", owner)
 	}
 
 	c.String(http.StatusNotFound, "Not found")

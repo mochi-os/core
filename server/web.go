@@ -1645,6 +1645,9 @@ func web_path(c *gin.Context) {
 				c.Redirect(http.StatusMovedPermanently, c.Request.URL.Path+"/")
 				return
 			}
+			// Same reason as the direct-entity branch below: the app is known
+			// here but absent from the URL, so publish it for the SPA.
+			c.Set("mochi_app_path", a.url_path(owner))
 			web_action(c, a, action, e)
 			return
 
@@ -1737,6 +1740,13 @@ func web_path(c *gin.Context) {
 			respond_error(c, http.StatusNotFound, "no_app_for_entity_class", "errors.no_app_for_class", nil)
 			return
 		}
+
+		// The app is resolved from the entity's class, but it is absent from the
+		// URL - so without this the SPA is served with no mochi:app meta tag and
+		// getAppPath() in lib/web returns "", leaving an app unable to build a
+		// class-level URL at all (its class endpoints came out as /-/groups).
+		// Publish the resolved path so entity-routed pages know their own app.
+		c.Set("mochi_app_path", a.url_path(owner))
 
 		action := e.Fingerprint
 		if len(segments) > 1 {

@@ -2081,6 +2081,17 @@ func (av *AppVersion) find_action(name string) *AppAction {
 		}
 	})
 
+	// Split the requested path once. Every matcher below compares whole
+	// segments of it, so re-splitting bought nothing and cost a great deal:
+	// the file/feature prefix walk re-split the entire remaining path on each
+	// iteration while shrinking it by one segment, making route matching
+	// quadratic in path segments, and the dynamic matcher re-split it once per
+	// candidate. A 1MB URL (MaxHeaderBytes) carries roughly half a million
+	// segments, and with ReadTimeout and WriteTimeout deliberately unset
+	// (web.go) nothing bounded the resulting CPU burn - on any URL of any app,
+	// before authorization, from an unauthenticated caller.
+	name_segments := strings.Split(name, "/")
+
 	for _, aa := range candidates {
 		// Try exact match first
 		if aa.name == name {
@@ -2088,13 +2099,20 @@ func (av *AppVersion) find_action(name string) *AppAction {
 			return &aa
 		}
 
-		// If type files or feature, check for matching parent (try progressively shorter prefixes)
-		// Supports parameterized patterns like :wiki/-/assets
+		// If type files or feature, check for matching parent.
+		// Supports parameterized patterns like :wiki/-/assets.
+		//
+		// Only the prefix carrying exactly as many segments as the pattern can
+		// match: string equality implies equal segment counts, and the
+		// parameterized comparison demands it outright. So test that one depth
+		// rather than walking every prefix from the full path down.
 		if aa.Files != "" || aa.Feature != "" {
 			key_segments := strings.Split(aa.name, "/")
-			match := name
-			for {
-				// Calculate the file path suffix (what comes after the matched pattern)
+			if len(key_segments) <= len(name_segments) {
+				value_segments := name_segments[:len(key_segments)]
+				match := strings.Join(value_segments, "/")
+
+				// The file path suffix is what comes after the matched pattern
 				suffix := ""
 				if len(match) < len(name) {
 					suffix = name[len(match)+1:] // +1 to skip the /
@@ -2106,37 +2124,28 @@ func (av *AppVersion) find_action(name string) *AppAction {
 					return &aa
 				}
 				// Try parameterized match
-				value_segments := strings.Split(match, "/")
-				if len(key_segments) == len(value_segments) {
-					ok := true
-					for i := 0; i < len(key_segments); i++ {
-						ks := key_segments[i]
-						vs := value_segments[i]
-						if strings.HasPrefix(ks, ":") {
-							pname := ks[1:]
-							aa.parameters[pname] = vs
-						} else if ks != vs {
-							ok = false
-							break
-						}
-					}
-					if ok {
-						aa.filepath = suffix
-						return &aa
+				ok := true
+				for i := 0; i < len(key_segments); i++ {
+					ks := key_segments[i]
+					vs := value_segments[i]
+					if strings.HasPrefix(ks, ":") {
+						pname := ks[1:]
+						aa.parameters[pname] = vs
+					} else if ks != vs {
+						ok = false
+						break
 					}
 				}
-				// Try shorter prefix
-				idx := strings.LastIndex(match, "/")
-				if idx < 0 {
-					break
+				if ok {
+					aa.filepath = suffix
+					return &aa
 				}
-				match = match[:idx]
 			}
 		}
 
 		// Try dynamic match
 		key_segments := strings.Split(aa.name, "/")
-		value_segments := strings.Split(name, "/")
+		value_segments := name_segments
 
 		// Find greedy parameter position (starts with *), if any
 		greedy_pos := -1

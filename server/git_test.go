@@ -8,6 +8,8 @@ package main
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	sl "go.starlark.net/starlark"
@@ -938,5 +941,61 @@ func TestGitUpdateBranchConcurrentWritersLoseAtMostOne(t *testing.T) {
 	}
 	if reference.Hash() == start {
 		t.Error("branch never moved, so the winner's write was lost")
+	}
+}
+
+// The git handlers must refuse when the app-system database cannot be opened,
+// not skip the access check. Treating that as "no rules to apply" gave
+// anonymous callers clone and push on every repository, precisely when the
+// server was least able to cope.
+//
+// Two things this test had to get right, both learned the hard way:
+//   - db_app_system returns nil only when app.db cannot be CREATED (MkdirAll or
+//     os.Create failing - disk full, lost permissions, read-only filesystem).
+//     If the file exists but SQLite cannot open it, the first use PANICS via
+//     must() instead, so that is a different failure mode and not this one.
+//     Here the app directory is made unwritable, so os.Create fails.
+//   - Only app.db is broken; the repository stays perfectly serviceable. An
+//     earlier version broke data_dir wholesale, so the fall-through it was
+//     meant to catch died later at session creation and returned 500 anyway -
+//     the test passed against the fixed AND the unfixed handler. With the
+//     repository intact the unfixed handler advertises refs, so the two are
+//     distinguishable.
+func TestGitHandlerRefusesWithoutAppDatabase(t *testing.T) {
+	user, _, cleanup := create_git_test_env(t)
+	defer cleanup()
+
+	repo := "repo1"
+	if err := git_init(user, test_app, repo); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+
+	// Make app.db uncreatable without touching the repository beside it.
+	app_dir := filepath.Join(data_dir, "users", user.UID, test_app.id)
+	if err := os.Chmod(app_dir, 0555); err != nil {
+		t.Fatalf("making the app directory read-only: %v", err)
+	}
+	defer os.Chmod(app_dir, 0755)
+
+	if db := db_app_system(user, test_app); db != nil {
+		t.Skip("app.db was still creatable in a read-only directory (running as root?); premise does not hold")
+	}
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest("GET", "/x/git/info/refs?service=git-upload-pack", nil)
+
+	entity := &Entity{ID: repo, Class: "repository"}
+	if !git_http_handler_entity(c, test_app, user, nil, entity, "info/refs") {
+		t.Fatal("handler did not handle the request")
+	}
+	if recorder.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d - an unopenable access database must refuse, not fall through to the git service",
+			recorder.Code, http.StatusInternalServerError)
+	}
+	if strings.Contains(recorder.Body.String(), "service=git-upload-pack") {
+		t.Errorf("refs were advertised to an anonymous caller despite the missing access database: %q",
+			recorder.Body.String())
 	}
 }

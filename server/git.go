@@ -440,6 +440,13 @@ func git_resolve_ref(repo *git.Repository, ref string) (*plumbing.Hash, error) {
 }
 
 // mochi.git.init(entity) -> bool: Initialize a bare git repository
+//
+// Deliberately ungated, unlike every other mutating git API. There is no
+// resource to authorise against yet: an app creates the entity, initialises
+// its repository, and only then writes the access grants - so a git_can_write
+// here would consult an ACL that does not exist and refuse every creation.
+// Repositories are written under the CALLING app's own directory
+// (git_repo_path), so an app can only initialise them in its own namespace.
 func api_git_init(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <entity: string>")
@@ -482,6 +489,10 @@ func api_git_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "no owner")
 	}
 
+	if !git_can_write(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository write required to delete a repository")
+	}
+
 	err := git_delete(owner, app, entity)
 	if err != nil {
 		return sl_error(fn, "failed to delete repository: %v", err)
@@ -505,6 +516,10 @@ func api_git_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+
+	if !git_can_read(t, owner, app, entity) {
+		return sl_error(fn, "permission denied: repository read required to read a repository path")
 	}
 
 	return sl.String(git_repo_path(owner, app, entity)), nil
@@ -2740,30 +2755,40 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 		user = git_authenticate(c, a)
 	}
 
-	// Check access control
+	// Check access control. A missing app-system database is refused, not
+	// skipped: db_app_system returns nil when the handle cannot be opened at
+	// all - the directory or file cannot be created, or either SQLite pool
+	// fails - which is disk exhaustion, lost permissions, a read-only
+	// filesystem or a corrupt app.db. Treating that as "no rules to apply"
+	// handed anonymous callers both clone and push on every repository,
+	// exactly when the server was least able to cope. git_can_read and
+	// git_can_write already fail closed on the same condition.
 	app_db := db_app_system(owner, a)
-	if app_db != nil {
-		identity_id := ""
-		role := ""
-		if user != nil {
-			if ident := user.identity(); ident != nil {
-				identity_id = ident.ID
-			}
-			role = user.Role
+	if app_db == nil {
+		info("git_http_handler: no app-system database for user %q app %q; refusing", owner.UID, a.id)
+		c.String(http.StatusInternalServerError, "Repository access unavailable")
+		return true
+	}
+	identity_id := ""
+	role := ""
+	if user != nil {
+		if ident := user.identity(); ident != nil {
+			identity_id = ident.ID
 		}
-		op := "read"
-		if is_write {
-			op = "write"
+		role = user.Role
+	}
+	op := "read"
+	if is_write {
+		op = "write"
+	}
+	if !app_db.access_check(owner, identity_id, role, "repository/"+id, op) {
+		if user == nil {
+			c.Header("WWW-Authenticate", `Basic realm="Mochi Git"`)
+			c.String(http.StatusUnauthorized, "Authentication required")
+		} else {
+			c.String(http.StatusNotFound, "Repository not found")
 		}
-		if !app_db.access_check(owner, identity_id, role, "repository/"+id, op) {
-			if user == nil {
-				c.Header("WWW-Authenticate", `Basic realm="Mochi Git"`)
-				c.String(http.StatusUnauthorized, "Authentication required")
-			} else {
-				c.String(http.StatusNotFound, "Repository not found")
-			}
-			return true
-		}
+		return true
 	}
 
 	// Route to appropriate handler
@@ -2818,30 +2843,34 @@ func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e 
 		user = git_authenticate(c, a)
 	}
 
-	// Check access control
+	// Check access control, failing closed on a missing app-system database.
+	// See git_http_handler above for why nil is refused rather than skipped.
 	app_db := db_app_system(owner, a)
-	if app_db != nil {
-		identity_id := ""
-		role := ""
-		if user != nil {
-			if id := user.identity(); id != nil {
-				identity_id = id.ID
-			}
-			role = user.Role
+	if app_db == nil {
+		info("git_http_handler_entity: no app-system database for user %q app %q; refusing", owner.UID, a.id)
+		c.String(http.StatusInternalServerError, "Repository access unavailable")
+		return true
+	}
+	identity_id := ""
+	role := ""
+	if user != nil {
+		if id := user.identity(); id != nil {
+			identity_id = id.ID
 		}
-		op := "read"
-		if is_write {
-			op = "write"
+		role = user.Role
+	}
+	op := "read"
+	if is_write {
+		op = "write"
+	}
+	if !app_db.access_check(owner, identity_id, role, "repository/"+e.ID, op) {
+		if user == nil {
+			c.Header("WWW-Authenticate", `Basic realm="Mochi Git"`)
+			c.String(http.StatusUnauthorized, "Authentication required")
+		} else {
+			c.String(http.StatusNotFound, "Repository not found")
 		}
-		if !app_db.access_check(owner, identity_id, role, "repository/"+e.ID, op) {
-			if user == nil {
-				c.Header("WWW-Authenticate", `Basic realm="Mochi Git"`)
-				c.String(http.StatusUnauthorized, "Authentication required")
-			} else {
-				c.String(http.StatusNotFound, "Repository not found")
-			}
-			return true
-		}
+		return true
 	}
 
 	// Route to appropriate handler

@@ -263,6 +263,14 @@ func api_group_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 // mochi.group.list() -> list: List all groups
 func api_group_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	// Enumerating the user's groups reveals their whole group structure to an app
+	// that knew nothing beforehand, which is why this is gated while
+	// mochi.group.get is not: get resolves an id the app already holds in its own
+	// access rules, and ids are unguessable uids.
+	if err := require_permission(t, fn, "groups/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	owner := t.Local("owner").(*User)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -430,6 +438,11 @@ func api_group_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 // mochi.group.members(group, recursive?) -> list: Get members of a group
 func apigroup_members(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	// Who is in a group is social-graph data, the same class as the friend list.
+	if err := require_permission(t, fn, "groups/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) < 1 || len(args) > 2 {
 		return sl_error(fn, "syntax: <group: string>, [recursive: bool]")
 	}
@@ -455,6 +468,12 @@ func apigroup_members(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 // mochi.group.memberships(user) -> list: Get groups a user belongs to
 func apigroup_memberships(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	// Which groups a user belongs to is the same disclosure as group membership,
+	// read from the other direction.
+	if err := require_permission(t, fn, "groups/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <user: string>")
 	}

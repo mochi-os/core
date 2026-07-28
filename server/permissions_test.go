@@ -433,6 +433,53 @@ func TestComptrollerDefaultPermissions(t *testing.T) {
 	}
 }
 
+// TestFriendsAndGroupsReadDefaults guards the grants that keep friend-gated
+// features working once friends/read and groups/read are enforced. Chat, Chess,
+// Go and Words check friendship inside P2P event handlers, where a missing grant
+// aborts the handler and drops the event with nothing shown to anyone - so a
+// dropped entry here surfaces as messages and moves silently vanishing, not as a
+// permission prompt. groups/manage does not imply groups/read (permission_granted
+// matches exactly), which is why People and Test carry both.
+func TestFriendsAndGroupsReadDefaults(t *testing.T) {
+	setup_test_data_dir(t)
+	defer cleanup_test_data_dir(t)
+
+	expected := map[string]string{
+		"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92":  "friends/read", // Chat
+		"12bMvfv6pVEAVLzBjJuS55oPaZDL3qzoUAtBWB8iK2arTk8GQkr": "friends/read", // Chess
+		"12NgqPUqEPpSvh3aNCbn1r5wxHRRzTb8mjb3p4LdYFWoXM6qvJG": "friends/read", // Go
+		"12s6o3pyRNvDY6UbpjgidgibnYBKoLhak5mUUM9ZGLDnv6tmETy": "friends/read", // Words
+		"1WhnggfLs2d1iXHJ5zVhYFhiSdZibh6UzaoYMH91ZoAXGzj8Cv":  "groups/read",  // CRM
+		"12254aHfG39LqrizhydT6iYRCTAZqph1EtAkVTR7DcgXZKWqRrj": "groups/read",  // Feeds
+		"12PGVUZUrLqgfqp1ovH8ejfKpAQq6uXbrcCqtoxWHjcuxWDxZbt": "groups/read",  // Forums
+		"12cTM7noFHaHkdv3JyWw3Dq9eP8iBaQFveu6JTrvVuuEEH8F8Bg": "groups/read",  // Projects
+		"1SWnPXg9xpT2Cxemw2aw8CLZCP5yDatQ6ebF9dHoMTXQNFKLuw":  "groups/read",  // Repositories
+		"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf": "groups/read",  // Wikis
+		"1gGcjxdhV2VjuEMLs7UZiQwMaY2jvx1ARbu8g9uqM5QeS2vFJV":  "groups/read",  // People
+		"test": "groups/read", // Test
+	}
+
+	user := create_permission_test_user(t, "u1")
+	for app, perm := range expected {
+		app_user_setup(user, app)
+		if !permission_granted(user, app, perm) {
+			t.Errorf("default permission %q not granted to app %q by app_user_setup", perm, app)
+		}
+	}
+
+	// Both are standard, so the request dialog can actually grant them. A
+	// restricted permission renders with no Allow button at all, which would
+	// dead-end any app asking for either.
+	for _, perm := range []string{"friends/read", "groups/read"} {
+		if permission_restricted(perm) {
+			t.Errorf("%q is restricted; it must be standard so apps can request it", perm)
+		}
+		if permission_administrator(perm) {
+			t.Errorf("%q requires administrator; it must be grantable by an ordinary user", perm)
+		}
+	}
+}
+
 func TestPermissionsList(t *testing.T) {
 	setup_test_data_dir(t)
 	defer cleanup_test_data_dir(t)

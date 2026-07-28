@@ -87,6 +87,10 @@ func broadcast_pending_dispatch_run(row *broadcast_pending_row, sysdb *DB) bool 
 	if !ok {
 		return false
 	}
+	// Same reason as the live event path: a drained broadcast can be an app's
+	// first contact with this user, and its handler needs the app's default
+	// grants in place before it runs.
+	app_user_setup(sysdb.user, a.id)
 	var content map[string]any
 	if err := cbor.Unmarshal(row.Content, &content); err != nil {
 		info("Broadcast pending drain: decode content failed for seq=%d (peer=%s, key=%s): %v", row.Sequence, row.Peer, row.Key, err)
@@ -292,6 +296,15 @@ func (e *Event) route() error {
 		debug("Event dropping to unknown event %q in app %q for service %q", e.event, a.id, e.service)
 		return fmt.Errorf("unknown event %q", e.event)
 	}
+
+	// Seed the app's default permissions, as web_action does for an HTTP action.
+	// An inbound event can be the very first time a user touches an app - a
+	// friend starts a chess game with someone who has never opened chess - and
+	// until this ran, that app held no grants at all. A handler calling a
+	// permissioned service (chat and the games check friendship via friends/get)
+	// was then denied, and because an event has no user in front of it, the
+	// failure surfaced only as the message silently never arriving.
+	app_user_setup(e.user, a.id)
 
 	// Load a database file for the app
 	if av.Database.File != "" {

@@ -406,16 +406,30 @@ var (
 		{"12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL", "Apps", []struct{ Permission, Object string }{
 			{"permissions/manage", ""},
 		}},
-		{"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92", "Chat", nil},
-		{"12bMvfv6pVEAVLzBjJuS55oPaZDL3qzoUAtBWB8iK2arTk8GQkr", "Chess", nil},
+		// Chat, Chess, Go and Words gate incoming messages and moves on whether
+		// the sender is a friend, and they do it inside P2P event handlers where
+		// no permission dialog can be shown. Without the grant the handler aborts
+		// and the event is dropped, so these must be granted by default rather
+		// than left to ask on first use.
+		{"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92", "Chat", []struct{ Permission, Object string }{
+			{"friends/read", ""},
+		}},
+		{"12bMvfv6pVEAVLzBjJuS55oPaZDL3qzoUAtBWB8iK2arTk8GQkr", "Chess", []struct{ Permission, Object string }{
+			{"friends/read", ""},
+		}},
 		{"1sfEACmTnQhBVgquGhaCs8Jw4SXKF9XY2apnUwJ63duq2QSxh5", "Comptroller", []struct{ Permission, Object string }{
 			{"url", "api.stripe.com"},
 			{"url", "connect.stripe.com"},
 			{"accounts/ai", ""},
 		}},
-		{"1WhnggfLs2d1iXHJ5zVhYFhiSdZibh6UzaoYMH91ZoAXGzj8Cv", "CRM", nil},
+		{"1WhnggfLs2d1iXHJ5zVhYFhiSdZibh6UzaoYMH91ZoAXGzj8Cv", "CRM", []struct{ Permission, Object string }{
+			{"groups/read", ""},
+		}},
+		// groups/manage does not imply groups/read - permission_granted matches
+		// exactly - so an app that manages groups needs both spelled out.
 		{"test", "Test", []struct{ Permission, Object string }{
 			{"groups/manage", ""},
+			{"groups/read", ""},
 			{"notifications/send", ""},
 			{"settings/write", ""},
 			{"users/read", ""},
@@ -423,16 +437,20 @@ var (
 		{"12254aHfG39LqrizhydT6iYRCTAZqph1EtAkVTR7DcgXZKWqRrj", "Feeds", []struct{ Permission, Object string }{
 			{"accounts/ai", ""},
 			{"accounts/read", ""},
+			{"groups/read", ""},
 			{"interests/read", ""},
 			{"interests/write", ""},
 		}},
 		{"12PGVUZUrLqgfqp1ovH8ejfKpAQq6uXbrcCqtoxWHjcuxWDxZbt", "Forums", []struct{ Permission, Object string }{
 			{"accounts/ai", ""},
 			{"accounts/read", ""},
+			{"groups/read", ""},
 			{"interests/read", ""},
 			{"interests/write", ""},
 		}},
-		{"12NgqPUqEPpSvh3aNCbn1r5wxHRRzTb8mjb3p4LdYFWoXM6qvJG", "Go", nil},
+		{"12NgqPUqEPpSvh3aNCbn1r5wxHRRzTb8mjb3p4LdYFWoXM6qvJG", "Go", []struct{ Permission, Object string }{
+			{"friends/read", ""},
+		}},
 		{"17Qx3vcsBJ6RcMhshTKfVSBPigPZUAaA52KkpCi4ZYFaekSgrY", "Help", nil},
 		{"12Erusc4s59DJjqmDZXwPQ15ny4RKrRKFJg2DfAmi2unDGaghgq", "Market", nil},
 		{"12ZwHwqDLsdN5FMLcHhWBrDwwYojNZ67dWcZiaynNFcjuHPnx2P", "Notifications", []struct{ Permission, Object string }{
@@ -443,6 +461,7 @@ var (
 		}},
 		{"1gGcjxdhV2VjuEMLs7UZiQwMaY2jvx1ARbu8g9uqM5QeS2vFJV", "People", []struct{ Permission, Object string }{
 			{"groups/manage", ""},
+			{"groups/read", ""},
 			{"user/identity/write", ""},
 			{"users/read", ""},
 		}},
@@ -450,11 +469,14 @@ var (
 		// performs merges from its merge-request UI, so it needs both sides of
 		// the repositories service permission.
 		{"12cTM7noFHaHkdv3JyWw3Dq9eP8iBaQFveu6JTrvVuuEEH8F8Bg", "Projects", []struct{ Permission, Object string }{
+			{"groups/read", ""},
 			{"repositories/read", ""},
 			{"repositories/write", ""},
 		}},
 		{"12nG95Lzt5SbKcmAqweB3vEWcz6oXUd7i9vf3nCXfBxuyqG9wJ3", "Publisher", nil},
-		{"1SWnPXg9xpT2Cxemw2aw8CLZCP5yDatQ6ebF9dHoMTXQNFKLuw", "Repositories", nil},
+		{"1SWnPXg9xpT2Cxemw2aw8CLZCP5yDatQ6ebF9dHoMTXQNFKLuw", "Repositories", []struct{ Permission, Object string }{
+			{"groups/read", ""},
+		}},
 		{"1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky", "Settings", []struct{ Permission, Object string }{
 			{"settings/write", ""},
 			{"server/update", ""},
@@ -473,8 +495,12 @@ var (
 			{"user/sessions/write", ""},
 		}},
 		{"12sE7AoAuAdWVsMxDPVY3PDM6YXhbwYfytGeDRD1TD49pKAuhno", "Themes", nil},
-		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", nil},
-		{"12s6o3pyRNvDY6UbpjgidgibnYBKoLhak5mUUM9ZGLDnv6tmETy", "Words", nil},
+		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", []struct{ Permission, Object string }{
+			{"groups/read", ""},
+		}},
+		{"12s6o3pyRNvDY6UbpjgidgibnYBKoLhak5mUUM9ZGLDnv6tmETy", "Words", []struct{ Permission, Object string }{
+			{"friends/read", ""},
+		}},
 	}
 	apps_bootstrap_ready = false // True once Login and Home are installed
 	apps                 = map[string]*App{}

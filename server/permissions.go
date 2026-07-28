@@ -48,7 +48,15 @@ var permissions = []Permission{
 	{"accounts/manage", false, false},
 	{"accounts/ai", false, false},
 	{"accounts/mcp", false, false},
+	// The friend graph and group membership are the same class of data, and both
+	// are things an app has an ordinary reason to ask for - a game offering to
+	// invite a friend, an app offering to share with a group. Standard rather
+	// than restricted so the request dialog can actually grant them; a restricted
+	// permission renders with no Allow button and sends the user hunting through
+	// settings for a routine capability.
+	{"friends/read", false, false},
 	{"groups/manage", false, false},
+	{"groups/read", false, false},
 	{"microphone", false, false},
 	{"interests/read", false, false},
 	{"interests/write", false, false},

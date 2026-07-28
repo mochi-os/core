@@ -37,7 +37,9 @@ var api_entity = sls.FromStringDict(sl.String("mochi.entity"), sl.StringDict{
 	"info":        sl.NewBuiltin("mochi.entity.info", api_entity_info),
 	"name":        sl.NewBuiltin("mochi.entity.name", api_entity_name),
 	"owned":       sl.NewBuiltin("mochi.entity.owned", api_entity_owned),
+	"sign":        sl.NewBuiltin("mochi.entity.sign", api_entity_sign),
 	"update":      sl.NewBuiltin("mochi.entity.update", api_entity_update),
+	"verify":      sl.NewBuiltin("mochi.entity.verify", api_entity_verify),
 })
 
 // Get an entity by id or fingerprint
@@ -509,6 +511,28 @@ func entity_sign(entity string, s string) string {
 	return base58_encode(ed25519.Sign(private, []byte(s)))
 }
 
+// Verify a signature over a string against an entity's public key. An entity id
+// IS its base58 ed25519 public key, so no lookup is needed and the entity does
+// not have to exist on this host - which is what lets a receiving host check the
+// authorship of a replicated object written by someone it has never met.
+func entity_verify(entity string, s string, signature string) bool {
+	if entity == "" || signature == "" {
+		return false
+	}
+
+	public := base58_decode(entity, "")
+	if len(public) != ed25519.PublicKeySize {
+		return false
+	}
+
+	sig := base58_decode(signature, "")
+	if len(sig) != ed25519.SignatureSize {
+		return false
+	}
+
+	return ed25519.Verify(ed25519.PublicKey(public), []byte(s), sig)
+}
+
 // Starlark methods
 func (e *Entity) AttrNames() []string {
 	return []string{"id", "name", "privacy"}
@@ -652,6 +676,81 @@ func api_entity_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	}
 
 	return sl_encode(fingerprint(id)), nil
+}
+
+// mochi.entity.sign(id, text) -> string: Sign text with an entity's private key,
+// returning a base58 ed25519 signature ("" if the entity has no usable key).
+//
+// Only entities belonging to the effective user can be signed with, so an app
+// cannot mint an assertion in someone else's name. Note that "effective user"
+// carries the usual anonymous-runs-as-owner caveat: an anonymous request to a
+// public action resolves to the entity owner, so a caller must establish a real
+// authenticated user (a.user) before signing anything attributed to a person.
+//
+// Signatures verify against the entity id alone, because a Mochi entity id IS
+// its base58 ed25519 public key. That is what makes person-level authorship
+// checkable on a remote host with no key exchange, directory lookup or network
+// round trip - see mochi.entity.verify.
+func api_entity_sign(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <id: string>, <text: string>")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok || (!valid(id, "entity") && !valid(id, "fingerprint")) {
+		return sl_error(fn, "invalid id %q", id)
+	}
+
+	text, ok := sl.AsString(args[1])
+	if !ok {
+		return sl_error(fn, "invalid text")
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	db := db_open("db/users.db")
+	var e Entity
+	if !db.scan(&e, "select * from entities where id=? or fingerprint=?", id, id) {
+		return sl_error(fn, "entity not found")
+	}
+	if e.User != user.UID {
+		return sl_error(fn, "not allowed to sign as this entity")
+	}
+
+	return sl_encode(entity_sign(e.ID, text)), nil
+}
+
+// mochi.entity.verify(id, text, signature) -> bool: Check that signature is a
+// valid signature over text by the entity id.
+//
+// Pure and self-contained: an entity id is its base58 ed25519 public key, so
+// this needs neither the entity to exist locally nor any network access. That
+// is the point - a host receiving a replicated object can check who really
+// wrote it without trusting the peer that relayed it.
+func api_entity_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 3 {
+		return sl_error(fn, "syntax: <id: string>, <text: string>, <signature: string>")
+	}
+
+	id, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid id")
+	}
+
+	text, ok := sl.AsString(args[1])
+	if !ok {
+		return sl_error(fn, "invalid text")
+	}
+
+	signature, ok := sl.AsString(args[2])
+	if !ok {
+		return sl_error(fn, "invalid signature")
+	}
+
+	return sl.Bool(entity_verify(id, text, signature)), nil
 }
 
 // mochi.entity.get(id) -> list: Get an entity owned by the effective user

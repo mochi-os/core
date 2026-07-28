@@ -620,6 +620,11 @@ func delegation_create(domain_name, path string, owner string) (*delegation, err
 	if domain_get(domain_name) == nil {
 		return nil, fmt.Errorf("domain not found")
 	}
+	// Store the canonical form ("" for the whole domain, no trailing slash)
+	// so exact-match lookups and the web client's own boundary check agree
+	// with delegation_covers. Legacy rows with a trailing slash are still
+	// tolerated at comparison time.
+	path = strings.TrimRight(path, "/")
 	if existing := delegation_get(domain_name, path, owner); existing != nil {
 		return existing, nil
 	}
@@ -640,13 +645,25 @@ func delegation_delete(domain_name, path string, owner string) error {
 	return nil
 }
 
+// delegation_covers reports whether a delegated path prefix covers a path.
+// Matching is on whole path segments, like route matching: a delegation for
+// /blog covers /blog and /blog/post but not /blogger. An empty delegation
+// (or "/") covers the whole domain; a trailing slash does not change scope.
+func delegation_covers(delegated, path string) bool {
+	delegated = strings.TrimRight(delegated, "/")
+	if delegated == "" {
+		return true
+	}
+	return path == delegated || strings.HasPrefix(path, delegated+"/")
+}
+
 // delegation_check returns true if the user has a delegation for the given domain and path
 func delegation_check(domain_name, path string, owner string) bool {
 	db := db_open("db/domains.db")
 	var delegations []delegation
 	db.scans(&delegations, "select * from delegations where domain=? and owner=?", domain_name, owner)
 	for _, d := range delegations {
-		if strings.HasPrefix(path, d.Path) {
+		if delegation_covers(d.Path, path) {
 			return true
 		}
 	}

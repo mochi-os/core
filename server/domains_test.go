@@ -325,6 +325,49 @@ func TestDelegationPath(t *testing.T) {
 	}
 }
 
+// Test delegation_check stops at path segment boundaries
+func TestDelegationPathBoundary(t *testing.T) {
+	cleanup := create_domains_test_env(t)
+	defer cleanup()
+
+	domain_register("example.com")
+	delegation_create("example.com", "/blog", "u123")
+
+	// A /blog delegation must not cover sibling paths that merely share the
+	// prefix string
+	if delegation_check("example.com", "/blogger", "u123") {
+		t.Error("/blog delegation should not cover /blogger")
+	}
+	if delegation_check("example.com", "/blog-admin", "u123") {
+		t.Error("/blog delegation should not cover /blog-admin")
+	}
+
+	// A root delegation covers every path
+	delegation_create("example.com", "/", "u456")
+	if !delegation_check("example.com", "/anything", "u456") {
+		t.Error("/ delegation should cover /anything")
+	}
+
+	// New delegations are stored in canonical form, without a trailing slash
+	created, err := delegation_create("example.com", "/wiki/", "u999")
+	if err != nil || created == nil || created.Path != "/wiki" {
+		t.Errorf("delegation_create should store /wiki/ as /wiki, got %+v (%v)", created, err)
+	}
+
+	// A trailing slash on a legacy row does not change its scope
+	db := db_open("db/domains.db")
+	db.exec("insert into delegations (domain, path, owner, created, updated) values ('example.com', '/shop/', 'u789', 1, 1)")
+	if !delegation_check("example.com", "/shop", "u789") {
+		t.Error("/shop/ delegation should cover /shop")
+	}
+	if !delegation_check("example.com", "/shop/items", "u789") {
+		t.Error("/shop/ delegation should cover /shop/items")
+	}
+	if delegation_check("example.com", "/shopping", "u789") {
+		t.Error("/shop/ delegation should not cover /shopping")
+	}
+}
+
 // Test route_create creates a new route
 func TestRouteCreate(t *testing.T) {
 	cleanup := create_domains_test_env(t)

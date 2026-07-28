@@ -39,8 +39,8 @@ KEEP_WORDS = {
     "paypal", "api", "url", "id", "rss", "qr", "sgf", "pgn", "sha",
     "apps", "chat", "chess", "disputes", "email", "feeds", "forums", "go",
     "help", "home", "market", "mentions", "menu", "messages", "moderation",
-    "notifications", "offline", "replica", "rose", "teal", "violet",
-    "wiki", "wikis", "server",
+    "normal", "notifications", "offline", "replica", "rose", "teal",
+    "violet", "wiki", "wikis", "server",
 }
 
 _WORD = re.compile(r"[A-Za-z]+")

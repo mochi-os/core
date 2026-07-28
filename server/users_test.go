@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	sl "go.starlark.net/starlark"
 )
 
 // Helper to create test environment with users database
@@ -522,5 +524,106 @@ func TestUserIsFreshAppDir(t *testing.T) {
 
 	if !user_is_fresh("u-fresh-app") {
 		t.Error("user_is_fresh should be true when only app-name subdirs (no attachments, no entity-shaped subdirs) are present")
+	}
+}
+
+// TestUserSearchOffsetAndCount covers paging through search results: the
+// offset argument must walk the same ordered set the unpaged search
+// returns, and mochi.user.count(query) must report the full match total
+// rather than the size of one page.
+func TestUserSearchOffsetAndCount(t *testing.T) {
+	cleanup := create_test_users_db(t)
+	defer cleanup()
+
+	db := db_open("db/users.db")
+	// Five matches for "target", plus one that must not match.
+	for _, name := range []string{"target-e", "target-a", "target-c", "target-b", "target-d"} {
+		db.exec("insert into users (uid, username) values (?, ?)", "u-"+name, name+"@example.com")
+	}
+	db.exec("insert into users (uid, username) values (?, ?)", "u-other", "someone@example.com")
+
+	user := create_test_admin(t, "u-admin")
+	app := create_external_app("test-app")
+	permission_grant(user, app.id, "users/read")
+	thread := create_test_thread(user, app)
+
+	search := sl.NewBuiltin("mochi.user.search", nil)
+	usernames := func(v sl.Value) []string {
+		rows, ok := v.(sl.Indexable)
+		if !ok {
+			t.Fatalf("search returned %T, want an indexable sequence", v)
+		}
+		var out []string
+		for i := 0; i < rows.Len(); i++ {
+			row, ok := rows.Index(i).(sl.Mapping)
+			if !ok {
+				t.Fatalf("row %d is %T, want a mapping", i, rows.Index(i))
+			}
+			value, found, _ := row.Get(sl.String("username"))
+			if !found {
+				t.Fatalf("row %d has no username", i)
+			}
+			text, _ := sl.AsString(value)
+			out = append(out, text)
+		}
+		return out
+	}
+
+	// The full ordered set, for the paged calls to be checked against.
+	all, err := api_user_search(thread, search, sl.Tuple{sl.String("target"), sl.MakeInt(100)}, nil)
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	full := usernames(all)
+	if len(full) != 5 {
+		t.Fatalf("search returned %d rows, want 5", len(full))
+	}
+
+	// Two pages of two, then the remainder — offsets must not repeat or
+	// skip a row relative to the unpaged order.
+	var paged []string
+	for offset := 0; offset < 6; offset += 2 {
+		page, err := api_user_search(thread, search,
+			sl.Tuple{sl.String("target"), sl.MakeInt(2), sl.MakeInt(offset)}, nil)
+		if err != nil {
+			t.Fatalf("search offset %d failed: %v", offset, err)
+		}
+		paged = append(paged, usernames(page)...)
+	}
+	if strings.Join(paged, ",") != strings.Join(full, ",") {
+		t.Errorf("paged search = %v, want %v", paged, full)
+	}
+
+	// A page past the end is empty, not an error.
+	past, err := api_user_search(thread, search, sl.Tuple{sl.String("target"), sl.MakeInt(2), sl.MakeInt(99)}, nil)
+	if err != nil {
+		t.Fatalf("search past end failed: %v", err)
+	}
+	if got := usernames(past); len(got) != 0 {
+		t.Errorf("search past end returned %v, want empty", got)
+	}
+
+	// A negative offset is rejected rather than silently treated as zero.
+	if _, err := api_user_search(thread, search,
+		sl.Tuple{sl.String("target"), sl.MakeInt(2), sl.MakeInt(-1)}, nil); err == nil {
+		t.Error("search should reject a negative offset")
+	}
+
+	// count(query) reports every match, not the page size; count() still
+	// reports every user including the non-matching one.
+	count := sl.NewBuiltin("mochi.user.count", nil)
+	matching, err := api_user_count(thread, count, sl.Tuple{sl.String("target")}, nil)
+	if err != nil {
+		t.Fatalf("count(query) failed: %v", err)
+	}
+	if fmt.Sprintf("%v", matching) != "5" {
+		t.Errorf("count(\"target\") = %v, want 5", matching)
+	}
+	total, err := api_user_count(thread, count, sl.Tuple{}, nil)
+	if err != nil {
+		t.Fatalf("count() failed: %v", err)
+	}
+	if fmt.Sprintf("%v", total) != "6" {
+		t.Errorf("count() = %v, want 6", total)
 	}
 }

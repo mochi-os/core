@@ -861,7 +861,7 @@ func users_attach_last(rows []map[string]any) {
 	}
 }
 
-// mochi.user.count() -> int: Count all users (admin only)
+// mochi.user.count(query) -> int: Count users, all or matching a search (admin only)
 func api_user_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Check users/read permission
 	if err := require_permission(t, fn, "users/read"); err != nil {
@@ -876,8 +876,24 @@ func api_user_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "not administrator")
 	}
 
+	if len(args) > 1 {
+		return sl_error(fn, "syntax: [query: string]")
+	}
+
 	db := db_open("db/users.db")
-	row, err := db.row("select count(*) as count from users")
+	var row map[string]any
+	var err error
+	if len(args) == 1 {
+		// Total for a search, so a paged result can report how many rows
+		// it is a page of. Matches mochi.user.search's own condition.
+		query, ok := sl.AsString(args[0])
+		if !ok || query == "" {
+			return sl_error(fn, "invalid query")
+		}
+		row, err = db.row("select count(*) as count from users where username like ?", user_search_pattern(query))
+	} else {
+		row, err = db.row("select count(*) as count from users")
+	}
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -901,7 +917,14 @@ func api_user_uid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	return sl.String(user.UID), nil
 }
 
-// mochi.user.search(query, limit) -> list: Search users by username prefix (admin only)
+// user_search_pattern builds the LIKE pattern for a user search. Shared by
+// mochi.user.search and mochi.user.count so a search's total can never
+// describe a different set of rows than the page it accompanies.
+func user_search_pattern(query string) string {
+	return "%" + query + "%"
+}
+
+// mochi.user.search(query, limit, offset) -> list: Search users by username (admin only)
 func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Check users/read permission
 	if err := require_permission(t, fn, "users/read"); err != nil {
@@ -916,8 +939,8 @@ func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "not administrator")
 	}
 
-	if len(args) < 1 || len(args) > 2 {
-		return sl_error(fn, "syntax: <query: string>, [limit: int]")
+	if len(args) < 1 || len(args) > 3 {
+		return sl_error(fn, "syntax: <query: string>, [limit: int], [offset: int]")
 	}
 
 	query, ok := sl.AsString(args[0])
@@ -926,6 +949,7 @@ func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	limit := 10
+	offset := 0
 	if len(args) > 1 {
 		l, err := sl.AsInt32(args[1])
 		if err != nil || l < 1 || l > 100 {
@@ -933,9 +957,16 @@ func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		}
 		limit = int(l)
 	}
+	if len(args) > 2 {
+		o, err := sl.AsInt32(args[2])
+		if err != nil || o < 0 {
+			return sl_error(fn, "invalid offset")
+		}
+		offset = int(o)
+	}
 
 	db := db_open("db/users.db")
-	rows, err := db.rows("select uid, username, role, methods, status from users where username like ? order by username collate nocase limit ?", "%"+query+"%", limit)
+	rows, err := db.rows("select uid, username, role, methods, status from users where username like ? order by username collate nocase limit ? offset ?", user_search_pattern(query), limit, offset)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}

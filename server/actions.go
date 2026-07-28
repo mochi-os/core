@@ -14,6 +14,8 @@ import (
 	"html/template"
 	"io"
 	"net"
+	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"syscall"
@@ -756,6 +758,18 @@ func (a *Action) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 }
 
 // a.write.file(path) -> None: Serve file from app's data directory
+//
+// Opened through os.Root, like every other mochi.file.* call, so a symlink
+// cannot serve anything outside the app's own directory. The path validator
+// checks the string and a symlink is not in the string, so before this a link
+// left behind by an rsync or an unpacked tarball - the ordinary way a file
+// host is filled - served whatever it pointed at, the server's own databases
+// included. Links that stay inside the directory still resolve, which the
+// "latest -> v2" layouts of package repositories depend on.
+//
+// A directory is answered from its index.html or not at all. http.ServeFile
+// generates an HTML index for a directory that has none, which made every
+// hosted tree browsable by anyone who could reach it.
 func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var path string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path); err != nil {
@@ -774,10 +788,58 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	}
 
 	app := t.Local("app").(*App)
-	file := api_file_path(owner, app, path)
+
+	root, err := os.OpenRoot(api_file_base(owner, app))
+	if err != nil {
+		http.NotFound(a.web.Writer, a.web.Request)
+		return sl.None, nil
+	}
+	defer root.Close()
+
+	file, err := root.Open(path)
+	if err != nil {
+		http.NotFound(a.web.Writer, a.web.Request)
+		return sl.None, nil
+	}
+	information, err := file.Stat()
+	if err != nil {
+		file.Close()
+		http.NotFound(a.web.Writer, a.web.Request)
+		return sl.None, nil
+	}
+
+	if information.IsDir() {
+		file.Close()
+
+		// Relative links in the index resolve against the request path, so it
+		// has to end in a slash before the page is served. This is the redirect
+		// http.ServeFile issued for the same case.
+		if !strings.HasSuffix(a.web.Request.URL.Path, "/") {
+			target := a.web.Request.URL.Path[strings.LastIndex(a.web.Request.URL.Path, "/")+1:] + "/"
+			if a.web.Request.URL.RawQuery != "" {
+				target += "?" + a.web.Request.URL.RawQuery
+			}
+			a.web.Redirect(http.StatusMovedPermanently, target)
+			return sl.None, nil
+		}
+
+		path = strings.TrimSuffix(path, "/") + "/index.html"
+		file, err = root.Open(path)
+		if err != nil {
+			http.NotFound(a.web.Writer, a.web.Request)
+			return sl.None, nil
+		}
+		information, err = file.Stat()
+		if err != nil || information.IsDir() {
+			file.Close()
+			http.NotFound(a.web.Writer, a.web.Request)
+			return sl.None, nil
+		}
+	}
+	defer file.Close()
 
 	starlark_serving_set(t, a.web.Writer)
-	a.web.File(file)
+	http.ServeContent(a.web.Writer, a.web.Request, path, information.ModTime(), file)
 	return sl.None, nil
 }
 

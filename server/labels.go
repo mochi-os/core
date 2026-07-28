@@ -33,8 +33,14 @@ var core_labels = map[string]map[string]string{}
 // Regional variants whose nearest translated catalog isn't reached by the
 // default subtag-stripping fallback. Each entry redirects to the locale whose
 // catalog should serve it; the resolver then walks that target's own parents.
-// This mirrors the web lingui.config fallbackLocales map so server-rendered
-// labels and client strings resolve to the same language.
+//
+// This is deliberately NOT a copy of the web lingui.config fallbackLocales
+// map, and the two are not expected to agree entry for entry. They answer
+// different questions: lingui's map also decides which locales the translation
+// tooling treats as overlays and skips filling (i18n_glossary.overlay_locales
+// reads it directly), so listing a locale there stops it being translated at
+// all. This map only says where a missing label degrades to, which is a
+// separate choice - see the nn entry below.
 //
 // Most Commonwealth English speakers (en-gb, en-au, en-nz, en-ie, en-za, en-in,
 // en-sg, en-hk, en-ca) need no entry: they fall back directly to `en` because
@@ -45,7 +51,13 @@ var variant_redirects = map[string]string{
 	"zh-hk": "zh-hant", // Hong Kong uses Traditional Chinese
 	"yue":   "zh-hant", // Written Cantonese uses Traditional Chinese
 	"es-ar": "es-419",  // Argentine Spanish resolves to Latin American Spanish
-	"nn":    "nb",      // Norwegian Nynorsk has no catalog; serve Bokmal
+	// nn is a full locale, not an overlay: nn.conf is complete in core and in
+	// every app, and its text diverges from nb in 74% of shared entries, so it
+	// is a separate written standard rather than a spelling variant. nb is only
+	// its degradation target for a key it has yet to translate, which serves a
+	// Nynorsk reader far better than dropping straight to English - "nn" has no
+	// subtag to strip, so without this entry the chain would be ["nn", "en"].
+	"nn": "nb",
 }
 
 // language_fallbacks returns the resolution chain for a BCP 47 language tag.

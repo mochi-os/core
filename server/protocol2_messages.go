@@ -225,9 +225,9 @@ func (r *Receiver) handle(f *Frame) bool {
 // entity) claim, decompresses content/data, and pushes onto the
 // per-(user, app) worker.
 func (r *Receiver) dispatch_message(f *Frame) {
-	// Dedup against the sticky message_seen cache. ID == "" frames
-	// can't dedup; they ack/fail as normal but might double-apply on
-	// a retry — acceptable for the rare ID-less frame.
+	// Fast path: a known duplicate acks without touching the claim or codec
+	// checks below. Read-only - the authoritative check-and-mark happens
+	// atomically at the dispatch commit point.
 	if f.ID != "" && message_seen(f.ID) {
 		debug("Messages: duplicate message %q, ack only peer=%q", f.ID, r.peer)
 		r.reply(&Frame{Type: frame_type_ack, Replies: []string{f.ID}})
@@ -284,19 +284,29 @@ func (r *Receiver) dispatch_message(f *Frame) {
 		}
 	}
 
+	// Authoritative dedup: check and mark in one step, immediately before
+	// handing off. The mark used to sit AFTER worker_dispatch, which BLOCKS
+	// when the inbox is full, so the gap between the fast-path read above
+	// and the mark spanned that block — a sender retry arriving on a fresh
+	// stream inside the window passed the read and was applied twice.
+	// pubsub already used the atomic form; the two paths share the map.
+	//
+	// It sits after the claim and codec checks on purpose: those reply with
+	// a failure the sender retries, and marking before them would make the
+	// retry look like a duplicate and lose the message. ID == "" frames
+	// can't dedup; they ack/fail as normal but might double-apply on a
+	// retry — acceptable for the rare ID-less frame.
+	if f.ID != "" && message_seen_mark(f.ID) {
+		debug("Messages: duplicate message %q, ack only peer=%q", f.ID, r.peer)
+		r.reply(&Frame{Type: frame_type_ack, Replies: []string{f.ID}})
+		return
+	}
+
 	worker_dispatch(user, f.Service, &worker_frame{
 		frame: f,
 		peer:  r.peer, // sender's libp2p peer ID
 		reply: stream_reply{receiver: r, id: f.ID},
 	})
-
-	if f.ID != "" {
-		// Mark as seen the moment we hand it off. The handler may
-		// fail and we'll ack/fail accordingly — but a duplicate arriving
-		// while the first copy is mid-flight gets the dedup ack rather
-		// than racing the worker.
-		message_mark_seen(f.ID)
-	}
 }
 
 // reply posts a frame onto the per-stream replies channel. Drops the

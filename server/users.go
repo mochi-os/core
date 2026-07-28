@@ -138,6 +138,13 @@ func code_send(email string, c *gin.Context) string {
 		return "invalid_email"
 	}
 
+	// Keyed on the account, so the limit holds however the send was reached:
+	// /_/auth/code (behind the login middleware) or mochi.user.code.send(),
+	// which any app holding user/export can call and which no middleware sees.
+	if !rate_limit_code.allow(email) {
+		return "too_many_codes"
+	}
+
 	// Check if user exists; if not, check signup_enabled
 	db := db_open("db/users.db")
 	exists, _ := db.exists("select 1 from users where username=?", email)
@@ -178,7 +185,9 @@ func code_consume(user *User, code string) bool {
 // second factor before building the (key-bearing) bundle — so a stolen
 // session alone can't extract the user's private keys, and the code
 // email doubles as an alert that an export was attempted. Gated on
-// user/export so only that flow can trigger a send.
+// user/export so only that flow can trigger a send. Returns "" when the
+// code was sent, or a short reason ("too_many_codes", "invalid_email",
+// "signup_disabled") for the caller to map to a translated message.
 func api_user_code_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "user/export"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -191,10 +200,11 @@ func api_user_code_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if action, ok := t.Local("action").(*Action); ok {
 		web = action.web
 	}
-	if reason := code_send(user.Username, web); reason != "" {
-		return sl_error(fn, "%s", reason)
-	}
-	return sl.None, nil
+	// Returns the reason rather than erroring, the way
+	// mochi.user.methods.configure does: a builtin error aborts the action and
+	// core reports that as a 500 with raw English text, which is the wrong
+	// answer for a rate limit the caller should translate and report itself.
+	return sl.String(code_send(user.Username, web)), nil
 }
 
 // api_user_code_verify is mochi.user.code.verify(code): verify+consume an
@@ -924,7 +934,7 @@ func user_search_pattern(query string) string {
 	return "%" + query + "%"
 }
 
-// mochi.user.search(query, limit, offset) -> list: Search users by username (admin only)
+// mochi.user.search(query, limit, offset, sort, order) -> list: Search users by username (admin only)
 func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Check users/read permission
 	if err := require_permission(t, fn, "users/read"); err != nil {
@@ -939,8 +949,8 @@ func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "not administrator")
 	}
 
-	if len(args) < 1 || len(args) > 3 {
-		return sl_error(fn, "syntax: <query: string>, [limit: int], [offset: int]")
+	if len(args) < 1 || len(args) > 5 {
+		return sl_error(fn, "syntax: <query: string>, [limit: int], [offset: int], [sort: string], [order: string]")
 	}
 
 	query, ok := sl.AsString(args[0])
@@ -950,6 +960,8 @@ func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	limit := 10
 	offset := 0
+	sort := "username"
+	order := "asc"
 	if len(args) > 1 {
 		l, err := sl.AsInt32(args[1])
 		if err != nil || l < 1 || l > 100 {
@@ -964,15 +976,41 @@ func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		}
 		offset = int(o)
 	}
+	if len(args) > 3 {
+		s, ok := sl.AsString(args[3])
+		if !ok || (s != "id" && s != "username" && s != "status" && s != "last") {
+			return sl_error(fn, "invalid sort")
+		}
+		sort = s
+	}
+	if len(args) > 4 {
+		o, ok := sl.AsString(args[4])
+		if !ok || (o != "asc" && o != "desc") {
+			return sl_error(fn, "invalid order")
+		}
+		order = o
+	}
 
+	// Matched rows are fetched, sorted and paginated in memory for the same
+	// reasons as mochi.user.list: last-login lives in sessions.db and ATTACH is
+	// blocked, so it cannot be an ORDER BY column, and sorting usernames in SQL
+	// would apply a collation that is locale-wrong and not portable.
 	db := db_open("db/users.db")
-	rows, err := db.rows("select uid, username, role, methods, status from users where username like ? order by username collate nocase limit ? offset ?", user_search_pattern(query), limit, offset)
+	rows, err := db.rows("select uid, username, role, methods, status from users where username like ?", user_search_pattern(query))
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
-
 	users_attach_last(rows)
-	return sl_encode(rows), nil
+	users_sort(rows, sort, order)
+
+	if offset >= len(rows) {
+		return sl_encode([]map[string]any{}), nil
+	}
+	end := offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return sl_encode(rows[offset:end]), nil
 }
 
 // mochi.user.create(username, role) -> dict: Create a new user (admin only)

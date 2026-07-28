@@ -297,6 +297,21 @@ func api_interests_summary(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	db := db_user(user, "user")
 
+	// A forced regeneration runs the AI synchronously, so it carries a minimum
+	// interval of its own: without one, any caller wired to a button spends
+	// unbounded AI budget at the user's request rate. Inside the interval the
+	// cached text is returned, which is what force was asking to refresh.
+	if bool(force) {
+		row, err := db.row("select text, number from settings where key='interest_summary'")
+		if err == nil && row != nil {
+			text, _ := row["text"].(string)
+			generated, _ := row["number"].(int64)
+			if text != "" && now()-generated < 300 {
+				return sl.String(text), nil
+			}
+		}
+	}
+
 	// Check cached summary (skip if force=True)
 	if !bool(force) {
 		row, err := db.row("select text, number from settings where key='interest_summary'")

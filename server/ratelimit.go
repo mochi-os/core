@@ -41,6 +41,19 @@ var (
 		window:  300,
 	}
 
+	// Login-code sends, keyed on the account rather than the IP: 5 per 15
+	// minutes. code_send is reachable both from /_/auth/code, which the login
+	// middleware covers, and from mochi.user.code.send(), which any app
+	// holding user/export can call — so the limit lives on the function every
+	// caller shares. Each send also leaves another hour-long code valid (the
+	// codes table keys on the code, not the account), so this bounds how many
+	// can be outstanding at once as well as the mail volume.
+	rate_limit_code = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   5,
+		window:  900,
+	}
+
 	// Net stream rate limiter: 100 per second per peer
 	rate_limit_p2p = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
@@ -396,6 +409,7 @@ func ratelimit_manager() {
 		rate_limit_api.cleanup()
 		account_login.cleanup()
 		rate_limit_login.cleanup()
+		rate_limit_code.cleanup()
 		rate_limit_p2p.cleanup()
 		rate_limit_pubsub_in.cleanup()
 		rate_limit_pubsub_control.cleanup()

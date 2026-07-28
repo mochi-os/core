@@ -1410,6 +1410,8 @@ func web_login_code(c *gin.Context) {
 		switch reason {
 		case "signup_disabled":
 			respond_error(c, http.StatusForbidden, "signup_disabled", "errors.signup_disabled", nil)
+		case "too_many_codes":
+			respond_error(c, http.StatusTooManyRequests, "too_many_login_attempts_please_try_again_later", "errors.too_many_logins", nil)
 		default:
 			respond_error(c, http.StatusBadRequest, "unable_to_send_login_email", "errors.unable_to_send_login_email", nil)
 		}

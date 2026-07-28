@@ -275,3 +275,43 @@ func TestRateLimitP2PSendConfig(t *testing.T) {
 		t.Errorf("rate_limit_net_send.window = %d, want 1", rate_limit_net_send.window)
 	}
 }
+
+// TestRateLimitCodeConfigured guards the login-code limiter's existence and
+// shape. code_send is reachable from /_/auth/code and from
+// mochi.user.code.send(), which no HTTP middleware sees, so the limit has to
+// live on the shared function — and it is keyed on the account rather than the
+// client IP so it cannot be sidestepped by dialling from elsewhere.
+func TestRateLimitCodeConfigured(t *testing.T) {
+	if rate_limit_code == nil {
+		t.Fatal("rate_limit_code must exist; code_send is otherwise unthrottled")
+	}
+	if rate_limit_code.limit < 1 {
+		t.Errorf("limit = %d, want at least 1", rate_limit_code.limit)
+	}
+	if rate_limit_code.window < 60 {
+		t.Errorf("window = %ds, want a window long enough to bound mail volume", rate_limit_code.window)
+	}
+
+	// Each send leaves another hour-long code valid, so the limit is also the
+	// ceiling on codes outstanding at once.
+	key := "code-limit-test@example.com"
+	rate_limit_code.reset(key)
+	allowed := 0
+	for i := 0; i < rate_limit_code.limit+5; i++ {
+		if rate_limit_code.allow(key) {
+			allowed++
+		}
+	}
+	if allowed != rate_limit_code.limit {
+		t.Errorf("allowed %d sends, want exactly the limit of %d", allowed, rate_limit_code.limit)
+	}
+
+	// A different account is unaffected by the first one's exhaustion.
+	other := "code-limit-other@example.com"
+	rate_limit_code.reset(other)
+	if !rate_limit_code.allow(other) {
+		t.Error("one account exhausting its codes must not block another")
+	}
+	rate_limit_code.reset(key)
+	rate_limit_code.reset(other)
+}

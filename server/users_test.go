@@ -627,3 +627,78 @@ func TestUserSearchOffsetAndCount(t *testing.T) {
 		t.Errorf("count() = %v, want 6", total)
 	}
 }
+
+// TestUserSearchSort covers the sort/order arguments added so the admin list's
+// column headers work while a search is active. Search sorts in memory for the
+// same reasons mochi.user.list does, so "last" — which lives in sessions.db and
+// cannot be an ORDER BY column — has to work as a sort key.
+func TestUserSearchSort(t *testing.T) {
+	cleanup := create_test_users_db(t)
+	defer cleanup()
+
+	db := db_open("db/users.db")
+	for _, name := range []string{"target-b", "target-a", "target-c"} {
+		db.exec("insert into users (uid, username) values (?, ?)", "u-"+name, name+"@example.com")
+	}
+
+	user := create_test_admin(t, "u-admin")
+	app := create_external_app("test-app")
+	permission_grant(user, app.id, "users/read")
+	thread := create_test_thread(user, app)
+	fn := sl.NewBuiltin("mochi.user.search", nil)
+
+	names := func(v sl.Value) []string {
+		rows, ok := v.(sl.Indexable)
+		if !ok {
+			t.Fatalf("search returned %T, want an indexable sequence", v)
+		}
+		var out []string
+		for i := 0; i < rows.Len(); i++ {
+			row := rows.Index(i).(sl.Mapping)
+			value, _, _ := row.Get(sl.String("username"))
+			text, _ := sl.AsString(value)
+			out = append(out, text)
+		}
+		return out
+	}
+
+	ascending, err := api_user_search(thread, fn,
+		sl.Tuple{sl.String("target"), sl.MakeInt(10), sl.MakeInt(0), sl.String("username"), sl.String("asc")}, nil)
+	if err != nil {
+		t.Fatalf("search asc failed: %v", err)
+	}
+	got := names(ascending)
+	want := []string{"target-a@example.com", "target-b@example.com", "target-c@example.com"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("ascending = %v, want %v", got, want)
+	}
+
+	descending, err := api_user_search(thread, fn,
+		sl.Tuple{sl.String("target"), sl.MakeInt(10), sl.MakeInt(0), sl.String("username"), sl.String("desc")}, nil)
+	if err != nil {
+		t.Fatalf("search desc failed: %v", err)
+	}
+	got = names(descending)
+	for i, j := 0, len(want)-1; i < j; i, j = i+1, j-1 {
+		want[i], want[j] = want[j], want[i]
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("descending = %v, want %v", got, want)
+	}
+
+	// Sorting by last-login must be accepted, not rejected as a bad column.
+	if _, err := api_user_search(thread, fn,
+		sl.Tuple{sl.String("target"), sl.MakeInt(10), sl.MakeInt(0), sl.String("last"), sl.String("desc")}, nil); err != nil {
+		t.Errorf("search by last failed: %v", err)
+	}
+
+	// Unknown sort and order are refused rather than silently ignored.
+	if _, err := api_user_search(thread, fn,
+		sl.Tuple{sl.String("target"), sl.MakeInt(10), sl.MakeInt(0), sl.String("password"), sl.String("asc")}, nil); err == nil {
+		t.Error("search should reject an unknown sort column")
+	}
+	if _, err := api_user_search(thread, fn,
+		sl.Tuple{sl.String("target"), sl.MakeInt(10), sl.MakeInt(0), sl.String("username"), sl.String("sideways")}, nil); err == nil {
+		t.Error("search should reject an unknown order")
+	}
+}

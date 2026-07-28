@@ -561,6 +561,9 @@ func route_create(domain_name, path, method, target, context string, owner strin
 	if route_get(domain_name, path) != nil {
 		return nil, fmt.Errorf("route already exists")
 	}
+	if !route_methods[method] {
+		return nil, fmt.Errorf("invalid method")
+	}
 
 	db := db_open("db/domains.db")
 	n := now()
@@ -569,6 +572,11 @@ func route_create(domain_name, path, method, target, context string, owner strin
 
 	return route_get(domain_name, path), nil
 }
+
+// Valid routing methods, matching the switch domains_middleware dispatches on.
+// A value outside this set stores a route that answers every request to its
+// path with unknown_route_method, so it is refused at write time.
+var route_methods = map[string]bool{"app": true, "redirect": true, "entity": true}
 
 // Valid column names for route updates
 var route_update_columns = map[string]bool{"method": true, "target": true, "context": true, "priority": true, "enabled": true}
@@ -585,6 +593,12 @@ func route_update(domain_name, path string, updates map[string]any) error {
 	for k, v := range updates {
 		if !route_update_columns[k] {
 			return fmt.Errorf("invalid column: %s", k)
+		}
+		if k == "method" {
+			method, _ := v.(string)
+			if !route_methods[method] {
+				return fmt.Errorf("invalid method")
+			}
 		}
 		sets = append(sets, k+"=?")
 		args = append(args, v)

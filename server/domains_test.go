@@ -737,3 +737,39 @@ func TestDomainMatchEmptyPath(t *testing.T) {
 		t.Errorf("Remaining = %q, want '/anything/here'", match.remaining)
 	}
 }
+
+// TestRouteMethodValidation covers the routing-method allowlist. A method
+// outside the set domains_middleware dispatches on stores a route that answers
+// every request to its path with unknown_route_method, so it is refused at
+// write time rather than at request time.
+func TestRouteMethodValidation(t *testing.T) {
+	cleanup := create_domains_test_env(t)
+	defer cleanup()
+
+	domain_register("example.com")
+
+	for _, method := range []string{"app", "redirect", "entity"} {
+		if _, err := route_create("example.com", "/"+method, method, "target", "", "", 0); err != nil {
+			t.Errorf("route_create with method %q failed: %v", method, err)
+		}
+	}
+
+	if _, err := route_create("example.com", "/bad", "proxy", "target", "", "", 0); err == nil {
+		t.Error("route_create should reject an unknown method")
+	}
+	if route_get("example.com", "/bad") != nil {
+		t.Error("a rejected method must not leave a route behind")
+	}
+
+	// The same guard applies to changing an existing route's method, which
+	// route_update_columns otherwise permits.
+	if err := route_update("example.com", "/app", map[string]any{"method": "proxy"}); err == nil {
+		t.Error("route_update should reject an unknown method")
+	}
+	if r := route_get("example.com", "/app"); r == nil || r.Method != "app" {
+		t.Error("a rejected update must leave the stored method unchanged")
+	}
+	if err := route_update("example.com", "/app", map[string]any{"method": "redirect"}); err != nil {
+		t.Errorf("route_update with a valid method failed: %v", err)
+	}
+}

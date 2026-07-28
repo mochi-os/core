@@ -606,7 +606,10 @@ func valid(s string, match string) bool {
 	case "path":
 		match = "^[0-9a-zA-Z-/]{0,1000}$"
 	case "positive":
-		match = "^\\d{1,9}$"
+		// Unlike "natural", excludes zero — that is the only thing this type
+		// offers over it. RE2 has no lookahead, so requiring a non-zero first
+		// digit is how that is expressed, which also rejects "007".
+		match = "^[1-9][0-9]{0,8}$"
 	case "privacy":
 		match = "^(public|private)$"
 	case "text":

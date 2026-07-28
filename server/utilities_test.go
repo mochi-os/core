@@ -297,10 +297,20 @@ func TestValid(t *testing.T) {
 		{"integer zero", "0", "integer", true},
 		{"integer with letters", "123abc", "integer", false},
 
-		// natural pattern (positive integer)
+		// natural pattern (non-negative integer)
 		{"natural valid", "12345", "natural", true},
 		{"natural zero", "0", "natural", true},
 		{"natural negative", "-1", "natural", false},
+
+		// positive pattern — unlike natural, excludes zero
+		{"positive valid", "12345", "positive", true},
+		{"positive one", "1", "positive", true},
+		{"positive zero", "0", "positive", false},
+		{"positive zeroes", "000", "positive", false},
+		{"positive leading zero", "007", "positive", false},
+		{"positive negative", "-1", "positive", false},
+		{"positive maximum", "999999999", "positive", true},
+		{"positive too long", "1000000000", "positive", false},
 
 		// numeric pattern (signed integer/decimal)
 		{"numeric integer", "-3", "numeric", true},

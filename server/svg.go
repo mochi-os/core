@@ -25,6 +25,36 @@ var (
 	svg_re_js_href_sq = regexp.MustCompile(`(?i)((?:xlink:)?href\s*=\s*')javascript:[^']*'`)
 )
 
+// svg_content_policy is the Content-Security-Policy served alongside every SVG
+// this server renders inline. svg_sanitize is best-effort and bypassable, so
+// this is the actual guarantee: scripts, plugins, frames and network fetches
+// are all blocked. Inline styles and data: images stay allowed so ordinary
+// self-contained SVGs still render.
+const svg_content_policy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:"
+
+// content_type_inline reports whether a content type may be rendered inline in
+// this server's origin. SVG is excluded deliberately - it is an executable
+// document format, and callers that want to serve one must go through the
+// sanitize-and-CSP path rather than handing the bytes straight to the browser.
+func content_type_inline(content_type string) bool {
+	if content_type == "image/svg+xml" {
+		return false
+	}
+	if strings.HasPrefix(content_type, "image/") ||
+		strings.HasPrefix(content_type, "video/") ||
+		strings.HasPrefix(content_type, "audio/") {
+		return true
+	}
+	return content_type == "application/pdf"
+}
+
+// content_type_base strips parameters and casing from a content type, so
+// "IMAGE/SVG+XML; charset=utf-8" compares equal to "image/svg+xml".
+func content_type_base(content_type string) string {
+	base, _, _ := strings.Cut(content_type, ";")
+	return strings.ToLower(strings.TrimSpace(base))
+}
+
 // svg_sanitize removes dangerous elements and attributes from SVG content.
 // Uses regex-based stripping to preserve the original formatting exactly.
 func svg_sanitize(data []byte) []byte {

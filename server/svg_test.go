@@ -11,6 +11,47 @@ import (
 	"testing"
 )
 
+// TestContentTypeInline pins the inline/download split shared by
+// web_serve_attachment and the a.write.stream guard. SVG must stay out of the
+// inline set: it is the one image type that can carry script, so it is served
+// only through the sanitize-and-CSP path.
+func TestContentTypeInline(t *testing.T) {
+	inline := []string{"image/png", "image/jpeg", "image/gif", "image/webp", "video/mp4", "audio/mpeg", "application/pdf"}
+	for _, ct := range inline {
+		if !content_type_inline(ct) {
+			t.Errorf("content_type_inline(%q) = false, want true", ct)
+		}
+	}
+
+	download := []string{"image/svg+xml", "text/html", "application/xhtml+xml", "text/xml", "application/javascript", "application/octet-stream", ""}
+	for _, ct := range download {
+		if content_type_inline(ct) {
+			t.Errorf("content_type_inline(%q) = true, want false", ct)
+		}
+	}
+}
+
+// TestContentTypeBase checks parameters and casing are stripped before the
+// comparison, so an SVG cannot slip into the inline set by announcing itself
+// as "IMAGE/SVG+XML" or by trailing a charset.
+func TestContentTypeBase(t *testing.T) {
+	cases := map[string]string{
+		"image/svg+xml":                  "image/svg+xml",
+		"IMAGE/SVG+XML":                  "image/svg+xml",
+		"image/svg+xml; charset=utf-8":   "image/svg+xml",
+		"  image/svg+xml ; charset=utf8": "image/svg+xml",
+		"image/png":                      "image/png",
+	}
+	for in, want := range cases {
+		if got := content_type_base(in); got != want {
+			t.Errorf("content_type_base(%q) = %q, want %q", in, got, want)
+		}
+		if want == "image/svg+xml" && content_type_inline(content_type_base(in)) {
+			t.Errorf("%q reached the inline set", in)
+		}
+	}
+}
+
 // TestSvgSanitizeStripsScripts checks the best-effort sanitizer removes the
 // obvious dangerous constructs, including the self-closing <script/> that a "/"
 // in an attribute value used to smuggle past. The Content-Security-Policy on

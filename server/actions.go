@@ -897,6 +897,21 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 		a.web.Header("Content-Type", "application/octet-stream")
 	}
 
+	// An app streaming through here is serving bytes it did not author - a
+	// person's avatar, a feed's image - and takes the content type from the far
+	// end, so the type is the remote peer's claim rather than this server's.
+	// Apply the policy web_serve_attachment already applies to stored files:
+	// sanitize SVG and serve it under a script-blocking CSP, let other
+	// inline-safe media through, and force everything else to download so a
+	// peer cannot have us execute their document in our own origin.
+	content_type := content_type_base(a.web.Writer.Header().Get("Content-Type"))
+	if content_type == "image/svg+xml" {
+		return a.write_stream_svg(fn, reader)
+	}
+	if !content_type_inline(content_type) && a.web.Writer.Header().Get("Content-Disposition") == "" {
+		a.web.Header("Content-Disposition", "attachment")
+	}
+
 	// Set status 200 on first write (matches a.print() pattern)
 	if !a.web.Writer.Written() {
 		a.web.Status(200)
@@ -909,6 +924,50 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	}
 
 	return sl.MakeInt64(n), nil
+}
+
+// stream_svg_maximum caps how much of a streamed SVG is buffered for
+// sanitizing. An SVG larger than this is served as a download instead, which
+// is equally safe and avoids holding an unbounded response in memory.
+const stream_svg_maximum = 2 * 1024 * 1024
+
+// write_stream_svg buffers a streamed SVG, sanitizes it, and serves it under
+// svg_content_policy. Sanitizing needs the whole document, so unlike the plain
+// copy path this cannot stream straight through.
+func (a *Action) write_stream_svg(fn *sl.Builtin, reader io.Reader) (sl.Value, error) {
+	buffer, err := io.ReadAll(io.LimitReader(reader, stream_svg_maximum+1))
+	if err != nil && !is_client_disconnect(err) {
+		return sl_error(fn, "stream read error: %v", err)
+	}
+
+	if len(buffer) > stream_svg_maximum {
+		// Too large to sanitize in memory. A download cannot execute, so serve
+		// it as one rather than refusing or truncating.
+		a.web.Header("Content-Disposition", "attachment")
+		if !a.web.Writer.Written() {
+			a.web.Status(200)
+		}
+		written, err := a.web.Writer.Write(buffer)
+		if err != nil && !is_client_disconnect(err) {
+			return sl_error(fn, "stream copy error: %v", err)
+		}
+		n, err := io.Copy(a.web.Writer, reader)
+		if err != nil && !is_client_disconnect(err) {
+			return sl_error(fn, "stream copy error: %v", err)
+		}
+		return sl.MakeInt64(int64(written) + n), nil
+	}
+
+	a.web.Header("Content-Security-Policy", svg_content_policy)
+	if !a.web.Writer.Written() {
+		a.web.Status(200)
+	}
+	n, err := a.web.Writer.Write(svg_sanitize(buffer))
+	if err != nil && !is_client_disconnect(err) {
+		return sl_error(fn, "stream copy error: %v", err)
+	}
+
+	return sl.MakeInt64(int64(n)), nil
 }
 
 // ActionCookie Starlark interface

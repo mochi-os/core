@@ -774,7 +774,7 @@ func web_serve_svg(c *gin.Context, path string) {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	c.Header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:")
+	c.Header("Content-Security-Policy", svg_content_policy)
 	c.Data(http.StatusOK, "image/svg+xml", svg_sanitize(data))
 }
 
@@ -2017,9 +2017,7 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 	// to prevent stored XSS via uploaded HTML/SVG files
 	ct := attachment_content_type(att.Name)
 	disposition := "attachment"
-	if (strings.HasPrefix(ct, "image/") && ct != "image/svg+xml") ||
-		strings.HasPrefix(ct, "video/") || strings.HasPrefix(ct, "audio/") ||
-		ct == "application/pdf" {
+	if content_type_inline(content_type_base(ct)) {
 		disposition = "inline"
 		// Chrome's built-in PDF viewer renders the PDF inside an extension-origin
 		// frame; X-Frame-Options: SAMEORIGIN blocks that and surfaces as "This

@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	sl "go.starlark.net/starlark"
 )
 
 func TestDumpResponse(t *testing.T) {
@@ -58,5 +59,64 @@ func TestErrorPageResponse(t *testing.T) {
 	}
 	if body := w.Body.String(); strings.Contains(body, "<script>") {
 		t.Errorf("error body must HTML-escape the message: %q", body)
+	}
+}
+
+// TestWriteStreamSvgSanitizes covers the path an app takes when it proxies a
+// person's avatar or a feed's image: the bytes and the content type both come
+// from the far end, so a peer claiming image/svg+xml must not get its script
+// executed in our origin.
+func TestWriteStreamSvgSanitizes(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/people/entity/-/avatar", nil)
+	a := &Action{web: c}
+
+	payload := `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(document.domain)</script><rect width="10" height="10"/></svg>`
+	if _, err := a.write_stream_svg(sl.NewBuiltin("write.stream", nil), strings.NewReader(payload)); err != nil {
+		t.Fatalf("write_stream_svg returned %v", err)
+	}
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	if policy := w.Header().Get("Content-Security-Policy"); policy != svg_content_policy {
+		t.Errorf("content policy = %q, want %q", policy, svg_content_policy)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "<script") || strings.Contains(body, "alert") {
+		t.Errorf("script survived sanitizing: %q", body)
+	}
+	if !strings.Contains(body, "<rect") {
+		t.Errorf("legitimate content dropped: %q", body)
+	}
+}
+
+// TestWriteStreamSvgOversizeDownloads checks the escape hatch: an SVG too big
+// to buffer is served as a download rather than being sanitized, truncated, or
+// passed through inline.
+func TestWriteStreamSvgOversizeDownloads(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/people/entity/-/avatar", nil)
+	a := &Action{web: c}
+
+	payload := "<svg>" + strings.Repeat("x", stream_svg_maximum) + "</svg>"
+	written, err := a.write_stream_svg(sl.NewBuiltin("write.stream", nil), strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("write_stream_svg returned %v", err)
+	}
+
+	if disposition := w.Header().Get("Content-Disposition"); disposition != "attachment" {
+		t.Errorf("disposition = %q, want attachment", disposition)
+	}
+	if w.Header().Get("Content-Security-Policy") != "" {
+		t.Errorf("oversize SVG must not claim the sanitized-content policy")
+	}
+	if count, _ := sl.AsInt32(written); int(count) != len(payload) {
+		t.Errorf("wrote %d bytes, want %d - the body must not be truncated", count, len(payload))
+	}
+	if w.Body.Len() != len(payload) {
+		t.Errorf("body = %d bytes, want %d", w.Body.Len(), len(payload))
 	}
 }

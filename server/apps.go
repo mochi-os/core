@@ -397,6 +397,8 @@ var (
 			{"user/authentication/write", ""},
 		}},
 		{"121eB4VBoaHhBQuBpwoNN7BVtACiEBHzvRLx1FtoHkKgyLBZQdN", "Menu", []struct{ Permission, Object string }{
+			{"notifications/manage", ""},
+			{"notifications/read", ""},
 			{"notifications/send", ""},
 			{"permissions/manage", ""},
 		}},
@@ -461,6 +463,7 @@ var (
 			{"accounts/manage", ""},
 			{"interests/read", ""},
 			{"interests/write", ""},
+			{"notifications/manage", ""},
 			{"notifications/send", ""},
 			{"user/authentication/read", ""},
 			{"user/authentication/write", ""},

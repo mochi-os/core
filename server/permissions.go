@@ -60,6 +60,8 @@ var permissions = []Permission{
 
 	// Restricted permissions
 	{"accounts/notify", true, false},
+	{"notifications/manage", true, false},
+	{"notifications/read", true, false},
 	{"notifications/send", true, false},
 	{"permissions/manage", true, false},
 	// Repository content is the user's private source code, and the write side

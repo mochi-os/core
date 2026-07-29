@@ -1080,16 +1080,16 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	case "claude":
 		api_key, _ := data["api_key"].(string)
-		result = account_test_claude(api_key)
+		result = account_test_claude(api_key, language)
 
 	case "openai":
 		api_key, _ := data["api_key"].(string)
-		result = account_test_openai(api_key)
+		result = account_test_openai(api_key, language)
 
 	case "mcp":
 		url := identifier
 		token, _ := data["token"].(string)
-		result = account_test_mcp(url, token)
+		result = account_test_mcp(url, token, language)
 
 	case "ntfy":
 		server, _ := data["server"].(string)
@@ -1100,10 +1100,10 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	case "url":
 		url := identifier
 		secret, _ := data["secret"].(string)
-		result = account_test_url(url, secret)
+		result = account_test_url(url, secret, language)
 
 	default:
-		result = AccountTestResult{Success: false, Message: "Unknown account type"}
+		result = AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.unknown_type", nil)}
 	}
 
 	return sl_encode(map[string]any{
@@ -1142,7 +1142,7 @@ func account_test_email(address string, language string, account_label string) A
 </body>
 </html>`
 	email_send_html(address, subject, html_body)
-	return AccountTestResult{Success: true, Message: "Test email sent"}
+	return AccountTestResult{Success: true, Message: resolve_core_label(language, "accounts.test.email_sent", nil)}
 }
 
 // account_test_browser sends a test browser push notification, localised to
@@ -1150,7 +1150,7 @@ func account_test_email(address string, language string, account_label string) A
 func account_test_browser(data map[string]any, language string, account_label string) AccountTestResult {
 	webpush_ensure()
 	if webpush_public == "" || webpush_private == "" {
-		return AccountTestResult{Success: false, Message: "Push notifications not configured"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.push_not_configured", nil)}
 	}
 
 	endpoint, _ := data["endpoint"].(string)
@@ -1158,7 +1158,7 @@ func account_test_browser(data map[string]any, language string, account_label st
 	p256dh, _ := data["p256dh"].(string)
 
 	if endpoint == "" || auth == "" || p256dh == "" {
-		return AccountTestResult{Success: false, Message: "Invalid subscription data"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.subscription_invalid", nil)}
 	}
 
 	payload, _ := json.Marshal(map[string]string{
@@ -1182,17 +1182,17 @@ func account_test_browser(data map[string]any, language string, account_label st
 	})
 
 	if err != nil {
-		return AccountTestResult{Success: false, Message: "Push notification failed: " + err.Error()}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.push_failed_detail", map[string]any{"detail": err.Error()})}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 201 {
-		return AccountTestResult{Success: true, Message: "Test notification sent"}
+		return AccountTestResult{Success: true, Message: resolve_core_label(language, "accounts.test.notification_sent", nil)}
 	} else if resp.StatusCode == 404 || resp.StatusCode == 410 {
-		return AccountTestResult{Success: false, Message: "Subscription expired"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.subscription_expired", nil)}
 	}
 
-	return AccountTestResult{Success: false, Message: "Push notification failed"}
+	return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.push_failed", nil)}
 }
 
 // account_test_unifiedpush sends a test push notification via UnifiedPush.
@@ -1202,7 +1202,7 @@ func account_test_browser(data map[string]any, language string, account_label st
 func account_test_unifiedpush(data map[string]any, language string, account_label string) AccountTestResult {
 	webpush_ensure()
 	if webpush_public == "" || webpush_private == "" {
-		return AccountTestResult{Success: false, Message: "Push notifications not configured"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.push_not_configured", nil)}
 	}
 
 	endpoint, _ := data["endpoint"].(string)
@@ -1210,7 +1210,7 @@ func account_test_unifiedpush(data map[string]any, language string, account_labe
 	p256dh, _ := data["p256dh"].(string)
 
 	if endpoint == "" || auth == "" || p256dh == "" {
-		return AccountTestResult{Success: false, Message: "Invalid subscription data"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.subscription_invalid", nil)}
 	}
 
 	payload, _ := json.Marshal(map[string]string{
@@ -1234,17 +1234,17 @@ func account_test_unifiedpush(data map[string]any, language string, account_labe
 	})
 
 	if err != nil {
-		return AccountTestResult{Success: false, Message: "Push notification failed: " + err.Error()}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.push_failed_detail", map[string]any{"detail": err.Error()})}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 201 {
-		return AccountTestResult{Success: true, Message: "Test notification sent"}
+		return AccountTestResult{Success: true, Message: resolve_core_label(language, "accounts.test.notification_sent", nil)}
 	} else if resp.StatusCode == 404 || resp.StatusCode == 410 {
-		return AccountTestResult{Success: false, Message: "Subscription expired"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.subscription_expired", nil)}
 	}
 
-	return AccountTestResult{Success: false, Message: "Push notification failed"}
+	return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.push_failed", nil)}
 }
 
 // account_test_fcm sends a test notification via Firebase Cloud Messaging,
@@ -1256,17 +1256,17 @@ func account_test_unifiedpush(data map[string]any, language string, account_labe
 // semantics as the production-push path in api_account_notify.
 func account_test_fcm(data map[string]any, language string, account_label string) (AccountTestResult, bool) {
 	if setting_effective("fcm.service_account") == "" {
-		return AccountTestResult{Success: false, Message: "FCM not configured"}, false
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.fcm_not_configured", nil)}, false
 	}
 	title := resolve_core_label(language, "push.test.title", nil)
 	body := resolve_core_label(language, "push.test.body", map[string]any{"account": account_label})
 	success, retire, detail := account_deliver_fcm(data, title, body, "", "notifications-test-", "notifications", "")
 	if success {
-		return AccountTestResult{Success: true, Message: "Test notification sent"}, false
+		return AccountTestResult{Success: true, Message: resolve_core_label(language, "accounts.test.notification_sent", nil)}, false
 	}
 	msg := detail
 	if msg == "" {
-		msg = "Push notification failed"
+		msg = resolve_core_label(language, "accounts.test.push_failed", nil)
 	}
 	return AccountTestResult{Success: false, Message: msg}, retire
 }
@@ -1274,7 +1274,7 @@ func account_test_fcm(data map[string]any, language string, account_label string
 // account_test_pushbullet sends a test notification via Pushbullet
 func account_test_pushbullet(token string, language string, account_label string) AccountTestResult {
 	if token == "" {
-		return AccountTestResult{Success: false, Message: "No access token"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.no_token", nil)}
 	}
 
 	payload, _ := json.Marshal(map[string]string{
@@ -1290,12 +1290,12 @@ func account_test_pushbullet(token string, language string, account_label string
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return AccountTestResult{Success: false, Message: "Connection failed: " + err.Error()}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.connection_failed_detail", map[string]any{"detail": err.Error()})}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 200 {
-		return AccountTestResult{Success: true, Message: "Test push sent"}
+		return AccountTestResult{Success: true, Message: resolve_core_label(language, "accounts.test.push_sent", nil)}
 	}
 
 	body, _ := io.ReadAll(resp.Body)
@@ -1307,13 +1307,13 @@ func account_test_pushbullet(token string, language string, account_label string
 		}
 	}
 
-	return AccountTestResult{Success: false, Message: "Pushbullet error"}
+	return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.pushbullet_error", nil)}
 }
 
 // account_test_claude verifies a Claude API key
-func account_test_claude(api_key string) AccountTestResult {
+func account_test_claude(api_key, language string) AccountTestResult {
 	if api_key == "" {
-		return AccountTestResult{Success: false, Message: "No API key"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.no_key", nil)}
 	}
 
 	// Use a minimal request to verify the key works
@@ -1333,15 +1333,15 @@ func account_test_claude(api_key string) AccountTestResult {
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return AccountTestResult{Success: false, Message: "Connection failed: " + err.Error()}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.connection_failed_detail", map[string]any{"detail": err.Error()})}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 200 {
-		return AccountTestResult{Success: true, Message: "API key verified"}
+		return AccountTestResult{Success: true, Message: resolve_core_label(language, "accounts.test.key_verified", nil)}
 	}
 	if resp.StatusCode == 401 {
-		return AccountTestResult{Success: false, Message: "Invalid API key"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.key_invalid", nil)}
 	}
 
 	body, _ := io.ReadAll(resp.Body)
@@ -1353,13 +1353,13 @@ func account_test_claude(api_key string) AccountTestResult {
 		}
 	}
 
-	return AccountTestResult{Success: false, Message: "API verification failed"}
+	return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.key_failed", nil)}
 }
 
 // account_test_openai verifies an OpenAI API key
-func account_test_openai(api_key string) AccountTestResult {
+func account_test_openai(api_key, language string) AccountTestResult {
 	if api_key == "" {
-		return AccountTestResult{Success: false, Message: "No API key"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.no_key", nil)}
 	}
 
 	req, _ := http.NewRequest("GET", "https://api.openai.com/v1/models", nil)
@@ -1368,27 +1368,27 @@ func account_test_openai(api_key string) AccountTestResult {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return AccountTestResult{Success: false, Message: "Connection failed: " + err.Error()}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.connection_failed_detail", map[string]any{"detail": err.Error()})}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 200 {
-		return AccountTestResult{Success: true, Message: "API key verified"}
+		return AccountTestResult{Success: true, Message: resolve_core_label(language, "accounts.test.key_verified", nil)}
 	}
 	if resp.StatusCode == 401 {
-		return AccountTestResult{Success: false, Message: "Invalid API key"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.key_invalid", nil)}
 	}
 
-	return AccountTestResult{Success: false, Message: "API verification failed"}
+	return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.key_failed", nil)}
 }
 
 // account_test_mcp tests connection to an MCP server
-func account_test_mcp(url, token string) AccountTestResult {
+func account_test_mcp(url, token, language string) AccountTestResult {
 	if url == "" {
-		return AccountTestResult{Success: false, Message: "No server URL"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.no_server", nil)}
 	}
 	if url_is_cloud_metadata(url) {
-		return AccountTestResult{Success: false, Message: "URL not allowed"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.url_not_allowed", nil)}
 	}
 
 	// Send MCP initialize request
@@ -1415,7 +1415,7 @@ func account_test_mcp(url, token string) AccountTestResult {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return AccountTestResult{Success: false, Message: "Connection failed: " + err.Error()}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.connection_failed_detail", map[string]any{"detail": err.Error()})}
 	}
 	defer resp.Body.Close()
 
@@ -1424,7 +1424,7 @@ func account_test_mcp(url, token string) AccountTestResult {
 		var result map[string]any
 		if json.Unmarshal(body, &result) == nil {
 			if _, ok := result["result"]; ok {
-				return AccountTestResult{Success: true, Message: "Server connected"}
+				return AccountTestResult{Success: true, Message: resolve_core_label(language, "accounts.test.server_connected", nil)}
 			}
 			if error_map, ok := result["error"].(map[string]any); ok {
 				if msg, ok := error_map["message"].(string); ok {
@@ -1432,19 +1432,19 @@ func account_test_mcp(url, token string) AccountTestResult {
 				}
 			}
 		}
-		return AccountTestResult{Success: true, Message: "Server connected"}
+		return AccountTestResult{Success: true, Message: resolve_core_label(language, "accounts.test.server_connected", nil)}
 	}
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return AccountTestResult{Success: false, Message: "Authentication failed"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.authentication_failed", nil)}
 	}
 
-	return AccountTestResult{Success: false, Message: "Connection failed"}
+	return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.connection_failed", nil)}
 }
 
 // account_test_ntfy sends a test notification via ntfy
 func account_test_ntfy(server, topic, token string, language string, account_label string) AccountTestResult {
 	if topic == "" {
-		return AccountTestResult{Success: false, Message: "No topic configured"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.no_topic", nil)}
 	}
 	if server == "" {
 		server = "https://ntfy.sh"
@@ -1452,7 +1452,7 @@ func account_test_ntfy(server, topic, token string, language string, account_lab
 
 	url := server + "/" + topic
 	if url_is_cloud_metadata(url) {
-		return AccountTestResult{Success: false, Message: "URL not allowed"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.url_not_allowed", nil)}
 	}
 	title := resolve_core_label(language, "push.test.title", nil)
 	body := resolve_core_label(language, "push.test.body", map[string]any{"account": account_label})
@@ -1465,27 +1465,27 @@ func account_test_ntfy(server, topic, token string, language string, account_lab
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return AccountTestResult{Success: false, Message: "Connection failed: " + err.Error()}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.connection_failed_detail", map[string]any{"detail": err.Error()})}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 200 {
-		return AccountTestResult{Success: true, Message: "Test notification sent"}
+		return AccountTestResult{Success: true, Message: resolve_core_label(language, "accounts.test.notification_sent", nil)}
 	}
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return AccountTestResult{Success: false, Message: "Authentication failed"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.authentication_failed", nil)}
 	}
 
-	return AccountTestResult{Success: false, Message: "ntfy returned " + itoa(resp.StatusCode)}
+	return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.ntfy_status", map[string]any{"status": itoa(resp.StatusCode)})}
 }
 
 // account_test_url tests an external URL
-func account_test_url(url, secret string) AccountTestResult {
+func account_test_url(url, secret, language string) AccountTestResult {
 	if url == "" {
-		return AccountTestResult{Success: false, Message: "No URL configured"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.no_url", nil)}
 	}
 	if url_is_cloud_metadata(url) {
-		return AccountTestResult{Success: false, Message: "URL not allowed"}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.url_not_allowed", nil)}
 	}
 
 	// Send a test notification
@@ -1504,15 +1504,15 @@ func account_test_url(url, secret string) AccountTestResult {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return AccountTestResult{Success: false, Message: "Connection failed: " + err.Error()}
+		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.connection_failed_detail", map[string]any{"detail": err.Error()})}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return AccountTestResult{Success: true, Message: "External URL test sent"}
+		return AccountTestResult{Success: true, Message: resolve_core_label(language, "accounts.test.url_sent", nil)}
 	}
 
-	return AccountTestResult{Success: false, Message: "External URL returned " + itoa(resp.StatusCode)}
+	return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.url_status", map[string]any{"status": itoa(resp.StatusCode)})}
 }
 
 // mochi.account.notify(app, category, object, title, body, link, urgency?, account?, id?) -> dict:

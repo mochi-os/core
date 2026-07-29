@@ -39,6 +39,12 @@ type domain struct {
 	Updated  int64  `db:"updated"`
 }
 
+// route_context_maximum bounds a route context. The context is prepended to
+// every path served through the route and core caps a whole path at 255
+// characters, so a long context quietly shortens the filenames the site can
+// hold; this leaves the bulk of the budget to the files themselves.
+const route_context_maximum = 64
+
 // route represents a row in the routes table
 type route struct {
 	Domain   string `db:"domain"`
@@ -53,10 +59,15 @@ type route struct {
 	Updated  int64  `db:"updated"`
 }
 
-// DomainRouteInfo exposes route info to Starlark as a.domain.route
+// DomainRouteInfo exposes route info to Starlark as a.domain.route.
+//
+// owner is the account the route publishes. It is not exposed to Starlark and
+// is not the action's owner - it exists so serving a file from a hosted domain
+// reads one fixed directory whoever is asking.
 type DomainRouteInfo struct {
 	context   string
 	remainder string
+	owner     *User
 }
 
 func (r *DomainRouteInfo) AttrNames() []string { return []string{"context", "remainder"} }
@@ -81,8 +92,16 @@ type DomainInfo struct {
 }
 
 func (d *DomainInfo) AttrNames() []string { return []string{"route"} }
+
+// Attr returns None for route when the request did not match a domain route,
+// so an app that is only meant to answer on a hosted domain can refuse a direct
+// request to its own path. The context alone cannot carry that: it is empty
+// both for a route that sets none and for a request that matched no route.
 func (d *DomainInfo) Attr(name string) (sl.Value, error) {
 	if name == "route" {
+		if d.route == nil {
+			return sl.None, nil
+		}
 		return d.route, nil
 	}
 	return nil, nil
@@ -413,7 +432,6 @@ func domain_register(name string) (*domain, error) {
 
 	db.exec("insert into domains (domain, verified, token, tls, created, updated) values (?, 0, ?, 1, ?, ?)", name, token, n, n)
 
-
 	// Served domains are part of the peers/publish announcement.
 	peers_publish_request()
 
@@ -542,6 +560,30 @@ func domain_match(host, path string) *route_match {
 	return nil
 }
 
+// route_context_valid reports whether a route context is usable by the app that
+// receives it. A context names a subdirectory the route is scoped to, so it has
+// to survive being used as one path segment: ASCII only, no separators, and
+// short enough to leave room for a filename within the path limit.
+//
+// Checked when the route is written rather than only when it is served, because
+// nothing rejected a context the serving side could not use - a route reading
+// as correctly configured while every request to it failed.
+func route_context_valid(context string) bool {
+	if context == "" {
+		return true
+	}
+	if len(context) > route_context_maximum {
+		return false
+	}
+	for _, r := range context {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // route_get retrieves a route by domain and path
 func route_get(domain_name, path string) *route {
 	db := db_open("db/domains.db")
@@ -568,7 +610,6 @@ func route_create(domain_name, path, method, target, context string, owner strin
 	db := db_open("db/domains.db")
 	n := now()
 	db.exec("insert into routes (domain, path, method, target, context, owner, priority, enabled, created, updated) values (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)", domain_name, path, method, target, context, owner, priority, n, n)
-
 
 	return route_get(domain_name, path), nil
 }
@@ -646,7 +687,6 @@ func delegation_create(domain_name, path string, owner string) (*delegation, err
 	db := db_open("db/domains.db")
 	n := now()
 	db.exec("insert into delegations (domain, path, owner, created, updated) values (?, ?, ?, ?, ?)", domain_name, path, owner, n, n)
-
 
 	return delegation_get(domain_name, path, owner), nil
 }
@@ -1036,6 +1076,10 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		}
 	}
 
+	if !route_context_valid(context) {
+		return sl_error(fn, "invalid context")
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -1110,6 +1154,9 @@ func api_domain_route_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 			}
 		case "context":
 			if s, ok := sl.AsString(kw[1]); ok {
+				if !route_context_valid(s) {
+					return sl_error(fn, "invalid context")
+				}
 				updates["context"] = s
 			}
 		case "priority":

@@ -576,6 +576,13 @@ func valid(s string, match string) bool {
 		if strings.Contains(s, "..") {
 			return false
 		}
+		// The leading-character class stops a hidden file only at the root, so
+		// "apt/.git/config" and "apt/.env" passed and were served: copy a git
+		// working tree into a hosted directory and its history and remotes went
+		// public. Every segment gets the rule the first one already had.
+		if strings.Contains(s, "/.") {
+			return false
+		}
 		match = "^[0-9a-zA-Z_][0-9a-zA-Z_/ ~().#@!&+=%,\\[\\]'\\-]{0,254}$"
 	case "fingerprint":
 		match = "^[0-9a-zA-Z]{9}$"

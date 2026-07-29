@@ -584,17 +584,35 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 		}
 	}
 
+	// Carry the route only when one actually matched, so a.domain.route is None
+	// for a request that reached the app by its own path instead of a hosted
+	// domain. An app whose action is public and serves the owner's files needs
+	// to tell those apart: reached directly it runs as the first administrator.
+	//
+	// The route's owner rides along for the file-serving path, which has to read
+	// one fixed directory whoever is asking. It is deliberately not used as the
+	// action's `owner`: apps take owner == user to mean the requester owns the
+	// data they are reading, so handing them another account's owner makes them
+	// authorize as that account.
+	domain := &DomainInfo{}
+	if _, routed := c.Get("domain_route"); routed {
+		domain.route = &DomainRouteInfo{
+			context:   c.GetString("domain_context"),
+			remainder: name,
+		}
+		if uid, ok := c.Get("domain_owner"); ok {
+			if id, ok := uid.(string); ok && id != "" {
+				domain.route.owner = user_by_uid(id)
+			}
+		}
+	}
+
 	// Create action
 	action := Action{
-		id:    action_id(),
-		user:  user,
-		owner: owner,
-		domain: &DomainInfo{
-			route: &DomainRouteInfo{
-				context:   c.GetString("domain_context"),
-				remainder: name,
-			},
-		},
+		id:     action_id(),
+		user:   user,
+		owner:  owner,
+		domain: domain,
 		app:    a,
 		active: av,
 		token:  api_token,

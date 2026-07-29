@@ -280,3 +280,156 @@ func TestWriteFileDirectoryRedirectsToSlash(t *testing.T) {
 		t.Errorf("location = %q, want /files/site/", location)
 	}
 }
+
+// TestWriteFileRejectsDotfiles covers hidden files below the root. The path
+// validator's leading-character rule stopped ".env" but not "site/.env", so a
+// git working tree or a stray .env copied into a hosted directory was readable.
+func TestWriteFileRejectsDotfiles(t *testing.T) {
+	base, serve := write_file_environment(t, "/files/site/.env")
+
+	if err := os.MkdirAll(base+"/site/.git", 0755); err != nil {
+		t.Fatalf("creating directory: %v", err)
+	}
+	if err := os.WriteFile(base+"/site/.env", []byte("DOTENV-SECRET"), 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+	if err := os.WriteFile(base+"/site/.git/config", []byte("GIT-CONFIG-SECRET"), 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+
+	for _, path := range []string{"site/.env", "site/.git/config"} {
+		w := serve(path)
+		if w.Code != 400 {
+			t.Errorf("%s: status = %d, want 400", path, w.Code)
+		}
+		if body := w.Body.String(); strings.Contains(body, "SECRET") {
+			t.Errorf("%s: hidden file served: %q", path, body)
+		}
+	}
+}
+
+// TestWriteFileSetsCachePolicy checks that a served file carries an explicit
+// policy. Which bytes a path yields depends on whose directory is read, so a
+// response with no Cache-Control could be held by a shared cache and handed to
+// the wrong reader, and one with no validator could outlive the file itself.
+func TestWriteFileSetsCachePolicy(t *testing.T) {
+	base, serve := write_file_environment(t, "/files/data.txt")
+
+	if err := os.WriteFile(base+"/data.txt", []byte("DATA"), 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+
+	w := serve("data.txt")
+
+	if control := w.Header().Get("Cache-Control"); !strings.Contains(control, "private") {
+		t.Errorf("Cache-Control = %q, want a private policy", control)
+	}
+	if !strings.Contains(w.Header().Get("Cache-Control"), "must-revalidate") {
+		t.Errorf("Cache-Control = %q, want must-revalidate", w.Header().Get("Cache-Control"))
+	}
+	if w.Header().Get("Etag") == "" {
+		t.Error("no ETag, so a revalidation cannot be answered cheaply")
+	}
+}
+
+// TestRouteContextValid pins the contexts a route may carry. A context is used
+// as one path segment by the app receiving it, so anything core's own path
+// validator would later reject has to be refused when the route is written -
+// otherwise the route reads as configured and every request to it fails.
+func TestRouteContextValid(t *testing.T) {
+	valid := []string{"", "apt", "docs", "site_one", "site-two", "v2", strings.Repeat("a", route_context_maximum)}
+	invalid := []string{
+		"café",      // non-ASCII: isalnum() accepted it, core's path validator does not
+		"日本",        // likewise
+		"a/b",       // a separator would escape the intended subdirectory
+		"..",        // traversal
+		".hidden",   // hidden directory
+		"has space", // not accepted in a path segment
+		strings.Repeat("a", route_context_maximum+1), // eats the filename budget
+	}
+
+	for _, context := range valid {
+		if !route_context_valid(context) {
+			t.Errorf("route_context_valid(%q) = false, want true", context)
+		}
+	}
+	for _, context := range invalid {
+		if route_context_valid(context) {
+			t.Errorf("route_context_valid(%q) = true, want false", context)
+		}
+	}
+}
+
+// TestWriteFileUsesRouteOwner covers a hosted domain serving one account's
+// files to every visitor alike. Resolving to the requester meant the same URL
+// gave the route owner's site to anonymous visitors and the visitor's own -
+// almost always empty - directory to anyone signed in.
+func TestWriteFileUsesRouteOwner(t *testing.T) {
+	original := data_dir
+	data_dir = t.TempDir()
+	t.Cleanup(func() { data_dir = original })
+
+	publisher := &User{UID: "publisher"}
+	visitor := &User{UID: "visitor"}
+	app := &App{id: "files"}
+
+	for _, u := range []*User{publisher, visitor} {
+		base := api_file_base(u, app)
+		if err := os.MkdirAll(base, 0755); err != nil {
+			t.Fatalf("creating files directory: %v", err)
+		}
+		if err := os.WriteFile(base+"/index.html", []byte(u.UID+"-FILE"), 0600); err != nil {
+			t.Fatalf("writing file: %v", err)
+		}
+	}
+
+	serve := func(requester *User) string {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("GET", "/index.html", nil)
+		a := &Action{
+			web:  c,
+			user: requester,
+			domain: &DomainInfo{
+				route: &DomainRouteInfo{owner: publisher},
+			},
+		}
+
+		thread := &sl.Thread{Name: "test"}
+		// The action's owner is the requester, exactly as core resolves it for
+		// an authenticated visitor. Only the file lookup may override it.
+		thread.SetLocal("owner", requester)
+		thread.SetLocal("app", app)
+
+		if _, err := a.sl_write_file(thread, sl.NewBuiltin("write.file", nil), sl.Tuple{sl.String("index.html")}, nil); err != nil {
+			t.Fatalf("sl_write_file returned %v", err)
+		}
+		return w.Body.String()
+	}
+
+	if body := serve(nil); body != "publisher-FILE" {
+		t.Errorf("anonymous visitor got %q, want publisher-FILE", body)
+	}
+	if body := serve(visitor); body != "publisher-FILE" {
+		t.Errorf("signed-in visitor got %q, want publisher-FILE - a hosted site must not vary with who is reading it", body)
+	}
+}
+
+// TestWriteFileDirectRequestKeepsOwner is the other half: with no route, the
+// action's own owner still decides which directory is read. Redirecting that
+// generally would be an escalation - apps read owner == user as "the requester
+// owns this data", so an authenticated stranger handed the published account's
+// owner is authorized as that account.
+func TestWriteFileDirectRequestKeepsOwner(t *testing.T) {
+	base, serve := write_file_environment(t, "/files/index.html")
+
+	if err := os.WriteFile(base+"/index.html", []byte("OWN-FILE"), 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+
+	w := serve("index.html")
+
+	if body := w.Body.String(); body != "OWN-FILE" {
+		t.Errorf("body = %q, want OWN-FILE", body)
+	}
+}

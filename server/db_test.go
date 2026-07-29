@@ -1334,6 +1334,13 @@ func TestDbUserForThread(t *testing.T) {
 		}
 	}
 
+	// A request that reached the app by its own path carries an action whose
+	// route is None, which is what distinguishes it from one that matched a
+	// route setting no context.
+	action_direct := func() *Action {
+		return &Action{domain: &DomainInfo{}}
+	}
+
 	tests := []struct {
 		name     string
 		user     *User
@@ -1397,6 +1404,15 @@ func TestDbUserForThread(t *testing.T) {
 			user:   alice,
 			owner:  bob,
 			action: action_with_route(""),
+			want:   alice,
+		},
+		// A request that reached the app by its own path carries no route
+		// at all, and must likewise read the requester's own database.
+		{
+			name:   "logged_in_direct_request_uses_own_db",
+			user:   alice,
+			owner:  bob,
+			action: action_direct(),
 			want:   alice,
 		},
 	}

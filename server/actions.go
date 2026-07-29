@@ -202,6 +202,17 @@ func (a *Action) dump(values ...any) {
 	a.web.Writer.WriteString("</pre></body></html>")
 }
 
+// error_label writes an error whose message comes from core's own label
+// catalogue, resolved into the request's language. a.error.label reads the
+// calling app's catalogue, which is right for messages the app authored and
+// useless for the ones core raises itself - an app cannot translate a string it
+// never wrote, so those reached the reader in English whatever language they
+// had asked for. The resolved text is passed as an argument rather than as the
+// format string so a label containing a percent verb cannot corrupt the output.
+func (a *Action) error_label(code int, key string) {
+	a.error(code, "%s", resolve_core_label(request_language(a.web, a.user), key, nil))
+}
+
 // Display an error as a simple HTML page
 func (a *Action) error(code int, message string, values ...any) {
 	msg := fmt.Sprintf(message, values...)
@@ -777,13 +788,27 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	}
 
 	if !valid(path, "filepath") {
-		a.error(400, "Invalid path")
+		a.error_label(400, "errors.invalid_file")
 		return sl.None, nil
 	}
 
-	owner := t.Local("owner").(*User)
+	owner, _ := t.Local("owner").(*User)
+
+	// A hosted domain publishes one account's files, and that has to hold for
+	// every visitor alike. Resolving to the requester whenever one was signed in
+	// meant a single URL served the route owner's site to anonymous visitors and
+	// the visitor's own - almost always empty - directory to anyone logged in,
+	// so a hosted site 404'd for exactly the people who had accounts.
+	//
+	// Only the bytes served are redirected, not the action's owner: apps read
+	// owner == user as "the requester owns this data", so moving the action's
+	// owner would have them authorize a stranger as the account being published.
+	if a.domain != nil && a.domain.route != nil && a.domain.route.owner != nil {
+		owner = a.domain.route.owner
+	}
+
 	if owner == nil {
-		a.error(500, "No owner")
+		a.error_label(500, "errors.server_error")
 		return sl.None, nil
 	}
 
@@ -791,20 +816,20 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 
 	root, err := os.OpenRoot(api_file_base(owner, app))
 	if err != nil {
-		http.NotFound(a.web.Writer, a.web.Request)
+		a.error_label(404, "errors.file_not_found")
 		return sl.None, nil
 	}
 	defer root.Close()
 
 	file, err := root.Open(path)
 	if err != nil {
-		http.NotFound(a.web.Writer, a.web.Request)
+		a.error_label(404, "errors.file_not_found")
 		return sl.None, nil
 	}
 	information, err := file.Stat()
 	if err != nil {
 		file.Close()
-		http.NotFound(a.web.Writer, a.web.Request)
+		a.error_label(404, "errors.file_not_found")
 		return sl.None, nil
 	}
 
@@ -826,17 +851,32 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		path = strings.TrimSuffix(path, "/") + "/index.html"
 		file, err = root.Open(path)
 		if err != nil {
-			http.NotFound(a.web.Writer, a.web.Request)
+			a.error_label(404, "errors.file_not_found")
 			return sl.None, nil
 		}
 		information, err = file.Stat()
 		if err != nil || information.IsDir() {
 			file.Close()
-			http.NotFound(a.web.Writer, a.web.Request)
+			a.error_label(404, "errors.file_not_found")
 			return sl.None, nil
 		}
 	}
 	defer file.Close()
+
+	// Which bytes this path yields depends on whose directory is being read, so
+	// the response must never land in a shared cache: an app serves its own
+	// caller's files here (a purchased asset, an account export) as readily as a
+	// domain route serves one fixed owner's. must-revalidate with an ETag keeps
+	// that safe while still making a repeat fetch cheap - ServeContent answers
+	// If-None-Match from the header set here, and If-Modified-Since from the
+	// modification time. Without either, a replaced or deleted file could be
+	// served from cache indefinitely.
+	if a.web.Writer.Header().Get("Cache-Control") == "" {
+		a.web.Header("Cache-Control", "private, must-revalidate")
+	}
+	if a.web.Writer.Header().Get("Etag") == "" {
+		a.web.Header("ETag", fmt.Sprintf(`"%x-%x"`, information.ModTime().UnixNano(), information.Size()))
+	}
 
 	starlark_serving_set(t, a.web.Writer)
 	http.ServeContent(a.web.Writer, a.web.Request, path, information.ModTime(), file)
@@ -866,14 +906,14 @@ func (a *Action) sl_write_attachment(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 		variant = "thumbnail"
 	}
 	if variant != "" && variant != "thumbnail" && variant != "preview" {
-		a.error(400, "Invalid variant")
+		a.error_label(400, "errors.invalid_request")
 		return sl.None, nil
 	}
 
 	owner, _ := t.Local("owner").(*User)
 	app, _ := t.Local("app").(*App)
 	if owner == nil || app == nil {
-		a.error(500, "No owner")
+		a.error_label(500, "errors.server_error")
 		return sl.None, nil
 	}
 
@@ -899,31 +939,44 @@ func (a *Action) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 
 	if !valid(path, "filepath") {
-		a.error(400, "Invalid path")
+		a.error_label(400, "errors.invalid_file")
 		return sl.None, nil
 	}
 
 	app, ok := t.Local("app").(*App)
 	if !ok || app == nil {
-		a.error(500, "No app")
+		a.error_label(500, "errors.server_error")
 		return sl.None, nil
 	}
 
 	user, _ := t.Local("user").(*User)
 	file := app_local_path(app, user, path)
 	if file == "" {
-		a.error(500, "No active app version")
+		a.error_label(500, "errors.server_error")
 		return sl.None, nil
 	}
 
 	// Reject symlinks
 	if file_is_symlink(file) {
-		a.error(404, "File not found")
+		a.error_label(404, "errors.file_not_found")
 		return sl.None, nil
 	}
 
 	if !file_exists(file) {
-		a.error(404, "File not found")
+		a.error_label(404, "errors.file_not_found")
+		return sl.None, nil
+	}
+
+	// An app's bundled SVG is attacker-controlled under the untrusted-app model,
+	// and opened as a top-level document it runs its scripts in this server's
+	// origin. The static-file routes divert to web_serve_svg for exactly that
+	// reason (web_serve_file), so serving the same files through this primitive
+	// has to do the same - otherwise which protection applies depends on how the
+	// app happened to route them. Overrides any Content-Type the app set:
+	// sanitising wins over an app's opinion about its own bytes.
+	if strings.HasSuffix(strings.ToLower(path), ".svg") {
+		starlark_serving_set(t, a.web.Writer)
+		web_serve_svg(a.web, file)
 		return sl.None, nil
 	}
 

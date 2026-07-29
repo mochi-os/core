@@ -223,24 +223,6 @@ func (e *Event) route() error {
 		defer e.db.close()
 
 		switch e.event {
-		case "_attachment/create":
-			e.attachment_event_create()
-			return nil
-		case "_attachment/insert":
-			e.attachment_event_insert()
-			return nil
-		case "_attachment/update":
-			e.attachment_event_update()
-			return nil
-		case "_attachment/move":
-			e.attachment_event_move()
-			return nil
-		case "_attachment/delete":
-			e.attachment_event_delete()
-			return nil
-		case "_attachment/clear":
-			e.attachment_event_clear()
-			return nil
 		case "_attachment/data":
 			e.attachment_event_data()
 			return nil

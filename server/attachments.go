@@ -56,7 +56,6 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 	"thumbnail": sl.NewBuiltin("mochi.attachment.thumbnail", api_attachment_thumbnail),
 	"preview":   sl.NewBuiltin("mochi.attachment.preview", api_attachment_preview),
 	"store":     sl.NewBuiltin("mochi.attachment.store", api_attachment_store),
-	"sync":      sl.NewBuiltin("mochi.attachment.sync", api_attachment_sync),
 	"fetch":     sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
 })
 
@@ -211,7 +210,7 @@ func (db *DB) attachment_meta_set(id, caption, description string) {
 
 // Create attachment record for file already at final path.
 // Shared logic used by create_from_stream.
-func attachment_create_record(db *DB, app *App, owner *User, object, name, id string, size int64, content_type, creator, caption, description string, notify []string) map[string]any {
+func attachment_create_record(db *DB, app *App, owner *User, object, name, id string, size int64, content_type, creator, caption, description string) map[string]any {
 	rank := db.attachment_next_rank(object)
 
 	att := Attachment{
@@ -231,10 +230,6 @@ func attachment_create_record(db *DB, app *App, owner *User, object, name, id st
 	attachment_record_write(db, &att)
 
 	result := att.to_map(app.url_path(owner))
-
-	if len(notify) > 0 {
-		attachment_notify_create(app, owner, object, []map[string]any{result}, notify)
-	}
 
 	return result
 }
@@ -298,10 +293,10 @@ func attachment_content_type(name string) string {
 	return ct
 }
 
-// mochi.attachment.save(object, field, captions?, descriptions?, notify?) -> list: Save uploaded files as attachments
+// mochi.attachment.save(object, field, captions?, descriptions?) -> list: Save uploaded files as attachments
 func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 5 {
-		return sl_error(fn, "syntax: <object: string>, <field: string>, [captions: array], [descriptions: array], [notify: array]")
+		return sl_error(fn, "syntax: <object: string>, <field: string>, [captions: array], [descriptions: array]")
 	}
 
 	object, ok := sl.AsString(args[0])
@@ -322,11 +317,6 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	var descriptions []string
 	if len(args) > 3 {
 		descriptions = sl_decode_string_list(args[3])
-	}
-
-	var notify []string
-	if len(args) > 4 {
-		notify = sl_decode_string_list(args[4])
 	}
 
 	action := t.Local("action").(*Action)
@@ -451,18 +441,13 @@ func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		results = append(results, att.to_map(app.url_path(owner)))
 	}
 
-	// Handle federation notify
-	if len(notify) > 0 {
-		attachment_notify_create(app, owner, object, results, notify)
-	}
-
 	return sl_encode(results), nil
 }
 
-// mochi.attachment.create(object, name, data, content_type?, caption?, description?, notify?) -> dict: Create an attachment from data
+// mochi.attachment.create(object, name, data, content_type?, caption?, description?) -> dict: Create an attachment from data
 func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 3 || len(args) > 7 {
-		return sl_error(fn, "syntax: <object: string>, <name: string>, <data: bytes>, [content_type: string], [caption: string], [description: string], [notify: array]")
+		return sl_error(fn, "syntax: <object: string>, <name: string>, <data: bytes>, [content_type: string], [caption: string], [description: string]")
 	}
 
 	object, ok := sl.AsString(args[0])
@@ -502,11 +487,6 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	description := ""
 	if len(args) > 5 {
 		description, _ = sl.AsString(args[5])
-	}
-
-	var notify []string
-	if len(args) > 6 {
-		notify = sl_decode_string_list(args[6])
 	}
 
 	app := t.Local("app").(*App)
@@ -590,19 +570,14 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	result := att.to_map(app.url_path(owner))
 
-	// Handle federation notify
-	if len(notify) > 0 {
-		attachment_notify_create(app, owner, object, []map[string]any{result}, notify)
-	}
-
 	return sl_encode(result), nil
 }
 
-// mochi.attachment.create.stream(object, name, stream, content_type?, caption?, description?, notify?, id?) -> dict: Create an attachment by streaming directly to storage
+// mochi.attachment.create.stream(object, name, stream, content_type?, caption?, description?, id?) -> dict: Create an attachment by streaming directly to storage
 // This avoids the need for a temp file by streaming directly to the final attachment location.
 func api_attachment_create_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 3 || len(args) > 8 {
-		return sl_error(fn, "syntax: <object: string>, <name: string>, <stream: Stream>, [content_type: string], [caption: string], [description: string], [notify: array], [id: string]")
+	if len(args) < 3 || len(args) > 7 {
+		return sl_error(fn, "syntax: <object: string>, <name: string>, <stream: Stream>, [content_type: string], [caption: string], [description: string], [id: string]")
 	}
 
 	object, ok := sl.AsString(args[0])
@@ -638,15 +613,10 @@ func api_attachment_create_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 		description, _ = sl.AsString(args[5])
 	}
 
-	var notify []string
-	if len(args) > 6 {
-		notify = sl_decode_string_list(args[6])
-	}
-
 	// Optional attachment ID (use existing ID for federation sync)
 	provided_id := ""
-	if len(args) > 7 {
-		provided_id, _ = sl.AsString(args[7])
+	if len(args) > 6 {
+		provided_id, _ = sl.AsString(args[6])
 	}
 
 	app := t.Local("app").(*App)
@@ -734,14 +704,14 @@ func api_attachment_create_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 	}
 
 	// Create record using shared helper
-	result := attachment_create_record(db, app, owner, object, name, id, size, content_type, creator, caption, description, notify)
+	result := attachment_create_record(db, app, owner, object, name, id, size, content_type, creator, caption, description)
 	return sl_encode(result), nil
 }
 
-// mochi.attachment.insert(object, name, data, position, content_type?, caption?, description?, notify?) -> dict: Insert an attachment at position
+// mochi.attachment.insert(object, name, data, position, content_type?, caption?, description?) -> dict: Insert an attachment at position
 func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 4 || len(args) > 8 {
-		return sl_error(fn, "syntax: <object: string>, <name: string>, <data: bytes>, <position: int>, [content_type: string], [caption: string], [description: string], [notify: array]")
+		return sl_error(fn, "syntax: <object: string>, <name: string>, <data: bytes>, <position: int>, [content_type: string], [caption: string], [description: string]")
 	}
 
 	object, ok := sl.AsString(args[0])
@@ -786,11 +756,6 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	description := ""
 	if len(args) > 6 {
 		description, _ = sl.AsString(args[6])
-	}
-
-	var notify []string
-	if len(args) > 7 {
-		notify = sl_decode_string_list(args[7])
 	}
 
 	app := t.Local("app").(*App)
@@ -876,18 +841,13 @@ func api_attachment_insert(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	result := att.to_map(app.url_path(owner))
 
-	// Handle federation notify
-	if len(notify) > 0 {
-		attachment_notify_insert(app, owner, object, result, notify)
-	}
-
 	return sl_encode(result), nil
 }
 
-// mochi.attachment.update(id, caption, description, notify?) -> dict or None: Update attachment metadata
+// mochi.attachment.update(id, caption, description) -> dict or None: Update attachment metadata
 func api_attachment_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 3 || len(args) > 4 {
-		return sl_error(fn, "syntax: <id: string>, <caption: string>, <description: string>, [notify: array]")
+		return sl_error(fn, "syntax: <id: string>, <caption: string>, <description: string>")
 	}
 
 	id, ok := sl.AsString(args[0])
@@ -903,11 +863,6 @@ func api_attachment_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	description, ok := sl.AsString(args[2])
 	if !ok {
 		return sl_error(fn, "invalid description")
-	}
-
-	var notify []string
-	if len(args) > 3 {
-		notify = sl_decode_string_list(args[3])
 	}
 
 	app := t.Local("app").(*App)
@@ -937,18 +892,13 @@ func api_attachment_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	result := att.to_map(app.url_path(owner))
 
-	// Handle federation notify
-	if len(notify) > 0 {
-		attachment_notify_update(app, owner, result, notify)
-	}
-
 	return sl_encode(result), nil
 }
 
-// mochi.attachment.move(id, position, notify?) -> dict: Move an attachment to a new position
+// mochi.attachment.move(id, position) -> dict: Move an attachment to a new position
 func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 3 {
-		return sl_error(fn, "syntax: <id: string>, <position: int>, [notify: array]")
+		return sl_error(fn, "syntax: <id: string>, <position: int>")
 	}
 
 	id, ok := sl.AsString(args[0])
@@ -959,11 +909,6 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	position, err := sl.AsInt32(args[1])
 	if err != nil || position < 1 {
 		return sl_error(fn, "invalid position")
-	}
-
-	var notify []string
-	if len(args) > 2 {
-		notify = sl_decode_string_list(args[2])
 	}
 
 	app := t.Local("app").(*App)
@@ -1006,44 +951,18 @@ func api_attachment_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	db.scan(&att, "select * from attachments where id = ?", id)
 	result := att.to_map(app.url_path(owner))
 
-	// Handle federation notify. Build the absolute-rank list of every
-	// attachment in this object so receivers can apply per-id UPDATE
-	// rather than replaying the rank-relative shifts (which diverge
-	// under concurrent moves on multi-host federated entities - the
-	// task #76 fix). Sender computes the post-move state; receivers
-	// REPLACE per id; last-arrival wins per id.
-	if len(notify) > 0 {
-		var ranks []map[string]any
-		if rows, err := db.rows("select id, rank from attachments where object = ?", att.Object); err == nil {
-			for _, r := range rows {
-				row_id, _ := r["id"].(string)
-				row_rank, _ := r["rank"].(int64)
-				if row_id == "" {
-					continue
-				}
-				ranks = append(ranks, map[string]any{"id": row_id, "rank": row_rank})
-			}
-		}
-		attachment_notify_move(app, owner, result, old_rank, ranks, notify)
-	}
-
 	return sl_encode(result), nil
 }
 
-// mochi.attachment.delete(id, notify?) -> None: Delete an attachment
+// mochi.attachment.delete(id) -> None: Delete an attachment
 func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
-		return sl_error(fn, "syntax: <id: string>, [notify: array]")
+		return sl_error(fn, "syntax: <id: string>")
 	}
 
 	id, ok := sl.AsString(args[0])
 	if !ok || id == "" {
 		return sl_error(fn, "invalid id")
-	}
-
-	var notify []string
-	if len(args) > 1 {
-		notify = sl_decode_string_list(args[1])
 	}
 
 	app := t.Local("app").(*App)
@@ -1081,28 +1000,18 @@ func api_attachment_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	db.row_remove(reg_attachments, map[string]any{"id": id})
 	db.attachment_shift_down(att.Object, att.Rank)
 
-	// Handle federation notify
-	if len(notify) > 0 {
-		attachment_notify_delete(app, owner, att.Object, id, notify)
-	}
-
 	return sl.True, nil
 }
 
-// mochi.attachment.clear(object, notify?) -> None: Delete all attachments for an object
+// mochi.attachment.clear(object) -> None: Delete all attachments for an object
 func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
-		return sl_error(fn, "syntax: <object: string>, [notify: array]")
+		return sl_error(fn, "syntax: <object: string>")
 	}
 
 	object, ok := sl.AsString(args[0])
 	if !ok || !valid(object, "path") {
 		return sl_error(fn, "invalid object")
-	}
-
-	var notify []string
-	if len(args) > 1 {
-		notify = sl_decode_string_list(args[1])
 	}
 
 	app := t.Local("app").(*App)
@@ -1141,11 +1050,6 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	// Delete the records.
 	for _, att := range attachments {
 		db.row_remove(reg_attachments, map[string]any{"id": att.ID})
-	}
-
-	// Handle federation notify
-	if len(notify) > 0 {
-		attachment_notify_clear(app, owner, object, notify)
 	}
 
 	return sl.None, nil
@@ -1458,171 +1362,6 @@ func api_attachment_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, variant
 	return sl_encode(rel), nil
 }
 
-// attachment_message builds an attachment-federation message carrying the
-// sender's declared service name + Services header, mirroring the data-fetch
-// path (attachment_fetch_remote). The receiver enforces that the message's
-// service is one the sender declares (route() -> "sender does not handle
-// service"); a plain message(from, to, app.id, ...) leaves Services empty and
-// uses app.id (an entity id for published apps) as the service, so every
-// attachment notification was rejected and retried forever. Set both here so
-// the notify path matches the fetch path.
-func attachment_message(app *App, owner *User, from, to, event string) *Message {
-	service := app.id
-	av := app.active(owner)
-	if av != nil && len(av.Services) > 0 {
-		service = av.Services[0]
-	}
-	m := message(from, to, service, event)
-	m.FromApp = app.id
-	m.Services = app_services(app, owner)
-	return m
-}
-
-// Federation: notify entities of new attachments
-func attachment_notify_create(app *App, owner *User, object string, attachments []map[string]any, notify []string) {
-	for _, entity := range notify {
-		if !valid(entity, "entity") {
-			continue
-		}
-		from := ""
-		if owner != nil && owner.Identity != nil {
-			from = owner.Identity.ID
-		}
-		if from == "" {
-			continue
-		}
-
-		m := attachment_message(app, owner, from, entity, "_attachment/create")
-		m.content = map[string]any{
-			"object": object,
-		}
-		m.add(attachments)
-		m.send()
-	}
-}
-
-// Federation: notify entities of inserted attachment
-func attachment_notify_insert(app *App, owner *User, object string, attachment map[string]any, notify []string) {
-	for _, entity := range notify {
-		if !valid(entity, "entity") {
-			continue
-		}
-		from := ""
-		if owner != nil && owner.Identity != nil {
-			from = owner.Identity.ID
-		}
-		if from == "" {
-			continue
-		}
-
-		m := attachment_message(app, owner, from, entity, "_attachment/insert")
-		m.content = map[string]any{
-			"object": object,
-		}
-		m.add(attachment)
-		m.send()
-	}
-}
-
-// Federation: notify entities of updated attachment
-func attachment_notify_update(app *App, owner *User, attachment map[string]any, notify []string) {
-	for _, entity := range notify {
-		if !valid(entity, "entity") {
-			continue
-		}
-		from := ""
-		if owner != nil && owner.Identity != nil {
-			from = owner.Identity.ID
-		}
-		if from == "" {
-			continue
-		}
-
-		m := attachment_message(app, owner, from, entity, "_attachment/update")
-		m.add(attachment)
-		m.send()
-	}
-}
-
-// Federation: notify entities of moved attachment. Sends both the
-// legacy (old_rank header + single attachment dict) shape and the
-// new (ranks list) shape in the same message. New receivers prefer
-// the ranks list - per-id REPLACE that converges under concurrent
-// moves; old receivers ignore the new field and fall through to the
-// legacy rank-relative shift path. After the next release cycle the
-// legacy fields can drop.
-//
-// Package-level var so the multi-master test harness can intercept
-// federation emits without spinning up libp2p / queue.db. See task
-// #79 in claude/plans/replication-test.md.
-var attachment_notify_move = func(app *App, owner *User, attachment map[string]any, old_rank int, ranks []map[string]any, notify []string) {
-	for _, entity := range notify {
-		if !valid(entity, "entity") {
-			continue
-		}
-		from := ""
-		if owner != nil && owner.Identity != nil {
-			from = owner.Identity.ID
-		}
-		if from == "" {
-			continue
-		}
-
-		m := attachment_message(app, owner, from, entity, "_attachment/move")
-		m.content = map[string]any{
-			"old_rank": fmt.Sprintf("%d", old_rank),
-			"ranks":    ranks,
-		}
-		m.add(attachment)
-		m.send()
-	}
-}
-
-// Federation: notify entities of deleted attachment
-func attachment_notify_delete(app *App, owner *User, object string, id string, notify []string) {
-	for _, entity := range notify {
-		if !valid(entity, "entity") {
-			continue
-		}
-		from := ""
-		if owner != nil && owner.Identity != nil {
-			from = owner.Identity.ID
-		}
-		if from == "" {
-			continue
-		}
-
-		m := attachment_message(app, owner, from, entity, "_attachment/delete")
-		m.content = map[string]any{
-			"object": object,
-			"id":     id,
-		}
-		m.send()
-	}
-}
-
-// Federation: notify entities of cleared attachments
-func attachment_notify_clear(app *App, owner *User, object string, notify []string) {
-	for _, entity := range notify {
-		if !valid(entity, "entity") {
-			continue
-		}
-		from := ""
-		if owner != nil && owner.Identity != nil {
-			from = owner.Identity.ID
-		}
-		if from == "" {
-			continue
-		}
-
-		m := attachment_message(app, owner, from, entity, "_attachment/clear")
-		m.content = map[string]any{
-			"object": object,
-		}
-		m.send()
-	}
-}
-
 // Federation: fetch attachment data from remote entity, returns cache file
 // path. variant is "" for the original bytes, "thumbnail" or "preview" for a
 // downscaled image variant (generated on the remote side).
@@ -1729,295 +1468,6 @@ func sl_extract_string(v sl.Value) string {
 		}
 	}
 	return ""
-}
-
-// Event handler: _attachment/create
-func (e *Event) attachment_event_create() {
-	object := e.get("object", "")
-	if object == "" {
-		return
-	}
-
-	source := e.from
-	if source == "" || !valid(source, "entity") {
-		return
-	}
-
-	// Skip self-notifications (owner subscribed to their own feed)
-	if source == e.to {
-		return
-	}
-
-	if e.db == nil {
-		return
-	}
-	e.db.attachments_setup()
-
-	var attachments []map[string]any
-	if !e.segment(&attachments) {
-		return
-	}
-
-	for _, att := range attachments {
-		id, _ := att["id"].(string)
-		if !valid(id, "id") {
-			continue
-		}
-
-		// replace-into overwrites by primary key, so a colliding id would let
-		// this sender hijack an attachment we own (entity="") or hold from a
-		// different peer. Only overwrite a row that is already ours from this
-		// same source; skip an id owned by anyone else.
-		if row, _ := e.db.row("select entity from attachments where id = ?", id); row != nil {
-			if held, _ := row["entity"].(string); held != source {
-				continue
-			}
-		}
-
-		name, _ := att["name"].(string)
-
-		e.db.exec(`replace into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, att["object"], source, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
-	}
-}
-
-// Event handler: _attachment/insert
-func (e *Event) attachment_event_insert() {
-	object := e.get("object", "")
-	if object == "" {
-		return
-	}
-
-	source := e.from
-	if source == "" || !valid(source, "entity") {
-		return
-	}
-
-	// Skip self-notifications (owner subscribed to their own feed)
-	if source == e.to {
-		return
-	}
-
-	if e.db == nil {
-		return
-	}
-	e.db.attachments_setup()
-
-	var att map[string]any
-	if !e.segment(&att) {
-		return
-	}
-
-	id, _ := att["id"].(string)
-	if !valid(id, "id") {
-		return
-	}
-
-	// Shift existing attachments
-	rank := 1
-	if r, ok := att["rank"].(float64); ok {
-		rank = int(r)
-	} else if r, ok := att["rank"].(int); ok {
-		rank = r
-	}
-	if rank < 1 {
-		rank = 1
-	}
-	e.db.attachment_shift_up(object, rank)
-
-	name, _ := att["name"].(string)
-
-	e.db.exec(`insert into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, att["object"], source, name, att["size"], att["content_type"], att["creator"], att["caption"], att["description"], att["rank"], att["created"])
-}
-
-// Event handler: _attachment/update
-func (e *Event) attachment_event_update() {
-	source := e.from
-	if source == "" || !valid(source, "entity") {
-		return
-	}
-
-	if e.db == nil {
-		return
-	}
-
-	var att map[string]any
-	if !e.segment(&att) {
-		return
-	}
-
-	id, _ := att["id"].(string)
-	if id == "" {
-		return
-	}
-
-	// Only update if we have this attachment and it's from this source
-	e.db.exec(`update attachments set caption = ?, description = ? where id = ? and entity = ?`,
-		att["caption"], att["description"], id, source)
-}
-
-// Event handler: _attachment/move
-//
-// Two payload shapes:
-//
-//  1. Absolute-rank list (preferred): e.content["ranks"] is a list of
-//     {id, rank} entries. Each entry is a per-id UPDATE; concurrent
-//     moves on multi-host federated entities converge by last-arrival
-//     per id rather than by replaying relative shifts. Task #76 fix.
-//
-//  2. Legacy rank-relative shift: old_rank header + single attachment
-//     dict in the first segment. Pre-#76 senders. Same behaviour as
-//     before; kept for one release cycle while sender + receiver roll
-//     out, then can drop.
-//
-// New receivers prefer (1) when present; (2) is the fallback.
-func (e *Event) attachment_event_move() {
-	source := e.from
-	if source == "" || !valid(source, "entity") {
-		return
-	}
-
-	if e.db == nil {
-		return
-	}
-
-	// Preferred path: absolute-rank list. Per-id UPDATE; order of
-	// concurrent moves doesn't matter - last writer wins per id.
-	// Checked before segment() so the legacy attachment dict doesn't
-	// need to be present on the new shape and tests can drive the
-	// handler without setting up a stream decoder.
-	if ranks, ok := e.content["ranks"].([]any); ok && len(ranks) > 0 {
-		for _, entry := range ranks {
-			row, ok := entry.(map[string]any)
-			if !ok {
-				continue
-			}
-			row_id, _ := row["id"].(string)
-			if row_id == "" {
-				continue
-			}
-			var row_rank int64
-			switch v := row["rank"].(type) {
-			case int64:
-				row_rank = v
-			case int:
-				row_rank = int64(v)
-			case float64:
-				row_rank = int64(v)
-			}
-			if row_rank > 0 {
-				e.db.exec("update attachments set rank = ? where id = ? and entity = ?", row_rank, row_id, source)
-			}
-		}
-		return
-	}
-
-	// Legacy fallback: rank-relative shift via old_rank header.
-	// segment() is called here (not at the top) because the legacy
-	// shape needs the attachment dict but the preferred path above
-	// doesn't.
-	var att map[string]any
-	if !e.segment(&att) {
-		return
-	}
-	id, _ := att["id"].(string)
-	if id == "" {
-		return
-	}
-	object, _ := att["object"].(string)
-	new_rank := 1
-	if r, ok := att["rank"].(float64); ok {
-		new_rank = int(r)
-	} else if r, ok := att["rank"].(int); ok {
-		new_rank = r
-	}
-	old_rank := int(atoi(e.get("old_rank", ""), 0))
-	if old_rank > 0 && new_rank > 0 && old_rank != new_rank {
-		if new_rank < old_rank {
-			e.db.exec("update attachments set rank = rank + 1 where object = ? and entity = ? and rank >= ? and rank < ?", object, source, new_rank, old_rank)
-		} else {
-			e.db.exec("update attachments set rank = rank - 1 where object = ? and entity = ? and rank > ? and rank <= ?", object, source, old_rank, new_rank)
-		}
-		e.db.exec("update attachments set rank = ? where id = ? and entity = ?", new_rank, id, source)
-	}
-}
-
-// Event handler: _attachment/delete
-func (e *Event) attachment_event_delete() {
-	source := e.from
-	if source == "" || !valid(source, "entity") {
-		return
-	}
-
-	if e.db == nil {
-		return
-	}
-
-	id := e.get("id", "")
-	object := e.get("object", "")
-	if id == "" {
-		return
-	}
-
-	// Only delete an attachment we hold FROM THIS SENDER. entity records the
-	// source a federated attachment was stored from, so `entity = source`
-	// authorises the delete: a sender may retract what it sent us and nothing
-	// else. A locally-owned attachment has entity="" and so is never deletable
-	// over P2P, and one federated from a different peer keeps that peer's id.
-	// Without this a peer could delete any attachment by id alone, across the
-	// recipient's whole store (confirmed cross-instance). Matches the guard
-	// _attachment/update, /move and /clear already apply.
-	var att Attachment
-	if e.db.scan(&att, "select * from attachments where id = ? and entity = ?", id, source) {
-		e.db.exec("delete from attachments where id = ? and entity = ?", id, source)
-		e.db.attachment_shift_down(object, att.Rank)
-
-		// Delete local file and image variants using os.Root for traversal protection
-		if e.user != nil && e.app != nil {
-			base := attachment_files_base(e.user.UID, e.app.id)
-			root, err := os.OpenRoot(base)
-			if err == nil {
-				attachment_files_remove(root, att.ID, att.Name)
-				root.Close()
-			}
-		}
-
-		// Delete cached file if exists
-		cache_path := fmt.Sprintf("%s/attachments/%s/%s/%s", cache_dir, source, e.app.id, id)
-		_ = os.Remove(cache_path)
-	}
-}
-
-// Event handler: _attachment/clear
-func (e *Event) attachment_event_clear() {
-	source := e.from
-	if source == "" || !valid(source, "entity") {
-		return
-	}
-
-	if e.db == nil {
-		return
-	}
-
-	object := e.get("object", "")
-	if object == "" {
-		return
-	}
-
-	// Get all attachments to delete cached files
-	var attachments []Attachment
-	err := e.db.scans(&attachments, "select * from attachments where object = ? and entity = ?", object, source)
-	if err != nil {
-		warn("Database error loading attachments for cache deletion: %v", err)
-	}
-
-	for _, att := range attachments {
-		cache_path := fmt.Sprintf("%s/attachments/%s/%s", cache_dir, source, att.ID)
-		_ = os.Remove(cache_path)
-	}
-
-	e.db.exec("delete from attachments where object = ? and entity = ?", object, source)
 }
 
 // Event handler: _attachment/data (responds with file bytes)
@@ -2263,61 +1713,6 @@ func api_attachment_store(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	return sl_encode(count), nil
-}
-
-// mochi.attachment.sync(object, recipients) -> int: Sync attachments to recipients, returns count
-func api_attachment_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 2 {
-		return sl_error(fn, "syntax: <object: string>, <recipients: array>")
-	}
-
-	object, ok := sl.AsString(args[0])
-	if !ok || !valid(object, "path") {
-		return sl_error(fn, "invalid object")
-	}
-
-	recipients := sl_decode_string_list(args[1])
-	if len(recipients) == 0 {
-		return sl.None, nil
-	}
-
-	app := t.Local("app").(*App)
-	if app == nil {
-		return sl_error(fn, "no app")
-	}
-
-	owner := attachment_user(t)
-	if owner == nil {
-		return sl_error(fn, "no owner")
-	}
-
-	db := db_app_system(owner, app)
-	if db == nil {
-		return sl_error(fn, "no database")
-	}
-	db.attachments_setup()
-
-	// Get existing attachments for object
-	var attachments []Attachment
-	err := db.scans(&attachments, "select * from attachments where object = ? order by rank", object)
-	if err != nil {
-		return sl.None, fmt.Errorf("database error: %v", err)
-	}
-
-	if len(attachments) == 0 {
-		return sl_encode(0), nil
-	}
-
-	// Convert to maps for notification
-	var results []map[string]any
-	for _, att := range attachments {
-		results = append(results, att.to_map(app.url_path(owner)))
-	}
-
-	// Send to recipients using existing notify infrastructure
-	attachment_notify_create(app, owner, object, results, recipients)
-
-	return sl_encode(len(attachments)), nil
 }
 
 // mochi.attachment.fetch(object, entity) -> list: Fetch attachments from a remote entity

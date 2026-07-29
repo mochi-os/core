@@ -267,6 +267,13 @@ func api_group_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	// that knew nothing beforehand, which is why this is gated while
 	// mochi.group.get is not: get resolves an id the app already holds in its own
 	// access rules, and ids are unguessable uids.
+	//
+	// That last clause is an assumption about callers, not something this
+	// function can check, and it is load-bearing - a group created as "family"
+	// would be readable by any app without groups/read. The people app is the
+	// only creator of groups and enforces the uid shape on a caller-supplied id
+	// for exactly this reason; anything else that starts creating groups has to
+	// do the same, or this exemption stops being safe.
 	if err := require_permission(t, fn, "groups/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}

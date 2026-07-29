@@ -198,10 +198,22 @@ func (e *Event) route() error {
 	// Get the version to use for this event
 	av := a.active(e.user)
 
-	// Handle built-in attachment events
-	// This must happen before the event lookup since _attachment/* events aren't registered in app.json
-	// System database (app.db) is always available, even for apps without a declared database file
-	if strings.HasPrefix(e.event, "_attachment/") {
+	// Handle built-in attachment events for apps that do attachment work.
+	//
+	// This must happen before the event lookup since _attachment/* events aren't
+	// registered in app.json - the app never declares them, so nothing else
+	// limits who they reach. A declared database is what marks an app as doing
+	// the data work attachments are part of; every app using mochi.attachment.*
+	// declares one, and the handlers below store a remote peer's rows and bytes
+	// under the app, so an app that does none of that must not be a target.
+	//
+	// The clause was dropped in passing when attachment rows moved from the
+	// app's own database to the system one (2026-01-10), which read as
+	// plumbing and left twelve apps - including a file server that publishes
+	// its directory to the web - accepting strangers' content into storage
+	// they never asked for. Rows still go to the system database; only the
+	// entry condition is restored.
+	if strings.HasPrefix(e.event, "_attachment/") && av.Database.File != "" {
 		if e.from == "" {
 			info("Event dropping unsigned attachment event")
 			audit_message_rejected("", "unsigned")

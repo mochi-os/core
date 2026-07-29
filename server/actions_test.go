@@ -433,3 +433,50 @@ func TestWriteFileDirectRequestKeepsOwner(t *testing.T) {
 		t.Errorf("body = %q, want OWN-FILE", body)
 	}
 }
+
+// TestWriteFileUnresolvedRouteOwnerFailsClosed covers a hosted domain whose
+// account no longer resolves - most often because it was deleted after the
+// route was made, leaving a live hostname pointing at nobody. Falling back to
+// the requester would put back the behaviour the route owner lookup exists to
+// remove: one URL answering with whoever happens to be asking.
+func TestWriteFileUnresolvedRouteOwnerFailsClosed(t *testing.T) {
+	original := data_dir
+	data_dir = t.TempDir()
+	t.Cleanup(func() { data_dir = original })
+
+	visitor := &User{UID: "visitor"}
+	app := &App{id: "files"}
+
+	base := api_file_base(visitor, app)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("creating files directory: %v", err)
+	}
+	if err := os.WriteFile(base+"/index.html", []byte("VISITOR-OWN-FILE"), 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/index.html", nil)
+	a := &Action{
+		web:  c,
+		user: visitor,
+		// A route matched, but its owner could not be resolved to an account.
+		domain: &DomainInfo{route: &DomainRouteInfo{}},
+	}
+
+	thread := &sl.Thread{Name: "test"}
+	thread.SetLocal("owner", visitor)
+	thread.SetLocal("app", app)
+
+	if _, err := a.sl_write_file(thread, sl.NewBuiltin("write.file", nil), sl.Tuple{sl.String("index.html")}, nil); err != nil {
+		t.Fatalf("sl_write_file returned %v", err)
+	}
+
+	if w.Code != 500 {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+	if body := w.Body.String(); strings.Contains(body, "VISITOR-OWN-FILE") {
+		t.Errorf("fell back to the requester's own file: %q", body)
+	}
+}

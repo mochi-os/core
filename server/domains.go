@@ -606,6 +606,12 @@ func route_create(domain_name, path, method, target, context string, owner strin
 	if !route_methods[method] {
 		return nil, fmt.Errorf("invalid method")
 	}
+	// Enforced here as well as at the API, for the same reason the method is:
+	// a context the serving side cannot use stores a route that fails every
+	// request to it, so it is refused at write time whichever way it arrives.
+	if !route_context_valid(context) {
+		return nil, fmt.Errorf("invalid context")
+	}
 
 	db := db_open("db/domains.db")
 	n := now()
@@ -639,6 +645,12 @@ func route_update(domain_name, path string, updates map[string]any) error {
 			method, _ := v.(string)
 			if !route_methods[method] {
 				return fmt.Errorf("invalid method")
+			}
+		}
+		if k == "context" {
+			context, _ := v.(string)
+			if !route_context_valid(context) {
+				return fmt.Errorf("invalid context")
 			}
 		}
 		sets = append(sets, k+"=?")
@@ -1094,9 +1106,16 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "access denied")
 	}
 
-	// Owner defaults to user's UID; admins can override
+	// Owner defaults to user's UID; admins can override.
+	//
+	// The override is checked to name a real account: a route is what tells the
+	// serving side whose data a hostname publishes, and one naming nobody used
+	// to be stored happily and then answer requests from whoever was asking.
 	owner := user.UID
 	if owner_override != "" && user.administrator() {
+		if user_by_uid(owner_override) == nil {
+			return sl_error(fn, "unknown owner")
+		}
 		owner = owner_override
 	}
 

@@ -773,3 +773,53 @@ func TestRouteMethodValidation(t *testing.T) {
 		t.Errorf("route_update with a valid method failed: %v", err)
 	}
 }
+
+// TestRouteCreateRejectsInvalidContext checks the helper itself, not only the
+// Starlark API above it. A context the serving side cannot use stores a route
+// that fails every request to it, so it is refused at write time whichever way
+// it arrives - the same reason the method is checked here.
+func TestRouteCreateRejectsInvalidContext(t *testing.T) {
+	cleanup := create_domains_test_env(t)
+	defer cleanup()
+
+	domain_register("context.example.com")
+
+	if _, err := route_create("context.example.com", "/bad", "app", "files", "café", "owner", 0); err == nil {
+		t.Error("route_create accepted a non-ASCII context")
+	}
+	if _, err := route_create("context.example.com", "/sep", "app", "files", "a/b", "owner", 0); err == nil {
+		t.Error("route_create accepted a context containing a separator")
+	}
+	if _, err := route_create("context.example.com", "/ok", "app", "files", "docs", "owner", 0); err != nil {
+		t.Errorf("route_create rejected a valid context: %v", err)
+	}
+
+	// An empty context stays legal: it means the route is scoped to the
+	// domain's root, which is what production uses.
+	if _, err := route_create("context.example.com", "/root", "app", "files", "", "owner", 0); err != nil {
+		t.Errorf("route_create rejected an empty context: %v", err)
+	}
+}
+
+// TestRouteUpdateRejectsInvalidContext is the same guard on the update path,
+// which could otherwise walk a valid route into an unusable one.
+func TestRouteUpdateRejectsInvalidContext(t *testing.T) {
+	cleanup := create_domains_test_env(t)
+	defer cleanup()
+
+	domain_register("update.example.com")
+	if _, err := route_create("update.example.com", "", "app", "files", "docs", "owner", 0); err != nil {
+		t.Fatalf("route_create: %v", err)
+	}
+
+	if err := route_update("update.example.com", "", map[string]any{"context": "café"}); err == nil {
+		t.Error("route_update accepted a non-ASCII context")
+	}
+	if err := route_update("update.example.com", "", map[string]any{"context": "guides"}); err != nil {
+		t.Errorf("route_update rejected a valid context: %v", err)
+	}
+
+	if r := route_get("update.example.com", ""); r == nil || r.Context != "guides" {
+		t.Errorf("context = %v, want guides", r)
+	}
+}

@@ -803,7 +803,18 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	// Only the bytes served are redirected, not the action's owner: apps read
 	// owner == user as "the requester owns this data", so moving the action's
 	// owner would have them authorize a stranger as the account being published.
-	if a.domain != nil && a.domain.route != nil && a.domain.route.owner != nil {
+	//
+	// A route whose account cannot be resolved fails closed. Falling back to the
+	// requester would put back exactly the behaviour above - one URL answering
+	// with whoever is asking - and the way a route loses its account is not an
+	// administrator mistyping one but the account being deleted afterwards,
+	// leaving a live hostname pointing at nobody.
+	if a.domain != nil && a.domain.route != nil {
+		if a.domain.route.owner == nil {
+			warn("Domain route serving %q has no resolvable owner; refusing to serve a file", a.web.Request.Host)
+			a.error_label(500, "errors.server_error")
+			return sl.None, nil
+		}
 		owner = a.domain.route.owner
 	}
 

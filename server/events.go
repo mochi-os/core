@@ -198,22 +198,21 @@ func (e *Event) route() error {
 	// Get the version to use for this event
 	av := a.active(e.user)
 
-	// Handle built-in attachment events for apps that do attachment work.
+	// Handle built-in attachment events, for the apps that declare they take
+	// part in attachment sync.
 	//
 	// This must happen before the event lookup since _attachment/* events aren't
-	// registered in app.json - the app never declares them, so nothing else
-	// limits who they reach. A declared database is what marks an app as doing
-	// the data work attachments are part of; every app using mochi.attachment.*
-	// declares one, and the handlers below store a remote peer's rows and bytes
-	// under the app, so an app that does none of that must not be a target.
+	// registered in app.json - the app never declares them there, so without
+	// this nothing limits who they reach, and the handlers below store a remote
+	// peer's rows and fetched bytes under whichever app the sender names.
 	//
-	// The clause was dropped in passing when attachment rows moved from the
-	// app's own database to the system one (2026-01-10), which read as
-	// plumbing and left twelve apps - including a file server that publishes
-	// its directory to the web - accepting strangers' content into storage
-	// they never asked for. Rows still go to the system database; only the
-	// entry condition is restored.
-	if strings.HasPrefix(e.event, "_attachment/") && av.Database.File != "" {
+	// Gated on the declaration rather than on anything inferred. A condition on
+	// the app having a database was doing this job by accident until it was
+	// dropped in passing (2026-01-10) when attachment rows moved to the system
+	// database; restoring it would have re-established a coincidence, since a
+	// database means the app does data work of some kind and nine apps that
+	// touch no attachment declare one.
+	if strings.HasPrefix(e.event, "_attachment/") && av.Attachments {
 		if e.from == "" {
 			info("Event dropping unsigned attachment event")
 			audit_message_rejected("", "unsigned")

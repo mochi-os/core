@@ -11,31 +11,32 @@ import (
 	"testing"
 )
 
-// TestAttachmentEventsSkipDatabaselessApp checks who core will run built-in
+// TestAttachmentEventsSkipUndeclaringApp checks who core will run built-in
 // _attachment/* handling for. The handlers store other people's content in the
 // app's storage, so an app that declares no database - and therefore does no
 // attachment work at all - must not be a destination for them.
 //
 // attachments_setup() runs before the handler reads its payload, so the table
 // appearing in the app's system database is proof the handler executed.
-func TestAttachmentEventsSkipDatabaselessApp(t *testing.T) {
-	if attachment_dispatch_reaches(t, "") {
-		t.Error("built-in attachment handling ran for an app that declares no database: a peer can have content stored under an app that does no attachment work")
+func TestAttachmentEventsSkipUndeclaringApp(t *testing.T) {
+	if attachment_dispatch_reaches(t, false) {
+		t.Error("built-in attachment handling ran for an app that does not declare attachment support: a peer can have content stored under an app that does no attachment work")
 	}
 }
 
-// TestAttachmentEventsReachDatabaseApp is the other half, and the one that
+// TestAttachmentEventsReachDeclaringApp is the other half, and the one that
 // stops the guard above from being satisfied by simply refusing everything:
 // an app that does attachment work must still receive them.
-func TestAttachmentEventsReachDatabaseApp(t *testing.T) {
-	if !attachment_dispatch_reaches(t, "myapp.db") {
-		t.Error("built-in attachment handling did not run for an app that declares a database: legitimate attachment sync is broken")
+func TestAttachmentEventsReachDeclaringApp(t *testing.T) {
+	if !attachment_dispatch_reaches(t, true) {
+		t.Error("built-in attachment handling did not run for an app that declares attachment support: legitimate attachment sync is broken")
 	}
 }
 
 // attachment_dispatch_reaches routes a stranger's _attachment/create at an app
-// declaring the given database file, and reports whether the handler ran.
-func attachment_dispatch_reaches(t *testing.T, database string) bool {
+// that does or does not declare attachment support, and reports whether the
+// handler ran.
+func attachment_dispatch_reaches(t *testing.T, declares bool) bool {
 	t.Helper()
 
 	// Distinct id per case: db_open caches handles by data_dir-relative path,
@@ -44,9 +45,9 @@ func attachment_dispatch_reaches(t *testing.T, database string) bool {
 	// Distinct id and service per case: db_open caches handles by
 	// data_dir-relative path and app_for_service caches by (user, service), so
 	// two cases sharing either would hand the second the first's app.
-	app_id, service := "filelike-nodatabase", "publish-nodatabase"
-	if database != "" {
-		app_id, service = "filelike-database", "publish-database"
+	app_id, service := "filelike-undeclared", "publish-undeclared"
+	if declares {
+		app_id, service = "filelike-declared", "publish-declared"
 	}
 	tmp, err := os.MkdirTemp("", "mochi_attachment_scope")
 	if err != nil {
@@ -71,9 +72,9 @@ func attachment_dispatch_reaches(t *testing.T, database string) bool {
 	udb.exec(`insert into entities (id, fingerprint, user, class, name, privacy) values (?, ?, ?, 'person', 'Victim', 'public')`,
 		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "bbbbbbbbb", victim)
 
-	// An app shaped like files: one service, no declared database.
+	// An app shaped like files: one service, no attachment work.
 	av := &AppVersion{Version: "1", Services: []string{service}}
-	av.Database.File = database
+	av.Attachments = declares
 	av.Architecture.Engine = "starlark"
 	av.Architecture.Version = 4
 	app := &App{id: app_id, versions: map[string]*AppVersion{"1": av}, internal: av}

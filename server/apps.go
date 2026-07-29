@@ -100,6 +100,17 @@ type AppVersion struct {
 	Classes  []string `json:"classes"`
 	Paths    []string `json:"paths"`
 	Services []string `json:"services"`
+
+	// Attachments records that this app takes part in attachment sync, so
+	// core will deliver the built-in _attachment/* events to it. Those events
+	// store a remote peer's rows and fetched bytes under the app, and nothing
+	// the app declares elsewhere limits who they reach - they are dispatched
+	// before the app.json event lookup - so an app that does no attachment
+	// work must not be a destination for them. Declared rather than inferred:
+	// the condition used to be "has a declared database", which is a proxy for
+	// doing data work in general and let nine apps that never touch an
+	// attachment receive other people's content.
+	Attachments bool `json:"attachments"`
 	Require  struct {
 		Role    string `json:"role"`
 		Version struct {
@@ -2355,6 +2366,7 @@ func (av *AppVersion) reload() {
 	av.Database = fresh.Database
 	av.Services = fresh.Services
 	av.Classes = fresh.Classes
+	av.Attachments = fresh.Attachments
 	av.Architecture = fresh.Architecture
 	av.Execute = fresh.Execute
 	av.Themes = fresh.Themes

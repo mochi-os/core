@@ -1013,6 +1013,33 @@ func web_multipart_maximum(user *User) int64 {
 }
 
 // Serve HTML file with dynamic Open Graph meta tags
+// opengraph_absolute turns an app's og:image into the absolute URL the protocol
+// requires. OpenGraph consumers are crawlers fetching the page from outside, so a
+// relative reference has nothing to resolve against and is simply dropped - people
+// and feeds both emitted "-/avatar" and neither has ever shown an image in a link
+// preview.
+//
+// Resolved here rather than in each app because the app cannot do it: the handler
+// receives only its route parameters, not the scheme or host it was reached on,
+// and those vary per request across the domains a server answers for.
+//
+// The path is treated as a directory even when it does not end in "/". A profile
+// served at /people/<fingerprint> keeps its avatar at /people/<fingerprint>/-/avatar,
+// so ordinary relative resolution - which would discard the last segment and give
+// /people/-/avatar - is wrong for every entity route.
+func opengraph_absolute(image, scheme, host, path string) string {
+	if strings.Contains(image, "://") || strings.HasPrefix(image, "//") {
+		return image
+	}
+	if strings.HasPrefix(image, "/") {
+		return scheme + "://" + host + image
+	}
+	if !strings.HasSuffix(path, "/") {
+		path += "/"
+	}
+	return scheme + "://" + host + path + image
+}
+
 func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *Entity, file string) bool {
 	// Get owner for database access - use entity owner if available
 	var owner *User
@@ -1093,6 +1120,7 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 		content = regexp_replace_meta_name(content, "description", desc)
 	}
 	if image, ok := og["image"].(string); ok && image != "" {
+		image = opengraph_absolute(image, scheme, c.Request.Host, c.Request.URL.Path)
 		escaped := escape_attr(image)
 		// Add og:image if not already present
 		if !strings.Contains(content, `property="og:image"`) {

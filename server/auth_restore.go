@@ -30,6 +30,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -384,11 +385,29 @@ func restore_schedule(uid, bundle string) {
 	}
 }
 
+// restore_source_origin reduces a bundle's claimed source server to a bare
+// https origin, or returns empty for anything else. The value is
+// attacker-controlled in a crafted bundle and lands in an anchor href on
+// the destination (the delete-your-old-account banner), so only the shape
+// export_source_server produces — https scheme, host, nothing else — is
+// stored. Empty means the banner link simply doesn't render; the restore
+// itself is unaffected.
+func restore_source_origin(source string) string {
+	u, err := url.Parse(strings.TrimSpace(source))
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Opaque != "" || u.Hostname() == "" {
+		return ""
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return ""
+	}
+	return "https://" + strings.ToLower(u.Host)
+}
+
 // restore_finish_account records the source server (drives the cleanup
 // banner) and the pending re-links from linked.json.
 func restore_finish_account(uid string, manifest export_manifest, bundle string) {
 	udb := db_open("db/users.db")
-	udb.exec("update users set restore_source=? where uid=?", manifest.Source, uid)
+	udb.exec("update users set restore_source=? where uid=?", restore_source_origin(manifest.Source), uid)
 
 	var links []export_link
 	if err := restore_read_json(filepath.Join(bundle, "linked.json"), &links); err != nil {

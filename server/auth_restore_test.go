@@ -218,3 +218,35 @@ func TestRestoreSafeMethods(t *testing.T) {
 		})
 	}
 }
+
+func TestRestoreSourceOrigin(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		// The shape export_source_server produces survives unchanged.
+		{"plain", "https://mochi.example", "https://mochi.example"},
+		{"trailing-slash", "https://mochi.example/", "https://mochi.example"},
+		{"port", "https://mochi.example:8443", "https://mochi.example:8443"},
+		{"case", "HTTPS://Mochi.Example", "https://mochi.example"},
+		// Anything a legitimate export can't contain is dropped entirely.
+		{"empty", "", ""},
+		{"http", "http://mochi.example", ""},
+		{"script", "javascript:alert(1)", ""},
+		{"script-slashes", "javascript://mochi.example%0aalert(1)", ""},
+		{"credentials", "https://user:secret@mochi.example", ""},
+		{"path", "https://mochi.example/phish", ""},
+		{"query", "https://mochi.example?q=1", ""},
+		{"fragment", "https://mochi.example#f", ""},
+		{"garbage", "not a url", ""},
+		{"relative", "mochi.example", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := restore_source_origin(c.source); got != c.want {
+				t.Errorf("restore_source_origin(%q) = %q, want %q", c.source, got, c.want)
+			}
+		})
+	}
+}

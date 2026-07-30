@@ -88,6 +88,18 @@ func TestThemesValidate(t *testing.T) {
 		{"comment split", []AppTheme{theme(func(t *AppTheme) {
 			t.Overrides = map[string]string{"--background-image": "u/*x*/rl(https://evil.example/x)"}
 		})}, nil, "bad theme override value"},
+		// The style attribute is HTML, so the parser decodes character
+		// references before CSS parses the value: these spell url( and a
+		// declaration separator without containing either literally.
+		{"character reference in url", []AppTheme{theme(func(t *AppTheme) {
+			t.Overrides = map[string]string{"--background-image": "u&#114;l(https://evil.example/x)"}
+		})}, nil, "bad theme override value"},
+		{"character reference separator", []AppTheme{theme(func(t *AppTheme) {
+			t.Overrides = map[string]string{"--primary-l": "red&#59;background-&#105mage:u&#114l(https://evil.example/x)"}
+		})}, nil, "bad theme override value"},
+		{"character reference in font", []AppTheme{theme(func(t *AppTheme) {
+			t.FontSans = "Georgia&#59;color:red"
+		})}, nil, "bad theme font"},
 		{"gradient value", []AppTheme{theme(func(t *AppTheme) {
 			t.Overrides = map[string]string{"--background-image": "radial-gradient(ellipse at top, color-mix(in oklch, var(--primary) 12%, transparent), transparent 70%)"}
 		})}, nil, ""},
@@ -117,5 +129,44 @@ func TestThemesValidate(t *testing.T) {
 				t.Fatalf("themes_validate = %v, want error containing %q", err, c.want)
 			}
 		})
+	}
+}
+
+// TestWebUserThemeStyleEscapes covers the boundary rather than the value: the
+// style attribute is HTML, so whatever reaches it must leave escaped. The
+// radius preference is the shortest path to a value the caller controls, and
+// its own check (like every check that reasons about the raw string) does not
+// stop a character reference — u&#114l( is url( only after the HTML parser has
+// decoded it, which happens after every string check in the server has run.
+func TestWebUserThemeStyleEscapes(t *testing.T) {
+	user, cleanup := create_test_user(t)
+	defer cleanup()
+
+	// theme is set empty so the active-theme lookup is skipped: this test is
+	// about the attribute, not about resolving a theme. The references are
+	// deliberately unterminated — a trailing semicolon would be caught by the
+	// existing literal-semicolon check, whereas `&#59` reaches the attribute
+	// and was verified in Chrome decoding to `;` and injecting the declaration.
+	user.Preferences = map[string]string{
+		"theme":  "",
+		"radius": "1rem&#59background-&#105mage:u&#114l(https://evil.example/x)",
+	}
+
+	style := web_user_theme_style(user)
+	if style == "" {
+		t.Fatal("web_user_theme_style returned nothing, so the test proves nothing")
+	}
+	if strings.Contains(style, "&#") {
+		t.Errorf("style attribute carries an undecoded character reference, which the HTML parser will turn back into CSS: %s", style)
+	}
+	if !strings.Contains(style, "&amp;#") {
+		t.Errorf("expected the ampersands to be escaped, got: %s", style)
+	}
+	// The quote in a font stack must survive as a quote once the parser
+	// decodes the attribute, so escaping may not be lossy.
+	user.Preferences = map[string]string{"theme": "", "font": "serif"}
+	style = web_user_theme_style(user)
+	if !strings.Contains(style, "&#39;Times New Roman&#39;") {
+		t.Errorf("font stack quotes should survive as escaped quotes, got: %s", style)
 	}
 }

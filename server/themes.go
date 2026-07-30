@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"html"
 	"regexp"
 	"sort"
 	"strings"
@@ -73,7 +74,7 @@ func themes_validate(av *AppVersion) error {
 		}
 
 		for _, font := range []string{t.FontSans, t.FontMono} {
-			if font != "" && (len(font) > 300 || strings.ContainsAny(font, `;<>"`) || !match_non_controls.MatchString(font)) {
+			if font != "" && (len(font) > 300 || strings.ContainsAny(font, `;<>"&`) || !match_non_controls.MatchString(font)) {
 				return fmt.Errorf("App bad theme font %q in theme %q", font, t.ID)
 			}
 		}
@@ -94,11 +95,16 @@ func themes_validate(av *AppVersion) error {
 			if !match_theme_override_key.MatchString(key) {
 				return fmt.Errorf("App bad theme override %q in theme %q", key, t.ID)
 			}
-			// Backslash and comment syntax are refused outright: both let an
-			// identifier be written so it doesn't read as itself, which is how
-			// a name-based check would be evaded (\75rl( is url(, and a value
-			// carrying no backslash cannot name a function it doesn't spell).
-			if len(value) > 500 || strings.ContainsAny(value, `;<>"\`) || strings.Contains(value, "/*") ||
+			// Backslash, ampersand and comment syntax are refused outright:
+			// each lets an identifier be written so it doesn't read as itself,
+			// which is how a name-based check is evaded. \75rl( is url( to the
+			// CSS tokenizer, and u&#114l( is url( to the HTML parser, which
+			// decodes the style attribute before CSS sees it. A value carrying
+			// none of them cannot name a function it doesn't spell. The style
+			// attribute is escaped on output too (web_user_theme_style) — this
+			// is so a manifest that tries fails loudly at load rather than
+			// silently rendering something inert.
+			if len(value) > 500 || strings.ContainsAny(value, `;<>"\&`) || strings.Contains(value, "/*") ||
 				!match_non_controls.MatchString(value) || match_theme_fetch.MatchString(value) {
 				return fmt.Errorf("App bad theme override value for %q in theme %q", key, t.ID)
 			}
@@ -429,7 +435,16 @@ func web_user_theme_style(user *User) string {
 	if len(style_parts) == 0 {
 		return ""
 	}
-	return `style="` + strings.Join(style_parts, "; ") + `"`
+	// The attribute goes into HTML, and the parser decodes character
+	// references before CSS ever parses the value — so a theme value carrying
+	// `u&#114l(` or `red&#59;background-image:url(` reconstructs a fetching
+	// function or a whole extra declaration on <html> that none of the checks
+	// above, or the manifest validation, ever saw as such. Escaping at the
+	// point of output is the boundary that holds whatever reached here, and it
+	// costs nothing in fidelity: the parser decodes each reference back to the
+	// character the theme meant, so the quotes in a font stack still arrive as
+	// quotes.
+	return `style="` + html.EscapeString(strings.Join(style_parts, "; ")) + `"`
 }
 
 // web_apply_user_document_theme injects user appearance/theme into a full

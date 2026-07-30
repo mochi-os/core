@@ -37,6 +37,10 @@ func api_remote_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl.None, nil
 	}
 
+	if reason := remote_rate_limit(t, url); reason != "" {
+		return sl_error(fn, reason)
+	}
+
 	peer, err := peer_connect_url(url)
 	if err != nil {
 		return sl.None, nil
@@ -238,6 +242,10 @@ func api_remote_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "invalid entity_id")
 	}
 
+	if reason := remote_rate_limit(t, entity_id); reason != "" {
+		return sl_error(fn, reason)
+	}
+
 	service, ok = sl.AsString(args[1])
 	if !ok || !valid(service, "constant") {
 		return sl_error(fn, "invalid service")
@@ -326,6 +334,10 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "invalid entity_id")
 	}
 
+	if reason := remote_rate_limit(t, entity_id); reason != "" {
+		return sl_error(fn, reason)
+	}
+
 	service, ok = sl.AsString(args[1])
 	if !ok || !valid(service, "constant") {
 		return sl_error(fn, "invalid service")
@@ -401,6 +413,10 @@ func api_remote_ping(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	entity_id, ok = sl.AsString(args[0])
 	if !ok || (!valid(entity_id, "entity") && !valid(entity_id, "fingerprint")) {
 		return sl_error(fn, "invalid entity_id")
+	}
+
+	if reason := remote_rate_limit(t, entity_id); reason != "" {
+		return sl_error(fn, reason)
 	}
 
 	if len(args) > 1 {

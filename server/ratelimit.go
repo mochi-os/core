@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	sl "go.starlark.net/starlark"
 )
 
 type rate_limit_entry struct {
@@ -131,7 +132,70 @@ var (
 		limit:   1000,
 		window:  1,
 	}
+
+	// Outbound remote request/stream/ping/peer, per app AND target.
+	// mochi.remote.* was the one outbound primitive with no limit, while
+	// mochi.url.* and mochi.message.send have had one for a long time. Apps
+	// proxy a remote entity's assets through public actions - a person's avatar,
+	// a feed's image - so an anonymous caller can make this server re-fetch
+	// someone else's bytes as fast as it will go.
+	//
+	// Keyed on the TARGET as well as the app, not on the app alone like its
+	// siblings. Keying on the app alone would let a flood against one entity
+	// exhaust the budget every other user of that app shares, turning a
+	// bandwidth nuisance into a denial of service against ourselves.
+	//
+	// The ceiling is set by the largest legitimate fan-out at a SINGLE target,
+	// which is the apps update sweep: apps.star queries one publisher entity
+	// once per app in the catalogue, so a cold-cache sweep costs as many calls
+	// as there are apps (27 today). A refusal there does not degrade - Starlark
+	// has no try/except, so the builtin error aborts the whole action and the
+	// updates page 500s - so this has to clear a catalogue several times larger
+	// than today's, not merely today's. 600/minute leaves room to ~600 apps
+	// while still turning an unbounded loop into 10/second.
+	//
+	// It bounds the REQUEST rate, not bytes: 600 banner fetches a minute is
+	// still a lot of traffic. Byte accounting is a separate mechanism this does
+	// not attempt.
+	rate_limit_remote_entity = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   600,
+		window:  60,
+	}
+
+	// Aggregate backstop for the same path: 3000 per minute per app. Per-target
+	// limiting bounds hammering ONE entity but not fanning out across every
+	// entity the directory knows, so this bounds the total. High enough that a
+	// legitimate list view fetching many different avatars never reaches it.
+	rate_limit_remote = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   3000,
+		window:  60,
+	}
 )
+
+// remote_rate_limit charges one outbound mochi.remote.* call against both the
+// per-target and per-app budgets. Returns the refusal message, or "" to proceed.
+// The target is an entity id for request/stream/ping and a URL for peer; either
+// way it is the thing we are about to dial, which is what needs bounding.
+func remote_rate_limit(t *sl.Thread, target string) string {
+	app, _ := t.Local("app").(*App)
+	if app == nil {
+		// No app in the thread: an internal call, not app-attributable. There is
+		// no budget to charge and no untrusted caller to bound.
+		return ""
+	}
+	// The numbers come from the limiters themselves: a hardcoded message drifts
+	// the moment a limit is retuned, and then reports a budget that is not the
+	// one being enforced.
+	if !rate_limit_remote_entity.allow(app.id + "/" + target) {
+		return "rate limit exceeded (" + strconv.Itoa(rate_limit_remote_entity.limit) + " remote calls per minute per target)"
+	}
+	if !rate_limit_remote.allow(app.id) {
+		return "rate limit exceeded (" + strconv.Itoa(rate_limit_remote.limit) + " remote calls per minute)"
+	}
+	return ""
+}
 
 // Check if request is allowed; returns true if allowed, false if rate limited
 func (r *rate_limiter) allow(key string) bool {

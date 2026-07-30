@@ -44,12 +44,30 @@ KEEP_WORDS = {
     "teal", "terracotta", "url", "violet", "wiki", "wikis",
 }
 
+# Exact-string allowlist, checked before word matching. A digit-bearing
+# token only matches here: _WORD finds alphabetic runs, so "libp2p" splits
+# into "libp" and "p" and is in no word list. Mirrors KEEP_ENGLISH in the
+# monorepo's claude/scripts/i18n_glossary.py — keep the two in sync.
+KEEP_ENGLISH = frozenset({
+    "API", "Air", "Apps", "CRM", "Chat", "Chess", "Comptroller",
+    "Disputes", "Email", "Feeds", "Forums", "Git", "GitHub", "Go",
+    "Google", "Help", "Home", "ID", "Invitations", "JWT", "Market",
+    "Matcha", "Mentions", "Menu", "Messages", "Mochi", "Moderation",
+    "Normal", "Notifications", "OAuth", "OIDC", "Offline", "P2P", "PGN",
+    "PKCE", "PayPal", "Pushbullet", "QR", "RSS", "Replica", "Rose",
+    "SAML", "SGF", "SHA", "Server", "Steel", "Stripe", "Teal",
+    "Terracotta", "URL", "Violet", "Wiki", "Wikis", "libp2p", "ntfy",
+})
+
 _WORD = re.compile(r"[A-Za-z]+")
 _PLACEHOLDER = re.compile(r"\{[^}]*\}")
 
 
 def keep_english(source):
     """True when leaving `source` in English is acceptable (not a gap)."""
+    source = source.strip()
+    if source in KEEP_ENGLISH:
+        return True
     words = _WORD.findall(_PLACEHOLDER.sub("", source))
     return bool(words) and all(w.lower() in KEEP_WORDS for w in words)
 

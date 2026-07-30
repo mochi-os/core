@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -195,6 +196,55 @@ const (
 	routing_domain = "domain" // domain route, method=entity, entity from the target
 	routing_hosted = "hosted" // domain route, method=app, no entity
 )
+
+// web_action_error renders an action that aborted. Starlark has no try/except, so
+// any builtin refusing unwinds the whole action and lands here; the type of the
+// error is the only remaining signal for what status the caller deserves.
+//
+// The generic case stays a 500 with the scrubbed text, which is right for a
+// genuine fault. The two typed cases are refusals rather than faults, and saying
+// so matters: a client is entitled to retry a 500, so reporting a deliberate
+// refusal as one invites the retry that recharges the very budget being
+// protected, and makes a working limiter indistinguishable from an outage in the
+// logs.
+func web_action_error(c *gin.Context, app string, err error) {
+	var permission *PermissionError
+	if errors.As(err, &permission) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error":      "permission_required",
+			"app":        app,
+			"permission": permission.Permission,
+			"restricted": permission.Restricted,
+		})
+		return
+	}
+
+	var limit *RateLimitError
+	if errors.As(err, &limit) {
+		// Retry-After carries the machine-readable wait; the body carries a
+		// translated label with no numbers in it. The full detail - which budget,
+		// how large - goes to the log only. That detail is exactly what the old
+		// generic 500 handed to anonymous callers along with the internal function
+		// name.
+		if limit.Retry > 0 {
+			c.Header("Retry-After", strconv.Itoa(limit.Retry))
+		}
+		// One line per app per minute, not one per refusal. A refused caller is
+		// usually a flood, so logging each one hands an anonymous attacker control
+		// of our log volume and disk - and the second identical line tells an
+		// operator nothing the first did not. The detail is logged rather than the
+		// wrapped error because sl_error folds the builtin name into text that
+		// already contains it, which reads as the same sentence twice.
+		if rate_limit_refusal_log.allow(app) {
+			warn("web: %s rate limited (%s), retry after %ds", app, limit.detail, limit.Retry)
+		}
+		respond_error(c, http.StatusTooManyRequests,
+			"rate_limit_exceeded_please_try_again_later", "errors.rate_limit_exceeded", nil)
+		return
+	}
+
+	c.JSON(http.StatusInternalServerError, gin.H{"error": path_scrub(err.Error())})
+}
 
 func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) bool {
 	if a == nil {
@@ -746,18 +796,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			if c.Writer.Written() {
 				return true
 			}
-			// Check for permission error and return structured response
-			var permErr *PermissionError
-			if errors.As(err, &permErr) {
-				c.JSON(http.StatusForbidden, gin.H{
-					"error":      "permission_required",
-					"app":        a.id,
-					"permission": permErr.Permission,
-					"restricted": permErr.Restricted,
-				})
-				return true
-			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": path_scrub(err.Error())})
+			web_action_error(c, a.id, err)
 			return true
 		}
 		if !c.Writer.Written() {

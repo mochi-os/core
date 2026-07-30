@@ -163,6 +163,15 @@ var (
 		window:  60,
 	}
 
+	// Not a budget: a once-per-minute-per-app gate on the log line written when a
+	// refusal is turned into a 429. A limit of 1 used this way is the same trick
+	// rate_limit_entry_withdraw uses to log an event at most once per window.
+	rate_limit_refusal_log = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   1,
+		window:  60,
+	}
+
 	// Aggregate backstop for the same path: 3000 per minute per app. Per-target
 	// limiting bounds hammering ONE entity but not fanning out across every
 	// entity the directory knows, so this bounds the total. High enough that a
@@ -174,27 +183,94 @@ var (
 	}
 )
 
+// RateLimitError is a refusal that the HTTP layer turns into a 429 rather than
+// the generic 500 every other builtin error becomes.
+//
+// Starlark has no try/except, so a limiter refusing inside a builtin unwinds the
+// whole action, and web_action_error saw only an opaque error: it answered 500
+// with the error text, which named the internal function and the budget. A 500
+// is not merely untidy - it reads as "the server faulted", so a correct client
+// retries it, and each retry recharges the budget the limiter is trying to
+// protect. Modelled on PermissionError, which already survives the unwind this
+// way (sl_error wraps with %w precisely so errors.As keeps working).
+//
+// Retry is seconds until the window resets, for Retry-After. Zero means unknown,
+// in which case no header is sent rather than a guessed one.
+//
+// detail names which budget was exhausted and how large it is. It reaches the log
+// and never the client: the numbers are what the old 500 disclosed to anonymous
+// callers, and an operator reading "which limit fired" is the only party who needs
+// them.
+type RateLimitError struct {
+	Retry  int
+	detail string
+}
+
+func (e *RateLimitError) Error() string {
+	if e.detail == "" {
+		return "rate limit exceeded"
+	}
+	return "rate limit exceeded (" + e.detail + ")"
+}
+
+// retry reports seconds until key's window resets, for Retry-After. Zero when no
+// window is live, which the caller reports as "unknown" rather than as "retry
+// now". reset and now() are both Unix seconds, so the difference is already whole
+// seconds and is at least 1 whenever it is positive - there is no rounding to do,
+// and no way to answer a misleading 0 while a window is still open.
+func (r *rate_limiter) retry(key string) int {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	entry := r.entries[key]
+	if entry == nil {
+		return 0
+	}
+	remaining := entry.reset - now()
+	if remaining <= 0 {
+		return 0
+	}
+	return int(remaining)
+}
+
 // remote_rate_limit charges one outbound mochi.remote.* call against both the
-// per-target and per-app budgets. Returns the refusal message, or "" to proceed.
+// per-target and per-app budgets. Returns nil to proceed, or a *RateLimitError so
+// the HTTP layer answers 429 with Retry-After instead of a generic 500.
 // The target is an entity id for request/stream/ping and a URL for peer; either
 // way it is the thing we are about to dial, which is what needs bounding.
-func remote_rate_limit(t *sl.Thread, target string) string {
+//
+// The detail (which budget, and how large) goes into the error text for the log
+// only - the response body carries a translated label with no numbers in it. The
+// numbers come from the limiters themselves rather than being written out here: a
+// hardcoded figure drifts the moment a limit is retuned, and then names a budget
+// that is not the one being enforced.
+func remote_rate_limit(t *sl.Thread, target string) error {
 	app, _ := t.Local("app").(*App)
 	if app == nil {
 		// No app in the thread: an internal call, not app-attributable. There is
 		// no budget to charge and no untrusted caller to bound.
-		return ""
+		return nil
 	}
-	// The numbers come from the limiters themselves: a hardcoded message drifts
-	// the moment a limit is retuned, and then reports a budget that is not the
-	// one being enforced.
-	if !rate_limit_remote_entity.allow(app.id + "/" + target) {
-		return "rate limit exceeded (" + strconv.Itoa(rate_limit_remote_entity.limit) + " remote calls per minute per target)"
+	entity_key := app.id + "/" + target
+	if !rate_limit_remote_entity.allow(entity_key) {
+		return rate_limit_refuse(rate_limit_remote_entity, entity_key,
+			"remote calls per minute per target")
 	}
 	if !rate_limit_remote.allow(app.id) {
-		return "rate limit exceeded (" + strconv.Itoa(rate_limit_remote.limit) + " remote calls per minute)"
+		return rate_limit_refuse(rate_limit_remote, app.id, "remote calls per minute")
 	}
-	return ""
+	return nil
+}
+
+// rate_limit_refuse builds the refusal for a limiter that has just declined key.
+// Kept in one place so every limiter reports Retry-After from its own window
+// rather than each call site deriving it, and so the log line always names which
+// budget was hit while the client response never does.
+func rate_limit_refuse(limiter *rate_limiter, key, what string) error {
+	return &RateLimitError{
+		Retry:  limiter.retry(key),
+		detail: strconv.Itoa(limiter.limit) + " " + what,
+	}
 }
 
 // Check if request is allowed; returns true if allowed, false if rate limited

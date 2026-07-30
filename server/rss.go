@@ -28,7 +28,7 @@ func api_rss_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	// Rate limit by app ID
 	app, _ := t.Local("app").(*App)
 	if app != nil && !rate_limit_url.allow(app.id) {
-		return sl_error(fn, "rate limit exceeded (100 requests per minute)")
+		return sl_error(fn, rate_limit_refuse(rate_limit_url, app.id, "requests per minute"))
 	}
 
 	url, ok := sl.AsString(args[0])

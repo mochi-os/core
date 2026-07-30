@@ -198,9 +198,12 @@ func (e *Event) route() error {
 	// Get the version to use for this event
 	av := a.active(e.user)
 
-	// Handle built-in attachment events
-	// This must happen before the event lookup since _attachment/* events aren't registered in app.json
-	// System database (app.db) is always available, even for apps without a declared database file
+	// Handle the built-in attachment byte-transfer events. Only data and fetch
+	// remain: the metadata events were removed, because they dispatched here -
+	// ahead of the app.json lookup below - so an app could neither decline them
+	// nor check the sender, while the only sender gate is a service name the
+	// sender writes about itself. These two are on the same footing and are being
+	// moved to the apps as well; see claude/plans/attachments-to-apps.md.
 	if strings.HasPrefix(e.event, "_attachment/") {
 		if e.from == "" {
 			info("Event dropping unsigned attachment event")

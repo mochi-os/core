@@ -294,6 +294,14 @@ func attachment_content_type(name string) string {
 }
 
 // mochi.attachment.save(object, field, captions?, descriptions?) -> list: Save uploaded files as attachments
+//
+// The upper bound is one higher than the documented arity, here and in the
+// other calls that used to take a `notify` list. That argument is gone - core no
+// longer fans attachment metadata out to peers - and an app still passing it is
+// tolerated and ignored rather than refused, deliberately: an installed app runs
+// the version it was published with, so tightening this would break every app
+// that has not yet been redeployed against a newer server. Drop the extra slot
+// once no published app version passes it.
 func api_attachment_save(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 || len(args) > 5 {
 		return sl_error(fn, "syntax: <object: string>, <field: string>, [captions: array], [descriptions: array]")

@@ -50,6 +50,24 @@ type Action struct {
 	web    *gin.Context
 	inputs map[string]string
 	body   string
+	// entity is the entity this action was routed to, nil for a class-level
+	// action. routing names how it was reached - see a.routing below.
+	entity  *Entity
+	routing string
+}
+
+// action_entity is the routed entity as a.entity sees it.
+//
+// A dict, not an object with attributes: `class` is a reserved word in Starlark,
+// so `a.entity.class` is a parse error ("not an identifier") and the field would
+// be unreachable. A dict also matches mochi.entity.info(), which apps already
+// read with entity.get("class").
+func action_entity(e *Entity) sl.Value {
+	return sl_encode(map[string]any{
+		"id":    e.ID,
+		"class": e.Class,
+		"name":  e.Name,
+	})
 }
 
 // ActionInput provides input methods (callable as a.input(), with a.input.has())
@@ -259,7 +277,7 @@ func (a *Action) input(name string) string {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access", "body", "cookie", "domain", "dump", "error", "file", "header", "input", "inputs", "json", "logout", "print", "redirect", "template", "token", "upload", "user", "write"}
+	return []string{"access", "body", "cookie", "domain", "dump", "entity", "error", "file", "header", "input", "inputs", "json", "logout", "owner", "print", "redirect", "routing", "template", "token", "upload", "user", "write"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
@@ -270,6 +288,29 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return sl.String(a.body), nil
 	case "cookie":
 		return &ActionCookie{action: a}, nil
+	case "entity":
+		// None on a class-level action, so an app can tell "no entity" from
+		// "an entity I know nothing about".
+		if a.entity == nil {
+			return sl.None, nil
+		}
+		return action_entity(a.entity), nil
+	case "owner":
+		// Does the AUTHENTICATED caller own the routed entity. Read a.user, not
+		// the effective user: web_action substitutes the owner into the thread
+		// local for an anonymous request to a public action, and resolving this
+		// through that substitution is the defect this field exists to retire -
+		// it would simply move into core, where every app inherits it.
+		//
+		// Always a bool, never None: an app writing `if a.owner` on a
+		// class-level action gets False rather than an error, so the guard
+		// fails closed instead of failing loudly in the wrong place.
+		if a.user == nil || a.entity == nil {
+			return sl.Bool(false), nil
+		}
+		return sl.Bool(a.entity.User == a.user.UID), nil
+	case "routing":
+		return sl.String(a.routing), nil
 	case "domain":
 		return a.domain, nil
 	case "dump":

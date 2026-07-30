@@ -753,10 +753,20 @@ func api_entity_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl.Bool(entity_verify(id, text, signature)), nil
 }
 
-// mochi.entity.get(id) -> list: Get an entity owned by the effective user
-// Accepts either an entity ID or a fingerprint.
-// Uses the same logic as database access to determine the effective user:
-// anonymous or domain routing -> owner, otherwise -> authenticated user.
+// mochi.entity.get(id) -> list: Get an entity owned by the AUTHENTICATED user,
+// empty for an anonymous caller. Accepts either an entity ID or a fingerprint.
+//
+// Every caller uses this to answer "does the caller own this", so it resolves
+// the caller and nothing else. It used to ask db_user_for_thread, which answers
+// a different question - which per-user database to open - and returns the
+// OWNER for an anonymous caller or a domain route carrying a context. Reading a
+// storage-routing decision as an identity claim meant that on such a route every
+// logged-in visitor was reported as the owner of the owner's entities, and six
+// apps inferred ownership from exactly that (feeds/forums owned(), wikis comment
+// deletion, publisher's 403 gate, repositories, people). Core keeps the two
+// apart everywhere else - access_check takes owner AND user as separate
+// arguments - and db_user_for_thread stays as it is for the two consumers that
+// genuinely want storage: opening the app database, and resolving attachments.
 func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
@@ -767,15 +777,16 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "invalid id %q", id)
 	}
 
-	// Determine effective user using the same logic as database access. An
-	// "no usable context" error here just means "no entities to show".
-	effective, _ := db_user_for_thread(t)
-	if effective == nil {
+	// No authenticated caller owns nothing, rather than owning the owner's
+	// entities. This is also what makes the anonymous half of the same mistake
+	// impossible rather than a convention apps have to remember.
+	user, _ := t.Local("user").(*User)
+	if user == nil {
 		return sl_encode([]any{}), nil
 	}
 
 	db := db_open("db/users.db")
-	e, err := db.rows("select id, fingerprint, parent, class, name, data, published from entities where (id=? or fingerprint=?) and user=?", id, id, effective.UID)
+	e, err := db.rows("select id, fingerprint, parent, class, name, data, published from entities where (id=? or fingerprint=?) and user=?", id, id, user.UID)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}

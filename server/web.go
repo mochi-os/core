@@ -183,7 +183,20 @@ func web_log_redact(path string) string {
 }
 
 // Call a web action
-func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
+// routing names how an action was reached, surfaced to Starlark as a.routing.
+// Declared by each dispatch site rather than inferred here: the security-relevant
+// distinction is whether the entity was chosen by the CALLER (routing_path,
+// routing_direct) or configured by the OPERATOR (routing_domain), and only the
+// dispatcher knows which branch it took.
+const (
+	routing_class  = "class"  // /<app>/-/<action>, no entity
+	routing_path   = "path"   // /<app>/<entity>/-/<action>, entity from the URL
+	routing_direct = "direct" // /<entity>/-/<action>, app resolved from the class
+	routing_domain = "domain" // domain route, method=entity, entity from the target
+	routing_hosted = "hosted" // domain route, method=app, no entity
+)
+
+func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) bool {
 	if a == nil {
 		return false
 	}
@@ -609,15 +622,17 @@ func web_action(c *gin.Context, a *App, name string, e *Entity) bool {
 
 	// Create action
 	action := Action{
-		id:     action_id(),
-		user:   user,
-		owner:  owner,
-		domain: domain,
-		app:    a,
-		active: av,
-		token:  api_token,
-		web:    c,
-		inputs: make(map[string]string),
+		id:      action_id(),
+		user:    user,
+		owner:   owner,
+		domain:  domain,
+		app:     a,
+		active:  av,
+		token:   api_token,
+		web:     c,
+		inputs:  make(map[string]string),
+		entity:  e,
+		routing: routing,
 	}
 
 	for k, v := range aa.parameters {
@@ -1640,7 +1655,7 @@ func web_path(c *gin.Context) {
 				c.Redirect(http.StatusMovedPermanently, c.Request.URL.Path+"/")
 				return
 			}
-			web_action(c, a, action, nil)
+			web_action(c, a, action, nil, routing_hosted)
 			return
 
 		case "redirect":
@@ -1668,7 +1683,7 @@ func web_path(c *gin.Context) {
 			// Same reason as the direct-entity branch below: the app is known
 			// here but absent from the URL, so publish it for the SPA.
 			c.Set("mochi_app_path", a.url_path(owner))
-			web_action(c, a, action, e)
+			web_action(c, a, action, e, routing_domain)
 			return
 
 		default:
@@ -1684,12 +1699,12 @@ func web_path(c *gin.Context) {
 		if user == nil && !web_is_iframe_request(c) {
 			// Serve login app for unauthenticated top-level navigations
 			if login_app := app_login(); login_app != nil {
-				web_action(c, login_app, "", nil)
+				web_action(c, login_app, "", nil, routing_class)
 				return
 			}
 		}
 		if a := app_by_root(user); a != nil {
-			web_action(c, a, "", nil)
+			web_action(c, a, "", nil, routing_class)
 			return
 		}
 		respond_error(c, http.StatusNotFound, "no_root_app_configured", "errors.no_root_app", nil)
@@ -1735,7 +1750,7 @@ func web_path(c *gin.Context) {
 			if len(segments) > 2 {
 				action = e.Fingerprint + "/" + strings.Join(segments[2:], "/")
 			}
-			if web_action(c, a, action, e) {
+			if web_action(c, a, action, e, routing_path) {
 				return
 			}
 		} else if is_entity_segment(second) {
@@ -1746,7 +1761,7 @@ func web_path(c *gin.Context) {
 		// Route on /<app>/<action...>
 		class_action := strings.Join(segments[1:], "/")
 
-		web_action(c, a, class_action, nil)
+		web_action(c, a, class_action, nil, routing_class)
 		return
 	}
 
@@ -1773,13 +1788,13 @@ func web_path(c *gin.Context) {
 			action = e.Fingerprint + "/" + strings.Join(segments[1:], "/")
 		}
 
-		web_action(c, a, action, e)
+		web_action(c, a, action, e, routing_direct)
 		return
 	}
 
 	// Unknown path - route to root app if available
 	if a := app_by_root(user); a != nil {
-		web_action(c, a, raw, nil)
+		web_action(c, a, raw, nil, routing_class)
 		return
 	}
 	respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)

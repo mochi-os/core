@@ -8,9 +8,120 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
+
+var (
+	match_theme_override_key = regexp.MustCompile(`^--[A-Za-z0-9_-]{1,64}$`)
+	match_theme_radius       = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?(rem|em|px)$`)
+	match_theme_background   = regexp.MustCompile(`^[0-9a-zA-Z#(),.% -]{1,100}$`)
+	// url( followed by a scheme or a protocol-relative authority. A custom
+	// property like --background-image is consumed by theme.css in an image
+	// context, so an external reference in an override value fires a request
+	// to a third party; same-origin relative url() stays allowed.
+	match_theme_external = regexp.MustCompile(`(?i)url\(\s*['"]?\s*([a-zA-Z][a-zA-Z0-9+.-]*:|//)`)
+)
+
+// themes_validate checks an app manifest's themes and theme_icons blocks.
+// Themes cross a trust boundary — any installed app may ship themes the user
+// can apply platform-wide — so identifiers, numeric ranges, enums, paths and
+// override properties are constrained at load, not at render. Override keys
+// are restricted to CSS custom properties by shape, not by allowlist: the
+// contract is "any variable theme.css defines", and the --* restriction is
+// what stops a theme setting ordinary properties (display, pointer-events)
+// on another app's root element.
+func themes_validate(av *AppVersion) error {
+	if len(av.Themes) > 100 {
+		return fmt.Errorf("App has too many themes (%d)", len(av.Themes))
+	}
+	identifiers := map[string]bool{}
+	for _, t := range av.Themes {
+		if !valid(t.ID, "constant") {
+			return fmt.Errorf("App bad theme id %q", t.ID)
+		}
+		if identifiers[t.ID] {
+			return fmt.Errorf("App duplicate theme id %q", t.ID)
+		}
+		identifiers[t.ID] = true
+
+		if !valid(t.Label, "constant") {
+			return fmt.Errorf("App bad theme label %q", t.Label)
+		}
+
+		if t.Hue < 0 || t.Hue > 360 || t.HueBG < 0 || t.HueBG > 360 {
+			return fmt.Errorf("App bad theme hue in theme %q", t.ID)
+		}
+		if t.Chroma < 0 || t.Chroma > 0.5 {
+			return fmt.Errorf("App bad theme chroma in theme %q", t.ID)
+		}
+
+		if t.BorderRadius != "" && !match_theme_radius.MatchString(t.BorderRadius) {
+			return fmt.Errorf("App bad theme border radius %q in theme %q", t.BorderRadius, t.ID)
+		}
+
+		switch t.Spacing {
+		case "", "compact", "comfortable", "spacious":
+		default:
+			return fmt.Errorf("App bad theme spacing %q in theme %q", t.Spacing, t.ID)
+		}
+
+		for _, font := range []string{t.FontSans, t.FontMono} {
+			if font != "" && (len(font) > 300 || strings.ContainsAny(font, `;<>"`) || !match_non_controls.MatchString(font)) {
+				return fmt.Errorf("App bad theme font %q in theme %q", font, t.ID)
+			}
+		}
+
+		switch t.IconMask {
+		case "", "circle", "square", "rounded", "squircle":
+		default:
+			return fmt.Errorf("App bad theme icon mask %q in theme %q", t.IconMask, t.ID)
+		}
+		if t.IconBackground != "" && !match_theme_background.MatchString(t.IconBackground) {
+			return fmt.Errorf("App bad theme icon background %q in theme %q", t.IconBackground, t.ID)
+		}
+
+		if len(t.Overrides) > 50 {
+			return fmt.Errorf("App has too many theme overrides (%d) in theme %q", len(t.Overrides), t.ID)
+		}
+		for key, value := range t.Overrides {
+			if !match_theme_override_key.MatchString(key) {
+				return fmt.Errorf("App bad theme override %q in theme %q", key, t.ID)
+			}
+			if len(value) > 500 || strings.ContainsAny(value, `;<>"`) || !match_non_controls.MatchString(value) || match_theme_external.MatchString(value) {
+				return fmt.Errorf("App bad theme override value for %q in theme %q", key, t.ID)
+			}
+		}
+
+		if len(t.Icons) > 100 {
+			return fmt.Errorf("App has too many theme icons (%d) in theme %q", len(t.Icons), t.ID)
+		}
+		for path, file := range t.Icons {
+			if path == "" || !valid(path, "apppath") {
+				return fmt.Errorf("App bad theme icon path %q in theme %q", path, t.ID)
+			}
+			if !valid(file, "filepath") {
+				return fmt.Errorf("App bad theme icon file %q in theme %q", file, t.ID)
+			}
+		}
+	}
+
+	if len(av.ThemeIcons) > 100 {
+		return fmt.Errorf("App has too many theme icons (%d)", len(av.ThemeIcons))
+	}
+	for id, file := range av.ThemeIcons {
+		parts := strings.SplitN(id, ":", 2)
+		if len(parts) != 2 || !valid(parts[0], "constant") || !valid(parts[1], "constant") {
+			return fmt.Errorf("App bad theme icon id %q", id)
+		}
+		if !valid(file, "filepath") {
+			return fmt.Errorf("App bad theme icon file %q", file)
+		}
+	}
+
+	return nil
+}
 
 // web_user_appearance_attrs returns the html-tag class attribute and an
 // optional <script> that selects dark/light mode according to the user's

@@ -1474,7 +1474,6 @@ func apps_publisher_id_set(id string) {
 	apps_publisher_lock.Unlock()
 }
 
-
 // Manage which apps and their versions are installed
 func apps_manager() {
 	time.Sleep(time.Second)
@@ -1798,6 +1797,10 @@ func app_read(id string, base string) (*AppVersion, error) {
 		if !valid(f.Function, "function") {
 			return nil, fmt.Errorf("App bad function function %q", f.Function)
 		}
+	}
+
+	if err := themes_validate(&av); err != nil {
+		return nil, err
 	}
 
 	return &av, nil
@@ -2306,6 +2309,13 @@ func (av *AppVersion) reload() {
 	var fresh AppVersion
 	if err := json.Unmarshal(data, &fresh); err != nil {
 		info("App reload failed to parse %q: %v", path, err)
+		return
+	}
+
+	// Reload skips app_read, so the themes trust boundary is re-checked
+	// here; a manifest that fails keeps the loaded version.
+	if err := themes_validate(&fresh); err != nil {
+		info("App reload rejected %q: %v", path, err)
 		return
 	}
 

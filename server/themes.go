@@ -17,11 +17,16 @@ var (
 	match_theme_override_key = regexp.MustCompile(`^--[A-Za-z0-9_-]{1,64}$`)
 	match_theme_radius       = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?(rem|em|px)$`)
 	match_theme_background   = regexp.MustCompile(`^[0-9a-zA-Z#(),.% -]{1,100}$`)
-	// url( followed by a scheme or a protocol-relative authority. A custom
-	// property like --background-image is consumed by theme.css in an image
-	// context, so an external reference in an override value fires a request
-	// to a third party; same-origin relative url() stays allowed.
-	match_theme_external = regexp.MustCompile(`(?i)url\(\s*['"]?\s*([a-zA-Z][a-zA-Z0-9+.-]*:|//)`)
+	// Function names that make the browser fetch. A custom property like
+	// --background-image is consumed as a real background-image, so a value
+	// naming any of these turns a theme into a beacon that reports every
+	// page view to a third party. Matching the construct rather than the URL
+	// shape is deliberate: a blocklist of URL shapes is bypassable, and
+	// url(h\74tp://...), image-set('http://...' 1x), -webkit-image-set(...)
+	// and even \75rl(...) were all verified fetching in Chrome against a
+	// scheme-matching pattern. No legitimate theme value needs to fetch —
+	// gradients, colours, lengths, shadows and font stacks name none of these.
+	match_theme_fetch = regexp.MustCompile(`(?i)url|image|src|element|cross-fade|paint`)
 )
 
 // themes_validate checks an app manifest's themes and theme_icons blocks.
@@ -89,7 +94,12 @@ func themes_validate(av *AppVersion) error {
 			if !match_theme_override_key.MatchString(key) {
 				return fmt.Errorf("App bad theme override %q in theme %q", key, t.ID)
 			}
-			if len(value) > 500 || strings.ContainsAny(value, `;<>"`) || !match_non_controls.MatchString(value) || match_theme_external.MatchString(value) {
+			// Backslash and comment syntax are refused outright: both let an
+			// identifier be written so it doesn't read as itself, which is how
+			// a name-based check would be evaded (\75rl( is url(, and a value
+			// carrying no backslash cannot name a function it doesn't spell).
+			if len(value) > 500 || strings.ContainsAny(value, `;<>"\`) || strings.Contains(value, "/*") ||
+				!match_non_controls.MatchString(value) || match_theme_fetch.MatchString(value) {
 				return fmt.Errorf("App bad theme override value for %q in theme %q", key, t.ID)
 			}
 		}

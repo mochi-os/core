@@ -57,6 +57,11 @@ func TestThemesValidate(t *testing.T) {
 		{"ordinary property key", []AppTheme{theme(func(t *AppTheme) { t.Overrides = map[string]string{"display": "none"} })}, nil, "bad theme override"},
 		{"font-size key", []AppTheme{theme(func(t *AppTheme) { t.Overrides = map[string]string{"font-size": "200%"} })}, nil, "bad theme override"},
 		{"override value injection", []AppTheme{theme(func(t *AppTheme) { t.Overrides = map[string]string{"--primary-l": `0.5;display:none`} })}, nil, "bad theme override value"},
+		// Every construct below was verified fetching in Chrome when set as
+		// --background-image, which lib/web's base layer consumes as a real
+		// background-image. A theme has no legitimate reason to fetch, so
+		// same-origin and relative references are refused too rather than
+		// leaving a shape for an attacker to aim at.
 		{"external url", []AppTheme{theme(func(t *AppTheme) {
 			t.Overrides = map[string]string{"--background-image": "url(https://evil.example/beacon)"}
 		})}, nil, "bad theme override value"},
@@ -64,7 +69,25 @@ func TestThemesValidate(t *testing.T) {
 			t.Overrides = map[string]string{"--background-image": "URL( 'https://evil.example/x' )"}
 		})}, nil, "bad theme override value"},
 		{"protocol-relative url", []AppTheme{theme(func(t *AppTheme) { t.Overrides = map[string]string{"--background-image": "url(//evil.example/x)"} })}, nil, "bad theme override value"},
-		{"relative url", []AppTheme{theme(func(t *AppTheme) { t.Overrides = map[string]string{"--background-image": "url(/themes/waves.svg)"} })}, nil, ""},
+		{"relative url", []AppTheme{theme(func(t *AppTheme) { t.Overrides = map[string]string{"--background-image": "url(/themes/waves.svg)"} })}, nil, "bad theme override value"},
+		{"escaped scheme", []AppTheme{theme(func(t *AppTheme) {
+			t.Overrides = map[string]string{"--background-image": `url(h\74tp://evil.example/x)`}
+		})}, nil, "bad theme override value"},
+		{"escaped url token", []AppTheme{theme(func(t *AppTheme) {
+			t.Overrides = map[string]string{"--background-image": `\75rl(http://evil.example/x)`}
+		})}, nil, "bad theme override value"},
+		{"image-set", []AppTheme{theme(func(t *AppTheme) {
+			t.Overrides = map[string]string{"--background-image": "image-set('https://evil.example/x' 1x)"}
+		})}, nil, "bad theme override value"},
+		{"webkit image-set", []AppTheme{theme(func(t *AppTheme) {
+			t.Overrides = map[string]string{"--background-image": "-webkit-image-set(url('https://evil.example/x') 1x)"}
+		})}, nil, "bad theme override value"},
+		{"cross-fade", []AppTheme{theme(func(t *AppTheme) {
+			t.Overrides = map[string]string{"--background-image": "cross-fade(url('https://evil.example/x') 50%, red)"}
+		})}, nil, "bad theme override value"},
+		{"comment split", []AppTheme{theme(func(t *AppTheme) {
+			t.Overrides = map[string]string{"--background-image": "u/*x*/rl(https://evil.example/x)"}
+		})}, nil, "bad theme override value"},
 		{"gradient value", []AppTheme{theme(func(t *AppTheme) {
 			t.Overrides = map[string]string{"--background-image": "radial-gradient(ellipse at top, color-mix(in oklch, var(--primary) 12%, transparent), transparent 70%)"}
 		})}, nil, ""},

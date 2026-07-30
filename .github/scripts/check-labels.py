@@ -34,13 +34,14 @@ OVERLAY = {"en", "en-us", "en-ca", "fr-ca", "es-ar", "zh-hk", "yue", "nn", "de-c
 
 # Lowercase alphabetic keep-words: brand/protocol nouns, loanwords, colours.
 KEEP_WORDS = {
-    "mochi", "stripe", "github", "pushbullet", "ntfy", "oauth", "oidc",
-    "pkce", "jwt", "saml", "libp2p", "crm", "comptroller", "git", "google",
-    "paypal", "api", "url", "id", "rss", "qr", "sgf", "pgn", "sha",
-    "apps", "chat", "chess", "disputes", "email", "feeds", "forums", "go",
-    "help", "home", "market", "mentions", "menu", "messages", "moderation",
-    "normal", "notifications", "offline", "replica", "rose", "teal",
-    "violet", "wiki", "wikis", "server",
+    "air", "api", "apps", "chat", "chess", "comptroller", "crm",
+    "disputes", "email", "feeds", "forums", "git", "github", "go",
+    "google", "help", "home", "id", "invitations", "jwt", "libp2p",
+    "market", "matcha", "mentions", "menu", "messages", "mochi",
+    "moderation", "normal", "notifications", "ntfy", "oauth", "offline",
+    "oidc", "paypal", "pgn", "pkce", "pushbullet", "qr", "replica",
+    "rose", "rss", "saml", "server", "sgf", "sha", "steel", "stripe",
+    "teal", "terracotta", "url", "violet", "wiki", "wikis",
 }
 
 _WORD = re.compile(r"[A-Za-z]+")

@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -1060,6 +1061,15 @@ type stream_limit_reader struct {
 	reader    io.Reader
 	remaining int64
 	exceeded  bool
+	// client and app key the byte budgets this relay is charged against. Empty
+	// client disables metering, for relays with no HTTP caller to attribute.
+	client string
+	app    string
+	// spent records that a budget ran out mid-relay, which is reported
+	// differently from exceeding the caller's own per-call cap: one is this
+	// client taking more than their share, the other is the far end sending more
+	// than the app allowed.
+	spent bool
 }
 
 func (r *stream_limit_reader) Read(p []byte) (int, error) {
@@ -1073,11 +1083,22 @@ func (r *stream_limit_reader) Read(p []byte) (int, error) {
 		}
 		return 0, io.EOF
 	}
+	// Checked per read, not once up front: a single relay can be a gigabyte, so a
+	// budget that was open when it started can be gone long before it finishes.
+	// Stopping here is what makes the budget a bound on traffic rather than a
+	// bound on how many relays may BEGIN.
+	if r.client != "" && stream_bytes_refusal(r.client, r.app) != nil {
+		r.spent = true
+		return 0, io.EOF
+	}
 	if int64(len(p)) > r.remaining {
 		p = p[:r.remaining]
 	}
 	n, err := r.reader.Read(p)
 	r.remaining -= int64(n)
+	if r.client != "" && n > 0 {
+		stream_bytes_charge(r.client, r.app, n)
+	}
 	return n, err
 }
 
@@ -1110,7 +1131,24 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	// whatever the far end feels like sending, for as long as it sends it, and the
 	// per-call rate limit bounds calls against an unbounded per-call cost. Wrapped
 	// here rather than in each branch so the SVG path inherits it too.
-	limited := &stream_limit_reader{reader: stream.raw_reader(), remaining: maximum}
+	// Refuse before writing anything when this client's budget is already gone, so
+	// they get a clean 429 with Retry-After rather than a body that stops partway.
+	// Once the copy starts the status and headers are sent and cannot be retracted.
+	app_id := ""
+	if a.app != nil {
+		app_id = a.app.id
+	}
+	client := app_id + "/" + rate_limit_client_ip(a.web)
+	if refusal := stream_bytes_refusal(client, app_id); refusal != nil {
+		return sl_error(fn, refusal)
+	}
+
+	limited := &stream_limit_reader{
+		reader:    stream.raw_reader(),
+		remaining: maximum,
+		client:    client,
+		app:       app_id,
+	}
 	var reader io.Reader = limited
 
 	// Set Content-Type to octet-stream if not already set (avoids JSON interpretation)
@@ -1153,11 +1191,32 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	if err != nil && !is_client_disconnect(err) {
 		return sl_error(fn, "stream copy error: %v", err)
 	}
+	if limited.spent {
+		return a.write_stream_spent(fn, n)
+	}
 	if limited.exceeded {
 		return a.write_stream_curtailed(fn, maximum, n)
 	}
 
 	return sl.MakeInt64(n), nil
+}
+
+// write_stream_spent reports a relay stopped because the caller's byte budget ran
+// out mid-transfer, as distinct from the far end exceeding the app's per-call cap.
+// Erroring rather than returning the count keeps a partial body from being taken
+// for a complete one, exactly as the cap does.
+func (a *Action) write_stream_spent(fn *sl.Builtin, written int64) (sl.Value, error) {
+	app := ""
+	if a.app != nil {
+		app = a.app.id
+	}
+	if rate_limit_refusal_log.allow(app) {
+		warn("actions: %s stopped a relay at %d bytes: the caller's byte budget is spent", app, written)
+	}
+	return sl_error(fn, &RateLimitError{
+		Retry:  rate_limit_stream_client.retry(app + "/" + rate_limit_client_ip(a.web)),
+		detail: strconv.Itoa(rate_limit_stream_client.limit) + " kilobytes relayed per minute per client",
+	})
 }
 
 // write_stream_curtailed reports a peer that tried to send more than the caller

@@ -163,6 +163,41 @@ var (
 		window:  60,
 	}
 
+	// Bytes relayed out of a.write.stream, per app and CLIENT, 2GB per minute.
+	// Measured in kilobytes: rate_limit_entry.count is an int, and a byte count
+	// this size would overflow it on a 32-bit build.
+	//
+	// This is the half the per-call cap cannot do. The cap bounds ONE relay; this
+	// bounds how many a caller may induce, which is what turns 600 fetches of a
+	// 10MB banner from 6GB of traffic into a bounded figure.
+	//
+	// Keyed on the CLIENT, deliberately not on the target entity like its
+	// call-counting sibling. A per-target byte budget is shared by everyone
+	// viewing that entity, so a much-visited profile would exhaust it and start
+	// refusing legitimate viewers - it would meter popularity rather than abuse.
+	// The client is who induces the cost, so the client is what to bound.
+	//
+	// 2GB/minute clears any single legitimate transfer, since one relay is capped
+	// at stream_maximum_default (1GB) and the largest real ones - a repository
+	// archive, a market asset download - are public routes an anonymous caller
+	// uses honestly. It is a ceiling on one client, not a tight quota.
+	rate_limit_stream_client = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   2 * 1024 * 1024, // kilobytes
+		window:  60,
+	}
+
+	// Same accounting per app, as a circuit breaker against the same flood spread
+	// across many addresses, which per-client keying cannot see. Set far above any
+	// plausible honest minute so ordinary load never reaches it: a limit low
+	// enough to bind in normal use would be shared fate, refusing every user of an
+	// app because one of them is being abused.
+	rate_limit_stream_app = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   16 * 1024 * 1024, // kilobytes
+		window:  60,
+	}
+
 	// Not a budget: a once-per-minute-per-app gate on the log line written when a
 	// refusal is turned into a 429. A limit of 1 used this way is the same trick
 	// rate_limit_entry_withdraw uses to log an event at most once per window.
@@ -258,6 +293,64 @@ func remote_rate_limit(t *sl.Thread, target string) error {
 	}
 	if !rate_limit_remote.allow(app.id) {
 		return rate_limit_refuse(rate_limit_remote, app.id, "remote calls per minute")
+	}
+	return nil
+}
+
+// spend charges n units against key's budget, for limiters that meter a quantity
+// (kilobytes relayed) rather than counting events. Returns false when the budget
+// was already gone BEFORE this charge.
+//
+// The charge still lands when it returns false, so an overshoot is recorded
+// rather than discarded - a caller that blows the budget by 30MB should wait for
+// that, not have it forgiven.
+func (r *rate_limiter) spend(key string, n int) bool {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	now := now()
+	entry := r.entries[key]
+	if entry == nil || now >= entry.reset {
+		r.entries[key] = &rate_limit_entry{count: n, reset: now + r.window}
+		return true
+	}
+
+	open := entry.count < r.limit
+	entry.count += n
+	return open
+}
+
+// exhausted reports whether key's budget is gone, without charging it. Used to
+// refuse before a relay starts, so the caller gets a clean 429 rather than a body
+// that stops partway.
+func (r *rate_limiter) exhausted(key string) bool {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	entry := r.entries[key]
+	if entry == nil || now() >= entry.reset {
+		return false
+	}
+	return entry.count >= r.limit
+}
+
+// stream_bytes_charge meters one read against the per-client and per-app budgets.
+// Rounds up to whole kilobytes: a read of a few bytes still costs 1, so a peer
+// dribbling single bytes cannot relay indefinitely for free.
+func stream_bytes_charge(client, app string, bytes int) {
+	kilobytes := (bytes + 1023) / 1024
+	rate_limit_stream_client.spend(client, kilobytes)
+	rate_limit_stream_app.spend(app, kilobytes)
+}
+
+// stream_bytes_refusal returns the refusal for a relay whose byte budget is
+// already spent, or nil to proceed.
+func stream_bytes_refusal(client, app string) error {
+	if rate_limit_stream_client.exhausted(client) {
+		return rate_limit_refuse(rate_limit_stream_client, client, "kilobytes relayed per minute per client")
+	}
+	if rate_limit_stream_app.exhausted(app) {
+		return rate_limit_refuse(rate_limit_stream_app, app, "kilobytes relayed per minute")
 	}
 	return nil
 }

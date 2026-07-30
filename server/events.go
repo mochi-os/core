@@ -604,13 +604,15 @@ func (ew *EventWrite) CallInternal(t *sl.Thread, args sl.Tuple, kwargs []sl.Tupl
 }
 
 func (ew *EventWrite) AttrNames() []string {
-	return []string{"asset", "file"}
+	return []string{"asset", "cache", "file"}
 }
 
 func (ew *EventWrite) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "asset":
 		return sl.NewBuiltin("write.asset", ew.event.stream.sl_write_asset), nil
+	case "cache":
+		return sl.NewBuiltin("write.cache", ew.event.stream.sl_write_cache), nil
 	case "file":
 		return sl.NewBuiltin("write.file", ew.event.stream.sl_write_file), nil
 	}

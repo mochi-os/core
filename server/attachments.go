@@ -57,7 +57,47 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 	"preview":   sl.NewBuiltin("mochi.attachment.preview", api_attachment_preview),
 	"store":     sl.NewBuiltin("mochi.attachment.store", api_attachment_store),
 	"fetch":     sl.NewBuiltin("mochi.attachment.fetch", api_attachment_fetch),
+	"export":    sl.NewBuiltin("mochi.attachment.export", api_attachment_export),
 })
+
+// mochi.attachment.export() -> list: Return every attachment row for the
+// calling user and app, each carrying object, entity (provenance: ” for the
+// app's own rows, an entity id for a remote copy), name, size, content_type,
+// creator, caption, description, rank, created. The transition bridge for the
+// attachments-library migration: an app's database_upgrade reads its rows out
+// of the core-managed app.db (which mochi.db cannot reach) and into its own
+// table. No URLs - the migration writes storage rows, not display data.
+func api_attachment_export(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+	owner := attachment_user(t)
+	if owner == nil {
+		return sl_error(fn, "no owner")
+	}
+	db := db_app_system(owner, app)
+	if db == nil {
+		return sl_error(fn, "no database")
+	}
+	db.attachments_setup()
+
+	var attachments []Attachment
+	if err := db.scans(&attachments, "select * from attachments order by object, rank"); err != nil {
+		return sl.None, fmt.Errorf("database error: %v", err)
+	}
+
+	results := []map[string]any{}
+	for _, att := range attachments {
+		results = append(results, map[string]any{
+			"id": att.ID, "object": att.Object, "entity": att.Entity,
+			"name": att.Name, "size": att.Size, "content_type": att.ContentType,
+			"creator": att.Creator, "caption": att.Caption,
+			"description": att.Description, "rank": att.Rank, "created": att.Created,
+		})
+	}
+	return sl_encode(results), nil
+}
 
 // attachment_create_module is a callable module that also has a .stream method.
 // Usage: mochi.attachment.create(object, name, data, ...) or mochi.attachment.create.stream(object, name, stream, ...)

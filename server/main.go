@@ -145,6 +145,7 @@ func main_serve(ready func()) int {
 
 	load_core_labels()
 	starlark_configure()
+	cache_configure()
 	db_start()
 	passkey_init()
 	if err := domains_load_certs(); err != nil {

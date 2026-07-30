@@ -386,13 +386,15 @@ func (sw *StreamWrite) CallInternal(t *sl.Thread, args sl.Tuple, kwargs []sl.Tup
 }
 
 func (sw *StreamWrite) AttrNames() []string {
-	return []string{"asset", "raw"}
+	return []string{"asset", "cache", "raw"}
 }
 
 func (sw *StreamWrite) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "asset":
 		return sl.NewBuiltin("write.asset", sw.stream.sl_write_asset), nil
+	case "cache":
+		return sl.NewBuiltin("write.cache", sw.stream.sl_write_cache), nil
 	case "raw":
 		return sl.NewBuiltin("write.raw", sw.stream.sl_write_raw), nil
 	}
@@ -587,6 +589,34 @@ func (s *Stream) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		return sl_error(fn, "unable to send file")
 	}
 
+	return sl.MakeInt64(n), nil
+}
+
+// s.write.cache(name) -> int or None: Send a cache entry's bytes over the
+// stream, returning None on a cache miss so a responder can fill and retry.
+// Used by byte-pull responders that keep a local cached copy.
+func (s *Stream) sl_write_cache(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	defer s.close_write()
+	var name string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name); err != nil {
+		return sl_error(fn, "syntax: write.cache(name)")
+	}
+
+	path, err := cache_serve_file(t, name)
+	if err != nil {
+		return sl.None, nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return sl.None, nil
+	}
+	defer f.Close()
+
+	n, err := io.Copy(s.writer, f)
+	if err != nil {
+		return sl_error(fn, "unable to send cache entry")
+	}
 	return sl.MakeInt64(n), nil
 }
 

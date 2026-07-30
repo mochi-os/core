@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
@@ -278,7 +279,7 @@ func (a *Action) input(name string) string {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access", "body", "cookie", "domain", "dump", "entity", "error", "file", "header", "input", "inputs", "json", "logout", "owner", "print", "redirect", "routing", "template", "token", "upload", "user", "write"}
+	return []string{"access", "body", "cookie", "domain", "dump", "entity", "error", "file", "files", "header", "input", "inputs", "json", "logout", "owner", "print", "redirect", "routing", "template", "token", "upload", "user", "write"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
@@ -320,6 +321,8 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return &ActionError{action: a}, nil
 	case "file":
 		return sl.NewBuiltin("file", a.sl_file), nil
+	case "files":
+		return sl.NewBuiltin("files", a.sl_files), nil
 	case "header":
 		return sl.NewBuiltin("header", a.sl_header), nil
 	case "input":
@@ -372,7 +375,7 @@ func (w *ActionWrite) Freeze()               {}
 func (w *ActionWrite) Truth() sl.Bool        { return sl.True }
 func (w *ActionWrite) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
 func (w *ActionWrite) AttrNames() []string {
-	return []string{"asset", "attachment", "file", "stream"}
+	return []string{"asset", "attachment", "cache", "file", "stream"}
 }
 func (w *ActionWrite) Attr(name string) (sl.Value, error) {
 	switch name {
@@ -380,6 +383,8 @@ func (w *ActionWrite) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("write.asset", w.action.sl_write_asset), nil
 	case "attachment":
 		return sl.NewBuiltin("write.attachment", w.action.sl_write_attachment), nil
+	case "cache":
+		return sl.NewBuiltin("write.cache", w.action.sl_write_cache), nil
 	case "file":
 		return sl.NewBuiltin("write.file", w.action.sl_write_file), nil
 	case "stream":
@@ -705,19 +710,20 @@ func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	return sl.None, nil
 }
 
-// a.upload(field, file) -> None: Save an uploaded file
+// a.upload(field, file, index=0) -> int: Save an uploaded file to the app's
+// file storage, returning its size. index selects which file to save when a
+// field carries several (a multi-file attachment upload); it defaults to the
+// first, so single-file callers are unchanged.
 func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 2 {
-		return sl_error(fn, "syntax: <field: string>, <file: string>")
+	var field, file string
+	var index int
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "field", &field, "file", &file, "index?", &index); err != nil {
+		return sl_error(fn, "syntax: upload(field, file, index=0)")
 	}
-
-	field, ok := sl.AsString(args[0])
-	if !ok || !valid(field, "constant") {
+	if !valid(field, "constant") {
 		return sl_error(fn, "invalid field %q", field)
 	}
-
-	file, ok := sl.AsString(args[1])
-	if !ok || !valid(file, "filepath") {
+	if !valid(file, "filepath") {
 		return sl_error(fn, "invalid file %q", file)
 	}
 
@@ -726,9 +732,9 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no app")
 	}
 
-	ff, err := a.web.FormFile(field)
-	if err != nil {
-		return sl_error(fn, "unable to get file field %q: %v", field, err)
+	ff := a.upload_header(field, index)
+	if ff == nil {
+		return sl_error(fn, "no file %d for field %q", index, field)
 	}
 
 	// Check storage limit (10GB per user across all apps; admins exempt)
@@ -740,12 +746,50 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "storage limit exceeded")
 	}
 
-	err = a.web.SaveUploadedFile(ff, api_file_path(a.user, app, file))
-	if err != nil {
+	if err := a.web.SaveUploadedFile(ff, api_file_path(a.user, app, file)); err != nil {
 		return sl_error(fn, "unable to write file for field %q: %v", field, err)
 	}
 
-	return sl.None, nil
+	return sl.MakeInt64(ff.Size), nil
+}
+
+// upload_header returns the index-th uploaded file header for a field, or nil.
+// FormFile reads only the first; the attachment library uploads each file of a
+// multi-file field by index.
+func (a *Action) upload_header(field string, index int) *multipart.FileHeader {
+	form, err := a.web.MultipartForm()
+	if err != nil {
+		return nil
+	}
+	files := form.File[field]
+	if index < 0 || index >= len(files) {
+		return nil
+	}
+	return files[index]
+}
+
+// a.files(field) -> list: Metadata for every uploaded file in a field, each a
+// dict of name, content_type, size - without the bytes. Pair with
+// a.upload(field, path, index=i) to stream each to storage. a.file(field)
+// remains the single-file, data-included form.
+func (a *Action) sl_files(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var field string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "field", &field); err != nil {
+		return sl_error(fn, "syntax: files(field)")
+	}
+	form, err := a.web.MultipartForm()
+	if err != nil {
+		return sl_encode([]map[string]any{}), nil
+	}
+	results := []map[string]any{}
+	for _, ff := range form.File[field] {
+		results = append(results, map[string]any{
+			"name":         ff.Filename,
+			"content_type": ff.Header.Get("Content-Type"),
+			"size":         ff.Size,
+		})
+	}
+	return sl_encode(results), nil
 }
 
 // a.file(field) -> dict or None: Read uploaded file data
@@ -936,6 +980,64 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	return sl.None, nil
 }
 
+// a.write.cache(name, content_type="") -> bool: Serve a cache entry to the HTTP
+// response, returning False on a cache miss so the caller can fill and retry.
+// The entry holds re-obtainable bytes (a pulled remote copy, a generated image
+// variant); the calling action MUST authorise the request first, as with
+// a.write.file. Content type and disposition are set safely by core - SVG is
+// sanitised and served under a script-blocking policy, other known media serve
+// inline, everything else downloads - so a cached foreign file cannot execute
+// in this origin.
+func (a *Action) sl_write_cache(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var name, content_type string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name, "content_type?", &content_type); err != nil {
+		return nil, err
+	}
+
+	path, err := cache_serve_file(t, name)
+	if err != nil {
+		return sl.False, nil
+	}
+
+	if content_type == "" {
+		content_type = file_name_type(name)
+	}
+	base := content_type_base(content_type)
+
+	if base == "image/svg+xml" {
+		starlark_serving_set(t, a.web.Writer)
+		web_serve_svg(a.web, path)
+		return sl.True, nil
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return sl.False, nil
+	}
+	defer file.Close()
+	information, err := file.Stat()
+	if err != nil || information.IsDir() {
+		return sl.False, nil
+	}
+
+	if a.web.Writer.Header().Get("Content-Type") == "" {
+		a.web.Header("Content-Type", content_type)
+	}
+	if !content_type_inline(base) && a.web.Writer.Header().Get("Content-Disposition") == "" {
+		a.web.Header("Content-Disposition", "attachment")
+	}
+	if a.web.Writer.Header().Get("Cache-Control") == "" {
+		a.web.Header("Cache-Control", "private, must-revalidate")
+	}
+	if a.web.Writer.Header().Get("Etag") == "" {
+		a.web.Header("ETag", fmt.Sprintf(`"%x-%x"`, information.ModTime().UnixNano(), information.Size()))
+	}
+
+	starlark_serving_set(t, a.web.Writer)
+	http.ServeContent(a.web.Writer, a.web.Request, path, information.ModTime(), file)
+	return sl.True, nil
+}
+
 // a.write.attachment(id, entity=None, variant="") -> None: Serve an attachment
 // (or a downscaled image variant, "thumbnail" or "preview") to the HTTP
 // response by id. The calling action MUST authorise the request first — gate
@@ -1102,12 +1204,18 @@ func (r *stream_limit_reader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// a.write.stream(stream, maximum=bytes) -> int: Pipe Net stream content directly to HTTP response, returns bytes written
+// a.write.stream(stream, maximum=bytes, cache=name) -> int: Pipe Net stream content directly to HTTP response, returns bytes written
+//
+// cache names a cache entry to fill as a side effect: the body is teed into
+// the entry while it streams to the client, and only a complete relay is
+// renamed into place - a curtailed, spent or aborted one is discarded, so a
+// partial body never becomes a cache hit.
 func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var stream_value sl.Value
 	maximum := int64(stream_maximum_default)
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "stream", &stream_value, "maximum?", &maximum); err != nil {
-		return sl_error(fn, "syntax: write.stream(stream, maximum=bytes)")
+	cache := ""
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "stream", &stream_value, "maximum?", &maximum, "cache?", &cache); err != nil {
+		return sl_error(fn, "syntax: write.stream(stream, maximum=bytes, cache=name)")
 	}
 	if maximum <= 0 || maximum > stream_maximum_default {
 		return sl_error(fn, "maximum must be between 1 and %d", int64(stream_maximum_default))
@@ -1151,6 +1259,15 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	}
 	var reader io.Reader = limited
 
+	// Cache fill is best effort: a tee that cannot start still serves.
+	filled := false
+	if cache != "" {
+		if tee, err := cache_tee_start(t, cache); err == nil {
+			defer func() { tee.finish(filled) }()
+			reader = io.TeeReader(reader, tee.file)
+		}
+	}
+
 	// Set Content-Type to octet-stream if not already set (avoids JSON interpretation)
 	if a.web.Writer.Header().Get("Content-Type") == "" {
 		a.web.Header("Content-Type", "application/octet-stream")
@@ -1175,6 +1292,7 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 			n, _ := sl.AsInt32(written)
 			return a.write_stream_curtailed(fn, maximum, int64(n))
 		}
+		filled = true
 		return written, nil
 	}
 	if !content_type_inline(content_type) && a.web.Writer.Header().Get("Content-Disposition") == "" {
@@ -1198,6 +1316,9 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 		return a.write_stream_curtailed(fn, maximum, n)
 	}
 
+	// A clean copy error already returned above; reaching here means the body
+	// arrived complete, so the tee may be committed to the cache.
+	filled = true
 	return sl.MakeInt64(n), nil
 }
 

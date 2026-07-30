@@ -43,6 +43,7 @@ var (
 		"delete": sl.NewBuiltin("mochi.file.delete", api_file_delete),
 		"exists": sl.NewBuiltin("mochi.file.exists", api_file_exists),
 		"list":   sl.NewBuiltin("mochi.file.list", api_file_list),
+		"move":   sl.NewBuiltin("mochi.file.move", api_file_move),
 		"read":   sl.NewBuiltin("mochi.file.read", api_file_read),
 		"write":  sl.NewBuiltin("mochi.file.write", api_file_write),
 	})
@@ -296,7 +297,11 @@ func api_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	dir, ok := sl.AsString(args[0])
-	if !ok || !valid(dir, "filepath") {
+	// "" and "." name the app's file root - a valid listing target that the
+	// filepath validator (which requires a leading alphanumeric) would reject.
+	if dir == "" || dir == "." {
+		dir = "."
+	} else if !ok || !valid(dir, "filepath") {
 		return sl_error(fn, "invalid directory %q", dir)
 	}
 
@@ -466,6 +471,51 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	return sl.None, nil
 }
 
+// mochi.file.move(from, to) -> None: Rename a file within the app's file
+// storage. Both paths are relative to the app's files directory; parent
+// directories of the destination are created. No bytes are copied, so this is
+// free relative to read-then-write, and no quota is charged - the bytes were
+// already stored.
+func api_file_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var from, to string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "from", &from, "to", &to); err != nil {
+		return sl_error(fn, "syntax: move(from, to)")
+	}
+	if !valid(from, "filepath") {
+		return sl_error(fn, "invalid source %q", from)
+	}
+	if !valid(to, "filepath") {
+		return sl_error(fn, "invalid destination %q", to)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	base := api_file_base(user, app)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return sl_error(fn, "unable to access files directory")
+	}
+	defer root.Close()
+
+	if dir := filepath.Dir(to); dir != "." && dir != "" {
+		if err := root_mkdir_all(root, dir); err != nil {
+			return sl_error(fn, "unable to create directory")
+		}
+	}
+
+	if err := root.Rename(from, to); err != nil {
+		return sl_error(fn, "unable to move file: %v", err)
+	}
+	return sl.None, nil
+}
+
 // temporary_configure points the process's temporary directory at
 // cache_dir/tmp.
 //
@@ -509,7 +559,8 @@ func cache_manager() {
 	}
 }
 
-// Remove cache files older than cache_max_age
+// Remove cache files older than cache_max_age, then enforce the byte budget
+// over the apps namespace (cache_evict).
 func cache_cleanup() {
 	cutoff := time.Now().Add(-cache_max_age)
 	filepath.Walk(cache_dir, func(path string, info os.FileInfo, err error) error {
@@ -521,4 +572,5 @@ func cache_cleanup() {
 		}
 		return nil
 	})
+	cache_evict()
 }

@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +24,32 @@ import (
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 )
+
+// MigrationAbort is raised by mochi.db.abort() from a database_upgrade to say
+// "I cannot complete this migration, and the schema version must NOT advance."
+// The upgrade loop stamps a failed migration's version by default (the repair
+// ships as the next version), which is wrong when the migration is blocked on
+// something transient - the attachments transition bridge being gone before a
+// dormant user migrated. Aborting leaves the database at its previous version
+// so the migration retries verbatim on the next request once the block clears.
+type MigrationAbort struct {
+	Reason string
+}
+
+func (e *MigrationAbort) Error() string { return "migration aborted: " + e.Reason }
+
+// mochi.db.abort(reason) -> never returns: Abort the running database_upgrade
+// without advancing the schema version, so the same migration step retries on
+// the next request. For a migration blocked on a transient precondition (a
+// data-source that has not yet appeared), not a coding error. Like every
+// builtin error it unwinds the handler; the upgrade loop recognises it.
+func api_db_abort(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	reason := ""
+	if len(args) > 0 {
+		reason, _ = sl.AsString(args[0])
+	}
+	return nil, &MigrationAbort{Reason: reason}
+}
 
 // DB carries two connection pools per SQLite file. internal has no
 // authoriser and is used for all server-trusted queries (schema migrations,
@@ -92,6 +119,7 @@ var (
 	databases_lock sync.Mutex
 
 	api_db = sls.FromStringDict(sl.String("mochi.db"), sl.StringDict{
+		"abort":       sl.NewBuiltin("mochi.db.abort", api_db_abort),
 		"commit":      api_commit,
 		"execute":     sl.NewBuiltin("mochi.db.execute", api_db_query),
 		"exists":      sl.NewBuiltin("mochi.db.exists", api_db_query),
@@ -575,6 +603,15 @@ func db_app(u *User, app *App) *DB {
 		for version := schema + 1; version <= av.Database.Schema; version++ {
 			debug("Database %q upgrading to schema version %d", path, version)
 			if err := av.starlark_db(db, u, av.Database.Upgrade.Function, sl_encode_tuple(version), version); err != nil {
+				// A migration that called mochi.db.abort() is blocked on
+				// something transient, not broken: leave the version where it
+				// was and stop, so the same step retries verbatim next time
+				// rather than being consumed and needing a repair version.
+				var abort *MigrationAbort
+				if errors.As(err, &abort) {
+					warn("App %q version %q database upgrade to %d aborted, version held: %s", av.app.id, av.Version, version, abort.Reason)
+					break
+				}
 				warn("App %q version %q database upgrade error: %v", av.app.id, av.Version, err)
 				// A failed migration still consumes the version number (the
 				// established repair convention: the fix ships as the NEXT

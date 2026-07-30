@@ -571,6 +571,7 @@ var (
 		"service": api_app_service,
 		"themes":  sl.NewBuiltin("mochi.app.themes", api_app_themes),
 		"track":   api_app_track,
+		"url":     sl.NewBuiltin("mochi.app.url", api_app_url),
 		"version": api_app_version,
 	})
 )
@@ -3064,6 +3065,20 @@ func api_app_service_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		result[row["service"].(string)] = row["app"].(string)
 	}
 	return sl_encode(result), nil
+}
+
+// mochi.app.url() -> string: The calling app's URL path prefix - its first
+// declared path, or its id when it declares none. This is the segment that
+// begins every route the app serves (/<prefix>/<entity>/-/action), so an app
+// building an absolute URL to one of its own routes prefixes it with this.
+// Matches the prefix core used when it built attachment URLs.
+func api_app_url(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+	user, _ := t.Local("user").(*User)
+	return sl.String(app.url_path(user)), nil
 }
 
 // mochi.app.path.get(path) -> string | None: Get the app bound to a path (admin only)

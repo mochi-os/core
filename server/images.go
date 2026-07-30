@@ -11,6 +11,8 @@ import (
 	"github.com/disintegration/imaging"
 	"github.com/nfnt/resize"
 	"github.com/rwcarlsen/goexif/exif"
+	sl "go.starlark.net/starlark"
+	sls "go.starlark.net/starlarkstruct"
 	"image"
 	"image/gif"
 	"image/jpeg"
@@ -58,17 +60,33 @@ func variant_size(variant string) uint {
 // variant_create generates a downscaled copy of an image ("thumbnail" or
 // "preview") on demand, storing it beside the original in a per-variant
 // subdirectory ("thumbnails/", "previews/") with a matching filename suffix.
+// image_decode_pixels_maximum caps the pixel count of an image decoded from
+// a possibly-hostile source. A small file can declare enormous dimensions (a
+// decompression bomb) and exhaust memory when decoded, so DecodeConfig is
+// consulted before image.Decode allocates. 100 megapixels is far above any
+// legitimate photo and still bounds the allocation.
+const image_decode_pixels_maximum = 100_000_000
+
+// variant_create generates the variant beside the original, in a per-variant
+// subdirectory. Kept for callers that serve variants from owned storage.
 func variant_create(path string, variant string) (string, error) {
 	dir, file := filepath.Split(path)
 	thumb := dir + variant + "s/" + variant_name(file, variant)
+	if file_exists(thumb) {
+		return thumb, nil
+	}
+	return variant_render(path, variant, thumb)
+}
+
+// variant_render decodes the image at source, downscales it for the named
+// variant, and writes it to destination (atomically, via a temporary). The
+// decode is guarded against decompression bombs. Returns "" without error for
+// a format it does not re-encode.
+func variant_render(path string, variant string, thumb string) (string, error) {
 	tmp := thumb + ".tmp"
 
 	// Clean up any leftover temp file from a previous failed attempt
 	_ = os.Remove(tmp)
-
-	if file_exists(thumb) {
-		return thumb, nil
-	}
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -91,6 +109,16 @@ func variant_create(path string, variant string) (string, error) {
 			if iv, err := tag.Int(0); err == nil {
 				orientation = iv
 			}
+		}
+	}
+
+	// Reject a decompression bomb before decoding allocates for it: the config
+	// header carries the dimensions cheaply, so an oversized image is refused
+	// without ever holding its pixels in memory.
+	if config, _, err := image.DecodeConfig(bytes.NewReader(b)); err == nil {
+		if int64(config.Width)*int64(config.Height) > image_decode_pixels_maximum {
+			info("Refusing to decode image file %q for %s variant: %dx%d exceeds pixel cap", path, variant, config.Width, config.Height)
+			return "", nil
 		}
 	}
 
@@ -162,6 +190,60 @@ func variant_create(path string, variant string) (string, error) {
 	}
 
 	return thumb, nil
+}
+
+// api_image is the mochi.image namespace.
+var api_image = sls.FromStringDict(sl.String("mochi.image"), sl.StringDict{
+	"variant": sl.NewBuiltin("mochi.image.variant", api_image_variant),
+})
+
+// mochi.image.variant(file, kind) -> name or None: Generate a downscaled
+// variant ("thumbnail" or "preview") of an image in the app's file storage,
+// returning a cache entry name for a.write.cache / e.write.cache. Variants are
+// re-computable, so they live in cache space and may be evicted; the next call
+// regenerates. Returns None for a non-image, a missing source, or a decode
+// failure. The decode is capped against decompression bombs.
+func api_image_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var file, kind string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "file", &file, "kind", &kind); err != nil {
+		return sl_error(fn, "syntax: variant(file, kind)")
+	}
+	if !valid(file, "filepath") {
+		return sl_error(fn, "invalid file %q", file)
+	}
+	if kind != "thumbnail" && kind != "preview" {
+		return sl_error(fn, "kind must be thumbnail or preview")
+	}
+	if !is_image(file) {
+		return sl.None, nil
+	}
+
+	user, err := db_user_for_thread(t)
+	if err != nil || user == nil {
+		return sl_error(fn, "no user")
+	}
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	source := filepath.Join(api_file_base(user, app), file)
+	if !file_exists(source) {
+		return sl.None, nil
+	}
+
+	name := "variants/" + variant_name(filepath.Base(file), kind)
+	destination, err := cache_file(t, name)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if file_exists(destination) {
+		return sl.String(name), nil
+	}
+	if result, err := variant_render(source, kind, destination); err != nil || result == "" {
+		return sl.None, nil
+	}
+	return sl.String(name), nil
 }
 
 func variant_name(name string, variant string) string {

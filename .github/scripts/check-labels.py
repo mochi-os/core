@@ -63,6 +63,14 @@ _WORD = re.compile(r"[A-Za-z]+")
 _PLACEHOLDER = re.compile(r"\{[^}]*\}")
 
 
+def translatable(value):
+    """False when stripping {placeholders} leaves no letters — "{listing}" and
+    "{author}: {excerpt}" are pure substitution tokens, so the correct
+    translation is the English string byte for byte. Mirrors real() in the
+    monorepo's conf-refresh.py, which is why that checker accepts them."""
+    return bool(re.search(r"[A-Za-z]", _PLACEHOLDER.sub("", value)))
+
+
 def keep_english(source):
     """True when leaving `source` in English is acceptable (not a gap)."""
     source = source.strip()
@@ -92,6 +100,12 @@ def main():
         translated = parse(conf)
         missing = []
         for key, en_value in en.items():
+            # Nothing to translate and nothing to miss: resolve_label falls back
+            # through language_fallbacks to "en", so an absent placeholder-only
+            # key renders the same string in every language. conf-refresh.py
+            # skips these the same way.
+            if not translatable(en_value):
+                continue
             value = translated.get(key, "")
             if not value:
                 missing.append(key)

@@ -1770,13 +1770,17 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_encode([]map[string]any{}), nil
 	}
 
-	// Store attachments locally
+	// Store attachments locally, against the object we asked about rather than
+	// the one each row claims. attachment_event_fetch answers only with rows for
+	// the requested object, so an honest responder loses nothing here, and a
+	// dishonest one no longer gets to file rows against containers it has nothing
+	// to do with.
+	stored := []map[string]any{}
 	for _, att := range attachments {
 		id, _ := att["id"].(string)
 		if !valid(id, "id") {
 			continue
 		}
-		obj, _ := att["object"].(string)
 		name, _ := att["name"].(string)
 		size, _ := att["size"].(float64)
 		content_type, _ := att["content_type"].(string)
@@ -1786,12 +1790,28 @@ func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		rank, _ := att["rank"].(float64)
 		created, _ := att["created"].(float64)
 
+		// The write below replaces by primary key, so without this a responder
+		// could name the id of an attachment we already hold - one of our own,
+		// or one from a different peer - and repoint it. The same guard the
+		// other receive path uses; a collision skips that row rather than
+		// failing the fetch, so one hostile entry cannot discard the rest.
+		if held, conflict := attachment_conflict(db, id, object); conflict {
+			warn("Attachment %q already belongs to %q; refusing to repoint it at %q", id, held, object)
+			continue
+		}
+
 		db.exec(`replace into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created)
 			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, obj, entity, name, int64(size), content_type, creator, caption, description, int(rank), int64(created))
+			id, object, entity, name, int64(size), content_type, creator, caption, description, int(rank), int64(created))
+
+		att["object"] = object
+		stored = append(stored, att)
 	}
 
-	return sl_encode(attachments), nil
+	// What was stored, not what arrived: callers assign this straight to a
+	// display list, so returning the raw response showed rows the guard above
+	// skipped, each carrying whatever object the responder claimed.
+	return sl_encode(stored), nil
 }
 
 // Event handler: _attachment/fetch (responds with attachments for object via stream)

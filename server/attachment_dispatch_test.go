@@ -44,3 +44,38 @@ func TestAttachmentNotifyRemoved(t *testing.T) {
 		}
 	}
 }
+
+// TestAttachmentFetchPinsObjectAndGuardsCollisions covers what
+// api_attachment_fetch does with a responder's answer. Pinning and the
+// collision guard are asserted against the source because the function opens a
+// real P2P stream to reach a peer, which a unit test cannot stand up; the guard's
+// own behaviour is covered by TestAttachmentConflictRejectsForeignObject.
+//
+// The app asks a peer for one object's attachments. Taking each row's object
+// from the reply let a responder file rows against any container in the app's
+// database, and writing without the guard let it name an id the app already held
+// - its own or another peer's - and repoint that row, since the write replaces by
+// primary key.
+func TestAttachmentFetchPinsObjectAndGuardsCollisions(t *testing.T) {
+	source, err := os.ReadFile("attachments.go")
+	if err != nil {
+		t.Fatalf("reading attachments.go: %v", err)
+	}
+	start := strings.Index(string(source), "func api_attachment_fetch(")
+	if start < 0 {
+		t.Fatal("api_attachment_fetch not found")
+	}
+	body := string(source)[start:]
+	if end := strings.Index(body, "\n}\n"); end > 0 {
+		body = body[:end]
+	}
+
+	// A read is the type assertion; the function also writes att["object"] to
+	// correct the row it returns, which is the fix rather than the defect.
+	if strings.Contains(body, `att["object"].(`) {
+		t.Error(`api_attachment_fetch reads att["object"] again: the object must be the one the app asked for, not the one the responder claims`)
+	}
+	if !strings.Contains(body, "attachment_conflict(db, id, object)") {
+		t.Error("api_attachment_fetch no longer guards id collisions: a responder can repoint an attachment the app already holds")
+	}
+}

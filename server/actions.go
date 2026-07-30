@@ -1042,13 +1042,57 @@ func (a *Action) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	return sl.None, nil
 }
 
-// a.write.stream(stream) -> int: Pipe Net stream content directly to HTTP response, returns bytes written
+// stream_maximum_default backstops a.write.stream when the app names no limit of
+// its own. It matches attachment_max_size_default, the largest object the
+// platform stores, because two callers legitimately relay things that big - a
+// repository archive and a market asset download - and a limit that breaks a
+// clone is worse than no limit at all.
+//
+// It is a backstop, not the real bound. An app relaying an image knows a far
+// tighter figure and should pass it: see the maximum argument.
+const stream_maximum_default = attachment_max_size_default
+
+// stream_limit_reader relays at most remaining bytes and records whether the far
+// end tried to send more, so the caller can tell a complete body from a curtailed
+// one. Returning io.EOF at the limit stops io.Copy without inventing an error for
+// the honest case where the body simply ended.
+type stream_limit_reader struct {
+	reader    io.Reader
+	remaining int64
+	exceeded  bool
+}
+
+func (r *stream_limit_reader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		// One speculative byte distinguishes "ended exactly at the limit" from
+		// "had more to give", which is the difference between a complete asset
+		// and a truncated one.
+		var probe [1]byte
+		if n, _ := r.reader.Read(probe[:]); n > 0 {
+			r.exceeded = true
+		}
+		return 0, io.EOF
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	n, err := r.reader.Read(p)
+	r.remaining -= int64(n)
+	return n, err
+}
+
+// a.write.stream(stream, maximum=bytes) -> int: Pipe Net stream content directly to HTTP response, returns bytes written
 func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: write_from_stream(stream)")
+	var stream_value sl.Value
+	maximum := int64(stream_maximum_default)
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "stream", &stream_value, "maximum?", &maximum); err != nil {
+		return sl_error(fn, "syntax: write.stream(stream, maximum=bytes)")
+	}
+	if maximum <= 0 || maximum > stream_maximum_default {
+		return sl_error(fn, "maximum must be between 1 and %d", int64(stream_maximum_default))
 	}
 
-	stream, ok := args[0].(*Stream)
+	stream, ok := stream_value.(*Stream)
 	if !ok {
 		return sl_error(fn, "argument must be a Stream")
 	}
@@ -1056,8 +1100,18 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	// Mark as file serving so the timeout handler waits for I/O to complete
 	starlark_serving_set(t, a.web.Writer)
 
-	// Get the raw reader (includes any buffered bytes from CBOR decoder)
-	reader := stream.raw_reader()
+	// Get the raw reader (includes any buffered bytes from CBOR decoder).
+	//
+	// Bounded before anything else reads from it. raw_reader deliberately returns
+	// the UNWRAPPED reader - the 100MB cbor_max_size LimitReader wraps the CBOR
+	// decoder, so it caps decoded messages and not the byte body - and every
+	// caller of this function is relaying bytes a remote peer chose. Without a cap
+	// here, an anonymous request to a public asset route makes this server pull
+	// whatever the far end feels like sending, for as long as it sends it, and the
+	// per-call rate limit bounds calls against an unbounded per-call cost. Wrapped
+	// here rather than in each branch so the SVG path inherits it too.
+	limited := &stream_limit_reader{reader: stream.raw_reader(), remaining: maximum}
+	var reader io.Reader = limited
 
 	// Set Content-Type to octet-stream if not already set (avoids JSON interpretation)
 	if a.web.Writer.Header().Get("Content-Type") == "" {
@@ -1073,7 +1127,17 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	// peer cannot have us execute their document in our own origin.
 	content_type := content_type_base(a.web.Writer.Header().Get("Content-Type"))
 	if content_type == "image/svg+xml" {
-		return a.write_stream_svg(fn, reader)
+		written, err := a.write_stream_svg(fn, reader)
+		if err != nil {
+			return written, err
+		}
+		// Same overrun check as the plain path below: an SVG larger than the
+		// caller allowed must not be reported as a complete document either.
+		if limited.exceeded {
+			n, _ := sl.AsInt32(written)
+			return a.write_stream_curtailed(fn, maximum, int64(n))
+		}
+		return written, nil
 	}
 	if !content_type_inline(content_type) && a.web.Writer.Header().Get("Content-Disposition") == "" {
 		a.web.Header("Content-Disposition", "attachment")
@@ -1089,8 +1153,28 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	if err != nil && !is_client_disconnect(err) {
 		return sl_error(fn, "stream copy error: %v", err)
 	}
+	if limited.exceeded {
+		return a.write_stream_curtailed(fn, maximum, n)
+	}
 
 	return sl.MakeInt64(n), nil
+}
+
+// write_stream_curtailed reports a peer that tried to send more than the caller
+// allowed. The bytes are already on the wire, so the response cannot be retracted
+// - the point is that we stopped reading, and that this does not pass for success.
+//
+// Erroring rather than returning the byte count matters because the caller cannot
+// otherwise tell a complete asset from a curtailed one, and would cache or
+// announce a truncated image as though it were the real thing.
+func (a *Action) write_stream_curtailed(fn *sl.Builtin, maximum, written int64) (sl.Value, error) {
+	app := ""
+	if a.app != nil {
+		app = a.app.id
+	}
+	warn("actions: %s curtailed a stream at %d of at most %d bytes: the far end had more to send",
+		app, written, maximum)
+	return sl_error(fn, "stream exceeded %d bytes", maximum)
 }
 
 // stream_svg_maximum caps how much of a streamed SVG is buffered for
@@ -1122,6 +1206,8 @@ func (a *Action) write_stream_svg(fn *sl.Builtin, reader io.Reader) (sl.Value, e
 		if err != nil && !is_client_disconnect(err) {
 			return sl_error(fn, "stream copy error: %v", err)
 		}
+		// reader is the caller's limited reader, so this copy is bounded too; the
+		// overrun is reported by sl_write_stream once the copy returns.
 		return sl.MakeInt64(int64(written) + n), nil
 	}
 

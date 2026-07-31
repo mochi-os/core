@@ -45,6 +45,7 @@ var api_cache = sls.FromStringDict(sl.String("mochi.cache"), sl.StringDict{
 	"read":   sl.NewBuiltin("mochi.cache.read", api_cache_read),
 	"path":   sl.NewBuiltin("mochi.cache.path", api_cache_path),
 	"age":    sl.NewBuiltin("mochi.cache.age", api_cache_age),
+	"copy":   sl.NewBuiltin("mochi.cache.copy", api_cache_copy),
 	"delete": sl.NewBuiltin("mochi.cache.delete", api_cache_delete),
 })
 
@@ -213,6 +214,75 @@ func api_cache_age(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl.None, nil
 	}
 	return sl.MakeInt64(int64(time.Since(information.ModTime()).Seconds())), nil
+}
+
+// mochi.cache.copy(name, destination) -> integer or None: Copy a cache entry
+// into the app's file storage, returning the bytes copied, or None on a miss so
+// the caller can fill and retry. The bytes stream across and are never held in
+// memory. This is how a re-obtainable copy becomes a kept one: an attachment
+// pulled from a peer lives in cache, and forwarding it makes the bytes ours.
+func api_cache_copy(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var name, destination string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name, "destination", &destination); err != nil {
+		return sl_error(fn, "syntax: <name: string>, <destination: string>")
+	}
+	if !valid(destination, "filepath") {
+		return sl_error(fn, "invalid destination %q", destination)
+	}
+
+	path, err := cache_file(t, name)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	source, err := os.Open(path)
+	if err != nil {
+		return sl.None, nil
+	}
+	defer source.Close()
+
+	information, err := source.Stat()
+	if err != nil || information.IsDir() {
+		return sl.None, nil
+	}
+
+	// Cache space is quota-exempt and file storage is not, so the copy is
+	// charged even though the bytes already exist on this disk.
+	remaining, err := user_storage_remaining(user)
+	if err != nil {
+		return sl_error(fn, "unable to measure storage: %v", err)
+	}
+	if information.Size() > remaining {
+		return sl_error(fn, "storage limit exceeded")
+	}
+
+	base := api_file_base(user, app)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		return sl_error(fn, "unable to create files directory: %v", err)
+	}
+
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return sl_error(fn, "unable to access files directory")
+	}
+	defer root.Close()
+
+	written, err := root_write_file(root, destination, source)
+	if err != nil {
+		return sl_error(fn, "unable to write file")
+	}
+
+	return sl.MakeInt64(written), nil
 }
 
 // mochi.cache.delete(name) -> bool: Remove a cache entry

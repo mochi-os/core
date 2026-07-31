@@ -7,6 +7,8 @@
 package main
 
 import (
+	"archive/zip"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,6 +19,154 @@ import (
 
 	sl "go.starlark.net/starlark"
 )
+
+// file_api_environment sets up one user's app file storage and a thread with
+// the locals the mochi.file.* builtins read, returning the storage base.
+func file_api_environment(t *testing.T) (string, *sl.Thread) {
+	t.Helper()
+
+	original := data_dir
+	data_dir = t.TempDir()
+	t.Cleanup(func() { data_dir = original })
+
+	user := &User{UID: "testuser"}
+	app := &App{id: "files"}
+	base := api_file_base(user, app)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("creating files directory: %v", err)
+	}
+
+	thread := &sl.Thread{Name: "test"}
+	thread.SetLocal("user", user)
+	thread.SetLocal("app", app)
+	return base, thread
+}
+
+// TestFileCopy covers the primitive that lets an app duplicate an attachment
+// without materialising it. Reading and then writing would build the whole
+// object as a Starlark value first, which is what makes a large attachment a
+// memory problem for every user sharing the process.
+func TestFileCopy(t *testing.T) {
+	base, thread := file_api_environment(t)
+
+	content := []byte("ORIGINAL-BYTES")
+	if err := os.WriteFile(base+"/source.txt", content, 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+
+	copy := func(source, destination string) (sl.Value, error) {
+		return api_file_copy(thread, sl.NewBuiltin("mochi.file.copy", nil),
+			sl.Tuple{sl.String(source), sl.String(destination)}, nil)
+	}
+
+	// A copy into a directory that does not exist yet still lands, as a write
+	// does - an app should not have to create the tree first.
+	value, err := copy("source.txt", "nested/copy.txt")
+	if err != nil {
+		t.Fatalf("api_file_copy returned %v", err)
+	}
+	written, err := sl.AsInt32(value)
+	if err != nil || int(written) != len(content) {
+		t.Errorf("copied %v bytes, want %d", value, len(content))
+	}
+	landed, err := os.ReadFile(base + "/nested/copy.txt")
+	if err != nil {
+		t.Fatalf("reading copy: %v", err)
+	}
+	if string(landed) != string(content) {
+		t.Errorf("copy = %q, want %q", landed, content)
+	}
+	// The source survives - this is a copy, not the move mochi.file.move is.
+	if _, err := os.Stat(base + "/source.txt"); err != nil {
+		t.Errorf("source gone after copy: %v", err)
+	}
+
+	if _, err := copy("missing.txt", "out.txt"); err == nil {
+		t.Error("copying a missing file returned no error")
+	}
+	if _, err := copy("../../escape.txt", "out.txt"); err == nil {
+		t.Error("a traversing source was accepted")
+	}
+	if _, err := copy("source.txt", "../../escape.txt"); err == nil {
+		t.Error("a traversing destination was accepted")
+	}
+}
+
+// TestFileCopyRefusesEscapingSymlink is the containment check for the write
+// side. The path validator inspects the string, and a symlink is not in the
+// string, so a link planted at the destination must not redirect the copy
+// outside the app's directory.
+func TestFileCopyRefusesEscapingSymlink(t *testing.T) {
+	base, thread := file_api_environment(t)
+
+	if err := os.WriteFile(base+"/source.txt", []byte("INSIDE"), 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+	outside := data_dir + "/outside.txt"
+	if err := os.WriteFile(outside, []byte("UNTOUCHED"), 0600); err != nil {
+		t.Fatalf("writing outside file: %v", err)
+	}
+	if err := os.Symlink(outside, base+"/link.txt"); err != nil {
+		t.Fatalf("creating symlink: %v", err)
+	}
+
+	api_file_copy(thread, sl.NewBuiltin("mochi.file.copy", nil),
+		sl.Tuple{sl.String("source.txt"), sl.String("link.txt")}, nil)
+
+	after, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("reading outside file: %v", err)
+	}
+	if string(after) != "UNTOUCHED" {
+		t.Errorf("the copy followed a symlink out of the directory: %q", after)
+	}
+}
+
+// TestCacheCopy covers the other direction a forward takes: an attachment
+// pulled from a peer lives in cache, which is evictable, and keeping it means
+// moving the bytes into file storage without reading them into Starlark.
+func TestCacheCopy(t *testing.T) {
+	base, thread := file_api_environment(t)
+
+	original := cache_dir
+	cache_dir = t.TempDir()
+	t.Cleanup(func() { cache_dir = original })
+
+	entry := filepath.Join(cache_dir, "apps", "testuser", "files")
+	if err := os.MkdirAll(entry, 0755); err != nil {
+		t.Fatalf("creating cache directory: %v", err)
+	}
+	if err := os.WriteFile(entry+"/remote", []byte("PULLED-BYTES"), 0600); err != nil {
+		t.Fatalf("writing cache entry: %v", err)
+	}
+
+	value, err := api_cache_copy(thread, sl.NewBuiltin("mochi.cache.copy", nil),
+		sl.Tuple{sl.String("remote"), sl.String("kept.bin")}, nil)
+	if err != nil {
+		t.Fatalf("api_cache_copy returned %v", err)
+	}
+	if written, err := sl.AsInt32(value); err != nil || int(written) != len("PULLED-BYTES") {
+		t.Errorf("copied %v bytes, want %d", value, len("PULLED-BYTES"))
+	}
+	landed, err := os.ReadFile(base + "/kept.bin")
+	if err != nil {
+		t.Fatalf("reading copy: %v", err)
+	}
+	if string(landed) != "PULLED-BYTES" {
+		t.Errorf("copy = %q, want PULLED-BYTES", landed)
+	}
+
+	// A miss reads as None rather than an error: cache entries are evictable at
+	// any moment, so the caller's answer is to re-obtain and retry.
+	value, err = api_cache_copy(thread, sl.NewBuiltin("mochi.cache.copy", nil),
+		sl.Tuple{sl.String("absent"), sl.String("out.bin")}, nil)
+	if err != nil {
+		t.Fatalf("api_cache_copy on a miss returned %v", err)
+	}
+	if value != sl.None {
+		t.Errorf("miss = %v, want None", value)
+	}
+}
 
 // TestFileAge covers the reading the attachment sweep depends on to tell a file
 // that has settled from one another request may still be writing. A listing
@@ -716,5 +866,134 @@ func TestCacheCleanup(t *testing.T) {
 	// New file should still exist
 	if !file_exists(new_file) {
 		t.Error("cache_cleanup should not have removed new file")
+	}
+}
+
+// TestArchiveRoundTrip covers the container an export uses instead of embedding
+// bytes in its own JSON. The manifest goes in from a string and the content
+// streams in from file storage, which is the whole point: an attachment may be
+// as large as the uploader's quota, and the old shape held every one of them
+// base64-expanded in memory at once.
+func TestArchiveRoundTrip(t *testing.T) {
+	base, thread := file_api_environment(t)
+
+	if err := os.WriteFile(base+"/photo.png", []byte("PNG-CONTENT"), 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+
+	manifest := `{"format":3,"attachments":["files/photo.png"]}`
+	entries := sl_encode([]map[string]any{
+		{"name": "manifest.json", "data": manifest},
+		{"name": "files/photo.png", "file": "photo.png"},
+		{"name": "files/gone.png", "file": "missing.png"},
+	})
+
+	value, err := api_archive_write(thread, sl.NewBuiltin("mochi.archive.write", nil),
+		sl.Tuple{sl.String("export.zip"), entries}, nil)
+	if err != nil {
+		t.Fatalf("api_archive_write returned %v", err)
+	}
+	if size, err := sl.AsInt32(value); err != nil || size <= 0 {
+		t.Errorf("archive size = %v, want a positive count", value)
+	}
+
+	listed, err := api_archive_list(thread, sl.NewBuiltin("mochi.archive.list", nil),
+		sl.Tuple{sl.String("export.zip")}, nil)
+	if err != nil {
+		t.Fatalf("api_archive_list returned %v", err)
+	}
+	names := map[string]bool{}
+	for _, item := range sl_decode(listed).([]any) {
+		entry := item.(map[string]any)
+		names[entry["name"].(string)] = true
+	}
+	if !names["manifest.json"] || !names["files/photo.png"] {
+		t.Errorf("entries = %v, want the manifest and the photo", names)
+	}
+	// A file that vanished between listing and archiving is skipped, not fatal:
+	// one deleted blob must not cost the whole export.
+	if names["files/gone.png"] {
+		t.Errorf("a missing source produced an entry: %v", names)
+	}
+
+	read, err := api_archive_read(thread, sl.NewBuiltin("mochi.archive.read", nil),
+		sl.Tuple{sl.String("export.zip"), sl.String("manifest.json")}, nil)
+	if err != nil {
+		t.Fatalf("api_archive_read returned %v", err)
+	}
+	if got := string(sl_decode(read).([]byte)); got != manifest {
+		t.Errorf("manifest = %q, want %q", got, manifest)
+	}
+
+	extracted, err := api_archive_extract(thread, sl.NewBuiltin("mochi.archive.extract", nil),
+		sl.Tuple{sl.String("export.zip"), sl.String("files/photo.png"), sl.String("restored/photo.png")}, nil)
+	if err != nil {
+		t.Fatalf("api_archive_extract returned %v", err)
+	}
+	if written, err := sl.AsInt32(extracted); err != nil || int(written) != len("PNG-CONTENT") {
+		t.Errorf("extracted %v bytes, want %d", extracted, len("PNG-CONTENT"))
+	}
+	landed, err := os.ReadFile(base + "/restored/photo.png")
+	if err != nil {
+		t.Fatalf("reading extracted file: %v", err)
+	}
+	if string(landed) != "PNG-CONTENT" {
+		t.Errorf("extracted = %q, want PNG-CONTENT", landed)
+	}
+
+	// An absent entry reads as None on both paths rather than erroring, so an
+	// import can tell "not in this archive" from "this archive is broken".
+	missing, _ := api_archive_read(thread, sl.NewBuiltin("mochi.archive.read", nil),
+		sl.Tuple{sl.String("export.zip"), sl.String("absent")}, nil)
+	if missing != sl.None {
+		t.Errorf("reading an absent entry = %v, want None", missing)
+	}
+	missing, _ = api_archive_extract(thread, sl.NewBuiltin("mochi.archive.extract", nil),
+		sl.Tuple{sl.String("export.zip"), sl.String("absent"), sl.String("out.bin")}, nil)
+	if missing != sl.None {
+		t.Errorf("extracting an absent entry = %v, want None", missing)
+	}
+}
+
+// TestArchiveExtractIgnoresEntryName is the zip-slip check. A received archive
+// names its own entries, and this one names a traversal - but extract writes to
+// the destination the CALLER passed, so the entry name addresses nothing.
+func TestArchiveExtractIgnoresEntryName(t *testing.T) {
+	base, thread := file_api_environment(t)
+
+	hostile := base + "/hostile.zip"
+	f, err := os.Create(hostile)
+	if err != nil {
+		t.Fatalf("creating archive: %v", err)
+	}
+	writer := zip.NewWriter(f)
+	w, err := writer.Create("../../../escaped.txt")
+	if err != nil {
+		t.Fatalf("creating entry: %v", err)
+	}
+	io.WriteString(w, "ESCAPED")
+	writer.Close()
+	f.Close()
+
+	value, err := api_archive_extract(thread, sl.NewBuiltin("mochi.archive.extract", nil),
+		sl.Tuple{sl.String("hostile.zip"), sl.String("../../../escaped.txt"), sl.String("safe.txt")}, nil)
+	if err != nil {
+		t.Fatalf("api_archive_extract returned %v", err)
+	}
+	if written, err := sl.AsInt32(value); err != nil || int(written) != len("ESCAPED") {
+		t.Errorf("extracted %v bytes, want %d", value, len("ESCAPED"))
+	}
+	if _, err := os.Stat(base + "/safe.txt"); err != nil {
+		t.Errorf("the entry did not land at the caller's destination: %v", err)
+	}
+	if _, err := os.Stat(data_dir + "/escaped.txt"); err == nil {
+		t.Error("an entry name escaped the app's directory")
+	}
+
+	// And a traversing destination is refused outright, since that argument is
+	// the one the caller controls.
+	if _, err := api_archive_extract(thread, sl.NewBuiltin("mochi.archive.extract", nil),
+		sl.Tuple{sl.String("hostile.zip"), sl.String("../../../escaped.txt"), sl.String("../../out.txt")}, nil); err == nil {
+		t.Error("a traversing destination was accepted")
 	}
 }

@@ -7,6 +7,7 @@
 package main
 
 import (
+	"archive/zip"
 	"fmt"
 	"io"
 	"math"
@@ -41,6 +42,7 @@ func user_storage_remaining(u *User) (int64, error) {
 var (
 	api_file = sls.FromStringDict(sl.String("mochi.file"), sl.StringDict{
 		"age":    sl.NewBuiltin("mochi.file.age", api_file_age),
+		"copy":   sl.NewBuiltin("mochi.file.copy", api_file_copy),
 		"delete": sl.NewBuiltin("mochi.file.delete", api_file_delete),
 		"exists": sl.NewBuiltin("mochi.file.exists", api_file_exists),
 		"list":   sl.NewBuiltin("mochi.file.list", api_file_list),
@@ -254,6 +256,89 @@ func api_file_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	root.Remove(file)
 	return sl.None, nil
+}
+
+// root_write_file streams source into name inside root, creating any parent
+// directories, and returns the number of bytes written. The destination is
+// opened through the root so a symlink left in the tree cannot redirect the
+// write outside it, which a plain path join would allow.
+func root_write_file(root *os.Root, name string, source io.Reader) (int64, error) {
+	dir := filepath.Dir(name)
+	if dir != "." && dir != "" {
+		if err := root_mkdir_all(root, dir); err != nil {
+			return 0, err
+		}
+	}
+
+	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	return io.Copy(f, source)
+}
+
+// mochi.file.copy(source, destination) -> integer: Copy a file within the app's
+// directory, returning the bytes copied. The bytes stream from one to the other
+// and are never held in memory, so this is the way to duplicate an attachment
+// or any other large object - mochi.file.read plus mochi.file.write would
+// materialise the whole thing as a Starlark value first.
+func api_file_copy(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var source, destination string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "source", &source, "destination", &destination); err != nil {
+		return sl_error(fn, "syntax: <source: string>, <destination: string>")
+	}
+	if !valid(source, "filepath") {
+		return sl_error(fn, "invalid source %q", source)
+	}
+	if !valid(destination, "filepath") {
+		return sl_error(fn, "invalid destination %q", destination)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	base := api_file_base(user, app)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return sl_error(fn, "unable to access files directory")
+	}
+	defer root.Close()
+
+	f, err := root.Open(source)
+	if err != nil {
+		return sl_error(fn, "file not found")
+	}
+	defer f.Close()
+
+	information, err := f.Stat()
+	if err != nil || information.IsDir() {
+		return sl_error(fn, "file not found")
+	}
+
+	// A copy adds its own size to the account, so it is checked like a write.
+	remaining, err := user_storage_remaining(user)
+	if err != nil {
+		return sl_error(fn, "unable to measure storage: %v", err)
+	}
+	if information.Size() > remaining {
+		return sl_error(fn, "storage limit exceeded")
+	}
+
+	written, err := root_write_file(root, destination, f)
+	if err != nil {
+		return sl_error(fn, "unable to write file")
+	}
+
+	return sl.MakeInt64(written), nil
 }
 
 // mochi.file.age(file) -> integer or None: Seconds since a file was last
@@ -614,4 +699,329 @@ func cache_cleanup() {
 		return nil
 	})
 	cache_evict()
+}
+
+// ---------------------------------------------------------------------------
+// Archives
+// ---------------------------------------------------------------------------
+//
+// A zip container an app builds and reads without the entries passing through
+// Starlark. The reason it exists: an export that embeds attachment bytes in its
+// own JSON has to hold every one of them, base64-expanded, in memory at once,
+// and an attachment may be as large as the uploader's remaining quota. Here the
+// manifest is one small entry written from a string and each attachment is
+// streamed straight from file storage.
+//
+// Entry names inside an archive are never used as paths. write() takes the name
+// from the caller and extract() takes the destination from the caller, so a
+// hostile name in someone else's archive addresses nothing - the zip-slip
+// question does not arise.
+
+// archive_read_maximum bounds mochi.archive.read, which exists for a manifest
+// rather than for content. Anything larger is what extract() is for.
+const archive_read_maximum = 64 << 20
+
+var api_archive = sls.FromStringDict(sl.String("mochi.archive"), sl.StringDict{
+	"write":   sl.NewBuiltin("mochi.archive.write", api_archive_write),
+	"list":    sl.NewBuiltin("mochi.archive.list", api_archive_list),
+	"read":    sl.NewBuiltin("mochi.archive.read", api_archive_read),
+	"extract": sl.NewBuiltin("mochi.archive.extract", api_archive_extract),
+})
+
+// mochi.archive.write(destination, entries) -> integer: Build a zip archive at
+// destination and return its size. entries is a list of dicts, each with a
+// "name" (the path inside the archive) and either "file" (an app file, streamed
+// in without being read into memory) or "data" (a string, for a manifest).
+func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var destination string
+	var entries sl.Value
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "destination", &destination, "entries", &entries); err != nil {
+		return sl_error(fn, "syntax: <destination: string>, <entries: list>")
+	}
+	if !valid(destination, "filepath") {
+		return sl_error(fn, "invalid destination %q", destination)
+	}
+
+	list, ok := sl_decode(entries).([]any)
+	if !ok {
+		return sl_error(fn, "entries must be a list")
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	base := api_file_base(user, app)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		return sl_error(fn, "unable to create files directory: %v", err)
+	}
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return sl_error(fn, "unable to access files directory")
+	}
+	defer root.Close()
+
+	// The archive is charged to the account like any other write, and its
+	// contents are already stored, so the budget is checked before building
+	// rather than discovering it part-way through.
+	remaining, err := user_storage_remaining(user)
+	if err != nil {
+		return sl_error(fn, "unable to measure storage: %v", err)
+	}
+
+	dir := filepath.Dir(destination)
+	if dir != "." && dir != "" {
+		if err := root_mkdir_all(root, dir); err != nil {
+			return sl_error(fn, "unable to create directory")
+		}
+	}
+	out, err := root.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return sl_error(fn, "unable to write archive")
+	}
+	defer out.Close()
+
+	counter := &archive_counter{limit: remaining}
+	writer := zip.NewWriter(io.MultiWriter(out, counter))
+
+	for _, item := range list {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := entry["name"].(string)
+		if name == "" {
+			return sl_error(fn, "archive entry has no name")
+		}
+
+		if source, ok := entry["file"].(string); ok && source != "" {
+			if !valid(source, "filepath") {
+				return sl_error(fn, "invalid file %q", source)
+			}
+			// Opened before the entry is created: a file that has gone missing
+			// is skipped rather than fatal, since an export of a hundred
+			// attachments should not be lost to one deleted blob - and creating
+			// the entry first would leave an empty one standing in for it,
+			// which an import would read back as a zero-byte attachment.
+			f, err := root.Open(source)
+			if err != nil {
+				continue
+			}
+			w, err := writer.Create(name)
+			if err != nil {
+				f.Close()
+				return sl_error(fn, "unable to add %q: %v", name, err)
+			}
+			_, err = io.Copy(w, f)
+			f.Close()
+			if err != nil {
+				return sl_error(fn, "unable to add %q: %v", name, err)
+			}
+		} else if data, ok := entry["data"].(string); ok {
+			w, err := writer.Create(name)
+			if err != nil {
+				return sl_error(fn, "unable to add %q: %v", name, err)
+			}
+			if _, err := io.WriteString(w, data); err != nil {
+				return sl_error(fn, "unable to add %q: %v", name, err)
+			}
+		}
+
+		if counter.exceeded {
+			writer.Close()
+			root.Remove(destination)
+			return sl_error(fn, "storage limit exceeded")
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		return sl_error(fn, "unable to finish archive: %v", err)
+	}
+	if counter.exceeded {
+		root.Remove(destination)
+		return sl_error(fn, "storage limit exceeded")
+	}
+
+	return sl.MakeInt64(counter.written), nil
+}
+
+// archive_counter tallies bytes as an archive is built, so a quota overrun is
+// caught while writing rather than after a multi-gigabyte file has landed.
+type archive_counter struct {
+	written  int64
+	limit    int64
+	exceeded bool
+}
+
+func (c *archive_counter) Write(p []byte) (int, error) {
+	c.written += int64(len(p))
+	if c.written > c.limit {
+		c.exceeded = true
+	}
+	return len(p), nil
+}
+
+// archive_open opens an archive inside the app's file storage.
+func archive_open(t *sl.Thread, fn *sl.Builtin, file string) (*zip.ReadCloser, error) {
+	if !valid(file, "filepath") {
+		return nil, fmt.Errorf("invalid file %q", file)
+	}
+	user := t.Local("user").(*User)
+	if user == nil {
+		return nil, fmt.Errorf("no user")
+	}
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return nil, fmt.Errorf("no app")
+	}
+	root, err := os.OpenRoot(api_file_base(user, app))
+	if err != nil {
+		return nil, fmt.Errorf("file not found")
+	}
+	defer root.Close()
+
+	// Resolve through the root first so a symlink cannot point the reader at a
+	// file outside the app's directory, then hand the real path to zip.
+	f, err := root.Open(file)
+	if err != nil {
+		return nil, fmt.Errorf("file not found")
+	}
+	information, err := f.Stat()
+	f.Close()
+	if err != nil || information.IsDir() {
+		return nil, fmt.Errorf("file not found")
+	}
+
+	return zip.OpenReader(filepath.Join(api_file_base(user, app), file))
+}
+
+// mochi.archive.list(file) -> list or None: The archive's entries, each a dict
+// of name and size. None if the file is not a readable archive.
+func api_archive_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var file string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "file", &file); err != nil {
+		return sl_error(fn, "syntax: <file: string>")
+	}
+	reader, err := archive_open(t, fn, file)
+	if err != nil {
+		return sl.None, nil
+	}
+	defer reader.Close()
+
+	entries := []map[string]any{}
+	for _, f := range reader.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		entries = append(entries, map[string]any{
+			"name": f.Name,
+			"size": int64(f.UncompressedSize64),
+		})
+	}
+	return sl_encode(entries), nil
+}
+
+// mochi.archive.read(file, name) -> bytes or None: One entry's contents. For a
+// manifest; bulk content belongs in extract(), and an entry beyond
+// archive_read_maximum is refused rather than held in memory.
+func api_archive_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var file, name string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "file", &file, "name", &name); err != nil {
+		return sl_error(fn, "syntax: <file: string>, <name: string>")
+	}
+	reader, err := archive_open(t, fn, file)
+	if err != nil {
+		return sl.None, nil
+	}
+	defer reader.Close()
+
+	for _, f := range reader.File {
+		if f.Name != name || f.FileInfo().IsDir() {
+			continue
+		}
+		if f.UncompressedSize64 > archive_read_maximum {
+			return sl_error(fn, "entry %q is too large to read; use extract", name)
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return sl.None, nil
+		}
+		defer rc.Close()
+		data, err := io.ReadAll(io.LimitReader(rc, archive_read_maximum+1))
+		if err != nil || int64(len(data)) > archive_read_maximum {
+			return sl.None, nil
+		}
+		return sl_encode(data), nil
+	}
+	return sl.None, nil
+}
+
+// mochi.archive.extract(file, name, destination) -> integer or None: Stream one
+// entry out to an app file, returning the bytes written, or None if the entry
+// is absent. The destination is the caller's, never the archive's own entry
+// name, so a hostile name in a received archive addresses nothing.
+func api_archive_extract(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var file, name, destination string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "file", &file, "name", &name, "destination", &destination); err != nil {
+		return sl_error(fn, "syntax: <file: string>, <name: string>, <destination: string>")
+	}
+	if !valid(destination, "filepath") {
+		return sl_error(fn, "invalid destination %q", destination)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	reader, err := archive_open(t, fn, file)
+	if err != nil {
+		return sl.None, nil
+	}
+	defer reader.Close()
+
+	remaining, err := user_storage_remaining(user)
+	if err != nil {
+		return sl_error(fn, "unable to measure storage: %v", err)
+	}
+
+	for _, f := range reader.File {
+		if f.Name != name || f.FileInfo().IsDir() {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return sl.None, nil
+		}
+		defer rc.Close()
+
+		root, err := os.OpenRoot(api_file_base(user, app))
+		if err != nil {
+			return sl_error(fn, "unable to access files directory")
+		}
+		defer root.Close()
+
+		// Bounded by the quota rather than by the entry's declared size: a zip
+		// header can claim any size it likes, and the decompressed stream is
+		// what actually lands on disk.
+		written, err := root_write_file(root, destination, io.LimitReader(rc, remaining+1))
+		if err != nil {
+			return sl_error(fn, "unable to write file")
+		}
+		if written > remaining {
+			root.Remove(destination)
+			return sl_error(fn, "storage limit exceeded")
+		}
+		return sl.MakeInt64(written), nil
+	}
+	return sl.None, nil
 }

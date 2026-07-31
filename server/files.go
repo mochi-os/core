@@ -730,13 +730,16 @@ var api_archive = sls.FromStringDict(sl.String("mochi.archive"), sl.StringDict{
 
 // mochi.archive.write(destination, entries) -> integer: Build a zip archive at
 // destination and return its size. entries is a list of dicts, each with a
-// "name" (the path inside the archive) and either "file" (an app file, streamed
-// in without being read into memory) or "data" (a string, for a manifest).
+// "name" (the path inside the archive) and one of "file" (an app file), "cache"
+// (a cache entry, where a copy pulled from a peer lives) or "data" (a string,
+// for a manifest). File and cache entries stream in without being read into
+// memory; a source that has gone missing is skipped rather than fatal.
 func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var destination string
 	var entries sl.Value
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "destination", &destination, "entries", &entries); err != nil {
-		return sl_error(fn, "syntax: <destination: string>, <entries: list>")
+	var cache bool
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "destination", &destination, "entries", &entries, "cache?", &cache); err != nil {
+		return sl_error(fn, "syntax: <destination: string>, <entries: list>, [cache: bool]")
 	}
 	if !valid(destination, "filepath") {
 		return sl_error(fn, "invalid destination %q", destination)
@@ -774,15 +777,36 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "unable to measure storage: %v", err)
 	}
 
-	dir := filepath.Dir(destination)
-	if dir != "." && dir != "" {
-		if err := root_mkdir_all(root, dir); err != nil {
-			return sl_error(fn, "unable to create directory")
+	// An archive built for immediate download is re-obtainable, so cache is
+	// where it belongs: quota-exempt, evictable, and - unlike file storage,
+	// which a.write.file reads as the ENTITY OWNER - resolved for the same
+	// user that a.write.cache serves. A subscriber exporting someone else's
+	// container writes and reads as themselves either way.
+	var out io.WriteCloser
+	if cache {
+		path, err := cache_file(t, destination)
+		if err != nil {
+			return sl_error(fn, "invalid destination %q", destination)
 		}
-	}
-	out, err := root.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return sl_error(fn, "unable to write archive")
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return sl_error(fn, "unable to create cache directory: %v", err)
+		}
+		out, err = os.Create(path)
+		if err != nil {
+			return sl_error(fn, "unable to write archive")
+		}
+		remaining = math.MaxInt64
+	} else {
+		dir := filepath.Dir(destination)
+		if dir != "." && dir != "" {
+			if err := root_mkdir_all(root, dir); err != nil {
+				return sl_error(fn, "unable to create directory")
+			}
+		}
+		out, err = root.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		if err != nil {
+			return sl_error(fn, "unable to write archive")
+		}
 	}
 	defer out.Close()
 
@@ -809,6 +833,29 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 			// the entry first would leave an empty one standing in for it,
 			// which an import would read back as a zero-byte attachment.
 			f, err := root.Open(source)
+			if err != nil {
+				continue
+			}
+			w, err := writer.Create(name)
+			if err != nil {
+				f.Close()
+				return sl_error(fn, "unable to add %q: %v", name, err)
+			}
+			_, err = io.Copy(w, f)
+			f.Close()
+			if err != nil {
+				return sl_error(fn, "unable to add %q: %v", name, err)
+			}
+		} else if source, ok := entry["cache"].(string); ok && source != "" {
+			// A copy pulled from a peer lives in cache rather than file
+			// storage, so an export of someone else's attachment reads from
+			// there. Cache space is evictable, and an entry that has gone is
+			// skipped exactly as a missing file is.
+			path, err := cache_file(t, source)
+			if err != nil {
+				return sl_error(fn, "invalid cache entry %q", source)
+			}
+			f, err := os.Open(path)
 			if err != nil {
 				continue
 			}

@@ -1251,20 +1251,12 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl.None, nil
 	}
 
-	// If entity is set, this is a cached reference - fetch from remote
+	// A row carrying an entity is a reference to bytes another host holds.
+	// Core no longer pulls them: the peer-facing _attachment/* transfer is
+	// gone, and an app that wants a remote copy asks for it through its own
+	// declared event, where it can authorise the exchange. Nothing local to
+	// return, so this reads as absent.
 	if att.Entity != "" {
-		from := ""
-		if owner.Identity != nil {
-			from = owner.Identity.ID
-		}
-		path := attachment_fetch_remote(app, from, att.Entity, id, "")
-		if path != "" {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return sl_error(fn, "unable to read attachment: %v", err)
-			}
-			return sl_encode(data), nil
-		}
 		return sl.None, nil
 	}
 
@@ -1410,78 +1402,6 @@ func api_attachment_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, variant
 	return sl_encode(rel), nil
 }
 
-// Federation: fetch attachment data from remote entity, returns cache file
-// path. variant is "" for the original bytes, "thumbnail" or "preview" for a
-// downscaled image variant (generated on the remote side).
-func attachment_fetch_remote(app *App, from string, entity string, id string, variant string) string {
-	//debug("attachment_fetch_remote: fetching %s from entity %s via app %s", id, entity, app.id)
-
-	// Cache path for remote attachments (variants cached separately; ".thumb"
-	// predates the preview variant and is kept so existing caches stay valid)
-	cache_path := fmt.Sprintf("%s/attachments/%s/%s/%s", cache_dir, entity, app.id, id)
-	switch variant {
-	case "thumbnail":
-		cache_path += ".thumb"
-	case "preview":
-		cache_path += ".preview"
-	}
-	if fi, err := os.Stat(cache_path); err == nil {
-		if time.Since(fi.ModTime()) > cache_max_age {
-			os.Remove(cache_path) // expired, will refetch below
-		} else {
-			//debug("attachment_fetch_remote: returning cached file %s", cache_path)
-			return cache_path
-		}
-	}
-
-	// Fetch from remote — use declared service name (not app.id which may be an entity ID for published apps)
-	service := app.id
-	av := app.active(nil)
-	if av != nil && len(av.Services) > 0 {
-		service = av.Services[0]
-	}
-	s, err := stream(from, entity, service, "_attachment/data", app.id, app_services(app, nil))
-	if err != nil {
-		warn("attachment_fetch_remote: stream error: %v", err)
-		return ""
-	}
-	defer s.close()
-
-	//debug("attachment_fetch_remote: sending id=%s variant=%q", id, variant)
-	// The wire flags are separate booleans rather than a variant field so old
-	// receivers keep honouring thumbnail requests; a receiver that predates
-	// previews ignores the preview flag and answers with the original bytes,
-	// which still displays correctly.
-	content := map[string]string{"id": id}
-	switch variant {
-	case "thumbnail":
-		content["thumbnail"] = "true"
-	case "preview":
-		content["preview"] = "true"
-	}
-	s.write(content)
-
-	//debug("attachment_fetch_remote: waiting for status response...")
-	status, err := s.read_content()
-	//debug("attachment_fetch_remote: received status=%v err=%v", status, err)
-	if err != nil || status["status"] != "200" {
-		debug("attachment_fetch_remote: bad status: %v", status)
-		return ""
-	}
-
-	// Stream directly to cache file (use raw_reader to include any buffered data from CBOR decoder)
-	if err := os.MkdirAll(filepath.Dir(cache_path), 0755); err != nil {
-		warn("attachment_fetch_remote: failed to create cache dir: %v", err)
-		return ""
-	}
-	if !file_write_from_reader(cache_path, s.raw_reader()) {
-		//debug("attachment_fetch_remote: failed to write cache file")
-		return ""
-	}
-
-	return cache_path
-}
-
 // Decode a Starlark value to a string list
 // Accepts strings, or dicts (extracts first string value from each dict)
 func sl_decode_string_list(v sl.Value) []string {
@@ -1516,122 +1436,6 @@ func sl_extract_string(v sl.Value) string {
 		}
 	}
 	return ""
-}
-
-// Event handler: _attachment/data (responds with file bytes)
-func (e *Event) attachment_event_data() {
-	//debug("attachment_event_data: called with content=%v", e.content)
-
-	if e.db == nil {
-		// No app DB for this (user, app) on this host. A peer can
-		// legitimately request an attachment for a user/app not present
-		// here — that's "I don't have it", not a server fault. Answer 404
-		// like the not-found case below, at debug, so it doesn't
-		// warn-email the admin on every such request.
-		debug("attachment_event_data: no database for this context, returning 404")
-		e.stream.write(map[string]string{"status": "404"})
-		return
-	}
-
-	id := e.get("id", "")
-	if id == "" {
-		warn("attachment_event_data: no id, returning 400")
-		e.stream.write(map[string]string{"status": "400"})
-		return
-	}
-	variant := ""
-	if e.get("thumbnail", "") == "true" {
-		variant = "thumbnail"
-	}
-	if e.get("preview", "") == "true" {
-		variant = "preview"
-	}
-
-	//debug("attachment_event_data: looking up attachment id=%s", id)
-	var att Attachment
-	if !e.db.scan(&att, "select * from attachments where id = ?", id) {
-		debug("attachment_event_data: attachment not found in db, returning 404")
-		e.stream.write(map[string]string{"status": "404"})
-		return
-	}
-
-	//debug("attachment_event_data: found attachment entity=%q name=%q", att.Entity, att.Name)
-
-	// Resolve the file path — fetch from the original uploader if needed
-	base := attachment_files_base(e.user.UID, e.app.id)
-	filename := attachment_filename(att.ID, att.Name)
-	path := filepath.Join(base, filename)
-
-	if att.Entity != "" {
-		// We don't own this attachment — file may not be local.
-		// Try to fetch from the entity that uploaded it (e.g., subscriber
-		// uploaded to a project we own; we have metadata but not the file).
-		if !file_exists(path) {
-			from := ""
-			if e.user.Identity != nil {
-				from = e.user.Identity.ID
-			}
-			cached := attachment_fetch_remote(e.app, from, att.Entity, id, "")
-			if cached == "" {
-				e.stream.write(map[string]string{"status": "404"})
-				return
-			}
-			// Store locally so future requests don't need the uploader online
-			if err := os.MkdirAll(base, 0755); err != nil {
-				warn("Unable to create attachment base dir: %v", err)
-				e.stream.write(map[string]string{"status": "500"})
-				return
-			}
-			if err := file_copy(cached, path); err != nil {
-				warn("Unable to cache attachment locally: %v", err)
-				e.stream.write(map[string]string{"status": "500"})
-				return
-			}
-			// Cache promotion: this host fetched the bytes and now owns a
-			// local copy — entity="" means "bytes are local".
-			e.db.exec("update attachments set entity = '' where id = ?", id)
-			info("Attachment %s fetched from uploader and stored locally", id)
-		}
-		// File now exists locally — serve it below
-	}
-
-	// Open file using os.Root for traversal protection
-	root, err := os.OpenRoot(base)
-	if err != nil {
-		warn("attachment_event_data: unable to open root, returning 404")
-		e.stream.write(map[string]string{"status": "404"})
-		return
-	}
-	defer root.Close()
-
-	// Serve the requested image variant if the file is an image
-	if variant != "" && is_image(att.Name) {
-		thumb, err := variant_create(path, variant)
-		if err == nil && thumb != "" {
-			f, err := os.Open(thumb)
-			if err == nil {
-				defer f.Close()
-				e.stream.write(map[string]string{"status": "200"})
-				io.Copy(e.stream.writer, f)
-				e.stream.close_write()
-				return
-			}
-		}
-	}
-
-	f, err := root.Open(filename)
-	if err != nil {
-		debug("attachment_event_data: file not found, returning 404")
-		e.stream.write(map[string]string{"status": "404"})
-		return
-	}
-	defer f.Close()
-
-	//debug("attachment_event_data: sending file %s", filename)
-	e.stream.write(map[string]string{"status": "200"})
-	io.Copy(e.stream.writer, f)
-	e.stream.close_write()
-	//debug("attachment_event_data: done")
 }
 
 // attachment_conflict reports whether id already exists bound to a different
@@ -1763,137 +1567,18 @@ func api_attachment_store(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl_encode(count), nil
 }
 
-// mochi.attachment.fetch(object, entity) -> list: Fetch attachments from a remote entity
+// mochi.attachment.fetch(object, entity) -> list: Retained for app versions
+// published before attachments moved into the apps; always returns an empty
+// list. Its counterpart, the built-in _attachment/fetch responder, is gone, so
+// no peer answers this any more. It stays a no-op rather than an error because
+// an installed app runs the version it was published with: an old app that
+// calls this shows no attachments, where a removed builtin would abort the
+// whole action. The response-parsing it used to do - which trusted the object
+// each row claimed and could be made to repoint an id we already held - goes
+// with it. Apps fetch remote attachments through their own declared events now.
 func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <object: string>, <entity: string>")
 	}
-
-	object, ok := sl.AsString(args[0])
-	if !ok || !valid(object, "path") {
-		return sl_error(fn, "invalid object")
-	}
-
-	entity, ok := sl.AsString(args[1])
-	if !ok || !valid(entity, "entity") {
-		return sl_error(fn, "invalid entity")
-	}
-
-	app := t.Local("app").(*App)
-	if app == nil {
-		return sl_error(fn, "no app")
-	}
-
-	owner := attachment_user(t)
-	if owner == nil {
-		return sl_error(fn, "no owner")
-	}
-
-	db := db_app_system(owner, app)
-	if db == nil {
-		return sl_error(fn, "no database")
-	}
-	db.attachments_setup()
-
-	from := ""
-	if owner.Identity != nil {
-		from = owner.Identity.ID
-	}
-	if from == "" {
-		return sl_error(fn, "no identity")
-	}
-
-	// Open stream to remote entity
-	s, err := stream(from, entity, app.id, "_attachment/fetch", app.id, app_services(app, nil))
-	if err != nil {
-		return sl_encode([]map[string]any{}), nil
-	}
-	defer s.close()
-
-	s.write_content("object", object)
-
-	// Read response
-	var attachments []map[string]any
-	if err := s.read(&attachments); err != nil {
-		return sl_encode([]map[string]any{}), nil
-	}
-
-	// Store attachments locally, against the object we asked about rather than
-	// the one each row claims. attachment_event_fetch answers only with rows for
-	// the requested object, so an honest responder loses nothing here, and a
-	// dishonest one no longer gets to file rows against containers it has nothing
-	// to do with.
-	stored := []map[string]any{}
-	for _, att := range attachments {
-		id, _ := att["id"].(string)
-		if !valid(id, "id") {
-			continue
-		}
-		name, _ := att["name"].(string)
-		size, _ := att["size"].(float64)
-		content_type, _ := att["content_type"].(string)
-		creator, _ := att["creator"].(string)
-		caption, _ := att["caption"].(string)
-		description, _ := att["description"].(string)
-		rank, _ := att["rank"].(float64)
-		created, _ := att["created"].(float64)
-
-		// The write below replaces by primary key, so without this a responder
-		// could name the id of an attachment we already hold - one of our own,
-		// or one from a different peer - and repoint it. The same guard the
-		// other receive path uses; a collision skips that row rather than
-		// failing the fetch, so one hostile entry cannot discard the rest.
-		if held, conflict := attachment_conflict(db, id, object); conflict {
-			warn("Attachment %q already belongs to %q; refusing to repoint it at %q", id, held, object)
-			continue
-		}
-
-		db.exec(`replace into attachments (id, object, entity, name, size, content_type, creator, caption, description, rank, created)
-			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, object, entity, name, int64(size), content_type, creator, caption, description, int(rank), int64(created))
-
-		att["object"] = object
-		stored = append(stored, att)
-	}
-
-	// What was stored, not what arrived: callers assign this straight to a
-	// display list, so returning the raw response showed rows the guard above
-	// skipped, each carrying whatever object the responder claimed.
-	return sl_encode(stored), nil
-}
-
-// Event handler: _attachment/fetch (responds with attachments for object via stream)
-func (e *Event) attachment_event_fetch() {
-	object := e.get("object", "")
-	if object == "" {
-		e.stream.write([]map[string]any{})
-		return
-	}
-
-	if e.db == nil {
-		e.stream.write([]map[string]any{})
-		return
-	}
-
-	// Get attachments for this object that we own (entity is empty)
-	var attachments []Attachment
-	err := e.db.scans(&attachments, "select * from attachments where object = ? and entity = '' order by rank", object)
-	if err != nil {
-		warn("Database error loading attachments: %v", err)
-		e.stream.write([]map[string]any{})
-		return
-	}
-
-	if len(attachments) == 0 {
-		e.stream.write([]map[string]any{})
-		return
-	}
-
-	// Convert to maps and send back via stream (no URL since this is Net)
-	var results []map[string]any
-	for _, att := range attachments {
-		results = append(results, att.to_map())
-	}
-
-	e.stream.write(results)
+	return sl_encode([]map[string]any{}), nil
 }

@@ -198,42 +198,15 @@ func (e *Event) route() error {
 	// Get the version to use for this event
 	av := a.active(e.user)
 
-	// Handle the built-in attachment byte-transfer events. Only data and fetch
-	// remain: the metadata events were removed, because they dispatched here -
-	// ahead of the app.json lookup below - so an app could neither decline them
-	// nor check the sender, while the only sender gate is a service name the
-	// sender writes about itself. These two are on the same footing and are being
-	// moved to the apps as well; see claude/plans/attachments-to-apps.md.
-	if strings.HasPrefix(e.event, "_attachment/") {
-		if e.from == "" {
-			info("Event dropping unsigned attachment event")
-			audit_message_rejected("", "unsigned")
-			return fmt.Errorf("unsigned attachment event")
-		}
-		if e.user == nil {
-			info("Event dropping attachment event for nil user")
-			return fmt.Errorf("attachment event requires user")
-		}
-		if !string_in_slice(e.service, e.sender_services) {
-			info("Event dropping attachment event: sender does not handle service %q", e.service)
-			return fmt.Errorf("sender does not handle service %q", e.service)
-		}
-		e.db = db_app_system(e.user, a)
-		if e.db == nil {
-			info("Event app %q failed to open system database", a.id)
-			return fmt.Errorf("no system database")
-		}
-		defer e.db.close()
-
-		switch e.event {
-		case "_attachment/data":
-			e.attachment_event_data()
-			return nil
-		case "_attachment/fetch":
-			e.attachment_event_fetch()
-			return nil
-		}
-	}
+	// The built-in _attachment/* events are gone. They dispatched here, ahead
+	// of the app.json lookup below, so an app could neither decline them nor
+	// check the sender - and the only sender gate was a service name the sender
+	// writes about itself, which constrains nobody. Attachments are now owned by
+	// each app: a peer asking for bytes reaches a declared attachment/fetch
+	// event whose handler authorises the requester against its own state, the
+	// same as any other app event. An unrecognised _attachment/* event now falls
+	// through to the app lookup and is refused there, which is correct: nothing
+	// in the platform answers it any more. See claude/plans/attachments-to-apps.md.
 
 	// System broadcast events. Handled internally, bypassing app-level
 	// event registration since every subscription app gets the same

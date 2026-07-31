@@ -23,9 +23,37 @@ func TestAttachmentMetadataEventsNotDispatched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading events.go: %v", err)
 	}
-	for _, event := range []string{"create", "insert", "update", "move", "delete", "clear"} {
+	// data and fetch went the same way as the metadata events: a peer asking
+	// for bytes, or for an object's attachment list, now reaches the app's own
+	// declared event, where the handler authorises the requester against its
+	// own state before answering.
+	for _, event := range []string{"create", "insert", "update", "move", "delete", "clear", "data", "fetch"} {
 		if strings.Contains(string(source), `"_attachment/`+event+`"`) {
 			t.Errorf("_attachment/%s is dispatched again; it must be handled by the app's own declared event", event)
+		}
+	}
+}
+
+// TestAttachmentByteTransferRemoved pins the responders and the remote pull.
+// attachment_event_data and attachment_event_fetch answered any signed peer -
+// the sender gate was a service name the sender asserts about itself - so a peer
+// who knew an object id could list its attachments and pull their bytes whatever
+// the app's own rules said. attachment_fetch_remote was the matching requester,
+// which core drove automatically from serve and read paths, so the exchange
+// happened with no app involved at either end.
+func TestAttachmentByteTransferRemoved(t *testing.T) {
+	for _, file := range []string{"attachments.go", "web.go"} {
+		source, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("reading %s: %v", file, err)
+		}
+		for _, symbol := range []string{
+			"attachment_event_data", "attachment_event_fetch",
+			"attachment_fetch_remote", "web_serve_attachment_remote",
+		} {
+			if strings.Contains(string(source), symbol+"(") {
+				t.Errorf("%s is back in %s; byte transfer between hosts belongs to the app that owns the data", symbol, file)
+			}
 		}
 	}
 }
@@ -45,18 +73,18 @@ func TestAttachmentNotifyRemoved(t *testing.T) {
 	}
 }
 
-// TestAttachmentFetchPinsObjectAndGuardsCollisions covers what
-// api_attachment_fetch does with a responder's answer. Pinning and the
-// collision guard are asserted against the source because the function opens a
-// real P2P stream to reach a peer, which a unit test cannot stand up; the guard's
-// own behaviour is covered by TestAttachmentConflictRejectsForeignObject.
+// TestAttachmentFetchParsesNoResponse pins that api_attachment_fetch consumes
+// nothing from a peer. It is retained only so an app published before the move
+// keeps loading; it answers with an empty list and opens no stream.
 //
-// The app asks a peer for one object's attachments. Taking each row's object
-// from the reply let a responder file rows against any container in the app's
-// database, and writing without the guard let it name an id the app already held
-// - its own or another peer's - and repoint that row, since the write replaces by
-// primary key.
-func TestAttachmentFetchPinsObjectAndGuardsCollisions(t *testing.T) {
+// This replaces a pair of narrower pins - that the function filed rows under the
+// object the app asked for rather than the one each reply claimed, and that it
+// refused an id already bound elsewhere - which mattered while it still parsed a
+// responder's answer. Writing nothing is the stronger property: a hostile
+// responder has no reachable path here at all. Asserted against the source
+// because the old function opened a real P2P stream, which a unit test cannot
+// stand up.
+func TestAttachmentFetchParsesNoResponse(t *testing.T) {
 	source, err := os.ReadFile("attachments.go")
 	if err != nil {
 		t.Fatalf("reading attachments.go: %v", err)
@@ -70,12 +98,9 @@ func TestAttachmentFetchPinsObjectAndGuardsCollisions(t *testing.T) {
 		body = body[:end]
 	}
 
-	// A read is the type assertion; the function also writes att["object"] to
-	// correct the row it returns, which is the fix rather than the defect.
-	if strings.Contains(body, `att["object"].(`) {
-		t.Error(`api_attachment_fetch reads att["object"] again: the object must be the one the app asked for, not the one the responder claims`)
-	}
-	if !strings.Contains(body, "attachment_conflict(db, id, object)") {
-		t.Error("api_attachment_fetch no longer guards id collisions: a responder can repoint an attachment the app already holds")
+	for _, symbol := range []string{"stream(", "s.read", "replace into attachments", "db.exec"} {
+		if strings.Contains(body, symbol) {
+			t.Errorf("api_attachment_fetch uses %s again: it must consume nothing from a peer, so a responder has no path into the app's database", symbol)
+		}
 	}
 }

@@ -252,6 +252,14 @@ func git_can_read(t *sl.Thread, owner *User, app *App, entity string) bool {
 }
 
 // Initialize a new bare repository
+// git_init creates a bare repository with no commits and no refs — only HEAD
+// pointing symbolically at refs/heads/main, so the first pushed branch lands as
+// main. No placeholder commit: one used to be manufactured here so the web view
+// had a ref to resolve, but it made every first push into a web-created repo a
+// divergent-history rejection (the pusher's real history shares no ancestor
+// with the synthetic root) and left a meaningless Mochi-authored root commit in
+// every repository forever. The display layer now treats a repo with no refs as
+// empty instead of erroring, which is the only thing the placeholder bought.
 func git_init(owner *User, app *App, entity string) error {
 	path := git_repo_path(owner, app, entity)
 
@@ -265,45 +273,72 @@ func git_init(owner *User, app *App, entity string) error {
 		return err
 	}
 
-	// Create initial empty commit so the "main" branch ref exists
-	empty_tree := &object.Tree{Entries: []object.TreeEntry{}}
-	tree_obj := repo.Storer.NewEncodedObject()
-	tree_obj.SetType(plumbing.TreeObject)
-	if err := empty_tree.Encode(tree_obj); err != nil {
-		return fmt.Errorf("failed to encode empty tree: %v", err)
-	}
-	tree_hash, err := repo.Storer.SetEncodedObject(tree_obj)
-	if err != nil {
-		return fmt.Errorf("failed to store empty tree: %v", err)
-	}
-
-	now := time.Now()
-	sig := object.Signature{Name: "Mochi", Email: "mochi@localhost", When: now}
-	commit := &object.Commit{
-		Author:    sig,
-		Committer: sig,
-		Message:   "Initial commit\n",
-		TreeHash:  tree_hash,
-	}
-	commit_obj := repo.Storer.NewEncodedObject()
-	commit_obj.SetType(plumbing.CommitObject)
-	if err := commit.Encode(commit_obj); err != nil {
-		return fmt.Errorf("failed to encode initial commit: %v", err)
-	}
-	commit_hash, err := repo.Storer.SetEncodedObject(commit_obj)
-	if err != nil {
-		return fmt.Errorf("failed to store initial commit: %v", err)
-	}
-
-	// Set refs/heads/main to the initial commit
-	ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName("main"), commit_hash)
-	if err := repo.Storer.SetReference(ref); err != nil {
-		return fmt.Errorf("failed to set main branch: %v", err)
-	}
-
 	// Set HEAD to point to main
 	head := plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName("main"))
 	return repo.Storer.SetReference(head)
+}
+
+// git_placeholder_sweep returns repositories created before git_init stopped
+// manufacturing a placeholder commit to their intended empty state, so a first
+// push lands as an ordinary new branch instead of being refused as unrelated
+// history. Runs once at startup.
+//
+// A repository qualifies only on an exact signature: refs/heads/main is the
+// single ref, and its commit has no parent, the empty tree
+// (4b825dc642cb6eb9a060e54bf8d69288fbee4904), the message "Initial commit" and
+// the Mochi <mochi@localhost> author. Nothing a person authored can match -
+// their commit either has a parent, a non-empty tree, or their own identity -
+// so a repository holding real work is never touched. Deleting the ref leaves
+// the unreachable objects for git's own gc; nothing references them.
+func git_placeholder_sweep() {
+	const empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+	users, err := filepath.Glob(filepath.Join(data_dir, "users", "*", "repositories", "*"))
+	if err != nil {
+		return
+	}
+	swept := 0
+	for _, path := range users {
+		if !file_exists(filepath.Join(path, "HEAD")) {
+			continue
+		}
+		repo, err := git.PlainOpen(path)
+		if err != nil {
+			continue
+		}
+		refs, err := repo.References()
+		if err != nil {
+			continue
+		}
+		var only *plumbing.Reference
+		count := 0
+		refs.ForEach(func(r *plumbing.Reference) error {
+			if r.Type() == plumbing.HashReference {
+				count++
+				only = r
+			}
+			return nil
+		})
+		if count != 1 || only == nil || only.Name() != plumbing.NewBranchReferenceName("main") {
+			continue
+		}
+		commit, err := repo.CommitObject(only.Hash())
+		if err != nil {
+			continue
+		}
+		if commit.NumParents() != 0 || commit.TreeHash.String() != empty_tree ||
+			strings.TrimSpace(commit.Message) != "Initial commit" ||
+			commit.Author.Name != "Mochi" || commit.Author.Email != "mochi@localhost" {
+			continue
+		}
+		if err := repo.Storer.RemoveReference(only.Name()); err != nil {
+			warn("git: unable to remove placeholder ref in %q: %v", path, err)
+			continue
+		}
+		swept++
+	}
+	if swept > 0 {
+		info("git: returned %d repository/repositories holding only the old placeholder commit to empty", swept)
+	}
 }
 
 // Delete a repository

@@ -153,6 +153,7 @@ func main_serve(ready func()) int {
 	}
 	domains_init_acme()
 	apps_start()
+	go git_placeholder_sweep()
 	net_start()
 	// setting_set replicates to every pair member via system-set ops
 	// (#68). Must run after net_start so the spawned send_peer

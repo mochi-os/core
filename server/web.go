@@ -2038,13 +2038,13 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 		return true
 	}
 
-	// If no local owner, try to fetch from remote entity (e.g., bookmarked wikis)
+	// Without a local owner there is nothing to serve. Core used to pull the
+	// bytes from the naming entity here; that peer-facing transfer is gone,
+	// and an app wanting a remote copy fetches it through its own declared
+	// event, where it can authorise the exchange.
 	if user == nil {
-		if entity == "" || (!valid(entity, "entity") && !valid(entity, "fingerprint")) {
-			respond_error(c, http.StatusNotFound, "entity_not_found", "errors.entity_not_found", nil)
-			return true
-		}
-		return web_serve_attachment_remote(c, app, nil, entity, id, variant)
+		respond_error(c, http.StatusNotFound, "attachment_not_found", "errors.attachment_not_found", nil)
+		return true
 	}
 
 	db := db_app_system(user, app)
@@ -2055,46 +2055,17 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 
 	var att Attachment
 	if !db.scan(&att, "select * from attachments where id = ?", id) {
-		// Attachment record not in local database — try remote if entity is available
-		// (e.g., subscribed feed whose attachments haven't been piggybacked)
-		if entity != "" && (valid(entity, "entity") || valid(entity, "fingerprint")) {
-			return web_serve_attachment_remote(c, app, user, entity, id, variant)
-		}
 		respond_error(c, http.StatusNotFound, "attachment_not_found", "errors.attachment_not_found", nil)
 		return true
 	}
 
-	// Get file path - always use local storage, fetching from remote if needed
+	// Serve from local storage only. A row whose bytes live on another host
+	// reads as not found: the on-demand pull core used to do belongs to the
+	// owning app now, which requests it through its own event.
 	path := filepath.Join(data_dir, attachment_path(user.UID, app.id, att.ID, att.Name))
 	if !file_exists(path) {
-		// Prefer route entity (e.g., feed ID from URL) over stored entity (may be post ID)
-		fetch_entity := entity
-		if fetch_entity == "" {
-			fetch_entity = att.Entity
-		}
-		if fetch_entity != "" {
-			// Fetch from remote and store locally
-			from := ""
-			if user.Identity != nil {
-				from = user.Identity.ID
-			}
-			cached := attachment_fetch_remote(app, from, fetch_entity, id, "")
-			if cached == "" {
-				respond_error(c, http.StatusNotFound, "file_not_found", "errors.file_not_found", nil)
-				return true
-			}
-			if err := file_copy(cached, path); err != nil {
-				warn("Unable to cache attachment locally: %v", err)
-				respond_error(c, http.StatusInternalServerError, "unable_to_cache_file", "errors.unable_to_cache_file", nil)
-				return true
-			}
-			// Clear entity so future requests serve from local storage
-			db.exec(`update attachments set entity = '' where id = ?`, id) // exec-ok: host-local cache promotion, entity="" is true only on the fetching host
-			info("Attachment %s fetched and stored locally on demand", id)
-		} else {
-			respond_error(c, http.StatusNotFound, "file_not_found", "errors.file_not_found", nil)
-			return true
-		}
+		respond_error(c, http.StatusNotFound, "file_not_found", "errors.file_not_found", nil)
+		return true
 	}
 
 	// Use ETag for cache validation so deleted files don't persist in browser cache
@@ -2128,57 +2099,6 @@ func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id strin
 		c.Header("X-Frame-Options", "")
 	}
 	c.Header("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, att.Name))
-	c.File(path)
-	return true
-}
-
-// Serve an attachment from a remote entity (for bookmarked wikis, etc.)
-func web_serve_attachment_remote(c *gin.Context, app *App, user *User, entity, id string, variant string) bool {
-	from := ""
-	if user != nil && user.Identity != nil {
-		from = user.Identity.ID
-	}
-	// Fetch from remote (image variant generated on remote side if requested)
-	path := attachment_fetch_remote(app, from, entity, id, variant)
-	if path == "" {
-		respond_error(c, http.StatusNotFound, "attachment_not_found", "errors.attachment_not_found", nil)
-		return true
-	}
-
-	// ETag cache validation ("-thumb" predates the preview variant and is kept
-	// so browser caches of existing thumbnails stay valid)
-	suffix := ""
-	switch variant {
-	case "thumbnail":
-		suffix = "-thumb"
-	case "preview":
-		suffix = "-preview"
-	}
-	etag := fmt.Sprintf(`"%s%s"`, id, suffix)
-	c.Header("ETag", etag)
-	c.Header("Cache-Control", "private, must-revalidate")
-
-	if match := c.GetHeader("If-None-Match"); match == etag {
-		c.Status(http.StatusNotModified)
-		return true
-	}
-
-	// The remote fetch gives us bytes with no filename/extension, so the cache
-	// path carries no type hint and c.File would let Go sniff the content —
-	// labelling an HTML/SVG payload text/html and rendering it inline in this
-	// server's origin (stored XSS). Sniff it ourselves and only serve inline
-	// for known-safe media types; force download for everything else. Mirrors
-	// the local-path guard in web_serve_attachment.
-	ct := file_content_type(path)
-	disposition := "attachment"
-	if (strings.HasPrefix(ct, "image/") && ct != "image/svg+xml") ||
-		strings.HasPrefix(ct, "video/") || strings.HasPrefix(ct, "audio/") ||
-		ct == "application/pdf" {
-		disposition = "inline"
-		c.Header("X-Frame-Options", "")
-	}
-	c.Header("Content-Type", ct)
-	c.Header("Content-Disposition", disposition)
 	c.File(path)
 	return true
 }

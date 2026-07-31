@@ -591,7 +591,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			}
 			web_cache_static(c, file, aa.Cache)
 			if strings.HasSuffix(strings.ToLower(aa.File), ".svg") {
-				web_serve_svg(c, file)
+				web_serve_svg_path(c, file)
 				return true
 			}
 			c.File(file)
@@ -610,7 +610,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			//debug("Serving file from directory for app %q: %q", a.id, file)
 			web_cache_static(c, file, aa.Cache)
 			if strings.HasSuffix(strings.ToLower(aa.filepath), ".svg") {
-				web_serve_svg(c, file)
+				web_serve_svg_path(c, file)
 			} else {
 				c.File(file)
 			}
@@ -833,21 +833,50 @@ func web_auth(c *gin.Context) *User {
 }
 
 // Ask browser to cache static files
-// web_serve_svg reads an SVG file, sanitizes it, and serves the result. App
-// SVGs are attacker-controlled under the untrusted-app model, and an SVG opened
-// as a top-level document runs its scripts in this server's origin. The regex
+// web_serve_svg sanitizes SVG content and serves the result. App SVGs are
+// attacker-controlled under the untrusted-app model, and an SVG opened as a
+// top-level document runs its scripts in this server's origin. The regex
 // sanitizer below is best-effort and bypassable, so the real guarantee is the
 // Content-Security-Policy: scripts, plugins, frames and network fetches are all
 // blocked even if a payload slips past svg_sanitize. Inline styles and data:
 // images are allowed so ordinary self-contained SVGs still render.
-func web_serve_svg(c *gin.Context, path string) {
-	data, err := os.ReadFile(path)
+//
+// The content arrives as an open handle rather than a path so that whatever the
+// caller checked to obtain it - the containment check a hosted file goes
+// through, the cache lookup a pulled copy goes through - still holds here.
+// Sanitizing needs the whole document in memory, so one too large to buffer is
+// served as a download instead: a download cannot execute, which makes it the
+// safe answer for a file that is far more likely to be a mislabelled upload
+// than a real drawing.
+func web_serve_svg(c *gin.Context, reader io.Reader) {
+	buffer, err := io.ReadAll(io.LimitReader(reader, stream_svg_maximum+1))
 	if err != nil {
 		c.Status(http.StatusNotFound)
 		return
 	}
+
+	if len(buffer) > stream_svg_maximum {
+		c.Header("Content-Disposition", "attachment")
+		c.Data(http.StatusOK, "image/svg+xml", buffer)
+		io.Copy(c.Writer, reader)
+		return
+	}
+
 	c.Header("Content-Security-Policy", svg_content_policy)
-	c.Data(http.StatusOK, "image/svg+xml", svg_sanitize(data))
+	c.Data(http.StatusOK, "image/svg+xml", svg_sanitize(buffer))
+}
+
+// web_serve_svg_path opens a path and serves it through web_serve_svg. It suits
+// an app's own bundled files, where the path was built by the server and no
+// caller-held handle has to be preserved.
+func web_serve_svg_path(c *gin.Context, path string) {
+	file, err := os.Open(path)
+	if err != nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	defer file.Close()
+	web_serve_svg(c, file)
 }
 
 func web_cache_static(c *gin.Context, path string, cache string) {

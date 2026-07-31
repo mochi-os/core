@@ -960,6 +960,31 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	}
 	defer file.Close()
 
+	// A files directory holds whatever was put there, and for most apps that
+	// means content someone else supplied - an attachment, a photo, a purchased
+	// asset. Served inline on the app's own origin, an .html or an active .svg
+	// among them executes with the reader's session, so the same policy the cache
+	// path applies to a pulled copy applies here: SVG is sanitized and served
+	// under a script-blocking policy, other known media serve inline, everything
+	// else downloads.
+	//
+	// A request that arrived on a hosted domain is the exception, because
+	// publishing a site is exactly what that route is for and its pages have to
+	// render. That narrows rather than removes the question: an app which both
+	// serves foreign uploads and is reachable through a domain route would serve
+	// them raw again, though on the route's own hostname rather than this origin.
+	if a.domain == nil || a.domain.route == nil {
+		content_type := file_name_type(path)
+		if content_type == "image/svg+xml" {
+			starlark_serving_set(t, a.web.Writer)
+			web_serve_svg(a.web, file)
+			return sl.None, nil
+		}
+		if !content_type_inline(content_type) && a.web.Writer.Header().Get("Content-Disposition") == "" {
+			a.web.Header("Content-Disposition", "attachment")
+		}
+	}
+
 	// Which bytes this path yields depends on whose directory is being read, so
 	// the response must never land in a shared cache: an app serves its own
 	// caller's files here (a purchased asset, an account export) as readily as a
@@ -1004,12 +1029,6 @@ func (a *Action) sl_write_cache(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 	base := content_type_base(content_type)
 
-	if base == "image/svg+xml" {
-		starlark_serving_set(t, a.web.Writer)
-		web_serve_svg(a.web, path)
-		return sl.True, nil
-	}
-
 	file, err := os.Open(path)
 	if err != nil {
 		return sl.False, nil
@@ -1018,6 +1037,12 @@ func (a *Action) sl_write_cache(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	information, err := file.Stat()
 	if err != nil || information.IsDir() {
 		return sl.False, nil
+	}
+
+	if base == "image/svg+xml" {
+		starlark_serving_set(t, a.web.Writer)
+		web_serve_svg(a.web, file)
+		return sl.True, nil
 	}
 
 	if a.web.Writer.Header().Get("Content-Type") == "" {
@@ -1131,7 +1156,7 @@ func (a *Action) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	// sanitising wins over an app's opinion about its own bytes.
 	if strings.HasSuffix(strings.ToLower(path), ".svg") {
 		starlark_serving_set(t, a.web.Writer)
-		web_serve_svg(a.web, file)
+		web_serve_svg_path(a.web, file)
 		return sl.None, nil
 	}
 

@@ -123,8 +123,11 @@ func TestWriteStreamSvgOversizeDownloads(t *testing.T) {
 }
 
 // write_file_environment builds a files directory for one user and app, and
-// returns a function that serves a path from it the way an action would.
-func write_file_environment(t *testing.T, url string) (string, func(string) *httptest.ResponseRecorder) {
+// returns a function that serves a path from it the way an action would. hosted
+// picks which of the two callers is being modelled: a request that arrived on a
+// domain route, which publishes a site and may render it, or a plain request to
+// the app, which serves stored content and may not.
+func write_file_environment(t *testing.T, url string, hosted bool) (string, func(string) *httptest.ResponseRecorder) {
 	t.Helper()
 
 	original := data_dir
@@ -143,6 +146,9 @@ func write_file_environment(t *testing.T, url string) (string, func(string) *htt
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest("GET", url, nil)
 		a := &Action{web: c}
+		if hosted {
+			a.domain = &DomainInfo{route: &DomainRouteInfo{owner: user}}
+		}
 
 		thread := &sl.Thread{Name: "test"}
 		thread.SetLocal("owner", user)
@@ -162,7 +168,7 @@ func write_file_environment(t *testing.T, url string) (string, func(string) *htt
 // left behind by an rsync or an unpacked tarball must be refused at open time
 // instead of serving whatever it points at.
 func TestWriteFileRefusesEscapingSymlink(t *testing.T) {
-	base, serve := write_file_environment(t, "/files/escape.txt")
+	base, serve := write_file_environment(t, "/files/escape.txt", false)
 
 	secret := data_dir + "/outside.txt"
 	if err := os.WriteFile(secret, []byte("OUTSIDE-SECRET"), 0600); err != nil {
@@ -186,7 +192,7 @@ func TestWriteFileRefusesEscapingSymlink(t *testing.T) {
 // links that stay inside the directory are legitimate, and the "latest -> v2"
 // layout of a package repository depends on them resolving.
 func TestWriteFileFollowsInternalSymlink(t *testing.T) {
-	base, serve := write_file_environment(t, "/files/latest/data.txt")
+	base, serve := write_file_environment(t, "/files/latest/data.txt", true)
 
 	if err := os.MkdirAll(base+"/v2", 0755); err != nil {
 		t.Fatalf("creating directory: %v", err)
@@ -212,7 +218,7 @@ func TestWriteFileFollowsInternalSymlink(t *testing.T) {
 // directory that has no index must not fall back to a generated HTML index,
 // which named every file in the tree to anyone who could reach it.
 func TestWriteFileDirectoryDoesNotList(t *testing.T) {
-	base, serve := write_file_environment(t, "/files/listing/")
+	base, serve := write_file_environment(t, "/files/listing/", true)
 
 	if err := os.MkdirAll(base+"/listing", 0755); err != nil {
 		t.Fatalf("creating directory: %v", err)
@@ -234,7 +240,7 @@ func TestWriteFileDirectoryDoesNotList(t *testing.T) {
 // TestWriteFileDirectoryServesIndex keeps the behaviour a static file host
 // relies on: a directory request is answered from its index.html.
 func TestWriteFileDirectoryServesIndex(t *testing.T) {
-	base, serve := write_file_environment(t, "/files/site/")
+	base, serve := write_file_environment(t, "/files/site/", true)
 
 	if err := os.MkdirAll(base+"/site", 0755); err != nil {
 		t.Fatalf("creating directory: %v", err)
@@ -260,7 +266,7 @@ func TestWriteFileDirectoryServesIndex(t *testing.T) {
 // used to issue for the same case: relative links in an index resolve against
 // the request path, so it has to end in a slash before the page is served.
 func TestWriteFileDirectoryRedirectsToSlash(t *testing.T) {
-	base, serve := write_file_environment(t, "/files/site")
+	base, serve := write_file_environment(t, "/files/site", true)
 
 	if err := os.MkdirAll(base+"/site", 0755); err != nil {
 		t.Fatalf("creating directory: %v", err)
@@ -285,7 +291,7 @@ func TestWriteFileDirectoryRedirectsToSlash(t *testing.T) {
 // validator's leading-character rule stopped ".env" but not "site/.env", so a
 // git working tree or a stray .env copied into a hosted directory was readable.
 func TestWriteFileRejectsDotfiles(t *testing.T) {
-	base, serve := write_file_environment(t, "/files/site/.env")
+	base, serve := write_file_environment(t, "/files/site/.env", false)
 
 	if err := os.MkdirAll(base+"/site/.git", 0755); err != nil {
 		t.Fatalf("creating directory: %v", err)
@@ -313,7 +319,7 @@ func TestWriteFileRejectsDotfiles(t *testing.T) {
 // response with no Cache-Control could be held by a shared cache and handed to
 // the wrong reader, and one with no validator could outlive the file itself.
 func TestWriteFileSetsCachePolicy(t *testing.T) {
-	base, serve := write_file_environment(t, "/files/data.txt")
+	base, serve := write_file_environment(t, "/files/data.txt", false)
 
 	if err := os.WriteFile(base+"/data.txt", []byte("DATA"), 0600); err != nil {
 		t.Fatalf("writing file: %v", err)
@@ -329,6 +335,97 @@ func TestWriteFileSetsCachePolicy(t *testing.T) {
 	}
 	if w.Header().Get("Etag") == "" {
 		t.Error("no ETag, so a revalidation cannot be answered cheaply")
+	}
+}
+
+// TestWriteFileDownloadsDocument covers the stored-content case: a files
+// directory holds what its app was given, and most apps are given it by someone
+// other than the reader - an attachment, a photo, a purchased asset. A document
+// among them served inline would run in this origin with the reader's session,
+// so anything outside the inline allowlist has to arrive as a download.
+func TestWriteFileDownloadsDocument(t *testing.T) {
+	base, serve := write_file_environment(t, "/feeds/entity/-/attachment", false)
+
+	if err := os.WriteFile(base+"/payload.html", []byte("<script>alert(document.domain)</script>"), 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+
+	w := serve("payload.html")
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	if disposition := w.Header().Get("Content-Disposition"); disposition != "attachment" {
+		t.Errorf("disposition = %q, want attachment - an uploaded document must not render in this origin", disposition)
+	}
+	if body := w.Body.String(); !strings.Contains(body, "alert") {
+		t.Errorf("body = %q, want the file served intact as a download", body)
+	}
+}
+
+// TestWriteFileSanitizesSvg is the same case for the format that renders even
+// when it is called an image. Serving it as a download would be safe but would
+// stop legitimate SVGs displaying, so it takes the sanitize-and-CSP path the
+// cache path already uses for a copy pulled from a peer.
+func TestWriteFileSanitizesSvg(t *testing.T) {
+	base, serve := write_file_environment(t, "/feeds/entity/-/attachment", false)
+
+	payload := `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(document.domain)</script><rect width="10" height="10"/></svg>`
+	if err := os.WriteFile(base+"/drawing.svg", []byte(payload), 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+
+	w := serve("drawing.svg")
+
+	if policy := w.Header().Get("Content-Security-Policy"); policy != svg_content_policy {
+		t.Errorf("content policy = %q, want %q", policy, svg_content_policy)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "<script") || strings.Contains(body, "alert") {
+		t.Errorf("script survived sanitizing: %q", body)
+	}
+	if !strings.Contains(body, "<rect") {
+		t.Errorf("legitimate content dropped: %q", body)
+	}
+}
+
+// TestWriteFileServesImageInline keeps the other half of the policy honest: the
+// allowlisted media types still display, or every avatar and attached photo
+// would turn into a download.
+func TestWriteFileServesImageInline(t *testing.T) {
+	base, serve := write_file_environment(t, "/feeds/entity/-/attachment", false)
+
+	if err := os.WriteFile(base+"/photo.png", []byte("\x89PNG\r\n\x1a\n"), 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+
+	w := serve("photo.png")
+
+	if disposition := w.Header().Get("Content-Disposition"); disposition != "" {
+		t.Errorf("disposition = %q, want none - an image must still display", disposition)
+	}
+}
+
+// TestWriteFileHostedSiteRendersDocument covers the exemption. A request that
+// arrived on a domain route is publishing a site, where serving HTML is the
+// entire point and the response answers on the route's own hostname.
+func TestWriteFileHostedSiteRendersDocument(t *testing.T) {
+	base, serve := write_file_environment(t, "/page.html", true)
+
+	if err := os.WriteFile(base+"/page.html", []byte("<h1>PAGE</h1>"), 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+
+	w := serve("page.html")
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	if disposition := w.Header().Get("Content-Disposition"); disposition != "" {
+		t.Errorf("disposition = %q, want none - a hosted page has to render", disposition)
+	}
+	if body := w.Body.String(); !strings.Contains(body, "PAGE") {
+		t.Errorf("body = %q, want the page", body)
 	}
 }
 
@@ -421,7 +518,7 @@ func TestWriteFileUsesRouteOwner(t *testing.T) {
 // owns this data", so an authenticated stranger handed the published account's
 // owner is authorized as that account.
 func TestWriteFileDirectRequestKeepsOwner(t *testing.T) {
-	base, serve := write_file_environment(t, "/files/index.html")
+	base, serve := write_file_environment(t, "/files/index.html", false)
 
 	if err := os.WriteFile(base+"/index.html", []byte("OWN-FILE"), 0600); err != nil {
 		t.Fatalf("writing file: %v", err)

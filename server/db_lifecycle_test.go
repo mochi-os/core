@@ -240,6 +240,59 @@ def database_upgrade(version):
 	}
 }
 
+// TestAppDatabaseUpgradeAbort: a step that calls mochi.db.abort() does NOT
+// advance the schema version - unlike an ordinary failure, which consumes it.
+// The step retries verbatim on the next open, which is what lets a migration
+// blocked on a transient precondition (the attachments transition bridge being
+// absent) wait rather than being consumed and needing a repair version.
+func TestAppDatabaseUpgradeAbort(t *testing.T) {
+	app, av, cleanup := lifecycle_test_app(t, `
+def database_create():
+    mochi.db.execute("create table alpha (id integer primary key)")
+
+def database_upgrade(version):
+    if version == 2:
+        mochi.db.execute("alter table alpha add column extra text")
+    if version == 3:
+        mochi.db.execute("create table gamma (id integer primary key)")
+        mochi.db.abort("transient precondition missing")
+`)
+	defer cleanup()
+	u := &User{UID: "abortuser"}
+
+	if db := db_app(u, app); db == nil {
+		t.Fatal("initial create failed")
+	}
+
+	// Ship "2.0" with schema 3: step 2 commits, step 3 aborts.
+	av.Version = "2.0"
+	av.Database.Schema = 3
+	av.Database.Upgrade.Function = "database_upgrade"
+	db := db_app(u, app)
+	if db == nil {
+		t.Fatal("db_app returned nil after migration wave")
+	}
+
+	// The version is HELD at 2 - the abort did not advance it, so step 3
+	// retries next time (contrast the failure case, which reaches 3).
+	if v := db.integer("pragma user_version"); v != 2 {
+		t.Fatalf("user_version = %d, want 2 (abort must hold the version, not consume it)", v)
+	}
+	// Step 2's committed DDL survives; step 3's rolled back.
+	if n := db.integer("select count(*) from pragma_table_info('alpha')"); n != 2 {
+		t.Fatalf("alpha has %d columns, want 2 (step 2 committed)", n)
+	}
+	if n := db.integer("select count(*) from sqlite_master where type='table' and name='gamma'"); n != 0 {
+		t.Fatalf("gamma exists - the aborted step's DDL was not rolled back")
+	}
+
+	// A second open retries the aborted step, and it aborts again: still 2.
+	db2 := db_app(u, app)
+	if v := db2.integer("pragma user_version"); v != 2 {
+		t.Fatalf("user_version = %d after retry, want 2 (a persistently aborting step never advances)", v)
+	}
+}
+
 // TestLifecycleAuthoriser: the dedicated lifecycle connection allows the
 // user_version stamp but keeps every other Starlark-pool restriction.
 func TestLifecycleAuthoriser(t *testing.T) {

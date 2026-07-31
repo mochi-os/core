@@ -25,6 +25,22 @@ func email_tls_policy() gm.TLSPolicy {
 	return gm.NoTLS
 }
 
+// email_identifier returns a Message-ID value for an outbound message, built
+// from the sender's domain. Left to the library, the Message-ID is generated
+// from the machine's hostname, which is commonly a short name rather than
+// fully qualified — and receiving filters penalise a Message-ID whose
+// right-hand side is not an FQDN. The sender address always carries the
+// operator's chosen mail domain.
+func email_identifier(from string) string {
+	domain := "localhost"
+	if address, err := mail.ParseAddress(from); err == nil {
+		if at := strings.LastIndex(address.Address, "@"); at >= 0 {
+			domain = address.Address[at+1:]
+		}
+	}
+	return uid() + "@" + domain
+}
+
 // email_send sends a plain text email.
 // email_send_dedup is email_send with a per-user (address, event_id)
 // dedup gate. When event_id is non-empty and the user already received
@@ -117,6 +133,7 @@ func email_send(to string, subject string, body string) {
 		info("Email failed to set from address %q: %v", from, err)
 		return
 	}
+	m.SetMessageIDWithValue(email_identifier(from))
 	err = m.To(to)
 	if err != nil {
 		info("Email failed to set to address %q: %v", to, err)
@@ -151,6 +168,7 @@ func email_send_html(to string, subject string, html string) {
 		info("Email failed to set from address %q: %v", from, err)
 		return
 	}
+	m.SetMessageIDWithValue(email_identifier(from))
 	err = m.To(to)
 	if err != nil {
 		info("Email failed to set to address %q: %v", to, err)
@@ -248,6 +266,7 @@ func email_send_multipart(to string, subject string, text string, html string) {
 		info("Email failed to set from address %q: %v", from, err)
 		return
 	}
+	m.SetMessageIDWithValue(email_identifier(from))
 	err = m.To(to)
 	if err != nil {
 		info("Email failed to set to address %q: %v", to, err)

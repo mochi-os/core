@@ -40,6 +40,7 @@ func user_storage_remaining(u *User) (int64, error) {
 
 var (
 	api_file = sls.FromStringDict(sl.String("mochi.file"), sl.StringDict{
+		"age":    sl.NewBuiltin("mochi.file.age", api_file_age),
 		"delete": sl.NewBuiltin("mochi.file.delete", api_file_delete),
 		"exists": sl.NewBuiltin("mochi.file.exists", api_file_exists),
 		"list":   sl.NewBuiltin("mochi.file.list", api_file_list),
@@ -253,6 +254,46 @@ func api_file_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	root.Remove(file)
 	return sl.None, nil
+}
+
+// mochi.file.age(file) -> integer or None: Seconds since a file was last
+// modified, or None if it does not exist or is a directory. Lets a caller tell
+// a file that has settled from one another request may still be writing: a
+// listing alone cannot, because a partially written upload and an abandoned one
+// look identical by name.
+func api_file_age(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <file: string>")
+	}
+
+	file, ok := sl.AsString(args[0])
+	if !ok || !valid(file, "filepath") {
+		return sl_error(fn, "invalid file %q", file)
+	}
+
+	user := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	base := api_file_base(user, app)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return sl.None, nil
+	}
+	defer root.Close()
+
+	information, err := root.Stat(file)
+	if err != nil || information.IsDir() {
+		return sl.None, nil
+	}
+
+	return sl.MakeInt64(int64(time.Since(information.ModTime()).Seconds())), nil
 }
 
 // mochi.file.exists(file) -> bool: Check whether a file exists

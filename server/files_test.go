@@ -14,7 +14,66 @@ import (
 	"testing"
 	"time"
 	"unicode"
+
+	sl "go.starlark.net/starlark"
 )
+
+// TestFileAge covers the reading the attachment sweep depends on to tell a file
+// that has settled from one another request may still be writing. A listing
+// cannot: a part-written upload and an abandoned one have the same name.
+func TestFileAge(t *testing.T) {
+	original := data_dir
+	data_dir = t.TempDir()
+	t.Cleanup(func() { data_dir = original })
+
+	user := &User{UID: "testuser"}
+	app := &App{id: "files"}
+	base := api_file_base(user, app)
+	if err := os.MkdirAll(base+"/directory", 0755); err != nil {
+		t.Fatalf("creating files directory: %v", err)
+	}
+	if err := os.WriteFile(base+"/fresh.txt", []byte("x"), 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+	if err := os.WriteFile(base+"/stale.txt", []byte("x"), 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(base+"/stale.txt", old, old); err != nil {
+		t.Fatalf("setting modification time: %v", err)
+	}
+
+	thread := &sl.Thread{Name: "test"}
+	thread.SetLocal("user", user)
+	thread.SetLocal("app", app)
+
+	age := func(name string) sl.Value {
+		value, err := api_file_age(thread, sl.NewBuiltin("mochi.file.age", nil), sl.Tuple{sl.String(name)}, nil)
+		if err != nil {
+			t.Fatalf("api_file_age(%q) returned %v", name, err)
+		}
+		return value
+	}
+
+	seconds, err := sl.AsInt32(age("fresh.txt"))
+	if err != nil || seconds > 60 {
+		t.Errorf("fresh file age = %v, want a small number of seconds", age("fresh.txt"))
+	}
+
+	seconds, err = sl.AsInt32(age("stale.txt"))
+	if err != nil || seconds < 7000 {
+		t.Errorf("stale file age = %v, want about 7200 seconds", age("stale.txt"))
+	}
+
+	// Absent and directory both read as no answer rather than an age of zero,
+	// which a caller comparing against a threshold would take as "settled".
+	if value := age("missing.txt"); value != sl.None {
+		t.Errorf("missing file age = %v, want None", value)
+	}
+	if value := age("directory"); value != sl.None {
+		t.Errorf("directory age = %v, want None", value)
+	}
+}
 
 var (
 	match_repeated_separators = regexp.MustCompile(`[-_ ]{2,}`)

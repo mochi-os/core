@@ -108,11 +108,34 @@ output, so the effective configuration is safe to copy into bug reports.
     Without inbound reachability on this port the server can still
     initiate connections but cannot serve as a peer for others.
 
-**relay** = **true** | **false**
-:   When **true**, the server advertises as a libp2p relay, helping
-    NAT-restricted peers reach each other. Defaults to **false**.
+## [relay]
+
+Whether the server relays at all is the *relay* server setting (default
+**true**), changed through the settings interface: when it is enabled and the
+server has found itself publicly reachable, the relay service starts and is
+announced to NAT-restricted peers. The keys below tune the running service.
+
+**reservations** = *integer*
+:   Maximum relay reservations held at once. Defaults to **2048**.
+
+**data** = *bytes*
+:   Per-connection cap on relayed transfer volume. Unset or **0** leaves the
+    connection unbounded, so relayed file sharing is never truncated below
+    what the application itself allows. Setting *data* or *duration* enables
+    the per-connection limit.
+
+**duration** = *seconds*
+:   Per-connection cap on relayed transfer time. Unset or **0** leaves the
+    connection unbounded.
 
 ## [email]
+
+The sender address for outbound mail (login codes, admin alerts) is not
+configured here: it is the *email_from* server setting, changed through the
+settings interface by an administrator. It defaults to
+**mochi-server@localhost**, which receiving filters reject as
+unauthenticatable - set it to an address at a domain whose SPF record covers
+the sending host, or the mail will be filed as spam.
 
 **host** = *hostname*
 :   SMTP relay host. Defaults to **127.0.0.1**.
@@ -126,11 +149,6 @@ output, so the effective configuration is safe to copy into bug reports.
     Set to **false** when relaying through a localhost or LAN-private
     postfix whose certificate isn't in any public CA chain — the network
     path is private by position, so plain SMTP is acceptable there.
-
-**from** = *address*
-:   Default `From` address for outbound mail (login codes, admin
-    alerts). Defaults to **mochi-server@localhost** unless overridden
-    by the *email_from* setting in the database (set through the UI).
 
 **admin** = *address*
 :   Email address that receives **warn()**-level alerts. If empty (the

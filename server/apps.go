@@ -29,6 +29,12 @@ type App struct {
 	versions    map[string]*AppVersion
 	latest      *AppVersion // Highest installed version (external apps)
 	internal    *AppVersion // Single version for internal Go apps
+	// development marks apps not installed from a publisher (the dev
+	// directory and internal Go apps). Set at load; drives dev-precedence
+	// in service/path/class selection and the "development" field in the
+	// app APIs. Never inferred from the id's shape - entity ids are 49-51
+	// characters, and length-based guesses misclassified the 49s.
+	development bool
 }
 
 type AppAction struct {
@@ -583,7 +589,7 @@ func app(id string) *App {
 	apps_lock.Unlock()
 
 	if !found {
-		a = &App{id: id, fingerprint: fingerprint(id), versions: make(map[string]*AppVersion)}
+		a = &App{id: id, fingerprint: fingerprint(id), versions: make(map[string]*AppVersion), development: true}
 		a.internal = &AppVersion{}
 		a.internal.app = a
 		a.internal.Actions = make(map[string]AppAction)
@@ -901,11 +907,11 @@ func app_for_service_resolve(user *User, service string) *App {
 		return nil
 	}
 	// If a published app was found, check if a dev app provides the same service
-	if is_entity_id(a.id) {
+	if !a.development {
 		av := a.active(user)
 		if av != nil {
 			for _, s := range av.Services {
-				if dev := app_for_service_fallback(user, s); dev != nil && !is_entity_id(dev.id) {
+				if dev := app_for_service_fallback(user, s); dev != nil && dev.development {
 					debug("app_for_service: published app %q -> dev app %q for service %q", a.id, dev.id, s)
 					return dev
 				}
@@ -1165,13 +1171,13 @@ func app_select_best(candidates []*App) *App {
 		return candidates[0]
 	}
 
-	// Separate dev apps (non-entity IDs) from published apps (entity IDs)
+	// Separate dev apps from published apps
 	var dev, published []*App
 	for _, a := range candidates {
-		if is_entity_id(a.id) {
-			published = append(published, a)
-		} else {
+		if a.development {
 			dev = append(dev, a)
+		} else {
+			published = append(published, a)
 		}
 	}
 
@@ -1208,11 +1214,6 @@ func app_select_best(candidates []*App) *App {
 	}
 
 	return best
-}
-
-// is_entity_id returns true if the ID looks like an entity ID (50-51 chars)
-func is_entity_id(id string) bool {
-	return len(id) >= 50 && len(id) <= 51
 }
 
 // Global binding functions for apps.db
@@ -1571,7 +1572,7 @@ func apps_pin_default_services(defaults []DefaultApp) {
 		if av == nil {
 			continue
 		}
-		if !is_entity_id(a.id) {
+		if a.development {
 			// Dev app: record its services so we never override it.
 			for _, s := range av.Services {
 				dev[s] = true
@@ -1907,6 +1908,7 @@ func apps_load_dev() {
 		}
 
 		a := app_external(id)
+		a.development = true
 		a.load_version(av)
 		debug("Dev app loaded: %s", id)
 	}
@@ -2400,10 +2402,11 @@ func api_app_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 			latest = a.latest.Version
 		}
 		result := map[string]any{
-			"id":     a.id,
-			"name":   a.label(user, av, av.Label),
-			"latest": latest,
-			"icon":   av.icon(),
+			"id":          a.id,
+			"name":        a.label(user, av, av.Label),
+			"latest":      latest,
+			"icon":        av.icon(),
+			"development": a.development,
 		}
 		if av.Publisher.Peer != "" {
 			result["publisher"] = map[string]string{"peer": av.Publisher.Peer}
@@ -2498,7 +2501,7 @@ func starlark_kwargs_to_map(kwargs []sl.Tuple) (map[string]any, error) {
 // Returns {"icons": [...], "icon_mask": "...", "icon_background": "..."}
 func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
-	var icons []map[string]string
+	var icons []map[string]any
 
 	// Resolve the user's active theme for icon overrides
 	theme_pref := user_preference_get(user, "theme", "")
@@ -2555,13 +2558,13 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 				}
 			}
 
-			icons = append(icons, map[string]string{"id": a.id, "path": icon_path, "name": a.label(user, av, i.Label), "file": icon_file, "link": path})
+			icons = append(icons, map[string]any{"id": a.id, "path": icon_path, "name": a.label(user, av, i.Label), "file": icon_file, "link": path, "development": a.development})
 		}
 	}
 	apps_lock.Unlock()
 
 	sort.Slice(icons, func(i, j int) bool {
-		return strings.ToLower(icons[i]["name"]) < strings.ToLower(icons[j]["name"])
+		return strings.ToLower(icons[i]["name"].(string)) < strings.ToLower(icons[j]["name"].(string))
 	})
 
 	result := map[string]any{"icons": icons}
@@ -2752,15 +2755,16 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 			latest = a.latest.Version
 		}
 		result := map[string]any{
-			"id":       a.id,
-			"name":     a.label(user, av, av.Label),
-			"active":   av.Version,
-			"latest":   latest,
-			"engine":   av.Architecture.Engine,
-			"icon":     av.icon(),
-			"classes":  av.Classes,
-			"services": av.Services,
-			"paths":    av.Paths,
+			"id":          a.id,
+			"name":        a.label(user, av, av.Label),
+			"active":      av.Version,
+			"latest":      latest,
+			"engine":      av.Architecture.Engine,
+			"icon":        av.icon(),
+			"classes":     av.Classes,
+			"services":    av.Services,
+			"paths":       av.Paths,
+			"development": a.development,
 		}
 		if len(av.Themes) > 0 {
 			themes := make([]map[string]any, len(av.Themes))
@@ -2852,7 +2856,7 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		}
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
-		return !is_entity_id(entries[i].app.id) && is_entity_id(entries[j].app.id)
+		return entries[i].app.development && !entries[j].app.development
 	})
 
 	seen := make(map[string]bool, len(entries))
@@ -2875,7 +2879,7 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 			"hue":         theme.Hue,
 			"chroma":      theme.Chroma,
 			"hue_bg":      theme.HueBG,
-			"development": !is_entity_id(a.id),
+			"development": a.development,
 		}
 		if theme.BorderRadius != "" {
 			result["border_radius"] = theme.BorderRadius

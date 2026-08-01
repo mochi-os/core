@@ -57,6 +57,7 @@ func user_storage_remaining(u *User) (int64, error) {
 var (
 	api_file = sls.FromStringDict(sl.String("mochi.file"), sl.StringDict{
 		"age":     sl.NewBuiltin("mochi.file.age", api_file_age),
+		"clean":   sl.NewBuiltin("mochi.file.clean", api_file_clean),
 		"copy":    sl.NewBuiltin("mochi.file.copy", api_file_copy),
 		"maximum": sl.NewBuiltin("mochi.file.maximum", api_file_maximum),
 		"delete":  sl.NewBuiltin("mochi.file.delete", api_file_delete),
@@ -221,6 +222,21 @@ func dir_size(path string) (int64, error) {
 		return nil
 	})
 	return size, err
+}
+
+// mochi.file.clean(name, maximum=255) -> string: Reduce a client-supplied name
+// to one every platform accepts and the "filepath" validator passes. Identity
+// for legitimate names in any script; strips invisible and forbidden
+// characters, device stems and path components, and bounds the byte length.
+// The validator and this share one implementation, so a caller storing what
+// clean returns can never be refused by the validator later.
+func api_file_clean(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var name string
+	maximum := 255
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name, "maximum?", &maximum); err != nil {
+		return nil, err
+	}
+	return sl.String(path_clean(name, maximum)), nil
 }
 
 // mochi.file.delete(file) -> None: Delete a file

@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // Test atoi function
@@ -351,6 +352,73 @@ func TestValid(t *testing.T) {
 		{"filename backslash", "file\\path.txt", "filename", false},
 		{"filename caret", "file^name.txt", "filename", false},
 
+		// filepath: ASCII by exact list
+		{"filepath plain", "photo.png", "filepath", true},
+		{"filepath nested", "reports/2026/summary.pdf", "filepath", true},
+		{"filepath punctuation", "Report (final), v2 [draft] ~1 100%.pdf", "filepath", true},
+		{"filepath interior double dot", "report..final.pdf", "filepath", true},
+		{"filepath dollar", "price$.txt", "filepath", false},
+		{"filepath semicolon", "a;b.txt", "filepath", false},
+		{"filepath backtick", "a`b.txt", "filepath", false},
+		{"filepath caret", "a^b.txt", "filepath", false},
+		{"filepath braces", "a{b}.txt", "filepath", false},
+		{"filepath windows forbidden", "a:b.txt", "filepath", false},
+		{"filepath quote", "a\"b.txt", "filepath", false},
+		{"filepath asterisk", "a*.txt", "filepath", false},
+		{"filepath pipe", "a|b.txt", "filepath", false},
+		{"filepath question", "a?.txt", "filepath", false},
+		{"filepath backslash", "a\\b.txt", "filepath", false},
+
+		// filepath: non-ASCII by category
+		{"filepath accented", "café.png", "filepath", true},
+		{"filepath cjk", "写真.png", "filepath", true},
+		{"filepath cyrillic", "отчёт.pdf", "filepath", true},
+		{"filepath arabic", "ملف.pdf", "filepath", true},
+		{"filepath emoji", "party 🎉.png", "filepath", true},
+		{"filepath curly quote", "John’s file.txt", "filepath", true},
+		{"filepath em dash", "notes — final.txt", "filepath", true},
+		{"filepath cjk punctuation", "第1章。草稿.txt", "filepath", true},
+		{"filepath circled digit", "chapter ①.txt", "filepath", true},
+		{"filepath currency", "price €10.txt", "filepath", true},
+		{"filepath decomposed", "café.png", "filepath", false},
+		{"filepath bell", "ring\x07.txt", "filepath", false},
+		{"filepath newline", "line1\nline2.txt", "filepath", false},
+		{"filepath carriage return", "a\rb.txt", "filepath", false},
+		{"filepath escape", "a\x1bb.txt", "filepath", false},
+		{"filepath delete char", "a\x7fb.txt", "filepath", false},
+		{"filepath bidi override", "photo‮gnp.exe", "filepath", false},
+		{"filepath zero width space", "a​b.txt", "filepath", false},
+		{"filepath zero width joiner", "a‍b.txt", "filepath", false},
+		{"filepath no-break space", "a b.txt", "filepath", false},
+		{"filepath ideographic space", "a　b.txt", "filepath", false},
+		{"filepath fullwidth solidus", "photos／2026.png", "filepath", false},
+		{"filepath fullwidth colon", "time：now.txt", "filepath", false},
+		{"filepath care of", "a℅b.txt", "filepath", false},
+		{"filepath private use", "ab.txt", "filepath", false},
+
+		// filepath: structure
+		{"filepath empty", "", "filepath", false},
+		{"filepath traversal", "../etc/passwd", "filepath", false},
+		{"filepath interior traversal", "a/../b.txt", "filepath", false},
+		{"filepath rooted", "/etc/passwd", "filepath", false},
+		{"filepath hidden root", ".env", "filepath", false},
+		{"filepath hidden nested", "apt/.git/config", "filepath", false},
+		{"filepath leading hyphen", "-rf.txt", "filepath", false},
+		{"filepath leading tilde", "~root.txt", "filepath", false},
+		{"filepath leading space", " a.txt", "filepath", false},
+		{"filepath leading combining mark", "́a.txt", "filepath", false},
+		{"filepath trailing space", "a.txt ", "filepath", false},
+		{"filepath trailing dot", "file.", "filepath", false},
+		{"filepath device", "CON", "filepath", false},
+		{"filepath device lowercase", "con.txt", "filepath", false},
+		{"filepath device nested", "logs/NUL.log", "filepath", false},
+		{"filepath device lookalike ok", "console.txt", "filepath", true},
+		{"filepath long component", strings.Repeat("x", 256) + ".txt", "filepath", false},
+		{"filepath component at limit", strings.Repeat("x", 251) + ".txt", "filepath", true},
+		{"filepath empty component", "a//b.txt", "filepath", false},
+		{"filepath trailing separator", "a/", "filepath", false},
+		{"filepath invalid utf8", "a\xffb.txt", "filepath", false},
+
 		// Control characters should fail all patterns
 		{"control chars", "hello\x00world", "constant", false},
 		{"control chars name", "hello\x01world", "name", false},
@@ -397,6 +465,78 @@ func TestValid(t *testing.T) {
 				t.Errorf("valid(%q, %q) = %v, want %v", tt.input, tt.match, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestPathClean(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		// Identity for legitimate names in any script
+		{"ascii", "photo.png", "photo.png"},
+		{"accented", "café.png", "café.png"},
+		{"cjk", "写真.png", "写真.png"},
+		{"cyrillic", "отчёт.pdf", "отчёт.pdf"},
+		{"punctuation", "Report (final), v2 [draft].pdf", "Report (final), v2 [draft].pdf"},
+		{"emoji", "party 🎉.png", "party 🎉.png"},
+		{"interior double dot", "report..final.pdf", "report..final.pdf"},
+
+		// Repairs
+		{"decomposed to composed", "cafe\u0301.png", "café.png"},
+		{"bell dropped", "ring\x07.txt", "ring.txt"},
+		{"newline dropped", "line1\nline2.txt", "line1line2.txt"},
+		{"bidi override dropped", "photo\u202egnp.exe", "photognp.exe"},
+		{"zero width space dropped", "a\u200bb.txt", "ab.txt"},
+		{"no-break space to space", "a\u00a0b.txt", "a b.txt"},
+		{"ideographic space to space", "a\u3000b.txt", "a b.txt"},
+		{"colon scarred", "my:file.txt", "my_file.txt"},
+		{"dollar scarred", "price$.txt", "price_.txt"},
+		{"fullwidth solidus scarred", "photos\uff0f2026.png", "photos_2026.png"},
+		{"windows path to base", "C:\\Users\\x\\photo.png", "photo.png"},
+		{"unix path to base", "/etc/passwd", "passwd"},
+		{"traversal to base", "../../etc/passwd", "passwd"},
+		{"hidden unhidden", ".env", "env"},
+		{"leading hyphen trimmed", "-rf.txt", "rf.txt"},
+		{"trailing dot trimmed", "file.", "file"},
+		{"trailing space trimmed", "file.txt ", "file.txt"},
+		{"device prefixed", "CON.txt", "_CON.txt"},
+		{"device lowercase prefixed", "nul.log", "_nul.log"},
+		{"device lookalike untouched", "console.txt", "console.txt"},
+		{"empty", "", "file"},
+		{"only dots", "...", "file"},
+		{"only invisible", "\u202e\u200b", "file"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := path_clean(tt.input, 255)
+			if result != tt.expected {
+				t.Errorf("path_clean(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+			// Whatever clean returns, the validator accepts: the pair share one
+			// implementation, and this is the property that keeps them honest.
+			if !path_valid(result) {
+				t.Errorf("path_clean(%q) = %q which path_valid refuses", tt.input, result)
+			}
+			// Idempotent: cleaning a cleaned name changes nothing.
+			if again := path_clean(result, 255); again != result {
+				t.Errorf("path_clean not idempotent: %q -> %q -> %q", tt.input, result, again)
+			}
+		})
+	}
+
+	// Truncation: fits the bound, keeps the extension, stays valid.
+	long := strings.Repeat("x", 300) + ".png"
+	short := path_clean(long, 100)
+	if len(short) > 100 || !strings.HasSuffix(short, ".png") || !path_valid(short) {
+		t.Errorf("path_clean truncation produced %q (%d bytes)", short, len(short))
+	}
+	// Truncation on a multibyte name never splits a code point.
+	wide := strings.Repeat("写", 200) + ".png"
+	cut := path_clean(wide, 100)
+	if len(cut) > 100 || !utf8.ValidString(cut) || !path_valid(cut) {
+		t.Errorf("path_clean multibyte truncation produced %q (%d bytes)", cut, len(cut))
 	}
 }
 

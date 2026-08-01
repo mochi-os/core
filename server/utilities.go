@@ -21,11 +21,14 @@ import (
 	md_parser "github.com/gomarkdown/markdown/parser"
 	"github.com/google/uuid"
 	"github.com/microcosm-cc/bluemonday"
+	"golang.org/x/text/unicode/norm"
 	"io"
+	"io/fs"
 	"math/big"
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -33,6 +36,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -571,19 +576,7 @@ func valid(s string, match string) bool {
 	case "filename":
 		match = "^[0-9a-zA-Z _~()-][0-9a-zA-Z _~().-]{0,254}$"
 	case "filepath":
-		// Allow alphanumeric and underscore at start (not . to prevent hidden files/traversal)
-		// Allow common filename chars but not consecutive dots (..)
-		if strings.Contains(s, "..") {
-			return false
-		}
-		// The leading-character class stops a hidden file only at the root, so
-		// "apt/.git/config" and "apt/.env" passed and were served: copy a git
-		// working tree into a hosted directory and its history and remotes went
-		// public. Every segment gets the rule the first one already had.
-		if strings.Contains(s, "/.") {
-			return false
-		}
-		match = "^[0-9a-zA-Z_][0-9a-zA-Z_/ ~().#@!&+=%,\\[\\]'\\-]{0,254}$"
+		return path_valid(s)
 	case "fingerprint":
 		match = "^[0-9a-zA-Z]{9}$"
 	case "function":
@@ -644,6 +637,219 @@ func valid(s string, match string) bool {
 	}
 
 	return regex_cached(match).MatchString(s)
+}
+
+// The ASCII punctuation allowed in a path component. Everything that can act -
+// shell expansion, command separation, redirection, wildcards, cmd.exe escapes,
+// header injection - is ASCII, so ASCII is held to this exact list while
+// non-ASCII is judged by Unicode category in path_component_valid. The list is
+// the POSIX portable filename set plus the punctuation all of Linux, Windows
+// and macOS accept and no shell or URL parser assigns semantics to.
+const path_punctuation = " !#%&'()+,-.=@[]_~"
+
+// Windows reserves these device names case-insensitively, with or without an
+// extension: creating "CON.txt" opens the console, not a file.
+var path_devices = map[string]bool{
+	"con": true, "prn": true, "aux": true, "nul": true,
+	"com1": true, "com2": true, "com3": true, "com4": true, "com5": true,
+	"com6": true, "com7": true, "com8": true, "com9": true,
+	"lpt1": true, "lpt2": true, "lpt3": true, "lpt4": true, "lpt5": true,
+	"lpt6": true, "lpt7": true, "lpt8": true, "lpt9": true,
+}
+
+func path_ascii(r rune) bool {
+	if (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+		return true
+	}
+	return strings.ContainsRune(path_punctuation, r)
+}
+
+// path_valid reports whether s is a relative path safe to store and serve on
+// every platform an attachment can reach. A name travels to subscribers over
+// P2P, so the rule is the intersection of Linux, Windows and macOS rather than
+// the rules of whichever one this server runs on. This replaced an ASCII
+// allow-list that refused every accented, CJK and Cyrillic name outright - no
+// non-English speaker could name a file in their own language.
+//
+// None of this is the traversal defence: os.Root confines every file syscall
+// to its base directory whatever the name says, and a symlink is invisible to
+// any check on the name alone.
+func path_valid(s string) bool {
+	if s == "" || len(s) > 4096 || !utf8.ValidString(s) {
+		return false
+	}
+	// One canonical form. APFS compares names decomposed, ext4 stores bytes as
+	// given, so "café" composed and decomposed are one file on macOS and two on
+	// Linux; only NFC input keeps one logical name one name everywhere.
+	if norm.NFC.String(s) != s {
+		return false
+	}
+	// fs.ValidPath refuses a rooted path, an empty component and any "." or
+	// ".." segment; filepath.IsLocal refuses anything escaping the directory
+	// it is joined to.
+	if !fs.ValidPath(s) || !filepath.IsLocal(s) {
+		return false
+	}
+	for _, component := range strings.Split(s, "/") {
+		if !path_component_valid(component) {
+			return false
+		}
+	}
+	return true
+}
+
+func path_component_valid(component string) bool {
+	// 255 bytes is the component limit on ext4 and APFS; NTFS counts UTF-16
+	// units, and 255 bytes always fits.
+	if component == "" || len(component) > 255 {
+		return false
+	}
+	first, _ := utf8.DecodeRuneInString(component)
+	// A leading dot hides the file - on every component, not just the first:
+	// "apt/.git/config" once passed and was served, publishing a hosted git
+	// tree's history. A leading hyphen reads as a flag to any tool given the
+	// name, a leading tilde as a home directory to a shell, and a combining
+	// mark with nothing to combine with renders onto the path separator.
+	if strings.ContainsRune(".-~ ", first) || unicode.In(first, unicode.M) {
+		return false
+	}
+	// Windows silently strips a trailing space or dot, so the name that comes
+	// back from the filesystem is not the name that went in.
+	if strings.HasSuffix(component, " ") || strings.HasSuffix(component, ".") {
+		return false
+	}
+	stem, _, _ := strings.Cut(component, ".")
+	if path_devices[strings.ToLower(stem)] {
+		return false
+	}
+	for _, r := range component {
+		if r < utf8.RuneSelf {
+			if !path_ascii(r) {
+				return false
+			}
+			continue
+		}
+		// Letters, marks, digits, punctuation and symbols of every script,
+		// which admits café, 写真, отчёт and emoji. Excluded by absence:
+		// controls (Cc: bell, newline, escape), format characters (Cf: the
+		// bidirectional overrides that render "photo<RLO>gnp.exe" as
+		// "photo.png", zero-width joiners), private use, unassigned, and every
+		// separator except the ASCII space - a no-break or ideographic space
+		// makes two names that display identically address different files.
+		if !unicode.In(r, unicode.L, unicode.M, unicode.N, unicode.P, unicode.S) {
+			return false
+		}
+	}
+	// The confusable guard: a character whose compatibility form is forbidden
+	// ASCII is standing in for it visually - the fullwidth solidus renders as
+	// "/", the fullwidth colon as ":". Folding legitimate names is harmless
+	// here because this only rejects when the fold lands on the forbidden set.
+	for _, r := range norm.NFKC.String(component) {
+		if r < utf8.RuneSelf && !path_ascii(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// path_clean reduces an arbitrary client-supplied name to one path_valid
+// accepts, so the upload boundary repairs instead of refusing: the browser
+// hands over whatever the user's own filesystem allowed. For every legitimate
+// name - café.png, 写真.png, Report (final).pdf - this is the identity
+// function; only names carrying invisible characters, forbidden ASCII or a
+// device stem change. Idempotent, and its output always passes path_valid.
+func path_clean(name string, maximum int) string {
+	if maximum < 16 || maximum > 255 {
+		maximum = 255
+	}
+	// The last component of whatever path shape arrived; some browsers send a
+	// full client-side path.
+	if index := strings.LastIndexAny(name, "/\\"); index >= 0 {
+		name = name[index+1:]
+	}
+	if !utf8.ValidString(name) {
+		name = strings.ToValidUTF8(name, "_")
+	}
+	name = norm.NFC.String(name)
+
+	var builder strings.Builder
+	for _, r := range name {
+		switch {
+		case r < utf8.RuneSelf:
+			if path_ascii(r) {
+				builder.WriteRune(r)
+			} else if !unicode.IsControl(r) {
+				// Visible but forbidden punctuation leaves a scar; a control
+				// character is invisible and is simply dropped.
+				builder.WriteRune('_')
+			}
+		case unicode.In(r, unicode.Zs, unicode.Zl, unicode.Zp):
+			builder.WriteRune(' ')
+		case !unicode.In(r, unicode.L, unicode.M, unicode.N, unicode.P, unicode.S):
+			// Format characters, private use, unassigned: dropped.
+		case path_confusable(r):
+			builder.WriteRune('_')
+		default:
+			builder.WriteRune(r)
+		}
+	}
+	// Dropping a character can leave a base and a combining mark adjacent that
+	// NFC would compose, so normalise again before judging the result.
+	name = norm.NFC.String(builder.String())
+	name = path_clean_trim(name)
+	for iteration := 0; iteration < 4; iteration++ {
+		if stem, _, _ := strings.Cut(name, "."); path_devices[strings.ToLower(stem)] {
+			name = "_" + name
+		}
+		if len(name) <= maximum {
+			break
+		}
+		name = path_clean_trim(path_truncate(name, maximum))
+	}
+	if name == "" {
+		return "file"
+	}
+	return name
+}
+
+func path_confusable(r rune) bool {
+	for _, folded := range norm.NFKC.String(string(r)) {
+		if folded < utf8.RuneSelf && !path_ascii(folded) {
+			return true
+		}
+	}
+	return false
+}
+
+func path_clean_trim(name string) string {
+	for name != "" {
+		r, size := utf8.DecodeRuneInString(name)
+		if strings.ContainsRune(".-~ ", r) || unicode.In(r, unicode.M) {
+			name = name[size:]
+			continue
+		}
+		break
+	}
+	for strings.HasSuffix(name, " ") || strings.HasSuffix(name, ".") {
+		name = name[:len(name)-1]
+	}
+	return name
+}
+
+// path_truncate shortens name to at most maximum bytes on a rune boundary,
+// keeping the extension when there is a plausible one - the extension decides
+// the content type on the way back out.
+func path_truncate(name string, maximum int) string {
+	extension := path.Ext(name)
+	if len(extension) > 16 || len(extension) >= maximum {
+		extension = ""
+	}
+	stem := name[:len(name)-len(extension)]
+	for len(stem)+len(extension) > maximum && stem != "" {
+		_, size := utf8.DecodeLastRuneInString(stem)
+		stem = stem[:len(stem)-size]
+	}
+	return stem + extension
 }
 
 func regex_cached(pattern string) *regexp.Regexp {

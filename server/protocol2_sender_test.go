@@ -492,6 +492,7 @@ func TestSendersBeyAllNoopOnNoSenders(t *testing.T) {
 
 // fake_writer implements io.Writer for stream_io-style tests of
 // write_one and helpers that need a writable target.
+//lint:ignore U1000 test scaffolding
 type fake_writer struct {
 	mu  sync.Mutex
 	buf []byte

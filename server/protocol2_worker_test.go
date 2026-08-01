@@ -582,6 +582,7 @@ func TestWorkersDrainWaitsForInflight(t *testing.T) {
 // internal handler so tests can assert on it. The handler decodes one
 // CBOR segment from e.stream — exercising the Frame.Data → e.stream
 // wiring path that pair-join's join-request handler relies on.
+//lint:ignore U1000 test scaffolding
 type capture_target struct {
 	mu      sync.Mutex
 	peer    string

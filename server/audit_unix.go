@@ -137,6 +137,7 @@ func audit_admin_escalation(admin string, target string, action string) {
 }
 
 // audit_signature_failed logs signature verification failures
+//lint:ignore U1000 audit vocabulary: the call exists so a future caller reaches for the right event name rather than inventing one
 func audit_signature_failed(from string, reason string) {
 	audit_log_auth(fmt.Sprintf("signature_failed from=%s reason=%s", from, reason))
 }
@@ -223,6 +224,7 @@ func audit_server_stop() {
 }
 
 // audit_schema_migrated logs server schema migrations
+//lint:ignore U1000 audit vocabulary: see audit_signature_failed
 func audit_schema_migrated(from_version int, to_version int) {
 	audit_log_daemon(fmt.Sprintf("schema_migrated from=%d to=%d", from_version, to_version))
 }
@@ -235,6 +237,7 @@ func audit_app_installed(app string, version string) {
 }
 
 // audit_app_removed logs app removal
+//lint:ignore U1000 audit vocabulary: see audit_signature_failed
 func audit_app_removed(app string) {
 	audit_log_ops(fmt.Sprintf("app_removed app=%s", app))
 }
@@ -279,51 +282,3 @@ func audit_user_routing_changed(user string, routing_type string, key string, ap
 	audit_log_ops(fmt.Sprintf("user_routing_changed user=%s type=%s key=%s app=%s", user, routing_type, key, app))
 }
 
-// audit_replication_pair_join_approved logs that the operator approved
-// an incoming whole-server pair join request from `peer`.
-func audit_replication_pair_join_approved(peer string) {
-	audit_log_ops(fmt.Sprintf("replication_pair_join_approved peer=%s", peer))
-}
-
-// audit_replication_pair_join_denied logs that the operator denied an
-// incoming whole-server pair join request from `peer`.
-func audit_replication_pair_join_denied(peer string) {
-	audit_log_ops(fmt.Sprintf("replication_pair_join_denied peer=%s", peer))
-}
-
-// audit_replication_pair_removed logs that the operator kicked a peer
-// out of the pair set.
-func audit_replication_pair_removed(peer string) {
-	audit_log_ops(fmt.Sprintf("replication_pair_removed peer=%s", peer))
-}
-
-// audit_replication_link_approved logs that a user approved an
-// incoming per-user replication link request from another server.
-func audit_replication_link_approved(user string, peer string) {
-	audit_log_ops(fmt.Sprintf("replication_link_approved user=%s peer=%s", user, peer))
-}
-
-// audit_replication_link_denied logs that a user denied an incoming
-// per-user replication link request.
-func audit_replication_link_denied(user string, peer string) {
-	audit_log_ops(fmt.Sprintf("replication_link_denied user=%s peer=%s", user, peer))
-}
-
-// audit_replication_host_removed logs that a user removed a host from
-// their per-user opt-in replication set.
-func audit_replication_host_removed(user string, peer string) {
-	audit_log_ops(fmt.Sprintf("replication_host_removed user=%s peer=%s", user, peer))
-}
-
-// audit_replication_bootstrap_started logs that a bulk-bootstrap run
-// has been initiated against `peer` — either auto via join-approved or
-// manually via mochictl replication resync.
-func audit_replication_bootstrap_started(peer string) {
-	audit_log_daemon(fmt.Sprintf("replication_bootstrap_started peer=%s", peer))
-}
-
-// audit_replication_bootstrap_scope_done logs that one scope of the
-// bulk bootstrap has reached state='done' for a given peer.
-func audit_replication_bootstrap_scope_done(peer string, scope string) {
-	audit_log_daemon(fmt.Sprintf("replication_bootstrap_scope_done peer=%s scope=%s", peer, scope))
-}

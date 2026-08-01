@@ -181,6 +181,7 @@ func peer_names_save(id string) {
 
 // peer_name_dict adds the display fields for a peer to a starlark dict:
 // the self-asserted `name` and the authoritative `fingerprint`.
+//lint:ignore U1000 the dict form of peer_name_fields, kept so a caller building a Starlark dict does not reimplement which fields are authoritative
 func peer_name_dict(entry *sl.Dict, id string) {
 	_ = entry.SetKey(sl.String("name"), sl.String(peer_name(id)))
 	_ = entry.SetKey(sl.String("fingerprint"), sl.String(fingerprint(id)))

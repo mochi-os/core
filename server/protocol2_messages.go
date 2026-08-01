@@ -31,6 +31,7 @@ const (
 	// Capability flags this build advertises in hello.Features /
 	// caps.Features. Empty in v2 baseline — every feature gets added
 	// here and gated by intersection checks.
+	//lint:ignore U1000 the capability-flag baseline: empty in v2, and every future feature is added here and gated by intersection
 	receiver_features_default = ""
 
 	// receiver_replies_buffer — depth of the per-stream replies

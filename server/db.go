@@ -1621,6 +1621,7 @@ func (db *DB) integer(query string, values ...any) int {
 // the 32-bit builds (armhf/armv7hl) where integer()'s int return would be. Use
 // this for any column whose value can exceed ~2.1e9. Returns 0 on no-row/error,
 // matching integer().
+//lint:ignore U1000 exists to stop a >2.1e9 column being truncated on the 32-bit armhf and armv7hl builds; deleting it because today's callers use small columns invites that bug back
 func (db *DB) integer64(query string, values ...any) int64 {
 	var result int64
 	var err error

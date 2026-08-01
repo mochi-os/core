@@ -20,7 +20,6 @@ package main
 
 import (
 	"io"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,9 +29,8 @@ import (
 // stream's read-from-remote direction, the other is the write-to-remote
 // direction. Reset closes both.
 type pipe_stream struct {
-	mu        sync.Mutex
-	reader    *io.PipeReader
-	writer    *io.PipeWriter
+	reader      *io.PipeReader
+	writer      *io.PipeWriter
 	reset_count atomic.Int32
 }
 

@@ -173,6 +173,7 @@ func append_radius_variables_from_base(style_parts *[]string, baseRadius string)
 	)
 }
 
+//lint:ignore U1000 the radius half of the theme preset helpers, alongside the colour ones that are used
 func append_radius_preset(style_parts *[]string, preset string) {
 	switch preset {
 	case "none":

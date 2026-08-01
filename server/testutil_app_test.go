@@ -13,52 +13,6 @@ import (
 	"time"
 )
 
-// setup_sql_replication_test wires up just enough server state for an
-// apply-side test: a temp data_dir, a registered user, a registered app
-// pointing at a per-(user, app) DB the apply path will exec against,
-// and a fresh schema in that DB.
-func setup_sql_replication_test(t *testing.T) (cleanup func(), user_uid, app_id string) {
-	t.Helper()
-	tmp, err := os.MkdirTemp("", "mochi_sql_repl")
-	if err != nil {
-		t.Fatalf("mktemp: %v", err)
-	}
-	orig := data_dir
-	data_dir = tmp
-
-	udb := db_open("db/users.db")
-	udb.exec(`create table if not exists users (id integer primary key, uid text not null unique, username text not null unique)`)
-	user_uid = "uid-test-sql"
-	udb.exec("insert into users (uid, username) values (?, ?)", user_uid, "alice")
-
-	app_id = "myapp"
-	av := &AppVersion{Version: "1"}
-	av.Architecture.Engine = "starlark"
-	av.Architecture.Version = 4
-	av.Database.File = "myapp.db"
-	av.Database.Schema = 1
-	av.Database.create_function = func(db *DB) {
-		db.exec(`create table posts (id text primary key, title text not null)`)
-	}
-	a := &App{id: app_id, versions: map[string]*AppVersion{"1": av}, internal: av}
-	av.app = a
-	apps_lock.Lock()
-	if apps == nil {
-		apps = map[string]*App{}
-	}
-	apps[app_id] = a
-	apps_lock.Unlock()
-
-	cleanup = func() {
-		apps_lock.Lock()
-		delete(apps, app_id)
-		apps_lock.Unlock()
-		data_dir = orig
-		os.RemoveAll(tmp)
-	}
-	return
-}
-
 // 50-character pseudo-entity-id used in tests where valid("entity") needs
 // to pass (49-51 word chars). The first character varies so different
 // fixtures produce distinct IDs.
@@ -124,6 +78,7 @@ func setup_users_test_schema() {
 
 // setup_sessions_test_schema creates the sessions table for tests that
 // exercise session-replication apply paths.
+//lint:ignore U1000 test scaffolding
 func setup_sessions_test_schema() {
 	sessions := db_open("db/sessions.db")
 	sessions.exec("create table sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")

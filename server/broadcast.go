@@ -260,11 +260,6 @@ func broadcast_acknowledged_table_create(db *DB) {
 // wasabi 2026-05-24..26 event_ai_tag panics (468 occurrences over
 // ~48h). RETURNING reports the post-UPSERT value as part of the same
 // atomic statement, so each goroutine sees its own allocation.
-//
-// The replication mirror to paired hosts is fired separately (the
-// exec_app_user wrapper does Exec+emit; we already did the local
-// apply via QueryRow). RETURNING is stripped from the wire copy -
-// receivers just apply the UPSERT; they don't read the result.
 func broadcast_next_local(db *DB, key, peer string) int64 {
 	broadcast_sequence_table_create(db)
 	const allocate = "insert into sequence (key, peer, last) values (?, ?, 1) on conflict(key, peer) do update set last = sequence.last + 1 returning last"
@@ -272,16 +267,6 @@ func broadcast_next_local(db *DB, key, peer string) int64 {
 	if err := db.internal.QueryRow(allocate, key, peer).Scan(&seq); err != nil {
 		warn("Broadcast next_local: RETURNING failed for (key=%q, peer=%q): %v", key, peer, err)
 		return 0
-	}
-	if db.user != nil && db.user.UID != "" && db.app != nil {
-		if av := db.app.active(db.user); av != nil {
-			// Mirror the LITERAL allocated value, not a relative `+1`: replaying a
-			// relative increment diverges the paired host's takeover counter if a
-			// mirror op is lost or reordered (the counter-arithmetic anti-pattern).
-			// A max-merge of the absolute value is idempotent and order-independent
-			// (#150).
-			const mirror = "insert into sequence (key, peer, last) values (?, ?, ?) on conflict(key, peer) do update set last = max(sequence.last, excluded.last)"
-		}
 	}
 	return seq
 }

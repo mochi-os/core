@@ -589,6 +589,7 @@ func setting_set(name string, value string) {
 // setting_set(name, "") which leaves an explicit empty row. Used by
 // callers that want subsequent setting_get to return the default
 // rather than an empty string.
+//lint:ignore U1000 removes a row entirely, which setting_set(name, "") deliberately does not; the distinction is the point and is documented above
 func setting_delete(name string) {
 	db := db_open("db/settings.db")
 	db.exec("delete from settings where name=?", name)

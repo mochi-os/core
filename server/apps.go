@@ -1464,27 +1464,6 @@ func apps_manager_signal() {
 	}
 }
 
-var (
-	apps_publisher_lock     sync.Mutex
-	apps_publisher_id_value string
-)
-
-// apps_publisher_id returns the memoised local publisher app id — the app
-// serving the "publisher" service. Resolved by apps_manager on each pass (after
-// the install checks) so the replication apply path only reads a cached string
-// rather than scanning the app registry per op. Empty until the first pass.
-func apps_publisher_id() string {
-	apps_publisher_lock.Lock()
-	defer apps_publisher_lock.Unlock()
-	return apps_publisher_id_value
-}
-
-func apps_publisher_id_set(id string) {
-	apps_publisher_lock.Lock()
-	apps_publisher_id_value = id
-	apps_publisher_lock.Unlock()
-}
-
 // Manage which apps and their versions are installed
 func apps_manager() {
 	time.Sleep(time.Second)
@@ -1534,13 +1513,6 @@ func apps_manager() {
 		// inbound P2P events (the Comptroller) gets its defaults seeded at all
 		// (app_user_setup otherwise fires only from a same-host service call).
 		apps_seed_default_permissions()
-
-		// Cache the local publisher app id so the replication apply path can
-		// recognise a replicated publisher-catalog write cheaply (a string read,
-		// no registry scan per op).
-		if a := app_for_service(nil, "publisher"); a != nil {
-			apps_publisher_id_set(a.id)
-		}
 
 		// Wait out the poll, but wake early when a replicated publisher write
 		// signals that a peer published a new version (replica-pair hosts).
@@ -2000,6 +1972,7 @@ func apps_load_published() {
 }
 
 // Register an event handler for an internal app
+//lint:ignore U1000 the event half of the internal-app surface; the register half is used, and an internal app gaining an event handler should not have to re-add the mechanism
 func (a *App) event(event string, f func(*Event)) {
 	a.internal.Events[event] = AppEvent{internal_function: f}
 }

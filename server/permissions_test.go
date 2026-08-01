@@ -66,6 +66,7 @@ func create_internal_app(id string) *App {
 }
 
 // cleanup_test_user removes test user data
+//lint:ignore U1000 test scaffolding
 func cleanup_test_user(t *testing.T, id string) {
 	t.Helper()
 	user_dir := filepath.Join(data_dir, "users", id)
@@ -1480,6 +1481,7 @@ func TestMultipleAppsPerUser(t *testing.T) {
 // =============================================================================
 
 // Helper to verify an API function requires a specific permission
+//lint:ignore U1000 test scaffolding: an assertion helper for permission-gated APIs
 func assert_api_requires_permission(t *testing.T, name string, permission string, apiCall func(*sl.Thread, *sl.Builtin) (sl.Value, error)) {
 	t.Helper()
 	setup_test_data_dir(t)

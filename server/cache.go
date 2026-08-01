@@ -179,8 +179,19 @@ func api_cache_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
+	// One handle for both the measurement and the read. Resolving the path
+	// twice would let a cache fill land between them - writes here are a
+	// temporary renamed into place, so the name can point at a different, larger
+	// file than the one just measured, and the bound would describe bytes that
+	// are no longer the bytes being returned.
+	f, err := os.Open(path)
+	if err != nil {
+		return sl.None, nil
+	}
+	defer f.Close()
+
 	if maximum > 0 {
-		information, err := os.Stat(path)
+		information, err := f.Stat()
 		if err != nil {
 			return sl.None, nil
 		}
@@ -189,7 +200,7 @@ func api_cache_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 			return sl.None, nil
 		}
 	}
-	data, err := os.ReadFile(path)
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return sl.None, nil
 	}

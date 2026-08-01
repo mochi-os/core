@@ -8,6 +8,7 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"io"
 	"os"
 	"path/filepath"
@@ -1062,5 +1063,74 @@ func TestTransferSetUsesTheTransferBound(t *testing.T) {
 	if starlark_file_timeout <= starlark_default_timeout {
 		t.Errorf("transfer bound %s is not longer than the compute bound %s, so marking a transfer buys nothing",
 			starlark_file_timeout, starlark_default_timeout)
+	}
+}
+
+// TestCacheReadBoundSurvivesReplacement pins the reason mochi.cache.read holds
+// one handle rather than resolving the name twice. Cache writes are a temporary
+// renamed into place, so between a Stat of the path and a ReadFile of the path
+// the name can come to mean a different, larger file - and the limit would then
+// describe bytes that are not the bytes returned.
+//
+// Reproducing that interleaving would mean interposing on the rename, so this
+// does not exercise api_cache_read and would NOT fail if someone rewrote it to
+// resolve the path twice. What it pins is the property that fix relies on - a
+// descriptor keeps referring to the file it opened, so a measurement taken
+// through the handle still describes what a read through the same handle
+// returns - and it records why the function is shaped the way it is, next to a
+// demonstration that the path-based alternative would have measured 5 bytes and
+// returned 4096.
+func TestCacheReadBoundSurvivesReplacement(t *testing.T) {
+	original := cache_dir
+	cache_dir = t.TempDir()
+	t.Cleanup(func() { cache_dir = original })
+
+	directory := filepath.Join(cache_dir, "apps", "testuser", "files")
+	if err := os.MkdirAll(directory, 0755); err != nil {
+		t.Fatalf("creating cache directory: %v", err)
+	}
+	entry := filepath.Join(directory, "remote")
+	if err := os.WriteFile(entry, []byte("small"), 0600); err != nil {
+		t.Fatalf("writing cache entry: %v", err)
+	}
+
+	// The read side opens first, as api_cache_read now does.
+	f, err := os.Open(entry)
+	if err != nil {
+		t.Fatalf("opening entry: %v", err)
+	}
+	defer f.Close()
+
+	// A concurrent fill replaces the name atomically, exactly as
+	// cache_write_file does, with something far larger.
+	replacement := make([]byte, 4096)
+	if _, err := cache_write_file(entry, bytes.NewReader(replacement)); err != nil {
+		t.Fatalf("replacing entry: %v", err)
+	}
+
+	// The handle still describes and returns the file it opened. A path-based
+	// Stat here would report 4096 and a path-based read would return it, which
+	// is the bypass: a bound satisfied against one file, bytes taken from
+	// another.
+	information, err := f.Stat()
+	if err != nil {
+		t.Fatalf("stat through the handle: %v", err)
+	}
+	if information.Size() != int64(len("small")) {
+		t.Errorf("size through the handle = %d, want %d: the measurement must describe the opened file, not whatever the name means now",
+			information.Size(), len("small"))
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatalf("reading through the handle: %v", err)
+	}
+	if string(data) != "small" {
+		t.Errorf("read %d bytes through the handle, want the 5 that were measured", len(data))
+	}
+
+	// And the path really was replaced, so the check above is about the handle
+	// rather than about nothing having happened.
+	if by_path, err := os.Stat(entry); err != nil || by_path.Size() != 4096 {
+		t.Errorf("the replacement did not land; this test would pass vacuously")
 	}
 }

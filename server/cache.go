@@ -164,14 +164,30 @@ func cache_write_file(path string, reader io.Reader) (int64, error) {
 	return n, nil
 }
 
-// mochi.cache.read(name) -> bytes or None: Read a cache entry, marking it used
+// mochi.cache.read(name, maximum=0) -> bytes or None: Read a cache entry,
+// marking it used. maximum refuses an entry larger than that many bytes; zero,
+// the default, is unbounded. As with mochi.file.read the check is against the
+// entry itself, because a caller's idea of the size may have come from the peer
+// that filled it.
 func api_cache_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <name: string>")
+	var name string
+	var maximum int64
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name, "maximum?", &maximum); err != nil {
+		return sl_error(fn, "syntax: <name: string>, [maximum: integer]")
 	}
-	path, err := cache_value(t, args[0])
+	path, err := cache_file(t, name)
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	if maximum > 0 {
+		information, err := os.Stat(path)
+		if err != nil {
+			return sl.None, nil
+		}
+		if information.Size() > maximum {
+			debug("mochi.cache.read refusing %q: %d bytes exceeds the caller's limit of %d", name, information.Size(), maximum)
+			return sl.None, nil
+		}
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

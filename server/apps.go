@@ -38,12 +38,21 @@ type App struct {
 }
 
 type AppAction struct {
-	Function  string `json:"function"`
-	File      string `json:"file"`
-	Files     string `json:"files"`
-	Feature   string `json:"feature"`
-	Cache     string `json:"cache"`
-	Public    bool   `json:"public"`
+	Function string `json:"function"`
+	File     string `json:"file"`
+	Files    string `json:"files"`
+	Feature  string `json:"feature"`
+	Cache    string `json:"cache"`
+	Public   bool   `json:"public"`
+	// Site marks an action that publishes a website, where serving a document
+	// that renders is the entire point. Everything else gets the safe-serve
+	// policy - SVG sanitized, unsafe types forced to download - because a files
+	// directory otherwise holds what someone else uploaded. Declared here rather
+	// than inferred from the request having arrived on a domain route: routing
+	// is how a reader reached the action, not what the app meant by it, and a
+	// domain pointed at any other app would have silently taken the exemption
+	// with it.
+	Site      bool   `json:"site"`
 	OpenGraph string `json:"opengraph"` // Starlark function to generate Open Graph meta tags
 
 	name              string            `json:"-"`

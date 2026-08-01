@@ -683,6 +683,8 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		inputs:  make(map[string]string),
 		entity:  e,
 		routing: routing,
+
+		definition: aa,
 	}
 
 	for k, v := range aa.parameters {

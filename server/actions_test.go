@@ -147,7 +147,11 @@ func write_file_environment(t *testing.T, url string, hosted bool) (string, func
 		c.Request = httptest.NewRequest("GET", url, nil)
 		a := &Action{web: c}
 		if hosted {
+			// A site publishes because its action says so. The route is set too,
+			// since that is how such a request really arrives, but it is the
+			// declaration that grants the exemption.
 			a.domain = &DomainInfo{route: &DomainRouteInfo{owner: user}}
+			a.definition = &AppAction{Site: true}
 		}
 
 		thread := &sl.Thread{Name: "test"}
@@ -426,6 +430,58 @@ func TestWriteFileHostedSiteRendersDocument(t *testing.T) {
 	}
 	if body := w.Body.String(); !strings.Contains(body, "PAGE") {
 		t.Errorf("body = %q, want the page", body)
+	}
+}
+
+// TestDomainRouteDoesNotGrantSiteServing is the point of moving the exemption
+// onto the declaration. A domain route pointed at an app that serves uploads -
+// rather than at one publishing a site - used to carry the exemption with it,
+// so that app served uploaded documents raw on the route's hostname. Routing is
+// how a reader arrived, not what the app meant.
+func TestDomainRouteDoesNotGrantSiteServing(t *testing.T) {
+	original := data_dir
+	data_dir = t.TempDir()
+	t.Cleanup(func() { data_dir = original })
+
+	user := &User{UID: "testuser"}
+	app := &App{id: "files"}
+	base := api_file_base(user, app)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("creating files directory: %v", err)
+	}
+	if err := os.WriteFile(base+"/payload.html", []byte("<script>alert(1)</script>"), 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+
+	serve := func(definition *AppAction) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("GET", "/payload.html", nil)
+		a := &Action{
+			web:        c,
+			domain:     &DomainInfo{route: &DomainRouteInfo{owner: user}},
+			definition: definition,
+		}
+		thread := &sl.Thread{Name: "test"}
+		thread.SetLocal("owner", user)
+		thread.SetLocal("app", app)
+		if _, err := a.sl_write_file(thread, sl.NewBuiltin("write.file", nil), sl.Tuple{sl.String("payload.html")}, nil); err != nil {
+			t.Fatalf("sl_write_file returned %v", err)
+		}
+		return w
+	}
+
+	// Domain-routed, but the action does not claim to publish a site.
+	if disposition := serve(&AppAction{}).Header().Get("Content-Disposition"); disposition != "attachment" {
+		t.Errorf("disposition = %q, want attachment: a domain route must not exempt an action that never said it publishes", disposition)
+	}
+	// An action with no declaration at all is treated the same way.
+	if disposition := serve(nil).Header().Get("Content-Disposition"); disposition != "attachment" {
+		t.Errorf("disposition = %q, want attachment for an undeclared action", disposition)
+	}
+	// And the declaration still grants it, or a hosted site could not render.
+	if disposition := serve(&AppAction{Site: true}).Header().Get("Content-Disposition"); disposition != "" {
+		t.Errorf("disposition = %q, want none: a declared site has to render", disposition)
 	}
 }
 

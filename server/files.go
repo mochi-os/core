@@ -483,14 +483,21 @@ func api_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return sl_encode(files), nil
 }
 
-// mochi.file.read(file) -> bytes: Read a file into memory
+// mochi.file.read(file, maximum=0) -> bytes or None: Read a file into memory.
+// maximum refuses a file larger than that many bytes, answering None so the
+// caller can fall back to a streaming path; zero, the default, is unbounded.
+//
+// The check is made against the file, not against whatever the caller believes
+// its size to be. A caller bounding on its own metadata is bounding on a number
+// it may not control - an attachment row's size arrives from a peer - so the
+// limit has to be enforced where the real size is known.
 func api_file_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <file: string>")
+	var file string
+	var maximum int64
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "file", &file, "maximum?", &maximum); err != nil {
+		return sl_error(fn, "syntax: <file: string>, [maximum: integer]")
 	}
-
-	file, ok := sl.AsString(args[0])
-	if !ok || !valid(file, "filepath") {
+	if !valid(file, "filepath") {
 		return sl_error(fn, "invalid file %q", file)
 	}
 
@@ -516,6 +523,17 @@ func api_file_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "file not found")
 	}
 	defer f.Close()
+
+	if maximum > 0 {
+		information, err := f.Stat()
+		if err != nil {
+			return sl_error(fn, "unable to read file")
+		}
+		if information.Size() > maximum {
+			debug("mochi.file.read refusing %q: %d bytes exceeds the caller's limit of %d", file, information.Size(), maximum)
+			return sl.None, nil
+		}
+	}
 
 	data, err := io.ReadAll(f)
 	if err != nil {

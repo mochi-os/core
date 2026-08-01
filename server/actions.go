@@ -56,6 +56,10 @@ type Action struct {
 	// action. routing names how it was reached - see a.routing below.
 	entity  *Entity
 	routing string
+	// definition is the action as its app.json declares it, kept so serving can
+	// consult what the app said it was doing rather than infer it from how the
+	// request happened to arrive.
+	definition *AppAction
 }
 
 // action_entity is the routed entity as a.entity sees it.
@@ -978,12 +982,13 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	// under a script-blocking policy, other known media serve inline, everything
 	// else downloads.
 	//
-	// A request that arrived on a hosted domain is the exception, because
-	// publishing a site is exactly what that route is for and its pages have to
-	// render. That narrows rather than removes the question: an app which both
-	// serves foreign uploads and is reachable through a domain route would serve
-	// them raw again, though on the route's own hostname rather than this origin.
-	if a.domain == nil || a.domain.route == nil {
+	// The exception is an action that DECLARES it publishes a site ("site": true
+	// in app.json), because rendering a document is what such an action is for.
+	// Declared rather than inferred from the request having arrived on a domain
+	// route: routing is how a reader reached the action, not what the app meant
+	// by it, so a domain pointed at any other app used to carry the exemption
+	// along with it and serve that app's uploads raw on the route's hostname.
+	if a.definition == nil || !a.definition.Site {
 		content_type := file_name_type(path)
 		if content_type == "image/svg+xml" {
 			starlark_serving_set(t, a.web.Writer)

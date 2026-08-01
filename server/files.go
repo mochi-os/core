@@ -155,25 +155,6 @@ func file_name_type(name string) string {
 	return "application/octet-stream"
 }
 
-// file_copy copies a file by streaming, without loading into memory
-func file_copy(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return err
-	}
-	s, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer s.Close()
-	d, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	_, err = io.Copy(d, s)
-	return err
-}
-
 func file_write(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err

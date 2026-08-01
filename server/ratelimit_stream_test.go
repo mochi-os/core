@@ -69,15 +69,22 @@ func TestStreamBytesIsolatesClients(t *testing.T) {
 func TestStreamBytesAppCircuitBreaker(t *testing.T) {
 	stream_bytes_reset()
 
-	// Each address stays under its own budget; only the per-app total can stop it.
+	// Each address stays under its own budget; only the per-app total can stop
+	// it. The volume is derived from the breaker rather than fixed, so raising
+	// the breaker cannot quietly turn this into a test that floods less than
+	// the limit and concludes the limit works.
+	const chunk = 8 * 1024 * 1024
+	breaker := int64(rate_limit_stream_app.limit) * 1024
 	blocked := false
-	for i := 0; i < 4000; i++ {
+	charged := int64(0)
+	for i := 0; charged <= breaker+chunk; i++ {
 		client := "people/198.51.100." + strings.Repeat("0", i%3) + itoa_test(i)
 		if stream_bytes_refusal(client, "people") != nil {
 			blocked = true
 			break
 		}
-		stream_bytes_charge(client, "people", 8*1024*1024)
+		stream_bytes_charge(client, "people", chunk)
+		charged += chunk
 	}
 
 	if !blocked {

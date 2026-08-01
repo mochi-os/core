@@ -125,6 +125,10 @@ func api_cache_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		reader = strings.NewReader(string(v))
 	case *Stream:
 		defer v.close_read()
+		// A stream source is a bulk transfer from a peer, not computation, and
+		// at the largest object the platform stores it cannot complete inside
+		// the compute budget on an ordinary link.
+		starlark_transfer_set(t)
 		reader = io.LimitReader(v.raw_reader(), attachment_max_size_default)
 	default:
 		return sl_error(fn, "source must be bytes or a stream")

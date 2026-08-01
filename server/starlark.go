@@ -413,6 +413,22 @@ func starlark_serving_set(t *sl.Thread, writer http.ResponseWriter) {
 	}
 }
 
+// starlark_transfer_set marks a call as moving bulk bytes rather than
+// computing, so the transfer bound applies instead of the compute one.
+//
+// The compute timeout exists to stop a handler thinking for too long. A call
+// pulling a large object from a peer is not thinking - it is one io.Copy whose
+// duration is the size of the object over the speed of the link, and at the
+// largest object the platform stores it cannot finish inside a compute budget
+// on any ordinary connection. Bounding it by that budget would not protect
+// anything: the copy sits inside a built-in that does not check for
+// cancellation, so the timeout abandons the caller while the transfer runs on
+// regardless. It is the same reasoning that gives a call streaming a response
+// the longer bound; here the bytes are arriving rather than leaving.
+func starlark_transfer_set(t *sl.Thread) {
+	starlark_serving_set(t, nil)
+}
+
 // Report whether this thread has handed its response to the client.
 func starlark_serving_get(t *sl.Thread) bool {
 	serving, ok := t.Local("file_serving").(*atomic.Bool)

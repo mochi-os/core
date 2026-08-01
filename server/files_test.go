@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"regexp"
 	"strings"
 	"testing"
@@ -995,5 +996,71 @@ func TestArchiveExtractIgnoresEntryName(t *testing.T) {
 	if _, err := api_archive_extract(thread, sl.NewBuiltin("mochi.archive.extract", nil),
 		sl.Tuple{sl.String("hostile.zip"), sl.String("../../../escaped.txt"), sl.String("../../out.txt")}, nil); err == nil {
 		t.Error("a traversing destination was accepted")
+	}
+}
+
+// TestStorageLimitsAgree pins the relationship the sizes depend on: what the
+// platform stores and what it transfers are one figure, not two. When they
+// drift the larger wins on the way in and the smaller silently truncates on
+// the way out - an attachment above the stream cap is stored whole by its owner
+// and received as a prefix by every subscriber, with no error at either end.
+func TestStorageLimitsAgree(t *testing.T) {
+	if int64(attachment_max_size_default) != int64(object_maximum) {
+		t.Errorf("attachment cap = %d, want object_maximum (%d)",
+			int64(attachment_max_size_default), int64(object_maximum))
+	}
+	if int64(stream_maximum_default) < int64(object_maximum) {
+		t.Errorf("stream cap = %d is below the largest storable object (%d), so that object cannot be transferred whole - the owner keeps it and every subscriber receives a prefix",
+			int64(stream_maximum_default), int64(object_maximum))
+	}
+	// The far end of the chain. The per-client byte budget is a denial-of-service
+	// control, and one honest transfer of the largest object has to fit inside
+	// it or the budget truncates legitimate traffic. Raising object_maximum
+	// without raising this is what this check exists to refuse.
+	budget := int64(rate_limit_stream_client.limit) * 1024
+	if budget < int64(stream_maximum_default) {
+		t.Errorf("per-client relay budget = %d bytes, below one maximum relay (%d): a single honest transfer of the largest object cannot complete",
+			budget, int64(stream_maximum_default))
+	}
+	// The app-wide breaker has to stay clear of the per-client budget, or one
+	// client's honest transfer trips the circuit for every other user of that
+	// app - shared fate, which is what the breaker's own comment rules out.
+	if breaker := int64(rate_limit_stream_app.limit) * 1024; breaker <= budget {
+		t.Errorf("app breaker = %d bytes, not above one client's budget (%d): one honest transfer would refuse every other caller",
+			breaker, budget)
+	}
+	// A transfer of the largest object has to be able to finish inside the
+	// bound that applies to it. The compute timeout is not that bound - a pull
+	// marks itself as transferring - so it is the file timeout that has to
+	// clear it at some defensible rate.
+	rate := float64(object_maximum) / starlark_file_timeout.Seconds() / (1024 * 1024)
+	if rate > 25 {
+		t.Errorf("the largest object needs %.1f MB/s sustained to transfer inside the %s bound; that is not an ordinary link speed",
+			rate, starlark_file_timeout)
+	}
+}
+
+// TestTransferSetUsesTheTransferBound covers the marker a bulk pull sets. The
+// compute timeout would abandon the caller part-way through a large transfer
+// while the copy ran on regardless - it sits inside a built-in that does not
+// check for cancellation - so a call moving bytes has to be bounded by the
+// transfer timeout instead.
+func TestTransferSetUsesTheTransferBound(t *testing.T) {
+	thread := &sl.Thread{Name: "test"}
+	var serving atomic.Bool
+	thread.SetLocal("file_serving", &serving)
+
+	if starlark_serving_get(thread) {
+		t.Fatal("a fresh thread already claims to be transferring")
+	}
+
+	starlark_transfer_set(thread)
+
+	if !starlark_serving_get(thread) {
+		t.Error("a bulk transfer is still bounded by the compute timeout, which cannot clear the largest object on an ordinary link")
+	}
+	if starlark_file_timeout <= starlark_default_timeout {
+		t.Errorf("transfer bound %s is not longer than the compute bound %s, so marking a transfer buys nothing",
+			starlark_file_timeout, starlark_default_timeout)
 	}
 }

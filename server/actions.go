@@ -717,8 +717,9 @@ func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var field, file string
 	var index int
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "field", &field, "file", &file, "index?", &index); err != nil {
-		return sl_error(fn, "syntax: upload(field, file, index=0)")
+	var maximum int64
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "field", &field, "file", &file, "index?", &index, "maximum?", &maximum); err != nil {
+		return sl_error(fn, "syntax: upload(field, file, index=0, maximum=0)")
 	}
 	if !valid(field, "constant") {
 		return sl_error(fn, "invalid field %q", field)
@@ -735,6 +736,15 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	ff := a.upload_header(field, index)
 	if ff == nil {
 		return sl_error(fn, "no file %d for field %q", index, field)
+	}
+
+	// A per-call ceiling, for a caller storing one kind of thing: an attachment
+	// has to stay within what a transfer can carry, or its owner keeps it whole
+	// and every subscriber receives a prefix. Zero means the quota is the only
+	// bound, which suits a caller storing something that is legitimately larger
+	// than any single object - an import container holding many of them.
+	if maximum > 0 && ff.Size > maximum {
+		return sl_error(fn, "file too large: %d bytes exceeds %d", ff.Size, maximum)
 	}
 
 	// Check storage limit (10GB per user across all apps; admins exempt)

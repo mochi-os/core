@@ -177,13 +177,16 @@ var (
 	// refusing legitimate viewers - it would meter popularity rather than abuse.
 	// The client is who induces the cost, so the client is what to bound.
 	//
-	// 2GB/minute clears any single legitimate transfer, since one relay is capped
-	// at stream_maximum_default (1GB) and the largest real ones - a repository
-	// archive, a market asset download - are public routes an anonymous caller
-	// uses honestly. It is a ceiling on one client, not a tight quota.
+	// Sized to clear one transfer of the largest object the platform stores, and
+	// held there by TestStorageLimitsAgree. A budget below that does not stop
+	// abuse, it truncates honest traffic part-way: the largest real transfers -
+	// a repository archive, a market asset download, a video attachment - are
+	// public routes an anonymous caller uses honestly, and a fast one completes
+	// well inside a single window. It is a ceiling on one client, not a tight
+	// quota, and it is the reason object_maximum cannot be raised on its own.
 	rate_limit_stream_client = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
-		limit:   2 * 1024 * 1024, // kilobytes
+		limit:   10 * 1024 * 1024, // kilobytes: one object_maximum transfer
 		window:  60,
 	}
 
@@ -194,7 +197,7 @@ var (
 	// app because one of them is being abused.
 	rate_limit_stream_app = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
-		limit:   16 * 1024 * 1024, // kilobytes
+		limit:   80 * 1024 * 1024, // kilobytes: eight per-client budgets
 		window:  60,
 	}
 

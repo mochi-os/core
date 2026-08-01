@@ -22,7 +22,11 @@ import (
 )
 
 const (
-	attachment_max_size_default = 1073741824         // 1GB
+	// The largest attachment the platform stores. Equal to object_maximum, and
+	// held there by test rather than by hope: an attachment above the transfer
+	// cap is stored whole by its owner and received truncated by every
+	// subscriber, silently.
+	attachment_max_size_default = object_maximum
 	cache_max_age               = 7 * 24 * time.Hour // 7 days
 )
 

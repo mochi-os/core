@@ -21,7 +21,22 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 )
 
-// Maximum file storage per user (10GB)
+// object_maximum is the largest single object the platform stores, and so the
+// largest it must be able to transfer whole. Three limits are in a chain and
+// only hold together in one order:
+//
+//	object_maximum <= stream_maximum_default <= the per-client relay byte budget
+//
+// Break it at the front and a stored object exceeds what a transfer carries, so
+// a peer receives it truncated with no error at either end. Break it at the back
+// and one honest transfer of the largest object exhausts the caller's budget
+// part-way through. Raising this therefore means raising both of the others -
+// and the byte budget is a denial-of-service control, so that is a security
+// decision rather than a arithmetic one. TestStorageLimitsAgree holds the chain.
+const object_maximum = 10 * 1024 * 1024 * 1024 // 10GB
+
+// Maximum file storage per user (10GB). Equal to object_maximum, so a single
+// object may fill a user's whole allowance - a video is one file, not many.
 var file_max_storage int64 = 10 * 1024 * 1024 * 1024
 
 // user_storage_remaining reports how many more bytes the user may store before
@@ -41,14 +56,15 @@ func user_storage_remaining(u *User) (int64, error) {
 
 var (
 	api_file = sls.FromStringDict(sl.String("mochi.file"), sl.StringDict{
-		"age":    sl.NewBuiltin("mochi.file.age", api_file_age),
-		"copy":   sl.NewBuiltin("mochi.file.copy", api_file_copy),
-		"delete": sl.NewBuiltin("mochi.file.delete", api_file_delete),
-		"exists": sl.NewBuiltin("mochi.file.exists", api_file_exists),
-		"list":   sl.NewBuiltin("mochi.file.list", api_file_list),
-		"move":   sl.NewBuiltin("mochi.file.move", api_file_move),
-		"read":   sl.NewBuiltin("mochi.file.read", api_file_read),
-		"write":  sl.NewBuiltin("mochi.file.write", api_file_write),
+		"age":     sl.NewBuiltin("mochi.file.age", api_file_age),
+		"copy":    sl.NewBuiltin("mochi.file.copy", api_file_copy),
+		"maximum": sl.NewBuiltin("mochi.file.maximum", api_file_maximum),
+		"delete":  sl.NewBuiltin("mochi.file.delete", api_file_delete),
+		"exists":  sl.NewBuiltin("mochi.file.exists", api_file_exists),
+		"list":    sl.NewBuiltin("mochi.file.list", api_file_list),
+		"move":    sl.NewBuiltin("mochi.file.move", api_file_move),
+		"read":    sl.NewBuiltin("mochi.file.read", api_file_read),
+		"write":   sl.NewBuiltin("mochi.file.write", api_file_write),
 	})
 )
 
@@ -339,6 +355,15 @@ func api_file_copy(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	return sl.MakeInt64(written), nil
+}
+
+// mochi.file.maximum() -> integer: The largest single object the platform
+// stores, in bytes. Exposed so an app can refuse an oversized upload against
+// the same figure core enforces rather than carrying its own copy - the two
+// drifting apart is what let an object be stored larger than a transfer can
+// carry, so peers received it truncated.
+func api_file_maximum(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return sl.MakeInt64(object_maximum), nil
 }
 
 // mochi.file.age(file) -> integer or None: Seconds since a file was last

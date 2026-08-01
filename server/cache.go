@@ -108,17 +108,30 @@ func cache_value(t *sl.Thread, v sl.Value) (string, error) {
 	return cache_file(t, name)
 }
 
-// mochi.cache.write(name, source) -> int: Store bytes or a stream as a cache entry, returns size
+// mochi.cache.write(name, source, maximum=0) -> int: Store bytes or a stream as a cache entry, returns size
 func api_cache_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 2 {
-		return sl_error(fn, "syntax: <name: string>, <source: bytes or Stream>")
+	var name, source sl.Value
+	maximum := 0
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name, "source", &source, "maximum?", &maximum); err != nil {
+		return nil, err
 	}
-	path, err := cache_value(t, args[0])
+	path, err := cache_value(t, name)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
+	// The global cap holds regardless; a positive maximum tightens it to what
+	// the caller expects. The bound is maximum+1, not maximum: a source that
+	// overruns must be distinguishable from one that fits exactly, so one byte
+	// beyond the bound survives for the caller's size check to find. Cutting
+	// at maximum would truncate a peer's oversized transfer to precisely the
+	// declared size, and a completeness check downstream would then pass a
+	// file whose tail was silently discarded.
+	limit := int64(attachment_max_size_default)
+	if maximum > 0 && int64(maximum) < limit {
+		limit = int64(maximum) + 1
+	}
 	var reader io.Reader
-	switch v := args[1].(type) {
+	switch v := source.(type) {
 	case sl.String:
 		reader = strings.NewReader(string(v))
 	case sl.Bytes:
@@ -129,11 +142,11 @@ func api_cache_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		// at the largest object the platform stores it cannot complete inside
 		// the compute budget on an ordinary link.
 		starlark_transfer_set(t)
-		reader = io.LimitReader(v.raw_reader(), attachment_max_size_default)
+		reader = v.raw_reader()
 	default:
 		return sl_error(fn, "source must be bytes or a stream")
 	}
-	n, err := cache_write_file(path, reader)
+	n, err := cache_write_file(path, io.LimitReader(reader, limit))
 	if err != nil {
 		return sl_error(fn, "unable to write cache entry: %v", err)
 	}

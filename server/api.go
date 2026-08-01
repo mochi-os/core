@@ -759,7 +759,7 @@ func (m *stream_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []
 	return api_stream(thread, nil, args, kwargs)
 }
 
-// mochi.stream(headers, content) -> Stream: Create a Net stream to another entity
+// mochi.stream(headers, content) -> Stream or None: Create a Net stream to another entity; None if the peer is unreachable
 func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <headers: dictionary>, <content: dictionary>")
@@ -814,7 +814,14 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 
 	s, err := stream(headers["from"], headers["to"], headers["service"], headers["event"], from_app, services)
 	if err != nil {
-		return sl_error(fn, "%v", err)
+		// A peer being unreachable is an ordinary runtime condition, not a
+		// caller mistake, and Starlark has no way to catch an error - so
+		// raising here made every failure-handling branch after a stream call
+		// dead code, and an offline peer aborted the handler instead of
+		// engaging its backoff. Validation failures above still raise; only
+		// the dial reports by value.
+		debug("mochi.stream to %q failed: %v", headers["to"], err)
+		return sl.None, nil
 	}
 	s.write(sl_decode(args[1]))
 
@@ -825,7 +832,7 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 	return s, nil
 }
 
-// mochi.stream.peer(peer, headers, content) -> Stream: Create a Net stream to a specific peer
+// mochi.stream.peer(peer, headers, content) -> Stream or None: Create a Net stream to a specific peer; None if it is unreachable
 func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
 		return sl_error(fn, "syntax: <peer: string>, <headers: dictionary>, <content: dictionary>")
@@ -885,7 +892,11 @@ func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	s, err := stream_to_peer(peer, headers["from"], headers["to"], headers["service"], headers["event"], from_app, services)
 	if err != nil {
-		return sl_error(fn, "%v", err)
+		// Same contract as mochi.stream: the dial reports by value, because a
+		// raised error is uncatchable in Starlark and an unreachable peer is
+		// not a caller mistake.
+		debug("mochi.stream.peer to %q failed: %v", peer, err)
+		return sl.None, nil
 	}
 	s.write(sl_decode(args[2]))
 

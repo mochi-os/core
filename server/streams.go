@@ -429,14 +429,19 @@ func (s *Stream) sl_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(v), nil
 }
 
-// s.read.file(path) -> int: Read raw bytes from the stream and write them to a
-// per-user data file, returns bytes read. Writes to the same filesystem as mochi.file.*.
+// s.read.file(path, maximum=0) -> int: Read raw bytes from the stream and write
+// them to a per-user data file, returns bytes read. Writes to the same
+// filesystem as mochi.file.*. With a positive maximum, at most maximum+1 bytes
+// are written - the extra byte lets the caller distinguish a source that fits
+// exactly from one that overran, delete the file, and refuse the transfer.
 func (s *Stream) sl_read_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// debug("Stream %d reading rest of stream to file", s.id)
 
-	if len(args) != 1 {
+	var file string
+	maximum := 0
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "file", &file, "maximum?", &maximum); err != nil {
 		s.close_read()
-		return sl_error(fn, "syntax: <file: string>")
+		return nil, err
 	}
 
 	user := t.Local("user").(*User)
@@ -451,8 +456,7 @@ func (s *Stream) sl_read_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "no app")
 	}
 
-	file, ok := sl.AsString(args[0])
-	if !ok || !valid(file, "filepath") {
+	if !valid(file, "filepath") {
 		s.close_read()
 		return sl_error(fn, "invalid file %q", file)
 	}
@@ -501,7 +505,11 @@ func (s *Stream) sl_read_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	// This is critical when read_to_file follows a read() call
 	reader := s.raw_reader()
 
-	// Limit reader to remaining storage space
+	// Limit reader to remaining storage space, tightened to the caller's
+	// expectation when one was given (+1 so an overrun is visible to it).
+	if maximum > 0 && int64(maximum)+1 < remaining {
+		remaining = int64(maximum) + 1
+	}
 	limited := io.LimitReader(reader, remaining)
 	n, err := io.Copy(f, limited)
 	f.Close()

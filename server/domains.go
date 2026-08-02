@@ -858,14 +858,29 @@ func api_domain_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	if row == nil {
 		return sl.None, nil
 	}
-	return sl_encode(row), nil
+	return sl_encode(domain_certificate(row)), nil
 }
 
 // mochi.domain.list() -> list: List all domains
 func api_domain_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	db := db_open("db/domains.db")
 	rows, _ := db.rows("select * from domains order by domain")
+	for _, row := range rows {
+		domain_certificate(row)
+	}
 	return sl_encode(rows), nil
+}
+
+// domain_certificate annotates a domain row with whether a certificate was
+// installed by hand for it. The tls column alone does not answer "can HTTPS
+// serve this name": domains_get_certificate consults the manual map first and
+// a manual certificate overrides the column entirely, so a caller weighing
+// what happens when automatic certificates are switched off needs both.
+// Mutates and returns the row so the get and list paths cannot drift.
+func domain_certificate(row map[string]any) map[string]any {
+	name, _ := row["domain"].(string)
+	row["certificate"] = domains_manual_cert(name) != nil
+	return row
 }
 
 // mochi.domain.update(domain, verified=None, tls=None) -> dict: Update domain settings

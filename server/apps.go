@@ -584,6 +584,7 @@ var (
 		"path":    api_app_path,
 		"presets": sl.NewBuiltin("mochi.app.presets", api_app_presets),
 		"service": api_app_service,
+		"services": sl.NewBuiltin("mochi.app.services", api_app_services),
 		"themes":  sl.NewBuiltin("mochi.app.themes", api_app_themes),
 		"track":   api_app_track,
 		"url":     sl.NewBuiltin("mochi.app.url", api_app_url),
@@ -3065,6 +3066,23 @@ func api_app_url(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 	}
 	user, _ := t.Local("user").(*User)
 	return sl.String(app.url_path(user)), nil
+}
+
+// mochi.app.services() -> list: The services the calling app is the active
+// handler for. P2P frames route by SERVICE, and an app whose URL path prefix
+// differs from its service (paths ["comptroller"], services ["market"]) sends
+// frames nobody handles if it derives the header from mochi.app.url() - the
+// two happen to coincide for most apps, which is what let the mistake work.
+func api_app_services(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	app := t.Local("app").(*App)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+	user, _ := t.Local("user").(*User)
+	if user == nil {
+		user, _ = t.Local("owner").(*User)
+	}
+	return sl_encode(app_services(app, user)), nil
 }
 
 // mochi.app.path.get(path) -> string | None: Get the app bound to a path (admin only)

@@ -169,8 +169,22 @@ func web_tls_config() *tls.Config {
 }
 
 // web_redirect_https sends a plain-HTTP request to the same URL over HTTPS.
+// The target is the CONFIGURED host, not the requested one: Host is supplied
+// by the caller, and domains_get_certificate serves a name only if the domains
+// table holds it, so reflecting an arbitrary host answers a permanent redirect
+// to somewhere this server could never complete a handshake. The requested
+// name (minus any port) is what the Location carries — a wildcard row's own
+// Domain is the pattern "*.example.com", which is no use as a destination.
 func web_redirect_https(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "https://"+r.Host+r.RequestURI, http.StatusMovedPermanently)
+	host := r.Host
+	if name, _, err := net.SplitHostPort(host); err == nil {
+		host = name
+	}
+	if domain_lookup(host) == nil {
+		http.NotFound(w, r)
+		return
+	}
+	http.Redirect(w, r, "https://"+host+r.RequestURI, http.StatusMovedPermanently)
 }
 
 // Redact credential query values from a request path before it reaches the

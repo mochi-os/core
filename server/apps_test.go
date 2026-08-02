@@ -1169,7 +1169,7 @@ func TestAppsPinDefaultServices(t *testing.T) {
 	impAV := &AppVersion{Version: "1.0", Services: []string{"svc1"}}
 	apps[imposter] = &App{id: imposter, versions: map[string]*AppVersion{"1.0": impAV}, latest: impAV}
 	devAV := &AppVersion{Version: "1.0", Services: []string{"svc3"}}
-	apps["devapp"] = &App{id: "devapp", versions: map[string]*AppVersion{"1.0": devAV}, latest: devAV}
+	apps["devapp"] = &App{id: "devapp", development: true, versions: map[string]*AppVersion{"1.0": devAV}, latest: devAV}
 
 	// svc2 already has an admin/system binding that must be preserved.
 	apps_service_set("svc2", "preset-app")

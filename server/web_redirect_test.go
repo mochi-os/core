@@ -18,6 +18,12 @@ import (
 // the path and query intact — a redirect that drops either silently breaks
 // every bookmarked deep link.
 func TestRedirectHTTPS(t *testing.T) {
+	cleanup := create_domains_test_env(t)
+	defer cleanup()
+	if _, err := domain_register("mochi-os.org"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
 	// Targets are origin-form, as a server receives them. Passing an absolute
 	// URL to httptest.NewRequest would set RequestURI to the whole URL, which
 	// no real request carries, and the redirect builds its Location from Host
@@ -53,6 +59,12 @@ func TestRedirectHTTPS(t *testing.T) {
 // that path first it would answer 301 and validation could never complete —
 // no certificate would ever be issued. Everything else must still redirect.
 func TestACMEChallengeIsNotRedirected(t *testing.T) {
+	cleanup := create_domains_test_env(t)
+	defer cleanup()
+	if _, err := domain_register("mochi-os.org"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
 	manager := &autocert.Manager{
 		Prompt: autocert.AcceptTOS,
 		Cache:  autocert.DirCache(t.TempDir()),
@@ -77,6 +89,52 @@ func TestACMEChallengeIsNotRedirected(t *testing.T) {
 	}
 	if got := recorder.Header().Get("Location"); got != "https://mochi-os.org/feeds/" {
 		t.Errorf("Location %q, want %q", got, "https://mochi-os.org/feeds/")
+	}
+}
+
+// TestRedirectHTTPSHost pins that the redirect target is validated rather than
+// reflected. Host is supplied by the caller, and domains_get_certificate serves
+// only names the domains table holds, so an unconfigured host must not become a
+// permanent redirect this server issues in its own name.
+func TestRedirectHTTPSHost(t *testing.T) {
+	cleanup := create_domains_test_env(t)
+	defer cleanup()
+	for _, name := range []string{"mochi-os.org", "*.example.com"} {
+		if _, err := domain_register(name); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+
+	tests := []struct {
+		host   string
+		status int
+		want   string // the Location, empty when none should be sent
+	}{
+		{"mochi-os.org", http.StatusMovedPermanently, "https://mochi-os.org/some/path"},
+		// A wildcard row covers the subdomain, and the Location carries the
+		// REQUESTED name: the row's own domain is the pattern itself, which
+		// would be no use as a destination.
+		{"foo.example.com", http.StatusMovedPermanently, "https://foo.example.com/some/path"},
+		// The port is dropped, so a configured domain cannot be borrowed to
+		// bounce a caller onto an arbitrary port.
+		{"mochi-os.org:8080", http.StatusMovedPermanently, "https://mochi-os.org/some/path"},
+		// An unconfigured host is refused outright rather than reflected.
+		{"attacker.example", http.StatusNotFound, ""},
+		// The wildcard covers subdomains, not the apex.
+		{"example.com", http.StatusNotFound, ""},
+	}
+	for _, test := range tests {
+		request := httptest.NewRequest("GET", "/some/path", nil)
+		request.Host = test.host
+		recorder := httptest.NewRecorder()
+		web_redirect_https(recorder, request)
+
+		if recorder.Code != test.status {
+			t.Errorf("%s: status %d, want %d", test.host, recorder.Code, test.status)
+		}
+		if got := recorder.Header().Get("Location"); got != test.want {
+			t.Errorf("%s: Location %q, want %q", test.host, got, test.want)
+		}
 	}
 }
 

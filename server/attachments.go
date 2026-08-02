@@ -12,6 +12,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	sl "go.starlark.net/starlark"
@@ -70,6 +71,22 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 	"export": sl.NewBuiltin("mochi.attachment.export", api_attachment_export),
 })
 
+var attachment_bridge_warned sync.Map
+
+// attachment_bridge_notice logs when a legacy mochi.attachment.* call runs, so
+// apps still on the old API surface in the logs instead of lingering silently
+// until the bridge is removed. Once per app and function per process: a stale
+// chat app would otherwise write a line per message.
+func attachment_bridge_notice(t *sl.Thread, function string) {
+	identifier := ""
+	if app, ok := t.Local("app").(*App); ok && app != nil {
+		identifier = app.id
+	}
+	if _, seen := attachment_bridge_warned.LoadOrStore(identifier+" "+function, true); !seen {
+		warn("Legacy attachment API %s called by app %q; update the app to the attachments library", function, identifier)
+	}
+}
+
 // mochi.attachment.export() -> list: Return every attachment row for the
 // calling user and app, each carrying object, entity (provenance: ” for the
 // app's own rows, an entity id for a remote copy), name, size, content_type,
@@ -78,6 +95,7 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 // of the core-managed app.db (which mochi.db cannot reach) and into its own
 // table. No URLs - the migration writes storage rows, not display data.
 func api_attachment_export(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	attachment_bridge_notice(t, "mochi.attachment.export")
 	app := t.Local("app").(*App)
 	if app == nil {
 		return sl_error(fn, "no app")
@@ -449,6 +467,7 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 // mochi.attachment.create.stream(object, name, stream, content_type?, caption?, description?, id?) -> dict: Create an attachment by streaming directly to storage
 // This avoids the need for a temp file by streaming directly to the final attachment location.
 func api_attachment_create_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	attachment_bridge_notice(t, "mochi.attachment.create.stream")
 	if len(args) < 3 || len(args) > 7 {
 		return sl_error(fn, "syntax: <object: string>, <name: string>, <stream: Stream>, [content_type: string], [caption: string], [description: string], [id: string]")
 	}
@@ -583,6 +602,7 @@ func api_attachment_create_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 
 // mochi.attachment.clear(object) -> None: Delete all attachments for an object
 func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	attachment_bridge_notice(t, "mochi.attachment.clear")
 	if len(args) < 1 || len(args) > 2 {
 		return sl_error(fn, "syntax: <object: string>")
 	}
@@ -635,6 +655,7 @@ func api_attachment_clear(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // mochi.attachment.data(id) -> bytes or None: Get attachment file data
 func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	attachment_bridge_notice(t, "mochi.attachment.data")
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
 	}
@@ -699,6 +720,7 @@ func api_attachment_data(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 // mochi.attachment.path(id) -> string or None: Get relative file path for use with stream file operations
 // Returns the filename relative to the app's files directory, suitable for write_from_file/read_to_file
 func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	attachment_bridge_notice(t, "mochi.attachment.path")
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
 	}
@@ -772,6 +794,7 @@ func attachment_conflict(db *DB, id string, object string) (string, bool) {
 // each row claimed and could be made to repoint an id we already held - goes
 // with it. Apps fetch remote attachments through their own declared events now.
 func api_attachment_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	attachment_bridge_notice(t, "mochi.attachment.fetch")
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <object: string>, <entity: string>")
 	}

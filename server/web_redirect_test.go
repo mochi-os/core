@@ -7,6 +7,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -122,6 +123,44 @@ func TestRedirectHTTPSHost(t *testing.T) {
 		{"attacker.example", http.StatusNotFound, ""},
 		// The wildcard covers subdomains, not the apex.
 		{"example.com", http.StatusNotFound, ""},
+	}
+	for _, test := range tests {
+		request := httptest.NewRequest("GET", "/some/path", nil)
+		request.Host = test.host
+		recorder := httptest.NewRecorder()
+		web_redirect_https(recorder, request)
+
+		if recorder.Code != test.status {
+			t.Errorf("%s: status %d, want %d", test.host, recorder.Code, test.status)
+		}
+		if got := recorder.Header().Get("Location"); got != test.want {
+			t.Errorf("%s: Location %q, want %q", test.host, got, test.want)
+		}
+	}
+}
+
+// TestRedirectHTTPSManualCertificate pins that a manually certificated host is
+// still redirected even with no row in the domains table. domains_get_certificate
+// tries the manual map first, so HTTPS serves such a host; refusing to send
+// callers there would strand it on plain HTTP. Wildcard certificates make this
+// ordinary rather than exotic — ACME issues none over TLS-ALPN-01 or HTTP-01,
+// so every wildcard is manual and its subdomains need no rows of their own.
+func TestRedirectHTTPSManualCertificate(t *testing.T) {
+	cleanup := create_domains_test_env(t)
+	defer cleanup()
+
+	original := domains_certs
+	domains_certs = map[string]*tls.Certificate{"*.manual.example": {}}
+	defer func() { domains_certs = original }()
+
+	tests := []struct {
+		host   string
+		status int
+		want   string
+	}{
+		{"host.manual.example", http.StatusMovedPermanently, "https://host.manual.example/some/path"},
+		// Nothing covers this one: no certificate and no row.
+		{"other.example", http.StatusNotFound, ""},
 	}
 	for _, test := range tests {
 		request := httptest.NewRequest("GET", "/some/path", nil)

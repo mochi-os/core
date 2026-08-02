@@ -65,6 +65,7 @@ var (
 		"list":    sl.NewBuiltin("mochi.file.list", api_file_list),
 		"move":    sl.NewBuiltin("mochi.file.move", api_file_move),
 		"read":    sl.NewBuiltin("mochi.file.read", api_file_read),
+		"type":    sl.NewBuiltin("mochi.file.type", api_file_type),
 		"write":   sl.NewBuiltin("mochi.file.write", api_file_write),
 	})
 )
@@ -151,6 +152,41 @@ func file_name_type(name string) string {
 		return "image/webp"
 	case ".xml":
 		return "application/xml"
+
+	// Media types, which decide whether a browser plays an attachment or
+	// downloads it: content_type_inline admits image/*, video/* and audio/*,
+	// and octet-stream falls to Content-Disposition: attachment. Their absence
+	// meant a serve deriving from the name demoted every video and audio file,
+	// which forced the remote-attachment path to trust a peer's declared type
+	// instead.
+	case ".avif":
+		return "image/avif"
+	case ".flac":
+		return "audio/flac"
+	case ".heic":
+		return "image/heif"
+	case ".m4a":
+		return "audio/mp4"
+	case ".m4v":
+		return "video/mp4"
+	case ".mov":
+		return "video/quicktime"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".mp4":
+		return "video/mp4"
+	case ".oga":
+		return "audio/ogg"
+	case ".ogg":
+		return "audio/ogg"
+	case ".ogv":
+		return "video/ogg"
+	case ".opus":
+		return "audio/opus"
+	case ".wav":
+		return "audio/wav"
+	case ".webm":
+		return "video/webm"
 	}
 
 	return "application/octet-stream"
@@ -222,6 +258,19 @@ func dir_size(path string) (int64, error) {
 		return nil
 	})
 	return size, err
+}
+
+// mochi.file.type(name) -> string: The content type a file name's extension
+// implies, application/octet-stream when it implies none. The same map every
+// serve path derives from, exposed so a caller labelling bytes it serves under
+// another name - a cache entry, a stream - agrees with what core would say,
+// rather than keeping its own copy of this table to drift.
+func api_file_type(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var name string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name); err != nil {
+		return nil, err
+	}
+	return sl.String(file_name_type(name)), nil
 }
 
 // mochi.file.clean(name, maximum=255) -> string: Reduce a client-supplied name

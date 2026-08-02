@@ -180,7 +180,12 @@ func web_redirect_https(w http.ResponseWriter, r *http.Request) {
 	if name, _, err := net.SplitHostPort(host); err == nil {
 		host = name
 	}
-	if domain_lookup(host) == nil {
+	// The test mirrors domains_get_certificate, which tries a manually
+	// installed certificate before the table: a wildcard certificate can serve
+	// a host that has no row of its own, and wildcards are only ever manual
+	// since ACME issues none over TLS-ALPN-01 or HTTP-01. Checking the table
+	// alone would refuse to redirect a host that HTTPS then serves happily.
+	if domains_manual_cert(host) == nil && domain_lookup(host) == nil {
 		http.NotFound(w, r)
 		return
 	}

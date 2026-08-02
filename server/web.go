@@ -168,24 +168,35 @@ func web_tls_config() *tls.Config {
 	}
 }
 
-// web_redirect_https sends a plain-HTTP request to the same URL over HTTPS.
-// The target is the CONFIGURED host, not the requested one: Host is supplied
-// by the caller, and domains_get_certificate serves a name only if the domains
-// table holds it, so reflecting an arbitrary host answers a permanent redirect
-// to somewhere this server could never complete a handshake. The requested
-// name (minus any port) is what the Location carries — a wildcard row's own
-// Domain is the pattern "*.example.com", which is no use as a destination.
+// web_https_serves reports whether the HTTPS listener could present a
+// certificate for host, mirroring domains_get_certificate's own order: a
+// manually installed certificate wins outright, and only then does the table
+// decide. Deliberately NOT domains_host_policy, which additionally demands a
+// verified domain — that governs whether ACME may issue, not whether the
+// server can serve, and an unverified domain with a certificate serves fine.
+func web_https_serves(host string) bool {
+	if domains_manual_cert(host) != nil {
+		return true
+	}
+	d := domain_lookup(host)
+	return d != nil && d.TLS != 0
+}
+
+// web_redirect_https sends a plain-HTTP request to the same URL over HTTPS,
+// provided HTTPS can actually answer for that host. Host is supplied by the
+// caller, so reflecting it unchecked issues a permanent redirect to wherever
+// the caller names; and a host this server holds no certificate for — never
+// configured, or configured with automatic certificates switched off — would
+// be sent to a handshake that is refused. The Location carries the REQUESTED
+// name minus any port: a wildcard row's own Domain is the pattern
+// "*.example.com", which is no use as a destination, and an unstripped port
+// lets a configured domain bounce a caller onto an arbitrary one.
 func web_redirect_https(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
 	if name, _, err := net.SplitHostPort(host); err == nil {
 		host = name
 	}
-	// The test mirrors domains_get_certificate, which tries a manually
-	// installed certificate before the table: a wildcard certificate can serve
-	// a host that has no row of its own, and wildcards are only ever manual
-	// since ACME issues none over TLS-ALPN-01 or HTTP-01. Checking the table
-	// alone would refuse to redirect a host that HTTPS then serves happily.
-	if domains_manual_cert(host) == nil && domain_lookup(host) == nil {
+	if !web_https_serves(host) {
 		http.NotFound(w, r)
 		return
 	}

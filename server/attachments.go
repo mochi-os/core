@@ -337,6 +337,7 @@ func attachment_content_type(name string) string {
 
 // mochi.attachment.create(object, name, data, content_type?, caption?, description?) -> dict: Create an attachment from data
 func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	attachment_bridge_notice(t, "mochi.attachment.create")
 	if len(args) < 3 || len(args) > 7 {
 		return sl_error(fn, "syntax: <object: string>, <name: string>, <data: bytes>, [content_type: string], [caption: string], [description: string]")
 	}

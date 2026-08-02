@@ -177,6 +177,51 @@ func TestRedirectHTTPSManualCertificate(t *testing.T) {
 	}
 }
 
+// TestRedirectHTTPSAutomaticCertificatesOff pins what the domains table's tls
+// column does to the redirect. Switching a domain off means no ACME issuance,
+// so unless a certificate was installed by hand there is nothing for the
+// handshake to present and sending callers to HTTPS strands them. A manual
+// certificate is checked first and overrides the column, exactly as
+// domains_get_certificate does.
+func TestRedirectHTTPSAutomaticCertificatesOff(t *testing.T) {
+	cleanup := create_domains_test_env(t)
+	defer cleanup()
+	for _, name := range []string{"bare.example", "certificated.example"} {
+		if _, err := domain_register(name); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	db_open("db/domains.db").exec("update domains set tls=0")
+
+	original := domains_certs
+	domains_certs = map[string]*tls.Certificate{"certificated.example": {}}
+	defer func() { domains_certs = original }()
+
+	tests := []struct {
+		host   string
+		status int
+		want   string
+	}{
+		// Registered, but nothing can answer the handshake.
+		{"bare.example", http.StatusNotFound, ""},
+		// The hand-installed certificate serves it regardless of the column.
+		{"certificated.example", http.StatusMovedPermanently, "https://certificated.example/some/path"},
+	}
+	for _, test := range tests {
+		request := httptest.NewRequest("GET", "/some/path", nil)
+		request.Host = test.host
+		recorder := httptest.NewRecorder()
+		web_redirect_https(recorder, request)
+
+		if recorder.Code != test.status {
+			t.Errorf("%s: status %d, want %d", test.host, recorder.Code, test.status)
+		}
+		if got := recorder.Header().Get("Location"); got != test.want {
+			t.Errorf("%s: Location %q, want %q", test.host, got, test.want)
+		}
+	}
+}
+
 // challenge_request builds an origin-form request for mochi-os.org, matching
 // what the listener actually receives.
 func challenge_request(t *testing.T, target string) *http.Request {

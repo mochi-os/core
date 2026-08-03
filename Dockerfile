@@ -16,7 +16,20 @@
 # Runtime: gcr.io/distroless/static-debian12 — fully static binary, no libc
 # dependency at runtime.
 
-FROM gcr.io/distroless/static-debian12:latest AS runtime
+# Pinned by digest, not by tag: a floating tag means the same commit can build
+# different images, and a moved or compromised upstream tag propagates with
+# nothing recording that it changed. This is the manifest LIST digest, which is
+# what a multi-architecture buildx needs - a per-architecture digest would build
+# one arch and fail the other.
+#
+# Bump it deliberately as part of a release; `make base-digest` reports whether
+# the tag has moved. The scheduled Trivy container scan in the Security workflow
+# is what makes a stale pin visible, by reporting the base image's CVEs.
+#
+# The tag this tracks is :latest, which runs as ROOT - unlike world, which uses
+# :nonroot. That is not settled either way here: core binds 80 and 443, which is
+# the obvious reason, but nothing records whether it was decided or inherited.
+FROM gcr.io/distroless/static-debian12:latest@sha256:a9fcaedd4c9b59e12dd65d954f0b5044f19b0647a8a3712e77205df9e7b102cd AS runtime
 ARG TARGETARCH
 
 COPY build/docker/bin/mochi-server-${TARGETARCH} /usr/sbin/mochi-server

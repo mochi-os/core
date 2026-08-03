@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -169,17 +170,23 @@ func web_tls_config() *tls.Config {
 }
 
 // web_https_serves reports whether the HTTPS listener could present a
-// certificate for host, mirroring domains_get_certificate's own order: a
-// manually installed certificate wins outright, and only then does the table
-// decide. Deliberately NOT domains_host_policy, which additionally demands a
-// verified domain — that governs whether ACME may issue, not whether the
-// server can serve, and an unverified domain with a certificate serves fine.
+// certificate for host, following domains_get_certificate step for step: a
+// manually installed certificate wins outright, and everything else ends up at
+// the ACME manager, which answers only for hosts its own HostPolicy admits.
+// Deferring to domains_host_policy rather than re-deriving its rules is what
+// keeps the two listeners agreeing — it also rejects an unverified domain
+// while domains_verification is on, and a domain whose automatic certificates
+// are switched off. Note the ordering: the policy is authoritative only for
+// issuance, so it must not be consulted before the manual map, or a
+// hand-certificated host — the only kind a wildcard can be — would be refused.
 func web_https_serves(host string) bool {
 	if domains_manual_cert(host) != nil {
 		return true
 	}
-	d := domain_lookup(host)
-	return d != nil && d.TLS != 0
+	if domains_acme_manager == nil {
+		return false // nothing left to issue one
+	}
+	return domains_host_policy(context.Background(), host) == nil
 }
 
 // web_redirect_https sends a plain-HTTP request to the same URL over HTTPS,

@@ -871,15 +871,18 @@ func api_domain_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl_encode(rows), nil
 }
 
-// domain_certificate annotates a domain row with whether a certificate was
-// installed by hand for it. The tls column alone does not answer "can HTTPS
-// serve this name": domains_get_certificate consults the manual map first and
-// a manual certificate overrides the column entirely, so a caller weighing
-// what happens when automatic certificates are switched off needs both.
+// domain_certificate annotates a domain row with the two facts the tls column
+// cannot answer on its own. certificate says a certificate was installed by
+// hand, which overrides the column entirely and is what decides whether
+// switching automatic certificates off costs anything. https says the server
+// could actually present a certificate for this name today, which additionally
+// depends on the verification policy and on ACME being configured — neither
+// visible to a client — so it is computed here rather than re-derived there.
 // Mutates and returns the row so the get and list paths cannot drift.
 func domain_certificate(row map[string]any) map[string]any {
 	name, _ := row["domain"].(string)
 	row["certificate"] = domains_manual_cert(name) != nil
+	row["https"] = web_https_serves(name)
 	return row
 }
 

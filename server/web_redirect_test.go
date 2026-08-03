@@ -15,15 +15,42 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 )
 
+// acme_manager gives the package a certificate manager for the duration of the
+// test. web_https_serves follows the resolver all the way to the manager, so
+// with none configured there is nothing that could issue a certificate and no
+// host without a manual one is redirected.
+func acme_manager(t *testing.T) {
+	t.Helper()
+	original := domains_acme_manager
+	domains_acme_manager = &autocert.Manager{
+		Prompt: autocert.AcceptTOS,
+		Cache:  autocert.DirCache(t.TempDir()),
+	}
+	t.Cleanup(func() { domains_acme_manager = original })
+}
+
+// serving_domain registers domains in the state an in-service domain is in:
+// verified, with automatic certificates on and a manager to issue them. A bare
+// domain_register leaves verified=0, which under the default verification
+// policy describes a domain that cannot yet serve HTTPS.
+func serving_domain(t *testing.T, names ...string) {
+	t.Helper()
+	acme_manager(t)
+	for _, name := range names {
+		if _, err := domain_register(name); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+		db_open("db/domains.db").exec("update domains set verified=1 where domain=?", name)
+	}
+}
+
 // TestRedirectHTTPS pins that the plain listener sends callers to HTTPS with
 // the path and query intact — a redirect that drops either silently breaks
 // every bookmarked deep link.
 func TestRedirectHTTPS(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
-	if _, err := domain_register("mochi-os.org"); err != nil {
-		t.Fatalf("register: %v", err)
-	}
+	serving_domain(t, "mochi-os.org")
 
 	// Targets are origin-form, as a server receives them. Passing an absolute
 	// URL to httptest.NewRequest would set RequestURI to the whole URL, which
@@ -62,9 +89,7 @@ func TestRedirectHTTPS(t *testing.T) {
 func TestACMEChallengeIsNotRedirected(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
-	if _, err := domain_register("mochi-os.org"); err != nil {
-		t.Fatalf("register: %v", err)
-	}
+	serving_domain(t, "mochi-os.org")
 
 	manager := &autocert.Manager{
 		Prompt: autocert.AcceptTOS,
@@ -100,11 +125,7 @@ func TestACMEChallengeIsNotRedirected(t *testing.T) {
 func TestRedirectHTTPSHost(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
-	for _, name := range []string{"mochi-os.org", "*.example.com"} {
-		if _, err := domain_register(name); err != nil {
-			t.Fatalf("register %s: %v", name, err)
-		}
-	}
+	serving_domain(t, "mochi-os.org", "*.example.com")
 
 	tests := []struct {
 		host   string
@@ -136,6 +157,51 @@ func TestRedirectHTTPSHost(t *testing.T) {
 		if got := recorder.Header().Get("Location"); got != test.want {
 			t.Errorf("%s: Location %q, want %q", test.host, got, test.want)
 		}
+	}
+}
+
+// TestRedirectHTTPSIssuanceBlocked pins the two conditions that stop a
+// certificate being issued for an otherwise well-formed domain. Both sit
+// behind the ACME manager rather than in the domains table, so a predicate
+// that reads the table alone reports HTTPS as available and sends callers to a
+// handshake that is refused.
+func TestRedirectHTTPSIssuanceBlocked(t *testing.T) {
+	cleanup := create_domains_test_env(t)
+	defer cleanup()
+
+	// Unverified while the verification policy is on. This is the DEFAULT state
+	// of a freshly registered domain, not an exotic one: domain_register writes
+	// verified=0 and domains_verification defaults to true.
+	acme_manager(t)
+	if _, err := domain_register("unverified.example"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	setting_set("domains_verification", "true")
+
+	request := httptest.NewRequest("GET", "/some/path", nil)
+	request.Host = "unverified.example"
+	recorder := httptest.NewRecorder()
+	web_redirect_https(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("unverified domain: status %d, want %d", recorder.Code, http.StatusNotFound)
+	}
+
+	// Verifying it is the only thing that changes, and it now redirects.
+	db_open("db/domains.db").exec("update domains set verified=1 where domain=?", "unverified.example")
+	recorder = httptest.NewRecorder()
+	web_redirect_https(recorder, request)
+	if recorder.Code != http.StatusMovedPermanently {
+		t.Errorf("verified domain: status %d, want %d", recorder.Code, http.StatusMovedPermanently)
+	}
+
+	// No manager configured at all: nothing can issue, so nothing is promised.
+	original := domains_acme_manager
+	domains_acme_manager = nil
+	defer func() { domains_acme_manager = original }()
+	recorder = httptest.NewRecorder()
+	web_redirect_https(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("no ACME manager: status %d, want %d", recorder.Code, http.StatusNotFound)
 	}
 }
 
@@ -186,11 +252,7 @@ func TestRedirectHTTPSManualCertificate(t *testing.T) {
 func TestRedirectHTTPSAutomaticCertificatesOff(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
-	for _, name := range []string{"bare.example", "certificated.example"} {
-		if _, err := domain_register(name); err != nil {
-			t.Fatalf("register %s: %v", name, err)
-		}
-	}
+	serving_domain(t, "bare.example", "certificated.example")
 	db_open("db/domains.db").exec("update domains set tls=0")
 
 	original := domains_certs

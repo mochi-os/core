@@ -212,7 +212,9 @@ func web_serve_shell(c *gin.Context, app_id string) {
 	).Replace(shell_html)
 
 	// Clear stale mochi-theme cookie (no longer used)
-	secure := c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
+	// The connection itself, not a claim about it: nothing sits in front of
+	// this server, so X-Forwarded-Proto would be caller-supplied input.
+	secure := c.Request.TLS != nil
 	c.SetCookie("mochi-theme", "", -1, "/", "", secure, false)
 
 	// Security headers

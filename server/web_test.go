@@ -347,3 +347,53 @@ func TestFileContentTypeDisposition(t *testing.T) {
 		})
 	}
 }
+
+// TestLocalhostIgnoresForwardedFor pins that a caller cannot talk its way into
+// being treated as local. web_is_localhost decides whether a cookie carries
+// Secure and whether an OAuth callback is advertised as https, so a request
+// that merely CLAIMS to come from 127.0.0.1 must not qualify.
+//
+// The engine trusts no proxy, which is the root fix, but this asserts the
+// behaviour rather than the configuration call: it also fails if someone later
+// routes this decision back through ClientIP.
+func TestLocalhostIgnoresForwardedFor(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name      string
+		remote    string
+		forwarded string
+		want      bool
+	}{
+		{"remote localhost", "127.0.0.1:5000", "", true},
+		{"remote localhost IPv6", "[::1]:5000", "", true},
+		{"remote external", "203.0.113.9:5000", "", false},
+		// The attack: an external caller claiming to be local.
+		{"forwarded localhost from outside", "203.0.113.9:5000", "127.0.0.1", false},
+		{"forwarded localhost IPv6 from outside", "203.0.113.9:5000", "::1", false},
+		// And the reverse, so a genuinely local caller is not talked out of it.
+		{"forwarded external from localhost", "127.0.0.1:5000", "203.0.113.9", true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest("GET", "/", nil)
+			request.RemoteAddr = test.remote
+			if test.forwarded != "" {
+				request.Header.Set("X-Forwarded-For", test.forwarded)
+			}
+
+			engine := gin.New()
+			if err := engine.SetTrustedProxies(nil); err != nil {
+				t.Fatalf("SetTrustedProxies: %v", err)
+			}
+			var got bool
+			engine.GET("/", func(c *gin.Context) { got = web_is_localhost(c) })
+			engine.ServeHTTP(httptest.NewRecorder(), request)
+
+			if got != test.want {
+				t.Errorf("web_is_localhost() = %v, want %v (remote %s, X-Forwarded-For %q)",
+					got, test.want, test.remote, test.forwarded)
+			}
+		})
+	}
+}

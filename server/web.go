@@ -983,9 +983,17 @@ func web_cookie_set(c *gin.Context, name string, value string) {
 	c.SetCookie(name, value, 365*86400, "/", "", secure, true)
 }
 
-// Check if request is from localhost
+// Check if request is from localhost.
+//
+// Reads the socket peer rather than ClientIP, so no header can reach it. The
+// engine trusts no proxy, which already makes the two equivalent; this is
+// deliberate belt and braces, because what hangs off this answer is whether a
+// cookie carries Secure and whether an OAuth callback is advertised as https,
+// and neither should become forgeable if a trusted-proxy list is ever
+// configured. Recording where a user logged in from is the opposite case and
+// stays on ClientIP.
 func web_is_localhost(c *gin.Context) bool {
-	ip := c.ClientIP()
+	ip := c.RemoteIP()
 	return ip == "127.0.0.1" || ip == "::1" || ip == "localhost"
 }
 
@@ -1985,6 +1993,20 @@ func web_start() {
 	}
 	gin.DefaultWriter = log.Writer()
 	r := gin.New()
+	// Mochi terminates TLS itself and is not intended to run behind a reverse
+	// proxy, so no proxy is trusted. Gin's default is the opposite — it trusts
+	// every source — which would let any caller set their own apparent address
+	// through X-Forwarded-For, and with it the login records and every decision
+	// derived from the address. With no trusted proxy, ClientIP falls through
+	// to the socket peer, so this one call closes all of them at the root.
+	// If proxy support is ever added, this becomes a configured list rather
+	// than a deletion: the header is only ever as trustworthy as the hop that
+	// set it.
+	if err := r.SetTrustedProxies(nil); err != nil {
+		// Cannot fail for a nil list, but a silent failure would leave Gin's
+		// trust-everything default in place with nobody the wiser.
+		warn("Web unable to refuse proxy headers, X-Forwarded-For may be honoured: %v", err)
+	}
 	// First, before logging or any other handling: bridge a root-path
 	// libp2p WebSocket upgrade to the loopback libp2p listener. No-op
 	// unless the 443 fallback is enabled and the request is exactly that.

@@ -53,15 +53,30 @@ type oauth_profile struct {
 
 // oauth_state is serialised into ceremonies.data during the round trip.
 type oauth_state struct {
-	Provider  string `json:"provider"`
-	Verifier  string `json:"verifier"`
-	Nonce     string `json:"nonce"`
-	Target    string `json:"target"`
-	Redirect  string `json:"redirect"`
-	Mode      string `json:"mode,omitempty"`      // "mobile" for native-app flow
-	Scheme    string `json:"scheme,omitempty"`    // app deep-link scheme (mobile)
-	Challenge string `json:"challenge,omitempty"` // S256(verifier) for app exchange (mobile)
-	Email     string `json:"email,omitempty"`     // address the email-login flow is verifying
+	Provider  string       `json:"provider"`
+	Verifier  string       `json:"verifier"`
+	Nonce     string       `json:"nonce"`
+	Target    string       `json:"target"`
+	Redirect  string       `json:"redirect"`
+	Mode      string       `json:"mode,omitempty"`      // "mobile" for native-app flow
+	Scheme    string       `json:"scheme,omitempty"`    // app deep-link scheme (mobile)
+	Challenge string       `json:"challenge,omitempty"` // S256(verifier) for app exchange (mobile)
+	Email     string       `json:"email,omitempty"`     // address the email-login flow is verifying
+	Return    oauth_return `json:"return"`
+}
+
+// oauth_return carries the values echoed back to a native client on the
+// deep-link redirect.
+//
+// Its Nonce is NOT the Nonce above. That one is the OIDC nonce: it is sent to
+// the PROVIDER and bound into the ID token, so it must never appear in a URL
+// the app receives. This one never leaves the pair (this server, this app) and
+// exists only so the app can tell its own return from an injected one — the
+// activity handling mochi:oauth-return is exported and BROWSABLE, so any app or
+// web page can deliver one, and accepting it consumes the PKCE verifier and
+// kills the genuine ceremony.
+type oauth_return struct {
+	Nonce string `json:"nonce,omitempty"`
 }
 
 var api_user_oauth = sls.FromStringDict(sl.String("mochi.user.oauth"), sl.StringDict{
@@ -291,10 +306,18 @@ func web_oauth_begin(c *gin.Context) {
 		link_user = user.UID
 	}
 
-	auth_url, err := oauth_begin_ceremony(c, provider, name, link_user, body.Target, body.Mode, body.Scheme, body.Challenge, body.Email)
+	auth_url, returned, err := oauth_begin_ceremony(c, provider, name, link_user, body.Target, body.Mode, body.Scheme, body.Challenge, body.Email)
 	if err != nil {
 		warn("OAuth begin: %v", err)
 		respond_error(c, http.StatusServiceUnavailable, "provider_unavailable", "errors.provider_unavailable", nil)
+		return
+	}
+	// The return nonce goes only to a native client: it is the app's means of
+	// telling its own deep-link return from an injected one, and the web flow
+	// has no equivalent exposure (a browser redirect cannot be delivered by a
+	// third party the way an exported activity's intent can).
+	if body.Mode == "mobile" {
+		c.JSON(http.StatusOK, gin.H{"url": auth_url, "nonce": returned})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"url": auth_url})
@@ -304,15 +327,18 @@ func web_oauth_begin(c *gin.Context) {
 // ceremony - carrying user_id for the link and step-up flows, and the caller's
 // result challenge for the app/popup exchange - and returns the provider auth
 // URL. Shared by the web begin handler and the step-up verify.begin builtin.
-func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_id, target, mode, scheme, challenge, email string) (string, error) {
+func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_id, target, mode, scheme, challenge, email string) (string, string, error) {
 	verifier, oauth_challenge := oauth_pkce()
 	state := random_alphanumeric(32)
 	nonce := random_alphanumeric(32)
+	// Minted for every ceremony, not just mobile ones, so the value is never
+	// absent when a mode is added later; only the deep-link redirect echoes it.
+	returned := random_alphanumeric(32)
 	redirect := oauth_redirect(c, name)
 
 	cfg, _, err := oauth_client_config(provider, redirect)
 	if err != nil {
-		return "", fmt.Errorf("provider config error (%s): %w", name, err)
+		return "", "", fmt.Errorf("provider config error (%s): %w", name, err)
 	}
 
 	data, err := json.Marshal(oauth_state{
@@ -325,9 +351,10 @@ func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_i
 		Scheme:    scheme,
 		Challenge: challenge,
 		Email:     email,
+		Return:    oauth_return{Nonce: returned},
 	})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	db_open("db/sessions.db").exec(
@@ -343,7 +370,7 @@ func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_i
 	}
 	opts = append(opts, provider.extra_auth...)
 
-	return cfg.AuthCodeURL(state, opts...), nil
+	return cfg.AuthCodeURL(state, opts...), returned, nil
 }
 
 // GET /_/auth/oauth/:provider/callback
@@ -903,7 +930,9 @@ func api_user_oauth_verify_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 		return sl_error(fn, "provider not linked")
 	}
 
-	url, err := oauth_begin_ceremony(action.web, provider, name, user.UID, "", "reauthentication", "", challenge, "")
+	// Step-up reauthentication completes in the browser, not through a deep
+	// link, so the return nonce has nothing to authenticate here.
+	url, _, err := oauth_begin_ceremony(action.web, provider, name, user.UID, "", "reauthentication", "", challenge, "")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -1136,7 +1165,10 @@ func oauth_valid_mobile_scheme(s string) bool {
 
 // oauth_mobile_redirect 302s to the app's deep-link return URL with either an
 // exchange code (success / MFA / identity-needed) or an error code.
-func oauth_mobile_redirect(c *gin.Context, scheme, exchange_code, error_code string, extras map[string]string) {
+// Takes the whole state rather than just the scheme so the return nonce cannot
+// be forgotten at a call site: an error path that omitted it would be silently
+// unauthenticated, and the error paths are the ones an attacker picks.
+func oauth_mobile_redirect(c *gin.Context, st *oauth_state, exchange_code, error_code string, extras map[string]string) {
 	q := url.Values{}
 	if exchange_code != "" {
 		q.Set("code", exchange_code)
@@ -1144,18 +1176,24 @@ func oauth_mobile_redirect(c *gin.Context, scheme, exchange_code, error_code str
 	if error_code != "" {
 		q.Set("error", error_code)
 	}
+	// Echoed on success AND error. An error return is the cheaper forgery —
+	// it needs no plausible code — so leaving it unauthenticated would leave
+	// the ceremony killable by anyone who can deliver an intent.
+	if st.Return.Nonce != "" {
+		q.Set("nonce", st.Return.Nonce)
+	}
 	for k, v := range extras {
 		if v != "" {
 			q.Set(k, v)
 		}
 	}
-	c.Redirect(http.StatusFound, scheme+":oauth-return?"+q.Encode())
+	c.Redirect(http.StatusFound, st.Scheme+":oauth-return?"+q.Encode())
 }
 
 // oauth_mobile_error sends the app a deep-link redirect carrying an error
 // code, mirroring oauth_error_redirect for the web path.
 func oauth_mobile_error(c *gin.Context, st *oauth_state, code string, extras map[string]string) {
-	oauth_mobile_redirect(c, st.Scheme, "", code, extras)
+	oauth_mobile_redirect(c, st, "", code, extras)
 }
 
 // oauth_mobile_store stashes the result of a callback in the ceremonies table
@@ -1229,7 +1267,7 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 				oauth_mobile_error(c, st, "server_error", nil)
 				return
 			}
-			oauth_mobile_redirect(c, st.Scheme, code, "", nil)
+			oauth_mobile_redirect(c, st, code, "", nil)
 			return
 		}
 
@@ -1255,7 +1293,7 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 			oauth_mobile_error(c, st, "server_error", nil)
 			return
 		}
-		oauth_mobile_redirect(c, st.Scheme, code, "", nil)
+		oauth_mobile_redirect(c, st, code, "", nil)
 		return
 	}
 
@@ -1301,7 +1339,7 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 		oauth_mobile_error(c, st, "server_error", nil)
 		return
 	}
-	oauth_mobile_redirect(c, st.Scheme, code, "", nil)
+	oauth_mobile_redirect(c, st, code, "", nil)
 }
 
 // identity_name_or_empty returns the user's identity name or "" if not set.

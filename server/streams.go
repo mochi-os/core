@@ -368,7 +368,8 @@ func (sr *StreamRead) Attr(name string) (sl.Value, error) {
 	return nil, nil
 }
 
-// StreamWrite is callable as s.write(values...) and exposes s.write.{raw, asset}.
+// StreamWrite is callable as s.write(values...) and exposes s.write.{asset,
+// cache, file, raw}.
 type StreamWrite struct {
 	stream *Stream
 }
@@ -386,7 +387,7 @@ func (sw *StreamWrite) CallInternal(t *sl.Thread, args sl.Tuple, kwargs []sl.Tup
 }
 
 func (sw *StreamWrite) AttrNames() []string {
-	return []string{"asset", "cache", "raw"}
+	return []string{"asset", "cache", "file", "raw"}
 }
 
 func (sw *StreamWrite) Attr(name string) (sl.Value, error) {
@@ -395,6 +396,8 @@ func (sw *StreamWrite) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("write.asset", sw.stream.sl_write_asset), nil
 	case "cache":
 		return sl.NewBuiltin("write.cache", sw.stream.sl_write_cache), nil
+	case "file":
+		return sl.NewBuiltin("write.file", sw.stream.sl_write_file), nil
 	case "raw":
 		return sl.NewBuiltin("write.raw", sw.stream.sl_write_raw), nil
 	}

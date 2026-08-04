@@ -47,9 +47,22 @@ const (
 )
 
 var (
-	locks              = map[string]*sync.Mutex{}
-	locks_lock         sync.Mutex
-	match_hyphens      = regexp.MustCompile(`-`)
+	locks         = map[string]*sync.Mutex{}
+	locks_lock    sync.Mutex
+	match_hyphens = regexp.MustCompile(`-`)
+	// Every control character except carriage return and line feed. Those two
+	// are admitted ON PURPOSE: valid() applies this to every input, and the
+	// "text" type - entity data, directory entries - carries multi-line
+	// content, so excluding them here rejects every payload with a newline in
+	// it. Nothing else depends on the exemption: of the other validators only
+	// "line" and "name" could match a newline at all, and both exclude it in
+	// their own pattern; the rest use character classes that cannot.
+	//
+	// A validator needing no newline therefore says so itself rather than
+	// asking this to say it. themes.go applies it to font names and override
+	// values, which reach a style attribute - harmless, because that output
+	// escapes the quote that delimits the attribute and both call sites refuse
+	// the semicolon a second declaration would need.
 	match_non_controls = regexp.MustCompile("^[\\P{Cc}\\r\\n]*$")
 	regex_cache        = map[string]*regexp.Regexp{}
 	regex_cache_mu     sync.Mutex

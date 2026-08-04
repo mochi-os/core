@@ -73,9 +73,10 @@ func shell_file_load(path string) (string, error) {
 	return content, nil
 }
 
-// web_should_serve_shell returns true when the request should get the shell page
-// instead of the app HTML directly
-func web_should_serve_shell(c *gin.Context) bool {
+// shell_wrap_candidate reports whether a request is the kind of top-level
+// navigation the shell wraps, independent of who is making it.
+// web_should_serve_shell adds the authentication requirements on top.
+func shell_wrap_candidate(c *gin.Context) bool {
 	// Sec-Fetch-Dest classifies the request: "document" for top-level navigations,
 	// "iframe" for iframe loads, "script"/"style"/"image"/etc for assets, and
 	// "empty" for fetch/XHR. Modern browsers always send it, but older browsers,
@@ -97,14 +98,20 @@ func web_should_serve_shell(c *gin.Context) bool {
 		return false
 	}
 
-	// Iframe loads (within the shell) carry _shell=1 — never wrap them in another shell.
+	// Iframe loads (within the shell) carry _shell=1 — never wrap them in
+	// another shell. Honour it only when Sec-Fetch-Dest is absent: a browser
+	// sends "iframe" for a real iframe load, which the check above already
+	// handles, so the parameter is needed only for clients and proxies that
+	// strip the header.
 	//
-	// Trust boundary: _shell=1 is a UX hint, NOT a security boundary. A user
-	// can append it to any URL and bypass the shell wrapper for themselves —
-	// they only ever see their own raw app HTML, which is what they'd see in
-	// the iframe anyway. Don't rely on shell-vs-no-shell for any access
-	// control decision; auth and per-app permissions are enforced separately.
-	if c.Query("_shell") == "1" {
+	// On an explicit "document" it must NOT be honoured. The shell sandboxes
+	// apps without allow-same-origin but with allow-popups-to-escape-sandbox,
+	// so an app can open its own URL in a popup that is not sandboxed; serving
+	// raw app HTML there runs the app's bundle top-level, same-origin and
+	// cookie-bearing, where POST /_/token mints a JWT for every installed app.
+	// Wrapping instead gives the popup the shell's own nonce-CSP page, which
+	// the opener cannot script.
+	if dest == "" && c.Query("_shell") == "1" {
 		return false
 	}
 
@@ -132,6 +139,16 @@ func web_should_serve_shell(c *gin.Context) bool {
 	// These URLs are always direct resource downloads and must reach the
 	// browser as top-level responses, not iframe contents.
 	if strings.Contains(path, "/-/attachments/") || strings.Contains(path, "/git/") {
+		return false
+	}
+
+	return true
+}
+
+// web_should_serve_shell returns true when the request should get the shell page
+// instead of the app HTML directly
+func web_should_serve_shell(c *gin.Context) bool {
+	if !shell_wrap_candidate(c) {
 		return false
 	}
 
@@ -432,10 +449,15 @@ func web_shell_init(c *gin.Context) {
 // cross-site top-level navigations (e.g., links from Reddit), causing the
 // login/landing page to be skipped for external visitors.
 func web_is_iframe_request(c *gin.Context) bool {
-	if c.GetHeader("Sec-Fetch-Dest") == "iframe" {
+	dest := c.GetHeader("Sec-Fetch-Dest")
+	if dest == "iframe" {
 		return true
 	}
-	if c.Query("_shell") == "1" {
+	// As in shell_wrap_candidate, _shell=1 speaks only for requests the browser
+	// did not classify. An explicit "document" is a top-level navigation, and
+	// treating one as an iframe skips the login redirect for anonymous callers
+	// and serves app HTML outside the sandbox the parameter is meant to mark.
+	if dest == "" && c.Query("_shell") == "1" {
 		return true
 	}
 	return false

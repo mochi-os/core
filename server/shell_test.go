@@ -70,17 +70,43 @@ func TestShellRejectsNonDocumentDest(t *testing.T) {
 	}
 }
 
-// Test web_should_serve_shell rejects iframe loads (carry _shell=1)
+// Test web_should_serve_shell rejects iframe loads (carry _shell=1) only when
+// the browser did not classify the request itself. An explicit "document" is a
+// top-level navigation whatever the query string says: honouring _shell=1 there
+// serves raw app HTML into a popup that allow-popups-to-escape-sandbox has
+// un-sandboxed, giving an app a same-origin cookie-bearing context in which
+// POST /_/token mints a JWT for every installed app.
 func TestShellRejectsIframeLoads(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("GET", "/feeds/?_shell=1", nil)
-	c.Request.Header.Set("Sec-Fetch-Dest", "document")
-	c.Request.Header.Set("Accept", "text/html")
 
-	if web_should_serve_shell(c) {
-		t.Error("web_should_serve_shell should return false when _shell=1 marks an iframe load")
+	// shell_wrap_candidate rather than web_should_serve_shell: the latter also
+	// requires an authenticated user with an identity, which would mask the
+	// classification this test is about.
+	shell_for := func(dest string) bool {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("GET", "/feeds/?_shell=1", nil)
+		c.Request.Header.Set("Accept", "text/html")
+		if dest != "" {
+			c.Request.Header.Set("Sec-Fetch-Dest", dest)
+		}
+		return shell_wrap_candidate(c)
+	}
+
+	// Header stripped by an older browser or a proxy: _shell=1 is the only
+	// signal that this is the shell's own iframe, so honour it.
+	if shell_for("") {
+		t.Error("shell_wrap_candidate should return false for _shell=1 with no Sec-Fetch-Dest")
+	}
+
+	// A real iframe load is already rejected by the Sec-Fetch-Dest check.
+	if shell_for("iframe") {
+		t.Error("shell_wrap_candidate should return false for Sec-Fetch-Dest: iframe")
+	}
+
+	// The escape: a top-level navigation must be wrapped even carrying _shell=1.
+	if !shell_for("document") {
+		t.Error("shell_wrap_candidate must wrap a Sec-Fetch-Dest: document request even with _shell=1")
 	}
 }
 
@@ -191,11 +217,20 @@ func TestIsIframeRequest(t *testing.T) {
 		t.Error("web_is_iframe_request should return true for Sec-Fetch-Dest: iframe")
 	}
 
-	// Case 2: navigation within shell iframe → _shell=1 query parameter
+	// Case 2: navigation within shell iframe, header stripped by an older
+	// browser or a proxy → _shell=1 is the only signal left, so honour it.
+	c = new_context("/feeds/?_shell=1")
+	if !web_is_iframe_request(c) {
+		t.Error("web_is_iframe_request should return true for _shell=1 with no Sec-Fetch-Dest")
+	}
+
+	// Case 2b: an explicit "document" is a top-level navigation whatever the
+	// query string claims — honouring _shell=1 here skips the login redirect
+	// and serves app HTML outside the sandbox the parameter marks.
 	c = new_context("/feeds/?_shell=1")
 	c.Request.Header.Set("Sec-Fetch-Dest", "document")
-	if !web_is_iframe_request(c) {
-		t.Error("web_is_iframe_request should return true for _shell=1 query parameter")
+	if web_is_iframe_request(c) {
+		t.Error("web_is_iframe_request must return false for Sec-Fetch-Dest: document even with _shell=1")
 	}
 
 	// Case 3: cross-site top-level navigation (e.g., link from Reddit) → NOT iframe

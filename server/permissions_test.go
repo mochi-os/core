@@ -707,6 +707,34 @@ func TestRequirePermissionURL(t *testing.T) {
 	}
 }
 
+// TestURLPreviewRequiresPermission: fetching a preview is an outbound request
+// like any other and needs the same url: grant mochi.url.request does. Only the
+// rate limiter stood between an ungranted app and any host it named.
+func TestURLPreviewRequiresPermission(t *testing.T) {
+	setup_test_data_dir(t)
+	defer cleanup_test_data_dir(t)
+
+	user := create_permission_test_user(t, "u1")
+	app := create_external_app("preview-app")
+	thread := create_test_thread(user, app)
+	fn := sl.NewBuiltin("mochi.url.preview", api_url_preview)
+
+	// .invalid never resolves, so the fetch fails immediately either way and
+	// the permission check is the only thing that differs.
+	target := sl.Tuple{sl.String("https://host.invalid/page")}
+
+	if _, err := api_url_preview(thread, fn, target, nil); err == nil {
+		t.Error("api_url_preview accepted a host with no url: grant")
+	}
+
+	// Granted: the check passes. A failed fetch reports itself by returning ""
+	// rather than an error, so the absence of an error is the signal here.
+	permission_grant(user, app.id, "url:host.invalid")
+	if _, err := api_url_preview(thread, fn, target, nil); err != nil {
+		t.Errorf("api_url_preview refused a granted host: %v", err)
+	}
+}
+
 func TestRequirePermissionURLInvalid(t *testing.T) {
 	setup_test_data_dir(t)
 	defer cleanup_test_data_dir(t)

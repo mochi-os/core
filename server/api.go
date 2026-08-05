@@ -1268,6 +1268,14 @@ func api_url_preview(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl.String(""), nil
 	}
 
+	// Fetching a preview is an outbound request like any other, so it needs the
+	// same url: grant mochi.url.request and mochi.rss.fetch require. Without it
+	// an app with no grant at all reaches arbitrary hosts, and learns from what
+	// comes back which ones answer.
+	if err := require_permission_url(t, fn, rawurl); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	// Use a recognizable, Mozilla-prefixed UA so sites that gate content on
 	// "browser-ish" user-agents still serve us their og:image-bearing HTML
 	// rather than a stripped/anti-bot variant. The self-identifying URL lets

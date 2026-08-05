@@ -59,7 +59,6 @@ func schedule_create(user string, app string, due int64, event string, data stri
 		return 0
 	}
 
-
 	// Wake up the scheduler to check for the new event
 	schedule_notify()
 
@@ -137,14 +136,10 @@ func schedule_valid(se *ScheduledEvent) bool {
 		return false
 	}
 
-	// ...that has a handler for this event (or a catch-all "").
-	apps_lock.Lock()
-	_, found := av.Events[se.Event]
-	if !found {
-		_, found = av.Events[""]
-	}
-	apps_lock.Unlock()
-	return found
+	// ...that defines a Starlark function of that name. Same lookup
+	// schedule_run_event uses, so a typo is rejected when the task is
+	// scheduled rather than silently doing nothing when it comes due.
+	return av.starlark().has(se.Event)
 }
 
 // schedule_handle_unrunnable deals with a due event that schedule_valid
@@ -372,16 +367,13 @@ func schedule_run_event(se *ScheduledEvent) {
 		return
 	}
 
-	// Find the event handler
-	apps_lock.Lock()
-	ae, found := av.Events[se.Event]
-	if !found {
-		ae, found = av.Events[""]
-	}
-	apps_lock.Unlock()
-
-	if !found {
-		debug("schedule: event %q not found in app %q", se.Event, se.App)
+	// A scheduled task names its Starlark function directly. app.json's events
+	// block lists what a REMOTE PEER may invoke, which a scheduled task is not,
+	// so the two namespaces stay apart: a scheduled handler is unreachable from
+	// the network because it is not in the event namespace at all.
+	s := av.starlark()
+	if !s.has(se.Event) {
+		debug("schedule: handler %q not found in app %q", se.Event, se.App)
 		return
 	}
 
@@ -403,13 +395,12 @@ func schedule_run_event(se *ScheduledEvent) {
 	}
 
 	// Run the handler
-	s := av.starlark()
 	s.set("event", sew)
 	s.set("app", app)
 	s.set("user", user)
 	s.set("owner", user)
 
-	s.call(ae.Function, sl.Tuple{sew})
+	s.call(se.Event, sl.Tuple{sew})
 }
 
 // ScheduledEventWrapper wraps a ScheduledEvent for Starlark event handlers
@@ -827,4 +818,3 @@ func api_schedule_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	return sl.NewList(result), nil
 }
-

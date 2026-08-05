@@ -450,6 +450,14 @@ func starlark_context(t *sl.Thread) context.Context {
 	return context.Background()
 }
 
+// has reports whether the app defines a Starlark global of this name — the
+// same lookup call() does, so a caller can test resolvability without running
+// anything.
+func (s *Starlark) has(function string) bool {
+	_, found := s.globals[function]
+	return found
+}
+
 // Call a Starlark function
 func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (sl.Value, error) {
 	f, found := s.globals[function]

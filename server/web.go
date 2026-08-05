@@ -756,6 +756,17 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		}
 	}
 
+	// A body key named after the routed entity's class would repoint the app at
+	// a different entity, and token_allows above compared the token against the
+	// ROUTED one. Restore the route's value so an entity-bound credential cannot
+	// be aimed at anything else: it authenticates as its issuer, so the app's own
+	// access check would pass for whatever that issuer owns. Only tokens are
+	// constrained — a session-authenticated caller is checked against whatever it
+	// addresses either way, and apps do pass a class-named key legitimately.
+	if api_token != nil && api_token.Entity != "" && e != nil && e.Class != "" {
+		action.inputs[e.Class] = e.ID
+	}
+
 	// Read the entire multipart body BEFORE running the action: uploads
 	// arrive at the client's network speed, and parsing them lazily inside
 	// a.file() charged the transfer time against the Starlark timeout — a

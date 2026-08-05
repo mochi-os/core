@@ -134,10 +134,21 @@ func admin_migrate(c *gin.Context) {
 	apps_lock.Unlock()
 	opened := 0
 	failed := 0
+	skipped := 0
 	for _, r := range rows {
 		uid, _ := r["uid"].(string)
-		u := user_by_uid(uid)
-		if u == nil {
+		// Deliberately not user_by_uid: that refuses a suspended user and one
+		// that has not created an identity yet, and both own real databases.
+		// An administrator running this expects every database migrated, and
+		// leaving some behind is worst precisely where the sweep is used -
+		// before removing migration code, where a database it silently passed
+		// over is stranded at its old schema permanently.
+		//
+		// Only the identifier is needed from here: it addresses the database
+		// directory, and the per-user version resolution keys off it too.
+		u := &User{}
+		if !users.scan(u, "select uid, username, role, methods, disabled, status from users where uid=?", uid) {
+			skipped++
 			continue
 		}
 		for _, id := range names {
@@ -163,6 +174,10 @@ func admin_migrate(c *gin.Context) {
 			}
 		}
 	}
-	info("Admin migrate: %d databases opened/migrated, %d failed", opened, failed)
-	c.JSON(200, gin.H{"opened": opened, "failed": failed})
+	// skipped counts users whose row vanished between listing and loading.
+	// Reported rather than swallowed: the value of this sweep is being able
+	// to say every database was reached, so anything it did not reach has to
+	// be visible to whoever is about to act on that claim.
+	info("Admin migrate: %d databases opened/migrated, %d failed, %d users skipped", opened, failed, skipped)
+	c.JSON(200, gin.H{"opened": opened, "failed": failed, "skipped": skipped})
 }

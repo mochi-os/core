@@ -74,10 +74,22 @@ var api_attachment = sls.FromStringDict(sl.String("mochi.attachment"), sl.String
 var attachment_bridge_warned sync.Map
 
 // attachment_bridge_notice logs when a legacy mochi.attachment.* call runs, so
-// apps still on the old API surface in the logs instead of lingering silently
-// until the bridge is removed. Once per app and function per process: a stale
-// chat app would otherwise write a line per message.
+// apps still on the old API surface show in the logs instead of lingering
+// silently until the bridge is removed. Once per app and function per process:
+// a stale chat app would otherwise write a line per message.
+//
+// A migration is not a stale app. The attachments library's own
+// attachment_migrate reads its rows out through mochi.attachment.export from
+// database_upgrade - the bridge's whole reason for surviving - so warning
+// there tells an operator to update an app that is already current, once for
+// every database still to migrate. That is also what makes the absence of
+// these lines worth something: while migrations wrote them too, a quiet log
+// could not distinguish "no stale apps" from "no migrations ran", and the
+// quiet is the only evidence that would ever justify deleting the bridge.
 func attachment_bridge_notice(t *sl.Thread, function string) {
+	if db_lifecycle_conn(t) != nil {
+		return
+	}
 	identifier := ""
 	if app, ok := t.Local("app").(*App); ok && app != nil {
 		identifier = app.id

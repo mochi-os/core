@@ -4,8 +4,12 @@
 // This file is part of Mochi, licensed under the GNU AGPL v3 with the
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
-// Provides app-level file attachments with federation support.
-// Attachments are associated with objects and can be synced between users.
+// The transition bridge for attachments, which apps own now
+// (lib/starlark/attachments.star). This file no longer implements storage,
+// federation or synchronisation between users - it is what a migration reads
+// its old rows out through, plus the degradations an app published before the
+// move still calls. See the comment on api_attachment below for why each
+// surviving entry point survives.
 
 package main
 
@@ -290,7 +294,12 @@ func attachment_create_record(db *DB, app *App, owner *User, object, name, id st
 
 // Convert Attachment struct to map for Starlark
 // paths: [app_path, action_path (default "attachments"), entity (optional for public URLs)]
-func (a *Attachment) to_map(paths ...string) map[string]any {
+// to_map renders a row as the response dict the create builtins return. The
+// path is the calling app's URL prefix; empty omits the URLs entirely. It took
+// a variadic of up to three path components - prefix, action, entity - and
+// every caller passed one, the other two exercised only by tests written for
+// the capability rather than for any use of it.
+func (a *Attachment) to_map(app_path string) map[string]any {
 	m := map[string]any{
 		"id":           a.ID,
 		"object":       a.Object,
@@ -306,20 +315,12 @@ func (a *Attachment) to_map(paths ...string) map[string]any {
 		"created":      a.Created,
 		"image":        is_image(a.Name),
 	}
-	if len(paths) > 0 && paths[0] != "" {
-		app_path := paths[0]
-		action_path := "attachments"
-		entity := ""
-		if len(paths) > 1 && paths[1] != "" {
-			action_path = paths[1]
-		}
-		if len(paths) > 2 && paths[2] != "" {
-			entity = paths[2]
-		}
-		m["url"] = a.attachment_url(app_path, action_path, entity)
+	if app_path != "" {
+		url := a.attachment_url(app_path, "attachments", "")
+		m["url"] = url
 		if is_image(a.Name) {
-			m["thumbnail_url"] = a.attachment_url(app_path, action_path, entity) + "/thumbnail"
-			m["preview_url"] = a.attachment_url(app_path, action_path, entity) + "/preview"
+			m["thumbnail_url"] = url + "/thumbnail"
+			m["preview_url"] = url + "/preview"
 		}
 	}
 	return m
@@ -776,25 +777,6 @@ func api_attachment_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		safe_name = "file"
 	}
 	return sl_encode(fmt.Sprintf("%s_%s", att.ID, safe_name)), nil
-}
-
-// attachment_conflict reports whether id already exists bound to a different
-// object, returning the object currently holding it.
-//
-// The store path takes ids from the sending peer and writes them with
-// `replace`, so an id that already exists would otherwise be overwritten -
-// object and entity included. A member of one container can read the
-// attachment ids it holds and quote one back in a message to another,
-// repointing the row and detaching the attachment from the message it really
-// belongs to. Re-storing an id under its OWN object stays allowed: that is an
-// ordinary metadata update, and the sync path relies on it.
-func attachment_conflict(db *DB, id string, object string) (string, bool) {
-	existing, _ := db.row("select object from attachments where id = ?", id)
-	if existing == nil {
-		return "", false
-	}
-	held, _ := existing["object"].(string)
-	return held, held != object
 }
 
 // mochi.attachment.fetch(object, entity) -> list: Retained for app versions

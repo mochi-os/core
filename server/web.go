@@ -247,7 +247,9 @@ const (
 func web_action_error(c *gin.Context, app string, err error) {
 	var permission *PermissionError
 	if errors.As(err, &permission) {
-		c.JSON(http.StatusForbidden, gin.H{
+		// A machine-readable code plus the fields the permission dialog needs,
+		// which respond_error cannot carry. The client renders the text.
+		c.JSON(http.StatusForbidden, gin.H{ // i18n-ok
 			"error":      "permission_required",
 			"app":        app,
 			"permission": permission.Permission,
@@ -280,7 +282,11 @@ func web_action_error(c *gin.Context, app string, err error) {
 		return
 	}
 
-	c.JSON(http.StatusInternalServerError, gin.H{"error": path_scrub(err.Error())})
+	// The detail goes to the log, not to the caller: err carries the internal
+	// Starlark function name and, when the failure came from the database, the
+	// driver's own message.
+	warn("web: %s action failed: %s", app, path_scrub(err.Error()))
+	respond_error(c, http.StatusInternalServerError, "server_error", "errors.server_error", nil)
 }
 
 func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) bool {

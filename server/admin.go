@@ -123,7 +123,7 @@ func admin_migrate(c *gin.Context) {
 	users := db_open("db/users.db")
 	rows, err := users.rows("select uid from users")
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(500, gin.H{"error": err.Error()}) // i18n-ok: admin socket, peer-authenticated by uid; the operator wants the raw error
 		return
 	}
 	apps_lock.Lock()

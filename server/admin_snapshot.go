@@ -218,7 +218,7 @@ func admin_vacuum(c *gin.Context) {
 func admin_backup(c *gin.Context) {
 	lock, err := snapshot_acquire_lock()
 	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()}) // i18n-ok: admin socket, peer-authenticated by uid; the operator wants the raw error
 		return
 	}
 	defer snapshot_release_lock(lock)

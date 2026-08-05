@@ -139,13 +139,21 @@ func TestActionErrorPermissionUnchanged(t *testing.T) {
 // TestActionErrorGenericStaysA500 keeps a real fault reported as a fault. Turning
 // every abort into a 429 would hide genuine breakage, which is the opposite
 // failure to the one being fixed.
+//
+// It also holds the detail back from the caller. err carries the internal
+// Starlark function name, and from a database failure the driver's own message;
+// the body says only that the server failed, and the log carries the rest.
 func TestActionErrorGenericStaysA500(t *testing.T) {
 	recorder := action_error_response(errors.New("division by zero"))
 
 	if recorder.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want %d - an ordinary fault must stay a fault", recorder.Code, http.StatusInternalServerError)
 	}
-	if !strings.Contains(recorder.Body.String(), "division by zero") {
-		t.Errorf("the generic branch dropped the error text; body was %s", recorder.Body.String())
+	body := recorder.Body.String()
+	if !strings.Contains(body, "server_error") {
+		t.Errorf("the generic branch did not report a server error; body was %s", body)
+	}
+	if strings.Contains(body, "division by zero") {
+		t.Errorf("the generic branch leaked the error detail to the caller; body was %s", body)
 	}
 }

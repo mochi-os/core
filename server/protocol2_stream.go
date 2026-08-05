@@ -82,7 +82,7 @@ func receive_stream(s p2p_network.Stream) {
 		}
 		switch f.Type {
 		case frame_type_claim:
-			if err := claim_verify(f.From, challenge, f.Signature); err != nil {
+			if err := claim_verify(f.From, challenge, f.Signature, net_id, protocol_stream); err != nil {
 				info("Stream: claim verify failed peer=%q entity=%q: %v", peer, f.From, err)
 				continue
 			}
@@ -312,7 +312,7 @@ func stream_open(peer, from, to, service, event, from_app string,
 	}
 
 	if from != "" {
-		if err := claim_write(rawstream, from, hello.Challenge); err != nil {
+		if err := claim_write(rawstream, from, hello.Challenge, peer, protocol_stream); err != nil {
 			rawstream.Reset()
 			return nil, "", fmt.Errorf("stream: claim write failed peer=%q: %w", peer, err)
 		}

@@ -95,7 +95,7 @@ func TestEndToEndHandshakeOverPipe(t *testing.T) {
 			t.Errorf("expected claim from %q, got %+v", id, claim)
 			return
 		}
-		if err := claim_verify(claim.From, challenge, claim.Signature); err != nil {
+		if err := claim_verify(claim.From, challenge, claim.Signature, test_receiver, protocol_messages); err != nil {
 			t.Errorf("claim verify failed: %v", err)
 		}
 	}()
@@ -108,7 +108,7 @@ func TestEndToEndHandshakeOverPipe(t *testing.T) {
 	if err := caps_write(senderStream, []string{"zstd"}, nil); err != nil {
 		t.Fatalf("sender caps_write: %v", err)
 	}
-	if err := claim_write(senderStream, id, hello.Challenge); err != nil {
+	if err := claim_write(senderStream, id, hello.Challenge, test_receiver, protocol_messages); err != nil {
 		t.Fatalf("sender claim_write: %v", err)
 	}
 
@@ -122,7 +122,11 @@ func TestEndToEndHandshakeOverPipe(t *testing.T) {
 // handshake then sits in a read loop, sending an ack frame for every
 // message frame it receives. Returns a channel that emits the IDs of
 // every message it dispatched.
-func run_test_receiver(t *testing.T, stream wire_stream, challenge []byte) <-chan string {
+// receiver is the peer ID this fake is playing, and MUST match the peer
+// the Sender under test was installed for: the real sender signs its
+// claim for the peer it believes it is talking to, so a mismatch here
+// means every claim is correctly rejected and no message is delivered.
+func run_test_receiver(t *testing.T, stream wire_stream, challenge []byte, receiver string) <-chan string {
 	t.Helper()
 	got := make(chan string, 128)
 	go func() {
@@ -143,7 +147,7 @@ func run_test_receiver(t *testing.T, stream wire_stream, challenge []byte) <-cha
 			}
 			switch f.Type {
 			case frame_type_claim:
-				if err := claim_verify(f.From, challenge, f.Signature); err == nil {
+				if err := claim_verify(f.From, challenge, f.Signature, receiver, protocol_messages); err == nil {
 					claimed[f.From] = true
 				}
 			case frame_type_message:
@@ -219,7 +223,7 @@ func TestEndToEndMessageRoundTrip(t *testing.T) {
 
 	// Start the receiver simulator with a known challenge.
 	challenge, _ := hello_challenge()
-	gotIDs := run_test_receiver(t, recvStream, challenge)
+	gotIDs := run_test_receiver(t, recvStream, challenge, "e2e-peer")
 
 	// Sender side: read the receiver's hello, install the Sender,
 	// then send 3 messages.
@@ -529,7 +533,7 @@ func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
 		// new post-ack write. We can't call stream_open directly because
 		// it uses peer_protocol_open + libp2p. Inline the relevant bits.
 		_ = caps_write(sendStream, []string{"zstd"}, nil)
-		_ = claim_write(sendStream, id, hello.Challenge)
+		_ = claim_write(sendStream, id, hello.Challenge, test_receiver, protocol_stream)
 		open := &Frame{Type: frame_type_open, ID: "x", From: id,
 			Service: "svc", Event: "ev"}
 		_ = frame_write(sendStream, open)

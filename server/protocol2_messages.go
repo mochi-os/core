@@ -176,7 +176,7 @@ func (r *Receiver) handle(f *Frame) bool {
 		return false
 
 	case frame_type_claim:
-		if err := claim_verify(f.From, r.challenge, f.Signature); err != nil {
+		if err := claim_verify(f.From, r.challenge, f.Signature, net_id, protocol_messages); err != nil {
 			// Don't fail the claim explicitly — the next message from
 			// the unclaimed entity will fail naturally with unclaimed
 			// and the sender re-issues. Logging is enough.

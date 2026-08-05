@@ -21,6 +21,12 @@ import (
 	"testing"
 )
 
+// test_receiver stands in for the peer ID a claim is addressed to. In
+// production this comes from the authenticated libp2p connection at the
+// signer and from net_id at the verifier; the tests only need the two
+// ends to agree, except where they deliberately disagree.
+const test_receiver = "12D3KooWReceiverUnderTest"
+
 // new_entity_keys generates a fresh ed25519 keypair, base58-encodes the
 // public key as the entity ID (matching entity_id() in entities.go),
 // and inserts the row into the test users.db so claim_sign can find the
@@ -188,11 +194,11 @@ func TestClaimSignVerifyRoundTrip(t *testing.T) {
 	if _, err := rand.Read(challenge); err != nil {
 		t.Fatalf("rand.Read: %v", err)
 	}
-	sig := claim_sign(id, challenge)
+	sig := claim_sign(id, challenge, test_receiver, protocol_messages)
 	if sig == nil {
 		t.Fatal("claim_sign returned nil for valid entity")
 	}
-	if err := claim_verify(id, challenge, sig); err != nil {
+	if err := claim_verify(id, challenge, sig, test_receiver, protocol_messages); err != nil {
 		t.Errorf("claim_verify rejected own signature: %v", err)
 	}
 }
@@ -205,16 +211,16 @@ func TestClaimSignMissingEntityReturnsNil(t *testing.T) {
 	challenge := make([]byte, challenge_size_v2)
 	rand.Read(challenge)
 	// entity not in users.db
-	if sig := claim_sign(test_entity_id('z'), challenge); sig != nil {
+	if sig := claim_sign(test_entity_id('z'), challenge, test_receiver, protocol_messages); sig != nil {
 		t.Error("claim_sign for unknown entity returned non-nil")
 	}
 }
 
 func TestClaimSignBadChallengeReturnsNil(t *testing.T) {
-	if sig := claim_sign(test_entity_id('a'), make([]byte, 16)); sig != nil {
+	if sig := claim_sign(test_entity_id('a'), make([]byte, 16), test_receiver, protocol_messages); sig != nil {
 		t.Error("claim_sign with wrong-length challenge returned non-nil")
 	}
-	if sig := claim_sign("", make([]byte, challenge_size_v2)); sig != nil {
+	if sig := claim_sign("", make([]byte, challenge_size_v2), test_receiver, protocol_messages); sig != nil {
 		t.Error("claim_sign with empty entity returned non-nil")
 	}
 }
@@ -231,7 +237,7 @@ func TestClaimVerifyRejectsForgedSignature(t *testing.T) {
 	// Random garbage of correct length.
 	bogus := make([]byte, ed25519.SignatureSize)
 	rand.Read(bogus)
-	if err := claim_verify(id, challenge, bogus); err == nil {
+	if err := claim_verify(id, challenge, bogus, test_receiver, protocol_messages); err == nil {
 		t.Error("claim_verify accepted random garbage signature")
 	}
 }
@@ -252,12 +258,12 @@ func TestClaimVerifyRejectsCrossStreamReplay(t *testing.T) {
 	if bytes.Equal(chA, chB) {
 		t.Fatal("test setup: challenges collided")
 	}
-	sigA := claim_sign(id, chA)
+	sigA := claim_sign(id, chA, test_receiver, protocol_messages)
 	if sigA == nil {
 		t.Fatal("claim_sign A failed")
 	}
 	// Same signature, different stream challenge → must fail.
-	if err := claim_verify(id, chB, sigA); err == nil {
+	if err := claim_verify(id, chB, sigA, test_receiver, protocol_messages); err == nil {
 		t.Error("claim_verify accepted replay from a different stream's challenge")
 	}
 }
@@ -274,23 +280,113 @@ func TestClaimVerifyRejectsCrossEntityReplay(t *testing.T) {
 
 	challenge := make([]byte, challenge_size_v2)
 	rand.Read(challenge)
-	sigA := claim_sign(idA, challenge)
+	sigA := claim_sign(idA, challenge, test_receiver, protocol_messages)
 	if sigA == nil {
 		t.Fatal("claim_sign A failed")
 	}
-	if err := claim_verify(idB, challenge, sigA); err == nil {
+	if err := claim_verify(idB, challenge, sigA, test_receiver, protocol_messages); err == nil {
 		t.Errorf("claim_verify accepted entity A's signature for entity B")
 	}
 }
 
+// TestClaimVerifyRejectsRelayedClaim is the attack the receiver binding
+// exists for, and the one the cross-stream replay test above cannot
+// express: it uses two INDEPENDENTLY RANDOM challenges, so it never
+// exercises a challenge the attacker chose.
+//
+// M opens a stream to victim V and captures V's fresh challenge. M then
+// induces the key holder to open a stream to M, plays receiver, and hands
+// back that same challenge. The signature it gets is genuine and covers
+// exactly the bytes V is expecting, so with only {challenge, entity}
+// signed, relaying it to V used to succeed — and M could then speak as
+// the entity and poison the directory route for it.
+func TestClaimVerifyRejectsRelayedClaim(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	id, _ := new_entity_keys(t)
+
+	challenge := make([]byte, challenge_size_v2) // V's, captured by M
+	rand.Read(challenge)
+
+	const victim = "12D3KooWVictimPeer"
+	const attacker = "12D3KooWAttackerPeer"
+
+	// The key holder signs for the peer it is actually talking to: M.
+	sig := claim_sign(id, challenge, attacker, protocol_messages)
+	if sig == nil {
+		t.Fatal("claim_sign failed")
+	}
+	// M relays it verbatim; V checks it against its own identity.
+	if err := claim_verify(id, challenge, sig, victim, protocol_messages); err == nil {
+		t.Error("claim_verify accepted a claim signed for a different receiver")
+	}
+	// Control: the same claim is still good on the stream it was made
+	// for, so this is rejecting the relay rather than everything.
+	if err := claim_verify(id, challenge, sig, attacker, protocol_messages); err != nil {
+		t.Errorf("claim_verify rejected the claim on its own stream: %v", err)
+	}
+}
+
+// TestClaimVerifyRejectsCrossProtocolReplay: the protocol is signed too,
+// so a claim made on the messages protocol cannot be lifted onto the
+// stream protocol even between the same two peers on the same challenge.
+func TestClaimVerifyRejectsCrossProtocolReplay(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	id, _ := new_entity_keys(t)
+
+	challenge := make([]byte, challenge_size_v2)
+	rand.Read(challenge)
+
+	sig := claim_sign(id, challenge, test_receiver, protocol_messages)
+	if sig == nil {
+		t.Fatal("claim_sign failed")
+	}
+	if err := claim_verify(id, challenge, sig, test_receiver, protocol_stream); err == nil {
+		t.Error("claim_verify accepted a claim made for a different protocol")
+	}
+}
+
+// TestClaimRequiresReceiverAndProtocol: both must be supplied. An empty
+// value would silently collapse the binding back to challenge-only, so
+// signing and verifying fail closed rather than proceeding.
+func TestClaimRequiresReceiverAndProtocol(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	id, _ := new_entity_keys(t)
+
+	challenge := make([]byte, challenge_size_v2)
+	rand.Read(challenge)
+
+	if sig := claim_sign(id, challenge, "", protocol_messages); sig != nil {
+		t.Error("claim_sign produced a signature with no receiver")
+	}
+	if sig := claim_sign(id, challenge, test_receiver, ""); sig != nil {
+		t.Error("claim_sign produced a signature with no protocol")
+	}
+	sig := claim_sign(id, challenge, test_receiver, protocol_messages)
+	if sig == nil {
+		t.Fatal("claim_sign failed")
+	}
+	if err := claim_verify(id, challenge, sig, "", protocol_messages); err == nil {
+		t.Error("claim_verify accepted an empty receiver")
+	}
+	if err := claim_verify(id, challenge, sig, test_receiver, ""); err == nil {
+		t.Error("claim_verify accepted an empty protocol")
+	}
+}
+
 func TestClaimVerifyShortInputs(t *testing.T) {
-	if err := claim_verify("", make([]byte, challenge_size_v2), make([]byte, ed25519.SignatureSize)); err == nil {
+	if err := claim_verify("", make([]byte, challenge_size_v2), make([]byte, ed25519.SignatureSize), test_receiver, protocol_messages); err == nil {
 		t.Error("claim_verify accepted empty entity")
 	}
-	if err := claim_verify(test_entity_id('a'), make([]byte, 16), make([]byte, ed25519.SignatureSize)); err == nil {
+	if err := claim_verify(test_entity_id('a'), make([]byte, 16), make([]byte, ed25519.SignatureSize), test_receiver, protocol_messages); err == nil {
 		t.Error("claim_verify accepted wrong-length challenge")
 	}
-	if err := claim_verify(test_entity_id('a'), make([]byte, challenge_size_v2), make([]byte, 32)); err == nil {
+	if err := claim_verify(test_entity_id('a'), make([]byte, challenge_size_v2), make([]byte, 32), test_receiver, protocol_messages); err == nil {
 		t.Error("claim_verify accepted wrong-length signature")
 	}
 }
@@ -307,7 +403,7 @@ func TestClaimWriteEmitsClaimFrame(t *testing.T) {
 	rand.Read(challenge)
 
 	var buf bytes.Buffer
-	if err := claim_write(&buf, id, challenge); err != nil {
+	if err := claim_write(&buf, id, challenge, test_receiver, protocol_messages); err != nil {
 		t.Fatalf("claim_write: %v", err)
 	}
 	f, err := frame_read(&buf)
@@ -320,7 +416,7 @@ func TestClaimWriteEmitsClaimFrame(t *testing.T) {
 	if f.From != id {
 		t.Errorf("From: %q want %q", f.From, id)
 	}
-	if err := claim_verify(f.From, challenge, f.Signature); err != nil {
+	if err := claim_verify(f.From, challenge, f.Signature, test_receiver, protocol_messages); err != nil {
 		t.Errorf("verify on round-tripped claim: %v", err)
 	}
 }
@@ -334,7 +430,7 @@ func TestClaimWriteFailsForUnknownEntity(t *testing.T) {
 	rand.Read(challenge)
 
 	var buf bytes.Buffer
-	err := claim_write(&buf, test_entity_id('q'), challenge) // not in db
+	err := claim_write(&buf, test_entity_id('q'), challenge, test_receiver, protocol_messages) // not in db
 	if err == nil {
 		t.Error("claim_write succeeded for unknown entity")
 	}

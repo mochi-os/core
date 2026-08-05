@@ -117,11 +117,12 @@ func caps_read(r io.Reader) (*Frame, error) {
 }
 
 // claim_write writes one `claim` frame for `entity`. Signature is
-// computed via canonical-CBOR over {v, stream, entity}. Returns the
-// frame (or an error) so the caller can pipeline it ahead of the first
-// message frame without waiting for an ack.
-func claim_write(w io.Writer, entity string, challenge []byte) error {
-	sig := claim_sign(entity, challenge)
+// computed via canonical-CBOR over {v, stream, entity, receiver,
+// protocol}. Returns the frame (or an error) so the caller can pipeline
+// it ahead of the first message frame without waiting for an ack.
+// receiver must be the authenticated peer this stream runs to.
+func claim_write(w io.Writer, entity string, challenge []byte, receiver string, protocol string) error {
+	sig := claim_sign(entity, challenge, receiver, protocol)
 	if sig == nil {
 		return fmt.Errorf("claim: signing failed for entity %q", entity)
 	}

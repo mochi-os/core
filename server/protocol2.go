@@ -61,7 +61,7 @@ const (
 	frame_priority_bulk        = 10
 
 	// Domain separators for the per-stream claim signature.
-	claim_domain    = "mochi/2/claim"
+	claim_domain    = "mochi/2/claim/2"
 	claim_version_2 = 2
 )
 
@@ -298,19 +298,28 @@ func frame_decompress(payload []byte, codec byte) ([]byte, error) {
 }
 
 // claim_signable returns the canonical CBOR bytes signed by an entity
-// for a per-stream claim. Schema is fixed: {v, stream, entity} sorted
-// bytewise-lexical per RFC 8949 §4.2. Any change to the schema MUST
-// bump claim_domain.
+// for a per-stream claim. Schema is fixed: {v, stream, entity, receiver,
+// protocol} sorted bytewise-lexical per RFC 8949 §4.2. Any change to the
+// schema MUST bump claim_domain.
 //
-// Map keys are deliberately one-letter — they're never decoded by
-// anyone (only the signer and verifier ever materialise the bytes);
-// keeping them short shaves a few bytes off every claim signature
-// input. The canonical encoder sorts them bytewise.
-func claim_signable(challenge []byte, entity string) ([]byte, error) {
+// receiver and protocol are what make a claim non-transferable. Signing
+// only the challenge leaves the signature a bearer token for any stream
+// presenting the same bytes: a hostile peer plays receiver to the key
+// holder, hands it a challenge captured from a third party, and relays
+// the answer on to be accepted as that entity.
+//
+// BOTH MUST come from the authenticated libp2p connection and the
+// handler's own protocol constant — never from a wire field. The remote
+// identity is established by the security handshake, which is why an
+// attacker cannot be authenticated as someone else; take it from a frame
+// and it becomes attacker-chosen, and this is worth nothing.
+func claim_signable(challenge []byte, entity string, receiver string, protocol string) ([]byte, error) {
 	payload := map[string]any{
-		"v":      claim_domain,
-		"stream": challenge,
-		"entity": entity,
+		"v":        claim_domain,
+		"stream":   challenge,
+		"entity":   entity,
+		"receiver": receiver,
+		"protocol": protocol,
 	}
 	out, err := canonical_encoder.Marshal(payload)
 	if err != nil {
@@ -322,11 +331,14 @@ func claim_signable(challenge []byte, entity string) ([]byte, error) {
 // claim_sign produces the signature for the given (challenge, entity)
 // pair using the entity's private key. Returns nil if the entity isn't
 // local or its key can't be loaded — caller logs and skips the claim.
-func claim_sign(entity string, challenge []byte) []byte {
-	if entity == "" || len(challenge) != challenge_size_v2 {
+// receiver is the peer this claim is being sent TO, taken from the
+// authenticated connection; protocol is the caller's own protocol
+// constant.
+func claim_sign(entity string, challenge []byte, receiver string, protocol string) []byte {
+	if entity == "" || len(challenge) != challenge_size_v2 || receiver == "" || protocol == "" {
 		return nil
 	}
-	signable, err := claim_signable(challenge, entity)
+	signable, err := claim_signable(challenge, entity, receiver, protocol)
 	if err != nil {
 		warn("claim_sign canonical encode failed for %q: %v", entity, err)
 		return nil
@@ -348,9 +360,17 @@ func claim_sign(entity string, challenge []byte) []byte {
 // claim_verify checks an inbound claim. The entity ID IS the base58-
 // encoded ed25519 public key — no directory lookup needed. Returns nil
 // on success, descriptive error on failure (logged by caller).
-func claim_verify(entity string, challenge, signature []byte) error {
+// receiver MUST be this host's own peer ID and protocol the handler's
+// own constant: that is what rejects a claim signed for somebody else.
+func claim_verify(entity string, challenge, signature []byte, receiver string, protocol string) error {
 	if entity == "" {
 		return errors.New("claim: empty entity")
+	}
+	if receiver == "" {
+		return errors.New("claim: empty receiver")
+	}
+	if protocol == "" {
+		return errors.New("claim: empty protocol")
 	}
 	if len(challenge) != challenge_size_v2 {
 		return fmt.Errorf("claim: invalid challenge length %d", len(challenge))
@@ -362,7 +382,7 @@ func claim_verify(entity string, challenge, signature []byte) error {
 	if len(public) != ed25519.PublicKeySize {
 		return fmt.Errorf("claim: invalid entity pubkey length %d", len(public))
 	}
-	signable, err := claim_signable(challenge, entity)
+	signable, err := claim_signable(challenge, entity, receiver, protocol)
 	if err != nil {
 		return fmt.Errorf("claim: canonical encode failed: %w", err)
 	}

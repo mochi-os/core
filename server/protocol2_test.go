@@ -303,11 +303,11 @@ func TestClaimSignableDeterministic(t *testing.T) {
 	// byte-identical output (canonical CBOR with SortBytewiseLexical).
 	challenge := bytes.Repeat([]byte{0x42}, challenge_size_v2)
 	entity := test_entity_id('s')
-	out1, err := claim_signable(challenge, entity)
+	out1, err := claim_signable(challenge, entity, "peerZ", protocol_messages)
 	if err != nil {
 		t.Fatalf("claim_signable 1: %v", err)
 	}
-	out2, err := claim_signable(challenge, entity)
+	out2, err := claim_signable(challenge, entity, "peerZ", protocol_messages)
 	if err != nil {
 		t.Fatalf("claim_signable 2: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestClaimSignableDomainSeparator(t *testing.T) {
 	// happened to share the same field shape.
 	challenge := bytes.Repeat([]byte{0x42}, challenge_size_v2)
 	entity := test_entity_id('d')
-	out, err := claim_signable(challenge, entity)
+	out, err := claim_signable(challenge, entity, "peerZ", protocol_messages)
 	if err != nil {
 		t.Fatalf("claim_signable: %v", err)
 	}

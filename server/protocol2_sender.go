@@ -288,7 +288,7 @@ func (s *Sender) write_one(ob *outbound) error {
 	s.lock.Unlock()
 
 	if need_claim {
-		if err := claim_write(s.stream, f.From, s.challenge); err != nil {
+		if err := claim_write(s.stream, f.From, s.challenge, s.peer, protocol_messages); err != nil {
 			s.lock.Lock()
 			delete(s.claimed, f.From)
 			s.lock.Unlock()

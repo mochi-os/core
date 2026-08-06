@@ -79,6 +79,15 @@ var permissions = []Permission{
 	{"repositories/write", true, false},
 	{"server/update", true, true},
 	{"settings/write", true, true},
+	// Signing with the user's passkey. The shell hosts WebAuthn ceremonies for
+	// sandboxed apps, which cannot reach navigator.credentials themselves, and
+	// a ceremony runs on the real Mochi origin - so the assertion it returns is
+	// valid for Mochi whoever asked, and the browser's prompt names the relying
+	// party rather than the caller. Restricted, so it is granted deliberately
+	// from settings rather than by a consent dialog an app can raise at a moment
+	// of its choosing: a prompt the user cannot attribute is one they cannot
+	// safely answer under pressure.
+	{"user/authentication/sign", true, false},
 	{"user/export", true, false},
 	{"users/read", true, true},
 	{"webpush/send", true, false},

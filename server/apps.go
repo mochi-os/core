@@ -493,6 +493,11 @@ var (
 			{"groups/read", ""},
 		}},
 		{"1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky", "Settings", []struct{ Permission, Object string }{
+			// Registering a passkey and answering a step-up both run a WebAuthn
+			// ceremony through the shell, which is where the user manages
+			// credentials - so the stock app holds it without being asked. Any
+			// other app, a fork of this one included, asks the user.
+			{"user/authentication/sign", ""},
 			{"settings/write", ""},
 			{"server/update", ""},
 			{"users/read", ""},

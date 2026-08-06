@@ -265,6 +265,7 @@ func web_oauth_begin(c *gin.Context) {
 		Scheme    string `json:"scheme"`    // app deep-link scheme (mobile only)
 		Challenge string `json:"challenge"` // base64url(sha256(app_verifier)) (mobile only)
 		Email     string `json:"email"`     // typed address (email-login flow); binds OAuth to that account
+		Token     string `json:"token"`     // step-up re-authentication proof (link only)
 	}
 	c.ShouldBindJSON(&body)
 
@@ -301,6 +302,18 @@ func web_oauth_begin(c *gin.Context) {
 		}
 		if user == nil {
 			respond_error(c, http.StatusUnauthorized, "not_authenticated", "errors.not_authenticated", nil)
+			return
+		}
+		// Linking ADDS a way to sign in, under an identity the caller names,
+		// and it survives every later passphrase, passkey and TOTP change - so
+		// a session alone must not be enough, the same as for every other
+		// credential change (passkey register, TOTP setup, recovery codes, and
+		// unlink, which are gated in the settings app). The proof is spent here
+		// rather than at the callback because this is the request carrying the
+		// session; the ceremony row it writes is already bound to link_user and
+		// expires in 600 seconds.
+		if !reauthentication_consume(user, body.Token) {
+			respond_error(c, http.StatusForbidden, "reauthentication_required", "errors.reauthentication_required", nil)
 			return
 		}
 		link_user = user.UID

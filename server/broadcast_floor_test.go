@@ -153,7 +153,8 @@ func TestBroadcastPendingSkipStreamRespectsAge(t *testing.T) {
 }
 
 // TestBroadcastLogAgeTrimRespectsAckFloor — aged rows a lagging subscriber
-// still needs survive the normal trim and fall only at the hard cap.
+// still needs survive the normal trim and fall only at the hard cap; a
+// floor the eviction leaves unreplayable falls with them.
 func TestBroadcastLogAgeTrimRespectsAckFloor(t *testing.T) {
 	db, cleanup := setup_broadcast_log_test(t)
 	defer cleanup()
@@ -165,17 +166,42 @@ func TestBroadcastLogAgeTrimRespectsAckFloor(t *testing.T) {
 		db.exec("insert into log (key, peer, sequence, event, data, created) values ('k', 'p', ?, 'e', '', ?)", i, now()-broadcast_log_age-100)
 	}
 	db.exec("insert into acknowledged (key, peer, subscriber, last) values ('k', 'p', 'laggard', 3)")
+	db.exec("insert into acknowledged (key, peer, subscriber, last) values ('k', 'p', 'edge', 6)")
+	db.exec("insert into acknowledged (key, peer, subscriber, last) values ('k', 'p', 'current', 9)")
 
 	broadcast_log_age_trim(db, "k", "p")
 	if low := db.integer("select min(sequence) from log where key='k' and peer='p'"); low != 4 {
 		t.Errorf("after floor-aware trim: min sequence %d, want 4 (rows the laggard needs survive)", low)
 	}
+	if n := db.integer("select count(*) from acknowledged where key='k' and peer='p'"); n != 3 {
+		t.Errorf("the normal trim must not touch acknowledged: %d rows, want 3", n)
+	}
 
-	// Rows past the hard cap fall regardless of the floor.
+	// Rows past the hard cap fall regardless of the floor, and the floor
+	// the eviction strands falls with them; a floor the surviving log can
+	// still replay to (edge needs 7, the new oldest row) is kept.
 	db.exec("update log set created=? where key='k' and peer='p' and sequence <= 6", now()-broadcast_log_age_maximum-100)
 	broadcast_log_age_trim(db, "k", "p")
 	if low := db.integer("select min(sequence) from log where key='k' and peer='p'"); low != 7 {
 		t.Errorf("after hard cap: min sequence %d, want 7", low)
+	}
+	if n := db.integer("select count(*) from acknowledged where subscriber='laggard'"); n != 0 {
+		t.Error("an unreplayable floor must fall with the hard-cap eviction")
+	}
+	for _, kept := range []string{"edge", "current"} {
+		if n := db.integer("select count(*) from acknowledged where subscriber=?", kept); n != 1 {
+			t.Errorf("a replayable floor (%s) must survive the hard-cap eviction", kept)
+		}
+	}
+
+	// A hard-cap eviction that empties the log strands every floor.
+	db.exec("update log set created=? where key='k' and peer='p'", now()-broadcast_log_age_maximum-100)
+	broadcast_log_age_trim(db, "k", "p")
+	if n := db.integer("select count(*) from log where key='k' and peer='p'"); n != 0 {
+		t.Errorf("emptied log: %d rows remain", n)
+	}
+	if n := db.integer("select count(*) from acknowledged where key='k' and peer='p'"); n != 0 {
+		t.Errorf("no floor is replayable from an empty log: %d rows remain", n)
 	}
 }
 

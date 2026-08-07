@@ -454,6 +454,22 @@ func broadcast_log_age_trim(db *DB, key, peer string) {
 	if pinned, _ := db.exists("select 1 from log where key=? and peer=? and created < ? limit 1", key, peer, now()-broadcast_log_age_maximum); pinned {
 		warn("Broadcast log for (key=%q, peer=%q) evicting rows past the hard retention cap that a subscriber at ack floor %d still needs; that subscriber will skip the lost span and re-fetch on its next resync.", key, peer, floor)
 		db.exec("delete from log where key=? and peer=? and created < ?", key, peer, now()-broadcast_log_age_maximum)
+		// Drop ack floors the surviving log can no longer replay to
+		// (the subscriber's next needed sequence precedes the oldest
+		// surviving row). Such a subscriber can only be floor-skipped
+		// into a re-fetch, which reads nothing from acknowledged, and a
+		// live one re-inserts its row with its next ack — but a floor
+		// left by a subscriber that is gone for good (unsubscribed,
+		// deleted, host wiped) never advances, and kept it would pin
+		// the trim and this warning forever.
+		if row, _ := db.row("select min(sequence) as m from log where key=? and peer=?", key, peer); row != nil {
+			if oldest, ok := row["m"].(int64); ok {
+				db.exec("delete from acknowledged where key=? and peer=? and last+1 < ?", key, peer, oldest)
+			} else {
+				// The eviction emptied the log: no floor is replayable.
+				db.exec("delete from acknowledged where key=? and peer=?", key, peer)
+			}
+		}
 	}
 }
 

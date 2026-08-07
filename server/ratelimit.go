@@ -89,6 +89,25 @@ var (
 		window:  1,
 	}
 
+	// Directory sync serving: 6 per minute per requesting peer.
+	//
+	// A sync request is one small anonymous frame, and answering it reads and
+	// streams every directory row at or after the requester's watermark - a
+	// request with no watermark means the whole table. The asymmetry is the
+	// problem, not the size: the rows are public, the node already stores
+	// them all, and a joining peer legitimately needs every one, so capping
+	// how MANY rows go back would break bootstrap. What has no legitimate
+	// form is asking again immediately.
+	//
+	// directory_sync runs on a 5-minute tick, so 6 per minute is two orders
+	// of magnitude of headroom for a peer that restarts, reconnects and
+	// re-syncs in quick succession.
+	rate_limit_directory_sync = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   6,
+		window:  60,
+	}
+
 	// Peer address-request rate limiter: 1 broadcast per minute per
 	// target peer. The queue retries unreachable peers every tick;
 	// without this each retry would re-flood a peers/request.

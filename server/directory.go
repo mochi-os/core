@@ -442,6 +442,14 @@ func directory_sync_event(e *Event) {
 	}
 	debug("Directory received sync request from peer %q at %q since %s", e.peer, remote, time_local(nil, start))
 
+	// Anonymous by design, and answering costs a full read of every row at or
+	// after the watermark. Nothing bounds how often a peer may ask, so one
+	// small frame repeated is an amplifier. Keyed on the requesting peer.
+	if e.peer != "" && !rate_limit_directory_sync.allow(e.peer) {
+		debug("Directory sync refused: peer %q over the request rate limit", e.peer)
+		return
+	}
+
 	var results []Entry
 	db := db_open("db/directory.db")
 	err := db.scans(&results, "select * from entries where seen>=? order by seen", start)

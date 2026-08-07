@@ -1110,6 +1110,19 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		if row != nil {
 			old = row["role"].(string)
 		}
+		// Demoting the only administrator leaves nobody able to promote one
+		// back, and the server offers no route out of that. Closing your own
+		// account is already refused for the same reason (account.star), and
+		// the comptroller applies the same rule to its own last admin; this is
+		// the one place the invariant was never expressed.
+		if old == "administrator" && role != "administrator" {
+			administrators, _ := db.row("select count(*) as count from users where role='administrator' and status='active'")
+			if administrators != nil {
+				if count, ok := administrators["count"].(int64); ok && count <= 1 {
+					return sl_error(fn, "cannot demote the last administrator")
+				}
+			}
+		}
 		db.exec("update users set role=? where uid=?", role, id)
 		if old != role {
 			if role == "administrator" {

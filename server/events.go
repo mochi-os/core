@@ -286,7 +286,22 @@ func (e *Event) route() error {
 		return fmt.Errorf("unsigned message")
 	}
 
-	// Check sender app against allowed apps list (if specified)
+	// Check sender app against allowed apps list (if specified).
+	//
+	// A ROUTING HINT, NOT AUTHORIZATION. Both this and the services list below
+	// are matched against fields the sender writes about ITSELF - Frame.FromApp
+	// and Frame.Services, plain CBOR with nothing signing them. The claim
+	// signature covers {v, stream, entity, receiver, protocol}: it authenticates
+	// who is speaking, never what app they are running. Any authenticated peer
+	// can name whatever an allowlist contains and pass.
+	//
+	// So these lists keep honest callers on the intended path and stop nothing
+	// else. A handler that needs to restrict its callers must authorise on
+	// e.header("from"), the authenticated sender - see forums/projects
+	// _app_event_is_self, which requires the sender to BE the user the event
+	// acts for. The same conclusion was reached once before for the removed
+	// _attachment/* events (see the comment above), and the general mechanism
+	// was left as-is; this comment is the missing half of that.
 	if len(ae.Apps) > 0 {
 		allowed := false
 		for _, entry := range ae.Apps {

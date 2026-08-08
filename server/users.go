@@ -1454,11 +1454,19 @@ func api_user_session_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "database error")
 	}
 
-	// Replace raw session codes with hashed identifiers
+	// Replace raw session codes with hashed identifiers, and mark the row the
+	// caller is using. Only the server can identify it: the session cookie is
+	// HttpOnly, so the browser cannot hash its own code and compare. Without
+	// this the UI had to guess, and "most recently accessed" is wrong whenever
+	// another device was used more recently - labelling someone else's session
+	// as yours, which is the wrong way round for a screen whose purpose is
+	// spotting a session that should not be there.
+	current, _ := t.Local("session").(string)
 	for _, row := range rows {
 		if code, ok := row["code"].(string); ok {
 			hash := sha256.Sum256([]byte(code))
 			row["id"] = hex.EncodeToString(hash[:8])
+			row["current"] = current != "" && code == current
 			delete(row, "code")
 		}
 	}

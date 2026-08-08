@@ -840,6 +840,13 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		}
 		s.set("user", effective)
 		s.set("owner", owner)
+		// The caller's own session, so an API can tell which of the user's
+		// sessions is the one making the request. Only mochi.user.session.list
+		// reads it, to mark the current row - the settings UI was guessing
+		// "most recently accessed", which labels another device's session as
+		// yours whenever it was used more recently. Empty for anonymous and
+		// for app-token callers, which have no browser session.
+		s.set("session", web_cookie_get(c, "session", ""))
 		s.set("language", request_language(c, user))
 		if e != nil {
 			s.set("route_entity", e.ID)

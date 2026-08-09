@@ -41,7 +41,7 @@ KEEP_WORDS = {
     "moderation", "normal", "notifications", "ntfy", "oauth", "offline",
     "oidc", "paypal", "pgn", "pkce", "pushbullet", "qr", "replica",
     "rose", "rss", "saml", "server", "sgf", "sha", "steel", "stripe",
-    "teal", "terracotta", "url", "violet", "wiki", "wikis",
+    "teal", "terracotta", "url", "version", "violet", "wiki", "wikis",
 }
 
 # Exact-string allowlist, checked before word matching. A digit-bearing
@@ -56,11 +56,35 @@ KEEP_ENGLISH = frozenset({
     "Normal", "Notifications", "OAuth", "OIDC", "Offline", "P2P", "PGN",
     "PKCE", "PayPal", "Pushbullet", "QR", "RSS", "Replica", "Rose",
     "SAML", "SGF", "SHA", "Server", "Steel", "Stripe", "Teal",
-    "Terracotta", "URL", "Violet", "Wiki", "Wikis", "libp2p", "ntfy",
+    "Terracotta", "URL", "Version", "Violet", "Wiki", "Wikis", "libp2p",
+    "ntfy",
 })
 
+def _strip_placeholders(value):
+    """Remove every {...} group, including nested ICU constructs.
+
+    A regex cannot do this: a {...} pattern stops at the first closing brace,
+    so `{count, plural, one {#m} other {#m}}` loses `{count, plural, one {#m}`
+    and leaves ` other {#m}}` behind - which then reads as the English word
+    "other" and makes a translated plural look like untranslated prose.
+    Mirrors claude/scripts/i18n_glossary.py strip_placeholders; keep in sync.
+    """
+    out = []
+    depth = 0
+    for c in value:
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            if depth:
+                depth -= 1
+            else:
+                out.append(c)
+        elif not depth:
+            out.append(c)
+    return "".join(out)
+
+
 _WORD = re.compile(r"[A-Za-z]+")
-_PLACEHOLDER = re.compile(r"\{[^}]*\}")
 
 
 def translatable(value):
@@ -68,7 +92,7 @@ def translatable(value):
     "{author}: {excerpt}" are pure substitution tokens, so the correct
     translation is the English string byte for byte. Mirrors real() in the
     monorepo's conf-refresh.py, which is why that checker accepts them."""
-    return bool(re.search(r"[A-Za-z]", _PLACEHOLDER.sub("", value)))
+    return bool(re.search(r"[A-Za-z]", _strip_placeholders(value)))
 
 
 def keep_english(source):
@@ -76,7 +100,7 @@ def keep_english(source):
     source = source.strip()
     if source in KEEP_ENGLISH:
         return True
-    words = _WORD.findall(_PLACEHOLDER.sub("", source))
+    words = _WORD.findall(_strip_placeholders(source))
     return bool(words) and all(w.lower() in KEEP_WORDS for w in words)
 
 

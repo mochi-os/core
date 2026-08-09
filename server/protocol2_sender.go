@@ -44,7 +44,12 @@ import (
 	cbor "github.com/fxamacker/cbor/v2"
 )
 
-func init() {
+// senders_init registers the /mochi/2 Sender invalidation hook.
+//
+// Called explicitly from main_serve rather than run as a package init():
+// registration is a startup step with a defined position, not a side effect
+// of importing the file.
+func senders_init() {
 	// /mochi/2 owns per-peer Sender state in the Sender registry; it
 	// needs invalidation on libp2p disconnect so the next reconnect
 	// opens a fresh Sender. Register here so peers.go's peer_disconnected

@@ -36,11 +36,20 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"sync/atomic"
+
+	p2p_pubsub "github.com/libp2p/go-libp2p-pubsub"
+	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 )
+
+// pubsub_topic is the GossipSub topic every Mochi server joins. Named
+// because both the Join and the validator registration must use the same
+// string, and a mismatch registers a validator that never runs.
+const pubsub_topic = "/mochi/2"
 
 // Operator counters surfaced by `mochictl pubsub status`
 // (admin_pubsub_status): outbound publish volume, inbound message volume,
@@ -152,9 +161,83 @@ func pubsub_limiter(service string) *rate_limiter {
 	return rate_limit_pubsub_in
 }
 
+// pubsub_validate is the GossipSub topic validator for /mochi/2, registered
+// by net_start. It decodes, shape-checks and rate limits BEFORE the message
+// is relayed.
+//
+// Placement is the whole point. Every check used to run in pubsub_manager,
+// after s.Next() — by which time go-libp2p-pubsub has already forwarded the
+// message to our mesh neighbours. The node therefore amplified a flood and
+// only afterwards decided it was junk. A validator runs inside the pubsub
+// machinery ahead of propagation, so a message we refuse is a message we do
+// not pass on.
+//
+// The cost ordering is unchanged and still deliberate: announcement_read
+// bounds the payload before allocating and then CBOR-decodes, and
+// announcement_valid is a handful of string checks, so what an
+// unauthenticated flooder forces here is one bounded decode. The expensive
+// part — entity signature verification — stays behind the rate limit in
+// pubsub_receive.
+//
+// Every refusal is Ignore, never Reject. Reject additionally penalises the
+// sender under GossipSub peer scoring, and the things we refuse here are
+// exactly the things a version skew produces: pubsub.go's own note that
+// "during a format change every relay looks guilty" is the reason. The
+// 2026-07-25 wire-format flag day partitioned old peers already; a Reject
+// would have had every up-to-date node graylist the entire old fleet on top
+// of that. Ignore stops the relay, which is the finding, without turning a
+// rollout into a mesh split. Peer scoring is left disabled for the same
+// reason - see net_start.
+func pubsub_validate(ctx context.Context, from p2p_peer.ID, m *p2p_pubsub.Message) p2p_pubsub.ValidationResult {
+	// ReceivedFrom is the last-hop mesh peer, not the originator — the right
+	// identity for rate limiting. Nothing here treats it as the author:
+	// directory payloads self-verify, and envelope signatures name their own
+	// entity.
+	peer := m.ReceivedFrom.String()
+
+	// Our own publishes are validated too (Topic.Publish -> ValidateLocal),
+	// and refusing them would stop this server flooding anything at all.
+	if peer == net_id {
+		return p2p_pubsub.ValidationAccept
+	}
+
+	f, err := announcement_read(m.Data)
+	if err != nil {
+		pubsub_dropped.Add(1)
+		// Name the ORIGINATOR, not the relay: GossipSub forwards at the
+		// mesh layer whether or not we can decode, so peer here is just
+		// the last hop and blaming it sends an operator after the wrong
+		// server — during a format change every relay looks guilty.
+		info("Pubsub read error, originator %q via peer %q: %v", m.GetFrom().String(), peer, err)
+		return p2p_pubsub.ValidationIgnore
+	}
+	if !announcement_valid(f) {
+		pubsub_dropped.Add(1)
+		info("Pubsub received invalid announcement from peer %q", peer)
+		return p2p_pubsub.ValidationIgnore
+	}
+
+	// Rate limit inbound per peer, against the budget for this message's
+	// plane. Bootstrap and paired peers are trusted and skip the limit.
+	limiter := pubsub_limiter(f.Service)
+	if !peer_is_bootstrap(peer) && !limiter.allow(peer) {
+		pubsub_dropped.Add(1)
+		debug("Pubsub rate limited peer %q service %q", peer, f.Service)
+		return p2p_pubsub.ValidationIgnore
+	}
+
+	// Hand the decoded announcement to the subscribe loop rather than have
+	// it parse the same bytes a second time.
+	m.ValidatorData = f
+	return p2p_pubsub.ValidationAccept
+}
+
 // pubsub_manager subscribes to the /mochi/2 topic and dispatches each
 // inbound message. One goroutine for the process, started from net_start
 // once the topic is joined.
+//
+// Decode, shape and rate-limit checks have already run in pubsub_validate,
+// ahead of propagation; what arrives here is accepted traffic.
 func pubsub_manager() {
 	s := must(net_pubsub.Subscribe())
 
@@ -164,45 +247,18 @@ func pubsub_manager() {
 			warn("Pubsub error: %v", err)
 			continue
 		}
-		// ReceivedFrom is the last-hop mesh peer, not the originator — the
-		// right identity for rate limiting and mesh-neighbour discovery
-		// below. Nothing here treats it as the author: directory payloads
-		// self-verify, and envelope signatures name their own entity.
 		peer := m.ReceivedFrom.String()
 		if peer == net_id {
 			continue
 		}
-		// Decode before rate limiting, so the limit can tell peer control
-		// traffic apart from an application flood. Only the cheap half of
-		// the work moves ahead of the limit: announcement_read bounds the
-		// payload before allocating and then CBOR-decodes, and
-		// announcement_valid is a handful of string checks. The expensive
-		// part — the entity signature verification in pubsub_receive —
-		// stays behind it, so what an unauthenticated flooder can force is
-		// one bounded decode rather than a public-key operation.
-		f, err := announcement_read(m.Data)
-		if err != nil {
+		// Set by pubsub_validate. Absent only if the validator did not run
+		// (it accepts our own messages without decoding, and those are
+		// skipped above), so treat a miss as a message to drop rather than
+		// silently re-deriving what the gate was supposed to have checked.
+		f, ok := m.ValidatorData.(*Announcement)
+		if !ok {
 			pubsub_dropped.Add(1)
-			// Name the ORIGINATOR, not the relay: GossipSub forwards at the
-			// mesh layer whether or not we can decode, so peer here is just
-			// the last hop and blaming it sends an operator after the wrong
-			// server — during a format change every relay looks guilty.
-			info("Pubsub read error, originator %q via peer %q: %v", m.GetFrom().String(), peer, err)
-			continue
-		}
-		if !announcement_valid(f) {
-			pubsub_dropped.Add(1)
-			info("Pubsub received invalid announcement from peer %q", peer)
-			continue
-		}
-
-		// Rate limit inbound per peer, against the budget for this
-		// message's plane. Bootstrap and paired peers are trusted and skip
-		// the limit.
-		limiter := pubsub_limiter(f.Service)
-		if !peer_is_bootstrap(peer) && !limiter.allow(peer) {
-			pubsub_dropped.Add(1)
-			debug("Pubsub rate limited peer %q service %q", peer, f.Service)
+			warn("Pubsub message from peer %q reached the loop unvalidated", peer)
 			continue
 		}
 		pubsub_received.Add(1)

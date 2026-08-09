@@ -28,7 +28,12 @@ import (
 	multiaddr "github.com/multiformats/go-multiaddr"
 )
 
-func init() {
+// peers_init registers the built-in peers app and its handlers.
+//
+// Called explicitly from main_serve rather than run as a package init():
+// registration is a startup step with a defined position, not a side effect
+// of importing the file.
+func peers_init() {
 	a := app("peers")
 	a.service("peers")
 	a.event_anonymous("request", peer_request_event) // Unsigned pubsub broadcast

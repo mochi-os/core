@@ -93,7 +93,7 @@ func starlark(files []string) *Starlark {
 	s := Starlark{thread: &sl.Thread{Name: "main"}}
 	s.globals = make(sl.StringDict)
 
-	// Copy api_globals to s.globals (predeclared globals like mochi)
+	// Copy the API table into s.globals (predeclared globals like mochi)
 	for k, v := range api_globals {
 		s.globals[k] = v
 	}

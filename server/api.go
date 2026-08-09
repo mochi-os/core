@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -32,12 +33,40 @@ import (
 
 const url_max_response_size = 100 * 1024 * 1024 // 100 MB
 
-var (
-	api_globals sl.StringDict
-)
+// api_globals returns the Starlark global table every app script is
+// evaluated against, building it once on first use.
+//
+// This was a package init() writing a package var. That made the app-visible
+// API surface a side effect of importing the package: it could not be built
+// differently, inspected before use, or exercised by a test without also
+// getting whatever else init() ordering dragged in. api_init makes the
+// construction a step in startup, and api_table stays directly callable -
+// which is what lets TestApiTableIsExplicit assert the surface rather than
+// trust it.
+//
+// api_globals MUST stay a plain variable with no initializer, and starlark()
+// must read it rather than call a builder. Any form that has starlark() call
+// into api_table puts the table in the package initialization graph, and that
+// graph has a cycle:
+//
+//	api_app -> api_app_version -> ... -> stream -> route -> starlark
+//	        -> api_table -> api_app
+//
+// which the compiler rejects. An init() body is exempt from that analysis,
+// which is the only reason the original compiled; an explicit call from
+// main_serve is exempt for the same reason and is honest about when it runs.
+var api_globals sl.StringDict
 
-func init() {
-	api_globals = sl.StringDict{
+// api_init builds the Starlark global API table. Called once from main_serve
+// before anything can evaluate an app script, and from TestMain so the test
+// binary has the same surface without depending on init() ordering.
+func api_init() {
+	api_globals = api_table()
+}
+
+// api_table constructs the Starlark global API table.
+func api_table() sl.StringDict {
+	return sl.StringDict{
 		"json": starlarkjson.Module,
 		"mochi": sls.FromStringDict(sl.String("mochi"), sl.StringDict{
 			"access":     api_access,
@@ -759,6 +788,63 @@ func (m *stream_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []
 	return api_stream(thread, nil, args, kwargs)
 }
 
+// stream_headers_validate resolves the calling user and checks the routing
+// headers a stream may be opened with, returning the sender's app id and
+// service list for the outgoing frame.
+//
+// Shared by mochi.stream and mochi.stream.peer, which carried a
+// line-for-line copy of this each. The from check is the reason it must not
+// drift: it is what stops an app opening a stream AS an entity its user does
+// not own, and a fix applied to one copy and not the other would leave that
+// hole open on whichever call site was missed.
+//
+// The route_entity fallback covers an entity-scoped action running for a
+// caller who is not the owner: the thread is routed to that entity, so it
+// may speak as it even though users.db does not tie it to this user.
+func stream_headers_validate(t *sl.Thread, headers map[string]string) (*User, string, []string, error) {
+	user, _ := t.Local("user").(*User)
+	if user == nil {
+		user, _ = t.Local("owner").(*User)
+	}
+	if user == nil {
+		return nil, "", nil, errors.New("no user")
+	}
+
+	db := db_open("db/users.db")
+	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.UID)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("database error: %v", err)
+	}
+	if !from_valid {
+		if re, ok := t.Local("route_entity").(string); ok && re == headers["from"] {
+			from_valid = true
+		}
+	}
+	if !from_valid {
+		return nil, "", nil, errors.New("invalid from header")
+	}
+
+	if !valid(headers["to"], "entity") {
+		return nil, "", nil, errors.New("invalid to header")
+	}
+	if !valid(headers["service"], "constant") {
+		return nil, "", nil, errors.New("invalid service header")
+	}
+	if !valid(headers["event"], "constant") {
+		return nil, "", nil, errors.New("invalid event header")
+	}
+
+	// from_app and services describe the SENDER to the receiver. Both are
+	// routing hints and neither is signed - see the note in events.go on the
+	// app.json allowlists; a receiver that needs to restrict its callers
+	// authorises on the authenticated sender instead.
+	app, _ := t.Local("app").(*App)
+	if app == nil {
+		return user, "", nil, nil
+	}
+	return user, app.id, app_services(app, user), nil
+}
+
 // mochi.stream(headers, content) -> Stream or None: Create a Net stream to another entity; None if the peer is unreachable
 func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
@@ -770,46 +856,10 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 		return sl_error(fn, "headers not specified or invalid")
 	}
 
-	user, _ := t.Local("user").(*User)
-	if user == nil {
-		user, _ = t.Local("owner").(*User)
-	}
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	db := db_open("db/users.db")
-	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.UID)
+	// The user is validated inside; only the sender description is needed here.
+	_, from_app, services, err := stream_headers_validate(t, headers)
 	if err != nil {
-		return sl_error(fn, "database error: %v", err)
-	}
-	if !from_valid {
-		if re, ok := t.Local("route_entity").(string); ok && re == headers["from"] {
-			from_valid = true
-		}
-	}
-	if !from_valid {
-		return sl_error(fn, "invalid from header")
-	}
-
-	if !valid(headers["to"], "entity") {
-		return sl_error(fn, "invalid to header")
-	}
-
-	if !valid(headers["service"], "constant") {
-		return sl_error(fn, "invalid service header")
-	}
-
-	if !valid(headers["event"], "constant") {
-		return sl_error(fn, "invalid event header")
-	}
-
-	app, _ := t.Local("app").(*App)
-	from_app := ""
-	var services []string
-	if app != nil {
-		from_app = app.id
-		services = app_services(app, user)
+		return sl_error(fn, err)
 	}
 
 	s, err := stream(headers["from"], headers["to"], headers["service"], headers["event"], from_app, services)
@@ -848,46 +898,10 @@ func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "headers not specified or invalid")
 	}
 
-	user, _ := t.Local("user").(*User)
-	if user == nil {
-		user, _ = t.Local("owner").(*User)
-	}
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	db := db_open("db/users.db")
-	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.UID)
+	// The user is validated inside; only the sender description is needed here.
+	_, from_app, services, err := stream_headers_validate(t, headers)
 	if err != nil {
-		return sl_error(fn, "database error: %v", err)
-	}
-	if !from_valid {
-		if re, ok := t.Local("route_entity").(string); ok && re == headers["from"] {
-			from_valid = true
-		}
-	}
-	if !from_valid {
-		return sl_error(fn, "invalid from header")
-	}
-
-	if !valid(headers["to"], "entity") {
-		return sl_error(fn, "invalid to header")
-	}
-
-	if !valid(headers["service"], "constant") {
-		return sl_error(fn, "invalid service header")
-	}
-
-	if !valid(headers["event"], "constant") {
-		return sl_error(fn, "invalid event header")
-	}
-
-	app, _ := t.Local("app").(*App)
-	from_app := ""
-	var services []string
-	if app != nil {
-		from_app = app.id
-		services = app_services(app, user)
+		return sl_error(fn, err)
 	}
 
 	s, err := stream_to_peer(peer, headers["from"], headers["to"], headers["service"], headers["event"], from_app, services)

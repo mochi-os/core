@@ -87,6 +87,20 @@ func main_serve(ready func()) int {
 		warn("Unable to create runtime state directory %s: %v", run_dir(), err)
 	}
 	temporary_configure()
+	// Build the Starlark API table and register the built-in apps and hooks
+	// before anything can evaluate a script, route an event, or open a
+	// stream. Explicit rather than package init()s, so the app-visible API
+	// surface and the built-in handler set are startup steps with a defined
+	// position rather than side effects of importing a file.
+	//
+	// log.go and streams.go keep their init()s deliberately - see the note
+	// on each. They must be in place before ANY code can log or decode,
+	// including package-level variable initialisers, which run before this.
+	api_init()
+	events_init()
+	directory_init()
+	peers_init()
+	senders_init()
 	// Confirm the data directory is writable. On Windows, the MSI
 	// installer creates %ProgramData%\Mochi\data owned by SYSTEM with
 	// restrictive ACLs so the auto-installed mochi-server service

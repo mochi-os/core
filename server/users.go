@@ -1305,9 +1305,19 @@ func user_purge_local(id string, accountGone bool) (string, error) {
 func user_is_fresh(uid string) bool {
 	u := &User{UID: uid}
 
+	// Whole queries as literals rather than a table name interpolated into
+	// one. The interpolated form was safe - the names came from this very
+	// slice - but a reader has to prove that each time, and a later change
+	// that sources a name from anywhere else turns it into an injection with
+	// no visible edit at the query site.
 	udb := db_user(u, "user")
-	for _, table := range []string{"accounts", "groups", "group_members", "interests"} {
-		any, _ := udb.exists(fmt.Sprintf("select 1 from %s limit 1", table))
+	for _, query := range []string{
+		"select 1 from accounts limit 1",
+		"select 1 from groups limit 1",
+		"select 1 from group_members limit 1",
+		"select 1 from interests limit 1",
+	} {
+		any, _ := udb.exists(query)
 		if any {
 			return false
 		}

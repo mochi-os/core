@@ -290,9 +290,20 @@ func net_start() {
 		warn("mDNS peer discovery disabled: %v", err)
 	}
 
-	// Start pubsubs
+	// Start pubsubs. The topic validator must be registered before Join, so
+	// no message can be relayed in the window between joining and gating.
+	//
+	// Peer scoring (WithPeerScore) is deliberately NOT enabled. Its only
+	// useful input here would be invalid-message deliveries, driven by the
+	// validator returning Reject — and the traffic this validator refuses is
+	// indistinguishable from a peer running an older wire format. Enabling
+	// scoring would therefore have turned the 2026-07-25 flag day into a
+	// graylisting of every old node by every new one. Revisit only with a
+	// signal that separates "hostile" from "out of date"; see
+	// pubsub_validate.
 	gs := must(p2p_pubsub.NewGossipSub(net_context, net_me))
-	net_pubsub = must(gs.Join("/mochi/2"))
+	must(gs.RegisterTopicValidator(pubsub_topic, pubsub_validate))
+	net_pubsub = must(gs.Join(pubsub_topic))
 	go pubsub_manager()
 
 	// Watch the broadcast mesh and aggressively re-dial when it empties

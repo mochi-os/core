@@ -32,6 +32,14 @@ var (
 	})
 )
 
+// Deliberately a package init(), not a call from main_serve.
+//
+// This must be in place before ANY code can log, and package-level variable
+// initialisers throughout the package run before main() is entered - a
+// hoisted version would leave anything logging during that phase writing
+// through Go's default logger with its own flags and destination. The other
+// startup registrations moved into main_serve (api_init, directory_init,
+// peers_init, events_init, senders_init); this one cannot follow them.
 func init() {
 	log.SetFlags(0)
 	log.SetOutput(new(log_writer))

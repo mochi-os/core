@@ -53,7 +53,12 @@ var api_directory = sls.FromStringDict(sl.String("mochi.directory"), sl.StringDi
 	"search": sl.NewBuiltin("mochi.directory.search", api_directory_search),
 })
 
-func init() {
+// directory_init registers the built-in directory app and its handlers.
+//
+// Called explicitly from main_serve rather than run as a package init():
+// registration is a startup step with a defined position, not a side effect
+// of importing the file.
+func directory_init() {
 	a := app("directory")
 	a.service("directory")
 	// All payloads are self-verifying; the message envelope is anonymous.

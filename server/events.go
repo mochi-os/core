@@ -49,7 +49,12 @@ func event_id() int64 {
 	return id
 }
 
-func init() {
+// events_init wires the broadcast pending-drain dispatcher.
+//
+// Called explicitly from main_serve rather than run as a package init():
+// registration is a startup step with a defined position, not a side effect
+// of importing the file.
+func events_init() {
 	// Wire the broadcast pending-drain dispatcher (task #82). The
 	// drain loop in broadcast_pending_drain_chain calls this for
 	// each in-order buffered row; we synthesise an Event from the

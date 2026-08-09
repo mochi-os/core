@@ -28,6 +28,14 @@ const (
 
 var cbor_decode_mode cbor.DecMode
 
+// Deliberately a package init(), not a call from main_serve.
+//
+// cbor_decode_mode carries the decode limits every inbound frame is bounded
+// by, and a nil mode is not a safe default - it would mean decoding with
+// library defaults and no depth, map or element caps. Establishing it at
+// package initialisation makes it impossible for any path, including one
+// reached from another file's variable initialiser, to decode before the
+// limits exist.
 func init() {
 	cbor_decode_mode = must(cbor.DecOptions{
 		MaxMapPairs:      cbor_max_pairs,

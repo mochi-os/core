@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
@@ -25,11 +26,72 @@ import (
 // TTL was already on the edge. Memory cost is bounded by the cache
 // cleanup that runs hourly; at typical traffic this is single-digit
 // MB. The relation is enforced by TestDedupWindowExceedsMaxRetryInterval.
+//
+// IN MEMORY ON PURPOSE, and NOT a replay defence. A restart empties this,
+// so a captured announcement can be re-delivered inside its (2h) freshness
+// window. That is deliberate: every handler reachable this way already
+// refuses a stale message on its own terms, which is where the property
+// belongs — dedup is a fast path that saves work, not the boundary.
+//
+//	directory publish  version/seen monotonic; a non-newer row returns early
+//	directory delete   bounded by `seen<=?`, so it cannot remove a row
+//	                   published after the attested time
+//	peers publish      signed peer records are sequence-numbered by libp2p;
+//	                   the unsigned fallback only re-applies addresses and a
+//	                   name, where a stale value simply fails to dial
+//
+// Persisting this would add a database write per message to defend
+// something the handlers already reject. If a future pubsub handler is NOT
+// monotonic, that handler needs its own guard — do not reach for
+// persistence here. TestDirectoryDeleteIsBoundedByAttestedTime pins the
+// least obvious of the three.
 var (
 	seen_messages      = make(map[string]int64) // id -> timestamp
 	seen_messages_lock sync.Mutex
 	seen_messages_ttl  = int64(8 * 3600) // 8 hours
+
+	// Ceiling on the dedup map, because the TTL alone does not bound it.
+	// Entries are shed hourly by age, but nothing limits how fast they
+	// arrive: the stream rate limit is charged per stream OPEN, not per
+	// frame, so one authenticated peer can hold a single stream open and
+	// add an entry per message for the whole 8h window.
+	//
+	// At roughly 100 bytes an entry this is ~100 MB of headroom, far above
+	// any real traffic and well below a level that threatens the process.
+	// Over it, message_seen_evict drops the OLDEST entries: they are the
+	// closest to expiring anyway, and a retry needs the RECENT half of the
+	// window (retry_delays tops out at 1h against an 8h TTL), so the
+	// entries sacrificed are the ones least likely to be asked about.
+	seen_messages_maximum = 1000000
 )
+
+// message_seen_evict drops the oldest entries until the map is back under
+// its ceiling. Caller holds seen_messages_lock.
+//
+// Sheds a slice rather than one entry per call so this runs O(n) rarely
+// instead of O(n) per insert once the ceiling is reached.
+func message_seen_evict() {
+	if len(seen_messages) <= seen_messages_maximum {
+		return
+	}
+	target := len(seen_messages) - seen_messages_maximum + seen_messages_maximum/10
+
+	// One sort to find the age cutoff that sheds `target` entries. Walking
+	// the cutoff forward a second at a time instead would rescan the map on
+	// every step - O(window x n), billions of operations at this size.
+	timestamps := make([]int64, 0, len(seen_messages))
+	for _, ts := range seen_messages {
+		timestamps = append(timestamps, ts)
+	}
+	slices.Sort(timestamps)
+	cutoff := timestamps[target]
+	for id, ts := range seen_messages {
+		if ts < cutoff {
+			delete(seen_messages, id)
+		}
+	}
+	warn("Messages: dedup map hit its %d-entry ceiling; shed entries older than %d", seen_messages_maximum, cutoff)
+}
 
 // Check if message was already processed
 func message_seen(id string) bool {
@@ -44,6 +106,7 @@ func message_mark_seen(id string) {
 	seen_messages_lock.Lock()
 	defer seen_messages_lock.Unlock()
 	seen_messages[id] = now()
+	message_seen_evict()
 }
 
 // message_seen_mark atomically reports whether id was already processed
@@ -60,6 +123,7 @@ func message_seen_mark(id string) bool {
 		return true
 	}
 	seen_messages[id] = now()
+	message_seen_evict()
 	return false
 }
 

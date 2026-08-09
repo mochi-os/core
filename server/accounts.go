@@ -14,7 +14,6 @@ package main
 import (
 	"bytes"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -148,9 +147,6 @@ var providers = []Provider{
 	},
 }
 
-// Unambiguous character set for verification codes (no 0/O, 1/l/I confusion)
-const verificationCharset = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz"
-
 // Starlark API module
 var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"add":       sl.NewBuiltin("mochi.account.add", api_account_add),
@@ -202,15 +198,17 @@ func provider_has_capability(ptype, capability string) bool {
 	return false
 }
 
-// account_generate_code generates a random verification code
+// account_generate_code generates a random verification code.
+//
+// Delegates rather than drawing its own bytes. The local version read
+// crypto/rand into a byte slice and took it modulo the alphabet length,
+// which biases the result: 256 is not a multiple of 54, so the first 40
+// characters of the set came up fractionally more often. It also discarded
+// rand.Read's error, so a failing entropy source produced a code of zeroes -
+// the same code every time - with nothing said. random_unambiguous uses
+// rand.Int over the exact range, which is unbiased and fails loudly.
 func account_generate_code(length int) string {
-	b := make([]byte, length)
-	rand.Read(b)
-	code := make([]byte, length)
-	for i := range b {
-		code[i] = verificationCharset[int(b[i])%len(verificationCharset)]
-	}
-	return string(code)
+	return random_unambiguous(length)
 }
 
 // account_redact returns an account map with secrets removed
@@ -1750,7 +1748,7 @@ func account_deliver_unifiedpush(user *User, accountID string, data map[string]a
 			sub_id = endpoint[i+1:]
 		}
 		websockets_send(user, "unifiedpush", map[string]any{
-			"sub_id":   sub_id,
+			"sub_id":  sub_id,
 			"payload": string(payload),
 			"account": accountID,
 		})

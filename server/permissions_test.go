@@ -440,7 +440,7 @@ func TestComptrollerDefaultPermissions(t *testing.T) {
 // aborts the handler and drops the event with nothing shown to anyone - so a
 // dropped entry here surfaces as messages and moves silently vanishing, not as a
 // permission prompt. groups/manage does not imply groups/read (permission_granted
-// matches exactly), which is why People and Test carry both.
+// matches exactly), which is why People carries both.
 func TestFriendsAndGroupsReadDefaults(t *testing.T) {
 	setup_test_data_dir(t)
 	defer cleanup_test_data_dir(t)
@@ -457,7 +457,6 @@ func TestFriendsAndGroupsReadDefaults(t *testing.T) {
 		"1SWnPXg9xpT2Cxemw2aw8CLZCP5yDatQ6ebF9dHoMTXQNFKLuw":  "groups/read",  // Repositories
 		"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf": "groups/read",  // Wikis
 		"1gGcjxdhV2VjuEMLs7UZiQwMaY2jvx1ARbu8g9uqM5QeS2vFJV":  "groups/read",  // People
-		"test": "groups/read", // Test
 	}
 
 	user := create_permission_test_user(t, "u1")

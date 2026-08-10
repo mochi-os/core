@@ -57,6 +57,7 @@ var permissions = []Permission{
 	{"friends/read", false, false},
 	{"groups/manage", false, false},
 	{"groups/read", false, false},
+	{"camera", false, false},
 	{"microphone", false, false},
 	{"interests/read", false, false},
 	{"interests/write", false, false},

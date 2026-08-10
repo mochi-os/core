@@ -418,36 +418,26 @@ var (
 			{"permissions/manage", ""},
 		}},
 		{"12YGtmNxgihPn2cmNSpKfpViFWtWH25xYT7o6xKnTXCA2deNvjH", "Home", nil},
+		{"16MQ3jNWhdy2TaVv55kwxCn6QC8CM1y5W6tmFNkwkkEUtitukV", "Air", []struct{ Permission, Object string }{
+			{"camera", ""},
+		}},
 		{"12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL", "Apps", []struct{ Permission, Object string }{
 			{"permissions/manage", ""},
 		}},
-		// Chat, Chess, Go and Words gate incoming messages and moves on whether
-		// the sender is a friend, and they do it inside P2P event handlers where
-		// no permission dialog can be shown. Without the grant the handler aborts
-		// and the event is dropped, so these must be granted by default rather
-		// than left to ask on first use.
 		{"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92", "Chat", []struct{ Permission, Object string }{
 			{"friends/read", ""},
+			{"microphone", ""},
 		}},
 		{"12bMvfv6pVEAVLzBjJuS55oPaZDL3qzoUAtBWB8iK2arTk8GQkr", "Chess", []struct{ Permission, Object string }{
 			{"friends/read", ""},
 		}},
 		{"1sfEACmTnQhBVgquGhaCs8Jw4SXKF9XY2apnUwJ63duq2QSxh5", "Comptroller", []struct{ Permission, Object string }{
+			{"accounts/ai", ""},
 			{"url", "api.stripe.com"},
 			{"url", "connect.stripe.com"},
-			{"accounts/ai", ""},
 		}},
 		{"1WhnggfLs2d1iXHJ5zVhYFhiSdZibh6UzaoYMH91ZoAXGzj8Cv", "CRM", []struct{ Permission, Object string }{
 			{"groups/read", ""},
-		}},
-		// groups/manage does not imply groups/read - permission_granted matches
-		// exactly - so an app that manages groups needs both spelled out.
-		{"test", "Test", []struct{ Permission, Object string }{
-			{"groups/manage", ""},
-			{"groups/read", ""},
-			{"notifications/send", ""},
-			{"settings/write", ""},
-			{"users/read", ""},
 		}},
 		{"12254aHfG39LqrizhydT6iYRCTAZqph1EtAkVTR7DcgXZKWqRrj", "Feeds", []struct{ Permission, Object string }{
 			{"accounts/ai", ""},
@@ -469,10 +459,10 @@ var (
 		{"17Qx3vcsBJ6RcMhshTKfVSBPigPZUAaA52KkpCi4ZYFaekSgrY", "Help", nil},
 		{"12Erusc4s59DJjqmDZXwPQ15ny4RKrRKFJg2DfAmi2unDGaghgq", "Market", nil},
 		{"12ZwHwqDLsdN5FMLcHhWBrDwwYojNZ67dWcZiaynNFcjuHPnx2P", "Notifications", []struct{ Permission, Object string }{
-			{"webpush/send", ""},
-			{"accounts/read", ""},
 			{"accounts/manage", ""},
 			{"accounts/notify", ""},
+			{"accounts/read", ""},
+			{"webpush/send", ""},
 		}},
 		{"1gGcjxdhV2VjuEMLs7UZiQwMaY2jvx1ARbu8g9uqM5QeS2vFJV", "People", []struct{ Permission, Object string }{
 			{"groups/manage", ""},
@@ -480,9 +470,6 @@ var (
 			{"user/identity/write", ""},
 			{"users/read", ""},
 		}},
-		// Projects reads repositories (list, branches, diff, merge check) and
-		// performs merges from its merge-request UI, so it needs both sides of
-		// the repositories service permission.
 		{"12cTM7noFHaHkdv3JyWw3Dq9eP8iBaQFveu6JTrvVuuEEH8F8Bg", "Projects", []struct{ Permission, Object string }{
 			{"groups/read", ""},
 			{"repositories/read", ""},
@@ -493,26 +480,22 @@ var (
 			{"groups/read", ""},
 		}},
 		{"1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky", "Settings", []struct{ Permission, Object string }{
-			// Registering a passkey and answering a step-up both run a WebAuthn
-			// ceremony through the shell, which is where the user manages
-			// credentials - so the stock app holds it without being asked. Any
-			// other app, a fork of this one included, asks the user.
-			{"user/authentication/sign", ""},
-			{"settings/write", ""},
-			{"server/update", ""},
-			{"users/read", ""},
-			{"accounts/read", ""},
 			{"accounts/manage", ""},
+			{"accounts/read", ""},
 			{"interests/read", ""},
 			{"interests/write", ""},
 			{"notifications/manage", ""},
 			{"notifications/send", ""},
+			{"server/update", ""},
+			{"settings/write", ""},
 			{"user/authentication/read", ""},
+			{"user/authentication/sign", ""},
 			{"user/authentication/write", ""},
 			{"user/export", ""},
 			{"user/identity/write", ""},
 			{"user/sessions/read", ""},
 			{"user/sessions/write", ""},
+			{"users/read", ""},
 		}},
 		{"12sE7AoAuAdWVsMxDPVY3PDM6YXhbwYfytGeDRD1TD49pKAuhno", "Themes", nil},
 		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", []struct{ Permission, Object string }{

@@ -334,6 +334,20 @@ var system_settings = map[string]SystemSetting{
 		UserReadable: true,
 		ReadOnly:     false,
 	},
+	// Public because the Market and Staff apps read it from event handlers as
+	// well as from actions, and an event handler carries whatever user the
+	// event resolved to rather than an authenticated caller. Nothing is
+	// disclosed by that: the default this overrides is a literal in the
+	// published source of both apps, which anyone may download.
+	"market_comptroller": {
+		Name:         "market_comptroller",
+		Pattern:      "entity",
+		Default:      "",
+		Description:  "Comptroller entity ID the Market and Staff apps talk to. Leave empty to use the default canonical Mochi marketplace.",
+		UserReadable: true,
+		ReadOnly:     false,
+		Public:       true,
+	},
 }
 
 var api_setting = sls.FromStringDict(sl.String("mochi.setting"), sl.StringDict{

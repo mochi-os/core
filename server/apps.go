@@ -431,11 +431,6 @@ var (
 		{"12bMvfv6pVEAVLzBjJuS55oPaZDL3qzoUAtBWB8iK2arTk8GQkr", "Chess", []struct{ Permission, Object string }{
 			{"friends/read", ""},
 		}},
-		{"1sfEACmTnQhBVgquGhaCs8Jw4SXKF9XY2apnUwJ63duq2QSxh5", "Comptroller", []struct{ Permission, Object string }{
-			{"accounts/ai", ""},
-			{"url", "api.stripe.com"},
-			{"url", "connect.stripe.com"},
-		}},
 		{"1WhnggfLs2d1iXHJ5zVhYFhiSdZibh6UzaoYMH91ZoAXGzj8Cv", "CRM", []struct{ Permission, Object string }{
 			{"groups/read", ""},
 		}},

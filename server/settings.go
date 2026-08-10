@@ -318,36 +318,6 @@ var system_settings = map[string]SystemSetting{
 		UserReadable: false,
 		ReadOnly:     false,
 	},
-	"help_users_forum": {
-		Name:         "help_users_forum",
-		Pattern:      "entity",
-		Default:      "",
-		Description:  "Forum entity ID for Help app user submissions (Introduce yourself / Ask a question). Leave empty to use the default canonical Mochi forum.",
-		UserReadable: true,
-		ReadOnly:     false,
-	},
-	"help_dev_project": {
-		Name:         "help_dev_project",
-		Pattern:      "entity",
-		Default:      "",
-		Description:  "Project entity ID for Help app developer submissions (Report a bug / Suggest a feature). Leave empty to use the default canonical Mochi project.",
-		UserReadable: true,
-		ReadOnly:     false,
-	},
-	// Public because the Market and Staff apps read it from event handlers as
-	// well as from actions, and an event handler carries whatever user the
-	// event resolved to rather than an authenticated caller. Nothing is
-	// disclosed by that: the default this overrides is a literal in the
-	// published source of both apps, which anyone may download.
-	"market_comptroller": {
-		Name:         "market_comptroller",
-		Pattern:      "entity",
-		Default:      "",
-		Description:  "Comptroller entity ID the Market and Staff apps talk to. Leave empty to use the default canonical Mochi marketplace.",
-		UserReadable: true,
-		ReadOnly:     false,
-		Public:       true,
-	},
 }
 
 var api_setting = sls.FromStringDict(sl.String("mochi.setting"), sl.StringDict{

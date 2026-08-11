@@ -922,6 +922,30 @@ func (e *Event) broadcast_acknowledge() error {
 		return fmt.Errorf("broadcast/acknowledge requires key, peer, and sequence")
 	}
 
+	// Clamp to what this host actually allocated for the stream. The
+	// sequence rides in from the network and was taken on trust, so a
+	// subscriber could claim a watermark far beyond anything sent; the
+	// acknowledged row then feeds broadcast_log_ack_trim, which deletes
+	// every log row below the lowest subscriber floor. A watermark above
+	// the head is not a claim we can honour - nobody can have received an
+	// event that was never allocated - so cap it at the head rather than
+	// refuse, which keeps a subscriber that is merely ahead of our own
+	// view (a re-apply, a reseed) from wedging on a rejected ack.
+	//
+	// No sequence row means this host never originated the stream, so
+	// there is nothing to acknowledge and nothing to trim: drop it
+	// quietly rather than recording a floor against a log we do not own.
+	head := int64(0)
+	if row, _ := e.db.row("select last from sequence where key=? and peer=?", key, peer); row != nil {
+		head, _ = row["last"].(int64)
+	}
+	if head <= 0 {
+		return nil
+	}
+	if sequence > head {
+		sequence = head
+	}
+
 	broadcast_acknowledged_table_create(e.db)
 	e.db.exec("insert into acknowledged (key, peer, subscriber, last) values (?, ?, ?, ?) on conflict(key, peer, subscriber) do update set last = max(acknowledged.last, excluded.last)", key, peer, e.from, sequence)
 	broadcast_log_ack_trim(e.db, key, peer)

@@ -1,7 +1,6 @@
 // Mochi server: corrupt-DB resilience — a corrupt user DB must not crash the
 // multi-user process. Covers the corruption matcher, the quarantine
-// lifecycle, exec_bg's skip/no-over-quarantine behaviour, and the
-// db_recover_background backstop (swallow corruption, re-fire genuine bugs).
+// lifecycle, and exec_bg's skip/no-over-quarantine behaviour.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
@@ -59,37 +58,6 @@ func TestDbQuarantineLifecycle(t *testing.T) {
 	db_quarantine_clear(path)
 	if db_quarantined(path) {
 		t.Error("db_quarantine_clear should lift the flag (fresh copy swapped in)")
-	}
-}
-
-// db_recover_background swallows a corruption panic (keeps the loop + process
-// alive) but re-fires any other panic so a genuine bug still crashes.
-func TestDbRecoverBackground(t *testing.T) {
-	swallowed := func() (ok bool) {
-		defer func() {
-			if recover() != nil {
-				ok = false // re-panicked past the backstop — not swallowed
-			}
-		}()
-		defer db_recover_background("test")
-		ok = true
-		panic(errors.New("database disk image is malformed"))
-	}
-	if !swallowed() {
-		t.Error("a corruption panic must be swallowed by db_recover_background")
-	}
-
-	refired := func() (fired bool) {
-		defer func() {
-			if recover() != nil {
-				fired = true
-			}
-		}()
-		defer db_recover_background("test")
-		panic(errors.New("runtime error: index out of range [3]"))
-	}
-	if !refired() {
-		t.Error("a non-corruption panic must re-fire (genuine bugs still crash)")
 	}
 }
 

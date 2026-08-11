@@ -1015,23 +1015,6 @@ const (
 	ExecSkipped                     // nil / quarantined DB, or a permanent error — retry won't help
 )
 
-// db_recover_background is a deferred backstop for a long-lived background loop:
-// a corruption panic that escaped exec_bg (a shared write still on db.exec, or
-// any unconverted site) is logged + swallowed so the loop and the whole process
-// survive; any OTHER panic re-fires so a genuine bug still crashes. The
-// integrity watchdog flags + quarantines the corrupt DB within the hour.
-func db_recover_background(context string) {
-	r := recover()
-	if r == nil {
-		return
-	}
-	if e, ok := r.(error); ok && db_error_is_corruption(e) {
-		warn("Background goroutine %s recovered from a corrupt-DB panic: %v — skipped to keep the server up; the integrity watchdog will flag the DB.", context, r)
-		return
-	}
-	panic(r)
-}
-
 // db_integrity_watchdog quick_checks a few due DBs each tick and warns the
 // moment one is found corrupt — proactive detection so corruption surfaces as
 // an alert in minutes rather than as a silent multi-hour outage (#6). The check
@@ -1621,6 +1604,7 @@ func (db *DB) integer(query string, values ...any) int {
 // the 32-bit builds (armhf/armv7hl) where integer()'s int return would be. Use
 // this for any column whose value can exceed ~2.1e9. Returns 0 on no-row/error,
 // matching integer().
+//
 //lint:ignore U1000 exists to stop a >2.1e9 column being truncated on the 32-bit armhf and armv7hl builds; deleting it because today's callers use small columns invites that bug back
 func (db *DB) integer64(query string, values ...any) int64 {
 	var result int64

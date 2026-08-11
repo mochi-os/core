@@ -512,10 +512,10 @@ var account_login = &account_gate{entries: make(map[string]*account_gate_entry)}
 // account_wait_max, which is also the deepest queue a request will wait in
 // before being refused outright.
 var (
-	account_gate_free  = 3
-	account_gate_floor int64 = 1    // seconds between consecutive slots at minimum
-	account_wait_max   int64 = 8    // seconds: refuse rather than wait/hold longer
-	account_gate_ttl   int64 = 900  // seconds idle before an entry is dropped
+	account_gate_free        = 3
+	account_gate_floor int64 = 1   // seconds between consecutive slots at minimum
+	account_wait_max   int64 = 8   // seconds: refuse rather than wait/hold longer
+	account_gate_ttl   int64 = 900 // seconds idle before an entry is dropped
 )
 
 // account_gate_spacing is the gap (seconds) reserved between consecutive
@@ -673,5 +673,17 @@ func ratelimit_manager() {
 		rate_limit_entry_withdraw.cleanup()
 		rate_limit_url.cleanup()
 		rate_limit_net_send.cleanup()
+		// Keyed on values a caller chooses, so the map grows from remote
+		// input until swept. rate_limit_stream_client is keyed on the app
+		// AND the client address, so its ceiling is the address space.
+		rate_limit_directory_sync.cleanup()
+		rate_limit_remote_entity.cleanup()
+		rate_limit_stream_client.cleanup()
+		// Keyed on an app id, so bounded by what is installed. Swept anyway:
+		// a list that covers most limiters invites the next reader to assume
+		// each omission was deliberate.
+		rate_limit_refusal_log.cleanup()
+		rate_limit_remote.cleanup()
+		rate_limit_stream_app.cleanup()
 	}
 }

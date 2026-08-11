@@ -644,7 +644,7 @@ func TestUnzip(t *testing.T) {
 	zip_file.Close()
 
 	// Test normal extraction
-	err = unzip(zip_path, dest_dir)
+	err = unzip(zip_path, dest_dir, unzip_maximum_bytes)
 	if err != nil {
 		t.Fatalf("unzip failed: %v", err)
 	}
@@ -696,7 +696,7 @@ func TestUnzipPathTraversal(t *testing.T) {
 	os.MkdirAll(dest_dir, 0755)
 
 	// Attempt extraction - os.Root should prevent the traversal
-	err = unzip(zip_path, dest_dir)
+	err = unzip(zip_path, dest_dir, unzip_maximum_bytes)
 
 	// os.Root returns an error for path traversal attempts
 	if err == nil {

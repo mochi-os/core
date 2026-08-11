@@ -7,7 +7,9 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -556,22 +558,22 @@ var (
 	})
 
 	api_app = sls.FromStringDict(sl.String("mochi.app"), sl.StringDict{
-		"asset":   api_app_asset,
-		"class":   api_app_class,
-		"cleanup": sl.NewBuiltin("mochi.app.cleanup", api_app_cleanup),
-		"get":     sl.NewBuiltin("mochi.app.get", api_app_get),
-		"icons":   sl.NewBuiltin("mochi.app.icons", api_app_icons),
-		"label":   sl.NewBuiltin("mochi.app.label", api_app_label),
-		"list":    sl.NewBuiltin("mochi.app.list", api_app_list),
-		"package": api_app_package,
-		"path":    api_app_path,
-		"presets": sl.NewBuiltin("mochi.app.presets", api_app_presets),
-		"service": api_app_service,
+		"asset":    api_app_asset,
+		"class":    api_app_class,
+		"cleanup":  sl.NewBuiltin("mochi.app.cleanup", api_app_cleanup),
+		"get":      sl.NewBuiltin("mochi.app.get", api_app_get),
+		"icons":    sl.NewBuiltin("mochi.app.icons", api_app_icons),
+		"label":    sl.NewBuiltin("mochi.app.label", api_app_label),
+		"list":     sl.NewBuiltin("mochi.app.list", api_app_list),
+		"package":  api_app_package,
+		"path":     api_app_path,
+		"presets":  sl.NewBuiltin("mochi.app.presets", api_app_presets),
+		"service":  api_app_service,
 		"services": sl.NewBuiltin("mochi.app.services", api_app_services),
-		"themes":  sl.NewBuiltin("mochi.app.themes", api_app_themes),
-		"track":   api_app_track,
-		"url":     sl.NewBuiltin("mochi.app.url", api_app_url),
-		"version": api_app_version,
+		"themes":   sl.NewBuiltin("mochi.app.themes", api_app_themes),
+		"track":    api_app_track,
+		"url":      sl.NewBuiltin("mochi.app.url", api_app_url),
+		"version":  api_app_version,
 	})
 )
 
@@ -1317,7 +1319,7 @@ func app_install(id string, version string, file string, check_only bool, peer .
 		return nil, fmt.Errorf("unable to create tmp dir: %w", err)
 	}
 	tmp := filepath.Join(data_dir, "tmp", fmt.Sprintf("app_install_%s_%s", id, random_alphanumeric(8)))
-	err := unzip(file, tmp)
+	err := unzip(file, tmp, unzip_maximum_bytes)
 	if err != nil {
 		info("App unzip failed: %v", err)
 		_ = os.RemoveAll(tmp)
@@ -1956,6 +1958,7 @@ func apps_load_published() {
 }
 
 // Register an event handler for an internal app
+//
 //lint:ignore U1000 the event half of the internal-app surface; the register half is used, and an internal app gaining an event handler should not have to re-add the mechanism
 func (a *App) event(event string, f func(*Event)) {
 	a.internal.Events[event] = AppEvent{internal_function: f}
@@ -2566,28 +2569,23 @@ func api_app_package_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no app")
 	}
 
-	// Unzip to temp directory
-	if err := os.MkdirAll(filepath.Join(data_dir, "tmp"), 0755); err != nil {
-		return sl_error(fn, "unable to create tmp dir: %v", err)
-	}
-	tmp := filepath.Join(data_dir, "tmp", fmt.Sprintf("app_info_%s", random_alphanumeric(8)))
-	err := unzip(api_file_path(user, a, file), tmp)
+	// Read the two entries this needs straight out of the archive. It used to
+	// extract the whole package to a temp directory and delete it moments
+	// later, having read only app.json and labels/en.conf - so an app could
+	// have a bomb written to disk for nothing. Reading in place removes the
+	// surface rather than bounding it, and is the faster path anyway.
+	archive, err := zip.OpenReader(api_file_path(user, a, file))
 	if err != nil {
-		_ = os.RemoveAll(tmp)
-		return sl_error(fn, "failed to unzip: %v", err)
+		return sl_error(fn, "failed to open archive: %v", err)
 	}
-	defer os.RemoveAll(tmp)
+	defer archive.Close()
 
-	// Read app.json
-	if !file_exists(filepath.Join(tmp, "app.json")) {
-		return sl_error(fn, "no app.json in archive")
+	raw, err := zip_entry_read(&archive.Reader, "app.json", app_metadata_maximum)
+	if err != nil {
+		return sl_error(fn, "no readable app.json in archive: %v", err)
 	}
 
 	var av AppVersion
-	raw, err := os.ReadFile(filepath.Join(tmp, "app.json"))
-	if err != nil {
-		return sl_error(fn, "unable to read app.json: %v", err)
-	}
 	data, err := hujson.Standardize(raw)
 	if err != nil {
 		return sl_error(fn, "bad app.json: %v", err)
@@ -2599,19 +2597,14 @@ func api_app_package_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	// Read label from labels/en.conf
 	name := av.Label
-	labels_path := tmp + "/labels/en.conf"
-	if file_exists(labels_path) {
-		f, err := os.Open(labels_path)
-		if err == nil {
-			s := bufio.NewScanner(f)
-			for s.Scan() {
-				parts := strings.SplitN(s.Text(), "=", 2)
-				if len(parts) == 2 && strings.TrimSpace(parts[0]) == av.Label {
-					name = strings.TrimSpace(parts[1])
-					break
-				}
+	if labels, err := zip_entry_read(&archive.Reader, "labels/en.conf", app_metadata_maximum); err == nil {
+		s := bufio.NewScanner(bytes.NewReader(labels))
+		for s.Scan() {
+			parts := strings.SplitN(s.Text(), "=", 2)
+			if len(parts) == 2 && strings.TrimSpace(parts[0]) == av.Label {
+				name = strings.TrimSpace(parts[1])
+				break
 			}
-			f.Close()
 		}
 	}
 

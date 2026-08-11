@@ -305,12 +305,67 @@ func uid() string {
 	return match_hyphens.ReplaceAllLiteralString(u.String(), "")
 }
 
-func unzip(file string, destination string) error {
+// Extraction bounds for an app package. The largest package shipped today
+// unpacks to 34 MB across 185 entries, and the biggest ordinary app to 12 MB
+// across 681; legitimate packages expand 1.3x to 3x because their bulk is
+// already-compressed assets and minified bundles. A bomb expands thousands of
+// times, so there is no overlap to trade off against - these are set for the
+// growth of a real package (a 3D game gaining models and audio), not to sit
+// close to today's largest.
+//
+// The byte cap stops one entry decompressing to petabytes; the entry cap stops
+// the other shape, millions of tiny files exhausting inodes rather than disk.
+const (
+	unzip_maximum_bytes   = 256 << 20
+	unzip_maximum_entries = 10_000
+)
+
+// app_metadata_maximum bounds a single metadata entry read out of a package.
+// app.json and labels/en.conf are small; a package whose app.json alone runs
+// to megabytes is not one to describe to a caller.
+const app_metadata_maximum = 1 << 20
+
+// zip_entry_read returns one named entry's bytes without extracting anything
+// to disk, refusing an entry that decompresses past `maximum`. For callers
+// that want a file or two out of an archive rather than all of it: nothing is
+// written, so a bomb has nowhere to land.
+func zip_entry_read(r *zip.Reader, name string, maximum int64) ([]byte, error) {
+	for _, f := range r.File {
+		if f.Name != name {
+			continue
+		}
+		in, err := f.Open()
+		if err != nil {
+			return nil, err
+		}
+		defer in.Close()
+		// +1 so an entry that exactly fills the budget reads as an overflow
+		// rather than passing on the boundary.
+		out, err := io.ReadAll(io.LimitReader(in, maximum+1))
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(out)) > maximum {
+			return nil, fmt.Errorf("%q is larger than the limit of %d bytes", name, maximum)
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("%q not found in archive", name)
+}
+
+// unzip extracts `file` into `destination`, refusing an archive that expands
+// past `maximum` bytes or unzip_maximum_entries files. Traversal is prevented
+// by os.Root; these bounds are about volume.
+func unzip(file string, destination string, maximum int64) error {
 	r, err := zip.OpenReader(file)
 	if err != nil {
 		return err
 	}
 	defer r.Close()
+
+	if len(r.File) > unzip_maximum_entries {
+		return fmt.Errorf("archive has too many entries: %d (limit %d)", len(r.File), unzip_maximum_entries)
+	}
 
 	// Create destination if it doesn't exist
 	if err := os.MkdirAll(destination, 0755); err != nil {
@@ -324,6 +379,7 @@ func unzip(file string, destination string) error {
 	}
 	defer root.Close()
 
+	var total int64
 	for _, f := range r.File {
 		if f.FileInfo().IsDir() {
 			// Create directory within root (os.Root automatically prevents traversal)
@@ -353,13 +409,21 @@ func unzip(file string, destination string) error {
 			return err
 		}
 
-		_, err = io.Copy(d, fa)
+		// Bound the RUNNING TOTAL rather than trust the header: a bomb can
+		// declare a small uncompressed size and still expand without limit.
+		// +1 so a copy that exactly fills the budget is still detected as an
+		// overflow rather than passing on the boundary.
+		written, err := io.Copy(d, io.LimitReader(fa, maximum-total+1))
 
 		d.Close()
 		fa.Close()
 
 		if err != nil {
 			return err
+		}
+		total += written
+		if total > maximum {
+			return fmt.Errorf("archive expands past the limit of %d bytes", maximum)
 		}
 	}
 

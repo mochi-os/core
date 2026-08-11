@@ -57,15 +57,31 @@ func variant_size(variant string) uint {
 	return thumbnail_size
 }
 
-// variant_create generates a downscaled copy of an image ("thumbnail" or
-// "preview") on demand, storing it beside the original in a per-variant
-// subdirectory ("thumbnails/", "previews/") with a matching filename suffix.
-// image_decode_pixels_maximum caps the pixel count of an image decoded from
-// a possibly-hostile source. A small file can declare enormous dimensions (a
+// These two caps bound the memory a single variant render can hold, and are
+// meant to be read together: the file cap covers the compressed bytes, the
+// pixel cap covers what they decode to.
+//
+// image_decode_pixels_maximum caps the pixel count of an image decoded from a
+// possibly-hostile source. A small file can declare enormous dimensions (a
 // decompression bomb) and exhaust memory when decoded, so DecodeConfig is
 // consulted before image.Decode allocates. 100 megapixels is far above any
 // legitimate photo and still bounds the allocation.
-const image_decode_pixels_maximum = 100_000_000
+//
+// image_file_bytes_maximum caps the file itself, which the pixel cap cannot:
+// the dimensions are only readable once the bytes are in memory, so a large
+// file is resident before anything has looked at it. An upload is bounded only
+// by the uploader's remaining storage quota, so without this a multi-gigabyte
+// file becomes multi-gigabyte of heap the moment a thumbnail is requested.
+//
+// A 100 megapixel JPEG runs to roughly 20-30 MB, so 100 MB clears any real
+// photograph several times over. Lossless formats are denser and a 100
+// megapixel PNG can exceed this, meaning the file cap binds first for those -
+// deliberately, since such a file is not one to be generating a 250px preview
+// from.
+const (
+	image_decode_pixels_maximum = 100_000_000
+	image_file_bytes_maximum    = 100 << 20
+)
 
 // variant_create generates the variant beside the original, in a per-variant
 // subdirectory. Kept for callers that serve variants from owned storage.
@@ -94,6 +110,15 @@ func variant_render(path string, variant string, thumb string) (string, error) {
 		return "", err
 	}
 	defer f.Close()
+
+	// Refuse an oversized file before reading it. Stat rather than a limited
+	// read: the size is known from the open handle, so nothing is read at all,
+	// and asking the handle rather than the path leaves no window for the file
+	// to change between the check and the read.
+	if information, err := f.Stat(); err == nil && information.Size() > image_file_bytes_maximum {
+		info("Refusing to read image file %q for %s variant: %d bytes exceeds file cap", path, variant, information.Size())
+		return "", nil
+	}
 
 	// Read the file into memory so we can inspect EXIF and decode the image
 	b, err := io.ReadAll(f)

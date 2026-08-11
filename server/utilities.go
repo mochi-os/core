@@ -31,6 +31,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	rd "runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -899,4 +900,31 @@ func path_scrub(message string) string {
 		}
 		message = message[:i] + rest
 	}
+}
+
+// guard runs f, containing any panic it raises rather than letting it reach
+// the goroutine's top and take the process with it.
+//
+// recover() only ever sees panics raised on its OWN goroutine, so a guard
+// around the function that spawns a goroutine catches nothing: every entry
+// point that runs on its own goroutine and is fed by remote input needs one of
+// its own. That is why this exists at the two inbound P2P entry points rather
+// than once around the dispatch they share.
+//
+// `after` runs during recovery to shut the faulted subject down - resetting a
+// stream, say - and is itself guarded, so a second panic while cleaning up
+// cannot defeat the first.
+func guard(name string, after func(), f func()) {
+	defer func() {
+		fault := recover()
+		if fault == nil {
+			return
+		}
+		warn("Panic in %s: %v\n\n%s", name, fault, string(rd.Stack()))
+		if after != nil {
+			defer func() { _ = recover() }()
+			after()
+		}
+	}()
+	f()
 }

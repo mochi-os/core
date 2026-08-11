@@ -29,14 +29,24 @@ import (
 // /mochi/2/stream in net_start.
 //
 // Wire sequence (after libp2p accepts the protocol):
-//   1. Write hello with a fresh challenge.
-//   2. Read caps (first sender frame).
-//   3. Read one or more claim frames; verify per-(stream, entity)
-//      signatures and cache claimed[From] = true.
-//   4. Read open: the sender's app-stream request. Dispatch to the
-//      app handler with the raw libp2p stream as e.stream; the
-//      handler reads/writes raw bytes for the rest of the session.
+//  1. Write hello with a fresh challenge.
+//  2. Read caps (first sender frame).
+//  3. Read one or more claim frames; verify per-(stream, entity)
+//     signatures and cache claimed[From] = true.
+//  4. Read open: the sender's app-stream request. Dispatch to the
+//     app handler with the raw libp2p stream as e.stream; the
+//     handler reads/writes raw bytes for the rest of the session.
+//
+// libp2p runs each stream handler on its own goroutine, so a panic anywhere
+// below reaches that goroutine's top and takes the process down. The dispatch
+// this reaches routes broadcast events internally rather than through
+// run_handler, so the recover there does not cover them, and db.exec panics on
+// any SQL error - a table an app has not created yet is enough.
 func receive_stream(s p2p_network.Stream) {
+	guard("receive_stream", func() { s.Reset() }, func() { receive_stream_guarded(s) })
+}
+
+func receive_stream_guarded(s p2p_network.Stream) {
 	peer := s.Conn().RemotePeer().String()
 
 	if !peer_is_bootstrap(peer) && !rate_limit_p2p.allow(peer) {

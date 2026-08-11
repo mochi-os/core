@@ -213,6 +213,10 @@ var api_broadcast = sls.FromStringDict(sl.String("mochi.broadcast"), sl.StringDi
 	"touch":    sl.NewBuiltin("mochi.broadcast.touch", api_broadcast_touch),
 	"send":     sl.NewBuiltin("mochi.broadcast.send", api_broadcast_send),
 	"replay":   sl.NewBuiltin("mochi.broadcast.replay", api_broadcast_replay),
+	"subscriber": sls.FromStringDict(sl.String("mochi.broadcast.subscriber"), sl.StringDict{
+		"add":    sl.NewBuiltin("mochi.broadcast.subscriber.add", api_broadcast_subscriber_add),
+		"remove": sl.NewBuiltin("mochi.broadcast.subscriber.remove", api_broadcast_subscriber_remove),
+	}),
 })
 
 const broadcast_log_age = 7 * 86400
@@ -247,6 +251,122 @@ func broadcast_log_table_create(db *DB) {
 
 func broadcast_acknowledged_table_create(db *DB) {
 	db.exec("create table if not exists acknowledged (key text not null, peer text not null, subscriber text not null, last integer not null default 0, primary key (key, peer, subscriber))")
+}
+
+func broadcast_subscribed_table_create(db *DB) {
+	db.exec("create table if not exists subscribed (key text not null, peer text not null, subscriber text not null, updated integer not null default 0, primary key (key, peer, subscriber))")
+}
+
+// A subscription record expires on the same clock as the hard log cap. The
+// binding rule is that the gate must never refuse a replay the log can still
+// serve: an ack floor pins log rows out to broadcast_log_age_maximum, so a
+// subscriber quiet for less than that may still have rows waiting, and a
+// shorter window would turn a returning laggard into a wedge.
+//
+// This is garbage collection, not revocation. A removed subscriber keeps a
+// live record until it expires, and the log is a rolling window, so they could
+// replay events created after their removal for as long as the record lasts.
+// mochi.broadcast.subscriber.remove is what actually revokes; the expiry only
+// stops rows accumulating for members who have genuinely gone.
+const broadcast_subscribed_age = broadcast_log_age_maximum
+
+// broadcast_subscribed_record notes that this host fanned out to each of
+// `subscribers` on (key, peer), and drops records past the expiry.
+//
+// The set is a UNION over sends, never a replacement: apps legitimately send to
+// a partial list - every chat call site excludes the sender, and the leave /
+// member-remove / member-add sites exclude the affected member - so replacing
+// would evict a member who simply was not a recipient of the latest event, and
+// then refuse them a resync.
+// How stale a record may get before a send refreshes it. Without this every
+// send rewrote a row per recipient, doubling the write cost of a fan-out - a
+// feed with ten thousand subscribers paid ten thousand upserts per post. A day
+// is far inside the expiry, so an actively-served subscriber never lapses.
+const broadcast_subscribed_refresh = 86400
+
+func broadcast_subscribed_record(db *DB, key, peer string, subscribers []string) {
+	if key == "" || peer == "" || len(subscribers) == 0 {
+		return
+	}
+	broadcast_subscribed_table_create(db)
+	now := now()
+
+	// One read to find what is already fresh, so the steady state writes
+	// nothing at all.
+	fresh := map[string]bool{}
+	rows, _ := db.rows("select subscriber from subscribed where key=? and peer=? and updated > ?", key, peer, now-broadcast_subscribed_refresh)
+	for _, row := range rows {
+		if name, ok := row["subscriber"].(string); ok {
+			fresh[name] = true
+		}
+	}
+
+	// Marker row, subscriber "": records that this stream HAS a known set,
+	// separately from who is in it. The gate keys "is this stream gated" on
+	// the marker alone, so a subscriber recorded by broadcast_subscribed_add
+	// before the stream's first send cannot gate it early and lock out members
+	// nobody has recorded yet. An empty subscriber is refused by the gate, so
+	// the marker never grants access itself.
+	if !fresh[""] {
+		db.exec("insert into subscribed (key, peer, subscriber, updated) values (?, ?, '', ?) on conflict(key, peer, subscriber) do update set updated = excluded.updated", key, peer, now)
+	}
+	for _, subscriber := range subscribers {
+		if subscriber == "" || fresh[subscriber] {
+			continue
+		}
+		db.exec("insert into subscribed (key, peer, subscriber, updated) values (?, ?, ?, ?) on conflict(key, peer, subscriber) do update set updated = excluded.updated", key, peer, subscriber, now)
+	}
+	db.exec("delete from subscribed where key=? and peer=? and updated < ?", key, peer, now-broadcast_subscribed_age)
+}
+
+// broadcast_subscribed_add records a subscriber without sending to them.
+//
+// Membership is otherwise only learned from a fan-out, which misses anyone a
+// send deliberately excludes: chat's member/add broadcast goes to the EXISTING
+// members, so the member being added is absent from the very event that admits
+// them. That send still marks the stream gated, so without this the new member
+// is refused a resync until some later send happens to include them - and a
+// quiet stream leaves them stuck, which is worse than the exposure the gate
+// closes.
+//
+// Deliberately does NOT write the marker: a stream with no sends yet must stay
+// fail-open, or adding one member would lock out every member recorded nowhere.
+func broadcast_subscribed_add(db *DB, key, peer, subscriber string) bool {
+	if key == "" || peer == "" || subscriber == "" {
+		return false
+	}
+	broadcast_subscribed_table_create(db)
+	existed, _ := db.exists("select 1 from subscribed where key=? and peer=? and subscriber=?", key, peer, subscriber)
+	db.exec("insert into subscribed (key, peer, subscriber, updated) values (?, ?, ?, ?) on conflict(key, peer, subscriber) do update set updated = excluded.updated", key, peer, subscriber, now())
+	return !existed
+}
+
+// broadcast_subscribed_allowed reports whether `subscriber` may read the
+// (key, peer) stream.
+//
+// Fails OPEN until this host has fanned the stream out at least once, which is
+// what the marker row records. That makes the gate deployable without a flag
+// day: on an upgraded server every existing stream starts unmarked, and
+// refusing them would wedge every subscriber at once - the failure mode that
+// ground the News feed for nine days in 2026-07. A stream becomes gated the
+// moment it next sends, so the exposure closes on its own as traffic flows.
+//
+// Keyed on the marker rather than on "any row exists" so that
+// broadcast_subscribed_add can record a member of a stream that has not sent
+// yet without gating it against everyone else.
+func broadcast_subscribed_allowed(db *DB, key, peer, subscriber string) bool {
+	if subscriber == "" {
+		return false
+	}
+	if exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='subscribed'"); !exists {
+		return true
+	}
+	marked, _ := db.exists("select 1 from subscribed where key=? and peer=? and subscriber=''", key, peer)
+	if !marked {
+		return true
+	}
+	allowed, _ := db.exists("select 1 from subscribed where key=? and peer=? and subscriber=?", key, peer, subscriber)
+	return allowed
 }
 
 // broadcast_next_local allocates and returns the next outbound sequence
@@ -488,6 +608,94 @@ func broadcast_log_ack_trim(db *DB, key, peer string) {
 	db.exec("delete from log where key=? and peer=? and sequence < ?", key, peer, last)
 }
 
+// mochi.broadcast.subscriber.add(key, subscriber) -> bool: record a subscriber
+// of this host's (key) stream without sending to them. Returns whether the
+// record is new.
+//
+// Call this when a member joins. Membership is otherwise learned only from
+// mochi.broadcast.send's recipient list, which misses anyone a send
+// deliberately excludes - the member/add broadcast goes to the EXISTING
+// members, so the joiner is absent from the very event that admits them, and
+// would be refused a resync until some later send happened to include them.
+func api_broadcast_subscriber_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var key, subscriber string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "key", &key, "subscriber", &subscriber); err != nil {
+		return nil, err
+	}
+	if key == "" {
+		return sl_error(fn, "key must be non-empty")
+	}
+	if subscriber == "" {
+		return sl_error(fn, "subscriber must be non-empty")
+	}
+
+	user, _ := t.Local("user").(*User)
+	app, _ := t.Local("app").(*App)
+	if user == nil || app == nil {
+		return sl_error(fn, "no user/app context")
+	}
+
+	db := db_app_system(user, app)
+	if db == nil {
+		return sl_error(fn, "no system database")
+	}
+	return sl.Bool(broadcast_subscribed_add(db, key, net_id, subscriber)), nil
+}
+
+// mochi.broadcast.subscriber.remove(key, subscriber) -> bool: revoke a
+// subscriber's access to replay this host's (key) stream. Returns whether a
+// record was removed.
+//
+// Call this when a member leaves or is removed. Dropping them from the
+// subscriber list passed to mochi.broadcast.send stops future deliveries but
+// NOT replay: their record ages out on the log's own clock, and until then
+// they can resync events created after they left. This is the call that makes
+// revocation immediate.
+//
+// Scoped to this host's own stream (key, net_id) - an app may revoke access to
+// what it broadcasts, never to another host's stream.
+func api_broadcast_subscriber_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var key, subscriber string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "key", &key, "subscriber", &subscriber); err != nil {
+		return nil, err
+	}
+	if key == "" {
+		return sl_error(fn, "key must be non-empty")
+	}
+	if subscriber == "" {
+		return sl_error(fn, "subscriber must be non-empty")
+	}
+
+	user, _ := t.Local("user").(*User)
+	app, _ := t.Local("app").(*App)
+	if user == nil || app == nil {
+		return sl_error(fn, "no user/app context")
+	}
+
+	db := db_app_system(user, app)
+	if db == nil {
+		return sl_error(fn, "no system database")
+	}
+	return sl.Bool(broadcast_subscribed_remove(db, key, net_id, subscriber)), nil
+}
+
+// broadcast_subscribed_remove revokes one subscriber's access to (key, peer).
+// Returns whether a record was actually removed, so a caller can tell a real
+// revocation from a no-op.
+func broadcast_subscribed_remove(db *DB, key, peer, subscriber string) bool {
+	// Never the marker row: deleting it would drop a stream whose members have
+	// all been revoked back to fail-open.
+	if subscriber == "" {
+		return false
+	}
+	if exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='subscribed'"); !exists {
+		return false
+	}
+	removed, _ := db.exists("select 1 from subscribed where key=? and peer=? and subscriber=?", key, peer, subscriber)
+	db.exec("delete from subscribed where key=? and peer=? and subscriber=?", key, peer, subscriber)
+	return removed
+}
+
 // mochi.broadcast.next(key) -> int: allocate the next outbound sequence
 // number for (key, this_host).
 func api_broadcast_next(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
@@ -705,6 +913,12 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	content[broadcast_content_sequence] = sequence
 
 	services := app_services(app, user)
+	// Who this stream fans out to, for the resync gate. Recorded from the
+	// whole list rather than from the delivery loop below, which skips
+	// recipients the sending user owns and subscribers the health gate has
+	// suspended - both are still entitled to replay, and a suspended one is
+	// exactly who needs it when they come back.
+	recorded := []string{}
 	iter := subscribers.Iterate()
 	defer iter.Done()
 	var item sl.Value
@@ -716,6 +930,9 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 				sub, _ = recipient["id"].(string)
 				peer, _ = recipient["peer"].(string)
 			}
+		}
+		if sub != "" {
+			recorded = append(recorded, sub)
 		}
 		if sub == "" {
 			continue
@@ -755,6 +972,8 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			m.send()
 		}
 	}
+
+	broadcast_subscribed_record(db, key, net_id, recorded)
 
 	return sl.MakeInt64(sequence), nil
 }
@@ -835,6 +1054,17 @@ func (e *Event) broadcast_resync(a *App, av *AppVersion) error {
 
 	exists, _ := e.db.exists("select 1 from sqlite_master where type='table' and name='log'")
 	if !exists {
+		return nil
+	}
+
+	// The requester must be someone this stream fans out to. `key` is the
+	// object entity id, so it is known to every current member, every FORMER
+	// member, and anyone who has seen a share link - without this, knowing an
+	// id was enough to replay a private stream's history, and removal from a
+	// group revoked nothing. Silent: a refused requester learns nothing about
+	// whether the stream exists.
+	if !broadcast_subscribed_allowed(e.db, key, peer, e.from) {
+		info("Broadcast refusing resync of (key=%q, peer=%q) to non-subscriber %q", key, peer, e.from)
 		return nil
 	}
 
@@ -944,6 +1174,14 @@ func (e *Event) broadcast_acknowledge() error {
 	}
 	if sequence > head {
 		sequence = head
+	}
+
+	// Same membership gate as resync. An acknowledged row from a stranger is
+	// not merely noise: broadcast_log_ack_trim trims to the LOWEST floor, so
+	// one forged ack of 1 pins the log forever, and each distinct sender adds
+	// a row keyed on an id anyone can mint.
+	if !broadcast_subscribed_allowed(e.db, key, peer, e.from) {
+		return nil
 	}
 
 	broadcast_acknowledged_table_create(e.db)

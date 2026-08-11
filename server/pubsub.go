@@ -287,7 +287,15 @@ func pubsub_manager() {
 // The frame arrives already decoded and shape-checked: pubsub_manager needs
 // the service to choose a rate limit, so it decodes first and passes the
 // result rather than having it parsed twice.
+// Runs on pubsub_manager's goroutine, which reads the subscription for the
+// life of the process: an escaping panic here does not lose one frame, it ends
+// pubsub for the server. Nothing to shut down on recovery - the frame is
+// dropped and the manager reads the next one.
 func pubsub_receive(f *Announcement, peer, origin string) {
+	guard("pubsub_receive", nil, func() { pubsub_receive_guarded(f, peer, origin) })
+}
+
+func pubsub_receive_guarded(f *Announcement, peer, origin string) {
 	// Freshness bounds replay within the signed window.
 	if !pubsub_fresh(f.Expires) {
 		debug("Pubsub dropping frame with out-of-window expires %q from peer %q", f.Expires, peer)

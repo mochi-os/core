@@ -1,0 +1,286 @@
+// Mochi server: World server listings
+//
+// A mochi-world server running on this machine pushes its status — name,
+// address, per-service player counts — to this server over a local socket
+// (world_unix.go / world_windows.go), and this server announces it to the
+// network over pubsub. A listing is an attribute of the PEER, not of any
+// user or entity: GossipSub's StrictSign already authenticates the sending
+// peer, so announcements need no entity keys and no extra signatures, and
+// there is no "which user owns the listing" question at all.
+//
+// Rows are keyed (peer, world id) and age out when refresh stops: the world
+// pushes on change and on a 10-15 minute idle floor, so a listing that has
+// not been refreshed for three floors (45 minutes) is gone, not idle. Only
+// the latest state matters — there is no log, no replay, and no repair
+// stream; the floor republish IS the repair.
+//
+// Deliberately NOT app JWTs for the push: an app token is signed with the
+// SESSION's secret (auth_create_app_token), so it dies silently on logout,
+// session expiry, or a sessions.db wipe — all designed-for operations — and
+// it authenticates a whole user to a whole app, far more than a status push
+// should hold. The local socket's group permission is the entire credential.
+//
+// Copyright © 2026 Mochisoft OÜ
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the
+// Mochi Application Interface Exception - see license.txt and license-exception.md.
+
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	sl "go.starlark.net/starlark"
+	sls "go.starlark.net/starlarkstruct"
+)
+
+const (
+	world_publish_minimum = 60   // seconds between gossip publishes per world: the server-side debounce, whatever cadence the world promises
+	world_seen_expiry     = 2700 // seconds before an unrefreshed row leaves the table: three missed 15-minute floors
+	world_services_most   = 16   // services one world may announce: a bound, not a target
+	world_name_most       = 64   // runes in a display name: it renders on every server's join page
+)
+
+// world_service is one hosted game's slice of an announcement.
+type world_service struct {
+	Service string `json:"service"`
+	Players int64  `json:"players"`
+	Name    string `json:"name,omitempty"` // optional per-service display name; the world name serves otherwise
+}
+
+// world_recent debounces outbound gossip per world id: an unchanged push
+// inside the minimum interval stores locally but does not flood.
+var (
+	world_lock   sync.Mutex
+	world_recent = map[string]struct {
+		content   string
+		published int64
+	}{}
+)
+
+// world_init registers the built-in world app, creates the table, and starts
+// the expiry sweep. Called from main_serve alongside directory_init.
+func world_init() {
+	a := app("world")
+	a.service("world")
+	// The payload is a claim about the sending peer itself, which StrictSign
+	// has already authenticated; the message envelope is anonymous.
+	a.event_anonymous("publish", world_publish_event)
+
+	db := db_open("db/world.db")
+	db.exec("create table if not exists worlds ( peer text not null, world text not null, name text not null, address text not null, version integer not null, services text not null, seen integer not null, primary key (peer, world) )")
+	db.exec("create index if not exists worlds_seen on worlds( seen )")
+
+	go world_manager()
+}
+
+// world_manager ages out listings whose world has stopped refreshing.
+func world_manager() {
+	for range time.Tick(5 * time.Minute) {
+		db := db_open("db/world.db")
+		db.exec("delete from worlds where seen < ?", now()-world_seen_expiry)
+	}
+}
+
+// world_validate checks one announcement's fields, local push and gossip
+// alike — the strings render on every server's join page, so bounds are not
+// negotiable. Returns the parsed services on success.
+func world_validate(id, name, address, version, services string) ([]world_service, bool) {
+	if !valid(id, "id") || !valid(name, "line") || len([]rune(name)) > world_name_most {
+		return nil, false
+	}
+	if !valid(address, "url") || address == "" {
+		return nil, false
+	}
+	if !valid(version, "integer") {
+		return nil, false
+	}
+	var list []world_service
+	if json.Unmarshal([]byte(services), &list) != nil || len(list) == 0 || len(list) > world_services_most {
+		return nil, false
+	}
+	for _, s := range list {
+		if !valid(s.Service, "constant") || s.Players < 0 || s.Players > 100000 {
+			return nil, false
+		}
+		if s.Name != "" && (!valid(s.Name, "line") || len([]rune(s.Name)) > world_name_most) {
+			return nil, false
+		}
+	}
+	return list, true
+}
+
+// world_store upserts one listing row.
+func world_store(peer, id, name, address string, version int64, services string) {
+	db := db_open("db/world.db")
+	db.exec("replace into worlds (peer, world, name, address, version, services, seen) values (?, ?, ?, ?, ?, ?, ?)",
+		peer, id, name, address, version, services, now())
+}
+
+// world_status_handler receives a local world server's push. The socket's
+// group permission authorized the connection before it reached Gin, so the
+// body is trusted to be a local claim — but never to be well-formed.
+func world_status_handler(c *gin.Context) {
+	var input struct {
+		World struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Address string `json:"address"`
+			Version int64  `json:"version"`
+		} `json:"world"`
+		Services []world_service `json:"services"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"}) // i18n-ok: local machine channel, operator-facing
+		return
+	}
+	services, err := json.Marshal(input.Services)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid services"}) // i18n-ok: as above
+		return
+	}
+	list, ok := world_validate(input.World.ID, input.World.Name, input.World.Address, i64toa(input.World.Version), string(services))
+	if !ok || len(list) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"}) // i18n-ok: as above
+		return
+	}
+
+	world_store(net_id, input.World.ID, input.World.Name, input.World.Address, input.World.Version, string(services))
+
+	// Gossip on change, floored to one flood per minute per world: the local
+	// row above always holds the latest truth, and a suppressed change
+	// surfaces at the world's next push anyway.
+	content := input.World.Name + "\x00" + input.World.Address + "\x00" + i64toa(input.World.Version) + "\x00" + string(services)
+	world_lock.Lock()
+	recent := world_recent[input.World.ID]
+	fresh := content != recent.content
+	due := now()-recent.published >= world_publish_minimum
+	if due && (fresh || now()-recent.published >= world_seen_expiry/3) {
+		world_recent[input.World.ID] = struct {
+			content   string
+			published int64
+		}{content, now()}
+		world_lock.Unlock()
+		m := message("", "", "world", "publish")
+		m.set("world", input.World.ID, "name", input.World.Name, "address", input.World.Address,
+			"version", i64toa(input.World.Version), "services", string(services))
+		m.publish(false)
+	} else {
+		world_lock.Unlock()
+	}
+
+	c.JSON(http.StatusOK, gin.H{"stored": true})
+}
+
+// world_health lets a world server confirm the pairing works.
+func world_health(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"peer": net_id})
+}
+
+// world_register_routes wires the world socket's engine: ONLY these routes.
+// The world socket's permissions are looser than the admin socket's (a
+// service group rather than the operator), so it must never serve the admin
+// engine — that would hand stop/restart and the pprof suite to every group
+// member.
+func world_register_routes(r *gin.Engine) {
+	r.POST("/_/world/status", world_status_handler)
+	r.GET("/_/world/health", world_health)
+}
+
+// rate_limit_world_publish bounds inbound gossip per peer: a correct world
+// stack floods at most once a minute per world, so a peer exceeding this
+// severalfold is broken or hostile either way.
+var rate_limit_world_publish = &rate_limiter{
+	entries: make(map[string]*rate_limit_entry),
+	limit:   30,
+	window:  60,
+}
+
+// world_publish_event stores a listing announced by another peer. The peer
+// identity comes from the pubsub transport (StrictSign), never from content.
+func world_publish_event(e *Event) {
+	if e.peer == "" || e.peer == net_id {
+		return // own announcements come back around the flood; the local row is already authoritative
+	}
+	if !rate_limit_world_publish.allow(e.peer) {
+		debug("World dropping publish from %q: over the rate limit", e.peer)
+		return
+	}
+	id := e.get("world", "")
+	name := e.get("name", "")
+	address := e.get("address", "")
+	version := e.get("version", "")
+	services := e.get("services", "")
+	if _, ok := world_validate(id, name, address, version, services); !ok {
+		debug("World dropping invalid publish from %q", e.peer)
+		return
+	}
+	world_store(e.peer, id, name, address, atoi(version, 0), services)
+}
+
+// admin_worlds serves the whole table over the admin socket for mochictl.
+func admin_worlds(c *gin.Context) {
+	db := db_open("db/world.db")
+	rows, err := db.rows("select * from worlds order by peer, world")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()}) // i18n-ok: admin socket, peer-authenticated by uid; the operator wants the raw cause
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"worlds": rows, "peer": net_id})
+}
+
+// mochi.world.list(service) -> [{peer, world, name, address, version, players, seen}, ...]:
+// Live listings hosting one service, this host's own included. Display name
+// resolution (per-service name over world name) happens here so every app
+// renders the same answer; ordering is the consumer's job.
+var api_world = sls.FromStringDict(sl.String("mochi.world"), sl.StringDict{
+	"list": sl.NewBuiltin("mochi.world.list", api_world_list),
+})
+
+func api_world_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <service: string>")
+	}
+	service, ok := sl.AsString(args[0])
+	if !ok || !valid(service, "constant") {
+		return sl_error(fn, "invalid service %q", service)
+	}
+
+	db := db_open("db/world.db")
+	rows, err := db.rows("select * from worlds where seen >= ? order by peer, world", now()-world_seen_expiry)
+	if err != nil {
+		return sl_error(fn, "database error: %v", err)
+	}
+
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		var list []world_service
+		text, _ := row["services"].(string)
+		if json.Unmarshal([]byte(text), &list) != nil {
+			continue
+		}
+		for _, s := range list {
+			if s.Service != service {
+				continue
+			}
+			name, _ := row["name"].(string)
+			if s.Name != "" {
+				name = s.Name
+			}
+			out = append(out, map[string]any{
+				"peer":    row["peer"],
+				"world":   row["world"],
+				"name":    name,
+				"address": row["address"],
+				"version": row["version"],
+				"players": s.Players,
+				"seen":    row["seen"],
+			})
+		}
+	}
+	return sl_encode(out), nil
+}

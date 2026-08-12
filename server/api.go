@@ -89,6 +89,7 @@ func api_table() sl.StringDict {
 			"db":         api_db,
 			"decode":     api_decode,
 			"directory":  api_directory,
+			"world":      api_world,
 			"image":      api_image,
 			"document":   api_document,
 			"domain":     api_domain,

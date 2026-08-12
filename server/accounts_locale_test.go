@@ -41,20 +41,28 @@ func Test_account_test_localised(t *testing.T) {
 
 // A message carrying a placeholder must substitute it, not print the ICU
 // source or drop the detail.
+//
+// Resolved directly rather than through a provider. This used to call
+// account_test_mcp against a closed port and read the error off the result,
+// but the providers that take a caller-supplied address no longer report the
+// underlying error - the difference between "refused", "timed out" and "no
+// such host" is an oracle on an address the caller chose. The _detail form is
+// still used by the fixed-vendor providers, and substitution is what this test
+// is actually about.
 func Test_account_test_localised_arguments(t *testing.T) {
 	load_core_labels()
 
-	got := account_test_mcp("http://127.0.0.1:9/mcp", "", "de").Message
-	if !strings.HasPrefix(got, "Verbindung fehlgeschlagen: ") {
-		t.Errorf("mcp de = %q, want German prefix", got)
-	}
-	if strings.Contains(got, "{detail}") || strings.HasSuffix(got, ": ") {
-		t.Errorf("mcp de = %q, placeholder not substituted", got)
-	}
-
-	got = account_test_mcp("http://127.0.0.1:9/mcp", "", "ja").Message
-	if !strings.HasPrefix(got, "接続に失敗しました: ") {
-		t.Errorf("mcp ja = %q, want Japanese prefix", got)
+	for _, c := range []struct{ language, prefix string }{
+		{"de", "Verbindung fehlgeschlagen: "},
+		{"ja", "接続に失敗しました: "},
+	} {
+		got := resolve_core_label(c.language, "accounts.test.connection_failed_detail", map[string]any{"detail": "boom"})
+		if !strings.HasPrefix(got, c.prefix) {
+			t.Errorf("%s = %q, want prefix %q", c.language, got, c.prefix)
+		}
+		if !strings.Contains(got, "boom") || strings.Contains(got, "{detail}") || strings.HasSuffix(got, ": ") {
+			t.Errorf("%s = %q, placeholder not substituted", c.language, got)
+		}
 	}
 }
 

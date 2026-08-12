@@ -32,7 +32,7 @@ effect).
 
 Subcommands fall into three groups:
 
-**Inspection** — *status*, *version*, *health*, *identity*, *config show*,
+**Inspection** — *status*, *version*, *health*, *identity*, *worlds*, *config show*,
 *rsync-filter*. Read-only. Output goes to stdout in one of three formats
 (see **OPTIONS**).
 
@@ -98,6 +98,14 @@ Global flags can appear before or after the subcommand name; both
 
 **identity**
 :   Server libp2p peer ID and the resolved data directory.
+
+**worlds**
+:   World-server listings this host holds: its own co-located
+    **mochi-world**(8) servers and everything learned over pubsub. One row
+    per listing - name, address, version, per-service player counts, and
+    the age of the last refresh (listings expire 45 minutes after their
+    world stops refreshing). The first place to look when a listing is
+    missing from a join page.
 
 **config show**
 :   Effective configuration after merging the file and `MOCHI_*` env-var

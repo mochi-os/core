@@ -99,6 +99,7 @@ func main_serve(ready func()) int {
 	api_init()
 	events_init()
 	directory_init()
+	world_init()
 	peers_init()
 	senders_init()
 	// Confirm the data directory is writable. On Windows, the MSI
@@ -176,6 +177,9 @@ func main_serve(ready func()) int {
 	setting_set("server_started", itoa(int(now())))
 	if err := admin_start(); err != nil {
 		warn("admin listener disabled: %v", err)
+	}
+	if err := world_start(); err != nil {
+		warn("World listener failed to start: %v", err)
 	}
 	go cache_manager()
 	go closure_manager()

@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"text/tabwriter"
 	"time"
 )
 
@@ -134,6 +135,10 @@ func init() {
 		"broadcast lag": {
 			help: "Per-(user, app, peer, key) broadcast subscriber lag (received_last vs owner _log.max when this host owns the stream)",
 			run:  cmd_broadcast_lag,
+		},
+		"worlds": {
+			help: "World servers known to this host (local pushes + gossip)",
+			run:  cmd_worlds,
 		},
 		"pipelining status": {
 			help: "/mochi/2 transport state: open Senders + inflight, per-host worker pool.",
@@ -439,4 +444,64 @@ func post_with_body(path string, payload any) error {
 		fmt.Println()
 	}
 	return nil
+}
+
+// cmd_worlds renders the world-server listings this host holds: its own
+// co-located worlds and everything learned over gossip. The age column is
+// what an operator actually debugs with — "is my listing propagating".
+func cmd_worlds(args []string) error {
+	resp, err := client().Get("/_/admin/worlds")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return http_error(resp.StatusCode, body)
+	}
+	if flag_json || flag_tabs {
+		return render(body)
+	}
+	var parsed struct {
+		Peer   string `json:"peer"`
+		Worlds []struct {
+			Peer     string `json:"peer"`
+			World    string `json:"world"`
+			Name     string `json:"name"`
+			Address  string `json:"address"`
+			Version  int64  `json:"version"`
+			Services string `json:"services"`
+			Seen     int64  `json:"seen"`
+		} `json:"worlds"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return err
+	}
+	if len(parsed.Worlds) == 0 {
+		fmt.Println("No world servers known")
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tADDRESS\tVERSION\tSERVICES\tAGE\tPEER")
+	for _, row := range parsed.Worlds {
+		var services []struct {
+			Service string `json:"service"`
+			Players int64  `json:"players"`
+		}
+		_ = json.Unmarshal([]byte(row.Services), &services)
+		parts := make([]string, 0, len(services))
+		for _, s := range services {
+			parts = append(parts, fmt.Sprintf("%s:%d", s.Service, s.Players))
+		}
+		peer := row.Peer
+		if peer == parsed.Peer {
+			peer = "(this host)"
+		} else if len(peer) > 12 {
+			peer = peer[:12] + "…"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\n",
+			row.Name, row.Address, row.Version, strings.Join(parts, " "),
+			humanise_duration(time.Now().Unix()-row.Seen), peer)
+	}
+	return w.Flush()
 }

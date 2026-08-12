@@ -28,6 +28,14 @@ The server maintains:
   QUIC/UDP).
 - An admin Unix domain socket at *<data_dir>*/run/admin.sock for
   **mochictl**(1).
+- A world-status Unix domain socket at *<data_dir>*/run/world.sock (mode
+  0660, group **mochi-world**) where a co-located **mochi-world**(8) server
+  pushes its public listing - name, address, per-service player counts. The
+  server announces listings to the network over pubsub; they age out 45
+  minutes after the world stops refreshing. Members of the **mochi-world**
+  group, the **mochi** user, and root may connect; on Windows the equivalent
+  named pipe \\.\pipe\mochi-world admits LocalSystem and Administrators.
+  Inspect known listings with **mochictl worlds**.
 
 By default, **mochi-server** runs as the dedicated **mochi** user (created
 by the deb/rpm postinst). Inside Docker, it starts as root, creates and

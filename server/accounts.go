@@ -985,6 +985,44 @@ type AccountTestResult struct {
 	Message string `json:"message"`
 }
 
+// account_client is the HTTP client for every account provider whose address
+// the user supplies - the external-URL webhook, ntfy, MCP, and the browser and
+// UnifiedPush endpoints. It carries url_transport, so the destination is
+// checked in the dialer against the resolved address on every hop.
+//
+// A user names these addresses, which makes them a request the server will
+// make on the user's behalf from inside whatever network it sits in. Checking
+// the URL string is not enough and never was: a hostname the user controls can
+// resolve to an internal address, a literal can be written in decimal or octal,
+// an allowed host can redirect inward, and DNS can change between the check and
+// the connection. url_address_allowed sees the socket rather than the string,
+// so it covers all four.
+//
+// Providers at fixed vendor addresses (Pushbullet, Anthropic, OpenAI, FCM) are
+// deliberately not routed through here - there is no caller-supplied address to
+// guard, and pointing them at the guard would only obscure that difference.
+func account_client(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, Transport: url_transport}
+}
+
+// account_failure logs the underlying transport error and returns the plain
+// user-facing message, without it.
+//
+// The detail is an oracle on a user-supplied address: "connection refused"
+// separates a closed port from a filtered one, "no such host" separates DNS
+// from routing, and a status code confirms a service. Repeated over a range,
+// that maps a network the caller cannot otherwise see. Operators still get the
+// full error in the log, where it is useful and not a probe.
+//
+// key is the plain label ("accounts.test.connection_failed" or
+// "accounts.test.push_failed"); the matching _detail form is used only for the
+// fixed-vendor providers, where the error describes a public endpoint the
+// caller could have contacted directly.
+func account_failure(language string, key string, provider string, err error) AccountTestResult {
+	info("Account test failed for %s provider: %v", provider, err)
+	return AccountTestResult{Success: false, Message: resolve_core_label(language, key, nil)}
+}
+
 // account_display_label returns a friendly name for a connected account for
 // use in test-notification bodies. Prefers the user-set label; falls back to
 // a localised provider-typed string ("Android device", "Email", etc.), or to
@@ -1180,7 +1218,7 @@ func account_test_browser(data map[string]any, language string, account_label st
 	})
 
 	if err != nil {
-		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.push_failed_detail", map[string]any{"detail": err.Error()})}
+		return account_failure(language, "accounts.test.push_failed", "browser", err)
 	}
 	defer resp.Body.Close()
 
@@ -1232,7 +1270,7 @@ func account_test_unifiedpush(data map[string]any, language string, account_labe
 	})
 
 	if err != nil {
-		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.push_failed_detail", map[string]any{"detail": err.Error()})}
+		return account_failure(language, "accounts.test.push_failed", "unifiedpush", err)
 	}
 	defer resp.Body.Close()
 
@@ -1410,10 +1448,10 @@ func account_test_mcp(url, token, language string) AccountTestResult {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := account_client(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
-		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.connection_failed_detail", map[string]any{"detail": err.Error()})}
+		return account_failure(language, "accounts.test.connection_failed", "mcp", err)
 	}
 	defer resp.Body.Close()
 
@@ -1460,10 +1498,10 @@ func account_test_ntfy(server, topic, token string, language string, account_lab
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := account_client(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
-		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.connection_failed_detail", map[string]any{"detail": err.Error()})}
+		return account_failure(language, "accounts.test.connection_failed", "ntfy", err)
 	}
 	defer resp.Body.Close()
 
@@ -1499,10 +1537,10 @@ func account_test_url(url, secret, language string) AccountTestResult {
 		req.Header.Set("X-Mochi-Signature", signature)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := account_client(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
-		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.connection_failed_detail", map[string]any{"detail": err.Error()})}
+		return account_failure(language, "accounts.test.connection_failed", "url", err)
 	}
 	defer resp.Body.Close()
 
@@ -1693,7 +1731,7 @@ func account_deliver_browser(data map[string]any, title, body, link, tag string)
 		// http.Client with no timeout; a hanging push endpoint then
 		// blocks the notifications commit hook until the Starlark
 		// execution cap kills it (and the caller's service.call with it).
-		HTTPClient:      &http.Client{Timeout: 15 * time.Second},
+		HTTPClient:      account_client(15 * time.Second),
 		Subscriber:      "mailto:webpush@localhost",
 		VAPIDPublicKey:  webpush_public,
 		VAPIDPrivateKey: webpush_private,
@@ -1776,7 +1814,7 @@ func account_deliver_unifiedpush(user *User, accountID string, data map[string]a
 
 	resp, err := webpush.SendNotification(payload, &sub, &webpush.Options{
 		// Bounded client for the same reason as account_deliver_browser.
-		HTTPClient:      &http.Client{Timeout: 15 * time.Second},
+		HTTPClient:      account_client(15 * time.Second),
 		Subscriber:      "mailto:webpush@localhost",
 		VAPIDPublicKey:  webpush_public,
 		VAPIDPrivateKey: webpush_private,
@@ -1872,7 +1910,7 @@ func account_deliver_ntfy(server, topic, token, title, body, link string) bool {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := account_client(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return false
@@ -1909,7 +1947,7 @@ func account_deliver_url(url, secret, app, category, object, title, body, link s
 		req.Header.Set("X-Mochi-Signature", signature)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := account_client(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return false

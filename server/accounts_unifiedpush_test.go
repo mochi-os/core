@@ -77,6 +77,7 @@ func TestUnifiedPushProviderHasNotifyCapability(t *testing.T) {
 // case) doesn't trigger an HTTP self-call. We point a sentinel httptest
 // server at a URL that should NOT be hit, and assert it stays untouched.
 func TestUnifiedPushDeliverLocalFastPath(t *testing.T) {
+	private_endpoints_allowed(t)
 	var hits int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&hits, 1)
@@ -102,6 +103,7 @@ func TestUnifiedPushDeliverLocalFastPath(t *testing.T) {
 // TestUnifiedPushDeliverRemote verifies that an absolute endpoint URL
 // (third-party distributor like ntfy.sh) routes via RFC 8030 Web Push.
 func TestUnifiedPushDeliverRemote(t *testing.T) {
+	private_endpoints_allowed(t)
 	var hits int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&hits, 1)
@@ -133,6 +135,7 @@ func TestUnifiedPushDeliverRemote(t *testing.T) {
 // "subscription dead" response from RFC 8030 push services) returns false,
 // so the caller's outer loop drops the account row.
 func TestUnifiedPushDeliverRemoteGone(t *testing.T) {
+	private_endpoints_allowed(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusGone)
 	}))
@@ -183,6 +186,7 @@ func TestUnifiedPushDeliverEmptyEndpoint(t *testing.T) {
 // not some hardcoded URL or default. Catches a regression where the path
 // logic accidentally rewrites foreign endpoints.
 func TestUnifiedPushDeliverRoutesToStoredEndpoint(t *testing.T) {
+	private_endpoints_allowed(t)
 	expected_host := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Capture the host so the test can assert the request landed at our

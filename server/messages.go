@@ -411,6 +411,46 @@ func (m *Message) set(in ...string) *Message {
 	}
 }
 
+// sender_check reports whether user owns the entity named in a from header.
+// Shared by message.send, message.send.peer and the stream openers, which each
+// carried a copy: the check is what stops an app speaking as an entity its user
+// does not own, so a change applied to one copy and not the others would leave
+// the gap open on whichever site was missed.
+//
+// Ownership is the only test. Being routed to an entity is deliberately not a
+// second way to pass: /<app>/<entity>/... takes the app from one URL segment
+// and resolves the entity globally from the next, with no check that the caller
+// owns it, that its class belongs to that app, or any authorization between the
+// two - core leaves that to the app. Treating the route as licence to speak as
+// the entity therefore granted, on the strength of a URL, what claim_sign then
+// turned into a real signature by that entity's key. mochi.entity.sign has
+// always refused the same request outright.
+//
+// Returns false (not an error) for a refusal, having logged it. The log names
+// the routed-entity case specifically, so a path that relied on the old grant
+// is diagnosable rather than a bare "invalid from header".
+func sender_check(t *sl.Thread, user *User, from string, context string) (bool, error) {
+	db := db_open("db/users.db")
+	owned, err := db.exists("select id from entities where id=? and user=?", from, user.UID)
+	if err != nil {
+		return false, fmt.Errorf("database error: %v", err)
+	}
+	if owned {
+		return true, nil
+	}
+
+	identity := ""
+	if user.Identity != nil {
+		identity = user.Identity.ID
+	}
+	routed := ""
+	if route, ok := t.Local("route_entity").(string); ok && route == from {
+		routed = " routed-entity"
+	}
+	info("%s: invalid%s from header - from=%q user=%q identity=%q", context, routed, from, user.UID, identity)
+	return false, nil
+}
+
 // mochi.message.send(headers, content?, data?, expires=seconds) -> None: Send a Net message
 func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 3 {
@@ -437,22 +477,11 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "no user")
 	}
 
-	db := db_open("db/users.db")
-	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.UID)
+	from_valid, err := sender_check(t, user, headers["from"], "message.send")
 	if err != nil {
-		return sl_error(fn, "database error: %v", err)
+		return sl_error(fn, "%v", err)
 	}
 	if !from_valid {
-		if re, ok := t.Local("route_entity").(string); ok && re == headers["from"] {
-			from_valid = true
-		}
-	}
-	if !from_valid {
-		identity := ""
-		if user.Identity != nil {
-			identity = user.Identity.ID
-		}
-		info("message.send: invalid from header - from=%q user=%q identity=%q", headers["from"], user.UID, identity)
 		return sl_error(fn, "invalid from header")
 	}
 
@@ -528,22 +557,11 @@ func api_message_send_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no user")
 	}
 
-	db := db_open("db/users.db")
-	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.UID)
+	from_valid, err := sender_check(t, user, headers["from"], "message.send.peer")
 	if err != nil {
-		return sl_error(fn, "database error: %v", err)
+		return sl_error(fn, "%v", err)
 	}
 	if !from_valid {
-		if re, ok := t.Local("route_entity").(string); ok && re == headers["from"] {
-			from_valid = true
-		}
-	}
-	if !from_valid {
-		identity := ""
-		if user.Identity != nil {
-			identity = user.Identity.ID
-		}
-		info("message.send.peer: invalid from header - from=%q user=%q identity=%q", headers["from"], user.UID, identity)
 		return sl_error(fn, "invalid from header")
 	}
 

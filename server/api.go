@@ -796,11 +796,8 @@ func (m *stream_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []
 // line-for-line copy of this each. The from check is the reason it must not
 // drift: it is what stops an app opening a stream AS an entity its user does
 // not own, and a fix applied to one copy and not the other would leave that
-// hole open on whichever call site was missed.
-//
-// The route_entity fallback covers an entity-scoped action running for a
-// caller who is not the owner: the thread is routed to that entity, so it
-// may speak as it even though users.db does not tie it to this user.
+// hole open on whichever call site was missed. sender_check is that test, and
+// is shared with message.send for the same reason.
 func stream_headers_validate(t *sl.Thread, headers map[string]string) (*User, string, []string, error) {
 	user, _ := t.Local("user").(*User)
 	if user == nil {
@@ -810,15 +807,9 @@ func stream_headers_validate(t *sl.Thread, headers map[string]string) (*User, st
 		return nil, "", nil, errors.New("no user")
 	}
 
-	db := db_open("db/users.db")
-	from_valid, err := db.exists("select id from entities where id=? and user=?", headers["from"], user.UID)
+	from_valid, err := sender_check(t, user, headers["from"], "stream")
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("database error: %v", err)
-	}
-	if !from_valid {
-		if re, ok := t.Local("route_entity").(string); ok && re == headers["from"] {
-			from_valid = true
-		}
+		return nil, "", nil, err
 	}
 	if !from_valid {
 		return nil, "", nil, errors.New("invalid from header")

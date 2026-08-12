@@ -141,6 +141,26 @@ func web_auth_restore(c *gin.Context) {
 		return
 	}
 
+	// Prove the caller controls the address before an account exists for it.
+	// The passphrase authenticates the bundle, not the person holding it, so
+	// on its own it says nothing about whether this address is theirs -
+	// restore was the one route that could mint an account, and on an empty
+	// server an administrator, for an address nobody had shown they could
+	// receive mail at. The code comes from the ordinary /_/auth/code flow.
+	//
+	// Consumed here rather than earlier so that a request failing any of the
+	// cheap checks above does not burn the user's single-use code. It still
+	// precedes the placeholder row and every byte of bundle processing.
+	code := strings.TrimSpace(c.PostForm("code"))
+	if code == "" {
+		respond_error(c, http.StatusBadRequest, "missing_code", "errors.missing_code", nil)
+		return
+	}
+	if !code_consume_email(email, code) {
+		respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
+		return
+	}
+
 	// Create the placeholder with a fresh destination-side uid. The source
 	// uid in the bundle is informational only; the destination's uid is
 	// canonical.

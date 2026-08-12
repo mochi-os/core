@@ -168,12 +168,31 @@ func code_send(email string, c *gin.Context) string {
 // session already identifies the user, so the code is matched to their
 // username and an attacker can't burn a different user's pending code.
 func code_consume(user *User, code string) bool {
-	if user == nil || code == "" {
+	if user == nil {
+		return false
+	}
+	return code_consume_email(user.Username, code)
+}
+
+// code_consume_email is the same check keyed on the address rather than an
+// account, for a caller proving control of an address that has no user yet.
+// code_send already stores codes against the address (it emails one for an
+// unknown address whenever signup is open), so nothing new is issued here -
+// this is only the matching consumption.
+//
+// Restore needs this: the passphrase authenticates the BUNDLE, not the person
+// holding it, so without a code that route would mint an account for an
+// address nobody had shown they could receive mail at.
+//
+// Single-use and expiry-checked in one statement: the delete-and-return means
+// two concurrent attempts cannot both succeed on the same code.
+func code_consume_email(email string, code string) bool {
+	if email == "" || code == "" {
 		return false
 	}
 	sessions := db_open("db/sessions.db")
 	var c Code
-	if !sessions.scan(&c, "delete from codes where code=? and username=? and expires>=? returning *", code, user.Username, now()) {
+	if !sessions.scan(&c, "delete from codes where code=? and username=? and expires>=? returning *", code, email, now()) {
 		return false
 	}
 	return true

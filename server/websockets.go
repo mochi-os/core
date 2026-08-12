@@ -98,7 +98,9 @@ func websocket_connection(c *gin.Context) {
 	for {
 		t, j, err := ws.Read(websocket_context)
 		if err != nil {
-			websocket_terminate(ws, u, key, id)
+			// The deferred terminate above runs on return; calling it here as
+			// well closed and deleted the same connection twice on every
+			// ordinary disconnect.
 			return
 		}
 		if t != websocket.MessageText {
@@ -112,7 +114,22 @@ func websocket_connection(c *gin.Context) {
 func websockets_send(u *User, key string, content any) {
 	// debug("Websocket sending to user %d, key %q: %+v", u.UID, key, content)
 	j := ""
-	var failed []string
+
+	// The connection is carried through to the termination pass rather than
+	// looked up again. The write failing is the same event that makes ws.Read
+	// fail on this connection's own reader goroutine, which terminates it and
+	// deletes the entry - so a second lookup races that deletion and yields a
+	// nil, and CloseNow dereferences its receiver. Nothing exotic is needed to
+	// reach it: an ordinary disconnect drives both paths at once.
+	//
+	// Termination cannot happen under the read lock, since it takes the write
+	// lock, which is why this is a second pass at all. That only requires
+	// deferring the CLOSE, not re-fetching a reference already in hand.
+	type dead struct {
+		id string
+		ws *websocket.Conn
+	}
+	var failed []dead
 
 	websockets_lock.RLock()
 	for id, ws := range websockets[u.UID][key] {
@@ -121,21 +138,25 @@ func websockets_send(u *User, key string, content any) {
 		}
 		err := ws.Write(websocket_context, websocket.MessageText, []byte(j))
 		if err != nil {
-			failed = append(failed, id)
+			failed = append(failed, dead{id: id, ws: ws})
 		}
 	}
 	websockets_lock.RUnlock()
 
-	for _, id := range failed {
-		websockets_lock.RLock()
-		ws := websockets[u.UID][key][id]
-		websockets_lock.RUnlock()
-		websocket_terminate(ws, u, key, id)
+	for _, entry := range failed {
+		websocket_terminate(entry.ws, u, key, entry.id)
 	}
 }
 
+// websocket_terminate closes a connection and removes it from the registry.
+// Safe to call more than once for the same id, and safe with a nil connection:
+// the map deletes below are no-ops on an entry that has already gone, and a
+// caller that no longer holds the connection should still be able to clear the
+// registry rather than dereference nothing.
 func websocket_terminate(ws *websocket.Conn, u *User, key string, id string) {
-	ws.CloseNow()
+	if ws != nil {
+		ws.CloseNow()
+	}
 	websockets_lock.Lock()
 	delete(websockets[u.UID][key], id)
 

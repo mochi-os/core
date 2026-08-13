@@ -4,7 +4,7 @@
 # This file is part of Mochi, licensed under the GNU AGPL v3 with the
 # Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-version = 0.4.236
+version = 0.4.237
 
 # Build outputs land in ~/mochi/bin/ (one level up from core/), so source
 # directories never collide with binary names.
@@ -559,10 +559,17 @@ release-publish:
 	# in place every release, and this rsync is not atomic, so a server that
 	# read versions.json seconds earlier could otherwise download a different
 	# build than the one it recorded. Pruned like the apt pool: current only.
+	#
+	# The stable name is a relative symlink to the stamped file, not a second
+	# copy: uploading the same 27MB twice was 12% of a release over a domestic
+	# uplink. It has to be relative, and to name a file in this same directory,
+	# because a.write.file opens through os.Root and a link that leaves the
+	# served directory is refused. The publish below is what makes the link
+	# safe - see the two-pass rsync there.
 	rm -f ../packages/windows/mochi-server-*.msi
 	gpg --armor --export `cat local/gpg.txt | tr -d '\n'` > ../packages/mochi.asc
-	cp $(msi) ../packages/windows/mochi-server.msi
 	cp $(msi) ../packages/windows/mochi-server-$(version).msi
+	ln -sfn mochi-server-$(version).msi ../packages/windows/mochi-server.msi
 	@sha=`sha256sum $(msi) | cut -d' ' -f1`; size=`wc -c < $(msi) | tr -d ' '`; \
 	  printf '{"tracks": {"production": "%s"}, "releases": {"%s": {"file": "mochi-server-%s.msi", "size": %s, "sha256": "%s"}}}\n' \
 	  '$(version)' '$(version)' '$(version)' "$$size" "$$sha" > ../packages/windows/versions.json
@@ -589,8 +596,24 @@ release-publish:
 	# Publish to yuzu by name (not the packages.mochi-os.org alias) so the
 	# target is deterministic regardless of where that record points. Wasabi is
 	# frozen as a pre-decouple backup and receives no packages.
+	#
+	# Two passes, because the stable download names are symlinks to the
+	# version-stamped file beside them. rsync creates a symlink in its generator
+	# pass, up front, while the file it points at arrives with the bulk transfer
+	# minutes later - so a single pass leaves the download URL pointing at
+	# nothing for the whole upload, every release. Measured, and neither
+	# --delete-after nor --delay-updates changes it.
+	#
+	# Pass one carries everything except those links and deletes nothing, so the
+	# previous build stays in place and the existing links keep resolving while
+	# the new one uploads. Pass two repoints the links, now that their targets
+	# are present, and only then prunes the previous version - --delete-after,
+	# so no link is left pointing at a file that was deleted a moment earlier.
+	# Pass two moves a few hundred bytes; the timing below covers both.
 	@t0=$$(date +%s); \
-	rsync -av --delete ../packages/ root@yuzu.mochi-os.org:/srv/packages/ || exit 1; \
+	rsync -av --exclude=/windows/mochi-server.msi --exclude=/android/mochi.apk \
+	    ../packages/ root@yuzu.mochi-os.org:/srv/packages/ || exit 1; \
+	rsync -av --delete-after ../packages/ root@yuzu.mochi-os.org:/srv/packages/ || exit 1; \
 	echo ">>> rsync local->yuzu: $$(($$(date +%s)-t0))s" | tee -a $(timing)
 
 # Install the published version on yuzu (verified). Separate from `release`

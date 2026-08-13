@@ -218,6 +218,34 @@ func TestWriteFileFollowsInternalSymlink(t *testing.T) {
 	}
 }
 
+// TestWriteFileFollowsSiblingFileSymlink covers the other in-directory shape:
+// a link whose final component points at a sibling file rather than at a
+// directory, which resolves by a different path through os.Root - a final
+// component is opened, not walked. The release publishes each installer under
+// a version-stamped name and leaves the stable download name beside it as a
+// link, so it is uploaded once instead of twice; if this stopped resolving the
+// download URL would 404 while the updater, which fetches the stamped name
+// directly, kept working and hid it.
+func TestWriteFileFollowsSiblingFileSymlink(t *testing.T) {
+	base, serve := write_file_environment(t, "/files/mochi-server.msi", true)
+
+	if err := os.WriteFile(base+"/mochi-server-0.4.237.msi", []byte("INSTALLER"), 0600); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+	if err := os.Symlink("mochi-server-0.4.237.msi", base+"/mochi-server.msi"); err != nil {
+		t.Fatalf("creating symlink: %v", err)
+	}
+
+	w := serve("mochi-server.msi")
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	if body := w.Body.String(); body != "INSTALLER" {
+		t.Errorf("body = %q, want INSTALLER", body)
+	}
+}
+
 // TestWriteFileDirectoryDoesNotList covers the enumeration hole: serving a
 // directory that has no index must not fall back to a generated HTML index,
 // which named every file in the tree to anyone who could reach it.

@@ -201,13 +201,19 @@ var rate_limit_world_publish = &rate_limiter{
 }
 
 // world_publish_event stores a listing announced by another peer. The peer
-// identity comes from the pubsub transport (StrictSign), never from content.
+// identity comes from the pubsub layer (StrictSign), never from content —
+// and it is e.origin, the signature-verified ORIGINATOR, not e.peer, the
+// last-hop mesh neighbour that forwarded the message. A listing is a claim
+// about its originator: keying rows on the forwarder filed one world under
+// every neighbour that relayed it, so a single server showed up twice in the
+// join list until the stale copy aged out. Rate limiting stays on e.peer,
+// the identity the transport actually delivers from.
 func world_publish_event(e *Event) {
-	if e.peer == "" || e.peer == net_id {
-		return // own announcements come back around the flood; the local row is already authoritative
+	if e.origin == "" || e.origin == net_id {
+		return // own announcements come back around the flood (the local row is already authoritative); "" is a direct stream, which never carries a world listing
 	}
 	if !rate_limit_world_publish.allow(e.peer) {
-		debug("World dropping publish from %q: over the rate limit", e.peer)
+		debug("World dropping publish forwarded by %q: over the rate limit", e.peer)
 		return
 	}
 	id := e.get("world", "")
@@ -216,10 +222,10 @@ func world_publish_event(e *Event) {
 	version := e.get("version", "")
 	services := e.get("services", "")
 	if _, ok := world_validate(id, name, address, version, services); !ok {
-		debug("World dropping invalid publish from %q", e.peer)
+		debug("World dropping invalid publish from %q", e.origin)
 		return
 	}
-	world_store(e.peer, id, name, address, atoi(version, 0), services)
+	world_store(e.origin, id, name, address, atoi(version, 0), services)
 }
 
 // admin_worlds serves the whole table over the admin socket for mochictl.

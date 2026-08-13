@@ -26,23 +26,44 @@ func world_test_services(players int64) string {
 	return string(b)
 }
 
-// A gossiped announcement from another peer stores; the peer identity comes
-// from the transport, so a row is keyed by the SENDER, not by anything in
-// the payload.
+// A gossiped announcement stores keyed by its ORIGINATOR — e.origin, the
+// GossipSub signature-verified GetFrom — never by e.peer, the last-hop mesh
+// neighbour that forwarded it, and never by anything in the payload. Keying
+// on the forwarder filed one world under every neighbour that relayed it, so
+// a single server appeared twice in the join list until the stale copy aged
+// out (seen live 2026-08-12: yuzu's listing under a dev instance's peer id).
 func TestWorldPublishEventStores(t *testing.T) {
 	defer setup_world_test(t)()
-	e := &Event{peer: "peer1", service: "world", event: "publish", content: map[string]any{
+	e := &Event{peer: "relay1", origin: "origin1", service: "world", event: "publish", content: map[string]any{
 		"world": world_test_id, "name": "Duc's World", "address": "https://world.example:4433",
 		"version": "3", "services": world_test_services(5)}}
 	world_publish_event(e)
 
 	db := db_open("db/world.db")
-	row, _ := db.row("select * from worlds where peer=? and world=?", "peer1", world_test_id)
+	row, _ := db.row("select * from worlds where peer=? and world=?", "origin1", world_test_id)
 	if row == nil {
-		t.Fatal("announcement from a remote peer was not stored")
+		t.Fatal("announcement was not stored under its originator")
 	}
 	if row["name"] != "Duc's World" {
 		t.Fatalf("stored name %q", row["name"])
+	}
+	if exists, _ := db.exists("select 1 from worlds where peer=?", "relay1"); exists {
+		t.Fatal("announcement was filed under the forwarding mesh neighbour")
+	}
+}
+
+// A direct stream carries no authenticated originator (origin ""), and no
+// legitimate world listing arrives that way: dropped.
+func TestWorldPublishEventNeedsOrigin(t *testing.T) {
+	defer setup_world_test(t)()
+	e := &Event{peer: "peer1", service: "world", event: "publish", content: map[string]any{
+		"world": world_test_id, "name": "Sneak", "address": "https://world.example:4433",
+		"version": "3", "services": world_test_services(1)}}
+	world_publish_event(e)
+
+	db := db_open("db/world.db")
+	if exists, _ := db.exists("select 1 from worlds where world=?", world_test_id); exists {
+		t.Fatal("originless announcement was stored")
 	}
 }
 
@@ -50,7 +71,7 @@ func TestWorldPublishEventStores(t *testing.T) {
 // around the flood must not overwrite the local table.
 func TestWorldPublishEventIgnoresSelf(t *testing.T) {
 	defer setup_world_test(t)()
-	e := &Event{peer: net_id, service: "world", event: "publish", content: map[string]any{
+	e := &Event{peer: "relay1", origin: net_id, service: "world", event: "publish", content: map[string]any{
 		"world": world_test_id, "name": "Echo", "address": "https://world.example:4433",
 		"version": "3", "services": world_test_services(1)}}
 	world_publish_event(e)
@@ -82,7 +103,7 @@ func TestWorldValidationRejects(t *testing.T) {
 		{"world": world_test_id, "name": "ok", "address": "", "version": "3", "services": world_test_services(1)},
 	}
 	for k, content := range cases {
-		world_publish_event(&Event{peer: "peer1", service: "world", event: "publish", content: content})
+		world_publish_event(&Event{peer: "relay1", origin: "peer1", service: "world", event: "publish", content: content})
 		db := db_open("db/world.db")
 		if exists, _ := db.exists("select 1 from worlds where peer=?", "peer1"); exists {
 			t.Fatalf("case %d: invalid announcement was stored: %v", k, content)

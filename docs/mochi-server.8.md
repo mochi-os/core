@@ -37,6 +37,17 @@ The server maintains:
   named pipe \\.\pipe\mochi-world admits LocalSystem and Administrators.
   Inspect known listings with **mochictl worlds**.
 
+  The **mochi-world** package creates that group and adds the **mochi**
+  account to it, because the socket is created by this server and a process
+  may only set a file's group to one it belongs to. Group membership is read
+  at process start, so a freshly installed pair takes the group on this
+  server's next restart; until then the world server reaches the socket as
+  its owner. The shipped **mochi-world** unit runs as the **mochi** user, so
+  it connects either way - the group is what lets an operator run the world
+  server under a separate account without granting it this server's data
+  directory. *<data_dir>*/run is mode 0751 so such an account can traverse
+  to the socket; each socket in it is gated by its own mode and group.
+
 By default, **mochi-server** runs as the dedicated **mochi** user (created
 by the deb/rpm postinst). Inside Docker, it starts as root, creates and
 chowns its data directories, then drops to uid/gid 1000 before serving

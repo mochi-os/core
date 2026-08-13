@@ -18,8 +18,21 @@ func run_dir() string {
 	return filepath.Join(data_dir, "run")
 }
 
-// run_dir_create ensures <data_dir>/run/ exists with mode 0750.
+// run_dir_create ensures <data_dir>/run/ exists.
 // Called early during startup, before the UDS admin listener tries to bind.
+//
+// Mode 0751: owner all, the server's group may list, everyone else may only
+// TRAVERSE. The traverse bit is load-bearing, not a loosening. Each socket in
+// here is gated by its own 0660 and its own group — admin.sock to the mochi
+// group, world.sock to mochi-world — and a member of one group is generally
+// not a member of the other, so at 0750 a mochi-world process that is not the
+// server's own user could not reach world.sock at all and the socket's group
+// was decorative. Traversal without read is the standard way to publish one
+// named endpoint out of a private directory: you must already know the name,
+// and the socket's own permissions still decide who may speak to it.
 func run_dir_create() error {
-	return os.MkdirAll(run_dir(), 0750)
+	if err := os.MkdirAll(run_dir(), 0751); err != nil {
+		return err
+	}
+	return os.Chmod(run_dir(), 0751) // an existing directory keeps its old mode through MkdirAll
 }

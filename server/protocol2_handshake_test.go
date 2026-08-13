@@ -27,6 +27,23 @@ import (
 // ends to agree, except where they deliberately disagree.
 const test_receiver = "12D3KooWReceiverUnderTest"
 
+// test_opener stands in for the peer ID that OPENED a stream — the one
+// a responder proof is addressed to. Deliberately distinct from
+// test_receiver so a test cannot pass by confusing the two directions.
+const test_opener = "12D3KooWOpenerUnderTest"
+
+// must_challenge returns a fresh well-formed challenge, failing the test
+// if the entropy source does. Tests use it wherever production code
+// would call hello_challenge().
+func must_challenge(t *testing.T) []byte {
+	t.Helper()
+	c, err := hello_challenge()
+	if err != nil {
+		t.Fatalf("hello_challenge: %v", err)
+	}
+	return c
+}
+
 // new_entity_keys generates a fresh ed25519 keypair, base58-encodes the
 // public key as the entity ID (matching entity_id() in entities.go),
 // and inserts the row into the test users.db so claim_sign can find the
@@ -153,7 +170,11 @@ func TestHelloWrongChallengeLengthRejected(t *testing.T) {
 
 func TestCapsRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
-	if err := caps_write(&buf, []string{"zstd", "snappy"}, []string{"batch"}); err != nil {
+	challenge, err := hello_challenge()
+	if err != nil {
+		t.Fatalf("hello_challenge: %v", err)
+	}
+	if err := caps_write(&buf, []string{"zstd", "snappy"}, []string{"batch"}, challenge); err != nil {
 		t.Fatalf("caps_write: %v", err)
 	}
 	got, err := caps_read(&buf)
@@ -168,6 +189,13 @@ func TestCapsRoundTrip(t *testing.T) {
 	}
 	if !contains_string(got.Features, "batch") {
 		t.Errorf("Features: %v", got.Features)
+	}
+	// The opener's challenge must survive the round trip: the answering
+	// side signs exactly these bytes to prove it holds the addressed
+	// entity, so a caps frame that drops or mangles it silently disables
+	// the proof rather than failing it.
+	if !bytes.Equal(got.Challenge, challenge) {
+		t.Errorf("Challenge: got %x want %x", got.Challenge, challenge)
 	}
 }
 
@@ -559,5 +587,127 @@ func TestSessionIDFresh(t *testing.T) {
 	b := session_id()
 	if a == b {
 		t.Error("session_id returned same value twice")
+	}
+}
+
+// --- responder proof ---------------------------------------------------
+//
+// The answering side's half of the mutual authentication: proof that the
+// host which answered actually holds the entity the opener addressed.
+// Without it an opener knows only which host replied, so any peer it was
+// told to use could answer for any entity.
+
+func TestResponderProofRoundTrip(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	id, _ := new_entity_keys(t)
+	challenge := must_challenge(t)
+
+	sig := responder_sign(id, challenge, test_opener, protocol_stream)
+	if sig == nil {
+		t.Fatal("responder_sign returned nil for a local entity")
+	}
+	if err := responder_verify(id, challenge, sig, test_opener, protocol_stream); err != nil {
+		t.Errorf("responder_verify rejected a valid proof: %v", err)
+	}
+}
+
+func TestResponderProofRejectsOtherEntity(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	// The core property: a host that does not hold an entity's key cannot
+	// produce a proof for it. This is what makes a caller-supplied peer
+	// harmless — it can answer, but it cannot answer AS the entity.
+	holder, _ := new_entity_keys(t)
+	impostor, _ := new_entity_keys(t)
+	challenge := must_challenge(t)
+
+	sig := responder_sign(impostor, challenge, test_opener, protocol_stream)
+	if sig == nil {
+		t.Fatal("responder_sign returned nil for a local entity")
+	}
+	if err := responder_verify(holder, challenge, sig, test_opener, protocol_stream); err == nil {
+		t.Error("responder_verify accepted a proof signed by a different entity")
+	}
+}
+
+func TestResponderProofRejectsReplayOnAnotherStream(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	// Each stream mints a fresh challenge, so a proof captured from one
+	// stream must not authenticate another.
+	id, _ := new_entity_keys(t)
+	first := must_challenge(t)
+	second := must_challenge(t)
+
+	sig := responder_sign(id, first, test_opener, protocol_stream)
+	if err := responder_verify(id, second, sig, test_opener, protocol_stream); err == nil {
+		t.Error("responder_verify accepted a proof replayed onto a different challenge")
+	}
+}
+
+func TestResponderProofRejectsReplayToAnotherOpener(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	// The opener binding stops a host collecting a proof on its own
+	// connection and relaying it to a victim as though it were the
+	// entity's answer.
+	id, _ := new_entity_keys(t)
+	challenge := must_challenge(t)
+
+	sig := responder_sign(id, challenge, test_opener, protocol_stream)
+	if err := responder_verify(id, challenge, sig, "12D3KooWSomeoneElse", protocol_stream); err == nil {
+		t.Error("responder_verify accepted a proof addressed to a different opener")
+	}
+}
+
+func TestResponderProofRejectsCrossProtocol(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	id, _ := new_entity_keys(t)
+	challenge := must_challenge(t)
+
+	sig := responder_sign(id, challenge, test_opener, protocol_stream)
+	if err := responder_verify(id, challenge, sig, test_opener, protocol_messages); err == nil {
+		t.Error("responder_verify accepted a stream proof on the messages protocol")
+	}
+}
+
+func TestResponderProofIsNotAClaim(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	// The two directions use separate signing domains, so a claim
+	// harvested from a sender can never be presented as a responder's
+	// proof (or the reverse) even if the same challenge were in play on
+	// both — which is the whole reason responder_domain exists.
+	id, _ := new_entity_keys(t)
+	challenge := must_challenge(t)
+
+	claim := claim_sign(id, challenge, test_opener, protocol_stream)
+	if claim == nil {
+		t.Fatal("claim_sign returned nil for a local entity")
+	}
+	if err := responder_verify(id, challenge, claim, test_opener, protocol_stream); err == nil {
+		t.Error("responder_verify accepted a sender claim as a responder proof")
+	}
+
+	proof := responder_sign(id, challenge, test_receiver, protocol_stream)
+	if err := claim_verify(id, challenge, proof, test_receiver, protocol_stream); err == nil {
+		t.Error("claim_verify accepted a responder proof as a sender claim")
+	}
+}
+
+func TestResponderSignUnknownEntity(t *testing.T) {
+	// An entity this host does not hold yields no proof, so the caller
+	// answers fail_unproven rather than acking unauthenticated.
+	challenge := must_challenge(t)
+	if sig := responder_sign(test_entity_id('z'), challenge, test_opener, protocol_stream); sig != nil {
+		t.Error("responder_sign produced a proof for an entity this host does not hold")
 	}
 }

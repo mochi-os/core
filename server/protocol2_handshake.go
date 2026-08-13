@@ -94,11 +94,18 @@ func hello_read(r io.Reader, version int) (*Frame, error) {
 // caps_write writes the sender's caps frame. MUST be the first frame
 // the sender writes; receiver MUST close the stream if it sees any
 // non-caps frame before this. caps is mandatory in /mochi/2.
-func caps_write(w io.Writer, codecs, features []string) error {
+//
+// challenge is the opener's half of the mutual authentication: the
+// answering side signs it with the key of the entity being addressed,
+// and returns the signature on the ack. Mandatory — the receiver rejects
+// a caps frame without a well-formed one, so neither side can decline
+// the exchange.
+func caps_write(w io.Writer, codecs, features []string, challenge []byte) error {
 	return frame_write(w, &Frame{
-		Type:     frame_type_caps,
-		Codecs:   codecs,
-		Features: features,
+		Type:      frame_type_caps,
+		Codecs:    codecs,
+		Features:  features,
+		Challenge: challenge,
 	})
 }
 

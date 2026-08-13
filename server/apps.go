@@ -789,13 +789,43 @@ func app_has_version(id, version string) bool {
 	return exists
 }
 
-// Download and install a specific version of an app (without activating it)
-func app_download_version(id, version string) bool {
+// Download and install a specific version of an app (without activating it).
+//
+// An optional peer names where to ask, for an app the directory does not
+// list — a restricted or unpublished one, reachable only through the link
+// its publisher gave you. Naming a peer decides only WHERE to ask: the
+// /mochi/2/stream handshake makes the answering host prove it holds `id`,
+// so a peer that does not hold the app's key cannot serve it whatever the
+// caller was told. That is what lets this be one function rather than a
+// safe path and a dangerous one.
+//
+// Accepts an entity id as the peer and resolves it, mirroring
+// remote_connect — a publisher is usually known by its entity, not by the
+// libp2p id of the host it currently runs on.
+func app_download_version(id, version string, peer ...string) bool {
 	debug("App %q downloading version %q", id, version)
 
-	s, err := stream("", id, "publisher", "get", "", nil)
-	if err != nil {
-		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "get", "", nil)
+	var s *Stream
+	var err error
+	if len(peer) > 0 && peer[0] != "" {
+		target := peer[0]
+		if valid(target, "entity") {
+			target = entity_peer(target)
+			if target == "" {
+				debug("App %q publisher entity %q not found in directory", id, peer[0])
+				return false
+			}
+		}
+		s, err = stream_to_peer(target, "", id, "publisher", "get", "", nil)
+	} else {
+		s, err = stream("", id, "publisher", "get", "", nil)
+		if err != nil {
+			// Cold-start fallback: a freshly installed server has no
+			// directory yet, so it asks the project's publisher for the
+			// apps it needs. Safe for the same reason the override is —
+			// that host can only answer for entities it holds.
+			s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "get", "", nil)
+		}
 	}
 	if err != nil {
 		debug("App %q download stream failed: %v", id, err)
@@ -3180,7 +3210,10 @@ func api_app_version_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl.True, nil
 }
 
-// mochi.app.version.download(app_id, version) -> bool: Download a specific version from publisher
+// mochi.app.version.download(app_id, version, peer?) -> bool: Download a specific version from publisher
+// Pass peer (a libp2p id or a publisher entity id) for an app the directory
+// does not list. It selects where to ask, not what may be served: the stream
+// handshake requires the answering host to prove it holds app_id.
 func api_app_version_download(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := t.Local("user").(*User)
 	if user == nil {
@@ -3189,8 +3222,8 @@ func api_app_version_download(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	if !user.administrator() && setting_effective("apps_install_user") != "true" {
 		return sl_error(fn, "not allowed to install apps")
 	}
-	if len(args) != 2 {
-		return sl_error(fn, "syntax: <app_id: string>, <version: string>")
+	if len(args) < 2 || len(args) > 3 {
+		return sl_error(fn, "syntax: <app_id: string>, <version: string>, [peer: string]")
 	}
 	app_id, ok := sl.AsString(args[0])
 	if !ok || !valid(app_id, "entity") {
@@ -3200,6 +3233,13 @@ func api_app_version_download(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	if !ok || !valid(version, "version") {
 		return sl_error(fn, "invalid version")
 	}
+	peer := ""
+	if len(args) > 2 {
+		peer, _ = sl.AsString(args[2])
+		if peer != "" && !valid(peer, "entity") && !valid(peer, "peer") {
+			return sl_error(fn, "invalid peer %q", peer)
+		}
+	}
 
 	// Check if already installed
 	if app_has_version(app_id, version) {
@@ -3207,7 +3247,7 @@ func api_app_version_download(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	}
 
 	// Download from publisher
-	if !app_download_version(app_id, version) {
+	if !app_download_version(app_id, version, peer) {
 		return sl.False, nil
 	}
 	return sl.True, nil

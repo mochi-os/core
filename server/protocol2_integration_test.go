@@ -105,7 +105,7 @@ func TestEndToEndHandshakeOverPipe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sender hello_read: %v", err)
 	}
-	if err := caps_write(senderStream, []string{"zstd"}, nil); err != nil {
+	if err := caps_write(senderStream, []string{"zstd"}, nil, must_challenge(t)); err != nil {
 		t.Fatalf("sender caps_write: %v", err)
 	}
 	if err := claim_write(senderStream, id, hello.Challenge, test_receiver, protocol_messages); err != nil {
@@ -186,7 +186,7 @@ func install_sender_for(t *testing.T, peer string, stream wire_stream, hello *Fr
 		pings:     map[string]int64{},
 		claimed:   map[string]bool{},
 	}
-	if err := caps_write(stream, codecs, features); err != nil {
+	if err := caps_write(stream, codecs, features, must_challenge(t)); err != nil {
 		t.Fatalf("caps_write: %v", err)
 	}
 	restore := stash_sender(t, peer, s)
@@ -526,13 +526,15 @@ func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
 	}
 	_ = hello
 
+	opener_challenge := must_challenge(t)
+
 	// Mirror what stream_open does, but call it directly so the test
 	// exercises the production code path (sender side).
 	go func() {
 		// Sender: write caps, claim, open, then content via stream_open's
 		// new post-ack write. We can't call stream_open directly because
 		// it uses peer_protocol_open + libp2p. Inline the relevant bits.
-		_ = caps_write(sendStream, []string{"zstd"}, nil)
+		_ = caps_write(sendStream, []string{"zstd"}, nil, opener_challenge)
 		_ = claim_write(sendStream, id, hello.Challenge, test_receiver, protocol_stream)
 		open := &Frame{Type: frame_type_open, ID: "x", From: id,
 			Service: "svc", Event: "ev"}

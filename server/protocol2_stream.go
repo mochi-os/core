@@ -76,7 +76,15 @@ func receive_stream_guarded(s p2p_network.Stream) {
 		s.Reset()
 		return
 	}
-	_ = caps // sender features not used by app-stream handlers today
+	// The opener's challenge is mandatory: it is what this host signs to
+	// prove it holds the entity being addressed. Rejecting a missing or
+	// malformed one here is what makes the proof unskippable — an opener
+	// cannot opt out of being given it.
+	if err := frame_reject_challenge(caps.Challenge); err != nil {
+		info("Stream: caps challenge rejected peer=%q session=%s: %v", peer, session, err)
+		s.Reset()
+		return
+	}
 
 	claimed := map[string]bool{}
 	var open *Frame
@@ -128,10 +136,31 @@ func receive_stream_guarded(s p2p_network.Stream) {
 		return
 	}
 
-	// Acknowledge the open; transition to raw mode. After this we hand
-	// the libp2p stream to the app handler as the Event's stream — no
-	// more framing.
-	if err := frame_write(s, &Frame{Type: frame_type_ack, Replies: []string{open.ID}}); err != nil {
+	// Prove to the opener that this host really holds the entity it
+	// addressed, by signing the challenge it sent in caps. Without this
+	// the opener has only its own routing to go on, and a peer it was
+	// told to use can answer for any entity it likes.
+	//
+	// Only meaningful when an entity was addressed. An empty To is a
+	// host-to-host stream (directory push/sync) carrying no entity-scoped
+	// data, and libp2p has already authenticated the host, so there is
+	// nothing further to prove.
+	ack := &Frame{Type: frame_type_ack, Replies: []string{open.ID}}
+	if to != "" {
+		proof := responder_sign(to, caps.Challenge, peer, protocol_stream)
+		if proof == nil {
+			info("Stream: cannot prove entity %q to peer=%q session=%s", to, peer, session)
+			_ = frame_write(s, &Frame{Type: frame_type_fail, Replies: []string{open.ID}, Reason: fail_unproven})
+			s.Close()
+			return
+		}
+		ack.Signature = proof
+		// The opener may have addressed a fingerprint; it cannot verify a
+		// signature against a key it only holds the fingerprint of, so
+		// return the resolved id for it to check the fingerprint against.
+		ack.To = to
+	}
+	if err := frame_write(s, ack); err != nil {
 		info("Stream: ack write failed peer=%q session=%s: %v", peer, session, err)
 		s.Reset()
 		return
@@ -316,7 +345,17 @@ func stream_open(peer, from, to, service, event, from_app string,
 	codecs := codec_intersect(receiver_codecs(), hello.Codecs)
 	features := features_intersect(receiver_features(), hello.Features)
 
-	if err := caps_write(rawstream, codecs, features); err != nil {
+	// Our own challenge, for the far side to sign with the key of the
+	// entity we are addressing. Fresh per stream, exactly as the hello
+	// challenge is: a reused one would let a proof from an earlier
+	// stream be replayed on this one.
+	challenge, err := hello_challenge()
+	if err != nil {
+		rawstream.Reset()
+		return nil, "", fmt.Errorf("stream: challenge entropy failed peer=%q: %w", peer, err)
+	}
+
+	if err := caps_write(rawstream, codecs, features, challenge); err != nil {
 		rawstream.Reset()
 		return nil, "", fmt.Errorf("stream: caps write failed peer=%q: %w", peer, err)
 	}
@@ -359,6 +398,30 @@ func stream_open(peer, from, to, service, event, from_app string,
 	}
 	switch reply.Type {
 	case frame_type_ack:
+		// Check the far side really holds the entity we addressed before
+		// treating anything it sends as that entity's data. Until this
+		// passes we know only which HOST answered (libp2p), not that the
+		// host had any right to speak for `to` — which is precisely what
+		// a caller-supplied peer would otherwise decide for us.
+		if to != "" {
+			resolved := reply.To
+			if resolved == "" {
+				resolved = to
+			}
+			// We may have addressed a fingerprint; the proof is over the
+			// full id, so bind the two before trusting the id it named.
+			if resolved != to && fingerprint(resolved) != to {
+				rawstream.Reset()
+				return nil, hello.Session,
+					fmt.Errorf("stream: peer=%q answered for entity %q, not %q", peer, resolved, to)
+			}
+			if err := responder_verify(resolved, challenge, reply.Signature, net_id, protocol_stream); err != nil {
+				rawstream.Reset()
+				return nil, hello.Session,
+					fmt.Errorf("stream: peer=%q failed to prove entity %q: %w", peer, resolved, err)
+			}
+		}
+
 		// Handshake complete; raw bytes from here on.
 		st := stream_rw(io.ReadCloser(rawstream), io.WriteCloser(rawstream))
 		// If the caller passed a content map, ship it as the first

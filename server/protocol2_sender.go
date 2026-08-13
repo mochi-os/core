@@ -199,7 +199,19 @@ func sender_open(peer string) (*Sender, error) {
 	codecs := codec_intersect(receiver_codecs(), hello.Codecs)
 	features := features_intersect(receiver_features(), hello.Features)
 
-	if err := caps_write(stream, codecs, features); err != nil {
+	// Every caps frame carries a challenge, so the two /mochi/2 protocols
+	// stay one handshake rather than two. /mochi/2/stream consumes it
+	// immediately (the ack carries the answering side's proof); the
+	// multiplexed messages path has no single addressed entity to prove
+	// at open time, so its per-target responder proof is still to come
+	// and nothing reads this one yet.
+	challenge, err := hello_challenge()
+	if err != nil {
+		stream.Reset()
+		return nil, fmt.Errorf("sender: challenge entropy failed peer=%q: %w", peer, err)
+	}
+
+	if err := caps_write(stream, codecs, features, challenge); err != nil {
 		stream.Reset()
 		return nil, fmt.Errorf("sender: caps write failed peer=%q: %w", peer, err)
 	}

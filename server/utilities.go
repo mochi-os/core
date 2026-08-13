@@ -651,6 +651,12 @@ func valid(s string, match string) bool {
 		return email_valid(s)
 	case "entity":
 		match = "^[\\w]{49,51}$"
+	case "peer":
+		// A libp2p peer id in base58btc: "12D3KooW..." (52 chars) for the
+		// ed25519 keys Mochi issues, "Qm..." (46) for older RSA hosts. The
+		// alphabet excludes 0, O, I and l. Bounded either side rather than
+		// fixed, since the length follows the key type.
+		match = "^[1-9A-HJ-NP-Za-km-z]{44,64}$"
 	case "filename":
 		match = "^[0-9a-zA-Z _~()-][0-9a-zA-Z _~().-]{0,254}$"
 	case "filepath":

@@ -61,8 +61,11 @@ const (
 	frame_priority_bulk        = 10
 
 	// Domain separators for the per-stream claim signature.
-	claim_domain    = "mochi/2/claim/2"
-	claim_version_2 = 2
+	claim_domain = "mochi/2/claim/2"
+	// responder_domain separates the answering side's possession proof
+	// from the calling side's claim. See responder_signable.
+	responder_domain = "mochi/2/responder/1"
+	claim_version_2  = 2
 )
 
 // Type vocabulary for Frame.Type. Receivers MUST close the stream on an
@@ -93,6 +96,11 @@ const (
 	fail_dedup             = "dedup"
 	fail_transient         = "transient"
 	fail_unclaimed         = "unclaimed"
+	// fail_unproven: the target entity is hosted here but this host could
+	// not sign for it, so it refuses to serve rather than answer
+	// unauthenticated. Distinct from fail_unknown_user, which means the
+	// entity is not here at all.
+	fail_unproven = "unproven"
 )
 
 // Frame is the on-wire envelope shared by /mochi/2/messages and
@@ -388,6 +396,107 @@ func claim_verify(entity string, challenge, signature []byte, receiver string, p
 	}
 	if !ed25519.Verify(public, signable, signature) {
 		return errors.New("claim: signature mismatch")
+	}
+	return nil
+}
+
+// responder_signable returns the canonical CBOR the ANSWERING side signs
+// to prove it holds the entity the opener addressed.
+//
+// Deliberately a separate domain from claim_signable rather than a reuse
+// of it. The two proofs travel in opposite directions over the same
+// protocol constant, and a single domain would make them structurally
+// identical whenever an opener's caps challenge happened to equal a
+// hello challenge it had issued elsewhere - the receiver binding already
+// makes that unexploitable, but a distinct domain makes it impossible
+// rather than merely hard, and costs one constant.
+//
+// Any change to this payload's shape or field set MUST bump
+// responder_domain, exactly as claim_domain governs the claim payload.
+func responder_signable(challenge []byte, entity string, opener string, protocol string) ([]byte, error) {
+	payload := map[string]any{
+		"v":        responder_domain,
+		"stream":   challenge,
+		"entity":   entity,
+		"opener":   opener,
+		"protocol": protocol,
+	}
+	out, err := canonical_encoder.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("responder: canonical encode failed: %w", err)
+	}
+	return out, nil
+}
+
+// responder_sign proves possession of `entity`'s private key against the
+// opener's challenge. Returns nil when the entity is not local or its key
+// cannot be loaded; the caller answers fail_unproven rather than acking,
+// so an entity whose key is missing fails visibly instead of serving
+// unauthenticated bytes.
+//
+// opener is the peer that opened the stream, taken from the authenticated
+// libp2p connection - that binding is what stops a proof collected on one
+// connection being replayed to a different opener.
+func responder_sign(entity string, challenge []byte, opener string, protocol string) []byte {
+	if entity == "" || len(challenge) != challenge_size_v2 || opener == "" || protocol == "" {
+		return nil
+	}
+	signable, err := responder_signable(challenge, entity, opener, protocol)
+	if err != nil {
+		warn("responder_sign canonical encode failed for %q: %v", entity, err)
+		return nil
+	}
+	db := db_open("db/users.db")
+	var e Entity
+	if !db.scan(&e, "select private from entities where id=?", entity) {
+		info("responder_sign entity %q not found", entity)
+		return nil
+	}
+	private := base58_decode(e.Private, "")
+	if len(private) != ed25519.PrivateKeySize {
+		// Reachable: restore_entities inserts whatever its bundle's key
+		// map held, so an entity restored without its key lands local but
+		// unsignable. Warn rather than debug — the entity is unreachable
+		// until an operator notices.
+		warn("responder_sign entity %q invalid private key length %d", entity, len(private))
+		return nil
+	}
+	return ed25519.Sign(private, signable)
+}
+
+// responder_verify is the opener's check that the far side holds the
+// entity it addressed. The entity id IS the base58 ed25519 public key, so
+// this needs no directory lookup and no prior relationship - which is
+// what lets it authenticate a publisher this host has never met.
+//
+// opener MUST be this host's own peer id: that is what rejects a proof
+// signed for somebody else's connection.
+func responder_verify(entity string, challenge, signature []byte, opener string, protocol string) error {
+	if entity == "" {
+		return errors.New("responder: empty entity")
+	}
+	if opener == "" {
+		return errors.New("responder: empty opener")
+	}
+	if protocol == "" {
+		return errors.New("responder: empty protocol")
+	}
+	if len(challenge) != challenge_size_v2 {
+		return fmt.Errorf("responder: invalid challenge length %d", len(challenge))
+	}
+	if len(signature) != ed25519.SignatureSize {
+		return fmt.Errorf("responder: invalid signature length %d", len(signature))
+	}
+	public := base58_decode(entity, "")
+	if len(public) != ed25519.PublicKeySize {
+		return fmt.Errorf("responder: invalid entity pubkey length %d", len(public))
+	}
+	signable, err := responder_signable(challenge, entity, opener, protocol)
+	if err != nil {
+		return fmt.Errorf("responder: canonical encode failed: %w", err)
+	}
+	if !ed25519.Verify(public, signable, signature) {
+		return errors.New("responder: signature mismatch")
 	}
 	return nil
 }

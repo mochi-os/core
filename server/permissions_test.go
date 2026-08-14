@@ -66,6 +66,7 @@ func create_internal_app(id string) *App {
 }
 
 // cleanup_test_user removes test user data
+//
 //lint:ignore U1000 test scaffolding
 func cleanup_test_user(t *testing.T, id string) {
 	t.Helper()
@@ -96,12 +97,45 @@ func TestPermissionRestrictedRestricted(t *testing.T) {
 		"settings/write",
 		"permissions/manage",
 		"webpush/send",
+		// Mints MFA-bypassing recovery codes and replaces the stored
+		// authenticator, so it must be granted from settings rather than by a
+		// consent dialog the app raises at a moment of its choosing.
+		"user/authentication/write",
 		"url:*", // Wildcard URL is restricted
 	}
 
 	for _, perm := range restricted_perms {
 		if !permission_restricted(perm) {
 			t.Errorf("permission_restricted(%q) = false, want true (restricted)", perm)
+		}
+	}
+}
+
+// TestAuthenticationWriteHoldersKeepTheirDefaultGrant guards the risk the
+// reclassification actually carries. Restricted permissions cannot be granted
+// through the in-app consent dialog, so the two apps that legitimately rewrite
+// authentication have to arrive holding it: their apps_default entry is what
+// carries them across, and losing it would leave TOTP and recovery-code
+// management dead with no way for the user to re-grant from the dialog.
+func TestAuthenticationWriteHoldersKeepTheirDefaultGrant(t *testing.T) {
+	if !permission_restricted("user/authentication/write") {
+		t.Fatal("user/authentication/write is not restricted; this test guards the consequences of it being so")
+	}
+
+	for _, name := range []string{"Login", "Settings"} {
+		found := false
+		for _, app := range apps_default {
+			if app.Name != name {
+				continue
+			}
+			for _, grant := range app.Permissions {
+				if grant.Permission == "user/authentication/write" {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("default app %q has no user/authentication/write grant; with the permission restricted it can no longer obtain one from a consent dialog", name)
 		}
 	}
 }
@@ -147,7 +181,7 @@ func TestPermissionAdministrator(t *testing.T) {
 
 func TestPermissionSplit(t *testing.T) {
 	tests := []struct {
-		permission string
+		permission  string
 		want_name   string
 		want_object string
 	}{
@@ -192,8 +226,8 @@ func TestPermissionJoin(t *testing.T) {
 
 func TestDomainExtract(t *testing.T) {
 	tests := []struct {
-		url     string
-		want    string
+		url      string
+		want     string
 		want_err bool
 	}{
 		{"https://github.com/foo/bar", "github.com", false},
@@ -223,9 +257,9 @@ func TestDomainExtract(t *testing.T) {
 
 func TestDomainMatchesExact(t *testing.T) {
 	tests := []struct {
-		perm_domain string
-		request_domain  string
-		want       bool
+		perm_domain    string
+		request_domain string
+		want           bool
 	}{
 		// Exact matches
 		{"github.com", "github.com", true},
@@ -251,9 +285,9 @@ func TestDomainMatchesExact(t *testing.T) {
 
 func TestDomainMatchesSubdomain(t *testing.T) {
 	tests := []struct {
-		perm_domain string
-		request_domain  string
-		want       bool
+		perm_domain    string
+		request_domain string
+		want           bool
 	}{
 		// Subdomain matches
 		{"github.com", "api.github.com", true},
@@ -959,7 +993,7 @@ func TestAPIPermissionLevel(t *testing.T) {
 
 	tests := []struct {
 		permission string
-		want_level  string
+		want_level string
 	}{
 		// standard: any user can grant
 		{"groups/manage", "standard"},
@@ -1487,6 +1521,7 @@ func TestMultipleAppsPerUser(t *testing.T) {
 // =============================================================================
 
 // Helper to verify an API function requires a specific permission
+//
 //lint:ignore U1000 test scaffolding: an assertion helper for permission-gated APIs
 func assert_api_requires_permission(t *testing.T, name string, permission string, apiCall func(*sl.Thread, *sl.Builtin) (sl.Value, error)) {
 	t.Helper()

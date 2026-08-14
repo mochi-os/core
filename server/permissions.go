@@ -62,7 +62,6 @@ var permissions = []Permission{
 	{"interests/read", false, false},
 	{"interests/write", false, false},
 	{"user/authentication/read", false, false},
-	{"user/authentication/write", false, false},
 	{"user/identity/write", false, false},
 	{"user/sessions/read", false, false},
 	{"user/sessions/write", false, false},
@@ -98,6 +97,17 @@ var permissions = []Permission{
 	// of its choosing: a prompt the user cannot attribute is one they cannot
 	// safely answer under pressure.
 	{"user/authentication/sign", true, false},
+	// Rewriting how the account authenticates. mochi.user.recovery.generate
+	// returns ten codes that bypass every second factor and invalidates the
+	// set the user already holds; mochi.user.totp.setup replaces the stored
+	// authenticator, and because a factor counts as available only while its
+	// row is verified, that alone drops the user's authenticator out of their
+	// usable factors and leaves login on an email code. Restricted for the
+	// same reason as sign above: an app can raise a consent dialog whenever it
+	// likes, and "change how you log in" is not a question a user can weigh in
+	// passing. Login and Settings hold it through apps_default, so the two
+	// legitimate holders are unaffected.
+	{"user/authentication/write", true, false},
 	{"user/export", true, false},
 	{"users/read", true, true},
 	{"webpush/send", true, false},

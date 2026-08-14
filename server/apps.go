@@ -424,6 +424,7 @@ var (
 			{"camera", ""},
 		}},
 		{"12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL", "Apps", []struct{ Permission, Object string }{
+			{"apps/install", ""},
 			{"permissions/manage", ""},
 		}},
 		{"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92", "Chat", []struct{ Permission, Object string }{
@@ -472,7 +473,9 @@ var (
 			{"repositories/read", ""},
 			{"repositories/write", ""},
 		}},
-		{"12nG95Lzt5SbKcmAqweB3vEWcz6oXUd7i9vf3nCXfBxuyqG9wJ3", "Publisher", nil},
+		{"12nG95Lzt5SbKcmAqweB3vEWcz6oXUd7i9vf3nCXfBxuyqG9wJ3", "Publisher", []struct{ Permission, Object string }{
+			{"apps/install", ""},
+		}},
 		{"1SWnPXg9xpT2Cxemw2aw8CLZCP5yDatQ6ebF9dHoMTXQNFKLuw", "Repositories", []struct{ Permission, Object string }{
 			{"groups/read", ""},
 		}},
@@ -2650,6 +2653,14 @@ func api_app_package_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 // Pass version to require the package to declare that exact version.
 // Requires administrator role, or apps_install_user setting to be "true"
 func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	// Which APP may install, as distinct from which USER may - the check
+	// below answers the second and cannot answer the first. Without this any
+	// installed app could write code under any other app's entity id from a
+	// file of its choosing, whatever the apps app's own rules say.
+	if err := require_permission(t, fn, "apps/install"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) < 2 || len(args) > 5 {
 		return sl_error(fn, "syntax: <app id: string>, <file: string>, [check only: boolean], [peer: string], [version: string]")
 	}
@@ -3215,6 +3226,18 @@ func api_app_version_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 // does not list. It selects where to ask, not what may be served: the stream
 // handshake requires the answering host to prove it holds app_id.
 func api_app_version_download(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	// Same permission as mochi.app.package.install: this reaches the same
+	// app_install, so gating only the other one would leave the fix
+	// bypassable by calling this instead. The bytes here are constrained to
+	// what the app's real publisher serves - the stream handshake proves the
+	// far side holds the app's entity - so this cannot inject foreign code
+	// the way a file install can. It can still make the server install app
+	// versions of the caller's choosing, which is not an arbitrary app's to
+	// decide.
+	if err := require_permission(t, fn, "apps/install"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")

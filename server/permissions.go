@@ -69,6 +69,15 @@ var permissions = []Permission{
 
 	// Restricted permissions
 	{"accounts/notify", true, false},
+	// Installing an app writes executable code to disk under an app's entity
+	// id, so this is the permission to run code as any app on the server. It
+	// is deliberately not admin-only: apps_install_user decides whether a
+	// non-administrator may install, and that check lives on the user in the
+	// install APIs. This one answers the separate question of whether the
+	// calling APP may. Restricted rather than standard because a consent
+	// dialog asking to "install applications" is one a user cannot safely
+	// evaluate in passing - see user/authentication/sign below.
+	{"apps/install", true, false},
 	{"notifications/manage", true, false},
 	{"notifications/read", true, false},
 	{"notifications/send", true, false},

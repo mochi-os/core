@@ -21,23 +21,44 @@ var (
 	api_websocket = sls.FromStringDict(sl.String("mochi.websocket"), sl.StringDict{
 		"write": sl.NewBuiltin("mochi.websocket.write", sl_websocket_write),
 	})
-	websockets        = map[string]map[string]map[string]*websocket.Conn{}
+	websockets        = map[string]map[string]map[string]*websocket_client{}
 	websockets_lock   sync.RWMutex
 	websocket_context = context.Background()
 )
 
+// websocket_client is one live connection and the app that opened it.
+//
+// The registry is keyed (user, key, connection id) and the key is whatever the
+// client passed in the query string, so it never identified an app. Most keys
+// are entity fingerprints, which mochi.entity.owned hands to any app ungated,
+// and some are bare literals like "notifications" - so without the app here,
+// mochi.websocket.write in one app reached sockets belonging to another. The
+// app comes from the JWT the connection already verifies; it cannot be claimed
+// by the client, unlike the key.
+type websocket_client struct {
+	ws  *websocket.Conn
+	app string
+}
+
 func websocket_connection(c *gin.Context) {
 	u := web_auth(c)
 	token_auth := false
+	// The app this socket belongs to, from its JWT. A cookie-authenticated
+	// connection has none: it then receives core's own sends but no app's,
+	// because there is nothing to say which app's sends it should get.
+	// Frontends always hold an app token - the shell supplies one and
+	// standalone mode fetches its own - so this is the unusual path.
+	app := ""
 	if u == nil {
 		// Check Authorization header (Bearer token)
 		auth_header := c.GetHeader("Authorization")
 		if strings.HasPrefix(auth_header, "Bearer ") {
 			token := strings.TrimPrefix(auth_header, "Bearer ")
-			user_id, _, err := jwt_verify(token)
+			user_id, token_app, err := jwt_verify(token)
 			if err == nil && user_id != "" {
 				if user := user_by_uid(user_id); user != nil {
 					u = user
+					app = token_app
 					token_auth = true
 				}
 			}
@@ -46,10 +67,11 @@ func websocket_connection(c *gin.Context) {
 		// Check token query parameter (for WebSocket from iframes that can't set headers)
 		if u == nil {
 			if token := c.Query("token"); token != "" {
-				user_id, _, err := jwt_verify(token)
+				user_id, token_app, err := jwt_verify(token)
 				if err == nil && user_id != "" {
 					if user := user_by_uid(user_id); user != nil {
 						u = user
+						app = token_app
 						token_auth = true
 					}
 				}
@@ -85,13 +107,13 @@ func websocket_connection(c *gin.Context) {
 	websockets_lock.Lock()
 	_, found := websockets[u.UID]
 	if !found {
-		websockets[u.UID] = map[string]map[string]*websocket.Conn{}
+		websockets[u.UID] = map[string]map[string]*websocket_client{}
 	}
 	_, found = websockets[u.UID][key]
 	if !found {
-		websockets[u.UID][key] = map[string]*websocket.Conn{}
+		websockets[u.UID][key] = map[string]*websocket_client{}
 	}
-	websockets[u.UID][key][id] = ws
+	websockets[u.UID][key][id] = &websocket_client{ws: ws, app: app}
 	websockets_lock.Unlock()
 	// debug("Websocket connection user %d, key %q, id %q", u.UID, key, id)
 
@@ -111,7 +133,13 @@ func websocket_connection(c *gin.Context) {
 	}
 }
 
-func websockets_send(u *User, key string, content any) {
+// websockets_send delivers content to a user's connections on this key.
+//
+// app scopes the delivery: a non-empty value reaches only the connections that
+// app opened, which is what stops one app writing into another's socket. Core's
+// own sends pass "" and reach every connection on the key, because core is not
+// the boundary being enforced and its callers predate any app binding.
+func websockets_send(u *User, app string, key string, content any) {
 	// debug("Websocket sending to user %d, key %q: %+v", u.UID, key, content)
 	j := ""
 
@@ -132,13 +160,16 @@ func websockets_send(u *User, key string, content any) {
 	var failed []dead
 
 	websockets_lock.RLock()
-	for id, ws := range websockets[u.UID][key] {
+	for id, client := range websockets[u.UID][key] {
+		if app != "" && client.app != app {
+			continue
+		}
 		if j == "" {
 			j = json_encode(content)
 		}
-		err := ws.Write(websocket_context, websocket.MessageText, []byte(j))
+		err := client.ws.Write(websocket_context, websocket.MessageText, []byte(j))
 		if err != nil {
-			failed = append(failed, dead{id: id, ws: ws})
+			failed = append(failed, dead{id: id, ws: client.ws})
 		}
 	}
 	websockets_lock.RUnlock()
@@ -186,6 +217,14 @@ func sl_websocket_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no user")
 	}
 
-	websockets_send(user, key, sl_decode(args[1]))
+	// Scoped to the calling app. Without this the key alone decided the
+	// target, and a key is not a secret: most are entity fingerprints that
+	// mochi.entity.owned returns to any app, and the rest are literals.
+	a, ok := t.Local("app").(*App)
+	if !ok || a == nil || a.id == "" {
+		return sl_error(fn, "no app")
+	}
+
+	websockets_send(user, a.id, key, sl_decode(args[1]))
 	return sl.None, nil
 }

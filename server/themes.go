@@ -157,7 +157,13 @@ func web_user_appearance_attrs(user *User, nonce string) (string, string) {
 	case "dark":
 		return `class="dark"`, ""
 	case "auto":
-		return "", `<script` + script_attrs + `>if(window.matchMedia('(prefers-color-scheme:dark)').matches)document.documentElement.classList.add('dark')</script>`
+		// The script resolves the scheme before first paint so the page does not
+		// flash. The attribute carries the PREFERENCE, which the resolved class
+		// alone destroys: a client reading only the class sees "dark" and cannot
+		// tell a user who chose dark from one who chose auto on a dark desktop,
+		// so it stops following the system for exactly half the users who asked
+		// it to.
+		return `data-appearance="auto"`, `<script` + script_attrs + `>if(window.matchMedia('(prefers-color-scheme:dark)').matches)document.documentElement.classList.add('dark')</script>`
 	default:
 		return "", ""
 	}

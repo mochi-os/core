@@ -213,3 +213,39 @@ func TestWebUserThemeDeclarations(t *testing.T) {
 		t.Error("empty declarations must produce an empty style attribute, not a bare style=\"\"")
 	}
 }
+
+// The class the server renders for "auto" is only what the preference resolved
+// to at that moment. A client that reads the class as the preference freezes
+// there — and because the freeze only happens when the OS was dark at load, the
+// same preference behaves differently depending on the time of day. So the
+// preference itself has to survive into the page.
+func TestWebUserAppearanceAttrsStatesTheAutoPreference(t *testing.T) {
+	user, cleanup := create_test_user(t)
+	defer cleanup()
+
+	user.Preferences = map[string]string{"appearance": "auto"}
+	attrs, script := web_user_appearance_attrs(user, "")
+	if !strings.Contains(attrs, `data-appearance="auto"`) {
+		t.Errorf("auto must state the preference on the element, got %q", attrs)
+	}
+	// Still resolved before first paint, or the page flashes the wrong scheme.
+	if !strings.Contains(script, "prefers-color-scheme") {
+		t.Errorf("auto must still resolve the scheme inline, got %q", script)
+	}
+
+	// An explicit choice is not "follow the system" and must not be marked as
+	// one, or the client would ignore the user's decision on the next OS flip.
+	for _, explicit := range []string{"light", "dark"} {
+		user.Preferences = map[string]string{"appearance": explicit}
+		attrs, script = web_user_appearance_attrs(user, "")
+		if strings.Contains(attrs, "data-appearance") {
+			t.Errorf("%s must not be marked as following the system, got %q", explicit, attrs)
+		}
+		if !strings.Contains(attrs, `class="`+explicit+`"`) {
+			t.Errorf("%s should render its class, got %q", explicit, attrs)
+		}
+		if script != "" {
+			t.Errorf("%s needs no resolving script, got %q", explicit, script)
+		}
+	}
+}

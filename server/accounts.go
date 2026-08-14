@@ -1785,7 +1785,7 @@ func account_deliver_unifiedpush(user *User, accountID string, data map[string]a
 		if i := strings.LastIndex(endpoint, "/"); i >= 0 {
 			sub_id = endpoint[i+1:]
 		}
-		websockets_send(user, "unifiedpush", map[string]any{
+		websockets_send(user, "", "unifiedpush", map[string]any{
 			"sub_id":  sub_id,
 			"payload": string(payload),
 			"account": accountID,

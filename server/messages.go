@@ -127,6 +127,28 @@ func message_seen_mark(id string) bool {
 	return false
 }
 
+// message_seen_clear forgets id, so a later delivery of the same message
+// is dispatched instead of being coalesced away as a duplicate.
+//
+// The mark is set before the handler runs (see the dedup block in
+// receive_messages), which is what closes the double-apply window when a
+// retry arrives on a fresh stream while the first copy is still queued.
+// The cost is that a handler failure leaves the id marked, and the retry
+// the failure asks for then looks like a duplicate: the receiver acks it
+// without dispatching, the sender deletes its queue row, and the message
+// is lost — the exact outcome the retry existed to prevent. Every retry
+// lands inside the window, because the backoff ladder tops out at an hour
+// against an 8h TTL.
+//
+// So the worker clears the mark whenever it answers with a reason the
+// sender will retry. Only those: clearing on a drop reason would reopen a
+// message the receiver has deliberately given up on.
+func message_seen_clear(id string) {
+	seen_messages_lock.Lock()
+	defer seen_messages_lock.Unlock()
+	delete(seen_messages, id)
+}
+
 // Clean up old entries
 func message_seen_cleanup() {
 	seen_messages_lock.Lock()

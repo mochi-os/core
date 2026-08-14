@@ -192,7 +192,7 @@ func (w *app_worker) handle(wf *worker_frame) {
 		if r := recover(); r != nil {
 			warn("Worker (%s,%s): handler panic for %q: %v\n%s",
 				w.user, w.app, wf.frame.ID, r, rd.Stack())
-			wf.reply.fail(fail_handler_panic)
+			worker_fail(wf, fail_handler_panic)
 		}
 	}()
 
@@ -232,11 +232,36 @@ func (w *app_worker) handle(wf *worker_frame) {
 	}
 
 	if err := e.route(); err != nil {
-		reason := worker_failure_reason(err)
-		wf.reply.fail(reason)
+		worker_fail(wf, worker_failure_reason(err))
 		return
 	}
 	wf.reply.ack()
+}
+
+// worker_fail answers a frame with a failure reason, first clearing the
+// dedup mark when the reason is one the sender will retry. The mark is
+// set before dispatch (receive_messages), so without this the retry the
+// failure asks for is coalesced away as a duplicate and the message is
+// lost. Clearing precedes the reply because a retry-now disposition puts
+// the row back on the wire immediately.
+func worker_fail(wf *worker_frame, reason string) {
+	if wf.frame != nil && wf.frame.ID != "" && fail_retryable(reason) {
+		message_seen_clear(wf.frame.ID)
+	}
+	wf.reply.fail(reason)
+}
+
+// fail_retryable reports whether a failure reason leaves the sender still
+// expecting to deliver this message. The drop set mirrors the one in
+// Sender.resolve_fail and queue_reply.fail; an empty or unrecognised
+// reason is transient, matching how both of those treat it.
+func fail_retryable(reason string) bool {
+	switch reason {
+	case fail_unsupported, fail_unknown_user, fail_expired,
+		fail_dedup, fail_signature_invalid:
+		return false
+	}
+	return true
 }
 
 // worker_failure_reason maps an Event.route() error to a wire failure
@@ -265,9 +290,16 @@ func worker_failure_reason(err error) string {
 		// the verdict. Drop instead of retrying forever (this is what wedged
 		// the stuck _attachment/* self-loop rows at ~62 retries).
 		strings.HasPrefix(msg, "sender does not handle service"),
+		// The app declares a handler name its Starlark globals do not
+		// define. Fixed until the app is changed, so retrying is 50
+		// deliveries of the same failure.
+		strings.HasPrefix(msg, "Starlark app function"),
 		strings.HasPrefix(msg, "unsigned attachment event"):
 		return fail_unsupported
-	case strings.HasPrefix(msg, "handler panic"):
+	case strings.HasPrefix(msg, "handler panic"),
+		// Starlark.call's own recover, for a panic raised inside a Go
+		// builtin rather than in the interpreter.
+		strings.HasPrefix(msg, "Starlark call "):
 		return fail_handler_panic
 	}
 	return fail_transient

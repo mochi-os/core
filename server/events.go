@@ -480,8 +480,18 @@ func (e *Event) run_handler(a *App, av *AppVersion, ae AppEvent) (handler_err er
 		s.set("owner", e.user)
 
 		//debug("App event %s:%s(): %v", a.id, ae.Function, e)
-		s.call(ae.Function, sl.Tuple{e})
-		return nil
+		// Returned, not discarded. The caller treats a nil here as "the
+		// handler ran": it acks to the sender and advances the broadcast
+		// watermark past this sequence, so a dropped error loses the
+		// event outright — the retry it should have provoked arrives
+		// below the watermark and is classed as a duplicate. Not wrapped,
+		// because worker_failure_reason classifies on the message prefix
+		// and Starlark.call's own wording is what it matches.
+		_, handler_err = s.call(ae.Function, sl.Tuple{e})
+		if handler_err != nil {
+			warn("Event handler %s:%s() for %q failed: %v", a.id, ae.Function, e.event, handler_err)
+		}
+		return handler_err
 
 	default:
 		info("Event unknown engine %q version %q", av.Architecture.Engine, av.Architecture.Version)

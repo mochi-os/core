@@ -400,7 +400,12 @@ func schedule_run_event(se *ScheduledEvent) {
 	s.set("user", user)
 	s.set("owner", user)
 
-	s.call(se.Event, sl.Tuple{sew})
+	// No sender to answer and no watermark to hold back, so a failure here
+	// is reported rather than propagated — but it is reported, because the
+	// alternative is a scheduled task that silently never does its work.
+	if _, err := s.call(se.Event, sl.Tuple{sew}); err != nil {
+		warn("Scheduled event %s:%s() failed: %v", app.id, se.Event, err)
+	}
 }
 
 // ScheduledEventWrapper wraps a ScheduledEvent for Starlark event handlers

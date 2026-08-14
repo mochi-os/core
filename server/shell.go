@@ -416,6 +416,12 @@ func web_shell_init(c *gin.Context) {
 	// from the user's own preference rather than from the reporting app.
 	result["theme"] = web_user_theme_declarations(user)
 
+	// The appearance PREFERENCE, not the light/dark it resolved to. "auto"
+	// means follow the system, and the system can change while the tab stays
+	// open, so the shell needs the preference itself to know whether to keep
+	// re-resolving.
+	result["appearance"] = user_preference_get(user, "appearance", "auto")
+
 	// Source-server cleanup banner: set when this account arrived via a
 	// server-move restore. Carried here so home/settings render the banner
 	// (and the pending re-link list) without a separate fetch. Shown by

@@ -646,4 +646,15 @@ func TestShellInitReturnsTheme(t *testing.T) {
 	if strings.Contains(theme.(string), `style="`) {
 		t.Errorf("theme should be bare declarations, not an attribute: %q", theme)
 	}
+
+	// The PREFERENCE, not the light/dark it resolved to. The shell needs to
+	// know "follow the system" to keep re-resolving when the system moves; a
+	// resolved value would freeze the chrome until the next reload.
+	wanted, ok := resp["appearance"]
+	if !ok {
+		t.Fatal("Response should carry an 'appearance' field")
+	}
+	if wanted != "auto" {
+		t.Errorf("appearance for a user with no preference should default to auto, got %v", wanted)
+	}
 }

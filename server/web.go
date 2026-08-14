@@ -330,21 +330,29 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	}
 
 	// Always extract Bearer token for app authorization, even if user already
-	// identified via session cookie
+	// identified via session cookie.
+	//
+	// has_bearer means "a token was presented AND it verified", not "a header
+	// was sent". Setting it from the prefix alone made the app-token
+	// requirement below satisfiable by the literal string "Bearer x": the
+	// session cookie supplied the user, the garbage token left jwt_app empty,
+	// and an empty jwt_app skips the app-match check - so any page holding the
+	// cookie could call any app's actions.
 	auth_header := c.GetHeader("Authorization")
 	if strings.HasPrefix(auth_header, "Bearer ") {
 		bearer := strings.TrimPrefix(auth_header, "Bearer ")
-		has_bearer = true
 		if strings.HasPrefix(bearer, "mochi-") {
 			// API token authentication
 			if api_token == nil {
 				api_token = token_validate(bearer)
 				if api_token != nil {
+					has_bearer = true
 					if user == nil {
 						user = user_by_uid(api_token.User)
 						if user == nil {
 							debug("API token valid but user %q not found", api_token.User)
 							api_token = nil
+							has_bearer = false
 						}
 					}
 				}
@@ -353,6 +361,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			// JWT authentication — extract app claim for authorization
 			if uid, app, err := jwt_verify(bearer); err == nil && uid != "" {
 				jwt_app = app
+				has_bearer = true
 				if user == nil {
 					if u := user_by_uid(uid); u != nil {
 						user = u
@@ -585,7 +594,12 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			respond_error(c, http.StatusForbidden, "app_token_required", "errors.app_token_required", nil)
 			return true
 		}
-		if jwt_app != "" && jwt_app != a.id {
+		// Exact match, not "match unless empty". Reaching here with has_bearer
+		// means a JWT verified (a verified mochi- token sets api_token and
+		// skips this block), and auth_create_app_token is the only issuer -
+		// it always stamps an app. So an empty claim is not a legitimate
+		// token, and treating it as a pass was a second way past this check.
+		if jwt_app != a.id {
 			debug("403 app token mismatch: jwt_app=%s a.id=%s action=%s method=%s", jwt_app, a.id, name, c.Request.Method)
 			respond_error(c, http.StatusForbidden, "app_token_mismatch", "errors.app_token_mismatch", nil)
 			return true

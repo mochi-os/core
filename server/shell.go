@@ -410,6 +410,12 @@ func web_shell_init(c *gin.Context) {
 	// anonymous-public window before login completes.
 	result["language"] = request_language(c, user)
 
+	// The user's resolved theme, as the same CSS declarations injected into the
+	// shell page at load. The shell re-reads this when an app reports the
+	// preference changed, so the values styling the trusted chrome always come
+	// from the user's own preference rather than from the reporting app.
+	result["theme"] = web_user_theme_declarations(user)
+
 	// Source-server cleanup banner: set when this account arrived via a
 	// server-move restore. Carried here so home/settings render the banner
 	// (and the pending re-link list) without a separate fetch. Shown by

@@ -170,3 +170,46 @@ func TestWebUserThemeStyleEscapes(t *testing.T) {
 		t.Errorf("font stack quotes should survive as escaped quotes, got: %s", style)
 	}
 }
+
+// The shell re-reads the theme from /_/shell when an app reports that the
+// preference changed, and installs the result on the trusted root — so the
+// declarations must arrive as CSS, not as the HTML attribute the page template
+// wants. A style="..." wrapper or an escaped ampersand reaching setProperty is
+// a value the browser drops, which would silently leave the chrome unthemed.
+func TestWebUserThemeDeclarations(t *testing.T) {
+	user, cleanup := create_test_user(t)
+	defer cleanup()
+
+	user.Preferences = map[string]string{"theme": "", "radius": "1rem"}
+
+	declarations := web_user_theme_declarations(user)
+	if declarations == "" {
+		t.Fatal("web_user_theme_declarations returned nothing, so the test proves nothing")
+	}
+	if strings.Contains(declarations, `style="`) {
+		t.Errorf("declarations should carry no attribute wrapper, got: %s", declarations)
+	}
+	if strings.Contains(declarations, "&") {
+		t.Errorf("declarations are consumed as CSS, so they must not be HTML-escaped, got: %s", declarations)
+	}
+	if !strings.Contains(declarations, "--radius") {
+		t.Errorf("expected the radius preference in the declarations, got: %s", declarations)
+	}
+
+	// The attribute form is the same content, escaped and wrapped — one source,
+	// two encodings, so the page and the shell can never disagree about the
+	// user's theme.
+	style := web_user_theme_style(user)
+	if !strings.HasPrefix(style, `style="`) || !strings.HasSuffix(style, `"`) {
+		t.Errorf("expected an attribute wrapper on the style form, got: %s", style)
+	}
+
+	// A user with no preferences at all resolves to the system default theme;
+	// whatever that yields, the two forms must still agree.
+	empty, cleanup_empty := create_test_user(t)
+	defer cleanup_empty()
+	empty.Preferences = map[string]string{"theme": ""}
+	if web_user_theme_declarations(empty) == "" && web_user_theme_style(empty) != "" {
+		t.Error("empty declarations must produce an empty style attribute, not a bare style=\"\"")
+	}
+}

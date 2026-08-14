@@ -317,15 +317,19 @@ func append_style_preset(style_parts *[]string, density string) {
 	}
 }
 
-// web_user_theme_style returns an inline style="..." attribute carrying
-// the user's resolved theme as CSS custom properties (hue, radius, fonts,
-// shadows, density). Honours per-axis user overrides — density, radius,
-// background, font_size — each defaulting to "theme" (inherit from the
-// active theme). For anonymous requests (user == nil) the per-user
-// overrides resolve to "theme" via user_preference_get's nil-guard, and
-// the active theme falls through to the system-wide default_theme so
-// login / landing / public-anon pages render branded.
-func web_user_theme_style(user *User) string {
+// web_user_theme_declarations returns the user's resolved theme as CSS
+// declaration text ("--hue: 250; --radius: 0.5rem"), unescaped and without an
+// attribute wrapper. web_user_theme_style wraps it for HTML output; the shell
+// init endpoint returns it as JSON so the shell can refresh the trusted root
+// from the server rather than from an app's postMessage.
+//
+// Honours per-axis user overrides — density, radius, background, font_size —
+// each defaulting to "theme" (inherit from the active theme). For anonymous
+// requests (user == nil) the per-user overrides resolve to "theme" via
+// user_preference_get's nil-guard, and the active theme falls through to the
+// system-wide default_theme so login / landing / public-anon pages render
+// branded.
+func web_user_theme_declarations(user *User) string {
 	user_density := user_preference_get(user, "density", "theme")
 	user_radius := user_preference_get(user, "radius", "theme")
 	user_card := user_preference_get(user, "card", "theme")
@@ -433,19 +437,26 @@ func web_user_theme_style(user *User) string {
 		style_parts = append(style_parts, "font-size: 125%")
 	}
 
-	if len(style_parts) == 0 {
+	return strings.Join(style_parts, "; ")
+}
+
+// web_user_theme_style returns web_user_theme_declarations as an inline
+// style="..." attribute for injection into an HTML document.
+func web_user_theme_style(user *User) string {
+	declarations := web_user_theme_declarations(user)
+	if declarations == "" {
 		return ""
 	}
 	// The attribute goes into HTML, and the parser decodes character
 	// references before CSS ever parses the value — so a theme value carrying
 	// `u&#114l(` or `red&#59;background-image:url(` reconstructs a fetching
 	// function or a whole extra declaration on <html> that none of the checks
-	// above, or the manifest validation, ever saw as such. Escaping at the
-	// point of output is the boundary that holds whatever reached here, and it
-	// costs nothing in fidelity: the parser decodes each reference back to the
-	// character the theme meant, so the quotes in a font stack still arrive as
-	// quotes.
-	return `style="` + html.EscapeString(strings.Join(style_parts, "; ")) + `"`
+	// in web_user_theme_declarations, or the manifest validation, ever saw as
+	// such. Escaping at the point of output is the boundary that holds
+	// whatever reached here, and it costs nothing in fidelity: the parser
+	// decodes each reference back to the character the theme meant, so the
+	// quotes in a font stack still arrive as quotes.
+	return `style="` + html.EscapeString(declarations) + `"`
 }
 
 // web_apply_user_document_theme injects user appearance/theme into a full

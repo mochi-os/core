@@ -594,3 +594,56 @@ func TestShellTokenResponseFormat(t *testing.T) {
 		t.Errorf("Token app = %q, want 'feeds'", app)
 	}
 }
+
+// The shell installs the theme this endpoint returns onto the trusted root,
+// which is what stops an app supplying those values itself. If the field goes
+// missing the shell silently keeps whatever the page loaded with, and a theme
+// change stops reaching the chrome — a failure with no error anywhere.
+func TestShellInitReturnsTheme(t *testing.T) {
+	cleanup := create_web_test_env(t)
+	defer cleanup()
+
+	db_users := db_open("db/users.db")
+	db_users.exec("alter table users add column methods text not null default ''")
+	db_users.exec("alter table users add column disabled text not null default ''")
+	db_users.exec("alter table users add column status text not null default 'active'")
+	n := now()
+	db_users.exec("insert into users (uid, username, role, created, updated) values (?, ?, ?, ?, ?)", "u1", "test@example.com", "user", n, n)
+
+	db_sessions := db_open("db/sessions.db")
+	db_sessions.exec("create table if not exists sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	db_sessions.exec("create unique index if not exists sessions_code on sessions(code)")
+	db_sessions.exec("insert into sessions (user, code, secret, expires, created, address, agent) values (?, ?, 'secret-for-theme-test-12345678', ?, ?, '127.0.0.1', 'test')", "u1", "theme-test-session", n+86400, n)
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/_/shell", web_shell_init)
+
+	req := httptest.NewRequest("POST", "/_/shell", nil)
+	req.AddCookie(&http.Cookie{Name: "session", Value: "theme-test-session"})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to parse response JSON: %v", err)
+	}
+
+	theme, ok := resp["theme"]
+	if !ok {
+		t.Fatal("Response should carry a 'theme' field; without it the shell can never refresh the trusted root from the server")
+	}
+	if _, ok := theme.(string); !ok {
+		t.Errorf("theme should be a CSS declaration string, got %T", theme)
+	}
+
+	// It goes to setProperty, not into HTML, so the attribute form would be
+	// installed verbatim and silently dropped by the browser.
+	if strings.Contains(theme.(string), `style="`) {
+		t.Errorf("theme should be bare declarations, not an attribute: %q", theme)
+	}
+}

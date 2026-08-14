@@ -138,7 +138,13 @@ func shell_wrap_candidate(c *gin.Context) bool {
 	// the rendered document) then fails with "Sandbox access violation".
 	// These URLs are always direct resource downloads and must reach the
 	// browser as top-level responses, not iframe contents.
-	if strings.Contains(path, "/-/attachments/") || strings.Contains(path, "/git/") {
+	//
+	// The list itself lives with web_resource_guard, which sandboxes anything
+	// on these paths that comes back as an executable document: the exemption
+	// is decided from a path the apps author, so the guard is what stops an app
+	// naming an action to escape the shell. One definition, so the two cannot
+	// disagree about which paths skip the wrap.
+	if shell_resource_path(path) {
 		return false
 	}
 

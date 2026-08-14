@@ -137,10 +137,11 @@ func TestResourceGuardIsRegistered(t *testing.T) {
 	}
 }
 
-// TestResourceGuardTracksTheShellExemption pins shell_resource_path against the
-// behaviour it mirrors. shell.go owns the exempt list; if it gains or loses a
-// substring and this copy is not updated, the guard silently stops covering the
-// paths that skip the wrap, and this fails.
+// TestResourceGuardTracksTheShellExemption pins the pairing the fix depends on:
+// every path that skips the shell wrap is one the guard covers. They now share
+// shell_resource_path, so this holds by construction — but the property is what
+// matters, not the sharing, and re-inlining the list in either place fails
+// here.
 func TestResourceGuardTracksTheShellExemption(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	paths := []string{

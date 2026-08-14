@@ -40,9 +40,11 @@ import (
 // withholds, which is what the exemption skipped.
 const shell_resource_policy = "sandbox"
 
-// shell_resource_path reports whether a path takes the resource exemption in
-// shell_wrap_candidate. Kept in step with that list by
-// TestResourceGuardTracksTheShellExemption.
+// shell_resource_path reports whether a path takes the resource exemption.
+// shell_wrap_candidate calls this to decide what skips the shell, and the guard
+// below calls it to decide what needs sandboxing if it comes back as a
+// document - one definition, so the exemption and its mitigation cannot drift
+// apart.
 func shell_resource_path(path string) bool {
 	return strings.Contains(path, "/-/attachments/") || strings.Contains(path, "/git/")
 }

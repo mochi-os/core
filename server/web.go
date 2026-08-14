@@ -2064,6 +2064,10 @@ func web_start() {
 	}))
 	r.Use(gin.Recovery())
 	r.Use(web_security_headers)
+	// After the security headers, so the guard's CSP is set on a response that
+	// already carries the standard ones, and before anything that can produce a
+	// body on a resource-exempt path.
+	r.Use(web_resource_guard)
 	r.Use(web_sticky_session)
 	r.Use(web_body_limit)
 	r.Use(rate_limit_api_middleware)

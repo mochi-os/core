@@ -111,7 +111,7 @@ const (
 )
 
 const (
-	schema_version = 5
+	schema_version = 6
 )
 
 var (
@@ -280,7 +280,11 @@ func db_create() {
 	users.exec("create index if not exists recovery_user on recovery(user)")
 
 	// TOTP secrets
-	users.exec("create table if not exists totp (user text primary key references users(uid) on delete cascade, secret text not null, verified integer not null default 0, created integer not null)")
+	// pending holds a secret from an enrolment that has not been proven yet.
+	// It is separate from secret so starting an enrolment cannot disturb the
+	// authenticator the user is currently logging in with - see
+	// api_user_totp_setup.
+	users.exec("create table if not exists totp (user text primary key references users(uid) on delete cascade, secret text not null, verified integer not null default 0, pending text not null default '', created integer not null)")
 
 	// OAuth identity definitions (Google, GitHub, Microsoft, Facebook, X).
 	// Last-used timestamp lives in sessions.db.verifications so this cold
@@ -1257,6 +1261,8 @@ func db_upgrade() {
 			db_upgrade_4()
 		case 5:
 			db_upgrade_5()
+		case 6:
+			db_upgrade_6()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2508,4 +2514,20 @@ func sql_is_mutating(sql string) bool {
 		return true
 	}
 	return false
+}
+
+// db_upgrade_6 gives the totp table a column for an unproven secret.
+//
+// Enrolment used to `replace into totp`, which overwrote the row and reset
+// verified to 0. A factor counts as available only while its row is verified,
+// so merely starting an enrolment - and then abandoning it, or never scanning
+// the code - dropped the user's working authenticator out of their usable
+// factors and quietly left login on an email code. The new secret now waits in
+// pending until a code proves it, and the one the user is actually carrying is
+// left alone.
+func db_upgrade_6() {
+	users := db_open("db/users.db")
+	if have, _ := users.exists("select 1 from pragma_table_info('totp') where name=?", "pending"); !have {
+		users.exec("alter table totp add column pending text not null default ''")
+	}
 }

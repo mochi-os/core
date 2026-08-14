@@ -1078,10 +1078,19 @@ func api_user_totp_setup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "failed to generate TOTP: %v", err)
 	}
 
-	// Store secret (unverified)
+	// Park the new secret as pending rather than replacing the row.
+	//
+	// `replace into` overwrote secret and reset verified to 0, and
+	// user_method_available reports TOTP available only while verified is 1 -
+	// so starting an enrolment disabled the authenticator the user already
+	// had, whether or not they went on to finish. Abandoning the flow (closing
+	// the tab, never scanning the code) left them with no second factor and
+	// login silently degraded to an email code. The live secret is untouched
+	// until api_user_totp_verify proves the new one.
 	db := db_open("db/users.db")
 	created := now()
-	db.exec("replace into totp (user, secret, verified, created) values (?, ?, 0, ?)",
+	db.exec(`insert into totp (user, secret, verified, pending, created) values (?, '', 0, ?, ?)
+		on conflict(user) do update set pending=excluded.pending`,
 		user.UID, key.Secret(), created)
 
 	// Return secret and otpauth URL for QR code
@@ -1118,13 +1127,25 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	db := db_open("db/users.db")
-	row, _ := db.row("select secret, verified, created from totp where user=?", user.UID)
+	row, _ := db.row("select secret, verified, pending, created from totp where user=?", user.UID)
 	if row == nil {
 		return sl_error(fn, "totp not set up")
 	}
 
 	secret := row["secret"].(string)
 	verified, _ := row["verified"].(int64)
+	pending, _ := row["pending"].(string)
+
+	// An enrolment in flight is settled first: a code matching the pending
+	// secret promotes it and retires whatever it replaces. Tried before the
+	// step-up branch below so a user who is re-enrolling can still complete it
+	// while their existing authenticator remains valid — a code from the old
+	// one simply falls through and re-authenticates as usual.
+	if pending != "" && totp.Validate(code, pending) {
+		db.exec("update totp set secret=?, verified=1, pending='' where user=?", pending, user.UID)
+		audit_password_changed(user.Username, "totp_enabled")
+		return sl.True, nil
+	}
 
 	// When TOTP is already enabled this call is a step-up re-verify, not
 	// setup: validate the code and advance the re-authentication accrual,
@@ -1139,11 +1160,13 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return reauthentication_result(user, "totp"), nil
 	}
 
-	if !totp.Validate(code, secret) {
+	// An unverified secret sitting in `secret` rather than `pending` is an
+	// enrolment that began before the pending column existed. Completing it the
+	// old way keeps a user who was mid-setup across the upgrade from having to
+	// start again.
+	if secret == "" || !totp.Validate(code, secret) {
 		return sl.False, nil
 	}
-
-	// Mark as verified (setup completion)
 	db.exec("update totp set verified=1 where user=?", user.UID)
 	audit_password_changed(user.Username, "totp_enabled")
 	return sl.True, nil

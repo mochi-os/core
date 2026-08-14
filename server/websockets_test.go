@@ -61,12 +61,12 @@ func websocket_register(t *testing.T, u *User, key, id string, ws *websocket.Con
 	t.Helper()
 	websockets_lock.Lock()
 	if websockets[u.UID] == nil {
-		websockets[u.UID] = map[string]map[string]*websocket.Conn{}
+		websockets[u.UID] = map[string]map[string]*websocket_client{}
 	}
 	if websockets[u.UID][key] == nil {
-		websockets[u.UID][key] = map[string]*websocket.Conn{}
+		websockets[u.UID][key] = map[string]*websocket_client{}
 	}
-	websockets[u.UID][key][id] = ws
+	websockets[u.UID][key][id] = &websocket_client{ws: ws}
 	websockets_lock.Unlock()
 
 	t.Cleanup(func() {
@@ -110,8 +110,8 @@ func TestSendTerminatesBrokenConnection(t *testing.T) {
 	// The first write may land in the socket buffer even though the peer has
 	// gone; the second reliably fails. Sending twice matches what a live
 	// server does anyway.
-	websockets_send(u, "key", map[string]any{"a": 1})
-	websockets_send(u, "key", map[string]any{"a": 2})
+	websockets_send(u, "", "key", map[string]any{"a": 1})
+	websockets_send(u, "", "key", map[string]any{"a": 2})
 
 	if websocket_registered(u, "key", "id") {
 		t.Error("a connection that could not be written to is still registered")
@@ -140,7 +140,7 @@ func TestSendRacesReaderTermination(t *testing.T) {
 		// A concurrent send's path: Write fails, terminate.
 		go func() {
 			defer wg.Done()
-			websockets_send(u, "key", map[string]any{"round": round})
+			websockets_send(u, "", "key", map[string]any{"round": round})
 		}()
 		wg.Wait()
 
@@ -181,12 +181,12 @@ func TestSendLeavesLiveConnectionsRegistered(t *testing.T) {
 	broken, break_broken := websocket_pair(t)
 	websocket_register(t, u, "key", "live", live)
 	websockets_lock.Lock()
-	websockets[u.UID]["key"]["broken"] = broken
+	websockets[u.UID]["key"]["broken"] = &websocket_client{ws: broken}
 	websockets_lock.Unlock()
 	break_broken()
 
-	websockets_send(u, "key", map[string]any{"a": 1})
-	websockets_send(u, "key", map[string]any{"a": 2})
+	websockets_send(u, "", "key", map[string]any{"a": 1})
+	websockets_send(u, "", "key", map[string]any{"a": 2})
 
 	if websocket_registered(u, "key", "broken") {
 		t.Error("the broken connection is still registered")

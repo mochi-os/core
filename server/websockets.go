@@ -160,10 +160,7 @@ func websockets_send(u *User, app string, key string, content any) {
 	var failed []dead
 
 	websockets_lock.RLock()
-	for id, client := range websockets[u.UID][key] {
-		if app != "" && client.app != app {
-			continue
-		}
+	for id, client := range websocket_targets(u, app, key) {
 		if j == "" {
 			j = json_encode(content)
 		}
@@ -177,6 +174,20 @@ func websockets_send(u *User, app string, key string, content any) {
 	for _, entry := range failed {
 		websocket_terminate(entry.ws, u, key, entry.id)
 	}
+}
+
+// websocket_targets returns the connections a send for this app must reach: its
+// own when app is set, every connection on the key when it is empty (core).
+// Caller holds websockets_lock.
+func websocket_targets(u *User, app string, key string) map[string]*websocket_client {
+	targets := map[string]*websocket_client{}
+	for id, client := range websockets[u.UID][key] {
+		if app != "" && client.app != app {
+			continue
+		}
+		targets[id] = client
+	}
+	return targets
 }
 
 // websocket_terminate closes a connection and removes it from the registry.

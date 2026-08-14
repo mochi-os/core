@@ -14,6 +14,7 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 	"log"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -64,9 +65,47 @@ func info(message string, values ...any) {
 	log.Printf(message+"\n", values...)
 }
 
-func warn(message string, values ...any) {
+// warn_application writes a warning raised by an app, and emails the admin
+// under a throttle keyed on the app rather than on the message.
+//
+// warn() keys its throttle on the format string, which for core is the call
+// site's fixed identity. An app supplies its own, so a format built from data -
+// mochi.log.warn("rejected: " + text) reads like an ordinary diagnostic - opens
+// a fresh key per call, and every fresh key is a first occurrence, which sends.
+// Keying on the app instead bounds it to one mail per app per window however
+// the app varies its text, and bounds warn_email_state to the number of
+// installed apps rather than to what they choose to write.
+//
+// The line is also repeat-suppressed, unlike core's warn(): that exemption
+// rests on warns being rare and their formats fixed, and neither holds here.
+// Without it an app floods the journal through the one level that never
+// suppressed, which is how the 2026-07 flood cut yuzu's history to ~35 minutes.
+func warn_application(app string, message string, values ...any) {
+	if !log_repeat_allow(message) {
+		return
+	}
+	out := warn_log(message, values...)
+
+	admin := ini_string("email", "admin", "")
+	if admin == "" {
+		return
+	}
+	send, suppressed := warn_email_allow("app:" + app)
+	if !send {
+		return
+	}
+	warn_email(admin, out, suppressed)
+}
+
+// warn_log writes a warning line and returns the formatted text.
+func warn_log(message string, values ...any) string {
 	out := fmt.Sprintf(message, values...)
 	log.Print(out + "\n")
+	return out
+}
+
+func warn(message string, values ...any) {
+	out := warn_log(message, values...)
 
 	admin := ini_string("email", "admin", "")
 	if admin == "" {
@@ -80,6 +119,12 @@ func warn(message string, values ...any) {
 	if !send {
 		return
 	}
+	warn_email(admin, out, suppressed)
+}
+
+// warn_email delivers one admin warning mail, with the rollup line when the
+// throttle suppressed occurrences since the last one.
+func warn_email(admin, out string, suppressed int) {
 	if suppressed > 0 {
 		out = fmt.Sprintf("%s\n\n(%d further warning(s) of this kind were suppressed since the last email.)", out, suppressed)
 	}
@@ -109,9 +154,10 @@ func server_hostname() string {
 // window, ending with a single rollup line when the window rolls. A flooding
 // diagnostic call site otherwise destroys journal retention — the 2026-07
 // broadcast gap flood wrote ~60 lines/sec and cut yuzu's journald to ~35
-// minutes of history, evicting the evidence needed to diagnose it. warn()
-// is exempt: warns are rare, important, and already email-throttled. var
-// (not const) so tests can lower them.
+// minutes of history, evicting the evidence needed to diagnose it. Core's
+// warn() is exempt: its warns are rare, important, and already email-throttled.
+// An app's are not - mochi.log.warn goes through warn_application, which
+// suppresses. var (not const) so tests can lower them.
 var log_repeat_threshold = 20
 var log_repeat_window int64 = 60
 
@@ -119,6 +165,19 @@ type log_repeat_record struct {
 	start int64
 	count int
 }
+
+// log_repeat_maximum bounds log_repeat_state.
+//
+// The key is the format string, and mochi.log.debug lets an app choose it. A
+// format built from data - mochi.log.debug("rejected: " + text) reads like an
+// ordinary diagnostic - is a fresh key on every call, so the table gains an
+// entry per line and nothing else here ever removes one. The window rollover
+// only replaces the entry for a format that recurs.
+//
+// Over the ceiling the oldest windows go. They are the ones least likely to be
+// actively suppressing anything, and losing one is harmless: the format simply
+// opens a fresh window on its next line.
+const log_repeat_maximum = 10000
 
 var (
 	log_repeat_state = map[string]*log_repeat_record{}
@@ -142,6 +201,7 @@ func log_repeat_allow(format string) bool {
 			log.Printf("(suppressed %d further lines of %q over %ds)\n", record.count-log_repeat_threshold, format, now-record.start)
 		}
 		log_repeat_state[format] = &log_repeat_record{start: now, count: 1}
+		log_repeat_evict()
 		return true
 	}
 	record.count++
@@ -151,6 +211,51 @@ func log_repeat_allow(format string) bool {
 type warn_email_record struct {
 	last       int64
 	suppressed int
+}
+
+// log_repeat_evict drops the oldest windows until the table is back under its
+// ceiling. Caller holds log_repeat_mutex.
+//
+// Sheds a slice at a time so this runs O(n) rarely rather than on every insert
+// once the ceiling is reached, matching message_seen_evict.
+//
+// Reports through log.Printf rather than warn(): this runs with
+// log_repeat_mutex held, and warn() sends the admin email inline over SMTP, so
+// routing it there would hold the lock across a network round trip and stall
+// every other log line on the server.
+func log_repeat_evict() {
+	if len(log_repeat_state) <= log_repeat_maximum {
+		return
+	}
+	target := len(log_repeat_state) - log_repeat_maximum + log_repeat_maximum/10
+
+	// Ordered by count first, then age. Dropping purely by age does not work:
+	// now() has second resolution, so a burst of fresh formats all carry the
+	// same start and a strict "older than the cutoff" test matches none of
+	// them - the table stays over its ceiling and re-sorts on every insert.
+	//
+	// Count first also decides the right victims. A window with a high count is
+	// actively suppressing a flood, and dropping it would let that flood clear
+	// its own suppression by opening enough new formats to push it out, then
+	// resume. A window at count 1 has printed one line and costs nothing to
+	// reopen.
+	formats := make([]string, 0, len(log_repeat_state))
+	for format := range log_repeat_state {
+		formats = append(formats, format)
+	}
+	slices.SortFunc(formats, func(a, b string) int {
+		first, second := log_repeat_state[a], log_repeat_state[b]
+		if first.count != second.count {
+			return first.count - second.count
+		}
+		return int(first.start - second.start)
+	})
+
+	for _, format := range formats[:target] {
+		delete(log_repeat_state, format)
+	}
+	log.Printf("(log repeat table hit its %d-entry ceiling; dropped the %d quietest window(s))\n",
+		log_repeat_maximum, target)
 }
 
 var (
@@ -193,9 +298,13 @@ func sl_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.
 	}
 
 	a, ok := t.Local("app").(*App)
+	// The throttle key for mochi.log.warn's admin email. Empty for a call with
+	// no app bound, which shares one key rather than opening one per format.
+	app := ""
 	if !ok || a == nil {
 		format = fmt.Sprintf("%s(): %s", t.Local("function"), format)
 	} else {
+		app = a.id
 		format = fmt.Sprintf("App %s:%s() %s", a.id, t.Local("function"), format)
 	}
 
@@ -212,7 +321,7 @@ func sl_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.
 		info(format, values...)
 
 	case "mochi.log.warn":
-		warn(format, values...)
+		warn_application(app, format, values...)
 	}
 
 	return sl.None, nil

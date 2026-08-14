@@ -377,10 +377,21 @@ func restore_swap(uid, bundle string) error {
 // restore_entities inserts the bundle's entities under the destination
 // uid with their private keys, and republishes public ones to the
 // directory so the network learns the new host.
+//
+// An entity whose key is absent from the bundle is skipped rather than
+// inserted keyless. Such a row would look locally owned to
+// user_owning_entity, so this host would answer streams addressed to it
+// and then fail to prove possession — the entity would be silently
+// unreachable, with the cause several layers from the symptom. Better to
+// refuse it at the point the key is missing and say so.
 func restore_entities(uid string, account export_account, keys map[string]string) {
 	udb := db_open("db/users.db")
 	for _, e := range account.Entities {
 		private := keys[e.ID]
+		if private == "" {
+			warn("Restore skipping entity %q for user %q: no private key in bundle", e.ID, uid)
+			continue
+		}
 		udb.exec("replace into entities (id, private, fingerprint, user, parent, class, name, privacy, data, published) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
 			e.ID, private, e.Fingerprint, uid, e.Parent, e.Class, e.Name, e.Privacy, e.Data)
 		if e.Privacy == "public" {

@@ -387,3 +387,42 @@ func TestHandleHelloOnMessagesStreamClosed(t *testing.T) {
 		t.Errorf("expected stream.Reset, got %d", resetCount.Load())
 	}
 }
+
+// TestCoalesceOneShipsClaimFrames guards the drop that the cross-instance
+// run caught: write_replies dispatches on frame type, and a type absent
+// from its list is discarded without a trace. A responder proof travels
+// as a claim frame, so a claim that never reaches the wire leaves the
+// far side waiting for a proof that was generated and thrown away.
+func TestCoalesceOneShipsClaimFrames(t *testing.T) {
+	stream, peer_side := new_stream_pair()
+	r := &Receiver{peer: "12D3KooWCoalesceTest", stream: stream}
+
+	// The pipe is unbuffered, so the reader has to be waiting before the
+	// write: coalesce_one blocks until someone takes the bytes.
+	done := make(chan *Frame, 1)
+	go func() {
+		f, err := frame_read(peer_side)
+		if err != nil {
+			done <- nil
+			return
+		}
+		done <- f
+	}()
+
+	acks := make([]string, 0)
+	go func() {
+		r.coalesce_one(&Frame{Type: frame_type_claim, From: test_entity_id('c'), Signature: []byte("sig")}, &acks)
+	}()
+
+	select {
+	case f := <-done:
+		if f == nil {
+			t.Fatal("claim frame was not written to the stream")
+		}
+		if f.Type != frame_type_claim {
+			t.Errorf("wrote type %q, want claim", f.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("claim frame was dropped rather than written")
+	}
+}

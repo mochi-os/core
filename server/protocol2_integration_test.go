@@ -138,7 +138,6 @@ func run_test_receiver(t *testing.T, stream wire_stream, challenge []byte, recei
 			t.Logf("recv caps_read: %v", err)
 			return
 		}
-		_ = caps
 		claimed := map[string]bool{}
 		for {
 			f, err := frame_read(stream)
@@ -150,6 +149,20 @@ func run_test_receiver(t *testing.T, stream wire_stream, challenge []byte, recei
 				if err := claim_verify(f.From, challenge, f.Signature, receiver, protocol_messages); err == nil {
 					claimed[f.From] = true
 				}
+			case frame_type_prove:
+				// Answer the sender's possession demand the way a real
+				// receiver does: sign ITS challenge (from caps) with the
+				// addressed entity's key.
+				// Bound to the OPENER's peer id — the Sender under test,
+				// whose id is net_id in this process — not to the peer this
+				// fake is playing. Signing for the wrong side is exactly
+				// what responder_verify is there to reject.
+				signature := responder_sign(f.To, caps.Challenge, net_id, protocol_messages)
+				if signature == nil {
+					_ = frame_write(stream, &Frame{Type: frame_type_fail, From: f.To, Reason: fail_unproven})
+					continue
+				}
+				_ = frame_write(stream, &Frame{Type: frame_type_claim, From: f.To, Signature: signature})
 			case frame_type_message:
 				if f.From != "" && !claimed[f.From] {
 					_ = frame_write(stream, &Frame{Type: frame_type_fail, Replies: []string{f.ID}, Reason: fail_unclaimed})
@@ -174,19 +187,25 @@ func install_sender_for(t *testing.T, peer string, stream wire_stream, hello *Fr
 	t.Helper()
 	codecs := codec_intersect(receiver_codecs(), hello.Codecs)
 	features := features_intersect(receiver_features(), hello.Features)
+	// offered must be the same challenge the caps frame carries: the far
+	// side signs that, and the Sender verifies proofs against this copy.
+	offered := must_challenge(t)
 	s := &Sender{
 		peer:      peer,
 		stream:    stream,
 		session:   hello.Session,
 		challenge: hello.Challenge,
+		offered:   offered,
 		codecs:    codecs,
 		features:  features,
 		outbox:    make(chan *outbound, peer_outbox()),
 		inflight:  map[string]*pending{},
 		pings:     map[string]int64{},
 		claimed:   map[string]bool{},
+		proven:    map[string]bool{},
+		proving:   map[string]chan error{},
 	}
-	if err := caps_write(stream, codecs, features, must_challenge(t)); err != nil {
+	if err := caps_write(stream, codecs, features, offered); err != nil {
 		t.Fatalf("caps_write: %v", err)
 	}
 	restore := stash_sender(t, peer, s)
@@ -660,4 +679,124 @@ func TestStreamSelfLoopAnswersErrors(t *testing.T) {
 		t.Fatalf("handler-error answer = %v", response)
 	}
 	s.close()
+}
+
+// --- messages-path responder proof -------------------------------------
+
+// TestMessagesProofPrecedesDelivery is the /mochi/2/messages counterpart
+// of the stream ack proof: a message must not reach the wire until the
+// far side has shown it holds the entity being addressed.
+func TestMessagesProofPrecedesDelivery(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	reset_workers(t)
+	defer reset_workers(t)
+
+	from, _ := new_entity_keys(t)
+	to, _ := new_entity_keys(t)
+
+	senderStream, recvStream := new_stream_pair()
+	challenge := must_challenge(t)
+	peer := "12D3KooWProofPeerUnderTest"
+	got := run_test_receiver(t, recvStream, challenge, peer)
+
+	hello, err := hello_read(senderStream, 2)
+	if err != nil {
+		t.Fatalf("hello_read: %v", err)
+	}
+	s, done := install_sender_for(t, peer, senderStream, hello)
+	defer done()
+
+	if err := peer_send(peer, "", &Frame{
+		Type: frame_type_message, ID: "m1", From: from, To: to,
+		Service: "test", Event: "ping",
+	}); err != nil {
+		t.Fatalf("peer_send: %v", err)
+	}
+
+	select {
+	case id := <-got:
+		if id != "m1" {
+			t.Errorf("delivered %q, want m1", id)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("message never delivered after the proof exchange")
+	}
+
+	s.lock.Lock()
+	proven := s.proven[to]
+	s.lock.Unlock()
+	if !proven {
+		t.Error("sender did not record the entity as proven")
+	}
+}
+
+// TestMessagesProofCachedPerConnection checks the proof is asked for once
+// per entity, not once per message — the property that makes this cheap
+// enough to be mandatory on a multiplexed stream.
+func TestMessagesProofCachedPerConnection(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	setup_users_test_schema()
+	reset_workers(t)
+	defer reset_workers(t)
+
+	from, _ := new_entity_keys(t)
+	to, _ := new_entity_keys(t)
+
+	senderStream, recvStream := new_stream_pair()
+	challenge := must_challenge(t)
+	peer := "12D3KooWProofCachePeerTest"
+
+	// Count prove demands seen on the wire.
+	proves := make(chan string, 16)
+	go func() {
+		_ = hello_write(recvStream, 2, "rs", challenge, receiver_codecs(), receiver_features())
+		caps, err := caps_read(recvStream)
+		if err != nil {
+			return
+		}
+		for {
+			f, err := frame_read(recvStream)
+			if err != nil {
+				return
+			}
+			switch f.Type {
+			case frame_type_prove:
+				proves <- f.To
+				signature := responder_sign(f.To, caps.Challenge, net_id, protocol_messages)
+				_ = frame_write(recvStream, &Frame{Type: frame_type_claim, From: f.To, Signature: signature})
+			case frame_type_message:
+				_ = frame_write(recvStream, &Frame{Type: frame_type_ack, Replies: []string{f.ID}})
+			}
+		}
+	}()
+
+	hello, err := hello_read(senderStream, 2)
+	if err != nil {
+		t.Fatalf("hello_read: %v", err)
+	}
+	_, done := install_sender_for(t, peer, senderStream, hello)
+	defer done()
+
+	for _, id := range []string{"m1", "m2", "m3"} {
+		if err := peer_send(peer, "", &Frame{
+			Type: frame_type_message, ID: id, From: from, To: to,
+			Service: "test", Event: "ping",
+		}); err != nil {
+			t.Fatalf("peer_send %s: %v", id, err)
+		}
+	}
+
+	select {
+	case <-proves:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no prove demand seen")
+	}
+	select {
+	case extra := <-proves:
+		t.Errorf("entity %q proved more than once on one connection", extra)
+	case <-time.After(500 * time.Millisecond):
+	}
 }

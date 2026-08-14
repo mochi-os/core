@@ -96,16 +96,24 @@ type pending struct {
 // Sender owns one outbound /mochi/2/messages stream to a single peer.
 // All fields except outbox are guarded by lock.
 type Sender struct {
-	peer         string
-	stream       wire_stream
-	session      string
-	challenge    []byte
-	codecs       []string // sender's effective codec set after intersection
-	features     []string // sender's effective feature set after intersection
-	outbox       chan *outbound
-	inflight     map[string]*pending
-	pings        map[string]int64
-	claimed      map[string]bool
+	peer      string
+	stream    wire_stream
+	session   string
+	challenge []byte   // theirs, from hello; we sign it to claim our entities
+	offered   []byte   // ours, in caps; they sign it to prove theirs
+	codecs    []string // sender's effective codec set after intersection
+	features  []string // sender's effective feature set after intersection
+	outbox    chan *outbound
+	inflight  map[string]*pending
+	pings     map[string]int64
+	claimed   map[string]bool
+	// proven records entities the far side has demonstrated it holds, for
+	// the life of this connection. A messages stream is multiplexed across
+	// many targets, so the proof is per entity rather than once at open as
+	// it is on /mochi/2/stream — but it is asked for once per entity, not
+	// once per message.
+	proven       map[string]bool
+	proving      map[string]chan error
 	closed       atomic.Bool
 	last_inbound atomic.Int64  // unix ns of last inbound frame; reset by ping_loop
 	wake         chan struct{} // queue_wake routes per-peer nudges here; pull_loop drains
@@ -223,10 +231,13 @@ func sender_open(peer string) (*Sender, error) {
 		challenge: hello.Challenge,
 		codecs:    codecs,
 		features:  features,
+		offered:   challenge,
 		outbox:    make(chan *outbound, peer_outbox()),
 		inflight:  map[string]*pending{},
 		pings:     map[string]int64{},
 		claimed:   map[string]bool{},
+		proven:    map[string]bool{},
+		proving:   map[string]chan error{},
 		wake:      make(chan struct{}, 1),
 	}
 
@@ -313,6 +324,16 @@ func (s *Sender) write_one(ob *outbound) error {
 		}
 	}
 
+	// Require the far side to prove it holds the target entity before any
+	// of this message crosses. Routing told us where to send; it did not
+	// establish that whoever is there may act as f.To, and by the time a
+	// message frame is written the content has already left.
+	if f.Type == frame_type_message && f.To != "" {
+		if err := s.ensure_proven(f.To); err != nil {
+			return err
+		}
+	}
+
 	if f.Type == frame_type_message && f.ID != "" {
 		// Window cap: block here when inflight has reached the
 		// per-peer limit (peer.window). Back-pressure path —
@@ -351,6 +372,63 @@ func (s *Sender) write_one(ob *outbound) error {
 		return err
 	}
 	return nil
+}
+
+// ensure_proven blocks until the far side has proven it holds `entity`,
+// asking it to if this connection has not already established it.
+//
+// Called from write_loop, so it blocks the outbox exactly as the inflight
+// window cap above does. That is the intent: a message must not be
+// written to a peer that has not shown it may act for the target, and the
+// cost is one round trip per entity per connection, not per message.
+//
+// Concurrent callers for the same entity share one demand — write_loop is
+// single-goroutine today, but the map makes that a property of the code
+// rather than an assumption about its callers.
+func (s *Sender) ensure_proven(entity string) error {
+	s.lock.Lock()
+	if s.proven[entity] {
+		s.lock.Unlock()
+		return nil
+	}
+	waiter, asked := s.proving[entity]
+	if !asked {
+		waiter = make(chan error, 1)
+		s.proving[entity] = waiter
+	}
+	s.lock.Unlock()
+
+	if !asked {
+		if err := frame_write(s.stream, &Frame{Type: frame_type_prove, To: entity}); err != nil {
+			s.resolve_proof(entity, err)
+			return err
+		}
+	}
+
+	select {
+	case err := <-waiter:
+		return err
+	case <-time.After(sender_send_timeout):
+		s.resolve_proof(entity, fmt.Errorf("timed out awaiting proof of entity %q", entity))
+		return fmt.Errorf("sender: peer %q did not prove entity %q", s.peer, entity)
+	}
+}
+
+// resolve_proof wakes whoever is waiting on `entity` and clears the
+// in-progress marker. A nil error also records the proof for the rest of
+// the connection's life.
+func (s *Sender) resolve_proof(entity string, err error) {
+	s.lock.Lock()
+	waiter := s.proving[entity]
+	delete(s.proving, entity)
+	if err == nil {
+		s.proven[entity] = true
+	}
+	s.lock.Unlock()
+	if waiter != nil {
+		waiter <- err
+		close(waiter)
+	}
 }
 
 // fail_outbound is called when an outbound can't be written. Maps to
@@ -406,7 +484,27 @@ func (s *Sender) handle_inbound(f *Frame) {
 			peer_mark_progress(s.peer)
 		}
 
+	case frame_type_claim:
+		// The far side answering a prove demand. Verified against the
+		// challenge WE offered in caps and our own peer id, so a proof
+		// gathered on some other connection cannot be relayed onto this
+		// one.
+		if err := responder_verify(f.From, s.offered, f.Signature, net_id, protocol_messages); err != nil {
+			info("Sender: proof verify failed peer=%q session=%s entity=%q: %v",
+				s.peer, s.session, f.From, err)
+			s.resolve_proof(f.From, fmt.Errorf("proof verify failed: %w", err))
+			return
+		}
+		s.resolve_proof(f.From, nil)
+
 	case frame_type_fail:
+		// A refused prove demand carries the entity rather than a message
+		// id: it is answering a question about the peer, not about a
+		// queued row.
+		if len(f.Replies) == 0 && f.From != "" {
+			s.resolve_proof(f.From, fmt.Errorf("peer refused to prove entity %q: %s", f.From, f.Reason))
+			return
+		}
 		if len(f.Replies) == 0 {
 			return
 		}

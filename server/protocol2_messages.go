@@ -71,7 +71,8 @@ type Receiver struct {
 	peer      string
 	stream    wire_stream
 	session   string
-	challenge []byte
+	challenge []byte   // ours, in hello; the sender signs it to claim its entities
+	offered   []byte   // the sender's, from caps; we sign it to prove ours
 	codecs    []string // sender's advertised codecs from caps
 	features  []string // sender's advertised features from caps
 	caps_seen atomic.Bool
@@ -156,6 +157,16 @@ func (r *Receiver) read_loop() {
 			}
 			r.codecs = f.Codecs
 			r.features = f.Features
+			// The opener's challenge, which this host signs to prove it
+			// holds an entity the sender addresses. Mandatory, same as on
+			// /mochi/2/stream — a sender must not be able to skip being
+			// offered the proof.
+			if err := frame_reject_challenge(f.Challenge); err != nil {
+				info("Messages: caps challenge rejected peer=%q session=%s: %v", r.peer, r.session, err)
+				r.stream.Reset()
+				return
+			}
+			r.offered = f.Challenge
 			r.caps_seen.Store(true)
 			continue
 		}
@@ -187,6 +198,16 @@ func (r *Receiver) handle(f *Frame) bool {
 		r.lock.Lock()
 		r.claimed[f.From] = true
 		r.lock.Unlock()
+		return true
+
+	case frame_type_prove:
+		// The sender will not hand us a message for this entity until we
+		// show we hold its key. Mirror image of the claim above: there
+		// the sender proves who it speaks for, here we prove who we
+		// answer for. Answering with our own entity's signature over the
+		// sender's challenge is the only thing that distinguishes this
+		// host from any other that could route the connection.
+		r.prove(f.To)
 		return true
 
 	case frame_type_message:
@@ -314,6 +335,32 @@ func (r *Receiver) dispatch_message(f *Frame) {
 // frame (with a debug log) if the channel is full — same recovery
 // path as a dropped stream: sender's sweeper times the inflight out,
 // retry, receiver_mark_seen catches the dup.
+// prove answers a `prove` demand for `entity`: a claim frame carrying
+// this host's signature over the sender's challenge when the entity is
+// ours to sign for, otherwise a fail the sender can distinguish.
+//
+// fail_unknown_user means the entity is not hosted here and the sender
+// should look elsewhere; fail_unproven means it is hosted here but the
+// key is missing, which is an operator problem on this side and must not
+// be silently downgraded into serving the entity unauthenticated.
+func (r *Receiver) prove(entity string) {
+	if entity == "" || !valid(entity, "entity") {
+		r.reply(&Frame{Type: frame_type_fail, From: entity, Reason: fail_unknown_user})
+		return
+	}
+	if user_owning_entity(entity) == nil {
+		r.reply(&Frame{Type: frame_type_fail, From: entity, Reason: fail_unknown_user})
+		return
+	}
+	signature := responder_sign(entity, r.offered, r.peer, protocol_messages)
+	if signature == nil {
+		info("Messages: cannot prove entity %q to peer=%q session=%s", entity, r.peer, r.session)
+		r.reply(&Frame{Type: frame_type_fail, From: entity, Reason: fail_unproven})
+		return
+	}
+	r.reply(&Frame{Type: frame_type_claim, From: entity, Signature: signature})
+}
+
 func (r *Receiver) reply(f *Frame) {
 	if r.closed.Load() {
 		return
@@ -367,8 +414,10 @@ func (r *Receiver) write_replies() {
 
 // coalesce_one is the per-frame branch inside write_replies' drain
 // loop: ack frames merge into pending_acks (one ack frame per drain
-// batch); any other frame (fail, pong) flushes the accumulated acks
-// first then ships standalone. Preserves wire ordering — a sender
+// batch); any other frame (fail, pong, claim) flushes the accumulated
+// acks first then ships standalone. A type missing from that list is
+// dropped silently, which is why the list must be kept in step with
+// whatever reply() can enqueue. Preserves wire ordering — a sender
 // observing an ack always sees it before any frame queued after the
 // ack, so inflight-resolution stays consistent with arrival order.
 func (r *Receiver) coalesce_one(f *Frame, pending_acks *[]string) {
@@ -388,7 +437,7 @@ func (r *Receiver) coalesce_one(f *Frame, pending_acks *[]string) {
 		*pending_acks = (*pending_acks)[:0]
 	}
 	switch f.Type {
-	case frame_type_fail, frame_type_pong:
+	case frame_type_fail, frame_type_pong, frame_type_claim:
 		if err := frame_write(r.stream, f); err != nil {
 			debug("Messages: %q write failed peer=%q: %v", f.Type, r.peer, err)
 		}

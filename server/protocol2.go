@@ -81,6 +81,7 @@ const (
 	frame_type_pong    = "pong"    // /mochi/2/messages only
 	frame_type_bye     = "bye"     // /mochi/2/messages only
 	frame_type_open    = "open"    // /mochi/2/stream only
+	frame_type_prove   = "prove"   // /mochi/2/messages only — demand the far side prove it holds an entity
 )
 
 // Failure reason vocabulary carried on Frame.Reason for fail frames.
@@ -154,7 +155,7 @@ func frame_type_known(t string) bool {
 	case frame_type_hello, frame_type_caps, frame_type_claim,
 		frame_type_ack, frame_type_fail,
 		frame_type_message, frame_type_ping, frame_type_pong, frame_type_bye,
-		frame_type_open:
+		frame_type_open, frame_type_prove:
 		return true
 	}
 	return false

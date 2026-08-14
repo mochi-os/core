@@ -537,7 +537,10 @@ release-clean:
 release-build: deb rpm msi pkg docker
 
 release-publish:
-	git tag -fa $(version) -m "$(version)"
+	# Not tagged here. This runs before the version bump is committed, so the
+	# tag landed on whatever HEAD happened to be - the commit declaring the
+	# PREVIOUS version - and -f meant a rebuild silently moved an existing tag.
+	# claude/scripts/commit.sh tags the commit that records the version.
 	rm -f ../packages/apt/pool/main/mochi-server_*.deb
 	cp $(deb_amd64) $(deb_arm64) $(deb_armhf) ../packages/apt/pool/main
 	@t=$$(date +%s); ./build/scripts/apt-repository-update ../packages/apt `cat local/gpg.txt | tr -d '\n'` && echo ">>> apt reindex (scan + gpg sign): $$(($$(date +%s)-t))s" | tee -a $(timing)

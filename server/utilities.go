@@ -978,8 +978,13 @@ func path_scrub(message string) string {
 // recover() only ever sees panics raised on its OWN goroutine, so a guard
 // around the function that spawns a goroutine catches nothing: every entry
 // point that runs on its own goroutine and is fed by remote input needs one of
-// its own. That is why this exists at the two inbound P2P entry points rather
-// than once around the dispatch they share.
+// its own. That is why this exists at each of the three inbound P2P entry
+// points - receive_messages, receive_stream and pubsub_receive - rather than
+// once around the dispatch they share.
+//
+// Said "two" until 2026-08, while receive_messages had no guard. The count was
+// the only statement of which entry points were covered, so being wrong about
+// it is what let the busiest one stay unguarded without looking like a gap.
 //
 // `after` runs during recovery to shut the faulted subject down - resetting a
 // stream, say - and is itself guarded, so a second panic while cleaning up

@@ -84,7 +84,19 @@ type Receiver struct {
 
 // receive_messages is the libp2p stream handler registered for
 // /mochi/2/messages in net_start. Runs in a fresh goroutine per stream.
+//
+// Guarded like the other two inbound entry points. This is the busiest of the
+// three and had no recover of its own, so a panic anywhere beneath it reached
+// the top of a libp2p goroutine and took the process down - and plenty can
+// panic: directory_user_learn on the claim path reaches db.exec, which is
+// must(...) and panics on any SQL error, so a locked or damaged database turned
+// an inbound message from a remote peer into a server-wide outage. Resetting
+// the stream on the way out tells that peer to stop waiting.
 func receive_messages(s p2p_network.Stream) {
+	guard("receive_messages", func() { s.Reset() }, func() { receive_messages_guarded(s) })
+}
+
+func receive_messages_guarded(s p2p_network.Stream) {
 	peer := s.Conn().RemotePeer().String()
 
 	// Rate limit incoming streams per peer (skip bootstrap peers — trusted
@@ -179,6 +191,20 @@ func (r *Receiver) read_loop() {
 // handle dispatches one inbound frame. Returns false to terminate the
 // read loop (used by `bye` and protocol violations).
 func (r *Receiver) handle(f *Frame) bool {
+	// Addressing checked before anything keys a map on it. Frame.Service and
+	// Frame.ID both become keys that outlive the stream — app_workers, which
+	// starts a goroutine per distinct service, and seen_messages, whose
+	// ceiling counts entries assuming an id is id-sized — and both are chosen
+	// by the sending peer. Rejecting closes the stream rather than failing the
+	// frame: a peer sending a malformed envelope is not one whose next frame
+	// is worth parsing.
+	if !envelope_valid(f.From, f.Service, f.Event, f.ID) {
+		info("Messages: protocol violation peer=%q session=%s — malformed envelope (service=%d bytes, id=%d bytes)",
+			r.peer, r.session, len(f.Service), len(f.ID))
+		r.stream.Reset()
+		return false
+	}
+
 	switch f.Type {
 	case frame_type_caps:
 		// Second caps frame mid-stream is a protocol violation.

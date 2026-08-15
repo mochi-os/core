@@ -6,9 +6,12 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -25,12 +28,18 @@ func oauth_binding_setup(t *testing.T) func() {
 	sessions.exec("create table sessions (user text not null, code text not null primary key, secret text not null, expires integer not null, created integer not null, accessed integer not null, address text not null default '', agent text not null default '')")
 	sessions.exec("create table ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")
 	sessions.exec("create table reauthentication (id text primary key, user text not null, methods text not null default '', expires integer not null)")
+	sessions.exec("create table verifications (oauth integer not null, user text not null, last integer not null, primary key (oauth, user))")
 	db_open("db/settings.db").exec("create table settings (name text primary key, value text not null default '')")
 
 	users := db_open("db/users.db")
 	users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+	users.exec("create table oauth (id integer primary key, user text not null, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
 	users.exec("insert into users (uid, username, methods) values ('u-link', 'link@example.com', 'email')")
 	users.exec("insert into users (uid, username, methods) values ('u-other', 'other@example.com', 'email')")
+	// user_by_uid, which the Bearer path at /begin goes through, returns nil
+	// for a user with no person entity.
+	users.exec("insert into entities (id, private, fingerprint, user, class, name) values ('e-link', '', 'fp-link', 'u-link', 'person', 'Link')")
+	users.exec("insert into entities (id, private, fingerprint, user, class, name) values ('e-other', '', 'fp-other', 'u-other', 'person', 'Other')")
 
 	setting_set("oauth_github_client_id", "test-client")
 	setting_set("oauth_github_client_secret", "test-secret")
@@ -283,5 +292,226 @@ func TestOauthStepupCeremonyNotSessionBound(t *testing.T) {
 	resolved, link_user, ok := oauth_callback_ceremony(c, "github", state)
 	if !ok || resolved == nil || resolved.Mode != "reauthentication" || link_user != "u-link" {
 		t.Errorf("step-up callback with no session was rejected (ok=%v link_user=%q)", ok, link_user)
+	}
+}
+
+// oauth_mobile_link_begin starts a mobile LINK ceremony for u-link and returns
+// the ceremony state id and the app's PKCE verifier.
+func oauth_mobile_link_begin(t *testing.T, session string) (string, string) {
+	t.Helper()
+	sessions := db_open("db/sessions.db")
+	proof := uid()
+	sessions.exec("insert into reauthentication (id, user, methods, expires) values (?, 'u-link', 'email', ?)", proof, now()+300)
+
+	verifier := random_alphanumeric(64)
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+
+	token := auth_create_app_token("u-link", session, "settings")
+	if token == "" {
+		t.Fatal("could not mint an app token")
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/_/auth/oauth/github/begin",
+		strings.NewReader(`{"link":true,"mode":"mobile","scheme":"mochi","target":"mochi:oauth-link-return","challenge":"`+challenge+`","token":"`+proof+`"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set("Authorization", "Bearer "+token)
+	c.Params = gin.Params{{Key: "provider", Value: "github"}}
+	web_oauth_begin(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("begin mobile link: status = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	state, _ := oauth_only_ceremony(t)
+	return state, verifier
+}
+
+// oauth_exchange_request drives POST /_/auth/oauth/exchange.
+func oauth_exchange_request(code, verifier, bearer string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/_/auth/oauth/exchange",
+		strings.NewReader(`{"code":"`+code+`","verifier":"`+verifier+`"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	if bearer != "" {
+		c.Request.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	web_oauth_exchange(c)
+	return w
+}
+
+// oauth_linked_owner returns the user a (provider, subject) is linked to.
+func oauth_linked_owner(provider, subject string) string {
+	row, _ := db_open("db/users.db").row("select user from oauth where provider=? and subject=?", provider, subject)
+	if row == nil {
+		return ""
+	}
+	owner, _ := row["user"].(string)
+	return owner
+}
+
+// TestOauthMobileLinkCompletesInTheApp is the mobile half of the link-hijack
+// defence. A link the app began used to be written by whatever browser
+// presented the callback - on Android a Custom Tab carrying no session, so
+// nothing in that request identified the app or the user. An attacker who
+// began a link on their own device could hand the provider URL to a victim and
+// collect the victim's provider identity against the attacker's account.
+//
+// Now the callback only stashes the profile and deep-links the app; the link
+// is written at /exchange, where the verifier proves the app instance and the
+// Bearer proves the user.
+func TestOauthMobileLinkCompletesInTheApp(t *testing.T) {
+	defer oauth_binding_setup(t)()
+	sessions := db_open("db/sessions.db")
+
+	link_session := login_create("u-link", "", "")
+	other_session := login_create("u-other", "", "")
+	link_token := auth_create_app_token("u-link", link_session, "settings")
+	other_token := auth_create_app_token("u-other", other_session, "settings")
+
+	profile := &oauth_profile{Subject: "gh-subject-1", Email: "link@example.com", Verified: true, Name: "Link User"}
+
+	// The callback writes NO link and sends the app a deep link, not a web
+	// redirect. This is the browser the attacker would have handed to a victim.
+	state, verifier := oauth_mobile_link_begin(t, link_session)
+	callback, _ := oauth_callback_context(state)
+	st, link_user, ok := oauth_callback_ceremony(callback, "github", state)
+	if !ok {
+		t.Fatal("mobile link callback was rejected")
+	}
+	// The routing itself is the security property: reaching the plain link
+	// destination is the browser writing a link it cannot authorise.
+	if d := oauth_callback_destination(st, link_user); d != oauth_destination_mobile_link {
+		t.Fatalf("mobile link ceremony routes to %q, want %q", d, oauth_destination_mobile_link)
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/_/auth/oauth/github/callback", nil)
+	oauth_mobile_link(c, "github", profile, st, link_user)
+
+	if owner := oauth_linked_owner("github", profile.Subject); owner != "" {
+		t.Errorf("the callback wrote the link (owner %q); it must wait for the app's exchange", owner)
+	}
+	location := w.Header().Get("Location")
+	if !strings.HasPrefix(location, "mochi:oauth-link-return?") {
+		t.Errorf("callback location = %q, want a mochi:oauth-link-return deep link", location)
+	}
+	parsed, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("callback location: %v", err)
+	}
+	// Go puts an opaque URI's query in RawQuery, not in Opaque.
+	query := parsed.Query()
+	code := query.Get("code")
+	if code == "" {
+		t.Fatal("callback deep link carries no exchange code")
+	}
+	if query.Get("nonce") == "" {
+		t.Error("callback deep link carries no return nonce")
+	}
+
+	// Another user's token cannot complete it, even holding the verifier -
+	// this is the attack, with the attacker's own app presenting its token.
+	if w := oauth_exchange_request(code, verifier, other_token); w.Code != http.StatusForbidden {
+		t.Errorf("exchange with another user's token: status = %d, want 403", w.Code)
+	}
+	if owner := oauth_linked_owner("github", profile.Subject); owner != "" {
+		t.Errorf("a refused exchange linked the identity to %q", owner)
+	}
+
+	// No token at all is refused too. The exchange row is consumed on the
+	// first attempt, so re-stash for each case.
+	restash := func() string {
+		t.Helper()
+		code, err := oauth_mobile_store(st.Challenge, map[string]any{
+			"link": true, "user": link_user, "provider": "github",
+			"profile": map[string]any{"subject": profile.Subject, "email": profile.Email, "verified": true, "name": profile.Name},
+		})
+		if err != nil {
+			t.Fatalf("restash: %v", err)
+		}
+		return code
+	}
+	if w := oauth_exchange_request(restash(), verifier, ""); w.Code != http.StatusUnauthorized {
+		t.Errorf("exchange with no token: status = %d, want 401", w.Code)
+	}
+
+	// The wrong verifier is refused even with the right token: the app that
+	// began the ceremony is a separate claim from the user completing it.
+	if w := oauth_exchange_request(restash(), random_alphanumeric(64), link_token); w.Code != http.StatusUnauthorized {
+		t.Errorf("exchange with a wrong verifier: status = %d, want 401", w.Code)
+	}
+	if owner := oauth_linked_owner("github", profile.Subject); owner != "" {
+		t.Errorf("a refused exchange linked the identity to %q", owner)
+	}
+
+	// The app that began it, acting for the user it names: the link lands.
+	w2 := oauth_exchange_request(restash(), verifier, link_token)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("exchange with the right verifier and token: status = %d, want 200 (%s)", w2.Code, w2.Body.String())
+	}
+	if owner := oauth_linked_owner("github", profile.Subject); owner != "u-link" {
+		t.Errorf("linked owner = %q, want u-link", owner)
+	}
+	if n, _ := sessions.rows("select 1 from ceremonies where type='oauth_exchange'"); len(n) != 0 {
+		t.Errorf("%d exchange rows left, want 0 (single-use)", len(n))
+	}
+}
+
+// TestOauthMobileLinkRefusesAnotherUsersIdentity: the identity is already
+// somebody else's, so the exchange reports the conflict rather than moving it.
+func TestOauthMobileLinkRefusesAnotherUsersIdentity(t *testing.T) {
+	defer oauth_binding_setup(t)()
+
+	db_open("db/users.db").exec(
+		"insert into oauth (user, provider, subject, email, verified, name, created) values ('u-other', 'github', 'gh-taken', '', 1, '', ?)", now())
+
+	link_session := login_create("u-link", "", "")
+	link_token := auth_create_app_token("u-link", link_session, "settings")
+	state, verifier := oauth_mobile_link_begin(t, link_session)
+	callback, _ := oauth_callback_context(state)
+	st, link_user, ok := oauth_callback_ceremony(callback, "github", state)
+	if !ok {
+		t.Fatal("mobile link callback was rejected")
+	}
+	code, err := oauth_mobile_store(st.Challenge, map[string]any{
+		"link": true, "user": link_user, "provider": "github",
+		"profile": map[string]any{"subject": "gh-taken", "email": "", "verified": true, "name": ""},
+	})
+	if err != nil {
+		t.Fatalf("stash: %v", err)
+	}
+	if w := oauth_exchange_request(code, verifier, link_token); w.Code != http.StatusConflict {
+		t.Errorf("exchange for another user's identity: status = %d, want 409", w.Code)
+	}
+	if owner := oauth_linked_owner("github", "gh-taken"); owner != "u-other" {
+		t.Errorf("identity owner = %q, want u-other (unmoved)", owner)
+	}
+}
+
+// TestOauthCallbackDestinations pins the routing table the callback switches
+// on. Each row is a ceremony shape and the completion it must reach; the
+// mobile/browser split is what keeps a link the app began from being written
+// by a browser that cannot prove who asked for it.
+func TestOauthCallbackDestinations(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		state     oauth_state
+		link_user string
+		want      string
+	}{
+		{"web login", oauth_state{}, "", oauth_destination_login},
+		{"web link", oauth_state{}, "u-link", oauth_destination_link},
+		{"mobile login", oauth_state{Mode: "mobile"}, "", oauth_destination_mobile_login},
+		{"mobile link", oauth_state{Mode: "mobile"}, "u-link", oauth_destination_mobile_link},
+		{"step-up", oauth_state{Mode: "reauthentication"}, "u-link", oauth_destination_reauthentication},
+		{"step-up without a user", oauth_state{Mode: "reauthentication"}, "", oauth_destination_login},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := oauth_callback_destination(&test.state, test.link_user); got != test.want {
+				t.Errorf("destination = %q, want %q", got, test.want)
+			}
+		})
 	}
 }

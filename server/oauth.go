@@ -504,23 +504,52 @@ func web_oauth_callback(c *gin.Context) {
 		return
 	}
 
-	if st.Mode == "reauthentication" && link_user != "" {
+	switch oauth_callback_destination(st, link_user) {
+	case oauth_destination_reauthentication:
 		if user := user_by_uid(link_user); user != nil {
 			oauth_reauthenticate(c, name, profile, user, st.Challenge)
 		} else {
 			oauth_reauthenticate_page(c)
 		}
-		return
-	}
-	if link_user != "" {
+	case oauth_destination_mobile_link:
+		oauth_mobile_link(c, name, profile, st, link_user)
+	case oauth_destination_link:
 		oauth_link(c, name, profile, link_user, st.Target)
-		return
-	}
-	if st.Mode == "mobile" {
+	case oauth_destination_mobile_login:
 		oauth_mobile_login(c, name, profile, st)
-		return
+	default:
+		oauth_login(c, name, profile, st.Target, st.Email)
 	}
-	oauth_login(c, name, profile, st.Target, st.Email)
+}
+
+// Where a resolved callback goes. Named rather than inlined into the switch
+// above so the routing can be asserted directly: which of these a ceremony
+// reaches is a security property, not a detail. A mobile link that reaches
+// oauth_destination_link is the browser writing a link it cannot authorise.
+const (
+	oauth_destination_login            = "login"
+	oauth_destination_link             = "link"
+	oauth_destination_mobile_login     = "mobile_login"
+	oauth_destination_mobile_link      = "mobile_link"
+	oauth_destination_reauthentication = "reauthentication"
+)
+
+// oauth_callback_destination decides which completion a resolved ceremony
+// takes. The mobile cases are separate from their browser twins because the
+// party the ceremony is bound to differs - see oauth_ceremony_bound.
+func oauth_callback_destination(st *oauth_state, link_user string) string {
+	switch {
+	case st.Mode == "reauthentication" && link_user != "":
+		return oauth_destination_reauthentication
+	case link_user != "" && st.Mode == "mobile":
+		return oauth_destination_mobile_link
+	case link_user != "":
+		return oauth_destination_link
+	case st.Mode == "mobile":
+		return oauth_destination_mobile_login
+	default:
+		return oauth_destination_login
+	}
 }
 
 // oauth_callback_ceremony resolves the ceremony a callback names: it looks the
@@ -579,10 +608,9 @@ func oauth_callback_ceremony(c *gin.Context, name, state string) (*oauth_state, 
 //   - A mobile ceremony is tied to the app instance at /exchange, where the
 //     PKCE verifier the app holds must match the challenge stored at /begin.
 //     The browser is only a conduit and may not be the one that called /begin.
-//     A mobile LINK ceremony completes in that browser without an exchange
-//     step and so is not tied to anything here; closing that needs the link
-//     to be routed through /exchange like the login, and the app to hold the
-//     verifier for it.
+//     A mobile LINK goes the same way and is additionally tied to the account
+//     it names, by the Bearer token presented at the exchange - see
+//     oauth_mobile_link and oauth_exchange_link.
 //   - A step-up ceremony is tied to the account being re-proved: the provider
 //     identity must already be linked to the row's user, and the proof is
 //     released only to that user. Android completes it in a browser with no
@@ -612,14 +640,6 @@ func oauth_ceremony_bound(c *gin.Context, st *oauth_state, link_user string) str
 // oauth_link attaches an OAuth identity to an already-authenticated user. The
 // callback handler routes here when the ceremony row has a non-null user.
 func oauth_link(c *gin.Context, provider string, p *oauth_profile, user_id string, target string) {
-	db := db_open("db/users.db")
-
-	// If this (provider, subject) is already linked, either refuse (wrong
-	// user) or update timestamps (same user).
-	owner := ""
-	if row, _ := db.row("select user from oauth where provider=? and subject=?", provider, p.Subject); row != nil {
-		owner, _ = row["user"].(string)
-	}
 	target = redirect_local(target)
 	if target == "" {
 		target = "/login/settings/oauth"
@@ -627,6 +647,30 @@ func oauth_link(c *gin.Context, provider string, p *oauth_profile, user_id strin
 	sep := "?"
 	if strings.Contains(target, "?") {
 		sep = "&"
+	}
+
+	if !oauth_link_apply(provider, p, user_id) {
+		// Linking failures redirect back to the target (user is authenticated)
+		// rather than /login/, which would log them out of the UI's view.
+		c.Redirect(http.StatusFound, target+sep+"oauth_error=already_linked")
+		return
+	}
+
+	c.Redirect(http.StatusFound, target+sep+"oauth_linked="+provider)
+}
+
+// oauth_link_apply writes the identity link, and reports whether it took. It
+// is false only when this (provider, subject) already belongs to a different
+// user - re-linking one's own identity refreshes it instead.
+//
+// Shared by the browser path above and the app exchange, which differ in how
+// they answer the caller but must not differ in what they record.
+func oauth_link_apply(provider string, p *oauth_profile, user_id string) bool {
+	db := db_open("db/users.db")
+
+	owner := ""
+	if row, _ := db.row("select user from oauth where provider=? and subject=?", provider, p.Subject); row != nil {
+		owner, _ = row["user"].(string)
 	}
 
 	switch {
@@ -638,13 +682,40 @@ func oauth_link(c *gin.Context, provider string, p *oauth_profile, user_id strin
 		oauth_update_profile(db, provider, p)
 		oauth_verification_record(db, provider, p.Subject, user_id)
 	default:
-		// Linking failures redirect back to the target (user is authenticated)
-		// rather than /login/, which would log them out of the UI's view.
-		c.Redirect(http.StatusFound, target+sep+"oauth_error=already_linked")
+		return false
+	}
+	return true
+}
+
+// oauth_mobile_link completes a link ceremony that a native app began. The
+// link is NOT written here: the browser holding this callback is only a
+// conduit, and on Android it is a Custom Tab carrying no session, so nothing
+// in this request identifies the app - or the user - that asked for the link.
+// Writing it here would let an attacker who begins a link on their own device
+// hand the provider URL to a victim and collect the victim's provider identity
+// against the attacker's account.
+//
+// Instead the profile is stashed under the app's PKCE challenge and the app is
+// deep-linked. The link is written at /exchange, where the app presents the
+// verifier (this app instance began the ceremony) and its Bearer token (whose
+// user must be the one the ceremony names).
+func oauth_mobile_link(c *gin.Context, provider string, p *oauth_profile, st *oauth_state, link_user string) {
+	code, err := oauth_mobile_store(st.Challenge, map[string]any{
+		"link":     true,
+		"user":     link_user,
+		"provider": provider,
+		"profile": map[string]any{
+			"subject":  p.Subject,
+			"email":    p.Email,
+			"verified": p.Verified,
+			"name":     p.Name,
+		},
+	})
+	if err != nil {
+		oauth_mobile_error_named(c, st, oauth_link_return, "server_error", nil)
 		return
 	}
-
-	c.Redirect(http.StatusFound, target+sep+"oauth_linked="+provider)
+	oauth_mobile_redirect_named(c, st, oauth_link_return, code, "", nil)
 }
 
 // oauth_login looks up an existing identity or creates a new user.
@@ -1303,6 +1374,21 @@ func oauth_valid_mobile_scheme(s string) bool {
 // be forgotten at a call site: an error path that omitted it would be silently
 // unauthenticated, and the error paths are the ones an attacker picks.
 func oauth_mobile_redirect(c *gin.Context, st *oauth_state, exchange_code, error_code string, extras map[string]string) {
+	oauth_mobile_redirect_named(c, st, oauth_login_return, exchange_code, error_code, extras)
+}
+
+// The deep-link names a native client is sent back on. A link and a login end
+// in different places in the app - one refreshes a settings page, the other
+// establishes a session - and the app must not feed one to the other's
+// handler, so they are separate returns rather than one carrying a discriminator.
+const (
+	oauth_login_return = "oauth-return"
+	oauth_link_return  = "oauth-link-return"
+)
+
+// oauth_mobile_redirect_named is oauth_mobile_redirect with the deep-link name
+// chosen by the caller.
+func oauth_mobile_redirect_named(c *gin.Context, st *oauth_state, name, exchange_code, error_code string, extras map[string]string) {
 	q := url.Values{}
 	if exchange_code != "" {
 		q.Set("code", exchange_code)
@@ -1321,13 +1407,19 @@ func oauth_mobile_redirect(c *gin.Context, st *oauth_state, exchange_code, error
 			q.Set(k, v)
 		}
 	}
-	c.Redirect(http.StatusFound, st.Scheme+":oauth-return?"+q.Encode())
+	c.Redirect(http.StatusFound, st.Scheme+":"+name+"?"+q.Encode())
 }
 
 // oauth_mobile_error sends the app a deep-link redirect carrying an error
 // code, mirroring oauth_error_redirect for the web path.
 func oauth_mobile_error(c *gin.Context, st *oauth_state, code string, extras map[string]string) {
 	oauth_mobile_redirect(c, st, "", code, extras)
+}
+
+// oauth_mobile_error_named is oauth_mobile_error with the deep-link name
+// chosen by the caller.
+func oauth_mobile_error_named(c *gin.Context, st *oauth_state, name, code string, extras map[string]string) {
+	oauth_mobile_redirect_named(c, st, name, "", code, extras)
 }
 
 // oauth_mobile_store stashes the result of a callback in the ceremonies table
@@ -1527,6 +1619,16 @@ func web_oauth_exchange(c *gin.Context) {
 		return
 	}
 
+	// Link branch: the verifier above proves this is the app instance that
+	// began the ceremony, and the Bearer proves which user is completing it.
+	// Both are needed - the ceremony names the account the identity will be
+	// attached to, and the browser that carried the callback proved nothing
+	// about it.
+	if link, _ := data["link"].(bool); link {
+		oauth_exchange_link(c, data)
+		return
+	}
+
 	// MFA branch: just relay the partial info; no session exists yet.
 	if mfa, _ := data["mfa"].(bool); mfa {
 		c.JSON(http.StatusOK, data)
@@ -1548,6 +1650,56 @@ func web_oauth_exchange(c *gin.Context) {
 		resp["profile"] = profile
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+// oauth_exchange_link writes the identity link a native app began, once the
+// caller has proved it is that app (the PKCE verifier, checked by the caller)
+// AND that it acts for the account the ceremony names (the Bearer token here).
+//
+// The token is read from the Authorization header rather than a session
+// cookie: the app holds per-app JWTs, and the ceremony was begun the same way.
+// Any of the user's app tokens is accepted, as at /begin - jwt_verify is
+// core-level and the app binding says nothing about which user it is.
+func oauth_exchange_link(c *gin.Context, data map[string]any) {
+	link_user, _ := data["user"].(string)
+	provider, _ := data["provider"].(string)
+	stored, _ := data["profile"].(map[string]any)
+	if link_user == "" || provider == "" || stored == nil {
+		respond_error(c, http.StatusInternalServerError, "server_error", "errors.server_error", nil)
+		return
+	}
+
+	token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+	if token == "" {
+		respond_error(c, http.StatusUnauthorized, "not_authenticated", "errors.not_authenticated", nil)
+		return
+	}
+	uid, _, err := jwt_verify(token)
+	if err != nil || uid == "" || uid != link_user {
+		audit_login_failed(link_user, rate_limit_client_ip(c), "oauth_link_user_mismatch")
+		respond_error(c, http.StatusForbidden, "link_user_mismatch", "errors.link_user_mismatch", nil)
+		return
+	}
+
+	subject, _ := stored["subject"].(string)
+	email, _ := stored["email"].(string)
+	verified, _ := stored["verified"].(bool)
+	profile_name, _ := stored["name"].(string)
+	if subject == "" {
+		respond_error(c, http.StatusInternalServerError, "server_error", "errors.server_error", nil)
+		return
+	}
+
+	if !oauth_link_apply(provider, &oauth_profile{
+		Subject:  subject,
+		Email:    email,
+		Verified: verified,
+		Name:     profile_name,
+	}, link_user) {
+		respond_error(c, http.StatusConflict, "already_linked", "errors.already_linked", nil)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"linked": provider})
 }
 
 // boolint converts a Go bool to the 0/1 integer we use in SQLite.

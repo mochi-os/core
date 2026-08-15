@@ -1126,6 +1126,19 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "invalid code")
 	}
 
+	// Throttle per account before validating anything. A six-digit code is
+	// guessable and the per-IP limiter is defeated by rotating addresses -
+	// the same reasoning the login path states at account_gate_guard - and
+	// the proof this mints unlocks mochi.user.export, which carries entity
+	// private keys. A refusal is reported as a bad code so a caller learns
+	// nothing from the difference; the sleep inside the reserve is what
+	// actually costs the guesser.
+	if !stepup_gate_reserve(user.UID) {
+		return sl.None, nil
+	}
+	proven := false
+	defer func() { stepup_gate_done(user.UID, proven) }()
+
 	db := db_open("db/users.db")
 	row, _ := db.row("select secret, verified, pending, created from totp where user=?", user.UID)
 	if row == nil {
@@ -1142,6 +1155,7 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	// while their existing authenticator remains valid — a code from the old
 	// one simply falls through and re-authenticates as usual.
 	if pending != "" && totp.Validate(code, pending) {
+		proven = true
 		db.exec("update totp set secret=?, verified=1, pending='' where user=?", pending, user.UID)
 		audit_password_changed(user.Username, "totp_enabled")
 		return sl.True, nil
@@ -1157,6 +1171,7 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		if !totp.Validate(code, secret) {
 			return sl.None, nil
 		}
+		proven = true
 		return reauthentication_result(user, "totp"), nil
 	}
 
@@ -1167,6 +1182,7 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if secret == "" || !totp.Validate(code, secret) {
 		return sl.False, nil
 	}
+	proven = true
 	db.exec("update totp set verified=1 where user=?", user.UID)
 	audit_password_changed(user.Username, "totp_enabled")
 	return sl.True, nil

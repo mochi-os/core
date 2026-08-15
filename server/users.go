@@ -248,9 +248,22 @@ func api_user_code_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if user_method_disabled(user, "email") {
 		return sl.None, nil
 	}
+
+	// Throttled like the TOTP step-up, and for the same reason: an emailed
+	// code is guessable, code_consume is a single unthrottled lookup, and the
+	// proof it mints is what api_user_code_send's own comment says stops a
+	// stolen session extracting the user's private keys. Without a gate here
+	// that sentence is a description of intent rather than of behaviour.
+	if !stepup_gate_reserve(user.UID) {
+		return sl.None, nil
+	}
+	proven := false
+	defer func() { stepup_gate_done(user.UID, proven) }()
+
 	if !code_consume(user, code) {
 		return sl.None, nil
 	}
+	proven = true
 	return reauthentication_result(user, "email"), nil
 }
 

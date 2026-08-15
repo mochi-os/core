@@ -687,3 +687,43 @@ func ratelimit_manager() {
 		rate_limit_stream_app.cleanup()
 	}
 }
+
+// account_stepup is the guessing gate for step-up re-authentication, keyed on
+// the account like account_login and with the same spacing.
+//
+// Separate from account_login on purpose. Sharing one bucket would stop an
+// attacker refreshing their budget by alternating between the two, but it
+// would also let a step-up attacker exhaust the legitimate user's LOGIN
+// budget - locking them out of signing in, using only their address. The
+// login path already carries that denial-of-service property; a second
+// trigger for it is not worth the marginal gain, since the two credentials
+// guard different things.
+var account_stepup = &account_gate{entries: make(map[string]*account_gate_entry)}
+
+// stepup_gate_reserve slows a step-up guess, sleeping out the spacing this
+// account has earned. Reports false when the queue is deeper than
+// account_wait_max, i.e. refuse rather than hold the caller any longer.
+//
+// The context-free half of account_gate_guard: the Starlark step-up builtins
+// have no gin.Context to hang a Retry-After header on, and a gate an app has
+// to remember to call is not a gate. Settle every reservation with
+// stepup_gate_done - a wrong guess is what widens the spacing, so failing to
+// report one leaves the gate open.
+func stepup_gate_reserve(uid string) bool {
+	if uid == "" {
+		return false
+	}
+	wait, ok := account_stepup.reserve(uid)
+	if !ok {
+		return false
+	}
+	if wait > 0 {
+		time.Sleep(time.Duration(wait) * time.Second)
+	}
+	return true
+}
+
+// stepup_gate_done settles a reservation from stepup_gate_reserve.
+func stepup_gate_done(uid string, verified bool) {
+	account_stepup.done(uid, verified)
+}

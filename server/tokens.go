@@ -190,6 +190,25 @@ func token_allows(t *Token, action string, entity string) bool {
 	return t.Action == action && t.Entity == entity
 }
 
+// token_maximum_lifetime caps an unbound token. Zero means "never expires",
+// which is right for a bound token - an RSS feed URL lives in a reader for
+// years - but an unbound token authenticates as the user across the whole app
+// and survives logout, so it gets an outside limit.
+const token_maximum_lifetime = 365 * 86400
+
+// token_expiry_capped clamps an unbound token's expiry to token_maximum_lifetime.
+// A bound token is confined to one action on one entity and is returned unchanged.
+func token_expiry_capped(expires int64, action string) int64 {
+	if action != "" {
+		return expires
+	}
+	limit := now() + token_maximum_lifetime
+	if expires <= 0 || expires > limit {
+		return limit
+	}
+	return expires
+}
+
 // token_unbound reports whether a token may be used on a core route, which
 // has no action pattern to compare a binding against. A bound token is minted
 // to be handed out - an RSS feed URL, a git credential - so it must not also
@@ -222,6 +241,10 @@ func token_has_scope(t *Token, scope string) bool {
 // the token valid across the whole app, which is what a user-created API
 // token wants.
 func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "tokens/create"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "not authenticated")
@@ -284,6 +307,8 @@ func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if action == "" && entity != "" {
 		return sl_error(fn, "entity requires an action")
 	}
+
+	expires = token_expiry_capped(expires, action)
 
 	token := token_create(user.UID, current_app.id, name, scopes, expires, action, entity)
 	if token == "" {

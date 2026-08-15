@@ -442,6 +442,7 @@ var (
 			{"accounts/read", ""},
 			{"groups/read", ""},
 			{"interests/read", ""},
+			{"tokens/create", ""},
 			{"interests/write", ""},
 		}},
 		{"12PGVUZUrLqgfqp1ovH8ejfKpAQq6uXbrcCqtoxWHjcuxWDxZbt", "Forums", []struct{ Permission, Object string }{
@@ -449,6 +450,7 @@ var (
 			{"accounts/read", ""},
 			{"groups/read", ""},
 			{"interests/read", ""},
+			{"tokens/create", ""},
 			{"interests/write", ""},
 		}},
 		{"12NgqPUqEPpSvh3aNCbn1r5wxHRRzTb8mjb3p4LdYFWoXM6qvJG", "Go", []struct{ Permission, Object string }{
@@ -460,6 +462,7 @@ var (
 			{"accounts/manage", ""},
 			{"accounts/notify", ""},
 			{"accounts/read", ""},
+			{"tokens/create", ""},
 			{"webpush/send", ""},
 		}},
 		{"1gGcjxdhV2VjuEMLs7UZiQwMaY2jvx1ARbu8g9uqM5QeS2vFJV", "People", []struct{ Permission, Object string }{
@@ -478,6 +481,7 @@ var (
 		}},
 		{"1SWnPXg9xpT2Cxemw2aw8CLZCP5yDatQ6ebF9dHoMTXQNFKLuw", "Repositories", []struct{ Permission, Object string }{
 			{"groups/read", ""},
+			{"tokens/create", ""},
 		}},
 		{"1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky", "Settings", []struct{ Permission, Object string }{
 			{"accounts/manage", ""},
@@ -502,6 +506,7 @@ var (
 		{"12sE7AoAuAdWVsMxDPVY3PDM6YXhbwYfytGeDRD1TD49pKAuhno", "Themes", nil},
 		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", []struct{ Permission, Object string }{
 			{"groups/read", ""},
+			{"tokens/create", ""},
 		}},
 		{"12s6o3pyRNvDY6UbpjgidgibnYBKoLhak5mUUM9ZGLDnv6tmETy", "Words", []struct{ Permission, Object string }{
 			{"friends/read", ""},

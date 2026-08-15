@@ -2302,3 +2302,127 @@ func TestUsersWriteGateRefusesUngrantedApp(t *testing.T) {
 		t.Error("the refused call created the account anyway")
 	}
 }
+
+// TestTokensCreateIsRestrictedAndMintersHoldIt: mochi.token.create mints a
+// bearer credential that authenticates as the user, survives logout (tokens
+// live in users.db, sessions_revoke_all clears only sessions.db) and has no
+// user-facing management surface. It checked only that a user and an app were
+// present on the thread - both "is there a context", neither an authorisation.
+func TestTokensCreateIsRestrictedAndMintersHoldIt(t *testing.T) {
+	if !permission_restricted("tokens/create") {
+		t.Error("tokens/create is not restricted; a durable credential must not be grantable from a consent dialog")
+	}
+	if permission_administrator("tokens/create") {
+		t.Error("tokens/create requires administrator; ordinary users mint RSS and git tokens")
+	}
+
+	// Every app that calls mochi.token.create must arrive holding the grant:
+	// restricted means it cannot obtain one from the dialog later.
+	for _, name := range []string{"Feeds", "Forums", "Notifications", "Repositories", "Wikis"} {
+		found := false
+		for _, app := range apps_default {
+			if app.Name != name {
+				continue
+			}
+			for _, grant := range app.Permissions {
+				if grant.Permission == "tokens/create" {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("default app %q mints tokens but has no tokens/create grant", name)
+		}
+	}
+}
+
+// TestTokenExpiryCapped: an unbound token authenticates across the whole app
+// and reaches /_/identity, so it gets an outside limit. A bound token is
+// confined to one action and lives in a URL a reader stores for years, so the
+// cap must not touch it - all nine call sites in the app tree pass expires=0
+// with an action, and every one of them would break.
+func TestTokenExpiryCapped(t *testing.T) {
+	horizon := now() + token_maximum_lifetime
+
+	for _, test := range []struct {
+		name    string
+		expires int64
+		action  string
+		want    func(int64) bool
+	}{
+		{"bound, never expires", 0, ":feed/-/rss", func(got int64) bool { return got == 0 }},
+		{"bound, far future", horizon * 10, "-/rss", func(got int64) bool { return got == horizon*10 }},
+		{"unbound, never expires", 0, "", func(got int64) bool { return got > now() && got <= horizon }},
+		{"unbound, beyond the cap", horizon * 10, "", func(got int64) bool { return got <= horizon }},
+		{"unbound, negative", -1, "", func(got int64) bool { return got > now() && got <= horizon }},
+		{"unbound, inside the cap", now() + 60, "", func(got int64) bool { return got == now()+60 }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := token_expiry_capped(test.expires, test.action); !test.want(got) {
+				t.Errorf("token_expiry_capped(%d, %q) = %d, outside the expected range (now %d, cap %d)",
+					test.expires, test.action, got, now(), horizon)
+			}
+		})
+	}
+}
+
+// TestTokensCreateGateRefusesUngrantedApp exercises the gate rather than the
+// registry, and checks no row is written on refusal.
+func TestTokensCreateGateRefusesUngrantedApp(t *testing.T) {
+	defer create_test_users_db(t)()
+
+	users := db_open("db/users.db")
+	users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+	users.exec("create table tokens (hash text primary key not null, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0)")
+	users.exec("create table permissions (app text not null, permission text not null, object text not null default '', granted integer not null default 0, created integer not null default 0, primary key (app, permission, object))")
+	users.exec("insert into users (uid, username, methods) values ('u-mint', 'mint@example.com', 'email')")
+	users.exec("insert into entities (id, private, fingerprint, user, class, name) values ('e-mint', '', 'fp-mint', 'u-mint', 'person', 'Minter')")
+	db_open("db/sessions.db").exec("create table accesses (hash text primary key not null, user text not null, used integer not null default 0)")
+
+	user := user_by_uid("u-mint")
+	if user == nil {
+		t.Fatal("test user did not load")
+	}
+
+	call := func(app_id string) (sl.Value, error) {
+		thread := &sl.Thread{Name: "test"}
+		thread.SetLocal("user", user)
+		thread.SetLocal("app", &App{id: app_id})
+		return api_token_create(thread, sl.NewBuiltin("mochi.token.create", api_token_create),
+			sl.Tuple{sl.String("probe")}, nil)
+	}
+
+	_, err := call("app-without-the-grant")
+	if err == nil {
+		t.Fatal("an app with no tokens/create grant minted a token")
+	}
+	var permission_error *PermissionError
+	if !errors.As(err, &permission_error) {
+		t.Errorf("error = %v (%T), want a *PermissionError", err, err)
+	} else if permission_error.Permission != "tokens/create" {
+		t.Errorf("PermissionError names %q, want tokens/create", permission_error.Permission)
+	}
+	if rows, _ := users.rows("select 1 from tokens"); len(rows) != 0 {
+		t.Errorf("the refused call wrote %d token rows, want 0", len(rows))
+	}
+
+	// Granted, the mint succeeds and the unbound token is capped rather than
+	// stored as never-expiring.
+	permission_grant(user, "app-with-the-grant", "tokens/create")
+	value, err := call("app-with-the-grant")
+	if err != nil {
+		t.Fatalf("a granted app was refused: %v", err)
+	}
+	token, _ := sl.AsString(value)
+	if !strings.HasPrefix(token, "mochi-") {
+		t.Errorf("returned %q, want a mochi- token", token)
+	}
+	row, _ := users.row("select expires from tokens where name='probe'")
+	if row == nil {
+		t.Fatal("no token row written")
+	}
+	expires, _ := row["expires"].(int64)
+	if expires <= now() || expires > now()+token_maximum_lifetime {
+		t.Errorf("stored expires = %d; want capped to at most %d", expires, now()+token_maximum_lifetime)
+	}
+}

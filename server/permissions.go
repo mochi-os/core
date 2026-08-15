@@ -88,6 +88,7 @@ var permissions = []Permission{
 	{"repositories/write", true, false},
 	{"server/update", true, true},
 	{"settings/write", true, true},
+	{"tokens/create", true, false},
 	// Signing with the user's passkey. The shell hosts WebAuthn ceremonies for
 	// sandboxed apps, which cannot reach navigator.credentials themselves, and
 	// a ceremony runs on the real Mochi origin - so the assertion it returns is

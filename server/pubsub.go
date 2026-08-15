@@ -127,20 +127,11 @@ func announcement_read(data []byte) (*Announcement, error) {
 
 // announcement_valid runs the envelope-level checks: well-formed from,
 // service, event and id. Content is validated by the event handler.
+// Delegates so the pubsub and /mochi/2/messages paths cannot disagree about
+// what a well-formed envelope is, which is how the id bound came to be
+// enforced on this path only.
 func announcement_valid(a *Announcement) bool {
-	if a.From != "" && !valid(a.From, "entity") {
-		return false
-	}
-	if a.Service != "" && !valid(a.Service, "constant") {
-		return false
-	}
-	if a.Event != "" && !valid(a.Event, "constant") {
-		return false
-	}
-	if a.ID != "" && len(a.ID) > max_id_length {
-		return false
-	}
-	return true
+	return envelope_valid(a.From, a.Service, a.Event, a.ID)
 }
 
 // pubsub_limiter chooses which inbound budget a message is charged against.

@@ -46,7 +46,7 @@ const (
 	frame_length_size     = 4                // big-endian uint32 prefix
 	frame_diagnostic_size = 256              // hex log on CBOR decode failure
 	challenge_size_v2     = 32               // hello.Challenge length
-	max_id_length         = 64               // max Frame.ID / message id length
+	max_id_length         = 64               // max Frame.ID / message id length; enforced by envelope_valid
 
 	// Codec byte values (Frame.Codec).
 	codec_none = 0
@@ -633,3 +633,35 @@ func peer_worker_inbox() int {
 // producer, since the inflight cap (peer_window) is the natural
 // back-pressure mechanism.
 func peer_rate() int { return ini_int("peer", "rate", 0) }
+
+// envelope_valid runs the addressing-level checks shared by every inbound
+// path: the entity a frame claims to be from, the service and event it names,
+// and the length of its id. Content is the handler's business.
+//
+// Shared because the two paths had drifted. max_id_length is declared here,
+// beside the Frame it names, and was enforced only in announcement_valid on
+// the pubsub path - so /mochi/2/messages accepted an id and a service of any
+// length and shape. Both become keys in maps that outlive the stream and are
+// chosen by the sending peer: Frame.Service keys app_workers, where a miss
+// does not merely add an entry but starts a goroutine with a buffered inbox
+// and holds it for the worker idle window; Frame.ID keys seen_messages, whose
+// ceiling counts entries on the assumption that an id is id-sized; and an
+// unresolvable service also populates the negative-result resolution cache.
+//
+// Empty is allowed for each - plenty of frames legitimately carry no from,
+// service or id - so this rejects only what is present and malformed.
+func envelope_valid(from, service, event, id string) bool {
+	if from != "" && !valid(from, "entity") {
+		return false
+	}
+	if service != "" && !valid(service, "constant") {
+		return false
+	}
+	if event != "" && !valid(event, "constant") {
+		return false
+	}
+	if id != "" && len(id) > max_id_length {
+		return false
+	}
+	return true
+}

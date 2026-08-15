@@ -279,8 +279,12 @@ func api_cache_copy(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
-	if user == nil {
+	// The same user the source was resolved for. cache_file goes through
+	// cache_base, which uses db_user_for_thread and so returns the OWNER under
+	// domain routing; reading the destination from t.Local("user") instead
+	// copied the owner's cached bytes into a visitor's own file storage.
+	user, err := db_user_for_thread(t)
+	if err != nil || user == nil {
 		return sl_error(fn, "no user")
 	}
 

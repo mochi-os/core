@@ -486,6 +486,8 @@ var (
 		{"1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky", "Settings", []struct{ Permission, Object string }{
 			{"accounts/manage", ""},
 			{"accounts/read", ""},
+			{"domains/read", ""},
+			{"domains/write", ""},
 			{"interests/read", ""},
 			{"interests/write", ""},
 			{"notifications/manage", ""},

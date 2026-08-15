@@ -83,6 +83,14 @@ var permissions = []Permission{
 	// frames. Restricted for the reason user/authentication/sign is: a dialog
 	// asking to sign on the user's behalf is one they cannot evaluate in passing.
 	{"entity/sign", true, false},
+	// Domain routing decides which account a public hostname serves, and the
+	// read and write halves are both restricted: the read side returns the DNS
+	// verification token, and the write side repoints the hostname. Not
+	// administrator-only - domain_can_manage_route lets a delegate manage a path,
+	// and that user check stays; these answer the separate question of whether the
+	// calling APP may.
+	{"domains/read", true, false},
+	{"domains/write", true, false},
 	{"notifications/manage", true, false},
 	{"notifications/read", true, false},
 	{"notifications/send", true, false},

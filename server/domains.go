@@ -814,6 +814,10 @@ func domain_can_manage_route(user *User, d *domain, path string) bool {
 
 // mochi.domain.register(domain) -> dict: Register a new domain
 func api_domain_register(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "domains/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <domain: string>")
 	}
@@ -844,6 +848,10 @@ func api_domain_register(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 // mochi.domain.get(domain) -> dict or None: Get domain by name
 func api_domain_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "domains/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <domain: string>")
 	}
@@ -863,6 +871,10 @@ func api_domain_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 
 // mochi.domain.list() -> list: List all domains
 func api_domain_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "domains/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	db := db_open("db/domains.db")
 	rows, _ := db.rows("select * from domains order by domain")
 	for _, row := range rows {
@@ -888,6 +900,10 @@ func domain_certificate(row map[string]any) map[string]any {
 
 // mochi.domain.update(domain, verified=None, tls=None) -> dict: Update domain settings
 func api_domain_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "domains/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) < 1 {
 		return sl_error(fn, "syntax: <domain: string>, [verified: bool], [tls: bool]")
 	}
@@ -953,6 +969,10 @@ func api_domain_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 // mochi.domain.delete(domain) -> bool: Delete domain and all its routes
 func api_domain_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "domains/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <domain: string>")
 	}
@@ -981,6 +1001,10 @@ func api_domain_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 // mochi.domain.verify(domain) -> bool: Check DNS and update verified status
 func api_domain_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "domains/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <domain: string>")
 	}
@@ -988,6 +1012,22 @@ func api_domain_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	name, ok := sl.AsString(args[0])
 	if !ok {
 		return sl_error(fn, "invalid domain name")
+	}
+
+	// The only mutator in this file that read no user at all, while it makes an
+	// unrate-limited outbound DNS lookup and, on a match, writes verified=1 into
+	// the server-global domains.db - the flag domain_match consults before
+	// serving a host.
+	user, _ := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	d := domain_get(name)
+	if d == nil {
+		return sl_error(fn, "domain not found")
+	}
+	if !domain_can_manage(user, d) {
+		return sl_error(fn, "access denied")
 	}
 
 	verified, err := domain_verify(name)
@@ -1003,6 +1043,10 @@ func api_domain_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 // mochi.domain.lookup(host) -> dict or None: Find domain entry for host
 func api_domain_lookup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "domains/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <host: string>")
 	}
@@ -1024,6 +1068,10 @@ func api_domain_lookup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 // mochi.domain.route.get(domain, path) -> dict or None: Get a specific route
 func api_domain_route_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "domains/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <domain: string>, <path: string>")
 	}
@@ -1048,6 +1096,10 @@ func api_domain_route_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // mochi.domain.route.list(domain) -> list: List all routes for a domain
 func api_domain_route_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "domains/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <domain: string>")
 	}
@@ -1064,6 +1116,10 @@ func api_domain_route_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // mochi.domain.route.create(domain, path, method, target, priority=0, context="") -> dict: Create route
 func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "domains/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) < 4 {
 		return sl_error(fn, "syntax: <domain: string>, <path: string>, <method: string>, <target: string>, [priority: int], [context: string]")
 	}
@@ -1149,6 +1205,10 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // mochi.domain.route.update(domain, path, method=None, target=None, context=None, priority=None, enabled=None) -> dict: Update route
 func api_domain_route_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "domains/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) < 2 {
 		return sl_error(fn, "syntax: <domain: string>, <path: string>, [method: string], [target: string], [context: string], [priority: int], [enabled: bool]")
 	}
@@ -1226,6 +1286,10 @@ func api_domain_route_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // mochi.domain.route.delete(domain, path) -> bool: Delete a route
 func api_domain_route_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "domains/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <domain: string>, <path: string>")
 	}
@@ -1264,6 +1328,10 @@ func api_domain_route_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // mochi.domain.delegation.list(domain="", owner="") -> list: List delegations
 func api_domain_delegation_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "domains/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	domain_name := ""
 	owner := ""
 
@@ -1294,6 +1362,10 @@ func api_domain_delegation_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 
 // mochi.domain.delegation.create(domain, path, owner) -> dict: Create a path delegation
 func api_domain_delegation_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "domains/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) < 3 {
 		return sl_error(fn, "syntax: <domain: string>, <path: string>, <owner: string>")
 	}
@@ -1339,6 +1411,10 @@ func api_domain_delegation_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 
 // mochi.domain.delegation.delete(domain, path, owner) -> bool: Delete a delegation
 func api_domain_delegation_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "domains/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) < 3 {
 		return sl_error(fn, "syntax: <domain: string>, <path: string>, <owner: string>")
 	}

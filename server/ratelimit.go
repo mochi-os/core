@@ -238,6 +238,26 @@ var (
 		limit:   3000,
 		window:  60,
 	}
+
+	// Account verification, in two buckets. Per recipient bounds what one
+	// mailbox receives; per sender bounds a spray across many addresses, which
+	// the recipient bucket never sees because each victim gets only one.
+	//
+	// Separate from rate_limit_code rather than sharing it: a shared bucket
+	// would let verification traffic aimed at an address exhaust the budget
+	// that address needs to receive a login code, which is the lockout core
+	// 266798d0 kept step-up out of the login bucket to avoid.
+	rate_limit_verification = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   5,
+		window:  900,
+	}
+
+	rate_limit_verification_sender = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   20,
+		window:  900,
+	}
 )
 
 // RateLimitError is a refusal that the HTTP layer turns into a 429 rather than
@@ -665,6 +685,8 @@ func ratelimit_manager() {
 		account_login.cleanup()
 		rate_limit_login.cleanup()
 		rate_limit_code.cleanup()
+		rate_limit_verification.cleanup()
+		rate_limit_verification_sender.cleanup()
 		rate_limit_p2p.cleanup()
 		rate_limit_pubsub_in.cleanup()
 		rate_limit_pubsub_control.cleanup()

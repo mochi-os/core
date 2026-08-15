@@ -141,7 +141,7 @@ func code_send(email string, c *gin.Context) string {
 	// Keyed on the account, so the limit holds however the send was reached:
 	// /_/auth/code (behind the login middleware) or mochi.user.code.send(),
 	// which any app holding user/export can call and which no middleware sees.
-	if !rate_limit_code.allow(email) {
+	if !rate_limit_code.allow(email_address(email)) {
 		return "too_many_codes"
 	}
 

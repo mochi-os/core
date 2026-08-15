@@ -479,6 +479,10 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		}
 		identifier = address
 
+		if err := account_verification_allowed(address, user.UID); err != nil {
+			return nil, err
+		}
+
 		// Generate verification code
 		code := account_generate_code(10)
 		expires := now + 3600 // 1 hour
@@ -885,6 +889,10 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	now := time.Now().Unix()
 
 	if code == "" {
+		if err := account_verification_allowed(identifier, user.UID); err != nil {
+			return nil, err
+		}
+
 		// Resend verification code
 		existing_code, _ := data["code"].(string)
 		expires, _ := data["expires"].(float64)
@@ -930,6 +938,25 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	db.account_set(id, map[string]any{"verified": now, "data": string(data_json)})
 
 	return sl.True, nil
+}
+
+// account_verification_allowed charges both verification buckets for one send.
+// The choke point is here rather than at the call sites so a later caller
+// cannot reach the mailer without paying.
+func account_verification_allowed(to string, sender string) error {
+	recipient := email_address(to)
+	if recipient == "" {
+		return nil
+	}
+	if !rate_limit_verification.allow(recipient) {
+		return rate_limit_refuse(rate_limit_verification, recipient,
+			"verification emails per address per 15 minutes")
+	}
+	if sender != "" && !rate_limit_verification_sender.allow(sender) {
+		return rate_limit_refuse(rate_limit_verification_sender, sender,
+			"verification emails per sender per 15 minutes")
+	}
+	return nil
 }
 
 // account_send_verification_email sends a styled HTML email with a verification

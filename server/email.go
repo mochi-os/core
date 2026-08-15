@@ -295,3 +295,18 @@ func email_valid(address string) bool {
 	}
 	return true
 }
+
+// email_address reduces a header value to the bare mailbox it addresses, so
+// that one mailbox is one key: "Alice <a@b.com>", " a@b.com " and "A@B.com"
+// all yield "a@b.com". Empty when the value does not parse.
+//
+// Anything keyed on an email address - a rate limiter above all - must key on
+// this rather than on what the caller typed, or the budget is per spelling
+// instead of per recipient.
+func email_address(value string) string {
+	parsed, err := mail.ParseAddress(value)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Address)
+}

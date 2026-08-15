@@ -549,7 +549,14 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	// no cookies (opaque origin). These files are safe to serve without auth —
 	// they're already public static assets. The actual API auth is handled via
 	// Bearer tokens delivered through postMessage.
-	shell_static := aa.File != "" || (aa.Files != "" && aa.filepath != "") || (web_is_iframe_request(c) && (aa.File != "" || aa.Files != ""))
+	//
+	// True only when a file will actually be served, not merely declared:
+	// declaring one used to be enough, so a negotiated action reached its
+	// function unauthenticated and a suffix-less files request skipped the
+	// checks on its way to a 400. Not narrowed further to iframes - a
+	// top-level navigation carries a session cookie and no Bearer, so the
+	// app-token check below would refuse every deep link and bookmark.
+	shell_static := web_serves_file(c, aa) || (aa.Files != "" && aa.filepath != "")
 
 	// Require authentication for non-public actions
 	if user == nil && !aa.Public {
@@ -625,35 +632,19 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		return git_http_handler(c, a, owner, user, repo, aa.parameters["path"])
 	}
 
-	// Serve static file
-	// If action has both file and function, do content negotiation:
-	// - HTML requests (browsers/crawlers) get the file with opengraph tags
-	// - API requests get the function response
-	if aa.File != "" {
-		serve_file := true
-
-		// Content negotiation: if we have both file and function, check Accept header
-		if aa.Function != "" && aa.OpenGraph != "" {
-			accept := c.GetHeader("Accept")
-			// Serve file only for HTML requests (browsers/crawlers)
-			// API requests (application/json, */*) should call the function
-			serve_file = strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
-		}
-
-		if serve_file {
-			file := av.base + "/" + aa.File
-			if strings.HasSuffix(aa.File, ".html") {
-				web_serve_html(c, a, av, aa, e, file)
-				return true
-			}
-			web_cache_static(c, file, aa.Cache)
-			if strings.HasSuffix(strings.ToLower(aa.File), ".svg") {
-				web_serve_svg_path(c, file)
-				return true
-			}
-			c.File(file)
+	if web_serves_file(c, aa) {
+		file := av.base + "/" + aa.File
+		if strings.HasSuffix(aa.File, ".html") {
+			web_serve_html(c, a, av, aa, e, file)
 			return true
 		}
+		web_cache_static(c, file, aa.Cache)
+		if strings.HasSuffix(strings.ToLower(aa.File), ".svg") {
+			web_serve_svg_path(c, file)
+			return true
+		}
+		c.File(file)
+		return true
 	}
 
 	// Serve static files from a directory
@@ -1124,6 +1115,22 @@ func web_multipart_maximum(user *User) int64 {
 		remaining = file_max_storage
 	}
 	return remaining + web_multipart_framing
+}
+
+// web_serves_file reports whether an action declaring a file will answer this
+// request with the file rather than with its function. Both the shell_static
+// bypass and the branch that writes the file ask it, so they cannot disagree.
+func web_serves_file(c *gin.Context, aa *AppAction) bool {
+	if aa.File == "" {
+		return false
+	}
+	// file+function+opengraph negotiates: HTML to a browser or crawler, the
+	// function to an API caller.
+	if aa.Function == "" || aa.OpenGraph == "" {
+		return true
+	}
+	accept := c.GetHeader("Accept")
+	return strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
 }
 
 // Serve HTML file with dynamic Open Graph meta tags

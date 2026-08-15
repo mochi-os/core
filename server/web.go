@@ -1561,9 +1561,18 @@ func web_identity_get(c *gin.Context) {
 		if strings.HasPrefix(auth_header, "Bearer ") {
 			bearer := strings.TrimPrefix(auth_header, "Bearer ")
 			if strings.HasPrefix(bearer, "mochi-") {
-				// API token authentication
+				// API token authentication, for an unbound token only: this
+				// answers with the account behind the token - email address,
+				// status, identity entity - and a bound token is one minted to
+				// be handed out. See token_unbound.
+				//
+				// The used timestamp is stamped by token_validate before this
+				// check, so a refused attempt still counts as use. That is the
+				// same order the app-action route runs in (web_action validates,
+				// then token_allows), and a presented-but-refused token is worth
+				// seeing in the token list rather than hiding.
 				api_token := token_validate(bearer)
-				if api_token != nil {
+				if token_unbound(api_token) {
 					u = user_by_id_allow_no_identity(api_token.User)
 				}
 			} else {

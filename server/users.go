@@ -1047,6 +1047,10 @@ func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // mochi.user.create(username, role) -> dict: Create a new user (admin only)
 func api_user_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "users/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -1091,6 +1095,10 @@ func api_user_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // mochi.user.update(id, username, role) -> bool: Update a user (admin only)
 func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "users/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -1214,6 +1222,10 @@ func api_user_identity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 
 // mochi.user.delete(id) -> bool: Delete a user and all associated data (admin only)
 func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "users/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -1407,6 +1419,10 @@ func user_files_dir_has_any(dir string) bool {
 
 // mochi.user.suspend(id) -> bool: Suspend a user (admin only)
 func api_user_suspend(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "users/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -1440,6 +1456,10 @@ func api_user_suspend(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 // mochi.user.activate(uid) -> bool: Activate a suspended user (admin only)
 func api_user_activate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "users/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")

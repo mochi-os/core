@@ -497,6 +497,7 @@ var (
 			{"user/sessions/read", ""},
 			{"user/sessions/write", ""},
 			{"users/read", ""},
+			{"users/write", ""},
 		}},
 		{"12sE7AoAuAdWVsMxDPVY3PDM6YXhbwYfytGeDRD1TD49pKAuhno", "Themes", nil},
 		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", []struct{ Permission, Object string }{

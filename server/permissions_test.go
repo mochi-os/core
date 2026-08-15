@@ -2198,3 +2198,107 @@ func TestUserCloseGateRefusesUngrantedApp(t *testing.T) {
 		t.Errorf("a granted app was still refused by the permission gate: %v", err)
 	}
 }
+
+// TestUsersWriteGatesEveryWriteAPI: the five APIs that create, update, delete,
+// suspend and activate accounts checked only user.administrator(), a fact about
+// the user rather than the calling app, while their read siblings had required
+// users/read all along. An app an administrator happened to be using could mint
+// a second administrator.
+func TestUsersWriteGatesEveryWriteAPI(t *testing.T) {
+	source, err := os.ReadFile("users.go")
+	if err != nil {
+		t.Fatalf("read users.go: %v", err)
+	}
+	text := string(source)
+
+	for _, name := range []string{
+		"api_user_create",
+		"api_user_update",
+		"api_user_delete",
+		"api_user_suspend",
+		"api_user_activate",
+	} {
+		t.Run(name, func(t *testing.T) {
+			start := strings.Index(text, "func "+name+"(")
+			if start < 0 {
+				t.Fatalf("%s not found; rename it here too", name)
+			}
+			end := strings.Index(text[start+1:], "\nfunc ")
+			if end < 0 {
+				t.Fatalf("could not find the end of %s", name)
+			}
+			body := text[start : start+1+end]
+
+			if !strings.Contains(body, `require_permission(t, fn, "users/write")`) {
+				t.Errorf("does not require users/write; an administrator's role would be spendable by any app they happen to be using")
+			}
+			if !strings.Contains(body, "administrator()") {
+				t.Errorf("no longer checks administrator(); the permission is additional to the role, never a replacement for it")
+			}
+		})
+	}
+}
+
+func TestUsersWriteIsRestrictedAndSettingsHoldsIt(t *testing.T) {
+	if !permission_restricted("users/write") {
+		t.Error("users/write is not restricted; users/read is, and rewriting the user list is not the lesser act")
+	}
+	if !permission_administrator("users/write") {
+		t.Error("users/write is not administrator-only")
+	}
+
+	found := false
+	for _, app := range apps_default {
+		if app.Name != "Settings" {
+			continue
+		}
+		for _, grant := range app.Permissions {
+			if grant.Permission == "users/write" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("the Settings app has no users/write default grant; with the permission restricted its user administration can never obtain one")
+	}
+}
+
+// TestUsersWriteGateRefusesUngrantedApp exercises the gate rather than the
+// source text, on the API whose refusal matters most.
+func TestUsersWriteGateRefusesUngrantedApp(t *testing.T) {
+	defer create_test_users_db(t)()
+
+	users := db_open("db/users.db")
+	users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+	users.exec("create table permissions (app text not null, permission text not null, object text not null default '', granted integer not null default 0, created integer not null default 0, primary key (app, permission, object))")
+	users.exec("insert into users (uid, username, role, methods) values ('u-admin', 'admin@example.com', 'administrator', 'email')")
+	users.exec("insert into entities (id, private, fingerprint, user, class, name) values ('e-admin', '', 'fp-admin', 'u-admin', 'person', 'Admin')")
+
+	admin := user_by_uid("u-admin")
+	if admin == nil || !admin.administrator() {
+		t.Fatal("test administrator did not load")
+	}
+
+	call := func(app_id string) error {
+		thread := &sl.Thread{Name: "test"}
+		thread.SetLocal("user", admin)
+		thread.SetLocal("app", &App{id: app_id})
+		_, err := api_user_create(thread, sl.NewBuiltin("mochi.user.create", api_user_create),
+			sl.Tuple{sl.String("victim@example.com"), sl.String("administrator")}, nil)
+		return err
+	}
+
+	err := call("app-without-the-grant")
+	if err == nil {
+		t.Fatal("an app with no users/write grant created a user")
+	}
+	var permission_error *PermissionError
+	if !errors.As(err, &permission_error) {
+		t.Errorf("error = %v (%T), want a *PermissionError", err, err)
+	} else if permission_error.Permission != "users/write" {
+		t.Errorf("PermissionError names %q, want users/write", permission_error.Permission)
+	}
+	if exists, _ := users.exists("select 1 from users where username='victim@example.com'"); exists {
+		t.Error("the refused call created the account anyway")
+	}
+}

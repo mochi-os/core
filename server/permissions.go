@@ -119,6 +119,7 @@ var permissions = []Permission{
 	{"user/close", true, false},
 	{"user/export", true, false},
 	{"users/read", true, true},
+	{"users/write", true, true},
 	{"webpush/send", true, false},
 }
 

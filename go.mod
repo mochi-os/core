@@ -2,14 +2,14 @@ module core
 
 go 1.25.7
 
-// Build with go1.25.12+ — it fixes the stdlib HIGH CVEs the nightly Trivy
-// scan flagged (CVE-2026-39822 os.Root symlink-following directory traversal,
-// plus the earlier CVE-2026-27145 cert hostname verification and the net/url,
-// crypto/x509, crypto/tls, net, net/mail DoS issues). GOTOOLCHAIN=auto treats
-// this as a floor: a newer host Go is used as-is; an older one (e.g. the
-// 1.25.7 on this host) auto-downloads 1.25.12.
-// Re-evaluate when bumping the go directive or moving to the 1.26 line.
-toolchain go1.25.12
+// The toolchain is the stdlib the binaries ship with, so this is where a
+// stdlib CVE is fixed: the nightly Trivy scan reports them against the
+// mochi-server image, and the remedy is to raise this to a Go release at or
+// above the highest Fixed Version, never a .trivyignore entry. GOTOOLCHAIN=auto
+// treats it as a floor: a newer host Go is used as-is, an older one
+// auto-downloads this exact version. Reaches production only via /release,
+// since every package format is host-built with the same toolchain.
+toolchain go1.25.13
 
 require (
 	filippo.io/age v1.3.1

@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -62,7 +63,50 @@ type oauth_state struct {
 	Scheme    string       `json:"scheme,omitempty"`    // app deep-link scheme (mobile)
 	Challenge string       `json:"challenge,omitempty"` // S256(verifier) for app exchange (mobile)
 	Email     string       `json:"email,omitempty"`     // address the email-login flow is verifying
+	Binding   string       `json:"binding,omitempty"`   // browser cookie a web login ceremony must present at the callback
 	Return    oauth_return `json:"return"`
+}
+
+// oauth_binding_cookie is the cookie that ties a web login ceremony to the
+// browser that began it. Its value is minted at /begin, stored in the ceremony
+// row, and required at the callback - so a callback URL captured from one
+// browser cannot be completed in another.
+//
+// The state parameter alone does not give this: it proves the callback matches
+// SOME ceremony that SOMEONE began, and the PKCE verifier is held server-side
+// under the same key, so neither ties the round trip to a user agent. Without
+// the tie an attacker completes the provider consent with their own account,
+// captures the callback URL, and has the victim open it - SameSite=Lax lets the
+// session cookie be set on that top-level GET, and the victim is silently
+// signed in to the attacker's account.
+//
+// Only web LOGIN ceremonies carry it. A link ceremony is bound to the session
+// that authorised it (checked at the callback); a mobile ceremony to the app's
+// PKCE verifier at /exchange; a step-up ceremony to the account whose provider
+// identity is being re-proved. See oauth_ceremony_bound.
+const oauth_binding_cookie = "oauth"
+
+// oauth_binding_path scopes the cookie to the OAuth endpoints, so it rides only
+// on /begin and the callback rather than on every request to the server.
+const oauth_binding_path = "/_/auth/oauth/"
+
+// oauth_binding_set writes the binding cookie. Lax, not Strict: the callback is
+// a top-level cross-site navigation from the provider, and Strict cookies are
+// withheld on exactly that. Same-origin XHR from the login app receives it;
+// the sandboxed shell iframe would not, which is why the flows that begin from
+// there use a different binding.
+func oauth_binding_set(c *gin.Context, value string) {
+	secure := web_https && !web_is_localhost(c)
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(oauth_binding_cookie, value, 600, oauth_binding_path, "", secure, true)
+}
+
+// oauth_binding_unset clears the binding cookie once a ceremony has been
+// presented, whatever the outcome.
+func oauth_binding_unset(c *gin.Context) {
+	secure := web_https && !web_is_localhost(c)
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(oauth_binding_cookie, "", -1, oauth_binding_path, "", secure, true)
 }
 
 // oauth_return carries the values echoed back to a native client on the
@@ -354,6 +398,13 @@ func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_i
 		return "", "", fmt.Errorf("provider config error (%s): %w", name, err)
 	}
 
+	// A web login ceremony is bound to the browser that began it; the other
+	// kinds carry their own binding (see oauth_binding_cookie).
+	binding := ""
+	if user_id == "" && mode == "" {
+		binding = random_alphanumeric(32)
+	}
+
 	data, err := json.Marshal(oauth_state{
 		Provider:  name,
 		Verifier:  verifier,
@@ -364,10 +415,14 @@ func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_i
 		Scheme:    scheme,
 		Challenge: challenge,
 		Email:     email,
+		Binding:   binding,
 		Return:    oauth_return{Nonce: returned},
 	})
 	if err != nil {
 		return "", "", err
+	}
+	if binding != "" {
+		oauth_binding_set(c, binding)
 	}
 
 	db_open("db/sessions.db").exec(
@@ -410,29 +465,9 @@ func web_oauth_callback(c *gin.Context) {
 		return
 	}
 
-	// Look up ceremony and consume it immediately (single-use).
-	db := db_open("db/sessions.db")
-	row, _ := db.row("select user, data from ceremonies where id=? and type='oauth' and expires>?", state, now())
-	if row == nil {
-		audit_login_failed("", rate_limit_client_ip(c), "oauth_state_invalid")
-		oauth_error_redirect(c, "state_invalid", nil)
+	st, link_user, ok := oauth_callback_ceremony(c, name, state)
+	if !ok {
 		return
-	}
-	db.exec("delete from ceremonies where id=?", state)
-
-	var st oauth_state
-	if err := json.Unmarshal([]byte(row["data"].(string)), &st); err != nil {
-		oauth_error_redirect(c, "state_invalid", nil)
-		return
-	}
-	if st.Provider != name {
-		oauth_error_redirect(c, "state_invalid", nil)
-		return
-	}
-
-	var link_user string
-	if row["user"] != nil {
-		link_user, _ = row["user"].(string)
 	}
 
 	cfg, oidc_prov, err := oauth_client_config(provider, st.Redirect)
@@ -482,10 +517,96 @@ func web_oauth_callback(c *gin.Context) {
 		return
 	}
 	if st.Mode == "mobile" {
-		oauth_mobile_login(c, name, profile, &st)
+		oauth_mobile_login(c, name, profile, st)
 		return
 	}
 	oauth_login(c, name, profile, st.Target, st.Email)
+}
+
+// oauth_callback_ceremony resolves the ceremony a callback names: it looks the
+// row up, consumes it, parses the stored state, checks it belongs to the
+// provider on the URL, and checks the caller is entitled to complete it. On
+// failure it has already written the error redirect and returns ok=false.
+//
+// The row is consumed before the binding check, deliberately: a callback URL
+// presented by the wrong browser is dead afterwards, so it cannot be tried
+// again in the right one.
+func oauth_callback_ceremony(c *gin.Context, name, state string) (*oauth_state, string, bool) {
+	db := db_open("db/sessions.db")
+	row, _ := db.row("select user, data from ceremonies where id=? and type='oauth' and expires>?", state, now())
+	if row == nil {
+		audit_login_failed("", rate_limit_client_ip(c), "oauth_state_invalid")
+		oauth_error_redirect(c, "state_invalid", nil)
+		return nil, "", false
+	}
+	db.exec("delete from ceremonies where id=?", state)
+
+	var st oauth_state
+	if err := json.Unmarshal([]byte(row["data"].(string)), &st); err != nil {
+		oauth_error_redirect(c, "state_invalid", nil)
+		return nil, "", false
+	}
+	if st.Provider != name {
+		oauth_error_redirect(c, "state_invalid", nil)
+		return nil, "", false
+	}
+
+	var link_user string
+	if row["user"] != nil {
+		link_user, _ = row["user"].(string)
+	}
+
+	if reason := oauth_ceremony_bound(c, &st, link_user); reason != "" {
+		audit_login_failed(link_user, rate_limit_client_ip(c), reason)
+		oauth_error_redirect(c, "state_invalid", nil)
+		return nil, "", false
+	}
+	return &st, link_user, true
+}
+
+// oauth_ceremony_bound checks that whoever presents a callback is entitled to
+// complete the ceremony, and returns the audit reason when they are not. Each
+// kind of ceremony is tied to the party that began it in the only way its
+// transport allows:
+//
+//   - A web login ceremony is tied to the browser: the binding cookie set at
+//     /begin must come back, and match the value stored in the row.
+//   - A web link ceremony is tied to the session that authorised it: the row's
+//     user must be the user whose session cookie arrives with the callback.
+//     The cookie above would not do, because the settings app begins the link
+//     from the sandboxed shell iframe, whose responses cannot set cookies; but
+//     the callback is a top-level navigation and does carry the session.
+//   - A mobile ceremony is tied to the app instance at /exchange, where the
+//     PKCE verifier the app holds must match the challenge stored at /begin.
+//     The browser is only a conduit and may not be the one that called /begin.
+//     A mobile LINK ceremony completes in that browser without an exchange
+//     step and so is not tied to anything here; closing that needs the link
+//     to be routed through /exchange like the login, and the app to hold the
+//     verifier for it.
+//   - A step-up ceremony is tied to the account being re-proved: the provider
+//     identity must already be linked to the row's user, and the proof is
+//     released only to that user. Android completes it in a browser with no
+//     server session, so a session check would break it.
+func oauth_ceremony_bound(c *gin.Context, st *oauth_state, link_user string) string {
+	switch {
+	case st.Mode == "mobile":
+		return ""
+	case st.Mode == "reauthentication":
+		return ""
+	case link_user != "":
+		user := web_auth(c)
+		if user == nil || user.UID != link_user {
+			return "oauth_session_mismatch"
+		}
+		return ""
+	default:
+		presented := web_cookie_get(c, oauth_binding_cookie, "")
+		oauth_binding_unset(c)
+		if st.Binding == "" || presented == "" || subtle.ConstantTimeCompare([]byte(presented), []byte(st.Binding)) != 1 {
+			return "oauth_binding_mismatch"
+		}
+		return ""
+	}
 }
 
 // oauth_link attaches an OAuth identity to an already-authenticated user. The

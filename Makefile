@@ -514,11 +514,49 @@ docker-clean:
 # could fire.
 release:
 	@: > $(timing)
+	@$(MAKE) --no-print-directory release-tree
 	@trap '$(MAKE) release-clean' EXIT; \
 	t=$$(date +%s); $(MAKE) clean release-clean || exit 1; echo ">>> phase clean: $$(($$(date +%s)-t))s" | tee -a $(timing); \
 	t=$$(date +%s); $(MAKE) -j$(JOBS) release-build || exit 1; echo ">>> phase build (incl docker push): $$(($$(date +%s)-t))s" | tee -a $(timing); \
 	t=$$(date +%s); $(MAKE) release-publish || exit 1; echo ">>> phase publish (reindex + rsync): $$(($$(date +%s)-t))s" | tee -a $(timing); \
 	echo; echo "=== release $(version) timing summary ==="; cat $(timing)
+
+# Record what the release is built from. `make release` builds the WORKING
+# TREE - go build runs in place - so uncommitted changes ship, and a tag on
+# the commit that later records the version bump names source that may not
+# be what was built. Two things are stamped into the release report:
+#
+# - The tree hash: `git stash create` writes the index and worktree as a real
+#   commit object without touching either. It is git's own name for exactly
+#   what was built. The object is unreferenced, so it is pinned under
+#   refs/releases/<version> - otherwise the next gc reclaims it and the hash
+#   in the report names nothing. `git show refs/releases/<version>` (or the
+#   hash) then shows what shipped after the tree has moved on. Empty output
+#   means the tree is clean at HEAD, in which case HEAD is the answer and
+#   the ref points there.
+# - A warning naming every modified file other than this Makefile's version
+#   bump. The bump is the one change a release is expected to carry; anything
+#   else is work - usually another session's - that will ship without a
+#   commit describing it. Named, not blocked: release-before-commit is the
+#   workflow, and the point is that the report says so.
+#
+# Cheap, read-only, and separate from the trap so a failure here (not a git
+# checkout, say) cannot start release-clean.
+release-tree:
+	@head=$$(git rev-parse --short=12 HEAD 2>/dev/null) || { echo ">>> tree: not a git checkout" | tee -a $(timing); exit 0; }; \
+	tree=$$(git stash create 2>/dev/null); \
+	if [ -z "$$tree" ]; then \
+	    git update-ref refs/releases/$(version) HEAD; \
+	    echo ">>> tree: clean at $$head (refs/releases/$(version))" | tee -a $(timing); \
+	else \
+	    git update-ref refs/releases/$(version) $$tree; \
+	    echo ">>> tree: dirty, built from $$(git rev-parse --short=12 $$tree) (HEAD $$head; git show refs/releases/$(version) for what shipped)" | tee -a $(timing); \
+	fi; \
+	foreign=$$(git status --porcelain --untracked-files=no | grep -v '^.M Makefile$$' | grep -v '^M. Makefile$$' | grep -v '^MM Makefile$$'); \
+	if [ -n "$$foreign" ]; then \
+	    echo ">>> WARNING: uncommitted changes beyond the version bump will ship with no commit describing them:" | tee -a $(timing); \
+	    echo "$$foreign" | sed 's/^/>>>     /' | tee -a $(timing); \
+	fi
 
 # Remove the release temporaries from /tmp: staging trees, rpmbuild trees, and
 # the packaged artefacts, which release-publish only copies into ../packages.

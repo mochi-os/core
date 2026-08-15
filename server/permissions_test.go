@@ -7,6 +7,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2081,5 +2082,119 @@ func TestPermissionCatalogueHasNames(t *testing.T) {
 		if name == "" || strings.Contains(name, "permissions.") {
 			t.Errorf("permission %q has no English name (got %q)", p.Name, name)
 		}
+	}
+}
+
+// TestUserCloseIsRestrictedAndSettingsHoldsIt guards the gate on
+// mochi.user.close, which schedules the account for deletion and revokes every
+// session. Before it, the API checked only that a user was present and was not
+// an administrator - both facts about the USER, neither about the calling app -
+// so any installed app could sign its user out everywhere and start the
+// deletion clock. The step-up in apps/settings is that app gating itself, and
+// lives in Starlark another app can simply not write.
+//
+// Restricted rather than standard, matching user/export, which this mirrors:
+// a restricted permission cannot be obtained from the in-app consent dialog, so
+// closure is granted deliberately or not at all. That makes the apps_default
+// entry load-bearing - without it the settings app's own close flow would have
+// no way to obtain the permission - which is what the second half checks.
+func TestUserCloseIsRestrictedAndSettingsHoldsIt(t *testing.T) {
+	if !permission_restricted("user/close") {
+		t.Error("user/close is not restricted; an app could obtain it from a consent dialog raised at a moment of its choosing")
+	}
+	if permission_administrator("user/close") {
+		t.Error("user/close requires administrator; closing one's own account is not an administrative act, and administrators are refused it outright")
+	}
+
+	found := false
+	for _, app := range apps_default {
+		if app.Name != "Settings" {
+			continue
+		}
+		for _, grant := range app.Permissions {
+			if grant.Permission == "user/close" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("the Settings app has no user/close default grant; with the permission restricted its account-closure flow can never obtain one")
+	}
+}
+
+// TestUserCloseGrantedToNobodyElse: closure is the one destructive account
+// operation a user performs on themselves, and exactly one app in the default
+// set has a reason to offer it. A second holder would be a second surface.
+func TestUserCloseGrantedToNobodyElse(t *testing.T) {
+	for _, app := range apps_default {
+		if app.Name == "Settings" {
+			continue
+		}
+		for _, grant := range app.Permissions {
+			if grant.Permission == "user/close" {
+				t.Errorf("default app %q holds user/close; only Settings offers account closure", app.Name)
+			}
+		}
+	}
+}
+
+// TestUserCloseGateRefusesUngrantedApp exercises the gate itself rather than
+// the registry: the two tests above would both pass while api_user_close
+// ignored the permission entirely, which is how it shipped. This one calls the
+// builtin the way an app does.
+func TestUserCloseGateRefusesUngrantedApp(t *testing.T) {
+	defer create_test_users_db(t)()
+
+	users := db_open("db/users.db")
+	users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+	users.exec("create table permissions (user text not null, app text not null, permission text not null, object text not null default '', granted integer not null default 0, primary key (user, app, permission, object))")
+	// create_test_users_db's users table predates closure and has no purge
+	// column; user_close writes one, so the "untouched" assertion needs it.
+	users.exec("alter table users add column purge integer not null default 0")
+	users.exec("insert into users (uid, username, methods) values ('u-close', 'close@example.com', 'email')")
+	users.exec("insert into entities (id, private, fingerprint, user, class, name) values ('e-close', '', 'fp-close', 'u-close', 'person', 'Closer')")
+
+	user := user_by_uid("u-close")
+	if user == nil {
+		t.Fatal("test user did not load")
+	}
+
+	call := func(app_id string) error {
+		thread := &sl.Thread{Name: "test"}
+		thread.SetLocal("user", user)
+		thread.SetLocal("app", &App{id: app_id})
+		_, err := api_user_close(thread, sl.NewBuiltin("mochi.user.close", api_user_close), nil, nil)
+		return err
+	}
+
+	// An app with no grant is refused, and refused as a PERMISSION failure -
+	// so the shell can tell the user what to grant rather than reporting a
+	// generic error.
+	err := call("app-without-the-grant")
+	if err == nil {
+		t.Fatal("an app with no user/close grant closed the account")
+	}
+	var permission_error *PermissionError
+	if !errors.As(err, &permission_error) {
+		t.Errorf("error = %v (%T), want a *PermissionError", err, err)
+	} else if permission_error.Permission != "user/close" {
+		t.Errorf("PermissionError names %q, want user/close", permission_error.Permission)
+	}
+
+	// The account is untouched: still active, no purge scheduled.
+	row, _ := users.row("select status, purge from users where uid='u-close'")
+	if status, _ := row["status"].(string); status != "active" {
+		t.Errorf("status = %q after a refused close, want active", status)
+	}
+	if purge, _ := row["purge"].(int64); purge != 0 {
+		t.Errorf("purge = %d after a refused close, want 0", purge)
+	}
+
+	// With the grant the gate lets the call through. It fails later, on the
+	// email the closure sends, which is not configured here - reaching that is
+	// proof the permission check is behind us.
+	permission_grant(user, "app-with-the-grant", "user/close")
+	if err := call("app-with-the-grant"); err != nil && errors.As(err, &permission_error) {
+		t.Errorf("a granted app was still refused by the permission gate: %v", err)
 	}
 }

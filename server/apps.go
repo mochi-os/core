@@ -491,6 +491,7 @@ var (
 			{"user/authentication/read", ""},
 			{"user/authentication/sign", ""},
 			{"user/authentication/write", ""},
+			{"user/close", ""},
 			{"user/export", ""},
 			{"user/identity/write", ""},
 			{"user/sessions/read", ""},

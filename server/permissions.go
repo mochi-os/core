@@ -108,6 +108,15 @@ var permissions = []Permission{
 	// passing. Login and Settings hold it through apps_default, so the two
 	// legitimate holders are unaffected.
 	{"user/authentication/write", true, false},
+	// Closing the account. mochi.user.close marks it for deletion after the
+	// grace period and revokes every session, so the user is signed out
+	// everywhere and their account is on its way out - recoverable only if
+	// they notice in time and cancel. Restricted for the same reason as the
+	// two above, and because it is strictly more destructive than export
+	// below, which has been restricted all along: the pair is one flow in the
+	// settings app and there is no reading under which copying the data out
+	// needs deliberate consent but scheduling its deletion does not.
+	{"user/close", true, false},
 	{"user/export", true, false},
 	{"users/read", true, true},
 	{"webpush/send", true, false},

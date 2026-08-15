@@ -42,7 +42,6 @@ type UserPurge struct {
 	AccountGone bool
 }
 
-
 // account_closing_days is the grace period, in days, between a self-service
 // closure and the hard purge. Operator-tunable via [account] closing in the
 // config; defaults to 30 (the de-facto deactivation window users expect).
@@ -59,7 +58,17 @@ func account_closing_days() int {
 // for deletion after the grace period. Returns the purge timestamp (unix
 // seconds). Step-up re-authentication is enforced by the calling app via
 // mochi.user.session.reauthenticate before this runs, mirroring export.
+//
+// That step-up is the settings app gating itself, which is worth having but is
+// not a boundary: it lives in Starlark any app can decline to write. The
+// permission is the boundary, and it is restricted so the grant is deliberate
+// rather than a dialog raised at a moment of the app's choosing - the same
+// reasoning as user/export, which this mirrors in every other respect.
 func api_user_close(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/close"); err != nil {
+		return nil, err
+	}
+
 	user, _ := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")

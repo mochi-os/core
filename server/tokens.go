@@ -190,18 +190,10 @@ func token_allows(t *Token, action string, entity string) bool {
 	return t.Action == action && t.Entity == entity
 }
 
-// token_unbound reports whether a token may be used outside any one app
-// action, which is what a core route like /_/identity is: there is no action
-// pattern to compare a binding against, so the question is only whether the
-// token carries one at all.
-//
-// A bound token was minted to be handed out. An RSS token lives in the feed
-// URL a user pastes into readers, so it also lives in their history, their
-// reader's server and every proxy log in between; a git credential is stored
-// by a git client. Treating any of those as proof of identity would answer
-// with the owner's email address to whoever picked the URL up. An unbound
-// token is the general-purpose kind a user creates deliberately, and stays
-// valid here.
+// token_unbound reports whether a token may be used on a core route, which
+// has no action pattern to compare a binding against. A bound token is minted
+// to be handed out - an RSS feed URL, a git credential - so it must not also
+// prove identity.
 func token_unbound(t *Token) bool {
 	return t != nil && t.Action == ""
 }

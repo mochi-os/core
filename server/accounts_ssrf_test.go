@@ -163,7 +163,11 @@ func TestAccountFailureCarriesNoDetail(t *testing.T) {
 // as a guarded one to every destination that is allowed, so nothing observable
 // distinguishes them until someone points one inward.
 //
-// A provider whose address the user supplies must use account_client.
+// A provider whose address the user supplies must use account_client. The
+// test asserts that presence, not merely the absence of a bare http.Client:
+// webpush-go builds its own bare client when Options.HTTPClient is nil, so a
+// function can omit the guard without ever writing `&http.Client{` itself,
+// and only the positive check sees that.
 func TestAccountProvidersUseGuardedTransport(t *testing.T) {
 	source, err := os.ReadFile("accounts.go")
 	if err != nil {
@@ -196,6 +200,9 @@ func TestAccountProvidersUseGuardedTransport(t *testing.T) {
 
 			if bare := regexp.MustCompile(`&http\.Client\{`).FindString(body); bare != "" {
 				t.Errorf("builds its own http.Client; a caller-supplied address must go through account_client so the dialer checks it")
+			}
+			if !strings.Contains(body, "account_client(") {
+				t.Errorf("does not call account_client; without it the request goes out on a bare client with no address check, no timeout and the environment's proxy")
 			}
 		})
 	}

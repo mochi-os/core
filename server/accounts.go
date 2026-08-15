@@ -1211,6 +1211,7 @@ func account_test_browser(data map[string]any, language string, account_label st
 	}
 
 	resp, err := webpush.SendNotification(payload, &sub, &webpush.Options{
+		HTTPClient:      account_client(15 * time.Second),
 		Subscriber:      "mailto:webpush@localhost",
 		VAPIDPublicKey:  webpush_public,
 		VAPIDPrivateKey: webpush_private,
@@ -1263,6 +1264,7 @@ func account_test_unifiedpush(data map[string]any, language string, account_labe
 	}
 
 	resp, err := webpush.SendNotification(payload, &sub, &webpush.Options{
+		HTTPClient:      account_client(15 * time.Second),
 		Subscriber:      "mailto:webpush@localhost",
 		VAPIDPublicKey:  webpush_public,
 		VAPIDPrivateKey: webpush_private,

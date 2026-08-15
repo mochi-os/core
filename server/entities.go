@@ -569,6 +569,26 @@ func (e *Entity) Type() string {
 	return "Entity"
 }
 
+// entity_class_identity is the class of the account's login identity.
+const entity_class_identity = "person"
+
+// entity_class_allowed reports whether the calling app may act on this class.
+// app_declares_class reads the app's own manifest, so it is a self-assertion -
+// any app can add a class to its app.json. For the login identity that is not
+// enough: mochi.user.identity.update makes the same mutation on the same row
+// behind user/identity/write, so entity.* must not be the ungated way in.
+func entity_class_allowed(t *sl.Thread, fn *sl.Builtin, app *App, user *User, class string) error {
+	if class == entity_class_identity {
+		if err := require_permission(t, fn, "user/identity/write"); err != nil {
+			return err
+		}
+	}
+	if !app_declares_class(app, user, class) {
+		return fmt.Errorf("app does not control class %q", class)
+	}
+	return nil
+}
+
 // mochi.entity.create(class, name, privacy, data?) -> string: Create a new entity, returns ID
 func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 3 || len(args) > 4 {
@@ -603,13 +623,12 @@ func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "no user")
 	}
 
-	// Verify the calling app declares the specified class
 	app := t.Local("app").(*App)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
-	if !app_declares_class(app, user, class) {
-		return sl_error(fn, "app does not control class %q", class)
+	if err := entity_class_allowed(t, fn, app, user, class); err != nil {
+		return sl_error(fn, "%v", err)
 	}
 
 	e, err := entity_create(user, class, name, privacy, data)
@@ -648,13 +667,14 @@ func api_entity_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "not allowed to delete this entity")
 	}
 
-	// Verify the calling app declares the entity's class
 	app := t.Local("app").(*App)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
-	if e.Class != "" && !app_declares_class(app, user, e.Class) {
-		return sl_error(fn, "app does not control class %q", e.Class)
+	if e.Class != "" {
+		if err := entity_class_allowed(t, fn, app, user, e.Class); err != nil {
+			return sl_error(fn, "%v", err)
+		}
 	}
 
 	// Delete the entity
@@ -914,13 +934,14 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "not allowed to update this entity")
 	}
 
-	// Verify the calling app declares the entity's class
 	app := t.Local("app").(*App)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
-	if e.Class != "" && !app_declares_class(app, user, e.Class) {
-		return sl_error(fn, "app does not control class %q", e.Class)
+	if e.Class != "" {
+		if err := entity_class_allowed(t, fn, app, user, e.Class); err != nil {
+			return sl_error(fn, "%v", err)
+		}
 	}
 
 	old_privacy := e.Privacy

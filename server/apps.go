@@ -505,6 +505,7 @@ var (
 		}},
 		{"12sE7AoAuAdWVsMxDPVY3PDM6YXhbwYfytGeDRD1TD49pKAuhno", "Themes", nil},
 		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", []struct{ Permission, Object string }{
+			{"entity/sign", ""},
 			{"groups/read", ""},
 			{"tokens/create", ""},
 		}},

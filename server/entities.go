@@ -712,6 +712,10 @@ func api_entity_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 // checkable on a remote host with no key exchange, directory lookup or network
 // round trip - see mochi.entity.verify.
 func api_entity_sign(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "entity/sign"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <id: string>, <text: string>")
 	}

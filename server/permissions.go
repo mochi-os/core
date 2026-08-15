@@ -77,6 +77,12 @@ var permissions = []Permission{
 	// dialog asking to "install applications" is one a user cannot safely
 	// evaluate in passing - see user/authentication/sign below.
 	{"apps/install", true, false},
+	// Signing arbitrary bytes with an entity's private key. The key is the
+	// entity id, so a signature made here is checkable by anyone, anywhere,
+	// forever - and core reuses the same keys for export manifests and pubsub
+	// frames. Restricted for the reason user/authentication/sign is: a dialog
+	// asking to sign on the user's behalf is one they cannot evaluate in passing.
+	{"entity/sign", true, false},
 	{"notifications/manage", true, false},
 	{"notifications/read", true, false},
 	{"notifications/send", true, false},

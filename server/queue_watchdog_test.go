@@ -3,9 +3,10 @@
 // The News feed self-loop wedge (2026-07-06 to 2026-07-15) accumulated 1.4M
 // undeliverable pending rows over a week with no direct alert — the WAL
 // watchdog fired as an indirect side effect a week after onset. queue_watchdog
-// warns when a (target, service) bucket's pending rows say deliveries are not
-// draining, and re-warns at most once per queue_warn_repeat while the
-// condition persists.
+// warns per (target, service) bucket when rows or attempts say deliveries are
+// not draining, warns across buckets when enough distinct destinations have
+// gone stale or nothing is delivering anywhere, and re-warns at most once per
+// queue_warn_repeat while a condition persists.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
@@ -66,11 +67,15 @@ func TestQueueWatchdog(t *testing.T) {
 		t.Error("bucket re-warned within queue_warn_repeat")
 	}
 
-	// Age threshold: a single old pending row trips even at low count.
+	// Age is NOT a per-bucket criterion: one destination holding an old
+	// row is a departed peer, not a fault here, and warned per bucket it
+	// was a daily email for every dead subscriber for the ~6 weeks before
+	// health parked it. Age warns across buckets - see
+	// TestQueueWatchdogStaleBreadth.
 	add("stale", "peer-c", "forums", now()-queue_warn_age-10, 0)
 	queue_watchdog()
-	if _, ok := warned("peer-c", "forums"); !ok {
-		t.Fatal("bucket with a pending row older than queue_warn_age must warn")
+	if _, ok := warned("peer-c", "forums"); ok {
+		t.Fatal("a single bucket must not warn on age alone")
 	}
 
 	// Attempts threshold: a wedged row retried past the cap trips.
@@ -91,37 +96,163 @@ func TestQueueWatchdog(t *testing.T) {
 
 // TestQueueWatchdogClassified — rows the health machinery has already
 // classified are outside the watchdog's scope: parked rows and pending
-// rows for suspended recipients must not warn however old they are,
+// rows for suspended recipients must not count however old they are,
 // while an unclassified recipient's old rows still do. Re-warning about
 // classified rows until the reaper deleted them was ~5 admin emails per
-// day per ghost subscriber (2026-07).
+// day per ghost subscriber (2026-07). Asserted through the stale-target
+// breadth count, since age no longer warns per bucket.
 func TestQueueWatchdogClassified(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
+
+	limit := queue_warn_stale_targets
+	queue_warn_stale_targets = 1
+	defer func() { queue_warn_stale_targets = limit; queue_stale_warned = 0 }()
 
 	db := db_open("db/queue.db")
 	add := func(id, target, recipient, service, status string) {
 		db.exec("insert into queue (id, target, from_entity, to_entity, service, event, next_retry, created, status) values (?, ?, 'e-from', ?, ?, 'event/test', 0, ?, ?)", id, target, recipient, service, now()-queue_warn_age-10, status)
 	}
 
-	// Parked rows never warn: parking is the classification.
+	// Parked rows never count: parking is the classification.
 	add("row-parked", "peer-parked", "r-parked", "feeds", "parked")
-	// Pending rows for a suspended recipient never warn: the health
+	// Pending rows for a suspended recipient never count: the health
 	// machinery owns them (probe, evict, reap).
 	db.exec("insert into health (recipient, suspended, since) values ('r-gated', ?, ?)", now(), now())
 	add("row-gated", "peer-gated", "r-gated", "forums", "pending")
-	// Old pending rows for an unclassified recipient still warn.
-	add("row-live", "peer-live", "r-live", "wikis", "pending")
 
 	queue_watchdog()
-	if _, ok := queue_warned.Load("peer-parked|feeds"); ok {
-		t.Error("parked bucket must not warn")
+	if queue_stale_warned != 0 {
+		t.Fatal("parked rows and suspended recipients must not count as stale destinations")
 	}
-	if _, ok := queue_warned.Load("peer-gated|forums"); ok {
-		t.Error("suspended recipient's bucket must not warn")
+
+	// An unclassified recipient's old row does count, and at threshold 1
+	// is enough to warn.
+	add("row-live", "peer-live", "r-live", "wikis", "pending")
+	queue_watchdog()
+	if queue_stale_warned == 0 {
+		t.Error("an unclassified stale destination must count toward the breadth warn")
 	}
-	if _, ok := queue_warned.Load("peer-live|wikis"); !ok {
-		t.Error("unclassified bucket over queue_warn_age must warn")
+}
+
+// TestQueueWatchdogStaleBreadth — age is a breadth signal. One or two
+// destinations holding an old undelivered row is a departed peer and
+// must not email; queue_warn_stale_targets of them together is a
+// resolution or connectivity fault on this side and must. The re-warn
+// window and recovery clearing behave like the other watchdog signals.
+func TestQueueWatchdogStaleBreadth(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	limit, silence := queue_warn_stale_targets, queue_warn_silence
+	queue_warn_stale_targets = 3
+	queue_warn_silence = 1 << 40 // silence never trips in this test
+	defer func() {
+		queue_warn_stale_targets, queue_warn_silence = limit, silence
+		queue_stale_warned = 0
+		queue_delivered.Store(0)
+	}()
+	queue_delivered.Store(now()) // deliveries are flowing elsewhere
+
+	db := db_open("db/queue.db")
+	stale := func(id, target string) {
+		db.exec("insert into queue (id, target, from_entity, to_entity, service, event, next_retry, created) values (?, ?, 'e-from', 'e-to', 'feeds', 'event/test', 0, ?)", id, target, now()-queue_warn_age-10)
+	}
+
+	// Two departed peers, several rows each: below the breadth threshold,
+	// no email however old the rows are or how many per peer.
+	stale("a1", "peer-a")
+	stale("a2", "peer-a")
+	stale("b1", "peer-b")
+	queue_watchdog()
+	if queue_stale_warned != 0 {
+		t.Fatal("stale destinations below queue_warn_stale_targets must not warn")
+	}
+	if _, ok := queue_warned.Load("peer-a|feeds"); ok {
+		t.Fatal("age must never warn per bucket")
+	}
+
+	// A third distinct destination crosses the threshold. It is distinct
+	// TARGETS that count, not rows: peer-a's two rows were one destination.
+	stale("c1", "peer-c")
+	queue_watchdog()
+	first := queue_stale_warned
+	if first == 0 {
+		t.Fatal("at queue_warn_stale_targets distinct stale destinations the breadth warn must fire")
+	}
+
+	// Repeat window: an immediate second pass must not re-stamp.
+	queue_watchdog()
+	if queue_stale_warned != first {
+		t.Error("stale breadth warn re-fired within queue_warn_repeat")
+	}
+
+	// Recovery: one destination draining drops the count below threshold
+	// and clears the tracking so a future recurrence warns fresh.
+	db.exec("delete from queue where target='peer-c'")
+	queue_watchdog()
+	if queue_stale_warned != 0 {
+		t.Error("dropping below the threshold must clear the stale breadth tracking")
+	}
+}
+
+// TestQueueWatchdogSilence — a single stale destination is not evidence
+// of anything while deliveries flow elsewhere, but the same destination
+// with nothing delivered to ANYONE for queue_warn_silence is
+// indistinguishable from this server being off the network, and warns
+// regardless of breadth. A zero delivery stamp (nothing since start) is
+// no evidence either way and must not count as silence.
+func TestQueueWatchdogSilence(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	limit, silence := queue_warn_stale_targets, queue_warn_silence
+	queue_warn_stale_targets = 1 << 40 // breadth never trips in this test
+	queue_warn_silence = 3600
+	defer func() {
+		queue_warn_stale_targets, queue_warn_silence = limit, silence
+		queue_stale_warned = 0
+		queue_delivered.Store(0)
+	}()
+
+	db := db_open("db/queue.db")
+	db.exec("insert into queue (id, target, from_entity, to_entity, service, event, next_retry, created) values ('s1', 'peer-s', 'e-from', 'e-to', 'feeds', 'event/test', 0, ?)", now()-queue_warn_age-10)
+
+	// Nothing delivered since start: unknown, not silent.
+	queue_delivered.Store(0)
+	queue_watchdog()
+	if queue_stale_warned != 0 {
+		t.Fatal("no delivery since start is not evidence of silence and must not warn")
+	}
+
+	// A recent delivery anywhere: that peer is simply gone. No email.
+	queue_delivered.Store(now() - 60)
+	queue_watchdog()
+	if queue_stale_warned != 0 {
+		t.Fatal("one stale destination with recent deliveries elsewhere must not warn")
+	}
+
+	// Silence past the window with a stale row pending: that is us.
+	queue_delivered.Store(now() - queue_warn_silence - 10)
+	queue_watchdog()
+	if queue_stale_warned == 0 {
+		t.Fatal("a stale destination with no delivery to anyone past queue_warn_silence must warn")
+	}
+
+	// A delivery landing clears it on the next tick.
+	queue_delivered.Store(now())
+	queue_watchdog()
+	if queue_stale_warned != 0 {
+		t.Error("a delivery must clear the silence warn tracking")
+	}
+
+	// Silence with NO stale rows is not this signal's business - a quiet
+	// server with an empty queue has nothing undelivered to worry about.
+	db.exec("delete from queue")
+	queue_delivered.Store(now() - queue_warn_silence - 10)
+	queue_watchdog()
+	if queue_stale_warned != 0 {
+		t.Error("silence with nothing stale pending must not warn")
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	rd "runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	cbor "github.com/fxamacker/cbor/v2"
@@ -245,19 +246,53 @@ func queue_next_retry(attempts int) int64 {
 	return now() + delay + jitter
 }
 
-// queue_warn_rows / queue_warn_age / queue_warn_attempts are the
-// pending-backlog thresholds past which queue_watchdog warns for a
-// (target, service) bucket. The News feed self-loop wedge (2026-07-06
-// to 2026-07-15) accumulated 1.4M undeliverable rows over a week with
-// the WAL watchdog firing as the only, indirect signal; any one of
-// these thresholds surfaces that class within hours of onset. The age
-// threshold sits well below queue_max_age (7d): warning only as the
-// reaper starts deleting the rows is too late to act on (the first
-// live age warns fired at exactly 7.0 days, for buckets already being
-// reaped). var (not const) so tests can lower them.
+// queue_warn_rows / queue_warn_attempts are the pending-backlog
+// thresholds past which queue_watchdog warns for a (target, service)
+// bucket. The News feed self-loop wedge (2026-07-06 to 2026-07-15)
+// accumulated 1.4M undeliverable rows over a week with the WAL watchdog
+// firing as the only, indirect signal; either threshold surfaces that
+// class within hours of onset. Both describe a local wedge - rows or
+// retries piling up here - whatever the destination's state.
+//
+// queue_warn_age is deliberately NOT a per-bucket criterion. One
+// destination holding an old undelivered row says nothing about this
+// server: a peer that never published an address, or left, is that
+// operator's state, and the only remedy the admin has is deleting the
+// row. Warned per bucket, every departed peer produced a daily email for
+// the ~6 weeks between its first failure and health parking it, which is
+// exactly the ghost-subscriber noise the classified-rows exclusion below
+// was added to stop, one layer earlier. Age is instead a BREADTH signal:
+// see queue_warn_stale_targets. var (not const) so tests can lower them.
 var queue_warn_rows int64 = 10000
 var queue_warn_age int64 = 2 * 86400
 var queue_warn_attempts int64 = 100
+
+// queue_warn_stale_targets is how many distinct destinations must hold an
+// unclassified pending row older than queue_warn_age before the age
+// signal warns. A single unreachable peer cannot be told apart from our
+// side - no address and no answer look the same whether they left or we
+// cannot resolve them - but breadth can: several destinations going stale
+// together while nothing else is wrong is not several peers leaving at
+// once, it is directory resolution or connectivity broken here.
+var queue_warn_stale_targets int64 = 5
+
+// queue_warn_silence is how long with no successful delivery to ANY
+// destination, while stale rows are pending, before the age signal warns
+// regardless of breadth. One stale destination with deliveries flowing
+// elsewhere proves resolution and transport work and that peer is simply
+// gone; the same destination with nothing delivering anywhere is
+// indistinguishable from this server being off the network, and that
+// is worth an email even when it turns out to be a quiet night.
+var queue_warn_silence int64 = 6 * 3600
+
+// queue_delivered is the unix time of the last successful delivery to any
+// destination, stamped by both ack paths. Zero until the first delivery
+// after start, which the silence check treats as "no evidence either
+// way" rather than as silence - a freshly started server has not had time
+// to deliver anything.
+var queue_delivered atomic.Int64
+
+var queue_stale_warned int64 // last age-breadth warn unix
 
 // queue_warn_repeat is the re-warn cadence: a bucket warns on the tick
 // it first trips a threshold, then once per repeat window while the
@@ -318,6 +353,10 @@ func health_success(recipient string) {
 	if recipient == "" {
 		return
 	}
+	// Any delivery anywhere is the evidence the watchdog's silence check
+	// wants; stamped before the health-row test so the healthy common
+	// case, which returns early, still counts.
+	queue_delivered.Store(now())
 	db := db_open("db/queue.db")
 	// Point read before the write: the healthy common case has no
 	// health row, and this runs on delivery hot paths (queue_ack, the
@@ -450,23 +489,30 @@ func health_evict_dispatch(user *User, app *App, service, recipient string) {
 var subscriber_dispatch = error_dispatch
 
 // queue_watchdog runs every db_manager tick. It groups pending queue
-// rows by (target, service) and warns when a bucket's row count,
-// oldest-row age, or attempt count says deliveries to that destination
-// are not draining. Retries make a transient outage invisible, which
-// also makes a permanent failure invisible — each individual retry is
-// routine, so undeliverable rows accumulate with no signal until
-// something downstream (disk, WAL churn) breaks. This is the direct
-// signal.
+// rows by (target, service) and warns when a bucket's row count or
+// attempt count says deliveries to that destination are not draining.
+// Retries make a transient outage invisible, which also makes a
+// permanent failure invisible — each individual retry is routine, so
+// undeliverable rows accumulate with no signal until something
+// downstream (disk, WAL churn) breaks. This is the direct signal.
 //
 // Scope: only rows the system has NOT yet classified. Parked rows and
 // rows for suspended recipients are excluded — the health machinery owns
 // those (probe, evict, reap) and re-warning about them daily until the
 // reaper deletes the evidence is noise (the 2026-07 ghost-subscriber
 // emails). A destination warns while its failure is still unexplained
-// and goes quiet the moment health classifies it dead. The complement is
-// the breadth warn at the end: many recipients suspended at once is no
-// longer routine residue but a systemic resolution failure, and that
-// aggregate — not the individual parks — is the operator signal.
+// and goes quiet the moment health classifies it dead.
+//
+// Every warn here is meant to name something THIS server's operator can
+// act on. A remote peer that never published an address, or that left,
+// is that operator's state, not ours, and it can only be told from a
+// fault here by breadth: one stale destination while others deliver is
+// them; several going stale together, or nothing delivering to anyone,
+// is us. So rows and attempts warn per bucket (a local wedge whatever
+// the destination), age warns only across buckets (queue_warn_stale_targets
+// / queue_warn_silence), and the breadth warn at the end covers many
+// recipients suspended at once - a systemic resolution failure, not
+// routine residue.
 func queue_watchdog() {
 	db := db_open("db/queue.db")
 	if db == nil {
@@ -485,10 +531,18 @@ func queue_watchdog() {
 	}
 	now := now()
 	unhealthy := map[string]bool{}
+	stale := map[string]bool{} // distinct targets holding a row past queue_warn_age
+	var oldest int64
 	for _, bucket := range buckets {
 		key := bucket.Target + "|" + bucket.Service
 		age := now - bucket.Oldest
-		if bucket.Total < queue_warn_rows && age < queue_warn_age && bucket.Attempts < queue_warn_attempts {
+		if age >= queue_warn_age {
+			stale[bucket.Target] = true
+			if oldest == 0 || bucket.Oldest < oldest {
+				oldest = bucket.Oldest
+			}
+		}
+		if bucket.Total < queue_warn_rows && bucket.Attempts < queue_warn_attempts {
 			queue_warned.Delete(key)
 			continue
 		}
@@ -507,6 +561,27 @@ func queue_watchdog() {
 		}
 		return true
 	})
+
+	// Age, across buckets. Stale destinations warn when there are enough
+	// of them to implicate this side, or when nothing at all has been
+	// delivered anywhere for queue_warn_silence - a peer being gone does
+	// not stop deliveries to everyone else, so that silence is ours. A
+	// zero delivery stamp means no delivery since start, which is no
+	// evidence either way and does not count as silence. Silence is only
+	// a signal while there is something stale to explain: a quiet server
+	// with an empty queue has nothing undelivered.
+	delivered := queue_delivered.Load()
+	silent := len(stale) > 0 && delivered != 0 && now-delivered >= queue_warn_silence
+	if int64(len(stale)) < queue_warn_stale_targets && !silent {
+		queue_stale_warned = 0
+	} else if queue_stale_warned == 0 || now-queue_stale_warned >= queue_warn_repeat {
+		queue_stale_warned = now
+		if silent {
+			warn("Queue health: %d destination(s) have held undelivered rows for over %.1f days and nothing has been delivered to any destination for %.1f hours; this server may be unable to resolve or reach peers.", len(stale), float64(now-oldest)/86400, float64(now-delivered)/3600)
+		} else {
+			warn("Queue health: %d distinct destinations have held undelivered rows for over %.1f days (threshold %d). One or two is a departed peer; this many together suggests directory resolution or connectivity is broken here.", len(stale), float64(now-oldest)/86400, queue_warn_stale_targets)
+		}
+	}
 
 	// Breadth: each suspension is routine on its own, so crossing the
 	// threshold is the first moment anything emails about them at all.
@@ -688,6 +763,7 @@ func queue_ack_flush(ids []string) {
 	// Delivery success clears any failure streak for these recipients
 	// before the rows disappear — one set-based update; a no-op for
 	// recipients with no health row (the healthy common case).
+	queue_delivered.Store(now())
 	db.exec_bg("health success flush", "update health set failures=0, denials=0, success=?, suspended=0 where recipient in (select to_entity from queue where id in ("+string(placeholders)+"))", append([]any{now()}, args...)...)
 	db.exec_bg("queue ack flush", "delete from queue where id in ("+string(placeholders)+")", args...)
 }

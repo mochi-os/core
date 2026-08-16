@@ -751,8 +751,20 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "file too large: %d bytes exceeds %d", ff.Size, maximum)
 	}
 
+	// The thread's user, not a.user. a.user is the raw requester and is nil on
+	// an anonymous request to a public action - the auth gate admits one, since
+	// it refuses only when user AND owner are absent - so reading it here
+	// dereferenced nil in user_storage_dir before the write was even attempted.
+	// web.go resolves the thread's user to the owner for exactly that case, and
+	// it is what every mochi.file.* call reads, so the upload lands in the
+	// directory those calls will read it back from.
+	user, _ := t.Local("user").(*User)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
 	// Check storage limit (10GB per user across all apps; admins exempt)
-	remaining, err := user_storage_remaining(a.user)
+	remaining, err := user_storage_remaining(user)
 	if err != nil {
 		return sl_error(fn, "unable to measure storage: %v", err)
 	}
@@ -760,11 +772,38 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "storage limit exceeded")
 	}
 
-	if err := a.web.SaveUploadedFile(ff, api_file_path(a.user, app, file)); err != nil {
+	// Through os.Root, like every other write to app storage. The path string
+	// is validated above, but a symlink is not in the string: gin's
+	// SaveUploadedFile does MkdirAll then Create, both of which follow one, so
+	// a link left behind in the app's file directory - by an rsync, an
+	// unpacked tarball, or an earlier upload - redirected the write anywhere
+	// the server could reach, its own databases included. This is the same
+	// reasoning a.write.file records for the read side.
+	// Ensure base directory exists before opening root, as mochi.file.write
+	// does: OpenRoot will not create it, and the first upload for a user and
+	// app arrives before anything else has.
+	base := api_file_base(user, app)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		return sl_error(fn, "unable to create files directory: %v", err)
+	}
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return sl_error(fn, "unable to open file storage: %v", err)
+	}
+	defer root.Close()
+
+	source, err := ff.Open()
+	if err != nil {
+		return sl_error(fn, "unable to read upload for field %q: %v", field, err)
+	}
+	defer source.Close()
+
+	written, err := root_write_file(root, file, source)
+	if err != nil {
 		return sl_error(fn, "unable to write file for field %q: %v", field, err)
 	}
 
-	return sl.MakeInt64(ff.Size), nil
+	return sl.MakeInt64(written), nil
 }
 
 // upload_header returns the index-th uploaded file header for a field, or nil.

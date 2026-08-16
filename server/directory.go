@@ -379,13 +379,32 @@ func directory_push_to_peer(peer string) {
 	debug("Directory pushed %d rows to peer %q", len(rows), peer)
 }
 
+// directory_push_rows_maximum bounds one push stream. The stream's own
+// byte cap is cumulative and defaults to 100MB, which is several hundred
+// thousand rows - and the cost here is per ROW, not per byte: four
+// validators, up to three SQLite queries and an ed25519 verification each.
+//
+// A legitimate push carries only the sending host's own re-attested rows,
+// and the largest one it ever sends is the full set after a restart clears
+// its watermark. This is far above that.
+const directory_push_rows_maximum = 100000
+
 // Receive a directory push: a peer delivering rows over a stream. Each
 // row passes the same verification gate as a live publish, so the worst
 // a malicious pusher can do is deliver valid rows; the sender is just a
 // carrier.
+//
+// Anonymous by design, like its directory_sync_event sibling, and the same
+// reasoning applies harder: sync is a peer asking us to read, push is a peer
+// making us write, and the peer decides how many rows that is. Bounded on
+// both axes - how often a peer may push, and how much one push may carry.
 func directory_push_event(e *Event) {
+	if e.peer != "" && !rate_limit_directory_push.allow(e.peer) {
+		debug("Directory push refused: peer %q over the push rate limit", e.peer)
+		return
+	}
 	stored := 0
-	for {
+	for read := 0; read < directory_push_rows_maximum; read++ {
 		var en Entry
 		if err := e.stream.read(&en); err != nil {
 			debug("Directory push from peer %q finished: %d rows stored", e.peer, stored)
@@ -395,6 +414,9 @@ func directory_push_event(e *Event) {
 			stored++
 		}
 	}
+	// Counted on rows READ, not stored: a row rejected by entry_store still
+	// cost the validation that rejected it.
+	debug("Directory push from peer %q truncated at %d rows: %d stored", e.peer, directory_push_rows_maximum, stored)
 }
 
 // directory_sync_from_peer pulls rows updated since our watermark from one

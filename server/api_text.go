@@ -6,6 +6,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -69,6 +70,49 @@ func api_text_sortkey(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.String(text_sortkey(s)), nil
 }
 
+// regex_session_maximum bounds one Starlark session's regex cache. A session is
+// a single action or event invocation - AppVersion.starlark() builds a fresh
+// thread per call, sharing only the compiled globals - and starlark_sem caps
+// concurrent sessions at 32, so the worst case is that many caches of this size,
+// all released when their handlers return.
+const regex_session_maximum = 1000
+
+// regex_session compiles pattern into a cache on the calling Starlark thread,
+// for patterns an app supplies rather than the compile-time constants
+// regex_cached holds.
+//
+// The process-global cache cannot hold these. Its key space would be whatever
+// an app cares to invent, each entry retaining a compiled program for the life
+// of the process - measured at ~2KB, so a loop reaches gigabytes and never
+// gives them back. Nor is a ceiling on the global cache enough: core's own
+// validators compile lazily on first use, so a flood that filled it would leave
+// some of them recompiling on every request forever.
+//
+// Past the ceiling patterns still compile and still work; they are simply not
+// retained, which turns the cost into CPU inside the caller's own timeout
+// rather than heap nobody can reclaim.
+func regex_session(t *sl.Thread, pattern string) (*regexp.Regexp, error) {
+	if t == nil {
+		return regexp.Compile(pattern)
+	}
+	cache, _ := t.Local("regexes").(map[string]*regexp.Regexp)
+	if cache == nil {
+		cache = map[string]*regexp.Regexp{}
+		t.SetLocal("regexes", cache)
+	}
+	if compiled, ok := cache[pattern]; ok {
+		return compiled, nil
+	}
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	if len(cache) < regex_session_maximum {
+		cache[pattern] = compiled
+	}
+	return compiled, nil
+}
+
 // mochi.text.valid(string, pattern) -> bool: Check if a string matches a validation pattern
 func api_text_valid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
@@ -88,7 +132,22 @@ func api_text_valid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "invalid match pattern %q", match)
 	}
 
-	return sl_encode(valid(s, match)), nil
+	// The pattern is the app's, so it is compiled into this session's cache
+	// rather than the process-global one, and a bad one is reported to the
+	// app author instead of panicking out of MustCompile.
+	var failure error
+	result := valid_with(s, match, func(pattern string) *regexp.Regexp {
+		compiled, err := regex_session(t, pattern)
+		if err != nil {
+			failure = err
+			return nil
+		}
+		return compiled
+	})
+	if failure != nil {
+		return sl_error(fn, "invalid match pattern %q: %v", match, failure)
+	}
+	return sl_encode(result), nil
 }
 
 // mochi.text.slug(s) -> string: Convert s to a URL-friendly slug. Strips

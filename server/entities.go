@@ -642,6 +642,13 @@ func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "%v", err)
 	}
 
+	// Charged here rather than in entity_create, so signup's own identity
+	// creation (web.go) is not subject to an app's budget, and after the class
+	// check, so a call that was going to be refused anyway costs nothing.
+	if !rate_limit_entity_create.allow(user.UID) {
+		return sl_error(fn, rate_limit_refuse(rate_limit_entity_create, user.UID, "entities created per minute"))
+	}
+
 	e, err := entity_create(user, class, name, privacy, data)
 	if err != nil {
 		return sl_error(fn, "unable to create entity: %v", err)

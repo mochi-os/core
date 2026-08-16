@@ -18,6 +18,10 @@
 	<string>_mochi</string>
 	<key>GroupName</key>
 	<string>_mochi</string>
+	<!-- 0077 octal. An integer, not a string: launchd silently ignores a
+	     string here, leaving the data files world-readable. -->
+	<key>Umask</key>
+	<integer>63</integer>
 	<key>StandardErrorPath</key>
 	<string>/var/log/mochi-server.log</string>
 </dict>

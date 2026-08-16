@@ -186,7 +186,27 @@ func world_health(c *gin.Context) {
 // service group rather than the operator), so it must never serve the admin
 // engine — that would hand stop/restart and the pprof suite to every group
 // member.
+// world_body_maximum bounds a status push. Not a security boundary: this
+// socket is a local UDS behind both a 0660 group and an SO_PEERCRED check, so
+// the caller is software the administrator installed on this machine and put in
+// the mochi-world group - and it can already open unbounded connections here,
+// which is cheaper than a large body. This is insurance against a BUGGY world
+// server: ShouldBindJSON reads to completion before world_validate runs, so
+// without a cap a runaway payload OOMs the server and the operator gets a dead
+// process with no explanation. With one they get a 413 naming the caller.
+//
+// A push is a world id, name, address, version and a short services list, so
+// 64KB is orders of magnitude above the real payload.
+const world_body_maximum = 64 << 10
+
+// world_register_routes wires the world socket's handlers. Shared by the Unix
+// and Windows listeners, so the body cap cannot be applied to one and missed on
+// the other.
 func world_register_routes(r *gin.Engine) {
+	r.Use(func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, world_body_maximum)
+		c.Next()
+	})
 	r.POST("/_/world/status", world_status_handler)
 	r.GET("/_/world/health", world_health)
 }

@@ -34,6 +34,20 @@ import (
 
 const broadcast_pending_max = 1000
 
+// broadcast_pending_streams_max bounds how many DISTINCT streams one peer
+// may hold buffered at once for a given user and app.
+//
+// broadcast_pending_max alone does not bound the table. It is per (peer,
+// key), and the key arrives in the inbound event's content with nothing
+// signing it - the gap branch buffers before any app handler runs - so a
+// peer inventing a key per event draws a fresh thousand-row budget every
+// time. The unfillable-gap GC below collects those, but only after days.
+//
+// A peer with this many streams gapping at one receiver simultaneously is
+// already pathological: a real fan-out gap heals by resync in minutes, and
+// a peer serves one stream per object the receiver subscribes to.
+const broadcast_pending_streams_max = 1000
+
 // broadcast_pending_gc_default_ttl_days is the default age above which
 // a stuck-stream gap gets skipped. Tuned to broadcast_log_age (7 days)
 // - if the sender pruned the gap from its log, no amount of patience
@@ -83,6 +97,16 @@ func broadcast_pending_count(db *DB, peer, key string) int {
 	return db.integer("select count(*) from pending where peer=? and key=?", peer, key)
 }
 
+// broadcast_pending_streams counts the distinct streams this peer holds
+// buffered. Served by the (peer, key, sequence) primary key.
+func broadcast_pending_streams(db *DB, peer string) int {
+	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='pending'")
+	if !exists {
+		return 0
+	}
+	return db.integer("select count(distinct key) from pending where peer=?", peer)
+}
+
 // broadcast_pending_insert buffers one out-of-order event. Returns
 // true if the row was stored, false if dropped because the per-stream
 // cap was reached. The caller still fires the resync request - either
@@ -91,8 +115,15 @@ func broadcast_pending_count(db *DB, peer, key string) int {
 // optimisation, not the primary mechanism for filling missed events.
 func broadcast_pending_insert(db *DB, peer, key string, sequence int64, source, target, service, event, msg_id, sender_app, sender_services string, content []byte) bool {
 	broadcast_pending_table_create(db)
-	if broadcast_pending_count(db, peer, key) >= broadcast_pending_max {
+	count := broadcast_pending_count(db, peer, key)
+	if count >= broadcast_pending_max {
 		debug("Broadcast pending dropping seq=%d for (peer=%s, key=%s): per-stream buffer full at %d", sequence, peer, key, broadcast_pending_max)
+		return false
+	}
+	// Only when opening a stream, so an established one never pays for the
+	// second query.
+	if count == 0 && broadcast_pending_streams(db, peer) >= broadcast_pending_streams_max {
+		debug("Broadcast pending dropping seq=%d for (peer=%s, key=%s): peer already holds %d buffered streams", sequence, peer, key, broadcast_pending_streams_max)
 		return false
 	}
 	// Plain db.exec - pending is receiver-side

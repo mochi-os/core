@@ -8,6 +8,12 @@ ExecStartPre=+setcap 'cap_net_bind_service=+ep' /usr/sbin/mochi-server
 ExecStart=/usr/sbin/mochi-server
 User=mochi
 Group=mochi
+# Data files are private to the service account. users.db holds entity private
+# keys and sessions.db holds session secrets, and SQLite writes its own -wal and
+# -shm sidecars carrying the same pages, so the mode has to come from the
+# process umask rather than from any one call site. Loosen to 0027 if a backup
+# group needs to read the tree.
+UMask=0077
 PIDFile=/run/mochi-server.pid
 Restart=on-failure
 RestartSec=1

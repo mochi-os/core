@@ -21,11 +21,9 @@ func TestBroadcastStallNote(t *testing.T) {
 	defer func() { broadcast_stall_age, broadcast_stall_repeat = age, repeat }()
 
 	stall := func() *broadcast_stall {
-		v, ok := broadcast_stalls.Load("u1|feeds|peer-x|key-1")
-		if !ok {
-			return nil
-		}
-		return v.(*broadcast_stall)
+		broadcast_stall_lock.Lock()
+		defer broadcast_stall_lock.Unlock()
+		return broadcast_stalls["u1|feeds|peer-x|key-1"]
 	}
 
 	// First gap at a watermark: tracked, not warned (no stall duration yet).

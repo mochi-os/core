@@ -39,6 +39,47 @@ var api_schedule = sls.FromStringDict(sl.String("mochi.schedule"), sl.StringDict
 // schedule_wake is used to wake up the scheduler when a new event is created
 var schedule_wake = make(chan struct{}, 1)
 
+// schedule_data_maximum bounds one row's payload. db/schedule.db is a single
+// global table shared by every user and app, and it sits outside the per-user
+// storage quota, so an unbounded blob here is server-wide disk an app fills for
+// free. Far above what a payload is for: a scheduled event carries the ids the
+// handler needs to find its work, not the work itself.
+const schedule_data_maximum = 64 * 1024
+
+// schedule_due_maximum bounds one pass, so the due query cannot materialise an
+// arbitrary number of rows and the loop cannot dispatch them all at once.
+// Leftovers are not delayed: schedule_next then reports a due time already
+// past, the manager's sleep clamps to zero, and the next pass takes them.
+const schedule_due_maximum = 100
+
+// schedule_concurrency bounds how many scheduled handlers run at once. Each
+// one enters Starlark, so without it a batch of rows made due at the same
+// instant queues on the 32-slot pool and starves every interactive request on
+// the host - and `at` accepts a past timestamp while `after` accepts a delay of
+// zero, so nobody has to wait to arrange that. Well under the pool, so
+// scheduled work leaves most of it for requests.
+const schedule_concurrency = 8
+
+// schedule_slots is acquired before a handler is dispatched and released when
+// it returns. Acquired BLOCKING: skipping at capacity would return to a manager
+// whose next sleep is zero (the skipped rows are still due), which is a busy
+// spin. Blocking paces the loop instead, and a wedged handler holds one slot
+// rather than all of them, so the rest keep running.
+var schedule_slots = make(chan struct{}, schedule_concurrency)
+
+// schedule_data_encode serialises a payload, refusing one past the size cap.
+// It also reports the encoding error the three callers used to discard.
+func schedule_data_encode(data map[string]any) (string, error) {
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return "", fmt.Errorf("data is not JSON-encodable: %v", err)
+	}
+	if len(encoded) > schedule_data_maximum {
+		return "", fmt.Errorf("data too large: %d bytes exceeds %d", len(encoded), schedule_data_maximum)
+	}
+	return string(encoded), nil
+}
+
 // schedule_db opens the schedule database
 func schedule_db() *DB {
 	return db_open("db/schedule.db")
@@ -95,7 +136,7 @@ func schedule_list(app string, user string) []ScheduledEvent {
 func schedule_due(t int64) []ScheduledEvent {
 	db := schedule_db()
 	var events []ScheduledEvent
-	db.scans(&events, "select * from schedule where due<=? order by due", t)
+	db.scans(&events, "select * from schedule where due<=? order by due limit ?", t, schedule_due_maximum)
 	return events
 }
 
@@ -250,7 +291,11 @@ func schedule_run_due(t time.Time) {
 		if !schedule_claim(item.ID, item.Interval) {
 			continue
 		}
-		go schedule_run(item)
+		schedule_slots <- struct{}{}
+		go func(item ScheduledEvent) {
+			defer func() { <-schedule_slots }()
+			schedule_run(item)
+		}(item)
 	}
 }
 
@@ -604,7 +649,10 @@ func api_schedule_at(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	// Serialize data
-	data_json, _ := json.Marshal(data_map)
+	data_json, err := schedule_data_encode(data_map)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
 
 	// If time is in the past, run immediately (but still schedule for audit trail)
 	due_time := int64(due)
@@ -655,7 +703,10 @@ func api_schedule_after(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	// Serialize data
-	data_json, _ := json.Marshal(data_map)
+	data_json, err := schedule_data_encode(data_map)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
 
 	// If delay is zero or negative, run immediately
 	due_time := now() + int64(delay)
@@ -714,7 +765,10 @@ func api_schedule_every(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	// Serialize data
-	data_json, _ := json.Marshal(data_map)
+	data_json, err := schedule_data_encode(data_map)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
 
 	// First run is after the interval
 	due_time := now() + int64(interval)

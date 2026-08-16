@@ -121,40 +121,99 @@ var ErrBroadcastGap = errors.New("broadcast gap")
 var broadcast_stall_age int64 = 6 * 3600
 var broadcast_stall_repeat int64 = 86400
 
+// broadcast_stall_maximum bounds the tracking map, and broadcast_stall_idle
+// drops an entry nothing has re-noted for that long.
+//
+// Both exist because the map key carries the broadcast key, which arrives in
+// an inbound event's content with nothing signing it. The gap branch notes a
+// stall before any app handler runs, so a peer inventing a key per event grew
+// this map for the process lifetime. The ceiling is what actually bounds
+// memory; the idle sweep is hygiene for keys that are simply abandoned.
+//
+// A genuinely stalled stream is re-noted by every arrival that gaps on it -
+// the 2026-07 News feed wedge gapped continuously for 9 days - so an hour of
+// silence means no diagnostic is being lost. Ten thousand is far above any
+// real population: a stream appears here only while it is actively gapping.
+const broadcast_stall_maximum = 10000
+const broadcast_stall_idle = int64(3600)
+
 type broadcast_stall struct {
 	first     int64 // when this watermark value first produced a gap
 	watermark int64 // received.last at that moment
 	warned    int64 // last warn unix, 0 = not yet warned
+	seen      int64 // last note, for the idle sweep
 }
 
 // broadcast_stalls tracks gapping streams by user|app|peer|key. Entries
-// reset whenever the watermark moves and are only ever touched from the
-// gap path, which the per-(user, app) worker serialises — no lock needed
-// on the struct fields. Healed streams leave a stale entry behind; it is
-// reset (not trusted) on the next gap because its watermark no longer
-// matches, so it can never cause a false warn.
-var broadcast_stalls sync.Map
+// reset whenever the watermark moves, so a healed stream can never cause a
+// false warn. Guarded by a lock rather than left to the per-(user, app)
+// worker's serialisation, because the sweep runs on the manager goroutine.
+var (
+	broadcast_stall_lock sync.Mutex
+	broadcast_stalls     = map[string]*broadcast_stall{}
+)
 
 // broadcast_stall_note is called from the events.go gap branch on every
 // buffered or NACKed gap event. It warns once the same watermark has
 // been gapping for broadcast_stall_age, then once per repeat window.
 func broadcast_stall_note(user, app, peer, key string, watermark, sequence int64) {
-	id := user + "|" + app + "|" + peer + "|" + key
-	now := now()
-	v, ok := broadcast_stalls.Load(id)
-	if !ok || v.(*broadcast_stall).watermark != watermark {
-		broadcast_stalls.Store(id, &broadcast_stall{first: now, watermark: watermark})
+	first, should := broadcast_stall_record(user+"|"+app+"|"+peer+"|"+key, watermark)
+	if !should {
 		return
 	}
-	stall := v.(*broadcast_stall)
+	warn("Broadcast stream stalled: (peer=%q, key=%q) for user %q app %q has been gapping for %.1f hours with the received watermark stuck at %d (incoming sequence %d); resync is not healing it.", peer, key, user, app, float64(now()-first)/3600, watermark, sequence)
+}
+
+// broadcast_stall_record updates id's entry and reports the stall's start
+// time when this note is the one that should warn.
+func broadcast_stall_record(id string, watermark int64) (int64, bool) {
+	broadcast_stall_lock.Lock()
+	defer broadcast_stall_lock.Unlock()
+
+	now := now()
+	stall, tracked := broadcast_stalls[id]
+	if !tracked || stall.watermark != watermark {
+		// A stream already tracked always gets its reset; a new one only
+		// when there is room. Refusing past the ceiling costs the
+		// diagnostic for streams that begin stalling mid-flood, which is
+		// the right trade against a map that grows without limit.
+		if tracked || len(broadcast_stalls) < broadcast_stall_maximum {
+			broadcast_stalls[id] = &broadcast_stall{first: now, watermark: watermark, seen: now}
+		}
+		return 0, false
+	}
+	stall.seen = now
 	if now-stall.first < broadcast_stall_age {
-		return
+		return 0, false
 	}
 	if stall.warned != 0 && now-stall.warned < broadcast_stall_repeat {
-		return
+		return 0, false
 	}
 	stall.warned = now
-	warn("Broadcast stream stalled: (peer=%q, key=%q) for user %q app %q has been gapping for %.1f hours with the received watermark stuck at %d (incoming sequence %d); resync is not healing it.", peer, key, user, app, float64(now-stall.first)/3600, watermark, sequence)
+	return stall.first, true
+}
+
+// broadcast_stall_clear drops a stream's tracking once it demonstrably
+// healed. Called from broadcast_advance_local; the watermark reset above
+// already prevents a false warn, so this is purely about not retaining an
+// entry for a stream that is fine.
+func broadcast_stall_clear(user, app, peer, key string) {
+	broadcast_stall_lock.Lock()
+	defer broadcast_stall_lock.Unlock()
+	delete(broadcast_stalls, user+"|"+app+"|"+peer+"|"+key)
+}
+
+// broadcast_stall_sweep drops entries nothing has re-noted for
+// broadcast_stall_idle.
+func broadcast_stall_sweep() {
+	broadcast_stall_lock.Lock()
+	defer broadcast_stall_lock.Unlock()
+	cutoff := now() - broadcast_stall_idle
+	for id, stall := range broadcast_stalls {
+		if stall.seen < cutoff {
+			delete(broadcast_stalls, id)
+		}
+	}
 }
 
 // ErrBroadcastPendingFull signals the receiver's per-stream pending
@@ -444,6 +503,9 @@ func broadcast_advance_local(db *DB, sender, key string, sequence int64) {
 	// timeout fallback for the no-user case.
 	if db.user != nil && db.user.UID != "" {
 		broadcast_resync_clear(db.user.UID, sender, key)
+		if db.app != nil {
+			broadcast_stall_clear(db.user.UID, db.app.id, sender, key)
+		}
 	}
 	// Pull in any buffered events that now chain onto received.last.
 	// Common case is "nothing pending" - one indexed SELECT.
@@ -1358,6 +1420,13 @@ func (e *Event) broadcast_floor(a *App) error {
 // investigation.md and follow-up task #81.
 const broadcast_resync_timeout = 30 * time.Second
 
+// broadcast_resync_maximum bounds the in-flight map. An entry is only
+// meaningful for broadcast_resync_timeout, but it is deleted on an advance
+// that a deliberately-gapped stream never makes, so the ceiling is what
+// bounds it. Matched to broadcast_stall_maximum - both are keyed on the
+// same unsigned broadcast key.
+const broadcast_resync_maximum = 10000
+
 var (
 	broadcast_resync_lock     sync.Mutex
 	broadcast_resync_inflight = map[string]int64{} // tag -> request unix time
@@ -1372,7 +1441,8 @@ func broadcast_resync_throttle(user_uid, peer, key string) bool {
 	defer broadcast_resync_lock.Unlock()
 	tag := broadcast_resync_tag(user_uid, peer, key)
 	now_ts := time.Now().Unix()
-	if last, inflight := broadcast_resync_inflight[tag]; inflight {
+	last, inflight := broadcast_resync_inflight[tag]
+	if inflight {
 		// Timeout fallback: if the resync reply never arrived
 		// (link flapped, owner offline at the moment), clear the
 		// in-flight flag so the next gap-detection can retry. Keeps
@@ -1381,8 +1451,31 @@ func broadcast_resync_throttle(user_uid, peer, key string) bool {
 			return false
 		}
 	}
+	// Past the ceiling only an already-tracked stream may re-arm. The tag
+	// carries the broadcast key, which arrives in an inbound event with
+	// nothing signing it, and this runs before any app handler - so a peer
+	// inventing a key per event both grew this map for the process lifetime
+	// and drew a resync request back to itself each time. Refusing is the
+	// safe direction: it sends nothing rather than sending unthrottled.
+	if !inflight && len(broadcast_resync_inflight) >= broadcast_resync_maximum {
+		return false
+	}
 	broadcast_resync_inflight[tag] = now_ts
 	return true
+}
+
+// broadcast_resync_sweep drops entries past the timeout. They are already
+// ignored by the throttle above, so this reclaims them rather than changing
+// any decision.
+func broadcast_resync_sweep() {
+	broadcast_resync_lock.Lock()
+	defer broadcast_resync_lock.Unlock()
+	cutoff := time.Now().Unix() - int64(broadcast_resync_timeout/time.Second)
+	for tag, last := range broadcast_resync_inflight {
+		if last < cutoff {
+			delete(broadcast_resync_inflight, tag)
+		}
+	}
 }
 
 // broadcast_resync_clear marks the in-flight resync for the given
@@ -1608,5 +1701,7 @@ func broadcast_acknowledge_flush(tag string) {
 func broadcast_manager() {
 	for range time.Tick(time.Duration(broadcast_pending_gc_period_seconds) * time.Second) {
 		broadcast_pending_gc(false)
+		broadcast_stall_sweep()
+		broadcast_resync_sweep()
 	}
 }

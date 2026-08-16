@@ -108,6 +108,45 @@ var (
 		window:  60,
 	}
 
+	// Directory push receiving: 6 per minute per pushing peer.
+	//
+	// The sibling of rate_limit_directory_sync, and the same reasoning applies
+	// harder. Sync is anonymous and costs a read; push is anonymous and costs
+	// a WRITE per row the peer chooses to send - four validators, up to three
+	// SQLite queries and an ed25519 verification each - and the peer decides
+	// how many rows there are. It had no limiter at all.
+	//
+	// directory_sync drives one push per 5-minute tick at most, and the
+	// sender's watermark makes steady state one per hourly re-attest cycle, so
+	// 6 per minute is two orders of magnitude of headroom for a peer that
+	// restarts, reconnects and re-pushes in quick succession.
+	rate_limit_directory_push = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   6,
+		window:  60,
+	}
+
+	// Entity creation from an app: 30 per minute per user.
+	//
+	// A public entity is not a local row. entity_create mints a keypair, signs
+	// an announcement, writes users.db and directory.db, and then floods the
+	// mesh - where every peer verifies the signature and writes its own row. One
+	// call is therefore N remote writes, and nothing bounded how many calls an
+	// app could make. Only WITHDRAWAL was limited (rate_limit_entry_withdraw),
+	// which is the wrong way round for a resource.
+	//
+	// Keyed on the user rather than the app, so a busy server's other accounts
+	// are unaffected by one app looping for one of them, and so the bound
+	// follows the account the entities belong to. Every app call site creates
+	// one entity per user action - none is inside a loop - so 30 a minute is far
+	// above hand-driven creation while turning an unbounded loop into one every
+	// two seconds.
+	rate_limit_entity_create = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   30,
+		window:  60,
+	}
+
 	// Peer address-request rate limiter: 1 broadcast per minute per
 	// target peer. The queue retries unreachable peers every tick;
 	// without this each retry would re-flood a peers/request.
@@ -728,6 +767,8 @@ func ratelimit_manager() {
 		// input until swept. rate_limit_stream_client is keyed on the app
 		// AND the client address, so its ceiling is the address space.
 		rate_limit_directory_sync.cleanup()
+		rate_limit_directory_push.cleanup()
+		rate_limit_entity_create.cleanup()
 		rate_limit_remote_entity.cleanup()
 		rate_limit_stream_client.cleanup()
 		rate_limit_stream_outbound.cleanup()

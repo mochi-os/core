@@ -634,7 +634,24 @@ func url_request(ctx context.Context, method string, url string, options map[str
 	return c.Do(r)
 }
 
+// valid checks s against a named validator type, or against match itself as a
+// regex when the name is not one of them. The raw-regex fallthrough has real
+// callers - the system_settings table validates most of its values with one -
+// so it stays.
+//
+// Patterns reaching here are compile-time constants, so they compile once into
+// a process-global cache and MustCompile cannot fail. mochi.text.valid does NOT
+// come through this door: an app chooses its own pattern string, which is
+// neither constant nor bounded in variety. See valid_with and regex_session.
 func valid(s string, match string) bool {
+	return valid_with(s, match, func(pattern string) *regexp.Regexp { return regex_cached(pattern) })
+}
+
+// valid_with is valid with the compile step supplied by the caller, so a caller
+// holding untrusted patterns can cache them somewhere that is bounded and does
+// not outlive it. Returning nil means the pattern would not compile, which is
+// not a match.
+func valid_with(s string, match string, compile func(string) *regexp.Regexp) bool {
 	//debug("Validating %q (%+v) as %s", s, s, match)
 	if !match_non_controls.MatchString(s) {
 		return false
@@ -720,7 +737,11 @@ func valid(s string, match string) bool {
 		match = "^[0-9a-zA-Z][0-9a-zA-Z._-]{0,19}$"
 	}
 
-	return regex_cached(match).MatchString(s)
+	compiled := compile(match)
+	if compiled == nil {
+		return false
+	}
+	return compiled.MatchString(s)
 }
 
 // The ASCII punctuation allowed in a path component. Everything that can act -

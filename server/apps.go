@@ -1364,15 +1364,19 @@ func apps_path_delete(path string) {
 	resolution_invalidate() // system path binding removed
 }
 
-// apps_record stamps an app's install timestamp and emits a system-set
-// op so pair members can pull the same code from the publisher. Always
-// writes (REPLACE INTO) and always emits — re-installs after an
-// upgrade need to re-broadcast the timestamp so the receiver-side
-// apply handler fires app_check_install for the new version.
+// apps_record stamps an app's install timestamp, once. The first write wins:
+// load_version runs on every startup load as well as on install, so REPLACE
+// INTO re-stamped every app with the boot time and left app_select_best - which
+// breaks path and class ties on "earliest install wins" - comparing values that
+// were all equal, or ordered by nothing more than which directory sorted first.
+//
+// It used to always write, to re-emit a system-set op so the other host in a
+// replication pair pulled the new code. That layer was removed in 2026-07 and
+// this function no longer emits anything, so the reason for overwriting went
+// with it.
 func apps_record(app string) {
 	db := db_apps()
-	ts := now()
-	db.exec("replace into apps (app, installed) values (?, ?)", app, ts)
+	db.exec("insert into apps (app, installed) values (?, ?) on conflict(app) do nothing", app, now())
 }
 
 // apps_installed returns the installation timestamp for an app, or 0 if not recorded
@@ -2068,7 +2072,8 @@ func (a *App) load_version(av *AppVersion) {
 		return
 	}
 
-	// Record app installation timestamp (only recorded once, not updated on upgrades)
+	// Record the install timestamp. Only the first write lands, which matters
+	// because this runs on every startup load, not only on install.
 	apps_record(a.id)
 
 	for i, file := range av.Execute {
@@ -2770,6 +2775,13 @@ func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	if !check_only {
+		// Demote to the fingerprint if the manifest's paths are already taken,
+		// as app_download_version and the startup load both do before their own
+		// load_version. Without it a package keeps a contested prefix and
+		// becomes a candidate for it - `login` included, which core exempts
+		// from its own authentication gates.
+		app_resolve_paths(av, id)
+
 		na := app_external(id)
 		na.load_version(av)
 	}

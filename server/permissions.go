@@ -42,10 +42,17 @@ func (e *PermissionError) Error() string {
 }
 
 // permissions defines all available permissions except dynamic url permissions
+// Permission names are <resource>/read and <resource>/write. The exceptions are
+// deliberate and should stay exceptions: sign, send, notify, install, close,
+// export, create and update name capabilities that do not read or write a
+// resource, and a consent dialog has to say what is actually being granted -
+// "change notifications" would not tell a user that an app may send one as
+// them. Do not add a new verb without that argument; do not fold an existing
+// one into write to tidy the list up.
 var permissions = []Permission{
 	// Standard permissions
 	{"accounts/read", false, false},
-	{"accounts/manage", false, false},
+	{"accounts/write", false, false},
 	{"accounts/ai", false, false},
 	{"accounts/mcp", false, false},
 	// The friend graph and group membership are the same class of data, and both
@@ -55,7 +62,7 @@ var permissions = []Permission{
 	// permission renders with no Allow button and sends the user hunting through
 	// settings for a routine capability.
 	{"friends/read", false, false},
-	{"groups/manage", false, false},
+	{"groups/write", false, false},
 	{"groups/read", false, false},
 	{"camera", false, false},
 	{"microphone", false, false},
@@ -83,24 +90,39 @@ var permissions = []Permission{
 	// frames. Restricted for the reason user/authentication/sign is: a dialog
 	// asking to sign on the user's behalf is one they cannot evaluate in passing.
 	{"entity/sign", true, false},
-	// Domain routing decides which account a public hostname serves, and the
-	// read and write halves are both restricted: the read side returns the DNS
-	// verification token, and the write side repoints the hostname. Not
-	// administrator-only - domain_can_manage_route lets a delegate manage a path,
-	// and that user check stays; these answer the separate question of whether the
-	// calling APP may.
+	// The app registry: which app answers a URL prefix, a class or a service
+	// name, and which version is active. apps/write can point the login prefix
+	// at another app, and core exempts whatever serves that prefix from its own
+	// authentication gates.
+	{"apps/read", true, true},
+	{"apps/write", true, true},
+	// The operator's own pages - terms, privacy - served to every visitor.
+	{"documents/read", true, true},
+	{"documents/write", true, true},
+	// Domain routing decides which account a public hostname serves, and both
+	// halves are restricted: the read side returns the DNS verification token,
+	// the write side repoints the hostname. Not administrator-only -
+	// domain_can_manage_route lets a delegate manage a path, and that user check
+	// stays; these answer the separate question of whether the calling APP may.
 	{"domains/read", true, false},
 	{"domains/write", true, false},
-	{"notifications/manage", true, false},
+	{"notifications/write", true, false},
 	{"notifications/read", true, false},
 	{"notifications/send", true, false},
-	{"permissions/manage", true, false},
+	// Reading which permissions an app holds is a display concern; granting
+	// and revoking them is not. They were one permission, so an app that only
+	// wanted to show the user their grants had to be handed the power to
+	// change them - and being restricted, it could not ask for the lesser one.
+	{"permissions/read", true, false},
+	{"permissions/write", true, false},
 	// Repository content is the user's private source code, and the write side
 	// can merge branches, so both sit with the permissions a user has to enable
 	// deliberately rather than ones any app may ask for in passing.
 	{"repositories/read", true, false},
 	{"repositories/write", true, false},
+	{"server/read", true, true},
 	{"server/update", true, true},
+	{"settings/read", true, true},
 	{"settings/write", true, true},
 	{"tokens/create", true, false},
 	// Signing with the user's passkey. The shell hosts WebAuthn ceremonies for
@@ -133,6 +155,11 @@ var permissions = []Permission{
 	// needs deliberate consent but scheduling its deletion does not.
 	{"user/close", true, false},
 	{"user/export", true, false},
+	// Confirming the account's own address. Sends a code to the user's stored
+	// username and consumes it - so it puts mail in someone's inbox, and
+	// code_send creates the account when the address is unknown and signup is
+	// open. It was gated on user/export, which describes something else.
+	{"user/verification/write", true, false},
 	{"users/read", true, true},
 	{"users/write", true, true},
 	{"webpush/send", true, false},
@@ -596,8 +623,8 @@ func api_permission_grant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "invalid permission")
 	}
 
-	// Check that calling app has permissions/manage
-	if err := require_permission(t, fn, "permissions/manage"); err != nil {
+	// Check that calling app has permissions/write
+	if err := require_permission(t, fn, "permissions/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -626,14 +653,14 @@ func api_permission_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "invalid permission")
 	}
 
-	// Check that calling app has permissions/manage
-	if err := require_permission(t, fn, "permissions/manage"); err != nil {
+	// Check that calling app has permissions/write
+	if err := require_permission(t, fn, "permissions/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
 	// Prevent an app from revoking its own permission/manage (prevents lockout)
 	calling_app, _ := t.Local("app").(*App)
-	if permission == "permissions/manage" && calling_app != nil && calling_app.id == app_id {
+	if permission == "permissions/write" && calling_app != nil && calling_app.id == app_id {
 		return sl_error(fn, "cannot revoke permission/manage from self")
 	}
 
@@ -667,7 +694,7 @@ func api_permission_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	calling_app, _ := t.Local("app").(*App)
 	if calling_app == nil || calling_app.id != app_id {
 		// Require permission/manage to list other apps' permissions
-		if err := require_permission(t, fn, "permissions/manage"); err != nil {
+		if err := require_permission(t, fn, "permissions/read"); err != nil {
 			return nil, err
 		}
 	}

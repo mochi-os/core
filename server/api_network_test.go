@@ -14,6 +14,8 @@ package main
 import (
 	"os"
 	"testing"
+
+	sl "go.starlark.net/starlark"
 )
 
 func TestApiServerNetworkQueueCounts(t *testing.T) {
@@ -36,7 +38,17 @@ func TestApiServerNetworkQueueCounts(t *testing.T) {
 	q.exec("insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created) values ('u2','direct','','e','t2','s','ev',0,0)")
 	q.exec("insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created) values ('d1','direct','12D3KooWPeer','e','t3','s','ev',0,0)")
 
-	result, err := api_server_network(nil, nil, nil, nil)
+	// mochi.server.network is behind server/read, so drive it the way an app
+	// does: a thread carrying a granted app rather than a bare nil.
+	os.MkdirAll(data_dir+"/users/u1", 0755)
+	user := &User{UID: "u1", Username: "user1@example.com", Role: "administrator"}
+	app := create_external_app("status")
+	udb := db_user(user, "user")
+	udb.permissions_setup()
+	udb.permissions_upsert(app.id, "server/read", "", 1)
+
+	result, err := api_server_network(create_test_thread(user, app),
+		sl.NewBuiltin("mochi.server.network", nil), nil, nil)
 	if err != nil {
 		t.Fatalf("api_server_network: %v", err)
 	}

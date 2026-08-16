@@ -208,7 +208,7 @@ func code_consume_email(email string, code string) bool {
 // code was sent, or a short reason ("too_many_codes", "invalid_email",
 // "signup_disabled") for the caller to map to a translated message.
 func api_user_code_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "user/export"); err != nil {
+	if err := require_permission(t, fn, "user/verification/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	user, _ := t.Local("user").(*User)
@@ -232,7 +232,7 @@ func api_user_code_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 // factor is satisfied, {"remaining": [...]} if more are needed, or None if
 // the code is wrong/expired (the action maps None to a translated error).
 func api_user_code_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "user/export"); err != nil {
+	if err := require_permission(t, fn, "user/verification/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	user, _ := t.Local("user").(*User)

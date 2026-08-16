@@ -542,6 +542,10 @@ func api_server_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 // that's the undeliverable case the status page exists to surface.
 // Unsorted; the consumer sorts.
 func api_server_peers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "server/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	type entry struct {
 		connected bool
 		address   string
@@ -647,6 +651,10 @@ func api_server_peers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 //	                       full and turning NAT'd peers away — they show
 //	                       Unreachable elsewhere with no other signal.
 func api_server_network(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "server/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	mesh := pubsub_topic_peers(net_pubsub)
 	if net_pubsub != nil {
 		mesh++
@@ -682,6 +690,10 @@ func api_server_network(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 //	users     int — accounts in users.db
 //	entities  int — entities across all accounts
 func api_server_counts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "server/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	users := int64(0)
 	entities := int64(0)
 	if file_exists(filepath.Join(data_dir, "db", "users.db")) {

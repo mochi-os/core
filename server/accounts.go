@@ -426,7 +426,7 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "syntax: <type: string>, [label=...], [address=...], [token=...], [api_key=...], [url=...], [endpoint=...], [auth=...], [p256dh=...], [secret=...], [topic=...], [server=...]")
 	}
 
-	if err := require_permission(t, fn, "accounts/manage"); err != nil {
+	if err := require_permission(t, fn, "accounts/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -670,7 +670,7 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "syntax: <id: integer>, [label=...], [enabled=...]")
 	}
 
-	if err := require_permission(t, fn, "accounts/manage"); err != nil {
+	if err := require_permission(t, fn, "accounts/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -791,7 +791,7 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "syntax: <id: integer>")
 	}
 
-	if err := require_permission(t, fn, "accounts/manage"); err != nil {
+	if err := require_permission(t, fn, "accounts/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -828,7 +828,7 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "syntax: <id: integer>, [code: string]")
 	}
 
-	if err := require_permission(t, fn, "accounts/manage"); err != nil {
+	if err := require_permission(t, fn, "accounts/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -1078,7 +1078,7 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "syntax: <id: integer>")
 	}
 
-	if err := require_permission(t, fn, "accounts/manage"); err != nil {
+	if err := require_permission(t, fn, "accounts/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 

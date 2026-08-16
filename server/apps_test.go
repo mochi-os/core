@@ -9,6 +9,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -630,6 +631,17 @@ func create_test_starlark_thread() *sl.Thread {
 	thread := &sl.Thread{Name: "test"}
 	admin := &User{UID: "u1", Username: "admin@example.com", Role: "administrator"}
 	thread.SetLocal("user", admin)
+
+	// The app registry APIs are behind apps/read and apps/write, so the thread
+	// needs a calling app holding them - the administrator role alone is a fact
+	// about the user, which is the distinction those permissions exist to draw.
+	app := create_external_app("apps")
+	thread.SetLocal("app", app)
+	os.MkdirAll(filepath.Join(data_dir, "users", admin.UID), 0755)
+	db := db_user(admin, "user")
+	db.permissions_setup()
+	db.permissions_upsert(app.id, "apps/read", "", 1)
+	db.permissions_upsert(app.id, "apps/write", "", 1)
 	return thread
 }
 
@@ -2175,7 +2187,6 @@ func TestAppIsLogin(t *testing.T) {
 		t.Error("ownership must follow the override")
 	}
 }
-
 
 // TestAppsManagerSignal (#52) checks the wake channel coalesces: repeated
 // signals while a pass is pending collapse into a single queued wake (buffer of

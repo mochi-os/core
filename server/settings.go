@@ -348,6 +348,12 @@ func api_setting_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl.String(value), nil
 	}
 
+	// Below the public branch on purpose: a public setting stays readable by
+	// anyone, grant or not. Everything else is server configuration.
+	if err := require_permission(t, fn, "settings/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -435,6 +441,10 @@ func api_setting_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // mochi.setting.list() -> list: List all system settings (admin only)
 func api_setting_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "settings/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -519,7 +529,6 @@ func user_preference_get(u *User, name, def string) string {
 }
 
 // user_preference_set sets a user preference.
-//
 func user_preference_set(u *User, name, value string) {
 	db := db_user(u, "user")
 	db.row_write(reg_preferences, map[string]any{"name": name, "value": value})
@@ -573,6 +582,7 @@ func setting_set(name string, value string) {
 // setting_set(name, "") which leaves an explicit empty row. Used by
 // callers that want subsequent setting_get to return the default
 // rather than an empty string.
+//
 //lint:ignore U1000 removes a row entirely, which setting_set(name, "") deliberately does not; the distinction is the point and is documented above
 func setting_delete(name string) {
 	db := db_open("db/settings.db")

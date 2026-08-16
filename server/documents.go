@@ -230,6 +230,10 @@ func api_document_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 // mochi.document.set(name, language, body) -> bool: Write an operator override (admin only).
 // Audited via audit_settings_changed.
 func api_document_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "documents/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 3 {
 		return sl_error(fn, "syntax: <name: string>, <language: string>, <body: string>")
 	}
@@ -266,6 +270,10 @@ func api_document_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 // un-rendered Markdown so the admin UI can show placeholder syntax verbatim.
 // `updated` is 0 if no operator override exists. Admin only.
 func api_document_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "documents/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 0 {
 		return sl_error(fn, "syntax: no arguments")
 	}

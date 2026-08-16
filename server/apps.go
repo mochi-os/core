@@ -414,10 +414,12 @@ var (
 			{"user/authentication/write", ""},
 		}},
 		{"121eB4VBoaHhBQuBpwoNN7BVtACiEBHzvRLx1FtoHkKgyLBZQdN", "Menu", []struct{ Permission, Object string }{
-			{"notifications/manage", ""},
+			{"apps/read", ""},
 			{"notifications/read", ""},
 			{"notifications/send", ""},
-			{"permissions/manage", ""},
+			{"notifications/write", ""},
+			{"permissions/read", ""},
+			{"permissions/write", ""},
 		}},
 		{"12YGtmNxgihPn2cmNSpKfpViFWtWH25xYT7o6xKnTXCA2deNvjH", "Home", nil},
 		{"16MQ3jNWhdy2TaVv55kwxCn6QC8CM1y5W6tmFNkwkkEUtitukV", "Air", []struct{ Permission, Object string }{
@@ -425,7 +427,11 @@ var (
 		}},
 		{"12kqLEaEE9L3mh6modywUmo8TC3JGi3ypPZR2N2KqAMhB3VBFdL", "Apps", []struct{ Permission, Object string }{
 			{"apps/install", ""},
-			{"permissions/manage", ""},
+			{"apps/read", ""},
+			{"apps/write", ""},
+			{"permissions/read", ""},
+			{"permissions/write", ""},
+			{"settings/read", ""},
 		}},
 		{"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92", "Chat", []struct{ Permission, Object string }{
 			{"friends/read", ""},
@@ -459,14 +465,15 @@ var (
 		{"17Qx3vcsBJ6RcMhshTKfVSBPigPZUAaA52KkpCi4ZYFaekSgrY", "Help", nil},
 		{"12Erusc4s59DJjqmDZXwPQ15ny4RKrRKFJg2DfAmi2unDGaghgq", "Market", nil},
 		{"12ZwHwqDLsdN5FMLcHhWBrDwwYojNZ67dWcZiaynNFcjuHPnx2P", "Notifications", []struct{ Permission, Object string }{
-			{"accounts/manage", ""},
 			{"accounts/notify", ""},
 			{"accounts/read", ""},
+			{"accounts/write", ""},
+			{"settings/read", ""},
 			{"tokens/create", ""},
 			{"webpush/send", ""},
 		}},
 		{"1gGcjxdhV2VjuEMLs7UZiQwMaY2jvx1ARbu8g9uqM5QeS2vFJV", "People", []struct{ Permission, Object string }{
-			{"groups/manage", ""},
+			{"groups/write", ""},
 			{"groups/read", ""},
 			{"user/identity/write", ""},
 			{"users/read", ""},
@@ -478,21 +485,29 @@ var (
 		}},
 		{"12nG95Lzt5SbKcmAqweB3vEWcz6oXUd7i9vf3nCXfBxuyqG9wJ3", "Publisher", []struct{ Permission, Object string }{
 			{"apps/install", ""},
+			{"apps/read", ""},
+			{"apps/write", ""},
 		}},
 		{"1SWnPXg9xpT2Cxemw2aw8CLZCP5yDatQ6ebF9dHoMTXQNFKLuw", "Repositories", []struct{ Permission, Object string }{
 			{"groups/read", ""},
 			{"tokens/create", ""},
 		}},
 		{"1FEuUQ9D5usB16Rb5d2QruSbVr6AYqaLkcu3DLhpqCA49VF8Ky", "Settings", []struct{ Permission, Object string }{
-			{"accounts/manage", ""},
 			{"accounts/read", ""},
+			{"accounts/write", ""},
+			{"apps/read", ""},
+			{"documents/read", ""},
+			{"documents/write", ""},
 			{"domains/read", ""},
 			{"domains/write", ""},
 			{"interests/read", ""},
 			{"interests/write", ""},
-			{"notifications/manage", ""},
 			{"notifications/send", ""},
+			{"notifications/write", ""},
+			{"permissions/read", ""},
+			{"server/read", ""},
 			{"server/update", ""},
+			{"settings/read", ""},
 			{"settings/write", ""},
 			{"user/authentication/read", ""},
 			{"user/authentication/sign", ""},
@@ -502,6 +517,7 @@ var (
 			{"user/identity/write", ""},
 			{"user/sessions/read", ""},
 			{"user/sessions/write", ""},
+			{"user/verification/write", ""},
 			{"users/read", ""},
 			{"users/write", ""},
 		}},
@@ -2393,6 +2409,10 @@ func (av *AppVersion) reload() {
 
 // mochi.app.get(id) -> dict or None: Get details of an app
 func api_app_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
 	}
@@ -2943,6 +2963,10 @@ func api_app_presets(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // mochi.app.class.get(class) -> string | None: Get the app bound to a class (admin only)
 func api_app_class_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
@@ -2963,6 +2987,10 @@ func api_app_class_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 // mochi.app.class.set(class, app_id) -> bool: Bind a class to an app (admin only)
 func api_app_class_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
@@ -2985,6 +3013,10 @@ func api_app_class_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 // mochi.app.class.delete(class) -> bool: Remove a class binding (admin only)
 func api_app_class_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
@@ -3002,6 +3034,10 @@ func api_app_class_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // mochi.app.class.list() -> dict: List all class bindings
 func api_app_class_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	db := db_apps()
 	rows, _ := db.rows("select class, app from classes")
 	result := make(map[string]string)
@@ -3013,6 +3049,10 @@ func api_app_class_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 // mochi.app.service.get(service) -> string | None: Get the app bound to a service (admin only)
 func api_app_service_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
@@ -3033,6 +3073,10 @@ func api_app_service_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 // mochi.app.service.set(service, app_id) -> bool: Bind a service to an app (admin only)
 func api_app_service_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
@@ -3055,6 +3099,10 @@ func api_app_service_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 // mochi.app.service.delete(service) -> bool: Remove a service binding (admin only)
 func api_app_service_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
@@ -3072,6 +3120,10 @@ func api_app_service_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 
 // mochi.app.service.list() -> dict: List all service bindings
 func api_app_service_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	db := db_apps()
 	rows, _ := db.rows("select service, app from services")
 	result := make(map[string]string)
@@ -3114,6 +3166,10 @@ func api_app_services(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 // mochi.app.path.get(path) -> string | None: Get the app bound to a path (admin only)
 func api_app_path_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
@@ -3134,6 +3190,10 @@ func api_app_path_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 // mochi.app.path.set(path, app_id) -> bool: Bind a path to an app (admin only)
 func api_app_path_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
@@ -3156,6 +3216,10 @@ func api_app_path_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 // mochi.app.path.delete(path) -> bool: Remove a path binding (admin only)
 func api_app_path_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
@@ -3173,6 +3237,10 @@ func api_app_path_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 // mochi.app.path.list() -> dict: List all path bindings
 func api_app_path_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	db := db_apps()
 	rows, _ := db.rows("select path, app from paths")
 	result := make(map[string]string)
@@ -3184,6 +3252,10 @@ func api_app_path_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 // mochi.app.version.get(app_id) -> dict | None: Get the default version/track for an app
 func api_app_version_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <app_id: string>")
 	}
@@ -3204,6 +3276,10 @@ func api_app_version_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 // mochi.app.version.set(app_id, version, track) -> bool: Set the default version/track for an app (admin only)
 func api_app_version_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
@@ -3288,6 +3364,10 @@ func api_app_version_download(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 
 // mochi.app.track.set(app_id, track, version) -> bool: Set the version for a track (admin only)
 func api_app_track_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
@@ -3317,6 +3397,10 @@ func api_app_track_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 // mochi.app.track.list(app_id) -> dict: List all tracks for an app
 func api_app_track_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <app_id: string>")
 	}
@@ -3333,6 +3417,10 @@ func api_app_track_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 // mochi.app.version.list(app_id) -> list: List all installed versions of an app
 func api_app_version_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <app_id: string>")
 	}
@@ -3375,6 +3463,10 @@ func api_app_version_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // mochi.app.cleanup() -> int: Remove unused app versions (admin only)
 func api_app_cleanup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	u, _ := t.Local("user").(*User)
 	if u == nil || !u.administrator() {
 		return sl_error(fn, "not administrator")

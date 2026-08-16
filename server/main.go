@@ -8,6 +8,8 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"runtime"
@@ -50,6 +52,36 @@ func main() {
 	}
 }
 
+// server_arguments parses a command line into the configuration path. The
+// server takes one flag; reporting the running version is mochictl's job
+// (`mochictl version`, and `mochictl status`), and a second way to ask would
+// be one more thing to keep consistent for no gain.
+//
+// Its own FlagSet with ContinueOnError rather than the global
+// flag.CommandLine, which is ExitOnError: on a bad flag that calls
+// os.Exit, which ends a test process along with the server. Returning the
+// error instead makes the flag surface testable and leaves the exit code
+// to the one caller that owns it.
+func server_arguments(arguments []string, default_config string, output io.Writer) (config string, err error) {
+	set := flag.NewFlagSet("mochi-server", flag.ContinueOnError)
+	set.SetOutput(output)
+	set.StringVar(&config, "f", default_config, "Configuration file")
+	if err = set.Parse(arguments); err != nil {
+		return config, err
+	}
+	// The flag package stops at the first non-flag argument and reports no
+	// error, so `mochi-server version` - the subcommand spelling anyone who
+	// has used mochictl will try - silently ignored the word and started a
+	// server. The server takes no positional arguments, so any is a mistake
+	// and is refused rather than dropped.
+	if set.NArg() > 0 {
+		err = fmt.Errorf("unexpected argument %q: mochi-server takes no positional arguments", set.Arg(0))
+		fmt.Fprintln(output, err)
+		set.Usage()
+	}
+	return config, err
+}
+
 // main_serve runs the full server lifecycle: parse flags, load config, start
 // managers, wait for a shutdown trigger, drain, exit. Returns the exit code.
 //
@@ -58,20 +90,32 @@ func main() {
 // handler to transition from StartPending to Running at the right moment.
 // Pass nil in interactive mode.
 func main_serve(ready func()) int {
+	// Platform-aware default paths, shared with mochictl
+	default_config := paths.Config()
+	default_cache := paths.Cache()
+	default_data := paths.Data()
+
+	config, err := server_arguments(os.Args[1:], default_config, os.Stderr)
+	if err != nil {
+		// server_arguments has already written the error and the usage.
+		// Exit 2 is what flag.CommandLine's ExitOnError used to produce
+		// for the same input, so callers and scripts see no change.
+		return 2
+	}
+	config_file = config
+
+	// Announced only once the arguments are known good. Logging it first
+	// meant every rejected invocation - a typo, or a `--version` an
+	// operator reached for - wrote "Mochi X starting" to the journal and
+	// then exited without starting, leaving a start record with no
+	// matching shutdown for whoever read the log later.
 	if build_platform != "" {
 		info("Mochi %s starting on %s", build_version, build_platform)
 	} else {
 		info("Mochi %s starting", build_version)
 	}
 
-	// Platform-aware default paths, shared with mochictl
-	default_config := paths.Config()
-	default_cache := paths.Cache()
-	default_data := paths.Data()
-
-	flag.StringVar(&config_file, "f", default_config, "Configuration file")
-	flag.Parse()
-	err := ini_load(config_file)
+	err = ini_load(config_file)
 	if err != nil {
 		warn("Unable to read configuration file: %v", err)
 		return 1

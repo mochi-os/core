@@ -311,11 +311,25 @@ func cmd_backup(args []string) error {
 	}
 
 	if out == nil {
-		f, err := os.Create(path)
+		// 0600: the archive is the whole data directory. db/users.db carries
+		// every account's entity private keys, db/sessions.db the live
+		// session secrets, and p2p/private.key the host identity, and
+		// admin_backup preserves each file's own 0600 inside the tar - so a
+		// world-readable container undoes all of it at once.
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 		if err != nil {
 			return err
 		}
 		defer f.Close()
+		// The mode above applies only where the open created the file. A
+		// nightly cron writing to a fixed path truncates an existing one
+		// instead, keeping whatever mode it already had, so set it
+		// explicitly. Refuse the backup if that cannot be done rather than
+		// stream the keys into a file we cannot protect - `mochictl backup -`
+		// is the way to take charge of the destination yourself.
+		if err := f.Chmod(0o600); err != nil {
+			return fmt.Errorf("unable to make %s private: %w", path, err)
+		}
 		out = f
 	}
 

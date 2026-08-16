@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	neturl "net/url"
 	"strings"
 	"time"
 
@@ -65,8 +66,19 @@ func peer_connect_url(url string) (string, error) {
 		url = "https://" + url
 	}
 
-	// Fetch Net info from the server
-	info_url := strings.TrimSuffix(url, "/") + "/_/p2p/info"
+	// Rebuild from scheme and host alone. The app supplies this string and it
+	// used to be concatenated straight onto "/_/p2p/info", so a trailing "?x="
+	// carried an arbitrary path and query through, and a trailing "#" discarded
+	// the suffix entirely - either way an app-chosen GET against any public
+	// host. Dropping userinfo with the rest also stops credentials riding along.
+	parsed, err := neturl.Parse(url)
+	if err != nil || parsed.Host == "" {
+		return "", fmt.Errorf("invalid server URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("invalid server URL scheme %q", parsed.Scheme)
+	}
+	info_url := parsed.Scheme + "://" + parsed.Host + "/_/p2p/info"
 	resp, err := url_request(context.Background(), "GET", info_url, nil, nil, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch net info: %v", err)

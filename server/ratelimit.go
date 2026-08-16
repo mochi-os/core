@@ -220,6 +220,16 @@ var (
 		window:  60,
 	}
 
+	// Outbound stream bytes, per app. Separate from the relay pair above, which
+	// meters what comes IN from a peer: the 600 streams/min per target cap says
+	// nothing about how much each stream carries, so an app could hold one open
+	// and write forever. Sized like the per-client relay budget.
+	rate_limit_stream_outbound = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   10 * 1024 * 1024, // kilobytes
+		window:  60,
+	}
+
 	// Not a budget: a once-per-minute-per-app gate on the log line written when a
 	// refusal is turned into a 429. A limit of 1 used this way is the same trick
 	// rate_limit_entry_withdraw uses to log an event at most once per window.
@@ -701,6 +711,7 @@ func ratelimit_manager() {
 		rate_limit_directory_sync.cleanup()
 		rate_limit_remote_entity.cleanup()
 		rate_limit_stream_client.cleanup()
+		rate_limit_stream_outbound.cleanup()
 		// Keyed on an app id, so bounded by what is installed. Swept anyway:
 		// a list that covers most limiters invites the next reader to assume
 		// each omission was deliberate.
@@ -748,4 +759,17 @@ func stepup_gate_reserve(uid string) bool {
 // stepup_gate_done settles a reservation from stepup_gate_reserve.
 func stepup_gate_done(uid string, verified bool) {
 	account_stepup.done(uid, verified)
+}
+
+// stream_outbound_charge meters bytes an app has written to a peer.
+func stream_outbound_charge(app string, bytes int) {
+	rate_limit_stream_outbound.spend(app, (bytes+1023)/1024)
+}
+
+// stream_outbound_refusal reports whether the app has spent its outbound budget.
+func stream_outbound_refusal(app string) error {
+	if rate_limit_stream_outbound.exhausted(app) {
+		return rate_limit_refuse(rate_limit_stream_outbound, app, "kilobytes written per minute")
+	}
+	return nil
 }

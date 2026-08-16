@@ -54,7 +54,6 @@ var permissions = []Permission{
 	{"accounts/read", false, false},
 	{"accounts/write", false, false},
 	{"accounts/ai", false, false},
-	{"accounts/mcp", false, false},
 	// The friend graph and group membership are the same class of data, and both
 	// are things an app has an ordinary reason to ask for - a game offering to
 	// invite a friend, an app offering to share with a group. Standard rather
@@ -62,6 +61,19 @@ var permissions = []Permission{
 	// permission renders with no Allow button and sends the user hunting through
 	// settings for a routine capability.
 	{"friends/read", false, false},
+	// Every object the user owns across every app - each feed, forum, wiki,
+	// repository and project. entity.owned enumerates them with no argument at
+	// all and entity.get hands over the data blob, so it was worth gating; but
+	// standard rather than restricted for the same reason friends/read is, and
+	// twelve first-party apps need it: letting the user pick one of their own
+	// objects is an ordinary thing for an app to ask.
+	{"entity/read", false, false},
+	// mochi.access.check resolves its subject against core data - the target's
+	// role out of users.db - so it answers "is this identity a local account,
+	// and an administrator?" for any identity an app holds, which accounts/read
+	// otherwise gates. The other seven access APIs touch only the app's own
+	// table and stay ungated.
+	{"access/read", false, false},
 	{"groups/write", false, false},
 	{"groups/read", false, false},
 	{"camera", false, false},
@@ -564,6 +576,35 @@ func require_permission(t *sl.Thread, fn *sl.Builtin, permission string) error {
 		Permission: permission,
 		Restricted: permission_restricted(permission),
 	}
+}
+
+// require_permission_acting checks a permission against the user the call
+// actually acts for, rather than against t.Local("user") alone. An anonymous
+// request to a public action runs as the owner - the caller is nil while the
+// call still reads the owner's data - so plain require_permission refuses on
+// "no user context" and takes the public page down with it. Use this on APIs
+// that legitimately answer an anonymous caller; use require_permission
+// everywhere else, where a missing user is a real refusal.
+func require_permission_acting(t *sl.Thread, fn *sl.Builtin, permission string) error {
+	app, _ := t.Local("app").(*App)
+	if app == nil {
+		return fmt.Errorf("no app context")
+	}
+	if app_is_internal(app) {
+		return nil
+	}
+
+	user, err := db_user_for_thread(t)
+	if err != nil || user == nil {
+		return fmt.Errorf("no user context")
+	}
+	if permission_administrator(permission) && !user.administrator() {
+		return fmt.Errorf("permission %q requires administrator role", permission)
+	}
+	if permission_granted(user, app.id, permission) {
+		return nil
+	}
+	return &PermissionError{Permission: permission, Restricted: permission_restricted(permission)}
 }
 
 // require_permission_url checks url permission for a specific URL

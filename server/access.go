@@ -150,6 +150,10 @@ func (db *DB) access_revoke(subject string, resource string, operation string) {
 
 // mochi.access.check(user, resource, operation) -> bool: Check if a user has access to a resource
 func api_access_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "access/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 3 {
 		return sl_error(fn, "syntax: <user: string or None>, <resource: string>, <operation: string>")
 	}

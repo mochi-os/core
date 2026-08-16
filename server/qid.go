@@ -27,7 +27,9 @@ import (
 )
 
 const (
-	qid_search_ttl       = 7 * 24 * time.Hour
+	qid_search_ttl = 7 * 24 * time.Hour
+	// Well past both TTLs: a pruned row is one no lookup would have used.
+	qid_retention        = int64(30 * 24 * 60 * 60)
 	qid_search_empty_ttl = time.Hour
 	qid_backoff_base     = 60 * time.Second
 	qid_backoff_max      = 30 * time.Minute
@@ -43,12 +45,18 @@ var api_qid = sls.FromStringDict(sl.String("mochi.qid"), sl.StringDict{
 })
 
 var (
-	qid_regex         = regexp.MustCompile(`^Q[0-9]+$`)
-	qid_rate_lock     sync.Mutex
-	qid_rate_last     time.Time
-	qid_backoff_lock  sync.Mutex
-	qid_backoff_until time.Time
-	qid_backoff_cur   = qid_backoff_base
+	qid_regex = regexp.MustCompile(`^Q[0-9]+$`)
+	// A language tag, not free text: lang is half the cache primary key in both
+	// tables, so an unvalidated value lets an app mint unbounded rows in a
+	// database every other app shares.
+	qid_language_regex = regexp.MustCompile(`^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$`)
+	qid_host           = "https://www.wikidata.org/"
+	qid_rate_lock      sync.Mutex
+	qid_rate_last      time.Time
+	qid_backoff_lock   sync.Mutex
+	qid_backoff_until  time.Time
+	qid_backoff_cur    = qid_backoff_base
+	qid_prune_last     int64
 )
 
 // qid_db opens external.db and creates the qids and qid_searches tables on first use
@@ -112,8 +120,12 @@ func api_qid_lookup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	lang, ok := sl.AsString(args[1])
-	if !ok || lang == "" {
+	if !ok || !qid_language_regex.MatchString(lang) {
 		return sl_error(fn, "invalid language")
+	}
+
+	if err := require_permission_url(t, fn, qid_host); err != nil {
+		return sl_error(fn, "%v", err)
 	}
 
 	// Detect single vs batch
@@ -329,8 +341,12 @@ func api_qid_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	lang, ok := sl.AsString(args[1])
-	if !ok || lang == "" {
+	if !ok || !qid_language_regex.MatchString(lang) {
 		return sl_error(fn, "invalid language")
+	}
+
+	if err := require_permission_url(t, fn, qid_host); err != nil {
+		return sl_error(fn, "%v", err)
 	}
 
 	db := qid_db()
@@ -440,4 +456,27 @@ func api_qid_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	return sl_encode(results), nil
+}
+
+// qid_prune drops cache rows older than the retention window. external.db is
+// opened by every app and keyed on app-supplied values, so without this the two
+// tables only ever grow - nothing else deletes from them.
+func qid_prune() {
+	db := qid_db()
+	if db == nil {
+		return
+	}
+	cutoff := now() - qid_retention
+	db.exec("delete from qids where fetched < ?", cutoff)
+	db.exec("delete from qid_searches where fetched < ?", cutoff)
+}
+
+// qid_prune_due runs the cache prune at most once a day from db_manager's
+// minute loop.
+func qid_prune_due(now int64) {
+	if now-qid_prune_last < 24*60*60 {
+		return
+	}
+	qid_prune_last = now
+	qid_prune()
 }

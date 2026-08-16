@@ -127,6 +127,58 @@ func stream_rw(r io.ReadCloser, w io.WriteCloser) *Stream {
 	return &Stream{id: stream_id(), reader: r, writer: w}
 }
 
+// stream_writer meters everything an app writes to a peer. It wraps s.writer
+// rather than each of the five sl_write* entry points because they all funnel
+// through it, so a write path added later is metered without being remembered.
+//
+// CloseWrite and SetWriteDeadline are forwarded deliberately: close_write,
+// write and write_raw all type-assert on s.writer for them, and a wrapper that
+// did not carry them would fail those assertions - silently turning a P2P
+// half-close into a full close and dropping every write deadline.
+type stream_writer struct {
+	inner io.WriteCloser
+	app   string
+}
+
+func (w *stream_writer) Write(p []byte) (int, error) {
+	if err := stream_outbound_refusal(w.app); err != nil {
+		return 0, err
+	}
+	n, err := w.inner.Write(p)
+	if n > 0 {
+		stream_outbound_charge(w.app, n)
+	}
+	return n, err
+}
+
+func (w *stream_writer) Close() error { return w.inner.Close() }
+
+func (w *stream_writer) CloseWrite() error {
+	if cw, ok := w.inner.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return w.inner.Close()
+}
+
+func (w *stream_writer) SetWriteDeadline(t time.Time) error {
+	if d, ok := w.inner.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		return d.SetWriteDeadline(t)
+	}
+	return nil
+}
+
+// meter wraps the stream's writer so an app's outbound bytes are counted. No-op
+// for an unattributed stream, and never double-wraps.
+func (s *Stream) meter(app string) {
+	if s == nil || s.writer == nil || app == "" {
+		return
+	}
+	if _, already := s.writer.(*stream_writer); already {
+		return
+	}
+	s.writer = &stream_writer{inner: s.writer, app: app}
+}
+
 // Close only the write direction of a stream (if supported), otherwise close entirely
 func (s *Stream) close_write() {
 	if s.writer == nil {

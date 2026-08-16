@@ -490,6 +490,17 @@ func entity_peers_failover_for(from string, id string) []string {
 const directory_active_window = 2 * 60 * 60
 
 // Sign a string using an entity's private key
+// entity_domain_application prefixes what mochi.entity.sign produces, so an
+// app-minted signature can never validate where core expects one of its own.
+// Core signs export manifests (api_user_export.go) and pubsub frames
+// (pubsub.go) with the same keys and no tag, and an app can emit those exact
+// bytes - without separation the two are indistinguishable.
+//
+// Deliberately applied to the APP side, not to core's: tagging what core signs
+// would change what remote peers verify, which is a wire break. This way core's
+// signing is untouched and only mochi.entity.verify has to learn the tag.
+const entity_domain_application = "mochi/application/1\n"
+
 func entity_sign(entity string, s string) string {
 	if entity == "" {
 		return ""
@@ -744,7 +755,7 @@ func api_entity_sign(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "not allowed to sign as this entity")
 	}
 
-	return sl_encode(entity_sign(e.ID, text)), nil
+	return sl_encode(entity_sign(e.ID, entity_domain_application+text)), nil
 }
 
 // mochi.entity.verify(id, text, signature) -> bool: Check that signature is a
@@ -774,6 +785,13 @@ func api_entity_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "invalid signature")
 	}
 
+	// Both forms during the migration: signatures minted before the domain tag
+	// existed are still stored in apps (wikis comments) and still arrive from
+	// peers running older builds. Drop the untagged arm once those have aged
+	// out - it is what lets a core-minted signature be presented here.
+	if entity_verify(id, entity_domain_application+text, signature) {
+		return sl.True, nil
+	}
 	return sl.Bool(entity_verify(id, text, signature)), nil
 }
 
@@ -792,6 +810,10 @@ func api_entity_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 // arguments - and db_user_for_thread stays as it is for the two consumers that
 // genuinely want storage: opening the app database, and resolving attachments.
 func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission_acting(t, fn, "entity/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
 	}
@@ -820,6 +842,10 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 
 // mochi.entity.name(id) -> string or None: Get the name of any entity (local or directory)
 func api_entity_name(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission_acting(t, fn, "entity/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
 	}
@@ -854,6 +880,10 @@ func api_entity_name(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // Accepts either an entity ID or a 9-character fingerprint.
 // Returns: id, fingerprint, parent, class, name, privacy, creator (owner's identity ID)
 func api_entity_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission_acting(t, fn, "entity/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")
 	}
@@ -894,6 +924,10 @@ func api_entity_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // mochi.entity.owned() -> list: Get all entities owned by the current user
 func api_entity_owned(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "entity/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	user := t.Local("user").(*User)
 	if user == nil {
 		return sl_error(fn, "no user")

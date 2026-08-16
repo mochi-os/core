@@ -23,6 +23,20 @@ func entity_get_thread(owner *User, user *User, context string) *sl.Thread {
 	if user != nil {
 		t.SetLocal("user", user)
 	}
+
+	// mochi.entity.get is behind entity/read, so the thread needs a calling app
+	// holding it - this test is about which USER the call resolves for, and the
+	// permission must not be what decides the outcome.
+	app := create_external_app("profile")
+	t.SetLocal("app", app)
+	for _, u := range []*User{owner, user} {
+		if u == nil {
+			continue
+		}
+		db := db_user(u, "user")
+		db.permissions_setup()
+		db.permissions_upsert(app.id, "entity/read", "", 1)
+	}
 	if context != "" {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)

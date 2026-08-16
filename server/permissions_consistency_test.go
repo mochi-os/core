@@ -20,7 +20,7 @@ import (
 // the account, exporting hands over a copy. Calling any of them "write" would
 // describe the wrong thing.
 var permission_verbs_exempt = map[string]bool{
-	"accounts/ai": true, "accounts/mcp": true, "accounts/notify": true,
+	"accounts/ai": true, "accounts/notify": true,
 	"apps/install": true, "camera": true, "entity/sign": true, "microphone": true,
 	"notifications/send": true, "server/update": true, "tokens/create": true,
 	"user/authentication/sign": true, "user/close": true, "user/export": true,

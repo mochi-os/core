@@ -461,8 +461,13 @@ func stream_open_or_self(peer, from, to, service, event, from_app string,
 	services []string, content map[string]any) (*Stream, error) {
 
 	if peer == net_id {
-		return stream_self_loop(from, to, service, event, from_app, services), nil
+		s := stream_self_loop(from, to, service, event, from_app, services)
+		s.meter(from_app)
+		return s, nil
 	}
 	s, _, err := stream_open(peer, from, to, service, event, from_app, services, content)
+	if err == nil {
+		s.meter(from_app)
+	}
 	return s, err
 }

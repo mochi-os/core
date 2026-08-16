@@ -152,6 +152,24 @@ var (
 		window:  1,
 	}
 
+	// Broadcast fan-out, charged one per RECIPIENT: mochi.broadcast.send turns
+	// one call into N wire messages and N queue.db rows, and had no limiter.
+	//
+	// Separate from rate_limit_net_send for the reason rate_limit_verification
+	// is separate from rate_limit_code - a shared bucket would let one fan-out
+	// exhaust the budget the app's direct sends need - and cannot reuse its
+	// size, because charging per recipient changes the unit: feeds broadcasts
+	// once per imported RSS item to every subscriber, so a backfill of a few
+	// hundred items to a few dozen subscribers legitimately exceeds 1000 in a
+	// burst. The minute window absorbs such a burst and bounds sustained volume
+	// instead. Per app, so it bounds each app's contribution to the shared
+	// queue rather than the total.
+	rate_limit_broadcast = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   20000,
+		window:  60,
+	}
+
 	// Outbound remote request/stream/ping/peer, per app AND target.
 	// mochi.remote.* was the one outbound primitive with no limit, while
 	// mochi.url.* and mochi.message.send have had one for a long time. Apps
@@ -705,6 +723,7 @@ func ratelimit_manager() {
 		rate_limit_entry_withdraw.cleanup()
 		rate_limit_url.cleanup()
 		rate_limit_net_send.cleanup()
+		rate_limit_broadcast.cleanup()
 		// Keyed on values a caller chooses, so the map grows from remote
 		// input until swept. rate_limit_stream_client is keyed on the app
 		// AND the client address, so its ceiling is the address space.

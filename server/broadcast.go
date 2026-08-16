@@ -46,6 +46,13 @@ const (
 	broadcast_content_exclude  = "_exclude"
 )
 
+// Ceiling on one broadcast's recipient list. A call fans out one queued
+// message per subscriber, so an uncapped list is an uncapped write to
+// queue.db - the shape that took instance 1's queue to SQLite's 1GB limit
+// and panicked (see send_peer in messages.go). Well above any real
+// subscriber count.
+const broadcast_recipients_maximum = 10000
+
 // broadcast_skip_for reports whether a sequenced broadcast event must be
 // acknowledged WITHOUT running the app handler at this receiver. Two cases:
 //
@@ -873,6 +880,21 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	owned, err := udb.exists("select id from entities where id=? and user=?", from, user.UID)
 	if err != nil || !owned {
 		return sl_error(fn, "from %q not owned by caller", from)
+	}
+
+	// Cost is the recipient count, not one: this is the only send API that
+	// amplifies. Charged on the LIST length rather than the delivered count,
+	// and settled BEFORE the log append - the self-owned and suspended
+	// recipients skipped below are only known part-way through the loop, and
+	// refusing partway would leave a sequence in the log that only some
+	// subscribers received, which resync would replay to the rest later as
+	// though delivery had happened.
+	recipients := subscribers.Len()
+	if recipients > broadcast_recipients_maximum {
+		return sl_error(fn, "too many subscribers: %d exceeds %d", recipients, broadcast_recipients_maximum)
+	}
+	if !rate_limit_broadcast.spend(app.id, recipients) {
+		return sl_error(fn, rate_limit_refuse(rate_limit_broadcast, app.id, "broadcast recipients per minute"))
 	}
 
 	db := db_app_system(user, app)

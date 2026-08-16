@@ -67,6 +67,21 @@ func api_commit_hook(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // api_commit_fire is the local-side trigger: apps call this after a
 // committed write so the registered hook fires for both local and
 // replicated writes.
+// commit_hook_depth_maximum bounds how deep commit hooks may nest. A handler
+// runs on a fresh Starlark thread with app and user set, so it can fire again,
+// and each level holds one of the global Starlark slots for the whole descent -
+// see the semaphore acquire in starlark.go, which spells out that nested calls
+// keep the outer slot. The drain loop multiplies that by up to 100 pending rows
+// per level, so an unguarded descent pins the engine for every user on the
+// host, not just the one whose request started it.
+//
+// Far below mochi.service.call's cap of 1000 because a different resource runs
+// out first: the slot pool is 32 by default and can be configured down to 4, so
+// a depth in the hundreds exhausts it long before the stack. Nothing nests
+// today - the seven apps that call fire all do so from an action handler, and
+// no on_db_commit fires again - so this is headroom, not a working limit.
+const commit_hook_depth_maximum = 8
+
 func api_commit_fire(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var table, kind, row_uid string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "table", &table, "kind", &kind, "row_uid?", &row_uid); err != nil {
@@ -78,7 +93,19 @@ func api_commit_fire(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	if app == nil || user == nil {
 		return sl_error(fn, "no app/user context")
 	}
-	commit_hook_fire(user.UID, app.id, table, kind, row_uid)
+
+	// Shared with mochi.service.call's counter on purpose: a chain that
+	// alternates between the two nests just as deep and holds just as many
+	// slots, so one depth answers for both.
+	depth := 1
+	if v, ok := t.Local("depth").(int); ok && v > 0 {
+		depth = v
+	}
+	if depth > commit_hook_depth_maximum {
+		return sl_error(fn, "reached maximum commit hook depth")
+	}
+
+	commit_hook_fire(user.UID, app.id, table, kind, row_uid, depth)
 	return sl.None, nil
 }
 
@@ -94,7 +121,7 @@ func api_commit_fire(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // is already durable but the hook fire would be lost. The log lives in
 // app.db (server-only, like access/attachments), so an app cannot tamper
 // with its own pending-fire bookkeeping via mochi.db.execute.
-func commit_hook_fire(userUID, appID, table, kind, row_uid string) {
+func commit_hook_fire(userUID, appID, table, kind, row_uid string, depth int) {
 	u, a, av := commit_hook_resolve(userUID, appID)
 	if u == nil || a == nil || av == nil {
 		return
@@ -111,10 +138,10 @@ func commit_hook_fire(userUID, appID, table, kind, row_uid string) {
 	// Opportunistic retry of any previously-failed hooks before logging
 	// the new one — keeps the log from growing unboundedly while the
 	// app is active.
-	commit_hook_drain(sys, av, a, u, function)
+	commit_hook_drain(sys, av, a, u, function, depth)
 
 	seq := commits_append(sys, table, kind, row_uid)
-	if commit_hook_invoke(av, a, u, function, table, kind, row_uid) {
+	if commit_hook_invoke(av, a, u, function, table, kind, row_uid, depth) {
 		commits_mark_fired(sys, seq)
 	}
 }
@@ -122,7 +149,7 @@ func commit_hook_fire(userUID, appID, table, kind, row_uid string) {
 // commit_hook_drain walks pending `commits` entries and retries each
 // against the registered handler. Successful invocations mark the row
 // fired; failed ones stay pending for the next drain.
-func commit_hook_drain(db *DB, av *AppVersion, a *App, u *User, function string) {
+func commit_hook_drain(db *DB, av *AppVersion, a *App, u *User, function string, depth int) {
 	commits_table_create(db)
 	commits_trim(db)
 	rows, err := db.rows("select seq, name, kind, row_uid from commits where fired=0 order by seq limit 100")
@@ -134,7 +161,7 @@ func commit_hook_drain(db *DB, av *AppVersion, a *App, u *User, function string)
 		table, _ := r["name"].(string)
 		kind, _ := r["kind"].(string)
 		row_uid, _ := r["row_uid"].(string)
-		if commit_hook_invoke(av, a, u, function, table, kind, row_uid) {
+		if commit_hook_invoke(av, a, u, function, table, kind, row_uid, depth) {
 			commits_mark_fired(db, seq)
 		}
 	}
@@ -144,7 +171,7 @@ func commit_hook_drain(db *DB, av *AppVersion, a *App, u *User, function string)
 // completed cleanly. Errors are logged but don't propagate; the caller
 // uses the return to decide whether to mark the log row fired or leave
 // it for the drainer to retry.
-func commit_hook_invoke(av *AppVersion, a *App, u *User, function, table, kind, row_uid string) bool {
+func commit_hook_invoke(av *AppVersion, a *App, u *User, function, table, kind, row_uid string, depth int) bool {
 	if av.Architecture.Engine != "starlark" {
 		return true
 	}
@@ -152,6 +179,7 @@ func commit_hook_invoke(av *AppVersion, a *App, u *User, function, table, kind, 
 	s.set("app", a)
 	s.set("user", u)
 	s.set("owner", u)
+	s.set("depth", depth+1)
 
 	if _, err := s.call(function, sl.Tuple{sl.String(table), sl.String(kind), sl.String(row_uid)}); err != nil {
 		warn("Commit hook %q in app %q failed: %v", function, a.id, err)

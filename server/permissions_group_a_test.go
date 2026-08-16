@@ -43,9 +43,6 @@ func TestEntityReadersNeedAPermission(t *testing.T) {
 		{"mochi.entity.info", func() (sl.Value, error) {
 			return api_entity_info(thread, sl.NewBuiltin("mochi.entity.info", nil), sl.Tuple{sl.String("x")}, nil)
 		}},
-		{"mochi.entity.name", func() (sl.Value, error) {
-			return api_entity_name(thread, sl.NewBuiltin("mochi.entity.name", nil), sl.Tuple{sl.String("x")}, nil)
-		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := c.call()
@@ -66,6 +63,33 @@ func TestEntityReadersNeedAPermission(t *testing.T) {
 	var stillDenied *PermissionError
 	if errors.As(err, &stillDenied) {
 		t.Errorf("a granted app was still refused on the permission: %v", err)
+	}
+}
+
+// TestEntityNameStaysUngated. name resolves one display string for an id the
+// caller already holds, and entity ids are unguessable public keys - the
+// exemption mochi.group.get relies on. It is also the only one of the four an
+// inbound P2P handler reaches: comptroller calls it from
+// event_staff_accounts_list and, not being a default app, has no way to hold a
+// grant at all (task #135). Gating it took comptroller's staff endpoints down
+// with a 500 on 2026-08-15.
+func TestEntityNameStaysUngated(t *testing.T) {
+	source, err := os.ReadFile("entities.go")
+	if err != nil {
+		t.Fatalf("read entities.go: %v", err)
+	}
+	text := string(source)
+	fn := text[strings.Index(text, "func api_entity_name("):]
+	fn = fn[:strings.Index(fn, "\n}")]
+	if strings.Contains(fn, "require_permission") {
+		t.Error("api_entity_name is gated; comptroller's inbound P2P handler cannot hold the grant")
+	}
+	for _, name := range []string{"api_entity_owned", "api_entity_get", "api_entity_info"} {
+		other := text[strings.Index(text, "func "+name+"("):]
+		other = other[:strings.Index(other, "\n}")]
+		if !strings.Contains(other, `entity/read`) {
+			t.Errorf("%s is no longer gated; enumeration and data reads are the ones that need the grant", name)
+		}
 	}
 }
 

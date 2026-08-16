@@ -842,9 +842,18 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 
 // mochi.entity.name(id) -> string or None: Get the name of any entity (local or directory)
 func api_entity_name(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission_acting(t, fn, "entity/read"); err != nil {
-		return sl_error(fn, "%v", err)
-	}
+	// Deliberately not behind entity/read, unlike owned, get and info. This
+	// resolves one display string for an id the caller already holds, and an
+	// entity id is an unguessable ed25519 public key - the same exemption
+	// mochi.group.get relies on and groups.go documents. owned enumerates with
+	// no argument, get returns the data blob and info returns class, privacy
+	// and creator for any local entity; none of those need an id you were
+	// already given.
+	//
+	// It is also the only one of the four reachable with no way to hold the
+	// grant: comptroller resolves names inside event_staff_accounts_list, an
+	// inbound P2P handler, and comptroller is not a default app, so nothing
+	// seeds it a permission and no consent dialog can (see task #135).
 
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")

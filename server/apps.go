@@ -1528,12 +1528,26 @@ func apps_manager_signal() {
 	}
 }
 
+// apps_dir returns the directory installed apps live in.
+func apps_dir() string {
+	return filepath.Join(data_dir, "apps")
+}
+
+// apps_dir_create ensures <data_dir>/apps/ exists. Called during startup
+// alongside run_dir_create: without it a server that has never installed an
+// app has no such directory, and the listing below warns - which emails the
+// administrator - every start until the first install. 0700 matches what
+// installs already leave on disk; an existing directory keeps its own mode.
+func apps_dir_create() error {
+	return os.MkdirAll(apps_dir(), 0700)
+}
+
 // Manage which apps and their versions are installed
 func apps_manager() {
 	time.Sleep(time.Second)
 
 	// If we already have apps installed, skip the setup wait
-	apps_root := filepath.Join(data_dir, "apps")
+	apps_root := apps_dir()
 	if existing, err := file_list(apps_root); err == nil && len(existing) >= 2 {
 		apps_bootstrap_ready = true
 		debug("Apps already installed, skipping setup wait")

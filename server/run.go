@@ -7,6 +7,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -35,4 +36,22 @@ func run_dir_create() error {
 		return err
 	}
 	return os.Chmod(run_dir(), 0751) // an existing directory keeps its old mode through MkdirAll
+}
+
+// socket_path_maximum is the longest path net.Listen("unix", ...) can bind.
+// sockaddr_un.sun_path is char[108] and the kernel wants a terminating NUL, so
+// 107 bytes are usable.
+const socket_path_maximum = 107
+
+// socket_path_check rejects a path too long to bind, naming the limit and what
+// to shorten. Past the limit bind returns EINVAL, which Go renders as "invalid
+// argument" - a message that says nothing about length and sends the operator
+// looking at permissions or SELinux. Both Unix sockets sit under data_dir, so
+// that is the one thing worth pointing at.
+func socket_path_check(kind, path string) error {
+	if len(path) <= socket_path_maximum {
+		return nil
+	}
+	return fmt.Errorf("%s socket path %s is %d bytes, over the %d the operating system allows: set a shorter directories.data",
+		kind, path, len(path), socket_path_maximum)
 }

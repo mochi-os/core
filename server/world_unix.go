@@ -96,6 +96,10 @@ func world_start() error {
 	world_resolve_creds()
 
 	path := world_socket_path()
+	if err := socket_path_check("world", path); err != nil {
+		return err
+	}
+
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove stale world socket %s: %w", path, err)
 	}

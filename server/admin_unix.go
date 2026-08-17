@@ -136,6 +136,10 @@ func admin_start() error {
 	admin_resolve_creds()
 
 	path := admin_socket_path()
+	if err := socket_path_check("admin", path); err != nil {
+		return err
+	}
+
 	// Remove a stale socket from a previous unclean shutdown. EEXIST without
 	// a listener bound is harmless; ENOENT is fine.
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {

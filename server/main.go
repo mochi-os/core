@@ -130,6 +130,9 @@ func main_serve(ready func()) int {
 	if err := run_dir_create(); err != nil {
 		warn("Unable to create runtime state directory %s: %v", run_dir(), err)
 	}
+	if err := apps_dir_create(); err != nil {
+		warn("Unable to create app directory %s: %v", apps_dir(), err)
+	}
 	temporary_configure()
 	// Build the Starlark API table and register the built-in apps and hooks
 	// before anything can evaluate a script, route an event, or open a

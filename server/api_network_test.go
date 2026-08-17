@@ -28,7 +28,7 @@ func TestApiServerNetworkQueueCounts(t *testing.T) {
 	defer func() { data_dir = orig; os.RemoveAll(tmp) }()
 
 	q := db_open("db/queue.db")
-	q.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20 )")
+	q.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20, claimed integer not null default 0 )")
 	// One broadcast, two unresolved-target direct rows, one direct row with a
 	// known target. unresolved must count only the two empty-target directs;
 	// queued must count only the broadcast; the resolved direct counts as

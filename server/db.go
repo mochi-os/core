@@ -111,7 +111,7 @@ const (
 )
 
 const (
-	schema_version = 6
+	schema_version = 7
 )
 
 var (
@@ -382,7 +382,7 @@ func db_create() {
 	// Message queue with reliability tracking
 	queue := db_open("db/queue.db")
 	// Outgoing message queue
-	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20 )")
+	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20, claimed integer not null default 0 )")
 	// (status, priority, next_retry) covers BOTH queue_select queries
 	// (main priority-desc + bulk-floor priority-range). Without the
 	// priority column, the main query's ORDER BY priority forces a
@@ -1264,6 +1264,8 @@ func db_upgrade() {
 			db_upgrade_5()
 		case 6:
 			db_upgrade_6()
+		case 7:
+			db_upgrade_7()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2488,5 +2490,16 @@ func db_upgrade_6() {
 	users := db_open("db/users.db")
 	if have, _ := users.exists("select 1 from pragma_table_info('totp') where name=?", "pending"); !have {
 		users.exec("alter table totp add column pending text not null default ''")
+	}
+}
+
+// db_upgrade_7 adds queue.claimed: when a row was last marked 'sending'.
+// The stuck-sending safety net keyed on `created`, which is the enqueue
+// time and never changes, so any row that had ever been retried was swept
+// the instant it was claimed - racing the sender still holding it.
+func db_upgrade_7() {
+	queue := db_open("db/queue.db")
+	if have, _ := queue.exists("select 1 from pragma_table_info('queue') where name=?", "claimed"); !have {
+		queue.exec("alter table queue add column claimed integer not null default 0")
 	}
 }

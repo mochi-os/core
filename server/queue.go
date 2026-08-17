@@ -36,6 +36,12 @@ const queue_per_peer_concurrency = 8
 // peer. Parallel file pushes only divide the same bandwidth.
 const queue_per_peer_file_concurrency = 1
 
+// How long a row may stay claimed before the safety net assumes the sender
+// holding it is gone. Long enough that a slow but live send is never taken
+// away from its sender; short enough that a row lost to a dead process comes
+// back without waiting for a restart.
+const queue_claim_timeout = 60
+
 // Message priority tiers, stored in queue.priority and used by
 // queue_process to order delivery — higher is more urgent. Spaced by 10
 // so a tier can be inserted between two existing ones (or below bulk)
@@ -99,6 +105,10 @@ type QueueEntry struct {
 	LastError    string `db:"last_error"`
 	Created      int64  `db:"created"`
 	Priority     int    `db:"priority"`
+	// When the row was last marked 'sending'. Created is the enqueue time and
+	// never changes, so it cannot answer "how long has a sender held this",
+	// which is the only question the stuck-sending safety net is asking.
+	Claimed int64 `db:"claimed"`
 }
 
 const (
@@ -179,7 +189,7 @@ func queue_claim_for_peer(peer string, limit int) []QueueEntry {
 	}
 	db := db_open("db/queue.db")
 	var rows []QueueEntry
-	err := db.scans(&rows, `update queue set status='sending'
+	err := db.scans(&rows, `update queue set status='sending', claimed=?
 		where id in (
 			select id from queue
 			where target=? and status='pending' and next_retry<=?
@@ -190,7 +200,7 @@ func queue_claim_for_peer(peer string, limit int) []QueueEntry {
 		returning id, type, target, from_entity, to_entity, service, event,
 			from_app, from_services, content, data, file, expires, status,
 			attempts, next_retry, created, priority`,
-		peer, now(), limit)
+		now(), peer, now(), limit)
 	if err != nil {
 		info("queue_claim_for_peer error peer=%q: %v", peer, err)
 		return nil
@@ -213,7 +223,7 @@ func queue_claim_for_self(limit int) []QueueEntry {
 	}
 	db := db_open("db/queue.db")
 	var rows []QueueEntry
-	err := db.scans(&rows, `update queue set status='sending'
+	err := db.scans(&rows, `update queue set status='sending', claimed=?
 		where id in (
 			select id from queue
 			where target=? and status='pending' and next_retry<=?
@@ -224,7 +234,7 @@ func queue_claim_for_self(limit int) []QueueEntry {
 		returning id, type, target, from_entity, to_entity, service, event,
 			from_app, from_services, content, data, file, expires, status,
 			attempts, next_retry, created, priority`,
-		net_id, now(), limit)
+		now(), net_id, now(), limit)
 	if err != nil {
 		info("queue_claim_for_self error: %v", err)
 		return nil
@@ -882,7 +892,7 @@ func nack_should_drop(reason string) bool {
 // Mark a message as being sent (prevents other processors from picking it up)
 func queue_sending(id string) {
 	db := db_open("db/queue.db")
-	db.exec_bg("queue mark sending", "update queue set status='sending' where id=?", id)
+	db.exec_bg("queue mark sending", "update queue set status='sending', claimed=? where id=?", now(), id)
 }
 
 // queue_unsending rolls back queue_sending when the async send path
@@ -1433,13 +1443,20 @@ func queue_process() int {
 // Check for sent messages that haven't received ACK (timeout)
 func queue_check_ack_timeout() {
 	db := db_open("db/queue.db")
-	// Messages sent more than 30 seconds ago without ACK
-	timeout := now() - 30
-	db.exec_bg("queue ack-timeout requeue", "update queue set status = 'pending', next_retry = ? where status = 'sent' and created < ?",
-		queue_next_retry(0), timeout)
-	// Messages stuck in 'sending' for more than 60 seconds (safety net)
-	stuck := now() - 60
-	db.exec_bg("queue stuck-sending requeue", "update queue set status = 'pending', next_retry = ? where status = 'sending' and created < ?",
+	// Rows still claimed 60 seconds after they were claimed: a sender that
+	// died mid-flight, or a process that went away holding them.
+	//
+	// Keyed on `claimed`, not `created`. created is the enqueue time and is
+	// never rewritten - the retry path bumps attempts and next_retry and
+	// leaves it - so a row that had ever been retried was already older than
+	// any threshold, and this swept it back to pending the instant it was
+	// claimed, while the sender still held it. The manager loops straight
+	// back into this whenever it acted on a row rather than waiting for its
+	// tick, so that fired continuously on a busy queue: a duplicate on the
+	// wire (caught downstream by message_seen dedup) and a retry ladder
+	// advancing on a message that was never failing.
+	stuck := now() - queue_claim_timeout
+	db.exec_bg("queue stuck-sending requeue", "update queue set status = 'pending', next_retry = ? where status = 'sending' and claimed < ?",
 		queue_next_retry(0), stuck)
 }
 

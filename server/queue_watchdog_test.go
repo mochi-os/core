@@ -29,7 +29,7 @@ func TestQueueWatchdog(t *testing.T) {
 	defer func() { queue_warn_rows, queue_warn_age, queue_warn_attempts = rows, age, attempts }()
 
 	db := db_open("db/queue.db")
-	db.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20 )")
+	db.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20, claimed integer not null default 0 )")
 
 	add := func(id, target, service string, created, attempts int64) {
 		db.exec("insert into queue (id, target, from_entity, to_entity, service, event, next_retry, created, attempts) values (?, ?, 'e-from', 'e-to', ?, 'event/test', 0, ?, ?)", id, target, service, created, attempts)

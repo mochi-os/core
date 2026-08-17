@@ -809,11 +809,15 @@ func api_schedule_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl.None, nil
 	}
 
-	// Verify the event belongs to this app and user
+	// Verify the event belongs to this app and user. A nil user owns nothing:
+	// an anonymous caller reaches Starlark with no user on the thread, so
+	// testing `user != nil && ...` skipped the ownership check for exactly
+	// those callers and left only the app test - every other user's events for
+	// this app were readable, and the ids are sequential rowids.
 	if se.App != app.id {
 		return sl.None, nil
 	}
-	if user != nil && se.User != user.UID {
+	if user == nil || se.User != user.UID {
 		return sl.None, nil
 	}
 
@@ -847,7 +851,7 @@ func api_schedule_cancel(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if se.App != app.id {
 		return sl.False, nil
 	}
-	if user != nil && se.User != user.UID {
+	if user == nil || se.User != user.UID {
 		return sl.False, nil
 	}
 

@@ -392,6 +392,43 @@ func TestGitCloneFilterBlobNone(t *testing.T) {
 	}
 }
 
+// TestGitCloneShallowFilterLazyFetch — a shallow partial clone, which is what
+// CI actually runs, and then the lazy fetch for a blob it was not sent.
+//
+// Measured against git.mochi-os.org on 2026-08-17: HTTP 500. The lazy fetch
+// asks for the blob by name and carries the client's shallow lines with it, so
+// the request takes the shallow path - where every want is peeled to the commit
+// it names, and a blob peels to nothing. Neither half alone reaches it: the
+// unshallow filter test passes, and the shallow tests never ask for a blob.
+func TestGitCloneShallowFilterLazyFetch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	user, _, cleanup := create_git_test_env(t)
+	defer cleanup()
+
+	repo_path := git_filter_repo(t, user, "shallowfilter")
+	server := git_negotiation_server(t, repo_path)
+
+	for _, version := range git_versions {
+		t.Run("protocol v"+version, func(t *testing.T) {
+			dir := git_temporary(t, "git_shallow_filter")
+			git_run(t, "", git_protocol(version, "clone", "--quiet",
+				"--filter=blob:none", "--no-checkout", "--depth", "2", server.URL, dir)...)
+
+			if counts := git_object_kinds(t, dir); counts["blob"] != 0 {
+				t.Errorf("a shallow blob:none clone received %d blobs", counts["blob"])
+			}
+
+			content := git_run(t, dir, git_protocol(version, "-C", dir, "cat-file", "blob", "HEAD:large0.bin")...)
+			if len(strings.TrimSpace(content)) != 2000 {
+				t.Errorf("lazily fetching an omitted blob gave %d bytes, want 2000", len(strings.TrimSpace(content)))
+			}
+		})
+	}
+}
+
 // TestGitCloneFilterBlobLimit — the same, cutting on size rather than on all
 // blobs, so the small ones still travel.
 func TestGitCloneFilterBlobLimit(t *testing.T) {

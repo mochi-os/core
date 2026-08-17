@@ -4039,10 +4039,27 @@ func git_upload_pack_select(storage storer.Storer, request *git_request, known [
 		return selection, git_upload_pack_trim(storage, request, selection)
 	}
 
-	// Peel the wants: one can name an annotated tag, and the walk below is
-	// over commits. The tag objects themselves still have to travel.
-	var tips, tags []plumbing.Hash
+	// Sort the wants. The walk below is over commits, so a want that names an
+	// annotated tag is peeled to the commit behind it and the tag object
+	// travels alongside.
+	//
+	// A want that is not history at all - a blob or a tree named directly - is
+	// content to include rather than a tip to walk from. That is how a partial
+	// clone comes back for an object it was not sent, and it carries its
+	// shallow lines with it, so this path sees it. Peeling one to a commit
+	// fails, which answered every such fetch with a 500: "could not fetch
+	// <oid> from promisor remote", on a shallow partial clone - the
+	// combination CI actually runs.
+	var tips, tags, named []plumbing.Hash
 	for _, want := range request.wants {
+		object, err := storage.EncodedObject(plumbing.AnyObject, want)
+		if err != nil {
+			return nil, err
+		}
+		if object.Type() == plumbing.BlobObject || object.Type() == plumbing.TreeObject {
+			named = append(named, want)
+			continue
+		}
 		commit, walked, err := git_peel(storage, want)
 		if err != nil {
 			return nil, err
@@ -4081,7 +4098,7 @@ func git_upload_pack_select(storage storer.Storer, request *git_request, known [
 	if !pack {
 		return selection, nil
 	}
-	if selection.objects, err = git_objects(storage, included, held, tags); err != nil {
+	if selection.objects, err = git_objects(storage, included, held, tags, named); err != nil {
 		return nil, err
 	}
 	return selection, git_upload_pack_trim(storage, request, selection)
@@ -4296,7 +4313,7 @@ func git_history(
 // Only trees are walked, never parents. The caller has already decided which
 // commits are in play - by depth, or at a client's boundary - and a walk that
 // followed parents itself would undo that decision.
-func git_objects(storage storer.Storer, wanted, held, tags []plumbing.Hash) ([]plumbing.Hash, error) {
+func git_objects(storage storer.Storer, wanted, held, tags, named []plumbing.Hash) ([]plumbing.Hash, error) {
 	held_trees, err := git_trees(storage, held)
 	if err != nil {
 		return nil, err
@@ -4312,7 +4329,9 @@ func git_objects(storage storer.Storer, wanted, held, tags []plumbing.Hash) ([]p
 	if err != nil {
 		return nil, err
 	}
-	objects, err := revlist.Objects(storage, wanted_trees, held_objects)
+	// Objects named directly by the client are expanded the same way, so a
+	// tree asked for by name brings what it contains.
+	objects, err := revlist.Objects(storage, append(wanted_trees, named...), held_objects)
 	if err != nil {
 		return nil, err
 	}

@@ -1316,7 +1316,7 @@ func TestStarlarkPoolConcurrent(t *testing.T) {
 	}
 }
 
-// TestDbUserForThread covers db_user_for_thread, the shared helper that picks
+// TestDbUserForThread covers principal_storage, the shared helper that picks
 // which user's perspective mochi.db.* and mochi.entity.* act from. The
 // "logged-in + entity owned by other user" case is a regression guard for the
 // silent owner-DB swap removed from db_for_thread: subscribe-style writes
@@ -1430,18 +1430,18 @@ func TestDbUserForThread(t *testing.T) {
 				thread.SetLocal("action", tc.action)
 			}
 
-			got, err := db_user_for_thread(thread)
+			got, err := principal_storage(thread)
 			if tc.want_err {
 				if err == nil {
-					t.Fatalf("db_user_for_thread() = %v, want error", got)
+					t.Fatalf("principal_storage() = %v, want error", got)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("db_user_for_thread() unexpected error: %v", err)
+				t.Fatalf("principal_storage() unexpected error: %v", err)
 			}
 			if got != tc.want {
-				t.Errorf("db_user_for_thread() = %v, want %v", got, tc.want)
+				t.Errorf("principal_storage() = %v, want %v", got, tc.want)
 			}
 		})
 	}

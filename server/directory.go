@@ -116,6 +116,23 @@ func entry_store(en *Entry, source string) bool {
 		debug("Directory dropping row with bad timestamps for %q from %s", en.Entity, source)
 		return false
 	}
+	// Before anything below acts on the row. The two branches that follow
+	// both reason from who signed it - the ghost withdrawal from "only the
+	// entity's key could have named this peer", the owner-authoritative drop
+	// from "a clone's rows verify" - and neither claim is true of a row whose
+	// signature nobody has checked. The ghost branch is the sharp one: it
+	// reaches it on push and sync, where the whole Entry is read off the wire
+	// and the entity is a string the sender chose, and it answers with a
+	// host-signed broadcast. One invented entity id per row bought one
+	// signature and one publish from us.
+	//
+	// Costs an ed25519 verify on rows the cheaper checks below would have
+	// rejected. That is the right way round: signing and broadcasting on
+	// unauthenticated input is worse than verifying something we then drop.
+	if !entry_verify(en) {
+		info("Directory dropping row with bad signature: entity=%q peer=%q from %s", en.Entity, en.Peer, source)
+		return false
+	}
 	// This host is authoritative for its own rows; they are rebuilt only by
 	// directory_create. A replayed copy must not override local state — but
 	// it is evidence: a row naming this host for an entity that no longer
@@ -148,10 +165,6 @@ func entry_store(en *Entry, source string) bool {
 		if local {
 			debug("Directory dropping foreign row for locally-owned %q (peer=%q) from %s", en.Entity, en.Peer, source)
 		}
-		return false
-	}
-	if !entry_verify(en) {
-		info("Directory dropping row with bad signature: entity=%q peer=%q from %s", en.Entity, en.Peer, source)
 		return false
 	}
 
@@ -778,7 +791,7 @@ func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		}
 	}
 
-	u := t.Local("user").(*User)
+	u := principal_caller(t)
 
 	// One result per entity: the row with the newest content, freshest
 	// claim breaking ties.

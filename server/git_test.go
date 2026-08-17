@@ -20,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	sl "go.starlark.net/starlark"
 )
 
@@ -762,6 +763,7 @@ func TestGitUploadPackNegotiation(t *testing.T) {
 	pkt := func(s string) string { return fmt.Sprintf("%04x%s", len(s)+4, s) }
 	a := "722cd9468569ef931a61b731279583fa268254b2"
 	b := "562d8c4b0d0b5da858a17cee1887bd93686b874d"
+	want := pkt("want " + a + "\n")
 
 	cases := []struct {
 		name  string
@@ -769,22 +771,108 @@ func TestGitUploadPackNegotiation(t *testing.T) {
 		haves int
 		done  bool
 	}{
-		{"empty body", "", 0, false},
-		{"exploratory round", pkt("have "+a+"\n") + pkt("have "+b+"\n") + "0000", 2, false},
-		{"final round", pkt("have "+a+"\n") + "0000" + pkt("done\n"), 1, true},
-		{"done without haves", pkt("done\n"), 0, true},
-		{"flush only", "0000", 0, false},
+		{"wants only", want + "0000", 0, false},
+		{"exploratory round", want + "0000" + pkt("have "+a+"\n") + pkt("have "+b+"\n") + "0000", 2, false},
+		{"final round", want + "0000" + pkt("have "+a+"\n") + "0000" + pkt("done\n"), 1, true},
+		{"done without haves", want + "0000" + pkt("done\n"), 0, true},
 	}
 
 	for _, c := range cases {
-		haves, done := git_upload_pack_negotiation(strings.NewReader(c.body))
-		if len(haves) != c.haves || done != c.done {
-			t.Errorf("%s: got %d haves done=%v, want %d done=%v", c.name, len(haves), done, c.haves, c.done)
+		request, err := git_request_decode(strings.NewReader(c.body))
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if len(request.haves) != c.haves || request.done != c.done {
+			t.Errorf("%s: got %d haves done=%v, want %d done=%v", c.name, len(request.haves), request.done, c.haves, c.done)
 		}
 	}
-	haves, _ := git_upload_pack_negotiation(strings.NewReader(pkt("have " + a + "\n") + "0000"))
-	if len(haves) != 1 || haves[0] != plumbing.NewHash(a) {
-		t.Errorf("hash not parsed: %v", haves)
+
+	request, err := git_request_decode(strings.NewReader(want + "0000" + pkt("have "+a+"\n") + "0000"))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(request.haves) != 1 || request.haves[0] != plumbing.NewHash(a) {
+		t.Errorf("hash not parsed: %v", request.haves)
+	}
+}
+
+// TestGitRequestDecode — the whole v0 request grammar in one pass, including
+// the lines packp.UploadRequest.Decode cannot represent: a filter, and more
+// than one deepen-not.
+func TestGitRequestDecode(t *testing.T) {
+	pkt := func(s string) string { return fmt.Sprintf("%04x%s", len(s)+4, s) }
+	a := "722cd9468569ef931a61b731279583fa268254b2"
+	b := "562d8c4b0d0b5da858a17cee1887bd93686b874d"
+
+	body := pkt("want "+a+" multi_ack_detailed side-band-64k shallow deepen-relative\n") +
+		pkt("want "+b+"\n") +
+		pkt("shallow "+a+"\n") +
+		pkt("deepen 5\n") +
+		pkt("deepen-since 1700000000\n") +
+		pkt("deepen-not refs/tags/v1\n") +
+		pkt("deepen-not refs/heads/old\n") +
+		pkt("filter blob:none\n") +
+		"0000" +
+		pkt("have "+b+"\n") +
+		pkt("done\n")
+
+	request, err := git_request_decode(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(request.wants) != 2 || request.wants[0] != plumbing.NewHash(a) {
+		t.Errorf("wants = %v", request.wants)
+	}
+	if len(request.shallows) != 1 || request.shallows[0] != plumbing.NewHash(a) {
+		t.Errorf("shallows = %v", request.shallows)
+	}
+	if request.depth != 5 {
+		t.Errorf("depth = %d, want 5", request.depth)
+	}
+	if request.since.Unix() != 1700000000 {
+		t.Errorf("since = %v", request.since)
+	}
+	if len(request.exclude) != 2 {
+		t.Errorf("exclude = %v, want both deepen-not lines: one is all packp can hold", request.exclude)
+	}
+	if request.filter != "blob:none" {
+		t.Errorf("filter = %q; packp reports this line as a decode error", request.filter)
+	}
+	if !request.relative {
+		t.Error("deepen-relative was advertised and requested but not recorded")
+	}
+	if !request.capabilities.Supports(capability.Sideband64k) {
+		t.Error("capabilities from the first want line were not decoded")
+	}
+	if len(request.haves) != 1 || !request.done {
+		t.Errorf("negotiation section: %d haves, done=%v", len(request.haves), request.done)
+	}
+	if !request.shallow() || !request.deepening() {
+		t.Error("a request carrying shallow and deepen lines reports neither")
+	}
+}
+
+// TestGitRequestDecodeRefusesMalformed — a request we cannot read must be
+// refused, never half-understood: a dropped line is a pack built to the wrong
+// specification, which the client cannot detect.
+func TestGitRequestDecodeRefusesMalformed(t *testing.T) {
+	pkt := func(s string) string { return fmt.Sprintf("%04x%s", len(s)+4, s) }
+	a := "722cd9468569ef931a61b731279583fa268254b2"
+
+	for _, c := range []struct{ name, body string }{
+		{"short object name", pkt("want 722cd94\n")},
+		{"object name that is not hex", pkt("want zzzzd9468569ef931a61b731279583fa268254b2\n")},
+		{"all-zero object name", pkt("want 0000000000000000000000000000000000000000\n")},
+		{"depth that is not a number", pkt("want "+a+"\n") + pkt("deepen soon\n")},
+		{"negative depth", pkt("want "+a+"\n") + pkt("deepen -1\n")},
+		{"deepen-since that is not a timestamp", pkt("want "+a+"\n") + pkt("deepen-since yesterday\n")},
+		{"unknown keyword", pkt("want "+a+"\n") + pkt("enhance 4\n")},
+	} {
+		if _, err := git_request_decode(strings.NewReader(c.body)); err == nil {
+			t.Errorf("%s: accepted, want a refusal", c.name)
+		}
 	}
 }
 

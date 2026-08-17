@@ -50,7 +50,7 @@ func api_commit_hook(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	app, _ := t.Local("app").(*App)
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if app == nil || user == nil {
 		return sl_error(fn, "no app/user context")
 	}
@@ -89,7 +89,7 @@ func api_commit_fire(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	app, _ := t.Local("app").(*App)
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if app == nil || user == nil {
 		return sl_error(fn, "no app/user context")
 	}

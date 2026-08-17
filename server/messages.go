@@ -491,9 +491,9 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	// Use user context, falling back to owner (for public actions like webhooks)
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
-		user, _ = t.Local("owner").(*User)
+		user = principal_owner(t)
 	}
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -571,9 +571,9 @@ func api_message_send_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "headers not specified or invalid")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
-		user, _ = t.Local("owner").(*User)
+		user = principal_owner(t)
 	}
 	if user == nil {
 		return sl_error(fn, "no user")

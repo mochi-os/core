@@ -127,7 +127,7 @@ func api_webpush_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	// Dedup gate. We only consult the table when event_id is supplied
 	// and a user is on the thread; otherwise behave as before.
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if event_id != "" && user != nil {
 		if webpush_already_delivered(user, endpoint, event_id) {
 			debug("webpush dedup: event_id=%q endpoint=%q already delivered", event_id, webpush_endpoint_redact(endpoint))

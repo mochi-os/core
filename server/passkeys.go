@@ -388,7 +388,7 @@ func api_user_passkey_verify_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 		return sl_error(fn, "passkey disabled")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -426,7 +426,7 @@ func api_user_passkey_verify_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 		return sl_error(fn, "webauthn not configured")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -492,7 +492,7 @@ func api_user_passkey_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -534,7 +534,7 @@ func api_user_passkey_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -563,7 +563,7 @@ func api_user_passkey_register_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 		return sl_error(fn, "passkey disabled")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -605,7 +605,7 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 		return sl_error(fn, "passkey disabled")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -702,7 +702,7 @@ func api_user_passkey_rename(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -742,7 +742,7 @@ func api_user_passkey_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}

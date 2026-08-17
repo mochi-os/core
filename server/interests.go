@@ -37,11 +37,11 @@ var reg_interests = upsert_def{"interests", []string{"qid"}, []string{"weight", 
 
 // mochi.interests.list() -> list: List all user interests sorted by weight descending
 func api_interests_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "interests/read"); err != nil {
+	if err := require_permission_acting(t, fn, "interests/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -86,7 +86,7 @@ func api_interests_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		weight = 100
 	}
 
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -116,7 +116,7 @@ func api_interests_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "invalid QID")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -178,7 +178,7 @@ func api_interests_adjust(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		}
 	}
 
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -221,7 +221,7 @@ func api_interests_top(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "syntax: <n: int>")
 	}
 
-	if err := require_permission(t, fn, "interests/read"); err != nil {
+	if err := require_permission_acting(t, fn, "interests/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -230,7 +230,7 @@ func api_interests_top(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "invalid count")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -253,7 +253,7 @@ func api_interests_bottom(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "syntax: <n: int>")
 	}
 
-	if err := require_permission(t, fn, "interests/read"); err != nil {
+	if err := require_permission_acting(t, fn, "interests/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -262,7 +262,7 @@ func api_interests_bottom(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "invalid count")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -281,7 +281,7 @@ func api_interests_bottom(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // mochi.interests.summary() -> string: Get or regenerate a natural language summary of user interests
 func api_interests_summary(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "interests/read"); err != nil {
+	if err := require_permission_acting(t, fn, "interests/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -290,7 +290,7 @@ func api_interests_summary(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "%v", err)
 	}
 
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}

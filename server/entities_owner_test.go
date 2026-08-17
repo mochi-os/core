@@ -16,7 +16,7 @@ import (
 
 // entity_get_thread builds a thread as an action would: an owner whose data is
 // being served, an authenticated caller, and optionally a domain route carrying
-// a context (which is what makes db_user_for_thread substitute the owner).
+// a context (which is what makes principal_storage substitute the owner).
 func entity_get_thread(owner *User, user *User, context string) *sl.Thread {
 	t := &sl.Thread{Name: "test"}
 	t.SetLocal("owner", owner)
@@ -126,14 +126,14 @@ func TestEntityGetResolvesCallerNotOwner(t *testing.T) {
 	// Guard against the whole test passing for the wrong reason. The visitor
 	// cases above are only meaningful because the storage selector genuinely
 	// does resolve to someone else here - that divergence IS the bug. If
-	// db_user_for_thread ever stopped substituting, these assertions would still
+	// principal_storage ever stopped substituting, these assertions would still
 	// pass while proving nothing, so pin the thing they depend on.
-	storage, err := db_user_for_thread(entity_get_thread(owner, visitor, "site"))
+	storage, err := principal_storage(entity_get_thread(owner, visitor, "site"))
 	if err != nil || storage == nil || storage.UID != owner.UID {
-		t.Errorf("db_user_for_thread on a contexted route = %v, want the owner - "+
+		t.Errorf("principal_storage on a contexted route = %v, want the owner - "+
 			"without that substitution the visitor assertions prove nothing", storage)
 	}
-	if plain, err := db_user_for_thread(entity_get_thread(owner, visitor, "")); err != nil || plain == nil || plain.UID != visitor.UID {
-		t.Errorf("db_user_for_thread on a plain route = %v, want the visitor", plain)
+	if plain, err := principal_storage(entity_get_thread(owner, visitor, "")); err != nil || plain == nil || plain.UID != visitor.UID {
+		t.Errorf("principal_storage on a plain route = %v, want the visitor", plain)
 	}
 }

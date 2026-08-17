@@ -698,7 +698,7 @@ func api_broadcast_subscriber_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 		return sl_error(fn, "subscriber must be non-empty")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	app, _ := t.Local("app").(*App)
 	if user == nil || app == nil {
 		return sl_error(fn, "no user/app context")
@@ -735,7 +735,7 @@ func api_broadcast_subscriber_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 		return sl_error(fn, "subscriber must be non-empty")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	app, _ := t.Local("app").(*App)
 	if user == nil || app == nil {
 		return sl_error(fn, "no user/app context")
@@ -776,7 +776,7 @@ func api_broadcast_next(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "key must be non-empty")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	app, _ := t.Local("app").(*App)
 	if user == nil || app == nil {
 		return sl_error(fn, "no user/app context")
@@ -796,7 +796,7 @@ func api_broadcast_received(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		return nil, err
 	}
 
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	app, _ := t.Local("app").(*App)
 	if user == nil || app == nil {
 		return sl.MakeInt(0), nil
@@ -820,7 +820,7 @@ func api_broadcast_seen(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "key must be non-empty")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	app, _ := t.Local("app").(*App)
 	if user == nil || app == nil {
 		return sl.MakeInt(0), nil
@@ -844,7 +844,7 @@ func api_broadcast_touch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "key must be non-empty")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	app, _ := t.Local("app").(*App)
 	if user == nil || app == nil {
 		return sl_error(fn, "no user/app context")
@@ -872,7 +872,7 @@ func api_broadcast_advance(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "sequence must be non-negative")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	app, _ := t.Local("app").(*App)
 	if user == nil || app == nil {
 		return sl_error(fn, "no user/app context")
@@ -932,7 +932,7 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "invalid event %q", event)
 	}
 
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	app, _ := t.Local("app").(*App)
 	if user == nil || app == nil {
 		return sl_error(fn, "no user/app context")
@@ -1087,7 +1087,7 @@ func api_broadcast_replay(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		limit = 100
 	}
 
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	app, _ := t.Local("app").(*App)
 	if user == nil || app == nil {
 		return sl_error(fn, "no user/app context")

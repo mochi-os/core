@@ -354,7 +354,7 @@ func api_setting_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -399,7 +399,7 @@ func api_setting_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "unknown setting %q", name)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -445,7 +445,7 @@ func api_setting_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}

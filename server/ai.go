@@ -43,7 +43,7 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "syntax: <prompt: string>, [account=<int>]")
 	}
 
-	if err := require_permission(t, fn, "accounts/ai"); err != nil {
+	if err := require_permission_acting(t, fn, "accounts/ai"); err != nil {
 		return sl_encode(map[string]any{"status": 403, "text": ""}), nil
 	}
 
@@ -65,7 +65,7 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		}
 	}
 
-	user := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}

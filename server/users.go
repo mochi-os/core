@@ -211,7 +211,7 @@ func api_user_code_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err := require_permission(t, fn, "user/verification/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -235,7 +235,7 @@ func api_user_code_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if err := require_permission(t, fn, "user/verification/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -278,7 +278,7 @@ func api_user_session_reauthenticate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 	if err := require_permission(t, fn, "user/sessions/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -607,7 +607,7 @@ func api_user_get_id(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -640,7 +640,7 @@ func api_user_get_username(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -673,7 +673,7 @@ func api_user_get_identity(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -716,7 +716,7 @@ func api_user_get_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -764,7 +764,7 @@ func api_user_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -910,7 +910,7 @@ func api_user_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -952,7 +952,7 @@ func api_user_uid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs); err != nil {
 		return nil, err
 	}
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl.String(""), nil
 	}
@@ -973,7 +973,7 @@ func api_user_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1051,7 +1051,7 @@ func api_user_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1099,7 +1099,7 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1182,7 +1182,7 @@ func api_user_identity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1226,7 +1226,7 @@ func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1423,7 +1423,7 @@ func api_user_suspend(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1460,7 +1460,7 @@ func api_user_activate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1493,7 +1493,7 @@ func api_user_session_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1544,7 +1544,7 @@ func api_user_session_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}

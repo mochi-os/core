@@ -827,7 +827,7 @@ func api_domain_register(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "invalid domain name")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -913,7 +913,7 @@ func api_domain_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "invalid domain name")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -982,7 +982,7 @@ func api_domain_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "invalid domain name")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1018,7 +1018,7 @@ func api_domain_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	// unrate-limited outbound DNS lookup and, on a match, writes verified=1 into
 	// the server-global domains.db - the flag domain_match consults before
 	// serving a host.
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1166,7 +1166,7 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "invalid context")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1223,7 +1223,7 @@ func api_domain_route_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "invalid path")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1304,7 +1304,7 @@ func api_domain_route_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "invalid path")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1385,7 +1385,7 @@ func api_domain_delegation_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 		return sl_error(fn, "invalid owner")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1434,7 +1434,7 @@ func api_domain_delegation_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 		return sl_error(fn, "invalid owner")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}

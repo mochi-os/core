@@ -171,7 +171,7 @@ func (m *attachment_create_module) CallInternal(thread *sl.Thread, args sl.Tuple
 }
 
 // attachment_user resolves whose store an attachment builtin operates on. It
-// deliberately matches mochi.db's resolution (db_user_for_thread): the
+// deliberately matches mochi.db's resolution (principal_storage): the
 // requesting user when there is one, otherwise the entity owner. Before this,
 // the attachment builtins read t.Local("owner") directly, so a user acting on
 // an entity someone else owns had mochi.db.* and mochi.attachment.* pointing at
@@ -179,14 +179,14 @@ func (m *attachment_create_module) CallInternal(thread *sl.Thread, args sl.Tuple
 // reconciliation then read the owner's attachment rows while deleting its own
 // objects, and serve_attachment validated an owner-store row against
 // requesting-user objects. In event context nothing changes: events set only
-// "owner", which db_user_for_thread falls back to.
+// "owner", which principal_storage falls back to.
 //
 // Metadata rows and their files must always resolve to the SAME user, so every
 // builtin here uses this for the database, the files base, and the URL path.
 // Byte serving (a.write.attachment) stays entity/owner-based on purpose, so a
 // subscriber's remote-attachment URLs still fetch from the owning host.
 func attachment_user(t *sl.Thread) *User {
-	user, err := db_user_for_thread(t)
+	user, err := principal_storage(t)
 	if err != nil {
 		return nil
 	}
@@ -404,7 +404,7 @@ func api_attachment_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no owner")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	creator := ""
 	if user != nil && user.Identity != nil {
 		creator = user.Identity.ID
@@ -535,7 +535,7 @@ func api_attachment_create_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 		return sl_error(fn, "no owner")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	creator := ""
 	if user != nil && user.Identity != nil {
 		creator = user.Identity.ID

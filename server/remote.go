@@ -275,7 +275,7 @@ func api_remote_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	// Get user and app from context
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -368,7 +368,7 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	// Get user and app from context. Anonymous (user==nil) is permitted —
 	// the receiving event handler decides whether to honour anonymous calls.
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 
 	app, _ := t.Local("app").(*App)
 	from_app := ""
@@ -435,7 +435,7 @@ func api_remote_ping(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		peer, _ = sl.AsString(args[1])
 	}
 	caller := ""
-	if user, _ := t.Local("user").(*User); user != nil && user.Identity != nil {
+	if user := principal_caller(t); user != nil && user.Identity != nil {
 		caller = user.Identity.ID
 	}
 

@@ -637,7 +637,7 @@ func api_schedule_at(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	// Get user and app from context
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	app := t.Local("app").(*App)
 	if app == nil {
 		return sl_error(fn, "no app context")
@@ -691,7 +691,7 @@ func api_schedule_after(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	// Get user and app from context
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	app := t.Local("app").(*App)
 	if app == nil {
 		return sl_error(fn, "no app context")
@@ -753,7 +753,7 @@ func api_schedule_every(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	// Get user and app from context
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	app := t.Local("app").(*App)
 	if app == nil {
 		return sl_error(fn, "no app context")
@@ -798,7 +798,7 @@ func api_schedule_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	// Get user and app from context
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	app := t.Local("app").(*App)
 	if app == nil {
 		return sl_error(fn, "no app context")
@@ -834,7 +834,7 @@ func api_schedule_cancel(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "invalid id")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	app := t.Local("app").(*App)
 	if app == nil {
 		return sl_error(fn, "no app context")
@@ -858,7 +858,7 @@ func api_schedule_cancel(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 // mochi.schedule.list() -> list: List scheduled events for current app and user
 func api_schedule_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Get user and app from context
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	app := t.Local("app").(*App)
 	if app == nil {
 		return sl_error(fn, "no app context")

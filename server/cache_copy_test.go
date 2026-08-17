@@ -17,7 +17,7 @@ import (
 
 // TestCacheCopyStaysInOneNamespace. Under domain routing an action runs for a
 // visitor while serving the route owner's site, and the two user resolutions
-// diverge: cache_base goes through db_user_for_thread and returns the OWNER,
+// diverge: cache_base goes through principal_storage and returns the OWNER,
 // while api_cache_copy read its destination from t.Local("user") and got the
 // VISITOR. So the copy read the owner's cached bytes and wrote them into the
 // visitor's own file storage, charged against the visitor's quota.
@@ -64,12 +64,12 @@ func TestCacheCopyStaysInOneNamespace(t *testing.T) {
 		t.Fatalf("the source resolved to %q, which is not the owner's cache - the premise of this test is wrong", source)
 	}
 
-	resolved, err := db_user_for_thread(thread)
+	resolved, err := principal_storage(thread)
 	if err != nil {
-		t.Fatalf("db_user_for_thread: %v", err)
+		t.Fatalf("principal_storage: %v", err)
 	}
 	if resolved.UID != owner.UID {
-		t.Fatalf("db_user_for_thread returned %q, want the owner - domain routing is not active in this thread", resolved.UID)
+		t.Fatalf("principal_storage returned %q, want the owner - domain routing is not active in this thread", resolved.UID)
 	}
 
 	// The destination must land in the same account the source came from.

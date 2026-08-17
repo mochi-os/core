@@ -150,7 +150,7 @@ func (db *DB) access_revoke(subject string, resource string, operation string) {
 
 // mochi.access.check(user, resource, operation) -> bool: Check if a user has access to a resource
 func api_access_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "access/read"); err != nil {
+	if err := require_permission_acting(t, fn, "access/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -186,7 +186,7 @@ func api_access_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -246,7 +246,7 @@ func api_access_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, grant bool) (sl
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -282,7 +282,7 @@ func api_access_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -308,7 +308,7 @@ func api_access_clear_resource(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -334,7 +334,7 @@ func api_access_clear_subject(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -360,7 +360,7 @@ func api_access_list_resource(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -389,7 +389,7 @@ func api_access_list_subject(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}

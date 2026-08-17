@@ -148,7 +148,7 @@ func api_user_export(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "%v", err)
 	}
 
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	app, _ := t.Local("app").(*App)
 	if user == nil || app == nil {
 		return sl_error(fn, "no user")

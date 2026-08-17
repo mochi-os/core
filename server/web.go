@@ -834,16 +834,16 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		s.set("host", c.Request.Host)
 		s.set("origin", request_origin(c))
 		// For `public: true` actions invoked anonymously (webhooks, OAuth
-		// callbacks, public APIs), there is no Mochi-authenticated caller —
-		// the manifest's `public: true` is itself the explicit declaration
-		// that anonymous invocation is the design. Run such requests as the
-		// app's owner, the same way every CGI/FastCGI/PHP-FPM system runs
-		// scripts as a fixed user. Authenticated requests are unaffected.
-		effective := user
-		if effective == nil && aa.Public {
-			effective = owner
-		}
-		s.set("user", effective)
+		// callbacks, public APIs) there is no Mochi-authenticated caller, and
+		// the caller is bound as exactly that: nothing. It used to be bound to
+		// the owner, on the CGI-runs-as-a-fixed-user argument, but the two
+		// things that argument conflates are the account whose data is read
+		// and the identity the request carries. principal_storage answers the
+		// first, and answers it the same way, so nothing loses access; saying
+		// the anonymous caller IS the owner only ever added a false claim on
+		// top - and the apps believed it. feeds carries a guard, and a comment
+		// about a stranger being told they owned the feed, because of this.
+		s.set("user", user)
 		s.set("owner", owner)
 		// The caller's own session, so an API can tell which of the user's
 		// sessions is the one making the request. Only mochi.user.session.list
@@ -1167,6 +1167,7 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 	if e != nil {
 		owner = user_owning_entity(e.ID)
 	}
+	user := web_auth(c)
 
 	// Set up database connection if needed
 	if av.Database.File != "" {
@@ -1182,8 +1183,15 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 	// Call Starlark function to get OG data
 	s := av.starlark()
 	s.set("app", a)
-	s.set("user", owner) // Use owner for database access
+	// Who is asking and whose data is being read are two different questions,
+	// and binding user to the owner answered both with the owner - so an
+	// authenticated stranger arrived as the owner, and any handler gating on
+	// "is this the owner?" would have granted. The caller is now whoever
+	// actually asked, nobody included; storage keeps the reads on the owner's
+	// databases regardless, which is what lets the two be separated at all.
+	s.set("user", user)
 	s.set("owner", owner)
+	s.set("storage", owner)
 	// OpenGraph rendering is primarily for external viewers (crawlers, link
 	// previews). Use Accept-Language to drive the meta-tag language; a
 	// logged-in viewer's specific preference can be wired in later if needed.

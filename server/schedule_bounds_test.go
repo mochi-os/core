@@ -167,6 +167,22 @@ func TestScheduleDispatchBlocksAtCapacity(t *testing.T) {
 		t.Fatal("dispatch did not resume after a slot was freed")
 	}
 
+	// schedule_run_due returns as soon as it has ACQUIRED the slot and
+	// spawned the handler, so the handler outlives it - and it opens
+	// databases under the t.TempDir() this test is about to remove. The
+	// handler's slot release is the completion signal: schedule_run_due
+	// defers it until schedule_run has fully returned, and schedule_run's
+	// only inner goroutine is the stuck-watchdog, which touches no storage.
+	// Without this wait the suite fails intermittently on "TempDir RemoveAll
+	// cleanup: directory not empty" rather than on any assertion.
+	deadline := time.Now().Add(5 * time.Second)
+	for len(schedule_slots) > schedule_concurrency-1 {
+		if time.Now().After(deadline) {
+			t.Fatal("the dispatched handler never released its slot")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
 	for len(schedule_slots) > 0 {
 		<-schedule_slots
 	}

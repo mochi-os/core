@@ -243,7 +243,7 @@ func api_image_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl.None, nil
 	}
 
-	user, err := db_user_for_thread(t)
+	user, err := principal_storage(t)
 	if err != nil || user == nil {
 		return sl_error(fn, "no user")
 	}

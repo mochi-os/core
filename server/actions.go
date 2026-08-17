@@ -457,7 +457,7 @@ func (aa *ActionAccess) sl_require(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 		return sl_error(fn, "no app")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -582,7 +582,7 @@ func (a *Action) sl_error_label(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 
 	app_local, _ := t.Local("app").(*App)
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	language := request_language(a.web, user)
 	var av *AppVersion
 	if app_local != nil {
@@ -758,7 +758,7 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	// web.go resolves the thread's user to the owner for exactly that case, and
 	// it is what every mochi.file.* call reads, so the upload lands in the
 	// directory those calls will read it back from.
-	user, _ := t.Local("user").(*User)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -931,7 +931,7 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		return sl.None, nil
 	}
 
-	owner, _ := t.Local("owner").(*User)
+	owner := principal_owner(t)
 
 	// A hosted domain publishes one account's files, and that has to hold for
 	// every visitor alike. Resolving to the requester whenever one was signed in
@@ -1144,7 +1144,7 @@ func (a *Action) sl_write_attachment(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 		return sl.None, nil
 	}
 
-	owner, _ := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app, _ := t.Local("app").(*App)
 	if owner == nil || app == nil {
 		a.error_label(500, "errors.server_error")
@@ -1183,7 +1183,7 @@ func (a *Action) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 		return sl.None, nil
 	}
 
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	file := app_local_path(app, user, path)
 	if file == "" {
 		a.error_label(500, "errors.server_error")

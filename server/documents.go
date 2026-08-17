@@ -237,7 +237,7 @@ func api_document_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if len(args) != 3 {
 		return sl_error(fn, "syntax: <name: string>, <language: string>, <body: string>")
 	}
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -277,7 +277,7 @@ func api_document_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if len(args) != 0 {
 		return sl_error(fn, "syntax: no arguments")
 	}
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}

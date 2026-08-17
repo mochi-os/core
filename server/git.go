@@ -10,15 +10,21 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
+	"crypto/sha1"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,9 +35,13 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/format/pktline"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp/sideband"
+	"github.com/go-git/go-git/v5/plumbing/revlist"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/server"
@@ -191,7 +201,7 @@ func git_can_write(t *sl.Thread, owner *User, app *App, entity string) bool {
 	if owner == nil || app == nil || entity == "" {
 		return false
 	}
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return false
 	}
@@ -236,7 +246,7 @@ func git_can_read(t *sl.Thread, owner *User, app *App, entity string) bool {
 	}
 	identity_id := ""
 	role := ""
-	if user, _ := t.Local("user").(*User); user != nil {
+	if user := principal_caller(t); user != nil {
 		if user.Identity != nil {
 			identity_id = user.Identity.ID
 		} else if ident := user.identity(); ident != nil {
@@ -492,7 +502,7 @@ func api_git_init(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "invalid entity")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -517,7 +527,7 @@ func api_git_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "invalid entity")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -546,7 +556,7 @@ func api_git_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "invalid entity")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -570,7 +580,7 @@ func api_git_size(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "invalid entity")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -599,7 +609,7 @@ func api_git_refs(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "invalid entity")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -663,7 +673,7 @@ func api_git_branches(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "invalid entity")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -710,7 +720,7 @@ func api_git_tags(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "invalid entity")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -777,7 +787,7 @@ func api_git_branch_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "invalid ref")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -826,7 +836,7 @@ func api_git_branch_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "invalid branch name")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -864,7 +874,7 @@ func api_git_branch_default_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 		return sl_error(fn, "invalid entity")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -904,7 +914,7 @@ func api_git_branch_default_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 		return sl_error(fn, "invalid branch name")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -965,7 +975,7 @@ func api_git_commit_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		offset, _ = sl.AsInt32(args[3])
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -1041,7 +1051,7 @@ func api_git_commit_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "invalid sha")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -1104,7 +1114,7 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		limit, _ = sl.AsInt32(args[3])
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -1176,7 +1186,7 @@ func api_git_commit_between(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		return sl_error(fn, "invalid head")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -1263,7 +1273,7 @@ func api_git_tree(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		path, _ = sl.AsString(args[2])
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -1360,7 +1370,7 @@ func api_git_blob_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "invalid path")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -1419,7 +1429,7 @@ func api_git_blob_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "invalid path")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -1494,7 +1504,7 @@ func api_git_diff(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "invalid head")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -1573,7 +1583,7 @@ func api_git_diff_stats(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "invalid head")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -1671,7 +1681,7 @@ func api_git_merge_base(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "invalid ref2")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -1739,7 +1749,7 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "invalid target")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -1904,7 +1914,7 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "invalid method: must be 'merge', 'squash', or 'rebase'")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -2450,7 +2460,7 @@ func api_git_archive(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		prefix += "/"
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	app := t.Local("app").(*App)
 	if owner == nil {
 		return sl_error(fn, "no owner")
@@ -2892,10 +2902,458 @@ func git_service_name(requested string) string {
 	return ""
 }
 
+// git_upload_pack_advertise adds the fetch capabilities this server implements
+// to an upload-pack advertisement.
+//
+// None of them come from go-git, whose session advertises only agent and
+// ofs-delta and rejects a request asking for anything else ("unsupported
+// capability"). They are answered by git_upload_pack, which is why that
+// function builds the packfile itself rather than calling upSession.UploadPack.
+//
+// A client only ever asks for what it is offered here, so this list is the one
+// place that decides what the protocol can do - and every entry must have a
+// matching implementation below, since advertising a capability we do not
+// honour is worse than not advertising it at all.
+func git_upload_pack_advertise(capabilities *capability.List) {
+	// multi_ack_detailed tells the client, DURING negotiation, which of its
+	// commits we already share.
+	//
+	// Without it there is nothing to say but NAK, and a client on the
+	// stateless HTTP transport never learns it has found common ground: it
+	// keeps offering haves in batches of 16, working backwards through its
+	// history, until it runs out. Only then does it send "done" - and each
+	// POST carries only that round's batch, so the request that finally asks
+	// for the pack holds the OLDEST commits it offered. They exclude almost
+	// nothing, and the pack is very nearly the whole repository: measured
+	// against a 40-commit fixture, a client three commits behind was sent 105
+	// of 120 objects, and in production 566 of 586. With the capability the
+	// client stops at the first round we acknowledge, while its haves are
+	// still the recent commits, and "done" carries the ones that actually
+	// exclude history.
+	capabilities.Add(capability.MultiACKDetailed)
+	capabilities.Add(capability.MultiACK)
+
+	// side-band-64k multiplexes the packfile with progress and error messages
+	// so the client can report what the server is doing. Without it a clone
+	// shows nothing at all from the remote end - measured, zero "remote:"
+	// lines - which on a slow link is indistinguishable from a hang, and there
+	// is no channel to explain a failure that happens after the pack has
+	// started. side-band is the 1000-byte legacy form, offered for clients too
+	// old to know the 64k one; no-progress is how a client says it wants the
+	// band for the pack but not the commentary.
+	capabilities.Add(capability.Sideband64k)
+	capabilities.Add(capability.Sideband)
+	capabilities.Add(capability.NoProgress)
+
+	// shallow lets a client bound how much history it takes. Without it
+	// `git clone --depth 1` does not degrade to a full clone - it fails
+	// outright, "Server does not support shallow clients" - so no CI system,
+	// container build or automation that checks out shallowly by default can
+	// use this server at all. deepen-since and deepen-not are the other two
+	// ways of naming a boundary (--shallow-since, --shallow-exclude), and
+	// deepen-relative is how `git fetch --deepen` asks for a boundary measured
+	// from where the client's own history currently stops.
+	capabilities.Add(capability.Shallow)
+	capabilities.Add(capability.DeepenSince)
+	capabilities.Add(capability.DeepenNot)
+	capabilities.Add(capability.DeepenRelative)
+
+	// thin-pack lets the pack refer to objects the client already holds and
+	// send only the difference against them. Without it every changed file
+	// travels in full, however small the edit, because the only bases a pack
+	// may use are the ones it also carries.
+	capabilities.Add(capability.ThinPack)
+
+	// filter is partial clone. Unadvertised, `git clone --filter=blob:none`
+	// did not fail - it printed "filtering not recognized by server, ignoring"
+	// and cloned everything, so the client asked for less and quietly got the
+	// lot. include-tag saves a second round trip for the tags on a branch
+	// being cloned.
+	capabilities.Add(capability.Filter)
+	capabilities.Add(capability.IncludeTag)
+
+	// A partial clone comes back later for the objects it skipped, asking for
+	// them by name rather than by ref. These say it may: this server serves
+	// any object it holds within a repository the caller is already allowed to
+	// read, so the advertisement describes what it already does rather than
+	// granting anything new.
+	capabilities.Add(capability.AllowTipSHA1InWant)
+	capabilities.Add(capability.AllowReachableSHA1InWant)
+}
+
+// git_advertise_peeled fills in what an annotated tag ultimately points at, so
+// the advertisement carries the "<commit> <ref>^{}" line beside the tag object.
+func git_advertise_peeled(storage storer.Storer, refs *packp.AdvRefs) {
+	for name, hash := range refs.References {
+		if !strings.HasPrefix(name, "refs/tags/") {
+			continue
+		}
+		if target, tags, err := git_peel(storage, hash); err == nil && len(tags) > 0 {
+			refs.Peeled[name] = target
+		}
+	}
+}
+
+// git_filter_rule reports whether one object survives one filter. depth is the
+// object's distance from the root tree of a commit carrying it, or -1 when it
+// sits in no tree.
+type git_filter_rule func(kind plumbing.ObjectType, size int64, depth int) bool
+
+// git_filter_apply drops the objects a partial-clone filter excludes.
+//
+// A specification this server does not implement is refused rather than
+// ignored. Before the capability was advertised the client was told plainly
+// that filtering was not recognised and fell back to a full clone; now that we
+// advertise it, the client has been told we honour what it asked for, and
+// silently sending the whole repository would be the worse answer.
+// A filter never removes an object the client named as a want, only ones
+// reached from them. That is git's own rule - `git rev-list --objects
+// --filter=blob:none <blob>` prints that blob - and it is what makes a partial
+// clone usable: the lazy fetch for an omitted blob asks for it by name and
+// carries the repository's filter with it, so a filter that applied to wants
+// would refuse to hand over the very object it had previously withheld
+// ("could not fetch <oid> from promisor remote").
+func git_filter_apply(storage storer.Storer, objects []plumbing.Hash, specification string, wants []plumbing.Hash) ([]plumbing.Hash, error) {
+	rules, measured, err := git_filter_parse(specification)
+	if err != nil {
+		return nil, err
+	}
+	requested := git_hash_set(wants)
+
+	depths := map[plumbing.Hash]int{}
+	if measured {
+		if depths, err = git_object_depths(storage, objects); err != nil {
+			return nil, err
+		}
+	}
+
+	kept := make([]plumbing.Hash, 0, len(objects))
+	for _, hash := range objects {
+		if requested[hash] {
+			kept = append(kept, hash)
+			continue
+		}
+		object, err := storage.EncodedObject(plumbing.AnyObject, hash)
+		if err != nil {
+			return nil, err
+		}
+		depth, known := depths[hash]
+		if !known {
+			depth = -1
+		}
+		keep := true
+		for _, rule := range rules {
+			if !rule(object.Type(), object.Size(), depth) {
+				keep = false
+				break
+			}
+		}
+		if keep {
+			kept = append(kept, hash)
+		}
+	}
+	return kept, nil
+}
+
+// git_filter_parse turns a filter specification into the rules an object has to
+// satisfy, and reports whether any of them needs to know how deep an object
+// sits - which costs a tree walk, so it is only paid for when asked.
+func git_filter_parse(specification string) ([]git_filter_rule, bool, error) {
+	// A combined filter omits an object that ANY of its parts omits, so the
+	// parts simply concatenate.
+	if rest, ok := strings.CutPrefix(specification, "combine:"); ok {
+		var rules []git_filter_rule
+		measured := false
+		for _, part := range strings.Split(rest, "+") {
+			decoded, err := url.QueryUnescape(part)
+			if err != nil {
+				return nil, false, fmt.Errorf("malformed combined filter %q", specification)
+			}
+			inner, needed, err := git_filter_parse(decoded)
+			if err != nil {
+				return nil, false, err
+			}
+			rules = append(rules, inner...)
+			measured = measured || needed
+		}
+		return rules, measured, nil
+	}
+
+	switch {
+	case specification == "blob:none":
+		return []git_filter_rule{func(kind plumbing.ObjectType, _ int64, _ int) bool {
+			return kind != plumbing.BlobObject
+		}}, false, nil
+
+	case strings.HasPrefix(specification, "blob:limit="):
+		limit, err := git_filter_size(strings.TrimPrefix(specification, "blob:limit="))
+		if err != nil {
+			return nil, false, err
+		}
+		return []git_filter_rule{func(kind plumbing.ObjectType, size int64, _ int) bool {
+			return kind != plumbing.BlobObject || size < limit
+		}}, false, nil
+
+	case strings.HasPrefix(specification, "tree:"):
+		limit, err := strconv.Atoi(strings.TrimPrefix(specification, "tree:"))
+		if err != nil || limit < 0 {
+			return nil, false, fmt.Errorf("malformed filter %q", specification)
+		}
+		return []git_filter_rule{func(kind plumbing.ObjectType, _ int64, depth int) bool {
+			if kind != plumbing.TreeObject && kind != plumbing.BlobObject {
+				return true
+			}
+			return depth >= 0 && depth < limit
+		}}, true, nil
+
+	case strings.HasPrefix(specification, "object:type="):
+		wanted, err := git_filter_kind(strings.TrimPrefix(specification, "object:type="))
+		if err != nil {
+			return nil, false, err
+		}
+		return []git_filter_rule{func(kind plumbing.ObjectType, _ int64, _ int) bool {
+			return kind == wanted
+		}}, false, nil
+	}
+
+	return nil, false, fmt.Errorf("unsupported filter %q", specification)
+}
+
+// git_filter_size reads a byte count, which a client may scale with k, m or g.
+func git_filter_size(text string) (int64, error) {
+	multiplier := int64(1)
+	switch strings.ToLower(text[max(len(text)-1, 0):]) {
+	case "k":
+		multiplier = 1 << 10
+	case "m":
+		multiplier = 1 << 20
+	case "g":
+		multiplier = 1 << 30
+	}
+	if multiplier > 1 {
+		text = text[:len(text)-1]
+	}
+	value, err := strconv.ParseInt(text, 10, 64)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("malformed size %q", text)
+	}
+	return value * multiplier, nil
+}
+
+// git_filter_kind reads an object type name.
+func git_filter_kind(name string) (plumbing.ObjectType, error) {
+	switch name {
+	case "blob":
+		return plumbing.BlobObject, nil
+	case "tree":
+		return plumbing.TreeObject, nil
+	case "commit":
+		return plumbing.CommitObject, nil
+	case "tag":
+		return plumbing.TagObject, nil
+	}
+	return plumbing.InvalidObject, fmt.Errorf("unknown object type %q", name)
+}
+
+// git_object_depths measures how far each tree and blob sits from the root tree
+// of a commit carrying it: the root tree is 0, its own entries 1, and so on.
+// An object reached by several paths takes the shallowest.
+func git_object_depths(storage storer.Storer, objects []plumbing.Hash) (map[plumbing.Hash]int, error) {
+	depths := map[plumbing.Hash]int{}
+	err := git_walk_paths(storage, git_commit_roots(storage, objects), func(path string, hash plumbing.Hash) {
+		depth := 0
+		if path != "" {
+			depth = strings.Count(path, "/") + 1
+		}
+		if current, seen := depths[hash]; !seen || depth < current {
+			depths[hash] = depth
+		}
+	})
+	return depths, err
+}
+
+// git_commit_roots picks the commits out of an object list. They are the roots
+// of every tree the list carries.
+func git_commit_roots(storage storer.Storer, objects []plumbing.Hash) []plumbing.Hash {
+	var commits []plumbing.Hash
+	for _, hash := range objects {
+		if _, err := storage.EncodedObject(plumbing.CommitObject, hash); err == nil {
+			commits = append(commits, hash)
+		}
+	}
+	return commits
+}
+
+// git_include_tags adds any annotated tag whose target is already in the pack.
+// That is what include-tag asks for: a clone taking a branch gets the tags on
+// it without a second round trip.
+func git_include_tags(storage storer.Storer, objects []plumbing.Hash) ([]plumbing.Hash, error) {
+	iterator, err := storage.IterReferences()
+	if err != nil {
+		return nil, err
+	}
+	defer iterator.Close()
+
+	sending := git_hash_set(objects)
+	err = iterator.ForEach(func(reference *plumbing.Reference) error {
+		if reference.Type() != plumbing.HashReference || !strings.HasPrefix(reference.Name().String(), "refs/tags/") {
+			return nil
+		}
+		target, tags, err := git_peel(storage, reference.Hash())
+		if err != nil || !sending[target] {
+			return nil
+		}
+		for _, tag := range tags {
+			if !sending[tag] {
+				sending[tag] = true
+				objects = append(objects, tag)
+			}
+		}
+		return nil
+	})
+	return objects, err
+}
+
+// git_request is an upload-pack request: what the client wants, what it already
+// has, and how much history it is asking for.
+//
+// It is parsed here rather than by packp.UploadRequest.Decode, which cannot
+// represent several things this server now advertises. That decoder holds a
+// single Depth value, so it can carry one deepen-not and cannot combine it with
+// a deepen-since; and it has no case at all for a "filter" line, which it
+// reports as "unexpected payload while expecting a want" - a 400 on a request
+// the client only made because we advertised the capability.
+type git_request struct {
+	capabilities *capability.List
+	wants        []plumbing.Hash
+	haves        []plumbing.Hash
+	shallows     []plumbing.Hash // the client's own boundary: it holds these but nothing behind them
+	depth        int             // deepen <n>: commits along any path, counting the tip as 1; 0 when absent
+	relative     bool            // deepen-relative: depth counts from the client's boundary, not from the tips
+	since        time.Time       // deepen-since
+	exclude      []string        // deepen-not, one per line
+	filter       string
+	tags         bool // include-tag: send annotated tags whose target is in the pack
+	done         bool
+}
+
+// deepening reports whether the client asked for a different amount of history
+// than it currently holds. Only a deepening request gets a shallow-info section
+// in the response - a client that merely declares its existing boundary is not
+// expecting one and fails on the lines it did not ask for.
+func (r *git_request) deepening() bool {
+	return r.depth > 0 || !r.since.IsZero() || len(r.exclude) > 0
+}
+
+// shallow reports whether shallow history is involved at all, in either
+// direction.
+func (r *git_request) shallow() bool {
+	return len(r.shallows) > 0 || r.deepening()
+}
+
+// git_request_decode reads a whole upload-pack request body.
+//
+// One pass covers it: every line in the v0 grammar is tagged by its keyword, so
+// the want section, the shallow and deepen lines, the haves and the final
+// "done" can be told apart without tracking which section we are in. Flush
+// packets separate those sections and carry nothing else, so they are skipped.
+func git_request_decode(reader io.Reader) (*git_request, error) {
+	request := &git_request{capabilities: capability.NewList()}
+	scanner := pktline.NewScanner(reader)
+	first := true
+
+	for scanner.Scan() {
+		line := strings.TrimSuffix(string(scanner.Bytes()), "\n")
+		if line == "" {
+			continue
+		}
+		keyword, argument, _ := strings.Cut(line, " ")
+
+		switch keyword {
+		case "want":
+			// Capabilities ride on the first want line, after the hash.
+			name, capabilities, _ := strings.Cut(argument, " ")
+			hash, err := git_request_hash(name)
+			if err != nil {
+				return nil, err
+			}
+			request.wants = append(request.wants, hash)
+			if first && capabilities != "" {
+				if err := request.capabilities.Decode([]byte(capabilities)); err != nil {
+					return nil, fmt.Errorf("invalid capabilities %q: %w", capabilities, err)
+				}
+				request.relative = request.capabilities.Supports(capability.DeepenRelative)
+				request.tags = request.capabilities.Supports(capability.IncludeTag)
+			}
+			first = false
+
+		case "have":
+			hash, err := git_request_hash(argument)
+			if err != nil {
+				return nil, err
+			}
+			request.haves = append(request.haves, hash)
+
+		case "shallow":
+			hash, err := git_request_hash(argument)
+			if err != nil {
+				return nil, err
+			}
+			request.shallows = append(request.shallows, hash)
+
+		case "deepen":
+			depth, err := strconv.Atoi(argument)
+			if err != nil || depth < 0 {
+				return nil, fmt.Errorf("malformed depth %q", argument)
+			}
+			request.depth = depth
+
+		case "deepen-since":
+			seconds, err := strconv.ParseInt(argument, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("malformed deepen-since %q", argument)
+			}
+			request.since = time.Unix(seconds, 0).UTC()
+
+		case "deepen-not":
+			request.exclude = append(request.exclude, argument)
+
+		case "filter":
+			request.filter = argument
+
+		case "done":
+			request.done = true
+
+		default:
+			return nil, fmt.Errorf("unexpected line %q", line)
+		}
+	}
+
+	return request, scanner.Err()
+}
+
+// git_request_hash parses an object name. plumbing.NewHash reports nothing for
+// malformed input - it returns the zero hash, which is indistinguishable from a
+// client genuinely naming all zeroes - so the text is checked here.
+func git_request_hash(text string) (plumbing.Hash, error) {
+	hash := plumbing.NewHash(text)
+	if len(text) != 40 || hash.IsZero() {
+		return plumbing.ZeroHash, fmt.Errorf("malformed object name %q", text)
+	}
+	return hash, nil
+}
+
 func git_info_refs(c *gin.Context, repo_path string, service string) bool {
 	if service != "git-upload-pack" && service != "git-receive-pack" {
 		c.String(http.StatusForbidden, "Service not enabled")
 		return true
+	}
+
+	// A v2 advertisement carries no references at all, so it is answered
+	// before any of the work below. Push stays on v0: its session is go-git's,
+	// which has no v2 at all, and a client offered v0 simply uses it.
+	if service == "git-upload-pack" && git_protocol_version(c) == 2 {
+		return git_v2_advertise(c, service)
 	}
 
 	// Create endpoint for the repository path
@@ -2917,6 +3375,16 @@ func git_info_refs(c *gin.Context, repo_path string, service string) bool {
 			info("git_info_refs: upload-pack advertise refs failed for %s: %v", repo_path, err)
 			c.String(http.StatusInternalServerError, "Failed to get refs")
 			return true
+		}
+		git_upload_pack_advertise(refs.Capabilities)
+
+		// go-git's advertisement carries no peeled refs (its setReferences
+		// leaves a TODO where they belong), so an annotated tag advertised
+		// only as its tag object gives the client no way to see the commit
+		// behind it without fetching. `git ls-remote` shows no "^{}" lines
+		// against this server for the same reason.
+		if storage, err := (&git_loader{}).Load(ep); err == nil {
+			git_advertise_peeled(storage, refs)
 		}
 	} else {
 		session, err := git_transport.NewReceivePackSession(ep, nil)
@@ -3061,113 +3529,1432 @@ func git_service_rpc(c *gin.Context, repo_path string, service string, owner *Us
 	reader = io.NopCloser(buffered)
 
 	if service == "git-upload-pack" {
+		if git_protocol_version(c) == 2 {
+			return git_v2_serve(c, repo_path, reader)
+		}
 		return git_upload_pack(c, repo_path, reader)
 	}
 	return git_receive_pack(c, repo_path, reader, budget)
 }
 
-// git_upload_pack handles the git-upload-pack service (fetch/clone)
-func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) bool {
-	ep := &transport.Endpoint{Path: repo_path}
-	ctx := context.Background()
+// Protocol version 2 ---------------------------------------------------------
 
-	session, err := git_transport.NewUploadPackSession(ep, nil)
+// git_protocol_version reads the protocol version a client asked for. Over HTTP
+// that arrives in the Git-Protocol header as a colon-separated list of extra
+// parameters, of which version= is the only one that matters here. A client
+// asking for a version this server does not speak is answered in v0, which is
+// the documented fallback and what every client did before v2 existed.
+func git_protocol_version(c *gin.Context) int {
+	for _, parameter := range strings.Split(c.GetHeader("Git-Protocol"), ":") {
+		if value, ok := strings.CutPrefix(strings.TrimSpace(parameter), "version="); ok {
+			if version, err := strconv.Atoi(value); err == nil {
+				return version
+			}
+		}
+	}
+	return 0
+}
+
+// git_v2_advertise answers the opening info/refs request in protocol v2: a
+// version line and the commands this server implements, and notably NOT the
+// references.
+//
+// That omission is the point of v2 here. The v0 advertisement sends every ref
+// on every connection, clone and fetch alike - measured against production,
+// 1,395 bytes for a 22-ref repository and 22,262 bytes for core's 356 refs,
+// paid before a single object moves and growing with every release tag. In v2
+// the client asks for the refs it wants, and may name a prefix.
+func git_v2_advertise(c *gin.Context, service string) bool {
+	c.Status(http.StatusOK)
+	c.Header("Content-Type", fmt.Sprintf("application/x-%s-advertisement", service))
+	c.Header("Cache-Control", "no-cache")
+
+	encoder := pktline.NewEncoder(c.Writer)
+	// The service line is v0's framing, but a v2 client steps over it when it
+	// is there and reads the version line behind it, so one shape serves both
+	// and any smart-HTTP intermediary still sees what it expects.
+	encoder.Encodef("# service=%s\n", service)
+	encoder.Flush()
+
+	encoder.Encodef("version 2\n")
+	// The agent value may not be empty, and build_version is stamped in by the
+	// linker - it is blank in any build that did not go through the Makefile.
+	version := build_version
+	if version == "" {
+		version = "unknown"
+	}
+	encoder.Encodef("agent=mochi/%s\n", version)
+	encoder.Encodef("ls-refs\n")
+	// Only features beyond the base fetch arguments are named here: shallow
+	// covers the whole deepen family, filter is partial clone. thin-pack,
+	// no-progress, ofs-delta and include-tag are base arguments in v2 and are
+	// not advertised.
+	encoder.Encodef("fetch=shallow filter\n")
+	encoder.Encodef("object-format=sha1\n")
+	encoder.Flush()
+	return true
+}
+
+// Packet kinds git_pktline distinguishes. v2 gives 0001 and 0002 meanings that
+// v0 never had.
+const (
+	git_packet_data = iota
+	git_packet_flush
+	git_packet_delimiter
+	git_packet_end
+)
+
+// git_pktline reads packet lines, telling the special packets apart.
+//
+// go-git's scanner cannot be used for this: it was written for v0, where a
+// length of 1 or 2 cannot occur, and it rejects a delimiter packet outright as
+// an invalid packet length.
+type git_pktline struct {
+	reader *bufio.Reader
+}
+
+// next returns the next packet's payload with its trailing newline removed, or
+// an empty payload and the kind of special packet that was found.
+func (p *git_pktline) next() (string, int, error) {
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(p.reader, header); err != nil {
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return "", git_packet_end, nil
+		}
+		return "", git_packet_data, err
+	}
+
+	length, err := strconv.ParseInt(string(header), 16, 32)
 	if err != nil {
-		info("git_upload_pack: session failed for %s: %v", repo_path, err)
-		c.String(http.StatusInternalServerError, "Failed to create session")
+		return "", git_packet_data, fmt.Errorf("malformed packet length %q", header)
+	}
+	switch length {
+	case 0:
+		return "", git_packet_flush, nil
+	case 1:
+		return "", git_packet_delimiter, nil
+	case 2:
+		return "", git_packet_end, nil
+	}
+	if length < 4 || length > 65524 {
+		return "", git_packet_data, fmt.Errorf("packet length %d out of range", length)
+	}
+
+	payload := make([]byte, length-4)
+	if _, err := io.ReadFull(p.reader, payload); err != nil {
+		return "", git_packet_data, err
+	}
+	return strings.TrimSuffix(string(payload), "\n"), git_packet_data, nil
+}
+
+// git_v2_delimiter writes a delimiter packet, which separates the sections of a
+// v2 response. go-git's encoder has no notion of one.
+func git_v2_delimiter(writer io.Writer) error {
+	_, err := writer.Write([]byte("0001"))
+	return err
+}
+
+// git_v2_command is a v2 request: one command, and the arguments that follow
+// the delimiter packet.
+type git_v2_command struct {
+	name      string
+	arguments []string
+}
+
+// git_v2_decode reads a v2 command request. Before the delimiter the client
+// names the command and the capabilities it is using; after it come the
+// command's own arguments.
+func git_v2_decode(reader io.Reader) (*git_v2_command, error) {
+	lines := &git_pktline{reader: bufio.NewReader(reader)}
+	command := &git_v2_command{}
+	arguments := false
+
+	for {
+		payload, kind, err := lines.next()
+		if err != nil {
+			return nil, err
+		}
+		switch kind {
+		case git_packet_data:
+			if arguments {
+				command.arguments = append(command.arguments, payload)
+				continue
+			}
+			if name, ok := strings.CutPrefix(payload, "command="); ok {
+				command.name = name
+			}
+			// Anything else before the delimiter is a capability the client
+			// is using - agent, object-format - and none of them change what
+			// this server does.
+		case git_packet_delimiter:
+			arguments = true
+		case git_packet_flush, git_packet_end:
+			if command.name == "" {
+				return nil, fmt.Errorf("request names no command")
+			}
+			return command, nil
+		}
+	}
+}
+
+// git_v2_serve dispatches one v2 command.
+func git_v2_serve(c *gin.Context, repo_path string, reader io.ReadCloser) bool {
+	storage, err := (&git_loader{}).Load(&transport.Endpoint{Path: repo_path})
+	if err != nil {
+		info("git_v2_serve: cannot load %s: %v", repo_path, err)
+		c.String(http.StatusInternalServerError, "Failed to open repository")
 		return true
 	}
-	defer session.Close()
 
-	// Decode the upload-pack request from the client
-	req := packp.NewUploadPackRequest()
-	if err := req.Decode(reader); err != nil {
+	command, err := git_v2_decode(reader)
+	if err != nil {
 		c.String(http.StatusBadRequest, "Failed to decode request: %v", err)
 		return true
 	}
 
-	// req.Decode is the embedded UploadRequest.Decode: it consumes only the
-	// want section, up to its flush packet. The negotiation section — "have"
-	// lines, flush packets, and a final "done" — is still unread. Parse it
-	// here: without the haves every fetch shipped the full repository, and a
-	// negotiation round without "done" was answered with a packfile the
-	// client wasn't expecting, which it fatals on with "bad line length
-	// character: PACK" — breaking every incremental fetch of a repository
-	// large enough that the client's first round doesn't already end in
-	// "done".
-	haves, done := git_upload_pack_negotiation(reader)
+	switch command.name {
+	case "ls-refs":
+		return git_v2_ls_refs(c, storage, command.arguments)
+	case "fetch":
+		return git_v2_fetch(c, storage, repo_path, command.arguments)
+	}
+	c.String(http.StatusBadRequest, "Unknown command %q", command.name)
+	return true
+}
 
-	// Keep only the haves this repository holds: the client legitimately
-	// offers commits from its other branches, and UploadPack's revlist walk
-	// fails outright on an unknown hash.
+// git_v2_ls_refs answers the v2 reference advertisement, which unlike v0's is
+// asked for explicitly and can be narrowed to the refs the client cares about.
+func git_v2_ls_refs(c *gin.Context, storage storer.Storer, arguments []string) bool {
+	var prefixes []string
+	peel, symrefs := false, false
+	for _, argument := range arguments {
+		switch {
+		case argument == "peel":
+			peel = true
+		case argument == "symrefs":
+			symrefs = true
+		case strings.HasPrefix(argument, "ref-prefix "):
+			prefixes = append(prefixes, strings.TrimPrefix(argument, "ref-prefix "))
+		}
+	}
+
+	type advertised struct {
+		name   string
+		hash   plumbing.Hash
+		target string
+		peeled plumbing.Hash
+	}
+	var refs []advertised
+
+	wanted := func(name string) bool {
+		if len(prefixes) == 0 {
+			return true
+		}
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(name, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// HEAD comes first and is the one ref that is normally symbolic, so the
+	// client learns which branch a fresh clone should check out.
+	if head, err := storage.Reference(plumbing.HEAD); err == nil && wanted("HEAD") {
+		entry := advertised{name: "HEAD"}
+		if head.Type() == plumbing.SymbolicReference {
+			if symrefs {
+				entry.target = head.Target().String()
+			}
+			resolved, err := storer.ResolveReference(storage, head.Target())
+			if err == nil && resolved != nil {
+				entry.hash = resolved.Hash()
+			}
+		} else {
+			entry.hash = head.Hash()
+		}
+		// A HEAD pointing at a branch with no commits yet has nothing to
+		// advertise, and this server does not offer the unborn feature.
+		if !entry.hash.IsZero() {
+			refs = append(refs, entry)
+		}
+	}
+
+	iterator, err := storage.IterReferences()
+	if err != nil {
+		info("git_v2_ls_refs: cannot iterate references: %v", err)
+		c.String(http.StatusInternalServerError, "Failed to get refs")
+		return true
+	}
+	err = iterator.ForEach(func(reference *plumbing.Reference) error {
+		name := reference.Name().String()
+		if reference.Type() != plumbing.HashReference || name == "HEAD" || !wanted(name) {
+			return nil
+		}
+		entry := advertised{name: name, hash: reference.Hash()}
+		if peel {
+			// A peeled line names what an annotated tag ultimately points at,
+			// so the client can tell a tag object from the commit it tags
+			// without fetching it first.
+			if target, tags, err := git_peel(storage, reference.Hash()); err == nil && len(tags) > 0 {
+				entry.peeled = target
+			}
+		}
+		refs = append(refs, entry)
+		return nil
+	})
+	iterator.Close()
+	if err != nil {
+		info("git_v2_ls_refs: cannot read references: %v", err)
+		c.String(http.StatusInternalServerError, "Failed to get refs")
+		return true
+	}
+
+	// HEAD stays at the front; the rest go in name order so the same
+	// repository advertises the same way twice.
+	sort.SliceStable(refs, func(i, j int) bool {
+		if refs[i].name == "HEAD" || refs[j].name == "HEAD" {
+			return refs[i].name == "HEAD" && refs[j].name != "HEAD"
+		}
+		return refs[i].name < refs[j].name
+	})
+
+	c.Status(http.StatusOK)
+	c.Header("Content-Type", "application/x-git-upload-pack-result")
+	c.Header("Cache-Control", "no-cache")
+
+	encoder := pktline.NewEncoder(c.Writer)
+	for _, entry := range refs {
+		line := entry.hash.String() + " " + entry.name
+		if entry.target != "" {
+			line += " symref-target:" + entry.target
+		}
+		if !entry.peeled.IsZero() {
+			line += " peeled:" + entry.peeled.String()
+		}
+		encoder.Encodef("%s\n", line)
+	}
+	encoder.Flush()
+	return true
+}
+
+// git_v2_fetch answers the v2 fetch command.
+func git_v2_fetch(c *gin.Context, storage storer.Storer, repo_path string, arguments []string) bool {
+	request, err := git_v2_fetch_request(arguments)
+	if err != nil {
+		c.String(http.StatusBadRequest, "Failed to decode request: %v", err)
+		return true
+	}
+	if len(request.wants) == 0 {
+		c.String(http.StatusBadRequest, "Request asks for nothing")
+		return true
+	}
+
 	var known []plumbing.Hash
-	if storage, err := (&git_loader{}).Load(ep); err == nil {
-		for _, have := range haves {
-			if storage.HasEncodedObject(have) == nil {
-				known = append(known, have)
+	for _, have := range request.haves {
+		if storage.HasEncodedObject(have) != nil {
+			continue
+		}
+		commit, _, err := git_peel(storage, have)
+		if err != nil {
+			continue
+		}
+		known = append(known, commit)
+	}
+
+	// "ready" says a pack can be built from what has been found in common,
+	// and commits this response to carrying it. Without it the client keeps
+	// offering haves until it runs out, and on the stateless transport each
+	// request carries only its own batch - the trap that made every
+	// incremental fetch ship almost the whole repository under v0.
+	ready := !request.done && len(known) > 0
+
+	selection, err := git_upload_pack_select(storage, request, known, request.done || ready)
+	if err != nil {
+		info("git_v2_fetch: selecting objects for %s failed: %v", repo_path, err)
+		c.String(http.StatusInternalServerError, "Upload pack failed")
+		return true
+	}
+
+	c.Status(http.StatusOK)
+	c.Header("Content-Type", "application/x-git-upload-pack-result")
+	c.Header("Cache-Control", "no-cache")
+	encoder := pktline.NewEncoder(c.Writer)
+
+	// The acknowledgements section is omitted entirely once the client has
+	// said "done" - the specification requires that - and is the whole
+	// response while negotiation has not converged.
+	if !request.done {
+		encoder.Encodef("acknowledgments\n")
+		if !ready {
+			encoder.Encodef("NAK\n")
+			encoder.Flush()
+			return true
+		}
+		for _, hash := range known {
+			encoder.Encodef("ACK %s\n", hash.String())
+		}
+		encoder.Encodef("ready\n")
+		git_v2_delimiter(c.Writer)
+	}
+
+	if selection.update != nil {
+		encoder.Encodef("shallow-info\n")
+		for _, hash := range selection.update.Shallows {
+			encoder.Encodef("shallow %s\n", hash.String())
+		}
+		for _, hash := range selection.update.Unshallows {
+			encoder.Encodef("unshallow %s\n", hash.String())
+		}
+		git_v2_delimiter(c.Writer)
+	}
+
+	encoder.Encodef("packfile\n")
+
+	// v2 always multiplexes the packfile section, so the band is not something
+	// the client opts into here; git_v2_fetch_request sets the capability.
+	band := git_band_open(c.Writer, request.capabilities)
+	band.message("Enumerating objects: %d, done.\n", len(selection.objects))
+	if err := git_upload_pack_send(band, storage, selection); err != nil {
+		info("git_v2_fetch: encoding the packfile for %s failed: %v", repo_path, err)
+		band.fail("packfile generation failed")
+	}
+	band.close()
+	return true
+}
+
+// git_v2_fetch_request turns v2 argument lines into the same request the v0
+// decoder produces, so the history walk, the shallow boundary, the filter and
+// the pack are one implementation serving both protocols.
+func git_v2_fetch_request(arguments []string) (*git_request, error) {
+	request := &git_request{capabilities: capability.NewList()}
+	// The packfile section of a v2 response is always multiplexed.
+	request.capabilities.Add(capability.Sideband64k)
+
+	for _, argument := range arguments {
+		keyword, value, _ := strings.Cut(argument, " ")
+		switch keyword {
+		case "want":
+			hash, err := git_request_hash(value)
+			if err != nil {
+				return nil, err
+			}
+			request.wants = append(request.wants, hash)
+
+		case "have":
+			hash, err := git_request_hash(value)
+			if err != nil {
+				return nil, err
+			}
+			request.haves = append(request.haves, hash)
+
+		case "shallow":
+			hash, err := git_request_hash(value)
+			if err != nil {
+				return nil, err
+			}
+			request.shallows = append(request.shallows, hash)
+
+		case "deepen":
+			depth, err := strconv.Atoi(value)
+			if err != nil || depth < 0 {
+				return nil, fmt.Errorf("malformed depth %q", value)
+			}
+			request.depth = depth
+
+		case "deepen-since":
+			seconds, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("malformed deepen-since %q", value)
+			}
+			request.since = time.Unix(seconds, 0).UTC()
+
+		case "deepen-not":
+			request.exclude = append(request.exclude, value)
+
+		case "deepen-relative":
+			request.relative = true
+
+		case "filter":
+			request.filter = value
+
+		case "done":
+			request.done = true
+
+		case "thin-pack":
+			request.capabilities.Add(capability.ThinPack)
+
+		case "no-progress":
+			request.capabilities.Add(capability.NoProgress)
+
+		case "include-tag":
+			request.tags = true
+
+		case "ofs-delta":
+			// The pack encoder uses offset deltas within a pack already, and
+			// falls back to reference deltas only for a thin pack's outside
+			// bases, where an offset cannot reach.
+
+		default:
+			return nil, fmt.Errorf("unexpected argument %q", argument)
+		}
+	}
+	return request, nil
+}
+
+// git_selection is what a fetch decided to do: the objects to send, and - when
+// the client asked about shallow history - where its history now stops.
+type git_selection struct {
+	objects []plumbing.Hash
+	update  *packp.ShallowUpdate
+	known   []plumbing.Hash // the commits the client offered that this repository holds
+	thin    bool            // the client will resolve deltas against bases the pack does not carry
+}
+
+// git_upload_pack_select decides what a fetch sends.
+//
+// pack is false for an exploratory negotiation round, which still needs the
+// shallow boundary answered but wants no packfile, and so must not pay for the
+// object walk that would build one.
+func git_upload_pack_select(storage storer.Storer, request *git_request, known []plumbing.Hash, pack bool) (*git_selection, error) {
+	selection := &git_selection{
+		known: known,
+		thin:  request.capabilities.Supports(capability.ThinPack),
+	}
+
+	if !request.shallow() {
+		if !pack {
+			return selection, nil
+		}
+		// The ordinary case, and the fast one: everything reachable from the
+		// wants, less everything reachable from the haves, with revlist
+		// pruning the walk as it goes.
+		shared, err := revlist.Objects(storage, known, nil)
+		if err != nil {
+			return nil, err
+		}
+		if selection.objects, err = revlist.Objects(storage, request.wants, shared); err != nil {
+			return nil, err
+		}
+		return selection, git_upload_pack_trim(storage, request, selection)
+	}
+
+	// Peel the wants: one can name an annotated tag, and the walk below is
+	// over commits. The tag objects themselves still have to travel.
+	var tips, tags []plumbing.Hash
+	for _, want := range request.wants {
+		commit, walked, err := git_peel(storage, want)
+		if err != nil {
+			return nil, err
+		}
+		tips = append(tips, commit)
+		tags = append(tags, walked...)
+	}
+
+	included, boundary, err := git_upload_pack_history(storage, request, tips)
+	if err != nil {
+		return nil, err
+	}
+
+	// What the client already holds, its own boundary respected. A walk that
+	// ran past that boundary would conclude it has objects it does not, and
+	// the pack would arrive missing them.
+	held, _, err := git_history(storage, known, git_hash_set(request.shallows), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// Only a deepening request gets a shallow list. A client that merely
+	// declared its existing boundary is not expecting one and treats the lines
+	// it did not ask for as a protocol error.
+	if request.deepening() {
+		edge := git_hash_set(boundary)
+		reached := git_hash_set(included)
+		selection.update = &packp.ShallowUpdate{Shallows: boundary}
+		for _, hash := range request.shallows {
+			if reached[hash] && !edge[hash] {
+				selection.update.Unshallows = append(selection.update.Unshallows, hash)
 			}
 		}
 	}
-	req.Haves = known
+
+	if !pack {
+		return selection, nil
+	}
+	if selection.objects, err = git_objects(storage, included, held, tags); err != nil {
+		return nil, err
+	}
+	return selection, git_upload_pack_trim(storage, request, selection)
+}
+
+// git_upload_pack_trim adds the tags the client asked to have travel with the
+// pack, drops whatever a partial-clone filter excludes, and settles the order.
+//
+// Tags first: include-tag is about what the pack should carry, and a filter is
+// entitled to remove one again (object:type=blob does exactly that).
+func git_upload_pack_trim(storage storer.Storer, request *git_request, selection *git_selection) error {
+	var err error
+	if request.tags {
+		if selection.objects, err = git_include_tags(storage, selection.objects); err != nil {
+			return err
+		}
+	}
+	if request.filter != "" {
+		if selection.objects, err = git_filter_apply(storage, selection.objects, request.filter, request.wants); err != nil {
+			return err
+		}
+	}
+	git_sort_hashes(selection.objects)
+	return nil
+}
+
+// git_sort_hashes puts an object list in a stable order.
+//
+// The pack is written from this list in order, so a stable order means the same
+// fetch produces the same pack twice. revlist returns its result by iterating a
+// Go map, whose order is randomised per run: without this, two identical
+// fetches differ by a few dozen bytes, and any measurement of whether a change
+// made packs larger or smaller is measuring the shuffle.
+func git_sort_hashes(hashes []plumbing.Hash) {
+	sort.Slice(hashes, func(i, j int) bool { return bytes.Compare(hashes[i][:], hashes[j][:]) < 0 })
+}
+
+// git_upload_pack_history works out which commits a shallow fetch covers, and
+// which of them end up on the boundary.
+func git_upload_pack_history(storage storer.Storer, request *git_request, tips []plumbing.Hash) (included, boundary []plumbing.Hash, err error) {
+	// deepen-relative measures the depth from where the client's history
+	// currently stops rather than from the tips, so the new boundary is worked
+	// out from its shallow commits first and the tips are then walked down to
+	// it. Counting a shallow commit itself as 1, depth+1 adds exactly the
+	// number of generations asked for.
+	if request.relative && request.depth > 0 && len(request.shallows) > 0 {
+		_, edge, err := git_history(storage, request.shallows, nil, git_depth_limit(request.depth+1))
+		if err != nil {
+			return nil, nil, err
+		}
+		return git_history(storage, tips, git_hash_set(edge), nil)
+	}
+
+	follow, err := git_upload_pack_limit(storage, request)
+	if err != nil {
+		return nil, nil, err
+	}
+	return git_history(storage, tips, nil, follow)
+}
+
+// git_upload_pack_limit builds the rule deciding how far back a deepening
+// request reaches. It returns nil when the client named no limit at all, which
+// means walk the whole history - `git fetch --unshallow` arrives as a depth of
+// 2147483647 and amounts to the same thing.
+func git_upload_pack_limit(storage storer.Storer, request *git_request) (func(*object.Commit, int) bool, error) {
+	var excluded map[plumbing.Hash]bool
+	if len(request.exclude) > 0 {
+		var err error
+		if excluded, err = git_excluded(storage, request.exclude); err != nil {
+			return nil, err
+		}
+	}
+	depth, since := request.depth, request.since
+	if depth == 0 && since.IsZero() && excluded == nil {
+		return nil, nil
+	}
+	return func(parent *object.Commit, reached int) bool {
+		if depth > 0 && reached > depth {
+			return false
+		}
+		if !since.IsZero() && parent.Committer.When.Before(since) {
+			return false
+		}
+		return !excluded[parent.Hash]
+	}, nil
+}
+
+// git_depth_limit stops a walk a fixed number of commits along any path.
+func git_depth_limit(depth int) func(*object.Commit, int) bool {
+	return func(_ *object.Commit, reached int) bool { return reached <= depth }
+}
+
+// git_excluded resolves the refs a deepen-not names and returns every commit
+// reachable from them: --shallow-exclude means "stop where this history begins".
+func git_excluded(storage storer.Storer, refs []string) (map[plumbing.Hash]bool, error) {
+	excluded := map[plumbing.Hash]bool{}
+	for _, name := range refs {
+		hash, err := git_reference_hash(storage, name)
+		if err != nil {
+			return nil, err
+		}
+		commit, _, err := git_peel(storage, hash)
+		if err != nil {
+			return nil, err
+		}
+		reached, _, err := git_history(storage, []plumbing.Hash{commit}, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		for _, hash := range reached {
+			excluded[hash] = true
+		}
+	}
+	return excluded, nil
+}
+
+// git_reference_hash resolves a name the client gave, trying the abbreviations
+// git itself accepts before falling back to reading it as an object name.
+func git_reference_hash(storage storer.ReferenceStorer, name string) (plumbing.Hash, error) {
+	for _, candidate := range []string{name, "refs/" + name, "refs/tags/" + name, "refs/heads/" + name} {
+		reference, err := storer.ResolveReference(storage, plumbing.ReferenceName(candidate))
+		if err == nil && reference != nil {
+			return reference.Hash(), nil
+		}
+	}
+	if hash, err := git_request_hash(name); err == nil {
+		return hash, nil
+	}
+	return plumbing.ZeroHash, fmt.Errorf("cannot resolve %q", name)
+}
+
+// git_history walks back from roots and returns the commits reached, plus the
+// boundary: those with a parent that is not itself reached. A boundary commit
+// is what a "shallow" line names - the client is told its history stops there.
+//
+// follow decides each parent edge, given the parent and its distance from a
+// root, counting a root as 1; nil follows every edge. Commits in cut are
+// grafted roots: they are reached, but nothing behind them is.
+func git_history(
+	storage storer.EncodedObjectStorer,
+	roots []plumbing.Hash,
+	cut map[plumbing.Hash]bool,
+	follow func(parent *object.Commit, depth int) bool,
+) (reached []plumbing.Hash, boundary []plumbing.Hash, err error) {
+	type step struct {
+		hash  plumbing.Hash
+		depth int
+	}
+
+	parents := map[plumbing.Hash][]plumbing.Hash{}
+	included := map[plumbing.Hash]bool{}
+	queue := make([]step, 0, len(roots))
+	for _, root := range roots {
+		queue = append(queue, step{hash: root, depth: 1})
+	}
+
+	// Breadth first, so the first time a commit is taken off the queue is by
+	// its shortest path from a root. A depth limit that saw a longer path
+	// first would cut away history the client asked for.
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if included[current.hash] {
+			continue
+		}
+		commit, err := object.GetCommit(storage, current.hash)
+		if err != nil {
+			return nil, nil, err
+		}
+		included[current.hash] = true
+		reached = append(reached, current.hash)
+		parents[current.hash] = commit.ParentHashes
+
+		if cut[current.hash] {
+			continue
+		}
+		for _, parent := range commit.ParentHashes {
+			if included[parent] {
+				continue
+			}
+			ancestor, err := object.GetCommit(storage, parent)
+			if err != nil {
+				// A parent this repository does not hold ends the history
+				// here as surely as a depth limit does.
+				continue
+			}
+			if follow != nil && !follow(ancestor, current.depth+1) {
+				continue
+			}
+			queue = append(queue, step{hash: parent, depth: current.depth + 1})
+		}
+	}
+
+	// The boundary can only be settled once the whole reachable set is known:
+	// a parent refused along one path may well arrive by a shorter one, and a
+	// commit is only shallow if NO path reached its parent.
+	for _, hash := range reached {
+		for _, parent := range parents[hash] {
+			if !included[parent] {
+				boundary = append(boundary, hash)
+				break
+			}
+		}
+	}
+	return reached, boundary, nil
+}
+
+// git_objects turns two commit sets into the objects to send: everything the
+// wanted commits reach that the held commits do not, plus the commits and any
+// tag objects themselves.
+//
+// Only trees are walked, never parents. The caller has already decided which
+// commits are in play - by depth, or at a client's boundary - and a walk that
+// followed parents itself would undo that decision.
+func git_objects(storage storer.Storer, wanted, held, tags []plumbing.Hash) ([]plumbing.Hash, error) {
+	held_trees, err := git_trees(storage, held)
+	if err != nil {
+		return nil, err
+	}
+	// Only trees go in, so revlist's expansion of the ignore set walks trees
+	// and blobs and cannot reach a parent commit the client does not hold.
+	held_objects, err := revlist.Objects(storage, held_trees, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	wanted_trees, err := git_trees(storage, wanted)
+	if err != nil {
+		return nil, err
+	}
+	objects, err := revlist.Objects(storage, wanted_trees, held_objects)
+	if err != nil {
+		return nil, err
+	}
+
+	// revlist saw only trees, so the commits and tags are not in the list yet.
+	seen := git_hash_set(held)
+	for _, hash := range append(append([]plumbing.Hash{}, wanted...), tags...) {
+		if !seen[hash] {
+			seen[hash] = true
+			objects = append(objects, hash)
+		}
+	}
+	return objects, nil
+}
+
+// git_trees returns the tree each commit points at.
+func git_trees(storage storer.EncodedObjectStorer, commits []plumbing.Hash) ([]plumbing.Hash, error) {
+	trees := make([]plumbing.Hash, 0, len(commits))
+	for _, hash := range commits {
+		commit, err := object.GetCommit(storage, hash)
+		if err != nil {
+			return nil, err
+		}
+		trees = append(trees, commit.TreeHash)
+	}
+	return trees, nil
+}
+
+// git_peel resolves an object name to the commit it names, returning any tag
+// objects walked through so they can travel in the pack alongside it.
+func git_peel(storage storer.EncodedObjectStorer, hash plumbing.Hash) (plumbing.Hash, []plumbing.Hash, error) {
+	var tags []plumbing.Hash
+	current := hash
+	// A tag pointing at a tag is legal; a chain long enough to matter is not.
+	for depth := 0; depth < 16; depth++ {
+		encoded, err := storage.EncodedObject(plumbing.AnyObject, current)
+		if err != nil {
+			return plumbing.ZeroHash, nil, err
+		}
+		switch encoded.Type() {
+		case plumbing.CommitObject:
+			return current, tags, nil
+		case plumbing.TagObject:
+			decoded, err := object.DecodeObject(storage, encoded)
+			if err != nil {
+				return plumbing.ZeroHash, nil, err
+			}
+			tag, ok := decoded.(*object.Tag)
+			if !ok {
+				return plumbing.ZeroHash, nil, fmt.Errorf("object %s does not decode as a tag", current)
+			}
+			tags = append(tags, current)
+			current = tag.Target
+		default:
+			return plumbing.ZeroHash, nil, fmt.Errorf("object %s is a %s, not a commit", current, encoded.Type())
+		}
+	}
+	return plumbing.ZeroHash, nil, fmt.Errorf("tag chain from %s is too long to follow", hash)
+}
+
+// git_hash_set indexes hashes for membership tests.
+func git_hash_set(hashes []plumbing.Hash) map[plumbing.Hash]bool {
+	set := make(map[plumbing.Hash]bool, len(hashes))
+	for _, hash := range hashes {
+		set[hash] = true
+	}
+	return set
+}
+
+// git_upload_pack handles the git-upload-pack service (fetch/clone).
+//
+// The packfile is built here rather than by go-git's upSession.UploadPack.
+// That method validates every requested capability against the two go-git
+// implements - agent and ofs-delta - and refuses the whole fetch with
+// "unsupported capability" for anything else, so every capability
+// git_upload_pack_advertise offers would have to be deleted from the request
+// before handing it over, and the features they name would still be
+// unimplemented on the other side. What UploadPack does that is genuinely
+// needed is two revlist walks and a packfile encode, which is what this does.
+func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) bool {
+	ep := &transport.Endpoint{Path: repo_path}
+
+	storage, err := (&git_loader{}).Load(ep)
+	if err != nil {
+		info("git_upload_pack: cannot load %s: %v", repo_path, err)
+		c.String(http.StatusInternalServerError, "Failed to open repository")
+		return true
+	}
+
+	// The whole body is read in one pass - wants and their capabilities, the
+	// shallow and deepen lines, the haves, and the final "done". Reading the
+	// negotiation section is not optional: without the haves every fetch
+	// shipped the full repository, and a round without "done" answered with a
+	// packfile the client wasn't expecting, which it fatals on with "bad line
+	// length character: PACK" - breaking every incremental fetch of a
+	// repository large enough that the client's first round doesn't already
+	// end in "done".
+	request, err := git_request_decode(reader)
+	if err != nil {
+		c.String(http.StatusBadRequest, "Failed to decode request: %v", err)
+		return true
+	}
+	if len(request.wants) == 0 {
+		c.String(http.StatusBadRequest, "Request asks for nothing")
+		return true
+	}
+
+	// Keep only the haves this repository holds, peeled to the commits they
+	// name: the client legitimately offers commits from its other branches,
+	// and the history walk fails outright on an object it cannot read.
+	var known []plumbing.Hash
+	for _, have := range request.haves {
+		if storage.HasEncodedObject(have) != nil {
+			continue
+		}
+		commit, _, err := git_peel(storage, have)
+		if err != nil {
+			continue
+		}
+		known = append(known, commit)
+	}
 
 	c.Header("Content-Type", "application/x-git-upload-pack-result")
 	c.Header("Cache-Control", "no-cache")
 
-	if !done {
+	// Where the client's history stops, and where this request moves it to.
+	// That has to be settled even for an exploratory round: a deepening client
+	// on the stateless transport repeats its deepen lines in every request and
+	// reads back a shallow list, terminated by a flush, before it will look at
+	// a single acknowledgement. The packfile is another matter, so an
+	// exploratory round does not pay for the object walk that builds one.
+	selection, err := git_upload_pack_select(storage, request, known, request.done)
+	if err != nil {
+		info("git_upload_pack: selecting objects for %s failed: %v", repo_path, err)
+		c.String(http.StatusInternalServerError, "Upload pack failed")
+		return true
+	}
+
+	if !request.done {
 		// An exploratory round: the client is discovering common history and
-		// expects only acknowledgement lines, never a packfile. Always NAK:
-		// a bare "ACK <sha>" (the advertisement carries no multi_ack) means
-		// "negotiation over" in the native-stream semantics this emulates, so
-		// the client would drop its accumulated haves from the final request
-		// and expect a packfile with no acknowledgement line at all. After
-		// NAKs the client keeps offering, then sends "done" with every have
-		// repeated — which is what lets the pack below exclude common
-		// history.
+		// expects only acknowledgement lines, never a packfile.
+		//
+		// multi_ack_detailed is advertised (see git_info_refs), so each have
+		// we hold is acknowledged as "common" and the last one as "ready",
+		// which tells the client we can build a pack from here and it should
+		// stop offering. That matters on the stateless HTTP transport: a POST
+		// carries only its own batch of haves, and the client offers them
+		// newest-first, so every round it spends still searching pushes the
+		// eventual "done" request onto older and less useful commits. Ending
+		// negotiation early is what keeps the recent haves in the request
+		// that finally asks for the pack.
+		//
+		// A bare "ACK <sha>" with no status word must NOT be used here: in
+		// the single-ack protocol that means "negotiation over, pack next",
+		// and the client would expect a packfile in this response.
 		c.Status(http.StatusOK)
+		if selection.update != nil {
+			if err := selection.update.Encode(c.Writer); err != nil {
+				info("git_upload_pack: failed to encode the shallow list: %v", err)
+				return true
+			}
+
+			// A deepening client's first request carries the wants and the
+			// deepen lines and nothing else. It is asking only where its
+			// history will stop, and it reads the shallow list, its flush, and
+			// then stops reading this response entirely.
+			//
+			// Anything written after that is not discarded. The HTTP transport
+			// hands fetch-pack one continuous stream across requests, so a
+			// stray acknowledgement surfaces at the head of the NEXT response
+			// and is read as that round's first line: "fatal: git fetch-pack:
+			// expected shallow list", which is how every --depth clone failed
+			// until the shallow list was the whole answer here.
+			if len(request.haves) == 0 {
+				return true
+			}
+		}
 		e := pktline.NewEncoder(c.Writer)
+		if len(known) == 0 {
+			e.Encodef("NAK\n")
+			return true
+		}
+		for _, have := range known {
+			e.Encodef("ACK %s common\n", have.String())
+		}
+		// NAK terminates the round. It is not "nothing in common" here - the
+		// acknowledgements above already said what is - it is the marker that
+		// every have in this request has been answered. The client reads
+		// acknowledgements until one of them ends the round, so leaving it out
+		// blocks fetch-pack on the socket, and a flush packet in its place is
+		// refused outright ("expected ACK/NAK, got a flush packet").
 		e.Encodef("NAK\n")
 		return true
 	}
 
-	// Process the upload-pack request. UploadPack excludes objects reachable
-	// from req.Haves (revlist tolerates haves we don't hold), so the packfile
-	// carries only what the client is missing.
-	resp, err := session.UploadPack(ctx, req)
-	if err != nil {
-		info("git_upload_pack: failed for %s: %v", repo_path, err)
-		c.String(http.StatusInternalServerError, "Upload pack failed")
-		return true
-	}
-	defer resp.Close()
-
 	c.Status(http.StatusOK)
 
-	// Encode the response
-	if err := resp.Encode(c.Writer); err != nil {
-		info("git_upload_pack: failed to encode response: %v", err)
+	// The shallow list comes before everything else, and carries its own flush
+	// packet. A deepening client reads it - and requires that flush - before it
+	// will read an acknowledgement.
+	if selection.update != nil {
+		if err := selection.update.Encode(c.Writer); err != nil {
+			info("git_upload_pack: failed to encode the shallow list: %v", err)
+			return true
+		}
 	}
+
+	// The final round answers with the last commit found in common, then the
+	// pack. A single ACK here is the multi_ack_detailed close: it tells the
+	// client which commit the pack was built against. With nothing in common
+	// the list stays empty and NAK goes out instead, which is the full-clone
+	// case. Exactly one ACK - more would be the "common" lines that belong to
+	// the exploratory rounds above.
+	//
+	// This section is always plain pkt-line. The side band, if the client
+	// asked for one, begins at the packfile and never covers what precedes it.
+	acknowledgement := packp.ServerResponse{}
+	if len(known) > 0 {
+		acknowledgement.ACKs = []plumbing.Hash{known[len(known)-1]}
+	}
+	if err := acknowledgement.Encode(c.Writer, true); err != nil {
+		info("git_upload_pack: failed to encode acknowledgements: %v", err)
+		return true
+	}
+
+	band := git_band_open(c.Writer, request.capabilities)
+	band.message("Enumerating objects: %d, done.\n", len(selection.objects))
+
+	if err := git_upload_pack_send(band, storage, selection); err != nil {
+		// Past this point the status and the acknowledgements have gone out,
+		// so there is no HTTP error left to send. With a side band the client
+		// gets the reason; without one it sees a truncated pack and says so
+		// itself.
+		info("git_upload_pack: encoding the packfile for %s failed: %v", repo_path, err)
+		band.fail("packfile generation failed")
+	}
+	band.close()
 
 	return true
 }
 
-// git_upload_pack_negotiation parses the negotiation section of an
-// upload-pack request: "have" lines with interleaved flush packets, ended by
-// "done" (the final round) or the end of the body (an exploratory round).
-func git_upload_pack_negotiation(reader io.Reader) ([]plumbing.Hash, bool) {
-	var haves []plumbing.Hash
-	scanner := pktline.NewScanner(reader)
-	for scanner.Scan() {
-		line := strings.TrimSuffix(string(scanner.Bytes()), "\n")
-		if line == "done" {
-			return haves, true
+// Sliding window the packfile encoder uses when looking for delta bases. 10 is
+// go-git's own choice for a server-side pack.
+const git_pack_window = 10
+
+// How much packfile data goes out between progress messages.
+const git_progress_interval = 1 << 20
+
+// Largest fetch a thin pack is attempted for. Beyond this the fetch is
+// effectively a clone, where the saving is proportionally small and the cost of
+// holding two candidate packs in memory to compare them is not.
+const git_thin_maximum = 50000
+
+// Largest object a delta is computed for. Both sides are held in memory to
+// diff them, so a pathological blob would otherwise decide how much memory a
+// fetch takes.
+const git_thin_object_maximum = 64 << 20
+
+// git_upload_pack_send encodes objects as a packfile and writes it to the band.
+//
+// When the client asked for a thin pack, two candidates are built and the
+// smaller is sent. A thin pack deltifies against what the client already has,
+// which the ordinary encoder cannot do at all; the ordinary encoder deltifies
+// objects against each other, which the thin one does not. Neither wins every
+// time, and building both costs one extra encode of a set that is small by
+// construction - a fetch large enough for that to matter is over the ceiling
+// above and skips the attempt.
+func git_upload_pack_send(band *git_band, storage storer.Storer, selection *git_selection) error {
+	if thin := git_thin_candidate(storage, selection); thin != nil {
+		plain, err := git_pack_plain(storage, selection.objects)
+		if err != nil {
+			return err
 		}
-		if rest, ok := strings.CutPrefix(line, "have "); ok {
-			if hash := plumbing.NewHash(rest); !hash.IsZero() {
-				haves = append(haves, hash)
+		chosen, kind := thin, "thin"
+		if len(plain) <= len(thin) {
+			chosen, kind = plain, "whole"
+		}
+		debug("git_upload_pack_send: %s pack chosen, %d bytes against %d", kind, len(chosen), len(plain)+len(thin)-len(chosen))
+		written, err := band.send(bytes.NewReader(chosen))
+		if err != nil {
+			return err
+		}
+		band.message("Sending objects: %s, done.\n", git_bytes(written))
+		return nil
+	}
+
+	reader, writer := io.Pipe()
+	go func() {
+		encoder := packfile.NewEncoder(writer, storage, false)
+		_, err := encoder.Encode(selection.objects, git_pack_window)
+		writer.CloseWithError(err)
+	}()
+	defer reader.Close()
+
+	written, err := band.send(reader)
+	if err != nil {
+		return err
+	}
+	band.message("Sending objects: %s, done.\n", git_bytes(written))
+	return nil
+}
+
+// git_thin_candidate builds the thin pack for a selection, or returns nil when
+// one is not worth having: the client did not ask, the fetch is too large, no
+// object had a base on the client's side, or the build failed. A failure here
+// is not fatal - the ordinary encoder still has a correct answer.
+func git_thin_candidate(storage storer.Storer, selection *git_selection) []byte {
+	if !selection.thin || len(selection.objects) > git_thin_maximum || len(selection.known) == 0 {
+		return nil
+	}
+	bases, err := git_thin_bases(storage, selection.objects, selection.known)
+	if err != nil || len(bases) == 0 {
+		if err != nil {
+			debug("git_thin_candidate: choosing delta bases failed: %v", err)
+		}
+		return nil
+	}
+	pack, deltas, err := git_pack_thin(storage, selection.objects, bases)
+	if err != nil {
+		debug("git_thin_candidate: building the thin pack failed: %v", err)
+		return nil
+	}
+	if deltas == 0 {
+		return nil
+	}
+	return pack
+}
+
+// git_pack_plain encodes objects with go-git's encoder, which deltifies them
+// against each other within a sliding window and never against anything the
+// pack does not carry.
+func git_pack_plain(storage storer.Storer, objects []plumbing.Hash) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := packfile.NewEncoder(&buffer, storage, false)
+	if _, err := encoder.Encode(objects, git_pack_window); err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
+}
+
+// git_pack_thin writes objects as a packfile, sending any object with a chosen
+// base as a delta against it. That base is not in the pack - the client
+// resolves it from its own store, which is what makes the pack thin - so the
+// entry has to be a REF_DELTA naming the base by hash. An OFS_DELTA names its
+// base by offset within the pack and cannot reach outside it.
+//
+// Returns the pack and how many entries ended up deltified.
+func git_pack_thin(storage storer.Storer, objects []plumbing.Hash, bases map[plumbing.Hash]plumbing.Hash) ([]byte, int, error) {
+	var buffer bytes.Buffer
+	// The trailing checksum covers every byte of the pack, so the digest runs
+	// alongside the buffer rather than over it afterwards.
+	digest := sha1.New()
+	writer := io.MultiWriter(&buffer, digest)
+
+	if _, err := writer.Write([]byte("PACK")); err != nil {
+		return nil, 0, err
+	}
+	if err := binary.Write(writer, binary.BigEndian, uint32(2)); err != nil {
+		return nil, 0, err
+	}
+	if err := binary.Write(writer, binary.BigEndian, uint32(len(objects))); err != nil {
+		return nil, 0, err
+	}
+
+	deltas := 0
+	compressor := zlib.NewWriter(writer)
+	for _, hash := range objects {
+		object, err := storage.EncodedObject(plumbing.AnyObject, hash)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		payload := object
+		kind := object.Type()
+		base := plumbing.ZeroHash
+		if candidate, ok := bases[hash]; ok {
+			if delta, err := git_thin_delta(storage, candidate, object); err == nil && delta != nil {
+				payload, kind, base = delta, plumbing.REFDeltaObject, candidate
+				deltas++
 			}
 		}
+
+		if err := git_pack_entry(writer, kind, payload.Size()); err != nil {
+			return nil, 0, err
+		}
+		if !base.IsZero() {
+			if _, err := writer.Write(base[:]); err != nil {
+				return nil, 0, err
+			}
+		}
+
+		content, err := payload.Reader()
+		if err != nil {
+			return nil, 0, err
+		}
+		compressor.Reset(writer)
+		if _, err := io.Copy(compressor, content); err != nil {
+			content.Close()
+			return nil, 0, err
+		}
+		content.Close()
+		if err := compressor.Close(); err != nil {
+			return nil, 0, err
+		}
 	}
-	return haves, false
+
+	if _, err := buffer.Write(digest.Sum(nil)); err != nil {
+		return nil, 0, err
+	}
+	return buffer.Bytes(), deltas, nil
+}
+
+// git_thin_delta produces the delta from base to target, or nil when it is not
+// worth sending one. A delta no smaller than the object it replaces is a loss
+// twice over: a bigger entry, and work for the client to apply it.
+func git_thin_delta(storage storer.Storer, base plumbing.Hash, target plumbing.EncodedObject) (plumbing.EncodedObject, error) {
+	if target.Size() > git_thin_object_maximum {
+		return nil, nil
+	}
+	source, err := storage.EncodedObject(plumbing.AnyObject, base)
+	if err != nil {
+		return nil, err
+	}
+	if source.Type() != target.Type() || source.Size() > git_thin_object_maximum {
+		return nil, nil
+	}
+	delta, err := packfile.GetDelta(source, target)
+	if err != nil {
+		return nil, err
+	}
+	if delta.Size() >= target.Size() {
+		return nil, nil
+	}
+	return delta, nil
+}
+
+// git_pack_entry writes an entry header: the object type and the uncompressed
+// size of what follows, in git's variable-width encoding. The first byte holds
+// the type and the low four bits of the size; each byte after it holds seven
+// more size bits, least significant first, with the top bit set while more
+// follow.
+func git_pack_entry(writer io.Writer, kind plumbing.ObjectType, size int64) error {
+	current := byte(kind)<<4 | byte(size&0x0f)
+	size >>= 4
+	header := []byte{}
+	for size > 0 {
+		header = append(header, current|0x80)
+		current = byte(size & 0x7f)
+		size >>= 7
+	}
+	header = append(header, current)
+	_, err := writer.Write(header)
+	return err
+}
+
+// git_thin_bases pairs each object about to be sent with an object the client
+// already holds at the same path.
+//
+// Path is the signal that matters: the previous version of a file is
+// overwhelmingly the best base for the new one, and it is what git's own
+// "preferred base" selection uses. Matching by size or similarity instead would
+// mean scanning the client's whole store for every object.
+func git_thin_bases(storage storer.Storer, objects []plumbing.Hash, known []plumbing.Hash) (map[plumbing.Hash]plumbing.Hash, error) {
+	held := map[string]plumbing.Hash{}
+	if err := git_walk_paths(storage, known, func(path string, hash plumbing.Hash) {
+		if _, seen := held[path]; !seen {
+			held[path] = hash
+		}
+	}); err != nil {
+		return nil, err
+	}
+	if len(held) == 0 {
+		return nil, nil
+	}
+
+	// The commits being sent are the roots of the trees being sent, so they
+	// are where the paths of everything else in the pack come from.
+	var roots []plumbing.Hash
+	for _, hash := range objects {
+		if object, err := storage.EncodedObject(plumbing.CommitObject, hash); err == nil && object != nil {
+			roots = append(roots, hash)
+		}
+	}
+
+	sending := git_hash_set(objects)
+	bases := map[plumbing.Hash]plumbing.Hash{}
+	if err := git_walk_paths(storage, roots, func(path string, hash plumbing.Hash) {
+		if !sending[hash] {
+			return
+		}
+		if _, chosen := bases[hash]; chosen {
+			return
+		}
+		if base, ok := held[path]; ok && base != hash {
+			bases[hash] = base
+		}
+	}); err != nil {
+		return nil, err
+	}
+	return bases, nil
+}
+
+// git_walk_paths visits every path in the given commits' trees, root tree
+// included, skipping submodule entries - those name a commit in another
+// repository, which this one does not hold.
+func git_walk_paths(storage storer.EncodedObjectStorer, commits []plumbing.Hash, visit func(path string, hash plumbing.Hash)) error {
+	seen := map[plumbing.Hash]bool{}
+	for _, hash := range commits {
+		commit, err := object.GetCommit(storage, hash)
+		if err != nil {
+			continue
+		}
+		tree, err := commit.Tree()
+		if err != nil {
+			return err
+		}
+		visit("", tree.Hash)
+
+		walker := object.NewTreeWalker(tree, true, seen)
+		for {
+			name, entry, err := walker.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				walker.Close()
+				return err
+			}
+			if entry.Mode == filemode.Submodule {
+				continue
+			}
+			visit(name, entry.Hash)
+		}
+		walker.Close()
+	}
+	return nil
+}
+
+// git_band writes the packfile section of an upload-pack response.
+//
+// Without a side band the packfile is simply the rest of the body. With one it
+// is multiplexed into pkt-lines across three channels - pack data, progress,
+// errors - which is what lets a client print "remote:" lines while a transfer
+// is in flight, and lets the server explain a failure that happens after the
+// pack has started and the status code is long gone.
+type git_band struct {
+	writer   gin.ResponseWriter
+	muxer    *sideband.Muxer // nil when the client asked for no side band
+	target   io.Writer       // the muxer when there is one, the writer when there is not
+	progress bool            // false when the client sent no-progress
+}
+
+// git_band_open picks the side band the client asked for, if any. A client only
+// asks for what git_upload_pack_advertise offered, so an old client that knows
+// only the 1000-byte form still gets one.
+func git_band_open(writer gin.ResponseWriter, capabilities *capability.List) *git_band {
+	band := &git_band{writer: writer, target: writer}
+	switch {
+	case capabilities.Supports(capability.Sideband64k):
+		band.muxer = sideband.NewMuxer(sideband.Sideband64k, writer)
+	case capabilities.Supports(capability.Sideband):
+		band.muxer = sideband.NewMuxer(sideband.Sideband, writer)
+	default:
+		return band
+	}
+	band.target = band.muxer
+	band.progress = !capabilities.Supports(capability.NoProgress)
+	return band
+}
+
+// send copies the packfile onto the band, reporting how much has gone out as it
+// goes. The report has to come from inside the copy loop: on a slow link the
+// whole point is the line that arrives while the transfer is still running.
+func (b *git_band) send(reader io.Reader) (int64, error) {
+	var written, reported int64
+	buffer := make([]byte, 32<<10)
+	for {
+		n, err := reader.Read(buffer)
+		if n > 0 {
+			if _, failure := b.target.Write(buffer[:n]); failure != nil {
+				return written, failure
+			}
+			written += int64(n)
+			if written-reported >= git_progress_interval {
+				reported = written
+				b.message("Sending objects: %s\r", git_bytes(written))
+			}
+		}
+		if err == io.EOF {
+			return written, nil
+		}
+		if err != nil {
+			return written, err
+		}
+	}
+}
+
+// message reports progress. It is flushed immediately - a progress line whose
+// whole purpose is to arrive before the thing it describes finishes must not
+// sit in a buffer waiting for the pack to fill it.
+func (b *git_band) message(format string, a ...any) {
+	if b.muxer == nil || !b.progress {
+		return
+	}
+	b.muxer.WriteChannel(sideband.ProgressMessage, []byte(fmt.Sprintf(format, a...)))
+	b.writer.Flush()
+}
+
+// fail sends an error the client can print. It ignores no-progress: that
+// suppresses commentary, not the explanation for a pack that stopped early.
+// With no side band there is no channel for it and the client sees only a short
+// read, which is what happened to every failure before the band existed.
+func (b *git_band) fail(format string, a ...any) {
+	if b.muxer == nil {
+		return
+	}
+	b.muxer.WriteChannel(sideband.ErrorMessage, []byte(fmt.Sprintf(format, a...)))
+	b.writer.Flush()
+}
+
+// close terminates a multiplexed response. The side band is a pkt-line stream
+// and needs its flush packet to end; a raw packfile ends at the end of the body.
+func (b *git_band) close() {
+	if b.muxer == nil {
+		return
+	}
+	pktline.NewEncoder(b.writer).Flush()
+	b.writer.Flush()
+}
+
+// git_bytes renders a byte count for a progress message, in the units git's own
+// progress output uses.
+func git_bytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.2f GiB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.2f MiB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.2f KiB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%d bytes", n)
 }
 
 // git_receive_pack handles the git-receive-pack service (push). budget is the

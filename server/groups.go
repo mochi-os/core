@@ -223,7 +223,7 @@ func api_group_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		description, _ = sl.AsString(args[2])
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -245,7 +245,7 @@ func api_group_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "invalid id")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -278,7 +278,7 @@ func api_group_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "%v", err)
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -307,7 +307,7 @@ func api_group_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "invalid id")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -352,7 +352,7 @@ func api_group_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "invalid id")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -392,7 +392,7 @@ func api_group_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "type must be 'user' or 'group'")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -432,7 +432,7 @@ func api_group_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "invalid member")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -464,7 +464,7 @@ func apigroup_members(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		recursive = bool(args[1].Truth())
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}
@@ -490,7 +490,7 @@ func apigroup_memberships(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "invalid user")
 	}
 
-	owner := t.Local("owner").(*User)
+	owner := principal_owner(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
 	}

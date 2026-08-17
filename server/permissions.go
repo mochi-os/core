@@ -244,7 +244,7 @@ func permission_name(language, permission string) string {
 // the same priority as api_app_label: signed-in user preference, then the
 // thread-local language stashed by the request handler, then English.
 func thread_language(t *sl.Thread) string {
-	if user, _ := t.Local("user").(*User); user != nil {
+	if user := principal_caller(t); user != nil {
 		return user_language(user)
 	}
 	if l, ok := t.Local("language").(string); ok && l != "" {
@@ -557,7 +557,7 @@ func require_permission(t *sl.Thread, fn *sl.Builtin, permission string) error {
 		return nil
 	}
 
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return fmt.Errorf("no user context")
 	}
@@ -594,7 +594,7 @@ func require_permission_acting(t *sl.Thread, fn *sl.Builtin, permission string) 
 		return nil
 	}
 
-	user, err := db_user_for_thread(t)
+	user, err := principal_storage(t)
 	if err != nil || user == nil {
 		return fmt.Errorf("no user context")
 	}
@@ -637,7 +637,7 @@ func api_permission_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl.True, nil
 	}
 
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl.False, nil
 	}
@@ -669,7 +669,7 @@ func api_permission_grant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "%v", err)
 	}
 
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -705,7 +705,7 @@ func api_permission_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "cannot revoke permission/manage from self")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -726,7 +726,7 @@ func api_permission_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "invalid app")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}

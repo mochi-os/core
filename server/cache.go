@@ -71,7 +71,7 @@ func cache_configure() {
 // resolution matches mochi.db and mochi.file: the requesting user when there
 // is one, otherwise the entity owner.
 func cache_base(t *sl.Thread) (string, error) {
-	user, err := db_user_for_thread(t)
+	user, err := principal_storage(t)
 	if err != nil || user == nil {
 		return "", fmt.Errorf("no user")
 	}
@@ -280,10 +280,10 @@ func api_cache_copy(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	// The same user the source was resolved for. cache_file goes through
-	// cache_base, which uses db_user_for_thread and so returns the OWNER under
+	// cache_base, which uses principal_storage and so returns the OWNER under
 	// domain routing; reading the destination from t.Local("user") instead
 	// copied the owner's cached bytes into a visitor's own file storage.
-	user, err := db_user_for_thread(t)
+	user, err := principal_storage(t)
 	if err != nil || user == nil {
 		return sl_error(fn, "no user")
 	}

@@ -43,7 +43,7 @@ func TestActionOwner(t *testing.T) {
 		{"owner on a plain route", owner, entity, routing_path, true},
 		{"owner on a domain route", owner, entity, routing_domain, true},
 		{"another logged-in caller, plain route", visitor, entity, routing_path, false},
-		// The escalation. db_user_for_thread returns the owner here, so anything
+		// The escalation. principal_storage returns the owner here, so anything
 		// resolving through it reports the visitor as the owner.
 		{"another logged-in caller, DOMAIN route", visitor, entity, routing_domain, false},
 		{"anonymous", nil, entity, routing_path, false},

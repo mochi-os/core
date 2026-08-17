@@ -507,7 +507,7 @@ func (s *Stream) sl_read_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return nil, err
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		s.close_read()
 		return sl_error(fn, "no user")
@@ -626,7 +626,7 @@ func (s *Stream) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		return sl_error(fn, "syntax: <file: string>")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -709,7 +709,7 @@ func (s *Stream) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 		return sl_error(fn, "no app")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	file := app_local_path(app, user, path)
 	if file == "" {
 		return sl_error(fn, "no active app version")

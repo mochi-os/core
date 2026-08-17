@@ -629,7 +629,7 @@ func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		}
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -669,7 +669,7 @@ func api_entity_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "invalid id %q", id)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -748,7 +748,7 @@ func api_entity_sign(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "invalid text")
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -806,7 +806,7 @@ func api_entity_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 // empty for an anonymous caller. Accepts either an entity ID or a fingerprint.
 //
 // Every caller uses this to answer "does the caller own this", so it resolves
-// the caller and nothing else. It used to ask db_user_for_thread, which answers
+// the caller and nothing else. It used to ask principal_storage, which answers
 // a different question - which per-user database to open - and returns the
 // OWNER for an anonymous caller or a domain route carrying a context. Reading a
 // storage-routing decision as an identity claim meant that on such a route every
@@ -814,7 +814,7 @@ func api_entity_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 // apps inferred ownership from exactly that (feeds/forums owned(), wikis comment
 // deletion, publisher's 403 gate, repositories, people). Core keeps the two
 // apart everywhere else - access_check takes owner AND user as separate
-// arguments - and db_user_for_thread stays as it is for the two consumers that
+// arguments - and principal_storage stays as it is for the two consumers that
 // genuinely want storage: opening the app database, and resolving attachments.
 func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission_acting(t, fn, "entity/read"); err != nil {
@@ -833,7 +833,7 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	// No authenticated caller owns nothing, rather than owning the owner's
 	// entities. This is also what makes the anonymous half of the same mistake
 	// impossible rather than a convention apps have to remember.
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_encode([]any{}), nil
 	}
@@ -940,11 +940,11 @@ func api_entity_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // mochi.entity.owned() -> list: Get all entities owned by the current user
 func api_entity_owned(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "entity/read"); err != nil {
+	if err := require_permission_acting(t, fn, "entity/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -970,7 +970,7 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	// Get user from context
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}

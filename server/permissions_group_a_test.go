@@ -132,8 +132,14 @@ func TestAccessCheckNeedsAPermission(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read access.go: %v", err)
 	}
-	if n := strings.Count(string(source), "require_permission(t, fn,"); n != 1 {
-		t.Errorf("access.go has %d permission checks, want exactly 1 - the other seven APIs read only the app's own table and are meant to stay ungated", n)
+	// Both call shapes: check is on the _acting variant because a public
+	// action reaches it with no caller at all, and strict require_permission
+	// refuses that before it ever looks at a grant.
+	text := string(source)
+	calls := strings.Count(text, "require_permission(t, fn,") +
+		strings.Count(text, "require_permission_acting(t, fn,")
+	if calls != 1 {
+		t.Errorf("access.go has %d permission checks, want exactly 1 - the other seven APIs read only the app's own table and are meant to stay ungated", calls)
 	}
 }
 

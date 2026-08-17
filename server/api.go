@@ -334,7 +334,7 @@ func api_service_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if !ok {
 		return sl_error(fn, "invalid service")
 	}
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	return sl.Bool(app_for_service(user, service) != nil), nil
 }
 
@@ -371,7 +371,7 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	// Look for matching app function, using user preferences
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	a := app_for_service(user, service)
 	if a == nil {
 		// Return None for missing service (allows graceful degradation during bootstrap)
@@ -410,8 +410,8 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	// Call function
 	s := av.starlark()
 	s.set("app", a)
-	s.set("user", t.Local("user").(*User))
-	s.set("owner", t.Local("owner").(*User))
+	s.set("user", principal_caller(t))
+	s.set("owner", principal_owner(t))
 	s.set("depth", depth+1)
 
 	// Build call args based on target app's architecture version
@@ -812,9 +812,9 @@ func (m *stream_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []
 // hole open on whichever call site was missed. sender_check is that test, and
 // is shared with message.send for the same reason.
 func stream_headers_validate(t *sl.Thread, headers map[string]string) (*User, string, []string, error) {
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
-		user, _ = t.Local("owner").(*User)
+		user = principal_owner(t)
 	}
 	if user == nil {
 		return nil, "", nil, errors.New("no user")
@@ -980,7 +980,7 @@ func api_time_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	// Get user's timezone
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	timezone := "UTC"
 	if user != nil {
 		timezone = user_preference_get(user, "timezone", "UTC")
@@ -1059,7 +1059,7 @@ func api_time_parse(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	// Naive format — assume the user's timezone (mirroring local's direction)
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	timezone := "UTC"
 	if user != nil {
 		timezone = user_preference_get(user, "timezone", "UTC")
@@ -1120,7 +1120,7 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	// Collect all granted url: domains for redirect validation
 	var url_domains []string
 	if app != nil {
-		user, _ := t.Local("user").(*User)
+		user, _ := principal_storage(t)
 		if user != nil && !app_is_internal(app) {
 			db := db_user(user, "user")
 			db.permissions_setup()
@@ -1173,7 +1173,7 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	// the same key. A hit returns the cached response without making
 	// another HTTP request — the safety net for APIs that ignore the
 	// Idempotency-Key header.
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if idempotency_key != "" && app != nil && user != nil {
 		if cached := url_idempotency_lookup(user, app, idempotency_key); cached != nil {
 			return sl_encode(cached), nil

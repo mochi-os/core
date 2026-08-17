@@ -2450,7 +2450,7 @@ func api_app_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 	apps_lock.Unlock()
 
 	if found {
-		user := t.Local("user").(*User)
+		user := principal_caller(t)
 		av := a.active(user)
 		latest := av.Version
 		if a.latest != nil {
@@ -2490,7 +2490,7 @@ func api_app_label(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl.String(""), nil
 	}
 
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	av := a.active(user)
 	if av == nil || av.labels == nil {
 		return sl.String(""), nil
@@ -2555,7 +2555,7 @@ func starlark_kwargs_to_map(kwargs []sl.Tuple) (map[string]any, error) {
 // mochi.app.icons() -> dict: Get available icons for home screen
 // Returns {"icons": [...], "icon_mask": "...", "icon_background": "..."}
 func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	var icons []map[string]any
 
 	// Resolve the user's active theme for icon overrides
@@ -2645,7 +2645,7 @@ func api_app_package_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "invalid file %q", file)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -2756,7 +2756,7 @@ func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		}
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -2791,7 +2791,7 @@ func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // mochi.app.list() -> list: Get list of installed apps
 func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	var results []map[string]any
 
 	apps_lock.Lock()
@@ -2872,7 +2872,7 @@ func app_theme_get(user *User, app_id, theme_id string) *AppTheme {
 
 // mochi.app.themes() -> list: Get flat list of all themes from all installed apps
 func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	var results []map[string]any
 
 	// In dev, pick up theme edits in any app's app.json without requiring
@@ -2997,7 +2997,7 @@ func api_app_class_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
 	}
@@ -3021,7 +3021,7 @@ func api_app_class_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
 	}
@@ -3047,7 +3047,7 @@ func api_app_class_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
 	}
@@ -3083,7 +3083,7 @@ func api_app_service_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
 	}
@@ -3107,7 +3107,7 @@ func api_app_service_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
 	}
@@ -3133,7 +3133,7 @@ func api_app_service_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
 	}
@@ -3173,7 +3173,7 @@ func api_app_url(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	return sl.String(app.url_path(user)), nil
 }
 
@@ -3187,9 +3187,9 @@ func api_app_services(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
-		user, _ = t.Local("owner").(*User)
+		user = principal_owner(t)
 	}
 	return sl_encode(app_services(app, user)), nil
 }
@@ -3200,7 +3200,7 @@ func api_app_path_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
 	}
@@ -3224,7 +3224,7 @@ func api_app_path_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
 	}
@@ -3250,7 +3250,7 @@ func api_app_path_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
 	}
@@ -3310,7 +3310,7 @@ func api_app_version_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
 	}
@@ -3354,7 +3354,7 @@ func api_app_version_download(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -3398,7 +3398,7 @@ func api_app_track_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil || !user.administrator() {
 		return sl_error(fn, "not administrator")
 	}
@@ -3497,7 +3497,7 @@ func api_app_cleanup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "%v", err)
 	}
 
-	u, _ := t.Local("user").(*User)
+	u := principal_caller(t)
 	if u == nil || !u.administrator() {
 		return sl_error(fn, "not administrator")
 	}
@@ -3651,7 +3651,7 @@ func api_app_asset_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "no app")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	full := app_local_path(app, user, path)
 	if full == "" {
 		return sl.False, nil
@@ -3687,7 +3687,7 @@ func api_app_asset_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no app")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	full := app_local_path(app, user, path)
 	if full == "" {
 		return sl_encode([]string{}), nil
@@ -3725,7 +3725,7 @@ func api_app_asset_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no app")
 	}
 
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	full := app_local_path(app, user, path)
 	if full == "" {
 		return sl_error(fn, "no active app version")

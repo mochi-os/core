@@ -1730,48 +1730,6 @@ func (db *DB) scans(out any, query string, values ...any) error {
 	return db.internal.Select(out, query, values...)
 }
 
-// db_user_for_thread resolves which user's perspective the current Starlark
-// thread is acting from, given the user/owner/domain-routing context.
-//
-// Rules:
-//   - logged-in user, no domain routing: that user
-//   - logged-in user with domain routing: the route owner (so apps under a
-//     custom domain serve the route owner's data regardless of who's signed in)
-//   - anonymous (no user) with a local entity owner: that owner (so visitors
-//     can read public entity content)
-//   - anonymous and no owner: error (no context to act in)
-//   - logged-in under domain routing with no owner: error (the route has no
-//     target user to act as)
-//
-// The helper is shared by mochi.db.* (which propagates the error) and
-// mochi.entity.* (which treats it as "no entities to show"), so the two
-// namespaces stay in sync.
-func db_user_for_thread(t *sl.Thread) (*User, error) {
-	owner, _ := t.Local("owner").(*User)
-	user, _ := t.Local("user").(*User)
-
-	var domain_routing bool
-	if action := t.Local("action"); action != nil {
-		if a, ok := action.(*Action); ok && a.domain != nil && a.domain.route != nil {
-			domain_routing = a.domain.route.context != ""
-		}
-	}
-
-	if user == nil {
-		if owner == nil {
-			return nil, fmt.Errorf("no user context available")
-		}
-		return owner, nil
-	}
-	if domain_routing {
-		if owner == nil {
-			return nil, fmt.Errorf("no owner context for domain routing")
-		}
-		return owner, nil
-	}
-	return user, nil
-}
-
 // starlark_db runs one of the app's database lifecycle functions
 // (database_create / database_upgrade / database_downgrade) and stamps
 // user_version, both inside a single transaction on a dedicated connection.
@@ -1850,7 +1808,7 @@ func db_for_thread(t *sl.Thread) (*DB, error) {
 		return db, nil
 	}
 
-	db_user, err := db_user_for_thread(t)
+	db_user, err := principal_storage(t)
 	if err != nil {
 		return nil, err
 	}

@@ -1082,7 +1082,7 @@ func api_user_oauth_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1109,7 +1109,7 @@ func api_user_oauth_verify_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1152,7 +1152,7 @@ func api_user_oauth_verify_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	user, _ := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -1271,7 +1271,7 @@ func api_user_oauth_unlink(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "%v", err)
 	}
 
-	user := t.Local("user").(*User)
+	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}

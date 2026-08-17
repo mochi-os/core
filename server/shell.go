@@ -127,7 +127,17 @@ func shell_wrap_candidate(c *gin.Context) bool {
 	// states — and a session-bearing user with an identity (e.g. a "closing"
 	// account) would otherwise be wrapped, loading the interstitial into the
 	// shell's sandboxed iframe where its cookies are stripped and it loops.
-	if path == "/login" || strings.HasPrefix(path, "/login/") {
+	//
+	// Resolved through app_login_owns rather than matched against "login",
+	// because the path is the login_app setting and both directions of a
+	// literal bite. A renamed login app gets wrapped, which is the loop above
+	// and the #414 class again. And an app that merely binds the path `login`
+	// stops being wrapped, which hands it the thing the wrap exists to deny:
+	// its bundle running top-level, same-origin and cookie-bearing, where
+	// POST /_/token mints a JWT for every installed app. The closing gate in
+	// web.go asks the same question the same way, so the two shell-level gates
+	// cannot disagree about which paths are the login app's.
+	if app_login_owns(strings.Trim(path, "/")) {
 		return false
 	}
 

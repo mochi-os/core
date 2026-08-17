@@ -89,9 +89,24 @@ func receive_stream_guarded(s p2p_network.Stream) {
 	claimed := map[string]bool{}
 	var open *Frame
 
-	// Drain claim frames until we see the open. Anything else before
-	// open is a protocol violation.
-	for {
+	// The pre-open phase is bounded on both axes, because until open arrives
+	// the peer has spent nothing and this host has spent a goroutine, a
+	// stream, an ed25519 verify per claim and a map entry per distinct
+	// entity. frame_maximum caps how big one frame is; nothing capped how
+	// many, or how slowly they arrive. libp2p's 128 inbound streams per peer
+	// is not the answer - it bounds concurrency, not work per stream, and a
+	// peer identity is free to mint.
+	//
+	// The deadline covers this phase only and is cleared before the handler
+	// takes over: an app stream is long-lived by design and must not inherit
+	// a handshake timeout.
+	_ = s.SetReadDeadline(time.Now().Add(stream_open_timeout))
+	for count := 0; ; count++ {
+		if count >= stream_claims_maximum {
+			info("Stream: too many claims before open peer=%q session=%s — over %d", peer, session, stream_claims_maximum)
+			s.Reset()
+			return
+		}
 		f, err := frame_read(s)
 		if err != nil {
 			info("Stream: framing error peer=%q session=%s: %v", peer, session, err)
@@ -100,9 +115,12 @@ func receive_stream_guarded(s p2p_network.Stream) {
 		}
 		switch f.Type {
 		case frame_type_claim:
+			// A claim that does not verify is not a retry, it is a peer
+			// spending our signature checks on nothing. It used to continue.
 			if err := claim_verify(f.From, challenge, f.Signature, net_id, protocol_stream); err != nil {
 				info("Stream: claim verify failed peer=%q entity=%q: %v", peer, f.From, err)
-				continue
+				s.Reset()
+				return
 			}
 			claimed[f.From] = true
 		case frame_type_open:
@@ -116,6 +134,7 @@ func receive_stream_guarded(s p2p_network.Stream) {
 			break
 		}
 	}
+	_ = s.SetReadDeadline(time.Time{})
 
 	if open.From != "" && !claimed[open.From] {
 		_ = frame_write(s, &Frame{Type: frame_type_fail, Replies: []string{open.ID}, Reason: fail_unclaimed})

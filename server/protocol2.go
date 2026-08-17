@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	cbor "github.com/fxamacker/cbor/v2"
 	zstd "github.com/klauspost/compress/zstd"
@@ -47,6 +48,14 @@ const (
 	frame_diagnostic_size = 256              // hex log on CBOR decode failure
 	challenge_size_v2     = 32               // hello.Challenge length
 	max_id_length         = 64               // max Frame.ID / message id length; enforced by envelope_valid
+
+	// Pre-open bounds on /mochi/2/stream. An opener claims the entities it is
+	// about to address - a handful - so anything approaching these is a peer
+	// spending our verifies and our goroutine rather than opening a stream.
+	// Real openers send one claim; the ceiling is generous so a legitimate
+	// multi-entity opener is never the one that trips it.
+	stream_claims_maximum = 64               // claim frames accepted before open
+	stream_open_timeout   = 30 * time.Second // whole pre-open phase, cleared after
 
 	// Codec byte values (Frame.Codec).
 	codec_none = 0

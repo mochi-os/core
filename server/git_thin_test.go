@@ -19,6 +19,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -140,6 +141,68 @@ func TestGitFetchThinPackNeverLargerThanWhole(t *testing.T) {
 	if len(thin) > len(whole) {
 		t.Errorf("asking for a thin pack made the response %d bytes against %d: "+
 			"the smaller of the two candidates is not being chosen", len(thin), len(whole))
+	}
+}
+
+// TestGitPackMemoryIsBounded — comparing a thin pack against a whole one means
+// holding both in memory, and the object-count ceiling bounds neither: one
+// large blob is one object. A client fetching after a long absence is sent most
+// of the repository, so the comparison has to give up rather than allocate it
+// twice.
+func TestGitPackMemoryIsBounded(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+
+	user, _, cleanup := create_git_test_env(t)
+	defer cleanup()
+
+	repo_path, first, second := git_thin_repo(t, user, "thinmemory")
+	storage, err := (&git_loader{}).Load(&transport.Endpoint{Path: repo_path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	capabilities := capability.NewList()
+	if err := capabilities.Add(capability.ThinPack); err != nil {
+		t.Fatalf("capabilities: %v", err)
+	}
+	selection, err := git_upload_pack_select(storage, &git_request{
+		capabilities: capabilities,
+		wants:        []plumbing.Hash{second},
+		done:         true,
+	}, []plumbing.Hash{first}, true)
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+
+	// A limit between the two candidates: the whole pack carries a 4 MiB
+	// incompressible blob, the thin one is about a kilobyte.
+	original := git_pack_memory_maximum
+	git_pack_memory_maximum = 1 << 20
+	defer func() { git_pack_memory_maximum = original }()
+
+	if _, err := git_pack_plain(storage, selection.objects); !errors.Is(err, git_pack_oversize) {
+		t.Errorf("a 4 MiB pack against a 1 MiB limit gave %v, want it refused", err)
+	}
+
+	// The chooser must still answer, and answer with the thin pack: a whole
+	// pack that did not fit is by definition larger than a thin one that did.
+	// This is exactly the case thin-pack exists for, so falling back to
+	// streaming the whole pack here would give up the entire saving.
+	chosen := git_upload_pack_candidate(storage, selection)
+	if chosen == nil {
+		t.Fatal("no candidate was chosen, so the fetch would stream the 4 MiB pack instead of the 1 KiB one")
+	}
+	if len(chosen) > 4096 {
+		t.Errorf("the chosen pack is %d bytes; the thin one was a little over a kilobyte", len(chosen))
+	}
+
+	// And with the limit below both, the fetch gives up on comparing and
+	// streams rather than allocating either.
+	git_pack_memory_maximum = 512
+	if chosen := git_upload_pack_candidate(storage, selection); chosen != nil {
+		t.Errorf("a %d byte candidate was built against a 512 byte limit", len(chosen))
 	}
 }
 

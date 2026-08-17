@@ -4571,6 +4571,36 @@ const git_thin_maximum = 50000
 // fetch takes.
 const git_thin_object_maximum = 64 << 20
 
+// Most a candidate pack may occupy in memory. Comparing thin against whole
+// means holding both at once, and the object ceiling above does not bound bytes
+// at all - one large blob is one object, and a client fetching after a long
+// absence is sent most of the repository. A pack over this is streamed by the
+// ordinary encoder instead, which holds no more than its copy buffer.
+//
+// A variable rather than a constant so a test can lower it and exercise the
+// refusal without building a repository large enough to reach it, the same way
+// the git tests already reassign data_dir.
+var git_pack_memory_maximum = 64 << 20
+
+// git_pack_oversize reports a candidate pack that outgrew the memory allowed
+// for comparing it. It is not a failure - the streamed encoder still has a
+// correct answer - so callers fall back rather than fail the fetch.
+var git_pack_oversize = errors.New("pack exceeds the memory allowed for comparing candidates")
+
+// git_capped collects a pack in memory but refuses to grow past a limit, so a
+// pack built only to be measured cannot decide how much memory a fetch takes.
+type git_capped struct {
+	buffer bytes.Buffer
+	limit  int
+}
+
+func (c *git_capped) Write(p []byte) (int, error) {
+	if c.buffer.Len()+len(p) > c.limit {
+		return 0, git_pack_oversize
+	}
+	return c.buffer.Write(p)
+}
+
 // git_upload_pack_send encodes objects as a packfile and writes it to the band.
 //
 // When the client asked for a thin pack, two candidates are built and the
@@ -4581,16 +4611,7 @@ const git_thin_object_maximum = 64 << 20
 // construction - a fetch large enough for that to matter is over the ceiling
 // above and skips the attempt.
 func git_upload_pack_send(band *git_band, storage storer.Storer, selection *git_selection) error {
-	if thin := git_thin_candidate(storage, selection); thin != nil {
-		plain, err := git_pack_plain(storage, selection.objects)
-		if err != nil {
-			return err
-		}
-		chosen, kind := thin, "thin"
-		if len(plain) <= len(thin) {
-			chosen, kind = plain, "whole"
-		}
-		debug("git_upload_pack_send: %s pack chosen, %d bytes against %d", kind, len(chosen), len(plain)+len(thin)-len(chosen))
+	if chosen := git_upload_pack_candidate(storage, selection); chosen != nil {
 		written, err := band.send(bytes.NewReader(chosen))
 		if err != nil {
 			return err
@@ -4615,10 +4636,42 @@ func git_upload_pack_send(band *git_band, storage storer.Storer, selection *git_
 	return nil
 }
 
+// git_upload_pack_candidate returns the pack to send when a thin one was worth
+// building and both candidates fitted in memory to be compared, and nil when
+// the streamed encoder is the answer.
+func git_upload_pack_candidate(storage storer.Storer, selection *git_selection) []byte {
+	thin := git_thin_candidate(storage, selection)
+	if thin == nil {
+		return nil
+	}
+
+	plain, err := git_pack_plain(storage, selection.objects)
+	if err != nil {
+		// An ordinary pack that outgrew the comparison limit is by definition
+		// larger than the thin one, which did not - so the choice is already
+		// made, and made in thin's favour. That is exactly the case thin-pack
+		// exists for: a small edit to a large file.
+		if errors.Is(err, git_pack_oversize) {
+			debug("git_upload_pack_candidate: thin pack chosen, %d bytes against a whole pack over %d",
+				len(thin), git_pack_memory_maximum)
+			return thin
+		}
+		debug("git_upload_pack_candidate: building the whole pack failed: %v", err)
+		return nil
+	}
+
+	if len(plain) <= len(thin) {
+		debug("git_upload_pack_candidate: whole pack chosen, %d bytes against %d", len(plain), len(thin))
+		return plain
+	}
+	debug("git_upload_pack_candidate: thin pack chosen, %d bytes against %d", len(thin), len(plain))
+	return thin
+}
+
 // git_thin_candidate builds the thin pack for a selection, or returns nil when
 // one is not worth having: the client did not ask, the fetch is too large, no
-// object had a base on the client's side, or the build failed. A failure here
-// is not fatal - the ordinary encoder still has a correct answer.
+// object had a base on the client's side, or the build did not fit or failed.
+// None of those is fatal - the ordinary encoder still has a correct answer.
 func git_thin_candidate(storage storer.Storer, selection *git_selection) []byte {
 	if !selection.thin || len(selection.objects) > git_thin_maximum || len(selection.known) == 0 {
 		return nil
@@ -4645,12 +4698,12 @@ func git_thin_candidate(storage storer.Storer, selection *git_selection) []byte 
 // against each other within a sliding window and never against anything the
 // pack does not carry.
 func git_pack_plain(storage storer.Storer, objects []plumbing.Hash) ([]byte, error) {
-	var buffer bytes.Buffer
-	encoder := packfile.NewEncoder(&buffer, storage, false)
+	capped := &git_capped{limit: git_pack_memory_maximum}
+	encoder := packfile.NewEncoder(capped, storage, false)
 	if _, err := encoder.Encode(objects, git_pack_window); err != nil {
 		return nil, err
 	}
-	return buffer.Bytes(), nil
+	return capped.buffer.Bytes(), nil
 }
 
 // git_pack_thin writes objects as a packfile, sending any object with a chosen
@@ -4661,11 +4714,11 @@ func git_pack_plain(storage storer.Storer, objects []plumbing.Hash) ([]byte, err
 //
 // Returns the pack and how many entries ended up deltified.
 func git_pack_thin(storage storer.Storer, objects []plumbing.Hash, bases map[plumbing.Hash]plumbing.Hash) ([]byte, int, error) {
-	var buffer bytes.Buffer
+	capped := &git_capped{limit: git_pack_memory_maximum}
 	// The trailing checksum covers every byte of the pack, so the digest runs
 	// alongside the buffer rather than over it afterwards.
 	digest := sha1.New()
-	writer := io.MultiWriter(&buffer, digest)
+	writer := io.MultiWriter(capped, digest)
 
 	if _, err := writer.Write([]byte("PACK")); err != nil {
 		return nil, 0, err
@@ -4719,10 +4772,10 @@ func git_pack_thin(storage storer.Storer, objects []plumbing.Hash, bases map[plu
 		}
 	}
 
-	if _, err := buffer.Write(digest.Sum(nil)); err != nil {
+	if _, err := capped.Write(digest.Sum(nil)); err != nil {
 		return nil, 0, err
 	}
-	return buffer.Bytes(), deltas, nil
+	return capped.buffer.Bytes(), deltas, nil
 }
 
 // git_thin_delta produces the delta from base to target, or nil when it is not

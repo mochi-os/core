@@ -351,12 +351,22 @@ func net_addresses() []string {
 	if net_me == nil {
 		return nil
 	}
+	return net_addresses_render(net_me.Addrs())
+}
+
+// net_addresses_render turns a host's advertised multiaddresses into the
+// published string form: container-interface and undialable addresses dropped,
+// each stamped with this server's peer id, deduplicated.
+func net_addresses_render(addrs []multiaddr.Multiaddr) []string {
 	container := net_container_addresses()
 	suffix := "/p2p/" + net_id
 	seen := map[string]bool{}
 	var out []string
-	for _, a := range net_me.Addrs() {
+	for _, a := range addrs {
 		if container[net_address_ip(a)] {
+			continue
+		}
+		if !net_address_dialable(a) {
 			continue
 		}
 		s := a.String()
@@ -370,6 +380,30 @@ func net_addresses() []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// net_address_dialable reports whether a remote host could use this address to
+// reach us. Loopback, unspecified and link-local cannot leave the machine or
+// the segment, so they are noise to every consumer of the published list -
+// worse than noise in peers_publish, which truncates at
+// peers_publish_addresses_maximum and would spend that budget on addresses no
+// peer can dial.
+//
+// Private addresses are kept on purpose. A peer on the same network dials
+// 10.x or 192.168.x successfully, and that is a supported deployment; only
+// addresses that are undialable from ANY other host are dropped. A name-based
+// address has no IP to judge and is kept.
+func net_address_dialable(a multiaddr.Multiaddr) bool {
+	text := net_address_ip(a)
+	if text == "" {
+		return true
+	}
+	address := gonet.ParseIP(text)
+	if address == nil {
+		return true
+	}
+	return !address.IsLoopback() && !address.IsUnspecified() &&
+		!address.IsLinkLocalUnicast() && !address.IsLinkLocalMulticast()
 }
 
 // net_address_ip returns the leading IP component of a multiaddress,

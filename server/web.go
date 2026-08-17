@@ -1999,9 +1999,13 @@ func web_path(c *gin.Context) {
 
 // Return Net connection info for this server
 func web_p2p_info(c *gin.Context) {
-	addresses := []string{}
-	for _, addr := range net_me.Addrs() {
-		addresses = append(addresses, addr.String()+"/p2p/"+net_id)
+	// net_addresses is the one rendering of this list: it drops container and
+	// undialable addresses, stamps the peer id once, and deduplicates. This
+	// handler used to loop over net_me.Addrs() itself and so published none of
+	// that, to anonymous callers, while the mesh got the filtered form.
+	addresses := net_addresses()
+	if addresses == nil {
+		addresses = []string{}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"peer":      net_id,

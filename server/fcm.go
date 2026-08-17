@@ -43,7 +43,20 @@ const (
 	fcm_oauth_token_url     = "https://oauth2.googleapis.com/token"
 	fcm_oauth_scope         = "https://www.googleapis.com/auth/firebase.messaging"
 	fcm_access_token_margin = 5 * time.Minute
+	// fcm_send_attempts counts total tries, not retries: one send, then at
+	// most one more.
+	fcm_send_attempts = 2
+	fcm_send_timeout  = 15 * time.Second
 )
+
+// fcm_retry_backoff is the pause between the two attempts. A var so tests can
+// exercise the retry without spending it.
+var fcm_retry_backoff = 2 * time.Second
+
+// fcm_request_error marks a failure to build the request rather than to send
+// it. The two are reported differently on the connected-accounts Test button,
+// and only the send is worth retrying.
+var fcm_request_error = errors.New("request build failed")
 
 // fcm_service_account is the parsed shape of the service-account JSON. Only
 // the fields we need; the JSON file has more.
@@ -132,31 +145,15 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app, id st
 	}
 
 	url := fmt.Sprintf(fcm_send_url_format, sa.ProjectID)
-	client := &http.Client{Timeout: 15 * time.Second}
-	var resp *http.Response
-	// A 5xx from FCM (INTERNAL, UNAVAILABLE) is a transient Google-side
-	// error that Google documents as retriable; one retry recovers the
-	// notification instead of dropping it. Only a failure on the final
-	// attempt reaches the warn below.
-	for attempt := 1; ; attempt++ {
-		req, err := http.NewRequest("POST", url, bytes.NewReader(payload))
-		if err != nil {
+	client := &http.Client{Timeout: fcm_send_timeout}
+	resp, err := fcm_post(client, url, access_token, payload)
+	if err != nil {
+		if errors.Is(err, fcm_request_error) {
 			warn("FCM: build request: %v", err)
 			return false, false, fmt.Sprintf("Request build failed: %v", err)
 		}
-		req.Header.Set("Authorization", "Bearer "+access_token)
-		req.Header.Set("Content-Type", "application/json")
-		resp, err = client.Do(req)
-		if err != nil {
-			warn("FCM: send: %v", err)
-			return false, false, fmt.Sprintf("Network error: %v", err)
-		}
-		if resp.StatusCode < 500 || attempt > 1 {
-			break
-		}
-		resp.Body.Close()
-		debug("FCM: send returned %d, retrying once", resp.StatusCode)
-		time.Sleep(2 * time.Second)
+		warn("FCM: send: %v", err)
+		return false, false, fmt.Sprintf("Network error: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == 200 {
@@ -172,6 +169,49 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app, id st
 		warn("FCM: send returned %d: %s", resp.StatusCode, string(body_bytes))
 	}
 	return false, retire, fcm_summarise_error(resp.StatusCode, body_bytes)
+}
+
+// fcm_post sends one prepared envelope, retrying once on a failure that will
+// plausibly have cleared two seconds later, and returns the response for the
+// caller to classify. A push has no queue behind it: whatever this returns is
+// the only attempt the notification gets, so a failure here is a phone that
+// never buzzes.
+//
+// Both retriable cases are transient and Google-side. A 5xx (INTERNAL,
+// UNAVAILABLE) is documented by Google as retriable. A transport error - TLS
+// handshake timeout, connection reset, DNS failure - never reached Google at
+// all, so it is at least as likely to succeed on a second attempt; it used to
+// return immediately, which excluded the most recoverable failure there is
+// from the mechanism built for recoverable failures.
+//
+// Two attempts, never more. The response body of a retried attempt is closed
+// here; the returned one is the caller's to close. Logging the final failure
+// is the caller's too, so both failure kinds keep their own message.
+func fcm_post(client *http.Client, url, access_token string, payload []byte) (*http.Response, error) {
+	var resp *http.Response
+	for attempt := 1; ; attempt++ {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(payload))
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", fcm_request_error, err)
+		}
+		req.Header.Set("Authorization", "Bearer "+access_token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err = client.Do(req)
+		if err != nil {
+			if attempt >= fcm_send_attempts {
+				return nil, err
+			}
+			debug("FCM: send failed (%v), retrying once", err)
+			time.Sleep(fcm_retry_backoff)
+			continue
+		}
+		if resp.StatusCode < 500 || attempt >= fcm_send_attempts {
+			return resp, nil
+		}
+		resp.Body.Close()
+		debug("FCM: send returned %d, retrying once", resp.StatusCode)
+		time.Sleep(fcm_retry_backoff)
+	}
 }
 
 // fcm_retire reports whether a non-200 FCM response names the token

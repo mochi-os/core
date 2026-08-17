@@ -431,7 +431,6 @@ var (
 			{"apps/write", ""},
 			{"permissions/read", ""},
 			{"permissions/write", ""},
-			{"settings/read", ""},
 		}},
 		{"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92", "Chat", []struct{ Permission, Object string }{
 			{"friends/read", ""},
@@ -477,7 +476,6 @@ var (
 			{"accounts/read", ""},
 			{"accounts/write", ""},
 			{"entity/read", ""},
-			{"settings/read", ""},
 			{"tokens/create", ""},
 			{"webpush/send", ""},
 		}},
@@ -523,7 +521,6 @@ var (
 			{"permissions/read", ""},
 			{"server/read", ""},
 			{"server/update", ""},
-			{"settings/read", ""},
 			{"settings/write", ""},
 			{"user/authentication/read", ""},
 			{"user/authentication/sign", ""},

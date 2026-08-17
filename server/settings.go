@@ -23,7 +23,14 @@ type Setting struct {
 	Value string
 }
 
-// SystemSetting defines a system setting with validation and access control
+// SystemSetting defines a system setting with validation and access control.
+//
+// Read access is decided by the setting's own classification and nothing else:
+// Public is readable by anyone including anonymous callers, UserReadable by any
+// signed-in user, neither by administrators only, and Secret by no one - the
+// stored value is never returned, so a credential cannot be read back through
+// any caller. Writing is separate and needs the restricted settings/write
+// permission, because there is no per-setting statement of who may write.
 type SystemSetting struct {
 	Name         string // Setting name
 	Pattern      string // Validation pattern for valid()
@@ -348,12 +355,6 @@ func api_setting_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl.String(value), nil
 	}
 
-	// Below the public branch on purpose: a public setting stays readable by
-	// anyone, grant or not. Everything else is server configuration.
-	if err := require_permission(t, fn, "settings/read"); err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
 	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -441,10 +442,6 @@ func api_setting_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // mochi.setting.list() -> list: List all system settings (admin only)
 func api_setting_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "settings/read"); err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
 	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")

@@ -134,7 +134,6 @@ var permissions = []Permission{
 	{"repositories/write", true, false},
 	{"server/read", true, true},
 	{"server/update", true, true},
-	{"settings/read", true, true},
 	{"settings/write", true, true},
 	{"tokens/create", true, false},
 	// Signing with the user's passkey. The shell hosts WebAuthn ceremonies for

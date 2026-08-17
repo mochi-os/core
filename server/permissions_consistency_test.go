@@ -133,26 +133,34 @@ func TestReadAndWriteHalvesAreSplitHonestly(t *testing.T) {
 	}
 }
 
-// TestPublicSettingsStayAnonymous. A public setting is readable with no user at
-// all - the login page reads branding before anyone has signed in. Putting the
-// settings/read gate at the top of api_setting_get, which is the obvious place,
-// breaks that; it has to sit below the public early return.
-func TestPublicSettingsStayAnonymous(t *testing.T) {
+// TestSettingReadsAreGatedByTheSettingAlone. A permission is one boolean for a
+// set spanning operator_name and relay, so it cannot say what the four tiers on
+// SystemSetting already say. It also sits in front of them: an administrator-only
+// permission refuses every non-administrator before the UserReadable tier is
+// consulted, which makes that tier unreachable and no test of gate ordering can
+// see it. Reads are classified per setting; writes keep settings/write.
+func TestSettingReadsAreGatedByTheSettingAlone(t *testing.T) {
 	body, err := os.ReadFile("settings.go")
 	if err != nil {
 		t.Fatalf("read settings.go: %v", err)
 	}
 	text := string(body)
-	fn := text[strings.Index(text, "func api_setting_get("):]
-	fn = fn[:strings.Index(fn, "\n}")]
-
-	public := strings.Index(fn, "if def.Public {")
-	gate := strings.Index(fn, `require_permission(t, fn, "settings/read")`)
-	if public < 0 || gate < 0 {
-		t.Fatalf("api_setting_get no longer has both a public branch (%d) and a settings/read gate (%d)", public, gate)
+	for _, name := range []string{"api_setting_get", "api_setting_list"} {
+		fn := text[strings.Index(text, "func "+name+"("):]
+		fn = fn[:strings.Index(fn, "\n}")]
+		if strings.Contains(fn, `require_permission(t, fn, "settings/read")`) {
+			t.Errorf("%s gates on settings/read again; an administrator-only permission there makes the UserReadable tier unreachable", name)
+		}
 	}
-	if gate < public {
-		t.Error("the settings/read gate runs before the public early return, so a public setting is no longer readable anonymously")
+	set := text[strings.Index(text, "func api_setting_set("):]
+	set = set[:strings.Index(set, "\n}")]
+	if !strings.Contains(set, `require_permission(t, fn, "settings/write")`) {
+		t.Error("api_setting_set no longer requires settings/write; writes have no per-setting statement of who may write, so the permission is the only gate")
+	}
+	for _, p := range permissions {
+		if p.Name == "settings/read" {
+			t.Error("settings/read is back in the catalogue")
+		}
 	}
 }
 
@@ -218,11 +226,10 @@ func TestEveryAppRegistryAPIIsGated(t *testing.T) {
 // apps_default grant is simply broken, with no way for the user to fix it.
 func TestDefaultAppsHoldWhatTheyCall(t *testing.T) {
 	required := map[string][]string{
-		"Apps":          {"apps/read", "apps/write", "permissions/read", "permissions/write", "settings/read"},
-		"Publisher":     {"apps/write"},
-		"Menu":          {"apps/read", "permissions/read", "permissions/write"},
-		"Notifications": {"settings/read"},
-		"Settings": {"apps/read", "settings/read", "settings/write", "server/read",
+		"Apps":      {"apps/read", "apps/write", "permissions/read", "permissions/write"},
+		"Publisher": {"apps/write"},
+		"Menu":      {"apps/read", "permissions/read", "permissions/write"},
+		"Settings": {"apps/read", "settings/write", "server/read",
 			"documents/read", "documents/write", "domains/read", "domains/write",
 			"user/verification/write"},
 	}

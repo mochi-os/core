@@ -57,6 +57,12 @@ fi
 %post
 chown -R mochi:mochi /var/lib/mochi
 chown -R mochi:mochi /var/cache/mochi
+
+# Files created since UMask=0077 are already private; an install predating it
+# keeps its old modes. go-rwx preserves the owner's bits, leaves git's
+# read-only loose objects readable, and is idempotent.
+chmod -R go-rwx /var/lib/mochi /var/cache/mochi
+
 systemctl daemon-reload
 
 %preun

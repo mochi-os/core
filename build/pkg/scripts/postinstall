@@ -3,6 +3,11 @@
 chown -R _mochi:_mochi /var/lib/mochi
 chown -R _mochi:_mochi /var/cache/mochi
 
+# Files created since UMask=0077 are already private; an install predating it
+# keeps its old modes. go-rwx preserves the owner's bits, leaves git's
+# read-only loose objects readable, and is idempotent.
+chmod -R go-rwx /var/lib/mochi /var/cache/mochi
+
 # Load the launchd service
 launchctl bootout system/org.mochi-os.server 2>/dev/null
 launchctl bootstrap system /Library/LaunchDaemons/org.mochi-os.server.plist

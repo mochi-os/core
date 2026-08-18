@@ -30,6 +30,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -86,6 +87,15 @@ func git_negotiation_repo(t *testing.T, user *User, repo_id string, commits int)
 	return repo_path, hashes
 }
 
+// git_test_mode puts gin in test mode exactly once. SetMode writes package
+// level state in gin, so calling it per request is a data race the moment two
+// fetches run at the same time - which the concurrency tests do deliberately.
+var git_test_mode sync.Once
+
+func git_gin_mode() {
+	git_test_mode.Do(func() { gin.SetMode(gin.TestMode) })
+}
+
 // git_negotiation_fetch drives git_upload_pack the way a stateless client
 // does: one want, the given haves, then done. Returns the number of objects in
 // the packfile the server produced.
@@ -99,6 +109,15 @@ func git_negotiation_fetch(t *testing.T, repo_path string, want plumbing.Hash, h
 // where a real client puts them, so a test can ask for a side band or a thin
 // pack and inspect what comes back.
 func git_negotiation_response(t *testing.T, repo_path string, want plumbing.Hash, haves []plumbing.Hash, capabilities ...string) []byte {
+	t.Helper()
+	return git_negotiation_round(t, repo_path, want, haves, true, capabilities...)
+}
+
+// git_negotiation_round is the same, with control over whether the request ends
+// in "done". Without it the request is an exploratory round: the client is
+// still discovering common history and expects acknowledgements and no
+// packfile, which is a different response shape entirely.
+func git_negotiation_round(t *testing.T, repo_path string, want plumbing.Hash, haves []plumbing.Hash, done bool, capabilities ...string) []byte {
 	t.Helper()
 
 	first := "want " + want.String()
@@ -119,11 +138,15 @@ func git_negotiation_response(t *testing.T, repo_path string, want plumbing.Hash
 			t.Fatalf("encode have: %v", err)
 		}
 	}
-	if err := encoder.Encodef("done\n"); err != nil {
-		t.Fatalf("encode done: %v", err)
+	if done {
+		if err := encoder.Encodef("done\n"); err != nil {
+			t.Fatalf("encode done: %v", err)
+		}
+	} else if err := encoder.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
 	}
 
-	gin.SetMode(gin.TestMode)
+	git_gin_mode()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest("POST", "/x/git/git-upload-pack", bytes.NewReader(body.Bytes()))

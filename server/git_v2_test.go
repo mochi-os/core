@@ -50,7 +50,7 @@ func git_v2_request(t *testing.T, repo_path, command string, arguments ...string
 	}
 	body.WriteString("0000")
 
-	gin.SetMode(gin.TestMode)
+	git_gin_mode()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest("POST", "/x/git/git-upload-pack", strings.NewReader(body.String()))
@@ -73,7 +73,7 @@ func (nopCloser) Close() error { return nil }
 // and returns its body.
 func git_v2_advertisement(t *testing.T, repo_path, version string) string {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
+	git_gin_mode()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest("GET", "/x/git/info/refs?service=git-upload-pack", nil)
@@ -147,7 +147,7 @@ func TestGitPushAdvertisementStaysV0(t *testing.T) {
 
 	repo_path, _ := git_shallow_repo(t, user, "pushadvert", 2)
 
-	gin.SetMode(gin.TestMode)
+	git_gin_mode()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest("GET", "/x/git/info/refs?service=git-receive-pack", nil)

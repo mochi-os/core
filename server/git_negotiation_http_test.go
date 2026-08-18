@@ -32,7 +32,7 @@ import (
 // production routes use, with no authentication in front of them.
 func git_negotiation_server(t *testing.T, repo_path string) *httptest.Server {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
+	git_gin_mode()
 	engine := gin.New()
 	engine.GET("/info/refs", func(c *gin.Context) {
 		git_info_refs(c, repo_path, git_service_name(c.Query("service")))

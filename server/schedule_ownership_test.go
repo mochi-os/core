@@ -58,7 +58,7 @@ func owner_test_cancel(t *testing.T, thread *sl.Thread, id int64) sl.Value {
 // owner_test_row schedules one event for a named user and returns its id.
 func owner_test_row(t *testing.T, uid, app string) int64 {
 	t.Helper()
-	id := schedule_create(uid, app, now()+3600, "remind", `{"secret":"the payload"}`, 0)
+	id, _ := schedule_create(uid, app, now()+3600, "remind", `{"secret":"the payload"}`, 0)
 	if id == 0 {
 		t.Fatal("schedule_create returned 0")
 	}

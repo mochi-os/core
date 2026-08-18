@@ -43,8 +43,39 @@ var schedule_wake = make(chan struct{}, 1)
 // global table shared by every user and app, and it sits outside the per-user
 // storage quota, so an unbounded blob here is server-wide disk an app fills for
 // free. Far above what a payload is for: a scheduled event carries the ids the
-// handler needs to find its work, not the work itself.
-const schedule_data_maximum = 64 * 1024
+// handler needs to find its work, not the work itself - the largest payload any
+// app in the tree can construct is about 110 bytes, and every row currently
+// stored holds an empty dictionary.
+const schedule_data_maximum = 4 * 1024
+
+// schedule_rows_maximum bounds how many rows one (app, user) pair may hold. The
+// payload cap bounds a row; without this nothing bounds the count, and the two
+// multiply into unbounded shared disk.
+//
+// Keyed on the pair because that is how the table is keyed and how the abuse
+// happens - a per-app cap would punish an app for being installed by many
+// users, and a per-user cap could not say which app was responsible. Ten
+// thousand matches directory_user_cap, and is chosen well clear of the busiest
+// real caller rather than close to it: comptroller's schedule rows are created
+// inside P2P event handlers, which run on the marketplace's host as the
+// marketplace operator, so every seller's listings and every buyer's bids land
+// in one pair - two rows per auctioned listing, plus one per bid extension,
+// finalisation and review. A cap that a busy marketplace could reach would fail
+// the way an app hitting it fails: an aborted handler, a 500, and an email.
+const schedule_rows_maximum = 10000
+
+// schedule_rows_warning is the level at which the operator hears about it,
+// while there is still room to act. Reported on the crossing only, so a pair
+// sitting legitimately above it does not warn for ever.
+const schedule_rows_warning = schedule_rows_maximum / 2
+
+// schedule_interval_floor is the shortest repeat a caller may ask for. The
+// clamp it replaces was one second, which is 86,400 firings a day for as long
+// as the row lives - and a recurring row lives until something cancels it,
+// since schedule_claim re-arms it with due = due + interval. Every use of
+// mochi.schedule.every in the tree is a daily watchdog, so a minute is far
+// below anything real while removing the per-second case entirely.
+const schedule_interval_floor = 60
 
 // schedule_due_maximum bounds one pass, so the due query cannot materialise an
 // arbitrary number of rows and the loop cannot dispatch them all at once.
@@ -90,20 +121,35 @@ func schedule_db() *DB {
 // replicas agree on what is scheduled; the leader-gate on the firing
 // side dedups handler execution. System events (user == "") stay
 // local - they have no scope identifier for the replication pipeline.
-func schedule_create(user string, app string, due int64, event string, data string, interval int64) int64 {
+func schedule_create(user string, app string, due int64, event string, data string, interval int64) (int64, error) {
 	created := now()
 	db := schedule_db()
+
+	// The cap is enforced here rather than in the three API functions so the
+	// count and the insert cannot drift apart, and so a path added later
+	// inherits it.
+	held := db.integer("select count(*) from schedule where app=? and user=?", app, user)
+	if held >= schedule_rows_maximum {
+		return 0, fmt.Errorf("scheduled event limit reached: %d events for this app", schedule_rows_maximum)
+	}
+	if held+1 == schedule_rows_warning {
+		// On the crossing only. warn_application keys the admin-email throttle
+		// on the app, so one app approaching its limit cannot silence another's
+		// first warning.
+		warn_application(app, "Schedule: app %q holds %d of its %d scheduled events for one user", app, held+1, schedule_rows_maximum)
+	}
+
 	result := must(db.internal.Exec("insert into schedule (user, app, due, event, data, interval, created) values (?, ?, ?, ?, ?, ?, ?)",
 		user, app, due, event, data, interval, created))
 	id, _ := result.LastInsertId()
 	if id == 0 {
-		return 0
+		return 0, fmt.Errorf("failed to create scheduled event")
 	}
 
 	// Wake up the scheduler to check for the new event
 	schedule_notify()
 
-	return id
+	return id, nil
 }
 
 // schedule_get retrieves a scheduled event by ID
@@ -657,9 +703,9 @@ func api_schedule_at(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	// If time is in the past, run immediately (but still schedule for audit trail)
 	due_time := int64(due)
 
-	id := schedule_create(uid, app.id, due_time, event, string(data_json), 0)
-	if id == 0 {
-		return sl_error(fn, "failed to create scheduled event")
+	id, err := schedule_create(uid, app.id, due_time, event, string(data_json), 0)
+	if err != nil {
+		return sl_error(fn, "%v", err)
 	}
 
 	return new_starlark_scheduled_event(&ScheduledEvent{
@@ -714,9 +760,9 @@ func api_schedule_after(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		due_time = now()
 	}
 
-	id := schedule_create(uid, app.id, due_time, event, string(data_json), 0)
-	if id == 0 {
-		return sl_error(fn, "failed to create scheduled event")
+	id, err := schedule_create(uid, app.id, due_time, event, string(data_json), 0)
+	if err != nil {
+		return sl_error(fn, "%v", err)
 	}
 
 	return new_starlark_scheduled_event(&ScheduledEvent{
@@ -747,9 +793,11 @@ func api_schedule_every(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "invalid interval")
 	}
 
-	// Minimum interval is 1 second
-	if interval < 1 {
-		interval = 1
+	// A repeat shorter than the floor is raised to it rather than refused: the
+	// clamp is the established contract here, and nothing in the tree asks for
+	// less than a day, so refusing would only ever surprise a future caller.
+	if interval < schedule_interval_floor {
+		interval = schedule_interval_floor
 	}
 
 	// Get user and app from context
@@ -773,9 +821,9 @@ func api_schedule_every(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	// First run is after the interval
 	due_time := now() + int64(interval)
 
-	id := schedule_create(uid, app.id, due_time, event, string(data_json), int64(interval))
-	if id == 0 {
-		return sl_error(fn, "failed to create scheduled event")
+	id, err := schedule_create(uid, app.id, due_time, event, string(data_json), int64(interval))
+	if err != nil {
+		return sl_error(fn, "%v", err)
 	}
 
 	se := &ScheduledEvent{

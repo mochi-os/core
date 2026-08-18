@@ -32,7 +32,7 @@ func TestScheduleDatabase(t *testing.T) {
 
 	t.Run("create and get", func(t *testing.T) {
 		data, _ := json.Marshal(map[string]any{"auction": 123})
-		id := schedule_create("u1", "test-app", now()+3600, "end_auction", string(data), 0)
+		id, _ := schedule_create("u1", "test-app", now()+3600, "end_auction", string(data), 0)
 		if id == 0 {
 			t.Fatal("expected non-zero ID")
 		}
@@ -64,7 +64,7 @@ func TestScheduleDatabase(t *testing.T) {
 
 	t.Run("create recurring", func(t *testing.T) {
 		data, _ := json.Marshal(map[string]any{})
-		id := schedule_create("u1", "test-app", now()+300, "cleanup", string(data), 300)
+		id, _ := schedule_create("u1", "test-app", now()+300, "cleanup", string(data), 300)
 		if id == 0 {
 			t.Fatal("expected non-zero ID")
 		}
@@ -101,7 +101,7 @@ func TestScheduleDatabase(t *testing.T) {
 
 	t.Run("delete", func(t *testing.T) {
 		data, _ := json.Marshal(map[string]any{})
-		id := schedule_create("u1", "test-app", now()+3600, "to_delete", string(data), 0)
+		id, _ := schedule_create("u1", "test-app", now()+3600, "to_delete", string(data), 0)
 
 		se := schedule_get(id)
 		if se == nil {
@@ -118,7 +118,7 @@ func TestScheduleDatabase(t *testing.T) {
 
 	t.Run("update due", func(t *testing.T) {
 		data, _ := json.Marshal(map[string]any{})
-		id := schedule_create("u1", "test-app", now()+100, "recurring", string(data), 100)
+		id, _ := schedule_create("u1", "test-app", now()+100, "recurring", string(data), 100)
 
 		se := schedule_get(id)
 		original_due := se.Due
@@ -400,7 +400,7 @@ func TestScheduleClaimBeforeExecute(t *testing.T) {
 
 	t.Run("one-shot event deleted on claim", func(t *testing.T) {
 		data, _ := json.Marshal(map[string]any{})
-		id := schedule_create("u0", "test-app", now(), "one_shot", string(data), 0)
+		id, _ := schedule_create("u0", "test-app", now(), "one_shot", string(data), 0)
 
 		se := schedule_get(id)
 		if se == nil {
@@ -423,7 +423,7 @@ func TestScheduleClaimBeforeExecute(t *testing.T) {
 	t.Run("recurring event due updated on claim", func(t *testing.T) {
 		data, _ := json.Marshal(map[string]any{})
 		original_due := now()
-		id := schedule_create("u0", "test-app", original_due, "recurring", string(data), 300)
+		id, _ := schedule_create("u0", "test-app", original_due, "recurring", string(data), 300)
 
 		se := schedule_get(id)
 		if se == nil {
@@ -455,7 +455,7 @@ func TestScheduleEdgeCases(t *testing.T) {
 	db.exec("create table schedule (id integer primary key, user int not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
 
 	t.Run("empty data", func(t *testing.T) {
-		id := schedule_create("u1", "test-app", now()+100, "event", "", 0)
+		id, _ := schedule_create("u1", "test-app", now()+100, "event", "", 0)
 		se := schedule_get(id)
 		if se == nil {
 			t.Fatal("expected event with empty data")
@@ -472,7 +472,7 @@ func TestScheduleEdgeCases(t *testing.T) {
 		}
 		data_json, _ := json.Marshal(large_data)
 
-		id := schedule_create("u1", "test-app", now()+100, "large_event", string(data_json), 0)
+		id, _ := schedule_create("u1", "test-app", now()+100, "large_event", string(data_json), 0)
 		se := schedule_get(id)
 		if se == nil {
 			t.Fatal("expected event with large data")
@@ -487,7 +487,7 @@ func TestScheduleEdgeCases(t *testing.T) {
 
 	t.Run("past due time", func(t *testing.T) {
 		past_time := now() - 3600 // 1 hour ago
-		id := schedule_create("u1", "test-app", past_time, "past_event", "{}", 0)
+		id, _ := schedule_create("u1", "test-app", past_time, "past_event", "{}", 0)
 		se := schedule_get(id)
 		if se == nil {
 			t.Fatal("expected event with past due time")
@@ -511,7 +511,7 @@ func TestScheduleEdgeCases(t *testing.T) {
 	})
 
 	t.Run("zero interval treated as one-shot", func(t *testing.T) {
-		id := schedule_create("u1", "test-app", now()+100, "zero_interval", "{}", 0)
+		id, _ := schedule_create("u1", "test-app", now()+100, "zero_interval", "{}", 0)
 		se := schedule_get(id)
 		if se.Interval != 0 {
 			t.Errorf("expected interval 0, got %d", se.Interval)
@@ -560,7 +560,7 @@ func TestScheduleConcurrency(t *testing.T) {
 		ids := make(map[int64]bool)
 		for i := 0; i < 10; i++ {
 			data, _ := json.Marshal(map[string]any{"n": i})
-			id := schedule_create("u1", "test-app", now()+int64(i*100), "concurrent", string(data), 0)
+			id, _ := schedule_create("u1", "test-app", now()+int64(i*100), "concurrent", string(data), 0)
 			if id == 0 {
 				t.Errorf("got zero ID for iteration %d", i)
 				continue

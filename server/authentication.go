@@ -1256,7 +1256,7 @@ func web_recovery_login(c *gin.Context) {
 	code := strings.ReplaceAll(input.Code, "-", "")
 
 	db := db_open("db/users.db")
-	row, _ := db.row("select uid from users where username=?", input.Username)
+	row, _ := db.row("select uid from users where username=?", email_address(input.Username))
 	if row == nil {
 		// Timing-safe: always do bcrypt comparison even if user not found
 		bcrypt.CompareHashAndPassword([]byte("$2a$10$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), []byte(code))

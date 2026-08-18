@@ -15,6 +15,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -390,8 +391,11 @@ func TestPushesTableOnAnUpgrade(t *testing.T) {
 	if have, _ := db.exists("select 1 from sqlite_master where type='table' and name='pushes'"); !have {
 		t.Error("db_upgrade left a schema-7 install without the pushes table: every existing server would fail its retry inserts")
 	}
-	if got := setting_get("schema", ""); got != "8" {
-		t.Errorf("schema is %q after the upgrade, want 8", got)
+	// Against schema_version rather than a literal: the assertion is that the
+	// upgrade ran to completion, and pinning the number here means every later
+	// migration fails this test for no reason.
+	if got, want := setting_get("schema", ""), fmt.Sprintf("%d", schema_version); got != want {
+		t.Errorf("schema is %q after the upgrade, want %s", got, want)
 	}
 }
 

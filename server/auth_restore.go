@@ -121,7 +121,11 @@ func web_auth_restore(c *gin.Context) {
 		respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
 		return
 	}
-	if !email_valid(email) {
+	// Canonical, so the username-taken check below sees an existing account
+	// however the address was typed, and the code consumed further down
+	// matches the row code_send wrote.
+	email = email_address(email)
+	if email == "" {
 		respond_error(c, http.StatusBadRequest, "invalid_email", "errors.invalid_email", nil)
 		return
 	}

@@ -111,7 +111,7 @@ const (
 )
 
 const (
-	schema_version = 8
+	schema_version = 9
 )
 
 var (
@@ -1275,6 +1275,8 @@ func db_upgrade() {
 			db_upgrade_7()
 		case 8:
 			db_upgrade_8()
+		case 9:
+			db_upgrade_9()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2509,6 +2511,61 @@ func db_upgrade_6() {
 // db_upgrade_8 adds the push retry queue. A push used to get one attempt and
 // then be dropped, so a destination unreachable for a few seconds lost the
 // notification outright.
+// db_upgrade_9 rewrites existing usernames into the canonical form the login
+// paths now key on. A username is an email address, and mail.ParseAddress
+// accepts "Alice <a@b.com>", " a@b.com " and "A@B.com" for the one mailbox, so
+// rows written before that was normalised would become unreachable now that
+// the lookups canonicalise.
+//
+// Two rows that reduce to the same address are LEFT ALONE. They are two
+// accounts, belonging to whoever completed each signup, and merging them here
+// would hand one person the other's data. The operator is told instead.
+//
+// Short-lived login codes in sessions.db are not migrated: they expire within
+// the hour, and a code that no longer matches simply makes the user ask for
+// another.
+func db_upgrade_9() {
+	users := db_open("db/users.db")
+	rows, err := users.rows("select uid, username from users")
+	if err != nil {
+		return
+	}
+
+	changed := 0
+	var collisions, unparsed []string
+	for _, row := range rows {
+		id := row_string(row, "uid")
+		username := row_string(row, "username")
+		canonical := email_address(username)
+		if canonical == "" {
+			unparsed = append(unparsed, fmt.Sprintf("%s (%q)", id, username))
+			continue
+		}
+		if canonical == username {
+			continue
+		}
+		if taken, _ := users.exists("select 1 from users where username=? and uid<>?", canonical, id); taken {
+			collisions = append(collisions, fmt.Sprintf("%s (%q -> %q)", id, username, canonical))
+			continue
+		}
+		users.exec("update users set username=? where uid=?", canonical, id)
+		changed++
+	}
+
+	if changed > 0 {
+		info("Schema 9: canonicalised %d username(s)", changed)
+	}
+	// One warning rather than one per row: warn() emails the administrator.
+	if len(collisions) > 0 {
+		warn("Schema 9: %d account(s) share a mailbox with another account and were left as they are, since merging them would give one person the other's data. Resolve them by hand: %s",
+			len(collisions), strings.Join(collisions, ", "))
+	}
+	if len(unparsed) > 0 {
+		warn("Schema 9: %d account(s) have a username that is not a usable email address and cannot be signed in to: %s",
+			len(unparsed), strings.Join(unparsed, ", "))
+	}
+}
+
 func db_upgrade_8() {
 	queue := db_open("db/queue.db")
 	queue.exec(`create table if not exists pushes ( id text primary key, user text not null,

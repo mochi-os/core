@@ -735,7 +735,7 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target, expe
 	if expect_email != "" {
 		matched := false
 		if user_id != "" {
-			if u := user_by_uid(user_id); u != nil && u.Username == expect_email {
+			if u := user_by_uid(user_id); u != nil && u.Username == email_address(expect_email) {
 				matched = true
 			}
 		}
@@ -818,7 +818,7 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target, expe
 
 	// Refuse to auto-link by email — see plan decision 6. The user must log
 	// in through their existing factor and then link from auth settings.
-	if exists, _ := db.exists("select 1 from users where username=?", p.Email); exists {
+	if exists, _ := db.exists("select 1 from users where username=?", email_address(p.Email)); exists {
 		audit_login_failed(p.Email, rate_limit_client_ip(c), "oauth_email_exists")
 		oauth_error_redirect(c, "email_exists", map[string]string{"provider": provider, "email": p.Email})
 		return
@@ -1534,7 +1534,7 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 		oauth_mobile_error(c, st, "email_unverified", map[string]string{"provider": provider})
 		return
 	}
-	if exists, _ := db.exists("select 1 from users where username=?", p.Email); exists {
+	if exists, _ := db.exists("select 1 from users where username=?", email_address(p.Email)); exists {
 		audit_login_failed(p.Email, rate_limit_client_ip(c), "oauth_email_exists")
 		oauth_mobile_error(c, st, "email_exists", map[string]string{"provider": provider, "email": p.Email})
 		return

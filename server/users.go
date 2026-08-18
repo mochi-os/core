@@ -134,20 +134,26 @@ func (m *user_get_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs 
 // preference if they're an existing user, otherwise Accept-Language from the
 // request that triggered the send.
 func code_send(email string, c *gin.Context) string {
-	if !email_valid(email) {
+	// Canonical from here down. mail.ParseAddress accepts "Alice <a@b.com>",
+	// " a@b.com " and "A@B.com" for the one mailbox, and the code row's
+	// username becomes the account's username when the code is redeemed - so
+	// keying anything below on what the caller typed hands a user who wrote
+	// their address a second way a second, empty account.
+	address := email_address(email)
+	if address == "" {
 		return "invalid_email"
 	}
 
 	// Keyed on the account, so the limit holds however the send was reached:
 	// /_/auth/code (behind the login middleware) or mochi.user.code.send(),
 	// which any app holding user/export can call and which no middleware sees.
-	if !rate_limit_code.allow(email_address(email)) {
+	if !rate_limit_code.allow(address) {
 		return "too_many_codes"
 	}
 
 	// Check if user exists; if not, check signup_enabled
 	db := db_open("db/users.db")
-	exists, _ := db.exists("select 1 from users where username=?", email)
+	exists, _ := db.exists("select 1 from users where username=?", address)
 	if !exists && !setting_signup_enabled() {
 		return "signup_disabled"
 	}
@@ -156,9 +162,9 @@ func code_send(email string, c *gin.Context) string {
 	code := random_unambiguous(10)
 	sessions := db_open("db/sessions.db")
 	expires := now() + 3600
-	sessions.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, email, expires)
-	u := user_by_username(email)
-	email_login_code(u, email, code, request_language(c, u))
+	sessions.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, address, expires)
+	u := user_by_username(address)
+	email_login_code(u, address, code, request_language(c, u))
 	return ""
 }
 
@@ -187,6 +193,7 @@ func code_consume(user *User, code string) bool {
 // Single-use and expiry-checked in one statement: the delete-and-return means
 // two concurrent attempts cannot both succeed on the same code.
 func code_consume_email(email string, code string) bool {
+	email = email_address(email)
 	if email == "" || code == "" {
 		return false
 	}
@@ -349,6 +356,10 @@ func user_by_uid(uid string) *User {
 // user_by_username looks up a user by their username (email).
 // Returns nil if the user doesn't exist. Note: does not require identity.
 func user_by_username(username string) *User {
+	username = email_address(username)
+	if username == "" {
+		return nil
+	}
 	db := db_open("db/users.db")
 	var u User
 	if !db.scan(&u, "select uid, username, role, methods, disabled, status from users where username=?", username) {
@@ -443,6 +454,14 @@ func user_from_code(code string) (*User, string) {
 // and an error reason ("" on success, "invalid" if the row could not be read
 // back).
 func user_create(username string) (*User, string) {
+	// The last gate before an address becomes an account. Canonical here as
+	// well as at each caller, so a future signup route cannot reintroduce a
+	// second account for a mailbox that already has one.
+	username = email_address(username)
+	if username == "" {
+		return nil, "invalid"
+	}
+
 	db := db_open("db/users.db")
 
 	role := "user"
@@ -655,6 +674,10 @@ func api_user_get_username(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	username, ok := sl.AsString(args[0])
 	if !ok {
 		return sl_error(fn, "invalid username")
+	}
+	username = email_address(username)
+	if username == "" {
+		return sl.None, nil
 	}
 
 	db := db_open("db/users.db")
@@ -1064,7 +1087,11 @@ func api_user_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	username, ok := sl.AsString(args[0])
-	if !ok || !email_valid(username) {
+	if !ok {
+		return sl_error(fn, "invalid username")
+	}
+	username = email_address(username)
+	if username == "" {
 		return sl_error(fn, "invalid username")
 	}
 
@@ -1124,7 +1151,11 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 	if len(args) > 1 && args[1] != sl.None {
 		username, ok := sl.AsString(args[1])
-		if !ok || !email_valid(username) {
+		if !ok {
+			return sl_error(fn, "invalid username")
+		}
+		username = email_address(username)
+		if username == "" {
 			return sl_error(fn, "invalid username")
 		}
 		// Get old username for audit

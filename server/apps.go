@@ -453,7 +453,6 @@ var (
 			{"interests/read", ""},
 			{"interests/write", ""},
 			{"tokens/create", ""},
-			{"url", "www.wikidata.org"},
 		}},
 		{"12PGVUZUrLqgfqp1ovH8ejfKpAQq6uXbrcCqtoxWHjcuxWDxZbt", "Forums", []struct{ Permission, Object string }{
 			{"access/read", ""},
@@ -464,7 +463,6 @@ var (
 			{"interests/read", ""},
 			{"interests/write", ""},
 			{"tokens/create", ""},
-			{"url", "www.wikidata.org"},
 		}},
 		{"12NgqPUqEPpSvh3aNCbn1r5wxHRRzTb8mjb3p4LdYFWoXM6qvJG", "Go", []struct{ Permission, Object string }{
 			{"friends/read", ""},

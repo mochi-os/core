@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -143,59 +144,59 @@ func TestAccessCheckNeedsAPermission(t *testing.T) {
 	}
 }
 
-// TestQidRequiresTheWikidataGrant. Both APIs reach Wikidata, and every other
-// outbound call in core requires the url: grant. The host is fixed in the
-// source, so the grant is exact rather than the url:* wildcard.
-func TestQidRequiresTheWikidataGrant(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
-
-	user := &User{UID: "u1", Username: "user1@example.com"}
-	app := create_external_app("looker")
-	apps[app.id] = app
-	thread := create_test_thread(user, app)
-
-	for _, c := range []struct {
-		name string
-		call func() (sl.Value, error)
-	}{
-		{"mochi.qid.lookup", func() (sl.Value, error) {
-			return api_qid_lookup(thread, sl.NewBuiltin("mochi.qid.lookup", nil),
-				sl.Tuple{sl.String("Q42"), sl.String("en")}, nil)
-		}},
-		{"mochi.qid.search", func() (sl.Value, error) {
-			return api_qid_search(thread, sl.NewBuiltin("mochi.qid.search", nil),
-				sl.Tuple{sl.String("douglas"), sl.String("en")}, nil)
-		}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			_, err := c.call()
-			var denied *PermissionError
-			if !errors.As(err, &denied) {
-				t.Fatalf("%s returned %v, want a PermissionError", c.name, err)
-			}
-			if denied.Permission != "url:www.wikidata.org" {
-				t.Errorf("refused on %q, want url:www.wikidata.org - the host is fixed, so the grant should not need the wildcard", denied.Permission)
-			}
-		})
+// TestQidReachesOnlyTheFixedEndpoint. Both APIs used to require the
+// url:www.wikidata.org grant, on the reasoning that every other outbound call
+// in core requires one. That was consistency with a rule rather than the rule:
+// the url: grant answers WHICH HOST an app may reach, and core answers that
+// here at compile time - the app supplies a QID matching ^Q[0-9]+$, a language
+// tag, or a search term, and every one of them becomes a query parameter on a
+// constant endpoint.
+//
+// The grant was also strictly worse than nothing, because url:<domain> is one
+// permission string shared with mochi.url.* and mochi.rss: an app granted it so
+// that qid.lookup would work could then make arbitrary requests to any path on
+// wikidata.org. Requiring it widened every legitimate caller.
+//
+// This is the property that decision rests on, so it is the property to pin. If
+// the endpoint ever becomes app-supplied the reasoning collapses and the gate
+// has to come back.
+func TestQidReachesOnlyTheFixedEndpoint(t *testing.T) {
+	if !strings.HasPrefix(qid_endpoint, "https://") {
+		t.Errorf("qid_endpoint = %q, want an https URL", qid_endpoint)
 	}
 
-	// Feeds and Forums are the only callers and must arrive holding it.
-	for _, name := range []string{"Feeds", "Forums"} {
-		found := false
-		for _, app := range apps_default {
-			if app.Name != name {
-				continue
-			}
-			for _, g := range app.Permissions {
-				if g.Permission == "url" && g.Object == "www.wikidata.org" {
-					found = true
-				}
-			}
+	body, err := os.ReadFile("qid.go")
+	if err != nil {
+		t.Fatalf("read qid.go: %v", err)
+	}
+	text := string(body)
+
+	// Every outbound request is built from the constant. A second literal host
+	// would mean a request nobody reviewing the constant would know about.
+	if n := strings.Count(text, "http.NewRequest("); n != 2 {
+		t.Errorf("qid.go makes %d outbound requests, want 2; a new one needs the same fixed-endpoint argument", n)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.Contains(line, "http.NewRequest(") && !strings.Contains(line, "Sprintf") {
+			continue
 		}
-		if !found {
-			t.Errorf("default app %q calls mochi.qid but has no url:www.wikidata.org grant", name)
+		if strings.Contains(line, "https://") {
+			t.Errorf("qid.go builds a request from a literal URL rather than qid_endpoint: %s", strings.TrimSpace(line))
 		}
+	}
+
+	// And no app input reaches the host: the URL is the constant plus a query
+	// string, so the only way an app could redirect the request is by having
+	// its input concatenated ahead of the "?".
+	for _, m := range regexp.MustCompile(`(?m)^\s*u :?= fmt\.Sprintf\("([^"]*)"`).FindAllStringSubmatch(text, -1) {
+		if !strings.HasPrefix(m[1], "%s?") {
+			t.Errorf("a qid request URL is built as %q; it must be the endpoint constant followed immediately by the query string", m[1])
+		}
+	}
+
+	// The gate is gone and must not come back by habit.
+	if strings.Contains(text, "require_permission_url") {
+		t.Error("qid.go requires a url: grant again; the host is fixed in core, and the grant it would need also confers arbitrary mochi.url access to that host")
 	}
 }
 

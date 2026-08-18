@@ -27,9 +27,19 @@ import (
 )
 
 const (
-	qid_search_ttl = 7 * 24 * time.Hour
-	// Well past both TTLs: a pruned row is one no lookup would have used.
-	qid_retention        = int64(30 * 24 * 60 * 60)
+	// How long a cached row is served. Each table is also pruned at its own
+	// value, so a row is deleted exactly when it stops being served and the two
+	// numbers cannot drift into "serving rows the prune already removed" or
+	// "keeping rows nothing will read".
+	//
+	// Labels are cached far longer than searches because they are far more
+	// stable: a Wikidata label is a property of one entity and rarely changes,
+	// while a search is a ranking over the whole corpus and moves as entities
+	// are added. Wikimedia's API etiquette also asks clients to cache
+	// aggressively, and every miss costs a round trip paced at one per second
+	// for the whole server.
+	qid_lookup_ttl       = 30 * 24 * time.Hour
+	qid_search_ttl       = 7 * 24 * time.Hour
 	qid_search_empty_ttl = time.Hour
 	qid_backoff_base     = 60 * time.Second
 	qid_backoff_max      = 30 * time.Minute
@@ -50,13 +60,17 @@ var (
 	// tables, so an unvalidated value lets an app mint unbounded rows in a
 	// database every other app shares.
 	qid_language_regex = regexp.MustCompile(`^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$`)
-	qid_host           = "https://www.wikidata.org/"
-	qid_rate_lock      sync.Mutex
-	qid_rate_last      time.Time
-	qid_backoff_lock   sync.Mutex
-	qid_backoff_until  time.Time
-	qid_backoff_cur    = qid_backoff_base
-	qid_prune_last     int64
+	// qid_endpoint is the whole of the outbound surface: both requests are
+	// built from it, no app input reaches it, and that is what makes a url:
+	// grant unnecessary here - the grant answers which host an app may reach,
+	// and core has already answered it.
+	qid_endpoint      = "https://www.wikidata.org/w/api.php"
+	qid_rate_lock     sync.Mutex
+	qid_rate_last     time.Time
+	qid_backoff_lock  sync.Mutex
+	qid_backoff_until time.Time
+	qid_backoff_cur   = qid_backoff_base
+	qid_prune_last    int64
 )
 
 // qid_db opens external.db and creates the qids and qid_searches tables on first use
@@ -124,10 +138,6 @@ func api_qid_lookup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "invalid language")
 	}
 
-	if err := require_permission_url(t, fn, qid_host); err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
 	// Detect single vs batch
 	single := false
 	var qids []string
@@ -171,12 +181,13 @@ func api_qid_lookup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	db := qid_db()
+	lookup_cutoff := time.Now().Add(-qid_lookup_ttl).Unix()
 	labels := make(map[string]string)
 	var misses []string
 
 	// Batch cache lookup
 	if len(qids) == 1 {
-		row, err := db.row("select label from qids where qid=? and lang=?", qids[0], lang)
+		row, err := db.row("select label from qids where qid=? and lang=? and fetched >= ?", qids[0], lang, lookup_cutoff)
 		if err == nil && row != nil {
 			label, _ := row["label"].(string)
 			labels[qids[0]] = label
@@ -190,8 +201,8 @@ func api_qid_lookup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 			placeholders[i] = "?"
 			args = append(args, qid)
 		}
-		args = append(args, lang)
-		rows, err := db.rows("select qid, label from qids where qid in ("+strings.Join(placeholders, ",")+") and lang=?", args...)
+		args = append(args, lang, lookup_cutoff)
+		rows, err := db.rows("select qid, label from qids where qid in ("+strings.Join(placeholders, ",")+") and lang=? and fetched >= ?", args...)
 		cached := make(map[string]string)
 		if err == nil {
 			for _, row := range rows {
@@ -256,8 +267,8 @@ func qid_fetch_labels(qids []string, lang string) map[string]string {
 			languages = lang + ",en"
 		}
 
-		u := fmt.Sprintf("https://www.wikidata.org/w/api.php?action=wbgetentities&ids=%s&languages=%s&props=labels&format=json",
-			url.QueryEscape(ids), url.QueryEscape(languages))
+		u := fmt.Sprintf("%s?action=wbgetentities&ids=%s&languages=%s&props=labels&format=json",
+			qid_endpoint, url.QueryEscape(ids), url.QueryEscape(languages))
 
 		req, err := http.NewRequest("GET", u, nil)
 		if err != nil {
@@ -345,10 +356,6 @@ func api_qid_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "invalid language")
 	}
 
-	if err := require_permission_url(t, fn, qid_host); err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
 	db := qid_db()
 	now_time := time.Now()
 	cutoff_full := now_time.Add(-qid_search_ttl).Unix()
@@ -380,8 +387,8 @@ func api_qid_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_encode([]map[string]any{}), nil
 	}
 
-	u := fmt.Sprintf("https://www.wikidata.org/w/api.php?action=wbsearchentities&search=%s&language=%s&limit=10&format=json",
-		url.QueryEscape(query), url.QueryEscape(lang))
+	u := fmt.Sprintf("%s?action=wbsearchentities&search=%s&language=%s&limit=10&format=json",
+		qid_endpoint, url.QueryEscape(query), url.QueryEscape(lang))
 
 	req, err := http.NewRequest("GET", u, nil)
 	if err != nil {
@@ -466,9 +473,9 @@ func qid_prune() {
 	if db == nil {
 		return
 	}
-	cutoff := now() - qid_retention
-	db.exec("delete from qids where fetched < ?", cutoff)
-	db.exec("delete from qid_searches where fetched < ?", cutoff)
+	moment := time.Now()
+	db.exec("delete from qids where fetched < ?", moment.Add(-qid_lookup_ttl).Unix())
+	db.exec("delete from qid_searches where fetched < ?", moment.Add(-qid_search_ttl).Unix())
 }
 
 // qid_prune_due runs the cache prune at most once a day from db_manager's

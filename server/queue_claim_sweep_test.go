@@ -23,6 +23,7 @@ package main
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -181,7 +182,9 @@ func TestQueueSchemaCarriesClaimed(t *testing.T) {
 	if !strings.Contains(text, "case 7:") {
 		t.Error("db_upgrade has no case 7, so db_upgrade_7 is never reached")
 	}
-	if !strings.Contains(text, "schema_version = 7") {
-		t.Error("schema_version was not bumped, so the upgrade never runs")
+	// At least 7: later migrations bump it further, and this test is about
+	// db_upgrade_7 having been reachable, not about being the newest.
+	if version := atoi(regexp.MustCompile(`schema_version = (\d+)`).FindStringSubmatch(text)[1], 0); version < 7 {
+		t.Errorf("schema_version = %d, want at least 7, or db_upgrade_7 never runs", version)
 	}
 }

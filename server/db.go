@@ -111,7 +111,7 @@ const (
 )
 
 const (
-	schema_version = 7
+	schema_version = 8
 )
 
 var (
@@ -405,6 +405,13 @@ func db_create() {
 	// and after queue_evict_age the owning apps are told to drop the
 	// subscriber (see health_gate in queue.go).
 	queue.exec("create table if not exists health ( recipient text not null primary key, failures integer not null default 0, denials integer not null default 0, success integer not null default 0, since integer not null default 0, suspended integer not null default 0, probed integer not null default 0 )")
+	queue.exec(`create table if not exists pushes ( id text primary key, user text not null,
+		account text not null, type text not null, identifier text not null default '',
+		data text not null default '', app text not null default '', category text not null default '',
+		object text not null default '', title text not null default '', body text not null default '',
+		link text not null default '', event text not null default '', attempts integer not null default 0,
+		next_retry integer not null, created integer not null )`)
+	queue.exec("create index if not exists pushes_next_retry on pushes(next_retry)")
 
 	// Domains
 	domains := db_open("db/domains.db")
@@ -1266,6 +1273,8 @@ func db_upgrade() {
 			db_upgrade_6()
 		case 7:
 			db_upgrade_7()
+		case 8:
+			db_upgrade_8()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2497,6 +2506,20 @@ func db_upgrade_6() {
 // The stuck-sending safety net keyed on `created`, which is the enqueue
 // time and never changes, so any row that had ever been retried was swept
 // the instant it was claimed - racing the sender still holding it.
+// db_upgrade_8 adds the push retry queue. A push used to get one attempt and
+// then be dropped, so a destination unreachable for a few seconds lost the
+// notification outright.
+func db_upgrade_8() {
+	queue := db_open("db/queue.db")
+	queue.exec(`create table if not exists pushes ( id text primary key, user text not null,
+		account text not null, type text not null, identifier text not null default '',
+		data text not null default '', app text not null default '', category text not null default '',
+		object text not null default '', title text not null default '', body text not null default '',
+		link text not null default '', event text not null default '', attempts integer not null default 0,
+		next_retry integer not null, created integer not null )`)
+	queue.exec("create index if not exists pushes_next_retry on pushes(next_retry)")
+}
+
 func db_upgrade_7() {
 	queue := db_open("db/queue.db")
 	if have, _ := queue.exists("select 1 from pragma_table_info('queue') where name=?", "claimed"); !have {

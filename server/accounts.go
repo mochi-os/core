@@ -1665,39 +1665,13 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			json.Unmarshal([]byte(raw), &data)
 		}
 
-		var success bool
-		switch ptype {
-		case "browser":
-			success = account_deliver_browser(data, title, body, link, app+"-"+category+"-"+object)
-		case "email":
-			success = account_deliver_email(identifier, title, body, link)
-		case "pushbullet":
-			token, _ := data["token"].(string)
-			success = account_deliver_pushbullet(token, title, body, link)
-		case "ntfy":
-			server, _ := data["server"].(string)
-			topic, _ := data["topic"].(string)
-			token, _ := data["token"].(string)
-			success = account_deliver_ntfy(server, topic, token, title, body, link)
-		case "unifiedpush":
-			success = account_deliver_unifiedpush(user, account, data, title, body, link, app+"-"+category+"-"+object, app, id)
-		case "fcm":
-			var retire bool
-			success, retire, _ = account_deliver_fcm(data, title, body, link, app+"-"+category+"-"+object, app, id)
-			if !success && retire {
-				// Google reported UNREGISTERED / INVALID_ARGUMENT — the
-				// token is permanently dead. Drop the row so the next
-				// FcmRegistrar.connect from the phone creates a fresh
-				// one rather than the upsert resurrecting the dead
-				// token. (Same one-strike semantics as browser below.)
-				db.exec("delete from accounts where id=?", account)
-				failed++
-				continue
-			}
-		case "url":
-			secret, _ := data["secret"].(string)
-			success = account_deliver_url(identifier, secret, app, category, object, title, body, link)
-		default:
+		p := &Push{
+			User: user, Account: account, Type: ptype, Identifier: identifier, Data: data,
+			App: app, Category: category, Object: object,
+			Title: title, Body: body, Link: link, Event: id,
+		}
+		success, retire, handled := account_deliver(p)
+		if !handled {
 			continue
 		}
 
@@ -1705,18 +1679,33 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			sent++
 			// Update last_delivered for TTL sweep
 			db.exec("update accounts set last_delivered=? where id=?", time.Now().Unix(), account)
-		} else {
-			failed++
-			// Remove expired browser subscriptions on any failure (longstanding
-			// behaviour). For unifiedpush, only the deliver function knows
-			// whether the failure was permanent (404/410 → drop) or transient
-			// (timeout, 5xx, network → keep) — until that signal is plumbed,
-			// keep the row so we don't tear down phones that just temporarily
-			// lost reachability. The TTL sweep handles long-term orphans.
-			if ptype == "browser" {
-				db.exec("delete from accounts where id=?", account)
-			}
+			continue
 		}
+
+		failed++
+
+		if retire {
+			// Google reported UNREGISTERED / INVALID_ARGUMENT — the token is
+			// permanently dead. Drop the row so the next FcmRegistrar.connect
+			// from the phone creates a fresh one rather than the upsert
+			// resurrecting the dead token. Nothing to retry.
+			db.exec("delete from accounts where id=?", account)
+			continue
+		}
+
+		// Remove expired browser subscriptions on any failure (longstanding
+		// behaviour), so there is nothing left to retry to.
+		if ptype == "browser" {
+			db.exec("delete from accounts where id=?", account)
+			continue
+		}
+
+		// Everything else is treated as transient and queued. Only the deliver
+		// function knows whether a unifiedpush or url failure was permanent
+		// (404/410) or transient (timeout, 5xx, network), and until that signal
+		// is plumbed the ladder's attempt cap and expiry bound the cost of
+		// guessing wrong.
+		push_queue_add(p)
 	}
 
 	return sl_encode(map[string]any{

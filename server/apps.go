@@ -112,9 +112,15 @@ type AppTheme struct {
 }
 
 type AppVersion struct {
-	Version  string   `json:"version"`
-	Label    string   `json:"label"`
-	Classes  []string `json:"classes"`
+	Version string   `json:"version"`
+	Label   string   `json:"label"`
+	Classes []string `json:"classes"`
+	// Shared names classes this app is willing to have other apps create in.
+	// A subset of Classes, and only meaningful alongside the handler check in
+	// entity_class_shared: a class opens to co-creation when the app that
+	// HANDLES it says so, so declaring a class shared here cannot let an app
+	// into somebody else's class, only invite others into its own.
+	Shared   []string `json:"shared"`
 	Paths    []string `json:"paths"`
 	Services []string `json:"services"`
 	Require  struct {
@@ -1165,6 +1171,23 @@ func app_declares_class(app *App, user *User, class string) bool {
 	return false
 }
 
+// app_shares_class reports whether an app has opened a class to co-creation.
+// Read from the app's own manifest, like app_declares_class - which is safe
+// only because entity_class_shared requires it of the class's HANDLER as well,
+// and the handler is resolved from bindings the app does not control.
+func app_shares_class(app *App, user *User, class string) bool {
+	av := app.active(user)
+	if av == nil {
+		return false
+	}
+	for _, c := range av.Shared {
+		if c == class {
+			return true
+		}
+	}
+	return false
+}
+
 // class_app_for finds the best app for a class with user preferences.
 // Resolution order:
 // 1. User's binding (if user is not nil)
@@ -1256,15 +1279,31 @@ func app_select_best(candidates []*App) *App {
 		candidates = published
 	}
 
-	// If multiple, pick the one with earliest install time
+	// If multiple, pick the one with earliest install time, and settle a tie on
+	// the id. The tie is the common case rather than the odd one - a default
+	// app set installs in a batch, and 24 of the 26 apps on the production
+	// server share two adjacent seconds - and candidates arrive here in Go map
+	// order, which is randomised per process. That was tolerable while this
+	// only chose who RENDERS an entity; entity_class_owned now asks the same
+	// question to decide who may change or destroy one, and a security answer
+	// must not vary from one restart to the next.
+	//
+	// Install time still leads, so an app installed after an incumbent can
+	// never take its class.
 	var best *App
 	var best_time int64 = 0
 	for _, a := range candidates {
 		installed := apps_installed(a.id)
-		if best == nil || (installed > 0 && installed < best_time) || (best_time == 0 && installed > 0) {
-			best = a
-			best_time = installed
+		switch {
+		case best == nil:
+		case installed > 0 && best_time == 0:
+		case installed > 0 && installed < best_time:
+		case installed == best_time && a.id < best.id:
+		default:
+			continue
 		}
+		best = a
+		best_time = installed
 	}
 
 	// If no install time recorded, just return the first
@@ -2429,6 +2468,7 @@ func (av *AppVersion) reload() {
 	av.Database = fresh.Database
 	av.Services = fresh.Services
 	av.Classes = fresh.Classes
+	av.Shared = fresh.Shared
 	av.Architecture = fresh.Architecture
 	av.Execute = fresh.Execute
 	av.Themes = fresh.Themes
@@ -2832,6 +2872,7 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 			"engine":      av.Architecture.Engine,
 			"icon":        av.icon(),
 			"classes":     av.Classes,
+			"shared":      av.Shared,
 			"services":    av.Services,
 			"paths":       av.Paths,
 			"development": a.development,

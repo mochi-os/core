@@ -1840,8 +1840,23 @@ func (p *UserAppClass) String() string        { return "UserAppClass" }
 func (p *UserAppClass) Truth() sl.Bool        { return sl.True }
 func (p *UserAppClass) Type() string          { return "UserAppClass" }
 
+// The four binding families below decide which app answers for a class, a
+// service, a URL path or a version - for this user, on every host of the
+// account. They are read and written through a.user.app.*, so any installed app
+// could reach them, and repointing a binding is how an app makes itself the
+// answer to a question it was not asked. mochi.entity.update and delete now
+// resolve the class handler to decide who may change or destroy an entity, so
+// an ungated setter here would hand back exactly what that check takes away.
+//
+// apps/write and apps/read rather than a new permission: this is the app
+// registry, the Apps app is the only caller in the tree, and it already holds
+// both.
+
 // a.user.app.class.get(class) -> string | None: Get user class binding
 func (p *UserAppClass) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	var class string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "class", &class); err != nil {
 		return sl_error(fn, "%v", err)
@@ -1855,6 +1870,9 @@ func (p *UserAppClass) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // a.user.app.class.set(class, app) -> None: Set user class binding
 func (p *UserAppClass) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	var class, app string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "class", &class, "app", &app); err != nil {
 		return sl_error(fn, "%v", err)
@@ -1865,6 +1883,9 @@ func (p *UserAppClass) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // a.user.app.class.delete(class) -> None: Delete user class binding
 func (p *UserAppClass) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	var class string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "class", &class); err != nil {
 		return sl_error(fn, "%v", err)
@@ -1875,6 +1896,9 @@ func (p *UserAppClass) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 
 // a.user.app.class.list() -> dict: List all user class bindings
 func (p *UserAppClass) list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	db := db_user(p.user, "user")
 	rows, _ := db.rows("select class, app from classes")
 	result := sl.NewDict(len(rows))
@@ -1916,6 +1940,9 @@ func (p *UserAppService) Type() string          { return "UserAppService" }
 
 // a.user.app.service.get(service) -> string | None: Get user service binding
 func (p *UserAppService) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	var service string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "service", &service); err != nil {
 		return sl_error(fn, "%v", err)
@@ -1929,6 +1956,9 @@ func (p *UserAppService) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // a.user.app.service.set(service, app) -> None: Set user service binding
 func (p *UserAppService) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	var service, app string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "service", &service, "app", &app); err != nil {
 		return sl_error(fn, "%v", err)
@@ -1939,6 +1969,9 @@ func (p *UserAppService) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // a.user.app.service.delete(service) -> None: Delete user service binding
 func (p *UserAppService) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	var service string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "service", &service); err != nil {
 		return sl_error(fn, "%v", err)
@@ -1949,6 +1982,9 @@ func (p *UserAppService) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 
 // a.user.app.service.list() -> dict: List all user service bindings
 func (p *UserAppService) list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	db := db_user(p.user, "user")
 	rows, _ := db.rows("select service, app from services")
 	result := sl.NewDict(len(rows))
@@ -1990,6 +2026,9 @@ func (p *UserAppPath) Type() string          { return "UserAppPath" }
 
 // a.user.app.path.get(path) -> string | None: Get user path binding
 func (p *UserAppPath) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	var path string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path); err != nil {
 		return sl_error(fn, "%v", err)
@@ -2003,6 +2042,9 @@ func (p *UserAppPath) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // a.user.app.path.set(path, app) -> None: Set user path binding
 func (p *UserAppPath) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	var path, app string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path, "app", &app); err != nil {
 		return sl_error(fn, "%v", err)
@@ -2013,6 +2055,9 @@ func (p *UserAppPath) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // a.user.app.path.delete(path) -> None: Delete user path binding
 func (p *UserAppPath) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	var path string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path); err != nil {
 		return sl_error(fn, "%v", err)
@@ -2023,6 +2068,9 @@ func (p *UserAppPath) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // a.user.app.path.list() -> dict: List all user path bindings
 func (p *UserAppPath) list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	db := db_user(p.user, "user")
 	rows, _ := db.rows("select path, app from paths")
 	result := sl.NewDict(len(rows))
@@ -2062,6 +2110,9 @@ func (p *UserAppVersion) Type() string          { return "UserAppVersion" }
 
 // a.user.app.version.get(app) -> dict | None: Get user version binding
 func (p *UserAppVersion) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	var app string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "app", &app); err != nil {
 		return sl_error(fn, "%v", err)
@@ -2078,6 +2129,9 @@ func (p *UserAppVersion) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // a.user.app.version.set(app, version?, track?) -> None: Set user version binding
 func (p *UserAppVersion) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	var app, version, track string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "app", &app, "version?", &version, "track?", &track); err != nil {
 		return sl_error(fn, "%v", err)
@@ -2088,6 +2142,9 @@ func (p *UserAppVersion) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // a.user.app.version.delete(app) -> None: Delete user version binding
 func (p *UserAppVersion) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	var app string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "app", &app); err != nil {
 		return sl_error(fn, "%v", err)

@@ -83,9 +83,14 @@ func TestIdentityClassNeedsTheIdentityPermission(t *testing.T) {
 }
 
 // TestIdentityClassGateCoversEveryEntityMutator: create, delete and update all
-// reach the class decision through the one helper, so none can be hardened or
-// missed on its own. app_declares_class is the self-assertion being wrapped -
-// a second caller would be a second way around the permission.
+// reach the class decision, so none can be hardened or missed on its own.
+// app_declares_class is the self-assertion being wrapped - a second caller
+// would be a second way around the permission.
+//
+// Two helpers rather than one since the handler check was added: create calls
+// entity_class_allowed, and delete and update call entity_class_owned, which
+// calls entity_class_allowed itself. Counting one name would pass while a
+// mutator sat on nothing at all, so the property is checked per mutator.
 func TestIdentityClassGateCoversEveryEntityMutator(t *testing.T) {
 	source, err := os.ReadFile("entities.go")
 	if err != nil {
@@ -93,9 +98,36 @@ func TestIdentityClassGateCoversEveryEntityMutator(t *testing.T) {
 	}
 	text := string(source)
 
-	if n := strings.Count(text, "entity_class_allowed(t, fn, app, user,"); n != 3 {
-		t.Errorf("entity_class_allowed is called %d times in entities.go, want 3 - create, delete and update", n)
+	for _, mutator := range []string{"func api_entity_create", "func api_entity_delete", "func api_entity_update"} {
+		start := strings.Index(text, mutator)
+		if start < 0 {
+			t.Fatalf("%s not found", mutator)
+		}
+		length := strings.Index(text[start+1:], "\nfunc ")
+		if length < 0 {
+			length = len(text) - start - 1
+		}
+		body := text[start : start+1+length]
+		if !strings.Contains(body, "entity_class_allowed(t, fn, app, user,") &&
+			!strings.Contains(body, "entity_class_owned(t, fn, app, user,") &&
+			!strings.Contains(body, "entity_class_shared(t, fn, app, user,") {
+			t.Errorf("%s reaches neither class check; the identity gate does not cover it", mutator)
+		}
 	}
+
+	// Both stricter helpers must go through the permissive one, or the identity
+	// permission stops applying to the mutators that use them.
+	for _, helper := range []string{"func entity_class_owned", "func entity_class_shared"} {
+		at := strings.Index(text, helper)
+		if at < 0 {
+			t.Fatalf("%s not found", helper)
+		}
+		length := strings.Index(text[at+1:], "\nfunc ")
+		if !strings.Contains(text[at:at+1+length], "entity_class_allowed(t, fn, app, user, class)") {
+			t.Errorf("%s does not call entity_class_allowed; its mutators no longer reach the user/identity/write gate", helper)
+		}
+	}
+
 	if n := strings.Count(text, "app_declares_class(app, user,"); n != 1 {
 		t.Errorf("app_declares_class is called %d times in entities.go, want 1 - only inside entity_class_allowed", n)
 	}

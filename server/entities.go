@@ -616,6 +616,69 @@ func entity_class_allowed(t *sl.Thread, fn *sl.Builtin, app *App, user *User, cl
 	return nil
 }
 
+// entity_class_owned is the stricter question, for an entity that already
+// exists: is the calling app the one that HANDLES this class for this user?
+//
+// entity_class_allowed above answers from the calling app's own manifest, which
+// for every class but "person" is a self-assertion - an app that adds
+// "classes": ["feed"] to its app.json can rename, re-privacy and destroy the
+// user's feeds, and mochi.entity.update/delete have no permission gate of their
+// own. class_app_for answers from somewhere the app does not control: the
+// user's binding, then the system binding, then install order.
+//
+// Only for changing and destroying, not for creating. Two apps may legitimately
+// create entities of one class - Apps and Publisher both create "app" entities -
+// and class_app_for deliberately resolves to a single handler, so the strict
+// question has no useful answer at create time. Creating is also the reversible
+// one: it adds an entity rather than taking one over. Every update and delete in
+// the app tree is by the app that also handles the class, so this costs nothing
+// and closes the destructive half.
+//
+// A class no app handles falls back to the manifest check alone. That cannot
+// arise from the caller (it declares the class, so it is a candidate), but a
+// nil handler must not become a refusal that strands somebody's entity.
+// entity_class_shared is the question for a NEW entity: may this app add to
+// this class at all?
+//
+// entity_class_allowed alone was a self-assertion here too - an app that added
+// "classes": ["feed"] to its manifest could mint feed entities in the user's
+// account, which the Feeds app then lists as the user's own. It cannot be the
+// handler check that update and delete use, because two apps legitimately
+// create "app" entities: Publisher mints one when a developer publishes, Apps
+// mints one when a user sideloads a package, and the resolution names only one
+// handler.
+//
+// So a class opens to co-creation when the app that HANDLES it declares it
+// shared, and a second app may join only by declaring it shared as well. Both
+// halves are read from manifests, but the newcomer's half is worthless on its
+// own - it cannot make itself the handler, and the handler is resolved from
+// the user's binding, the system binding, then install order. An app declaring
+// someone else's class shared invites nobody anywhere.
+func entity_class_shared(t *sl.Thread, fn *sl.Builtin, app *App, user *User, class string) error {
+	if err := entity_class_allowed(t, fn, app, user, class); err != nil {
+		return err
+	}
+	handler := class_app_for(user, class)
+	if handler == nil || handler.id == app.id {
+		return nil
+	}
+	if app_shares_class(app, user, class) && app_shares_class(handler, user, class) {
+		return nil
+	}
+	return fmt.Errorf("app may not create in class %q for this user", class)
+}
+
+func entity_class_owned(t *sl.Thread, fn *sl.Builtin, app *App, user *User, class string) error {
+	if err := entity_class_allowed(t, fn, app, user, class); err != nil {
+		return err
+	}
+	handler := class_app_for(user, class)
+	if handler != nil && handler.id != app.id {
+		return fmt.Errorf("app does not handle class %q for this user", class)
+	}
+	return nil
+}
+
 // mochi.entity.create(class, name, privacy, data?) -> string: Create a new entity, returns ID
 func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 3 || len(args) > 4 {
@@ -654,7 +717,7 @@ func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
-	if err := entity_class_allowed(t, fn, app, user, class); err != nil {
+	if err := entity_class_shared(t, fn, app, user, class); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -706,7 +769,7 @@ func api_entity_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "no app")
 	}
 	if e.Class != "" {
-		if err := entity_class_allowed(t, fn, app, user, e.Class); err != nil {
+		if err := entity_class_owned(t, fn, app, user, e.Class); err != nil {
 			return sl_error(fn, "%v", err)
 		}
 	}
@@ -1009,7 +1072,7 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "no app")
 	}
 	if e.Class != "" {
-		if err := entity_class_allowed(t, fn, app, user, e.Class); err != nil {
+		if err := entity_class_owned(t, fn, app, user, e.Class); err != nil {
 			return sl_error(fn, "%v", err)
 		}
 	}

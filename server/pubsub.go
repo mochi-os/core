@@ -360,6 +360,10 @@ func pubsub_publish(from, service, event, id string, content []byte) {
 		}
 		sig = pubsub_sign(id, from, service, event, expires, strcontent)
 		if sig == nil {
+			if !entity_present(from) {
+				debug("Pubsub skipping announcement for %q: the entity is gone", from)
+				return
+			}
 			warn("Pubsub refusing to flood unsigned announcement for %q", from)
 			return
 		}

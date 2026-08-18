@@ -501,6 +501,22 @@ const directory_active_window = 2 * 60 * 60
 // signing is untouched and only mochi.entity.verify has to learn the tag.
 const entity_domain_application = "mochi/application/1\n"
 
+// entity_present reports whether an entity row still exists on this host.
+//
+// Signing fails for two unrelated reasons: the entity is gone, or it is present
+// with an unusable key. entity_sign already draws that line - info for the
+// first, warn for the second - and only the second is a fault an operator
+// should be mailed about. A caller that warns on any nil signature undoes that
+// distinction, and an entity deleted while a publish was already in flight
+// then mails the operator about a race it handled correctly.
+func entity_present(id string) bool {
+	if id == "" {
+		return false
+	}
+	have, _ := db_open("db/users.db").exists("select 1 from entities where id=?", id)
+	return have
+}
+
 func entity_sign(entity string, s string) string {
 	if entity == "" {
 		return ""

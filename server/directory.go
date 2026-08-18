@@ -217,6 +217,10 @@ func directory_create(e *Entity) {
 		Message: uid(), Expires: i64toa(now + pubsub_expires_ttl)}
 	sig := pubsub_sign(en.Message, en.Entity, "directory", "publish", en.Expires, entry_content(&en))
 	if sig == nil {
+		if !entity_present(e.ID) {
+			debug("Directory skipping entry for %q: the entity is gone", e.ID)
+			return
+		}
 		warn("Directory unable to sign entry for %q", e.ID)
 		return
 	}

@@ -516,6 +516,7 @@ var (
 			{"entity/read", ""},
 			{"interests/read", ""},
 			{"interests/write", ""},
+			{"notifications/read", ""},
 			{"notifications/send", ""},
 			{"notifications/write", ""},
 			{"permissions/read", ""},

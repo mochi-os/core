@@ -231,7 +231,13 @@ func TestDefaultAppsHoldWhatTheyCall(t *testing.T) {
 		"Menu":      {"apps/read", "permissions/read", "permissions/write"},
 		"Settings": {"apps/read", "settings/write", "server/read",
 			"documents/read", "documents/write", "domains/read", "domains/write",
-			"user/verification/write"},
+			"user/verification/write",
+			// notifications/category/list, which the settings app calls to draw
+			// the notification categories page. Its absence 500'd that page and
+			// mailed the operator on every visit; the app held write and send
+			// but not read, so this was a plain omission when the permission
+			// was split.
+			"notifications/read"},
 	}
 	for name, permissions := range required {
 		held := map[string]bool{}
@@ -281,3 +287,38 @@ func TestVerificationCodesAreNotExport(t *testing.T) {
 }
 
 var _ = sl.None
+
+// TestDefaultGrantsReachExistingInstalls. Adding a permission to apps_default
+// is only half a fix: an account set up before the addition already has an
+// `apps` row, and if setup were skipped for it the app would stay broken on
+// every existing install while looking correct in the source. app_user_setup
+// records len(defaults)+1 and re-runs whenever that count no longer matches,
+// which is what carries a newly added grant to accounts that already exist.
+//
+// This pins the counter's relationship to the default set. A change that
+// recorded a constant, or the length without the +1, would leave every prior
+// account stranded on the old grants - and the symptom is a 500 the operator
+// receives by mail, which is how the missing notifications/read surfaced.
+func TestDefaultGrantsReachExistingInstalls(t *testing.T) {
+	body, err := os.ReadFile("permissions.go")
+	if err != nil {
+		t.Fatalf("read permissions.go: %v", err)
+	}
+	text := string(body)
+	start := strings.Index(text, "func app_user_setup(")
+	if start < 0 {
+		t.Fatal("app_user_setup not found in permissions.go")
+	}
+	end := strings.Index(text[start:], "\n}\n")
+	if end < 0 {
+		t.Fatal("could not find the end of app_user_setup")
+	}
+	function := text[start : start+end]
+
+	if !strings.Contains(function, "expected := len(defaults) + 1") {
+		t.Error("app_user_setup no longer derives its setup counter from the size of the default set, so adding a permission to apps_default would never reach an account that already exists")
+	}
+	if !strings.Contains(function, "setup == expected") {
+		t.Error("app_user_setup no longer compares the recorded counter against the current default set, so a changed default set would not re-run setup")
+	}
+}

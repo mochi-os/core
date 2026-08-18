@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -155,5 +156,55 @@ func TestActionErrorGenericStaysA500(t *testing.T) {
 	}
 	if strings.Contains(body, "division by zero") {
 		t.Errorf("the generic branch leaked the error detail to the caller; body was %s", body)
+	}
+}
+
+// TestActionErrorRateLimitDoesNotMailTheOperator. warn() mails the address in
+// [email] admin; info() does not. A limiter refusing a caller is the limiter
+// working - the caller already has a 429 with Retry-After and there is nothing
+// for an operator to do - so mailing them is wrong, and on a public server the
+// mail arrives for every distinct app a flood happens to touch. Every other
+// rate-limit refusal in the server logs at debug; this one line was at warn,
+// and mailed albatross for a test suite exercising its own limiter.
+//
+// Asserted on the source. warn only reaches the mail when [email] admin is set,
+// the ini package loads from a file only, and setting it would mutate global
+// config for every other test in this binary - the same reason
+// TestWarnApplicationKeysOnTheApp asserts this way. Scoped to the branch, so a
+// warn elsewhere in web_action_error is not caught by accident.
+func TestActionErrorRateLimitDoesNotMailTheOperator(t *testing.T) {
+	source, err := os.ReadFile("web.go")
+	if err != nil {
+		t.Fatalf("reading web.go: %v", err)
+	}
+	body := string(source)
+	start := strings.Index(body, "func web_action_error(")
+	if start < 0 {
+		t.Fatal("web_action_error not found in web.go")
+	}
+	end := strings.Index(body[start:], "\n}\n")
+	if end < 0 {
+		t.Fatal("could not find the end of web_action_error")
+	}
+	function := body[start : start+end]
+
+	branch_start := strings.Index(function, "errors.As(err, &limit)")
+	branch_end := strings.Index(function[branch_start:], "\n\t}\n")
+	if branch_start < 0 || branch_end < 0 {
+		t.Fatal("could not isolate the rate-limit branch of web_action_error")
+	}
+	branch := function[branch_start : branch_start+branch_end]
+
+	if strings.Contains(branch, "warn(") {
+		t.Error("the rate-limit branch logs at warn, which mails the operator for a refusal they cannot act on")
+	}
+	if !strings.Contains(branch, "info(") {
+		t.Error("the rate-limit branch no longer logs the refusal at all; the line is the only record that a budget was tripped")
+	}
+
+	// The generic branch below it must stay at warn: an action that genuinely
+	// broke is exactly what the operator should hear about.
+	if !strings.Contains(function[branch_start+branch_end:], "warn(") {
+		t.Error("the generic failure branch no longer warns, so a real fault would stop reaching the operator")
 	}
 }

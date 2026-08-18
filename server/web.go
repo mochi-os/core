@@ -268,6 +268,13 @@ func web_action_error(c *gin.Context, app string, err error) {
 		if limit.Retry > 0 {
 			c.Header("Retry-After", strconv.Itoa(limit.Retry))
 		}
+		// info, not warn: warn mails the administrator, and a limiter refusing a
+		// caller is the limiter working. The refusal is already a clean 429 with
+		// Retry-After, so there is nothing for an operator to do - while the mail
+		// arrives for every distinct app that trips a budget, which on a public
+		// server is whatever a flood happens to touch. The line stays in the log
+		// for anyone reading it back.
+		//
 		// One line per app per minute, not one per refusal. A refused caller is
 		// usually a flood, so logging each one hands an anonymous attacker control
 		// of our log volume and disk - and the second identical line tells an
@@ -275,7 +282,7 @@ func web_action_error(c *gin.Context, app string, err error) {
 		// wrapped error because sl_error folds the builtin name into text that
 		// already contains it, which reads as the same sentence twice.
 		if rate_limit_refusal_log.allow(app) {
-			warn("web: %s rate limited (%s), retry after %ds", app, limit.detail, limit.Retry)
+			info("web: %s rate limited (%s), retry after %ds", app, limit.detail, limit.Retry)
 		}
 		respond_error(c, http.StatusTooManyRequests,
 			"rate_limit_exceeded_please_try_again_later", "errors.rate_limit_exceeded", nil)

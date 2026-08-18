@@ -186,11 +186,11 @@ func TestUserRestoreRoundTrip(t *testing.T) {
 // the user with no usable login path.
 func TestRestoreSafeMethods(t *testing.T) {
 	cases := []struct {
-		name             string
+		name              string
 		methods, disabled string
-		totp, recovery   bool
-		wantMethods      string
-		wantDisabled     string
+		totp, recovery    bool
+		wantMethods       string
+		wantDisabled      string
 	}{
 		// Authenticator restored: a 2FA requirement carries over intact.
 		{"2fa-totp-restored", "email,totp", "", true, true, "email,totp", ""},

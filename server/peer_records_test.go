@@ -81,7 +81,6 @@ func TestPeerRecordRoundTrip(t *testing.T) {
 	}
 }
 
-
 // TestPeerRecordRejectsWrongOrigin: a record validly signed for peer A
 // must not apply when the GossipSub sender is peer B — the direct-
 // announcement origin binding.
@@ -322,4 +321,3 @@ func TestPeerRequestEventRelaysThirdParty(t *testing.T) {
 		t.Error("relay did not consume the rate-limit token for the subject")
 	}
 }
-

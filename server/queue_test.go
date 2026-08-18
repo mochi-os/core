@@ -414,7 +414,7 @@ func TestQueueClaimForSelf(t *testing.T) {
 
 // TestQueueClaimForSelfNoNetId: when net_id is empty (early startup,
 // pre-net_start), queue_claim_for_self must return nil rather than
-// claiming rows for target=''.
+// claiming rows whose target is empty.
 func TestQueueClaimForSelfNoNetId(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

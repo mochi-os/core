@@ -136,10 +136,10 @@ func TestWorkerDispatchCreatesLazily(t *testing.T) {
 
 // fake_reply records ack/fail calls for assertion in tests.
 type fake_reply struct {
-	mu      sync.Mutex
-	acks    int
-	fails   []string
-	done    chan struct{}
+	mu    sync.Mutex
+	acks  int
+	fails []string
+	done  chan struct{}
 }
 
 func newFakeReply() *fake_reply {
@@ -582,6 +582,7 @@ func TestWorkersDrainWaitsForInflight(t *testing.T) {
 // internal handler so tests can assert on it. The handler decodes one
 // CBOR segment from e.stream — exercising the Frame.Data → e.stream
 // wiring path that pair-join's join-request handler relies on.
+//
 //lint:ignore U1000 test scaffolding
 type capture_target struct {
 	mu      sync.Mutex
@@ -632,7 +633,7 @@ type fake_capture_reply struct {
 	got  *atomic.Value
 }
 
-func (f *fake_capture_reply) ack()             { f.done <- struct{}{} }
+func (f *fake_capture_reply) ack()               { f.done <- struct{}{} }
 func (f *fake_capture_reply) fail(reason string) { f.done <- struct{}{} }
 
 func TestWorkerEventStreamCarriesFrameData(t *testing.T) {

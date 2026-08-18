@@ -50,13 +50,13 @@ const (
 // reply_target abstracts where a worker's handler-result reply goes.
 // Two implementations exist:
 //
-//   stream_reply — for frames from a remote sender via /mochi/2/messages.
-//                  Routes back to the source Receiver's replies channel,
-//                  where receiver_reply batches them into ack frames.
+//	stream_reply — for frames from a remote sender via /mochi/2/messages.
+//	               Routes back to the source Receiver's replies channel,
+//	               where receiver_reply batches them into ack frames.
 //
-//   queue_reply  — for frames from the self-loop fast path. Bypasses
-//                  the wire entirely; ack/fail map straight to
-//                  queue_ack / queue_fail / queue_drop.
+//	queue_reply  — for frames from the self-loop fast path. Bypasses
+//	               the wire entirely; ack/fail map straight to
+//	               queue_ack / queue_fail / queue_drop.
 type reply_target interface {
 	// ack signals the handler succeeded.
 	ack()
@@ -267,13 +267,13 @@ func fail_retryable(reason string) bool {
 // worker_failure_reason maps an Event.route() error to a wire failure
 // reason. Routing errors fall into one of three buckets:
 //
-//   • "unknown user / no handler / no service" → drop, retry will
+//   - "unknown user / no handler / no service" → drop, retry will
 //     never succeed. unsupported / unknown_user.
-//   • Anything matching nack_reason_from_error's existing vocabulary
+//   - Anything matching nack_reason_from_error's existing vocabulary
 //     (broadcast-gap, pending-full, decode-failed) → translate to a
 //     compatible v2 reason. We currently map all of those to
 //     transient — the sender's resolver handles retry-backoff.
-//   • Default → transient (the catch-all retry-later disposition).
+//   - Default → transient (the catch-all retry-later disposition).
 func worker_failure_reason(err error) string {
 	if err == nil {
 		return ""

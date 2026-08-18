@@ -57,6 +57,7 @@ func setup_replication_test(t *testing.T) func() {
 		os.RemoveAll(tmp_dir)
 	}
 }
+
 // setup_users_test_schema creates a minimal users.db schema for tests that
 // exercise the keys-transfer or session-replication apply paths. Mirrors
 // the v53 schema: uid is the PK on users, FKs reference users(uid).
@@ -78,6 +79,7 @@ func setup_users_test_schema() {
 
 // setup_sessions_test_schema creates the sessions table for tests that
 // exercise session-replication apply paths.
+//
 //lint:ignore U1000 test scaffolding
 func setup_sessions_test_schema() {
 	sessions := db_open("db/sessions.db")

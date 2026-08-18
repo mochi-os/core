@@ -12,7 +12,7 @@ import (
 
 func TestAttachmentDisposition(t *testing.T) {
 	tests := []struct {
-		name       string
+		name        string
 		want_inline bool
 	}{
 		{"photo.jpg", true},

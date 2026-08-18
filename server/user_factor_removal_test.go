@@ -32,7 +32,9 @@ func TestUserFactorRemovalBlocked(t *testing.T) {
 		return &u
 	}
 	reset := func() { users.exec("delete from credentials"); users.exec("delete from totp") }
-	passkey := func() { users.exec("insert into credentials (id, user, public_key, created) values (x'01', 'u1', x'00', 1)") }
+	passkey := func() {
+		users.exec("insert into credentials (id, user, public_key, created) values (x'01', 'u1', x'00', 1)")
+	}
 	totp := func() { users.exec("insert into totp (user, secret, verified, created) values ('u1', 's', 1, 1)") }
 
 	cases := []struct {

@@ -50,8 +50,8 @@ func TestBroadcastSeenMaxOverPeers(t *testing.T) {
 }
 
 // TestBroadcastTouchSeedsSeen — touch stamps seen for a key that never received
-// a broadcast (empty source), via a sentinel sender='' row that does NOT leak
-// into a real peer's position (the gap detector reads a specific (peer, key)),
+// a broadcast (empty source), via a sentinel row with an empty sender that
+// does NOT leak into a real peer's position (the gap detector reads a specific (peer, key)),
 // and whose last=0 never shadows a later real advance.
 func TestBroadcastTouchSeedsSeen(t *testing.T) {
 	db, cleanup := setup_broadcast_log_test(t)

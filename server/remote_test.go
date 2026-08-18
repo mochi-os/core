@@ -21,10 +21,10 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 	// destinations by default.
 	allow_private_for_test(t)
 	tests := []struct {
-		name           string
-		handler        http.HandlerFunc
+		name             string
+		handler          http.HandlerFunc
 		expect_error_nil bool
-		expect_contains string
+		expect_contains  string
 	}{
 		{
 			name: "server returns 404",
@@ -32,7 +32,7 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 				w.WriteHeader(404)
 			},
 			expect_error_nil: false,
-			expect_contains: "server returned status 404",
+			expect_contains:  "server returned status 404",
 		},
 		{
 			name: "server returns 500",
@@ -40,7 +40,7 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 				w.WriteHeader(500)
 			},
 			expect_error_nil: false,
-			expect_contains: "server returned status 500",
+			expect_contains:  "server returned status 500",
 		},
 		{
 			name: "server returns invalid JSON",
@@ -48,7 +48,7 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 				w.Write([]byte("not json"))
 			},
 			expect_error_nil: false,
-			expect_contains: "failed to parse net info",
+			expect_contains:  "failed to parse net info",
 		},
 		{
 			name: "server returns empty peer",
@@ -59,7 +59,7 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 				})
 			},
 			expect_error_nil: false,
-			expect_contains: "invalid net info: missing peer or addresses",
+			expect_contains:  "invalid net info: missing peer or addresses",
 		},
 		{
 			name: "server returns empty addresses",
@@ -70,7 +70,7 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 				})
 			},
 			expect_error_nil: false,
-			expect_contains: "invalid net info: missing peer or addresses",
+			expect_contains:  "invalid net info: missing peer or addresses",
 		},
 		{
 			name: "server returns null addresses",
@@ -80,7 +80,7 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 				})
 			},
 			expect_error_nil: false,
-			expect_contains: "invalid net info: missing peer or addresses",
+			expect_contains:  "invalid net info: missing peer or addresses",
 		},
 	}
 

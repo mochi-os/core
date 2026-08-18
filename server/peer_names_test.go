@@ -214,4 +214,3 @@ func TestPeerNamesLoad(t *testing.T) {
 		t.Errorf("loaded peer_name = %q, want mochi-os.org", name)
 	}
 }
-

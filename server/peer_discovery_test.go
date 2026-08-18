@@ -176,7 +176,6 @@ func TestPeerConnectRetryEnrollsFailedDial(t *testing.T) {
 	}
 }
 
-
 // TestPeerPublishEventDropsSelfRelay: a circuit address that relays
 // through ourselves is dead weight (we reach the peer directly over its
 // reservation), so it is dropped on apply; a third-party relay and a
@@ -395,7 +394,6 @@ func TestNetContainerInterface(t *testing.T) {
 		}
 	}
 }
-
 
 func TestPeerAddressesNormalise(t *testing.T) {
 	id, _ := test_host(t)

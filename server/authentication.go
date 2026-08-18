@@ -528,8 +528,8 @@ func user_login_factors(user *User) []string {
 // only those can complete the login, so a usable-but-not-required factor is
 // omitted - offering it would imply an alternative that doesn't exist, since
 // the required factors must be completed regardless. With nothing required
-// (methods=''), any one usable factor suffices, so all are offered. Always
-// non-nil.
+// (methods is empty), any one usable factor suffices, so all are offered.
+// Always non-nil.
 func user_login_offered(user *User) []string {
 	usable := user_login_factors(user)
 	required := auth_remaining_methods(user, "")

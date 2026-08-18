@@ -136,7 +136,7 @@ func TestVersionCompareMalformed(t *testing.T) {
 
 func TestAppVersionRequirementMinimum(t *testing.T) {
 	tests := []struct {
-		name          string
+		name           string
 		server_version string
 		min_required   string
 		should_load    bool
@@ -163,7 +163,7 @@ func TestAppVersionRequirementMinimum(t *testing.T) {
 
 func TestAppVersionRequirementMaximum(t *testing.T) {
 	tests := []struct {
-		name          string
+		name           string
 		server_version string
 		max_required   string
 		should_load    bool
@@ -188,7 +188,7 @@ func TestAppVersionRequirementMaximum(t *testing.T) {
 
 func TestAppVersionRequirementRange(t *testing.T) {
 	tests := []struct {
-		name          string
+		name           string
 		server_version string
 		min_required   string
 		max_required   string
@@ -242,29 +242,29 @@ func TestMochiVersionScenarios(t *testing.T) {
 	// Simulate real Mochi version progression
 	scenarios := []struct {
 		name         string
-		app_min       string
-		app_max       string
+		app_min      string
+		app_max      string
 		compatible   []string
 		incompatible []string
 	}{
 		{
 			name:         "repositories app (0.3+)",
-			app_min:       "0.3",
-			app_max:       "",
+			app_min:      "0.3",
+			app_max:      "",
 			compatible:   []string{"0.3.0", "0.3.1", "0.4.0", "1.0.0"},
 			incompatible: []string{"0.2.0", "0.2.37", "0.1.0"},
 		},
 		{
 			name:         "legacy app (0.1-0.2)",
-			app_min:       "0.1",
-			app_max:       "0.2",
+			app_min:      "0.1",
+			app_max:      "0.2",
 			compatible:   []string{"0.1.0", "0.1.5", "0.2.0", "0.2.37"},
 			incompatible: []string{"0.3.0", "1.0.0"},
 		},
 		{
 			name:         "future app (1.0+)",
-			app_min:       "1.0",
-			app_max:       "",
+			app_min:      "1.0",
+			app_max:      "",
 			compatible:   []string{"1.0.0", "1.1.0", "2.0.0"},
 			incompatible: []string{"0.3.0", "0.9.9"},
 		},
@@ -358,9 +358,9 @@ func TestVersionRequirementExactVsFamily(t *testing.T) {
 func TestVersionRequirementMinimalPrecision(t *testing.T) {
 	// Apps can use minimal precision for broad compatibility
 	tests := []struct {
-		name       string
-		server     string
-		min_request     string
+		name        string
+		server      string
+		min_request string
 		should_pass bool
 	}{
 		// "1" means any 1.x.x version
@@ -390,10 +390,10 @@ func TestVersionRequirementMinimalPrecision(t *testing.T) {
 
 func TestVersionRequirementRangeWithDifferentPrecision(t *testing.T) {
 	tests := []struct {
-		name       string
-		server     string
-		min_request     string
-		max_request     string
+		name        string
+		server      string
+		min_request string
+		max_request string
 		should_pass bool
 	}{
 		// Range [0.2, 0.3] should include all 0.2.x and 0.3.x

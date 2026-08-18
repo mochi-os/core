@@ -380,4 +380,3 @@ func TestBroadcastResyncJitter(t *testing.T) {
 			len(seen), samples, seen)
 	}
 }
-

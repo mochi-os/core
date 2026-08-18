@@ -94,7 +94,7 @@ func TestResolveFailVocabulary(t *testing.T) {
 		{fail_handler_panic, "pending", true},
 		{fail_unclaimed, "pending", true},
 		{fail_transient, "pending", true},
-		{"", "pending", true},                // empty → transient
+		{"", "pending", true},                      // empty → transient
 		{"future-unknown-reason", "pending", true}, // unknown → transient retry
 	}
 
@@ -358,7 +358,6 @@ func TestSendersSweepTimesOutInflight(t *testing.T) {
 	}
 }
 
-
 func TestSendersSweepTimesOutPings(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -492,6 +491,7 @@ func TestSendersBeyAllNoopOnNoSenders(t *testing.T) {
 
 // fake_writer implements io.Writer for stream_io-style tests of
 // write_one and helpers that need a writable target.
+//
 //lint:ignore U1000 test scaffolding
 type fake_writer struct {
 	mu  sync.Mutex

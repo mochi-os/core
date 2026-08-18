@@ -34,14 +34,14 @@ import (
 // the receiver-side report alone shows "we're at N", not "we should
 // be at M". Operator follows up with a remote query if needed.
 type BroadcastLagRow struct {
-	User         string  `json:"user"`
-	App          string  `json:"app"`
-	Peer         string  `json:"peer"`
-	Key          string  `json:"key"`
-	ReceivedLast int64   `json:"received_last"`
-	OwnerLogMax  *int64  `json:"owner_log_max,omitempty"`
-	Lag          *int64  `json:"lag,omitempty"`
-	Pending      int     `json:"pending"`
+	User         string `json:"user"`
+	App          string `json:"app"`
+	Peer         string `json:"peer"`
+	Key          string `json:"key"`
+	ReceivedLast int64  `json:"received_last"`
+	OwnerLogMax  *int64 `json:"owner_log_max,omitempty"`
+	Lag          *int64 `json:"lag,omitempty"`
+	Pending      int    `json:"pending"`
 }
 
 // admin_broadcast_lag is GET /_/admin/broadcast/lag. Scans every

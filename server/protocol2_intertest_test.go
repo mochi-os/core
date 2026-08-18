@@ -177,9 +177,9 @@ func inter_mochi2_state(t *testing.T) (version string, queue int) {
 //
 // Scopes:
 //   - full:     stop, delete the entire data dir (including the libp2p
-//               host key → fresh peer identity on restart), start.
+//     host key → fresh peer identity on restart), start.
 //   - partial:  stop, delete data DBs but preserve db/host.key so the
-//               peer identity survives, start.
+//     peer identity survives, start.
 //   - surgical: stop, delete only the named DBs (extra args), start.
 //
 // Returns once mochi2 answers /_/health again.

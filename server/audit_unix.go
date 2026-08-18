@@ -137,6 +137,7 @@ func audit_admin_escalation(admin string, target string, action string) {
 }
 
 // audit_signature_failed logs signature verification failures
+//
 //lint:ignore U1000 audit vocabulary: the call exists so a future caller reaches for the right event name rather than inventing one
 func audit_signature_failed(from string, reason string) {
 	audit_log_auth(fmt.Sprintf("signature_failed from=%s reason=%s", from, reason))
@@ -224,6 +225,7 @@ func audit_server_stop() {
 }
 
 // audit_schema_migrated logs server schema migrations
+//
 //lint:ignore U1000 audit vocabulary: see audit_signature_failed
 func audit_schema_migrated(from_version int, to_version int) {
 	audit_log_daemon(fmt.Sprintf("schema_migrated from=%d to=%d", from_version, to_version))
@@ -237,6 +239,7 @@ func audit_app_installed(app string, version string) {
 }
 
 // audit_app_removed logs app removal
+//
 //lint:ignore U1000 audit vocabulary: see audit_signature_failed
 func audit_app_removed(app string) {
 	audit_log_ops(fmt.Sprintf("app_removed app=%s", app))
@@ -281,4 +284,3 @@ func audit_user_version_changed(user string, app string, version string, track s
 func audit_user_routing_changed(user string, routing_type string, key string, app string) {
 	audit_log_ops(fmt.Sprintf("user_routing_changed user=%s type=%s key=%s app=%s", user, routing_type, key, app))
 }
-

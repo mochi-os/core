@@ -19,8 +19,8 @@ import (
 func TestRepositoryNameValidation(t *testing.T) {
 	// Use "constant" validation which allows: alphanumeric, /, -, ., _
 	tests := []struct {
-		name    string
-		input   string
+		name     string
+		input    string
 		is_valid bool
 	}{
 		// Valid names (alphanumeric, hyphen, underscore, dot)
@@ -362,8 +362,8 @@ func TestRepositoryPathGeneration(t *testing.T) {
 	defer func() { data_dir = orig_data_dir }()
 
 	tests := []struct {
-		user_id   string
-		repo_id   string
+		user_id  string
+		repo_id  string
 		expected string
 	}{
 		{"u1", "repo-abc", "/var/lib/mochi/users/u1/repositories/repo-abc"},

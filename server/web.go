@@ -1443,7 +1443,14 @@ func regexp_replace_meta(html, property, value string) string {
 
 	pattern := regexp.MustCompile(`<meta\s+property="` + regexp.QuoteMeta(property) + `"\s+content="[^"]*"\s*/?>`)
 	replacement := `<meta property="` + property + `" content="` + value + `" />`
-	return pattern.ReplaceAllString(html, replacement)
+	// Literal, not ReplaceAllString: $ in the replacement is a capture-group
+	// reference, the value is app-supplied, and escape_attr covers the
+	// HTML-significant characters rather than this one. The pattern has no
+	// groups, so every $N and $name resolved to empty and took the digits or
+	// word after it with them - "Cost: $100" rendered as "Cost: ". Silent, and
+	// only in the preview that Slack, Discord and crawlers fetch, never in the
+	// page the author sees.
+	return pattern.ReplaceAllLiteralString(html, replacement)
 }
 
 // Replace meta tag with name attribute
@@ -1452,7 +1459,7 @@ func regexp_replace_meta_name(html, name, value string) string {
 
 	pattern := regexp.MustCompile(`<meta\s+name="` + regexp.QuoteMeta(name) + `"\s+content="[^"]*"\s*/?>`)
 	replacement := `<meta name="` + name + `" content="` + value + `" />`
-	return pattern.ReplaceAllString(html, replacement)
+	return pattern.ReplaceAllLiteralString(html, replacement)
 }
 
 // Replace HTML tag content
@@ -1461,7 +1468,7 @@ func regexp_replace_tag(html, tag, value string) string {
 
 	pattern := regexp.MustCompile(`<` + regexp.QuoteMeta(tag) + `>[^<]*</` + regexp.QuoteMeta(tag) + `>`)
 	replacement := `<` + tag + `>` + value + `</` + tag + `>`
-	return pattern.ReplaceAllString(html, replacement)
+	return pattern.ReplaceAllLiteralString(html, replacement)
 }
 
 // Handle login begin: check user's required auth methods (POST with JSON)

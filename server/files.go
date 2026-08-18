@@ -872,6 +872,8 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	// user that a.write.cache serves. A subscriber exporting someone else's
 	// container writes and reads as themselves either way.
 	var out io.WriteCloser
+	var cache_path string
+	var cache_previous int64
 	if cache {
 		path, err := cache_file(t, destination)
 		if err != nil {
@@ -880,10 +882,17 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 			return sl_error(fn, "unable to create cache directory: %v", err)
 		}
+		if information, err := os.Stat(path); err == nil {
+			cache_previous = information.Size()
+		}
 		out, err = os.Create(path)
 		if err != nil {
 			return sl_error(fn, "unable to write archive")
 		}
+		cache_path = path
+		// The cache is exempt from the per-user quota, so nothing bounds this
+		// archive's size - which is why the bytes are admitted below rather
+		// than left for the hourly sweep to notice.
 		remaining = math.MaxInt64
 	} else {
 		dir := filepath.Dir(destination)
@@ -898,6 +907,21 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		}
 	}
 	defer out.Close()
+
+	// Account for a cached archive however this returns. An error partway
+	// through still leaves whatever the zip writer has already emitted standing
+	// in the cache, and a running total that never learns of those bytes
+	// under-evicts for the rest of the process. Measured from the file rather
+	// than from counter.written, which counts the bytes fed in and not the
+	// compressed result; out is an unbuffered os.File, so the size is settled
+	// before the deferred Close above runs.
+	if cache_path != "" {
+		defer func() {
+			if information, err := os.Stat(cache_path); err == nil {
+				cache_admit(information.Size() - cache_previous)
+			}
+		}()
+	}
 
 	counter := &archive_counter{limit: remaining}
 	writer := zip.NewWriter(io.MultiWriter(out, counter))

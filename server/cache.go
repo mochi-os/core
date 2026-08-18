@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	sl "go.starlark.net/starlark"
@@ -39,6 +40,22 @@ import (
 // selects the aggressive mode), defaulting to a tenth of the disk holding
 // cache_dir.
 var cache_budget int64 = -1
+
+// cache_total is the running byte total of the apps namespace, so admission
+// does not walk the tree on every write. Negative means not yet measured; the
+// first admission seeds it with one walk, and every walk that follows (the
+// hourly sweep, or an admission eviction) replaces it with an exact figure, so
+// drift from a path that forgets to account cannot accumulate past an hour.
+var (
+	cache_total_lock sync.Mutex
+	cache_total      int64 = -1
+)
+
+// cache_headroom_divisor sets how far below the budget an admission eviction
+// clears: budget/8. cache_evict stops the instant it reaches the budget, so
+// evicting to exactly that would leave the very next write over again and walk
+// the whole tree per write. Clearing a margin means one walk serves many.
+const cache_headroom_divisor = 8
 
 var api_cache = sls.FromStringDict(sl.String("mochi.cache"), sl.StringDict{
 	"write":  sl.NewBuiltin("mochi.cache.write", api_cache_write),
@@ -159,6 +176,10 @@ func cache_write_file(path string, reader io.Reader) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return 0, err
 	}
+	var previous int64
+	if information, err := os.Stat(path); err == nil {
+		previous = information.Size()
+	}
 	temporary := fmt.Sprintf("%s.%s.partial", path, uid())
 	f, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 	if err != nil {
@@ -174,6 +195,8 @@ func cache_write_file(path string, reader io.Reader) (int64, error) {
 		os.Remove(temporary)
 		return 0, err
 	}
+	// The rename replaces whatever was at path, so only the difference is new.
+	cache_admit(n - previous)
 	return n, nil
 }
 
@@ -342,7 +365,14 @@ func api_cache_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
+	var size int64
+	if information, err := os.Stat(path); err == nil {
+		size = information.Size()
+	}
 	err = os.Remove(path)
+	if err == nil {
+		cache_admit(-size)
+	}
 	return sl.Bool(err == nil), nil
 }
 
@@ -403,6 +433,13 @@ func cache_evict() {
 	if cache_budget < 0 {
 		return
 	}
+	cache_total_set(cache_evict_to(cache_budget))
+}
+
+// cache_evict_to enforces a byte target over the apps namespace, least recently
+// used first, and returns the total that remains. Separate from cache_evict so
+// admission can clear headroom below the budget rather than exactly to it.
+func cache_evict_to(target int64) int64 {
 	type entry struct {
 		path     string
 		size     int64
@@ -427,17 +464,17 @@ func cache_evict() {
 		users[u] += information.Size()
 		return nil
 	})
-	if total <= cache_budget {
-		return
+	if total <= target {
+		return total
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].modified.Before(entries[j].modified) })
-	share := cache_budget
+	share := target
 	if len(users) > 0 {
-		share = cache_budget / int64(len(users))
+		share = target / int64(len(users))
 	}
 	for _, e := range entries {
-		if total <= cache_budget {
-			return
+		if total <= target {
+			return total
 		}
 		if users[e.user] > share && os.Remove(e.path) == nil {
 			total -= e.size
@@ -445,11 +482,68 @@ func cache_evict() {
 		}
 	}
 	for _, e := range entries {
-		if total <= cache_budget {
-			return
+		if total <= target {
+			return total
 		}
 		if os.Remove(e.path) == nil {
 			total -= e.size
 		}
+	}
+	return total
+}
+
+// cache_total_set replaces the running total with a figure a walk just measured.
+func cache_total_set(total int64) {
+	cache_total_lock.Lock()
+	cache_total = total
+	cache_total_lock.Unlock()
+}
+
+// cache_measure walks the apps namespace and returns its byte total, to seed
+// the running total on the first admission.
+func cache_measure() int64 {
+	var total int64
+	filepath.Walk(filepath.Join(cache_dir, "apps"), func(path string, information os.FileInfo, err error) error {
+		if err == nil && !information.IsDir() {
+			total += information.Size()
+		}
+		return nil
+	})
+	return total
+}
+
+// cache_admit accounts for bytes a write just added - or, negative, a delete
+// just released - and, when that puts the namespace over budget, evicts before
+// returning.
+//
+// Every caller admits *after* the change has landed on disk. That is what makes
+// the first-call seeding correct: the walk it does already counts the change
+// being reported, so the delta must not then be added on top of it.
+//
+// The cache is exempt from the per-user storage quota in exchange for being
+// unconditionally evictable, and that bargain was honoured only by an hourly
+// sweep: between two sweeps an app could write until the disk filled, which
+// cache_dir shares with every user on the host. Evicting rather than refusing
+// keeps the other half of the bargain - an app is promised that a miss
+// re-obtains, so a write that fails is a contract this code does not have.
+func cache_admit(delta int64) {
+	if cache_budget < 0 {
+		return
+	}
+
+	cache_total_lock.Lock()
+	if cache_total < 0 {
+		// Deliberately under the lock. It is one walk per process, and letting
+		// concurrent admissions each walk instead would have every one of them
+		// add its own delta on top of a measurement that already counted it.
+		cache_total = cache_measure()
+	} else {
+		cache_total += delta
+	}
+	over := cache_total > cache_budget
+	cache_total_lock.Unlock()
+
+	if over {
+		cache_total_set(cache_evict_to(cache_budget - cache_budget/cache_headroom_divisor))
 	}
 }

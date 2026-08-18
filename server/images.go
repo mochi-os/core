@@ -268,6 +268,14 @@ func api_image_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if result, err := variant_render(source, kind, destination); err != nil || result == "" {
 		return sl.None, nil
 	}
+	// The third path that adds bytes to the cache without going through
+	// cache_write_file, and so the third that has to account for them: an app
+	// that renders a variant per image would otherwise fill the cache with the
+	// budget checked only by the hourly sweep. The entry is new by
+	// construction - an existing one returned above - so the whole size counts.
+	if information, err := os.Stat(destination); err == nil {
+		cache_admit(information.Size())
+	}
 	return sl.String(name), nil
 }
 

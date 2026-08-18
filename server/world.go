@@ -43,6 +43,16 @@ const (
 	world_seen_expiry     = 2700 // seconds before an unrefreshed row leaves the table: three missed 15-minute floors
 	world_services_most   = 16   // services one world may announce: a bound, not a target
 	world_name_most       = 64   // runes in a display name: it renders on every server's join page
+
+	// world_ids_most bounds distinct worlds one peer may hold rows for. The
+	// per-world debounce below is keyed on the id, so it constrains one world's
+	// cadence and does nothing against a caller whose id varies - a world server
+	// deriving its id from a match or a restart counter rather than from its own
+	// identity writes a fresh row every push. replace into keeps a repeated id
+	// free, so only new ids grow the table; past the cap the least recently seen
+	// row is evicted rather than the push refused, since a legitimate world must
+	// not be lost because a buggy neighbour filled the table.
+	world_ids_most = 100
 )
 
 // world_service is one hosted game's slice of an announcement.
@@ -53,7 +63,10 @@ type world_service struct {
 }
 
 // world_recent debounces outbound gossip per world id: an unchanged push
-// inside the minimum interval stores locally but does not flood.
+// inside the minimum interval stores locally but does not flood. Swept by
+// world_manager on the table's own expiry, so debounce state cannot outlive the
+// listing it debounces - nothing deleted from it before, and an id seen once
+// stayed for the life of the process.
 var (
 	world_lock   sync.Mutex
 	world_recent = map[string]struct {
@@ -83,6 +96,23 @@ func world_manager() {
 	for range time.Tick(5 * time.Minute) {
 		db := db_open("db/world.db")
 		db.exec("delete from worlds where seen < ?", now()-world_seen_expiry)
+		world_recent_prune()
+	}
+}
+
+// world_recent_prune drops debounce entries for worlds that have stopped
+// pushing, on the same expiry as the rows they belong to. Without it the map
+// only ever grew: the table ages a silent world out after world_seen_expiry
+// while its entry stayed for the life of the process, so the two disagreed
+// about which worlds exist.
+func world_recent_prune() {
+	cutoff := now() - world_seen_expiry
+	world_lock.Lock()
+	defer world_lock.Unlock()
+	for id, recent := range world_recent {
+		if recent.published < cutoff {
+			delete(world_recent, id)
+		}
 	}
 }
 
@@ -117,6 +147,17 @@ func world_validate(id, name, address, version, services string) ([]world_servic
 // world_store upserts one listing row.
 func world_store(peer, id, name, address string, version int64, services string) {
 	db := db_open("db/world.db")
+
+	// Only a world this peer has not listed before grows the table; a repeated
+	// id is a replace. Evicting the least recently seen keeps a caller whose id
+	// varies from displacing every other world with its own churn.
+	if have, _ := db.exists("select 1 from worlds where peer=? and world=?", peer, id); !have {
+		if db.integer("select count(*) from worlds where peer=?", peer) >= world_ids_most {
+			db.exec(`delete from worlds where peer=? and world in (
+				select world from worlds where peer=? order by seen limit 1)`, peer, peer)
+		}
+	}
+
 	db.exec("replace into worlds (peer, world, name, address, version, services, seen) values (?, ?, ?, ?, ?, ?, ?)",
 		peer, id, name, address, version, services, now())
 }
@@ -159,7 +200,7 @@ func world_status_handler(c *gin.Context) {
 	recent := world_recent[input.World.ID]
 	fresh := content != recent.content
 	due := now()-recent.published >= world_publish_minimum
-	if due && (fresh || now()-recent.published >= world_seen_expiry/3) {
+	if due && (fresh || now()-recent.published >= world_seen_expiry/3) && rate_limit_world_gossip.allow(net_id) {
 		world_recent[input.World.ID] = struct {
 			content   string
 			published int64
@@ -215,6 +256,18 @@ func world_register_routes(r *gin.Engine) {
 // stack floods at most once a minute per world, so a peer exceeding this
 // severalfold is broken or hostile either way.
 var rate_limit_world_publish = &rate_limiter{
+	entries: make(map[string]*rate_limit_entry),
+	limit:   30,
+	window:  60,
+}
+
+// rate_limit_world_gossip bounds what this server floods OUTWARD, across all
+// worlds. world_publish_minimum is per id, so it paces one world and is no
+// constraint at all on a caller whose id varies: every fresh id has
+// published == 0, which makes the interval check trivially true and floods the
+// mesh on the spot. Matched to the inbound limiter above, which is what a peer
+// receiving this traffic will apply to it anyway.
+var rate_limit_world_gossip = &rate_limiter{
 	entries: make(map[string]*rate_limit_entry),
 	limit:   30,
 	window:  60,

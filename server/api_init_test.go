@@ -64,7 +64,7 @@ func TestApiTableIsExplicit(t *testing.T) {
 	if !ok {
 		t.Fatalf("table[\"mochi\"] is %T, want *starlarkstruct.Struct", table["mochi"])
 	}
-	for _, name := range []string{"db", "entity", "app", "access", "attachment", "remote", "stream"} {
+	for _, name := range []string{"db", "entity", "app", "access", "remote", "stream"} {
 		v, err := mochi.Attr(name)
 		if err != nil || v == nil {
 			t.Errorf("mochi.%s missing from the API table (err=%v)", name, err)

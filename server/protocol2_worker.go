@@ -297,8 +297,7 @@ func worker_failure_reason(err error) string {
 		// The app declares a handler name its Starlark globals do not
 		// define. Fixed until the app is changed, so retrying is 50
 		// deliveries of the same failure.
-		strings.HasPrefix(msg, "Starlark app function"),
-		strings.HasPrefix(msg, "unsigned attachment event"):
+		strings.HasPrefix(msg, "Starlark app function"):
 		return fail_unsupported
 	case strings.HasPrefix(msg, "handler panic"),
 		// Starlark.call's own recover, for a panic raised inside a Go

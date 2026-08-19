@@ -39,6 +39,9 @@ const object_maximum = 10 * 1024 * 1024 * 1024 // 10GB
 // object may fill a user's whole allowance - a video is one file, not many.
 var file_max_storage int64 = 10 * 1024 * 1024 * 1024
 
+// How long an unread cache entry survives before cache_cleanup removes it.
+const cache_max_age = 7 * 24 * time.Hour
+
 // user_storage_remaining reports how many more bytes the user may store before
 // reaching the per-user storage quota (file_max_storage). Administrators are
 // exempt from the quota and always have effectively unlimited space; returning

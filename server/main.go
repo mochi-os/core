@@ -209,6 +209,9 @@ func main_serve(ready func()) int {
 	starlark_configure()
 	cache_configure()
 	db_start()
+	// Before anything can open an app database: an app's migration reads the
+	// export this writes, and takes its absence as "no rows".
+	attachment_export_sweep()
 	if err := domains_load_certs(); err != nil {
 		warn("Failed to load domain certificates: %v", err)
 	}

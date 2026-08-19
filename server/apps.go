@@ -2574,8 +2574,8 @@ func api_app_label(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "invalid key")
 	}
 
-	a, ok := t.Local("app").(*App)
-	if !ok || a == nil {
+	a := principal_app(t)
+	if a == nil {
 		return sl.String(""), nil
 	}
 
@@ -2739,8 +2739,8 @@ func api_app_package_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no user")
 	}
 
-	a, ok := t.Local("app").(*App)
-	if !ok || a == nil {
+	a := principal_app(t)
+	if a == nil {
 		return sl_error(fn, "no app")
 	}
 
@@ -2853,8 +2853,8 @@ func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "not administrator")
 	}
 
-	a, ok := t.Local("app").(*App)
-	if !ok || a == nil {
+	a := principal_app(t)
+	if a == nil {
 		return sl_error(fn, "no app")
 	}
 
@@ -3259,7 +3259,7 @@ func api_app_service_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 // building an absolute URL to one of its own routes prefixes it with this.
 // Matches the prefix core used when it built attachment URLs.
 func api_app_url(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
@@ -3273,7 +3273,7 @@ func api_app_url(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 // frames nobody handles if it derives the header from mochi.app.url() - the
 // two happen to coincide for most apps, which is what let the mistake work.
 func api_app_services(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
@@ -3736,8 +3736,8 @@ func api_app_asset_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl.False, nil
 	}
 
-	app, ok := t.Local("app").(*App)
-	if !ok || app == nil {
+	app := principal_app(t)
+	if app == nil {
 		return sl_error(fn, "no app")
 	}
 
@@ -3772,8 +3772,8 @@ func api_app_asset_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl.NewList(nil), nil
 	}
 
-	app, ok := t.Local("app").(*App)
-	if !ok || app == nil {
+	app := principal_app(t)
+	if app == nil {
 		return sl_error(fn, "no app")
 	}
 
@@ -3810,8 +3810,8 @@ func api_app_asset_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "invalid path")
 	}
 
-	app, ok := t.Local("app").(*App)
-	if !ok || app == nil {
+	app := principal_app(t)
+	if app == nil {
 		return sl_error(fn, "no app")
 	}
 

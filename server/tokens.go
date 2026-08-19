@@ -250,7 +250,7 @@ func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "not authenticated")
 	}
 
-	current_app := t.Local("app").(*App)
+	current_app := principal_app(t)
 	if current_app == nil {
 		return sl_error(fn, "no app")
 	}
@@ -327,7 +327,7 @@ func api_token_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "not authenticated")
 	}
 
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
@@ -369,7 +369,7 @@ func api_token_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "not authenticated")
 	}
 
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
@@ -397,7 +397,7 @@ func api_token_scope(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	// Scope to the calling app's own tokens: an app must not be able to
 	// introspect tokens minted for a different app. token_lookup (not
 	// token_validate) so inspecting a token does not bump its used timestamp.
-	app, _ := t.Local("app").(*App)
+	app := principal_app(t)
 	token := token_lookup(token_str)
 	if token == nil || app == nil || token.App != app.id {
 		return sl.False, nil
@@ -420,7 +420,7 @@ func api_token_user(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "token must be a string")
 	}
 
-	app, _ := t.Local("app").(*App)
+	app := principal_app(t)
 	token := token_lookup(token_str)
 	if token == nil || app == nil || token.App != app.id {
 		return sl.None, nil
@@ -440,7 +440,7 @@ func api_token_validate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "token must be a string")
 	}
 
-	app, _ := t.Local("app").(*App)
+	app := principal_app(t)
 	token := token_lookup(token_str)
 	if token == nil || app == nil || token.App != app.id {
 		return sl.None, nil

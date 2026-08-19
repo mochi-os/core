@@ -143,7 +143,7 @@ func api_cache_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	// at maximum would truncate a peer's oversized transfer to precisely the
 	// declared size, and a completeness check downstream would then pass a
 	// file whose tail was silently discarded.
-	limit := int64(attachment_max_size_default)
+	limit := int64(object_maximum)
 	if maximum > 0 && int64(maximum) < limit {
 		limit = int64(maximum) + 1
 	}

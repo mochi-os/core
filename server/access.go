@@ -181,7 +181,7 @@ func api_access_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "invalid operation")
 	}
 
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
@@ -241,7 +241,7 @@ func api_access_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, grant bool) (sl
 		return sl_error(fn, "invalid granter")
 	}
 
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
@@ -277,7 +277,7 @@ func api_access_revoke(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "invalid operation")
 	}
 
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
@@ -303,7 +303,7 @@ func api_access_clear_resource(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		return sl_error(fn, "invalid resource")
 	}
 
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
@@ -329,7 +329,7 @@ func api_access_clear_subject(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "invalid subject")
 	}
 
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
@@ -355,7 +355,7 @@ func api_access_list_resource(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "invalid resource")
 	}
 
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
@@ -384,7 +384,7 @@ func api_access_list_subject(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "invalid subject")
 	}
 
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}

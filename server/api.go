@@ -69,14 +69,13 @@ func api_table() sl.StringDict {
 	return sl.StringDict{
 		"json": starlarkjson.Module,
 		"mochi": sls.FromStringDict(sl.String("mochi"), sl.StringDict{
-			"access":     api_access,
-			"account":    api_account,
-			"ai":         api_ai,
-			"app":        api_app,
-			"attachment": api_attachment,
-			"broadcast":  api_broadcast,
-			"archive":    api_archive,
-			"cache":      api_cache,
+			"access":    api_access,
+			"account":   api_account,
+			"ai":        api_ai,
+			"app":       api_app,
+			"broadcast": api_broadcast,
+			"archive":   api_archive,
+			"cache":     api_cache,
 			"crypto": sls.FromStringDict(sl.String("mochi.crypto"), sl.StringDict{
 				"equal": sl.NewBuiltin("mochi.crypto.equal", api_crypto_equal),
 				"hash": sls.FromStringDict(sl.String("mochi.crypto.hash"), sl.StringDict{

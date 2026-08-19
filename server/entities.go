@@ -713,7 +713,7 @@ func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "no user")
 	}
 
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
@@ -764,7 +764,7 @@ func api_entity_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "not allowed to delete this entity")
 	}
 
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
@@ -1067,7 +1067,7 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "not allowed to update this entity")
 	}
 
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}

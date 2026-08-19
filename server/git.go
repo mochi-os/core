@@ -503,9 +503,12 @@ func api_git_init(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	err := git_init(owner, app, entity)
@@ -528,9 +531,12 @@ func api_git_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_write(t, owner, app, entity) {
@@ -557,9 +563,12 @@ func api_git_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -581,9 +590,12 @@ func api_git_size(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -610,9 +622,12 @@ func api_git_refs(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -674,9 +689,12 @@ func api_git_branches(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -721,9 +739,12 @@ func api_git_tags(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -788,9 +809,12 @@ func api_git_branch_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_write(t, owner, app, entity) {
@@ -837,9 +861,12 @@ func api_git_branch_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_write(t, owner, app, entity) {
@@ -875,9 +902,12 @@ func api_git_branch_default_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -915,9 +945,12 @@ func api_git_branch_default_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_write(t, owner, app, entity) {
@@ -976,9 +1009,12 @@ func api_git_commit_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -1052,9 +1088,12 @@ func api_git_commit_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -1115,9 +1154,12 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -1187,9 +1229,12 @@ func api_git_commit_between(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -1274,9 +1319,12 @@ func api_git_tree(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -1371,9 +1419,12 @@ func api_git_blob_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -1430,9 +1481,12 @@ func api_git_blob_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -1505,9 +1559,12 @@ func api_git_diff(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -1584,9 +1641,12 @@ func api_git_diff_stats(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -1682,9 +1742,12 @@ func api_git_merge_base(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -1750,9 +1813,12 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
@@ -1915,9 +1981,12 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_write(t, owner, app, entity) {
@@ -2461,9 +2530,12 @@ func api_git_archive(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	owner := principal_owner(t)
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if owner == nil {
 		return sl_error(fn, "no owner")
+	}
+	if app == nil {
+		return sl_error(fn, "no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {

@@ -10,6 +10,8 @@
 //     operates on. Never nil on a call that reads anything.
 //   - OWNER   - who owns the entity the request addressed. A fact about the
 //     object, not about the request.
+//   - APP     - which app the call runs as. Permission grants are (user, app)
+//     pairs, so this is half of every authorization decision.
 //
 // Conflating the first two is the ambient-ownership bug class: the only way
 // to reach one account's data was to claim the requester WAS that account, so
@@ -49,6 +51,22 @@ func principal_caller(t *sl.Thread) *User {
 func principal_owner(t *sl.Thread) *User {
 	owner, _ := t.Local("owner").(*User)
 	return owner
+}
+
+// principal_app returns the app the call runs as, or nil when the thread has
+// none.
+//
+// A bare t.Local("app").(*App) panics in that case rather than yielding nil:
+// an unset local is a nil INTERFACE, and a nil interface does not assert to a
+// concrete type. So every `if app == nil` guard written below such an
+// assertion was unreachable on the one input it was defending against. The
+// locals are unset for the whole of module load - the interpreter executes an
+// app's .star files before any entry point has set them - so a module-level
+// `BASE = mochi.app.url()` reached a builtin with no app and took out the
+// interpreter rather than getting the error the builtin had ready.
+func principal_app(t *sl.Thread) *App {
+	app, _ := t.Local("app").(*App)
+	return app
 }
 
 // principal_storage returns the account whose data this call operates on.

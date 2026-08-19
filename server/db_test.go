@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1064,15 +1065,131 @@ func TestAppSystemNoSettingsTable(t *testing.T) {
 		t.Error("app.db should not have a settings table")
 	}
 
-	// Verify access and attachments tables do exist
+	// Verify the access table does exist
 	exists, _ = db.exists("select name from sqlite_master where type='table' and name='access'")
 	if !exists {
 		t.Error("app.db should have an access table")
 	}
 
+	// Attachments belong to the apps now; core creates no table for them.
 	exists, _ = db.exists("select name from sqlite_master where type='table' and name='attachments'")
-	if !exists {
-		t.Error("app.db should have an attachments table")
+	if exists {
+		t.Error("app.db should not have an attachments table")
+	}
+}
+
+// TestAttachmentExportSweep: a store with rows is written to the app's file
+// storage as attachments.json - own rows naming their stored file, remote rows
+// not - and then dropped with core's generated variants; a store without rows
+// is dropped and leaves no file; an app.db without the table is untouched; an
+// export already on disk is kept; a second pass changes nothing.
+func TestAttachmentExportSweep(t *testing.T) {
+	tmp_dir, err := os.MkdirTemp("", "mochi_db_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmp_dir)
+
+	orig_data_dir := data_dir
+	data_dir = tmp_dir
+	defer func() { data_dir = orig_data_dir }()
+
+	create := "create table attachments ( id text not null primary key, object text not null, entity text not null default '', name text not null, size integer not null, content_type text not null default '', creator text not null default '', caption text not null default '', description text not null default '', rank integer not null default 0, created integer not null )"
+	insert := "insert into attachments ( id, object, entity, name, size, content_type, creator, caption, description, rank, created ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )"
+
+	// u1/rows: two rows, one own and one remote, plus generated variants.
+	rows := db_open("users/u1/rows/app.db")
+	rows.exec(create)
+	rows.exec(insert, "0123456789abcdef0123456789abcdef", "post/1", "", "photo.jpg", 1234, "image/jpeg", "creator", "caption", "", 1, 1700000000)
+	rows.exec(insert, "fedcba9876543210fedcba9876543210", "post/1", "remote-entity", "remote.png", 99, "image/png", "", "", "", 2, 1700000001)
+	rows.exec("create table access ( id text )")
+	files := filepath.Join(tmp_dir, "users", "u1", "rows", "files")
+	os.MkdirAll(filepath.Join(files, "thumbnails"), 0755)
+	os.MkdirAll(filepath.Join(files, "previews"), 0755)
+	os.WriteFile(filepath.Join(files, "thumbnails", "0123456789abcdef0123456789abcdef_photo_thumbnail.jpg"), []byte("x"), 0644)
+	os.WriteFile(filepath.Join(files, "0123456789abcdef0123456789abcdef_photo.jpg"), []byte("original"), 0644)
+
+	// u1/empty: the table with no rows.
+	empty := db_open("users/u1/empty/app.db")
+	empty.exec(create)
+
+	// u2/none: an app.db without the table.
+	none := db_open("users/u2/none/app.db")
+	none.exec("create table access ( id text )")
+
+	// u2/kept: rows, and an export already on disk from an earlier pass.
+	kept := db_open("users/u2/kept/app.db")
+	kept.exec(create)
+	kept.exec(insert, "00000000000000000000000000000001", "o", "", "a.txt", 1, "text/plain", "", "", "", 1, 1)
+	kept_files := filepath.Join(tmp_dir, "users", "u2", "kept", "files")
+	os.MkdirAll(kept_files, 0755)
+	os.WriteFile(filepath.Join(kept_files, attachment_export_file), []byte("[]"), 0644)
+
+	attachment_export_sweep()
+
+	// u1/rows: exported, dropped, variants gone, original kept.
+	data, err := os.ReadFile(filepath.Join(files, attachment_export_file))
+	if err != nil {
+		t.Fatalf("export not written: %v", err)
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatalf("export is not JSON: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("export has %d entries, want 2", len(entries))
+	}
+	by_id := map[string]map[string]any{}
+	for _, entry := range entries {
+		by_id[entry["id"].(string)] = entry
+	}
+	own := by_id["0123456789abcdef0123456789abcdef"]
+	if own == nil || own["file"] != "0123456789abcdef0123456789abcdef_photo.jpg" || own["object"] != "post/1" || own["name"] != "photo.jpg" || own["size"] != float64(1234) || own["rank"] != float64(1) || own["created"] != float64(1700000000) || own["caption"] != "caption" || own["entity"] != "" {
+		t.Errorf("own row exported as %v", own)
+	}
+	remote := by_id["fedcba9876543210fedcba9876543210"]
+	if remote == nil || remote["file"] != "" || remote["entity"] != "remote-entity" {
+		t.Errorf("remote row exported as %v", remote)
+	}
+	if present, _ := rows.exists("select 1 from sqlite_master where type='table' and name='attachments'"); present {
+		t.Error("u1/rows still has its attachments table")
+	}
+	if present, _ := rows.exists("select 1 from sqlite_master where type='table' and name='access'"); !present {
+		t.Error("u1/rows lost a table that was not the attachments table")
+	}
+	if file_exists(filepath.Join(files, "thumbnails")) || file_exists(filepath.Join(files, "previews")) {
+		t.Error("generated variant directories survive the drop")
+	}
+	if !file_exists(filepath.Join(files, "0123456789abcdef0123456789abcdef_photo.jpg")) {
+		t.Error("the original bytes were removed")
+	}
+
+	// u1/empty: dropped, no file.
+	if present, _ := empty.exists("select 1 from sqlite_master where type='table' and name='attachments'"); present {
+		t.Error("u1/empty still has its attachments table")
+	}
+	if file_exists(filepath.Join(tmp_dir, "users", "u1", "empty", "files", attachment_export_file)) {
+		t.Error("an empty store wrote an export")
+	}
+
+	// u2/none: untouched.
+	if file_exists(filepath.Join(tmp_dir, "users", "u2", "none", "files")) {
+		t.Error("an app.db without the table grew a files directory")
+	}
+
+	// u2/kept: the earlier export stands, the table is dropped.
+	if data, _ := os.ReadFile(filepath.Join(kept_files, attachment_export_file)); string(data) != "[]" {
+		t.Errorf("an existing export was rewritten: %q", data)
+	}
+	if present, _ := kept.exists("select 1 from sqlite_master where type='table' and name='attachments'"); present {
+		t.Error("u2/kept still has its attachments table")
+	}
+
+	// A second pass has nothing to do and changes nothing.
+	os.Remove(filepath.Join(files, attachment_export_file))
+	attachment_export_sweep()
+	if file_exists(filepath.Join(files, attachment_export_file)) {
+		t.Error("a second pass rewrote an export from a table that no longer exists")
 	}
 }
 

@@ -122,17 +122,6 @@ func image_render_acquire() (func(), error) {
 	}
 }
 
-// variant_create generates the variant beside the original, in a per-variant
-// subdirectory. Kept for callers that serve variants from owned storage.
-func variant_create(path string, variant string) (string, error) {
-	dir, file := filepath.Split(path)
-	thumb := dir + variant + "s/" + variant_name(file, variant)
-	if file_exists(thumb) {
-		return thumb, nil
-	}
-	return variant_render(path, variant, thumb)
-}
-
 // variant_render decodes the image at source, downscales it for the named
 // variant, and writes it to destination (atomically, via a temporary). The
 // decode is guarded against decompression bombs. Returns "" without error for

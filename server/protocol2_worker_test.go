@@ -710,7 +710,6 @@ func TestWorkerFailureReasonMapping(t *testing.T) {
 		// Deterministic authorization rejections drop (must not retry forever
 		// — the stuck _attachment/* self-loop bug).
 		{"sender does not handle service \"wikis\"", fail_unsupported},
-		{"unsigned attachment event", fail_unsupported},
 		{"something else entirely", fail_transient},
 		{"", ""},
 	}

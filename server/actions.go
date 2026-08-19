@@ -379,14 +379,12 @@ func (w *ActionWrite) Freeze()               {}
 func (w *ActionWrite) Truth() sl.Bool        { return sl.True }
 func (w *ActionWrite) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
 func (w *ActionWrite) AttrNames() []string {
-	return []string{"asset", "attachment", "cache", "file", "stream"}
+	return []string{"asset", "cache", "file", "stream"}
 }
 func (w *ActionWrite) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "asset":
 		return sl.NewBuiltin("write.asset", w.action.sl_write_asset), nil
-	case "attachment":
-		return sl.NewBuiltin("write.attachment", w.action.sl_write_attachment), nil
 	case "cache":
 		return sl.NewBuiltin("write.cache", w.action.sl_write_cache), nil
 	case "file":
@@ -452,7 +450,7 @@ func (aa *ActionAccess) sl_require(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 		return sl_error(fn, "invalid operation")
 	}
 
-	app := t.Local("app").(*App)
+	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app")
 	}
@@ -581,7 +579,7 @@ func (a *Action) sl_error_label(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 		return sl_error(fn, "%v", err)
 	}
 
-	app_local, _ := t.Local("app").(*App)
+	app_local := principal_app(t)
 	user := principal_caller(t)
 	language := request_language(a.web, user)
 	var av *AppVersion
@@ -732,8 +730,8 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "invalid file %q", file)
 	}
 
-	app, ok := t.Local("app").(*App)
-	if !ok || app == nil {
+	app := principal_app(t)
+	if app == nil {
 		return sl_error(fn, "no app")
 	}
 
@@ -962,7 +960,11 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		return sl.None, nil
 	}
 
-	app := t.Local("app").(*App)
+	app := principal_app(t)
+	if app == nil {
+		a.error_label(500, "errors.server_error")
+		return sl.None, nil
+	}
 
 	root, err := os.OpenRoot(api_file_base(owner, app))
 	if err != nil {
@@ -1117,54 +1119,6 @@ func (a *Action) sl_write_cache(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	return sl.True, nil
 }
 
-// a.write.attachment(id, entity=None, variant="") -> None: Serve an attachment
-// (or a downscaled image variant, "thumbnail" or "preview") to the HTTP
-// response by id. The calling action MUST authorise the request first — gate
-// on a.user against the app's own access rules (subscriber/member/privacy) —
-// because core serves the bytes without any access check of its own. `entity`
-// defaults to the route entity and is used only to fetch not-yet-local
-// attachments from a remote peer (e.g. a subscribed feed). Content type and
-// disposition are set safely by core (inline only for known media, download
-// otherwise) to prevent stored XSS. thumbnail=True is the deprecated form of
-// variant="thumbnail", kept for already-deployed app versions.
-func (a *Action) sl_write_attachment(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	var id string
-	var entity string
-	var thumbnail bool
-	var variant string
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "id", &id, "entity?", &entity, "thumbnail?", &thumbnail, "variant?", &variant); err != nil {
-		return nil, err
-	}
-
-	if variant == "" && thumbnail {
-		variant = "thumbnail"
-	}
-	if variant != "" && variant != "thumbnail" && variant != "preview" {
-		a.error_label(400, "errors.invalid_request")
-		return sl.None, nil
-	}
-
-	owner := principal_owner(t)
-	app, _ := t.Local("app").(*App)
-	if owner == nil || app == nil {
-		a.error_label(500, "errors.server_error")
-		return sl.None, nil
-	}
-
-	if entity == "" {
-		if re, ok := t.Local("route_entity").(string); ok {
-			entity = re
-		}
-	}
-
-	// web_serve_attachment validates the id, serves from the owner's storage
-	// (fetching from the remote entity when not yet local), and applies the
-	// safe content-type/disposition guard. It performs no access check.
-	starlark_serving_set(t, a.web.Writer)
-	web_serve_attachment(a.web, app, owner, entity, id, variant)
-	return sl.None, nil
-}
-
 // a.write.asset(path) -> None: Serve a bundled asset from the installed app directory
 func (a *Action) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var path string
@@ -1177,8 +1131,8 @@ func (a *Action) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 		return sl.None, nil
 	}
 
-	app, ok := t.Local("app").(*App)
-	if !ok || app == nil {
+	app := principal_app(t)
+	if app == nil {
 		a.error_label(500, "errors.server_error")
 		return sl.None, nil
 	}
@@ -1225,14 +1179,14 @@ func (a *Action) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 }
 
 // stream_maximum_default backstops a.write.stream when the app names no limit of
-// its own. It matches attachment_max_size_default, the largest object the
-// platform stores, because two callers legitimately relay things that big - a
-// repository archive and a market asset download - and a limit that breaks a
-// clone is worse than no limit at all.
+// its own. It matches object_maximum, the largest object the platform stores,
+// because two callers legitimately relay things that big - a repository archive
+// and a market asset download - and a limit that breaks a clone is worse than no
+// limit at all.
 //
 // It is a backstop, not the real bound. An app relaying an image knows a far
 // tighter figure and should pass it: see the maximum argument.
-const stream_maximum_default = attachment_max_size_default
+const stream_maximum_default = object_maximum
 
 // stream_limit_reader relays at most remaining bytes and records whether the far
 // end tried to send more, so the caller can tell a complete body from a curtailed

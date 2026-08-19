@@ -113,8 +113,8 @@ func (r *stream_counting_reader) Read(p []byte) (int, error) {
 // chosen for avatars would break a clone. The default therefore tracks the largest
 // object the platform stores, and the real tightening is per-call.
 func TestStreamLimitDefaultClearsTheLargestLegitimateRelay(t *testing.T) {
-	if stream_maximum_default != attachment_max_size_default {
-		t.Errorf("default cap is %d, want attachment_max_size_default (%d): a repository archive or market download can be as large as the largest stored object",
-			int64(stream_maximum_default), int64(attachment_max_size_default))
+	if stream_maximum_default != object_maximum {
+		t.Errorf("default cap is %d, want object_maximum (%d): a repository archive or market download can be as large as the largest stored object",
+			int64(stream_maximum_default), int64(object_maximum))
 	}
 }

@@ -221,8 +221,9 @@ func BenchmarkIsImage(b *testing.B) {
 	}
 }
 
-// Test variant_create function
-func TestVariantCreate(t *testing.T) {
+// TestVariantRender renders both variants of a large image to a named
+// destination, bounded to the variant's box, atomically.
+func TestVariantRender(t *testing.T) {
 	// Create temp directory
 	tmp_dir, err := os.MkdirTemp("", "variant_test")
 	if err != nil {
@@ -250,25 +251,19 @@ func TestVariantCreate(t *testing.T) {
 	f.Close()
 
 	for _, tt := range []struct {
-		variant   string
-		directory string
-		suffix    string
-		size      int
+		variant string
+		size    int
 	}{
-		{"thumbnail", "thumbnails", "_thumbnail", 250},
-		{"preview", "previews", "_preview", 1280},
+		{"thumbnail", 250},
+		{"preview", 1280},
 	} {
-		thumb_path, err := variant_create(img_path, tt.variant)
+		expected := filepath.Join(tmp_dir, "variants", variant_name("test_image.png", tt.variant))
+		thumb_path, err := variant_render(img_path, tt.variant, expected)
 		if err != nil {
-			t.Fatalf("variant_create(%s) failed: %v", tt.variant, err)
+			t.Fatalf("variant_render(%s) failed: %v", tt.variant, err)
 		}
-		if thumb_path == "" {
-			t.Fatalf("variant_create(%s) returned empty path", tt.variant)
-		}
-
-		expected_thumb := filepath.Join(tmp_dir, tt.directory, "test_image"+tt.suffix+".png")
-		if thumb_path != expected_thumb {
-			t.Errorf("Expected %s path %q, got %q", tt.variant, expected_thumb, thumb_path)
+		if thumb_path != expected {
+			t.Errorf("Expected %s path %q, got %q", tt.variant, expected, thumb_path)
 		}
 
 		// Verify file exists
@@ -293,15 +288,6 @@ func TestVariantCreate(t *testing.T) {
 		}
 		if bounds.Dx() == 0 || bounds.Dy() == 0 {
 			t.Errorf("%s has zero dimension", tt.variant)
-		}
-
-		// Test that calling again returns the cached variant
-		thumb_path2, err := variant_create(img_path, tt.variant)
-		if err != nil {
-			t.Fatalf("Second variant_create(%s) failed: %v", tt.variant, err)
-		}
-		if thumb_path2 != thumb_path {
-			t.Errorf("Expected cached path %q, got %q", thumb_path, thumb_path2)
 		}
 
 		// Verify no temp file left behind

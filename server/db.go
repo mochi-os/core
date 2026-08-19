@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -29,9 +30,9 @@ import (
 // "I cannot complete this migration, and the schema version must NOT advance."
 // The upgrade loop stamps a failed migration's version by default (the repair
 // ships as the next version), which is wrong when the migration is blocked on
-// something transient - the attachments transition bridge being gone before a
-// dormant user migrated. Aborting leaves the database at its previous version
-// so the migration retries verbatim on the next request once the block clears.
+// something transient - a store it copies from not being readable yet.
+// Aborting leaves the database at its previous version so the migration
+// retries verbatim on the next request once the block clears.
 type MigrationAbort struct {
 	Reason string
 }
@@ -66,7 +67,7 @@ type DB struct {
 	app      *App
 	kind     string
 	// system_setup is set once db_app_system has run access_setup /
-	// attachments_setup / journal_setup on this handle. Gated on this — NOT on
+	// journal_setup on this handle. Gated on this — NOT on
 	// db_open_work's `reused` — so a handle first cached by a raw db_open (the
 	// convergence audit / sweep / bootstrap reading app.db's replicated tables)
 	// still gets its setups, and the access-table migration, on the first
@@ -99,7 +100,7 @@ type DB struct {
 // db_kind_* tag a DB handle with the per-host file role so the
 // matching emit/apply pair can route replicated writes back into the
 // right file on the receiver.
-//   - "app-system": users/<uid>/<app>/app.db (access, attachments)
+//   - "app-system": users/<uid>/<app>/app.db (access)
 //   - "user-core" : users/<uid>/user.db (groups, accounts, interests,
 //     permissions, settings, classes/services/paths/versions)
 //
@@ -670,7 +671,7 @@ func db_app(u *User, app *App) *DB {
 }
 
 // db_app_system opens the system database (app.db) for an app.
-// Contains access and attachments tables managed by the platform.
+// Contains the access table managed by the platform.
 // Always available even if app has no declared database file.
 func db_app_system(u *User, app *App) *DB {
 	if u == nil || app == nil {
@@ -699,7 +700,6 @@ func db_app_system(u *User, app *App) *DB {
 	}
 
 	db.access_setup()
-	db.attachments_setup()
 	// Broadcast state lives on the system DB; create its tables eagerly
 	// here (#424) rather than only via the send/receive paths' defensive
 	// creates.
@@ -714,7 +714,7 @@ func db_app_system(u *User, app *App) *DB {
 }
 
 // db_app_system_sweep walks every existing app.db at startup and runs the
-// idempotent app-system setups (access / attachments / journal, including the
+// idempotent app-system setups (access / journal, including the
 // access-table register migration). Without it, a (user, app) pair's app.db
 // migrates only when something calls db_app_system for it, and on a passive
 // pair member a dormant pair keeps the legacy schema indefinitely — so the
@@ -755,7 +755,6 @@ func db_app_system_sweep() {
 			l.Lock()
 			if !db.system_setup {
 				db.access_setup()
-				db.attachments_setup()
 				db.system_setup = true
 				count++
 			}
@@ -763,6 +762,130 @@ func db_app_system_sweep() {
 		}
 	}
 	debug("App-system sweep: setups run on %d app.db files", count)
+}
+
+// attachment_export_file is where an app finds the attachment rows core's
+// per-app store held for one user before the store was removed: a JSON list at
+// the root of the app's file storage, written only where rows existed. Each
+// entry carries the row's columns plus "file", the stored filename of an own
+// row relative to that storage ("" for a row whose bytes another host held).
+// The apps' migrations read it; nothing in core does.
+const attachment_export_file = "attachments.json"
+
+// attachment_export_sweep walks every app.db at startup and moves its
+// attachments table out of core: a store with rows is written to the app's
+// file storage as attachment_export_file, then the table is dropped, along with
+// the thumbnail and preview variants core generated beside the originals (the
+// app regenerates those into cache space). Synchronous, before anything serves
+// a request, so an app whose migration finds no export file can read that as
+// "no rows" rather than "not exported yet". Idempotent: an app.db without the
+// table is skipped, and an export already on disk (a crash between write and
+// drop) is kept rather than rewritten. A store whose export cannot be written
+// keeps its table and is retried next start.
+func attachment_export_sweep() {
+	users_root := filepath.Join(data_dir, "users")
+	users, err := os.ReadDir(users_root)
+	if err != nil {
+		return
+	}
+	exported, dropped := 0, 0
+	for _, u := range users {
+		if !u.IsDir() {
+			continue
+		}
+		apps, err := os.ReadDir(filepath.Join(users_root, u.Name()))
+		if err != nil {
+			continue
+		}
+		for _, a := range apps {
+			if !a.IsDir() {
+				continue
+			}
+			path := fmt.Sprintf("users/%s/%s/app.db", u.Name(), a.Name())
+			if !file_exists(filepath.Join(data_dir, path)) {
+				continue
+			}
+			db, _, _ := db_open_work(path)
+			if db == nil {
+				continue
+			}
+			present, _ := db.exists("select 1 from sqlite_master where type='table' and name='attachments'")
+			if !present {
+				continue
+			}
+			files := filepath.Join(users_root, u.Name(), a.Name(), "files")
+			rows, err := db.rows("select * from attachments order by rowid")
+			if err != nil {
+				warn("Attachment export: unable to read %s: %v", path, err)
+				continue
+			}
+			if len(rows) > 0 {
+				if err := attachment_export_write(files, rows); err != nil {
+					warn("Attachment export: unable to write %s: %v", filepath.Join(files, attachment_export_file), err)
+					continue
+				}
+				exported++
+			}
+			if err := db.exec_e("drop table if exists attachments"); err != nil {
+				warn("Attachment export: unable to drop the attachments table in %s: %v", path, err)
+				continue
+			}
+			os.RemoveAll(filepath.Join(files, "thumbnails"))
+			os.RemoveAll(filepath.Join(files, "previews"))
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		info("Attachment export: %d stores exported, %d tables dropped", exported, dropped)
+	}
+}
+
+// attachment_export_write writes the rows of one store as attachment_export_file
+// under files, atomically, unless an export is already there. The stored
+// filename is the one core used: the id, an underscore, and the base of the
+// name ("file" when the name has no base).
+func attachment_export_write(files string, rows []map[string]any) error {
+	target := filepath.Join(files, attachment_export_file)
+	if file_exists(target) {
+		return nil
+	}
+	entries := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		entry := map[string]any{}
+		for _, column := range []string{"id", "object", "entity", "name", "size", "content_type", "creator", "caption", "description", "rank", "created"} {
+			if value, ok := row[column]; ok && value != nil {
+				entry[column] = value
+			}
+		}
+		entry["file"] = ""
+		id, _ := row["id"].(string)
+		name, _ := row["name"].(string)
+		entity, _ := row["entity"].(string)
+		if id != "" && entity == "" {
+			base := filepath.Base(name)
+			if base == "" || base == "." || base == ".." || base == string(filepath.Separator) {
+				base = "file"
+			}
+			entry["file"] = id + "_" + base
+		}
+		entries = append(entries, entry)
+	}
+	data, err := json.Marshal(entries)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(files, 0755); err != nil {
+		return err
+	}
+	temporary := target + ".tmp"
+	if err := os.WriteFile(temporary, data, 0644); err != nil {
+		return err
+	}
+	if err := os.Rename(temporary, target); err != nil {
+		os.Remove(temporary)
+		return err
+	}
+	return nil
 }
 
 // db_app_schema_get reads the app database schema version from user_version pragma

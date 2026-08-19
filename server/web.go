@@ -19,7 +19,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -2194,90 +2193,4 @@ func web_start() {
 			}
 		}
 	}
-}
-
-// Serve an attachment or one of its image variants ("thumbnail" or "preview";
-// "" serves the original bytes)
-func web_serve_attachment(c *gin.Context, app *App, user *User, entity, id string, variant string) bool {
-	if !valid(id, "id") {
-		respond_error(c, http.StatusBadRequest, "invalid_attachment_id", "errors.invalid_attachment_id", nil)
-		return true
-	}
-
-	// Without a local owner there is nothing to serve. Core used to pull the
-	// bytes from the naming entity here; that peer-facing transfer is gone,
-	// and an app wanting a remote copy fetches it through its own declared
-	// event, where it can authorise the exchange.
-	if user == nil {
-		respond_error(c, http.StatusNotFound, "attachment_not_found", "errors.attachment_not_found", nil)
-		return true
-	}
-
-	db := db_app_system(user, app)
-	if db == nil {
-		respond_error(c, http.StatusInternalServerError, "database_error", "errors.database_error", nil)
-		return true
-	}
-
-	var att Attachment
-	if !db.scan(&att, "select * from attachments where id = ?", id) {
-		respond_error(c, http.StatusNotFound, "attachment_not_found", "errors.attachment_not_found", nil)
-		return true
-	}
-
-	// Serve from local storage only. A row whose bytes live on another host
-	// reads as not found: the on-demand pull core used to do belongs to the
-	// owning app now, which requests it through its own event.
-	path := filepath.Join(data_dir, attachment_path(user.UID, app.id, att.ID, att.Name))
-	if !file_exists(path) {
-		respond_error(c, http.StatusNotFound, "file_not_found", "errors.file_not_found", nil)
-		return true
-	}
-
-	// Use ETag for cache validation so deleted files don't persist in browser cache
-	etag := fmt.Sprintf(`"%s"`, att.ID)
-	c.Header("ETag", etag)
-	c.Header("Cache-Control", "private, must-revalidate")
-
-	// Check If-None-Match for conditional requests
-	if match := c.GetHeader("If-None-Match"); match == etag {
-		c.Status(http.StatusNotModified)
-		return true
-	}
-
-	if variant != "" && is_image(att.Name) {
-		if thumb, err := variant_create(path, variant); err == nil && thumb != "" {
-			c.File(thumb)
-			return true
-		}
-	}
-
-	// Only allow inline display for safe content types; force download for everything else
-	// to prevent stored XSS via uploaded HTML/SVG files
-	ct := attachment_content_type(att.Name)
-	disposition := "attachment"
-	if content_type_inline(content_type_base(ct)) {
-		disposition = "inline"
-		// Chrome's built-in PDF viewer renders the PDF inside an extension-origin
-		// frame; X-Frame-Options: SAMEORIGIN blocks that and surfaces as "This
-		// page has been blocked by Chrome". Inline media isn't clickjackable, so
-		// clear the middleware's header for these responses.
-		c.Header("X-Frame-Options", "")
-	}
-	c.Header("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, att.Name))
-	c.File(path)
-	return true
-}
-
-// file_content_type sniffs a file's content type from its leading bytes, used
-// when no filename/extension is available to guide it (remote attachments).
-func file_content_type(path string) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return "application/octet-stream"
-	}
-	defer f.Close()
-	buffer := make([]byte, 512)
-	n, _ := f.Read(buffer)
-	return http.DetectContentType(buffer[:n])
 }

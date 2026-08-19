@@ -1006,10 +1006,6 @@ func TestArchiveExtractIgnoresEntryName(t *testing.T) {
 // the way out - an attachment above the stream cap is stored whole by its owner
 // and received as a prefix by every subscriber, with no error at either end.
 func TestStorageLimitsAgree(t *testing.T) {
-	if int64(attachment_max_size_default) != int64(object_maximum) {
-		t.Errorf("attachment cap = %d, want object_maximum (%d)",
-			int64(attachment_max_size_default), int64(object_maximum))
-	}
 	if int64(stream_maximum_default) < int64(object_maximum) {
 		t.Errorf("stream cap = %d is below the largest storable object (%d), so that object cannot be transferred whole - the owner keeps it and every subscriber receives a prefix",
 			int64(stream_maximum_default), int64(object_maximum))

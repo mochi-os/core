@@ -2186,6 +2186,25 @@ func (a *App) service(service string) {
 }
 
 // Find the action best matching the specified name
+// event returns the handler this version declares for an event name, falling
+// back to the catch-all "" entry.
+//
+// The unlock is deferred, unlike the two open-coded copies this replaces. A
+// panic between a bare Lock and Unlock leaves apps_lock held for the life of
+// the process - and it is a global mutex every app lookup takes, so the
+// guard() at each P2P entry point contains the faulted goroutine and the
+// server stops routing anything. That is how a nil version dereferenced
+// inside this window turned one bad frame into a dead host.
+func (av *AppVersion) event(name string) (AppEvent, bool) {
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
+	ae, found := av.Events[name]
+	if !found {
+		ae, found = av.Events[""]
+	}
+	return ae, found
+}
+
 func (av *AppVersion) find_action(name string) *AppAction {
 	var candidates []AppAction
 

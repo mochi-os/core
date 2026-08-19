@@ -172,12 +172,7 @@ func (e *Event) route() error {
 		// Check if this app actually handles the requested event
 		av := a.active(e.user)
 		if av != nil {
-			apps_lock.Lock()
-			_, hasEvent := av.Events[e.event]
-			if !hasEvent {
-				_, hasEvent = av.Events[""]
-			}
-			apps_lock.Unlock()
+			_, hasEvent := av.event(e.event)
 			if !hasEvent {
 				// App doesn't handle this event, fall back to service lookup
 				a = nil
@@ -202,6 +197,16 @@ func (e *Event) route() error {
 
 	// Get the version to use for this event
 	av := a.active(e.user)
+	if av == nil {
+		// The same nil the app_by_id branch above screens for, on the branch
+		// that reaches here instead. active() falls back to a.latest, and an
+		// app registered by app_external whose version load then failed keeps
+		// an empty version map for the life of the process - reachable from
+		// the wire, because app_for_service_resolve looks a service name up as
+		// an app id. Every use of av below dereferences it.
+		debug("Event dropping to app %q with no active version for service %q", a.id, e.service)
+		return fmt.Errorf("no active version for app %q", a.id)
+	}
 
 	// The built-in _attachment/* events are gone. They dispatched here, ahead
 	// of the app.json lookup below, so an app could neither decline them nor
@@ -248,12 +253,7 @@ func (e *Event) route() error {
 	}
 
 	// Find event in app
-	apps_lock.Lock()
-	ae, found := av.Events[e.event]
-	if !found {
-		ae, found = av.Events[""]
-	}
-	apps_lock.Unlock()
+	ae, found := av.event(e.event)
 
 	if !found {
 		debug("Event dropping to unknown event %q in app %q for service %q", e.event, a.id, e.service)

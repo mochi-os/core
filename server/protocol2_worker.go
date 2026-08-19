@@ -285,6 +285,10 @@ func worker_failure_reason(err error) string {
 	case strings.HasPrefix(msg, "unknown service"),
 		strings.HasPrefix(msg, "unknown event"),
 		strings.HasPrefix(msg, "no handler"),
+		// The app is registered but none of its versions loaded. Fixed until
+		// the operator repairs or removes it, so retrying is 50 deliveries of
+		// the same failure.
+		strings.HasPrefix(msg, "no active version"),
 		// Deterministic authorization rejections: the sender's declared
 		// services are fixed in the message, so retrying can never change
 		// the verdict. Drop instead of retrying forever (this is what wedged

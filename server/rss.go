@@ -7,17 +7,28 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/mmcdole/gofeed"
 	ext "github.com/mmcdole/gofeed/extensions"
-	"github.com/mmcdole/gofeed/rss"
 	sl "go.starlark.net/starlark"
 	"golang.org/x/net/html"
 )
+
+// rss_maximum bounds one feed document. Separate from url_max_response_size so
+// that changing what a general outbound fetch may return does not silently
+// change this, and the reverse: a feed is text with a known shape, where an
+// arbitrary URL fetch is not.
+//
+// Real feeds are small - measured 2026-08-18, xkcd 2 KB, Hacker News 12 KB,
+// SMBC 14 KB, LWN 20 KB - so this is orders of magnitude above any of them and
+// bounds only the pathological case.
+const rss_maximum = 100 * 1024 * 1024
 
 // mochi.rss.fetch(url, headers?) -> dict: Fetch and parse an RSS or Atom feed
 func api_rss_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
@@ -81,20 +92,23 @@ func api_rss_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	// Read body
-	body, err := io.ReadAll(io.LimitReader(r.Body, url_max_response_size))
+	body, err := io.ReadAll(io.LimitReader(r.Body, rss_maximum))
 	if err != nil {
 		return sl_encode(empty), nil
 	}
 
-	// Parse with gofeed
+	// Parse with gofeed. From a reader over the bytes already held, not
+	// string(body): a Go string is immutable, so the conversion copies the
+	// whole document, and this did it twice - once here and once for the TTL -
+	// leaving three copies of the same feed live at the cap.
 	parser := gofeed.NewParser()
-	feed, err := parser.ParseString(string(body))
+	feed, err := parser.Parse(bytes.NewReader(body))
 	if err != nil {
 		return sl_encode(empty), nil
 	}
 
 	// Extract TTL from RSS feeds (gofeed's unified Feed struct doesn't expose it)
-	ttl := rss_extract_ttl(string(body))
+	ttl := rss_extract_ttl(body)
 
 	// Build items list
 	items := make([]any, 0, len(feed.Items))
@@ -170,14 +184,33 @@ func api_rss_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 }
 
 // rss_extract_ttl parses TTL from RSS XML using the RSS-specific parser
-func rss_extract_ttl(body string) int {
-	rp := &rss.Parser{}
-	feed, err := rp.Parse(strings.NewReader(body))
-	if err != nil || feed == nil || feed.TTL == "" {
+// rss_ttl_element matches the channel's <ttl> and captures its digits. Applied
+// only to the part of the document before the first item, so a <ttl> quoted
+// inside an entry's content cannot be mistaken for the feed's own.
+var rss_ttl_element = regexp.MustCompile(`(?is)<ttl[^>]*>\s*([0-9]+)\s*</ttl>`)
+var rss_first_item = regexp.MustCompile(`(?is)<(item|entry)[\s>]`)
+
+// rss_extract_ttl reads the channel's TTL in minutes, or 0 when there is none.
+//
+// gofeed's unified Feed does not expose ttl, and this used to recover it by
+// running a SECOND full parse of the whole document through rss.Parser - a
+// complete extra tree, at the cap, for one integer, and on every Atom and JSON
+// feed too, where the element does not exist at all. Scanning the channel
+// header instead answers the same question without building anything.
+func rss_extract_ttl(body []byte) int {
+	header := body
+	if at := rss_first_item.FindIndex(body); at != nil {
+		header = body[:at[0]]
+	}
+	match := rss_ttl_element.FindSubmatch(header)
+	if match == nil {
 		return 0
 	}
-	ttl, err := strconv.Atoi(feed.TTL)
-	if err != nil || ttl < 0 {
+	// No negative check: the capture is [0-9]+, so Atoi returns either a
+	// non-negative value or an error - a digit string too large for an int
+	// fails with ErrRange rather than wrapping.
+	ttl, err := strconv.Atoi(string(match[1]))
+	if err != nil {
 		return 0
 	}
 	return ttl

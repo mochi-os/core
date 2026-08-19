@@ -40,6 +40,32 @@ type websocket_client struct {
 	app string
 }
 
+// websockets_maximum bounds how many connections one user may hold at once.
+// Each is a goroutine parked in ws.Read plus a file descriptor and three map
+// entries, held until the client goes away, and nothing else limited them.
+//
+// Set well above real use rather than tightly: a frontend opens one socket per
+// view it is watching, and the whole app tree addresses four keys
+// (notifications, staff-events, market-thread-<id>, and entity fingerprints).
+const websockets_maximum = 32
+
+// websockets_held counts a user's live connections across every key.
+//
+// Read before the upgrade so a refusal is an HTTP status rather than a socket
+// that opens and closes, which means simultaneous connects can each see the
+// same count and a burst can land a little over the cap. That is the right
+// trade for a resource bound: the point is that the number cannot grow without
+// limit, not that it is never momentarily 33.
+func websockets_held(u *User) int {
+	websockets_lock.RLock()
+	defer websockets_lock.RUnlock()
+	held := 0
+	for _, connections := range websockets[u.UID] {
+		held += len(connections)
+	}
+	return held
+}
+
 func websocket_connection(c *gin.Context) {
 	u := web_auth(c)
 	token_auth := false
@@ -79,6 +105,12 @@ func websocket_connection(c *gin.Context) {
 		}
 
 		if u == nil {
+			// A bare return here is a 200 with an empty body: the handshake
+			// still fails, since there is no 101 and no Upgrade header, but
+			// the reason never reaches the caller and the access log records
+			// an authentication failure as a success. The origin check below
+			// already answers with a status; this one did not.
+			c.Status(401)
 			return
 		}
 	}
@@ -96,11 +128,26 @@ func websocket_connection(c *gin.Context) {
 		}
 	}
 
+	// The key names the channel this socket listens on. mochi.websocket.write
+	// validates it as a constant, and the two ends have to agree: taking
+	// whatever the query string holds let a client occupy keys no app could
+	// ever address, and made an arbitrarily long string a map key for the life
+	// of the connection.
+	key := c.Query("key")
+	if !valid(key, "constant") {
+		c.Status(400)
+		return
+	}
+
+	if websockets_held(u) >= websockets_maximum {
+		c.Status(429)
+		return
+	}
+
 	ws, err := websocket.Accept(c.Writer, c.Request, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		return
 	}
-	key := c.Query("key")
 	id := uid()
 	defer websocket_terminate(ws, u, key, id)
 

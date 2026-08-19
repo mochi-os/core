@@ -2121,7 +2121,7 @@ func (h *TransactionHandle) sl_execute(t *sl.Thread, fn *sl.Builtin, args sl.Tup
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	res, err := h.tx.Exec(query, params...)
+	res, err := h.tx.ExecContext(starlark_context(t), query, params...)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -2139,7 +2139,7 @@ func (h *TransactionHandle) sl_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	r, err := h.tx.Query(query, params...)
+	r, err := h.tx.QueryContext(starlark_context(t), query, params...)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -2155,7 +2155,7 @@ func (h *TransactionHandle) sl_row(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	r, err := h.tx.Queryx(query, params...)
+	r, err := h.tx.QueryxContext(starlark_context(t), query, params...)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -2183,7 +2183,7 @@ func (h *TransactionHandle) sl_rows(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	r, err := h.tx.Queryx(query, params...)
+	r, err := h.tx.QueryxContext(starlark_context(t), query, params...)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -2257,7 +2257,16 @@ func api_db_transaction(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "%v", err)
 	}
 
-	tx, err := db.starlark.Beginx()
+	// Opened under the call's context, like every statement run on it below.
+	// thread.Cancel is only observed between interpreter steps, so a statement
+	// already inside SQLite runs to completion however far the call has
+	// overrun - and a transaction holds a write lock while it does. The
+	// timeout path abandons a call stuck in a builtin rather than waiting
+	// (see Starlark.call), so the cleanup hook that would roll this back is
+	// queued behind the very statement it meant to interrupt; with a context
+	// on the transaction, database/sql rolls it back and returns the
+	// connection when the call is cancelled.
+	tx, err := db.starlark.BeginTxx(starlark_context(t), nil)
 	if err != nil {
 		return sl_error(fn, "begin failed: %v", err)
 	}

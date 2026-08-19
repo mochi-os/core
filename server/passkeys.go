@@ -13,18 +13,12 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
-)
-
-var (
-	webauthn_instances map[string]*webauthn.WebAuthn
-	webauthn_mu        sync.RWMutex
 )
 
 var api_user_passkey = sls.FromStringDict(sl.String("mochi.user.passkey"), sl.StringDict{
@@ -42,26 +36,23 @@ var api_user_passkey = sls.FromStringDict(sl.String("mochi.user.passkey"), sl.St
 	}),
 })
 
-// Initialize the WebAuthn instance cache
-func passkey_init() {
-	webauthn_instances = make(map[string]*webauthn.WebAuthn)
-}
-
 // webauthn_for_origin returns a WebAuthn instance bound to the request's
-// actual origin (scheme + host + optional port). Cached by origin string,
-// so each distinct (scheme, host, port) the server is reached at gets its
-// own configured instance — production HTTPS and any localhost port the
-// operator binds to all work without a hardcoded port allowlist.
+// actual origin (scheme + host + optional port), so each distinct (scheme,
+// host, port) the server is reached at gets its own configured instance —
+// production HTTPS and any localhost port the operator binds to all work
+// without a hardcoded port allowlist.
+//
+// Built per call rather than cached. The origin comes from the request's Host
+// header, which the client chooses freely, and POST /_/auth/passkey/begin
+// reaches here unauthenticated — so a cache keyed on it grew by one permanent
+// 346-byte entry per distinct header value and never shrank. Construction is
+// a url.Parse, four default-filling checks and a two-word allocation, measured
+// at 236ns, on a path that runs a handful of times per user session; the cache
+// was saving a quarter of a microsecond per ceremony in exchange for a map an
+// anonymous caller could grow without limit.
 func webauthn_for_origin(origin string) *webauthn.WebAuthn {
 	if origin == "" {
 		return nil
-	}
-
-	webauthn_mu.RLock()
-	instance := webauthn_instances[origin]
-	webauthn_mu.RUnlock()
-	if instance != nil {
-		return instance
 	}
 
 	// RPID is the registrable domain — the host portion stripped of
@@ -85,10 +76,6 @@ func webauthn_for_origin(origin string) *webauthn.WebAuthn {
 		warn("Failed to initialize WebAuthn for %s: %v", origin, err)
 		return nil
 	}
-
-	webauthn_mu.Lock()
-	webauthn_instances[origin] = instance
-	webauthn_mu.Unlock()
 	return instance
 }
 

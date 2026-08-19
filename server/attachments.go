@@ -599,12 +599,25 @@ func api_attachment_create_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 	// Use raw_reader() to include any bytes buffered by the CBOR decoder
 	reader := stream.raw_reader()
 
-	// Limit reader to remaining storage space and max attachment size
-	max_size := remaining
-	if max_size > attachment_max_size_default {
-		max_size = attachment_max_size_default
+	// Bounded by whichever of the two caps binds: the platform's object
+	// maximum, or what the user has left. Which one it was decides the error
+	// below, because they mean different things to whoever sees it - free some
+	// space, versus this file can never be stored here.
+	//
+	// The bound is max_size+1, the idiom api_cache_write documents: a source
+	// that overruns must be distinguishable from one that fits exactly, so one
+	// byte beyond the cap survives for the check after the copy to find.
+	// Cutting at max_size stored a prefix of an oversized attachment, wrote a
+	// row claiming that truncated length, and told the app it had succeeded -
+	// which is the silent truncation attachment_max_size_default is described
+	// as being held against.
+	max_size := int64(attachment_max_size_default)
+	quota := false
+	if remaining < max_size {
+		max_size = remaining
+		quota = true
 	}
-	limited := io.LimitReader(reader, max_size)
+	limited := io.LimitReader(reader, max_size+1)
 
 	// Write to file within root
 	f, err := root.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
@@ -625,6 +638,17 @@ func api_attachment_create_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 	if size == 0 {
 		root.Remove(filename)
 		return sl_error(fn, "empty attachment")
+	}
+
+	// The extra byte the limit allowed for. Same two messages the non-stream
+	// create answers with, so both paths say the same thing about the same
+	// condition.
+	if size > max_size {
+		root.Remove(filename)
+		if quota {
+			return sl_error(fn, "storage limit exceeded")
+		}
+		return sl_error(fn, "file too large: exceeds %d bytes", max_size)
 	}
 
 	// Create record using shared helper

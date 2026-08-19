@@ -519,10 +519,18 @@ func api_attachment_create_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 		description, _ = sl.AsString(args[5])
 	}
 
-	// Optional attachment ID (use existing ID for federation sync)
+	// Optional attachment ID (use existing ID for federation sync). Checked
+	// against the shape uid() produces - 32 lowercase hex - because it becomes
+	// both the filename stem and the row's primary key. os.Root refuses a
+	// traversal downstream, but "" and ".." are accepted as filenames and
+	// stored as the key regardless, and a value refused at the boundary is one
+	// no later reader has to reason about.
 	provided_id := ""
 	if len(args) > 6 {
 		provided_id, _ = sl.AsString(args[6])
+		if provided_id != "" && !valid(provided_id, "id") {
+			return sl_error(fn, "invalid id")
+		}
 	}
 
 	app := t.Local("app").(*App)
@@ -575,6 +583,16 @@ func api_attachment_create_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 		return sl_error(fn, "unable to access files directory")
 	}
 	defer root.Close()
+
+	// Before the truncating open below. A repeated id used to reach
+	// OpenFile(O_TRUNC), which emptied the existing attachment's file, and only
+	// then fail on the primary key - and db.exec panics on a constraint
+	// violation, so the caller got a failed handler and the original bytes were
+	// already gone.
+	if existing, _ := db.exists("select 1 from attachments where id=?", id); existing {
+		stream.close_read()
+		return sl_error(fn, "attachment %q already exists", id)
+	}
 
 	filename := attachment_filename(id, name)
 

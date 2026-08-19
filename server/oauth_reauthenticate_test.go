@@ -46,7 +46,7 @@ func TestOauthReauthenticate(t *testing.T) {
 	// Linked identity -> a single-use proof is stored, scoped to the user.
 	v1 := random_alphanumeric(64)
 	oauth_reauthenticate(c, "google", &oauth_profile{Subject: "sub-123", Email: "x@example.com", Verified: true}, user, challenge(v1))
-	row, _ := sessions.row("select data, user from ceremonies where id=? and type='reauthentication_oauth' and expires>?", challenge(v1), now())
+	row, _ := sessions.row("select data, user from ceremonies where challenge=? and type='reauthentication_oauth' and expires>?", []byte(challenge(v1)), now())
 	if row == nil {
 		t.Fatal("linked identity stored no proof")
 	}
@@ -62,7 +62,7 @@ func TestOauthReauthenticate(t *testing.T) {
 	// Unlinked provider account -> nothing minted (the stolen-session defence).
 	v2 := random_alphanumeric(64)
 	oauth_reauthenticate(c, "google", &oauth_profile{Subject: "attacker-sub", Email: "evil@example.com", Verified: true}, user, challenge(v2))
-	if r, _ := sessions.row("select 1 from ceremonies where id=? and type='reauthentication_oauth'", challenge(v2)); r != nil {
+	if r, _ := sessions.row("select 1 from ceremonies where challenge=? and type='reauthentication_oauth'", []byte(challenge(v2))); r != nil {
 		t.Error("unlinked provider account minted a proof")
 	}
 
@@ -70,12 +70,12 @@ func TestOauthReauthenticate(t *testing.T) {
 	// single-use. The wrong user cannot read u-x's proof; the right user reads
 	// it exactly once.
 	get := func(uid, verifier string) bool {
-		id := challenge(verifier)
-		r, _ := sessions.row("select data from ceremonies where id=? and type='reauthentication_oauth' and user=? and expires>?", id, uid, now())
+		r, _ := sessions.row("select id from ceremonies where challenge=? and type='reauthentication_oauth' and user=? and expires>?",
+			[]byte(challenge(verifier)), uid, now())
 		if r == nil {
 			return false
 		}
-		sessions.exec("delete from ceremonies where id=?", id)
+		sessions.exec("delete from ceremonies where id=?", as_string(r["id"]))
 		return true
 	}
 	if get("u-other", v1) {

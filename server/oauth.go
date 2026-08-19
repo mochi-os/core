@@ -1169,12 +1169,14 @@ func api_user_oauth_verify_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 	challenge := base64.RawURLEncoding.EncodeToString(h[:])
 
 	db := db_open("db/sessions.db")
-	row, _ := db.row("select data from ceremonies where id=? and type='reauthentication_oauth' and user=? and expires>?",
-		challenge, user.UID, now())
+	row, _ := db.row("select id, data from ceremonies where challenge=? and type='reauthentication_oauth' and user=? and expires>?",
+		[]byte(challenge), user.UID, now())
 	if row == nil {
 		return sl.None, nil
 	}
-	db.exec("delete from ceremonies where id=?", challenge)
+	// Two users may legitimately hold the same challenge now that it is not a
+	// key; the user filter above is what makes each read its own row.
+	db.exec("delete from ceremonies where id=?", as_string(row["id"]))
 
 	var result map[string]any
 	if err := json.Unmarshal([]byte(row["data"].(string)), &result); err != nil {
@@ -1208,9 +1210,16 @@ func oauth_reauthenticate(c *gin.Context, provider string, p *oauth_profile, use
 			result["remaining"] = remaining
 		}
 		if body, err := json.Marshal(result); err == nil {
+			// The caller's challenge goes in the challenge column, not in id.
+			// id is the primary key of a table shared by every ceremony type
+			// and every user, and this was the one row whose key an
+			// authenticated caller chose: a value already squatted made this
+			// insert a constraint violation, and db.exec panics on one, so the
+			// victim's callback answered 500 and their proof was never stored.
+			// Every other ceremony is keyed on a server-generated value.
 			db_open("db/sessions.db").exec(
-				"insert into ceremonies (id, type, user, challenge, data, expires) values (?, 'reauthentication_oauth', ?, '', ?, ?)",
-				challenge, user.UID, string(body), now()+120)
+				"insert into ceremonies (id, type, user, challenge, data, expires) values (?, 'reauthentication_oauth', ?, ?, ?, ?)",
+				uid(), user.UID, []byte(challenge), string(body), now()+120)
 		}
 	}
 

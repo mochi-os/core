@@ -353,6 +353,25 @@ func user_by_uid(uid string) *User {
 	return &u
 }
 
+// user_suspended reports whether uid names a suspended account.
+//
+// user_by_uid returns nil for a suspended user, deliberately - it is the "get
+// the acting user" lookup and a suspended user must not act. That collapses
+// three outcomes into one nil (no such user, suspended, no identity), which is
+// fine everywhere except the login paths, whose whole job at that point is to
+// explain the refusal. Five of them carried a status check AFTER the lookup,
+// so a suspended user was told the account did not exist, or that the identity
+// provider had failed, or got a 500.
+//
+// Called only on the nil branch, so the extra read is on a failure path.
+func user_suspended(uid string) bool {
+	if uid == "" {
+		return false
+	}
+	row, _ := db_open("db/users.db").row("select status from users where uid=?", uid)
+	return row != nil && as_string(row["status"]) == "suspended"
+}
+
 // user_by_username looks up a user by their username (email).
 // Returns nil if the user doesn't exist. Note: does not require identity.
 func user_by_username(username string) *User {

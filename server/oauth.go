@@ -750,13 +750,16 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target, expe
 		// Existing linked account.
 		user := user_by_uid(user_id)
 		if user == nil {
+			// Suspension first: "provider_error" blames the identity provider
+			// for what is purely this account's own state, so the user retries
+			// with the same provider and concludes it is broken.
+			if user_suspended(user_id) {
+				audit_login_failed(p.Email, rate_limit_client_ip(c), "suspended")
+				oauth_error_redirect(c, "suspended", nil)
+				return
+			}
 			audit_login_failed(p.Email, rate_limit_client_ip(c), "oauth_user_missing")
 			oauth_error_redirect(c, "provider_error", nil)
-			return
-		}
-		if user.Status == "suspended" {
-			audit_login_failed(user.Username, rate_limit_client_ip(c), "suspended")
-			oauth_error_redirect(c, "suspended", nil)
 			return
 		}
 		// Refuse only if the user has explicitly disabled OAuth as a login
@@ -1453,13 +1456,14 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 	if user_id != "" {
 		user := user_by_uid(user_id)
 		if user == nil {
+			// Same ordering as the web path above, and for the same reason.
+			if user_suspended(user_id) {
+				audit_login_failed(p.Email, rate_limit_client_ip(c), "suspended")
+				oauth_mobile_error(c, st, "suspended", nil)
+				return
+			}
 			audit_login_failed(p.Email, rate_limit_client_ip(c), "oauth_user_missing")
 			oauth_mobile_error(c, st, "provider_error", nil)
-			return
-		}
-		if user.Status == "suspended" {
-			audit_login_failed(user.Username, rate_limit_client_ip(c), "suspended")
-			oauth_mobile_error(c, st, "suspended", nil)
 			return
 		}
 		// Refuse only if the user has explicitly disabled OAuth as a login

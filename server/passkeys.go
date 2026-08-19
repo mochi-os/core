@@ -293,8 +293,13 @@ func web_passkey_login_finish(c *gin.Context) {
 		respond_error(c, http.StatusUnauthorized, "credential_not_found", "errors.credential_not_found", nil)
 		return
 	}
-	user := user_by_uid(row["user"].(string))
+	credential_user := row["user"].(string)
+	user := user_by_uid(credential_user)
 	if user == nil {
+		if user_suspended(credential_user) {
+			respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
+			return
+		}
 		respond_error(c, http.StatusUnauthorized, "user_not_found", "errors.user_not_found", nil)
 		return
 	}
@@ -310,10 +315,6 @@ func web_passkey_login_finish(c *gin.Context) {
 	// and the per-credential leadership claim. Shared with step-up
 	// re-auth; creates no session.
 	passkey_credential_finalize(user, credential, rate_limit_client_ip(c))
-	if user.Status == "suspended" {
-		respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
-		return
-	}
 
 	// Check for remaining MFA methods, folding this factor into any pending
 	// partial — a passkey completed from the /codes page continues the

@@ -724,13 +724,14 @@ func web_auth_mfa(c *gin.Context) {
 		return
 	}
 
-	user := user_by_uid(row["user"].(string))
+	partial_user := row["user"].(string)
+	user := user_by_uid(partial_user)
 	if user == nil {
+		if user_suspended(partial_user) {
+			respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
+			return
+		}
 		respond_error(c, http.StatusBadRequest, "user_not_found", "errors.user_not_found", nil)
-		return
-	}
-	if user.Status == "suspended" {
-		respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
 		return
 	}
 
@@ -1351,11 +1352,12 @@ func web_recovery_login(c *gin.Context) {
 	// Load user with identity
 	user := user_by_uid(user_id)
 	if user == nil {
+		if user_suspended(user_id) {
+			audit_login_failed(input.Username, rate_limit_client_ip(c), "suspended")
+			respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
+			return
+		}
 		respond_error(c, http.StatusInternalServerError, "user_error", "errors.user_error", nil)
-		return
-	}
-	if user.Status == "suspended" {
-		respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
 		return
 	}
 

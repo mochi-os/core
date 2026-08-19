@@ -75,9 +75,24 @@ var restore_upload_maximum int64 = 2 * 1024 * 1024 * 1024 // 2 GiB
 // web_auth_restore is POST /_/auth/restore.
 // multipart/form-data: email, passphrase, bundle (file).
 func web_auth_restore(c *gin.Context) {
-	// First-user-becomes-administrator, exactly as user_create and
-	// auth_replicate do — role is never taken from the bundle. Used when the
-	// placeholder is created below.
+	// Before anything is read from the body. Restore is a signup, so a server
+	// with signups off can never answer this request - and the check depends
+	// on nothing the caller sent, costing one indexed row from settings.db.
+	// It used to sit after the multipart parse, which meant an anonymous
+	// caller could make a closed server accept and spool a 2 GiB bundle it
+	// was always going to refuse; ParseMultipartForm spools to os.TempDir(),
+	// a tmpfs on a systemd host, so that was resident memory rather than
+	// disk. Answering here does mean a client still uploading sees the
+	// response before it has finished sending, which some clients surface as
+	// a reset rather than the 403 - the right trade against holding gigabytes
+	// for a request that cannot succeed.
+	if !setting_signup_enabled() {
+		respond_error(c, http.StatusForbidden, "signup_disabled", "errors.signup_disabled", nil)
+		return
+	}
+
+	// First-user-becomes-administrator, exactly as user_create does — role is
+	// never taken from the bundle. Used when the placeholder is created below.
 	udb := db_open("db/users.db")
 	role := "user"
 	if has, _ := udb.exists("select uid from users limit 1"); !has {
@@ -129,11 +144,6 @@ func web_auth_restore(c *gin.Context) {
 		respond_error(c, http.StatusBadRequest, "invalid_email", "errors.invalid_email", nil)
 		return
 	}
-	if !setting_signup_enabled() {
-		respond_error(c, http.StatusForbidden, "signup_disabled", "errors.signup_disabled", nil)
-		return
-	}
-
 	upload, err := c.FormFile("bundle")
 	if err != nil {
 		respond_error(c, http.StatusBadRequest, "bundle_required", "errors.bundle_required", nil)

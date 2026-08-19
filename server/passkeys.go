@@ -322,7 +322,7 @@ func web_passkey_login_finish(c *gin.Context) {
 	// Record the assertion: sign-count replay state, cosmetic last-used,
 	// and the per-credential leadership claim. Shared with step-up
 	// re-auth; creates no session.
-	passkey_credential_finalize(user, credential)
+	passkey_credential_finalize(user, credential, rate_limit_client_ip(c))
 	if user.Status == "suspended" {
 		respond_error(c, http.StatusForbidden, "suspended", "errors.suspended", nil)
 		return
@@ -353,14 +353,41 @@ func web_passkey_login_finish(c *gin.Context) {
 	auth_complete_login(c, user)
 }
 
+// passkey_clone_anomaly is the audit reason for an assertion whose signature
+// counter did not advance.
+const passkey_clone_anomaly = "passkey_clone_warning"
+
 // passkey_credential_finalize records a just-validated assertion: the
 // sign-count replay-prevention update (users.db, authoritative), the
 // cosmetic last-used upsert (sessions.db, self-healing), and the
 // per-credential leadership claim (see claude/plans/replication.md pattern
 // 1.4). Shared by login and step-up re-auth; it never creates a session.
-func passkey_credential_finalize(user *User, credential *webauthn.Credential) {
-	db_open("db/users.db").exec("update credentials set sign_count=? where id=?",
-		credential.Authenticator.SignCount, credential.ID)
+//
+// address is the client the assertion arrived from, or "" for the step-up
+// path, which runs under Starlark where no client address is in scope.
+func passkey_credential_finalize(user *User, credential *webauthn.Credential, address string) {
+	// The counter exists for exactly one purpose: to notice that two copies of
+	// a credential's private key are in use. go-webauthn computes that and
+	// sets CloneWarning, but by design never fails the ceremony - the spec
+	// leaves the response to the relying party - so a flag nobody reads leaves
+	// the column written, read, and asked nothing.
+	//
+	// Recorded rather than refused. A backup-eligible credential is synced
+	// across devices on purpose and its counter is not dependable across them,
+	// so refusing would lock a user out of their own account on a false
+	// positive - worse than the cloning it guards against, which additionally
+	// requires a private key extracted from an authenticator.
+	if credential.Authenticator.CloneWarning {
+		audit_session_anomaly(user.Username, address, passkey_clone_anomaly)
+		warn("Passkey signature counter for user %q did not advance: the authenticator may be cloned, or may be malfunctioning", user.Username)
+		// The stored counter stands. UpdateCounter leaves SignCount alone when
+		// it raises the warning, so writing it back is a no-op today - but the
+		// invariant being protected is that this column never moves backwards,
+		// and stating it here does not depend on that staying true.
+	} else {
+		db_open("db/users.db").exec("update credentials set sign_count=? where id=?",
+			credential.Authenticator.SignCount, credential.ID)
+	}
 	db_open("db/sessions.db").exec("insert into passkeys (credential, user, last) values (?, ?, ?) on conflict(credential) do update set last=excluded.last",
 		credential.ID, user.UID, now())
 }
@@ -481,7 +508,7 @@ func api_user_passkey_verify_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 		info("Passkey step-up failed: %v", err)
 		return sl.None, nil
 	}
-	passkey_credential_finalize(user, credential)
+	passkey_credential_finalize(user, credential, "")
 
 	return reauthentication_result(user, "passkey"), nil
 }

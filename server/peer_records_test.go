@@ -22,6 +22,18 @@ import (
 	multiaddr "github.com/multiformats/go-multiaddr"
 )
 
+// peer_record_envelope reads a stored record's envelope bytes, or nil when
+// none is held. Production reads the map directly in peer_record_relay; this
+// is the assertion form, and lives here because only tests need it.
+func peer_record_envelope(id string) []byte {
+	peer_records_lock.Lock()
+	defer peer_records_lock.Unlock()
+	if r, found := peer_records[id]; found {
+		return r.Envelope
+	}
+	return nil
+}
+
 // test_signed_record seals a peer record for id, signed by key, and
 // returns it base64-encoded as the publish payload carries it.
 func test_signed_record(t *testing.T, key p2p_crypto.PrivKey, id string, addresses []string, sequence uint64) string {
@@ -76,7 +88,7 @@ func TestPeerRecordRoundTrip(t *testing.T) {
 			t.Errorf("address %q not suffixed for %q", a, id)
 		}
 	}
-	if peer_record_get(id) == nil {
+	if peer_record_envelope(id) == nil {
 		t.Error("record not cached for relay")
 	}
 }
@@ -228,7 +240,7 @@ func TestPeerRecordEventAppliesRelayed(t *testing.T) {
 	if n := peer_addresses_count(subject); n != 1 {
 		t.Errorf("relayed record applied %d addresses, want 1", n)
 	}
-	if peer_record_get(subject) == nil {
+	if peer_record_envelope(subject) == nil {
 		t.Error("relayed record not cached")
 	}
 }
@@ -262,7 +274,7 @@ func TestPeerRecordEventIgnoresOwn(t *testing.T) {
 	defer func() { net_id = saved }()
 
 	peer_record_event(&Event{content: map[string]any{"record": test_signed_record(t, key, id, []string{"/ip4/192.0.2.80/tcp/1443"}, 1)}})
-	if peer_record_get(id) != nil {
+	if peer_record_envelope(id) != nil {
 		t.Error("our own relayed record was stored")
 	}
 }

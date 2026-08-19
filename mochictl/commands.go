@@ -13,7 +13,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,21 +22,6 @@ import (
 	"text/tabwriter"
 	"time"
 )
-
-// self_invocation reconstructs the `mochictl [global-flags]` prefix that
-// would target the same admin socket as the current run. Used when we
-// print a follow-up command for the user to copy — without the flag the
-// hint would default to /etc/mochi/mochi.conf and silently miss the
-// instance they're actually managing.
-func self_invocation() string {
-	if socket != "" {
-		return fmt.Sprintf("mochictl -s %s", socket)
-	}
-	if file != "" && file != default_config {
-		return fmt.Sprintf("mochictl -f %s", file)
-	}
-	return "mochictl"
-}
 
 // http_error formats a non-2xx admin-socket response as a user-friendly
 // error string. Tries the JSON `message` field first (server-side
@@ -441,31 +425,6 @@ func cmd_restore(args []string) error {
 // systemd isn't detected (e.g. running inside Docker or with no init system).
 func cmd_start(args []string) error {
 	return supervisor_start()
-}
-
-// post_with_body is a helper for sending a JSON body. Currently unused but
-// kept for future v2 endpoints (users.create, apps.install, etc).
-//
-//nolint:unused
-func post_with_body(path string, payload any) error {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	resp, err := client().Post(path, "application/json", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	out, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode/100 != 2 {
-		return http_error(resp.StatusCode, out)
-	}
-	os.Stdout.Write(out)
-	if len(out) > 0 && out[len(out)-1] != '\n' {
-		fmt.Println()
-	}
-	return nil
 }
 
 // cmd_worlds renders the world-server listings this host holds: its own

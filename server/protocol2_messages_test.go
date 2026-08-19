@@ -282,7 +282,9 @@ func TestDispatchMessageDedupsViaMessageSeen(t *testing.T) {
 
 	// Mark the ID as seen first.
 	const id = "dup-msg-id-test"
-	message_mark_seen(id)
+	seen_messages_lock.Lock()
+	seen_messages[id] = now()
+	seen_messages_lock.Unlock()
 	defer func() {
 		seen_messages_lock.Lock()
 		delete(seen_messages, id)

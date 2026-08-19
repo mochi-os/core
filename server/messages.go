@@ -101,14 +101,6 @@ func message_seen(id string) bool {
 	return exists
 }
 
-// Mark message as processed
-func message_mark_seen(id string) {
-	seen_messages_lock.Lock()
-	defer seen_messages_lock.Unlock()
-	seen_messages[id] = now()
-	message_seen_evict()
-}
-
 // message_seen_mark atomically reports whether id was already processed
 // and, if not, marks it seen — both under one lock. The separate
 // message_seen / message_mark_seen pair has a check-then-mark gap that two

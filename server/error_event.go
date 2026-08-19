@@ -55,8 +55,6 @@ type ErrorEvent struct {
 	original map[string]any // the operation that triggered it, when tied to a message
 	when     int64          // when it occurred, unix seconds, core-computed
 	detail   map[string]any // category-specific payload
-	user     *User
-	app      *App
 }
 
 func (e *ErrorEvent) AttrNames() []string {
@@ -137,8 +135,6 @@ func error_dispatch(user *User, app *App, code, reason, service, entity string, 
 		original: original,
 		when:     now(),
 		detail:   d,
-		user:     user,
-		app:      app,
 	}
 
 	defer func() {

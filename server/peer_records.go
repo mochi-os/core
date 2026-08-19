@@ -259,18 +259,6 @@ func peer_record_seen(id string) {
 	peer_records_answered_lock.Unlock()
 }
 
-// peer_record_get returns a peer's stored signed-record envelope bytes,
-// or nil when none is held — the relay source for address-book
-// exchange.
-func peer_record_get(id string) []byte {
-	peer_records_lock.Lock()
-	defer peer_records_lock.Unlock()
-	if r, found := peer_records[id]; found {
-		return r.Envelope
-	}
-	return nil
-}
-
 // peer_record_save persists a peer's latest record, replacing any
 // earlier one. Upsert so a refresh keeps the row's identity.
 func peer_record_save(id string, data []byte, sequence uint64) {

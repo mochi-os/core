@@ -30,18 +30,6 @@ import (
 	sl "go.starlark.net/starlark"
 )
 
-// UserPurge is the payload of a "user/purge" replication op — a deliberate,
-// signed "the account is gone everywhere" instruction (close / admin full
-// delete), distinct from a replicated row delete (which the apply path no-ops
-// for safety). Signed by one of the user's identity entities; the receiver
-// re-checks its own closing/purge state before acting. AccountGone is always
-// true now — the leave form (one host deleting another's copy) was the
-// forgeable strip primitive and is replaced by self-asserted membership.
-type UserPurge struct {
-	User        string
-	AccountGone bool
-}
-
 // account_closing_days is the grace period, in days, between a self-service
 // closure and the hard purge. Operator-tunable via [account] closing in the
 // config; defaults to 30 (the de-facto deactivation window users expect).

@@ -46,12 +46,6 @@ func New(socket string, timeout time.Duration) *Client {
 	}
 }
 
-// Socket returns the UDS path the client is configured to dial.
-// Useful for error messages and `mochictl --help` output.
-func (c *Client) Socket() string {
-	return c.socket
-}
-
 // url builds an HTTP URL with a placeholder host (the actual destination is
 // the UDS, set by the custom DialContext).
 func (c *Client) url(path string) string {

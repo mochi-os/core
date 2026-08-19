@@ -485,6 +485,17 @@ func load_core_labels() {
 //	respond_error(c, 404, "not_found", "errors.not_found", nil)
 //	respond_error(c, 400, "invalid_email", "errors.invalid_email",
 //	    map[string]any{"email": email})
+//
+// respond_text answers with a translated plain-text message, for the handful of
+// routes a browser reaches by navigation rather than by fetch: the shell page
+// and the HTML file serving. respond_error's JSON body is right for an API
+// caller and wrong to render in a window, so the shape is kept and only the
+// language fixed.
+func respond_text(c *gin.Context, status int, key string, args map[string]any) {
+	c.String(status, resolve_core_label(request_language(c, nil), key, args))
+	c.Abort()
+}
+
 func respond_error(c *gin.Context, status int, code, key string, args map[string]any) {
 	lang := request_language(c, nil)
 	msg := resolve_core_label(lang, key, args)

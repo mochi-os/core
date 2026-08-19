@@ -202,26 +202,26 @@ func web_serve_shell(c *gin.Context, app_id string) {
 	menu := shell_menu_app(user)
 	if menu == nil {
 		info("shell: menu app not installed")
-		c.String(http.StatusInternalServerError, "Shell unavailable")
+		respond_text(c, http.StatusInternalServerError, "errors.shell_unavailable", nil)
 		return
 	}
 	av := menu.active(user)
 	if av == nil {
 		info("shell: menu app has no active version")
-		c.String(http.StatusInternalServerError, "Shell unavailable")
+		respond_text(c, http.StatusInternalServerError, "errors.shell_unavailable", nil)
 		return
 	}
 
 	shell_html, err := shell_file_load(av.base + "/web/dist/shell.html")
 	if err != nil {
 		info("shell: failed to load shell.html: %v", err)
-		c.String(http.StatusInternalServerError, "Shell unavailable")
+		respond_text(c, http.StatusInternalServerError, "errors.shell_unavailable", nil)
 		return
 	}
 	shell_js, err := shell_file_load(av.base + "/web/dist/shell.js")
 	if err != nil {
 		info("shell: failed to load shell.js: %v", err)
-		c.String(http.StatusInternalServerError, "Shell unavailable")
+		respond_text(c, http.StatusInternalServerError, "errors.shell_unavailable", nil)
 		return
 	}
 

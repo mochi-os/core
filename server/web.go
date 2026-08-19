@@ -631,7 +631,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	if aa.Feature == "git" {
 		repo := aa.parameters["repository"]
 		if repo == "" {
-			c.String(http.StatusBadRequest, "Missing repository")
+			respond_text(c, http.StatusBadRequest, "errors.repository_required", nil)
 			return true
 		}
 		// Strip .git suffix if present (e.g., "my-project.git" -> "my-project")
@@ -1368,7 +1368,7 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 	if web_is_iframe_request(c) {
 		html, err := os.ReadFile(file)
 		if err != nil {
-			c.String(http.StatusNotFound, "File not found")
+			respond_text(c, http.StatusNotFound, "errors.file_not_found", nil)
 			return
 		}
 		content := string(html)
@@ -1410,7 +1410,7 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 	// Read HTML file
 	html, err := os.ReadFile(file)
 	if err != nil {
-		c.String(http.StatusNotFound, "File not found")
+		respond_text(c, http.StatusNotFound, "errors.file_not_found", nil)
 		return
 	}
 	content := web_inject_meta_tags(c, e, string(html))

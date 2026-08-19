@@ -2682,7 +2682,7 @@ func git_archive_write_tar(w io.Writer, tree *object.Tree, prefix string, mtime 
 
 func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo string, path string) bool {
 	if owner == nil {
-		c.String(http.StatusNotFound, "Repository not found")
+		c.String(http.StatusNotFound, "Repository not found") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 
@@ -2691,19 +2691,19 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 	db := db_open("db/users.db")
 	row, err := db.row("select id from entities where user = ? and fingerprint = ?", owner.UID, repo)
 	if err != nil || row == nil {
-		c.String(http.StatusNotFound, "Repository not found")
+		c.String(http.StatusNotFound, "Repository not found") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 	id, ok := row["id"].(string)
 	if !ok || id == "" {
-		c.String(http.StatusNotFound, "Repository not found")
+		c.String(http.StatusNotFound, "Repository not found") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 
 	// Build repository path
 	repo_path := git_repo_path(owner, a, id)
 	if _, err := os.Stat(repo_path); os.IsNotExist(err) {
-		c.String(http.StatusNotFound, "Repository not found")
+		c.String(http.StatusNotFound, "Repository not found") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 
@@ -2742,7 +2742,7 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 	app_db := db_app_system(owner, a)
 	if app_db == nil {
 		info("git_http_handler: no app-system database for user %q app %q; refusing", owner.UID, a.id)
-		c.String(http.StatusInternalServerError, "Repository access unavailable")
+		c.String(http.StatusInternalServerError, "Repository access unavailable") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 	identity_id := ""
@@ -2760,9 +2760,9 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 	if !app_db.access_check(owner, identity_id, role, "repository/"+id, op) {
 		if user == nil {
 			c.Header("WWW-Authenticate", `Basic realm="Mochi Git"`)
-			c.String(http.StatusUnauthorized, "Authentication required")
+			c.String(http.StatusUnauthorized, "Authentication required") // i18n-ok: git protocol, read by the client not a person
 		} else {
-			c.String(http.StatusNotFound, "Repository not found")
+			c.String(http.StatusNotFound, "Repository not found") // i18n-ok: git protocol, read by the client not a person
 		}
 		return true
 	}
@@ -2776,7 +2776,7 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 		return git_service_rpc(c, repo_path, "git-receive-pack", owner)
 	}
 
-	c.String(http.StatusNotFound, "Not found")
+	c.String(http.StatusNotFound, "Not found") // i18n-ok: git protocol, read by the client not a person
 	return true
 }
 
@@ -2784,14 +2784,14 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 // The entity is already resolved, so no fingerprint lookup is needed.
 func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e *Entity, path string) bool {
 	if owner == nil {
-		c.String(http.StatusNotFound, "Repository not found")
+		c.String(http.StatusNotFound, "Repository not found") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 
 	// Build repository path from the pre-resolved entity
 	repo_path := git_repo_path(owner, a, e.ID)
 	if _, err := os.Stat(repo_path); os.IsNotExist(err) {
-		c.String(http.StatusNotFound, "Repository not found")
+		c.String(http.StatusNotFound, "Repository not found") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 
@@ -2819,7 +2819,7 @@ func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e 
 	app_db := db_app_system(owner, a)
 	if app_db == nil {
 		info("git_http_handler_entity: no app-system database for user %q app %q; refusing", owner.UID, a.id)
-		c.String(http.StatusInternalServerError, "Repository access unavailable")
+		c.String(http.StatusInternalServerError, "Repository access unavailable") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 	identity_id := ""
@@ -2837,9 +2837,9 @@ func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e 
 	if !app_db.access_check(owner, identity_id, role, "repository/"+e.ID, op) {
 		if user == nil {
 			c.Header("WWW-Authenticate", `Basic realm="Mochi Git"`)
-			c.String(http.StatusUnauthorized, "Authentication required")
+			c.String(http.StatusUnauthorized, "Authentication required") // i18n-ok: git protocol, read by the client not a person
 		} else {
-			c.String(http.StatusNotFound, "Repository not found")
+			c.String(http.StatusNotFound, "Repository not found") // i18n-ok: git protocol, read by the client not a person
 		}
 		return true
 	}
@@ -2853,7 +2853,7 @@ func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e 
 		return git_service_rpc(c, repo_path, "git-receive-pack", owner)
 	}
 
-	c.String(http.StatusNotFound, "Not found")
+	c.String(http.StatusNotFound, "Not found") // i18n-ok: git protocol, read by the client not a person
 	return true
 }
 
@@ -3345,7 +3345,7 @@ func git_request_hash(text string) (plumbing.Hash, error) {
 
 func git_info_refs(c *gin.Context, repo_path string, service string) bool {
 	if service != "git-upload-pack" && service != "git-receive-pack" {
-		c.String(http.StatusForbidden, "Service not enabled")
+		c.String(http.StatusForbidden, "Service not enabled") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 
@@ -3366,14 +3366,14 @@ func git_info_refs(c *gin.Context, repo_path string, service string) bool {
 		session, err := git_transport.NewUploadPackSession(ep, nil)
 		if err != nil {
 			info("git_info_refs: upload-pack session failed for %s: %v", repo_path, err)
-			c.String(http.StatusInternalServerError, "Failed to create session")
+			c.String(http.StatusInternalServerError, "Failed to create session") // i18n-ok: git protocol, read by the client not a person
 			return true
 		}
 		defer session.Close()
 		refs, err = session.AdvertisedReferencesContext(ctx)
 		if err != nil {
 			info("git_info_refs: upload-pack advertise refs failed for %s: %v", repo_path, err)
-			c.String(http.StatusInternalServerError, "Failed to get refs")
+			c.String(http.StatusInternalServerError, "Failed to get refs") // i18n-ok: git protocol, read by the client not a person
 			return true
 		}
 		git_upload_pack_advertise(refs.Capabilities)
@@ -3390,14 +3390,14 @@ func git_info_refs(c *gin.Context, repo_path string, service string) bool {
 		session, err := git_transport.NewReceivePackSession(ep, nil)
 		if err != nil {
 			info("git_info_refs: receive-pack session failed for %s: %v", repo_path, err)
-			c.String(http.StatusInternalServerError, "Failed to create session")
+			c.String(http.StatusInternalServerError, "Failed to create session") // i18n-ok: git protocol, read by the client not a person
 			return true
 		}
 		defer session.Close()
 		refs, err = session.AdvertisedReferencesContext(ctx)
 		if err != nil {
 			info("git_info_refs: receive-pack advertise refs failed for %s: %v", repo_path, err)
-			c.String(http.StatusInternalServerError, "Failed to get refs")
+			c.String(http.StatusInternalServerError, "Failed to get refs") // i18n-ok: git protocol, read by the client not a person
 			return true
 		}
 	}
@@ -3504,7 +3504,7 @@ func git_service_rpc(c *gin.Context, repo_path string, service string, owner *Us
 	if c.GetHeader("Content-Encoding") == "gzip" {
 		gz_reader, err := gzip.NewReader(c.Request.Body)
 		if err != nil {
-			c.String(http.StatusBadRequest, "Invalid gzip data")
+			c.String(http.StatusBadRequest, "Invalid gzip data") // i18n-ok: git protocol, read by the client not a person
 			return true
 		}
 		defer gz_reader.Close()
@@ -3702,13 +3702,13 @@ func git_v2_serve(c *gin.Context, repo_path string, reader io.ReadCloser) bool {
 	storage, err := (&git_loader{}).Load(&transport.Endpoint{Path: repo_path})
 	if err != nil {
 		info("git_v2_serve: cannot load %s: %v", repo_path, err)
-		c.String(http.StatusInternalServerError, "Failed to open repository")
+		c.String(http.StatusInternalServerError, "Failed to open repository") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 
 	command, err := git_v2_decode(reader)
 	if err != nil {
-		c.String(http.StatusBadRequest, "Failed to decode request: %v", err)
+		c.String(http.StatusBadRequest, "Failed to decode request: %v", err) // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 
@@ -3718,7 +3718,7 @@ func git_v2_serve(c *gin.Context, repo_path string, reader io.ReadCloser) bool {
 	case "fetch":
 		return git_v2_fetch(c, storage, repo_path, command.arguments)
 	}
-	c.String(http.StatusBadRequest, "Unknown command %q", command.name)
+	c.String(http.StatusBadRequest, "Unknown command %q", command.name) // i18n-ok: git protocol, read by the client not a person
 	return true
 }
 
@@ -3783,7 +3783,7 @@ func git_v2_ls_refs(c *gin.Context, storage storer.Storer, arguments []string) b
 	iterator, err := storage.IterReferences()
 	if err != nil {
 		info("git_v2_ls_refs: cannot iterate references: %v", err)
-		c.String(http.StatusInternalServerError, "Failed to get refs")
+		c.String(http.StatusInternalServerError, "Failed to get refs") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 	err = iterator.ForEach(func(reference *plumbing.Reference) error {
@@ -3806,7 +3806,7 @@ func git_v2_ls_refs(c *gin.Context, storage storer.Storer, arguments []string) b
 	iterator.Close()
 	if err != nil {
 		info("git_v2_ls_refs: cannot read references: %v", err)
-		c.String(http.StatusInternalServerError, "Failed to get refs")
+		c.String(http.StatusInternalServerError, "Failed to get refs") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 
@@ -3842,11 +3842,11 @@ func git_v2_ls_refs(c *gin.Context, storage storer.Storer, arguments []string) b
 func git_v2_fetch(c *gin.Context, storage storer.Storer, repo_path string, arguments []string) bool {
 	request, err := git_v2_fetch_request(arguments)
 	if err != nil {
-		c.String(http.StatusBadRequest, "Failed to decode request: %v", err)
+		c.String(http.StatusBadRequest, "Failed to decode request: %v", err) // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 	if len(request.wants) == 0 {
-		c.String(http.StatusBadRequest, "Request asks for nothing")
+		c.String(http.StatusBadRequest, "Request asks for nothing") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 
@@ -3872,7 +3872,7 @@ func git_v2_fetch(c *gin.Context, storage storer.Storer, repo_path string, argum
 	selection, err := git_upload_pack_select(storage, request, known, request.done || ready)
 	if err != nil {
 		info("git_v2_fetch: selecting objects for %s failed: %v", repo_path, err)
-		c.String(http.StatusInternalServerError, "Upload pack failed")
+		c.String(http.StatusInternalServerError, "Upload pack failed") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 
@@ -4417,7 +4417,7 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 	storage, err := (&git_loader{}).Load(ep)
 	if err != nil {
 		info("git_upload_pack: cannot load %s: %v", repo_path, err)
-		c.String(http.StatusInternalServerError, "Failed to open repository")
+		c.String(http.StatusInternalServerError, "Failed to open repository") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 
@@ -4431,11 +4431,11 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 	// end in "done".
 	request, err := git_request_decode(reader)
 	if err != nil {
-		c.String(http.StatusBadRequest, "Failed to decode request: %v", err)
+		c.String(http.StatusBadRequest, "Failed to decode request: %v", err) // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 	if len(request.wants) == 0 {
-		c.String(http.StatusBadRequest, "Request asks for nothing")
+		c.String(http.StatusBadRequest, "Request asks for nothing") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 
@@ -4466,7 +4466,7 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 	selection, err := git_upload_pack_select(storage, request, known, request.done)
 	if err != nil {
 		info("git_upload_pack: selecting objects for %s failed: %v", repo_path, err)
-		c.String(http.StatusInternalServerError, "Upload pack failed")
+		c.String(http.StatusInternalServerError, "Upload pack failed") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 
@@ -5045,7 +5045,7 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, bu
 	session, err := server.NewServer(&git_loader{budget: budget}).NewReceivePackSession(ep, nil)
 	if err != nil {
 		info("git_receive_pack: failed to create session for %s: %v", repo_path, err)
-		c.String(http.StatusInternalServerError, "Failed to create session")
+		c.String(http.StatusInternalServerError, "Failed to create session") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 	defer session.Close()
@@ -5054,7 +5054,7 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, bu
 	req := packp.NewReferenceUpdateRequest()
 	if err := req.Decode(reader); err != nil {
 		info("git_receive_pack: failed to decode request for %s: %v", repo_path, err)
-		c.String(http.StatusBadRequest, "Failed to decode request: %v", err)
+		c.String(http.StatusBadRequest, "Failed to decode request: %v", err) // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
 
@@ -5078,7 +5078,7 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, bu
 
 	// No status report at all — something went very wrong
 	if err != nil {
-		c.String(http.StatusInternalServerError, "Receive pack failed")
+		c.String(http.StatusInternalServerError, "Receive pack failed") // i18n-ok: git protocol, read by the client not a person
 	}
 
 	return true

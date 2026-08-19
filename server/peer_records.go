@@ -232,6 +232,25 @@ func peer_record_relayable(id string) bool {
 	return found && r.Updated >= now()-peer_record_relay_maximum_age
 }
 
+// peer_record_current reports whether a relayed record is at least as new as
+// the one we hold, so peer_record_event can tell a real answer from a replay.
+//
+// The distinction cannot come from peer_record_store's return value, which is
+// false for an EQUAL sequence as well as an older one - and equal is the
+// ordinary case: a peer publishes its record once, every holder stores the
+// same envelope at the same sequence, and suppressing on one of them relaying
+// it is exactly the thundering-herd collapse the answered map exists for.
+// Only a strictly older sequence is a replay.
+//
+// No record held reports current: we cannot relay what we do not have
+// (peer_record_relayable requires it), so suppressing then costs nothing.
+func peer_record_current(id string, sequence uint64) bool {
+	peer_records_lock.Lock()
+	defer peer_records_lock.Unlock()
+	stored, found := peer_records[id]
+	return !found || sequence >= stored.Sequence
+}
+
 // peer_record_seen marks that we observed a relayed record for a peer,
 // feeding peer_record_relay's suppression.
 func peer_record_seen(id string) {

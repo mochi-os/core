@@ -505,7 +505,14 @@ func peer_record_event(e *Event) {
 	if !ok || id == net_id {
 		return
 	}
-	peer_record_seen(id)
+	// Only an answer that is not stale suppresses our own relay. A signed
+	// record is self-certifying and never expires, and every holder has seen
+	// it on the mesh, so replaying an old one otherwise silenced every
+	// legitimate relay for the answered window - the address-book exchange is
+	// how a server finds a peer that is offline or never heard the request.
+	if peer_record_current(id, sequence) {
+		peer_record_seen(id)
+	}
 	if !peer_record_store(id, sequence, data) {
 		return
 	}

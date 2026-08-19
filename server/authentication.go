@@ -697,7 +697,7 @@ func user_methods_configure(user *User, method, state string) string {
 	off := methods_join(disabled)
 	db := db_open("db/users.db")
 	db.exec("update users set methods=?, disabled=? where uid=?", methods, off, user.UID)
-	audit_password_changed(user.Username, "methods_changed")
+	audit_authentication_changed(user.Username, "methods_changed")
 	return ""
 }
 
@@ -1027,7 +1027,7 @@ func api_user_methods_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	// not required becomes allowed.
 	csv := strings.Join(methods, ",")
 	db.exec("update users set methods=?, disabled='' where uid=?", csv, user.UID)
-	audit_password_changed(user.Username, "methods_changed")
+	audit_authentication_changed(user.Username, "methods_changed")
 	return sl.True, nil
 }
 
@@ -1066,7 +1066,7 @@ func api_user_methods_reset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		target_name = target.Username
 	}
 	db.exec("update users set methods='email', disabled='' where uid=?", id)
-	audit_password_changed(target_name, "admin_reset")
+	audit_authentication_changed(target_name, "admin_reset")
 	return sl.True, nil
 }
 
@@ -1205,7 +1205,7 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if pending != "" && totp.Validate(code, pending) {
 		proven = true
 		db.exec("update totp set secret=?, verified=1, pending='' where user=?", pending, user.UID)
-		audit_password_changed(user.Username, "totp_enabled")
+		audit_authentication_changed(user.Username, "totp_enabled")
 		return sl.True, nil
 	}
 
@@ -1232,7 +1232,7 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 	proven = true
 	db.exec("update totp set verified=1 where user=?", user.UID)
-	audit_password_changed(user.Username, "totp_enabled")
+	audit_authentication_changed(user.Username, "totp_enabled")
 	return sl.True, nil
 }
 
@@ -1276,7 +1276,7 @@ func api_user_totp_disable(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	db := db_open("db/users.db")
 	db.exec("delete from totp where user=?", user.UID)
-	audit_password_changed(user.Username, "totp_disabled")
+	audit_authentication_changed(user.Username, "totp_disabled")
 	return sl.True, nil
 }
 
@@ -1397,7 +1397,7 @@ func api_user_recovery_generate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	db.exec("delete from recovery where user=?", user.UID)
 	// Tell peers to wipe their existing codes too. The hash="*" sentinel
 	// is recognised by the apply path as "delete all for user".
-	audit_password_changed(user.Username, "recovery_regenerated")
+	audit_authentication_changed(user.Username, "recovery_regenerated")
 
 	// Generate new codes
 	for i := 0; i < recovery_code_count; i++ {

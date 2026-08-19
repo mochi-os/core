@@ -192,9 +192,13 @@ func audit_identity_deleted(user string, entity string) {
 	audit_log_auth(fmt.Sprintf("identity_deleted user=%s entity=%s", user, entity))
 }
 
-// audit_password_changed logs password/credential changes
-func audit_password_changed(user string, method string) {
-	audit_log_auth(fmt.Sprintf("password_changed user=%s method=%s", user, method))
+// audit_authentication_changed logs a change to how an account signs in: a
+// passkey or authenticator added or removed, recovery codes regenerated, an
+// OAuth identity unlinked, the required-factor set edited, or an administrator
+// reset. Mochi has no password login, so none of those is a password change;
+// the event name is the operator's search key and has to match what happened.
+func audit_authentication_changed(user string, method string) {
+	audit_log_auth(fmt.Sprintf("authentication_changed user=%s method=%s", user, method))
 }
 
 // audit_email_changed logs email changes

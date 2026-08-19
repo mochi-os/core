@@ -1304,7 +1304,7 @@ func api_user_oauth_unlink(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 			db_open("db/sessions.db").exec("delete from verifications where oauth=?", oauth_id)
 		}
 	}
-	audit_password_changed(user.Username, "oauth_unlinked_"+provider)
+	audit_authentication_changed(user.Username, "oauth_unlinked_"+provider)
 	return sl.True, nil
 }
 

@@ -707,7 +707,7 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 	db_open("db/sessions.db").exec("insert into passkeys (credential, user, last) values (?, ?, 0)",
 		credential.ID, user.UID)
 
-	audit_password_changed(user.Username, "passkey_registered")
+	audit_authentication_changed(user.Username, "passkey_registered")
 	return sl_encode(map[string]any{"status": "ok", "name": name}), nil
 }
 
@@ -796,7 +796,7 @@ func api_user_passkey_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 	db.exec("delete from credentials where id=? and user=?", id, user.UID)
 	db_open("db/sessions.db").exec("delete from passkeys where credential=?", id)
-	audit_password_changed(user.Username, "passkey_deleted")
+	audit_authentication_changed(user.Username, "passkey_deleted")
 	return sl.True, nil
 }
 

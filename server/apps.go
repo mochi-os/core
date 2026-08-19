@@ -1729,6 +1729,155 @@ func apps_seed_default_permissions() {
 	}
 }
 
+// manifest_validate checks every field of a parsed app.json that the server
+// later trusts as a name, a path or a function.
+//
+// Extracted so app_read and AppVersion.reload run the same checks. reload
+// re-applies fourteen manifest fields onto a live version and used to re-run
+// only themes_validate, so an action's file path - concatenated onto the app's
+// base directory and served without further checking - reached the filesystem
+// having passed nothing. That gap is how the two lists drift: themes_validate
+// was added to reload when themes landed, and nothing generalised it.
+func manifest_validate(av *AppVersion) error {
+	if !valid(av.Version, "version") {
+		return fmt.Errorf("App bad version %q", av.Version)
+	}
+
+	// Check server version requirements
+	if av.Require.Version.Minimum != "" && version_compare(build_version, av.Require.Version.Minimum) < 0 {
+		return fmt.Errorf("App requires server version >= %s (current: %s)", av.Require.Version.Minimum, build_version)
+	}
+	if av.Require.Version.Maximum != "" && version_compare(build_version, av.Require.Version.Maximum) > 0 {
+		return fmt.Errorf("App requires server version <= %s (current: %s)", av.Require.Version.Maximum, build_version)
+	}
+
+	if !valid(av.Label, "constant") {
+		return fmt.Errorf("App bad label %q", av.Label)
+	}
+
+	for _, class := range av.Classes {
+		if !valid(class, "constant") {
+			return fmt.Errorf("App bad class %q", class)
+		}
+	}
+
+	for _, path := range av.Paths {
+		if !valid(path, "apppath") {
+			return fmt.Errorf("App bad path %q", path)
+		}
+	}
+
+	for _, service := range av.Services {
+		if !valid(service, "constant") {
+			return fmt.Errorf("App bad service %q", service)
+		}
+	}
+
+	if av.Architecture.Engine != "starlark" {
+		return fmt.Errorf("App bad engine %q version %d", av.Architecture.Engine, av.Architecture.Version)
+	}
+	if av.Architecture.Version < app_version_minimum {
+		return fmt.Errorf("App is too old. Version %d is less than minimum version %d", av.Architecture.Version, app_version_minimum)
+	}
+	if av.Architecture.Version > app_version_maximum {
+		return fmt.Errorf("App is too new. Version %d is greater than maximum version %d", av.Architecture.Version, app_version_maximum)
+	}
+
+	for _, file := range av.Execute {
+		if !valid(file, "filepath") {
+			return fmt.Errorf("App bad executable file %q", file)
+		}
+	}
+
+	if av.Database.File != "" && !valid(av.Database.File, "filename") {
+		return fmt.Errorf("App bad database file %q", av.Database.File)
+	}
+
+	if av.Database.Create.Function != "" && !valid(av.Database.Create.Function, "function") {
+		return fmt.Errorf("App bad database create function %q", av.Database.Create.Function)
+	}
+
+	if av.Database.Upgrade.Function != "" && !valid(av.Database.Upgrade.Function, "function") {
+		return fmt.Errorf("App bad database upgrade function %q", av.Database.Upgrade.Function)
+	}
+
+	if av.Database.Downgrade.Function != "" && !valid(av.Database.Downgrade.Function, "function") {
+		return fmt.Errorf("App bad database downgrade function %q", av.Database.Downgrade.Function)
+	}
+
+	if av.Icon != "" && !valid(av.Icon, "filepath") {
+		return fmt.Errorf("App bad icon path %q", av.Icon)
+	}
+
+	for _, i := range av.Icons {
+		if i.Action != "" && !valid(i.Action, "constant") {
+			return fmt.Errorf("App bad icon action %q", i.Action)
+		}
+
+		if !valid(i.Label, "constant") {
+			return fmt.Errorf("App bad icon label %q", i.Label)
+		}
+
+		if !valid(i.File, "filepath") {
+			return fmt.Errorf("App bad icon file %q", i.File)
+		}
+	}
+
+	for action, a := range av.Actions {
+		if action != "" && !valid(action, "action") {
+			return fmt.Errorf("App bad action %q", action)
+		}
+
+		if a.Function != "" && !valid(a.Function, "function") {
+			return fmt.Errorf("App bad action function %q", a.Function)
+		}
+
+		if a.File != "" && !valid(a.File, "filepath") {
+			return fmt.Errorf("App bad file path %q", a.File)
+		}
+
+		if a.Files != "" && !valid(a.Files, "filepath") {
+			return fmt.Errorf("App bad files path %q", a.Files)
+		}
+
+		if a.OpenGraph != "" && !valid(a.OpenGraph, "function") {
+			return fmt.Errorf("App bad opengraph function %q", a.OpenGraph)
+		}
+
+		if a.Cache != "" {
+			switch a.Cache {
+			case "immutable", "static", "revalidate", "none":
+				// valid
+			default:
+				return fmt.Errorf("App bad cache policy %q for action %q", a.Cache, action)
+			}
+		}
+
+	}
+
+	for event, e := range av.Events {
+		if !valid(event, "constant") {
+			return fmt.Errorf("App bad event %q", event)
+		}
+
+		if !valid(e.Function, "function") {
+			return fmt.Errorf("App bad event function %q", e.Function)
+		}
+	}
+
+	for function, f := range av.Functions {
+		if function != "" && !valid(function, "constant") {
+			return fmt.Errorf("App bad function %q", function)
+		}
+
+		if !valid(f.Function, "function") {
+			return fmt.Errorf("App bad function function %q", f.Function)
+		}
+	}
+
+	return themes_validate(av)
+}
+
 // Read in an external app version from a directory
 func app_read(id string, base string) (*AppVersion, error) {
 	debug("App loading %q", base)
@@ -1761,144 +1910,7 @@ func app_read(id string, base string) (*AppVersion, error) {
 	av.app_json_mtime = st.ModTime()
 	error_catalogue_validate(&av, id)
 
-	// Validate manifest
-	if !valid(av.Version, "version") {
-		return nil, fmt.Errorf("App bad version %q", av.Version)
-	}
-
-	// Check server version requirements
-	if av.Require.Version.Minimum != "" && version_compare(build_version, av.Require.Version.Minimum) < 0 {
-		return nil, fmt.Errorf("App requires server version >= %s (current: %s)", av.Require.Version.Minimum, build_version)
-	}
-	if av.Require.Version.Maximum != "" && version_compare(build_version, av.Require.Version.Maximum) > 0 {
-		return nil, fmt.Errorf("App requires server version <= %s (current: %s)", av.Require.Version.Maximum, build_version)
-	}
-
-	if !valid(av.Label, "constant") {
-		return nil, fmt.Errorf("App bad label %q", av.Label)
-	}
-
-	for _, class := range av.Classes {
-		if !valid(class, "constant") {
-			return nil, fmt.Errorf("App bad class %q", class)
-		}
-	}
-
-	for _, path := range av.Paths {
-		if !valid(path, "apppath") {
-			return nil, fmt.Errorf("App bad path %q", path)
-		}
-	}
-
-	for _, service := range av.Services {
-		if !valid(service, "constant") {
-			return nil, fmt.Errorf("App bad service %q", service)
-		}
-	}
-
-	if av.Architecture.Engine != "starlark" {
-		return nil, fmt.Errorf("App bad engine %q version %d", av.Architecture.Engine, av.Architecture.Version)
-	}
-	if av.Architecture.Version < app_version_minimum {
-		return nil, fmt.Errorf("App is too old. Version %d is less than minimum version %d", av.Architecture.Version, app_version_minimum)
-	}
-	if av.Architecture.Version > app_version_maximum {
-		return nil, fmt.Errorf("App is too new. Version %d is greater than maximum version %d", av.Architecture.Version, app_version_maximum)
-	}
-
-	for _, file := range av.Execute {
-		if !valid(file, "filepath") {
-			return nil, fmt.Errorf("App bad executable file %q", file)
-		}
-	}
-
-	if av.Database.File != "" && !valid(av.Database.File, "filename") {
-		return nil, fmt.Errorf("App bad database file %q", av.Database.File)
-	}
-
-	if av.Database.Create.Function != "" && !valid(av.Database.Create.Function, "function") {
-		return nil, fmt.Errorf("App bad database create function %q", av.Database.Create.Function)
-	}
-
-	if av.Database.Upgrade.Function != "" && !valid(av.Database.Upgrade.Function, "function") {
-		return nil, fmt.Errorf("App bad database upgrade function %q", av.Database.Upgrade.Function)
-	}
-
-	if av.Database.Downgrade.Function != "" && !valid(av.Database.Downgrade.Function, "function") {
-		return nil, fmt.Errorf("App bad database downgrade function %q", av.Database.Downgrade.Function)
-	}
-
-	if av.Icon != "" && !valid(av.Icon, "filepath") {
-		return nil, fmt.Errorf("App bad icon path %q", av.Icon)
-	}
-
-	for _, i := range av.Icons {
-		if i.Action != "" && !valid(i.Action, "constant") {
-			return nil, fmt.Errorf("App bad icon action %q", i.Action)
-		}
-
-		if !valid(i.Label, "constant") {
-			return nil, fmt.Errorf("App bad icon label %q", i.Label)
-		}
-
-		if !valid(i.File, "filepath") {
-			return nil, fmt.Errorf("App bad icon file %q", i.File)
-		}
-	}
-
-	for action, a := range av.Actions {
-		if action != "" && !valid(action, "action") {
-			return nil, fmt.Errorf("App bad action %q", action)
-		}
-
-		if a.Function != "" && !valid(a.Function, "function") {
-			return nil, fmt.Errorf("App bad action function %q", a.Function)
-		}
-
-		if a.File != "" && !valid(a.File, "filepath") {
-			return nil, fmt.Errorf("App bad file path %q", a.File)
-		}
-
-		if a.Files != "" && !valid(a.Files, "filepath") {
-			return nil, fmt.Errorf("App bad files path %q", a.Files)
-		}
-
-		if a.OpenGraph != "" && !valid(a.OpenGraph, "function") {
-			return nil, fmt.Errorf("App bad opengraph function %q", a.OpenGraph)
-		}
-
-		if a.Cache != "" {
-			switch a.Cache {
-			case "immutable", "static", "revalidate", "none":
-				// valid
-			default:
-				return nil, fmt.Errorf("App bad cache policy %q for action %q", a.Cache, action)
-			}
-		}
-
-	}
-
-	for event, e := range av.Events {
-		if !valid(event, "constant") {
-			return nil, fmt.Errorf("App bad event %q", event)
-		}
-
-		if !valid(e.Function, "function") {
-			return nil, fmt.Errorf("App bad event function %q", e.Function)
-		}
-	}
-
-	for function, f := range av.Functions {
-		if function != "" && !valid(function, "constant") {
-			return nil, fmt.Errorf("App bad function %q", function)
-		}
-
-		if !valid(f.Function, "function") {
-			return nil, fmt.Errorf("App bad function function %q", f.Function)
-		}
-	}
-
-	if err := themes_validate(&av); err != nil {
+	if err := manifest_validate(&av); err != nil {
 		return nil, err
 	}
 
@@ -2434,9 +2446,17 @@ func (av *AppVersion) reload() {
 		return
 	}
 
-	// Reload skips app_read, so the themes trust boundary is re-checked
-	// here; a manifest that fails keeps the loaded version.
-	if err := themes_validate(&fresh); err != nil {
+	// Reload skips app_read, so its validation runs here instead - all of it,
+	// not just the themes boundary this used to re-check. Every field applied
+	// below is one the server later trusts as a name, a path or a function; an
+	// action's file, in particular, is concatenated onto av.base and served
+	// with nothing else looking at it. A manifest that fails keeps the loaded
+	// version.
+	//
+	// Ahead of the Execute paths being made absolute below, because
+	// manifest_validate checks them as relative filepaths, exactly as app_read
+	// does before its own conversion.
+	if err := manifest_validate(&fresh); err != nil {
 		info("App reload rejected %q: %v", path, err)
 		return
 	}

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -23,6 +24,32 @@ import (
 )
 
 const recovery_code_count = 10
+
+// recovery_dummy is a real bcrypt hash at the cost the stored ones use, so a
+// comparison against it does the work a comparison against a stored hash does.
+//
+// Generated on first use rather than written as a constant: a literal would be
+// pinned to whatever cost bcrypt.DefaultCost meant on the day it was pasted,
+// and would drift silently if that changed - which is the same class of
+// mistake as the 57-byte string it replaces.
+//
+// This equalises the unknown-user path against the WORST known-user case. It
+// does not make the endpoint constant-time: a used code is deleted, so a user
+// with three codes left spends three comparisons and finishes sooner than an
+// unknown address does. That residue tells an attacker how many codes an
+// account has left, which is not the account's existence and is a far narrower
+// signal than the one removed here.
+var (
+	recovery_dummy_once sync.Once
+	recovery_dummy_hash []byte
+)
+
+func recovery_dummy() []byte {
+	recovery_dummy_once.Do(func() {
+		recovery_dummy_hash, _ = bcrypt.GenerateFromPassword([]byte("recovery"), bcrypt.DefaultCost)
+	})
+	return recovery_dummy_hash
+}
 
 var (
 	jwt_expiry = int64(365 * 86400) // 1 year, matching session cookie lifetime
@@ -1258,8 +1285,18 @@ func web_recovery_login(c *gin.Context) {
 	db := db_open("db/users.db")
 	row, _ := db.row("select uid from users where username=?", email_address(input.Username))
 	if row == nil {
-		// Timing-safe: always do bcrypt comparison even if user not found
-		bcrypt.CompareHashAndPassword([]byte("$2a$10$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), []byte(code))
+		// Spend what a known user spends. The placeholder here used to be a
+		// hand-written 57-byte string, two short of bcrypt's 59-byte minimum,
+		// so CompareHashAndPassword rejected it on length before touching the
+		// KDF: measured at 12ns against 407ms for a user holding ten codes.
+		// The comment claimed the property the value destroyed.
+		//
+		// recovery_code_count compares rather than one, because the loop below
+		// runs once per stored code and the worst case is what an attacker
+		// times against.
+		for i := 0; i < recovery_code_count; i++ {
+			bcrypt.CompareHashAndPassword(recovery_dummy(), []byte(code))
+		}
 		audit_login_failed(input.Username, rate_limit_client_ip(c), "user_not_found")
 		respond_error(c, http.StatusUnauthorized, "invalid_credentials", "errors.invalid_credentials", nil)
 		return

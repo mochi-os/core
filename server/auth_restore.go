@@ -91,13 +91,7 @@ func web_auth_restore(c *gin.Context) {
 		return
 	}
 
-	// First-user-becomes-administrator, exactly as user_create does — role is
-	// never taken from the bundle. Used when the placeholder is created below.
 	udb := db_open("db/users.db")
-	role := "user"
-	if has, _ := udb.exists("select uid from users limit 1"); !has {
-		role = "administrator"
-	}
 
 	// Cap the compressed bundle before the first PostForm call parses — and
 	// spools to disk — the multipart body. restore_upload_maximum bounds the
@@ -178,8 +172,17 @@ func web_auth_restore(c *gin.Context) {
 	// Create the placeholder with a fresh destination-side uid. The source
 	// uid in the bundle is informational only; the destination's uid is
 	// canonical.
+	// First-user-becomes-administrator, decided inside the insert exactly as
+	// user_create does - the role is never taken from the bundle, and never
+	// from a read that happened earlier. The gap here was the whole upload:
+	// the role used to be settled before the multipart parse, so an ordinary
+	// signup completing while a multi-gigabyte bundle was still arriving left
+	// the restore inserting a stale "administrator" alongside it. No
+	// concurrency needed - just two overlapping requests.
 	uid := uid()
-	udb.exec("insert into users (uid, username, role, methods, status) values (?, ?, ?, '', 'pending-restore')", uid, email, role)
+	udb.exec(`insert into users (uid, username, role, methods, status)
+		values (?, ?, case when exists (select 1 from users) then 'user' else 'administrator' end, '', 'pending-restore')`,
+		uid, email)
 
 	// Belt-and-braces freshness check before any staging, so the walk
 	// never has to skip the restore/ directory.

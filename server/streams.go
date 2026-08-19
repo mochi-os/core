@@ -62,9 +62,46 @@ type Stream struct {
 	// or more (bulk-bootstrap DB transfer). Must be set BEFORE the
 	// first read call, since the decoder + its underlying LimitReader
 	// are constructed lazily.
-	max_bytes     int64
+	max_bytes int64
+	// abandoned records that a write failed against the REMOTE end, as
+	// opposed to against the local source the bytes were read from. A
+	// requester that goes away mid-transfer is not an operator problem -
+	// a browser navigating off a page abandons every image still in
+	// flight - so the event dispatcher logs a handler that failed this
+	// way rather than warning about it. Set only where the failure is
+	// known to be the remote's; never inferred from an error string.
+	abandoned     bool
 	on_close      func() // Called once when stream is closed (e.g. release semaphore)
 	on_close_once sync.Once
+}
+
+// stream_destination wraps the remote end of a copy so that a failure there
+// can be told apart from a failure reading the source. io.Copy returns one
+// error for both sides, so a vanished peer and an unreadable file are the same
+// value to its caller; only this wrapper's own Write can record the remote's.
+type stream_destination struct {
+	writer io.Writer
+	failed error
+}
+
+func (d *stream_destination) Write(p []byte) (int, error) {
+	n, err := d.writer.Write(p)
+	if err != nil {
+		d.failed = err
+	}
+	return n, err
+}
+
+// send copies source to the remote, marking the stream abandoned if it was the
+// remote that gave out. The error is returned unchanged either way: whether the
+// transfer failed is the caller's business, and which end failed is the log's.
+func (s *Stream) send(source io.Reader) (int64, error) {
+	destination := &stream_destination{writer: s.writer}
+	n, err := io.Copy(destination, source)
+	if err != nil && destination.failed != nil {
+		s.abandoned = true
+	}
+	return n, err
 }
 
 var (
@@ -317,6 +354,10 @@ func (s *Stream) write(v any) error {
 	}
 	err := s.encoder.Encode(v)
 	if err != nil {
+		// Unconditional, unlike send: the encoder's only output is s.writer,
+		// and its input is already a plain Go value from sl_decode, so there
+		// is no local source here for the failure to have come from.
+		s.abandoned = true
 		return fmt.Errorf("stream error writing segment: %v", err)
 	}
 
@@ -346,7 +387,7 @@ func (s *Stream) write_file(path string) (int64, error) {
 	}
 	defer f.Close()
 
-	n, err := io.Copy(s.writer, f)
+	n, err := s.send(f)
 	if err != nil {
 		return 0, fmt.Errorf("stream error sending file segment: %v", err)
 	}
@@ -374,6 +415,9 @@ func (s *Stream) write_raw(data []byte) error {
 
 	_, err := s.writer.Write(data)
 	if err != nil {
+		// The bytes are already in hand, so the remote is the only thing that
+		// can fail here.
+		s.abandoned = true
 		return fmt.Errorf("stream error writing raw segment: %v", err)
 	}
 
@@ -655,9 +699,12 @@ func (s *Stream) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	}
 	defer f.Close()
 
-	n, err := io.Copy(s.writer, f)
+	n, err := s.send(f)
 	if err != nil {
-		return sl_error(fn, "unable to send file")
+		// The cause is carried, not flattened: a peer that went away and a
+		// disk that would not read reported the same fixed string, so the
+		// operator email could not tell a client disconnect from real trouble.
+		return sl_error(fn, "unable to send file: %v", err)
 	}
 
 	return sl.MakeInt64(n), nil
@@ -684,9 +731,9 @@ func (s *Stream) sl_write_cache(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 	defer f.Close()
 
-	n, err := io.Copy(s.writer, f)
+	n, err := s.send(f)
 	if err != nil {
-		return sl_error(fn, "unable to send cache entry")
+		return sl_error(fn, "unable to send cache entry: %v", err)
 	}
 	return sl.MakeInt64(n), nil
 }

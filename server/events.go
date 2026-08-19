@@ -489,8 +489,21 @@ func (e *Event) run_handler(a *App, av *AppVersion, ae AppEvent) (handler_err er
 		// and Starlark.call's own wording is what it matches.
 		_, handler_err = s.call(ae.Function, sl.Tuple{e})
 		if handler_err != nil {
-			warn("Event handler %s:%s() for %q failed: %v", a.id, ae.Function, e.event, handler_err)
+			if e.stream != nil && e.stream.abandoned {
+				// The requester went away mid-transfer. A browser that
+				// navigates off a page abandons every image still in flight,
+				// so this is the ordinary end of a transfer nobody is waiting
+				// for any more - not something to wake an operator for. It was
+				// warned about, and warn() mails, only when the bytes happened
+				// to be relayed from another host: the identical abandonment of
+				// a locally served file has always been logged quietly.
+				info("Event handler %s:%s() for %q abandoned by the requester: %v", a.id, ae.Function, e.event, handler_err)
+			} else {
+				warn("Event handler %s:%s() for %q failed: %v", a.id, ae.Function, e.event, handler_err)
+			}
 		}
+		// Returned unchanged in both cases: worker_failure_reason classifies on
+		// the message, and the caller acks on nil. Only the log level moved.
 		return handler_err
 
 	default:

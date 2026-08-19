@@ -9,6 +9,7 @@ package main
 import (
 	"compress/gzip"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/andybalholm/brotli"
@@ -45,26 +46,98 @@ func web_compress_middleware(c *gin.Context) {
 	w.close()
 }
 
+// accept_encoding_weights parses an Accept-Encoding header into the weight the
+// client gave each coding, as RFC 9110 section 12.5.3 defines it: a
+// comma-separated list, each element optionally carrying ";q=<value>", with an
+// absent q meaning 1.0 and a q of 0 meaning "not acceptable".
+//
+// The "*" entry stands for every coding the header does not name, so it is kept
+// as an ordinary key and consulted only when the specific one is absent.
+//
+// Returned weights are hundredths, so a comparison is integer: q is at most
+// three decimal places, and 0.001 apart is not a distinction worth carrying
+// float rounding for.
+func accept_encoding_weights(accept string) map[string]int {
+	weights := map[string]int{}
+	for _, element := range strings.Split(strings.ToLower(accept), ",") {
+		parts := strings.Split(element, ";")
+		coding := strings.TrimSpace(parts[0])
+		if coding == "" {
+			continue
+		}
+		weight := 100
+		for _, parameter := range parts[1:] {
+			parameter = strings.TrimSpace(parameter)
+			if !strings.HasPrefix(parameter, "q=") {
+				continue
+			}
+			weight = 0
+			// Parsed by hand rather than through ParseFloat: the grammar is a
+			// digit, optionally a point and up to three more digits, and an
+			// unparseable value should read as an absent q rather than a zero,
+			// since treating a malformed header as a refusal would silently
+			// stop compressing for that client.
+			value := strings.TrimPrefix(parameter, "q=")
+			if number, err := strconv.ParseFloat(value, 64); err == nil {
+				weight = int(number*100 + 0.5)
+			} else {
+				weight = 100
+			}
+		}
+		weights[coding] = weight
+	}
+	return weights
+}
+
+// accept_encoding_allows reports the weight a client gave one coding: its own
+// entry when the header names it, otherwise the "*" entry, otherwise zero.
+// Zero means the client will not take it - either because it said so with q=0
+// or because it never offered it.
+func accept_encoding_allows(weights map[string]int, coding string) int {
+	if weight, named := weights[coding]; named {
+		return weight
+	}
+	if weight, wildcard := weights["*"]; wildcard {
+		return weight
+	}
+	return 0
+}
+
 // negotiate_encoding picks brotli or gzip based on the server config and
 // what the client accepts. Returns "" when no compression should be used.
+//
+// The header is parsed rather than searched for substrings. strings.Contains
+// answered the wrong question in both directions: "br;q=0" contains "br", so a
+// client explicitly refusing brotli - which is how a proxy that cannot pass it
+// through says so - was sent brotli anyway and could not decode the reply,
+// while "*" contains neither token, so a client accepting everything got an
+// uncompressed response.
+//
+// In auto the client's own preference decides between the two, since parsing q
+// at all makes the ordering free. The explicit modes name one coding, so they
+// send it or nothing: an operator who set web.compress to br asked for br, not
+// for a fallback they did not choose.
 func negotiate_encoding(accept string) string {
-	accept = strings.ToLower(accept)
-	wants_br := strings.Contains(accept, "br")
-	wants_gz := strings.Contains(accept, "gzip")
+	weights := accept_encoding_weights(accept)
+	brotli := accept_encoding_allows(weights, "br")
+	gzip := accept_encoding_allows(weights, "gzip")
+
 	switch web_compress {
 	case "br":
-		if wants_br {
+		if brotli > 0 {
 			return "br"
 		}
 	case "gzip":
-		if wants_gz {
+		if gzip > 0 {
 			return "gzip"
 		}
 	case "auto":
-		if wants_br {
+		// Brotli on a tie: it compresses better, and a client that cared would
+		// have said so with a weight.
+		if brotli > 0 && brotli >= gzip {
 			return "br"
 		}
-		if wants_gz {
+		if gzip > 0 {
 			return "gzip"
 		}
 	}

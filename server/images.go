@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"github.com/disintegration/imaging"
 	"github.com/nfnt/resize"
 	"github.com/rwcarlsen/goexif/exif"
@@ -21,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func is_image(file string) bool {
@@ -83,6 +85,43 @@ const (
 	image_file_bytes_maximum    = 100 << 20
 )
 
+// image_render_parallel bounds how many variants are decoded at once.
+//
+// The two caps above bound ONE render: 100 MB of file bytes held while EXIF,
+// the config header and the decode each read them, plus the decoded pixels -
+// 100 megapixels at 4 bytes each is 400 MB - and then a rotate and a resize
+// allocate their own destinations. Nothing bounded how many ran together, and
+// the HTTP path renders synchronously in the request goroutine, so concurrency
+// was whatever arrived: a gallery of uncached images, or several requests for
+// the SAME uncached variant, each decoding the identical bytes.
+//
+// Four rather than the Starlark pool's 32, because a slot here is worth half a
+// gigabyte rather than a goroutine. A constant rather than a setting: this is a
+// memory-safety bound, not a knob worth an operator's attention.
+const image_render_parallel = 4
+
+// image_render_wait is how long a request waits for a slot before giving up on
+// the variant. A var so tests need not wait it out.
+var image_render_wait = 30 * time.Second
+
+var image_render_slots = make(chan struct{}, image_render_parallel)
+
+// image_render_acquire takes a decode slot, returning the release. The error
+// means the pool stayed full: the caller then reports no variant, which every
+// caller already handles - the HTTP path serves the original bytes and
+// mochi.image.variant answers None - so a busy server degrades to full-size
+// images rather than to a queue of requests holding half a gigabyte each.
+func image_render_acquire() (func(), error) {
+	timer := time.NewTimer(image_render_wait)
+	defer timer.Stop()
+	select {
+	case image_render_slots <- struct{}{}:
+		return func() { <-image_render_slots }, nil
+	case <-timer.C:
+		return nil, fmt.Errorf("image render pool busy")
+	}
+}
+
 // variant_create generates the variant beside the original, in a per-variant
 // subdirectory. Kept for callers that serve variants from owned storage.
 func variant_create(path string, variant string) (string, error) {
@@ -119,6 +158,16 @@ func variant_render(path string, variant string, thumb string) (string, error) {
 		info("Refusing to read image file %q for %s variant: %d bytes exceeds file cap", path, variant, information.Size())
 		return "", nil
 	}
+
+	// Held from here, not from the open: everything above is a stat and a
+	// refusal, so an oversized file is turned away without ever occupying a
+	// slot that a renderable image could use.
+	release, err := image_render_acquire()
+	if err != nil {
+		info("Deferring %s variant for %q: %v", variant, path, err)
+		return "", nil
+	}
+	defer release()
 
 	// Read the file into memory so we can inspect EXIF and decode the image
 	b, err := io.ReadAll(f)

@@ -183,15 +183,23 @@ func db_setup_conn_starlark(c *sqlite3.Conn) error {
 //   - Triggers (CREATE / DROP, persistent and TEMP): would silently
 //     fire on every write and burn CPU. No current app needs them.
 //   - Virtual tables (CREATE / DROP): wrap arbitrary modules outside
-//     the sandbox model. Built-in pragma_* virtual table reads go via
-//     SQLITE_READ, which is unaffected.
+//     the sandbox model. The built-in pragma_* table-valued functions
+//     are denied too, though not by this case: they carry their target
+//     as the PRAGMA argument, so the rule above catches them. Apps read
+//     a table's columns with mochi.db.table(), which asks over the
+//     ordinary pool.
+//   - ANALYZE: a full scan of every index, so it is CPU an app can spend
+//     on demand. Denied here rather than by the string check in
+//     db_starlark_sql_blocked, which reads only the first token of the
+//     first statement: "/*x*/ANALYZE", "-- c\nANALYZE",
+//     "select 1; analyze" and "BEGIN; ANALYZE; COMMIT" all ran past it.
 //
-// VACUUM and ANALYZE have no authoriser action codes and are caught
-// by the string-prefix check in api_db_query / transaction_args
-// instead.
+// VACUUM needs no case of its own: it attaches a temporary database, so
+// AUTH_ATTACH above already denies it in every form.
 func db_authorise_starlark(action sqlite3.AuthorizerActionCode, _, name4th, _, _ string) sqlite3.AuthorizerReturnCode {
 	switch action {
 	case sqlite3.AUTH_ATTACH, sqlite3.AUTH_DETACH,
+		sqlite3.AUTH_ANALYZE,
 		sqlite3.AUTH_CREATE_TRIGGER, sqlite3.AUTH_CREATE_TEMP_TRIGGER,
 		sqlite3.AUTH_DROP_TRIGGER, sqlite3.AUTH_DROP_TEMP_TRIGGER,
 		sqlite3.AUTH_CREATE_VTABLE, sqlite3.AUTH_DROP_VTABLE:
@@ -644,16 +652,15 @@ func db_app(u *User, app *App) *DB {
 		}
 	}
 
-	// Create the core-managed commit-hook table on this data DB eagerly at
-	// open — not lazily on first use (#424). Idempotent; covers both fresh
-	// and pre-existing files, and runs once per process per (path, version).
-	// The broadcast tables do NOT belong here: their live copies moved to
-	// the per-app SYSTEM DB (db_app_system creates them eagerly), and
-	// creating them on the data DB kept regenerating the stale duplicates
-	// that misled the 2026-07 News wedge diagnosis — the per-app migrations
-	// dropping those duplicates rely on this not re-creating them.
-	commits_table_create(db)
-
+	// No infra tables are created on the data DB. The commit-hook log lives
+	// on the per-app SYSTEM DB, which is where commits_setup creates it and
+	// where commit_hook_drain and commits_append read and write it; a copy
+	// here was never read, and left an app-writable table shadowing the real
+	// one. The broadcast tables moved for the same reason, and the stale
+	// duplicates they left behind are what misled the 2026-07 News wedge
+	// diagnosis - the per-app migrations dropping those rely on this not
+	// re-creating them. Existing data DBs keep their unused copy: a core-side
+	// drop would destroy an app's own table if one shares the name.
 	// Schema and infra tables are in place; open the reused fast-path. Never
 	// set on the error returns above, so a failed create is retried by the
 	// next opener instead of wedging the handle (#227).
@@ -2000,13 +2007,16 @@ func db_starlark_rollback(conn *sqlx.Conn) {
 }
 
 // db_starlark_sql_blocked returns a non-empty error message if the query
-// starts with a keyword that's blocked from Starlark. Belt-and-braces on
-// top of the per-connection authoriser: the authoriser is the
-// load-bearing layer (it sees parsed multi-statement input and can't
-// be bypassed by `BEGIN; PRAGMA …; COMMIT;`), but a clean string-level
-// rejection gives apps a friendlier error than an opaque authoriser
-// denial. Also catches VACUUM and ANALYZE, which have no authoriser
-// action codes.
+// starts with a keyword that's blocked from Starlark.
+//
+// Courtesy only. It reads the first token of the first statement, so a
+// leading comment or a second statement walks straight past it, and it is
+// deliberately not hardened: splitting on ";" to reach later statements
+// would refuse "select 'a; analyze'", turning working SQL into an error.
+// The authoriser is the layer that actually decides - it sees parsed
+// input, every statement, and cannot be evaded by spelling - and this
+// exists so the common case answers with a sentence an app author can
+// read instead of an opaque authoriser denial.
 func db_starlark_sql_blocked(query string) string {
 	trimmed := strings.TrimSpace(query)
 	first := trimmed

@@ -20,12 +20,32 @@ import (
 	"strings"
 )
 
+// systemctl_path returns the absolute path to systemctl, or "" when it is not
+// where a systemd host puts it.
+//
+// Not exec.LookPath: mochictl runs as root to start a service, and PATH is
+// inherited from whoever invoked it, so a writable directory earlier in it
+// would decide which binary root executes. sudo's secure_path already covers
+// the common case; a root shell does not.
+func systemctl_path() string {
+	for _, candidate := range []string{"/usr/bin/systemctl", "/bin/systemctl", "/usr/sbin/systemctl", "/sbin/systemctl"} {
+		if information, err := os.Stat(candidate); err == nil && !information.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
 // supervisor_start attempts to start the mochi-server unit via systemctl.
 // Falls through with a helpful error if systemd isn't the supervisor.
 func supervisor_start() error {
 	switch detect() {
 	case "systemd":
-		cmd := exec.Command("systemctl", "start", "mochi-server")
+		systemctl := systemctl_path()
+		if systemctl == "" {
+			return fmt.Errorf("systemd is the supervisor but systemctl is not at any expected absolute path")
+		}
+		cmd := exec.Command(systemctl, "start", "mochi-server")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
@@ -51,8 +71,9 @@ func detect() string {
 		}
 	}
 
-	// systemd check: systemctl present AND PID 1 is "systemd".
-	if _, err := exec.LookPath("systemctl"); err == nil {
+	// systemd check: systemctl present AND PID 1 is "systemd". Looked up by
+	// absolute path for the reason systemctl_path gives.
+	if systemctl_path() != "" {
 		if comm, err := os.ReadFile("/proc/1/comm"); err == nil && strings.TrimSpace(string(comm)) == "systemd" {
 			return "systemd"
 		}

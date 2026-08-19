@@ -59,9 +59,18 @@ func render(body []byte, order ...string) error {
 
 // render_json pretty-prints JSON (re-marshalled with 2-space indent so the
 // output is consistent regardless of whether the server compacted it).
+//
+// Decoded with UseNumber for the same reason render does, and more urgently:
+// this is the scripted-consumption mode, so it was the one path whose output
+// is parsed by other programs and the only one that corrupted the value. Plain
+// Unmarshal takes every number through float64, which rounds an integer above
+// 2^53 - a uint64 peer count printed as 18446744073709552000, with nothing in
+// the output to say it had been changed.
 func render_json(body []byte) error {
 	var v any
-	if err := json.Unmarshal(body, &v); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
 		os.Stdout.Write(body)
 		return nil
 	}

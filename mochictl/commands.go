@@ -242,13 +242,13 @@ func cmd_health(args []string) error {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if err := render(body, "status", "version", "uptime", "database", "network"); err != nil {
-		return err
-	}
+	// Status first. Rendering an error body through the health formatter puts
+	// it on stdout looking like a health report - and under -j it parses as
+	// one - leaving the exit code as the only thing that says otherwise.
 	if resp.StatusCode/100 != 2 {
 		return http_error(resp.StatusCode, body)
 	}
-	return nil
+	return render(body, "status", "version", "uptime", "database", "network")
 }
 
 // cmd_version queries the server for its build, then renders alongside the
@@ -259,9 +259,17 @@ func cmd_version(args []string) error {
 
 	resp, err := client().Get("/_/admin/version")
 	if err != nil {
-		// Server unreachable — print only the client version.
+		// Server unreachable. Still print the client version - knowing which
+		// mochictl you are holding is useful precisely when the server is down
+		// - but report the failure, so this does not read as success. Returning
+		// nil here meant `mochictl version` exited 0 against a dead server,
+		// with only a missing server_version field to distinguish it, and
+		// anything using it as a liveness probe saw a healthy host.
 		out, _ := json.Marshal(map[string]string{"mochictl_version": build_version})
-		return render(out, order...)
+		if err := render(out, order...); err != nil {
+			return err
+		}
+		return fmt.Errorf("server unreachable: %w", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)

@@ -91,8 +91,11 @@ func cmd_broadcast_lag(args []string) error {
 		"RECEIVED", "OWNER_MAX", "LAG", "PENDING")
 	for _, r := range payload.Rows {
 		key := r.Key
-		if len(key) > key_w {
-			key = key[:key_w-1] + "…"
+		// Cut on runes: len() and a byte slice split a multi-byte character
+		// in half, emitting invalid UTF-8 and miscounting the column width
+		// the %-*s below pads to.
+		if runes := []rune(key); len(runes) > key_w {
+			key = string(runes[:key_w-1]) + "…"
 		}
 		owner_str := "-"
 		lag_str := "-"

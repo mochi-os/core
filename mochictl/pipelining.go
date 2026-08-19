@@ -75,8 +75,11 @@ func cmd_pipelining_status(args []string) error {
 		peer_w, "PEER", "SENDER", "INFLIGHT", "SESSION")
 	for _, p := range payload.Peers {
 		peer := p.Peer
-		if len(peer) > peer_w {
-			peer = peer[:peer_w-1] + "…"
+		// Cut on runes: len() and a byte slice split a multi-byte character
+		// in half, emitting invalid UTF-8 and miscounting the column width
+		// the %-*s below pads to.
+		if runes := []rune(peer); len(runes) > peer_w {
+			peer = string(runes[:peer_w-1]) + "…"
 		}
 		sender := "no"
 		if p.Sender {

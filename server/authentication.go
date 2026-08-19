@@ -287,6 +287,15 @@ func auth_create_app_token(user_uid string, login string, app string) string {
 		return ""
 	}
 
+	// The session names the one account its secret may sign for. Every caller
+	// takes both arguments from the same cookie, so the pair matches today -
+	// this is what makes that a property of the issuer rather than a habit of
+	// its callers, and it is the half of the binding jwt_verify cannot do
+	// alone.
+	if s.User != user_uid {
+		return ""
+	}
+
 	claims := mochi_claims{
 		User: user_uid,
 		App:  app,
@@ -429,6 +438,17 @@ func jwt_verify(token_string string) (string, string, error) {
 	}
 	if !tkn.Valid {
 		return "", "", errors.New("invalid token")
+	}
+
+	// A valid signature proves only that the token was signed with THIS
+	// session's secret, not that it names this session's user. The user came
+	// from the token body and went straight to user_by_uid, so without this a
+	// single session secret authenticated as any account named in a token it
+	// signed - a per-device key acting as a key over the whole user table.
+	// Checked after the signature so an unauthenticated caller learns nothing
+	// from which error it gets.
+	if claims.User != s.User {
+		return "", "", errors.New("token user does not match the session that signed it")
 	}
 	return claims.User, claims.App, nil
 }

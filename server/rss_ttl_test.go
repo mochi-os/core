@@ -15,7 +15,6 @@
 package main
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -152,7 +151,6 @@ func TestRssMaximumIsItsOwnBound(t *testing.T) {
 	if !strings.Contains(string(whole), "Real feeds are small") {
 		t.Error("rss_maximum carries no note of what real feeds weigh, so a future change to it has nothing to judge against")
 	}
-	fmt.Sprintf("%d", rss_maximum) // keep the constant referenced if assertions are edited out
 }
 
 // TestRssFetchParsesARealFeed drives the whole path against a served document:

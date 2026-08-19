@@ -473,16 +473,22 @@ func peer_apply_addresses(id string, addresses []string) {
 // peer we are not, and we hold that peer's signed record, relay it on
 // their behalf — the address-book-exchange path that lets a server find
 // a peer that is offline or never heard the request.
+//
+// The origin check comes first, as it does in peer_publish_event: a
+// direct-stream message spoofing this event has no origin, and answering one
+// means an unverified caller decides when we announce ourselves to the whole
+// mesh. All three peers/* messages are published over pubsub, so there is no
+// legitimate direct-stream sender to lose.
 func peer_request_event(e *Event) {
+	if e.origin == "" || e.origin == net_id {
+		return
+	}
 	id := e.get("id", "")
 	if id == "" {
 		return
 	}
 	if id == net_id {
 		peers_publish_request()
-		return
-	}
-	if e.origin == "" || e.origin == net_id {
 		return
 	}
 	peer_record_relay(id)

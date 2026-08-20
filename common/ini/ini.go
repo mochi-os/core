@@ -112,9 +112,10 @@ func Ints(section, key string) []int {
 
 // Effective returns the merged view of (file values + MOCHI_<SECTION>_<KEY>
 // env overrides). Each top-level key is a section name; values are
-// section-key-to-value maps. Sensitive keys (anything matching *password,
-// *secret, *key, *token, case-insensitive) are returned with the value
-// replaced by "***redacted***".
+// section-key-to-value maps. Sensitive keys - any key CONTAINING password,
+// secret, key or token, case-insensitive - are returned with the value
+// replaced by "***redacted***"; an unset sensitive key stays empty rather than
+// being reported as though it held something.
 func Effective() map[string]map[string]string {
 	out := map[string]map[string]string{}
 	if file != nil {
@@ -161,10 +162,18 @@ func Effective() map[string]map[string]string {
 }
 
 // redact masks values whose key name suggests a credential.
+//
+// Containment, not suffix. HasSuffix was tested first and is implied by
+// Contains, so the pair reduced to the broader test alone - and the dead half
+// was the one the documentation described, which is how the two readings
+// coexisted. Containment is the right rule here anyway: this feeds
+// /_/admin/config, where over-redacting a diagnostic dump costs nothing and
+// under-redacting publishes a credential. It catches the key_file and
+// token_url shapes a suffix test would miss.
 func redact(key, value string) string {
 	low := strings.ToLower(key)
 	for _, marker := range []string{"password", "secret", "key", "token"} {
-		if strings.HasSuffix(low, marker) || strings.Contains(low, marker) {
+		if strings.Contains(low, marker) {
 			if value == "" {
 				return ""
 			}

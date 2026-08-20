@@ -7,7 +7,9 @@
 package ini
 
 import (
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	goini "gopkg.in/ini.v1"
@@ -198,5 +200,114 @@ func TestEffectiveRedactsSensitiveKeys(t *testing.T) {
 	}
 	if got["email"]["admin"] != "ops@example.com" {
 		t.Errorf("non-sensitive key should not be redacted: got %q", got["email"]["admin"])
+	}
+}
+
+// TestRedactMatchesOnContainment is the regression. redact tested
+// HasSuffix(low, marker) || Contains(low, marker); the first is implied by the
+// second, so the pair reduced to containment alone - and the dead half was the
+// one Effective's documentation described ("*password, *secret, *key,
+// *token", glob suffix notation). Two readings of the same rule coexisted
+// because the redundant operand let each look supported.
+//
+// These keys contain a marker without ending in one, so they are exactly what
+// the two readings disagree about. Every one is a plausible config key, and
+// none appears in the repo today - which is why nothing had caught it.
+func TestRedactMatchesOnContainment(t *testing.T) {
+	for _, key := range []string{
+		"key_file",
+		"secret_path",
+		"token_url",
+		"api_key_id",
+		"password_file",
+		"PASSWORD_FILE",
+		"SecretPath",
+	} {
+		if got := redact(key, "sensitive"); got != "***redacted***" {
+			t.Errorf("redact(%q, ...) = %q; the key names a credential and the value reaches /_/admin/config unmasked", key, got)
+		}
+	}
+}
+
+// TestRedactStillMatchesOnSuffix: containment is a superset, so nothing the
+// suffix rule caught may be lost.
+func TestRedactStillMatchesOnSuffix(t *testing.T) {
+	for _, key := range []string{
+		"password", "client_secret", "api_token", "signing_key",
+		"PASSWORD", "Client_Secret",
+	} {
+		if got := redact(key, "sensitive"); got != "***redacted***" {
+			t.Errorf("redact(%q, ...) = %q, want ***redacted***", key, got)
+		}
+	}
+}
+
+// TestRedactLeavesOrdinaryKeysAlone. /_/admin/config exists to be read, so
+// over-redaction is cheap but not free: a dump where everything is masked
+// tells an operator nothing.
+func TestRedactLeavesOrdinaryKeysAlone(t *testing.T) {
+	for _, key := range []string{
+		"admin", "host", "port", "ports", "data", "signup", "reload",
+		"cache", "cache_prepare", "apps", "domain", "timeout", "concurrency",
+	} {
+		if got := redact(key, "plain"); got != "plain" {
+			t.Errorf("redact(%q, \"plain\") = %q; that key names no credential", key, got)
+		}
+	}
+}
+
+// TestRedactKeepsAnUnsetKeyEmpty. An unset credential returns "" rather than
+// the mask, so a dump distinguishes "configured, hidden" from "not set at
+// all" - which is the question an operator reading this endpoint usually has.
+func TestRedactKeepsAnUnsetKeyEmpty(t *testing.T) {
+	for _, key := range []string{"password", "key_file", "client_secret"} {
+		if got := redact(key, ""); got != "" {
+			t.Errorf("redact(%q, \"\") = %q; an unset key must not read as though it holds something", key, got)
+		}
+	}
+}
+
+// TestEffectiveRedactsAContainedMarker drives the exported path rather than
+// the helper, since Effective is what /_/admin/config serves.
+func TestEffectiveRedactsAContainedMarker(t *testing.T) {
+	load_ini_bytes(t, "[tls]\nkey_file = /etc/mochi/tls.key\ncert_file = /etc/mochi/tls.crt\n")
+
+	got := Effective()
+
+	if got["tls"]["key_file"] != "***redacted***" {
+		t.Errorf("tls.key_file: got %q, want ***redacted***", got["tls"]["key_file"])
+	}
+	if got["tls"]["cert_file"] != "/etc/mochi/tls.crt" {
+		t.Errorf("tls.cert_file was redacted; a certificate path names no secret: got %q", got["tls"]["cert_file"])
+	}
+}
+
+// TestRedactRuleIsWrittenOnce is the gate, on both halves of the defect: the
+// subsumed operand, and the documentation that described it.
+func TestRedactRuleIsWrittenOnce(t *testing.T) {
+	source, err := os.ReadFile("ini.go")
+	if err != nil {
+		t.Fatalf("reading ini.go: %v", err)
+	}
+	text := string(source)
+
+	at := strings.Index(text, "func redact(")
+	if at < 0 {
+		t.Fatal("ini.go no longer defines redact")
+	}
+	body := text[at:]
+	if end := strings.Index(body, "\n}\n"); end > 0 {
+		body = body[:end]
+	}
+	if strings.Contains(body, "strings.HasSuffix") {
+		t.Error("redact tests HasSuffix again; Contains already implies it, so the pair reduces to Contains alone and the suffix operand only misleads the reader about which rule is in force")
+	}
+
+	// And the doc must not go back to describing a suffix rule.
+	doc := text[:strings.Index(text, "func Effective(")]
+	for _, glob := range []string{"*password", "*secret", "*key", "*token"} {
+		if strings.Contains(doc, glob) {
+			t.Errorf("Effective's documentation describes %q; that is glob suffix notation, and redact matches on containment", glob)
+		}
 	}
 }

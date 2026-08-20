@@ -82,13 +82,11 @@ func api_webpush_key(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // mochi.webpush.send(endpoint, auth, p256dh, payload, event_id="...") -> bool: Send push notification.
 //
 // `event_id` is an optional caller-supplied stable id for the logical
-// notification this send corresponds to. When provided the call dedups
-// against a per-user webpush_delivered(endpoint, event_id) row — two
-// replicas independently sending the same logical notification produce
-// one delivery per subscription instead of two. The cross-replica dedup
-// is local-only at this layer: replicating the dedup table tightens the
-// window but a small concurrent-emit race remains and is documented as
-// acceptable for the user-facing duplicate-push impact.
+// notification this send corresponds to. When provided the call dedups against
+// a per-user webpush_delivered(endpoint, event_id) row, so a notification
+// emitted more than once produces one delivery per subscription. A small
+// concurrent-emit race remains and is accepted: the cost of losing it is a
+// duplicate push.
 func api_webpush_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Check webpush/send permission
 	if err := require_permission(t, fn, "webpush/send"); err != nil {
@@ -188,10 +186,9 @@ func webpush_dedup_db(u *User) *DB {
 	return db_user(u, "notifications")
 }
 
-// Dedup TTL — slightly longer than the typical replication window so
-// two replicas processing the same logical event always see each other's
-// previous delivery, but short enough that a stale subscription that
-// happens to reuse an event_id 24 hours later isn't blocked.
+// Dedup TTL — long enough that a retry or a restart still sees the previous
+// delivery, short enough that a stale subscription reusing an event_id a day
+// later is not blocked.
 const webpush_dedup_ttl int64 = 24 * 3600
 
 // webpush_service_worker serves the push notification service worker

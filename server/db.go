@@ -900,11 +900,10 @@ const (
 // and written only from the single db_manager goroutine, so no lock.
 var db_vacuum_last int64
 
-// vacuum reclaims free pages from one database when it has churned past
-// the gate (ratio and minimum). It is host-local file maintenance, not a
-// logical write: it runs independently on every replica and must NOT be
-// leader-gated - gating it would leave non-leader replicas' files growing
-// forever. See claude/plans/vacuum.md.
+// vacuum reclaims free pages from one database when it has churned past the
+// gate (ratio and minimum). It is file maintenance rather than a logical write:
+// it changes how the rows are stored, never which rows there are. See
+// claude/plans/vacuum.md.
 //
 // auto_vacuum=INCREMENTAL databases (everything created since this landed)
 // get the cheap PRAGMA incremental_vacuum. Older auto_vacuum=NONE

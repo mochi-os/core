@@ -116,11 +116,8 @@ func schedule_db() *DB {
 	return db_open("db/schedule.db")
 }
 
-// schedule_create inserts a new scheduled event and returns its ID.
-// Replicates the new row to every host in the user's set so paired
-// replicas agree on what is scheduled; the leader-gate on the firing
-// side dedups handler execution. System events (user == "") stay
-// local - they have no scope identifier for the replication pipeline.
+// schedule_create inserts a new scheduled event and returns its ID. A system
+// event passes an empty user.
 func schedule_create(user string, app string, due int64, event string, data string, interval int64) (int64, error) {
 	created := now()
 	db := schedule_db()

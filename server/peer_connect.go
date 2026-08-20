@@ -339,8 +339,8 @@ const peers_publish_addresses_maximum = 16
 // Publish our own information — identity plus dialable addresses — to
 // the pubsub regularly, when another server requests it, or when our
 // address set changes (net_watch_addresses). The addresses are how a
-// server that knows this server only by peer id (mochictl replica join,
-// any bare-peer-id send) becomes able to dial it: receivers verify the
+// server that knows this server only by peer id (any bare-peer-id send)
+// becomes able to dial it: receivers verify the
 // pubsub envelope names us as originator and merge the addresses into
 // their peer registry.
 func peers_publish() {
@@ -519,10 +519,9 @@ func peer_record_event(e *Event) {
 	peer_apply_addresses(id, addresses)
 }
 
-// peer_request_addresses broadcasts a peers/request asking the named
-// peer to publish itself — the recovery path for sending to a peer we
-// know only by id (a replica joining a pair source it has never met) or
-// whose stored addresses have gone stale. The target answers with a
+// peer_request_addresses broadcasts a peers/request asking the named peer to
+// publish itself — the recovery path for sending to a peer we know only by id,
+// or whose stored addresses have gone stale. The target answers with a
 // peers/publish carrying its addresses; peer_publish_event applies them
 // and the queued messages deliver on the next wake. Rate limited per
 // target so the queue retrying an unreachable peer doesn't flood the

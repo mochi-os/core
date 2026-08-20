@@ -980,10 +980,9 @@ func api_user_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 }
 
 // mochi.user.uid() -> string: Return the calling user's UID.
-// Useful from commit hooks and other contexts where the user object is
-// not directly accessible as a Starlark variable, typically to build a
-// per-user leader scope (e.g. "user:" + mochi.user.uid()). Returns the
-// empty string when no user is in context.
+// Useful from commit hooks and other contexts where the user object is not
+// directly accessible as a Starlark variable. Returns the empty string when no
+// user is in context.
 func api_user_uid(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs); err != nil {
 		return nil, err
@@ -1313,8 +1312,7 @@ func user_delete(id string) (string, error) {
 // account_gone selects the entity directory side effect:
 //   - true  (close / admin delete): broadcast the signed entity directory
 //     tombstone — the account is gone everywhere.
-//   - false (leave-set / "delete this replica"): withdraw the directory row
-//     locally only.
+//   - false: withdraw the directory row locally only. No caller passes this.
 func user_purge_local(id string, account_gone bool) (string, error) {
 	db := db_open("db/users.db")
 	exists, _ := db.exists("select 1 from users where uid=?", id)

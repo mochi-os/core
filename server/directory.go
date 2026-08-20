@@ -543,8 +543,6 @@ func directory_cleanup_manager() {
 //
 //   - Not net_id (self never silenced).
 //   - Not a bootstrap peer (trusted infrastructure; never forget).
-//   - Not a pair-set member (whole-server replication partner; its
-//     lifecycle is operator-controlled via replica join/leave).
 //   - Most recent `seen` for this peer < now - directory_location_age_maximum.
 //   - peer_is_silent(peer) == true: the in-memory silent-cache has
 //     confirmed via repeated failed stream opens that the peer is

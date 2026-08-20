@@ -12,8 +12,8 @@
 // account immediately looks gone. During the grace window the user can
 // re-authenticate and reach the reactivation interstitial, which calls
 // /_/auth/close/cancel to restore the account. Once the purge timestamp
-// passes, closure_manager (leader-gated) hard-deletes the account via
-// user_delete, which broadcasts the network tombstone.
+// passes, closure_manager hard-deletes the account via user_delete, which
+// broadcasts the network tombstone.
 //
 // Administrators cannot close their own account: a self-closed sole admin
 // would strand the server. They must hand off the role (or be closed by
@@ -139,9 +139,10 @@ func user_purge(uid string) int64 {
 
 // closure_manager hard-deletes accounts whose grace period has elapsed. Runs
 // shortly after startup — a purge that came due while the server was down
-// should not wait an hour for the first tick, but the P2P layer needs a
-// moment to connect so the user/purge farewell can reach the other
-// replicas — then hourly; a coarse tick is fine for a multi-day timer.
+// should not wait an hour for the first tick, but the P2P layer needs a moment
+// to connect first, so the farewell messages the teardown sends (see
+// queue_drain_entity) can still reach the peers holding this user's
+// subscriptions — then hourly; a coarse tick is fine for a multi-day timer.
 func closure_manager() {
 	time.Sleep(time.Minute)
 	closure_run_due(now())
@@ -152,19 +153,9 @@ func closure_manager() {
 
 // closure_run_due purges every account whose purge timestamp has passed.
 //
-// Deliberately NOT leader-gated. Account data is per-host state: each replica
-// holds its own copy and must delete its own, so every host that sees the
-// account as due runs user_delete locally — that is how a multi-host account
-// converges to deleted everywhere. (The closing status and purge timestamp
-// replicate via the close path, so every host independently reaches this
-// point once the deadline passes.) Leader-gating would let exactly one host
-// delete its copy and strand the rest, because user deletion does not
-// propagate as a row op (the apply path no-ops incoming user deletes for
-// safety).
-//
-// The one cross-host side effect — the signed directory/delete tombstone each
-// entity broadcasts — is idempotent on receivers, so the handful of redundant
-// broadcasts from several hosts purging around the same time are harmless.
+// The one cross-host side effect is the signed directory tombstone each of the
+// account's entities broadcasts on deletion. It is idempotent on receivers, so
+// a receiver that has already withdrawn the entity is unaffected by a repeat.
 func closure_run_due(t int64) {
 	db := db_open("db/users.db")
 	rows, err := db.rows("select uid from users where status='closing' and purge>0 and purge<=?", t)
@@ -176,12 +167,9 @@ func closure_run_due(t int64) {
 		if uid == "" {
 			continue
 		}
-		// Propagate the authoritative purge to every replica (host-set ∪
-		// pairs) BEFORE deleting locally — the op is signed by one of the
-		// user's entities, which the local delete is about to remove. Each
-		// recipient re-checks its own closing/purge state before acting, and
-		// the op is idempotent, so it's safe for several hosts to emit it and
-		// for it to reach a host that has already purged.
+		// user_delete broadcasts each entity's directory tombstone before
+		// removing this host's copy: the tombstone is signed by the entity,
+		// whose key the delete is about to destroy, so the order matters.
 		if _, err := user_delete(uid); err != nil {
 			info("Account closure purge failed for %q: %v", uid, err)
 			continue
@@ -192,8 +180,8 @@ func closure_run_due(t int64) {
 
 // email_account_closing tells the user their account is scheduled for
 // deletion. Localised to the user's language via the core label resolver.
-// Deduped per (address, purge) so two replicas processing the same closure
-// don't email twice.
+// Deduped per (address, purge), so a closure processed twice - a restart
+// landing on the same tick, a retry - sends one email.
 //
 // The email deliberately contains NO link or action button. A "your account
 // is scheduled for deletion — click here to cancel" message is a prime

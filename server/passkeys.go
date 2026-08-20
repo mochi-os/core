@@ -311,9 +311,8 @@ func web_passkey_login_finish(c *gin.Context) {
 		return
 	}
 
-	// Record the assertion: sign-count replay state, cosmetic last-used,
-	// and the per-credential leadership claim. Shared with step-up
-	// re-auth; creates no session.
+	// Record the assertion: sign-count replay state and cosmetic last-used.
+	// Shared with step-up re-auth; creates no session.
 	passkey_credential_finalize(user, credential, rate_limit_client_ip(c))
 
 	// Check for remaining MFA methods, folding this factor into any pending
@@ -346,10 +345,9 @@ func web_passkey_login_finish(c *gin.Context) {
 const passkey_clone_anomaly = "passkey_clone_warning"
 
 // passkey_credential_finalize records a just-validated assertion: the
-// sign-count replay-prevention update (users.db, authoritative), the
-// cosmetic last-used upsert (sessions.db, self-healing), and the
-// per-credential leadership claim (see claude/plans/replication.md pattern
-// 1.4). Shared by login and step-up re-auth; it never creates a session.
+// sign-count replay-prevention update (users.db, authoritative) and the
+// cosmetic last-used upsert (sessions.db, self-healing). Shared by login and
+// step-up re-auth; it never creates a session.
 //
 // address is the client the assertion arrived from, or "" for the step-up
 // path, which runs under Starlark where no client address is in scope.

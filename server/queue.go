@@ -1316,7 +1316,7 @@ func queue_process() int {
 			continue
 		}
 		// Stalled-peer pre-filter: the target opens a stream but never
-		// acks (peer_progress.go) — e.g. a wiped/unbootstrapped replica.
+		// acks (peer_progress.go).
 		// Park its whole backlog until the trial window reopens, so the
 		// manager stops re-scanning an undeliverable pile every tick.
 		if q.Type != "broadcast" && q.Target != "" && peer_is_stalled(q.Target) {

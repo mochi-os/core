@@ -3,16 +3,13 @@
 // peer_reachability.go tracks libp2p CONNECT failures. This tracks the
 // distinct failure mode that cache deliberately ignores ("the peer IS
 // reachable; the failure is application- or protocol-level, handled
-// separately"): a peer whose /mochi/2/messages stream OPENS fine but
-// whose inflight frames repeatedly time out without an ack — e.g. a wiped
-// or unbootstrapped replica that receives ops but can never apply them,
-// so it never acks.
+// separately"): a peer whose /mochi/2/messages stream OPENS fine but whose
+// inflight frames repeatedly time out without an ack.
 //
 // Without this, queue_process keeps surfacing that target's backlog every
 // tick, the manager re-enters immediately (queue.go drain loop), and
-// queue_select re-scans the whole pending set each pass — the 2026-06-02
-// incident where 90k undeliverable replication rows to a wiped mochi2
-// pinned a core at ~87%.
+// queue_select re-scans the whole pending set each pass — a large enough
+// backlog to one dead target pins a core.
 //
 // When a target crosses the threshold it is "stalled" for
 // peer_stall_window; queue_process defers its entire backlog in one shot
@@ -44,9 +41,9 @@ const (
 	// doesn't stall a working peer.
 	peer_stall_threshold = 3
 
-	// How long a stalled target's backlog is deferred before the next
-	// trial send. A genuinely-dead replica retries at most this often
-	// (no spin); a recovered one resumes on the next trial.
+	// How long a stalled target's backlog is deferred before the next trial
+	// send. A genuinely-dead target retries at most this often (no spin); a
+	// recovered one resumes on the next trial.
 	peer_stall_window = 3600 // 1 hour
 )
 

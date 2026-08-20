@@ -152,7 +152,10 @@ func entities_manager() {
 // directory: removing and broadcasting deletion when going to private,
 // republishing when staying or becoming public.
 func entity_privacy_set(e *Entity, privacy string) error {
-	if privacy != "public" && privacy != "private" {
+	// Checked here rather than only at the callers: mochi.user.settings takes
+	// the "privacy" key straight from Starlark and does no check of its own
+	// (users.go), so this is that path's only gate.
+	if !valid(privacy, "privacy") {
 		return fmt.Errorf("privacy must be 'public' or 'private'")
 	}
 	if privacy == e.Privacy {
@@ -693,7 +696,7 @@ func api_entity_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	privacy, ok := sl.AsString(args[2])
-	if !ok || !valid(privacy, "^(private|public)$") {
+	if !ok || !valid(privacy, "privacy") {
 		return sl_error(fn, "invalid privacy %q", privacy)
 	}
 
@@ -1099,7 +1102,7 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 		case "privacy":
 			privacy, ok := sl.AsString(kv[1])
-			if !ok || (privacy != "public" && privacy != "private") {
+			if !ok || !valid(privacy, "privacy") {
 				return sl_error(fn, "privacy must be 'public' or 'private'")
 			}
 			if privacy != old_privacy {

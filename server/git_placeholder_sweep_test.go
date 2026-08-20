@@ -135,9 +135,12 @@ func sweep_data_dir(t *testing.T) string {
 // matched and these repositories were never repaired.
 func TestSweepReachesAPublishedInstall(t *testing.T) {
 	root := sweep_data_dir(t)
-	// The repositories app as published: the directory is an entity id.
+	// The repositories app as published: the directory is an entity id. The id
+	// is invented - core is the public mirror, so a real one out of the
+	// registry would publish which apps exist, and a PRIVATE app's id would
+	// publish that it exists at all.
 	published := filepath.Join(root, "users", "user-one",
-		"1sfEACmTnQhBVgquGhaCs8Jw4SXKF9XY2apnUwJ63duq2QSxh5", "repo-entity")
+		"1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "repo-entity")
 	sweep_placeholder_repo(t, published)
 
 	git_placeholder_sweep()

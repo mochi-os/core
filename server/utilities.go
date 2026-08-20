@@ -690,6 +690,28 @@ func valid_with(s string, match string, compile func(string) *regexp.Regexp) boo
 		match = "^(-)?\\d+(\\.\\d+)?$"
 	case "json":
 		match = "^[0-9a-zA-Z{}:\"]{1,1000}$"
+	case "display":
+		// A name that will be rendered to people other than whoever chose
+		// it: a world listing, a directory entry. Two things beyond "name":
+		//
+		// The global filter above excludes category Cc, which is why a
+		// terminal escape never reaches mochictl's world table. It does not
+		// exclude Cf, a different category, so the bidirectional overrides
+		// and isolates pass - "Server\u202Egnip" renders as its own reversal
+		// from the override onward, and no amount of HTML escaping helps
+		// because the effect is in the text layer, not the markup.
+		// path_component_valid already refuses Cf for exactly this reason;
+		// this brings the rule to names that are displayed rather than
+		// opened.
+		//
+		// Angle brackets go for the reason "name" excludes them: the value
+		// is interpolated by consumers this server does not control.
+		for _, character := range s {
+			if unicode.Is(unicode.Cf, character) {
+				return false
+			}
+		}
+		match = "^[^<>\r\n]{1,1000}$"
 	case "line":
 		match = "^[^\r\n]{1,1000}$"
 	case "locale":

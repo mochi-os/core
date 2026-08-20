@@ -108,7 +108,7 @@ func entry_delete_signable(entity, peer string, time int64) ([]byte, error) {
 // live publish and sync alike: validate fields, verify both signatures,
 // apply the ordering rules, upsert. Returns whether the row was stored.
 func entry_store(en *Entry, source string) bool {
-	if !valid(en.Entity, "entity") || !valid(en.Name, "line") || !valid(en.Class, "constant") || !valid(en.Data, "text") {
+	if !valid(en.Entity, "entity") || !valid(en.Name, "display") || !valid(en.Class, "constant") || !valid(en.Data, "text") {
 		debug("Directory dropping invalid row for %q from %s", en.Entity, source)
 		return false
 	}

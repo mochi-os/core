@@ -169,7 +169,7 @@ func world_address_valid(address string) bool {
 // alike — the strings render on every server's join page, so bounds are not
 // negotiable. Returns the parsed services on success.
 func world_validate(id, name, address, version, services string) ([]world_service, bool) {
-	if !valid(id, "id") || !valid(name, "line") || len([]rune(name)) > world_name_most {
+	if !valid(id, "id") || !valid(name, "display") || len([]rune(name)) > world_name_most {
 		return nil, false
 	}
 	if !world_address_valid(address) {
@@ -186,7 +186,7 @@ func world_validate(id, name, address, version, services string) ([]world_servic
 		if !valid(s.Service, "constant") || s.Players < 0 || s.Players > 100000 {
 			return nil, false
 		}
-		if s.Name != "" && (!valid(s.Name, "line") || len([]rune(s.Name)) > world_name_most) {
+		if s.Name != "" && (!valid(s.Name, "display") || len([]rune(s.Name)) > world_name_most) {
 			return nil, false
 		}
 	}

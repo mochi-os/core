@@ -84,7 +84,20 @@ func themes_validate(av *AppVersion) error {
 		default:
 			return fmt.Errorf("App bad theme icon mask %q in theme %q", t.IconMask, t.ID)
 		}
-		if t.IconBackground != "" && !match_theme_background.MatchString(t.IconBackground) {
+		// Same fetch blocklist as the override values below. The charset
+		// above was written for colour syntax - # for hex, and (), and %
+		// for rgb()/hsl() - and admitting parentheses admits function
+		// calls generally: url(evil.example), element(#id), paint(name),
+		// cross-fade() and the image-set family all fit it. The class
+		// happens to exclude : and /, so no absolute URL can be written,
+		// and the one consumer today assigns this to backgroundColor,
+		// where the CSSOM drops a non-colour. Neither is a guarantee: a
+		// consumer that used the background shorthand, which accepts an
+		// <image>, would make every one of them live. The charset already
+		// covers the rest of what the override check bans - ; < > " \ &
+		// and /* cannot be written with it.
+		if t.IconBackground != "" && (!match_theme_background.MatchString(t.IconBackground) ||
+			match_theme_fetch.MatchString(t.IconBackground)) {
 			return fmt.Errorf("App bad theme icon background %q in theme %q", t.IconBackground, t.ID)
 		}
 

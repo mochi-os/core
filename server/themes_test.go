@@ -54,6 +54,26 @@ func TestThemesValidate(t *testing.T) {
 		{"font injection", []AppTheme{theme(func(t *AppTheme) { t.FontSans = `x</style>` })}, nil, "bad theme font"},
 		{"bad icon mask", []AppTheme{theme(func(t *AppTheme) { t.IconMask = "hexagon" })}, nil, "bad theme icon mask"},
 		{"icon mask shape", []AppTheme{theme(func(t *AppTheme) { t.IconMask = "squircle"; t.IconBackground = "oklch(0.5 0.1 250)" })}, nil, ""},
+		// IconBackground is the other app-supplied theme value, and it used
+		// to get only the charset check. That class was written for colour
+		// syntax - # for hex, and () and % for rgb()/hsl() - so admitting
+		// parentheses admitted function calls generally. Each value below
+		// fits the charset and so passed before the fetch blocklist was
+		// applied here as well as to override values. None needs : or /,
+		// which the charset does exclude.
+		{"icon background relative url", []AppTheme{theme(func(t *AppTheme) { t.IconBackground = "url(evil.example)" })}, nil, "bad theme icon background"},
+		{"icon background bare url", []AppTheme{theme(func(t *AppTheme) { t.IconBackground = "url(a.b)" })}, nil, "bad theme icon background"},
+		{"icon background element", []AppTheme{theme(func(t *AppTheme) { t.IconBackground = "element(#target)" })}, nil, "bad theme icon background"},
+		{"icon background paint", []AppTheme{theme(func(t *AppTheme) { t.IconBackground = "paint(spy)" })}, nil, "bad theme icon background"},
+		{"icon background cross-fade", []AppTheme{theme(func(t *AppTheme) { t.IconBackground = "cross-fade(red, blue)" })}, nil, "bad theme icon background"},
+		{"icon background image-set", []AppTheme{theme(func(t *AppTheme) { t.IconBackground = "image-set(a.png 1x)" })}, nil, "bad theme icon background"},
+		{"icon background webkit image-set", []AppTheme{theme(func(t *AppTheme) { t.IconBackground = "-webkit-image-set(a.png 1x)" })}, nil, "bad theme icon background"},
+		// Real colours must still pass; a blanket refusal would be no fix.
+		{"icon background hex", []AppTheme{theme(func(t *AppTheme) { t.IconBackground = "#ff0000" })}, nil, ""},
+		{"icon background rgb", []AppTheme{theme(func(t *AppTheme) { t.IconBackground = "rgb(255, 0, 0)" })}, nil, ""},
+		{"icon background hsl", []AppTheme{theme(func(t *AppTheme) { t.IconBackground = "hsl(210, 50%, 40%)" })}, nil, ""},
+		{"icon background keyword", []AppTheme{theme(func(t *AppTheme) { t.IconBackground = "transparent" })}, nil, ""},
+		{"icon background gradient", []AppTheme{theme(func(t *AppTheme) { t.IconBackground = "linear-gradient(red, blue)" })}, nil, ""},
 		{"ordinary property key", []AppTheme{theme(func(t *AppTheme) { t.Overrides = map[string]string{"display": "none"} })}, nil, "bad theme override"},
 		{"font-size key", []AppTheme{theme(func(t *AppTheme) { t.Overrides = map[string]string{"font-size": "200%"} })}, nil, "bad theme override"},
 		{"override value injection", []AppTheme{theme(func(t *AppTheme) { t.Overrides = map[string]string{"--primary-l": `0.5;display:none`} })}, nil, "bad theme override value"},
@@ -246,6 +266,57 @@ func TestWebUserAppearanceAttrsStatesTheAutoPreference(t *testing.T) {
 		}
 		if script != "" {
 			t.Errorf("%s needs no resolving script, got %q", explicit, script)
+		}
+	}
+}
+
+// TestThemeValueFamiliesAgreeOnFetchConstructs is the consistency property the
+// icon-background gap was a violation of. A theme carries two families of
+// app-supplied value - override values and IconBackground - and a construct
+// that makes the browser fetch must be refused in both. The gap existed
+// because they were validated by different code with no test tying them
+// together: the fetch blocklist was applied to one and not the other, so
+// url(evil.example) was refused as an override and accepted as a background.
+//
+// Only constructs the background charset can express are listed. An absolute
+// url(http://...) needs : and /, which that charset excludes, so it is
+// refused there for a different reason and proves nothing about this.
+func TestThemeValueFamiliesAgreeOnFetchConstructs(t *testing.T) {
+	fetching := []string{
+		"url(evil.example)",
+		"url(a.b)",
+		"element(#target)",
+		"paint(spy)",
+		"cross-fade(red, blue)",
+		"image-set(a.png 1x)",
+		"-webkit-image-set(a.png 1x)",
+	}
+
+	for _, value := range fetching {
+		background := AppVersion{Themes: []AppTheme{theme(func(t *AppTheme) { t.IconBackground = value })}}
+		if err := themes_validate(&background); err == nil {
+			t.Errorf("IconBackground accepted %q; it names a construct that makes the browser fetch", value)
+		}
+		override := AppVersion{Themes: []AppTheme{theme(func(t *AppTheme) {
+			t.Overrides = map[string]string{"--background-image": value}
+		})}}
+		if err := themes_validate(&override); err == nil {
+			t.Errorf("an override value accepted %q; it names a construct that makes the browser fetch", value)
+		}
+	}
+
+	// The same value in either family must be accepted when it is a colour,
+	// so the agreement is about fetch constructs and not about strictness.
+	for _, value := range []string{"#ff0000", "rgb(255, 0, 0)", "transparent"} {
+		background := AppVersion{Themes: []AppTheme{theme(func(t *AppTheme) { t.IconBackground = value })}}
+		if err := themes_validate(&background); err != nil {
+			t.Errorf("IconBackground rejected the colour %q: %v", value, err)
+		}
+		override := AppVersion{Themes: []AppTheme{theme(func(t *AppTheme) {
+			t.Overrides = map[string]string{"--primary": value}
+		})}}
+		if err := themes_validate(&override); err != nil {
+			t.Errorf("an override value rejected the colour %q: %v", value, err)
 		}
 	}
 }

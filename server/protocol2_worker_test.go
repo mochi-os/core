@@ -11,8 +11,6 @@
 package main
 
 import (
-	"bytes"
-	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -657,17 +655,17 @@ func TestWorkerEventStreamCarriesFrameData(t *testing.T) {
 		t.Fatalf("cbor.Marshal: %v", err)
 	}
 
-	// Mimic what worker.handle does so we can assert on the resulting
-	// Event without poking into the dispatch path.
+	// Calls the same helper worker.handle does, rather than restating its
+	// rule: this test used to carry its own copy of the condition, and the
+	// copy said len(f.Data) > 0 while handle said
+	// `len(f.Data) > 0 || f.Data != nil`. A test that mimics the code it
+	// checks cannot notice when the two disagree.
 	f := &Frame{Type: frame_type_message, ID: "x", Data: data}
-	var ev *Event
-	if len(f.Data) > 0 {
-		st := stream_rw(io.NopCloser(bytes.NewReader(f.Data)), nil)
-		ev = &Event{stream: st}
-	}
-	if ev == nil {
+	st := frame_segment_stream(f.Data)
+	if st == nil {
 		t.Fatal("event stream not created for non-empty Frame.Data")
 	}
+	ev := &Event{stream: st}
 	var got sample
 	if !ev.segment(&got) {
 		t.Fatal("e.segment failed on Frame.Data-backed stream")

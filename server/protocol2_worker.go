@@ -185,6 +185,26 @@ func (w *app_worker) run() {
 	}
 }
 
+// frame_segment_stream returns the Stream carrying the CBOR segments a sender
+// packed after the content map - /mochi/2 packs them all into Frame.Data as one
+// []byte - so e.segment() and handlers using e.stream.read() can take them one
+// at a time. No segments means no stream, which is what e.segment() already
+// treats as "nothing to read".
+//
+// Keyed on length, not on nil. The two are the same thing here: Frame.Data is
+// tagged `cbor:"data,omitempty"`, so a sender's empty slice is omitted from the
+// frame and arrives back as nil. Distinguishing them would give a self-loop
+// frame a 0-byte stream that the identical remote frame could never produce -
+// and a 0-byte stream is not free, since every e.segment() call on one builds a
+// decoder, hits EOF, and logs before returning the false a nil stream returns
+// immediately.
+func frame_segment_stream(data []byte) *Stream {
+	if len(data) == 0 {
+		return nil
+	}
+	return stream_rw(io.NopCloser(bytes.NewReader(data)), nil)
+}
+
 // handle runs a single frame end-to-end: decompresses the body,
 // decodes the Event from frame fields, routes
 // it via e.route(), and signals completion via wf.reply.
@@ -207,17 +227,6 @@ func (w *app_worker) handle(wf *worker_frame) {
 		content = map[string]any{}
 	}
 
-	// e.stream carries any additional CBOR segments the sender packed
-	// after the content map: /mochi/2 packs them all into Frame.Data as
-	// a single []byte. We wrap that byte buffer in a Stream so
-	// e.segment() / handlers using e.stream.read() can decode segments
-	// one at a time. When Frame.Data is empty the stream's reader is a
-	// 0-byte buffer; handlers that don't call e.segment() never notice.
-	var event_stream *Stream
-	if len(f.Data) > 0 || f.Data != nil {
-		event_stream = stream_rw(io.NopCloser(bytes.NewReader(f.Data)), nil)
-	}
-
 	e := &Event{
 		id:              event_id(),
 		message:         f.ID,
@@ -229,7 +238,7 @@ func (w *app_worker) handle(wf *worker_frame) {
 		sender_services: f.Services,
 		peer:            wf.peer, // originating peer, NOT net_id
 		content:         content,
-		stream:          event_stream,
+		stream:          frame_segment_stream(f.Data),
 	}
 
 	if err := e.route(); err != nil {

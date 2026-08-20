@@ -699,6 +699,16 @@ func (s *Stream) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	}
 	defer f.Close()
 
+	// Everything above is computation and belongs inside the compute budget;
+	// from here the call is only moving bytes, and how long that takes is the
+	// size of the file over the speed of the receiver's link. The a.write.*
+	// builtins have marked that since they were written; these stream writers,
+	// which serve the same files over P2P rather than HTTP, never did - so a
+	// package download to a peer slower than about 1 Mbit/s hit the 90-second
+	// compute timeout, and hit it inside io.Copy, which does not check for
+	// cancellation, so the call was abandoned rather than stopped.
+	starlark_transfer_set(t)
+
 	n, err := s.send(f)
 	if err != nil {
 		// The cause is carried, not flattened: a peer that went away and a
@@ -731,6 +741,8 @@ func (s *Stream) sl_write_cache(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 	defer f.Close()
 
+	starlark_transfer_set(t) // bulk bytes, not computation - see sl_write_file
+
 	n, err := s.send(f)
 	if err != nil {
 		return sl_error(fn, "unable to send cache entry: %v", err)
@@ -761,6 +773,8 @@ func (s *Stream) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	if file == "" {
 		return sl_error(fn, "file not found")
 	}
+
+	starlark_transfer_set(t) // bulk bytes, not computation - see sl_write_file
 
 	n, err := s.write_file(file)
 	if err != nil {

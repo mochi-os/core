@@ -1529,24 +1529,40 @@ func queue_cleanup() {
 	db.exec_bg("health cleanup", "delete from health where suspended != 0 and suspended < ?", now()-2*queue_evict_age)
 }
 
-// Drain queue before shutdown (wait for pending sends to complete)
+// queue_drain waits, up to timeout, for the rows that are actually in flight
+// at shutdown.
+//
+// "sending" is that set: a row is marked sending when a sender claims it and
+// returns to pending on failure. It is not "pending" - on a busy server new
+// rows arrive continuously, so waiting for an empty pending set would always
+// burn the whole timeout and never mean anything.
+//
+// This counted status='sent' until 2026-08-20. Nothing in the server has ever
+// written that status, so the count was always zero, the function returned on
+// its first iteration and logged "Queue drained" on every shutdown without
+// checking anything. Little was lost - a row still sending is swept back to
+// pending by queue_check_ack_timeout and retried after restart, and SQLite is
+// crash-safe - but the log line asserted a drain that had not happened.
 func queue_drain(timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	db := db_open("db/queue.db")
 
 	for time.Now().Before(deadline) {
-		count := db.integer("select count(*) from queue where status = 'sent'")
+		count := db.integer("select count(*) from queue where status = 'sending'")
 		if count == 0 {
 			info("Queue drained")
 			return
 		}
-		info("Waiting for %d pending messages...", count)
+		info("Waiting for %d message(s) still sending...", count)
 		time.Sleep(time.Second)
 	}
 
-	remaining := db.integer("select count(*) from queue")
+	// The in-flight count, not every queued row: a queue holding a week of
+	// undeliverable rows would otherwise report thousands and make a clean
+	// shutdown read as a failed drain.
+	remaining := db.integer("select count(*) from queue where status = 'sending'")
 	if remaining > 0 {
-		info("Queue drain timeout, %d messages still pending", remaining)
+		info("Queue drain timeout, %d message(s) still sending", remaining)
 	}
 }
 

@@ -154,6 +154,21 @@ func TestSweepIsKeyedOnClaimed(t *testing.T) {
 	if strings.Contains(body, "'sent'") {
 		t.Error("the dead status='sent' requeue is back; nothing in the server sets that status, so it matches nothing")
 	}
+
+	// The whole file, not just this function. The first removal scoped its
+	// gate to queue_check_ack_timeout and left the identical count in
+	// queue_drain, which then went on asserting a drain it never performed
+	// for another three months. A status the server never writes is wrong
+	// everywhere, so check everywhere.
+	for number, line := range strings.Split(text, "\n") {
+		if !strings.Contains(line, "'sent'") {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		t.Errorf("queue.go:%d uses status 'sent', which nothing in the server writes: %s", number+1, strings.TrimSpace(line))
+	}
 }
 
 // TestQueueSchemaCarriesClaimed. db_create builds the column for new installs

@@ -298,11 +298,22 @@ func exists(path string) bool {
 // platform doesn't support self-install or if no upgrade is currently
 // available. Safe to call concurrently — the install lock prevents overlap.
 func update_install_start(version string) error {
-	if runtime.GOOS != "windows" || build_platform != "windows" {
-		return fmt.Errorf("self-install not supported on %s", build_platform)
-	}
 	if version == "" {
 		return fmt.Errorf("no version to install")
+	}
+	// Before anything else, including the setting write below: this string
+	// becomes a filename under data_dir/tmp and then a quoted argument on a
+	// cmd.exe line that runs msiexec as the service account, so a quote or a
+	// separator in it is a command injection and a "../" is a traversal. The
+	// manifest lookup in update_install_run would refuse an unknown key
+	// anyway, but that is an argument about a remote file rather than about
+	// this input, and it happens after update_pending has already been
+	// written. Every other place a version becomes a path calls this.
+	if !valid(version, "version") {
+		return fmt.Errorf("invalid version %q", version)
+	}
+	if runtime.GOOS != "windows" || build_platform != "windows" {
+		return fmt.Errorf("self-install not supported on %s", build_platform)
 	}
 	if version_compare(version, build_version) <= 0 {
 		return fmt.Errorf("requested version %q is not newer than %q", version, build_version)

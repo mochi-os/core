@@ -1,24 +1,12 @@
-// Mochi server: sticky-session middleware for whole-server pair
+// Mochi server: stamps the serving host's peer id into a response cookie
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
 // This file is part of Mochi, licensed under the GNU AGPL v3 with the
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
-// In a paired-server deployment a browser may reach any pair member
-// via DNS round-robin (operator-managed; see #69 in the plan). To
-// avoid the "I just submitted, where's my data?" UX issue (audit
-// pattern #7) where a follow-up read hits a different replica that
-// hasn't yet caught up, every response stamps a `mochi-server-id`
-// cookie naming the local peer. A session-aware LB or a future
-// server-side reverse proxy can read this cookie and pin subsequent
-// requests from the same browser to the same peer.
-//
-// v1 just stamps the cookie. The actual routing layer (LB-based or
-// peer-to-peer self-proxy) lives outside this file — DNS-round-robin
-// deployments without an LB get the cookie but no behavioural effect
-// until a downstream layer reads it. That's acceptable: the cookie is
-// idempotent and opaque to clients; if and when a routing layer is
-// added, the stamping is already in place.
+// Every response stamps a `mochi-server-id` cookie naming the peer that served
+// it. Nothing in the server reads it back: it is a marker for a downstream
+// routing layer, and for an operator asking which host answered a request.
 
 package main
 
@@ -26,19 +14,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// sticky_session_cookie is the cookie name. Constant kept here so the
-// LB / proxy implementations elsewhere can reference the same string
-// without duplicating the literal.
+// sticky_session_cookie is the cookie name.
 const sticky_session_cookie = "mochi-server-id"
 
-// web_sticky_session is a gin middleware that stamps the local peer-id
-// into the `mochi-server-id` cookie when not already set, or when the
-// cookie names a different peer that's no longer in our pair set
-// (likely a removed pair member — stale cookie). Subsequent responses
-// don't reset the cookie if it already matches.
+// web_sticky_session is a gin middleware that stamps the local peer id into the
+// `mochi-server-id` cookie whenever the cookie is unset or names a different
+// peer. A cookie that already matches is left alone.
 //
-// Runs before security_headers so the cookie travels in the same
-// response. Cheap — one cookie read, one optional cookie set.
+// Runs before security_headers so the cookie travels in the same response.
+// Cheap — one cookie read, one optional cookie set.
 func web_sticky_session(c *gin.Context) {
 	existing := web_cookie_get(c, sticky_session_cookie, "")
 	if existing == net_id {
@@ -58,15 +42,8 @@ func web_sticky_session(c *gin.Context) {
 		return
 	}
 
-	// Either the cookie is unset, names this peer (no-op above), or
-	// names a different peer. In the third case we need to decide
-	// whether to keep the cookie (it points at a known pair member —
-	// a downstream LB will route there) or replace it with our own
-	// peer-id (it's stale — the named peer is no longer in our pair
-	// set or never was). For v1 we always replace when the cookie
-	// doesn't match the local peer: simpler, idempotent for the
-	// common case, and assumes that if the request reached US then
-	// the LB (if any) didn't honour the cookie or there isn't one.
+	// The cookie is unset or names a different peer. Replace it either way: the
+	// request reached this host, so this host is what the cookie should name.
 	web_cookie_set(c, sticky_session_cookie, net_id)
 	c.Next()
 }

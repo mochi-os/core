@@ -592,8 +592,8 @@ func directory_cleanup_dead_peers() {
 // peers.db addresses for it, and the in-memory peer/reachability/reconnect
 // caches.
 //
-// Purely local — directory.db, queue.db, and peers.db are per-host state,
-// not replicated across pair members, so no leader/coordination is needed.
+// Purely local — directory.db, queue.db, and peers.db are per-host state, so
+// no coordination is needed.
 // The peer can come back later: a fresh libp2p connect drives republish +
 // sync, and the rows + peers.db addresses re-populate with current data.
 //

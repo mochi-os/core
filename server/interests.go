@@ -29,10 +29,8 @@ var api_interests = sls.FromStringDict(sl.String("mochi.interests"), sl.StringDi
 	"summary": sl.NewBuiltin("mochi.interests.summary", api_interests_summary),
 })
 
-// reg_interests is the user.db interests register (qid → weight): a versioned
-// LWW-Register so the account-global interest profile converges across the user's
-// hosts. `updated` is informational payload; the register's own version (not that
-// timestamp) drives conflict resolution.
+// reg_interests is the upsert definition for the user.db interests table
+// (qid → weight); `updated` is informational.
 var reg_interests = upsert_def{"interests", []string{"qid"}, []string{"weight", "updated"}}
 
 // mochi.interests.list() -> list: List all user interests sorted by weight descending
@@ -92,10 +90,6 @@ func api_interests_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	db := db_user(user, "user")
-	// Replicated: the interest profile is account-global user data —
-	// the user's personalised ranking should follow them to every host
-	// of their account. Timestamps are computed in Go and passed as
-	// bound parameters, so the replayed statement stays deterministic.
 	db.row_write(reg_interests, map[string]any{"qid": qid, "weight": weight, "updated": now()})
 
 	return sl.None, nil

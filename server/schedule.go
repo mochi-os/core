@@ -162,10 +162,7 @@ func schedule_get(id int64) *ScheduledEvent {
 	return &se
 }
 
-// schedule_delete removes a scheduled event by ID and replicates the
-// removal keyed on the natural composite identifier so paired hosts
-// drop the matching row. Looks the row up first because the
-// autoincrement id is local-only.
+// schedule_delete removes a scheduled event by ID.
 func schedule_delete(id int64) {
 	schedule_db().exec("delete from schedule where id=?", id)
 }
@@ -230,28 +227,19 @@ func schedule_valid(se *ScheduledEvent) bool {
 }
 
 // schedule_handle_unrunnable deals with a due event that schedule_valid
-// rejected. Under replication this is frequently EXPECTED, not an error:
-// the host that has the user + app + handler runs it (leader-gating dedups
-// the side effects), and a host still bootstrapping a user must not touch
-// that user's just-replicated rows. So we stay quiet (no admin email) and,
-// crucially, never replicate a delete — a peer at a different app version
-// may run this event fine, and propagating a delete would wipe it there.
+// rejected. It stays quiet (no admin email) either way:
 //
-//   - User absent or still bootstrapping (pending): defer silently — a
-//     peer runs it; dropping it risks losing a just-replicated schedule
-//     before its app/data finishes landing.
-//   - Active user, or a system event (host-local), whose app / version /
-//     handler is genuinely gone here: a recurring row would otherwise
-//     re-fire every interval forever, so drop it LOCALLY (no replicated
-//     delete) to stop the churn. One-shot rows were already removed by
-//     schedule_claim, so nothing to do for them.
+//   - User absent, or still bootstrapping (pending): leave the row alone. Its
+//     app and data may not have finished landing, so the handler could become
+//     runnable shortly.
+//   - Active user, or a system event, whose app / version / handler is gone:
+//     drop the row. A recurring one would otherwise re-fire every interval
+//     forever. One-shot rows were already removed by schedule_claim.
 func schedule_handle_unrunnable(se *ScheduledEvent) {
 	if se.User != "" {
-		// Decide on the user's replication status alone — NOT user_by_uid,
-		// which also returns nil for a user whose identity hasn't loaded and
-		// would wrongly look "absent". A missing row, or a still-bootstrapping
-		// (pending) user, means defer: a peer runs the event, and dropping a
-		// just-replicated row before its data lands would lose it.
+		// Read the users row directly — NOT user_by_uid, which also returns nil
+		// for a user whose identity hasn't loaded and would wrongly look
+		// "absent".
 		row, _ := db_open("db/users.db").row("select status from users where uid=?", se.User)
 		if row == nil {
 			return
@@ -345,19 +333,11 @@ func schedule_run_due(t time.Time) {
 	}
 }
 
-// schedule_claim atomically claims a scheduled event for execution.
-// Returns true if this call claimed the event, false if it was already
-// claimed.
-//
-// Recurring case: the "due = due + interval" UPDATE is intentionally
-// NOT replicated. Both replicas hit schedule_due at the same instant
-// and apply the same deterministic advance; replicating would just
-// duplicate the wire traffic with no convergence benefit.
-//
-// One-shot case: when the local delete actually fires (rows-affected
-// > 0) we look up the natural-key fields and replicate a delete so
-// paired replicas drop the row. Skipped if a concurrent claim on
-// another goroutine already removed it (rows-affected = 0).
+// schedule_claim atomically claims a scheduled event for execution. Returns
+// true if this call claimed the event, false if another goroutine got there
+// first. A recurring event advances its due time by one interval; a one-shot is
+// deleted. Both are conditional on due <= now, so the rows-affected count is
+// what decides the claim.
 func schedule_claim(id int64, interval int64) bool {
 	db := schedule_db()
 	var result int64
@@ -390,8 +370,8 @@ func schedule_run(se ScheduledEvent) {
 	}()
 
 	// Can it run on this host (user + app + active version + handler all
-	// present)? If not, handle it quietly and replication-safely — never
-	// warn-email or replicate a delete; see schedule_handle_unrunnable.
+	// present)? If not, handle it quietly — never warn-email; see
+	// schedule_handle_unrunnable.
 	if !schedule_valid(&se) {
 		schedule_handle_unrunnable(&se)
 		return

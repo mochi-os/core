@@ -266,7 +266,7 @@ func broadcast_received_table_create(db *DB) {
 	db.exec("create table if not exists received (sender text not null, key text not null, last integer not null default 0, seen integer not null default 0, primary key (sender, key))")
 	// Idle-resync (#165): seen = host-local time of the last applied broadcast
 	// for (sender, key). Added here so the migration rides every advance/touch
-	// path on existing received tables. Host-local, never replicated.
+	// path on existing received tables.
 	if exists, _ := db.exists("select 1 from pragma_table_info('received') where name='seen'"); !exists {
 		db.exec("alter table received add column seen integer not null default 0")
 	}
@@ -407,8 +407,8 @@ func broadcast_subscribed_allowed(db *DB, key, peer, subscriber string) bool {
 }
 
 // broadcast_next_local allocates and returns the next outbound sequence
-// number on the given DB for (key, peer). Per-(key, peer) PK gives each
-// paired host its own sequence space.
+// number on the given DB for (key, peer). Per-(key, peer) PK gives each peer
+// its own sequence space.
 //
 // Atomic via RETURNING. The previous UPSERT-then-SELECT pair raced
 // when two goroutines hit the same (key, peer) concurrently: both
@@ -489,17 +489,13 @@ func broadcast_advance_local(db *DB, sender, key string, sequence int64) {
 // re-enter the drain loop. Keep this in sync with the SQL in the
 // public advance above.
 //
-// Uses plain db.exec (NOT exec_app_user) - received is receiver-side
-// apply state and each paired host must track its own. If we pair-
-// replicated received, the gap detector on the partner host would
-// see incoming seqs as <= last and dedup them silently, never firing
-// the handler that updates row data. This closes the bug (projects ticket move on mochi1 didn't propagate to mochi2
-// even though both ended up with the same received.last).
+// received is receiver-side apply state: it records what THIS host has already
+// applied, so the gap detector can tell a fresh sequence from a duplicate.
 func broadcast_advance_local_simple(db *DB, sender, key string, sequence int64) {
 	broadcast_received_table_create(db)
 	// seen = now() stamps the host-local idle-resync (#165) signal on every
 	// applied broadcast - one chokepoint covering every app and event type.
-	// now() computed in Go (host-local plain exec, never replicated), not in SQL.
+	// now() computed in Go, not in SQL, so tests can control it.
 	db.exec("insert into received (sender, key, last, seen) values (?, ?, ?, ?) on conflict(sender, key) do update set last = max(received.last, excluded.last), seen = excluded.seen", sender, key, sequence, now())
 }
 
@@ -574,10 +570,9 @@ func broadcast_log_append(db *DB, key, peer, event string, data []byte) int64 {
 	broadcast_log_age_trim(db, key, peer)
 	sequence := broadcast_next_local(db, key, peer)
 	// insert OR IGNORE: the log is append-only keyed on (key, peer, sequence) and
-	// the sender always allocates a fresh sequence, so a collision only happens on
-	// a replicated re-apply of a row already present (e.g. the snapshot/cursor
-	// overlap after a stream reseed). Ignoring it makes the re-apply a clean no-op
-	// instead of a UNIQUE error that the replication apply path emails about.
+	// the sender always allocates a fresh sequence, so a collision means the row
+	// is already there. Ignoring it makes that a clean no-op rather than a UNIQUE
+	// error.
 	db.exec("insert or ignore into log (key, peer, sequence, event, data, created) values (?, ?, ?, ?, ?, ?)", key, peer, sequence, event, string(data), now())
 	return sequence
 }

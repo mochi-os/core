@@ -371,7 +371,7 @@ func permission_granted(u *User, app_id string, permission string) bool {
 		if seeded, _ := db.exists("select 1 from permissions where app=? and permission=? and object=?", app_id, name, object); !seeded {
 			for _, p := range apps_default_get(app_id) {
 				if p.Permission == name && p.Object == object {
-					db.exec("insert or ignore into permissions (app, permission, object, granted) values (?, ?, ?, 1)", app_id, name, object) // exec-ok: transient bootstrap-window seed of a re-derivable default grant; the authoritative grant replicates via app_user_setup
+					db.exec("insert or ignore into permissions (app, permission, object, granted) values (?, ?, ?, 1)", app_id, name, object) // exec-ok: transient bootstrap-window seed of a re-derivable default grant; app_user_setup writes the authoritative row once the user is active
 					return true
 				}
 			}
@@ -391,8 +391,6 @@ func permission_grant(u *User, app_id string, permission string) {
 
 	db := db_user(u, "user")
 	db.permissions_setup()
-	// Replicated versioned-register write: a permission grant is the user's own
-	// account-global decision and must converge on every host of the account.
 	db.permissions_upsert(app_id, name, object, 1)
 }
 
@@ -406,10 +404,10 @@ func permission_revoke(u *User, app_id string, permission string) {
 
 	db := db_user(u, "user")
 	db.permissions_setup()
-	// Soft-delete (granted=0), not a row delete, and a versioned write: it carries
-	// a higher version than any default grant, so the user's revoke beats the
-	// app's default — including when setup re-applies that default at version 1
-	// after the revoke. Replicated so it converges across the account's hosts.
+	// granted=0 rather than a row delete, and the difference matters: the row's
+	// presence is the whole reason the revoke sticks. permissions_default is
+	// insert-or-ignore, so a later setup pass finds this key already present and
+	// skips it instead of re-granting the app's default.
 	db.permissions_upsert(app_id, name, object, 0)
 }
 
@@ -445,13 +443,11 @@ func permissions_list(u *User, app_id, language string) []map[string]any {
 	return result
 }
 
-// permissions_setup creates the permissions table. Like the access table it is a
-// versioned LWW-Register: each (app, permission, object) carries a per-key Lamport
-// `version` and an originating-host `writer`, so a grant/revoke is the user's own
-// account-global decision ("the user is happy for this app to have this
-// permission") that converges identically on every host of the account regardless
-// of replication arrival order. A revoke is `granted=0` (not a row delete), and on
-// a version tie a deny beats a grant (fail-closed).
+// permissions_setup creates the permissions table: one row per (app, permission,
+// object) recording the user's own decision that this app may have this
+// permission. A revoke writes granted=0 rather than deleting the row, and that
+// surviving row is what makes permissions_default's insert-or-ignore safe - see
+// there.
 func (db *DB) permissions_setup() {
 	db.exec("create table if not exists permissions ( app text not null, permission text not null, object text not null default '', granted integer not null default 0, created integer not null default 0, primary key ( app, permission, object ) )")
 }
@@ -506,21 +502,18 @@ func app_user_setup(u *User, app_id string) {
 		return
 	}
 
-	// Grant default permissions. permissions_default replicates each at the
-	// baseline version 1, so it reaches every host of the account (a passive
-	// replica that never runs this setup still receives the app's permissions),
-	// while a user's explicit grant/revoke (version >= 2) always wins — re-setup
-	// never resurrects a revoked permission.
+	// Grant default permissions. permissions_default is insert-or-ignore, so this
+	// never resurrects a permission the user revoked: the revoke left a granted=0
+	// row behind, and the seed skips any key that already has one.
 	db.permissions_setup()
 	for _, p := range defaults {
 		db.permissions_default(app_id, p.Permission, p.Object)
 	}
 
-	// Record permission count so we detect when defaults change. Host-local: this
-	// counter only records that THIS host has applied the current default set, an
-	// optimisation to avoid re-emitting the grants on every call. The authoritative
-	// state is the replicated permissions rows, so the convergence audit excludes
-	// the apps table (it legitimately differs per host).
+	// Record permission count so we detect when defaults change. The counter is an
+	// optimisation only - it says the current default set has already been seeded,
+	// so the loop above is skipped on later calls. The permissions rows themselves
+	// are the authoritative state.
 	db.exec("replace into apps (app, setup) values (?, ?)", app_id, expected)
 }
 

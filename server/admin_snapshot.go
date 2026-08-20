@@ -200,7 +200,6 @@ func admin_snapshot(c *gin.Context) {
 // admin_vacuum is the POST /_/admin/vacuum handler. Runs the reclaim pass
 // over every currently-open database immediately - the same gate the
 // periodic db_manager pass uses - instead of waiting for the next tick.
-// Host-local: it compacts only this host's files and is not replicated.
 func admin_vacuum(c *gin.Context) {
 	start := time.Now()
 	count, bytes := db_vacuum_all()

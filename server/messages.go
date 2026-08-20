@@ -293,14 +293,12 @@ func (m *Message) send_peer_priority(peer string, priority int) {
 
 // Do the work of sending (queue-first, read challenge before sending, wait for ACK)
 //
-// Multi-host fan-out: when the caller didn't pin a specific peer (the
-// usual case for app-level `mochi.message.send`), look up every live
-// peer hosting the recipient entity and queue one row per peer with its
-// target set. Each replica receives the event directly from the source,
-// rather than relying on the chosen-peer → pair-replication relay to
-// fan it out internally. Resilient to one replica being briefly
-// unreachable (the others still get the direct hit) and to stale
-// directory entries pinning routing at a dead peer.
+// Multi-peer fan-out: when the caller didn't pin a specific peer (the usual
+// case for app-level `mochi.message.send`), look up every live peer hosting the
+// recipient entity and queue one row per peer with its target set. Each gets the
+// event directly from the source, so one peer being briefly unreachable does not
+// stop the others, and a stale directory entry cannot pin routing at a dead
+// peer.
 //
 // `send_peer` (target already set) keeps single-row behaviour — it's
 // the path for system-to-system / replication messages where the

@@ -6,14 +6,13 @@
 //
 // The "Advanced disclosure / restore" path on the signup form. The user
 // uploads a backup bundle (produced by mochi.user.export) and its
-// passphrase. Unlike replicate (which links to a still-running source),
-// restore is single-shot: the destination becomes the new home for the
-// account's data and network identity, and the source is left untouched
+// passphrase. Restore is single-shot: the destination becomes the new home for
+// the account's data and network identity, and the source is left untouched
 // (the user deletes it themselves — see the post-restore banner driven
 // by users.restore_source).
 //
-// Modelled on auth_replicate.go. Validation that should give the user a
-// fast inline error (bad passphrase, schema too new) runs synchronously;
+// Validation that should give the user a fast inline error (bad passphrase,
+// schema too new) runs synchronously;
 // the actual unpack-and-swap runs in a goroutine so
 // a multi-GB restore doesn't block the HTTP response past its timeout.
 // The placeholder sits in status='pending-restore' until the swap

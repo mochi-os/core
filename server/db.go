@@ -66,12 +66,10 @@ type DB struct {
 	user     *User
 	app      *App
 	// system_setup is set once db_app_system has run access_setup /
-	// journal_setup on this handle. Gated on this — NOT on
-	// db_open_work's `reused` — so a handle first cached by a raw db_open (the
-	// convergence audit / sweep / bootstrap reading app.db's replicated tables)
-	// still gets its setups, and the access-table migration, on the first
-	// db_app_system call. Without it a passive replica's access table stays on
-	// the legacy schema and inbound new-schema access ops fail + deadletter (#111).
+	// journal_setup on this handle. Gated on this — NOT on db_open_work's
+	// `reused` — so a handle first cached by a raw db_open (db_app_system_sweep,
+	// or anything else opening an app.db directly) still gets its setups, and
+	// the access-table migration, on the first db_app_system call.
 	// Guarded by lock(path) at the setup site.
 	system_setup bool
 	// ready is set once db_app has finished database_create/upgrade and the
@@ -706,16 +704,11 @@ func db_app_system(u *User, app *App) *DB {
 }
 
 // db_app_system_sweep walks every existing app.db at startup and runs the
-// idempotent app-system setups (access / journal, including the
-// access-table register migration). Without it, a (user, app) pair's app.db
-// migrates only when something calls db_app_system for it, and on a passive
-// pair member a dormant pair keeps the legacy schema indefinitely — so the
-// first register op emitted after the ACTIVE side migrated used to be
-// deadlettered ("table access has no column named removed"). The apply path
-// now migrates on demand (db_app_system + the system_setup gate), so this
-// sweep is the proactive half: it clears the dormant backlog at startup
-// instead of leaving each pair to heal on its next inbound op, and stops the
-// convergence audit reporting those pairs as schema-skew in the meantime.
+// idempotent app-system setups (access / journal, including the access-table
+// migration). db_app_system does the same work on demand, so the sweep is the
+// proactive half: an app.db nothing has touched since the migration landed is
+// brought up to date at startup rather than on whatever request happens to
+// reach it first.
 func db_app_system_sweep() {
 	users_root := filepath.Join(data_dir, "users")
 	users, err := os.ReadDir(users_root)
@@ -1117,11 +1110,10 @@ func db_error_is_corruption(err error) bool {
 
 // db_error_is_transient reports whether err is a RETRYABLE write failure — lock
 // contention or storage pressure — rather than a permanent one (schema drift,
-// constraint, malformed SQL). A replicated apply that hits one of these must
-// retry (ApplyDeferred), not report success and drop the op, or the write is
-// lost with no retry and the replica silently diverges (#159). Parallel-queue
-// delivery applies N ops to one peer concurrently, so a lock timeout is a normal
-// transient event under load, not a bug.
+// constraint, malformed SQL). It decides how exec_bg words its warning, and
+// which ExecResult it returns. Parallel-queue delivery applies N ops to one peer
+// concurrently, so a lock timeout is a normal transient event under load, not a
+// bug.
 func db_error_is_transient(err error) bool {
 	if err == nil {
 		return false
@@ -1136,10 +1128,8 @@ func db_error_is_transient(err error) bool {
 		strings.Contains(message, "disk is full")
 }
 
-// ExecResult is the outcome of a background write (exec_bg), so a replicated
-// apply can decide whether to retry. ExecRetryable must defer; ExecWrote and
-// ExecSkipped must NOT retry (success is done; a skipped/quarantined or
-// permanently-failing write won't succeed on retry — a quarantined DB reseeds).
+// ExecResult is the outcome of a background write (exec_bg): whether it landed,
+// failed transiently, or failed in a way retrying cannot help.
 type ExecResult int
 
 const (
@@ -1691,8 +1681,8 @@ func (db *DB) exec_bg(context, query string, values ...any) ExecResult {
 			return ExecSkipped
 		}
 		if db_error_is_transient(err) {
-			// Retryable: a replicated apply defers on this so the op stays in
-			// the pending buffer and re-applies next drain tick (#159).
+			// Retryable: the failure is lock contention or storage pressure, so
+			// the same statement could succeed later.
 			warn("Background DB write failed (%s, retryable) on %q: %v", context, db.path, err)
 			return ExecRetryable
 		}

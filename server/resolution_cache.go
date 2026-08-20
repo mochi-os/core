@@ -27,15 +27,14 @@ import (
 // local write that changes a resolution input (version prefs, service/
 // path/class bindings, system defaults/tracks, app version load/reload);
 // a bump makes every cache discard its contents on next access, so a user
-// who changes a binding sees it immediately. As a backstop for writes
-// that arrive via the replication apply path — which these caches
-// deliberately do not instrument, to stay out of that code — entries also
-// expire after resolution_cache_ttl, bounding both staleness and memory.
+// who changes a binding sees it immediately. As a backstop for any write that
+// does not invalidate, entries also expire after resolution_cache_ttl, bounding
+// both staleness and memory.
 
 // resolution_cache_ttl is how long (seconds) a resolved entry is trusted
-// before it is recomputed. Short enough that a replicated input change
-// self-heals quickly; long enough that the per-event query rate collapses
-// to at most one query per key per window.
+// before it is recomputed. Short enough that a missed invalidation self-heals
+// quickly; long enough that the per-event query rate collapses to at most one
+// query per key per window.
 const resolution_cache_ttl = 30
 
 var (

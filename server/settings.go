@@ -483,9 +483,8 @@ func setting_signup_enabled() bool {
 	return setting_effective("signup_enabled") == "true"
 }
 
-// reg_preferences is the user.db preferences register: a (name → value) versioned
-// LWW-Register so a preference (language, theme, …) the user changes on one host
-// converges on every host of the account.
+// reg_preferences is the upsert definition for the user.db preferences table
+// (name → value): language, theme, and the user's other own settings.
 var reg_preferences = upsert_def{"preferences", []string{"name"}, []string{"value"}}
 
 // user_preferences_load loads all preferences for a user
@@ -535,9 +534,7 @@ func user_preference_set(u *User, name, value string) {
 	u.Preferences[name] = value
 }
 
-// user_preference_delete deletes a user preference, returns true if it
-// existed. Replicated for the same reason as user_preference_set —
-// clearing a preference must converge across the account's hosts.
+// user_preference_delete deletes a user preference, returns true if it existed.
 func user_preference_delete(u *User, name string) bool {
 	if _, ok := u.Preferences[name]; !ok {
 		return false

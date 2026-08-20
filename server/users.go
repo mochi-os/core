@@ -533,10 +533,8 @@ func (u *User) administrator() bool {
 	return u.Role == "administrator"
 }
 
-// The user.db app-routing registers: per-user, account-global preferences for
-// which app handles a class/service/path and which version/track an app is pinned
-// to. Versioned LWW-Registers so a routing change on one host converges on every
-// host of the account.
+// The user.db app-routing tables: the user's preference for which app handles a
+// class/service/path, and which version/track an app is pinned to.
 var (
 	reg_classes  = upsert_def{"classes", []string{"class"}, []string{"app"}}
 	reg_services = upsert_def{"services", []string{"service"}, []string{"app"}}
@@ -555,9 +553,6 @@ func (u *User) class_app(class string) string {
 }
 
 // set_class_app sets the user's preferred app for a class.
-// Replicated: per-user app routing is an account-global preference —
-// it must take effect on every host of the account, not just the one
-// the user changed it on.
 func (u *User) set_class_app(class, app string) {
 	db := db_user(u, "user")
 	if app == "" {
@@ -580,7 +575,6 @@ func (u *User) service_app(service string) string {
 }
 
 // set_service_app sets the user's preferred app for a service.
-// Replicated — account-global routing preference (see set_class_app).
 func (u *User) set_service_app(service, app string) {
 	db := db_user(u, "user")
 	if app == "" {
@@ -603,7 +597,6 @@ func (u *User) path_app(path string) string {
 }
 
 // set_path_app sets the user's preferred app for a path.
-// Replicated — account-global routing preference (see set_class_app).
 func (u *User) set_path_app(path, app string) {
 	db := db_user(u, "user")
 	if app == "" {
@@ -626,8 +619,6 @@ func (u *User) app_version(app string) (version, track string) {
 }
 
 // set_app_version sets the user's preferred version or track for an app.
-// Replicated: the user's per-app version/track pin is account-global —
-// it must apply on every host of the account.
 func (u *User) set_app_version(app, version, track string) {
 	db := db_user(u, "user")
 	if version == "" && track == "" {

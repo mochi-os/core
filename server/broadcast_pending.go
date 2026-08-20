@@ -126,12 +126,8 @@ func broadcast_pending_insert(db *DB, peer, key string, sequence int64, source, 
 		debug("Broadcast pending dropping seq=%d for (peer=%s, key=%s): peer already holds %d buffered streams", sequence, peer, key, broadcast_pending_streams_maximum)
 		return false
 	}
-	// Plain db.exec - pending is receiver-side
-	// apply-buffer state and each paired host must track its own.
-	// Pair-replicating the buffer would cross-pollute drain
-	// expectations between hosts that have applied different subsets
-	// of their inbound streams. The received table carries the same
-	// hazard.
+	// pending is receiver-side apply-buffer state: it holds what THIS host has
+	// received but cannot yet apply in order.
 	db.exec(`insert or ignore into pending
 		(peer, key, sequence, source, target, service, event, msg_id, sender_app, sender_services, content, received)
 		values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

@@ -39,10 +39,8 @@ var api_group = sls.FromStringDict(sl.String("mochi.group"), sl.StringDict{
 	"memberships": sl.NewBuiltin("mochi.group.memberships", api_group_memberships),
 })
 
-// reg_groups is the user.db groups register (id → name, description); reg_members
-// is the group_members register — a payload-bearing convergent set keyed by
-// (parent, member). Both are versioned LWW-Registers so the account's groups and
-// memberships converge across the user's hosts. created is ordinary domain payload.
+// reg_groups and reg_members are the upsert definitions for the user.db groups
+// table (id → name, description) and group_members (keyed by parent + member).
 var (
 	reg_groups  = upsert_def{"groups", []string{"id"}, []string{"name", "description", "created"}}
 	reg_members = upsert_def{"group_members", []string{"parent", "member"}, []string{"type", "created"}}
@@ -55,10 +53,11 @@ func (db *DB) groups_setup() {
 	db.exec("create index if not exists group_members_member on group_members( member )")
 }
 
-// group_members_tombstone soft-deletes every group_members row matching the
-// predicate, so a multi-row removal (deleting a group, or all of a member's
-// memberships) converges as a set of tombstones rather than a hard delete.
-func (db *DB) group_members_tombstone(where string, args ...any) {
+// group_members_remove deletes every group_members row matching the predicate.
+// The select-then-delete-by-key shape is what row_remove takes: it deletes by
+// primary key, so a predicate over any other column has to be resolved to keys
+// first.
+func (db *DB) group_members_remove(where string, args ...any) {
 	rows, _ := db.rows("select parent, member from group_members where ("+where+")", args...)
 	for _, r := range rows {
 		db.row_remove(reg_members, map[string]any{"parent": r["parent"], "member": r["member"]})
@@ -314,9 +313,9 @@ func api_group_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	db := db_user(owner, "user")
 
-	// Whole-row read-modify-write: a partial-column update on a versioned register
-	// reads the current row, applies the changed fields, and writes the whole row
-	// at the next version so it converges across the account's hosts.
+	// Whole-row read-modify-write: row_write writes every payload column, so the
+	// columns this call is not changing have to be read back first or they would
+	// be blanked.
 	row, _ := db.row("select name, description, created from groups where id=?", id)
 	if row == nil {
 		return sl.None, nil
@@ -360,8 +359,8 @@ func api_group_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	db := db_user(owner, "user")
 
 	db.row_remove(reg_groups, map[string]any{"id": id})
-	db.group_members_tombstone("parent=?", id)
-	db.group_members_tombstone("member=? and type='group'", id)
+	db.group_members_remove("parent=?", id)
+	db.group_members_remove("member=? and type='group'", id)
 
 	return sl.None, nil
 }

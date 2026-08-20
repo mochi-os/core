@@ -132,12 +132,13 @@ func (db *DB) access_clear_subject(subject string) {
 	db.exec("delete from access where subject=?", subject)
 }
 
-// List access rules for a resource (active rules only; tombstones hidden).
+// List access rules for a resource. access_revoke deletes the row, so every row
+// present is an active rule; there is nothing to filter out.
 func (db *DB) access_list_resource(resource string) ([]map[string]any, error) {
 	return db.rows("select subject, resource, operation, grant, granter, created from access where resource=? order by subject", resource)
 }
 
-// List access rules for a subject (active rules only; tombstones hidden).
+// List access rules for a subject. See access_list_resource.
 func (db *DB) access_list_subject(subject string) ([]map[string]any, error) {
 	return db.rows("select subject, resource, operation, grant, granter, created from access where subject=? order by resource, operation", subject)
 }

@@ -25,14 +25,13 @@ import (
 // fire of the same row. The receive-side dedup prevents the underlying
 // SQL apply from running twice, but the hook fires on each invocation.
 //
-// V1 limitations (documented in claude/plans/replication.md pattern 1.6):
-//   - The commits log + drainer is best-effort: a handler crash between
-//     the commit and the log insert still means a missed fire (the
-//     underlying SQL write is durable, the hook fire is not).
-//   - Local-write hooking is opt-in via mochi.db.commit.fire; the
-//     framework only auto-fires from replication apply paths.
-//   - Only one handler per app version. Apps that need fan-out can
-//     dispatch from their single registered handler.
+// Limitations:
+//   - The commits log + drainer is best-effort: a handler crash between the
+//     commit and the log insert still means a missed fire (the underlying SQL
+//     write is durable, the hook fire is not).
+//   - Firing is opt-in: an app calls mochi.db.commit.fire after its write.
+//   - Only one handler per app version. Apps that need fan-out can dispatch
+//     from their single registered handler.
 var api_commit = sls.FromStringDict(sl.String("mochi.db.commit"), sl.StringDict{
 	"hook": sl.NewBuiltin("mochi.db.commit.hook", api_commit_hook),
 	"fire": sl.NewBuiltin("mochi.db.commit.fire", api_commit_fire),
@@ -64,9 +63,6 @@ func api_commit_hook(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.None, nil
 }
 
-// api_commit_fire is the local-side trigger: apps call this after a
-// committed write so the registered hook fires for both local and
-// replicated writes.
 // commit_hook_depth_maximum bounds how deep commit hooks may nest. A handler
 // runs on a fresh Starlark thread with app and user set, so it can fire again,
 // and each level holds one of the global Starlark slots for the whole descent -
@@ -82,6 +78,8 @@ func api_commit_hook(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // no on_db_commit fires again - so this is headroom, not a working limit.
 const commit_hook_depth_maximum = 8
 
+// api_commit_fire is the trigger apps call after a committed write so the
+// registered hook fires.
 func api_commit_fire(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var table, kind, row_uid string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "table", &table, "kind", &kind, "row_uid?", &row_uid); err != nil {

@@ -19,9 +19,9 @@
 // never below the user's own login bar. OAuth re-verifies as its own oauth
 // factor: a linked provider proves the provider account, not the email
 // inbox, so an account that requires email at login requires a real email
-// code at step-up, never a provider sign-in. The reauthentication table
-// lives in sessions.db and replicates like codes/partial, so a proof earned
-// on one host is honoured if the action lands on another within the host set.
+// code at step-up, never a provider sign-in. The reauthentication table lives
+// in sessions.db alongside codes/partial, so a proof does not survive a
+// sessions.db wipe - which is the intended lifetime for one.
 
 package main
 

@@ -148,24 +148,6 @@ type AppVersion struct {
 		Downgrade struct {
 			Function string `json:"function"`
 		} `json:"downgrade"`
-		// Replicate controls which writes to this app's per-user DB
-		// fan out to the user's other hosts. Default is opt-out: every
-		// INSERT/UPDATE/DELETE replays on every replica. Apps list
-		// whole caches / local-only TABLES in
-		// `database.replicate.exclude.tables` to keep them off the wire,
-		// and host-LOCAL COLUMNS (computed scores, per-host timestamps)
-		// inside otherwise-replicated tables in
-		// `database.replicate.exclude.columns` (table -> column names).
-		// The content-convergence audit derives its exclude-set from both
-		// (see claude/plans/audit-host-local-columns.md), so a column
-		// whose value legitimately differs per host isn't read as
-		// divergence. See claude/plans/replication.md.
-		Replicate struct {
-			Exclude struct {
-				Tables  []string            `json:"tables"`
-				Columns map[string][]string `json:"columns"`
-			} `json:"exclude"`
-		} `json:"replicate"`
 		create_function func(*DB) `json:"-"`
 	} `json:"database"`
 	Icon         string                 `json:"icon"`
@@ -175,12 +157,11 @@ type AppVersion struct {
 	Events       map[string]AppEvent    `json:"events"`
 	Errors       map[string]AppError    `json:"errors"`
 	Functions    map[string]AppFunction `json:"functions"`
-	// Commit.Function is the name of a Starlark function the framework
-	// invokes after any committed write to this app's per-user DB —
-	// both local commits and replication replays. Apps move WebSocket
-	// emission and other "after the row lands" work here so remote-host
-	// writes still reach local subscribers. See pattern 1.6 in
-	// claude/plans/replication.md. Handlers MUST be idempotent.
+	// Commit.Function is the name of a Starlark function the framework invokes
+	// after any committed write to this app's per-user DB. Apps put WebSocket
+	// emission and other "after the row lands" work here rather than inline in
+	// the handler. Handlers MUST be idempotent: commit_hook_drain retries a row
+	// whose handler failed.
 	Commit struct {
 		Function string `json:"function"`
 	} `json:"commit,omitempty"`
@@ -1336,8 +1317,7 @@ func apps_class_get(class string) string {
 	return row["app"].(string)
 }
 
-// apps_class_set binds a class to an app ID. Emits a system-set op so
-// pair members converge on the bindings.
+// apps_class_set binds a class to an app ID.
 func apps_class_set(class, app string) {
 	db := db_apps()
 	db.exec("replace into classes (class, app) values (?, ?)", class, app)
@@ -1551,11 +1531,9 @@ func app_write_publisher(base string, peer string) {
 	debug("Wrote publisher peer %q to %s", peer, path)
 }
 
-// apps_manager_wake lets a replicated publisher-catalog write trigger an early
-// apps_manager pass instead of waiting out the 24-hour poll — this is what
-// kills the version-skew window on replica-pair hosts. Buffered at 1 so a
-// deploy's burst of publisher ops (a new version writes several rows)
-// coalesces into a single queued pass.
+// apps_manager_wake lets a publisher-catalog write trigger an early
+// apps_manager pass instead of waiting out the 24-hour poll. Buffered at 1 so a
+// burst of publisher writes coalesces into a single queued pass.
 var apps_manager_wake = make(chan struct{}, 1)
 
 // apps_manager_signal wakes apps_manager without blocking. A full buffer means
@@ -1631,12 +1609,12 @@ func apps_manager() {
 		// (app_user_setup otherwise fires only from a same-host service call).
 		apps_seed_default_permissions()
 
-		// Wait out the poll, but wake early when a replicated publisher write
-		// signals that a peer published a new version (replica-pair hosts).
+		// Wait out the poll, but wake early if a publisher write signals a new
+		// version.
 		select {
 		case <-time.After(24 * time.Hour):
 		case <-apps_manager_wake:
-			debug("apps_manager woken early by a replicated publisher write")
+			debug("apps_manager woken early by a publisher write")
 		}
 	}
 }

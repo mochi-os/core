@@ -131,9 +131,8 @@ func document_setting(name, language string) string {
 	return v
 }
 
-// document_set writes an operator override into the documents table.
-// Replicates to operator-paired hosts so a terms / rules / privacy
-// edit on one side reaches the others; LWW per (name, language).
+// document_set writes an operator override into the documents table, keyed on
+// (name, language).
 func document_set(name, language, body string) error {
 	if !document_name_valid(name) {
 		return fmt.Errorf("unknown document name %q", name)

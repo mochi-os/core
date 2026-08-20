@@ -219,10 +219,6 @@ func main_serve(ready func()) int {
 	apps_start()
 	go git_placeholder_sweep()
 	net_start()
-	// setting_set replicates to every pair member via system-set ops
-	// (#68). Must run after net_start so the spawned send_peer
-	// goroutines don't dereference a nil net_me on a server that
-	// already has pair members from a prior run.
 	setting_set("server_started", itoa(int(now())))
 	if err := admin_start(); err != nil {
 		warn("admin listener disabled: %v", err)

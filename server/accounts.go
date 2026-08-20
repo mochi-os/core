@@ -807,18 +807,13 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	db := db_user(user, "user")
 
-	// Check account exists (and learn its type, to delete the right way).
-	row, _ := db.row("select type from accounts where id=?", id)
+	// Check the account exists; the caller distinguishes "no such account" from
+	// "removed" by the return value.
+	row, _ := db.row("select 1 from accounts where id=?", id)
 	if row == nil {
 		return sl.False, nil
 	}
-	if ptype, _ := row["type"].(string); account_device(ptype) {
-		// Per-device account: host-local, hard delete.
-		db.exec("delete from accounts where id=?", id)
-	} else {
-		// Replicated account: versioned tombstone so the removal converges.
-		db.row_remove(reg_accounts, map[string]any{"id": id})
-	}
+	db.row_remove(reg_accounts, map[string]any{"id": id})
 	return sl.True, nil
 }
 

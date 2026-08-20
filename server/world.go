@@ -30,6 +30,8 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,6 +118,53 @@ func world_recent_prune() {
 	}
 }
 
+// match_world_address_scheme captures a leading "scheme:" if the address has
+// one. The scheme grammar allows dots, so "example.com:4433" matches with
+// "example.com" as the scheme - which is why the caller distinguishes a real
+// scheme from a host:port by what follows the colon.
+var match_world_address_scheme = regexp.MustCompile(`(?i)^([a-z][a-z0-9+.-]*):`)
+
+// world_address_valid accepts the shapes a world server is actually reachable
+// at - an authority (host, or host:port) or an explicit http/https URL - and
+// refuses every other scheme.
+//
+// valid(address, "url") is a charset check, and its class contains ":" and the
+// percent sign, so "javascript:alert%281%29" passes it: a browser decodes the
+// escapes, and the listing is gossiped between servers and rendered on every
+// join page that shows a server list. The air client happens to run addresses
+// through normalize_server, which forces an http/https prefix onto anything
+// without one, but core hands this string to any app through mochi.world.list
+// and cannot assume each one does that.
+//
+// The "url" case in valid() is left alone: mochi.text.valid exposes it to
+// apps as a general URL check, so narrowing it there would change what every
+// app's own validation means. This is the world's rule, so it lives here.
+func world_address_valid(address string) bool {
+	if address == "" || !valid(address, "url") {
+		return false
+	}
+	found := match_world_address_scheme.FindStringSubmatch(address)
+	if found == nil {
+		return true // a bare host, no colon at all
+	}
+	switch strings.ToLower(found[1]) {
+	case "http", "https":
+		return true
+	}
+	// Not a scheme we allow, so the only remaining legitimate reading is
+	// host:port - everything after the colon must be the port.
+	port := address[len(found[0]):]
+	if port == "" {
+		return false
+	}
+	for _, digit := range port {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // world_validate checks one announcement's fields, local push and gossip
 // alike — the strings render on every server's join page, so bounds are not
 // negotiable. Returns the parsed services on success.
@@ -123,7 +172,7 @@ func world_validate(id, name, address, version, services string) ([]world_servic
 	if !valid(id, "id") || !valid(name, "line") || len([]rune(name)) > world_name_most {
 		return nil, false
 	}
-	if !valid(address, "url") || address == "" {
+	if !world_address_valid(address) {
 		return nil, false
 	}
 	if !valid(version, "integer") {

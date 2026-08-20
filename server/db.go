@@ -2588,13 +2588,6 @@ func sql_take_word(s string) (string, string) {
 	return s[:i], s[i:]
 }
 
-// sql_target_table extracts the target table from a mutating SQL
-// statement. Returns "" for read-only statements (SELECT, PRAGMA …)
-// and for schema statements (CREATE/DROP/ALTER) — neither replicates.
-// The parser is intentionally simple: skip leading comments + whitespace,
-// match the verb, then take the next identifier as the table name. CTE
-// (WITH …) prefixes are not recognised and stay local; apps that need
-// CTE writes to replicate should reshape to a plain INSERT/UPDATE/DELETE.
 // sql_is_mutating reports whether sql is a row-changing statement
 // (INSERT / REPLACE / UPDATE / DELETE, including the INSERT OR ... forms).
 // Used to keep mutations out of the read-only mochi.db.row/rows/exists APIs,
@@ -2627,13 +2620,6 @@ func db_upgrade_6() {
 	}
 }
 
-// db_upgrade_7 adds queue.claimed: when a row was last marked 'sending'.
-// The stuck-sending safety net keyed on `created`, which is the enqueue
-// time and never changes, so any row that had ever been retried was swept
-// the instant it was claimed - racing the sender still holding it.
-// db_upgrade_8 adds the push retry queue. A push used to get one attempt and
-// then be dropped, so a destination unreachable for a few seconds lost the
-// notification outright.
 // db_upgrade_9 rewrites existing usernames into the canonical form the login
 // paths now key on. A username is an email address, and mail.ParseAddress
 // accepts "Alice <a@b.com>", " a@b.com " and "A@B.com" for the one mailbox, so
@@ -2707,6 +2693,9 @@ func db_upgrade_10() {
 	}
 }
 
+// db_upgrade_8 adds the push retry queue. A push used to get one attempt and
+// then be dropped, so a destination unreachable for a few seconds lost the
+// notification outright.
 func db_upgrade_8() {
 	queue := db_open("db/queue.db")
 	queue.exec(`create table if not exists pushes ( id text primary key, user text not null,
@@ -2718,6 +2707,10 @@ func db_upgrade_8() {
 	queue.exec("create index if not exists pushes_next_retry on pushes(next_retry)")
 }
 
+// db_upgrade_7 adds queue.claimed: when a row was last marked 'sending'.
+// The stuck-sending safety net keyed on `created`, which is the enqueue time
+// and never changes, so any row that had ever been retried was swept the
+// instant it was claimed - racing the sender still holding it.
 func db_upgrade_7() {
 	queue := db_open("db/queue.db")
 	if have, _ := queue.exists("select 1 from pragma_table_info('queue') where name=?", "claimed"); !have {

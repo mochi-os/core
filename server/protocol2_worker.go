@@ -354,7 +354,7 @@ func worker_reaper() {
 	}
 }
 
-// worker_inbox_count returns the current number of pending frames
+// worker_count returns the current number of pending frames
 // across all workers, for observability. O(n) over the worker map; fine
 // for the ~50–200 typical worker population.
 func worker_count() (workers, pending int) {

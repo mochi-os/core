@@ -332,13 +332,13 @@ func relay_saturation_check() {
 	relay_rejected_alerted = rejected
 }
 
-// peer_relay_seen records that a peer announced it relays.
 // peer_relay_record is one peer's last relay announcement.
 type peer_relay_record struct {
 	seen int64
 	load int // advertised reservation utilisation, 0-100 (100 = full)
 }
 
+// peer_relay_seen records that a peer announced it relays.
 func peer_relay_seen(id string, load int) {
 	if id == "" || id == net_id {
 		return
@@ -413,11 +413,6 @@ func relay_addrinfo(id string, addresses []string) p2p_peer.AddrInfo {
 	return ai
 }
 
-// net_relay_candidates is AutoRelay's peer source: it yields up to num
-// relay candidates — the bootstrap relays first (always-available
-// anchors), then peers that have announced they relay. Switching from a
-// static bootstrap-only list to this lets a NAT'd server reserve a slot
-// on any public peer in the network, not just the bootstraps.
 // relay_candidate_latency returns the libp2p-measured RTT to a peer (0 when
 // there is no sample yet), used to prefer the closest relay.
 func relay_candidate_latency(id string) time.Duration {

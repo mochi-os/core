@@ -477,15 +477,6 @@ func load_core_labels() {
 	}
 }
 
-// respond_error sends an HTTP error response with a translated `message` field
-// and a stable machine-readable `code` field. The label key resolves through
-// the user's language preference (or Accept-Language for anonymous requests),
-// with the standard fallback chain.
-//
-//	respond_error(c, 404, "not_found", "errors.not_found", nil)
-//	respond_error(c, 400, "invalid_email", "errors.invalid_email",
-//	    map[string]any{"email": email})
-//
 // respond_text answers with a translated plain-text message, for the handful of
 // routes a browser reaches by navigation rather than by fetch: the shell page
 // and the HTML file serving. respond_error's JSON body is right for an API
@@ -496,6 +487,14 @@ func respond_text(c *gin.Context, status int, key string, args map[string]any) {
 	c.Abort()
 }
 
+// respond_error sends an HTTP error response with a translated `message` field
+// and a stable machine-readable `code` field. The label key resolves through
+// the user's language preference (or Accept-Language for anonymous requests),
+// with the standard fallback chain.
+//
+//	respond_error(c, 404, "not_found", "errors.not_found", nil)
+//	respond_error(c, 400, "invalid_email", "errors.invalid_email",
+//	    map[string]any{"email": email})
 func respond_error(c *gin.Context, status int, code, key string, args map[string]any) {
 	lang := request_language(c, nil)
 	message := resolve_core_label(lang, key, args)

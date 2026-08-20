@@ -616,27 +616,6 @@ func entity_class_allowed(t *sl.Thread, fn *sl.Builtin, app *App, user *User, cl
 	return nil
 }
 
-// entity_class_owned is the stricter question, for an entity that already
-// exists: is the calling app the one that HANDLES this class for this user?
-//
-// entity_class_allowed above answers from the calling app's own manifest, which
-// for every class but "person" is a self-assertion - an app that adds
-// "classes": ["feed"] to its app.json can rename, re-privacy and destroy the
-// user's feeds, and mochi.entity.update/delete have no permission gate of their
-// own. class_app_for answers from somewhere the app does not control: the
-// user's binding, then the system binding, then install order.
-//
-// Only for changing and destroying, not for creating. Two apps may legitimately
-// create entities of one class - Apps and Publisher both create "app" entities -
-// and class_app_for deliberately resolves to a single handler, so the strict
-// question has no useful answer at create time. Creating is also the reversible
-// one: it adds an entity rather than taking one over. Every update and delete in
-// the app tree is by the app that also handles the class, so this costs nothing
-// and closes the destructive half.
-//
-// A class no app handles falls back to the manifest check alone. That cannot
-// arise from the caller (it declares the class, so it is a candidate), but a
-// nil handler must not become a refusal that strands somebody's entity.
 // entity_class_shared is the question for a NEW entity: may this app add to
 // this class at all?
 //
@@ -668,6 +647,27 @@ func entity_class_shared(t *sl.Thread, fn *sl.Builtin, app *App, user *User, cla
 	return fmt.Errorf("app may not create in class %q for this user", class)
 }
 
+// entity_class_owned is the stricter question, for an entity that already
+// exists: is the calling app the one that HANDLES this class for this user?
+//
+// entity_class_allowed above answers from the calling app's own manifest, which
+// for every class but "person" is a self-assertion - an app that adds
+// "classes": ["feed"] to its app.json can rename, re-privacy and destroy the
+// user's feeds, and mochi.entity.update/delete have no permission gate of their
+// own. class_app_for answers from somewhere the app does not control: the
+// user's binding, then the system binding, then install order.
+//
+// Only for changing and destroying, not for creating. Two apps may legitimately
+// create entities of one class - Apps and Publisher both create "app" entities -
+// and class_app_for deliberately resolves to a single handler, so the strict
+// question has no useful answer at create time. Creating is also the reversible
+// one: it adds an entity rather than taking one over. Every update and delete in
+// the app tree is by the app that also handles the class, so this costs nothing
+// and closes the destructive half.
+//
+// A class no app handles falls back to the manifest check alone. That cannot
+// arise from the caller (it declares the class, so it is a candidate), but a
+// nil handler must not become a refusal that strands somebody's entity.
 func entity_class_owned(t *sl.Thread, fn *sl.Builtin, app *App, user *User, class string) error {
 	if err := entity_class_allowed(t, fn, app, user, class); err != nil {
 		return err

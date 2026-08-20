@@ -499,8 +499,6 @@ func broadcast_advance_local_simple(db *DB, sender, key string, sequence int64) 
 	db.exec("insert into received (sender, key, last, seen) values (?, ?, ?, ?) on conflict(sender, key) do update set last = max(received.last, excluded.last), seen = excluded.seen", sender, key, sequence, now())
 }
 
-// broadcast_log_append writes one log row in the same transaction as
-// the sequence bump. Returns the allocated sequence.
 // broadcast_payload_decode reads a stored broadcast-log payload back, keeping
 // whole numbers whole.
 //
@@ -565,6 +563,8 @@ func json_integers_restore(value any) any {
 	return value
 }
 
+// broadcast_log_append writes one log row in the same transaction as the
+// sequence bump. Returns the allocated sequence.
 func broadcast_log_append(db *DB, key, peer, event string, data []byte) int64 {
 	broadcast_log_table_create(db)
 	broadcast_log_age_trim(db, key, peer)
@@ -577,8 +577,6 @@ func broadcast_log_append(db *DB, key, peer, event string, data []byte) int64 {
 	return sequence
 }
 
-// broadcast_log_age_trim deletes log rows older than the age cap for
-// the given (key, peer). Called on send; no-op when nothing's aged out.
 // broadcast_log_age_maximum is the hard retention cap: a lagging
 // subscriber's ack floor protects rows past broadcast_log_age, but only
 // this long — beyond it one dead subscriber would grow the log forever.
@@ -586,6 +584,8 @@ func broadcast_log_append(db *DB, key, peer, event string, data []byte) int64 {
 // gets a broadcast/floor skip and its app re-fetches.
 const broadcast_log_age_maximum = 4 * broadcast_log_age
 
+// broadcast_log_age_trim deletes log rows older than the age cap for the given
+// (key, peer). Called on send; no-op when nothing's aged out.
 func broadcast_log_age_trim(db *DB, key, peer string) {
 	// The age trim respects the lowest acknowledged subscriber floor:
 	// trimming rows a live subscriber still needs converts its fillable

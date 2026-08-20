@@ -241,7 +241,7 @@ func (s *Stream) close_read() {
 	}
 }
 
-// Close closes both the reader and writer of the stream
+// close closes both the reader and writer of the stream
 func (s *Stream) close() {
 	if s.reader != nil {
 		s.reader.Close()

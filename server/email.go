@@ -41,15 +41,12 @@ func email_identifier(from string) string {
 	return uid() + "@" + domain
 }
 
-// email_send sends a plain text email.
-// email_send_dedup is email_send with a per-user (address, event_id)
-// dedup gate. When event_id is non-empty and the user already received
-// an email for the same (address, event_id) within the TTL window, the
-// send is suppressed — two replicas independently invoking the same
-// logical notification produce one email per recipient address instead
-// of two. Cross-replica dedup is local-only at this layer (same shape
-// as webpush_delivered); the small concurrent-emit race is documented
-// as acceptable for the user-facing duplicate-email impact.
+// email_send_dedup is email_send with a per-user (address, event_id) dedup
+// gate. When event_id is non-empty and the user already received an email for
+// the same (address, event_id) within the TTL window, the send is suppressed,
+// so a notification emitted more than once produces one email per recipient
+// address. The small concurrent-emit race is accepted: the cost of losing it is
+// a duplicate email.
 func email_send_dedup(u *User, event_id, to, subject, body string) {
 	if event_id != "" && u != nil && email_already_delivered(u, to, event_id) {
 		debug("email dedup: address=%q event_id=%q already delivered", to, event_id)
@@ -114,6 +111,7 @@ func email_deliverable(address string) bool {
 	return true
 }
 
+// email_send sends a plain text email.
 func email_send(to string, subject string, body string) {
 	// Never attempt delivery to a reserved / non-deliverable domain (RFC 2606
 	// + 6761): example.com/.net/.org and the .test/.example/.invalid/.localhost

@@ -433,12 +433,15 @@ func health_gate(recipient string) (skip bool, evict bool) {
 	return true, false
 }
 
-// health_evict_record tracks eviction dispatches per (app, recipient):
-// `last` throttles the dispatch to once per day, `first` and `warned`
-// back the overdue warn below. In-memory — a restart resets the overdue
-// clock, delaying the warn by at most another window.
+// health_evict_record throttles the eviction dispatch to once per day
+// per (app, recipient) and remembers whether the overdue warn has
+// fired. In-memory, which costs at most one extra dispatch and one
+// repeated warn per restart — neither changes what the app is told.
+// The overdue CLOCK is deliberately not kept here: it reads
+// health.evicted, because a server deployed to weekly restarts more
+// often than health_evict_overdue, so an in-memory clock could never
+// reach the threshold.
 type health_evict_record struct {
-	first  int64
 	last   int64
 	warned bool
 }
@@ -450,8 +453,8 @@ var health_evict_state sync.Map // app.id+"|"+recipient -> health_evict_record
 // ignoring them and the operator is warned. A handling app drops the
 // subscriber on the first dispatch, which ends the fan-out consults that
 // trigger dispatching — still being here a week later means the app has
-// no subscriber/unreachable handler and its ghost will recycle forever,
-// invisibly, once the health residue is cleaned.
+// no subscriber/unreachable handler, so its subscriber row will never be
+// dropped and every later post pays for the dead host again.
 var health_evict_overdue int64 = 7 * 86400
 
 // health_evict_dispatch tells the owning app — once per day per (app,
@@ -462,7 +465,7 @@ var health_evict_overdue int64 = 7 * 86400
 func health_evict_dispatch(user *User, app *App, service, recipient string) {
 	key := app.id + "|" + recipient
 	moment := now()
-	record := health_evict_record{first: moment}
+	record := health_evict_record{}
 	if v, ok := health_evict_state.Load(key); ok {
 		record = v.(health_evict_record)
 	}
@@ -470,17 +473,29 @@ func health_evict_dispatch(user *User, app *App, service, recipient string) {
 		return
 	}
 	record.last = moment
-	if !record.warned && moment-record.first >= health_evict_overdue {
-		record.warned = true
-		warn("App %q has been dispatched %s for subscriber %q daily for %d days and has not dropped it; the app is probably missing a handler for that event.", app.id, error_code_subscriber_unreachable, recipient, (moment-record.first)/86400)
-	}
-	health_evict_state.Store(key, record)
 	db := db_open("db/queue.db")
 	var h struct {
 		Since     int64 `db:"since"`
 		Suspended int64 `db:"suspended"`
+		Evicted   int64 `db:"evicted"`
 	}
-	_ = db.scan(&h, "select since, suspended from health where recipient=?", recipient)
+	_ = db.scan(&h, "select since, suspended, evicted from health where recipient=?", recipient)
+	// Stamp the first dispatch. This is what marks the row as "the owning
+	// app has been told", the one condition under which queue_cleanup may
+	// delete it — an unstamped row keeps gating, because forgetting it
+	// would let the subscriber recycle through a fresh retry ladder with
+	// its subscriber row still in place. An update rather than an upsert:
+	// the only caller is health_gate's evict branch, which already found a
+	// suspended row, and a health row means a failure history.
+	if h.Evicted == 0 {
+		h.Evicted = moment
+		db.exec("update health set evicted=? where recipient=? and evicted=0", moment, recipient)
+	}
+	if !record.warned && moment-h.Evicted >= health_evict_overdue {
+		record.warned = true
+		warn("App %q has been dispatched %s for subscriber %q daily for %d days and has not dropped it; the app is probably missing a handler for that event.", app.id, error_code_subscriber_unreachable, recipient, (moment-h.Evicted)/86400)
+	}
+	health_evict_state.Store(key, record)
 	target := recipient
 	subscriber_dispatch(user, app, error_code_subscriber_unreachable, "unreachable", service, target, nil, func() map[string]any {
 		return map[string]any{"subscriber": target, "since": h.Since, "suspended": h.Suspended}
@@ -1514,11 +1529,18 @@ func queue_cleanup() {
 		health_failure(recipient, created)
 	}
 
-	// Health residue: a recipient suspended past twice the evict age has
-	// had a month of eviction dispatches — every owning app has dropped
-	// them, so no fan-out consults the row again. If the host ever
-	// returns, inbound contact rebuilds state from scratch anyway.
-	db.exec_bg("health cleanup", "delete from health where suspended != 0 and suspended < ?", now()-2*queue_evict_age)
+	// Health residue: a recipient suspended past twice the evict age AND
+	// evicted at least once has had its owning app told to drop it, so no
+	// fan-out consults the row again. If the host ever returns, inbound
+	// contact rebuilds state from scratch anyway.
+	//
+	// The evicted check is not decoration. Eviction fires from the fan-out
+	// gate, so a recipient whose owner posts nothing between the evict age
+	// and twice it is never dispatched at all; deleting that row on age
+	// alone made it read healthy again while the app's subscriber row was
+	// still in place, and the next post burned a full retry ladder before
+	// re-suspending it — forever, one cycle per residue window.
+	db.exec_bg("health cleanup", "delete from health where suspended != 0 and suspended < ? and evicted != 0", now()-2*queue_evict_age)
 }
 
 // queue_drain waits, up to timeout, for the rows that are actually in flight

@@ -32,6 +32,17 @@ func health_row(t *testing.T, recipient string) (failures, denials, success, sus
 	return get("failures"), get("denials"), get("success"), get("suspended"), get("probed")
 }
 
+func health_evicted(t *testing.T, recipient string) int64 {
+	t.Helper()
+	db := db_open("db/queue.db")
+	row, _ := db.row("select evicted from health where recipient=?", recipient)
+	if row == nil {
+		return 0
+	}
+	v, _ := row["evicted"].(int64)
+	return v
+}
+
 func TestHealthStateMachine(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -279,6 +290,11 @@ func TestHealthEvictOverdue(t *testing.T) {
 	}
 	defer func() { subscriber_dispatch = original }()
 
+	// health_evict_dispatch is only ever reached through health_gate's
+	// evict branch, which requires a suspended row — so the row is a
+	// precondition, not something the dispatch invents.
+	db_open("db/queue.db").exec("insert into health (recipient, failures, since, suspended) values ('r-ignored', 1, ?, ?)", now(), now())
+
 	app := &App{id: "testapp"}
 	key := app.id + "|r-ignored"
 	record := func() health_evict_record {
@@ -305,9 +321,19 @@ func TestHealthEvictOverdue(t *testing.T) {
 		t.Fatalf("same-day dispatch must be throttled, got %d", dispatched)
 	}
 
-	// Backdate past the overdue window with the daily throttle open: the
-	// dispatch goes through and the overdue warn is recorded.
-	health_evict_state.Store(key, health_evict_record{first: now() - health_evict_overdue - 10, last: now() - 86400 - 10})
+	// The first dispatch stamps health.evicted. That stamp, not the
+	// in-memory record, is what the overdue clock and the cleanup sweep
+	// both read.
+	stamp := health_evicted(t, "r-ignored")
+	if stamp == 0 {
+		t.Fatal("the first dispatch must stamp health.evicted")
+	}
+
+	// Backdate the stamp past the overdue window with the daily throttle
+	// open: the dispatch goes through and the overdue warn is recorded.
+	db := db_open("db/queue.db")
+	db.exec("update health set evicted=? where recipient='r-ignored'", now()-health_evict_overdue-10)
+	health_evict_state.Store(key, health_evict_record{last: now() - 86400 - 10})
 	health_evict_dispatch(nil, app, "feeds", "r-ignored")
 	if dispatched != 2 {
 		t.Fatalf("overdue dispatch must go through, got %d", dispatched)
@@ -316,11 +342,116 @@ func TestHealthEvictOverdue(t *testing.T) {
 		t.Fatal("overdue pair must be marked warned")
 	}
 
+	// The stamp is written once: a later dispatch must not push it
+	// forward, or the overdue window would restart every day and never
+	// elapse.
+	if again := health_evicted(t, "r-ignored"); again != now()-health_evict_overdue-10 {
+		t.Fatalf("evicted must be stamped once, moved to %d", again)
+	}
+
 	// The flag persists across later dispatches, so the warn cannot
 	// re-fire for this pair.
-	health_evict_state.Store(key, health_evict_record{first: now() - health_evict_overdue - 10, last: now() - 86400 - 10, warned: true})
+	health_evict_state.Store(key, health_evict_record{last: now() - 86400 - 10, warned: true})
 	health_evict_dispatch(nil, app, "feeds", "r-ignored")
 	if dispatched != 3 || !record().warned {
 		t.Fatalf("later dispatches must keep the warned flag, dispatched=%d", dispatched)
+	}
+}
+
+// TestHealthEvictOverdueSurvivesRestart: the overdue clock lives in
+// health.evicted, not in health_evict_state. A server deployed to weekly
+// restarts more often than health_evict_overdue, so an in-memory clock
+// reset on every start could never reach the threshold and the warn for
+// an app with no subscriber/unreachable handler was unreachable.
+func TestHealthEvictOverdueSurvivesRestart(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	var warned bool
+	original := subscriber_dispatch
+	subscriber_dispatch = func(u *User, a *App, code, reason, service, entity string, orig map[string]any, detail func() map[string]any) {
+	}
+	defer func() { subscriber_dispatch = original }()
+
+	app := &App{id: "testapp"}
+	db_open("db/queue.db").exec("insert into health (recipient, failures, since, suspended) values ('r-restart', 1, ?, ?)", now(), now())
+	health_evict_dispatch(nil, app, "feeds", "r-restart")
+
+	// A week of dispatches passes, then the process restarts: the record
+	// is gone, and only the stamp remains.
+	db := db_open("db/queue.db")
+	db.exec("update health set evicted=? where recipient='r-restart'", now()-health_evict_overdue-10)
+	health_evict_state.Delete(app.id + "|r-restart")
+
+	health_evict_dispatch(nil, app, "feeds", "r-restart")
+	if v, ok := health_evict_state.Load(app.id + "|r-restart"); ok {
+		warned = v.(health_evict_record).warned
+	}
+	if !warned {
+		t.Fatal("the overdue warn must fire from the stored stamp after a restart")
+	}
+}
+
+// TestHealthEvictedColumnOnAnUpgrade covers every server already
+// running: their health table predates the evicted column, and without
+// the migration the stamp write and the sweep's condition both fail on a
+// missing column. Driven through db_upgrade rather than by calling
+// db_upgrade_10 directly, so a missing `case 10:` fails here too. The
+// rows already suspended on those servers must survive the upgrade
+// reading never-evicted — that is exactly the state that stops them
+// being swept and recycling.
+func TestHealthEvictedColumnOnAnUpgrade(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+	db_create()
+
+	// Wind the install back to a health table without the column, holding
+	// a recipient suspended long enough for the sweep to want it.
+	db := db_open("db/queue.db")
+	stale := now() - 2*queue_evict_age - 3600
+	db.exec("drop table if exists health")
+	db.exec("create table health ( recipient text not null primary key, failures integer not null default 0, denials integer not null default 0, success integer not null default 0, since integer not null default 0, suspended integer not null default 0, probed integer not null default 0 )")
+	db.exec("insert into health (recipient, failures, since, suspended) values ('r-existing', 1, ?, ?)", stale, stale)
+	setting_set("schema", "9")
+
+	db_upgrade()
+
+	if have, _ := db.exists("select 1 from pragma_table_info('health') where name='evicted'"); !have {
+		t.Fatal("db_upgrade left an existing install without health.evicted: the stamp write and the sweep both fail on it")
+	}
+	if n := db.integer("select count(*) from health where recipient='r-existing' and evicted=0"); n != 1 {
+		t.Fatal("an already-suspended row must survive the upgrade reading never-evicted")
+	}
+
+	// And it must then be held by the sweep rather than forgotten.
+	queue_cleanup()
+	if n := db.integer("select count(*) from health where recipient='r-existing'"); n != 1 {
+		t.Fatal("the upgraded row was swept: production's suspended recipients would recycle on the next post")
+	}
+}
+
+// TestHealthCleanupKeepsUnevicted: the residue sweep deletes a suspended
+// row only once its owning app has been told to drop the subscriber.
+// Eviction fires from the fan-out gate, so a recipient whose owner posts
+// nothing between the evict age and twice it is never dispatched at all;
+// deleting that row on age alone made it read healthy again while the
+// app's subscriber row was still in place, so the next post burned a
+// fresh retry ladder and re-suspended it, one cycle per residue window.
+func TestHealthCleanupKeepsUnevicted(t *testing.T) {
+	cleanup := setup_replication_test(t)
+	defer cleanup()
+
+	db := db_open("db/queue.db")
+	stale := now() - 2*queue_evict_age - 3600
+	db.exec("insert into health (recipient, failures, since, suspended, evicted) values ('r-quiet', 1, ?, ?, 0)", stale, stale)
+	db.exec("insert into health (recipient, failures, since, suspended, evicted) values ('r-told', 1, ?, ?, ?)", stale, stale, stale)
+
+	queue_cleanup()
+
+	if n := db.integer("select count(*) from health where recipient='r-quiet'"); n != 1 {
+		t.Fatal("a recipient no app was ever told about must keep gating, not be forgotten")
+	}
+	if n := db.integer("select count(*) from health where recipient='r-told'"); n != 0 {
+		t.Fatal("a recipient whose app was told to drop it is residue and must be swept")
 	}
 }

@@ -65,7 +65,6 @@ type DB struct {
 	starlark *sqlx.DB
 	user     *User
 	app      *App
-	kind     string
 	// system_setup is set once db_app_system has run access_setup /
 	// journal_setup on this handle. Gated on this — NOT on
 	// db_open_work's `reused` — so a handle first cached by a raw db_open (the
@@ -97,23 +96,17 @@ type DB struct {
 	statement_cache map[string]*sqlx.Stmt
 }
 
-// db_kind_* tag a DB handle with the per-host file role so the
-// matching emit/apply pair can route replicated writes back into the
-// right file on the receiver.
-//   - "app-system": users/<uid>/<app>/app.db (access)
-//   - "user-core" : users/<uid>/user.db (groups, accounts, interests,
-//     permissions, settings, classes/services/paths/versions)
-//
-// Everything else (per-app data DBs, sessions.db, users.db, …) goes
-// through its own replication path and leaves kind unset.
 const (
-	db_kind_app_system = "app-system"
-	db_kind_user_core  = "user-core"
+	schema_version = 10
 )
 
-const (
-	schema_version = 9
-)
+// health_schema is the CURRENT shape of queue.db's health table, shared
+// by db_create and the test harness so the two cannot drift — they did,
+// and a column added to one left every test that dispatches an eviction
+// panicking on a missing column. db_upgrade_2 deliberately does NOT use
+// this: it must keep reproducing the shape schema 2 shipped, with later
+// columns added by their own upgrade steps.
+const health_schema = "create table if not exists health ( recipient text not null primary key, failures integer not null default 0, denials integer not null default 0, success integer not null default 0, since integer not null default 0, suspended integer not null default 0, probed integer not null default 0, evicted integer not null default 0 )"
 
 var (
 	databases      = map[string]*DB{}
@@ -412,8 +405,11 @@ func db_create() {
 	// with a failure history (health_success is a bare update). Suspended
 	// recipients get no broadcast fan-out rows beyond a periodic probe,
 	// and after queue_evict_age the owning apps are told to drop the
-	// subscriber (see health_gate in queue.go).
-	queue.exec("create table if not exists health ( recipient text not null primary key, failures integer not null default 0, denials integer not null default 0, success integer not null default 0, since integer not null default 0, suspended integer not null default 0, probed integer not null default 0 )")
+	// subscriber (see health_gate in queue.go). `evicted` stamps that
+	// dispatch: only a stamped row is residue the cleanup sweep may
+	// delete, since deleting an unstamped one lets the subscriber recycle
+	// through a fresh retry ladder with no app ever told to drop it.
+	queue.exec(health_schema)
 	queue.exec(`create table if not exists pushes ( id text primary key, user text not null,
 		account text not null, type text not null, identifier text not null default '',
 		data text not null default '', app text not null default '', category text not null default '',
@@ -479,11 +475,7 @@ func db_user(u *User, name string) *DB {
 	// db.user here, via entity_peers_for -> user_owning_entity ->
 	// user_preferences_load. db_bind is write-once, so the first binder wins
 	// and later callers (same UID, same path) leave it alone.
-	kind := ""
-	if name == "user" {
-		kind = db_kind_user_core
-	}
-	db_bind(db, u, nil, kind)
+	db_bind(db, u, nil)
 
 	// Create tables for user.db
 	if name == "user" {
@@ -566,7 +558,7 @@ func db_app(u *User, app *App) *DB {
 	if db == nil {
 		return nil
 	}
-	db_bind(db, u, app, "")
+	db_bind(db, u, app)
 
 	// Fast path: a reused handle whose schema this process has already
 	// verified or created. Gated on ready, not reuse alone — a concurrent
@@ -683,7 +675,7 @@ func db_app_system(u *User, app *App) *DB {
 	if db == nil {
 		return nil
 	}
-	db_bind(db, u, app, db_kind_app_system)
+	db_bind(db, u, app)
 
 	// Run the platform system-table setups (and the access-table migration) the
 	// first time THIS handle is used as an app-system DB — even if a raw db_open
@@ -1407,6 +1399,8 @@ func db_upgrade() {
 			db_upgrade_8()
 		case 9:
 			db_upgrade_9()
+		case 10:
+			db_upgrade_10()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -1515,14 +1509,11 @@ func db_ready_set(db *DB) {
 // writes, which raced every other goroutine holding the handle (#227). Also
 // heals handles first cached by a raw db_open or the app-system sweep, which
 // carry no binding.
-func db_bind(db *DB, u *User, app *App, kind string) {
+func db_bind(db *DB, u *User, app *App) {
 	databases_lock.Lock()
 	if db.user == nil {
 		db.user = u
 		db.app = app
-	}
-	if kind != "" && db.kind == "" {
-		db.kind = kind
 	}
 	databases_lock.Unlock()
 }
@@ -2705,6 +2696,24 @@ func db_upgrade_9() {
 	if len(unparsed) > 0 {
 		warn("Schema 9: %d account(s) have a username that is not a usable email address and cannot be signed in to: %s",
 			len(unparsed), strings.Join(unparsed, ", "))
+	}
+}
+
+// db_upgrade_10 adds health.evicted, the timestamp of the first
+// subscriber/unreachable dispatch for a recipient. It is what makes a
+// suspended row residue the cleanup sweep may delete: before this, the
+// sweep deleted on age alone, so a recipient whose owner posted nothing
+// between the evict age and twice it was forgotten without any app ever
+// being told to drop the subscriber, and the next post burned a fresh
+// retry ladder against the same dead host.
+//
+// Existing rows default to 0 (never dispatched), which is the correct
+// reading — a row that has been evicted is stamped by the next dispatch,
+// and one that never was keeps gating, as it should.
+func db_upgrade_10() {
+	queue := db_open("db/queue.db")
+	if exists, _ := queue.exists("select 1 from pragma_table_info('health') where name='evicted'"); !exists {
+		queue.exec("alter table health add column evicted integer not null default 0")
 	}
 }
 

@@ -295,7 +295,20 @@ func api_image_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl.None, nil
 	}
 
-	name := "variants/" + variant_name(filepath.Base(file), kind)
+	// The whole relative path, not its base: two images with the same file
+	// name in different directories are different images, and keying on the
+	// base alone gave the second one the first one's render. The entry name IS
+	// the provenance here - the cache is a bare filesystem with no index, so
+	// recording the source separately would mean a sidecar the eviction sweep
+	// removes independently of the variant it describes.
+	//
+	// variant_name takes the path unchanged: filepath.Ext stops at a separator,
+	// so a directory containing a dot is not mistaken for an extension. For a
+	// flat name - every shipped caller, since attachment_filename returns
+	// "<id>_<name>" - the result is byte-identical to before, so no cached
+	// entry is invalidated and lib/starlark/attachments.star's own derivation
+	// still agrees.
+	name := "variants/" + variant_name(file, kind)
 	destination, err := cache_file(t, name)
 	if err != nil {
 		return sl_error(fn, "%v", err)

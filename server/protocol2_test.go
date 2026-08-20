@@ -408,11 +408,14 @@ func TestFramePriorityForMapsQueueTiers(t *testing.T) {
 		queue int
 		want  byte
 	}{
-		{priority_control, frame_priority_control},
 		{priority_replay, frame_priority_control},
 		{priority_interactive, frame_priority_interactive},
-		{priority_bulk, frame_priority_bulk},
 		{0, frame_priority_interactive}, // default
+		// The wire keeps three tiers; the queue has two producers. A stored
+		// priority from the removed control/bulk lanes maps to interactive,
+		// which is what an unrecognised value has always done.
+		{40, frame_priority_interactive},
+		{10, frame_priority_interactive},
 	}
 	for _, c := range cases {
 		if got := frame_priority_for(c.queue); got != c.want {

@@ -145,21 +145,19 @@ func TestBroadcastResyncThrottleIndependentTags(t *testing.T) {
 	}
 }
 
-// TestPriorityReplayAbovesInteractive locks in the relative ordering
-// of the priority tiers. queue_select orders desc by
-// priority, so for resync replies to overtake the live-broadcast
-// backlog they MUST be strictly greater than priority_interactive.
-// A future refactor that re-numbers the tiers without preserving
-// the ordering would silently regress catch-up rate.
+// TestPriorityReplayAbovesInteractive locks in the relative ordering of the
+// priority tiers. queue_select orders desc by priority, so for resync replies
+// to overtake the live-broadcast backlog they MUST be strictly greater than
+// priority_interactive. A future refactor that re-numbers the tiers without
+// preserving the ordering would silently regress catch-up rate.
+//
+// This used to assert control > replay > interactive > bulk. Control and bulk
+// were produced only by queue_priority's replication branch and went with it;
+// asserting an order between constants nothing can now hold would say nothing
+// about delivery.
 func TestPriorityReplayAbovesInteractive(t *testing.T) {
 	if priority_replay <= priority_interactive {
 		t.Errorf("priority_replay (%d) must be > priority_interactive (%d)", priority_replay, priority_interactive)
-	}
-	if priority_control <= priority_replay {
-		t.Errorf("priority_control (%d) must be > priority_replay (%d)", priority_control, priority_replay)
-	}
-	if priority_interactive <= priority_bulk {
-		t.Errorf("priority_interactive (%d) must be > priority_bulk (%d)", priority_interactive, priority_bulk)
 	}
 }
 

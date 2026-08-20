@@ -47,10 +47,12 @@ const queue_claim_timeout = 60
 // so a tier can be inserted between two existing ones (or below bulk)
 // without renumbering, since the values are purely ordinal.
 const (
-	priority_control     = 40 // replication coordination: link/*, membership, keys/transfer
+	// 40 was priority_control and 10 was priority_bulk, both produced only by
+	// queue_priority's replication branch. The wire still has all three tiers
+	// (frame_priority_*), which is a receiver-side vocabulary and outlives the
+	// queue lanes that fed it.
 	priority_replay      = 30 // broadcast resync replies: jump live broadcast queue
 	priority_interactive = 20 // normal app and entity messages (the default)
-	priority_bulk        = 10 // replication data: sql/op, system/set, system/row
 )
 
 // queue_silent_defer is how long to push a row's next_retry forward
@@ -63,24 +65,21 @@ const (
 // next tick.
 const queue_silent_defer = 3600 // 1 hour
 
-// queue_priority classifies an outbound message into a priority tier
-// from its service and event. Replication coordination jumps ahead of
-// everything so an approval is never stuck behind a sync; replication's
-// bulk data sits below normal app traffic so a large sync cannot delay
-// interactive messages. Everything else is interactive.
+// queue_priority classifies an outbound message into a priority tier from its
+// service and event.
+//
+// Every message is interactive today. The one classification this held was for
+// service "replication" - bulk for sql/op and the system row ops, control for
+// the link, membership and keys events - and multi-host replication was
+// removed in July 2026, so nothing sends that service. The function stays as
+// the seam any future tiering goes through: both callers already thread its
+// answer into frame_priority_for, and a message that wants a different lane
+// gets one by naming it here rather than by growing a second classifier.
+//
+// A caller that already knows its lane bypasses this entirely -
+// broadcast_resync ships replies through queue_add_direct_priority at
+// priority_replay.
 func queue_priority(service, event string) int {
-	if service == "replication" {
-		switch event {
-		case "sql/op", "system/set", "system/row":
-			return priority_bulk
-		case "link/request", "link/approved", "link/denied",
-			"join/request", "join/approved", "join/denied",
-			"membership/join", "membership/assert", "membership/leave",
-			"membership/evict", "pair/membership/change",
-			"keys/transfer", "bootstrap/scope/done":
-			return priority_control
-		}
-	}
 	return priority_interactive
 }
 
@@ -111,17 +110,11 @@ type QueueEntry struct {
 	Claimed int64 `db:"claimed"`
 }
 
-const (
-	queue_age_maximum = 7 * 86400 // 7 days
-
-	// replication_op_retention is the retention floor for replication ops
-	// specifically (service = "replication"): a peer offline up to this
-	// long can still replay its missed ops from queue.db and converge
-	// losslessly — the T_forget "host-gone" budget. Other message classes
-	// use queue_age_maximum. Invariant (asserted in retention_test.go):
-	// replication_op_retention >= queue_age_maximum.
-	replication_op_retention = 30 * 86400 // 30 days (T_forget)
-)
+// queue_age_maximum is the retention floor for every queued message. There
+// used to be a second, longer one for replication ops (30 days, the T_forget
+// budget within which an offline replica could still replay and converge);
+// replication went in July 2026 and took the only class it applied to.
+const queue_age_maximum = 7 * 86400 // 7 days
 
 // queue_wake_ch is a buffered channel used by send_peer to nudge the
 // queue manager into processing the queue immediately rather than
@@ -1471,22 +1464,21 @@ func queue_check_peer(peer string) {
 // Clean up old entries
 func queue_cleanup() {
 	db := db_open("db/queue.db")
-	// Per-class retention: replication ops keep replication_op_retention
-	// (30d / T_forget) so an offline replica can still replay and merge;
-	// every other message class keeps queue_age_maximum (7d). One sweep, keyed
-	// off service so it covers every replication emit path.
-	gen_cutoff := now() - queue_age_maximum
-	repl_cutoff := now() - replication_op_retention
-	aged := "((service = 'replication' and created < ?) or (service != 'replication' and created < ?))"
+	// One retention floor. This was two - replication ops kept 30 days so an
+	// offline replica could still replay, everything else 7 - and the first
+	// arm has been unmatchable since replication was removed, while the second
+	// (service != 'replication') was true of every row.
+	aged := "created < ?"
+	cutoff := now() - queue_age_maximum
 
 	// Log and delete expired messages
 	var old []QueueEntry
-	err := db.scans(&old, "select * from queue where "+aged, repl_cutoff, gen_cutoff)
+	err := db.scans(&old, "select * from queue where "+aged, cutoff)
 	if err != nil {
 		warn("Database error loading expired queue entries: %v", err)
 		return
 	}
-	db.exec_bg("queue cleanup", "delete from queue where "+aged, repl_cutoff, gen_cutoff)
+	db.exec_bg("queue cleanup", "delete from queue where "+aged, cutoff)
 
 	// Surface each aged-out send as message/timeout to its sending app,
 	// deduped per sweep by (from_entity, from_app, to_entity): fan-out makes

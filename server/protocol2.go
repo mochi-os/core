@@ -531,11 +531,8 @@ func frame_reject_challenge(challenge []byte) error {
 // message belonged to (currently informational; future ordering work
 // may use it).
 func frame_priority_for(queue_priority int) byte {
-	switch queue_priority {
-	case priority_control, priority_replay:
+	if queue_priority == priority_replay {
 		return frame_priority_control
-	case priority_bulk:
-		return frame_priority_bulk
 	}
 	return frame_priority_interactive
 }

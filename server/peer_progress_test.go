@@ -70,7 +70,7 @@ func TestQueueDeferTargetParksWholeBacklog(t *testing.T) {
 	db := queue_test_table()
 
 	for i := 0; i < 8; i++ {
-		queue_test_insert_target(db, fmt.Sprintf("stuck-%d", i), "peer-stuck", priority_bulk)
+		queue_test_insert_target(db, fmt.Sprintf("stuck-%d", i), "peer-stuck", priority_interactive)
 	}
 	queue_test_insert_target(db, "live-1", "peer-live", priority_interactive)
 

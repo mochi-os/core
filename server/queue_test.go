@@ -11,34 +11,28 @@ import (
 	"testing"
 )
 
-// TestQueuePriority covers the classifier that assigns a message to a
-// priority tier from its service and event.
+// TestQueuePriority covers the classifier that assigns a message to a priority
+// tier from its service and event.
+//
+// Every message is interactive. The only classification this ever made was for
+// service "replication" - bulk for the sql/op and system row ops, control for
+// link, membership and keys - and replication was removed in July 2026, taking
+// with it the one service that could reach either tier. The cases below
+// include those service and event names deliberately: they are ordinary
+// strings now, and a message naming one must be treated like any other.
 func TestQueuePriority(t *testing.T) {
-	cases := []struct {
-		service, event string
-		want           int
-	}{
-		{"feeds", "post/new", priority_interactive},
-		{"chat", "message", priority_interactive},
-		{"replication", "sql/op", priority_bulk},
-		{"replication", "system/set", priority_bulk},
-		{"replication", "system/row", priority_bulk},
-		{"replication", "link/request", priority_control},
-		{"replication", "link/approved", priority_control},
-		{"replication", "link/denied", priority_control},
-		{"replication", "membership/join", priority_control},
-		{"replication", "membership/leave", priority_control},
-		{"replication", "keys/transfer", priority_control},
-		{"replication", "join/approved", priority_control},
-		{"replication", "bootstrap/scope/done", priority_control},
-		// An unclassified replication event falls back to interactive —
-		// delivered promptly, and never stuck behind bulk.
-		{"replication", "future/unknown", priority_interactive},
-		{"", "", priority_interactive},
-	}
-	for _, c := range cases {
-		if got := queue_priority(c.service, c.event); got != c.want {
-			t.Errorf("queue_priority(%q, %q) = %d, want %d", c.service, c.event, got, c.want)
+	for _, c := range []struct{ service, event string }{
+		{"feeds", "post/new"},
+		{"chat", "message"},
+		{"replication", "sql/op"},
+		{"replication", "link/request"},
+		{"replication", "membership/join"},
+		{"replication", "keys/transfer"},
+		{"replication", "future/unknown"},
+		{"", ""},
+	} {
+		if got := queue_priority(c.service, c.event); got != priority_interactive {
+			t.Errorf("queue_priority(%q, %q) = %d, want %d - no service earns a lane of its own any more", c.service, c.event, got, priority_interactive)
 		}
 	}
 }
@@ -66,27 +60,28 @@ func queue_test_insert_target(db *DB, id, target string, priority int) {
 		id, target, now()-1, now()-1, priority)
 }
 
-// TestQueueSelectPriorityOrder: across distinct peers, queue_select
-// returns the most-urgent peer first so a control-tier message is
-// never delivered behind a bulk-tier one.
+// TestQueueSelectPriorityOrder: across distinct peers, queue_select returns
+// the most urgent peer first. Stated in the two tiers that still have a
+// producer - a resync reply at priority_replay must not be delivered behind
+// ordinary interactive traffic, which is the whole reason broadcast_resync
+// asks for that lane by name.
 func TestQueueSelectPriorityOrder(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
 	db := queue_test_table()
-	queue_test_insert(db, "bulk-1", priority_bulk)
 	queue_test_insert(db, "interactive-1", priority_interactive)
-	queue_test_insert(db, "control-1", priority_control)
+	queue_test_insert(db, "replay-1", priority_replay)
 
 	entries := queue_select(db)
-	if len(entries) != 3 {
-		t.Fatalf("queue_select returned %d entries, want 3 (3 distinct peers)", len(entries))
+	if len(entries) != 2 {
+		t.Fatalf("queue_select returned %d entries, want 2 (2 distinct peers)", len(entries))
 	}
-	if entries[0].Priority != priority_control {
-		t.Errorf("first entry priority = %d, want %d (control)", entries[0].Priority, priority_control)
+	if entries[0].Priority != priority_replay {
+		t.Errorf("first entry priority = %d, want %d (replay); a resync reply delivered behind live traffic is what the lane exists to prevent", entries[0].Priority, priority_replay)
 	}
-	if entries[len(entries)-1].Priority != priority_bulk {
-		t.Errorf("last entry priority = %d, want %d (bulk)", entries[len(entries)-1].Priority, priority_bulk)
+	if entries[len(entries)-1].Priority != priority_interactive {
+		t.Errorf("last entry priority = %d, want %d", entries[len(entries)-1].Priority, priority_interactive)
 	}
 }
 
@@ -100,12 +95,11 @@ func TestQueueSelectPickByPeerDedupesByTarget(t *testing.T) {
 	defer cleanup()
 
 	db := queue_test_table()
-	// Three rows for the same peer at different priorities. Insert
-	// bulk first so the bulk row has the earliest next_retry — if the
-	// picker ignored priority, bulk would win on next_retry ordering.
-	queue_test_insert_target(db, "bulk-A", "peer-A", priority_bulk)
+	// Two rows for the same peer at different priorities. Insert the lower
+	// one first so it has the earliest next_retry — if the picker ignored
+	// priority, interactive would win on next_retry ordering.
 	queue_test_insert_target(db, "interactive-A", "peer-A", priority_interactive)
-	queue_test_insert_target(db, "control-A", "peer-A", priority_control)
+	queue_test_insert_target(db, "replay-A", "peer-A", priority_replay)
 	// A second peer with a single interactive row.
 	queue_test_insert_target(db, "interactive-B", "peer-B", priority_interactive)
 
@@ -113,7 +107,7 @@ func TestQueueSelectPickByPeerDedupesByTarget(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("queue_select returned %d entries, want 2 (one per distinct peer)", len(entries))
 	}
-	// Peer A's representative must be the highest-priority row (control).
+	// Peer A's representative must be its highest-priority row.
 	var peer_a, peer_b string
 	for _, e := range entries {
 		if e.Target == "peer-A" {
@@ -123,33 +117,35 @@ func TestQueueSelectPickByPeerDedupesByTarget(t *testing.T) {
 			peer_b = e.ID
 		}
 	}
-	if peer_a != "control-A" {
-		t.Errorf("peer-A representative = %q, want %q (highest priority for that peer)", peer_a, "control-A")
+	if peer_a != "replay-A" {
+		t.Errorf("peer-A representative = %q, want %q (highest priority for that peer)", peer_a, "replay-A")
 	}
 	if peer_b != "interactive-B" {
 		t.Errorf("peer-B representative = %q, want %q", peer_b, "interactive-B")
 	}
 }
 
-// TestQueueSelectNoBulkStarvation: with a flood of higher-priority
-// rows spread across many peers AND a bulk row for a different peer,
-// the bulk row IS returned — pick-by-peer naturally gives every peer
-// its slot, so the old bulk-floor lane is unnecessary.
-func TestQueueSelectNoBulkStarvation(t *testing.T) {
+// TestQueueSelectNoLowPriorityStarvation: with a flood of higher-priority rows
+// spread across many peers AND one lower-priority row for a different peer,
+// that row IS returned — pick-by-peer naturally gives every peer its slot, so
+// a dedicated floor lane is unnecessary. Written in the bulk tier until that
+// tier lost its last producer; the property is about the ordering, not about
+// which tiers happen to exist.
+func TestQueueSelectNoLowPriorityStarvation(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
 	db := queue_test_table()
-	// 55 interactive rows, one per distinct peer — would fill the
+	// 55 higher-priority rows, one per distinct peer — would fill the
 	// 50-slot direct limit and overflow.
 	for i := 0; i < 55; i++ {
 		queue_test_insert_target(db,
-			fmt.Sprintf("interactive-%d", i),
-			fmt.Sprintf("peer-int-%d", i),
-			priority_interactive)
+			fmt.Sprintf("replay-%d", i),
+			fmt.Sprintf("peer-replay-%d", i),
+			priority_replay)
 	}
-	// One bulk row for a different peer.
-	queue_test_insert_target(db, "bulk-lone", "peer-bulk", priority_bulk)
+	// One lower-priority row for a different peer.
+	queue_test_insert_target(db, "low-lone", "peer-low", priority_interactive)
 
 	entries := queue_select(db)
 
@@ -161,25 +157,25 @@ func TestQueueSelectNoBulkStarvation(t *testing.T) {
 	// row wins its peer's slot — no starvation. Verify by claiming
 	// the bulk peer's lone row directly.
 	for _, e := range entries {
-		if e.Priority == priority_bulk {
-			// Bulk made it into a 50-slot batch — that's fine and
+		if e.Priority == priority_interactive {
+			// The low row made it into a 50-slot batch — that's fine and
 			// also non-starving; nothing else to test.
 			return
 		}
 	}
-	// Bulk wasn't picked this tick. Simulate the next tick by removing
-	// half of the interactive rows (queue_process having drained
-	// them) and re-querying.
+	// It was not picked this tick. Simulate the next one by removing half of
+	// the higher-priority rows (queue_process having drained them) and
+	// re-querying.
 	for i := 0; i < 30; i++ {
-		db.exec("delete from queue where id = ?", fmt.Sprintf("interactive-%d", i))
+		db.exec("delete from queue where id = ?", fmt.Sprintf("replay-%d", i))
 	}
 	entries = queue_select(db)
 	for _, e := range entries {
-		if e.ID == "bulk-lone" {
+		if e.ID == "low-lone" {
 			return
 		}
 	}
-	t.Errorf("bulk row never picked across two ticks; pick-by-peer should give every peer a slot")
+	t.Errorf("the low-priority row was never picked across two ticks; pick-by-peer should give every peer a slot")
 }
 
 // TestQueueAckFlushDeletesAllIds: queue_ack_flush issues a single

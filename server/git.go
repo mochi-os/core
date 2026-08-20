@@ -300,14 +300,22 @@ func git_init(owner *User, app *App, entity string) error {
 // their commit either has a parent, a non-empty tree, or their own identity -
 // so a repository holding real work is never touched. Deleting the ref leaves
 // the unreachable objects for git's own gc; nothing references them.
+//
+// The glob spans every app directory rather than a named one, because
+// git_repo_path composes users/<uid>/<app.id>/<entity> and app.id is the app's
+// NAME only on a dev install - on a published one it is the app's entity id.
+// Naming "repositories" here would sweep dev and silently find nothing
+// everywhere else, which is the same pre-v54 assumption git_repo_path was
+// fixed for. Candidates cost one stat: anything without a HEAD is skipped, and
+// the signature check below decides the rest.
 func git_placeholder_sweep() {
 	const empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-	users, err := filepath.Glob(filepath.Join(data_dir, "users", "*", "repositories", "*"))
+	candidates, err := filepath.Glob(filepath.Join(data_dir, "users", "*", "*", "*"))
 	if err != nil {
 		return
 	}
 	swept := 0
-	for _, path := range users {
+	for _, path := range candidates {
 		if !file_exists(filepath.Join(path, "HEAD")) {
 			continue
 		}

@@ -4,7 +4,7 @@
 // This file is part of Mochi, licensed under the GNU AGPL v3 with the
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
-// Tests covering the in-memory peer-silence fast-fail (task #100).
+// Tests covering the in-memory peer-silence fast-fail.
 // The gate sits in peer_protocol_open so every outbound send path
 // (queue_send_direct, file_push, directory, messages) gets the
 // benefit; the tests exercise the gate directly to keep the

@@ -498,7 +498,7 @@ func respond_text(c *gin.Context, status int, key string, args map[string]any) {
 
 func respond_error(c *gin.Context, status int, code, key string, args map[string]any) {
 	lang := request_language(c, nil)
-	msg := resolve_core_label(lang, key, args)
-	c.JSON(status, gin.H{"error": code, "message": msg})
+	message := resolve_core_label(lang, key, args)
+	c.JSON(status, gin.H{"error": code, "message": message})
 	c.Abort()
 }

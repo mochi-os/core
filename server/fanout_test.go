@@ -4,7 +4,7 @@
 // This file is part of Mochi, licensed under the GNU AGPL v3 with the
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
-// These pin the two properties audited for task #37: a message to an
+// These pin the two properties audited here: a message to an
 // entity that lives on several hosts fans out to an independent queue
 // row per host, and a single unreachable host is deferred out of the
 // send path rather than stalling or dropping delivery to the reachable

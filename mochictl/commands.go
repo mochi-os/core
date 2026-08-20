@@ -161,7 +161,7 @@ func get_dump(path string, order ...string) error {
 // prints `human_msg` (e.g. "Stopping server") only with -v. In -t / -j
 // mode it falls through to post_dump and renders the raw response so
 // scripts can parse it.
-func post_action(path, human_msg string) error {
+func post_action(path, message string) error {
 	if flag_tabs || flag_json {
 		return post_dump(path)
 	}
@@ -175,7 +175,7 @@ func post_action(path, human_msg string) error {
 		return http_error(resp.StatusCode, body)
 	}
 	if flag_verbose {
-		fmt.Println(human_msg)
+		fmt.Println(message)
 	}
 	return nil
 }

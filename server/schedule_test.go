@@ -55,10 +55,10 @@ func TestScheduleDatabase(t *testing.T) {
 		}
 
 		// Verify data
-		var dataMap map[string]any
-		json.Unmarshal([]byte(se.Data), &dataMap)
-		if dataMap["auction"] != float64(123) {
-			t.Errorf("expected auction 123, got %v", dataMap["auction"])
+		var data_map map[string]any
+		json.Unmarshal([]byte(se.Data), &data_map)
+		if data_map["auction"] != float64(123) {
+			t.Errorf("expected auction 123, got %v", data_map["auction"])
 		}
 	})
 
@@ -192,38 +192,38 @@ func TestScheduleStarlarkObject(t *testing.T) {
 		sl_se := new_starlark_scheduled_event(se)
 
 		// Test id
-		id_attr, _ := sl_se.Attr("id")
-		if id_attr.String() != "123" {
-			t.Errorf("expected id 123, got %s", id_attr.String())
+		id_attribute, _ := sl_se.Attr("id")
+		if id_attribute.String() != "123" {
+			t.Errorf("expected id 123, got %s", id_attribute.String())
 		}
 
 		// Test event
-		event_attr, _ := sl_se.Attr("event")
-		if event_attr.String() != `"test_event"` {
-			t.Errorf("expected event test_event, got %s", event_attr.String())
+		event_attribute, _ := sl_se.Attr("event")
+		if event_attribute.String() != `"test_event"` {
+			t.Errorf("expected event test_event, got %s", event_attribute.String())
 		}
 
 		// Test interval
-		interval_attr, _ := sl_se.Attr("interval")
-		if interval_attr.String() != "300" {
-			t.Errorf("expected interval 300, got %s", interval_attr.String())
+		interval_attribute, _ := sl_se.Attr("interval")
+		if interval_attribute.String() != "300" {
+			t.Errorf("expected interval 300, got %s", interval_attribute.String())
 		}
 
 		// Test due
-		due_attr, _ := sl_se.Attr("due")
-		if due_attr.String() != "1710522000" {
-			t.Errorf("expected due 1710522000, got %s", due_attr.String())
+		due_attribute, _ := sl_se.Attr("due")
+		if due_attribute.String() != "1710522000" {
+			t.Errorf("expected due 1710522000, got %s", due_attribute.String())
 		}
 
 		// Test created
-		created_attr, _ := sl_se.Attr("created")
-		if created_attr.String() != "1710435600" {
-			t.Errorf("expected created 1710435600, got %s", created_attr.String())
+		created_attribute, _ := sl_se.Attr("created")
+		if created_attribute.String() != "1710435600" {
+			t.Errorf("expected created 1710435600, got %s", created_attribute.String())
 		}
 
 		// Test data
-		data_attr, _ := sl_se.Attr("data")
-		if data_attr == nil {
+		data_attribute, _ := sl_se.Attr("data")
+		if data_attribute == nil {
 			t.Error("expected data attribute")
 		}
 	})
@@ -241,8 +241,8 @@ func TestScheduleStarlarkObject(t *testing.T) {
 		}
 
 		sl_se := new_starlark_scheduled_event(se)
-		data_attr, _ := sl_se.Attr("data")
-		if data_attr == nil {
+		data_attribute, _ := sl_se.Attr("data")
+		if data_attribute == nil {
 			t.Error("expected data attribute even for empty data")
 		}
 	})
@@ -265,33 +265,33 @@ func TestScheduleEventWrapper(t *testing.T) {
 		}
 
 		// Test source
-		source_attr, _ := wrapper.Attr("source")
-		if source_attr.String() != `"schedule"` {
-			t.Errorf("expected source schedule, got %s", source_attr.String())
+		source_attribute, _ := wrapper.Attr("source")
+		if source_attribute.String() != `"schedule"` {
+			t.Errorf("expected source schedule, got %s", source_attribute.String())
 		}
 
 		// Test due
-		due_attr, _ := wrapper.Attr("due")
-		if due_attr.String() != "1710522000" {
-			t.Errorf("expected due 1710522000, got %s", due_attr.String())
+		due_attribute, _ := wrapper.Attr("due")
+		if due_attribute.String() != "1710522000" {
+			t.Errorf("expected due 1710522000, got %s", due_attribute.String())
 		}
 
 		// Test created
-		created_attr, _ := wrapper.Attr("created")
-		if created_attr.String() != "1710435600" {
-			t.Errorf("expected created 1710435600, got %s", created_attr.String())
+		created_attribute, _ := wrapper.Attr("created")
+		if created_attribute.String() != "1710435600" {
+			t.Errorf("expected created 1710435600, got %s", created_attribute.String())
 		}
 
 		// Test from (should be None for scheduled events)
-		from_attr, _ := wrapper.Attr("from")
-		if from_attr.String() != "None" {
-			t.Errorf("expected from None, got %s", from_attr.String())
+		from_attribute, _ := wrapper.Attr("from")
+		if from_attribute.String() != "None" {
+			t.Errorf("expected from None, got %s", from_attribute.String())
 		}
 
 		// Test headers (should be None for scheduled events)
-		headers_attr, _ := wrapper.Attr("headers")
-		if headers_attr.String() != "None" {
-			t.Errorf("expected headers None, got %s", headers_attr.String())
+		headers_attribute, _ := wrapper.Attr("headers")
+		if headers_attribute.String() != "None" {
+			t.Errorf("expected headers None, got %s", headers_attribute.String())
 		}
 	})
 }
@@ -369,10 +369,10 @@ func TestScheduleHandleUnrunnable(t *testing.T) {
 	}
 
 	cases := []struct {
-		name     string
-		user     string
-		interval int64
-		wantKept bool
+		name      string
+		user      string
+		interval  int64
+		want_kept bool
 	}{
 		{"absent user recurring -> deferred", "ghost-u", 300, true},
 		{"pending user recurring -> deferred", "pending-u", 300, true},
@@ -383,8 +383,8 @@ func TestScheduleHandleUnrunnable(t *testing.T) {
 	for _, c := range cases {
 		id := insert(c.user, c.interval)
 		run(c.user, id, c.interval)
-		if got := exists(id); got != c.wantKept {
-			t.Errorf("%s: row kept=%v, want kept=%v", c.name, got, c.wantKept)
+		if got := exists(id); got != c.want_kept {
+			t.Errorf("%s: row kept=%v, want kept=%v", c.name, got, c.want_kept)
 		}
 	}
 }

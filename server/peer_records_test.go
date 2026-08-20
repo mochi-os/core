@@ -83,8 +83,8 @@ func TestPeerRecordRoundTrip(t *testing.T) {
 		t.Fatalf("returned %d addresses, want 2", len(addresses))
 	}
 	for _, a := range addresses {
-		info, err := p2p_peer.AddrInfoFromP2pAddr(multiaddr.StringCast(a))
-		if err != nil || info.ID.String() != id {
+		information, err := p2p_peer.AddrInfoFromP2pAddr(multiaddr.StringCast(a))
+		if err != nil || information.ID.String() != id {
 			t.Errorf("address %q not suffixed for %q", a, id)
 		}
 	}
@@ -231,8 +231,8 @@ func TestPeerRecordEventAppliesRelayed(t *testing.T) {
 	cleanup := setup_peer_discovery_test(t)
 	defer cleanup()
 
-	subject, subjectKey := test_host(t)
-	encoded := test_signed_record(t, subjectKey, subject, []string{"/ip4/192.0.2.60/tcp/1443"}, 10)
+	subject, subject_key := test_host(t)
+	encoded := test_signed_record(t, subject_key, subject, []string{"/ip4/192.0.2.60/tcp/1443"}, 10)
 
 	// No origin set: a relay isn't bound to its carrier.
 	peer_record_event(&Event{content: map[string]any{"record": encoded}})
@@ -251,9 +251,9 @@ func TestPeerRecordEventReplayGuard(t *testing.T) {
 	cleanup := setup_peer_discovery_test(t)
 	defer cleanup()
 
-	subject, subjectKey := test_host(t)
-	peer_record_event(&Event{content: map[string]any{"record": test_signed_record(t, subjectKey, subject, []string{"/ip4/192.0.2.70/tcp/1443"}, 100)}})
-	peer_record_event(&Event{content: map[string]any{"record": test_signed_record(t, subjectKey, subject, []string{"/ip4/192.0.2.71/tcp/1443"}, 50)}})
+	subject, subject_key := test_host(t)
+	peer_record_event(&Event{content: map[string]any{"record": test_signed_record(t, subject_key, subject, []string{"/ip4/192.0.2.70/tcp/1443"}, 100)}})
+	peer_record_event(&Event{content: map[string]any{"record": test_signed_record(t, subject_key, subject, []string{"/ip4/192.0.2.71/tcp/1443"}, 50)}})
 
 	// Only the seq=100 address should be present.
 	addresses := peer_stored_addresses(subject)
@@ -319,9 +319,9 @@ func TestPeerRequestEventRelaysThirdParty(t *testing.T) {
 	cleanup := setup_peer_discovery_test(t)
 	defer cleanup()
 
-	subject, subjectKey := test_host(t)
+	subject, subject_key := test_host(t)
 	asker, _ := test_host(t)
-	encoded := test_signed_record(t, subjectKey, subject, []string{"/ip4/192.0.2.90/tcp/1443"}, 1)
+	encoded := test_signed_record(t, subject_key, subject, []string{"/ip4/192.0.2.90/tcp/1443"}, 1)
 	if _, ok := peer_record_apply(subject, encoded); !ok {
 		t.Fatal("seed record rejected")
 	}

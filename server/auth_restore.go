@@ -65,7 +65,7 @@ func restore_cleanup_orphans() {
 // unauthenticated POST /_/auth/restore may spool to disk before any validation
 // runs (the route is public and multipart is exempt from the global body
 // limit). A fixed internal DoS bound — deliberately NOT an operator setting;
-// it is separate from the per-user storage quota (file_max_storage) so it
+// it is separate from the per-user storage quota (file_maximum_storage) so it
 // tracks the host's disk headroom, not the amount a restored account may
 // eventually store. The same cap covers the first-user path, so a fresh server
 // never exposes a large unauthenticated spool. A var, not a const, only so
@@ -98,7 +98,7 @@ func web_auth_restore(c *gin.Context) {
 	// upload itself; the separate decompressed-content cap (restore_cap, the
 	// account's storage quota) is the zip-bomb guard passed to restore_unzip.
 	// The headroom covers multipart framing and per-file zip overhead.
-	restore_cap := file_max_storage
+	restore_cap := file_maximum_storage
 	limit := restore_upload_maximum + 64*1024*1024
 	if c.Request.ContentLength > limit {
 		respond_error(c, http.StatusRequestEntityTooLarge, "bundle_too_large", "errors.bundle_too_large", nil)
@@ -467,21 +467,21 @@ func restore_finish_account(uid string, manifest export_manifest, bundle string)
 	}
 }
 
-// restore_max_entries caps the bundle's file count; maxBytes (passed in) caps
+// restore_entries_maximum caps the bundle's file count; maximum_bytes (passed in) caps
 // the total decompressed size. The bundle is uploaded by an unauthenticated
 // signup-via-restore caller (when signup is enabled), so without these a
 // zip-bomb could exhaust the disk. The byte cap is the per-user storage quota
-// (file_max_storage) for an ordinary restore — a backup decompressing to more
+// (file_maximum_storage) for an ordinary restore — a backup decompressing to more
 // than that is for an over-quota account and shouldn't restore here;
 // administrators are quota-exempt (see user_storage_remaining) and get a
 // generous finite ceiling, set by the caller.
-const restore_max_entries = 5_000_000
+const restore_entries_maximum = 5_000_000
 
 // restore_unzip extracts zip_path into dest and returns the bundle root
 // (the single top-level directory inside the archive). Guards against path
 // traversal in entry names and against decompression-bomb exhaustion (total
-// decompressed bytes capped at maxBytes, entry count at restore_max_entries).
-func restore_unzip(zip_path, dest string, maxBytes int64) (string, error) {
+// decompressed bytes capped at maximum_bytes, entry count at restore_entries_maximum).
+func restore_unzip(zip_path, dest string, maximum_bytes int64) (string, error) {
 	r, err := zip.OpenReader(zip_path)
 	if err != nil {
 		return "", err
@@ -492,8 +492,8 @@ func restore_unzip(zip_path, dest string, maxBytes int64) (string, error) {
 	var top string
 	var total int64
 	for i, f := range r.File {
-		if i >= restore_max_entries {
-			return "", fmt.Errorf("bundle has too many entries (limit %d)", restore_max_entries)
+		if i >= restore_entries_maximum {
+			return "", fmt.Errorf("bundle has too many entries (limit %d)", restore_entries_maximum)
 		}
 		target := filepath.Join(dest, f.Name)
 		if !strings.HasPrefix(filepath.Clean(target)+string(os.PathSeparator), clean) &&
@@ -524,15 +524,15 @@ func restore_unzip(zip_path, dest string, maxBytes int64) (string, error) {
 		// Cap each copy at the remaining budget (+1 to detect overflow): a
 		// zip-bomb declaring a small compressed size can still decompress to
 		// petabytes, so bound the running total rather than trust the header.
-		n, copyErr := io.Copy(out, io.LimitReader(in, maxBytes-total+1))
+		n, copy_error := io.Copy(out, io.LimitReader(in, maximum_bytes-total+1))
 		in.Close()
 		out.Close()
-		if copyErr != nil {
-			return "", copyErr
+		if copy_error != nil {
+			return "", copy_error
 		}
 		total += n
-		if total > maxBytes {
-			return "", fmt.Errorf("bundle exceeds the %d-byte decompressed limit", maxBytes)
+		if total > maximum_bytes {
+			return "", fmt.Errorf("bundle exceeds the %d-byte decompressed limit", maximum_bytes)
 		}
 	}
 	if top == "" {

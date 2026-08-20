@@ -56,7 +56,7 @@ func git_v2_request(t *testing.T, repo_path, command string, arguments ...string
 	c.Request = httptest.NewRequest("POST", "/x/git/git-upload-pack", strings.NewReader(body.String()))
 	c.Request.Header.Set("Git-Protocol", "version=2")
 
-	if !git_v2_serve(c, repo_path, nopCloser{strings.NewReader(body.String())}) {
+	if !git_v2_serve(c, repo_path, nop_closer{strings.NewReader(body.String())}) {
 		t.Fatal("git_v2_serve did not handle the request")
 	}
 	if recorder.Code != 200 {
@@ -65,9 +65,9 @@ func git_v2_request(t *testing.T, repo_path, command string, arguments ...string
 	return recorder.Body.String()
 }
 
-type nopCloser struct{ *strings.Reader }
+type nop_closer struct{ *strings.Reader }
 
-func (nopCloser) Close() error { return nil }
+func (nop_closer) Close() error { return nil }
 
 // git_v2_advertisement fetches the opening advertisement for a protocol version
 // and returns its body.
@@ -576,12 +576,12 @@ func TestGitIncludeTag(t *testing.T) {
 	}
 	before := len(objects)
 
-	withTags, err := git_include_tags(storage, objects)
+	with_tags, err := git_include_tags(storage, objects)
 	if err != nil {
 		t.Fatalf("include tags: %v", err)
 	}
-	if len(withTags) != before+1 {
-		t.Errorf("include-tag added %d objects, want the one annotated tag", len(withTags)-before)
+	if len(with_tags) != before+1 {
+		t.Errorf("include-tag added %d objects, want the one annotated tag", len(with_tags)-before)
 	}
 
 	// A tag whose target is not being sent must not be dragged in.

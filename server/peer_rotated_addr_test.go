@@ -36,16 +36,16 @@ func TestNetDropsRotatedAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	staleID, _ := p2p_peer.Decode(stale)
-	curID, _ := p2p_peer.Decode(current)
-	dialErr := &p2p_swarm.DialError{
-		Peer: staleID,
+	stale_i_d, _ := p2p_peer.Decode(stale)
+	cur_i_d, _ := p2p_peer.Decode(current)
+	dial_error := &p2p_swarm.DialError{
+		Peer: stale_i_d,
 		DialErrors: []p2p_swarm.TransportError{
-			{Address: ma, Cause: p2p_sec.ErrPeerIDMismatch{Expected: staleID, Actual: curID}},
+			{Address: ma, Cause: p2p_sec.ErrPeerIDMismatch{Expected: stale_i_d, Actual: cur_i_d}},
 		},
 	}
 
-	net_drop_rotated_addresses(stale, dialErr)
+	net_drop_rotated_addresses(stale, dial_error)
 
 	if n := peer_addresses_count(stale); n != 0 {
 		t.Fatalf("rotated address not dropped: %d remain", n)
@@ -62,14 +62,14 @@ func TestNetKeepsAddressOnPlainFailure(t *testing.T) {
 	bare := "/ip4/192.0.2.9/udp/1443/quic-v1"
 	peer_add_known(id, []string{bare + "/p2p/" + id})
 
-	idDec, _ := p2p_peer.Decode(id)
+	id_dec, _ := p2p_peer.Decode(id)
 	ma, _ := multiaddr.NewMultiaddr(bare)
-	dialErr := &p2p_swarm.DialError{
-		Peer:       idDec,
+	dial_error := &p2p_swarm.DialError{
+		Peer:       id_dec,
 		DialErrors: []p2p_swarm.TransportError{{Address: ma, Cause: p2p_swarm.ErrNoTransport}},
 	}
 
-	net_drop_rotated_addresses(id, dialErr)
+	net_drop_rotated_addresses(id, dial_error)
 
 	if n := peer_addresses_count(id); n != 1 {
 		t.Fatalf("plain dial failure wrongly dropped the address: %d remain", n)

@@ -48,11 +48,11 @@ var (
 )
 
 func shell_file_load(path string) (string, error) {
-	info, err := os.Stat(path)
+	information, err := os.Stat(path)
 	if err != nil {
 		return "", err
 	}
-	mtime := info.ModTime()
+	mtime := information.ModTime()
 
 	shell_files_mu.RLock()
 	cached, ok := shell_files_cache[path]

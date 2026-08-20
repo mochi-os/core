@@ -19,7 +19,7 @@ import (
 	sl "go.starlark.net/starlark"
 )
 
-const starlark_max_steps = 1000000000 // 1 billion steps
+const starlark_steps_maximum = 1000000000 // 1 billion steps
 
 // How long to wait for a cancelled call to actually stop before abandoning it.
 const starlark_cancel_grace = 5 * time.Second
@@ -33,7 +33,7 @@ const starlark_queue_timeout = 60 * time.Second
 const starlark_file_default = 900 * time.Second
 
 var (
-	starlark_sem             chan struct{}
+	starlark_semaphore       chan struct{}
 	starlark_default_timeout time.Duration
 	// starlark_file_timeout bounds a call that has handed the response to the
 	// client and is streaming bytes. Such a call must outlive the compute
@@ -64,7 +64,7 @@ func starlark_configure() {
 	if c < 1 {
 		c = 4
 	}
-	starlark_sem = make(chan struct{}, c)
+	starlark_semaphore = make(chan struct{}, c)
 
 	secs := ini_int("starlark", "timeout", 90)
 	if secs < 1 {
@@ -353,7 +353,7 @@ func sl_encode_tuple(in ...any) sl.Tuple {
 // Helper function to return an error
 func sl_error(fn *sl.Builtin, e any, values ...any) (sl.Value, error) {
 	format := "Unknown error type"
-	var underlying_err error
+	var underlying_error error
 
 	switch v := e.(type) {
 	case error:
@@ -361,7 +361,7 @@ func sl_error(fn *sl.Builtin, e any, values ...any) (sl.Value, error) {
 			format = "Nil error"
 		} else {
 			format = v.Error()
-			underlying_err = v
+			underlying_error = v
 		}
 
 	case string:
@@ -370,24 +370,24 @@ func sl_error(fn *sl.Builtin, e any, values ...any) (sl.Value, error) {
 
 	// Check if any of the values is an error we should preserve
 	for _, v := range values {
-		if err, ok := v.(error); ok && underlying_err == nil {
-			underlying_err = err
+		if err, ok := v.(error); ok && underlying_error == nil {
+			underlying_error = err
 		}
 	}
 
-	var final_err error
+	var final_error error
 	if fn == nil {
-		final_err = fmt.Errorf(format, values...)
+		final_error = fmt.Errorf(format, values...)
 	} else {
-		final_err = fmt.Errorf(fmt.Sprintf("%s() %s", fn.Name(), format), values...)
+		final_error = fmt.Errorf(fmt.Sprintf("%s() %s", fn.Name(), format), values...)
 	}
 
 	// Wrap with the underlying error to preserve error types for errors.As
-	if underlying_err != nil {
-		final_err = fmt.Errorf("%w: %v", underlying_err, final_err)
+	if underlying_error != nil {
+		final_error = fmt.Errorf("%w: %v", underlying_error, final_error)
 	}
 
-	return sl.None, final_err
+	return sl.None, final_error
 }
 
 // Mark this thread as having handed its response to the client: the Starlark
@@ -488,11 +488,11 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 	// call stuck in an uncancellable builtin is not recoverable, so waiting
 	// for one must fail loudly rather than hang a request forever.
 	select {
-	case starlark_sem <- struct{}{}:
+	case starlark_semaphore <- struct{}{}:
 	case <-time.After(starlark_queue_timeout):
 		return nil, fmt.Errorf("starlark: no concurrency slot available after %s", starlark_queue_timeout)
 	}
-	defer func() { <-starlark_sem }()
+	defer func() { <-starlark_semaphore }()
 
 	//debug("Starlark running %q: %+v", function, args)
 	s.thread.SetLocal("function", function)
@@ -516,7 +516,7 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 	s.thread.Uncancel()
 
 	// Set execution step limit
-	s.thread.SetMaxExecutionSteps(starlark_max_steps)
+	s.thread.SetMaxExecutionSteps(starlark_steps_maximum)
 
 	// Run the call in a goroutine so we can interrupt on timeout. Buffered so
 	// a goroutine we have already abandoned can always send and exit.

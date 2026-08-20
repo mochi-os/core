@@ -278,7 +278,7 @@ var (
 	}
 
 	// Outbound stream bytes, per app. Separate from the relay pair above, which
-	// meters what comes IN from a peer: the 600 streams/min per target cap says
+	// meters what comes IN from a peer: the 600 streams/minimum per target cap says
 	// nothing about how much each stream carries, so an app could hold one open
 	// and write forever. Sized like the per-client relay budget.
 	rate_limit_stream_outbound = &rate_limiter{
@@ -577,7 +577,7 @@ func rate_limit_api_middleware(c *gin.Context) {
 // It is also NOT a hard window: a correct credential submitted in a quiet
 // period reserves an immediate slot, verifies, and clears the account, so a
 // legitimate user is never locked out. Only when an account's reserved queue
-// already stretches past account_wait_max is a request refused (429) rather
+// already stretches past account_wait_maximum is a request refused (429) rather
 // than held — which both bounds the guess rate per account and caps how many
 // handler goroutines ever sleep at once.
 type account_gate_entry struct {
@@ -596,13 +596,13 @@ var account_login = &account_gate{entries: make(map[string]*account_gate_entry)}
 
 // Tunables (vars, not consts, so tests can adjust them). The first few
 // failures reserve at the floor spacing; beyond that the spacing doubles up to
-// account_wait_max, which is also the deepest queue a request will wait in
+// account_wait_maximum, which is also the deepest queue a request will wait in
 // before being refused outright.
 var (
-	account_gate_free        = 3
-	account_gate_floor int64 = 1   // seconds between consecutive slots at minimum
-	account_wait_max   int64 = 8   // seconds: refuse rather than wait/hold longer
-	account_gate_ttl   int64 = 900 // seconds idle before an entry is dropped
+	account_gate_free          = 3
+	account_gate_floor   int64 = 1   // seconds between consecutive slots at minimum
+	account_wait_maximum int64 = 8   // seconds: refuse rather than wait/hold longer
+	account_gate_ttl     int64 = 900 // seconds idle before an entry is dropped
 )
 
 // account_gate_spacing is the gap (seconds) reserved between consecutive
@@ -614,11 +614,11 @@ func account_gate_spacing(failures int) int64 {
 		return account_gate_floor
 	}
 	if steps > 20 { // guard the shift below from overflowing
-		return account_wait_max
+		return account_wait_maximum
 	}
 	gap := int64(1) << (steps - 1) // 1, 2, 4, 8, ...
-	if gap > account_wait_max {
-		return account_wait_max
+	if gap > account_wait_maximum {
+		return account_wait_maximum
 	}
 	if gap < account_gate_floor {
 		return account_gate_floor
@@ -628,7 +628,7 @@ func account_gate_spacing(failures int) int64 {
 
 // reserve atomically assigns this attempt a verification slot. It returns the
 // seconds the caller must wait before verifying, and false when the account's
-// reserved queue is already deeper than account_wait_max — in which case the
+// reserved queue is already deeper than account_wait_maximum — in which case the
 // caller rejects (429) instead of holding a goroutine. Serialising the slot
 // assignment under the lock is what stops parallel guesses bypassing the
 // throttle.
@@ -649,13 +649,13 @@ func (g *account_gate) reserve(uid string) (int64, bool) {
 	wait := start - now
 	// Accept only when this attempt's whole slot (its wait plus the spacing it
 	// reserves) fits inside the window, so entry.next never climbs past
-	// now+account_wait_max. That bounds recovery after a flood to at most
-	// account_wait_max (a slot that started at the window edge cannot push next
+	// now+account_wait_maximum. That bounds recovery after a flood to at most
+	// account_wait_maximum (a slot that started at the window edge cannot push next
 	// a further spacing beyond it) and stops next ratcheting away under
 	// sustained load. A front-of-queue attempt (wait 0) always fits, so a
 	// correct credential on a quiet account is never refused.
 	gap := account_gate_spacing(entry.failures)
-	if wait+gap > account_wait_max {
+	if wait+gap > account_wait_maximum {
 		return wait, false
 	}
 	entry.next = start + gap
@@ -795,7 +795,7 @@ var account_stepup = &account_gate{entries: make(map[string]*account_gate_entry)
 
 // stepup_gate_reserve slows a step-up guess, sleeping out the spacing this
 // account has earned. Reports false when the queue is deeper than
-// account_wait_max, i.e. refuse rather than hold the caller any longer.
+// account_wait_maximum, i.e. refuse rather than hold the caller any longer.
 //
 // The context-free half of account_gate_guard: the Starlark step-up builtins
 // have no gin.Context to hang a Retry-After header on, and a gate an app has

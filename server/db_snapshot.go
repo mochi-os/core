@@ -38,9 +38,9 @@ func db_quick_check(path string) (result string, ran bool) {
 	defer d.Close()
 	var r string
 	if err := d.QueryRow("PRAGMA quick_check(1)").Scan(&r); err != nil {
-		msg := err.Error()
-		if strings.Contains(msg, "malformed") || strings.Contains(msg, "not a database") || strings.Contains(msg, "corrupt") {
-			return msg, true
+		message := err.Error()
+		if strings.Contains(message, "malformed") || strings.Contains(message, "not a database") || strings.Contains(message, "corrupt") {
+			return message, true
 		}
 		return "", false
 	}
@@ -58,38 +58,38 @@ func snapshot_integrity_ok(path string) bool {
 	return ran && result == "ok"
 }
 
-// snapshot_copy_db copies srcPath to dstPath using SQLite's online
+// snapshot_copy_db copies source to destination using SQLite's online
 // backup API. Returns the size of the resulting file.
-func snapshot_copy_db(srcPath, dstPath string) (int64, error) {
-	src, err := sql.Open("sqlite3", "file:"+srcPath+"?mode=ro&_pragma=busy_timeout(5000)")
+func snapshot_copy_db(source, destination string) (int64, error) {
+	database, err := sql.Open("sqlite3", "file:"+source+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
-		return 0, fmt.Errorf("open source %s: %w", srcPath, err)
+		return 0, fmt.Errorf("open source %s: %w", source, err)
 	}
-	defer src.Close()
+	defer database.Close()
 
-	_ = os.Remove(dstPath)
+	_ = os.Remove(destination)
 
 	ctx := context.Background()
-	source_connection, err := src.Conn(ctx)
+	source_connection, err := database.Conn(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("source conn: %w", err)
 	}
 	defer source_connection.Close()
 
-	raw_error := source_connection.Raw(func(driverConn any) error {
-		dc, ok := driverConn.(sqlitedrv.Conn)
+	raw_error := source_connection.Raw(func(driver any) error {
+		dc, ok := driver.(sqlitedrv.Conn)
 		if !ok {
 			return fmt.Errorf("driver conn does not implement sqlitedrv.Conn")
 		}
-		return dc.Raw().Backup("main", dstPath)
+		return dc.Raw().Backup("main", destination)
 	})
 	if raw_error != nil {
 		return 0, fmt.Errorf("backup: %w", raw_error)
 	}
 
-	info, err := os.Stat(dstPath)
+	information, err := os.Stat(destination)
 	if err != nil {
 		return 0, err
 	}
-	return info.Size(), nil
+	return information.Size(), nil
 }

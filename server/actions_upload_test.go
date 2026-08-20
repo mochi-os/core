@@ -107,9 +107,9 @@ func TestUploadRefusesToFollowASymlink(t *testing.T) {
 		t.Error("a write through a symlink was accepted")
 	}
 
-	after, readErr := os.ReadFile(outside)
-	if readErr != nil {
-		t.Fatalf("read outside: %v", readErr)
+	after, read_error := os.ReadFile(outside)
+	if read_error != nil {
+		t.Fatalf("read outside: %v", read_error)
 	}
 	if string(after) != "original" {
 		t.Errorf("the file outside the app directory was overwritten: %q", after)
@@ -138,9 +138,9 @@ func TestUploadAnonymousPublicActionDoesNotPanic(t *testing.T) {
 		t.Errorf("returned size %v, want 5", size)
 	}
 	// And it landed in the owner's directory, which is where a later read looks.
-	written, readErr := os.ReadFile(filepath.Join(api_file_base(owner, app), "anon.txt"))
-	if readErr != nil {
-		t.Fatalf("upload did not land in the owner's directory: %v", readErr)
+	written, read_error := os.ReadFile(filepath.Join(api_file_base(owner, app), "anon.txt"))
+	if read_error != nil {
+		t.Fatalf("upload did not land in the owner's directory: %v", read_error)
 	}
 	if string(written) != "hello" {
 		t.Errorf("stored %q, want %q", written, "hello")

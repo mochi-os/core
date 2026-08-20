@@ -169,13 +169,13 @@ func web_user_appearance_attrs(user *User, nonce string) (string, string) {
 	}
 }
 
-func append_radius_variables_from_base(style_parts *[]string, baseRadius string) {
+func append_radius_variables_from_base(style_parts *[]string, base_radius string) {
 	*style_parts = append(*style_parts,
-		fmt.Sprintf("--radius: %s", baseRadius),
-		fmt.Sprintf("--radius-sm: calc(%s - 4px)", baseRadius),
-		fmt.Sprintf("--radius-md: calc(%s - 2px)", baseRadius),
-		fmt.Sprintf("--radius-lg: %s", baseRadius),
-		fmt.Sprintf("--radius-xl: calc(%s + 4px)", baseRadius),
+		fmt.Sprintf("--radius: %s", base_radius),
+		fmt.Sprintf("--radius-sm: calc(%s - 4px)", base_radius),
+		fmt.Sprintf("--radius-md: calc(%s - 2px)", base_radius),
+		fmt.Sprintf("--radius-lg: %s", base_radius),
+		fmt.Sprintf("--radius-xl: calc(%s + 4px)", base_radius),
 	)
 }
 
@@ -248,37 +248,37 @@ func font_stacks(pref string) (sans, mono string) {
 // and theme previews.
 func style_preset_vars(density string) map[string]string {
 	const (
-		fontSans    = `-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif`
-		fontMono    = "'IBM Plex Mono', 'Geist Mono', monospace"
-		shadowColor = "rgba(0, 0, 0, 0.1)"
-		borderWidth = "1px"
+		font_sans    = `-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif`
+		font_mono    = "'IBM Plex Mono', 'Geist Mono', monospace"
+		shadow_color = "rgba(0, 0, 0, 0.1)"
+		border_width = "1px"
 	)
 
-	var spacingBase string
+	var spacing_base string
 	switch density {
 	case "compact":
-		spacingBase = "0.215rem"
+		spacing_base = "0.215rem"
 	case "spacious":
-		spacingBase = "0.285rem"
+		spacing_base = "0.285rem"
 	default: // comfortable
-		spacingBase = "0.27rem"
+		spacing_base = "0.27rem"
 	}
 
 	vars := map[string]string{
-		"--spacing-base": spacingBase,
-		"--spacing":      spacingBase,
-		"--font-sans":    fontSans,
-		"--font-mono":    fontMono,
-		"--border-width": borderWidth,
-		"--shadow-color": shadowColor,
-		"--shadow-2xs":   fmt.Sprintf("0 1px 2px %s", shadowColor),
-		"--shadow-xs":    fmt.Sprintf("0 1px 3px %s", shadowColor),
-		"--shadow-sm":    fmt.Sprintf("0 1px 2px %s, 0 2px 6px %s", shadowColor, shadowColor),
-		"--shadow":       fmt.Sprintf("0 2px 8px %s, 0 10px 28px %s", shadowColor, shadowColor),
-		"--shadow-md":    fmt.Sprintf("0 4px 12px %s, 0 14px 36px %s", shadowColor, shadowColor),
-		"--shadow-lg":    fmt.Sprintf("0 8px 20px %s, 0 20px 48px %s", shadowColor, shadowColor),
-		"--shadow-xl":    fmt.Sprintf("0 12px 28px %s, 0 28px 56px %s", shadowColor, shadowColor),
-		"--shadow-2xl":   fmt.Sprintf("0 16px 34px %s, 0 36px 72px %s", shadowColor, shadowColor),
+		"--spacing-base": spacing_base,
+		"--spacing":      spacing_base,
+		"--font-sans":    font_sans,
+		"--font-mono":    font_mono,
+		"--border-width": border_width,
+		"--shadow-color": shadow_color,
+		"--shadow-2xs":   fmt.Sprintf("0 1px 2px %s", shadow_color),
+		"--shadow-xs":    fmt.Sprintf("0 1px 3px %s", shadow_color),
+		"--shadow-sm":    fmt.Sprintf("0 1px 2px %s, 0 2px 6px %s", shadow_color, shadow_color),
+		"--shadow":       fmt.Sprintf("0 2px 8px %s, 0 10px 28px %s", shadow_color, shadow_color),
+		"--shadow-md":    fmt.Sprintf("0 4px 12px %s, 0 14px 36px %s", shadow_color, shadow_color),
+		"--shadow-lg":    fmt.Sprintf("0 8px 20px %s, 0 20px 48px %s", shadow_color, shadow_color),
+		"--shadow-xl":    fmt.Sprintf("0 12px 28px %s, 0 28px 56px %s", shadow_color, shadow_color),
+		"--shadow-2xl":   fmt.Sprintf("0 16px 34px %s, 0 36px 72px %s", shadow_color, shadow_color),
 	}
 
 	switch density {
@@ -472,20 +472,20 @@ func web_user_theme_style(user *User) string {
 // branded.
 func web_apply_user_document_theme(content string, user *User) string {
 	html_class, appearance_script := web_user_appearance_attrs(user, "")
-	content = web_add_html_attr(content, html_class)
-	content = web_add_html_attr(content, web_user_theme_style(user))
+	content = web_add_html_attribute(content, html_class)
+	content = web_add_html_attribute(content, web_user_theme_style(user))
 	if appearance_script != "" {
 		content = strings.Replace(content, "<head>", "<head>"+appearance_script, 1)
 	}
 	return content
 }
 
-// web_add_html_attr injects a class="..." or style="..." attribute into the
+// web_add_html_attribute injects a class="..." or style="..." attribute into the
 // first <html> tag. If the tag already carries the same attribute name the
 // values are merged (space-joined for class, semicolon-joined for style)
 // instead of creating an invalid duplicate attribute.
-func web_add_html_attr(content, attr string) string {
-	if attr == "" {
+func web_add_html_attribute(content, attribute string) string {
+	if attribute == "" {
 		return content
 	}
 
@@ -500,28 +500,28 @@ func web_add_html_attr(content, attr string) string {
 	end += start
 	tag := content[start:end]
 
-	// Extract the attribute name and value from the incoming attr (e.g. class="dark")
-	eq := strings.Index(attr, "=")
+	// Extract the attribute name and value from the incoming attribute (e.g. class="dark")
+	eq := strings.Index(attribute, "=")
 	if eq == -1 {
 		// Plain attribute without value — just append
-		return content[:end] + " " + attr + content[end:]
+		return content[:end] + " " + attribute + content[end:]
 	}
-	name := attr[:eq]                     // "class" or "style"
-	val := strings.Trim(attr[eq+1:], `"`) // the value without quotes
+	name := attribute[:eq]                     // "class" or "style"
+	val := strings.Trim(attribute[eq+1:], `"`) // the value without quotes
 
 	// Check if the <html> tag already has this attribute
 	needle := name + `="`
-	pos := strings.Index(tag, needle)
-	if pos == -1 {
+	position := strings.Index(tag, needle)
+	if position == -1 {
 		// Attribute doesn't exist yet — append it
-		return content[:end] + " " + attr + content[end:]
+		return content[:end] + " " + attribute + content[end:]
 	}
 
 	// Find the closing quote of the existing attribute value
-	val_start := start + pos + len(needle)
+	val_start := start + position + len(needle)
 	val_end := strings.Index(content[val_start:], `"`)
 	if val_end == -1 {
-		return content[:end] + " " + attr + content[end:]
+		return content[:end] + " " + attribute + content[end:]
 	}
 	val_end += val_start
 

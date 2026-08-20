@@ -268,11 +268,11 @@ func root_mkdir_all(root *os.Root, path string) error {
 
 		err := root.Mkdir(current, 0755)
 		if err != nil && !os.IsExist(err) {
-			info, statErr := root.Stat(current)
-			if statErr == nil && !info.IsDir() {
+			information, stat_error := root.Stat(current)
+			if stat_error == nil && !information.IsDir() {
 				return fmt.Errorf("path %q is a file", current)
 			}
-			if statErr != nil && !os.IsExist(err) {
+			if stat_error != nil && !os.IsExist(err) {
 				return err
 			}
 		}
@@ -537,22 +537,22 @@ var url_transport = &http.Transport{
 	ExpectContinueTimeout: 1 * time.Second,
 }
 
-// url_max_timeout caps an app-supplied request timeout. A Starlark call is
+// url_timeout_maximum caps an app-supplied request timeout. A Starlark call is
 // already bounded by the compute timeout through the context below, so this
 // only stops an app naming an absurd value; it is set above the default
 // compute timeout so it never trims a legitimate request inside that window.
-const url_max_timeout = 300 * time.Second
+const url_timeout_maximum = 300 * time.Second
 
 // url_timeout selects the request timeout from options: the app's value when it
-// is a positive integer, the 30s default otherwise, clamped to url_max_timeout.
+// is a positive integer, the 30s default otherwise, clamped to url_timeout_maximum.
 // Separated so the clamp can be asserted directly.
 func url_timeout(options map[string]string) time.Duration {
 	timeout := 30 * time.Second
 	if seconds, err := strconv.Atoi(options["timeout"]); err == nil && seconds > 0 {
 		timeout = time.Duration(seconds) * time.Second
 	}
-	if timeout > url_max_timeout {
-		timeout = url_max_timeout
+	if timeout > url_timeout_maximum {
+		timeout = url_timeout_maximum
 	}
 	return timeout
 }

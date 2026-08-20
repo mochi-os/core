@@ -7,7 +7,7 @@
 // FCM HTTP v1 push delivery. The server admin pastes a Firebase service
 // account JSON into the "fcm.service_account" setting; we mint an OAuth2
 // access token (RS256-signed JWT exchanged for a Bearer token), cache it
-// for ~50 min, and POST the message envelope to
+// for ~50 minimum, and POST the message envelope to
 // https://fcm.googleapis.com/v1/projects/<project_id>/messages:send.
 //
 // Per-server Firebase project: each Mochi server has its own; the client

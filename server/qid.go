@@ -42,7 +42,7 @@ const (
 	qid_search_ttl       = 7 * 24 * time.Hour
 	qid_search_empty_ttl = time.Hour
 	qid_backoff_base     = 60 * time.Second
-	qid_backoff_max      = 30 * time.Minute
+	qid_backoff_maximum  = 30 * time.Minute
 	// Wikimedia's User-Agent policy throttles/blocks generic or missing UAs
 	// hard (the cause of the 429 storm in #35); a descriptive UA with a
 	// contact URL gets far higher limits.
@@ -114,8 +114,8 @@ func qid_handle_429(resp *http.Response, context string) {
 	}
 	qid_backoff_until = time.Now().Add(wait)
 	qid_backoff_cur *= 2
-	if qid_backoff_cur > qid_backoff_max {
-		qid_backoff_cur = qid_backoff_max
+	if qid_backoff_cur > qid_backoff_maximum {
+		qid_backoff_cur = qid_backoff_maximum
 	}
 	info("mochi.qid: Wikidata 429 on %s, backing off for %v", context, wait)
 }

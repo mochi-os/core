@@ -72,7 +72,7 @@ func api_text_sortkey(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 // regex_session_maximum bounds one Starlark session's regex cache. A session is
 // a single action or event invocation - AppVersion.starlark() builds a fresh
-// thread per call, sharing only the compiled globals - and starlark_sem caps
+// thread per call, sharing only the compiled globals - and starlark_semaphore caps
 // concurrent sessions at 32, so the worst case is that many caches of this size,
 // all released when their handlers return.
 const regex_session_maximum = 1000
@@ -171,14 +171,14 @@ func api_text_slug(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 func text_slug(s string) string {
 	cleaned := text_sortkey(s)
 	var b strings.Builder
-	prev_dash := true // suppress leading dashes
+	previous_dash := true // suppress leading dashes
 	for _, r := range cleaned {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			b.WriteRune(r)
-			prev_dash = false
-		} else if !prev_dash {
+			previous_dash = false
+		} else if !previous_dash {
 			b.WriteRune('-')
-			prev_dash = true
+			previous_dash = true
 		}
 	}
 	return strings.TrimRight(b.String(), "-")

@@ -81,11 +81,11 @@ func TestWebAuthPartial(t *testing.T) {
 	sessions := db_open("db/sessions.db")
 	sessions.exec("insert into partial (id, user, completed, remaining, expires) values ('p1', 'u1', 'oauth', 'email', ?)", now()+300)
 
-	call := func(withCookie bool) map[string]any {
+	call := func(with_cookie bool) map[string]any {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest("GET", "/_/auth/partial", nil)
-		if withCookie {
+		if with_cookie {
 			c.Request.AddCookie(&http.Cookie{Name: "login_partial", Value: "p1"})
 		}
 		web_auth_partial(c)

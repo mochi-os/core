@@ -132,7 +132,7 @@ func TestRssFetchDoesNotCopyTheBody(t *testing.T) {
 	}
 }
 
-// TestRssMaximumIsItsOwnBound. Sharing url_max_response_size meant a change to
+// TestRssMaximumIsItsOwnBound. Sharing url_response_size_maximum meant a change to
 // what any outbound fetch may return silently changed what a feed may be, and
 // the reverse.
 func TestRssMaximumIsItsOwnBound(t *testing.T) {

@@ -243,8 +243,8 @@ func TestAccountGateSpacing(t *testing.T) {
 	if g := account_gate_spacing(account_gate_free + 2); g != 2 {
 		t.Errorf("second paid spacing = %d, want 2", g)
 	}
-	if g := account_gate_spacing(1000); g != account_wait_max {
-		t.Errorf("far past the cap = %d, want %d", g, account_wait_max)
+	if g := account_gate_spacing(1000); g != account_wait_maximum {
+		t.Errorf("far past the cap = %d, want %d", g, account_wait_maximum)
 	}
 }
 
@@ -253,7 +253,7 @@ func TestAccountGateSpacing(t *testing.T) {
 // lock, so calling reserve repeatedly on one account (which is exactly what N
 // concurrent requests do — one at a time under the lock) hands out DISTINCT,
 // increasing wait slots, not the same free-tier slot to everyone. Past the
-// max-wait depth the gate refuses rather than queue, bounding both the guess
+// maximum-wait depth the gate refuses rather than queue, bounding both the guess
 // rate per account and the number of handlers that ever sleep.
 func TestAccountGateReserve(t *testing.T) {
 	gate := &account_gate{entries: make(map[string]*account_gate_entry)}
@@ -276,15 +276,15 @@ func TestAccountGateReserve(t *testing.T) {
 			t.Errorf("slot %d (%d) not after slot %d (%d) — parallel bypass", i, waits[i], i-1, waits[i-1])
 		}
 	}
-	// Beyond the max-wait depth the gate refuses rather than hold a goroutine.
+	// Beyond the maximum-wait depth the gate refuses rather than hold a goroutine.
 	if _, ok := gate.reserve("u1"); ok {
 		t.Error("a queue past account_wait_max must be refused (429), not queued")
 	}
 	// The reserved queue never climbs past the window, so recovery after a
-	// flood is bounded by account_wait_max — not 2x it, and never unbounded
+	// flood is bounded by account_wait_maximum — not 2x it, and never unbounded
 	// under sustained load.
-	if depth := gate.entries["u1"].next - now(); depth > account_wait_max {
-		t.Errorf("queue depth %ds exceeds account_wait_max %ds — recovery not bounded", depth, account_wait_max)
+	if depth := gate.entries["u1"].next - now(); depth > account_wait_maximum {
+		t.Errorf("queue depth %ds exceeds account_wait_max %ds — recovery not bounded", depth, account_wait_maximum)
 	}
 	// A different account is unaffected: its first slot is immediate.
 	if wait, ok := gate.reserve("u2"); !ok || wait != 0 {
@@ -312,7 +312,7 @@ func TestAccountGateDone(t *testing.T) {
 	if entry.pending != 3 {
 		t.Fatalf("pending = %d, want 3", entry.pending)
 	}
-	nextBefore := entry.next
+	next_before := entry.next
 
 	// The first attempt succeeds mid-flight. The entry must survive (two still
 	// pending), the timeline must not move, and the penalty must clear.
@@ -321,8 +321,8 @@ func TestAccountGateDone(t *testing.T) {
 	if entry == nil {
 		t.Fatal("entry deleted while reservations still pending — timeline rewound")
 	}
-	if entry.next != nextBefore {
-		t.Errorf("next moved on a mid-flight success: %d != %d", entry.next, nextBefore)
+	if entry.next != next_before {
+		t.Errorf("next moved on a mid-flight success: %d != %d", entry.next, next_before)
 	}
 	if entry.pending != 2 || entry.failures != 0 {
 		t.Errorf("after mid-flight success: pending=%d failures=%d, want 2 / 0", entry.pending, entry.failures)
@@ -358,9 +358,9 @@ func TestAccountRateLimit(t *testing.T) {
 	// Neutralise spacing (floor 0 AND a free tier past the attempt count) so
 	// serial attempts reserve immediate slots and never sleep; the spacing and
 	// serialisation are covered by TestAccountGateReserve.
-	savedFloor, savedFree := account_gate_floor, account_gate_free
+	saved_floor, saved_free := account_gate_floor, account_gate_free
 	account_gate_floor, account_gate_free = 0, 1_000_000
-	defer func() { account_gate_floor, account_gate_free = savedFloor, savedFree }()
+	defer func() { account_gate_floor, account_gate_free = saved_floor, saved_free }()
 
 	attempt := func() int {
 		w := httptest.NewRecorder()

@@ -6,7 +6,7 @@
 //
 // macOS has no SO_PEERCRED. The equivalent is LOCAL_PEERCRED, which returns an
 // xucred carrying the peer's uid and its group list (primary group first, up
-// to 16 entries). There is no pid, so admin_cred.pid stays 0. The xucred group
+// to 16 entries). There is no pid, so admin_credential.pid stays 0. The xucred group
 // list gives the supplementary-group membership directly, so no /proc-style
 // lookup is needed.
 
@@ -32,26 +32,26 @@ const admin_account = "_mochi"
 // reports whether the peer clears the admin gate: the mochi user, root, or a
 // member of the mochi group (primary or supplementary, from the xucred group
 // list).
-func admin_peer_authorized(c *net.UnixConn) (bool, *admin_cred) {
+func admin_peer_authorized(c *net.UnixConn) (bool, *admin_credential) {
 	raw, err := c.SyscallConn()
 	if err != nil {
 		return false, nil
 	}
 	var xucred *unix.Xucred
-	var credErr error
+	var credential_error error
 	err = raw.Control(func(fd uintptr) {
-		xucred, credErr = unix.GetsockoptXucred(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERCRED)
+		xucred, credential_error = unix.GetsockoptXucred(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERCRED)
 	})
-	if err != nil || credErr != nil || xucred == nil {
+	if err != nil || credential_error != nil || xucred == nil {
 		return false, nil
 	}
 	var gid uint32
 	if xucred.Ngroups > 0 {
 		gid = xucred.Groups[0]
 	}
-	cred := &admin_cred{uid: xucred.Uid, gid: gid, pid: 0}
-	if admin_cred_basic_authorized(cred.uid, cred.gid) {
-		return true, cred
+	credential := &admin_credential{uid: xucred.Uid, gid: gid, pid: 0}
+	if admin_credential_basic_authorized(credential.uid, credential.gid) {
+		return true, credential
 	}
 	if admin_mochi_gid != 0 {
 		n := int(xucred.Ngroups)
@@ -60,9 +60,9 @@ func admin_peer_authorized(c *net.UnixConn) (bool, *admin_cred) {
 		}
 		for i := 0; i < n; i++ {
 			if xucred.Groups[i] == admin_mochi_gid {
-				return true, cred
+				return true, credential
 			}
 		}
 	}
-	return false, cred
+	return false, credential
 }

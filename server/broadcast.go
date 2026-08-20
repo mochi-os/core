@@ -256,7 +256,7 @@ func nack_reason_from_error(err error) string {
 //	mochi.broadcast.next(key) -> int (legacy; sequence allocator)
 //	mochi.broadcast.received(sender, key) -> int (highest applied seq)
 //	mochi.broadcast.seen(key) -> int (host-local time of the last apply for
-//	  key, max over senders; idle-resync #165 gate)
+//	  key, maximum over senders; idle-resync #165 gate)
 //	mochi.broadcast.advance(sender, key, sequence)
 //	mochi.broadcast.touch(key) (stamp seen=now without an applied broadcast)
 //
@@ -522,8 +522,7 @@ func broadcast_advance_local(db *DB, sender, key string, sequence int64) {
 // apply state and each paired host must track its own. If we pair-
 // replicated received, the gap detector on the partner host would
 // see incoming seqs as <= last and dedup them silently, never firing
-// the handler that updates row data. See task #91 for the bug this
-// closes (projects ticket move on mochi1 didn't propagate to mochi2
+// the handler that updates row data. This closes the bug (projects ticket move on mochi1 didn't propagate to mochi2
 // even though both ended up with the same received.last).
 func broadcast_advance_local_simple(db *DB, sender, key string, sequence int64) {
 	broadcast_received_table_create(db)
@@ -662,7 +661,7 @@ func broadcast_log_age_trim(db *DB, key, peer string) {
 	}
 }
 
-// broadcast_log_ack_trim deletes log rows below the min ack across all
+// broadcast_log_ack_trim deletes log rows below the minimum ack across all
 // subscribers for (key, peer). Called from the acknowledge handler
 // after acknowledged is updated.
 func broadcast_log_ack_trim(db *DB, key, peer string) {
@@ -1218,7 +1217,6 @@ func (e *Event) broadcast_resync(a *App, av *AppVersion) error {
 		// traffic at the per-bucket cap=1 and the subscriber's
 		// catch-up rate degrades to the bucket's drain rate
 		// (~0.7 events/sec observed live with a 12k-deep bucket).
-		// See task #96.
 		m.send_peer_priority(e.peer, priority_replay)
 	}
 	return nil
@@ -1386,12 +1384,12 @@ func (e *Event) broadcast_floor(a *App) error {
 	e.db.exec("delete from pending where peer=? and key=? and sequence<=?", peer, key, broadcast_received_get(e.db, peer, key))
 	audit_broadcast_pending_purged(e.user.UID, a.id, peer, key, first, floor-1, floor-1-last)
 	broadcast_skip_warn(e.user.UID, a.id, peer, key, first, floor-1)
-	svc := ""
+	service := ""
 	if svcs := app_services(a, e.user); len(svcs) > 0 {
-		svc = svcs[0]
+		service = svcs[0]
 	}
 	k, p, f, l := key, peer, first, floor-1
-	error_dispatch(e.user, a, error_code_broadcast_gap, "unfillable", svc, k, nil, func() map[string]any {
+	error_dispatch(e.user, a, error_code_broadcast_gap, "unfillable", service, k, nil, func() map[string]any {
 		return map[string]any{"peer": p, "key": k, "first": f, "last": l}
 	})
 	return nil
@@ -1417,7 +1415,7 @@ func (e *Event) broadcast_floor(a *App) error {
 // request fires immediately.
 //
 // See claude/sessions/2026-05-25-broadcast-resync-seq-643-
-// investigation.md and follow-up task #81.
+// investigation.md.
 const broadcast_resync_timeout = 30 * time.Second
 
 // broadcast_resync_maximum bounds the in-flight map. An entry is only

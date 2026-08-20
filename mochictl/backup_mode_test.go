@@ -187,13 +187,13 @@ func TestBackupToStdoutCreatesNoFile(t *testing.T) {
 	}
 	stdout := os.Stdout
 	os.Stdout = write
-	run_err := backup_run(t, socket_path, "-")
+	run_error := backup_run(t, socket_path, "-")
 	os.Stdout = stdout
 	write.Close()
 	streamed, _ := io.ReadAll(read)
 
-	if run_err != nil {
-		t.Fatalf("backup -: %v", run_err)
+	if run_error != nil {
+		t.Fatalf("backup -: %v", run_error)
 	}
 	if string(streamed) != "tarball" {
 		t.Errorf("streamed %q, want the body on stdout", streamed)

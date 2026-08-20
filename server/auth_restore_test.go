@@ -86,7 +86,7 @@ func TestUserRestoreRoundTrip(t *testing.T) {
 
 	// ---- Restore into a fresh destination ----
 	stage := filepath.Join(data_dir, "users", "u-dst", "restore", "staging")
-	bundle, err := restore_unzip(zip_path, stage, file_max_storage)
+	bundle, err := restore_unzip(zip_path, stage, file_maximum_storage)
 	if err != nil {
 		t.Fatalf("unzip: %v", err)
 	}
@@ -189,8 +189,8 @@ func TestRestoreSafeMethods(t *testing.T) {
 		name              string
 		methods, disabled string
 		totp, recovery    bool
-		wantMethods       string
-		wantDisabled      string
+		want_methods      string
+		want_disabled     string
 	}{
 		// Authenticator restored: a 2FA requirement carries over intact.
 		{"2fa-totp-restored", "email,totp", "", true, true, "email,totp", ""},
@@ -209,11 +209,11 @@ func TestRestoreSafeMethods(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			m, d := restore_safe_methods(c.methods, c.disabled, c.totp, c.recovery)
-			if m != c.wantMethods {
-				t.Errorf("methods = %q, want %q", m, c.wantMethods)
+			if m != c.want_methods {
+				t.Errorf("methods = %q, want %q", m, c.want_methods)
 			}
-			if d != c.wantDisabled {
-				t.Errorf("disabled = %q, want %q", d, c.wantDisabled)
+			if d != c.want_disabled {
+				t.Errorf("disabled = %q, want %q", d, c.want_disabled)
 			}
 		})
 	}

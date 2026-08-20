@@ -306,14 +306,14 @@ func longest_key(v any) int {
 	if !ok {
 		return 0
 	}
-	max := 0
+	maximum := 0
 	for k := range m {
 		// +1 for the trailing colon in the format string.
-		if l := len(humanise(k)) + 1; l > max {
-			max = l
+		if l := len(humanise(k)) + 1; l > maximum {
+			maximum = l
 		}
 	}
-	return max
+	return maximum
 }
 
 // sorted_keys returns the keys of m in lexicographic order so output is stable.

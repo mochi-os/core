@@ -279,19 +279,19 @@ func TestClaimVerifyRejectsCrossStreamReplay(t *testing.T) {
 	setup_users_test_schema()
 	id, _ := new_entity_keys(t)
 
-	chA := make([]byte, challenge_size_v2)
-	chB := make([]byte, challenge_size_v2)
-	rand.Read(chA)
-	rand.Read(chB)
-	if bytes.Equal(chA, chB) {
+	channel_a := make([]byte, challenge_size_v2)
+	channel_b := make([]byte, challenge_size_v2)
+	rand.Read(channel_a)
+	rand.Read(channel_b)
+	if bytes.Equal(channel_a, channel_b) {
 		t.Fatal("test setup: challenges collided")
 	}
-	sigA := claim_sign(id, chA, test_receiver, protocol_messages)
-	if sigA == nil {
+	sig_a := claim_sign(id, channel_a, test_receiver, protocol_messages)
+	if sig_a == nil {
 		t.Fatal("claim_sign A failed")
 	}
 	// Same signature, different stream challenge → must fail.
-	if err := claim_verify(id, chB, sigA, test_receiver, protocol_messages); err == nil {
+	if err := claim_verify(id, channel_b, sig_a, test_receiver, protocol_messages); err == nil {
 		t.Error("claim_verify accepted replay from a different stream's challenge")
 	}
 }
@@ -300,19 +300,19 @@ func TestClaimVerifyRejectsCrossEntityReplay(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 	setup_users_test_schema()
-	idA, _ := new_entity_keys(t)
-	idB, _ := new_entity_keys(t)
-	if idA == idB {
+	id_a, _ := new_entity_keys(t)
+	id_b, _ := new_entity_keys(t)
+	if id_a == id_b {
 		t.Fatal("setup: entity IDs collided")
 	}
 
 	challenge := make([]byte, challenge_size_v2)
 	rand.Read(challenge)
-	sigA := claim_sign(idA, challenge, test_receiver, protocol_messages)
-	if sigA == nil {
+	sig_a := claim_sign(id_a, challenge, test_receiver, protocol_messages)
+	if sig_a == nil {
 		t.Fatal("claim_sign A failed")
 	}
-	if err := claim_verify(idB, challenge, sigA, test_receiver, protocol_messages); err == nil {
+	if err := claim_verify(id_b, challenge, sig_a, test_receiver, protocol_messages); err == nil {
 		t.Errorf("claim_verify accepted entity A's signature for entity B")
 	}
 }
@@ -480,7 +480,7 @@ func TestSendersEntityInvalidateClosesMatching(t *testing.T) {
 	// Stash any existing entry under peer so we restore it on cleanup
 	// and don't disturb other tests.
 	senders_lock.Lock()
-	prev, hadPrev := senders[peer]
+	previous, had_previous := senders[peer]
 	senders[peer] = &Sender{
 		peer:     peer,
 		outbox:   make(chan *outbound, 1),
@@ -492,8 +492,8 @@ func TestSendersEntityInvalidateClosesMatching(t *testing.T) {
 	senders_lock.Unlock()
 	defer func() {
 		senders_lock.Lock()
-		if hadPrev {
-			senders[peer] = prev
+		if had_previous {
+			senders[peer] = previous
 		} else {
 			delete(senders, peer)
 		}
@@ -517,7 +517,7 @@ func TestSendersEntityInvalidateNoOpForEmptyEntity(t *testing.T) {
 	// everything by accident.
 	const peer = "peer-noop-test"
 	senders_lock.Lock()
-	prev, hadPrev := senders[peer]
+	previous, had_previous := senders[peer]
 	senders[peer] = &Sender{
 		peer:     peer,
 		outbox:   make(chan *outbound, 1),
@@ -529,8 +529,8 @@ func TestSendersEntityInvalidateNoOpForEmptyEntity(t *testing.T) {
 	senders_lock.Unlock()
 	defer func() {
 		senders_lock.Lock()
-		if hadPrev {
-			senders[peer] = prev
+		if had_previous {
+			senders[peer] = previous
 		} else {
 			delete(senders, peer)
 		}

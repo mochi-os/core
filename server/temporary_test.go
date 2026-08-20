@@ -38,17 +38,17 @@ func TestTemporaryConfigure(t *testing.T) {
 	if got := os.TempDir(); got != expected {
 		t.Errorf("os.TempDir() = %q, want %q — uploads would spool to the system default", got, expected)
 	}
-	info, err := os.Stat(expected)
+	information, err := os.Stat(expected)
 	if err != nil {
 		t.Fatalf("temporary directory was not created: %v", err)
 	}
-	if !info.IsDir() {
+	if !information.IsDir() {
 		t.Fatalf("%s is not a directory", expected)
 	}
 
 	// The spooled parts of an upload land here, so the directory must not be
 	// readable by other users on the host.
-	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+	if mode := information.Mode().Perm(); mode&0o077 != 0 {
 		t.Errorf("temporary directory is mode %o, accessible beyond its owner", mode)
 	}
 

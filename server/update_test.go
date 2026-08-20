@@ -78,9 +78,9 @@ func TestUpdateInstallDownloadVerifies(t *testing.T) {
 				if err != nil {
 					t.Fatalf("expected success, got: %v", err)
 				}
-				got, readErr := os.ReadFile(dest)
-				if readErr != nil {
-					t.Fatalf("read destination: %v", readErr)
+				got, read_error := os.ReadFile(dest)
+				if read_error != nil {
+					t.Fatalf("read destination: %v", read_error)
 				}
 				if string(got) != string(body) {
 					t.Errorf("destination holds %q, want %q", got, body)
@@ -89,13 +89,13 @@ func TestUpdateInstallDownloadVerifies(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected rejection, got success")
 				}
-				if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+				if _, stat_error := os.Stat(dest); !os.IsNotExist(stat_error) {
 					t.Errorf("rejected artifact was left at %s", dest)
 				}
 			}
 
 			// The partial must never survive, on either path.
-			if _, statErr := os.Stat(dest + ".part"); !os.IsNotExist(statErr) {
+			if _, stat_error := os.Stat(dest + ".part"); !os.IsNotExist(stat_error) {
 				t.Errorf("partial download was left at %s.part", dest)
 			}
 		})

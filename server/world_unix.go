@@ -72,10 +72,10 @@ func (l *world_conn_listener) Accept() (net.Conn, error) {
 			_ = c.Close()
 			continue
 		}
-		authorized, cred := world_peer_authorized(uc)
+		authorized, credential := world_peer_authorized(uc)
 		if !authorized {
-			if cred != nil {
-				warn("world: rejecting unauthorised peer uid=%d gid=%d pid=%d", cred.uid, cred.gid, cred.pid)
+			if credential != nil {
+				warn("world: rejecting unauthorised peer uid=%d gid=%d pid=%d", credential.uid, credential.gid, credential.pid)
 			} else {
 				warn("world: rejecting peer with unreadable creds")
 			}

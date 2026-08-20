@@ -43,7 +43,7 @@ func TestWorkerInboxOfferCreatesWorker(t *testing.T) {
 	defer reset_workers(t)
 	ok := worker_inbox_offer("nobody", "no-such-app", &worker_frame{
 		frame: &Frame{Type: frame_type_message, ID: "x"},
-		reply: local_reply{id: "x"},
+		reply: local_reply{message: "x"},
 	})
 	if !ok {
 		t.Error("worker_inbox_offer with no worker returned false; want true (creates it)")
@@ -67,7 +67,7 @@ func TestWorkerInboxOfferAcceptsWhenWorkerExists(t *testing.T) {
 	})
 	if !worker_inbox_offer("user-a", "app-a", &worker_frame{
 		frame: &Frame{Type: frame_type_message, ID: "y"},
-		reply: local_reply{id: "y"},
+		reply: local_reply{message: "y"},
 	}) {
 		t.Error("worker_inbox_offer to existing worker returned false; want true")
 	}
@@ -91,7 +91,7 @@ func TestWorkerInboxOfferReturnsFalseWhenInboxFull(t *testing.T) {
 	w.inbox <- &worker_frame{frame: &Frame{Type: frame_type_message, ID: "filler"}}
 	if worker_inbox_offer("u", "svc", &worker_frame{
 		frame: &Frame{Type: frame_type_message, ID: "overflow"},
-		reply: local_reply{id: "overflow"},
+		reply: local_reply{message: "overflow"},
 	}) {
 		t.Error("worker_inbox_offer with full inbox returned true; want false")
 	}
@@ -142,7 +142,7 @@ type fake_reply struct {
 	done  chan struct{}
 }
 
-func newFakeReply() *fake_reply {
+func new_fake_reply() *fake_reply {
 	return &fake_reply{done: make(chan struct{}, 1)}
 }
 
@@ -195,7 +195,7 @@ func TestWorkerCallsReplyFailOnUnknownService(t *testing.T) {
 	reset_workers(t)
 	defer reset_workers(t)
 
-	reply := newFakeReply()
+	reply := new_fake_reply()
 	worker_dispatch("", "no-such-service", &worker_frame{
 		frame: &Frame{
 			Type:    frame_type_message,
@@ -312,16 +312,16 @@ func TestWorkerDifferentKeysRunConcurrently(t *testing.T) {
 	reset_workers(t)
 	defer reset_workers(t)
 
-	gateA := make(chan struct{})
-	gateB := make(chan struct{})
+	gate_a := make(chan struct{})
+	gate_b := make(chan struct{})
 	var seen atomic.Int64
 	worker_dispatch("alice", "svc", &worker_frame{
 		frame: &Frame{Type: frame_type_message, ID: "a", Service: "svc"},
-		reply: &slow_reply{id: 1, gate: gateA, seen: &seen},
+		reply: &slow_reply{id: 1, gate: gate_a, seen: &seen},
 	})
 	worker_dispatch("bob", "svc", &worker_frame{
 		frame: &Frame{Type: frame_type_message, ID: "b", Service: "svc"},
-		reply: &slow_reply{id: 2, gate: gateB, seen: &seen},
+		reply: &slow_reply{id: 2, gate: gate_b, seen: &seen},
 	})
 
 	// Both replies should reach their gate without waiting for each
@@ -333,8 +333,8 @@ func TestWorkerDifferentKeysRunConcurrently(t *testing.T) {
 	if got := seen.Load(); got != 2 {
 		t.Errorf("both workers should reach gate independently; seen=%d", got)
 	}
-	close(gateA)
-	close(gateB)
+	close(gate_a)
+	close(gate_b)
 }
 
 // --- worker_dispatch back-pressure -----------------------------------
@@ -463,13 +463,13 @@ func TestWorkerReaperSparesActive(t *testing.T) {
 	defer reset_workers(t)
 
 	// Active worker (recent last_used) MUST NOT be reaped.
-	keyActive := user_app_key{user: "active", app: "app"}
-	w := worker_create(keyActive)
+	key_active := user_app_key{user: "active", app: "app"}
+	w := worker_create(key_active)
 	w.last_used.Store(now())
 
 	// Idle worker (zero last_used) WILL be reaped.
-	keyIdle := user_app_key{user: "idle", app: "app"}
-	wi := worker_create(keyIdle)
+	key_idle := user_app_key{user: "idle", app: "app"}
+	wi := worker_create(key_idle)
 	wi.last_used.Store(0)
 
 	cutoff := now() - 1
@@ -482,8 +482,8 @@ func TestWorkerReaperSparesActive(t *testing.T) {
 	}
 	app_workers_lock.RUnlock()
 
-	if len(doomed) != 1 || doomed[0] != keyIdle {
-		t.Errorf("doomed list: got %v, want [%v]", doomed, keyIdle)
+	if len(doomed) != 1 || doomed[0] != key_idle {
+		t.Errorf("doomed list: got %v, want [%v]", doomed, key_idle)
 	}
 }
 
@@ -716,7 +716,7 @@ func TestWorkerFailureReasonMapping(t *testing.T) {
 	for _, c := range cases {
 		var err error
 		if c.errmsg != "" {
-			err = errString(c.errmsg)
+			err = error_string(c.errmsg)
 		}
 		got := worker_failure_reason(err)
 		if got != c.want {
@@ -725,8 +725,8 @@ func TestWorkerFailureReasonMapping(t *testing.T) {
 	}
 }
 
-// errString is a tiny error type used only in worker_failure_reason
+// error_string is a tiny error type used only in worker_failure_reason
 // tests so we don't pull in errors.New + fmt.Errorf repeatedly.
-type errString string
+type error_string string
 
-func (e errString) Error() string { return string(e) }
+func (e error_string) Error() string { return string(e) }

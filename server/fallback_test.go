@@ -161,28 +161,28 @@ func TestFallbackAutoEnable(t *testing.T) {
 func TestFallbackMiddleware(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	backendHit := false
+	backend_hit := false
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		backendHit = true
+		backend_hit = true
 		w.WriteHeader(200)
 	}))
 	defer backend.Close()
-	backendPort := backend.Listener.Addr().(interface{ String() string }).String()
+	backend_port := backend.Listener.Addr().(interface{ String() string }).String()
 	// Extract the numeric port from "127.0.0.1:NNNN".
-	if i := strings.LastIndex(backendPort, ":"); i >= 0 {
-		fallback_ws_port = int(atoi(backendPort[i+1:], 0))
+	if i := strings.LastIndex(backend_port, ":"); i >= 0 {
+		fallback_ws_port = int(atoi(backend_port[i+1:], 0))
 	}
 	defer func() { fallback_ws_port = 0 }()
 
-	passedThrough := false
+	passed_through := false
 	engine := gin.New()
 	engine.Use(fallback_middleware)
-	engine.NoRoute(func(c *gin.Context) { passedThrough = true; c.Status(200) })
+	engine.NoRoute(func(c *gin.Context) { passed_through = true; c.Status(200) })
 	front := httptest.NewServer(engine)
 	defer front.Close()
 
 	do := func(path string, ws bool) {
-		backendHit, passedThrough = false, false
+		backend_hit, passed_through = false, false
 		req, _ := http.NewRequest("GET", front.URL+path, nil)
 		if ws {
 			req.Header.Set("Connection", "Upgrade")
@@ -198,38 +198,38 @@ func TestFallbackMiddleware(t *testing.T) {
 
 	// Root WebSocket upgrade → bridged to the libp2p backend.
 	do("/", true)
-	if !backendHit {
+	if !backend_hit {
 		t.Error("root WS upgrade was not bridged to the libp2p listener")
 	}
-	if passedThrough {
+	if passed_through {
 		t.Error("root WS upgrade also reached the web app")
 	}
 
 	// Root plain GET → web app, not bridged.
 	do("/", false)
-	if backendHit {
+	if backend_hit {
 		t.Error("plain root GET was bridged")
 	}
-	if !passedThrough {
+	if !passed_through {
 		t.Error("plain root GET did not reach the web app")
 	}
 
 	// App-path WebSocket upgrade (an app's own socket) → web app.
 	do("/feeds/abc/-/socket", true)
-	if backendHit {
+	if backend_hit {
 		t.Error("app-path WS upgrade was bridged")
 	}
-	if !passedThrough {
+	if !passed_through {
 		t.Error("app-path WS upgrade did not reach the web app")
 	}
 
 	// Off (port 0): even a root WS upgrade passes through.
 	fallback_ws_port = 0
 	do("/", true)
-	if backendHit {
+	if backend_hit {
 		t.Error("root WS upgrade bridged while fallback off")
 	}
-	if !passedThrough {
+	if !passed_through {
 		t.Error("root WS upgrade did not reach the web app while fallback off")
 	}
 }

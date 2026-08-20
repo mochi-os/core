@@ -37,13 +37,13 @@ const object_maximum = 10 * 1024 * 1024 * 1024 // 10GB
 
 // Maximum file storage per user (10GB). Equal to object_maximum, so a single
 // object may fill a user's whole allowance - a video is one file, not many.
-var file_max_storage int64 = 10 * 1024 * 1024 * 1024
+var file_maximum_storage int64 = 10 * 1024 * 1024 * 1024
 
 // How long an unread cache entry survives before cache_cleanup removes it.
-const cache_max_age = 7 * 24 * time.Hour
+const cache_age_maximum = 7 * 24 * time.Hour
 
 // user_storage_remaining reports how many more bytes the user may store before
-// reaching the per-user storage quota (file_max_storage). Administrators are
+// reaching the per-user storage quota (file_maximum_storage). Administrators are
 // exempt from the quota and always have effectively unlimited space; returning
 // early also spares them the full-tree dir_size walk on every write.
 func user_storage_remaining(u *User) (int64, error) {
@@ -54,7 +54,7 @@ func user_storage_remaining(u *User) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return file_max_storage - current, nil
+	return file_maximum_storage - current, nil
 }
 
 var (
@@ -98,20 +98,20 @@ func data_dir_writable_check() error {
 }
 
 func file_is_directory(path string) bool {
-	info, err := os.Stat(path)
+	information, err := os.Stat(path)
 	if err != nil {
 		return false
 	}
-	return info.IsDir()
+	return information.IsDir()
 }
 
 // Check if path is a symlink
 func file_is_symlink(path string) bool {
-	info, err := os.Lstat(path)
+	information, err := os.Lstat(path)
 	if err != nil {
 		return false
 	}
-	return info.Mode()&os.ModeSymlink != 0
+	return information.Mode()&os.ModeSymlink != 0
 }
 
 func file_list(path string) ([]string, error) {
@@ -251,12 +251,12 @@ func user_storage_dir(u *User) string {
 // Calculate total size of files in a directory
 func dir_size(path string) (int64, error) {
 	var size int64
-	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+	err := filepath.Walk(path, func(_ string, information os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if info != nil && !info.IsDir() {
-			size += info.Size()
+		if information != nil && !information.IsDir() {
+			size += information.Size()
 		}
 		return nil
 	})
@@ -406,7 +406,7 @@ func api_file_copy(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return sl.MakeInt64(written), nil
 }
 
-// mochi.file.maximum() -> integer: The largest single object the platform
+// mochi.file.max() -> integer: The largest single object the platform
 // stores, in bytes. Exposed so an app can refuse an oversized upload against
 // the same figure core enforces rather than carrying its own copy - the two
 // drifting apart is what let an object be stored larger than a transfer can
@@ -522,11 +522,11 @@ func api_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 	defer root.Close()
 
-	info, err := root.Stat(dir)
+	information, err := root.Stat(dir)
 	if err != nil {
 		return sl_error(fn, "does not exist")
 	}
-	if !info.IsDir() {
+	if !information.IsDir() {
 		return sl_error(fn, "not a directory")
 	}
 
@@ -777,15 +777,15 @@ func cache_manager() {
 	}
 }
 
-// Remove cache files older than cache_max_age, then enforce the byte budget
+// Remove cache files older than cache_age_maximum, then enforce the byte budget
 // over the apps namespace (cache_evict).
 func cache_cleanup() {
-	cutoff := time.Now().Add(-cache_max_age)
-	filepath.Walk(cache_dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+	cutoff := time.Now().Add(-cache_age_maximum)
+	filepath.Walk(cache_dir, func(path string, information os.FileInfo, err error) error {
+		if err != nil || information.IsDir() {
 			return nil
 		}
-		if info.ModTime().Before(cutoff) {
+		if information.ModTime().Before(cutoff) {
 			os.Remove(path)
 		}
 		return nil

@@ -5,7 +5,7 @@
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
 // Provides app-level groups that can be used as subjects in access control.
-// Groups can contain users or other groups (up to group_max_depth levels).
+// Groups can contain users or other groups (up to group_depth_maximum levels).
 
 package main
 
@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	group_max_depth = 10
+	group_depth_maximum = 10
 )
 
 type GroupMember struct {
@@ -35,8 +35,8 @@ var api_group = sls.FromStringDict(sl.String("mochi.group"), sl.StringDict{
 	"delete":      sl.NewBuiltin("mochi.group.delete", api_group_delete),
 	"add":         sl.NewBuiltin("mochi.group.add", api_group_add),
 	"remove":      sl.NewBuiltin("mochi.group.remove", api_group_remove),
-	"members":     sl.NewBuiltin("mochi.group.members", apigroup_members),
-	"memberships": sl.NewBuiltin("mochi.group.memberships", apigroup_memberships),
+	"members":     sl.NewBuiltin("mochi.group.members", api_group_members),
+	"memberships": sl.NewBuiltin("mochi.group.memberships", api_group_memberships),
 })
 
 // reg_groups is the user.db groups register (id → name, description); reg_members
@@ -74,7 +74,7 @@ func (db *DB) group_memberships(user string) []string {
 	current := []string{user}
 	current_type := "user"
 
-	for depth := 0; depth < group_max_depth; depth++ {
+	for depth := 0; depth < group_depth_maximum; depth++ {
 		if len(current) == 0 {
 			break
 		}
@@ -128,7 +128,7 @@ func (db *DB) group_members(group string, recursive bool) []map[string]any {
 
 	var expand func(group string, depth int)
 	expand = func(group string, depth int) {
-		if depth >= group_max_depth {
+		if depth >= group_depth_maximum {
 			return
 		}
 
@@ -166,7 +166,7 @@ func (db *DB) group_would_cycle(group string, member_group string) bool {
 	seen := make(map[string]bool)
 	current := []string{member_group}
 
-	for depth := 0; depth < group_max_depth; depth++ {
+	for depth := 0; depth < group_depth_maximum; depth++ {
 		if len(current) == 0 {
 			break
 		}
@@ -444,7 +444,7 @@ func api_group_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 }
 
 // mochi.group.members(group, recursive?) -> list: Get members of a group
-func apigroup_members(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func api_group_members(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Who is in a group is social-graph data, the same class as the friend list.
 	if err := require_permission(t, fn, "groups/read"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -474,7 +474,7 @@ func apigroup_members(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 }
 
 // mochi.group.memberships(user) -> list: Get groups a user belongs to
-func apigroup_memberships(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+func api_group_memberships(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Which groups a user belongs to is the same disclosure as group membership,
 	// read from the other direction.
 	if err := require_permission(t, fn, "groups/read"); err != nil {

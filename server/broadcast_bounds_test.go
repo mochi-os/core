@@ -198,7 +198,7 @@ func TestBroadcastResyncSweepDropsExpired(t *testing.T) {
 	}
 }
 
-// TestBroadcastPendingStreamCap. broadcast_pending_max is per (peer, key), so
+// TestBroadcastPendingStreamCap. broadcast_pending_maximum is per (peer, key), so
 // it bounds nothing while the key is chosen by the sender: each invented key
 // draws its own thousand-row budget.
 func TestBroadcastPendingStreamCap(t *testing.T) {
@@ -216,13 +216,13 @@ func TestBroadcastPendingStreamCap(t *testing.T) {
 			"from", "to", "service", "event", "", "", "", []byte("{}"))
 	}
 
-	for i := 0; i < broadcast_pending_streams_max; i++ {
+	for i := 0; i < broadcast_pending_streams_maximum; i++ {
 		if !insert(fmt.Sprintf("stream-%d", i), 5) {
 			t.Fatalf("stream %d was refused below the cap", i)
 		}
 	}
 	if insert("one-too-many", 5) {
-		t.Errorf("a %dth distinct stream from one peer was buffered", broadcast_pending_streams_max+1)
+		t.Errorf("a %dth distinct stream from one peer was buffered", broadcast_pending_streams_maximum+1)
 	}
 	// An established stream is unaffected: the cap gates opening a stream,
 	// not appending to one, so a real subscriber at the cap still catches up.

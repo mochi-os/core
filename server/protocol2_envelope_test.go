@@ -5,7 +5,7 @@
 
 // Tests for envelope validation on the /mochi/2/messages path.
 //
-// max_id_length is declared in protocol2.go beside the Frame it names, and was
+// id_length_maximum is declared in protocol2.go beside the Frame it names, and was
 // enforced only by announcement_valid on the pubsub path. The messages
 // receiver took Frame.Service and Frame.ID of any length and shape straight
 // into two maps that outlive the stream and are keyed by the sending peer:
@@ -51,7 +51,7 @@ func receiver_for_test() (*Receiver, *recording_stream) {
 func TestHandleRejectsOversizedID(t *testing.T) {
 	r, stream := receiver_for_test()
 
-	long := strings.Repeat("a", max_id_length+1)
+	long := strings.Repeat("a", id_length_maximum+1)
 	if r.handle(&Frame{Type: frame_type_message, ID: long, Service: "feeds", Event: "post/create"}) {
 		t.Error("handle accepted an id longer than max_id_length; it becomes a seen_messages key for the next 8 hours")
 	}
@@ -63,8 +63,8 @@ func TestHandleRejectsOversizedID(t *testing.T) {
 // TestHandleAcceptsIDAtTheLimit: the boundary is inclusive, so a legitimate
 // id of exactly the documented length still works.
 func TestHandleAcceptsIDAtTheLimit(t *testing.T) {
-	if !envelope_valid("", "feeds", "post/create", strings.Repeat("a", max_id_length)) {
-		t.Errorf("an id of exactly max_id_length (%d) was rejected; the bound is a maximum, not an exclusive limit", max_id_length)
+	if !envelope_valid("", "feeds", "post/create", strings.Repeat("a", id_length_maximum)) {
+		t.Errorf("an id of exactly max_id_length (%d) was rejected; the bound is a maximum, not an exclusive limit", id_length_maximum)
 	}
 }
 
@@ -133,7 +133,7 @@ func TestEnvelopeAllowsEmptyFields(t *testing.T) {
 // paths having separate copies is how the id bound came to be enforced on one
 // of them only; if pubsub re-inlines its own, this fails.
 func TestAnnouncementValidSharesTheEnvelopeCheck(t *testing.T) {
-	long := strings.Repeat("a", max_id_length+1)
+	long := strings.Repeat("a", id_length_maximum+1)
 	if announcement_valid(&Announcement{ID: long}) {
 		t.Error("announcement_valid accepted an oversized id")
 	}

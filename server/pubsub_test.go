@@ -54,14 +54,14 @@ func TestMessageSeenMarkAtomic(t *testing.T) {
 // signature are recomputed per flood, but the invariant is the cheap
 // guard against a future TTL change dipping below the retry ceiling.
 func TestPubsubExpiresTTLExceedsMaxRetry(t *testing.T) {
-	var max int64
+	var maximum int64
 	for _, d := range retry_delays {
-		if d > max {
-			max = d
+		if d > maximum {
+			maximum = d
 		}
 	}
-	if pubsub_expires_ttl <= max {
-		t.Errorf("pubsub_expires_ttl (%d) must exceed the max retry interval (%d)", pubsub_expires_ttl, max)
+	if pubsub_expires_ttl <= maximum {
+		t.Errorf("pubsub_expires_ttl (%d) must exceed the max retry interval (%d)", pubsub_expires_ttl, maximum)
 	}
 }
 
@@ -79,7 +79,7 @@ func TestPubsubFresh(t *testing.T) {
 		{"missing", "", false},
 		{"zero", "0", false},
 		{"expired", i64toa(base - 1), false},
-		{"far-future", i64toa(base + pubsub_expires_max + 60), false},
+		{"far-future", i64toa(base + pubsub_expires_maximum + 60), false},
 	}
 	for _, c := range cases {
 		if got := pubsub_fresh(c.expires); got != c.want {
@@ -165,7 +165,7 @@ func TestPubsubSignVerify(t *testing.T) {
 		t.Error("verify accepted tampered content")
 	}
 	// Rewriting expires to extend the window must fail (expires is signed).
-	if err := pubsub_verify("m1", id, "directory", "publish", i64toa(now()+pubsub_expires_max), content, sig); err == nil {
+	if err := pubsub_verify("m1", id, "directory", "publish", i64toa(now()+pubsub_expires_maximum), content, sig); err == nil {
 		t.Error("verify accepted tampered expires")
 	}
 	if err := pubsub_verify("m1", id, "directory", "delete", expires, content, sig); err == nil {

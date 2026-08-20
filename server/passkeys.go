@@ -270,8 +270,8 @@ func web_passkey_login_finish(c *gin.Context) {
 	}
 
 	// Handler to find user from credential
-	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
-		user := user_by_uid(string(userHandle))
+	handler := func(raw_i_d, user_handle []byte) (webauthn.User, error) {
+		user := user_by_uid(string(user_handle))
 		if user == nil {
 			return nil, errors.New("user not found")
 		}
@@ -524,19 +524,19 @@ func api_user_passkey_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	credentials := make([]map[string]any, len(rows))
 	for i, row := range rows {
 		// Handle ID as either []byte or string (SQLite driver may return either)
-		var idBytes []byte
+		var id_bytes []byte
 		switch id := row["id"].(type) {
 		case []byte:
-			idBytes = id
+			id_bytes = id
 		case string:
-			idBytes = []byte(id)
+			id_bytes = []byte(id)
 		}
 		credentials[i] = map[string]any{
-			"id":         base64.URLEncoding.EncodeToString(idBytes),
+			"id":         base64.URLEncoding.EncodeToString(id_bytes),
 			"name":       row["name"],
 			"transports": row["transports"],
 			"created":    row["created"],
-			"last_used":  lasts[string(idBytes)],
+			"last_used":  lasts[string(id_bytes)],
 		}
 	}
 
@@ -636,11 +636,11 @@ func api_user_passkey_register_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tupl
 
 	// The credential can be a JSON string or a Starlark dict
 	var credential_json string
-	switch cred := args[1].(type) {
+	switch credential := args[1].(type) {
 	case sl.String:
-		credential_json = string(cred)
+		credential_json = string(credential)
 	case *sl.Dict:
-		body, err := starlark_to_json(cred)
+		body, err := starlark_to_json(credential)
 		if err != nil {
 			return sl_error(fn, "invalid credential format")
 		}

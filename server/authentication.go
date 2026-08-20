@@ -1437,15 +1437,15 @@ func api_user_recovery_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // partial_create inserts an MFA partial-login session. Wrapping keeps the
 // insert SQL in one place across the five call sites.
-func partial_create(sdb *DB, partialID, userUID, completed, remaining string, expires int64) {
+func partial_create(sdb *DB, partial, user, completed, remaining string, expires int64) {
 	sdb.exec("insert into partial (id, user, completed, remaining, expires) values (?, ?, ?, ?, ?)",
-		partialID, userUID, completed, remaining, expires)
+		partial, user, completed, remaining, expires)
 }
 
 // partial_delete removes an MFA partial-login session by id (the random
 // 32-char id is globally unique).
-func partial_delete(sdb *DB, partialID string) {
-	sdb.exec("delete from partial where id=?", partialID)
+func partial_delete(sdb *DB, partial string) {
+	sdb.exec("delete from partial where id=?", partial)
 }
 
 // partial_continue records a just-completed login factor. When the caller's

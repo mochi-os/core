@@ -165,7 +165,7 @@ func TestHealthCleanupReap(t *testing.T) {
 	defer cleanup()
 
 	db := db_open("db/queue.db")
-	aged := now() - queue_max_age - 3600
+	aged := now() - queue_age_maximum - 3600
 	for _, id := range []string{"reap-1", "reap-2"} {
 		db.exec("insert into queue (id, target, from_entity, to_entity, service, event, next_retry, created, attempts) values (?, 'peer-ghost', 'e-from', 'r-frozen', 'projects', 'event/test', 0, ?, 1)", id, aged)
 	}

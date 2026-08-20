@@ -165,10 +165,10 @@ func setup_vapid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateVAPIDKeys: %v", err)
 	}
-	orig_pub, origPriv := webpush_public, webpush_private
+	orig_pub, orig_priv := webpush_public, webpush_private
 	webpush_public, webpush_private = pub, priv
 	webpush_once.Do(func() {}) // mark consumed
-	t.Cleanup(func() { webpush_public, webpush_private = orig_pub, origPriv })
+	t.Cleanup(func() { webpush_public, webpush_private = orig_pub, orig_priv })
 }
 
 // TestUnifiedPushDeliverEmptyEndpoint guards against silent success when an

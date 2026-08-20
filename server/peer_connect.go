@@ -279,7 +279,7 @@ const peer_reconnect_parallel = 20
 // in its own goroutine through a semaphore. Goroutines update
 // per-peer backoff state on failure under peer_reconnect_lock.
 func peer_reconnect_manager() {
-	sem := make(chan struct{}, peer_reconnect_parallel)
+	semaphore := make(chan struct{}, peer_reconnect_parallel)
 	for range time.Tick(10 * time.Second) {
 		t := now()
 		var ready []string
@@ -293,9 +293,9 @@ func peer_reconnect_manager() {
 		peer_reconnect_lock.Unlock()
 
 		for _, id := range ready {
-			sem <- struct{}{}
+			semaphore <- struct{}{}
 			go func(id string) {
-				defer func() { <-sem }()
+				defer func() { <-semaphore }()
 				if peer_connect(id) {
 					debug("Peer %q reconnected successfully", id)
 					// Re-ship any retained journal ops the peer missed while
@@ -450,8 +450,8 @@ func peer_apply_addresses(id string, addresses []string) {
 		if err != nil {
 			continue
 		}
-		info, err := p2p_peer.AddrInfoFromP2pAddr(ma)
-		if err != nil || info.ID.String() != id {
+		information, err := p2p_peer.AddrInfoFromP2pAddr(ma)
+		if err != nil || information.ID.String() != id {
 			continue
 		}
 		// Drop circuit addresses that relay through ourselves: we can

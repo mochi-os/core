@@ -308,18 +308,18 @@ func TestRelayResources(t *testing.T) {
 // low utilisation — the real wasabi case, 1 refused with 3 of 2048 held — is a
 // per-peer/per-IP sub-limit, not the pool filling up, and must stay silent.
 func TestRelaySaturationAlert(t *testing.T) {
-	const max = 2048 // threshold is 0.8*2048 = 1638.4
+	const maximum = 2048 // threshold is 0.8*2048 = 1638.4
 	cases := []struct {
 		name                             string
 		rejected, alerted, held, maximum int64
 		want                             bool
 	}{
-		{"wasabi case: low utilisation refusal", 1, 0, 3, max, false},
-		{"no new refusals", 5, 5, max, max, false},
-		{"new refusal but half full", 6, 5, max / 2, max, false},
-		{"new refusal just below threshold", 6, 5, 1638, max, false},
-		{"new refusal at/above threshold", 6, 5, 1639, max, true},
-		{"new refusal while full", 10, 5, max, max, true},
+		{"wasabi case: low utilisation refusal", 1, 0, 3, maximum, false},
+		{"no new refusals", 5, 5, maximum, maximum, false},
+		{"new refusal but half full", 6, 5, maximum / 2, maximum, false},
+		{"new refusal just below threshold", 6, 5, 1638, maximum, false},
+		{"new refusal at/above threshold", 6, 5, 1639, maximum, true},
+		{"new refusal while full", 10, 5, maximum, maximum, true},
 		{"maximum unset", 1, 0, 0, 0, false},
 	}
 	for _, c := range cases {

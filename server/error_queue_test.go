@@ -10,10 +10,10 @@ import "testing"
 
 // error_test_queue_insert adds a queue row with full control over the
 // fields the error wiring reads (provenance + created age).
-func error_test_queue_insert(db *DB, id, fromEntity, fromApp, toEntity, service, event string, created int64) {
+func error_test_queue_insert(db *DB, id, from_entity, from_app, to_entity, service, event string, created int64) {
 	db.exec(`insert into queue (id, target, from_entity, to_entity, service, event, from_app, next_retry, created)
 		values (?, '', ?, ?, ?, ?, ?, 0, ?)`,
-		id, fromEntity, toEntity, service, event, fromApp, created)
+		id, from_entity, to_entity, service, event, from_app, created)
 }
 
 // error_test_capture stubs queue_error_dispatch and returns the captured
@@ -67,7 +67,7 @@ func TestQueueDropFiresErrorEvent(t *testing.T) {
 }
 
 // TestQueueFailTimeout: queue_fail fires message/timeout only once the row
-// has aged past queue_max_age; a young row reschedules with no dispatch.
+// has aged past queue_age_maximum; a young row reschedules with no dispatch.
 func TestQueueFailTimeout(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -76,7 +76,7 @@ func TestQueueFailTimeout(t *testing.T) {
 	var calls []error_call
 	defer error_test_capture(&calls)()
 
-	error_test_queue_insert(db, "old", "owner", "feeds", "gone", "feeds", "post/create", now()-queue_max_age-100)
+	error_test_queue_insert(db, "old", "owner", "feeds", "gone", "feeds", "post/create", now()-queue_age_maximum-100)
 	queue_fail("old", "peer offline")
 	if len(calls) != 1 || calls[0].code != error_code_message_timeout || calls[0].to != "gone" {
 		t.Fatalf("aged queue_fail: calls = %+v", calls)
@@ -114,7 +114,7 @@ func TestQueueCleanupTimeoutDedup(t *testing.T) {
 		seen[q.ToEntity]++
 	}
 
-	old := now() - queue_max_age - 100
+	old := now() - queue_age_maximum - 100
 	error_test_queue_insert(db, "a1", "owner", "feeds", "gone", "feeds", "post/create", old)
 	error_test_queue_insert(db, "a2", "owner", "feeds", "gone", "feeds", "post/create", old)
 	error_test_queue_insert(db, "a3", "owner", "feeds", "gone", "feeds", "post/create", old)

@@ -21,9 +21,9 @@ func TestDbIntegrityWatchdog(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	orig := db_integrity_max_per_check
-	db_integrity_max_per_check = 1000 // check every due DB in one pass
-	defer func() { db_integrity_max_per_check = orig }()
+	orig := db_integrity_per_check_maximum
+	db_integrity_per_check_maximum = 1000 // check every due DB in one pass
+	defer func() { db_integrity_per_check_maximum = orig }()
 
 	// Clean DB: recorded as checked with an ok timestamp, not flagged.
 	clean := db_open("users/u/clean/db/app.db")
@@ -36,7 +36,7 @@ func TestDbIntegrityWatchdog(t *testing.T) {
 	if !ok {
 		t.Fatal("clean DB should be recorded as checked")
 	}
-	if _, isTime := v.(int64); !isTime {
+	if _, is_time := v.(int64); !is_time {
 		t.Fatalf("clean DB state = %v, want an ok timestamp", v)
 	}
 

@@ -57,13 +57,13 @@ func audit_close() {
 }
 
 // audit_write writes a message to the audit log with timestamp and facility
-func audit_write(facility string, msg string) {
+func audit_write(facility string, message string) {
 	audit_mutex.Lock()
 	defer audit_mutex.Unlock()
 
 	if audit_logger != nil {
 		timestamp := time.Now().Format("2006-01-02 15:04:05.000000")
-		audit_logger.Printf("%s [%s] %s", timestamp, facility, msg)
+		audit_logger.Printf("%s [%s] %s", timestamp, facility, message)
 	}
 }
 
@@ -71,8 +71,8 @@ func audit_write(facility string, msg string) {
 // syslog's LOG_DAEMON; here it routes through the file logger. Provided so the
 // cross-platform admin audit middleware (admin_routes.go) can record on every
 // platform.
-func audit_log_daemon(msg string) {
-	audit_write("DAEMON", msg)
+func audit_log_daemon(message string) {
+	audit_write("DAEMON", message)
 }
 
 // LOG_AUTH: Authentication, authorization, and security events

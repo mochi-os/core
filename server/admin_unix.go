@@ -40,12 +40,12 @@ var (
 	admin_creds_once sync.Once
 )
 
-// admin_cred_basic_authorized reports whether the peer uid/gid alone clears
+// admin_credential_basic_authorized reports whether the peer uid/gid alone clears
 // the gate: root, the mochi user, or a primary group of mochi. The per-OS
 // admin_peer_authorized calls this first, then falls back to a supplementary-
 // group check that needs platform-specific data (/proc on Linux, the xucred
 // group list on macOS).
-func admin_cred_basic_authorized(uid, gid uint32) bool {
+func admin_credential_basic_authorized(uid, gid uint32) bool {
 	if uid == 0 || uid == admin_mochi_uid {
 		return true
 	}
@@ -60,7 +60,7 @@ func admin_cred_basic_authorized(uid, gid uint32) bool {
 // into the request context.
 type admin_conn struct {
 	net.Conn
-	cred *admin_cred
+	credential *admin_credential
 }
 
 // admin_socket_path returns the absolute path of the admin UDS.
@@ -113,17 +113,17 @@ func (l *admin_listener) Accept() (net.Conn, error) {
 			_ = c.Close()
 			continue
 		}
-		authorized, cred := admin_peer_authorized(uc)
+		authorized, credential := admin_peer_authorized(uc)
 		if !authorized {
-			if cred != nil {
-				warn("admin: rejecting unauthorised peer uid=%d gid=%d pid=%d", cred.uid, cred.gid, cred.pid)
+			if credential != nil {
+				warn("admin: rejecting unauthorised peer uid=%d gid=%d pid=%d", credential.uid, credential.gid, credential.pid)
 			} else {
 				warn("admin: rejecting peer with unreadable creds")
 			}
 			_ = c.Close()
 			continue
 		}
-		return &admin_conn{Conn: c, cred: cred}, nil
+		return &admin_conn{Conn: c, credential: credential}, nil
 	}
 }
 
@@ -172,8 +172,8 @@ func admin_start() error {
 	server := &http.Server{
 		Handler: admin_router,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
-			if ac, ok := c.(*admin_conn); ok && ac.cred != nil {
-				ctx = context.WithValue(ctx, peer_credential_key{}, ac.cred)
+			if ac, ok := c.(*admin_conn); ok && ac.credential != nil {
+				ctx = context.WithValue(ctx, peer_credential_key{}, ac.credential)
 			}
 			return ctx
 		},

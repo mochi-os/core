@@ -42,13 +42,13 @@ func new_test_sender(t *testing.T, peer string) *Sender {
 func stash_sender(t *testing.T, peer string, s *Sender) func() {
 	t.Helper()
 	senders_lock.Lock()
-	prev, had := senders[peer]
+	previous, had := senders[peer]
 	senders[peer] = s
 	senders_lock.Unlock()
 	return func() {
 		senders_lock.Lock()
 		if had {
-			senders[peer] = prev
+			senders[peer] = previous
 		} else {
 			delete(senders, peer)
 		}
@@ -80,9 +80,9 @@ func TestResolveFailVocabulary(t *testing.T) {
 	s := new_test_sender(t, "test-peer")
 
 	cases := []struct {
-		reason       string
-		wantStatus   string // "deleted" (drop/ack) | "pending" (fail-retry) | ""
-		wantNonempty bool   // true → must remain in queue with status set
+		reason        string
+		want_status   string // "deleted" (drop/ack) | "pending" (fail-retry) | ""
+		want_nonempty bool   // true → must remain in queue with status set
 	}{
 		{fail_unsupported, "deleted", false},
 		{fail_unknown_user, "deleted", false},
@@ -99,8 +99,8 @@ func TestResolveFailVocabulary(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		t.Run(c.reason+"/wants-"+c.wantStatus, func(t *testing.T) {
-			id := "test-" + c.reason + "-" + c.wantStatus
+		t.Run(c.reason+"/wants-"+c.want_status, func(t *testing.T) {
+			id := "test-" + c.reason + "-" + c.want_status
 			install_queue_row(t, id)
 
 			p := &pending{queue: id, sent: now()}
@@ -111,7 +111,7 @@ func TestResolveFailVocabulary(t *testing.T) {
 			if err != nil {
 				t.Fatalf("db.row: %v", err)
 			}
-			switch c.wantStatus {
+			switch c.want_status {
 			case "deleted":
 				if row != nil {
 					t.Errorf("reason=%q: row still present, want deleted", c.reason)
@@ -331,25 +331,25 @@ func TestSendersSweepTimesOutInflight(t *testing.T) {
 	defer restore()
 
 	// One fresh inflight (just sent) + one stale (sent 1h ago).
-	freshID := "fresh-1"
-	staleID := "stale-1"
-	install_queue_row(t, freshID)
-	install_queue_row(t, staleID)
-	s.inflight[freshID] = &pending{queue: freshID, sent: now()}
-	s.inflight[staleID] = &pending{queue: staleID, sent: now() - 3600}
+	fresh_i_d := "fresh-1"
+	stale_i_d := "stale-1"
+	install_queue_row(t, fresh_i_d)
+	install_queue_row(t, stale_i_d)
+	s.inflight[fresh_i_d] = &pending{queue: fresh_i_d, sent: now()}
+	s.inflight[stale_i_d] = &pending{queue: stale_i_d, sent: now() - 3600}
 
 	senders_sweep_all()
 
-	if _, ok := s.inflight[staleID]; ok {
+	if _, ok := s.inflight[stale_i_d]; ok {
 		t.Error("stale inflight not swept")
 	}
-	if _, ok := s.inflight[freshID]; !ok {
+	if _, ok := s.inflight[fresh_i_d]; !ok {
 		t.Error("fresh inflight wrongly swept")
 	}
 
 	// Stale row's status should now be 'pending' (queue_fail).
 	db := db_open("db/queue.db")
-	row, _ := db.row("select status from queue where id=?", staleID)
+	row, _ := db.row("select status from queue where id=?", stale_i_d)
 	if row == nil {
 		t.Fatalf("stale row missing from queue.db")
 	}
@@ -368,8 +368,8 @@ func TestSendersSweepTimesOutPings(t *testing.T) {
 
 	// Stale ping (older than ping_timeout). Should trigger
 	// shutdown (which marks closed=true).
-	staleAge := int64(peer_ping_timeout_seconds() + 10)
-	s.pings["ping-stale"] = now() - staleAge
+	stale_age := int64(peer_ping_timeout_seconds() + 10)
+	s.pings["ping-stale"] = now() - stale_age
 
 	senders_sweep_all()
 

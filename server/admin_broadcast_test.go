@@ -58,34 +58,34 @@ func TestBroadcastLagScanDB(t *testing.T) {
 		t.Fatalf("scan returned %d rows, want 2", len(rows))
 	}
 
-	byKey := map[string]BroadcastLagRow{}
+	by_key := map[string]BroadcastLagRow{}
 	for _, r := range rows {
-		byKey[r.Key] = r
+		by_key[r.Key] = r
 	}
 
-	owned, ok := byKey["key-owned"]
+	owned, ok := by_key["key-owned"]
 	if !ok {
 		t.Fatal("missing key-owned row")
 	}
 	if owned.ReceivedLast != 42 {
 		t.Errorf("key-owned received_last: got %d, want 42", owned.ReceivedLast)
 	}
-	if owned.OwnerLogMax == nil || *owned.OwnerLogMax != 100 {
-		t.Errorf("key-owned owner_log_max: got %v, want 100", owned.OwnerLogMax)
+	if owned.OwnerLogMaximum == nil || *owned.OwnerLogMaximum != 100 {
+		t.Errorf("key-owned owner_log_maximum: got %v, want 100", owned.OwnerLogMaximum)
 	}
 	if owned.Lag == nil || *owned.Lag != 58 {
 		t.Errorf("key-owned lag: got %v, want 58 (100 - 42)", owned.Lag)
 	}
 
-	sub, ok := byKey["key-subscribed"]
+	sub, ok := by_key["key-subscribed"]
 	if !ok {
 		t.Fatal("missing key-subscribed row")
 	}
 	if sub.ReceivedLast != 5 {
 		t.Errorf("key-subscribed received_last: got %d, want 5", sub.ReceivedLast)
 	}
-	if sub.OwnerLogMax != nil {
-		t.Errorf("key-subscribed owner_log_max: got %v, want nil (no local log row)", sub.OwnerLogMax)
+	if sub.OwnerLogMaximum != nil {
+		t.Errorf("key-subscribed owner_log_maximum: got %v, want nil (no local log row)", sub.OwnerLogMaximum)
 	}
 	if sub.Lag != nil {
 		t.Errorf("key-subscribed lag: got %v, want nil", sub.Lag)

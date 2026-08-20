@@ -701,7 +701,7 @@ func TestUnzipPathTraversal(t *testing.T) {
 	// os.Root returns an error for path traversal attempts
 	if err == nil {
 		// If no error, verify the file was NOT created outside
-		if _, statErr := os.Stat(outside_file); statErr == nil {
+		if _, stat_error := os.Stat(outside_file); stat_error == nil {
 			t.Errorf("Path traversal succeeded - file created outside destination")
 		}
 	}

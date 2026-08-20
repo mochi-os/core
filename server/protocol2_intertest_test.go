@@ -1,6 +1,6 @@
 //go:build intertest
 
-// Mochi server: inter-instance test harness (task #60).
+// Mochi server: inter-instance test harness.
 //
 // These tests drive the two REAL local systemd instances — mochi1 and
 // mochi2 — over their actual libp2p transport, rather than mocknet or a
@@ -13,7 +13,7 @@
 //
 //	go test -tags intertest ./server/ -run TestInter -v
 //
-// Wipe safety (see claude/plans/protocol2.md + task #60):
+// Wipe safety (see claude/plans/protocol2.md):
 //   - mochi1 is NEVER wiped — it's the operator's working instance.
 //   - mochi2 may be wiped ONLY with per-run operator approval, passed
 //     in via the MOCHI2_WIPE env var (full | partial | surgical). A
@@ -196,30 +196,30 @@ func inter_mochi2_wipe(t *testing.T, scope string, surgical ...string) {
 		t.Fatalf("inter-instance harness: refusing to wipe — mochi2 data dir %q looks wrong", inter_mochi2.data)
 	}
 
-	mustRun := func(name string, args ...string) {
+	must_run := func(name string, args ...string) {
 		if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
 			t.Fatalf("%s %v: %v\n%s", name, args, err, out)
 		}
 	}
 
-	mustRun("systemctl", "--user", "stop", inter_mochi2.unit)
+	must_run("systemctl", "--user", "stop", inter_mochi2.unit)
 	switch scope {
 	case "full":
-		mustRun("rm", "-rf", inter_mochi2.data+"/db", inter_mochi2.data+"/users", inter_mochi2.data+"/host.key")
+		must_run("rm", "-rf", inter_mochi2.data+"/db", inter_mochi2.data+"/users", inter_mochi2.data+"/host.key")
 	case "partial":
 		// Preserve host.key (peer identity); drop the rest.
-		mustRun("rm", "-rf", inter_mochi2.data+"/db", inter_mochi2.data+"/users")
+		must_run("rm", "-rf", inter_mochi2.data+"/db", inter_mochi2.data+"/users")
 	case "surgical":
 		if len(surgical) == 0 {
 			t.Fatal("inter-instance harness: surgical wipe needs at least one db path")
 		}
 		for _, db := range surgical {
-			mustRun("rm", "-f", inter_mochi2.data+"/"+db)
+			must_run("rm", "-f", inter_mochi2.data+"/"+db)
 		}
 	default:
 		t.Fatalf("inter-instance harness: unknown wipe scope %q", scope)
 	}
-	mustRun("systemctl", "--user", "start", inter_mochi2.unit)
+	must_run("systemctl", "--user", "start", inter_mochi2.unit)
 
 	// Wait for mochi2 to answer health again.
 	deadline := time.Now().Add(30 * time.Second)

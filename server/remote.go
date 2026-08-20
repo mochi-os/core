@@ -95,25 +95,25 @@ func peer_connect_url(url string) (string, error) {
 	}
 
 	// Parse JSON response
-	var info struct {
+	var information struct {
 		Peer      string   `json:"peer"`
 		Addresses []string `json:"addresses"`
 	}
-	if err := json.Unmarshal(body, &info); err != nil {
+	if err := json.Unmarshal(body, &information); err != nil {
 		return "", fmt.Errorf("failed to parse net info: %v", err)
 	}
 
-	if info.Peer == "" || len(info.Addresses) == 0 {
+	if information.Peer == "" || len(information.Addresses) == 0 {
 		return "", fmt.Errorf("invalid net info: missing peer or addresses")
 	}
 
 	// Add peer and connect
-	peer_add_known(info.Peer, info.Addresses)
-	if !peer_connect(info.Peer) {
-		return "", fmt.Errorf("failed to connect to peer %s", info.Peer)
+	peer_add_known(information.Peer, information.Addresses)
+	if !peer_connect(information.Peer) {
+		return "", fmt.Errorf("failed to connect to peer %s", information.Peer)
 	}
 
-	return info.Peer, nil
+	return information.Peer, nil
 }
 
 // remote_address_wait bounds how long a synchronous remote request

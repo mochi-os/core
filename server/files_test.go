@@ -640,8 +640,8 @@ func TestDirSize(t *testing.T) {
 // Test file storage limit is 10GB per user
 func TestFileStorageLimitConstant(t *testing.T) {
 	expected_limit := int64(10 * 1024 * 1024 * 1024)
-	if file_max_storage != expected_limit {
-		t.Errorf("file_max_storage = %d, expected %d (10GB)", file_max_storage, expected_limit)
+	if file_maximum_storage != expected_limit {
+		t.Errorf("file_max_storage = %d, expected %d (10GB)", file_maximum_storage, expected_limit)
 	}
 }
 
@@ -815,12 +815,12 @@ func TestOsRootNormalOperations(t *testing.T) {
 	f.Close()
 
 	// Stat the file
-	info, err := root.Stat("subdir/nested.txt")
+	information, err := root.Stat("subdir/nested.txt")
 	if err != nil {
 		t.Fatalf("Failed to stat nested file: %v", err)
 	}
-	if info.Size() != 6 {
-		t.Errorf("File size = %d, want 6", info.Size())
+	if information.Size() != 6 {
+		t.Errorf("File size = %d, want 6", information.Size())
 	}
 
 	// Remove the file
@@ -853,7 +853,7 @@ func TestCacheCleanup(t *testing.T) {
 		t.Fatalf("file_write failed: %v", err)
 	}
 
-	// Set old file to 8 days ago (older than cache_max_age of 7 days)
+	// Set old file to 8 days ago (older than cache_age_maximum of 7 days)
 	old_time := time.Now().Add(-8 * 24 * time.Hour)
 	os.Chtimes(old_file, old_time, old_time)
 

@@ -351,71 +351,71 @@ func interests_generate_summary(user *User, db *DB) string {
 		rows = []map[string]any{}
 	}
 
-	var posQids []string
+	var positive_qids []string
 	for _, row := range rows {
 		qid, _ := row["qid"].(string)
 		if qid != "" {
-			posQids = append(posQids, qid)
+			positive_qids = append(positive_qids, qid)
 		}
 	}
 
-	neg_rows, err := db.rows("select qid from interests where weight < 0 order by weight asc limit 15")
+	negative_rows, err := db.rows("select qid from interests where weight < 0 order by weight asc limit 15")
 	if err != nil {
-		neg_rows = []map[string]any{}
+		negative_rows = []map[string]any{}
 	}
 
-	var negQids []string
-	for _, row := range neg_rows {
+	var negative_qids []string
+	for _, row := range negative_rows {
 		qid, _ := row["qid"].(string)
 		if qid != "" {
-			negQids = append(negQids, qid)
+			negative_qids = append(negative_qids, qid)
 		}
 	}
 
-	if len(posQids) == 0 && len(negQids) == 0 {
+	if len(positive_qids) == 0 && len(negative_qids) == 0 {
 		return ""
 	}
 
 	// Resolve QID labels and the AI summary in the user's preferred language.
 	language := user_language(user)
-	all_qids := append(posQids, negQids...)
+	all_qids := append(positive_qids, negative_qids...)
 	labels := qid_fetch_labels(all_qids, qid_lang_for_fetch(language))
 
 	// Try AI summary first
-	summary := interests_ai_summary(user, db, posQids, negQids, labels, language)
+	summary := interests_ai_summary(user, db, positive_qids, negative_qids, labels, language)
 	if summary != "" {
 		return summary
 	}
 
 	// Fallback: simple label list, with translatable lead-in.
-	var posParts []string
-	for _, qid := range posQids {
+	var positive_parts []string
+	for _, qid := range positive_qids {
 		label := labels[qid]
 		if label != "" && label != qid {
-			posParts = append(posParts, label)
+			positive_parts = append(positive_parts, label)
 		}
 	}
-	var negParts []string
-	for _, qid := range negQids {
+	var negative_parts []string
+	for _, qid := range negative_qids {
 		label := labels[qid]
 		if label != "" && label != qid {
-			negParts = append(negParts, label)
+			negative_parts = append(negative_parts, label)
 		}
 	}
-	if len(posParts) == 0 && len(negParts) == 0 {
+	if len(positive_parts) == 0 && len(negative_parts) == 0 {
 		return ""
 	}
 	var result string
-	if len(posParts) > 0 {
+	if len(positive_parts) > 0 {
 		result = resolve_core_label(language, "interests.summary.liked",
-			map[string]any{"list": strings.Join(posParts, ", ")})
+			map[string]any{"list": strings.Join(positive_parts, ", ")})
 	}
-	if len(negParts) > 0 {
+	if len(negative_parts) > 0 {
 		if result != "" {
 			result += ". "
 		}
 		result += resolve_core_label(language, "interests.summary.disliked",
-			map[string]any{"list": strings.Join(negParts, ", ")})
+			map[string]any{"list": strings.Join(negative_parts, ", ")})
 	}
 	return result
 }
@@ -435,7 +435,7 @@ func qid_lang_for_fetch(lang string) string {
 
 // interests_ai_summary attempts to generate an AI-powered summary in the
 // user's preferred language.
-func interests_ai_summary(user *User, db *DB, posQids []string, negQids []string, labels map[string]string, language string) string {
+func interests_ai_summary(user *User, db *DB, positive_qids []string, negative_qids []string, labels map[string]string, language string) string {
 	// Find first enabled AI account
 	rows, err := db.rows("select id, type, data, enabled from accounts order by id")
 	if err != nil {
@@ -468,30 +468,30 @@ func interests_ai_summary(user *User, db *DB, posQids []string, negQids []string
 	}
 
 	// Build interest list for prompt
-	var posLines []string
-	for _, qid := range posQids {
+	var positive_lines []string
+	for _, qid := range positive_qids {
 		label := labels[qid]
 		if label != "" && label != qid {
-			posLines = append(posLines, fmt.Sprintf("- %s (%s)", label, qid))
+			positive_lines = append(positive_lines, fmt.Sprintf("- %s (%s)", label, qid))
 		}
 	}
-	var negLines []string
-	for _, qid := range negQids {
+	var negative_lines []string
+	for _, qid := range negative_qids {
 		label := labels[qid]
 		if label != "" && label != qid {
-			negLines = append(negLines, fmt.Sprintf("- %s (%s)", label, qid))
+			negative_lines = append(negative_lines, fmt.Sprintf("- %s (%s)", label, qid))
 		}
 	}
-	if len(posLines) == 0 && len(negLines) == 0 {
+	if len(positive_lines) == 0 && len(negative_lines) == 0 {
 		return ""
 	}
 
 	var sections []string
-	if len(posLines) > 0 {
-		sections = append(sections, "Liked topics:\n"+strings.Join(posLines, "\n"))
+	if len(positive_lines) > 0 {
+		sections = append(sections, "Liked topics:\n"+strings.Join(positive_lines, "\n"))
 	}
-	if len(negLines) > 0 {
-		sections = append(sections, "Disliked topics:\n"+strings.Join(negLines, "\n"))
+	if len(negative_lines) > 0 {
+		sections = append(sections, "Disliked topics:\n"+strings.Join(negative_lines, "\n"))
 	}
 
 	// Localise the response. The QIDs are protocol identifiers in any language;

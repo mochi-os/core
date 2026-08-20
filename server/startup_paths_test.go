@@ -170,12 +170,12 @@ func TestAppDirectoryCreateIsIdempotent(t *testing.T) {
 	if err := apps_dir_create(); err != nil {
 		t.Fatalf("apps_dir_create on an existing directory: %v", err)
 	}
-	info, err := os.Stat(apps_dir())
+	information, err := os.Stat(apps_dir())
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if info.Mode().Perm() != 0755 {
-		t.Errorf("mode became %o; an existing app directory must keep the mode it had", info.Mode().Perm())
+	if information.Mode().Perm() != 0755 {
+		t.Errorf("mode became %o; an existing app directory must keep the mode it had", information.Mode().Perm())
 	}
 }
 
@@ -189,11 +189,11 @@ func TestAppDirectoryIsPrivateWhenCreated(t *testing.T) {
 	if err := apps_dir_create(); err != nil {
 		t.Fatalf("apps_dir_create: %v", err)
 	}
-	info, err := os.Stat(apps_dir())
+	information, err := os.Stat(apps_dir())
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm&0077 != 0 {
+	if perm := information.Mode().Perm(); perm&0077 != 0 {
 		t.Errorf("a new app directory is %o; it holds installed app packages and must not be group- or world-readable", perm)
 	}
 }

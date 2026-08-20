@@ -277,7 +277,7 @@ func (m *Message) send_peer(peer string) {
 // send_peer_priority is send_peer with an explicit queue priority
 // override. Used by broadcast_resync to ship replay messages in the
 // priority_replay lane so they overtake live broadcast traffic in
-// wasabi's outbound queue. See task #96.
+// the outbound queue.
 func (m *Message) send_peer_priority(peer string, priority int) {
 	m.target = peer
 	if m.ID == "" {
@@ -408,9 +408,9 @@ func message_attempt_send_real(m *Message, peer string, content []byte) {
 		return
 	}
 	queue_sending(m.ID)
-	if send_err := peer_send(peer, m.ID, f); send_err != nil {
+	if send_error := peer_send(peer, m.ID, f); send_error != nil {
 		queue_unsending(m.ID)
-		queue_fail(m.ID, fmt.Sprintf("peer_send: %v", send_err))
+		queue_fail(m.ID, fmt.Sprintf("peer_send: %v", send_error))
 	}
 }
 

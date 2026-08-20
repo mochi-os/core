@@ -12,7 +12,7 @@
 // (a valid Python construct that Starlark rejects) fails the deploy
 // locally rather than silently breaking every action in the app once
 // the server tries to load the deployed bundle. See
-// claude/memory/feedback_starlark_no_implicit_concat.md and task #89.
+// claude/memory/feedback_starlark_no_implicit_concat.md.
 
 package main
 
@@ -46,9 +46,9 @@ func cmd_check_starlark(args []string) error {
 
 	var paths []string
 	if info.IsDir() {
-		err := filepath.WalkDir(root, func(p string, d os.DirEntry, walk_err error) error {
-			if walk_err != nil {
-				return walk_err
+		err := filepath.WalkDir(root, func(p string, d os.DirEntry, walk_error error) error {
+			if walk_error != nil {
+				return walk_error
 			}
 			if d.IsDir() {
 				// Skip the directories that never contain runtime

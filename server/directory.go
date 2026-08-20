@@ -285,7 +285,7 @@ func directory_publish_event(e *Event) {
 		Version:   atoi(e.get("version", ""), 0),
 		Created:   atoi(e.get("created", ""), 0),
 		Seen:      atoi(e.get("seen", ""), 0),
-		Message:   e.msg_id,
+		Message:   e.message,
 		Expires:   e.expires,
 		Signature: base58_encode(e.signature),
 	}
@@ -514,11 +514,11 @@ func directory_sync_event(e *Event) {
 	}
 }
 
-// directory_location_max_age is how long a directory row may remain
+// directory_location_age_maximum is how long a directory row may remain
 // un-refreshed before a silenced peer's rows get forgotten. Live peers
 // re-attest hourly; only a peer that's been dark for the full window gets
 // considered.
-const directory_location_max_age = 14 * 86400 // 14 days
+const directory_location_age_maximum = 14 * 86400 // 14 days
 
 // directory_cleanup_manager runs once per hour and forgets peers that have
 // been demonstrably unreachable for a long time. See directory_forget_peer
@@ -545,7 +545,7 @@ func directory_cleanup_manager() {
 //   - Not a bootstrap peer (trusted infrastructure; never forget).
 //   - Not a pair-set member (whole-server replication partner; its
 //     lifecycle is operator-controlled via replica join/leave).
-//   - Most recent `seen` for this peer < now - directory_location_max_age.
+//   - Most recent `seen` for this peer < now - directory_location_age_maximum.
 //   - peer_is_silent(peer) == true: the in-memory silent-cache has
 //     confirmed via repeated failed stream opens that the peer is
 //     genuinely unreachable, not just absent from the directory due
@@ -557,7 +557,7 @@ func directory_cleanup_manager() {
 // catch only peers that have been gone long enough to be considered
 // dead, AND that we've recently tried to reach.
 func directory_cleanup_dead_peers() {
-	cutoff := now() - directory_location_max_age
+	cutoff := now() - directory_location_age_maximum
 	ddb := db_open("db/directory.db")
 	rows, err := ddb.rows(
 		"select peer, max(seen) as latest from entries where peer != ? group by peer having latest < ?",

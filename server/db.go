@@ -90,11 +90,11 @@ type DB struct {
 	// DB lives in, so no new synchronisation primitive is introduced.
 	closed int64
 
-	// stmt_cache holds prepared statements for the internal pool, keyed
-	// by SQL text, populated lazily by prepared(). Guarded by stmt_lock.
+	// statement_cache holds prepared statements for the internal pool, keyed
+	// by SQL text, populated lazily by prepared(). Guarded by statement_lock.
 	// Closed on eviction (stmts_close).
-	stmt_lock  sync.Mutex
-	stmt_cache map[string]*sqlx.Stmt
+	statement_lock  sync.Mutex
+	statement_cache map[string]*sqlx.Stmt
 }
 
 // db_kind_* tag a DB handle with the per-host file role so the
@@ -154,7 +154,7 @@ func db_setup_conn(c *sqlite3.Conn) error {
 	if err := c.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		return err
 	}
-	return c.Exec(fmt.Sprintf("PRAGMA max_page_count = %d", db_max_page_count))
+	return c.Exec(fmt.Sprintf("PRAGMA max_page_count = %d", db_page_count_maximum))
 }
 
 // db_setup_conn_starlark wraps db_setup_conn and additionally installs
@@ -541,9 +541,9 @@ func db_user(u *User, name string) *DB {
 // well under 100 MB. Headroom for the busy outliers without removing
 // the safety net for actually-runaway code.
 //
-// Total max disk per server is approximately (number of DB files) ×
+// Total maximum disk per server is approximately (number of DB files) ×
 // 25 GB, but in practice only a handful of DBs ever approach the cap.
-const db_max_page_count = 6_553_600
+const db_page_count_maximum = 6_553_600
 
 // db_app opens a database file for an app, creating, upgrading, or downgrading it as necessary.
 // App databases are stored in users/{user_id}/{app_id}/db/{file.db}.
@@ -1068,10 +1068,10 @@ func db_wal_watchdog() {
 // noticed; an hourly quick_check turns that into a prompt alert.
 var db_integrity_period int64 = 3600
 
-// db_integrity_max_per_check bounds how many DBs the watchdog quick_checks per
+// db_integrity_per_check_maximum bounds how many DBs the watchdog quick_checks per
 // tick, so a host with many large DBs spreads the scan load instead of stalling
 // on a thundering herd of full-DB checks. var so tests can lift the cap.
-var db_integrity_max_per_check = 2
+var db_integrity_per_check_maximum = 2
 
 // db_integrity_state maps db.path -> last-ok unix time (int64), or the string
 // "corrupt" once a DB has been flagged (so it isn't re-scanned or re-alerted).
@@ -1093,9 +1093,9 @@ func db_quarantined(path string) bool {
 // transition into corrupt), sharing db_integrity_state with the watchdog so a
 // reactive quarantine and the proactive scan never double-alert.
 func db_quarantine(path, context string, err error) {
-	prev, _ := db_integrity_state.Load(path)
+	previous, _ := db_integrity_state.Load(path)
 	db_integrity_state.Store(path, "corrupt")
-	if prev != "corrupt" {
+	if previous != "corrupt" {
 		warn("Database %q corrupt during %s: %v — quarantined; further operations on it are skipped until it is repaired (recover from backup / reseed).", path, context, err)
 	}
 }
@@ -1116,11 +1116,11 @@ func db_error_is_corruption(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "malformed") ||
-		strings.Contains(msg, "not a database") ||
-		strings.Contains(msg, "disk image is malformed") ||
-		strings.Contains(msg, "corrupt")
+	message := err.Error()
+	return strings.Contains(message, "malformed") ||
+		strings.Contains(message, "not a database") ||
+		strings.Contains(message, "disk image is malformed") ||
+		strings.Contains(message, "corrupt")
 }
 
 // db_error_is_transient reports whether err is a RETRYABLE write failure — lock
@@ -1134,14 +1134,14 @@ func db_error_is_transient(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "database is locked") ||
-		strings.Contains(msg, "database table is locked") ||
-		strings.Contains(msg, "SQLITE_BUSY") ||
-		strings.Contains(msg, "SQLITE_LOCKED") ||
-		strings.Contains(msg, "disk I/O error") ||
-		strings.Contains(msg, "database or disk is full") ||
-		strings.Contains(msg, "disk is full")
+	message := err.Error()
+	return strings.Contains(message, "database is locked") ||
+		strings.Contains(message, "database table is locked") ||
+		strings.Contains(message, "SQLITE_BUSY") ||
+		strings.Contains(message, "SQLITE_LOCKED") ||
+		strings.Contains(message, "disk I/O error") ||
+		strings.Contains(message, "database or disk is full") ||
+		strings.Contains(message, "disk is full")
 }
 
 // ExecResult is the outcome of a background write (exec_bg), so a replicated
@@ -1173,7 +1173,7 @@ func db_integrity_watchdog() {
 
 	checked := 0
 	for _, db := range open {
-		if checked >= db_integrity_max_per_check {
+		if checked >= db_integrity_per_check_maximum {
 			break
 		}
 		if v, ok := db_integrity_state.Load(db.path); ok {
@@ -1248,11 +1248,11 @@ func db_open(file string) *DB {
 	return db
 }
 
-func db_open_work(file string, cacheKeys ...string) (*DB, bool, bool) {
+func db_open_work(file string, keys ...string) (*DB, bool, bool) {
 	path := filepath.Join(data_dir, file)
 	key := path
-	if len(cacheKeys) > 0 && cacheKeys[0] != "" {
-		key = cacheKeys[0]
+	if len(keys) > 0 && keys[0] != "" {
+		key = keys[0]
 	}
 
 	databases_lock.Lock()
@@ -1550,11 +1550,11 @@ func db_purge_prefix(dir string) {
 	}
 }
 
-// db_stmt_cache_max bounds the per-DB prepared-statement cache. On
+// db_statement_cache_maximum bounds the per-DB prepared-statement cache. On
 // overflow the whole cache is flushed (closing a statement is safe even
 // if one is mid-flight — database/sql reference-counts open uses), so
 // dynamically-built SQL can't grow it without bound.
-const db_stmt_cache_max = 512
+const db_statement_cache_maximum = 512
 
 // prepared returns a cached prepared statement on the internal pool for
 // query, or nil to fall back to the uncached path. These statements are
@@ -1573,49 +1573,49 @@ func (db *DB) prepared(query string) *sqlx.Stmt {
 	if db_migrating.Load() > 0 || sql_is_introspection(query) {
 		return nil
 	}
-	db.stmt_lock.Lock()
-	defer db.stmt_lock.Unlock()
-	if st, ok := db.stmt_cache[query]; ok {
+	db.statement_lock.Lock()
+	defer db.statement_lock.Unlock()
+	if st, ok := db.statement_cache[query]; ok {
 		return st
 	}
-	if db.stmt_cache == nil {
-		db.stmt_cache = make(map[string]*sqlx.Stmt)
+	if db.statement_cache == nil {
+		db.statement_cache = make(map[string]*sqlx.Stmt)
 	}
-	if len(db.stmt_cache) >= db_stmt_cache_max {
-		for _, st := range db.stmt_cache {
+	if len(db.statement_cache) >= db_statement_cache_maximum {
+		for _, st := range db.statement_cache {
 			st.Close()
 		}
-		db.stmt_cache = make(map[string]*sqlx.Stmt)
+		db.statement_cache = make(map[string]*sqlx.Stmt)
 	}
 	st, err := db.internal.Preparex(query)
 	if err != nil {
 		return nil // fall back to the uncached path
 	}
-	db.stmt_cache[query] = st
+	db.statement_cache[query] = st
 	return st
 }
 
 // stmts_close closes every cached prepared statement. Called from the
 // db_manager eviction path before the pool is closed.
 func (db *DB) stmts_close() {
-	db.stmt_lock.Lock()
-	defer db.stmt_lock.Unlock()
-	for _, st := range db.stmt_cache {
+	db.statement_lock.Lock()
+	defer db.statement_lock.Unlock()
+	for _, st := range db.statement_cache {
 		st.Close()
 	}
-	db.stmt_cache = nil
+	db.statement_cache = nil
 }
 
-// stmt_closed reports whether err is database/sql's "statement is closed"
+// statement_closed reports whether err is database/sql's "statement is closed"
 // sentinel. A cached prepared statement can be closed by a concurrent
 // stmts_close (DDL flush, 512-entry overflow, or eviction) in the window
 // between prepared() handing it out and the caller executing it outside
-// stmt_lock — under heavy concurrent load on one DB this surfaced as
+// statement_lock — under heavy concurrent load on one DB this surfaced as
 // intermittent "sql: statement is closed" (e.g. group_memberships on the hot
 // access-check path). The query helpers treat it as a transient cache miss and
 // retry once on the uncached pool path, which re-prepares fresh. The sentinel
 // is unexported in database/sql, so match on its stable message.
-func stmt_closed(err error) bool {
+func statement_closed(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "statement is closed")
 }
 
@@ -1675,7 +1675,7 @@ func (db *DB) exec_e(query string, values ...any) error {
 		return nil
 	}
 	if st := db.prepared(query); st != nil {
-		if _, err := st.Exec(values...); !stmt_closed(err) {
+		if _, err := st.Exec(values...); !statement_closed(err) {
 			return err
 		}
 		// cached statement closed by a concurrent cache flush; retry uncached
@@ -1716,7 +1716,7 @@ func (db *DB) exists(query string, values ...any) (bool, error) {
 	var err error
 	if st := db.prepared(query); st != nil {
 		r, err = st.Query(values...)
-		if stmt_closed(err) {
+		if statement_closed(err) {
 			// cached statement closed by a concurrent cache flush; retry uncached
 			r, err = db.internal.Query(query, values...)
 		}
@@ -1736,7 +1736,7 @@ func (db *DB) integer(query string, values ...any) int {
 	var err error
 	if st := db.prepared(query); st != nil {
 		err = st.QueryRow(values...).Scan(&result)
-		if stmt_closed(err) {
+		if statement_closed(err) {
 			// cached statement closed by a concurrent cache flush; retry uncached
 			err = db.internal.QueryRow(query, values...).Scan(&result)
 		}
@@ -1761,7 +1761,7 @@ func (db *DB) integer64(query string, values ...any) int64 {
 	var err error
 	if st := db.prepared(query); st != nil {
 		err = st.QueryRow(values...).Scan(&result)
-		if stmt_closed(err) {
+		if statement_closed(err) {
 			// cached statement closed by a concurrent cache flush; retry uncached
 			err = db.internal.QueryRow(query, values...).Scan(&result)
 		}
@@ -1779,7 +1779,7 @@ func (db *DB) row(query string, values ...any) (map[string]any, error) {
 	var err error
 	if st := db.prepared(query); st != nil {
 		r, err = st.Queryx(values...)
-		if stmt_closed(err) {
+		if statement_closed(err) {
 			// cached statement closed by a concurrent cache flush; retry uncached
 			r, err = db.internal.Queryx(query, values...)
 		}
@@ -1815,7 +1815,7 @@ func (db *DB) rows(query string, values ...any) ([]map[string]any, error) {
 	var err error
 	if st := db.prepared(query); st != nil {
 		r, err = st.Queryx(values...)
-		if stmt_closed(err) {
+		if statement_closed(err) {
 			// cached statement closed by a concurrent cache flush; retry uncached
 			r, err = db.internal.Queryx(query, values...)
 		}
@@ -1846,7 +1846,7 @@ func (db *DB) scan(out any, query string, values ...any) bool {
 	var err error
 	if st := db.prepared(query); st != nil {
 		err = st.QueryRowx(values...).StructScan(out)
-		if stmt_closed(err) {
+		if statement_closed(err) {
 			// cached statement closed by a concurrent cache flush; retry uncached
 			err = db.internal.QueryRowx(query, values...).StructScan(out)
 		}
@@ -1865,7 +1865,7 @@ func (db *DB) scan(out any, query string, values ...any) bool {
 
 func (db *DB) scans(out any, query string, values ...any) error {
 	if st := db.prepared(query); st != nil {
-		if err := st.Select(out, values...); !stmt_closed(err) {
+		if err := st.Select(out, values...); !statement_closed(err) {
 			return err
 		}
 		// cached statement closed by a concurrent cache flush; retry uncached

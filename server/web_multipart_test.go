@@ -39,16 +39,16 @@ func TestMultipartMaximumAnonymous(t *testing.T) {
 // MaxInt64 and overflow into a negative limit — which would reject every
 // upload, or worse, be treated as unbounded.
 func TestMultipartMaximumFinite(t *testing.T) {
-	for _, remaining := range []int64{1<<62 - 1, file_max_storage, 1} {
+	for _, remaining := range []int64{1<<62 - 1, file_maximum_storage, 1} {
 		limit := remaining
-		if limit > file_max_storage {
-			limit = file_max_storage
+		if limit > file_maximum_storage {
+			limit = file_maximum_storage
 		}
 		limit += web_multipart_framing
 		if limit <= 0 {
 			t.Errorf("derived limit for remaining=%d overflowed to %d", remaining, limit)
 		}
-		if limit > file_max_storage+web_multipart_framing {
+		if limit > file_maximum_storage+web_multipart_framing {
 			t.Errorf("derived limit for remaining=%d is %d, above the per-user ceiling", remaining, limit)
 		}
 	}

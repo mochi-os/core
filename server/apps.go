@@ -2314,24 +2314,24 @@ func (av *AppVersion) find_action(name string) *AppAction {
 		value_segments := name_segments
 
 		// Find greedy parameter position (starts with *), if any
-		greedy_pos := -1
+		greedy_position := -1
 		for i, ks := range key_segments {
 			if strings.HasPrefix(ks, "*") {
-				greedy_pos = i
+				greedy_position = i
 				break
 			}
 		}
 
 		// Calculate suffix length (segments after greedy param)
 		suffix_len := 0
-		if greedy_pos >= 0 {
-			suffix_len = len(key_segments) - greedy_pos - 1
+		if greedy_position >= 0 {
+			suffix_len = len(key_segments) - greedy_position - 1
 		}
 
 		// Check segment count compatibility
-		if greedy_pos >= 0 {
+		if greedy_position >= 0 {
 			// Greedy: value must have at least (prefix + 1 + suffix) segments
-			if len(value_segments) < greedy_pos+1+suffix_len {
+			if len(value_segments) < greedy_position+1+suffix_len {
 				continue
 			}
 		} else if len(key_segments) != len(value_segments) {
@@ -2342,8 +2342,8 @@ func (av *AppVersion) find_action(name string) *AppAction {
 
 		// Match prefix segments (before greedy param)
 		prefix_end := len(key_segments)
-		if greedy_pos >= 0 {
-			prefix_end = greedy_pos
+		if greedy_position >= 0 {
+			prefix_end = greedy_position
 		}
 		for i := 0; i < prefix_end; i++ {
 			ks := key_segments[i]
@@ -2375,10 +2375,10 @@ func (av *AppVersion) find_action(name string) *AppAction {
 		}
 
 		// Capture greedy parameter (everything between prefix and suffix)
-		if greedy_pos >= 0 {
+		if greedy_position >= 0 {
 			greedy_end := len(value_segments) - suffix_len
-			pname := key_segments[greedy_pos][1:] // Remove '*'
-			aa.parameters[pname] = strings.Join(value_segments[greedy_pos:greedy_end], "/")
+			pname := key_segments[greedy_position][1:] // Remove '*'
+			aa.parameters[pname] = strings.Join(value_segments[greedy_position:greedy_end], "/")
 		}
 
 		return &aa
@@ -3704,12 +3704,12 @@ func version_compare(a, b string) int {
 	parts_b := strings.Split(b, ".")
 
 	// Compare only up to the segment count of the shorter version
-	min := len(parts_a)
-	if len(parts_b) < min {
-		min = len(parts_b)
+	minimum := len(parts_a)
+	if len(parts_b) < minimum {
+		minimum = len(parts_b)
 	}
 
-	for i := 0; i < min; i++ {
+	for i := 0; i < minimum; i++ {
 		num_a, _ := strconv.Atoi(parts_a[i])
 		num_b, _ := strconv.Atoi(parts_b[i])
 		if num_a > num_b {

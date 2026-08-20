@@ -238,13 +238,13 @@ func (a *Action) error_label(code int, key string) {
 }
 
 // Display an error as a simple HTML page
-func (a *Action) error(code int, message string, values ...any) {
-	msg := fmt.Sprintf(message, values...)
+func (a *Action) error(code int, format string, values ...any) {
+	message := fmt.Sprintf(format, values...)
 
 	// Return JSON for API requests, HTML for browser requests
 	if strings.Contains(a.web.GetHeader("Accept"), "application/json") ||
 		strings.HasPrefix(a.web.GetHeader("Content-Type"), "application/json") {
-		a.web.JSON(code, gin.H{"error": msg})
+		a.web.JSON(code, gin.H{"error": message})
 		return
 	}
 
@@ -253,7 +253,7 @@ func (a *Action) error(code int, message string, values ...any) {
 	a.web.Writer.WriteString("<html><head><title>Error</title></head><body>")
 	a.web.Writer.WriteString(fmt.Sprintf("<h1>Error %d</h1>", code))
 	a.web.Writer.WriteString("<pre>")
-	a.web.Writer.WriteString(template.HTMLEscapeString(msg))
+	a.web.Writer.WriteString(template.HTMLEscapeString(message))
 	a.web.Writer.WriteString("</pre></body></html>")
 }
 
@@ -587,14 +587,14 @@ func (a *Action) sl_error_label(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 		av = app_local.active(user)
 	}
 
-	msg := key
+	message := key
 	if av != nil {
-		msg = resolve_label(av, language, key, margs)
+		message = resolve_label(av, language, key, margs)
 	}
 	if log_it {
-		debug("sl_error_label() %d %s -> %s", int(code), key, msg)
+		debug("sl_error_label() %d %s -> %s", int(code), key, message)
 	}
-	a.error(int(code), "%s", msg)
+	a.error(int(code), "%s", message)
 	return sl.None, nil
 }
 
@@ -1265,7 +1265,7 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	// Get the raw reader (includes any buffered bytes from CBOR decoder).
 	//
 	// Bounded before anything else reads from it. raw_reader deliberately returns
-	// the UNWRAPPED reader - the 100MB cbor_max_size LimitReader wraps the CBOR
+	// the UNWRAPPED reader - the 100MB cbor_maximum_size LimitReader wraps the CBOR
 	// decoder, so it caps decoded messages and not the byte body - and every
 	// caller of this function is relaying bytes a remote peer chose. Without a cap
 	// here, an anonymous request to a public asset route makes this server pull

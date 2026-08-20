@@ -121,8 +121,8 @@ func api_commit_fire(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // is already durable but the hook fire would be lost. The log lives in
 // app.db (server-only, like access/attachments), so an app cannot tamper
 // with its own pending-fire bookkeeping via mochi.db.execute.
-func commit_hook_fire(userUID, appID, table, kind, row_uid string, depth int) {
-	u, a, av := commit_hook_resolve(userUID, appID)
+func commit_hook_fire(user, app, table, kind, row_uid string, depth int) {
+	u, a, av := commit_hook_resolve(user, app)
 	if u == nil || a == nil || av == nil {
 		return
 	}
@@ -188,19 +188,19 @@ func commit_hook_invoke(av *AppVersion, a *App, u *User, function, table, kind, 
 	return true
 }
 
-// commit_hook_resolve translates (userUID, appID) into the User, App,
+// commit_hook_resolve translates (user, app) into the User, App,
 // and AppVersion the hook needs. Returns nil for any field that can't
 // be resolved — caller treats nil as "skip silently".
-func commit_hook_resolve(userUID, appID string) (*User, *App, *AppVersion) {
-	if userUID == "" || appID == "" {
+func commit_hook_resolve(user, app string) (*User, *App, *AppVersion) {
+	if user == "" || app == "" {
 		return nil, nil, nil
 	}
 
-	u := user_by_uid(userUID)
+	u := user_by_uid(user)
 	if u == nil {
 		return nil, nil, nil
 	}
-	a := app_by_id(appID)
+	a := app_by_id(app)
 	if a == nil {
 		return nil, nil, nil
 	}

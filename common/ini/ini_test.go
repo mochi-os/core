@@ -13,7 +13,7 @@ import (
 	goini "gopkg.in/ini.v1"
 )
 
-func loadIniBytes(t *testing.T, body string) {
+func load_ini_bytes(t *testing.T, body string) {
 	t.Helper()
 	f, err := goini.Load([]byte(body))
 	if err != nil {
@@ -23,7 +23,7 @@ func loadIniBytes(t *testing.T, body string) {
 }
 
 func TestStringEnvOverride(t *testing.T) {
-	loadIniBytes(t, "[web]\ndomain = file.example\n")
+	load_ini_bytes(t, "[web]\ndomain = file.example\n")
 
 	if got := String("web", "domain", "fallback"); got != "file.example" {
 		t.Errorf("without env: got %q, want %q", got, "file.example")
@@ -36,7 +36,7 @@ func TestStringEnvOverride(t *testing.T) {
 }
 
 func TestStringEnvEmptyOverridesFile(t *testing.T) {
-	loadIniBytes(t, "[web]\ndomain = file.example\n")
+	load_ini_bytes(t, "[web]\ndomain = file.example\n")
 
 	t.Setenv("MOCHI_WEB_DOMAIN", "")
 	if got := String("web", "domain", "fallback"); got != "" {
@@ -45,14 +45,14 @@ func TestStringEnvEmptyOverridesFile(t *testing.T) {
 }
 
 func TestStringFallsBackToDefault(t *testing.T) {
-	loadIniBytes(t, "")
+	load_ini_bytes(t, "")
 	if got := String("nope", "missing", "default"); got != "default" {
 		t.Errorf("no file value, no env: got %q, want %q", got, "default")
 	}
 }
 
 func TestIntEnvOverride(t *testing.T) {
-	loadIniBytes(t, "[p2p]\nport = 1443\n")
+	load_ini_bytes(t, "[p2p]\nport = 1443\n")
 
 	if got := Int("p2p", "port", 9999); got != 1443 {
 		t.Errorf("without env: got %d, want 1443", got)
@@ -65,7 +65,7 @@ func TestIntEnvOverride(t *testing.T) {
 }
 
 func TestIntEnvUnparseableFallsBack(t *testing.T) {
-	loadIniBytes(t, "[p2p]\nport = 1443\n")
+	load_ini_bytes(t, "[p2p]\nport = 1443\n")
 	t.Setenv("MOCHI_P2P_PORT", "not-a-number")
 	if got := Int("p2p", "port", 9999); got != 1443 {
 		t.Errorf("unparseable env should fall back to file: got %d, want 1443", got)
@@ -73,7 +73,7 @@ func TestIntEnvUnparseableFallsBack(t *testing.T) {
 }
 
 func TestBoolEnvOverride(t *testing.T) {
-	loadIniBytes(t, "[p2p]\nrelay = false\n")
+	load_ini_bytes(t, "[p2p]\nrelay = false\n")
 
 	if got := Bool("p2p", "relay", false); got {
 		t.Errorf("without env: got true, want false")
@@ -86,7 +86,7 @@ func TestBoolEnvOverride(t *testing.T) {
 }
 
 func TestBoolEnvUnparseableFallsBack(t *testing.T) {
-	loadIniBytes(t, "[p2p]\nrelay = true\n")
+	load_ini_bytes(t, "[p2p]\nrelay = true\n")
 	t.Setenv("MOCHI_P2P_RELAY", "maybe")
 	if got := Bool("p2p", "relay", false); !got {
 		t.Errorf("unparseable env should fall back to file: got false, want true")
@@ -94,7 +94,7 @@ func TestBoolEnvUnparseableFallsBack(t *testing.T) {
 }
 
 func TestStringsEnvOverride(t *testing.T) {
-	loadIniBytes(t, "[web]\nports = 80, 443\n")
+	load_ini_bytes(t, "[web]\nports = 80, 443\n")
 
 	if got := Strings("web", "ports"); !reflect.DeepEqual(got, []string{"80", "443"}) {
 		t.Errorf("without env: got %v", got)
@@ -108,7 +108,7 @@ func TestStringsEnvOverride(t *testing.T) {
 }
 
 func TestIntsEnvOverride(t *testing.T) {
-	loadIniBytes(t, "[web]\nports = 80, 443\n")
+	load_ini_bytes(t, "[web]\nports = 80, 443\n")
 
 	t.Setenv("MOCHI_WEB_PORTS", "8080,8443")
 	want := []int{8080, 8443}
@@ -118,7 +118,7 @@ func TestIntsEnvOverride(t *testing.T) {
 }
 
 func TestEnvNameUppercases(t *testing.T) {
-	loadIniBytes(t, "")
+	load_ini_bytes(t, "")
 	t.Setenv("MOCHI_DIRECTORIES_DATA", "/var/lib/test")
 	if got := String("directories", "data", "/wrong"); got != "/var/lib/test" {
 		t.Errorf("lowercase section/key should map to MOCHI_DIRECTORIES_DATA: got %q", got)
@@ -126,7 +126,7 @@ func TestEnvNameUppercases(t *testing.T) {
 }
 
 func TestUnsetEnvFallsToFile(t *testing.T) {
-	loadIniBytes(t, "[web]\ndomain = file.example\n")
+	load_ini_bytes(t, "[web]\ndomain = file.example\n")
 	// MOCHI_WEB_DOMAIN deliberately not set
 	if got := String("web", "domain", "default"); got != "file.example" {
 		t.Errorf("unset env should yield file value: got %q", got)
@@ -137,9 +137,9 @@ func TestUnsetEnvFallsToFile(t *testing.T) {
 // successfully (e.g. mochictl tolerating a missing mochi.conf). Accessors
 // must return their default rather than panic on the nil package-level file.
 func TestAccessorsHandleNilFile(t *testing.T) {
-	prev := file
+	previous := file
 	file = nil
-	defer func() { file = prev }()
+	defer func() { file = previous }()
 
 	if got := String("web", "domain", "default-string"); got != "default-string" {
 		t.Errorf("String with nil file: got %q, want default-string", got)
@@ -165,7 +165,7 @@ func TestAccessorsHandleNilFile(t *testing.T) {
 }
 
 func TestEffectiveMergesFileAndEnv(t *testing.T) {
-	loadIniBytes(t, "[web]\ndomain = file.example\nports = 80,443\n[email]\nadmin = ops@example.com\n")
+	load_ini_bytes(t, "[web]\ndomain = file.example\nports = 80,443\n[email]\nadmin = ops@example.com\n")
 	t.Setenv("MOCHI_WEB_PORTS", "8080,8443")
 	t.Setenv("MOCHI_NEWSECT_VALUE", "from-env")
 
@@ -183,7 +183,7 @@ func TestEffectiveMergesFileAndEnv(t *testing.T) {
 }
 
 func TestEffectiveRedactsSensitiveKeys(t *testing.T) {
-	loadIniBytes(t, "[email]\npassword = supersecret\nadmin = ops@example.com\n[oauth]\nclient_secret = abc\napi_token = xyz\n")
+	load_ini_bytes(t, "[email]\npassword = supersecret\nadmin = ops@example.com\n[oauth]\nclient_secret = abc\napi_token = xyz\n")
 
 	got := Effective()
 

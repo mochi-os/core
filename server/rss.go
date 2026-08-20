@@ -20,7 +20,7 @@ import (
 	"golang.org/x/net/html"
 )
 
-// rss_maximum bounds one feed document. Separate from url_max_response_size so
+// rss_maximum bounds one feed document. Separate from url_response_size_maximum so
 // that changing what a general outbound fetch may return does not silently
 // change this, and the reverse: a feed is text with a known shape, where an
 // arbitrary URL fetch is not.
@@ -292,8 +292,8 @@ func rss_image_from_html(body string) string {
 			continue
 		}
 
-		name, hasAttr := tokenizer.TagName()
-		if string(name) != "img" || !hasAttr {
+		name, has_attribute := tokenizer.TagName()
+		if string(name) != "img" || !has_attribute {
 			continue
 		}
 

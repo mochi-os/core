@@ -967,8 +967,8 @@ func web_cache_static(c *gin.Context, path string, cache string) {
 			c.Header("Cache-Control", "public, max-age=300")
 		case "revalidate":
 			c.Header("Cache-Control", "no-cache, must-revalidate")
-			if info, err := os.Stat(path); err == nil {
-				etag := fmt.Sprintf(`"%x"`, info.ModTime().UnixNano())
+			if information, err := os.Stat(path); err == nil {
+				etag := fmt.Sprintf(`"%x"`, information.ModTime().UnixNano())
 				c.Header("ETag", etag)
 				if match := c.GetHeader("If-None-Match"); match == etag {
 					c.AbortWithStatus(http.StatusNotModified)
@@ -984,8 +984,8 @@ func web_cache_static(c *gin.Context, path string, cache string) {
 		// HTML files should revalidate on every request
 		// Add ETag based on file modification time for proper cache validation
 		c.Header("Cache-Control", "no-cache, must-revalidate")
-		if info, err := os.Stat(path); err == nil {
-			etag := fmt.Sprintf(`"%x"`, info.ModTime().UnixNano())
+		if information, err := os.Stat(path); err == nil {
+			etag := fmt.Sprintf(`"%x"`, information.ModTime().UnixNano())
 			c.Header("ETag", etag)
 			// Check If-None-Match header for conditional request
 			if match := c.GetHeader("If-None-Match"); match == etag {
@@ -1117,8 +1117,8 @@ func web_multipart_maximum(user *User) int64 {
 	// Administrators are quota-exempt (MaxInt64). Give them a finite ceiling
 	// anyway — unbounded is the thing being fixed — sized at the per-user
 	// quota, which is far beyond any real single upload.
-	if remaining > file_max_storage {
-		remaining = file_max_storage
+	if remaining > file_maximum_storage {
+		remaining = file_maximum_storage
 	}
 	return remaining + web_multipart_framing
 }
@@ -1236,8 +1236,8 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 	}
 
 	// Read HTML file
-	html, readErr := os.ReadFile(file)
-	if readErr != nil {
+	html, read_error := os.ReadFile(file)
+	if read_error != nil {
 		return false
 	}
 	content := string(html)
@@ -1256,7 +1256,7 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 	}
 	if image, ok := og["image"].(string); ok && image != "" {
 		image = opengraph_absolute(image, scheme, c.Request.Host, c.Request.URL.Path)
-		escaped := escape_attr(image)
+		escaped := escape_attribute(image)
 		// Add og:image if not already present
 		if !strings.Contains(content, `property="og:image"`) {
 			content = strings.Replace(content, `<meta property="og:description"`,
@@ -1278,7 +1278,7 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 
 	// Always set og:url to current URL
 	if !strings.Contains(content, `property="og:url"`) {
-		escaped := escape_attr(url)
+		escaped := escape_attribute(url)
 		content = strings.Replace(content, `<meta property="og:type"`,
 			`<meta property="og:url" content="`+escaped+`" />`+"\n    "+`<meta property="og:type"`, 1)
 	} else {
@@ -1328,28 +1328,28 @@ func web_inject_meta_tags(c *gin.Context, e *Entity, content string) string {
 	// Must be a static tag (not JS-generated) so the browser's preload scanner
 	// resolves ./assets/... correctly before any scripts execute.
 	if dm == "entity" || dm == "app" {
-		tags = append(tags, `<base href="`+escape_attr(route_path)+`">`)
+		tags = append(tags, `<base href="`+escape_attribute(route_path)+`">`)
 	} else if e != nil && app != "" {
-		tags = append(tags, `<base href="/`+escape_attr(app)+`/`+escape_attr(e.Fingerprint)+`/">`)
+		tags = append(tags, `<base href="/`+escape_attribute(app)+`/`+escape_attribute(e.Fingerprint)+`/">`)
 	} else if e != nil {
-		tags = append(tags, `<base href="/`+escape_attr(e.Fingerprint)+`/">`)
+		tags = append(tags, `<base href="/`+escape_attribute(e.Fingerprint)+`/">`)
 	} else if app != "" {
-		tags = append(tags, `<base href="/`+escape_attr(app)+`/">`)
+		tags = append(tags, `<base href="/`+escape_attribute(app)+`/">`)
 	}
 
 	if app != "" {
-		tags = append(tags, `<meta name="mochi:app" content="`+escape_attr(app)+`">`)
+		tags = append(tags, `<meta name="mochi:app" content="`+escape_attribute(app)+`">`)
 	}
 	if e != nil {
-		tags = append(tags, `<meta name="mochi:class" content="`+escape_attr(e.Class)+`">`)
-		tags = append(tags, `<meta name="mochi:entity" content="`+escape_attr(e.ID)+`">`)
-		tags = append(tags, `<meta name="mochi:fingerprint" content="`+escape_attr(e.Fingerprint)+`">`)
+		tags = append(tags, `<meta name="mochi:class" content="`+escape_attribute(e.Class)+`">`)
+		tags = append(tags, `<meta name="mochi:entity" content="`+escape_attribute(e.ID)+`">`)
+		tags = append(tags, `<meta name="mochi:fingerprint" content="`+escape_attribute(e.Fingerprint)+`">`)
 	} else if seg := c.GetString("mochi_entity_segment"); seg != "" {
-		tags = append(tags, `<meta name="mochi:fingerprint" content="`+escape_attr(seg)+`">`)
+		tags = append(tags, `<meta name="mochi:fingerprint" content="`+escape_attribute(seg)+`">`)
 	}
 	if dm == "entity" || dm == "app" {
 		// content carries the matched route path so SPAs can derive their basepath
-		tags = append(tags, `<meta name="mochi:domain" content="`+escape_attr(route_path)+`">`)
+		tags = append(tags, `<meta name="mochi:domain" content="`+escape_attribute(route_path)+`">`)
 	}
 	if len(tags) > 0 {
 		injection := "\n    " + strings.Join(tags, "\n    ")
@@ -1374,7 +1374,7 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 		// Inject base href so the browser's preload scanner resolves relative
 		// asset paths (./assets/...) correctly even on deep URL paths.
 		if app := c.GetString("mochi_app_path"); app != "" {
-			content = strings.Replace(content, "<head>", `<head><base href="/`+escape_attr(app)+`/">`, 1)
+			content = strings.Replace(content, "<head>", `<head><base href="/`+escape_attribute(app)+`/">`, 1)
 		}
 		user := web_auth(c)
 		content = web_apply_user_document_theme(content, user)
@@ -1388,7 +1388,7 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		// User-specific theme is baked in — prevent shared caches from
 		// serving one user's appearance to another. Short private
-		// max-age covers rapid app switching without a server round-trip.
+		// maximum-age covers rapid app switching without a server round-trip.
 		if web_cache {
 			c.Header("Cache-Control", "private, max-age=60")
 		} else {
@@ -1418,7 +1418,7 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	// User-specific theme is baked in — prevent shared caches from
 	// serving one user's appearance to another. Short private
-	// max-age covers rapid app switching without a server round-trip.
+	// maximum-age covers rapid app switching without a server round-trip.
 	if web_cache {
 		c.Header("Cache-Control", "private, max-age=60")
 	} else {
@@ -1429,7 +1429,7 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 }
 
 // Replace Open Graph meta tag content
-func escape_attr(value string) string {
+func escape_attribute(value string) string {
 	value = strings.ReplaceAll(value, `&`, `&amp;`)
 	value = strings.ReplaceAll(value, `"`, `&quot;`)
 	value = strings.ReplaceAll(value, `<`, `&lt;`)
@@ -1438,12 +1438,12 @@ func escape_attr(value string) string {
 }
 
 func regexp_replace_meta(html, property, value string) string {
-	value = escape_attr(value)
+	value = escape_attribute(value)
 
 	pattern := regexp.MustCompile(`<meta\s+property="` + regexp.QuoteMeta(property) + `"\s+content="[^"]*"\s*/?>`)
 	replacement := `<meta property="` + property + `" content="` + value + `" />`
 	// Literal, not ReplaceAllString: $ in the replacement is a capture-group
-	// reference, the value is app-supplied, and escape_attr covers the
+	// reference, the value is app-supplied, and escape_attribute covers the
 	// HTML-significant characters rather than this one. The pattern has no
 	// groups, so every $N and $name resolved to empty and took the digits or
 	// word after it with them - "Cost: $100" rendered as "Cost: ". Silent, and
@@ -1454,7 +1454,7 @@ func regexp_replace_meta(html, property, value string) string {
 
 // Replace meta tag with name attribute
 func regexp_replace_meta_name(html, name, value string) string {
-	value = escape_attr(value)
+	value = escape_attribute(value)
 
 	pattern := regexp.MustCompile(`<meta\s+name="` + regexp.QuoteMeta(name) + `"\s+content="[^"]*"\s*/?>`)
 	replacement := `<meta name="` + name + `" content="` + value + `" />`
@@ -1463,7 +1463,7 @@ func regexp_replace_meta_name(html, name, value string) string {
 
 // Replace HTML tag content
 func regexp_replace_tag(html, tag, value string) string {
-	value = escape_attr(value)
+	value = escape_attribute(value)
 
 	pattern := regexp.MustCompile(`<` + regexp.QuoteMeta(tag) + `>[^<]*</` + regexp.QuoteMeta(tag) + `>`)
 	replacement := `<` + tag + `>` + value + `</` + tag + `>`

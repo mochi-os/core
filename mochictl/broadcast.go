@@ -8,7 +8,7 @@
 //   Surfaces subscribers that have fallen behind the broadcast owner
 //   without firing user-visible errors. From the broadcast investigation
 //   session report; see claude/sessions/2026-05-25-broadcast-resync-
-//   seq-643-investigation.md and task #83.
+//   seq-643-investigation.md.
 
 package main
 
@@ -47,14 +47,14 @@ func cmd_broadcast_lag(args []string) error {
 
 	var payload struct {
 		Rows []struct {
-			User         string `json:"user"`
-			App          string `json:"app"`
-			Peer         string `json:"peer"`
-			Key          string `json:"key"`
-			ReceivedLast int64  `json:"received_last"`
-			OwnerLogMax  *int64 `json:"owner_log_max"`
-			Lag          *int64 `json:"lag"`
-			Pending      int    `json:"pending"`
+			User            string `json:"user"`
+			App             string `json:"app"`
+			Peer            string `json:"peer"`
+			Key             string `json:"key"`
+			ReceivedLast    int64  `json:"received_last"`
+			OwnerLogMaximum *int64 `json:"owner_log_maximum"`
+			Lag             *int64 `json:"lag"`
+			Pending         int    `json:"pending"`
 		} `json:"rows"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -99,8 +99,8 @@ func cmd_broadcast_lag(args []string) error {
 		}
 		owner_str := "-"
 		lag_str := "-"
-		if r.OwnerLogMax != nil {
-			owner_str = fmt.Sprintf("%d", *r.OwnerLogMax)
+		if r.OwnerLogMaximum != nil {
+			owner_str = fmt.Sprintf("%d", *r.OwnerLogMaximum)
 			lag_str = fmt.Sprintf("%d", *r.Lag)
 		}
 		fmt.Printf("%-*s  %-*s  %-*s  %12d  %12s  %12s  %d\n",

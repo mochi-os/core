@@ -120,9 +120,9 @@ func net_connect(peer string, addresses []string) bool {
 // otherwise the reconnect manager re-dials the defunct id forever, each dial a
 // CRYPTO_ERROR peer-id-mismatch (the high-CPU churn, #48). Ordinary dial
 // failures (offline, transient, no transport) are left untouched.
-func net_drop_rotated_addresses(peer string, dialErr error) {
+func net_drop_rotated_addresses(peer string, dial_error error) {
 	var de *p2p_swarm.DialError
-	if !errors.As(dialErr, &de) {
+	if !errors.As(dial_error, &de) {
 		return
 	}
 	for _, te := range de.DialErrors {

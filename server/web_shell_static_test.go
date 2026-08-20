@@ -32,7 +32,7 @@ func serves_file(accept string, aa *AppAction) bool {
 func TestServesFileDecidesTheAuthBypass(t *testing.T) {
 	plain := &AppAction{File: "index.html"}
 	negotiated := &AppAction{File: "index.html", Function: "action_post", OpenGraph: "og_post"}
-	functionOnly := &AppAction{Function: "action_post"}
+	function_only := &AppAction{Function: "action_post"}
 
 	for _, test := range []struct {
 		name   string
@@ -52,7 +52,7 @@ func TestServesFileDecidesTheAuthBypass(t *testing.T) {
 		{"negotiated, no Accept - runs the function", "", negotiated, false},
 		{"negotiated, HTML and JSON both - runs the function", "text/html,application/json", negotiated, false},
 
-		{"an action with no file never serves one", "text/html", functionOnly, false},
+		{"an action with no file never serves one", "text/html", function_only, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := serves_file(test.accept, test.action); got != test.want {

@@ -5,7 +5,7 @@
 
 // Tests for the dedup window invariant from claude/plans/protocol2.md:
 //
-//   message_mark_seen's retention window must exceed the queue's max
+//   message_mark_seen's retention window must exceed the queue's maximum
 //   retry interval by at least 2×. ... Add a test in queue_test.go that
 //   asserts the relation.
 //
@@ -29,16 +29,16 @@ func TestDedupWindowExceedsMaxRetryInterval(t *testing.T) {
 	if len(retry_delays) == 0 {
 		t.Skip("retry_delays empty; invariant not applicable")
 	}
-	max_gap := retry_delays[0]
+	gap_maximum := retry_delays[0]
 	for _, d := range retry_delays {
-		if d > max_gap {
-			max_gap = d
+		if d > gap_maximum {
+			gap_maximum = d
 		}
 	}
-	required := 2 * max_gap
+	required := 2 * gap_maximum
 	if seen_messages_ttl < required {
 		t.Errorf("dedup window invariant violated: seen_messages_ttl=%d, max retry gap=%d, required ≥ %d (2× max gap). "+
 			"Bump seen_messages_ttl OR cap retry_delays so the relation holds.",
-			seen_messages_ttl, max_gap, required)
+			seen_messages_ttl, gap_maximum, required)
 	}
 }

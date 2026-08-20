@@ -54,8 +54,8 @@ func TestURLRequestCancels(t *testing.T) {
 // absurd value, an unset or invalid one falls to the default, and a value
 // within the cap is honoured.
 func TestURLTimeout(t *testing.T) {
-	if url_max_timeout <= 0 || url_max_timeout > time.Hour {
-		t.Fatalf("url_max_timeout is %s, not a sane finite ceiling", url_max_timeout)
+	if url_timeout_maximum <= 0 || url_timeout_maximum > time.Hour {
+		t.Fatalf("url_max_timeout is %s, not a sane finite ceiling", url_timeout_maximum)
 	}
 	cases := []struct {
 		name    string
@@ -67,7 +67,7 @@ func TestURLTimeout(t *testing.T) {
 		{"zero", map[string]string{"timeout": "0"}, 30 * time.Second},
 		{"negative", map[string]string{"timeout": "-5"}, 30 * time.Second},
 		{"within cap", map[string]string{"timeout": "60"}, 60 * time.Second},
-		{"a week is clamped", map[string]string{"timeout": "604800"}, url_max_timeout},
+		{"a week is clamped", map[string]string{"timeout": "604800"}, url_timeout_maximum},
 	}
 	for _, c := range cases {
 		if got := url_timeout(c.options); got != c.want {

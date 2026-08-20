@@ -25,26 +25,26 @@ import (
 // admin_register_routes and serves it over that platform's listener.
 var admin_router *gin.Engine
 
-// admin_cred is the platform-neutral peer identity for an accepted admin
+// admin_credential is the platform-neutral peer identity for an accepted admin
 // connection. On Linux/macOS the transport fills it from the socket's peer
 // credentials (SO_PEERCRED / LOCAL_PEERCRED); on Windows the pipe's security
-// descriptor gates access at connect time, so no per-connection cred is
-// attached and admin_peer_cred returns nil. pid is 0 when unknown.
-type admin_cred struct {
+// descriptor gates access at connect time, so no per-connection credential is
+// attached and admin_peer_credential returns nil. pid is 0 when unknown.
+type admin_credential struct {
 	uid uint32
 	gid uint32
 	pid int32
 }
 
-// peer_credential_key is the context key used to attach the peer's admin_cred
+// peer_credential_key is the context key used to attach the peer's admin_credential
 // to the request context so handlers and middleware can read it.
 type peer_credential_key struct{}
 
-// admin_peer_cred extracts the peer credentials attached by the transport's
+// admin_peer_credential extracts the peer credentials attached by the transport's
 // ConnContext, or nil when none were attached (e.g. on Windows).
-func admin_peer_cred(ctx context.Context) *admin_cred {
-	if cred, ok := ctx.Value(peer_credential_key{}).(*admin_cred); ok {
-		return cred
+func admin_peer_credential(ctx context.Context) *admin_credential {
+	if credential, ok := ctx.Value(peer_credential_key{}).(*admin_credential); ok {
+		return credential
 	}
 	return nil
 }
@@ -77,19 +77,19 @@ func admin_register_routes(r *gin.Engine) {
 	//   go tool pprof heap.pb.gz
 	// curl -s --unix-socket admin.sock http://x/_/admin/debug/pprof/<profile>
 	// is the lower-level form for ad-hoc captures.
-	debug := r.Group("/_/admin/debug/pprof")
-	debug.GET("/", gin.WrapF(pprof.Index))
-	debug.GET("/cmdline", gin.WrapF(pprof.Cmdline))
-	debug.GET("/profile", gin.WrapF(pprof.Profile))
-	debug.GET("/symbol", gin.WrapF(pprof.Symbol))
-	debug.POST("/symbol", gin.WrapF(pprof.Symbol))
-	debug.GET("/trace", gin.WrapF(pprof.Trace))
-	debug.GET("/allocs", gin.WrapH(pprof.Handler("allocs")))
-	debug.GET("/heap", gin.WrapH(pprof.Handler("heap")))
-	debug.GET("/goroutine", gin.WrapH(pprof.Handler("goroutine")))
-	debug.GET("/threadcreate", gin.WrapH(pprof.Handler("threadcreate")))
-	debug.GET("/block", gin.WrapH(pprof.Handler("block")))
-	debug.GET("/mutex", gin.WrapH(pprof.Handler("mutex")))
+	profiling := r.Group("/_/admin/debug/pprof")
+	profiling.GET("/", gin.WrapF(pprof.Index))
+	profiling.GET("/cmdline", gin.WrapF(pprof.Cmdline))
+	profiling.GET("/profile", gin.WrapF(pprof.Profile))
+	profiling.GET("/symbol", gin.WrapF(pprof.Symbol))
+	profiling.POST("/symbol", gin.WrapF(pprof.Symbol))
+	profiling.GET("/trace", gin.WrapF(pprof.Trace))
+	profiling.GET("/allocs", gin.WrapH(pprof.Handler("allocs")))
+	profiling.GET("/heap", gin.WrapH(pprof.Handler("heap")))
+	profiling.GET("/goroutine", gin.WrapH(pprof.Handler("goroutine")))
+	profiling.GET("/threadcreate", gin.WrapH(pprof.Handler("threadcreate")))
+	profiling.GET("/block", gin.WrapH(pprof.Handler("block")))
+	profiling.GET("/mutex", gin.WrapH(pprof.Handler("mutex")))
 }
 
 // -- Audit middleware ------------------------------------------------------
@@ -114,12 +114,12 @@ func admin_audit_middleware() gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		cred := admin_peer_cred(c.Request.Context())
+		credential := admin_peer_credential(c.Request.Context())
 		uid := -1
 		gid := -1
-		if cred != nil {
-			uid = int(cred.uid)
-			gid = int(cred.gid)
+		if credential != nil {
+			uid = int(credential.uid)
+			gid = int(credential.gid)
 		}
 		audit_log_daemon(fmt.Sprintf("%s peer_uid=%d peer_gid=%d status=%d",
 			op, uid, gid, c.Writer.Status()))

@@ -31,7 +31,7 @@ import (
 	"golang.org/x/net/html"
 )
 
-const url_max_response_size = 100 * 1024 * 1024 // 100 MB
+const url_response_size_maximum = 100 * 1024 * 1024 // 100 MB
 
 // api_globals returns the Starlark global table every app script is
 // evaluated against, building it once on first use.
@@ -276,8 +276,8 @@ func api_random_choice(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return indexable.Index(int(idx.Int64())), nil
 }
 
-// mochi.random.integer(min, max) -> integer: Random integer in [min, max]
-// inclusive. Errors if min > max.
+// mochi.random.integer(minimum, maximum) -> integer: Random integer in [minimum, maximum]
+// inclusive. Errors if minimum > maximum.
 func api_random_integer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 2 {
 		return sl_error(fn, "syntax: <min: integer>, <max: integer>")
@@ -1186,7 +1186,7 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 	defer r.Body.Close()
 
-	data, _ := io.ReadAll(io.LimitReader(r.Body, url_max_response_size))
+	data, _ := io.ReadAll(io.LimitReader(r.Body, url_response_size_maximum))
 	response := map[string]any{"status": r.StatusCode, "headers": header_to_map(r.Header), "body": string(data)}
 
 	// Cache the response for future replays with the same key. Only when
@@ -1326,9 +1326,9 @@ func api_url_preview(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // and resolves relative URLs against the page URL. Returns "" if neither tag
 // is present or the head ends without one. Reads incrementally so callers
 // stop paying memory cost once <body> is reached.
-func url_extract_preview(body io.Reader, pageURL string) string {
+func url_extract_preview(body io.Reader, page_url string) string {
 	tokenizer := html.NewTokenizer(body)
-	var ogImage, twitterImage string
+	var opengraph_image, twitter_image string
 
 	for {
 		tt := tokenizer.Next()
@@ -1336,14 +1336,14 @@ func url_extract_preview(body io.Reader, pageURL string) string {
 			break
 		}
 		if tt == html.StartTagToken || tt == html.SelfClosingTagToken {
-			tn, hasAttr := tokenizer.TagName()
+			tn, has_attribute := tokenizer.TagName()
 			tag_name := string(tn)
 
 			if tag_name == "body" {
 				break
 			}
 
-			if tag_name == "meta" && hasAttr {
+			if tag_name == "meta" && has_attribute {
 				var property, name, content string
 				for {
 					key, val, more := tokenizer.TagAttr()
@@ -1362,9 +1362,9 @@ func url_extract_preview(body io.Reader, pageURL string) string {
 					}
 				}
 				if property == "og:image" && content != "" {
-					ogImage = content
-				} else if twitterImage == "" && name == "twitter:image" && content != "" {
-					twitterImage = content
+					opengraph_image = content
+				} else if twitter_image == "" && name == "twitter:image" && content != "" {
+					twitter_image = content
 				}
 			}
 		}
@@ -1376,16 +1376,16 @@ func url_extract_preview(body io.Reader, pageURL string) string {
 		}
 	}
 
-	result := ogImage
+	result := opengraph_image
 	if result == "" {
-		result = twitterImage
+		result = twitter_image
 	}
 	if result == "" {
 		return ""
 	}
 
 	// Resolve relative URLs
-	base, err := url.Parse(pageURL)
+	base, err := url.Parse(page_url)
 	if err != nil {
 		return result
 	}

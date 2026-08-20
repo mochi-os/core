@@ -390,8 +390,8 @@ func TestStarlarkTimeoutCancellation(t *testing.T) {
 	defer func() { starlark_default_timeout = original_timeout }()
 
 	// Initialize semaphore if not already done
-	if starlark_sem == nil {
-		starlark_sem = make(chan struct{}, 4)
+	if starlark_semaphore == nil {
+		starlark_semaphore = make(chan struct{}, 4)
 	}
 
 	// Enable recursion for this test
@@ -442,8 +442,8 @@ func TestStarlarkStepLimit(t *testing.T) {
 	defer func() { starlark_default_timeout = original_timeout }()
 
 	// Initialize semaphore if not already done
-	if starlark_sem == nil {
-		starlark_sem = make(chan struct{}, 4)
+	if starlark_semaphore == nil {
+		starlark_semaphore = make(chan struct{}, 4)
 	}
 
 	// Create a Starlark interpreter

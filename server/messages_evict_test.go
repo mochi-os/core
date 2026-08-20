@@ -17,7 +17,7 @@ import (
 // stream OPEN, not per frame, so one authenticated peer can hold a stream
 // open and add an entry per message for the whole 8h window.
 func TestMessageSeenEvictHonoursTheCeiling(t *testing.T) {
-	saved_max := seen_messages_maximum
+	saved_maximum := seen_messages_maximum
 	seen_messages_lock.Lock()
 	saved_map := seen_messages
 	seen_messages = make(map[string]int64)
@@ -25,7 +25,7 @@ func TestMessageSeenEvictHonoursTheCeiling(t *testing.T) {
 	t.Cleanup(func() {
 		seen_messages_lock.Lock()
 		seen_messages = saved_map
-		seen_messages_maximum = saved_max
+		seen_messages_maximum = saved_maximum
 		seen_messages_lock.Unlock()
 	})
 
@@ -57,7 +57,7 @@ func TestMessageSeenEvictHonoursTheCeiling(t *testing.T) {
 // Under the ceiling, nothing is shed - eviction must not cost dedup coverage
 // in normal operation.
 func TestMessageSeenEvictLeavesAnUnderfullMapAlone(t *testing.T) {
-	saved_max := seen_messages_maximum
+	saved_maximum := seen_messages_maximum
 	seen_messages_lock.Lock()
 	saved_map := seen_messages
 	seen_messages = make(map[string]int64)
@@ -65,7 +65,7 @@ func TestMessageSeenEvictLeavesAnUnderfullMapAlone(t *testing.T) {
 	t.Cleanup(func() {
 		seen_messages_lock.Lock()
 		seen_messages = saved_map
-		seen_messages_maximum = saved_max
+		seen_messages_maximum = saved_maximum
 		seen_messages_lock.Unlock()
 	})
 

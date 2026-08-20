@@ -76,15 +76,15 @@ const (
 // uses. A var (not const) so tests can lower it.
 var peer_stream_open_timeout = 10 * time.Second
 
-// errSenderUnreachable is returned by peer_send when the target peer
+// error_sender_unreachable is returned by peer_send when the target peer
 // isn't reachable and the call can't even open a sender. queue_fail
 // will re-queue with the usual backoff.
-var errSenderUnreachable = errors.New("sender: peer unreachable")
+var error_sender_unreachable = errors.New("sender: peer unreachable")
 
-// errSenderFull is returned by peer_send when the outbox channel is
+// error_sender_full is returned by peer_send when the outbox channel is
 // saturated past sender_send_timeout. Same recovery as a stream-open
 // failure: queue_fail re-queues with exp backoff.
-var errSenderFull = errors.New("sender: outbox full")
+var error_sender_full = errors.New("sender: outbox full")
 
 // pending tracks one outbound message awaiting ack. Keyed by message
 // id on the Sender's inflight map.
@@ -153,7 +153,7 @@ func senders_has(peer string) bool {
 
 // peer_send is the entry point for /mochi/2/messages outbound. Looks
 // up (or creates) the Sender for `peer` and enqueues `frame` on its
-// outbox. Returns errSenderUnreachable / errSenderFull on failure so
+// outbox. Returns error_sender_unreachable / error_sender_full on failure so
 // queue_send_direct can map to queue_fail with the normal backoff.
 //
 // `queue` is the queue.id that originated this send — sender_read uses
@@ -168,7 +168,7 @@ func peer_send(peer string, queue string, frame *Frame) error {
 	case s.outbox <- &outbound{frame: frame, queue: queue}:
 		return nil
 	case <-time.After(sender_send_timeout):
-		return errSenderFull
+		return error_sender_full
 	}
 }
 
@@ -186,7 +186,7 @@ func sender_for(peer string) (*Sender, error) {
 
 // sender_open establishes a new /mochi/2/messages stream to peer,
 // runs the handshake (read hello → write caps), and starts the
-// per-Sender goroutines. Returns errSenderUnreachable if the peer
+// per-Sender goroutines. Returns error_sender_unreachable if the peer
 // can't be reached or doesn't speak /mochi/2/messages.
 func sender_open(peer string) (*Sender, error) {
 	stream, err := peer_protocol_open(peer, protocol_messages)
@@ -194,7 +194,7 @@ func sender_open(peer string) (*Sender, error) {
 		return nil, fmt.Errorf("sender: stream open failed: %w", err)
 	}
 	if stream == nil {
-		return nil, errSenderUnreachable
+		return nil, error_sender_unreachable
 	}
 
 	hello, err := hello_read(stream, 2)
@@ -888,17 +888,17 @@ func senders_entity_invalidate(entity string) {
 // peer_protocol_open opens a libp2p stream to peer for `prefer` (one of
 // the /mochi/2/* protocols), connecting first if needed.
 //
-// Returns errSenderUnreachable when the peer is silent, can't be
+// Returns error_sender_unreachable when the peer is silent, can't be
 // connected, or doesn't speak `prefer`. A peer that rejects `prefer`
 // with multistream's not-supported error never upgraded past /mochi/1
 // (removed in this version): it's logged loudly and silenced so we stop
 // probing it on every queue tick.
 func peer_protocol_open(peer string, prefer string) (p2p_network.Stream, error) {
 	if peer == "" || net_me == nil {
-		return nil, errSenderUnreachable
+		return nil, error_sender_unreachable
 	}
 	if peer_is_silent(peer) {
-		return nil, errSenderUnreachable
+		return nil, error_sender_unreachable
 	}
 	if peer != net_id && !peer_connect(peer) {
 		// Unknown or stale-addressed peer: ask the mesh for its current
@@ -906,7 +906,7 @@ func peer_protocol_open(peer string, prefer string) (p2p_network.Stream, error) 
 		// peer_discovered_address, so the failed row retries promptly.
 		peer_request_addresses(peer)
 		peer_mark_send_failed(peer)
-		return nil, errSenderUnreachable
+		return nil, error_sender_unreachable
 	}
 
 	pid, err := p2p_peer.Decode(peer)
@@ -921,7 +921,7 @@ func peer_protocol_open(peer string, prefer string) (p2p_network.Stream, error) 
 		if is_protocol_not_supported(err) {
 			debug("Protocol: peer %q does not support %q — treating as unreachable (peer never upgraded past /mochi/1?)", peer, prefer)
 			peer_mark_send_failed(peer)
-			return nil, errSenderUnreachable
+			return nil, error_sender_unreachable
 		}
 		peer_mark_send_failed(peer)
 		return nil, fmt.Errorf("protocol: NewStream peer=%q proto=%q: %w", peer, prefer, err)
@@ -955,7 +955,7 @@ func is_protocol_not_supported(err error) bool {
 	}
 	// String fallback for any future libp2p wrapping that strips the
 	// typed error. The phrase is stable across multistream versions.
-	if msg := err.Error(); strings.Contains(msg, "protocols not supported") {
+	if message := err.Error(); strings.Contains(message, "protocols not supported") {
 		return true
 	}
 	return false
@@ -1002,9 +1002,9 @@ func frame_for_queue(q *QueueEntry) (*Frame, error) {
 // frame_for_message builds a v2 message Frame from a *Message. Used
 // by message_attempt_send_real's v2 branch.
 func frame_for_message(m *Message, content []byte) (*Frame, error) {
-	contentMap := map[string]any{}
+	content_map := map[string]any{}
 	if len(content) > 0 {
-		if err := cbor.Unmarshal(content, &contentMap); err != nil {
+		if err := cbor.Unmarshal(content, &content_map); err != nil {
 			return nil, err
 		}
 	}
@@ -1018,7 +1018,7 @@ func frame_for_message(m *Message, content []byte) (*Frame, error) {
 		FromApp:  m.FromApp,
 		Services: m.Services,
 		Priority: frame_priority_for(queue_priority(m.Service, m.Event)),
-		Content:  contentMap,
+		Content:  content_map,
 		Data:     m.data,
 	}, nil
 }

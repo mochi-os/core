@@ -34,9 +34,9 @@ func cache_test_write(t *testing.T, user, app, name string, size int, modified t
 func cache_test_total(t *testing.T) int64 {
 	t.Helper()
 	var total int64
-	filepath.Walk(filepath.Join(cache_dir, "apps"), func(_ string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() {
-			total += info.Size()
+	filepath.Walk(filepath.Join(cache_dir, "apps"), func(_ string, information os.FileInfo, err error) error {
+		if err == nil && !information.IsDir() {
+			total += information.Size()
 		}
 		return nil
 	})

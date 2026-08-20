@@ -29,12 +29,12 @@ import (
 // of Starlark.call runs before any timeout handling, so callers block forever
 // with no timeout to rescue them.
 func TestStarlarkNestedCallReleasesSlot(t *testing.T) {
-	original_sem := starlark_sem
+	original_semaphore := starlark_semaphore
 	original_timeout := starlark_default_timeout
-	starlark_sem = make(chan struct{}, 1) // one slot makes exhaustion deterministic
+	starlark_semaphore = make(chan struct{}, 1) // one slot makes exhaustion deterministic
 	starlark_default_timeout = 1 * time.Second
 	t.Cleanup(func() {
-		starlark_sem = original_sem
+		starlark_semaphore = original_semaphore
 		starlark_default_timeout = original_timeout
 	})
 

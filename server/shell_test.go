@@ -443,7 +443,7 @@ func TestShellJsNamespacesStorage(t *testing.T) {
 	}
 }
 
-// Test escape_attr properly escapes HTML attributes
+// Test escape_attribute properly escapes HTML attributes
 func TestEscapeAttr(t *testing.T) {
 	tests := []struct {
 		input    string
@@ -458,9 +458,9 @@ func TestEscapeAttr(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result := escape_attr(tt.input)
+		result := escape_attribute(tt.input)
 		if result != tt.expected {
-			t.Errorf("escape_attr(%q) = %q, want %q", tt.input, result, tt.expected)
+			t.Errorf("escape_attribute(%q) = %q, want %q", tt.input, result, tt.expected)
 		}
 	}
 }

@@ -18,7 +18,7 @@ import (
 
 type Event struct {
 	id              int64
-	msg_id          string
+	message         string
 	from            string
 	to              string
 	service         string
@@ -55,7 +55,7 @@ func event_id() int64 {
 // registration is a startup step with a defined position, not a side effect
 // of importing the file.
 func events_init() {
-	// Wire the broadcast pending-drain dispatcher (task #82). The
+	// Wire the broadcast pending-drain dispatcher. The
 	// drain loop in broadcast_pending_drain_chain calls this for
 	// each in-order buffered row; we synthesise an Event from the
 	// stored fields and re-run the matching app event handler.
@@ -116,9 +116,9 @@ func broadcast_pending_dispatch_run(row *broadcast_pending_row, sysdb *DB) bool 
 	}
 	e := &Event{
 		id:              event_id(),
-		msg_id:          row.MsgID,
-		from:            row.Source,
-		to:              row.Target,
+		message:         row.Message,
+		from:            row.From,
+		to:              row.To,
 		service:         row.Service,
 		event:           row.Event,
 		sender_app:      row.SenderApp,
@@ -172,8 +172,8 @@ func (e *Event) route() error {
 		// Check if this app actually handles the requested event
 		av := a.active(e.user)
 		if av != nil {
-			_, hasEvent := av.event(e.event)
-			if !hasEvent {
+			_, has_event := av.event(e.event)
+			if !has_event {
 				// App doesn't handle this event, fall back to service lookup
 				a = nil
 			}
@@ -402,7 +402,7 @@ func (e *Event) route() error {
 			broadcast_stall_note(e.user.UID, a.id, e.peer, bkey, last, bseq)
 			go broadcast_request_resync(e.user, a, e.to, e.from, bkey, e.peer, last)
 			stored := broadcast_pending_insert(bdb, e.peer, bkey, bseq,
-				e.from, e.to, e.service, e.event, e.msg_id, e.sender_app,
+				e.from, e.to, e.service, e.event, e.message, e.sender_app,
 				strings.Join(e.sender_services, ","),
 				cbor_encode(e.content))
 			if !stored {
@@ -425,9 +425,9 @@ func (e *Event) route() error {
 	}
 
 	// Check which engine the app uses, and run it
-	handler_err := e.run_handler(a, av, ae)
+	handler_error := e.run_handler(a, av, ae)
 
-	if broadcast_check && handler_err == nil {
+	if broadcast_check && handler_error == nil {
 		broadcast_advance_local(bdb, e.peer, bkey, bseq)
 		broadcast_send_ack(e.user, a, e.to, e.from, bkey, e.peer, bseq)
 		// Continuation: this apply (often the tail of a replay batch)
@@ -442,13 +442,13 @@ func (e *Event) route() error {
 			}
 		}
 	}
-	return handler_err
+	return handler_error
 }
 
 // run_handler invokes the per-app event handler under the correct
 // engine. Factored out so the broadcast wrapper can call it once and
 // check the result.
-func (e *Event) run_handler(a *App, av *AppVersion, ae AppEvent) (handler_err error) {
+func (e *Event) run_handler(a *App, av *AppVersion, ae AppEvent) (handler_error error) {
 	switch av.Architecture.Engine {
 	case "": // Internal app
 		if ae.internal_function == nil {
@@ -460,12 +460,12 @@ func (e *Event) run_handler(a *App, av *AppVersion, ae AppEvent) (handler_err er
 			r := recover()
 			if r != nil {
 				warn("Event handler error: %v\n\n%s", r, string(rd.Stack()))
-				handler_err = fmt.Errorf("handler panic: %v", r)
+				handler_error = fmt.Errorf("handler panic: %v", r)
 			}
 		}()
 
 		ae.internal_function(e)
-		return handler_err
+		return handler_error
 
 	case "starlark":
 		if ae.Function == "" {
@@ -487,8 +487,8 @@ func (e *Event) run_handler(a *App, av *AppVersion, ae AppEvent) (handler_err er
 		// below the watermark and is classed as a duplicate. Not wrapped,
 		// because worker_failure_reason classifies on the message prefix
 		// and Starlark.call's own wording is what it matches.
-		_, handler_err = s.call(ae.Function, sl.Tuple{e})
-		if handler_err != nil {
+		_, handler_error = s.call(ae.Function, sl.Tuple{e})
+		if handler_error != nil {
 			if e.stream != nil && e.stream.abandoned {
 				// The requester went away mid-transfer. A browser that
 				// navigates off a page abandons every image still in flight,
@@ -497,14 +497,14 @@ func (e *Event) run_handler(a *App, av *AppVersion, ae AppEvent) (handler_err er
 				// warned about, and warn() mails, only when the bytes happened
 				// to be relayed from another host: the identical abandonment of
 				// a locally served file has always been logged quietly.
-				info("Event handler %s:%s() for %q abandoned by the requester: %v", a.id, ae.Function, e.event, handler_err)
+				info("Event handler %s:%s() for %q abandoned by the requester: %v", a.id, ae.Function, e.event, handler_error)
 			} else {
-				warn("Event handler %s:%s() for %q failed: %v", a.id, ae.Function, e.event, handler_err)
+				warn("Event handler %s:%s() for %q failed: %v", a.id, ae.Function, e.event, handler_error)
 			}
 		}
 		// Returned unchanged in both cases: worker_failure_reason classifies on
 		// the message, and the caller acks on nil. Only the log level moved.
-		return handler_err
+		return handler_error
 
 	default:
 		info("Event unknown engine %q version %q", av.Architecture.Engine, av.Architecture.Version)

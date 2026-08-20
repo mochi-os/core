@@ -1095,21 +1095,21 @@ func TestAppForServiceInternalFastPath(t *testing.T) {
 	// Registered at startup by directory.go / peer_connect.go; present in
 	// internal_services even though create_test_routing_env swapped out the
 	// apps map.
-	for _, svc := range []string{"directory", "peers"} {
-		got := app_for_service(nil, svc)
-		if got == nil || got.id != svc {
-			t.Fatalf("app_for_service(%q) = %v, want internal app %q", svc, got, svc)
+	for _, service := range []string{"directory", "peers"} {
+		got := app_for_service(nil, service)
+		if got == nil || got.id != service {
+			t.Fatalf("app_for_service(%q) = %v, want internal app %q", service, got, service)
 		}
 		if got.internal == nil {
-			t.Errorf("app_for_service(%q) returned non-internal app %q", svc, got.id)
+			t.Errorf("app_for_service(%q) returned non-internal app %q", service, got.id)
 		}
 	}
 
 	// Shadow protection: a user-installed app declaring "directory",
 	// with BOTH a system binding and a user binding pointing at it, must
 	// still lose to the built-in handler.
-	imposterAV := &AppVersion{Version: "1.0", Services: []string{"directory"}}
-	apps["imposter-app"] = &App{id: "imposter-app", versions: map[string]*AppVersion{"1.0": imposterAV}, latest: imposterAV}
+	imposter_a_v := &AppVersion{Version: "1.0", Services: []string{"directory"}}
+	apps["imposter-app"] = &App{id: "imposter-app", versions: map[string]*AppVersion{"1.0": imposter_a_v}, latest: imposter_a_v}
 	apps_service_set("directory", "imposter-app")
 	user := &User{UID: "u1", Username: "user1@example.com"}
 	user.set_service_app("directory", "imposter-app")
@@ -1119,8 +1119,8 @@ func TestAppForServiceInternalFastPath(t *testing.T) {
 
 	// Regression: an ordinary (non-internal) service still resolves via
 	// the normal binding path, unaffected by the fast path.
-	ordAV := &AppVersion{Version: "1.0", Services: []string{"notifications"}}
-	apps["notif-app"] = &App{id: "notif-app", versions: map[string]*AppVersion{"1.0": ordAV}, latest: ordAV}
+	ord_a_v := &AppVersion{Version: "1.0", Services: []string{"notifications"}}
+	apps["notif-app"] = &App{id: "notif-app", versions: map[string]*AppVersion{"1.0": ord_a_v}, latest: ord_a_v}
 	apps_service_set("notifications", "notif-app")
 	if got := app_for_service(nil, "notifications"); got == nil || got.id != "notif-app" {
 		t.Errorf("app_for_service(notifications) = %v, want notif-app", got)
@@ -1176,12 +1176,12 @@ func TestAppsPinDefaultServices(t *testing.T) {
 	canonical := "c" + strings.Repeat("a", 49) // entity-id-shaped (len 50)
 	imposter := "i" + strings.Repeat("b", 49)  // entity-id-shaped (len 50)
 
-	canonAV := &AppVersion{Version: "1.0", Services: []string{"svc1", "svc2", "svc3"}}
-	apps[canonical] = &App{id: canonical, versions: map[string]*AppVersion{"1.0": canonAV}, latest: canonAV}
-	impAV := &AppVersion{Version: "1.0", Services: []string{"svc1"}}
-	apps[imposter] = &App{id: imposter, versions: map[string]*AppVersion{"1.0": impAV}, latest: impAV}
-	devAV := &AppVersion{Version: "1.0", Services: []string{"svc3"}}
-	apps["devapp"] = &App{id: "devapp", development: true, versions: map[string]*AppVersion{"1.0": devAV}, latest: devAV}
+	canon_a_v := &AppVersion{Version: "1.0", Services: []string{"svc1", "svc2", "svc3"}}
+	apps[canonical] = &App{id: canonical, versions: map[string]*AppVersion{"1.0": canon_a_v}, latest: canon_a_v}
+	imp_a_v := &AppVersion{Version: "1.0", Services: []string{"svc1"}}
+	apps[imposter] = &App{id: imposter, versions: map[string]*AppVersion{"1.0": imp_a_v}, latest: imp_a_v}
+	dev_a_v := &AppVersion{Version: "1.0", Services: []string{"svc3"}}
+	apps["devapp"] = &App{id: "devapp", development: true, versions: map[string]*AppVersion{"1.0": dev_a_v}, latest: dev_a_v}
 
 	// svc2 already has an admin/system binding that must be preserved.
 	apps_service_set("svc2", "preset-app")

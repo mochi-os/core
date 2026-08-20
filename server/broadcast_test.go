@@ -7,7 +7,7 @@
 // Tests targeting the NACK-reason wire hint plus the gap-error
 // sentinel that the stream-receive NACK responder maps to it. The
 // goal is to prove the wire-protocol extension does what's needed
-// for the queue-side fix in task #80: a broadcast gap NACK becomes
+// for the queue-side fix: a broadcast gap NACK becomes
 // a drop on the sender, not another 7-day retry loop.
 
 package main
@@ -164,7 +164,7 @@ func TestNackShouldDrop(t *testing.T) {
 }
 
 // TestPriorityReplayAbovesInteractive locks in the relative ordering
-// of the priority tiers (task #96). queue_select orders desc by
+// of the priority tiers. queue_select orders desc by
 // priority, so for resync replies to overtake the live-broadcast
 // backlog they MUST be strictly greater than priority_interactive.
 // A future refactor that re-numbers the tiers without preserving
@@ -293,7 +293,7 @@ func TestBroadcastPayloadDecodeKeepsIntegers(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
 		t.Fatalf("legacy decode: %v", err)
 	}
-	if _, wasFloat := legacy["created"].(float64); !wasFloat {
+	if _, was_float := legacy["created"].(float64); !was_float {
 		t.Fatalf("expected the plain Unmarshal to yield float64, got %T", legacy["created"])
 	}
 

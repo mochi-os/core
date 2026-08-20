@@ -22,9 +22,9 @@ func TestSnapshotIntegrityGate(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 
-	cleanRel := "gate-clean.db"
-	cleanPath := filepath.Join(data_dir, cleanRel)
-	c := db_open(cleanRel)
+	clean_rel := "gate-clean.db"
+	clean_path := filepath.Join(data_dir, clean_rel)
+	c := db_open(clean_rel)
 	c.exec("create table t (id integer primary key, v blob)")
 	payload := strings.Repeat("x", 1024)
 	for i := 0; i < 300; i++ { // ~300 KB -> dozens of btree pages
@@ -32,25 +32,25 @@ func TestSnapshotIntegrityGate(t *testing.T) {
 	}
 	c.exec("PRAGMA wal_checkpoint(TRUNCATE)") // flush the WAL into the main file
 
-	if !snapshot_integrity_ok(cleanPath) {
+	if !snapshot_integrity_ok(clean_path) {
 		t.Fatal("clean snapshot must pass the integrity gate")
 	}
 
 	// Corrupt a copy: garble a swath of btree pages (pages 2..10) in the main
 	// file — invalid page-type bytes are exactly the btreeInitPage corruption
 	// the prod incident showed.
-	corruptPath := filepath.Join(data_dir, "gate-corrupt.db")
-	data, err := os.ReadFile(cleanPath)
+	corrupt_path := filepath.Join(data_dir, "gate-corrupt.db")
+	data, err := os.ReadFile(clean_path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 4096; i < 40960 && i < len(data); i++ {
 		data[i] = 0xFF
 	}
-	if err := os.WriteFile(corruptPath, data, 0o644); err != nil {
+	if err := os.WriteFile(corrupt_path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot_integrity_ok(corruptPath) {
+	if snapshot_integrity_ok(corrupt_path) {
 		t.Fatal("corrupt snapshot must be rejected by the integrity gate")
 	}
 }

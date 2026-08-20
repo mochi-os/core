@@ -14,12 +14,12 @@
 // the same restriction even though their ordering is enforced
 // receiver-side by sequence. With this buffer, the sender can blast
 // multiple events to a subscriber out of order; the receiver drains
-// them in chain order via this table. Combined with task #80 (drop
-// on gap NACK) and task #81 (one-in-flight resync gate), this closes
+// them in chain order via this table. Combined with the drop-on-gap
+// NACK and the one-in-flight resync gate, this closes
 // the "subscriber permanently behind" failure mode documented in
 // claude/sessions/2026-05-25-broadcast-resync-seq-643-investigation.md.
 //
-// Bounded per (peer, key) at broadcast_pending_max so a single
+// Bounded per (peer, key) at broadcast_pending_maximum so a single
 // misbehaving stream can't grow the table unbounded. Inserts above
 // the cap are dropped (with log) - the subscriber's resync request
 // re-fetches them.
@@ -32,12 +32,12 @@ import (
 	"strconv"
 )
 
-const broadcast_pending_max = 1000
+const broadcast_pending_maximum = 1000
 
-// broadcast_pending_streams_max bounds how many DISTINCT streams one peer
+// broadcast_pending_streams_maximum bounds how many DISTINCT streams one peer
 // may hold buffered at once for a given user and app.
 //
-// broadcast_pending_max alone does not bound the table. It is per (peer,
+// broadcast_pending_maximum alone does not bound the table. It is per (peer,
 // key), and the key arrives in the inbound event's content with nothing
 // signing it - the gap branch buffers before any app handler runs - so a
 // peer inventing a key per event draws a fresh thousand-row budget every
@@ -46,7 +46,7 @@ const broadcast_pending_max = 1000
 // A peer with this many streams gapping at one receiver simultaneously is
 // already pathological: a real fan-out gap heals by resync in minutes, and
 // a peer serves one stream per object the receiver subscribes to.
-const broadcast_pending_streams_max = 1000
+const broadcast_pending_streams_maximum = 1000
 
 // broadcast_pending_gc_default_ttl_days is the default age above which
 // a stuck-stream gap gets skipped. Tuned to broadcast_log_age (7 days)
@@ -88,7 +88,7 @@ func broadcast_pending_table_create(db *DB) {
 
 // broadcast_pending_count returns the current row count for one
 // (peer, key) stream. Used by the insert path to enforce the per-
-// stream cap and by the operator visibility surface (task #83).
+// stream cap and by the operator visibility surface.
 func broadcast_pending_count(db *DB, peer, key string) int {
 	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='pending'")
 	if !exists {
@@ -113,29 +113,29 @@ func broadcast_pending_streams(db *DB, peer string) int {
 // way the gap-fill path is initiated; the buffer is the
 // "we already received this, replay it in order when the gap closes"
 // optimisation, not the primary mechanism for filling missed events.
-func broadcast_pending_insert(db *DB, peer, key string, sequence int64, source, target, service, event, msg_id, sender_app, sender_services string, content []byte) bool {
+func broadcast_pending_insert(db *DB, peer, key string, sequence int64, source, target, service, event, message, sender_app, sender_services string, content []byte) bool {
 	broadcast_pending_table_create(db)
 	count := broadcast_pending_count(db, peer, key)
-	if count >= broadcast_pending_max {
-		debug("Broadcast pending dropping seq=%d for (peer=%s, key=%s): per-stream buffer full at %d", sequence, peer, key, broadcast_pending_max)
+	if count >= broadcast_pending_maximum {
+		debug("Broadcast pending dropping seq=%d for (peer=%s, key=%s): per-stream buffer full at %d", sequence, peer, key, broadcast_pending_maximum)
 		return false
 	}
 	// Only when opening a stream, so an established one never pays for the
 	// second query.
-	if count == 0 && broadcast_pending_streams(db, peer) >= broadcast_pending_streams_max {
-		debug("Broadcast pending dropping seq=%d for (peer=%s, key=%s): peer already holds %d buffered streams", sequence, peer, key, broadcast_pending_streams_max)
+	if count == 0 && broadcast_pending_streams(db, peer) >= broadcast_pending_streams_maximum {
+		debug("Broadcast pending dropping seq=%d for (peer=%s, key=%s): peer already holds %d buffered streams", sequence, peer, key, broadcast_pending_streams_maximum)
 		return false
 	}
 	// Plain db.exec - pending is receiver-side
 	// apply-buffer state and each paired host must track its own.
 	// Pair-replicating the buffer would cross-pollute drain
 	// expectations between hosts that have applied different subsets
-	// of their inbound streams. See task #91 for the related bug on
-	// the received table.
+	// of their inbound streams. The received table carries the same
+	// hazard.
 	db.exec(`insert or ignore into pending
 		(peer, key, sequence, source, target, service, event, msg_id, sender_app, sender_services, content, received)
 		values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		peer, key, sequence, source, target, service, event, msg_id, sender_app, sender_services, content, now())
+		peer, key, sequence, source, target, service, event, message, sender_app, sender_services, content, now())
 	return true
 }
 
@@ -145,11 +145,11 @@ type broadcast_pending_row struct {
 	Peer           string `db:"peer"`
 	Key            string `db:"key"`
 	Sequence       int64  `db:"sequence"`
-	Source         string `db:"source"`
-	Target         string `db:"target"`
+	From           string `db:"source"`
+	To             string `db:"target"`
 	Service        string `db:"service"`
 	Event          string `db:"event"`
-	MsgID          string `db:"msg_id"`
+	Message        string `db:"msg_id"`
 	SenderApp      string `db:"sender_app"`
 	SenderServices string `db:"sender_services"`
 	Content        []byte `db:"content"`
@@ -207,7 +207,7 @@ func broadcast_pending_drain_chain(db *DB, peer, key string) {
 	if broadcast_pending_dispatch == nil {
 		return
 	}
-	for i := 0; i < broadcast_pending_max; i++ {
+	for i := 0; i < broadcast_pending_maximum; i++ {
 		last := broadcast_received_get(db, peer, key)
 		row := broadcast_pending_next(db, peer, key, last+1)
 		if row == nil {
@@ -224,7 +224,7 @@ func broadcast_pending_drain_chain(db *DB, peer, key string) {
 	}
 }
 
-// --- pending GC for unfillable gaps (task #101) -------------------
+// --- pending GC for unfillable gaps -------------------------------
 //
 // Receivers can deadlock when the pending buffer fills with high-seq
 // rows that won't apply (gap below them) and resync replies for the
@@ -259,9 +259,9 @@ type BroadcastStalledStream struct {
 // broadcast_pending_stalled walks per-app system DBs and returns
 // streams whose pending buffer has rows below the in-buffer minimum
 // AND received.last hasn't reached the contiguous chain start.
-// Mirrors broadcast_lag_scan's walk pattern (task #83). Walks
+// Mirrors broadcast_lag_scan's walk pattern. Walks
 // users/<uid>/<app-id>/app.db; the broadcast tables live in the per-
-// app system DB (task #90). Apps that don't use broadcasts have no
+// app system DB. Apps that don't use broadcasts have no
 // `pending` table - skipped silently as the common case.
 func broadcast_pending_stalled() []BroadcastStalledStream {
 	var out []BroadcastStalledStream
@@ -352,11 +352,11 @@ func broadcast_pending_stalled_db(user, app, db_path string) []BroadcastStalledS
 		peer, _ := r["peer"].(string)
 		key, _ := r["key"].(string)
 		count, _ := r["count"].(int64)
-		min_seq, _ := r["min_seq"].(int64)
+		minimum_sequence, _ := r["min_seq"].(int64)
 		oldest, _ := r["oldest"].(int64)
 		last, _ := r["last"].(int64)
 		// Drains naturally on the next arrival of received.last+1.
-		if min_seq <= last+1 {
+		if minimum_sequence <= last+1 {
 			continue
 		}
 		out = append(out, BroadcastStalledStream{
@@ -366,7 +366,7 @@ func broadcast_pending_stalled_db(user, app, db_path string) []BroadcastStalledS
 			Peer:       peer,
 			Key:        key,
 			Last:       last,
-			MinPending: min_seq,
+			MinPending: minimum_sequence,
 			Count:      count,
 			Oldest:     oldest,
 		})
@@ -481,12 +481,12 @@ func broadcast_pending_gc(force bool) int {
 		// can't fill a gap whose sequences are pruned from the owner's log.
 		// entity = the stream key (the source entity). Best-effort,
 		// host-local; no-op if the app declares no broadcast/gap handler.
-		svc := ""
+		service := ""
 		if svcs := app_services(a, u); len(svcs) > 0 {
-			svc = svcs[0]
+			service = svcs[0]
 		}
 		peer, key, first, final := s.Peer, s.Key, s.Last+1, last
-		error_dispatch(u, a, error_code_broadcast_gap, "unfillable", svc, key, nil, func() map[string]any {
+		error_dispatch(u, a, error_code_broadcast_gap, "unfillable", service, key, nil, func() map[string]any {
 			return map[string]any{"peer": peer, "key": key, "first": first, "last": final}
 		})
 		skipped++

@@ -189,7 +189,7 @@ func TestBroadcastPendingDrainHaltsOnDispatchFailure(t *testing.T) {
 }
 
 // TestBroadcastPendingCapEnforced confirms the per-stream cap is
-// honoured: inserts above broadcast_pending_max return false and
+// honoured: inserts above broadcast_pending_maximum return false and
 // the buffer count plateaus. Smoke-tests the cap without inserting
 // 1000+ rows by lowering it temporarily.
 func TestBroadcastPendingCapEnforced(t *testing.T) {
@@ -202,7 +202,7 @@ func TestBroadcastPendingCapEnforced(t *testing.T) {
 	// load-bearing one and is verified by the count check.
 	for seq := int64(1); seq <= 5; seq++ {
 		if !broadcast_pending_insert(db, "p", "k", seq, "", "", "", "", "", "", "", []byte{}) {
-			t.Errorf("insert seq=%d returned false (well below cap=%d)", seq, broadcast_pending_max)
+			t.Errorf("insert seq=%d returned false (well below cap=%d)", seq, broadcast_pending_maximum)
 		}
 	}
 	if got := broadcast_pending_count(db, "p", "k"); got != 5 {
@@ -210,7 +210,7 @@ func TestBroadcastPendingCapEnforced(t *testing.T) {
 	}
 }
 
-// --- broadcast pending GC (task #101) -----------------------------
+// --- broadcast pending GC -----------------------------------------
 //
 // The GC walks per-app DBs and skips unfillable gaps; tests below
 // exercise the classifier and the skip+drain integration. The
@@ -236,7 +236,7 @@ func setup_broadcast_pending_gc_test(t *testing.T) (string, func()) {
 // in the current data_dir, populates pending + received so the
 // (peer, key) stream looks stuck: received.last < min(pending.seq) - 1.
 // Returns the relative db path the GC walker would use.
-func stage_stalled_stream(t *testing.T, uid, app, peer, key string, last, min_pending, count int64, oldest int64) string {
+func stage_stalled_stream(t *testing.T, uid, app, peer, key string, last, minimum_pending, count int64, oldest int64) string {
 	t.Helper()
 	rel := filepath.Join("users", uid, app, "app.db")
 	abs := filepath.Join(data_dir, rel)
@@ -254,7 +254,7 @@ func stage_stalled_stream(t *testing.T, uid, app, peer, key string, last, min_pe
 		db.exec(`insert into pending
 			(peer, key, sequence, source, target, service, event, content, received)
 			values (?, ?, ?, '', '', '', '', ?, ?)`,
-			peer, key, min_pending+i, []byte{1, 2}, oldest)
+			peer, key, minimum_pending+i, []byte{1, 2}, oldest)
 	}
 	return rel
 }
@@ -345,7 +345,7 @@ func TestBroadcastPendingStalledWalkFindsMultipleApps(t *testing.T) {
 // test for the bug found during the first force-skip on wasabi: stale
 // pending entries below received.last must NOT hide a genuinely stuck
 // stream from the classifier. Pre-fix, min(sequence)=11 with
-// received.last=866 made the test min_seq <= last+1 trivially true
+// received.last=866 made the test minimum_sequence <= last+1 trivially true
 // (11 <= 867) and the stream was reported as "drains naturally" -
 // missing the real gap at sequence 1310.
 func TestBroadcastPendingStalledDBStalePendingHidden(t *testing.T) {
@@ -353,8 +353,8 @@ func TestBroadcastPendingStalledDBStalePendingHidden(t *testing.T) {
 	defer cleanup()
 	// Stream: received.last=866, pending has 1 stale orphan at seq=11
 	// (left over from an earlier buggy code path) PLUS a genuine
-	// gap with relevant min=1310. The fixed classifier must pick
-	// 1310, not 11, when computing min_seq.
+	// gap with relevant minimum=1310. The fixed classifier must pick
+	// 1310, not 11, when computing minimum_sequence.
 	rel := filepath.Join("users", "u1", "appA", "app.db")
 	abs := filepath.Join(data_dir, rel)
 	if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {

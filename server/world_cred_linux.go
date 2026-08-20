@@ -23,28 +23,28 @@ const world_account_group = "mochi-world"
 // (primary or supplementary), or anyone the ADMIN socket would accept —
 // root, the mochi user, the mochi group — so an operator can hand-test with
 // curl and a development machine with no mochi-world group still works.
-func world_peer_authorized(c *net.UnixConn) (bool, *admin_cred) {
+func world_peer_authorized(c *net.UnixConn) (bool, *admin_credential) {
 	raw, err := c.SyscallConn()
 	if err != nil {
 		return false, nil
 	}
 	var ucred *unix.Ucred
-	var credErr error
+	var credential_error error
 	err = raw.Control(func(fd uintptr) {
-		ucred, credErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
+		ucred, credential_error = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
 	})
-	if err != nil || credErr != nil || ucred == nil {
+	if err != nil || credential_error != nil || ucred == nil {
 		return false, nil
 	}
-	cred := &admin_cred{uid: ucred.Uid, gid: ucred.Gid, pid: ucred.Pid}
-	if world_gid != 0 && (cred.gid == world_gid || admin_pid_in_group(int(cred.pid), world_gid)) {
-		return true, cred
+	credential := &admin_credential{uid: ucred.Uid, gid: ucred.Gid, pid: ucred.Pid}
+	if world_gid != 0 && (credential.gid == world_gid || admin_pid_in_group(int(credential.pid), world_gid)) {
+		return true, credential
 	}
-	if admin_cred_basic_authorized(cred.uid, cred.gid) {
-		return true, cred
+	if admin_credential_basic_authorized(credential.uid, credential.gid) {
+		return true, credential
 	}
-	if admin_mochi_gid != 0 && admin_pid_in_group(int(cred.pid), admin_mochi_gid) {
-		return true, cred
+	if admin_mochi_gid != 0 && admin_pid_in_group(int(credential.pid), admin_mochi_gid) {
+		return true, credential
 	}
-	return false, cred
+	return false, credential
 }

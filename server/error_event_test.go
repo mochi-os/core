@@ -45,10 +45,10 @@ func TestErrorsBlockParse(t *testing.T) {
 // including reasons that dispatch nothing.
 func TestErrorCodeForNack(t *testing.T) {
 	cases := []struct {
-		nack       string
-		wantCode   string
-		wantReason string
-		wantOK     bool
+		nack        string
+		want_code   string
+		want_reason string
+		want_o_k    bool
 	}{
 		{fail_unknown_user, error_code_message_unknown, "unknown", true},
 		{fail_unsupported, error_code_message_rejected, "unsupported", true},
@@ -60,9 +60,9 @@ func TestErrorCodeForNack(t *testing.T) {
 	}
 	for _, c := range cases {
 		code, reason, ok := error_code_for_nack(c.nack)
-		if code != c.wantCode || reason != c.wantReason || ok != c.wantOK {
+		if code != c.want_code || reason != c.want_reason || ok != c.want_o_k {
 			t.Errorf("error_code_for_nack(%q) = (%q, %q, %v), want (%q, %q, %v)",
-				c.nack, code, reason, ok, c.wantCode, c.wantReason, c.wantOK)
+				c.nack, code, reason, ok, c.want_code, c.want_reason, c.want_o_k)
 		}
 	}
 }
@@ -209,13 +209,13 @@ func TestErrorDispatchGate(t *testing.T) {
 	// No matching handler -> thunk never invoked, no-op.
 	none := &AppVersion{Version: "1.0", Errors: map[string]AppError{}}
 	none.Architecture.Engine = "starlark"
-	aNone := &App{id: "app-none", versions: map[string]*AppVersion{"1.0": none}}
-	aNone.latest = none
-	if aNone.active(user) == nil {
+	a_none := &App{id: "app-none", versions: map[string]*AppVersion{"1.0": none}}
+	a_none.latest = none
+	if a_none.active(user) == nil {
 		t.Fatal("active(user) returned nil; fixture broken")
 	}
 	invoked := false
-	error_dispatch(user, aNone, error_code_message_timeout, "timeout", "feeds", "ent", nil, func() map[string]any {
+	error_dispatch(user, a_none, error_code_message_timeout, "timeout", "feeds", "ent", nil, func() map[string]any {
 		invoked = true
 		return map[string]any{"locations": int64(0)}
 	})
@@ -230,10 +230,10 @@ func TestErrorDispatchGate(t *testing.T) {
 	}}
 	have.Architecture.Engine = "starlark"
 	have.Execute = []string{"def error_message_timeout(e):\n    _ = e.code\n    _ = e.reason\n    _ = e.service\n    _ = e.entity\n    _ = e.original\n    _ = e.time\n    _ = e.detail\n"}
-	aHave := &App{id: "app-have", versions: map[string]*AppVersion{"1.0": have}}
-	aHave.latest = have
+	a_have := &App{id: "app-have", versions: map[string]*AppVersion{"1.0": have}}
+	a_have.latest = have
 	ran := false
-	error_dispatch(user, aHave, error_code_message_timeout, "timeout", "feeds", "ent",
+	error_dispatch(user, a_have, error_code_message_timeout, "timeout", "feeds", "ent",
 		map[string]any{"service": "feeds", "event": "post/create", "message": "m1"},
 		func() map[string]any {
 			ran = true

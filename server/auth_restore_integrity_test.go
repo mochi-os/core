@@ -31,11 +31,11 @@ func TestRestoreIntegrityGuard(t *testing.T) {
 	}
 
 	// A clean sqlite DB nested in the bundle.
-	cleanPath := filepath.Join(bundle, "app", "db", "clean.db")
-	if err := os.MkdirAll(filepath.Dir(cleanPath), 0o755); err != nil {
+	clean_path := filepath.Join(bundle, "app", "db", "clean.db")
+	if err := os.MkdirAll(filepath.Dir(clean_path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	c, err := sql.Open("sqlite3", "file:"+cleanPath)
+	c, err := sql.Open("sqlite3", "file:"+clean_path)
 	if err != nil {
 		t.Fatal(err)
 	}

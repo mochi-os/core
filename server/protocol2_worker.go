@@ -11,7 +11,7 @@
 // same worker via queue_reply, so local writes and remote writes
 // serialise against each other for the same handler.
 //
-// Idle workers reap after worker_idle_default (5 min) of no activity.
+// Idle workers reap after worker_idle_default (5 minimum) of no activity.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
@@ -219,7 +219,7 @@ func (w *app_worker) handle(wf *worker_frame) {
 
 	e := &Event{
 		id:              event_id(),
-		msg_id:          f.ID,
+		message:         f.ID,
 		from:            f.From,
 		to:              f.To,
 		service:         f.Service,
@@ -278,31 +278,31 @@ func worker_failure_reason(err error) string {
 	if err == nil {
 		return ""
 	}
-	msg := err.Error()
+	message := err.Error()
 	switch {
-	case strings.HasPrefix(msg, "unknown user"):
+	case strings.HasPrefix(message, "unknown user"):
 		return fail_unknown_user
-	case strings.HasPrefix(msg, "unknown service"),
-		strings.HasPrefix(msg, "unknown event"),
-		strings.HasPrefix(msg, "no handler"),
+	case strings.HasPrefix(message, "unknown service"),
+		strings.HasPrefix(message, "unknown event"),
+		strings.HasPrefix(message, "no handler"),
 		// The app is registered but none of its versions loaded. Fixed until
 		// the operator repairs or removes it, so retrying is 50 deliveries of
 		// the same failure.
-		strings.HasPrefix(msg, "no active version"),
+		strings.HasPrefix(message, "no active version"),
 		// Deterministic authorization rejections: the sender's declared
 		// services are fixed in the message, so retrying can never change
 		// the verdict. Drop instead of retrying forever (this is what wedged
 		// the stuck _attachment/* self-loop rows at ~62 retries).
-		strings.HasPrefix(msg, "sender does not handle service"),
+		strings.HasPrefix(message, "sender does not handle service"),
 		// The app declares a handler name its Starlark globals do not
 		// define. Fixed until the app is changed, so retrying is 50
 		// deliveries of the same failure.
-		strings.HasPrefix(msg, "Starlark app function"):
+		strings.HasPrefix(message, "Starlark app function"):
 		return fail_unsupported
-	case strings.HasPrefix(msg, "handler panic"),
+	case strings.HasPrefix(message, "handler panic"),
 		// Starlark.call's own recover, for a panic raised inside a Go
 		// builtin rather than in the interpreter.
-		strings.HasPrefix(msg, "Starlark call "):
+		strings.HasPrefix(message, "Starlark call "):
 		return fail_handler_panic
 	}
 	return fail_transient
@@ -398,7 +398,7 @@ func workers_drain_test(timeout time.Duration) {
 // per drain.
 type stream_reply struct {
 	receiver *Receiver
-	id       string // the message id being replied to
+	message  string // the message id being replied to
 }
 
 func (s stream_reply) ack() {
@@ -408,11 +408,11 @@ func (s stream_reply) ack() {
 		return
 	}
 	select {
-	case s.receiver.replies <- &Frame{Type: frame_type_ack, Replies: []string{s.id}}:
+	case s.receiver.replies <- &Frame{Type: frame_type_ack, Replies: []string{s.message}}:
 	default:
 		// replies channel full — receiver_reply hasn't drained yet.
 		// Drop the ack; same recovery path as a dropped stream.
-		debug("Worker: dropping ack for %q (replies channel full)", s.id)
+		debug("Worker: dropping ack for %q (replies channel full)", s.message)
 	}
 }
 
@@ -423,11 +423,11 @@ func (s stream_reply) fail(reason string) {
 	if reason == "" {
 		reason = fail_transient
 	}
-	f := &Frame{Type: frame_type_fail, Replies: []string{s.id}, Reason: reason}
+	f := &Frame{Type: frame_type_fail, Replies: []string{s.message}, Reason: reason}
 	select {
 	case s.receiver.replies <- f:
 	default:
-		debug("Worker: dropping fail for %q (replies channel full)", s.id)
+		debug("Worker: dropping fail for %q (replies channel full)", s.message)
 	}
 }
 
@@ -485,7 +485,7 @@ func (q queue_reply) fail(reason string) {
 // move on than to recycle the row through queue.db's exponential
 // backoff.
 type local_reply struct {
-	id      string
+	message string
 	service string
 	event   string
 	to      string
@@ -507,13 +507,13 @@ func (l local_reply) fail(reason string) {
 	case fail_dedup:
 		// Common and benign — same message dispatched twice (e.g. app
 		// retry on its own initiative). Debug only.
-		debug("Self-loop direct dispatch: %s/%s id=%q dedup", l.service, l.event, l.id)
+		debug("Self-loop direct dispatch: %s/%s id=%q dedup", l.service, l.event, l.message)
 	case fail_signature_invalid:
 		warn("Self-loop direct dispatch: %s/%s id=%q signature_invalid — local bug",
-			l.service, l.event, l.id)
+			l.service, l.event, l.message)
 	default:
 		info("Self-loop direct dispatch: %s/%s id=%q failed: %s",
-			l.service, l.event, l.id, reason)
+			l.service, l.event, l.message, reason)
 	}
 }
 
@@ -601,7 +601,7 @@ func message_self_loop_dispatch(m *Message, content []byte) bool {
 			Data:     m.data,
 		},
 		peer:  net_id,
-		reply: local_reply{id: m.ID, service: m.Service, event: m.Event, to: to},
+		reply: local_reply{message: m.ID, service: m.Service, event: m.Event, to: to},
 	}
 
 	// Non-blocking enqueue, creating the worker on first use. The one

@@ -34,8 +34,8 @@ func starlark_event_app(t *testing.T) (*App, *AppVersion) {
 	// returns "no concurrency slot available". That error is not nil, so a
 	// test asserting only "an error came back" passes without the handler
 	// ever running. Same guard the other Starlark tests use.
-	if starlark_sem == nil {
-		starlark_sem = make(chan struct{}, 4)
+	if starlark_semaphore == nil {
+		starlark_semaphore = make(chan struct{}, 4)
 	}
 	// Likewise the compute timeout, which is read from configuration at
 	// startup and is zero here — time.After(0) fires at once, so every call
@@ -126,7 +126,7 @@ func TestWorkerFailClearsDedupForRetryableReason(t *testing.T) {
 
 	wf := &worker_frame{
 		frame: &Frame{Type: frame_type_message, ID: id},
-		reply: local_reply{id: id},
+		reply: local_reply{message: id},
 	}
 	worker_fail(wf, fail_transient)
 
@@ -146,7 +146,7 @@ func TestWorkerFailKeepsDedupForDropReason(t *testing.T) {
 
 	wf := &worker_frame{
 		frame: &Frame{Type: frame_type_message, ID: id},
-		reply: local_reply{id: id},
+		reply: local_reply{message: id},
 	}
 	worker_fail(wf, fail_unsupported)
 

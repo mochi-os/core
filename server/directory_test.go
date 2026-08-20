@@ -474,7 +474,7 @@ func TestDirectoryCleanupDeadPeersSkipsLiveCache(t *testing.T) {
 	defer reset_caches(t)
 
 	stale_but_unsilenced := "12D3KooWFakeStaleButNotYetSilencedPeer"
-	add_entry(t, "ent-X", stale_but_unsilenced, now()-directory_location_max_age-1)
+	add_entry(t, "ent-X", stale_but_unsilenced, now()-directory_location_age_maximum-1)
 
 	// silent-cache is empty (cold).
 	directory_cleanup_dead_peers()
@@ -494,7 +494,7 @@ func TestDirectoryCleanupDeadPeersForgetsStaleAndSilent(t *testing.T) {
 	defer reset_caches(t)
 
 	dead := "12D3KooWFakeStaleSilentDeadPeer"
-	add_entry(t, "ent-X", dead, now()-directory_location_max_age-1)
+	add_entry(t, "ent-X", dead, now()-directory_location_age_maximum-1)
 
 	peer_reachability_lock.Lock()
 	peer_reachability[dead] = PeerReachability{
@@ -520,7 +520,7 @@ func TestDirectoryCleanupDeadPeersSkipsBootstrap(t *testing.T) {
 	defer reset_caches(t)
 
 	bootstrap_id := peers_bootstrap[0].ID
-	add_entry(t, "ent-X", bootstrap_id, now()-directory_location_max_age-1)
+	add_entry(t, "ent-X", bootstrap_id, now()-directory_location_age_maximum-1)
 
 	peer_reachability_lock.Lock()
 	peer_reachability[bootstrap_id] = PeerReachability{

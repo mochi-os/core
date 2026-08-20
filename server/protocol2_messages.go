@@ -353,7 +353,7 @@ func (r *Receiver) dispatch_message(f *Frame) {
 	worker_dispatch(user, f.Service, &worker_frame{
 		frame: f,
 		peer:  r.peer, // sender's libp2p peer ID
-		reply: stream_reply{receiver: r, id: f.ID},
+		reply: stream_reply{receiver: r, message: f.ID},
 	})
 }
 

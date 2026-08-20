@@ -85,9 +85,9 @@ func TestPreparedStatementCache(t *testing.T) {
 	}
 
 	// Statements were actually cached.
-	db.stmt_lock.Lock()
-	cached := len(db.stmt_cache)
-	db.stmt_lock.Unlock()
+	db.statement_lock.Lock()
+	cached := len(db.statement_cache)
+	db.statement_lock.Unlock()
 	if cached == 0 {
 		t.Error("stmt_cache is empty; expected cached statements")
 	}
@@ -107,11 +107,11 @@ func TestPreparedStatementCache(t *testing.T) {
 
 	// stmts_close clears the cache; queries still work (re-prepare).
 	db.stmts_close()
-	db.stmt_lock.Lock()
-	afterClose := len(db.stmt_cache)
-	db.stmt_lock.Unlock()
-	if afterClose != 0 {
-		t.Errorf("stmt_cache not cleared after stmts_close: %d", afterClose)
+	db.statement_lock.Lock()
+	after_close := len(db.statement_cache)
+	db.statement_lock.Unlock()
+	if after_close != 0 {
+		t.Errorf("stmt_cache not cleared after stmts_close: %d", after_close)
 	}
 	if r, _ := db.row("SELECT name FROM t WHERE id=?", 2); r == nil || r["name"] != "bob" {
 		t.Errorf("row after stmts_close = %v, want bob", r)
@@ -134,22 +134,22 @@ func TestPreparedStatementCacheMigrationSafety(t *testing.T) {
 	// Part 1: introspection queries must not be cached.
 	introspect := "select 1 from pragma_table_info('t') where name='age'"
 	db.exists(introspect)
-	db.stmt_lock.Lock()
-	_, cached := db.stmt_cache[introspect]
-	db.stmt_lock.Unlock()
+	db.statement_lock.Lock()
+	_, cached := db.statement_cache[introspect]
+	db.statement_lock.Unlock()
 	if cached {
 		t.Error("pragma_table_info query was cached; introspection must bypass the cache (#10 part 1)")
 	}
 
 	// The idempotent add-column guard must run the ALTER exactly once — a
 	// stale cached guard would re-run it and panic with a duplicate column.
-	addAge := func() {
+	add_age := func() {
 		if ok, _ := db.exists(introspect); !ok {
 			db.exec("alter table t add column age integer not null default 0")
 		}
 	}
-	addAge()
-	addAge() // must be a no-op, not a duplicate-column panic
+	add_age()
+	add_age() // must be a no-op, not a duplicate-column panic
 	if ok, _ := db.exists(introspect); !ok {
 		t.Error("age column should exist after the guard")
 	}
@@ -180,14 +180,14 @@ func TestStmtCacheClosedRetry(t *testing.T) {
 	db.exec("INSERT INTO t (id, name) VALUES (?, ?)", 1, "alice")
 	db.exec("INSERT INTO t (id, name) VALUES (?, ?)", 2, "bob")
 
-	// closeCached primes the cache for query then closes the cached statement
+	// close_cached primes the cache for query then closes the cached statement
 	// while leaving it in the map, so the next prepared() returns a closed
 	// handle — the exact state a caller hits when a flush races its execute.
-	closeCached := func(query string, prime func()) {
+	close_cached := func(query string, prime func()) {
 		prime()
-		db.stmt_lock.Lock()
-		st, ok := db.stmt_cache[query]
-		db.stmt_lock.Unlock()
+		db.statement_lock.Lock()
+		st, ok := db.statement_cache[query]
+		db.statement_lock.Unlock()
 		if !ok {
 			t.Fatalf("query not cached: %q", query)
 		}
@@ -195,34 +195,34 @@ func TestStmtCacheClosedRetry(t *testing.T) {
 	}
 
 	// row
-	qRow := "SELECT name FROM t WHERE id=?"
-	closeCached(qRow, func() { db.row(qRow, 1) })
-	if r, err := db.row(qRow, 1); err != nil || r == nil || r["name"] != "alice" {
+	q_row := "SELECT name FROM t WHERE id=?"
+	close_cached(q_row, func() { db.row(q_row, 1) })
+	if r, err := db.row(q_row, 1); err != nil || r == nil || r["name"] != "alice" {
 		t.Fatalf("row after cached-stmt close = %v err=%v, want alice", r, err)
 	}
 
 	// rows
-	qRows := "SELECT id, name FROM t ORDER BY id"
-	closeCached(qRows, func() { db.rows(qRows) })
-	if all, err := db.rows(qRows); err != nil || len(all) != 2 {
+	q_rows := "SELECT id, name FROM t ORDER BY id"
+	close_cached(q_rows, func() { db.rows(q_rows) })
+	if all, err := db.rows(q_rows); err != nil || len(all) != 2 {
 		t.Fatalf("rows after cached-stmt close = %v err=%v, want 2", all, err)
 	}
 
 	// scans
-	qScans := "SELECT name FROM t WHERE id<=? ORDER BY id"
+	q_scans := "SELECT name FROM t WHERE id<=? ORDER BY id"
 	var names []struct {
 		Name string `db:"name"`
 	}
-	closeCached(qScans, func() { db.scans(&names, qScans, 2) })
+	close_cached(q_scans, func() { db.scans(&names, q_scans, 2) })
 	names = nil
-	if err := db.scans(&names, qScans, 2); err != nil || len(names) != 2 {
+	if err := db.scans(&names, q_scans, 2); err != nil || len(names) != 2 {
 		t.Fatalf("scans after cached-stmt close: err=%v len=%d, want 2", err, len(names))
 	}
 
 	// exec_e: a write through a closed cached statement must still apply.
-	qExec := "UPDATE t SET name=? WHERE id=?"
-	closeCached(qExec, func() { db.exec(qExec, "alice", 1) })
-	if err := db.exec_e(qExec, "alison", 1); err != nil {
+	q_exec := "UPDATE t SET name=? WHERE id=?"
+	close_cached(q_exec, func() { db.exec(q_exec, "alice", 1) })
+	if err := db.exec_e(q_exec, "alison", 1); err != nil {
 		t.Fatalf("exec_e after cached-stmt close: %v", err)
 	}
 	if r, _ := db.row("SELECT name FROM t WHERE id=?", 1); r == nil || r["name"] != "alison" {
@@ -257,7 +257,7 @@ func TestStmtCacheConcurrentClose(t *testing.T) {
 	}()
 
 	var readers sync.WaitGroup
-	errCh := make(chan error, 64)
+	error_channel := make(chan error, 64)
 	for i := 0; i < 16; i++ {
 		readers.Add(1)
 		go func() {
@@ -265,23 +265,23 @@ func TestStmtCacheConcurrentClose(t *testing.T) {
 			for j := 0; j < 300; j++ {
 				r, err := db.row("SELECT name FROM t WHERE id=?", 1)
 				if err != nil {
-					errCh <- fmt.Errorf("row: %w", err)
+					error_channel <- fmt.Errorf("row: %w", err)
 					return
 				}
 				if r == nil || r["name"] != "alice" {
-					errCh <- fmt.Errorf("row = %v, want alice", r)
+					error_channel <- fmt.Errorf("row = %v, want alice", r)
 					return
 				}
 				// exercise the other fixed cached-stmt paths too
 				if ok, err := db.exists("SELECT 1 FROM t WHERE name=?", "alice"); err != nil {
-					errCh <- fmt.Errorf("exists: %w", err)
+					error_channel <- fmt.Errorf("exists: %w", err)
 					return
 				} else if !ok {
-					errCh <- fmt.Errorf("exists(alice) = false, want true")
+					error_channel <- fmt.Errorf("exists(alice) = false, want true")
 					return
 				}
 				if n := db.integer("SELECT count(*) FROM t WHERE id=?", 1); n != 1 {
-					errCh <- fmt.Errorf("integer = %d, want 1", n)
+					error_channel <- fmt.Errorf("integer = %d, want 1", n)
 					return
 				}
 			}
@@ -290,8 +290,8 @@ func TestStmtCacheConcurrentClose(t *testing.T) {
 	readers.Wait()
 	close(stop)
 	flusher.Wait()
-	close(errCh)
-	for err := range errCh {
+	close(error_channel)
+	for err := range error_channel {
 		t.Error(err)
 	}
 }
@@ -885,8 +885,8 @@ func TestStarlarkSQLPrefixBlocked(t *testing.T) {
 // app DBs (e.g. feeds.db on heavy users) don't hit the cap.
 func TestDbMaxPageCountConstant(t *testing.T) {
 	expected_limit := 6_553_600
-	if db_max_page_count != expected_limit {
-		t.Errorf("db_max_page_count = %d, expected %d", db_max_page_count, expected_limit)
+	if db_page_count_maximum != expected_limit {
+		t.Errorf("db_max_page_count = %d, expected %d", db_page_count_maximum, expected_limit)
 	}
 }
 
@@ -1314,13 +1314,13 @@ func TestStarlarkPoolConcurrent(t *testing.T) {
 	const iterations = 200
 
 	var (
-		ctx     = context.Background()
-		wg      sync.WaitGroup
-		errCh   = make(chan error, goroutines*iterations)
-		inserts atomic.Int64
-		selects atomic.Int64
-		txs     atomic.Int64
-		denials atomic.Int64
+		ctx           = context.Background()
+		wg            sync.WaitGroup
+		error_channel = make(chan error, goroutines*iterations)
+		inserts       atomic.Int64
+		selects       atomic.Int64
+		txs           atomic.Int64
+		denials       atomic.Int64
 	)
 
 	worker := func(id int) {
@@ -1330,26 +1330,26 @@ func TestStarlarkPoolConcurrent(t *testing.T) {
 			case 0: // simple insert via per-call Connx (mirrors api_db_query)
 				conn, err := db.starlark.Connx(ctx)
 				if err != nil {
-					errCh <- fmt.Errorf("g%d i%d Connx: %w", id, i, err)
+					error_channel <- fmt.Errorf("g%d i%d Connx: %w", id, i, err)
 					return
 				}
 				_, err = conn.ExecContext(ctx, "INSERT INTO conc (who, n) VALUES (?, ?)", fmt.Sprintf("g%d", id), i)
 				conn.Close()
 				if err != nil {
-					errCh <- fmt.Errorf("g%d i%d INSERT: %w", id, i, err)
+					error_channel <- fmt.Errorf("g%d i%d INSERT: %w", id, i, err)
 					return
 				}
 				inserts.Add(1)
 			case 1: // SELECT
 				conn, err := db.starlark.Connx(ctx)
 				if err != nil {
-					errCh <- fmt.Errorf("g%d i%d Connx: %w", id, i, err)
+					error_channel <- fmt.Errorf("g%d i%d Connx: %w", id, i, err)
 					return
 				}
 				rows, err := conn.QueryxContext(ctx, "SELECT id FROM conc WHERE who = ?", fmt.Sprintf("g%d", id))
 				if err != nil {
 					conn.Close()
-					errCh <- fmt.Errorf("g%d i%d SELECT: %w", id, i, err)
+					error_channel <- fmt.Errorf("g%d i%d SELECT: %w", id, i, err)
 					return
 				}
 				for rows.Next() {
@@ -1360,16 +1360,16 @@ func TestStarlarkPoolConcurrent(t *testing.T) {
 			case 2: // full transaction via the same path api_db_transaction takes
 				tx, err := db.starlark.Beginx()
 				if err != nil {
-					errCh <- fmt.Errorf("g%d i%d Beginx: %w", id, i, err)
+					error_channel <- fmt.Errorf("g%d i%d Beginx: %w", id, i, err)
 					return
 				}
 				if _, err := tx.Exec("INSERT INTO conc (who, n) VALUES (?, ?)", fmt.Sprintf("g%d-tx", id), i); err != nil {
 					tx.Rollback()
-					errCh <- fmt.Errorf("g%d i%d tx INSERT: %w", id, i, err)
+					error_channel <- fmt.Errorf("g%d i%d tx INSERT: %w", id, i, err)
 					return
 				}
 				if err := tx.Commit(); err != nil {
-					errCh <- fmt.Errorf("g%d i%d Commit: %w", id, i, err)
+					error_channel <- fmt.Errorf("g%d i%d Commit: %w", id, i, err)
 					return
 				}
 				txs.Add(1)
@@ -1380,13 +1380,13 @@ func TestStarlarkPoolConcurrent(t *testing.T) {
 				// "cannot start a transaction within a transaction".
 				conn, err := db.starlark.Connx(ctx)
 				if err != nil {
-					errCh <- fmt.Errorf("g%d i%d Connx: %w", id, i, err)
+					error_channel <- fmt.Errorf("g%d i%d Connx: %w", id, i, err)
 					return
 				}
 				_, err = conn.ExecContext(ctx, "BEGIN; PRAGMA max_page_count = 999999999; COMMIT")
 				if err == nil {
 					conn.Close()
-					errCh <- fmt.Errorf("g%d i%d expected denial for multistmt PRAGMA write", id, i)
+					error_channel <- fmt.Errorf("g%d i%d expected denial for multistmt PRAGMA write", id, i)
 					return
 				}
 				// The defensive rollback that api_db_query does:
@@ -1402,9 +1402,9 @@ func TestStarlarkPoolConcurrent(t *testing.T) {
 		go worker(g)
 	}
 	wg.Wait()
-	close(errCh)
+	close(error_channel)
 
-	for err := range errCh {
+	for err := range error_channel {
 		t.Errorf("%v", err)
 	}
 
@@ -1459,12 +1459,12 @@ func TestDbUserForThread(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		user     *User
-		owner    *User
-		action   *Action
-		want     *User
-		want_err bool
+		name       string
+		user       *User
+		owner      *User
+		action     *Action
+		want       *User
+		want_error bool
 	}{
 		{
 			name:  "anonymous_reads_owner_db",
@@ -1473,10 +1473,10 @@ func TestDbUserForThread(t *testing.T) {
 			want:  alice,
 		},
 		{
-			name:     "anonymous_with_no_owner_errors",
-			user:     nil,
-			owner:    nil,
-			want_err: true,
+			name:       "anonymous_with_no_owner_errors",
+			user:       nil,
+			owner:      nil,
+			want_error: true,
 		},
 		{
 			name:  "logged_in_no_entity_uses_own_db",
@@ -1507,11 +1507,11 @@ func TestDbUserForThread(t *testing.T) {
 			want:   bob,
 		},
 		{
-			name:     "logged_in_under_domain_routing_no_owner_errors",
-			user:     alice,
-			owner:    nil,
-			action:   action_with_route("/blog"),
-			want_err: true,
+			name:       "logged_in_under_domain_routing_no_owner_errors",
+			user:       alice,
+			owner:      nil,
+			action:     action_with_route("/blog"),
+			want_error: true,
 		},
 		// An action with an empty domain context is not "domain routing"
 		// — main-site requests carry an Action but no route, so the
@@ -1548,7 +1548,7 @@ func TestDbUserForThread(t *testing.T) {
 			}
 
 			got, err := principal_storage(thread)
-			if tc.want_err {
+			if tc.want_error {
 				if err == nil {
 					t.Fatalf("principal_storage() = %v, want error", got)
 				}

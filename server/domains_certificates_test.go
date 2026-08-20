@@ -27,7 +27,7 @@ func certificates_dirs(t *testing.T) (cache string, data string) {
 }
 
 // TestCertificatesLiveOutsideTheCache pins that the autocert cache is not under
-// cache_dir. cache_cleanup deletes everything there older than cache_max_age,
+// cache_dir. cache_cleanup deletes everything there older than cache_age_maximum,
 // which silently destroyed valid certificates and the ACME account key —
 // invisibly, because autocert also caches in memory, so the loss only appeared
 // on the next restart.
@@ -92,11 +92,11 @@ func TestCertificatesMigrate(t *testing.T) {
 
 		domains_certificates_migrate()
 
-		info, err := os.Stat(filepath.Join(domains_certificates(), "key"))
+		information, err := os.Stat(filepath.Join(domains_certificates(), "key"))
 		if err != nil {
 			t.Fatalf("file did not survive the move: %v", err)
 		}
-		if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		if mode := information.Mode().Perm(); mode&0o077 != 0 {
 			t.Errorf("migrated key is mode %o, readable beyond its owner", mode)
 		}
 	})

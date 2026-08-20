@@ -112,14 +112,14 @@ type QueueEntry struct {
 }
 
 const (
-	queue_max_age = 7 * 86400 // 7 days
+	queue_age_maximum = 7 * 86400 // 7 days
 
 	// replication_op_retention is the retention floor for replication ops
 	// specifically (service = "replication"): a peer offline up to this
 	// long can still replay its missed ops from queue.db and converge
 	// losslessly — the T_forget "host-gone" budget. Other message classes
-	// use queue_max_age. Invariant (asserted in retention_test.go):
-	// replication_op_retention >= queue_max_age.
+	// use queue_age_maximum. Invariant (asserted in retention_test.go):
+	// replication_op_retention >= queue_age_maximum.
 	replication_op_retention = 30 * 86400 // 30 days (T_forget)
 )
 
@@ -611,7 +611,7 @@ func queue_watchdog() {
 // Add a direct message to the queue. Caller can override the default
 // (service+event)-derived priority by calling queue_add_direct_priority
 // instead — used by broadcast_resync to ship replies in the priority_replay
-// lane so they overtake the live-broadcast backlog (task #96).
+// lane so they overtake the live-broadcast backlog.
 func queue_add_direct(id, target, from_entity, to_entity, service, event, from_app string, services []string, content, data []byte, file string, expires int64) {
 	queue_add_direct_priority(id, target, from_entity, to_entity, service, event, from_app, services, content, data, file, expires, queue_priority(service, event))
 }
@@ -827,8 +827,8 @@ func queue_drop(id, reason string) {
 			// there — authoritative evidence for the health record.
 			health_denial(q.ToEntity)
 		}
-		if code, errReason, ok := error_code_for_nack(reason); ok {
-			queue_error_dispatch(&q, code, errReason)
+		if code, error_reason, ok := error_code_for_nack(reason); ok {
+			queue_error_dispatch(&q, code, error_reason)
 		}
 	}
 }
@@ -897,7 +897,7 @@ func queue_sending(id string) {
 
 // queue_unsending rolls back queue_sending when the async send path
 // fails before the row enters its inflight tracking (e.g. peer_send
-// returns errSenderUnreachable). Returns the row to 'pending' so the
+// returns error_sender_unreachable). Returns the row to 'pending' so the
 // next queue_select picks it up.
 func queue_unsending(id string) {
 	db := db_open("db/queue.db")
@@ -974,7 +974,7 @@ func queue_fail(id string, err string) {
 	attempts := q.Attempts + 1
 	age := time.Now().Unix() - q.Created
 
-	if age > queue_max_age {
+	if age > queue_age_maximum {
 		//warn("Queue dropping message after %d attempts: id=%q type=%q from=%q to=%q service=%q event=%q error=%q", attempts, q.ID, q.Type, q.FromEntity, q.ToEntity, q.Service, q.Event, err)
 		db.exec_bg("queue fail drop aged", "delete from queue where id = ?", id)
 		// The retry budget is exhausted: the learned route (if any) is
@@ -1006,9 +1006,9 @@ func queue_fail(id string, err string) {
 		if q.Target == "" {
 			// No peer to reconnect: the recipient entity never resolved
 			// to any host, so these rows only age out.
-			info("Queue parked a delivery for (service=%q) with no resolvable recipient after %d failed attempts (latest: %s); rows keep their data and are reaped after %d days.", q.Service, attempts, err, queue_max_age/86400)
+			info("Queue parked a delivery for (service=%q) with no resolvable recipient after %d failed attempts (latest: %s); rows keep their data and are reaped after %d days.", q.Service, attempts, err, queue_age_maximum/86400)
 		} else {
-			info("Queue parked a delivery for (target=%q, service=%q) after %d failed attempts (latest: %s); rows keep their data, revive if the peer reconnects, and are reaped after %d days.", q.Target, q.Service, attempts, err, queue_max_age/86400)
+			info("Queue parked a delivery for (target=%q, service=%q) after %d failed attempts (latest: %s); rows keep their data, revive if the peer reconnects, and are reaped after %d days.", q.Target, q.Service, attempts, err, queue_age_maximum/86400)
 		}
 	} else {
 		// Schedule retry
@@ -1083,7 +1083,7 @@ func queue_send_direct(q *QueueEntry) bool {
 	// Mark in-flight BEFORE handing off, so queue_process's post-call
 	// status check sees 'sending' and doesn't queue_fail an in-flight row.
 	queue_sending(q.ID)
-	if send_err := peer_send(peer, q.ID, f); send_err != nil {
+	if send_error := peer_send(peer, q.ID, f); send_error != nil {
 		// peer_send failed before queueing. Roll back 'sending' so
 		// queue_process re-pends the row for a later retry.
 		queue_unsending(q.ID)
@@ -1376,10 +1376,10 @@ func queue_process() int {
 	// large file at a time per peer (parallel pushes would just
 	// divide bandwidth).
 	semaphores := map[string]chan struct{}{}
-	var semLock sync.Mutex
-	get_sem := func(peer string, cap int) chan struct{} {
-		semLock.Lock()
-		defer semLock.Unlock()
+	var semaphore_lock sync.Mutex
+	get_semaphore := func(peer string, cap int) chan struct{} {
+		semaphore_lock.Lock()
+		defer semaphore_lock.Unlock()
 		s, ok := semaphores[peer]
 		if !ok {
 			s = make(chan struct{}, cap)
@@ -1411,11 +1411,11 @@ func queue_process() int {
 			bucket = "\x00direct\x00" + q.Target + "\x00" + q.FromEntity
 			cap = 1
 		}
-		sem := get_sem(bucket, cap)
-		sem <- struct{}{}
-		go func(q QueueEntry, sem chan struct{}) {
+		semaphore := get_semaphore(bucket, cap)
+		semaphore <- struct{}{}
+		go func(q QueueEntry, semaphore chan struct{}) {
 			defer wg.Done()
-			defer func() { <-sem }()
+			defer func() { <-semaphore }()
 
 			var ok bool
 			switch {
@@ -1434,7 +1434,7 @@ func queue_process() int {
 				// receiver replies. Don't touch in-flight rows here.
 				queue_fail(q.ID, "send failed")
 			}
-		}(q, sem)
+		}(q, semaphore)
 	}
 	wg.Wait()
 	return processed + len(valid)
@@ -1486,9 +1486,9 @@ func queue_cleanup() {
 	db := db_open("db/queue.db")
 	// Per-class retention: replication ops keep replication_op_retention
 	// (30d / T_forget) so an offline replica can still replay and merge;
-	// every other message class keeps queue_max_age (7d). One sweep, keyed
+	// every other message class keeps queue_age_maximum (7d). One sweep, keyed
 	// off service so it covers every replication emit path.
-	gen_cutoff := now() - queue_max_age
+	gen_cutoff := now() - queue_age_maximum
 	repl_cutoff := now() - replication_op_retention
 	aged := "((service = 'replication' and created < ?) or (service != 'replication' and created < ?))"
 

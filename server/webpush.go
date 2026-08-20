@@ -198,10 +198,10 @@ const webpush_dedup_ttl int64 = 24 * 3600
 func webpush_service_worker(c *gin.Context) {
 	c.Writer.Header().Set("Content-Type", "application/javascript")
 	c.Writer.Header().Set("Service-Worker-Allowed", "/")
-	c.String(200, serviceWorkerJS)
+	c.String(200, service_worker)
 }
 
-const serviceWorkerJS = `// Mochi Push Notification Service Worker
+const service_worker = `// Mochi Push Notification Service Worker
 
 self.addEventListener('push', function(event) {
   if (!event.data) return;

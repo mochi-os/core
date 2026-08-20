@@ -71,14 +71,14 @@ func TestEndToEndHandshakeOverPipe(t *testing.T) {
 	defer reset_workers(t)
 	id, _ := new_entity_keys(t)
 
-	senderStream, recvStream := new_stream_pair()
+	sender_stream, received_stream := new_stream_pair()
 
 	// Receiver-side state machine: write hello, read caps, read claim,
 	// (we don't drive message dispatch here — the next test does).
 	go func() {
 		challenge, _ := hello_challenge()
-		_ = hello_write(recvStream, 2, "test-sess", challenge, receiver_codecs(), receiver_features())
-		caps, err := caps_read(recvStream)
+		_ = hello_write(received_stream, 2, "test-sess", challenge, receiver_codecs(), receiver_features())
+		caps, err := caps_read(received_stream)
 		if err != nil {
 			t.Errorf("recv caps_read: %v", err)
 			return
@@ -86,7 +86,7 @@ func TestEndToEndHandshakeOverPipe(t *testing.T) {
 		if !contains_string(caps.Codecs, "zstd") {
 			t.Errorf("caps codecs missing zstd: %v", caps.Codecs)
 		}
-		claim, err := frame_read(recvStream)
+		claim, err := frame_read(received_stream)
 		if err != nil {
 			t.Errorf("recv claim read: %v", err)
 			return
@@ -101,14 +101,14 @@ func TestEndToEndHandshakeOverPipe(t *testing.T) {
 	}()
 
 	// Sender-side: read hello, write caps + claim.
-	hello, err := hello_read(senderStream, 2)
+	hello, err := hello_read(sender_stream, 2)
 	if err != nil {
 		t.Fatalf("sender hello_read: %v", err)
 	}
-	if err := caps_write(senderStream, []string{"zstd"}, nil, must_challenge(t)); err != nil {
+	if err := caps_write(sender_stream, []string{"zstd"}, nil, must_challenge(t)); err != nil {
 		t.Fatalf("sender caps_write: %v", err)
 	}
-	if err := claim_write(senderStream, id, hello.Challenge, test_receiver, protocol_messages); err != nil {
+	if err := claim_write(sender_stream, id, hello.Challenge, test_receiver, protocol_messages); err != nil {
 		t.Fatalf("sender claim_write: %v", err)
 	}
 
@@ -238,20 +238,20 @@ func TestEndToEndMessageRoundTrip(t *testing.T) {
 	defer reset_workers(t)
 	id, _ := new_entity_keys(t)
 
-	sendStream, recvStream := new_stream_pair()
+	send_stream, received_stream := new_stream_pair()
 
 	// Start the receiver simulator with a known challenge.
 	challenge, _ := hello_challenge()
-	gotIDs := run_test_receiver(t, recvStream, challenge, "e2e-peer")
+	got_i_ds := run_test_receiver(t, received_stream, challenge, "e2e-peer")
 
 	// Sender side: read the receiver's hello, install the Sender,
 	// then send 3 messages.
-	hello, err := hello_read(sendStream, 2)
+	hello, err := hello_read(send_stream, 2)
 	if err != nil {
 		t.Fatalf("hello_read: %v", err)
 	}
 	const peer = "e2e-peer"
-	_, stop := install_sender_for(t, peer, sendStream, hello)
+	_, stop := install_sender_for(t, peer, send_stream, hello)
 	defer stop()
 
 	// Queue rows so resolve_fail / queue_ack have something to operate on.
@@ -271,7 +271,7 @@ func TestEndToEndMessageRoundTrip(t *testing.T) {
 	want := []string{"e2e-1", "e2e-2", "e2e-3"}
 	for i, w := range want {
 		select {
-		case got := <-gotIDs:
+		case got := <-got_i_ds:
 			if got != w {
 				t.Errorf("message %d: got id %q, want %q", i, got, w)
 			}
@@ -311,15 +311,15 @@ func TestEndToEndPipelinesClaimAndMessage(t *testing.T) {
 	defer reset_workers(t)
 	id, _ := new_entity_keys(t)
 
-	sendStream, recvStream := new_stream_pair()
+	send_stream, received_stream := new_stream_pair()
 	challenge, _ := hello_challenge()
 
 	saw_claim := make(chan struct{}, 1)
 	saw_message := make(chan string, 1)
 
 	go func() {
-		_ = hello_write(recvStream, 2, "p", challenge, receiver_codecs(), receiver_features())
-		caps, err := caps_read(recvStream)
+		_ = hello_write(received_stream, 2, "p", challenge, receiver_codecs(), receiver_features())
+		caps, err := caps_read(received_stream)
 		if err != nil {
 			t.Errorf("recv caps_read: %v", err)
 			return
@@ -328,7 +328,7 @@ func TestEndToEndPipelinesClaimAndMessage(t *testing.T) {
 		// Drain frames. First non-caps should be a claim, then a
 		// message.
 		for {
-			f, err := frame_read(recvStream)
+			f, err := frame_read(received_stream)
 			if err != nil {
 				return
 			}
@@ -337,18 +337,18 @@ func TestEndToEndPipelinesClaimAndMessage(t *testing.T) {
 				saw_claim <- struct{}{}
 			case frame_type_message:
 				saw_message <- f.ID
-				_ = frame_write(recvStream, &Frame{Type: frame_type_ack, Replies: []string{f.ID}})
+				_ = frame_write(received_stream, &Frame{Type: frame_type_ack, Replies: []string{f.ID}})
 				return
 			}
 		}
 	}()
 
-	hello, err := hello_read(sendStream, 2)
+	hello, err := hello_read(send_stream, 2)
 	if err != nil {
 		t.Fatalf("hello_read: %v", err)
 	}
 	const peer = "pipeline-peer"
-	_, stop := install_sender_for(t, peer, sendStream, hello)
+	_, stop := install_sender_for(t, peer, send_stream, hello)
 	defer stop()
 
 	install_queue_row(t, "pipe-1")
@@ -419,29 +419,29 @@ func TestEndToEndStreamDeathQueueFailsInflight(t *testing.T) {
 	defer reset_workers(t)
 	id, _ := new_entity_keys(t)
 
-	sendStream, recvStream := new_stream_pair()
+	send_stream, received_stream := new_stream_pair()
 
 	challenge, _ := hello_challenge()
 	go func() {
-		_ = hello_write(recvStream, 2, "d", challenge, receiver_codecs(), receiver_features())
-		_, _ = caps_read(recvStream)
+		_ = hello_write(received_stream, 2, "d", challenge, receiver_codecs(), receiver_features())
+		_, _ = caps_read(received_stream)
 		// Read first frame (claim or message), then kill stream
 		// without acking.
-		f, err := frame_read(recvStream)
+		f, err := frame_read(received_stream)
 		if err != nil {
 			return
 		}
 		_ = f
 		// Death: close both pipe ends so the sender sees EOF.
-		recvStream.Reset()
+		received_stream.Reset()
 	}()
 
-	hello, err := hello_read(sendStream, 2)
+	hello, err := hello_read(send_stream, 2)
 	if err != nil {
 		t.Fatalf("hello_read: %v", err)
 	}
 	const peer = "death-peer"
-	_, stop := install_sender_for(t, peer, sendStream, hello)
+	_, stop := install_sender_for(t, peer, send_stream, hello)
 	defer stop()
 
 	install_queue_row(t, "death-1")
@@ -500,14 +500,14 @@ func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
 	setup_users_test_schema()
 	id, _ := new_entity_keys(t)
 
-	sendStream, recvStream := new_stream_pair()
+	send_stream, received_stream := new_stream_pair()
 
 	got_content := make(chan map[string]any, 1)
 
 	go func() {
 		challenge, _ := hello_challenge()
-		_ = hello_write(recvStream, 2, "s", challenge, receiver_codecs(), receiver_features())
-		caps, err := caps_read(recvStream)
+		_ = hello_write(received_stream, 2, "s", challenge, receiver_codecs(), receiver_features())
+		caps, err := caps_read(received_stream)
 		if err != nil {
 			t.Errorf("recv caps_read: %v", err)
 			return
@@ -515,7 +515,7 @@ func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
 		_ = caps
 		// Drain claim + open
 		for {
-			f, err := frame_read(recvStream)
+			f, err := frame_read(received_stream)
 			if err != nil {
 				return
 			}
@@ -523,11 +523,11 @@ func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
 				continue
 			}
 			if f.Type == frame_type_open {
-				_ = frame_write(recvStream, &Frame{Type: frame_type_ack, Replies: []string{f.ID}})
+				_ = frame_write(received_stream, &Frame{Type: frame_type_ack, Replies: []string{f.ID}})
 				// After ack, the next thing on the wire MUST be the
 				// caller's content map. Decode it as a generic map and
 				// hand back to the test.
-				st := stream_rw(recvStream, recvStream)
+				st := stream_rw(received_stream, received_stream)
 				var content map[string]any
 				if err := st.read(&content); err != nil {
 					t.Errorf("recv content read: %v", err)
@@ -539,7 +539,7 @@ func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
 		}
 	}()
 
-	hello, err := hello_read(sendStream, 2)
+	hello, err := hello_read(send_stream, 2)
 	if err != nil {
 		t.Fatalf("hello_read: %v", err)
 	}
@@ -553,16 +553,16 @@ func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
 		// Sender: write caps, claim, open, then content via stream_open's
 		// new post-ack write. We can't call stream_open directly because
 		// it uses peer_protocol_open + libp2p. Inline the relevant bits.
-		_ = caps_write(sendStream, []string{"zstd"}, nil, opener_challenge)
-		_ = claim_write(sendStream, id, hello.Challenge, test_receiver, protocol_stream)
+		_ = caps_write(send_stream, []string{"zstd"}, nil, opener_challenge)
+		_ = claim_write(send_stream, id, hello.Challenge, test_receiver, protocol_stream)
 		open := &Frame{Type: frame_type_open, ID: "x", From: id,
 			Service: "svc", Event: "ev"}
-		_ = frame_write(sendStream, open)
+		_ = frame_write(send_stream, open)
 		// Read ack
-		_, _ = frame_read(sendStream)
+		_, _ = frame_read(send_stream)
 		// Now ship content as first post-ack segment (this is what
 		// stream_open does when content != nil).
-		st := stream_rw(sendStream, sendStream)
+		st := stream_rw(send_stream, send_stream)
 		_ = st.write(map[string]any{"username": "alistair@acunningham.org"})
 	}()
 
@@ -584,7 +584,7 @@ func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
 // than attempting (and failing) the wire path.
 //
 // In the test environment net_me is nil, so the wire attempt would
-// return errSenderUnreachable; the self-loop path must return a non-nil
+// return error_sender_unreachable; the self-loop path must return a non-nil
 // near end with no error.
 //
 // Note: the far-end dispatch goroutine resolves "to-entity" to no local
@@ -617,7 +617,7 @@ func TestStreamOpenSelfLoopUsesV2Native(t *testing.T) {
 func TestQueueSendDirectUnreachablePeerFails(t *testing.T) {
 	// queue_send_direct to a remote peer with no libp2p host (net_me is
 	// nil in tests) must unwind cleanly: peer_protocol_open returns
-	// errSenderUnreachable, queue_unsending rolls back the 'sending'
+	// error_sender_unreachable, queue_unsending rolls back the 'sending'
 	// mark, and the row is left for queue_process to retry.
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -696,16 +696,16 @@ func TestMessagesProofPrecedesDelivery(t *testing.T) {
 	from, _ := new_entity_keys(t)
 	to, _ := new_entity_keys(t)
 
-	senderStream, recvStream := new_stream_pair()
+	sender_stream, received_stream := new_stream_pair()
 	challenge := must_challenge(t)
 	peer := "12D3KooWProofPeerUnderTest"
-	got := run_test_receiver(t, recvStream, challenge, peer)
+	got := run_test_receiver(t, received_stream, challenge, peer)
 
-	hello, err := hello_read(senderStream, 2)
+	hello, err := hello_read(sender_stream, 2)
 	if err != nil {
 		t.Fatalf("hello_read: %v", err)
 	}
-	s, done := install_sender_for(t, peer, senderStream, hello)
+	s, done := install_sender_for(t, peer, sender_stream, hello)
 	defer done()
 
 	if err := peer_send(peer, "", &Frame{
@@ -745,20 +745,20 @@ func TestMessagesProofCachedPerConnection(t *testing.T) {
 	from, _ := new_entity_keys(t)
 	to, _ := new_entity_keys(t)
 
-	senderStream, recvStream := new_stream_pair()
+	sender_stream, received_stream := new_stream_pair()
 	challenge := must_challenge(t)
 	peer := "12D3KooWProofCachePeerTest"
 
 	// Count prove demands seen on the wire.
 	proves := make(chan string, 16)
 	go func() {
-		_ = hello_write(recvStream, 2, "rs", challenge, receiver_codecs(), receiver_features())
-		caps, err := caps_read(recvStream)
+		_ = hello_write(received_stream, 2, "rs", challenge, receiver_codecs(), receiver_features())
+		caps, err := caps_read(received_stream)
 		if err != nil {
 			return
 		}
 		for {
-			f, err := frame_read(recvStream)
+			f, err := frame_read(received_stream)
 			if err != nil {
 				return
 			}
@@ -766,18 +766,18 @@ func TestMessagesProofCachedPerConnection(t *testing.T) {
 			case frame_type_prove:
 				proves <- f.To
 				signature := responder_sign(f.To, caps.Challenge, net_id, protocol_messages)
-				_ = frame_write(recvStream, &Frame{Type: frame_type_claim, From: f.To, Signature: signature})
+				_ = frame_write(received_stream, &Frame{Type: frame_type_claim, From: f.To, Signature: signature})
 			case frame_type_message:
-				_ = frame_write(recvStream, &Frame{Type: frame_type_ack, Replies: []string{f.ID}})
+				_ = frame_write(received_stream, &Frame{Type: frame_type_ack, Replies: []string{f.ID}})
 			}
 		}
 	}()
 
-	hello, err := hello_read(senderStream, 2)
+	hello, err := hello_read(sender_stream, 2)
 	if err != nil {
 		t.Fatalf("hello_read: %v", err)
 	}
-	_, done := install_sender_for(t, peer, senderStream, hello)
+	_, done := install_sender_for(t, peer, sender_stream, hello)
 	defer done()
 
 	for _, id := range []string{"m1", "m2", "m3"} {

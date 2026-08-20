@@ -68,23 +68,23 @@ func audit_close() {
 }
 
 // audit_log_auth writes to the auth facility
-func audit_log_auth(msg string) {
+func audit_log_auth(message string) {
 	if audit_auth != nil {
-		audit_auth.Info(msg)
+		audit_auth.Info(message)
 	}
 }
 
 // audit_log_daemon writes to the daemon facility
-func audit_log_daemon(msg string) {
+func audit_log_daemon(message string) {
 	if audit_daemon != nil {
-		audit_daemon.Info(msg)
+		audit_daemon.Info(message)
 	}
 }
 
 // audit_log_ops writes to the ops facility
-func audit_log_ops(msg string) {
+func audit_log_ops(message string) {
 	if audit_ops != nil {
-		audit_ops.Info(msg)
+		audit_ops.Info(message)
 	}
 }
 

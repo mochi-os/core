@@ -1329,11 +1329,11 @@ func account_test_fcm(data map[string]any, language string, account_label string
 	if success {
 		return AccountTestResult{Success: true, Message: resolve_core_label(language, "accounts.test.notification_sent", nil)}, false
 	}
-	msg := detail
-	if msg == "" {
-		msg = resolve_core_label(language, "accounts.test.push_failed", nil)
+	message := detail
+	if message == "" {
+		message = resolve_core_label(language, "accounts.test.push_failed", nil)
 	}
-	return AccountTestResult{Success: false, Message: msg}, retire
+	return AccountTestResult{Success: false, Message: message}, retire
 }
 
 // account_test_pushbullet sends a test notification via Pushbullet
@@ -1367,8 +1367,8 @@ func account_test_pushbullet(token string, language string, account_label string
 	var data map[string]any
 	json.Unmarshal(body, &data)
 	if error_map, ok := data["error"].(map[string]any); ok {
-		if msg, ok := error_map["message"].(string); ok {
-			return AccountTestResult{Success: false, Message: msg}
+		if message, ok := error_map["message"].(string); ok {
+			return AccountTestResult{Success: false, Message: message}
 		}
 	}
 
@@ -1413,8 +1413,8 @@ func account_test_claude(api_key, language string) AccountTestResult {
 	var data map[string]any
 	json.Unmarshal(body, &data)
 	if error_map, ok := data["error"].(map[string]any); ok {
-		if msg, ok := error_map["message"].(string); ok {
-			return AccountTestResult{Success: false, Message: msg}
+		if message, ok := error_map["message"].(string); ok {
+			return AccountTestResult{Success: false, Message: message}
 		}
 	}
 
@@ -1492,8 +1492,8 @@ func account_test_mcp(url, token, language string) AccountTestResult {
 				return AccountTestResult{Success: true, Message: resolve_core_label(language, "accounts.test.server_connected", nil)}
 			}
 			if error_map, ok := result["error"].(map[string]any); ok {
-				if msg, ok := error_map["message"].(string); ok {
-					return AccountTestResult{Success: false, Message: msg}
+				if message, ok := error_map["message"].(string); ok {
+					return AccountTestResult{Success: false, Message: message}
 				}
 			}
 		}
@@ -1778,7 +1778,7 @@ func account_deliver_browser(data map[string]any, title, body, link, tag string)
 //     instead of HTTP self-call + Web Push round-trip.
 //   - **Remote (RFC 8030)**: any absolute URL — third-party distributors
 //     (ntfy, NextPush, Mozilla autopush). Same code path as browser push.
-func account_deliver_unifiedpush(user *User, accountID string, data map[string]any, title, body, link, tag, app, id string) bool {
+func account_deliver_unifiedpush(user *User, account string, data map[string]any, title, body, link, tag, app, id string) bool {
 	endpoint, _ := data["endpoint"].(string)
 	if endpoint == "" {
 		return false
@@ -1806,7 +1806,7 @@ func account_deliver_unifiedpush(user *User, accountID string, data map[string]a
 		websockets_send(user, "", "unifiedpush", map[string]any{
 			"sub_id":  sub_id,
 			"payload": string(payload),
-			"account": accountID,
+			"account": account,
 		})
 		return true
 	}

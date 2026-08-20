@@ -50,7 +50,7 @@ func TestIsProtocolNotSupportedRecognisesProtocolIDSpecialisation(t *testing.T) 
 func TestIsProtocolNotSupportedStringFallback(t *testing.T) {
 	// Belt-and-braces: a future libp2p wrapping that strips the typed
 	// error chain should still be caught by the string-match fallback.
-	plain := errString("multistream: protocols not supported: [/mochi/2/stream]")
+	plain := error_string("multistream: protocols not supported: [/mochi/2/stream]")
 	if !is_protocol_not_supported(plain) {
 		t.Error("string fallback missed the standard phrasing")
 	}

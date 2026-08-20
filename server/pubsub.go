@@ -81,7 +81,7 @@ const (
 	pubsub_domain = "mochi/2/pubsub"
 
 	// pubsub_expires_ttl is how long after flooding an announcement stays
-	// valid. Lower-bounded by the max queue-broadcast retry interval
+	// valid. Lower-bounded by the maximum queue-broadcast retry interval
 	// (retry_delays' 3600s) so a queue-held re-flood is never already
 	// expired, and kept above the hourly peers_publish cadence so a peer
 	// announcement stays valid until the next one. Asserted by
@@ -91,11 +91,11 @@ const (
 	// flood has expired.
 	pubsub_expires_ttl = 2 * 3600 // 2 hours
 
-	// pubsub_expires_max bounds how far in the future an Expires may sit
+	// pubsub_expires_maximum bounds how far in the future an Expires may sit
 	// before a receiver treats it as absurd — without it, a captured
 	// message carrying a far-future Expires would replay long past the
 	// intended window. 2x the TTL leaves generous clock-skew slack.
-	pubsub_expires_max = 2 * pubsub_expires_ttl
+	pubsub_expires_maximum = 2 * pubsub_expires_ttl
 )
 
 // Announcement is the /mochi/2 pubsub wire shape. Pubsub carries exactly one
@@ -312,7 +312,7 @@ func pubsub_receive_guarded(f *Announcement, peer, origin string) {
 		return
 	}
 
-	e := Event{id: event_id(), msg_id: f.ID, from: f.From, service: f.Service, event: f.Event,
+	e := Event{id: event_id(), message: f.ID, from: f.From, service: f.Service, event: f.Event,
 		peer: peer, origin: origin, content: f.Content, expires: f.Expires, signature: f.Signature}
 	if err := e.route(); err != nil {
 		debug("Pubsub frame route error for service %q event %q from peer %q: %v", f.Service, f.Event, peer, err)
@@ -324,7 +324,7 @@ func pubsub_receive_guarded(f *Announcement, peer, origin string) {
 // yet expired, and not absurdly far in the future.
 func pubsub_fresh(expires string) bool {
 	exp := atoi(expires, 0)
-	return exp > 0 && now() < exp && exp <= now()+pubsub_expires_max
+	return exp > 0 && now() < exp && exp <= now()+pubsub_expires_maximum
 }
 
 // pubsub_publish floods one message to the /mochi/2 topic as a
@@ -410,7 +410,7 @@ func pubsub_string_content(content map[string]any) (map[string]string, bool) {
 // Nothing meaningful is left out. id is covered so a captured message cannot
 // be re-flooded under fresh ids to defeat dedup, and expires is covered so the
 // sender owns the replay window rather than whoever relays it — an unsigned
-// expires makes pubsub_expires_max decorative, since an attacker simply
+// expires makes pubsub_expires_maximum decorative, since an attacker simply
 // rewrites it every window. The frame type is NOT covered: pubsub carries only
 // message frames, so v already implies it.
 func pubsub_signable(id, from, service, event, expires string, content map[string]string) ([]byte, error) {

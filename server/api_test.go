@@ -20,7 +20,7 @@ func TestURLResponseSizeLimit(t *testing.T) {
 	// destinations by default.
 	allow_private_for_test(t)
 	// Create a test server that returns more than the limit
-	oversized := make([]byte, url_max_response_size+1000)
+	oversized := make([]byte, url_response_size_maximum+1000)
 	for i := range oversized {
 		oversized[i] = 'X'
 	}
@@ -38,15 +38,15 @@ func TestURLResponseSizeLimit(t *testing.T) {
 	defer resp.Body.Close()
 
 	// Read with limit (simulating what api_url_request does)
-	data, err := io.ReadAll(io.LimitReader(resp.Body, url_max_response_size))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, url_response_size_maximum))
 	if err != nil {
 		t.Fatalf("ReadAll failed: %v", err)
 	}
 
 	// Verify we got exactly the limit, not the full oversized response
-	if len(data) != int(url_max_response_size) {
-		t.Errorf("Expected %d bytes, got %d", url_max_response_size, len(data))
+	if len(data) != int(url_response_size_maximum) {
+		t.Errorf("Expected %d bytes, got %d", url_response_size_maximum, len(data))
 	}
 
-	t.Logf("Response size limit worked: got %d bytes (limit: %d)", len(data), url_max_response_size)
+	t.Logf("Response size limit worked: got %d bytes (limit: %d)", len(data), url_response_size_maximum)
 }

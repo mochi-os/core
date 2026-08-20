@@ -26,8 +26,8 @@ func lifecycle_test_app(t *testing.T, source string) (*App, *AppVersion, func())
 	// Starlark.call needs the runtime state the server normally sets up at
 	// startup via starlark_configure: a non-nil concurrency semaphore (a nil
 	// channel blocks forever) and a non-zero timeout (zero cancels instantly).
-	if starlark_sem == nil {
-		starlark_sem = make(chan struct{}, 32)
+	if starlark_semaphore == nil {
+		starlark_semaphore = make(chan struct{}, 32)
 		starlark_default_timeout = 90 * time.Second
 	}
 

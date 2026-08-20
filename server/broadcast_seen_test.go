@@ -33,7 +33,7 @@ func TestBroadcastSeenStampedOnAdvance(t *testing.T) {
 	}
 }
 
-// TestBroadcastSeenMaxOverPeers — seen is max across senders, so a paired owner
+// TestBroadcastSeenMaxOverPeers — seen is maximum across senders, so a paired owner
 // (two peers, same key) reports the freshest apply; owner host-migration (new
 // peer, same key) is the same shape.
 func TestBroadcastSeenMaxOverPeers(t *testing.T) {

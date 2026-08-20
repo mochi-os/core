@@ -47,7 +47,7 @@ const (
 	frame_length_size     = 4                // big-endian uint32 prefix
 	frame_diagnostic_size = 256              // hex log on CBOR decode failure
 	challenge_size_v2     = 32               // hello.Challenge length
-	max_id_length         = 64               // max Frame.ID / message id length; enforced by envelope_valid
+	id_length_maximum     = 64               // maximum Frame.ID / message id length; enforced by envelope_valid
 
 	// Pre-open bounds on /mochi/2/stream. An opener claims the entities it is
 	// about to address - a handful - so anything approaching these is a peer
@@ -647,7 +647,7 @@ func peer_rate() int { return ini_int("peer", "rate", 0) }
 // path: the entity a frame claims to be from, the service and event it names,
 // and the length of its id. Content is the handler's business.
 //
-// Shared because the two paths had drifted. max_id_length is declared here,
+// Shared because the two paths had drifted. id_length_maximum is declared here,
 // beside the Frame it names, and was enforced only in announcement_valid on
 // the pubsub path - so /mochi/2/messages accepted an id and a service of any
 // length and shape. Both become keys in maps that outlive the stream and are
@@ -669,7 +669,7 @@ func envelope_valid(from, service, event, id string) bool {
 	if event != "" && !valid(event, "constant") {
 		return false
 	}
-	if id != "" && len(id) > max_id_length {
+	if id != "" && len(id) > id_length_maximum {
 		return false
 	}
 	return true

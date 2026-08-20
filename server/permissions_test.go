@@ -227,9 +227,9 @@ func TestPermissionJoin(t *testing.T) {
 
 func TestDomainExtract(t *testing.T) {
 	tests := []struct {
-		url      string
-		want     string
-		want_err bool
+		url        string
+		want       string
+		want_error bool
 	}{
 		{"https://github.com/foo/bar", "github.com", false},
 		{"https://api.github.com/v1/users", "api.github.com", false},
@@ -242,8 +242,8 @@ func TestDomainExtract(t *testing.T) {
 
 	for _, tt := range tests {
 		got, err := domain_extract(tt.url)
-		if (err != nil) != tt.want_err {
-			t.Errorf("domain_extract(%q) error = %v, want_err = %v", tt.url, err, tt.want_err)
+		if (err != nil) != tt.want_error {
+			t.Errorf("domain_extract(%q) error = %v, want_err = %v", tt.url, err, tt.want_error)
 			continue
 		}
 		if got != tt.want {
@@ -1525,7 +1525,7 @@ func TestMultipleAppsPerUser(t *testing.T) {
 // Helper to verify an API function requires a specific permission
 //
 //lint:ignore U1000 test scaffolding: an assertion helper for permission-gated APIs
-func assert_api_requires_permission(t *testing.T, name string, permission string, apiCall func(*sl.Thread, *sl.Builtin) (sl.Value, error)) {
+func assert_api_requires_permission(t *testing.T, name string, permission string, api_call func(*sl.Thread, *sl.Builtin) (sl.Value, error)) {
 	t.Helper()
 	setup_test_data_dir(t)
 	defer cleanup_test_data_dir(t)
@@ -1536,14 +1536,14 @@ func assert_api_requires_permission(t *testing.T, name string, permission string
 	fn := sl.NewBuiltin(name, nil)
 
 	// Call without permission - should fail
-	_, err := apiCall(thread, fn)
+	_, err := api_call(thread, fn)
 	if err == nil {
 		t.Errorf("%s should require %s permission", name, permission)
 	}
 
 	// Grant permission and retry - should succeed (or fail for other reasons)
 	permission_grant(user, app.id, permission)
-	_, err = apiCall(thread, fn)
+	_, err = api_call(thread, fn)
 	// We just check it doesn't fail with permission error
 	// It may fail for other reasons (missing args, etc) which is fine
 	if err != nil && contains_permission_error(err) {
@@ -1555,8 +1555,8 @@ func contains_permission_error(err error) bool {
 	if err == nil {
 		return false
 	}
-	err_string := err.Error()
-	return contains(err_string, "permission") && (contains(err_string, "denied") || contains(err_string, "required") || contains(err_string, "not granted"))
+	error_string := err.Error()
+	return contains(error_string, "permission") && (contains(error_string, "denied") || contains(error_string, "required") || contains(error_string, "not granted"))
 }
 
 func contains(s, substr string) bool {

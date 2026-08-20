@@ -402,8 +402,8 @@ func TestGitMultipleUsers(t *testing.T) {
 	user2 := &User{UID: "u2"}
 
 	// Create directories for user2
-	user2Dir := filepath.Join(tmp_dir, "users", "2", "repositories")
-	os.MkdirAll(user2Dir, 0755)
+	user2_dir := filepath.Join(tmp_dir, "users", "2", "repositories")
+	os.MkdirAll(user2_dir, 0755)
 
 	// Create same-named repos for different users
 	git_init(user1, test_app, "shared-name")
@@ -622,7 +622,7 @@ func TestGitBranchOperations(t *testing.T) {
 // ============ Merge / branch-mutation access control ============
 
 // TestGitMergeAccessControl is the unit-level proof of the repository-merge
-// ACL (task #3): git_can_write - the shared gate for api_git_merge_perform and
+// ACL: git_can_write - the shared gate for api_git_merge_perform and
 // the branch create/delete/default-set primitives - authorizes a mutation only
 // when the acting identity holds repository/<id> write, the same grant a git
 // push requires, and fails closed otherwise. This encodes the plan's acceptance

@@ -22,24 +22,24 @@ const world_account_group = "_mochi-world"
 // world_peer_authorized reads LOCAL_PEERCRED off a connected UnixConn and
 // reports whether the peer may push world status: the mochi-world group
 // (from the xucred group list), or anyone the ADMIN socket would accept.
-func world_peer_authorized(c *net.UnixConn) (bool, *admin_cred) {
+func world_peer_authorized(c *net.UnixConn) (bool, *admin_credential) {
 	raw, err := c.SyscallConn()
 	if err != nil {
 		return false, nil
 	}
 	var xucred *unix.Xucred
-	var credErr error
+	var credential_error error
 	err = raw.Control(func(fd uintptr) {
-		xucred, credErr = unix.GetsockoptXucred(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERCRED)
+		xucred, credential_error = unix.GetsockoptXucred(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERCRED)
 	})
-	if err != nil || credErr != nil || xucred == nil {
+	if err != nil || credential_error != nil || xucred == nil {
 		return false, nil
 	}
 	var gid uint32
 	if xucred.Ngroups > 0 {
 		gid = xucred.Groups[0]
 	}
-	cred := &admin_cred{uid: xucred.Uid, gid: gid, pid: 0}
+	credential := &admin_credential{uid: xucred.Uid, gid: gid, pid: 0}
 	n := int(xucred.Ngroups)
 	if n > len(xucred.Groups) {
 		n = len(xucred.Groups)
@@ -47,19 +47,19 @@ func world_peer_authorized(c *net.UnixConn) (bool, *admin_cred) {
 	if world_gid != 0 {
 		for i := 0; i < n; i++ {
 			if xucred.Groups[i] == world_gid {
-				return true, cred
+				return true, credential
 			}
 		}
 	}
-	if admin_cred_basic_authorized(cred.uid, cred.gid) {
-		return true, cred
+	if admin_credential_basic_authorized(credential.uid, credential.gid) {
+		return true, credential
 	}
 	if admin_mochi_gid != 0 {
 		for i := 0; i < n; i++ {
 			if xucred.Groups[i] == admin_mochi_gid {
-				return true, cred
+				return true, credential
 			}
 		}
 	}
-	return false, cred
+	return false, credential
 }

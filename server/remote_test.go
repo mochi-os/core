@@ -108,17 +108,17 @@ func TestPeerConnectUrlPath(t *testing.T) {
 	// Serves from httptest on 127.0.0.1; url_request blocks non-public
 	// destinations by default.
 	allow_private_for_test(t)
-	var requestedPath string
+	var requested_path string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestedPath = r.URL.Path
+		requested_path = r.URL.Path
 		w.WriteHeader(500) // Return error to stop further processing
 	}))
 	defer server.Close()
 
 	peer_connect_url(server.URL)
 
-	if requestedPath != "/_/p2p/info" {
-		t.Errorf("expected request path /_/p2p/info, got %q", requestedPath)
+	if requested_path != "/_/p2p/info" {
+		t.Errorf("expected request path /_/p2p/info, got %q", requested_path)
 	}
 }
 
@@ -129,9 +129,9 @@ func TestPeerConnectUrlNormalizesScheme(t *testing.T) {
 	allow_private_for_test(t)
 	// We can't easily test the https normalization without a real HTTPS server,
 	// but we can verify the logic by checking that http:// URLs work
-	var receivedHost string
+	var received_host string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedHost = r.Host
+		received_host = r.Host
 		w.WriteHeader(500)
 	}))
 	defer server.Close()
@@ -140,8 +140,8 @@ func TestPeerConnectUrlNormalizesScheme(t *testing.T) {
 	host_port := strings.TrimPrefix(server.URL, "http://")
 
 	peer_connect_url(server.URL)
-	if receivedHost != host_port {
-		t.Errorf("with full URL, expected host %q, got %q", host_port, receivedHost)
+	if received_host != host_port {
+		t.Errorf("with full URL, expected host %q, got %q", host_port, received_host)
 	}
 }
 

@@ -18,12 +18,12 @@ import (
 )
 
 const (
-	cbor_max_size     = 100 * 1024 * 1024 // 100MB max message size
-	cbor_max_depth    = 32                // Max nesting depth
-	cbor_max_pairs    = 1000              // Max map pairs
-	cbor_max_elements = 10000             // Max array elements
-	content_max_key   = 256               // Max content key length
-	content_max_value = 100 * 1024 * 1024 // 100MB max content value length
+	cbor_maximum_size     = 100 * 1024 * 1024 // 100MB maximum message size
+	cbor_maximum_depth    = 32                // Max nesting depth
+	cbor_maximum_pairs    = 1000              // Max map pairs
+	cbor_maximum_elements = 10000             // Max array elements
+	content_maximum_key   = 256               // Max content key length
+	content_maximum_value = 100 * 1024 * 1024 // 100MB maximum content value length
 )
 
 var cbor_decode_mode cbor.DecMode
@@ -38,9 +38,9 @@ var cbor_decode_mode cbor.DecMode
 // limits exist.
 func init() {
 	cbor_decode_mode = must(cbor.DecOptions{
-		MaxMapPairs:      cbor_max_pairs,
-		MaxArrayElements: cbor_max_elements,
-		MaxNestedLevels:  cbor_max_depth,
+		MaxMapPairs:      cbor_maximum_pairs,
+		MaxArrayElements: cbor_maximum_elements,
+		MaxNestedLevels:  cbor_maximum_depth,
 	}.DecMode())
 }
 
@@ -55,14 +55,14 @@ type Stream struct {
 		read  int
 		write int
 	}
-	// max_bytes overrides the cumulative LimitReader cap used to
-	// wrap the CBOR decoder. Zero = use cbor_max_size (100 MB total
+	// maximum_bytes overrides the cumulative LimitReader cap used to
+	// wrap the CBOR decoder. Zero = use cbor_maximum_size (100 MB total
 	// for the stream's lifetime); set to a larger value before the
 	// first read on streams that legitimately carry hundreds of MB
 	// or more (bulk-bootstrap DB transfer). Must be set BEFORE the
 	// first read call, since the decoder + its underlying LimitReader
 	// are constructed lazily.
-	max_bytes int64
+	maximum_bytes int64
 	// abandoned records that a write failed against the REMOTE end, as
 	// opposed to against the local source the bytes were read from. A
 	// requester that goes away mid-transfer is not an operator problem -
@@ -123,15 +123,15 @@ func stream(from string, to string, service string, event string, from_app strin
 		return nil, fmt.Errorf("stream unable to determine location of entity %q", to)
 	}
 
-	var last_err error
+	var last_error error
 	for _, peer := range peers {
 		s, err := stream_to_peer(peer, from, to, service, event, from_app, services)
 		if err == nil {
 			return s, nil
 		}
-		last_err = err
+		last_error = err
 	}
-	return nil, last_err
+	return nil, last_error
 }
 
 // Create a stream to a specific peer (without entity lookup). Routes a
@@ -286,16 +286,16 @@ func (s *Stream) read(v any) error {
 }
 
 // cbor_limit returns the cumulative byte limit applied to the CBOR
-// decoder via io.LimitReader. The default (cbor_max_size) caps total
+// decoder via io.LimitReader. The default (cbor_maximum_size) caps total
 // decoder reads at 100 MB for a stream's lifetime, which is sufficient
 // for normal app-message streams but breaks bulk-bootstrap DB transfer
 // (a 948 MB feeds.db hits the cap at offset ~100 MB). Streams that
-// legitimately carry more bytes set s.max_bytes before the first read.
+// legitimately carry more bytes set s.maximum_bytes before the first read.
 func (s *Stream) cbor_limit() int64 {
-	if s.max_bytes > 0 {
-		return s.max_bytes
+	if s.maximum_bytes > 0 {
+		return s.maximum_bytes
 	}
-	return int64(cbor_max_size)
+	return int64(cbor_maximum_size)
 }
 
 // Read a content segment from a stream
@@ -308,12 +308,12 @@ func (s *Stream) read_content() (map[string]any, error) {
 
 	// Validate key/value sizes
 	for k, v := range content {
-		if len(k) > content_max_key {
-			return nil, fmt.Errorf("content key too long: %d > %d", len(k), content_max_key)
+		if len(k) > content_maximum_key {
+			return nil, fmt.Errorf("content key too long: %d > %d", len(k), content_maximum_key)
 		}
 		if str, ok := v.(string); ok {
-			if len(str) > content_max_value {
-				return nil, fmt.Errorf("content value too long: %d > %d", len(str), content_max_value)
+			if len(str) > content_maximum_value {
+				return nil, fmt.Errorf("content value too long: %d > %d", len(str), content_maximum_value)
 			}
 		}
 	}

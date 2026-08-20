@@ -29,7 +29,7 @@ import (
 )
 
 func TestRestoreUnzipGuards(t *testing.T) {
-	makeZip := func(entries map[string]int) string {
+	make_zip := func(entries map[string]int) string {
 		zp := filepath.Join(t.TempDir(), "b.zip")
 		f, err := os.Create(zp)
 		if err != nil {
@@ -53,17 +53,17 @@ func TestRestoreUnzipGuards(t *testing.T) {
 	}
 
 	// Path traversal (zip-slip) is rejected.
-	if _, err := restore_unzip(makeZip(map[string]int{"top/ok.txt": 1, "../escape.txt": 1}), t.TempDir(), 1<<20); err == nil {
+	if _, err := restore_unzip(make_zip(map[string]int{"top/ok.txt": 1, "../escape.txt": 1}), t.TempDir(), 1<<20); err == nil {
 		t.Error("traversal entry (../escape.txt) must be rejected")
 	}
 
-	// A bundle decompressing past maxBytes is rejected (zip-bomb guard).
-	if _, err := restore_unzip(makeZip(map[string]int{"top/big.bin": 4096}), t.TempDir(), 1024); err == nil {
+	// A bundle decompressing past maximum_bytes is rejected (zip-bomb guard).
+	if _, err := restore_unzip(make_zip(map[string]int{"top/big.bin": 4096}), t.TempDir(), 1024); err == nil {
 		t.Error("bundle exceeding maxBytes must be rejected")
 	}
 
 	// Within the cap it extracts cleanly.
-	if _, err := restore_unzip(makeZip(map[string]int{"top/small.bin": 256}), t.TempDir(), 1024); err != nil {
+	if _, err := restore_unzip(make_zip(map[string]int{"top/small.bin": 256}), t.TempDir(), 1024); err != nil {
 		t.Errorf("within-cap bundle must extract: %v", err)
 	}
 }

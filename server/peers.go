@@ -11,7 +11,7 @@
 // Peerstore (AddAddrs / Addrs) covers the in-memory side, but its TTL
 // model is push-driven (Addresses expire when their TTL elapses) and
 // it's unbounded. We need three things Peerstore doesn't give us:
-// (a) a hard cap on addresses per peer (peer_address_max=20) so a
+// (a) a hard cap on addresses per peer (peer_address_maximum=20) so a
 // noisy multiaddr-broadcasting peer can't blow our footprint up,
 // (b) on-disk persistence across restarts (peers.db) so a freshly-
 // started server has somewhere to dial before bootstrap+DHT discovery
@@ -155,12 +155,12 @@ func bootstrap_addresses_parse(list string) []Peer {
 			warn("Bootstrap: invalid multiaddress %q: %v", addr, err)
 			continue
 		}
-		info, err := p2p_peer.AddrInfoFromP2pAddr(ma)
+		information, err := p2p_peer.AddrInfoFromP2pAddr(ma)
 		if err != nil {
 			warn("Bootstrap: cannot extract peer id from %q: %v", addr, err)
 			continue
 		}
-		id := info.ID.String()
+		id := information.ID.String()
 		if _, seen := grouped[id]; !seen {
 			order = append(order, id)
 		}
@@ -366,8 +366,8 @@ func peer_addresses_normalise(id string, addresses []string) ([]string, string) 
 		if err != nil {
 			return nil, address
 		}
-		if info, err := p2p_peer.AddrInfoFromP2pAddr(ma); err == nil {
-			if info.ID.String() != id {
+		if information, err := p2p_peer.AddrInfoFromP2pAddr(ma); err == nil {
+			if information.ID.String() != id {
 				return nil, address
 			}
 			out = append(out, address)

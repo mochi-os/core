@@ -245,7 +245,7 @@ func stream_dispatch(st *Stream, open *Frame, user *User, to, peer string) {
 
 	e := &Event{
 		id:              event_id(),
-		msg_id:          open.ID,
+		message:         open.ID,
 		from:            open.From,
 		to:              to,
 		service:         open.Service,
@@ -352,7 +352,7 @@ func stream_open(peer, from, to, service, event, from_app string,
 		return nil, "", err
 	}
 	if rawstream == nil {
-		return nil, "", errSenderUnreachable
+		return nil, "", error_sender_unreachable
 	}
 
 	hello, err := hello_read(rawstream, 2)

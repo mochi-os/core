@@ -10,15 +10,15 @@ import "testing"
 
 // TestQueueRetentionByClass: queue_cleanup keeps replication ops for
 // replication_op_retention (30d) and every other message class for
-// queue_max_age (7d), so an offline replica can still replay its ops while
+// queue_age_maximum (7d), so an offline replica can still replay its ops while
 // transient app traffic is still trimmed promptly.
 func TestQueueRetentionByClass(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 	db := queue_test_table()
 
-	insert := func(id, service string, ageDays int64) {
-		created := now() - ageDays*86400
+	insert := func(id, service string, age_days int64) {
+		created := now() - age_days*86400
 		db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created, priority)
 			values (?, 'direct', 'peer-x', '', '', ?, 'sql/op', ?, ?, ?)`,
 			id, service, created, created, priority_bulk)
@@ -54,20 +54,20 @@ func TestQueueRetentionByClass(t *testing.T) {
 // shrink (the 7-vs-30 bug). Part of the unified timeout/retention model's
 // CI gates.
 func TestRetentionOrderingInvariant(t *testing.T) {
-	if replication_op_retention < queue_max_age {
+	if replication_op_retention < queue_age_maximum {
 		t.Fatalf("invariant violated: replication_op_retention (%d) must be >= queue_max_age (%d)",
-			replication_op_retention, queue_max_age)
+			replication_op_retention, queue_age_maximum)
 	}
 	// dedup window must outlive the longest retry gap (existing invariant,
 	// re-asserted here so the model's gates live in one place).
-	var maxRetry int64
+	var maximum_retry int64
 	for _, d := range retry_delays {
-		if d > maxRetry {
-			maxRetry = d
+		if d > maximum_retry {
+			maximum_retry = d
 		}
 	}
-	if seen_messages_ttl < 2*maxRetry {
+	if seen_messages_ttl < 2*maximum_retry {
 		t.Fatalf("invariant violated: seen_messages_ttl (%d) must be >= 2x max retry gap (%d)",
-			seen_messages_ttl, maxRetry)
+			seen_messages_ttl, maximum_retry)
 	}
 }

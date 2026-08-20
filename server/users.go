@@ -1319,12 +1319,12 @@ func user_delete(id string) (string, error) {
 // passkeys, totp, recovery, oauth, app DBs and the on-disk tree. Returns the
 // deleted username for audit.
 //
-// accountGone selects the entity directory side effect:
+// account_gone selects the entity directory side effect:
 //   - true  (close / admin delete): broadcast the signed entity directory
 //     tombstone — the account is gone everywhere.
 //   - false (leave-set / "delete this replica"): withdraw the directory row
 //     locally only.
-func user_purge_local(id string, accountGone bool) (string, error) {
+func user_purge_local(id string, account_gone bool) (string, error) {
 	db := db_open("db/users.db")
 	exists, _ := db.exists("select 1 from users where uid=?", id)
 	if !exists {
@@ -1344,7 +1344,7 @@ func user_purge_local(id string, accountGone bool) (string, error) {
 	var entities []Entity
 	db.scans(&entities, "select * from entities where user=?", id)
 	for _, e := range entities {
-		if accountGone {
+		if account_gone {
 			e.delete() // tombstone network-wide + replicate the deletion
 		} else {
 			e.delete_local() // this host only; entity survives on other hosts

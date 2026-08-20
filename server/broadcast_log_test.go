@@ -103,7 +103,7 @@ func TestBroadcastLogAgeTrim(t *testing.T) {
 }
 
 // TestBroadcastLogAckTrim — after subscribers acknowledge, rows below
-// the min ack across all subscribers are dropped.
+// the minimum ack across all subscribers are dropped.
 func TestBroadcastLogAckTrim(t *testing.T) {
 	db, cleanup := setup_broadcast_log_test(t)
 	defer cleanup()
@@ -230,7 +230,7 @@ func TestBroadcastNextLocalConcurrentNoDuplicates(t *testing.T) {
 
 // TestBroadcastResyncThrottle — same (user, peer, key) with a
 // resync already in flight blocks; different tags pass through.
-// Updated for task #81: the gate is now per-in-flight rather than
+// The gate is per-in-flight rather than
 // time-based. Independent-tags coverage is duplicated in
 // broadcast_test.go's TestBroadcastResyncThrottleIndependentTags but
 // kept here too so the legacy test name still surfaces in a grep.

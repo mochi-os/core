@@ -362,12 +362,12 @@ func git_size(owner *User, app *App, entity string) (int64, error) {
 	path := git_repo_path(owner, app, entity)
 	var size int64
 
-	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+	err := filepath.Walk(path, func(_ string, information os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if !info.IsDir() {
-			size += info.Size()
+		if !information.IsDir() {
+			size += information.Size()
 		}
 		return nil
 	})
@@ -3532,8 +3532,8 @@ func git_storage_budget(owner *User) int64 {
 	if err != nil || remaining <= 0 {
 		return 0
 	}
-	if remaining > file_max_storage {
-		remaining = file_max_storage
+	if remaining > file_maximum_storage {
+		remaining = file_maximum_storage
 	}
 	return remaining
 }

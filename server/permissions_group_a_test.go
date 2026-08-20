@@ -61,8 +61,8 @@ func TestEntityReadersNeedAPermission(t *testing.T) {
 	db.permissions_setup()
 	db.permissions_upsert(app.id, "entity/read", "", 1)
 	_, err := api_entity_owned(thread, sl.NewBuiltin("mochi.entity.owned", nil), nil, nil)
-	var stillDenied *PermissionError
-	if errors.As(err, &stillDenied) {
+	var still_denied *PermissionError
+	if errors.As(err, &still_denied) {
 		t.Errorf("a granted app was still refused on the permission: %v", err)
 	}
 }
@@ -72,7 +72,7 @@ func TestEntityReadersNeedAPermission(t *testing.T) {
 // exemption mochi.group.get relies on. It is also the only one of the four an
 // inbound P2P handler reaches: comptroller calls it from
 // event_staff_accounts_list and, not being a default app, has no way to hold a
-// grant at all (task #135). Gating it took comptroller's staff endpoints down
+// grant at all. Gating it took comptroller's staff endpoints down
 // with a 500 on 2026-08-15.
 func TestEntityNameStaysUngated(t *testing.T) {
 	source, err := os.ReadFile("entities.go")

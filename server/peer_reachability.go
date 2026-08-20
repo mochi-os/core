@@ -5,7 +5,7 @@
 // timeout on `net_me.Connect()` when the target peer is offline. Three
 // consecutive stream-open failures mean "skip the libp2p attempt and
 // return nil immediately" — the queue row stays pending, Sender open
-// returns errSenderUnreachable.
+// returns error_sender_unreachable.
 //
 // Silence is DURABLE: once the counter crosses the threshold, the peer
 // stays silent until peer_mark_reachable / peer_mark_send_success

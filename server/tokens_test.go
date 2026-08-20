@@ -374,19 +374,19 @@ func TestTokenDeleteByTokenStringAndAppScope(t *testing.T) {
 	del := sl.NewBuiltin("mochi.token.delete", api_token_delete)
 
 	// A different app must NOT be able to delete it, even holding the token.
-	thForums := &sl.Thread{Name: "test"}
-	thForums.SetLocal("user", user)
-	thForums.SetLocal("app", &App{id: "forums"})
-	_, _ = api_token_delete(thForums, del, sl.Tuple{sl.String(token)}, nil)
+	thread_forums := &sl.Thread{Name: "test"}
+	thread_forums.SetLocal("user", user)
+	thread_forums.SetLocal("app", &App{id: "forums"})
+	_, _ = api_token_delete(thread_forums, del, sl.Tuple{sl.String(token)}, nil)
 	if token_lookup(token) == nil {
 		t.Fatal("forums must not be able to delete feeds' token")
 	}
 
 	// The owning app deletes it by the token STRING (the new behaviour).
-	thFeeds := &sl.Thread{Name: "test"}
-	thFeeds.SetLocal("user", user)
-	thFeeds.SetLocal("app", &App{id: "feeds"})
-	res, err := api_token_delete(thFeeds, del, sl.Tuple{sl.String(token)}, nil)
+	thread_feeds := &sl.Thread{Name: "test"}
+	thread_feeds.SetLocal("user", user)
+	thread_feeds.SetLocal("app", &App{id: "feeds"})
+	res, err := api_token_delete(thread_feeds, del, sl.Tuple{sl.String(token)}, nil)
 	if err != nil {
 		t.Fatalf("delete by token string failed: %v", err)
 	}

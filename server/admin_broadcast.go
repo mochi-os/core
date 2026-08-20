@@ -5,7 +5,7 @@
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 //
 // Operator visibility into the broadcast subsystem. Today: lag
-// detection (task #83) - scan every per-user-app DB for received
+// detection - scan every per-user-app DB for received
 // vs log to surface subscribers that have fallen behind the owner
 // without firing user-visible errors. The original broadcast
 // investigation report (claude/sessions/2026-05-25-broadcast-resync-
@@ -26,7 +26,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// BroadcastLagRow is the per-stream lag report. owner_log_max is the
+// BroadcastLagRow is the per-stream lag report. owner_log_maximum is the
 // owner-side log.max(sequence) for the same (key, peer) when this
 // host happens to own that broadcast (the (key, peer) pair lives in
 // the local log too). It's null when this host is a pure subscriber
@@ -34,14 +34,14 @@ import (
 // the receiver-side report alone shows "we're at N", not "we should
 // be at M". Operator follows up with a remote query if needed.
 type BroadcastLagRow struct {
-	User         string `json:"user"`
-	App          string `json:"app"`
-	Peer         string `json:"peer"`
-	Key          string `json:"key"`
-	ReceivedLast int64  `json:"received_last"`
-	OwnerLogMax  *int64 `json:"owner_log_max,omitempty"`
-	Lag          *int64 `json:"lag,omitempty"`
-	Pending      int    `json:"pending"`
+	User            string `json:"user"`
+	App             string `json:"app"`
+	Peer            string `json:"peer"`
+	Key             string `json:"key"`
+	ReceivedLast    int64  `json:"received_last"`
+	OwnerLogMaximum *int64 `json:"owner_log_maximum,omitempty"`
+	Lag             *int64 `json:"lag,omitempty"`
+	Pending         int    `json:"pending"`
 }
 
 // admin_broadcast_lag is GET /_/admin/broadcast/lag. Scans every
@@ -49,7 +49,7 @@ type BroadcastLagRow struct {
 // and log rows, and produces a single flat list keyed on
 // (user, app, peer, key). When the local host is also the owner of
 // the stream (same (key, peer) appears in log on this same DB),
-// lag = log.max - received.last; otherwise omitted.
+// lag = log.maximum - received.last; otherwise omitted.
 //
 // Query param: ?threshold=N reports only rows with Lag > N. Default
 // 0 = all rows including healthy ones, useful for a periodic
@@ -91,8 +91,7 @@ func admin_broadcast_lag(c *gin.Context) {
 //
 // The broadcast tables (received, log, pending, etc.)
 // live in the per-app system DB (users/<uid>/<app>/app.db), NOT in
-// the app's writable data DB - see task #90 for the architectural
-// rationale. The scanner therefore looks for app.db, not the
+// the app's writable data DB, for architectural reasons. The scanner therefore looks for app.db, not the
 // per-app db/*.db files.
 func broadcast_lag_scan() []BroadcastLagRow {
 	var out []BroadcastLagRow
@@ -181,9 +180,9 @@ func broadcast_lag_scan_db(user, app, db_path string) []BroadcastLagRow {
 			log_row, _ := db.row("select max(sequence) as m from log where key=? and peer=?", key, peer)
 			if log_row != nil {
 				if m, ok := log_row["m"].(int64); ok && m > 0 {
-					owner_max := m
-					lag := owner_max - last
-					row.OwnerLogMax = &owner_max
+					owner_maximum := m
+					lag := owner_maximum - last
+					row.OwnerLogMaximum = &owner_maximum
 					row.Lag = &lag
 				}
 			}

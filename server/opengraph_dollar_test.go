@@ -2,7 +2,7 @@
 //
 // The three replacers build a replacement string with the app-supplied value
 // inside it and handed it to ReplaceAllString, which reads $ as a capture-group
-// reference. escape_attr covers the HTML-significant characters - &, ", <, > -
+// reference. escape_attribute covers the HTML-significant characters - &, ", <, > -
 // and not this one, because $ is regexp-replacement syntax rather than HTML.
 // The patterns have no capture groups, so every $N and $name resolved to empty
 // and took the digits or word after it with them: "Cost: $100" rendered as
@@ -57,22 +57,22 @@ func TestOpenGraphKeepsDollarSigns(t *testing.T) {
 }
 
 // TestEscapeAttrLeavesDollarAlone states why the fix belongs in the replacer
-// rather than in escape_attr. Escaping $ to $$ there would also make the
-// dollar-sign test above pass - but escape_attr has twelve other callers in
+// rather than in escape_attribute. Escaping $ to $$ there would also make the
+// dollar-sign test above pass - but escape_attribute has twelve other callers in
 // web.go that build HTML by concatenation with no regexp anywhere near them
 // (<base href>, mochi:app, mochi:class, mochi:entity, mochi:fingerprint,
 // mochi:domain), and every one of those would then render a doubled dollar. $$
-// is regexp-replacement syntax; escape_attr produces HTML attribute escaping.
+// is regexp-replacement syntax; escape_attribute produces HTML attribute escaping.
 func TestEscapeAttrLeavesDollarAlone(t *testing.T) {
 	for _, value := range []string{"$", "$$", "Cost: $100", "a $name b"} {
-		if got := escape_attr(value); got != value {
-			t.Errorf("escape_attr(%q) = %q; $ is not HTML-significant, and doubling it here would corrupt the twelve callers that concatenate the result straight into markup", value, got)
+		if got := escape_attribute(value); got != value {
+			t.Errorf("escape_attribute(%q) = %q; $ is not HTML-significant, and doubling it here would corrupt the twelve callers that concatenate the result straight into markup", value, got)
 		}
 	}
 }
 
 // TestOpenGraphStillEscapesMarkup. Taking the replacement literally must not
-// weaken escape_attr: the characters that could close the attribute or open a
+// weaken escape_attribute: the characters that could close the attribute or open a
 // tag still have to be entities, or a literal replacement would trade silent
 // corruption for injection.
 func TestOpenGraphStillEscapesMarkup(t *testing.T) {

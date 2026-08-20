@@ -68,7 +68,7 @@ func TestGitLimitedReaderStopsDecompressionBomb(t *testing.T) {
 // becomes repository content.
 func TestGitRequestMaximumByService(t *testing.T) {
 	// A large remaining quota must not raise the negotiation ceiling.
-	if got := git_request_maximum("git-upload-pack", file_max_storage); got != git_negotiation_maximum {
+	if got := git_request_maximum("git-upload-pack", file_maximum_storage); got != git_negotiation_maximum {
 		t.Errorf("upload-pack maximum = %d, want %d", got, git_negotiation_maximum)
 	}
 	// With no measurable quota the receive-pack ceiling must still be finite
@@ -77,8 +77,8 @@ func TestGitRequestMaximumByService(t *testing.T) {
 	if got <= 0 {
 		t.Errorf("receive-pack maximum = %d, want a positive finite ceiling", got)
 	}
-	if got > file_max_storage {
-		t.Errorf("receive-pack maximum = %d, above the per-user storage ceiling %d", got, file_max_storage)
+	if got > file_maximum_storage {
+		t.Errorf("receive-pack maximum = %d, above the per-user storage ceiling %d", got, file_maximum_storage)
 	}
 	// A measured quota becomes the ceiling.
 	if got := git_request_maximum("git-receive-pack", 4096); got != 4096 {

@@ -10,7 +10,7 @@
 // at connect time: only LocalSystem (SY) and the Administrators group (BA) may
 // open it. That mirrors the Unix design — the OS, not a token, proves the
 // caller's identity — so no per-connection credential check is needed and no
-// admin_cred is attached (admin_peer_cred returns nil, and the audit row logs
+// admin_credential is attached (admin_peer_credential returns nil, and the audit row logs
 // peer_uid/gid as -1). The same /_/admin/* router (admin_routes.go) is served
 // over the pipe. The server runs as the LocalSystem service installed by the
 // MSI, so it can create the pipe with this descriptor; the operator runs

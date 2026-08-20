@@ -358,9 +358,9 @@ func TestHandleSecondCapsClosesStream(t *testing.T) {
 	// Receiver's read_loop sets caps_seen=true after the first caps;
 	// any subsequent caps frame hits handle() and must close the
 	// stream. We check by observing the synthetic Reset() count.
-	resetCount := new(atomic.Int32)
+	reset_count := new(atomic.Int32)
 	r := &Receiver{
-		stream:  &fake_stream{buf: &bytes.Buffer{}, reset_count: resetCount},
+		stream:  &fake_stream{buf: &bytes.Buffer{}, reset_count: reset_count},
 		replies: make(chan *Frame, 4),
 		claimed: map[string]bool{},
 	}
@@ -368,16 +368,16 @@ func TestHandleSecondCapsClosesStream(t *testing.T) {
 	if r.handle(&Frame{Type: frame_type_caps}) {
 		t.Error("handle(caps) on caps-already-seen returned true; should close stream")
 	}
-	if resetCount.Load() != 1 {
-		t.Errorf("expected stream.Reset() called once, got %d", resetCount.Load())
+	if reset_count.Load() != 1 {
+		t.Errorf("expected stream.Reset() called once, got %d", reset_count.Load())
 	}
 }
 
 func TestHandleHelloOnMessagesStreamClosed(t *testing.T) {
 	// hello after handshake is a protocol violation.
-	resetCount := new(atomic.Int32)
+	reset_count := new(atomic.Int32)
 	r := &Receiver{
-		stream:  &fake_stream{buf: &bytes.Buffer{}, reset_count: resetCount},
+		stream:  &fake_stream{buf: &bytes.Buffer{}, reset_count: reset_count},
 		replies: make(chan *Frame, 4),
 		claimed: map[string]bool{},
 	}
@@ -385,8 +385,8 @@ func TestHandleHelloOnMessagesStreamClosed(t *testing.T) {
 	if r.handle(&Frame{Type: frame_type_hello}) {
 		t.Error("handle(hello) on messages stream returned true")
 	}
-	if resetCount.Load() != 1 {
-		t.Errorf("expected stream.Reset, got %d", resetCount.Load())
+	if reset_count.Load() != 1 {
+		t.Errorf("expected stream.Reset, got %d", reset_count.Load())
 	}
 }
 

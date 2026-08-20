@@ -27,9 +27,9 @@ func stepup_gate_reset(t *testing.T) {
 	t.Helper()
 	// The spacing is real time — the gate sleeps it out — so these run at the
 	// floor. The tunables are vars for exactly this.
-	floor, wait := account_gate_floor, account_wait_max
-	account_gate_floor, account_wait_max = 0, 0
-	t.Cleanup(func() { account_gate_floor, account_wait_max = floor, wait })
+	floor, wait := account_gate_floor, account_wait_maximum
+	account_gate_floor, account_wait_maximum = 0, 0
+	t.Cleanup(func() { account_gate_floor, account_wait_maximum = floor, wait })
 
 	account_stepup.lock.Lock()
 	account_stepup.entries = make(map[string]*account_gate_entry)

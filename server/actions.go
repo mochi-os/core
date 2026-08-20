@@ -1138,19 +1138,8 @@ func (a *Action) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 
 	user := principal_caller(t)
-	file := app_local_path(app, user, path)
+	file := app_asset_path(app, user, path)
 	if file == "" {
-		a.error_label(500, "errors.server_error")
-		return sl.None, nil
-	}
-
-	// Reject symlinks
-	if file_is_symlink(file) {
-		a.error_label(404, "errors.file_not_found")
-		return sl.None, nil
-	}
-
-	if !file_exists(file) {
 		a.error_label(404, "errors.file_not_found")
 		return sl.None, nil
 	}

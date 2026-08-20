@@ -105,15 +105,6 @@ func file_is_directory(path string) bool {
 	return information.IsDir()
 }
 
-// Check if path is a symlink
-func file_is_symlink(path string) bool {
-	information, err := os.Lstat(path)
-	if err != nil {
-		return false
-	}
-	return information.Mode()&os.ModeSymlink != 0
-}
-
 func file_list(path string) ([]string, error) {
 	found, err := os.ReadDir(path)
 	if err != nil {
@@ -235,12 +226,44 @@ func api_file_base(u *User, a *App) string {
 }
 
 // Helper function to get the path of a file in an app's directory
-func app_local_path(a *App, u *User, file string) string {
+// app_asset_root opens the calling app's active version directory as an
+// os.Root, through which every app-asset read is done.
+//
+// os.Root refuses to traverse a symlink at any depth. What it replaces was an
+// os.Lstat on the joined path, which declines to follow the FINAL component
+// and follows every intermediate one - so "assets/secret", where assets is a
+// symlink out of the app directory, resolved to the far side and reported the
+// target's mode. The check saw a regular file and passed. Installed packages
+// cannot carry a symlink, so this only ever mattered for a dev app, where the
+// app's own directory is writable by whoever authors it.
+func app_asset_root(a *App, u *User) (*os.Root, error) {
 	av := a.active(u)
 	if av == nil {
+		return nil, fmt.Errorf("no active app version")
+	}
+	return os.OpenRoot(av.base)
+}
+
+// app_asset_path returns the on-disk path of an app asset, or "" when the
+// path does not resolve to a real file inside the app's directory.
+//
+// Containment is established by opening through app_asset_root and discarding
+// the handle, so the answer carries os.Root's guarantee rather than a
+// hand-rolled check. Prefer app_asset_root and the handle itself; this exists
+// for the two callers that must hand a path to something that opens it for
+// them (gin's Context.File, and Stream.write_file).
+func app_asset_path(a *App, u *User, file string) string {
+	root, err := app_asset_root(a, u)
+	if err != nil {
 		return ""
 	}
-	return filepath.Join(av.base, file)
+	defer root.Close()
+	f, err := root.Open(file)
+	if err != nil {
+		return ""
+	}
+	f.Close()
+	return filepath.Join(a.active(u).base, file)
 }
 
 // Helper function to get the base directory for a user's storage

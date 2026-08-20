@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -3742,20 +3743,16 @@ func api_app_asset_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	user := principal_caller(t)
-	full := app_local_path(app, user, path)
-	if full == "" {
+	root, err := app_asset_root(app, user)
+	if err != nil {
 		return sl.False, nil
 	}
+	defer root.Close()
 
-	// Reject symlinks
-	if file_is_symlink(full) {
+	if _, err := root.Stat(path); err != nil {
 		return sl.False, nil
 	}
-
-	if file_exists(full) {
-		return sl.True, nil
-	}
-	return sl.False, nil
+	return sl.True, nil
 }
 
 // mochi.app.asset.list(path) -> list: List files in an app directory
@@ -3778,23 +3775,30 @@ func api_app_asset_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	user := principal_caller(t)
-	full := app_local_path(app, user, path)
-	if full == "" {
+	root, err := app_asset_root(app, user)
+	if err != nil {
+		return sl_encode([]string{}), nil
+	}
+	defer root.Close()
+
+	information, err := root.Stat(path)
+	if err != nil || !information.IsDir() {
 		return sl_encode([]string{}), nil
 	}
 
-	// Reject symlinks
-	if file_is_symlink(full) {
+	directory, err := root.OpenFile(path, os.O_RDONLY, 0)
+	if err != nil {
 		return sl_encode([]string{}), nil
 	}
+	defer directory.Close()
 
-	if !file_exists(full) || !file_is_directory(full) {
-		return sl_encode([]string{}), nil
-	}
-
-	entries, err := file_list(full)
+	found, err := directory.ReadDir(-1)
 	if err != nil {
 		return sl_error(fn, "unable to list directory: %v", err)
+	}
+	entries := []string{}
+	for _, entry := range found {
+		entries = append(entries, entry.Name())
 	}
 	return sl_encode(entries), nil
 }
@@ -3816,21 +3820,19 @@ func api_app_asset_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	user := principal_caller(t)
-	full := app_local_path(app, user, path)
-	if full == "" {
+	root, err := app_asset_root(app, user)
+	if err != nil {
 		return sl_error(fn, "no active app version")
 	}
+	defer root.Close()
 
-	// Reject symlinks
-	if file_is_symlink(full) {
+	f, err := root.Open(path)
+	if err != nil {
 		return sl_error(fn, "file not found")
 	}
+	defer f.Close()
 
-	if !file_exists(full) {
-		return sl_error(fn, "file not found")
-	}
-
-	data, err := os.ReadFile(full)
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return sl_error(fn, "unable to read file: %v", err)
 	}

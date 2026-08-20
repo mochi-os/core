@@ -757,17 +757,8 @@ func (s *Stream) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 
 	user := principal_caller(t)
-	file := app_local_path(app, user, path)
+	file := app_asset_path(app, user, path)
 	if file == "" {
-		return sl_error(fn, "no active app version")
-	}
-
-	// Reject symlinks
-	if file_is_symlink(file) {
-		return sl_error(fn, "file not found")
-	}
-
-	if !file_exists(file) {
 		return sl_error(fn, "file not found")
 	}
 

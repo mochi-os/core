@@ -34,6 +34,9 @@ func log_tables_reset(t *testing.T) {
 	warn_email_mutex.Lock()
 	warn_email_state = map[string]warn_email_record{}
 	warn_email_mutex.Unlock()
+	log_app_mutex.Lock()
+	log_app_state = map[string]*log_repeat_record{}
+	log_app_mutex.Unlock()
 }
 
 // TestLogRepeatTableIsBounded: a distinct format per call must not grow the
@@ -125,18 +128,38 @@ func TestWarnApplicationKeysOnTheApp(t *testing.T) {
 		t.Fatalf("reading log.go: %v", err)
 	}
 	body := string(source)
-	start := strings.Index(body, "func warn_application(")
+	// The throttle lives in warn_application_email, which warn_application and
+	// sl_log both call. sl_log needs it separately because it formats and
+	// escapes the line itself - the app supplies the values as well as the
+	// format - so it cannot hand text back to something that formats again.
+	start := strings.Index(body, "func warn_application_email(")
 	if start < 0 {
-		t.Fatal("warn_application not found in log.go")
+		t.Fatal("warn_application_email not found in log.go")
 	}
 	end := strings.Index(body[start:], "\n}\n")
 	if end < 0 {
-		t.Fatal("could not find the end of warn_application")
+		t.Fatal("could not find the end of warn_application_email")
 	}
 	function := body[start : start+end]
 
 	if !strings.Contains(function, `warn_email_allow("app:" + app)`) {
-		t.Error("warn_application does not key its admin-email throttle on the app; keyed on the message, an app varying its text sends a mail per call because every fresh key is a first occurrence")
+		t.Error("the app warning email does not key its throttle on the app; keyed on the message, an app varying its text sends a mail per call because every fresh key is a first occurrence")
+	}
+
+	// And both entry points must route through it, or one of them regains the
+	// unbounded behaviour on its own.
+	for _, caller := range []string{"func warn_application(", "func sl_log("} {
+		at := strings.Index(body, caller)
+		if at < 0 {
+			t.Fatalf("%s not found in log.go", caller)
+		}
+		tail := body[at:]
+		if stop := strings.Index(tail, "\n}\n"); stop > 0 {
+			tail = tail[:stop]
+		}
+		if !strings.Contains(tail, "warn_application_email(") {
+			t.Errorf("%s does not send its app warning through warn_application_email, so that path is not throttled per app", strings.TrimPrefix(strings.TrimSuffix(caller, "("), "func "))
+		}
 	}
 }
 

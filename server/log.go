@@ -84,8 +84,15 @@ func warn_application(app string, message string, values ...any) {
 	if !log_repeat_allow(message) {
 		return
 	}
-	out := warn_log(message, values...)
+	warn_application_email(app, warn_log(message, values...))
+}
 
+// warn_application_email sends the admin mail for an app warning that has
+// already been written to the journal. Split from warn_application because
+// sl_log formats and escapes the line itself - it has to, since the app
+// supplies the values as well as the format - and so cannot hand text back to
+// a function that would format it again.
+func warn_application_email(app string, out string) {
 	admin := ini_string("email", "admin", "")
 	if admin == "" {
 		return
@@ -164,6 +171,107 @@ var log_repeat_window int64 = 60
 type log_repeat_record struct {
 	start int64
 	count int
+}
+
+// log_app_lines_maximum is how many journal lines ONE APP may write per
+// log_repeat_window, whatever text it varies.
+//
+// log_repeat_allow keys on the format string. For core that is the call site's
+// fixed identity and the suppression works. For an app the format is whatever
+// the app passes, so a format built from data - mochi.log.debug("item " + id) -
+// is a fresh key on every call, every fresh key is a first occurrence, and
+// nothing suppresses: measured, 5,000 such calls all printed while 5,000 calls
+// on one fixed format printed 20. Only the TABLE was bounded, never the write
+// rate.
+//
+// warn_application already re-keyed its admin email on the app for exactly this
+// reason; its journal write stayed on the format key, as did debug and info.
+// This is that same fix for the journal.
+//
+// Deliberately far above core's per-format threshold. An app's whole budget is
+// one key, shared across every call site it has, where core gets 20 per site;
+// the point is to bound a flood by orders of magnitude, not to ration ordinary
+// debugging. The 2026-07 flood that cut yuzu's history to ~35 minutes ran at
+// ~60 lines/sec - this caps an app at 5.
+var log_app_lines_maximum = 300
+
+var (
+	log_app_state = map[string]*log_repeat_record{}
+	log_app_mutex sync.Mutex
+)
+
+// log_app_allow reports whether app may write another journal line now, and
+// prints a rollup when a window that suppressed lines rolls over.
+//
+// Unlike log_repeat_state this needs no eviction: the key space is the set of
+// installed apps, which the apps do not choose. That is the whole point of
+// keying on it.
+func log_app_allow(app string) bool {
+	if app == "" {
+		return true
+	}
+	moment := now()
+	log_app_mutex.Lock()
+	defer log_app_mutex.Unlock()
+	record, ok := log_app_state[app]
+	if !ok || moment-record.start >= log_repeat_window {
+		if ok && record.count > log_app_lines_maximum {
+			log.Printf("(suppressed %d further log lines from app %q over %ds)\n",
+				record.count-log_app_lines_maximum, app, moment-record.start)
+		}
+		log_app_state[app] = &log_repeat_record{start: moment, count: 1}
+		return true
+	}
+	record.count++
+	return record.count <= log_app_lines_maximum
+}
+
+// log_escape renders app-supplied text as a single journal line.
+//
+// log_writer.Write stamps the time once per Write, not per line, so a newline
+// inside app text produced a second line the writer never touched - carrying
+// whatever the app wrote, including a timestamp of its own choosing, and
+// indistinguishable from core's own output to an operator or to anything
+// parsing the journal. The "App <id>:<function>()" prefix sl_log forces only
+// ever reaches the first line.
+//
+// Other C0 controls go too: the journal is read in a terminal, and an escape
+// sequence there is the same class of problem as the bidirectional controls
+// refused from display names. Tab survives - it is legitimate spacing and
+// starts no line.
+func log_escape(s string) string {
+	var out strings.Builder
+	for _, character := range s {
+		switch {
+		case character == '\n':
+			out.WriteString("\\n")
+		case character == '\r':
+			out.WriteString("\\r")
+		case character == '\t':
+			out.WriteRune(character)
+		case character < 0x20 || character == 0x7f:
+			fmt.Fprintf(&out, "\\x%02x", character)
+		default:
+			out.WriteRune(character)
+		}
+	}
+	return out.String()
+}
+
+// log_line writes one already-formatted, already-escaped line at the given
+// level. Split out because an app's text has to be formatted BEFORE it is
+// escaped - Sprintf splices the values in, and a newline can arrive inside one
+// of them - while debug and info format internally, after their own repeat
+// check. Core keeps using those; only sl_log needs this.
+func log_line(level string, line string) {
+	if level == "mochi.log.warn" {
+		log.Print(line + "\n")
+		return
+	}
+	if len(line) > 1000 {
+		line = line[:1000] + "..."
+	}
+	log.Print(line + "\n")
 }
 
 // log_repeat_maximum bounds log_repeat_state.
@@ -298,14 +406,24 @@ func sl_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.
 	}
 
 	a, ok := t.Local("app").(*App)
-	// The throttle key for mochi.log.warn's admin email. Empty for a call with
-	// no app bound, which shares one key rather than opening one per format.
+	// The throttle key for mochi.log.warn's admin email, and for the journal
+	// line budget below. Empty for a call with no app bound, which shares one
+	// key rather than opening one per format.
 	app := ""
 	if !ok || a == nil {
-		format = fmt.Sprintf("%s(): %s", t.Local("function"), format)
+		format = fmt.Sprintf("%s(): %s", t.Local("function"), log_escape(format))
 	} else {
 		app = a.id
-		format = fmt.Sprintf("App %s:%s() %s", a.id, t.Local("function"), format)
+		format = fmt.Sprintf("App %s:%s() %s", a.id, t.Local("function"), log_escape(format))
+	}
+
+	// Bounded here rather than in debug/info/warn_application, because those
+	// suppress on the format string and an app chooses its own - a format built
+	// from data never repeats, so it never suppresses. One key per app is the
+	// only key an app cannot vary. The per-format suppression still applies
+	// underneath; whichever bound is tighter wins.
+	if !log_app_allow(app) {
+		return sl.None, nil
 	}
 
 	values := make([]any, len(args)-1)
@@ -313,15 +431,23 @@ func sl_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.
 		values[i] = sl_decode(a)
 	}
 
-	switch fn.Name() {
-	case "mochi.log.debug":
-		debug(format, values...)
+	// Formatted first, escaped second. The values are app-supplied as well as
+	// the format, and sl_decode yields lists, tuples, maps and bytes as well as
+	// strings - a newline can arrive inside any of them, so escaping the inputs
+	// would leave holes that escaping the result does not.
+	line := log_escape(fmt.Sprintf(format, values...))
 
-	case "mochi.log.info":
-		info(format, values...)
+	// The per-format window still applies, keyed on the app's format so a
+	// well-behaved app that repeats one line still gets its rollup. It is not
+	// load-bearing here - an app can vary the format - which is what the app
+	// budget above is for.
+	if !log_repeat_allow(format) {
+		return sl.None, nil
+	}
 
-	case "mochi.log.warn":
-		warn_application(app, format, values...)
+	log_line(fn.Name(), line)
+	if fn.Name() == "mochi.log.warn" {
+		warn_application_email(app, line)
 	}
 
 	return sl.None, nil

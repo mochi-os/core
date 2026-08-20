@@ -152,7 +152,7 @@ func commit_hook_fire(user, app, table, kind, row_uid string, depth int) {
 func commit_hook_drain(db *DB, av *AppVersion, a *App, u *User, function string, depth int) {
 	commits_table_create(db)
 	commits_trim(db)
-	rows, err := db.rows("select seq, name, kind, row_uid from commits where fired=0 order by seq limit 100")
+	rows, err := db.rows("select seq, name, kind, row_uid, attempts from commits where fired=0 order by seq limit 100")
 	if err != nil {
 		return
 	}
@@ -161,9 +161,12 @@ func commit_hook_drain(db *DB, av *AppVersion, a *App, u *User, function string,
 		table, _ := r["name"].(string)
 		kind, _ := r["kind"].(string)
 		row_uid, _ := r["row_uid"].(string)
+		attempts, _ := r["attempts"].(int64)
 		if commit_hook_invoke(av, a, u, function, table, kind, row_uid, depth) {
 			commits_mark_fired(db, seq)
+			continue
 		}
+		commits_failed(db, seq, attempts, a.id, function, table, kind, row_uid)
 	}
 }
 
@@ -222,8 +225,14 @@ func commit_hook_function(av *AppVersion) string {
 // commits_table_create lazily creates the `commits` pending-fire log and
 // its index on the handle it's given (the app system DB, app.db).
 func commits_table_create(db *DB) {
-	db.exec("create table if not exists commits (seq integer primary key autoincrement, name text not null, kind text not null, row_uid text not null default '', ts integer not null, fired integer not null default 0)")
+	db.exec("create table if not exists commits (seq integer primary key autoincrement, name text not null, kind text not null, row_uid text not null default '', ts integer not null, fired integer not null default 0, attempts integer not null default 0)")
 	db.exec("create index if not exists commits_fired on commits(fired, ts)")
+	// attempts bounds the retry. Added here rather than through a separate
+	// migration so it rides every path that touches the table, the way
+	// received.seen and directory.confirmed were added.
+	if exists, _ := db.exists("select 1 from pragma_table_info('commits') where name='attempts'"); !exists {
+		db.exec("alter table commits add column attempts integer not null default 0")
+	}
 }
 
 // commits_setup opens the app system DB (app.db), ensures the `commits`
@@ -271,6 +280,40 @@ func commits_append(db *DB, table, kind, row_uid string) int64 {
 	result := must(db.internal.Exec("insert into commits (name, kind, row_uid, ts, fired) values (?, ?, ?, ?, 0)", table, kind, row_uid, now()))
 	seq, _ := result.LastInsertId()
 	return seq
+}
+
+// commits_attempts_maximum is the retry budget for one commit-log row.
+//
+// Fifty matches queue_park_attempts, but what spends the budget differs: the
+// queue retries on a timer with an hour-capped backoff, so fifty attempts is
+// days, while a commit-log row is retried once per commit to the same app, so
+// a busy app can spend the whole budget in seconds. That is the right way
+// round. The budget exists because an unfired row costs a Starlark call and a
+// starlark_sem slot on EVERY later commit, up to a hundred rows at a time - so
+// the faster an app commits, the more the retries cost it and the sooner the
+// bound should apply.
+//
+// Giving up is safe to the extent that commit handlers are required to be
+// idempotent and the app's own tables are the source of truth; this log is how
+// the app is told, not where the data lives.
+const commits_attempts_maximum = 50
+
+// commits_failed records one failed invocation of the row at seq. Below the
+// budget it counts the attempt; at the budget it gives up - marking the row
+// fired so the drain stops picking it up, and leaving it to age out through
+// the ordinary trim so a day of evidence survives. "fired" means "no longer to
+// be retried", which is what has become true either way.
+func commits_failed(db *DB, seq, attempts int64, app, function, table, kind, row_uid string) {
+	if seq <= 0 {
+		return
+	}
+	attempts++
+	if attempts < commits_attempts_maximum {
+		db.exec("update commits set attempts=? where seq=?", attempts, seq)
+		return
+	}
+	warn("Commit hook %q in app %q abandoned %s/%s row %q after %d failed attempts", function, app, table, kind, row_uid, attempts)
+	commits_mark_fired(db, seq)
 }
 
 // commits_mark_fired marks a row as fired. Idempotent.

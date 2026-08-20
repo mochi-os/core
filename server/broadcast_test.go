@@ -20,41 +20,49 @@ import (
 	"testing"
 )
 
-// TestNackReasonFromBroadcastGap maps a route()-returned error
-// wrapped around the ErrBroadcastGap sentinel to the wire reason
-// string. The sender's queue uses this to decide drop vs retry.
-func TestNackReasonFromBroadcastGap(t *testing.T) {
-	err := fmt.Errorf("broadcast gap detected (peer=p, key=k, last=42, seq=99): %w", ErrBroadcastGap)
-	if got := nack_reason_from_error(err); got != nack_reason_broadcast_gap {
-		t.Errorf("wrapped sentinel: got reason %q, want %q", got, nack_reason_broadcast_gap)
-	}
+// TestPendingFullIsTransientBySentinel is what the two deleted NACK tests
+// were really guarding: a receiver whose per-stream pending buffer is full
+// must make the sender RETRY, never drop. ACKing on overflow loses the event
+// outright - the sender deletes the queue row on ACK, and the receiver never
+// sees that seq again unless a later resync round happens to walk it.
+//
+// They guarded it through nack_reason_from_error and nack_should_drop, a
+// vocabulary nothing in production produced or consumed. The property held
+// anyway, but only because worker_failure_reason's catch-all answers
+// transient for anything it does not recognise. It is checked by sentinel
+// now, so these assert against the mechanism that actually decides.
+func TestPendingFullIsTransientBySentinel(t *testing.T) {
+	err := fmt.Errorf("pending buffer full for (peer=p, key=k): %w", ErrBroadcastPendingFull)
 
-	// Plain non-sentinel error must map to empty (legacy retry path).
-	plain := errors.New("something else broke")
-	if got := nack_reason_from_error(plain); got != "" {
-		t.Errorf("plain error: got reason %q, want empty (legacy retry)", got)
+	if reason := worker_failure_reason(err); reason != fail_transient {
+		t.Errorf("worker_failure_reason = %q, want %q; the sender would drop the row and the event would be lost", reason, fail_transient)
 	}
-
-	// Nil error returns empty - defensive; the caller should never
-	// build a NACK from a nil error, but we don't want to panic.
-	if got := nack_reason_from_error(nil); got != "" {
-		t.Errorf("nil error: got reason %q, want empty", got)
+	if !fail_retryable(fail_transient) {
+		t.Errorf("fail_retryable(%q) = false; buffer-full backpressure must be retried, not dropped", fail_transient)
 	}
 }
 
-// TestNackReasonFromPendingFull confirms ErrBroadcastPendingFull
-// wraps through to nack_reason_pending_full on the wire AND that the
-// sender's nack_should_drop gate treats it as retry-not-drop. This
-// pair is the load-bearing contract for the buffer-full fix: ACKing
-// on overflow silently loses the event, so the receiver must signal
-// and the sender must hold the row for retry.
-func TestNackReasonFromPendingFull(t *testing.T) {
-	err := fmt.Errorf("pending buffer full for (peer=p, key=k): %w", ErrBroadcastPendingFull)
-	if got := nack_reason_from_error(err); got != nack_reason_pending_full {
-		t.Errorf("wrapped sentinel: got reason %q, want %q", got, nack_reason_pending_full)
+// TestPendingFullDoesNotDependOnItsWording proves the sentinel is what is
+// consulted. The catch-all would answer transient for any unrecognised text,
+// so a test using the real message cannot tell the two apart - this one uses
+// a message that matches a DROP prefix and must still come back transient.
+func TestPendingFullDoesNotDependOnItsWording(t *testing.T) {
+	disguised := fmt.Errorf("unknown user in a rephrased overflow message: %w", ErrBroadcastPendingFull)
+
+	if reason := worker_failure_reason(disguised); reason != fail_transient {
+		t.Errorf("worker_failure_reason = %q for an error wrapping ErrBroadcastPendingFull, want %q. The sentinel must be checked before the prefixes, or rewording the fmt.Errorf at events.go silently turns retry into drop", reason, fail_transient)
 	}
-	if nack_should_drop(nack_reason_pending_full) {
-		t.Errorf("nack_should_drop(%q) returned true; want false (buffer-full is transient, sender must retry)", nack_reason_pending_full)
+}
+
+// TestUnrecognisedErrorsStayTransient: the catch-all is still the disposition
+// for everything else, which is why the sentinel check had to be added rather
+// than relied upon.
+func TestUnrecognisedErrorsStayTransient(t *testing.T) {
+	if reason := worker_failure_reason(errors.New("something else broke")); reason != fail_transient {
+		t.Errorf("worker_failure_reason = %q for an unrecognised error, want %q", reason, fail_transient)
+	}
+	if reason := worker_failure_reason(nil); reason != "" {
+		t.Errorf("worker_failure_reason(nil) = %q, want empty", reason)
 	}
 }
 
@@ -134,32 +142,6 @@ func TestBroadcastResyncThrottleIndependentTags(t *testing.T) {
 	}
 	if !broadcast_resync_throttle("u2", "p1", "k1") {
 		t.Error("different user must not be blocked")
-	}
-}
-
-// TestNackShouldDrop is the matching sender-side gate. Drop reasons
-// route to queue_drop (delete row, no retry); everything else goes
-// to queue_fail (schedule retry with backoff).
-func TestNackShouldDrop(t *testing.T) {
-	for _, reason := range []string{
-		nack_reason_broadcast_gap,
-		nack_reason_decode_failed,
-	} {
-		if !nack_should_drop(reason) {
-			t.Errorf("reason %q: want drop=true, got false", reason)
-		}
-	}
-
-	// Empty reason means a legacy receiver or an unspecified
-	// failure. Must keep the retry semantics.
-	if nack_should_drop("") {
-		t.Error("empty reason: want drop=false, got true (would break legacy receivers)")
-	}
-
-	// An unknown reason from a future receiver also defaults to
-	// retry - safer than dropping on something we don't recognise.
-	if nack_should_drop("future-reason-we-dont-know") {
-		t.Error("unknown reason: want drop=false, got true")
 	}
 }
 

@@ -876,19 +876,6 @@ func queue_error_dispatch_real(q *QueueEntry, code, reason string) {
 	error_dispatch(user, app, code, reason, q.Service, q.ToEntity, original, detail)
 }
 
-// nack_should_drop returns true when a NACK's Reason hint means
-// retrying is pointless and the queue row should be dropped instead
-// of scheduling another attempt. Falls back to "" -> retry which
-// preserves the legacy behaviour for older receivers that don't set
-// a reason at all.
-func nack_should_drop(reason string) bool {
-	switch reason {
-	case nack_reason_broadcast_gap, nack_reason_decode_failed:
-		return true
-	}
-	return false
-}
-
 // Mark a message as being sent (prevents other processors from picking it up)
 func queue_sending(id string) {
 	db := db_open("db/queue.db")

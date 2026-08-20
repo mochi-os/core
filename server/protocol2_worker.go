@@ -22,6 +22,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	rd "runtime/debug"
@@ -269,14 +270,19 @@ func fail_retryable(reason string) bool {
 //
 //   - "unknown user / no handler / no service" → drop, retry will
 //     never succeed. unsupported / unknown_user.
-//   - Anything matching nack_reason_from_error's existing vocabulary
-//     (broadcast-gap, pending-full, decode-failed) → translate to a
-//     compatible v2 reason. We currently map all of those to
-//     transient — the sender's resolver handles retry-backoff.
+//   - ErrBroadcastPendingFull → transient, checked by sentinel rather
+//     than left to the default below. Retry-not-drop is the whole
+//     point of returning that error, and a property inherited from a
+//     catch-all is one a later prefix rule can take away silently.
 //   - Default → transient (the catch-all retry-later disposition).
 func worker_failure_reason(err error) string {
 	if err == nil {
 		return ""
+	}
+	// Before the prefix matching: this one is asserted by the receiver, not
+	// guessed from wording, and dropping it loses a broadcast event.
+	if errors.Is(err, ErrBroadcastPendingFull) {
+		return fail_transient
 	}
 	message := err.Error()
 	switch {

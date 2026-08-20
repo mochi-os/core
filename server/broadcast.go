@@ -19,19 +19,6 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 )
 
-// NACK reason hints. Receiver populates Frame.Reason on the
-// outbound NACK frame; sender's NACK handler reads it to decide
-// between retry (the legacy unconditional behaviour) and drop. New
-// reasons can be added freely - the omitempty wire field falls back
-// to "" on older peers, which maps to the legacy retry-everything
-// path. See claude/sessions/2026-05-25-broadcast-resync-seq-643-
-// investigation.md for context.
-const (
-	nack_reason_broadcast_gap = "broadcast-gap"
-	nack_reason_decode_failed = "decode-failed"
-	nack_reason_pending_full  = "pending-full"
-)
-
 // Wire content keys for broadcast metadata riding alongside the app's own
 // payload fields in an event's content map. Underscore-prefixed so an app
 // payload field named "key" or "sequence" can't collide. Shared constants
@@ -102,13 +89,6 @@ func broadcast_inbound_class(last, bseq int64) string {
 	}
 	return "apply"
 }
-
-// ErrBroadcastGap is the sentinel the gap detector wraps its returned
-// error with so the stream-layer NACK responder can map it to the
-// nack_reason_broadcast_gap wire hint without parsing the (info-only)
-// error string. Other apply paths that want a non-retry NACK should
-// define their own sentinel and extend nack_reason_from_error.
-var ErrBroadcastGap = errors.New("broadcast gap")
 
 // broadcast_stall_age is how long a stream may keep gapping on the same
 // received watermark before it warns: a healing stream's watermark
@@ -218,28 +198,19 @@ func broadcast_stall_sweep() {
 
 // ErrBroadcastPendingFull signals the receiver's per-stream pending
 // buffer was full and a gapped event could not be stored. The sender
-// must NOT drop the row: this is a transient backpressure condition
-// that clears as resync drains the buffer. nack_reason_pending_full
-// is explicitly absent from nack_should_drop so the queue's standard
-// exponential-backoff retry path kicks in. Without this signal the
-// receiver would ACK silently on overflow and the event would be lost
-// (the sender deletes the queue row on ACK; the receiver would never
-// see it again unless a later resync round happened to walk that seq).
+// must NOT drop the row: this is transient backpressure that clears
+// as resync drains the buffer. Without the signal the receiver would
+// ACK silently on overflow and the event would be lost - the sender
+// deletes the queue row on ACK, and the receiver would never see that
+// seq again unless a later resync round happened to walk it.
+//
+// worker_failure_reason checks this sentinel and answers
+// fail_transient. It is checked rather than left to that function's
+// catch-all: retry-not-drop is the whole point of returning an error
+// here, and inheriting it from a default means a later prefix rule
+// matching "pending buffer full", or a reworded fmt.Errorf, flips the
+// behaviour to drop with nothing to notice.
 var ErrBroadcastPendingFull = errors.New("broadcast pending buffer full")
-
-// nack_reason_from_error maps a route() error to the wire Reason
-// hint. Unknown errors return "" which preserves legacy retry
-// behaviour at the sender. Called from the stream-receive NACK path
-// in streams.go.
-func nack_reason_from_error(err error) string {
-	if errors.Is(err, ErrBroadcastGap) {
-		return nack_reason_broadcast_gap
-	}
-	if errors.Is(err, ErrBroadcastPendingFull) {
-		return nack_reason_pending_full
-	}
-	return ""
-}
 
 // mochi.broadcast.* — sequenced broadcast with a durable log per
 // (app, key, peer) so subscribers can replay gaps from the owner.

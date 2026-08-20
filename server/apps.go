@@ -2138,8 +2138,6 @@ func (a *App) load_version(av *AppVersion) {
 			info("App unable to read labels file %q: %v", path, err)
 			continue
 		}
-		defer f.Close()
-
 		s := bufio.NewScanner(f)
 		for s.Scan() {
 			parts := strings.SplitN(s.Text(), "=", 2)
@@ -2147,6 +2145,7 @@ func (a *App) load_version(av *AppVersion) {
 				av.labels[language][strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 			}
 		}
+		f.Close()
 	}
 
 	apps_lock.Lock()

@@ -51,11 +51,19 @@ func cmd_check_starlark(args []string) error {
 				return walk_error
 			}
 			if d.IsDir() {
-				// Skip the directories that never contain runtime
-				// Starlark - they bulk-up the walk and any .star
-				// files there are by definition not app code.
+				// Skip only the two trees that are not the app's own source:
+				// git's object store and installed dependencies. Both nest, so
+				// both are matched at any depth.
+				//
+				// `web` used to be skipped here too, on the grounds that a
+				// frontend directory holds no runtime Starlark. That is true of
+				// every app today, and it made the check unable to say so: a
+				// .star file placed under web/ was skipped rather than parsed,
+				// and this walk is deploy.sh's blocking pre-deploy gate, so it
+				// would have shipped without ever being read. Walking it costs
+				// a few hundred directory entries per app.
 				name := d.Name()
-				if name == ".git" || name == "node_modules" || name == "web" {
+				if name == ".git" || name == "node_modules" {
 					return filepath.SkipDir
 				}
 				return nil

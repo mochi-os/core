@@ -17,6 +17,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -55,6 +56,15 @@ func world_resolve_creds() {
 	})
 }
 
+// world_conn carries an accepted connection's verified peer credentials so the
+// ConnContext callback can promote them into the request context. The same
+// shape as admin_conn, and read back through the same admin_peer_credential, so
+// a handler does not have to know which socket it arrived on.
+type world_conn struct {
+	net.Conn
+	credential *admin_credential
+}
+
 // world_conn_listener wraps the Unix listener and drops any connection that
 // fails the peer-credential check before it reaches the HTTP server.
 type world_conn_listener struct {
@@ -82,7 +92,7 @@ func (l *world_conn_listener) Accept() (net.Conn, error) {
 			_ = c.Close()
 			continue
 		}
-		return c, nil
+		return &world_conn{Conn: c, credential: credential}, nil
 	}
 }
 
@@ -125,7 +135,15 @@ func world_start() error {
 	router.Use(gin.Recovery())
 	world_register_routes(router)
 
-	server := &http.Server{Handler: router}
+	server := &http.Server{
+		Handler: router,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			if wc, ok := c.(*world_conn); ok && wc.credential != nil {
+				ctx = context.WithValue(ctx, peer_credential_key{}, wc.credential)
+			}
+			return ctx
+		},
+	}
 	go func() {
 		info("world: listening on %s", path)
 		if err := server.Serve(&world_conn_listener{inner: ln}); err != nil && err != http.ErrServerClosed {

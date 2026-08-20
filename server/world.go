@@ -29,6 +29,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -240,6 +241,16 @@ func world_status_handler(c *gin.Context) {
 	}
 
 	world_store(net_id, input.World.ID, input.World.Name, input.World.Address, input.World.Version, string(services))
+
+	// Audited because the effect leaves the machine: the row gossips on, so
+	// the name and address a world advertises reach other hosts' join pages.
+	// The socket's group is the authority and is deliberately looser than the
+	// admin socket's, which is why WHICH member pushed is worth recording. The
+	// world id is the identifying detail - "a listing changed" alone says
+	// nothing.
+	uid, gid, pid := audit_peer_identity(c.Request.Context())
+	audit_log_daemon(fmt.Sprintf("world.status peer_uid=%d peer_gid=%d peer_pid=%d world=%q",
+		uid, gid, pid, input.World.ID))
 
 	// Gossip on change, floored to one flood per minute per world: the local
 	// row above always holds the latest truth, and a suppressed change

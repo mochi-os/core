@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"net/http/pprof"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -39,6 +40,19 @@ type admin_credential struct {
 // peer_credential_key is the context key used to attach the peer's admin_credential
 // to the request context so handlers and middleware can read it.
 type peer_credential_key struct{}
+
+// audit_peer_identity returns the connecting peer's uid, gid and pid for an
+// audit line, or -1 for each where the transport attached no credential -
+// Windows, where the pipe's security descriptor gates at connect time and
+// there is nothing per-connection to attach. Shared by both local sockets so
+// an unknown peer reads the same on each.
+func audit_peer_identity(ctx context.Context) (uid, gid, pid int) {
+	credential := admin_peer_credential(ctx)
+	if credential == nil {
+		return -1, -1, -1
+	}
+	return int(credential.uid), int(credential.gid), int(credential.pid)
+}
 
 // admin_peer_credential extracts the peer credentials attached by the transport's
 // ConnContext, or nil when none were attached (e.g. on Windows).
@@ -77,7 +91,7 @@ func admin_register_routes(r *gin.Engine) {
 	//   go tool pprof heap.pb.gz
 	// curl -s --unix-socket admin.sock http://x/_/admin/debug/pprof/<profile>
 	// is the lower-level form for ad-hoc captures.
-	profiling := r.Group("/_/admin/debug/pprof")
+	profiling := admin.Group("/debug/pprof")
 	profiling.GET("/", gin.WrapF(pprof.Index))
 	profiling.GET("/cmdline", gin.WrapF(pprof.Cmdline))
 	profiling.GET("/profile", gin.WrapF(pprof.Profile))
@@ -94,13 +108,43 @@ func admin_register_routes(r *gin.Engine) {
 
 // -- Audit middleware ------------------------------------------------------
 
-// admin_audited_routes maps "<METHOD> <fullPath>" to the subcommand label
-// to record. Anything not in this map is not audited.
+// admin_audited_routes maps "<METHOD> <fullPath>" to the subcommand label to
+// record. Anything not in this map, and not under the profiling prefix, is not
+// audited.
+//
+// The reads are here as well as the writes. An audit trail that records a
+// vacuum but not a full data export, a schema migration, or a dump of the
+// effective config answers "what did this server do" while leaving "what left
+// this server" blank - and on a socket this quiet, a row costs nothing.
 var admin_audited_routes = map[string]string{
 	"POST /_/admin/snapshot": "admin.snapshot",
 	"POST /_/admin/vacuum":   "admin.vacuum",
 	"POST /_/admin/stop":     "admin.stop",
 	"POST /_/admin/restart":  "admin.restart",
+	"POST /_/admin/migrate":  "admin.migrate",
+	"GET /_/admin/backup":    "admin.backup",
+	"GET /_/admin/config":    "admin.config",
+}
+
+// admin_profiling_prefix is audited by prefix rather than by name: the twelve
+// pprof endpoints hand out process memory, stacks and goroutine state, and
+// naming each one in the map above would be a list to forget to extend.
+const admin_profiling_prefix = "/_/admin/debug/pprof"
+
+// admin_audited_operation returns the label to record for one request, and
+// whether it is audited at all.
+func admin_audited_operation(method, path string) (string, bool) {
+	if operation, ok := admin_audited_routes[method+" "+path]; ok {
+		return operation, true
+	}
+	if path == admin_profiling_prefix || strings.HasPrefix(path, admin_profiling_prefix+"/") {
+		profile := strings.Trim(strings.TrimPrefix(path, admin_profiling_prefix), "/")
+		if profile == "" {
+			profile = "index"
+		}
+		return "admin.pprof." + profile, true
+	}
+	return "", false
 }
 
 // admin_audit_middleware records a daemon-facility audit row after each
@@ -109,19 +153,12 @@ func admin_audit_middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
 
-		key := c.Request.Method + " " + c.FullPath()
-		op, ok := admin_audited_routes[key]
+		operation, ok := admin_audited_operation(c.Request.Method, c.FullPath())
 		if !ok {
 			return
 		}
-		credential := admin_peer_credential(c.Request.Context())
-		uid := -1
-		gid := -1
-		if credential != nil {
-			uid = int(credential.uid)
-			gid = int(credential.gid)
-		}
+		uid, gid, _ := audit_peer_identity(c.Request.Context())
 		audit_log_daemon(fmt.Sprintf("%s peer_uid=%d peer_gid=%d status=%d",
-			op, uid, gid, c.Writer.Status()))
+			operation, uid, gid, c.Writer.Status()))
 	}
 }

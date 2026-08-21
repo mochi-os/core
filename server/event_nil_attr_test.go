@@ -40,8 +40,8 @@ import (
 	sl "go.starlark.net/starlark"
 )
 
-// nil_attr fetches one attribute from an event with neither stream nor user.
-func nil_attr(t *testing.T, name string) sl.Value {
+// nil_attribute fetches one attribute from an event with neither stream nor user.
+func nil_attribute(t *testing.T, name string) sl.Value {
 	t.Helper()
 	value, err := (&Event{}).Attr(name)
 	if err != nil {
@@ -54,7 +54,7 @@ func nil_attr(t *testing.T, name string) sl.Value {
 // None rather than a typed nil pointer.
 func TestNilAttrIsNone(t *testing.T) {
 	for _, name := range []string{"stream", "user"} {
-		value := nil_attr(t, name)
+		value := nil_attribute(t, name)
 		if value != sl.None {
 			t.Errorf("e.%s on an event with none returned %T, want sl.None; a typed nil is truthy and panics when printed", name, value)
 		}
@@ -65,7 +65,7 @@ func TestNilAttrIsNone(t *testing.T) {
 // `if e.stream:` must not take the branch for an event that has no stream.
 func TestNilAttrIsFalsy(t *testing.T) {
 	for _, name := range []string{"stream", "user"} {
-		if value := nil_attr(t, name); bool(value.Truth()) {
+		if value := nil_attribute(t, name); bool(value.Truth()) {
 			t.Errorf("e.%s is truthy on an event with none, so `if e.%s:` takes the branch for every event that has none", name, name)
 		}
 	}
@@ -82,7 +82,7 @@ func TestNilAttrPrintsWithoutPanicking(t *testing.T) {
 					t.Errorf("printing e.%s on an event with none panicked: %v", name, r)
 				}
 			}()
-			_ = nil_attr(t, name).String()
+			_ = nil_attribute(t, name).String()
 		}()
 	}
 }

@@ -41,8 +41,8 @@ import (
 	sl "go.starlark.net/starlark"
 )
 
-// stream_attr resolves e.<group>.<name> on an event with no stream.
-func stream_attr(t *testing.T, group, name string) (sl.Value, error) {
+// stream_attribute resolves e.<group>.<name> on an event with no stream.
+func stream_attribute(t *testing.T, group, name string) (sl.Value, error) {
 	t.Helper()
 	outer, err := (&Event{}).Attr(group)
 	if err != nil {
@@ -64,7 +64,7 @@ func TestNilStreamBuiltinsRefuse(t *testing.T) {
 		{"write", "cache"},
 		{"write", "asset"},
 	} {
-		value, err := stream_attr(t, c.group, c.name)
+		value, err := stream_attribute(t, c.group, c.name)
 		if err == nil {
 			t.Errorf("e.%s.%s returned %T with no error; it is bound to a nil stream and panics when called", c.group, c.name, value)
 			continue
@@ -88,7 +88,7 @@ func TestNilStreamBuiltinsNameTheAttribute(t *testing.T) {
 		{"write", "cache"},
 		{"write", "asset"},
 	} {
-		_, err := stream_attr(t, c.group, c.name)
+		_, err := stream_attribute(t, c.group, c.name)
 		if err == nil {
 			t.Fatalf("e.%s.%s did not fail", c.group, c.name)
 		}
@@ -126,7 +126,7 @@ func TestPresentStreamBuiltinsStillBind(t *testing.T) {
 // turn an unknown name into a failure that reads like a missing stream.
 func TestUnknownStreamAttrIsStillUnknown(t *testing.T) {
 	for _, group := range []string{"read", "write"} {
-		value, err := stream_attr(t, group, "no-such-attribute")
+		value, err := stream_attribute(t, group, "no-such-attribute")
 		if err != nil {
 			t.Errorf("e.%s.no-such-attribute errored (%v); it should be a plain unknown attribute", group, err)
 		}

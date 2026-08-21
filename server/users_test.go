@@ -702,3 +702,32 @@ func TestUserSearchSort(t *testing.T) {
 		t.Error("search should reject an unknown order")
 	}
 }
+
+// TestPurgeTakesNoAccountGoneParameter guards a dead branch staying dead.
+//
+// user_purge_local's account_gone parameter selected between e.delete()
+// (tombstone network-wide) and e.delete_local() (withdraw this host's row
+// only). The second was multi-host replication: a host leaving a user's host
+// set removed its copy without claiming the account was gone. That went in July
+// 2026, and the only caller — user_delete — passed true.
+//
+// The delete_local half is gated for free: it had exactly one caller, so
+// removing the branch orphaned it, and staticcheck's U1000 job fails the build
+// if it comes back uncalled. Nothing gates the parameter, hence this.
+func TestPurgeTakesNoAccountGoneParameter(t *testing.T) {
+	source, err := os.ReadFile("users.go")
+	if err != nil {
+		t.Fatalf("reading users.go: %v", err)
+	}
+	text := string(source)
+
+	if !strings.Contains(text, "func user_purge_local(id string) (string, error)") {
+		t.Error("user_purge_local no longer takes exactly the user id; a mode parameter selecting a directory side effect means one of its branches is unreachable, as account_gone's was")
+	}
+	if strings.Contains(text, "account_gone") {
+		t.Error("account_gone is back in users.go; no caller can pass false, so its branch cannot run")
+	}
+	if strings.Contains(text, "delete_local(") {
+		t.Error("user_purge_local calls delete_local again; that is the leave-set path, and there is no host set to leave")
+	}
+}

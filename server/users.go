@@ -1302,18 +1302,16 @@ func api_user_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // user_delete removes this host's copy of a user, entities tombstoned — the
 // "account is gone everywhere" form. Thin wrapper over user_purge_local.
 func user_delete(id string) (string, error) {
-	return user_purge_local(id, true)
+	return user_purge_local(id)
 }
 
 // user_purge_local removes THIS host's copy of a user: entities, sessions,
 // passkeys, totp, recovery, oauth, app DBs and the on-disk tree. Returns the
 // deleted username for audit.
 //
-// account_gone selects the entity directory side effect:
-//   - true  (close / admin delete): broadcast the signed entity directory
-//     tombstone — the account is gone everywhere.
-//   - false: withdraw the directory row locally only. No caller passes this.
-func user_purge_local(id string, account_gone bool) (string, error) {
+// Each entity is tombstoned network-wide: this host is the only one that had
+// it, so its removal is unconditional.
+func user_purge_local(id string) (string, error) {
 	db := db_open("db/users.db")
 	exists, _ := db.exists("select 1 from users where uid=?", id)
 	if !exists {
@@ -1333,11 +1331,7 @@ func user_purge_local(id string, account_gone bool) (string, error) {
 	var entities []Entity
 	db.scans(&entities, "select * from entities where user=?", id)
 	for _, e := range entities {
-		if account_gone {
-			e.delete() // tombstone network-wide + replicate the deletion
-		} else {
-			e.delete_local() // this host only; entity survives on other hosts
-		}
+		e.delete() // tombstone network-wide
 	}
 
 	sdb := db_open("db/sessions.db")

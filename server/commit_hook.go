@@ -328,11 +328,23 @@ func commits_mark_fired(db *DB, seq int64) {
 // is just a short debugging window.
 const commits_log_age = 86400 // 1 day
 
-// commits_trim deletes fired rows older than commits_log_age. Called from
-// commit_hook_drain — which runs on every commit_hook_fire — using the
-// commits_fired (fired, ts) index, so the table tracks ~a day of recent activity
-// rather than growing forever. Unfired (pending) rows are never trimmed, so a
-// stuck handler's retries are preserved regardless of age.
+// commits_trim deletes fired rows older than commits_log_age, using the
+// commits_fired (fired, ts) index. Unfired (pending) rows are never trimmed, so
+// a stuck handler's retries are preserved regardless of age.
+//
+// The trim is activity-driven, and only for pairs that still have a hook: its
+// one caller is commit_hook_drain, whose one caller is commit_hook_fire, which
+// returns at `function == ""` above it. So a (user, app) pair reclaims its rows
+// only by committing again through an app that still declares a hook. A pair
+// that goes quiet, or an app whose manifest drops "commit", keeps whatever it
+// had — the table is bounded for active pairs, not in general.
+//
+// Accepted rather than fixed: fired rows are inert, and the ones that can never
+// be collected are in apps that no longer write any. Measured across both
+// development instances 2026-08-21: 3840 fired rows over 1105 app databases,
+// 3043 of them in apps declaring no hook at all, median age 8 days. Collecting
+// those would need a sweep over every app database on a timer, which costs more
+// than the rows it reclaims.
 func commits_trim(db *DB) {
 	db.exec("delete from commits where fired=1 and ts < ?", now()-commits_log_age)
 }

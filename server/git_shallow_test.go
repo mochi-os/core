@@ -1,15 +1,13 @@
 // Mochi server: git smart-HTTP shallow history.
 //
-// `git clone --depth 1` against git.mochi-os.org failed outright on 2026-08-16
-// with "fatal: Server does not support shallow clients", so no CI system,
-// container build or automation that checks out shallowly by default could use
-// this server at all. go-git's session refuses a shallow request and ignores
-// the depth, so the walk that answers one is ours.
+// go-git's session refuses a shallow request and ignores the depth, so the walk
+// that answers one is ours; without it `git clone --depth 1` fails outright
+// rather than degrading to a full clone.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -301,11 +299,9 @@ func TestGitCloneShallowSince(t *testing.T) {
 	for _, version := range git_versions {
 		t.Run("protocol v"+version, func(t *testing.T) {
 			dir := git_temporary(t, "git_since")
-			// The cutoff carries an explicit time and zone. git's approxidate
-			// fills anything unspecified from the current clock, so a bare
-			// "2026-01-07" means midnight only if the test happens to run at
-			// midnight - it otherwise cuts at today's time of day and the
-			// answer moves through the day.
+			// The cutoff carries an explicit time and zone: git's approxidate fills
+			// anything unspecified from the current clock, so a bare date cuts at
+			// today's time of day and the answer moves through the day.
 			git_run(t, "", git_protocol(version, "clone", "--quiet", "--shallow-since", "2026-01-07T00:00:00+0000", server.URL, dir)...)
 
 			count, shallow := git_clone_state(t, dir)

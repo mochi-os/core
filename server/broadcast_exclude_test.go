@@ -1,19 +1,13 @@
 // Mochi server: broadcast exclusion and owner-guard regressions.
 //
-// Send-time exclusion used to skip the excluded recipient's delivery while
-// still allocating the sequence — a permanent hole in their stream that
-// resync, blind to the exclusion, "healed" by redelivering the event. A
-// redelivered post/edit ran feeds' subscriber-side handler against the feed
-// OWNER's canonical DB and deleted its attachment files from disk
-// (2026-07-15). Exclusion now rides in the payload (log + wire + replay
-// identically) and the receive wrapper skips the handler for the excluded
-// actor and for any user who owns the from entity; self-owned recipients
-// are not sent to at all.
+// Exclusion rides in the payload (log, wire and replay identically); the
+// receive wrapper skips the handler for the excluded actor and for any user
+// owning the from entity, and self-owned recipients are not sent to at all.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -65,11 +59,8 @@ func TestBroadcastSkipFor(t *testing.T) {
 	}
 }
 
-// TestBroadcastSendExcludeRidesPayloadAndSkipsSelf drives the real
-// api_broadcast_send: the exclusion must land in the log row's data (so
-// resync replays carry it), the excluded REMOTE subscriber must still get
-// a delivery (stream continuity — no hole), and a subscriber owned by the
-// sending user must get nothing at all.
+// TestBroadcastSendExcludeRidesPayloadAndSkipsSelf - the excluded subscriber is
+// still delivered to (no hole in their stream); a self-owned one is not.
 func TestBroadcastSendExcludeRidesPayloadAndSkipsSelf(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

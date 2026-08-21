@@ -1,14 +1,8 @@
 // Mochi server: broadcast subsystem unit tests
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
-//
-// Tests targeting the NACK-reason wire hint plus the gap-error
-// sentinel that the stream-receive NACK responder maps to it. The
-// goal is to prove the wire-protocol extension does what's needed
-// for the queue-side fix: a broadcast gap NACK becomes
-// a drop on the sender, not another 7-day retry loop.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -20,17 +14,8 @@ import (
 	"testing"
 )
 
-// TestPendingFullIsTransientBySentinel is what the two deleted NACK tests
-// were really guarding: a receiver whose per-stream pending buffer is full
-// must make the sender RETRY, never drop. ACKing on overflow loses the event
-// outright - the sender deletes the queue row on ACK, and the receiver never
-// sees that seq again unless a later resync round happens to walk it.
-//
-// They guarded it through nack_reason_from_error and nack_should_drop, a
-// vocabulary nothing in production produced or consumed. The property held
-// anyway, but only because worker_failure_reason's catch-all answers
-// transient for anything it does not recognise. It is checked by sentinel
-// now, so these assert against the mechanism that actually decides.
+// TestPendingFullIsTransientBySentinel - a full pending buffer must make the
+// sender retry: it deletes the queue row on ACK, so an ACK loses the event.
 func TestPendingFullIsTransientBySentinel(t *testing.T) {
 	err := fmt.Errorf("pending buffer full for (peer=p, key=k): %w", ErrBroadcastPendingFull)
 
@@ -91,11 +76,8 @@ func TestBroadcastResyncThrottleBurstDedup(t *testing.T) {
 	}
 }
 
-// TestBroadcastResyncClearUnlocksImmediately is the new property: a
-// successful resync (signalled by broadcast_advance_local clearing
-// the in-flight flag) lets the next request fire WITHOUT waiting out
-// any time window. Under the old 60s throttle this took 60s; under
-// the new design it takes one clear call.
+// TestBroadcastResyncClearUnlocksImmediately - clearing the in-flight flag lets
+// the next request fire without waiting out any time window.
 func TestBroadcastResyncClearUnlocksImmediately(t *testing.T) {
 	broadcast_resync_lock.Lock()
 	broadcast_resync_inflight = map[string]int64{}
@@ -145,27 +127,16 @@ func TestBroadcastResyncThrottleIndependentTags(t *testing.T) {
 	}
 }
 
-// TestPriorityReplayAbovesInteractive locks in the relative ordering of the
-// priority tiers. queue_select orders desc by priority, so for resync replies
-// to overtake the live-broadcast backlog they MUST be strictly greater than
-// priority_interactive. A future refactor that re-numbers the tiers without
-// preserving the ordering would silently regress catch-up rate.
-//
-// This used to assert control > replay > interactive > bulk. Control and bulk
-// were produced only by queue_priority's replication branch and went with it;
-// asserting an order between constants nothing can now hold would say nothing
-// about delivery.
+// TestPriorityReplayAbovesInteractive - queue_select orders by priority desc,
+// so resync replies overtake the live backlog only while replay > interactive.
 func TestPriorityReplayAbovesInteractive(t *testing.T) {
 	if priority_replay <= priority_interactive {
 		t.Errorf("priority_replay (%d) must be > priority_interactive (%d)", priority_replay, priority_interactive)
 	}
 }
 
-// TestQueueAddDirectPriorityOverride pins the wire-level invariant:
-// queue_add_direct_priority writes its argument into the queue.priority
-// column, NOT the (service, event)-derived default. Without this the
-// resync-reply path would silently fall back to priority_interactive
-// and the catch-up rate fix would be a no-op.
+// TestQueueAddDirectPriorityOverride - queue_add_direct_priority must write its
+// argument to queue.priority, not the (service, event)-derived default.
 func TestQueueAddDirectPriorityOverride(t *testing.T) {
 	tmp_dir, err := os.MkdirTemp("", "mochi_queue_prio")
 	if err != nil {
@@ -195,13 +166,8 @@ func TestQueueAddDirectPriorityOverride(t *testing.T) {
 	}
 }
 
-// TestBroadcastWireKeys pins the wire content-key literals. The sender
-// (api_broadcast_send, broadcast_resync replay) and the receiver
-// (events.go gap detection) share these constants, so they cannot
-// diverge at compile time; this test additionally pins the underscore
-// prefix itself, because a 2026-05-26 table-rename find/replace once
-// rewrote the sender's "_sequence" to "sequence" and silently disabled
-// dedup, gap buffering, and watermarks for six weeks.
+// TestBroadcastWireKeys pins the wire content-key literals, including the
+// underscore prefix that keeps app payload fields from colliding.
 func TestBroadcastWireKeys(t *testing.T) {
 	if broadcast_content_key != "_key" {
 		t.Errorf("broadcast_content_key = %q, want %q", broadcast_content_key, "_key")
@@ -211,12 +177,8 @@ func TestBroadcastWireKeys(t *testing.T) {
 	}
 }
 
-// TestBroadcastInboundClass covers the receiver's classification of an
-// inbound sequenced event against the stream watermark, including the
-// anchor-adoption rule: a stream with no watermark (last == 0) accepts
-// its first event at any sequence instead of gap-buffering, because
-// resync replay can never reach back past the sender's log trim, so a
-// "gap" verdict on an unknown stream would wedge it permanently.
+// TestBroadcastInboundClass covers the watermark classification, including
+// anchor adoption: an unknown stream applies its first event at any sequence.
 func TestBroadcastInboundClass(t *testing.T) {
 	cases := []struct {
 		name string
@@ -242,11 +204,8 @@ func TestBroadcastInboundClass(t *testing.T) {
 	}
 }
 
-// TestBroadcastPayloadDecodeKeepsIntegers covers the resync data loss: the
-// broadcast log stores JSON, where every number is a double, so a replayed
-// timestamp used to arrive as float64. Apps validate such fields by pattern
-// against str(value), and "1.7534e+09" fails an integer regex - so the handler
-// dropped the row on the one path that repairs missed deliveries.
+// TestBroadcastPayloadDecodeKeepsIntegers - a replayed integer must not come
+// back as a float64; apps validate such fields by pattern against str(value).
 func TestBroadcastPayloadDecodeKeepsIntegers(t *testing.T) {
 	raw := `{"created":1753400000,"edited":0,"body":"hello","score":1.5,` +
 		`"nested":{"seen":1753400001},"list":[1753400002,2]}`

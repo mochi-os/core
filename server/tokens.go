@@ -16,11 +16,9 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 )
 
-// Token represents an API token. Action and Entity bind the token to a single
-// route: an empty Action means the token is valid across the whole app, which
-// is what a user-created API token is for. A bound token names the action
-// pattern it may call (":wiki/-/rss") and the entity it may name; an empty
-// Entity is a class-level route that carries no entity.
+// Token represents an API token. An empty Action means the token is valid
+// across the whole app; a bound token names one action pattern (":wiki/-/rss")
+// and one entity, with an empty Entity for a class-level route.
 type Token struct {
 	Hash     string   `db:"hash"`
 	User     string   `db:"user"`
@@ -175,11 +173,6 @@ func token_validate(token string) *Token {
 	return t
 }
 
-// token_allows reports whether a token may be used for a given action pattern
-// and entity. A token with no action binding is valid across its whole app,
-// which is what a user-created API token is for. A bound token matches one
-// action and one entity exactly, so the URL that reads a wiki's RSS feed
-// cannot also call that wiki's delete action, nor read a different wiki.
 func token_allows(t *Token, action string, entity string) bool {
 	if t == nil {
 		return false
@@ -235,11 +228,8 @@ func token_has_scope(t *Token, scope string) bool {
 }
 
 // mochi.token.create(name, scopes?, expires?, action?, entity?) -> string:
-// Create a new token, returns plaintext token. Naming an action binds the
-// token to that action pattern and entity alone, so a token minted for a feed
-// URL cannot be replayed against the app's other actions; omitting it leaves
-// the token valid across the whole app, which is what a user-created API
-// token wants.
+// Create a new token, returns plaintext token. Naming an action binds the token
+// to that action and entity alone; omitting it leaves it valid across the app.
 func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "tokens/create"); err != nil {
 		return sl_error(fn, "%v", err)

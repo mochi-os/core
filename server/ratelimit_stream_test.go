@@ -104,12 +104,9 @@ func itoa_test(i int) string {
 	return string(out)
 }
 
-// TestStreamBytesClearsALargeLegitimateTransfer is the constraint that stops this
-// from being tuned into a bug. repositories' archive route is PUBLIC, so an
-// anonymous caller downloads a whole repository through this path; a budget that
-// cannot pass one relay of the maximum permitted size would truncate honest
-// clones. One relay is capped at stream_maximum_default, so the budget has to
-// clear at least that.
+// TestStreamBytesClearsALargeLegitimateTransfer: repositories' archive route is
+// public, so the byte budget must pass one relay of the maximum permitted size
+// or honest clones truncate.
 func TestStreamBytesClearsALargeLegitimateTransfer(t *testing.T) {
 	stream_bytes_reset()
 

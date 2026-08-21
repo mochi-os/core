@@ -19,18 +19,9 @@ import (
 	cbor "github.com/fxamacker/cbor/v2"
 )
 
-// queue_per_peer_concurrency caps the number of in-flight sends to a
-// single target peer per tick. Each in-flight send opens its own
-// libp2p stream and waits for its ACK; allowing multiple sends per
-// peer in parallel lets one tick drain ~Nx faster than the strict
-// serial pattern. Receivers handle multiple concurrent streams from
-// the same peer fine (libp2p multiplexes; ACK dedup keys are
-// per-message ID), and SQL ops apply by sequence number on the
-// receiver — out-of-order arrival on the wire is rebuilt at apply.
-//
-// 8 is conservative: enough to overcome per-message ACK latency
-// (localhost ~50ms × 8 ≈ 6.25ms/op effective), well under any
-// per-peer rate limits in tests.
+// queue_per_peer_concurrency caps in-flight sends to one peer per tick.
+// Concurrent streams to a peer are safe: libp2p multiplexes, ACK dedup keys are
+// per-message, and SQL ops apply by sequence number, so wire order is rebuilt.
 const queue_per_peer_concurrency = 8
 
 // File pushes stay serial per peer — one in-flight file at a time per
@@ -56,30 +47,14 @@ const (
 	priority_interactive = 20 // normal app and entity messages (the default)
 )
 
-// queue_silent_defer is how long to push a row's next_retry forward
-// when the target peer is in the silent-failure cache. Recovery is via
-// queue_resurrect_peer when the peer reconnects. With pick-by-peer +
-// durable silent-cache, silenced peers don't recycle through the
-// picker anyway — the defer is belt-and-suspenders so a row that
-// slipped through (e.g. silenced after the picker but before the
-// goroutine fired) doesn't immediately re-appear at the front of the
-// next tick.
+// queue_silent_defer is how far a row's next_retry moves when its target is in
+// the silent-failure cache. queue_resurrect_peer pulls it back on reconnect.
 const queue_silent_defer = 3600 // 1 hour
 
-// queue_priority classifies an outbound message into a priority tier from its
-// service and event.
-//
-// Every message is interactive today. The one classification this held was for
-// service "replication" - bulk for sql/op and the system row ops, control for
-// the link, membership and keys events - and multi-host replication was
-// removed in July 2026, so nothing sends that service. The function stays as
-// the seam any future tiering goes through: both callers already thread its
-// answer into frame_priority_for, and a message that wants a different lane
-// gets one by naming it here rather than by growing a second classifier.
-//
-// A caller that already knows its lane bypasses this entirely -
-// broadcast_resync ships replies through queue_add_direct_priority at
-// priority_replay.
+// queue_priority classifies an outbound message into a priority tier. Every
+// message is interactive; the function stays as the seam any future tiering
+// goes through. A caller that knows its lane uses queue_add_direct_priority
+// instead.
 func queue_priority(service, event string) int {
 	return priority_interactive
 }
@@ -111,17 +86,12 @@ type QueueEntry struct {
 	Claimed int64 `db:"claimed"`
 }
 
-// queue_age_maximum is the retention floor for every queued message. There
-// used to be a second, longer one for replication ops (30 days, the T_forget
-// budget within which an offline replica could still replay and converge);
-// replication went in July 2026 and took the only class it applied to.
+// queue_age_maximum is the retention floor for every queued message.
 const queue_age_maximum = 7 * 86400 // 7 days
 
-// queue_wake_ch is a buffered channel used by send_peer to nudge the
-// queue manager into processing the queue immediately rather than
-// waiting for the next tick. Buffer-of-1 means multiple wakes between
-// ticks coalesce into a single processing pass — no work for the
-// manager to do beyond what queue_process already handles.
+// queue_wake_ch nudges the queue manager to process immediately rather than
+// wait for the next tick. Buffer of 1, so wakes between ticks coalesce into one
+// pass.
 var queue_wake_ch = make(chan struct{}, 1)
 
 // self_loop_wake_ch nudges the self_loop_drain goroutine to claim
@@ -166,17 +136,10 @@ func senders_wake_all() {
 	}
 }
 
-// queue_claim_for_peer atomically pulls up to `limit` rows targeting
-// `peer` from queue.db, marking them status='sending' in the same
-// statement so queue_process won't double-pick them. Used by
-// /mochi/2/messages Senders' pull_loop. Returns claimed rows in
-// (priority desc, next_retry asc) order — same order as the global
-// queue_select.
-//
-// File pushes are excluded — they use /mochi/2/stream with a fresh
-// libp2p stream per file, not the Sender's persistent stream, so the
-// queue_send_file_push code path in queue_process handles them.
-// Broadcasts are implicitly excluded by the type='direct' filter.
+// queue_claim_for_peer atomically claims up to `limit` rows targeting `peer`,
+// marking them 'sending' so queue_process will not double-pick them. File
+// pushes are excluded: they ride /mochi/2/stream, not the Sender's persistent
+// stream.
 func queue_claim_for_peer(peer string, limit int) []QueueEntry {
 	if peer == "" || limit <= 0 {
 		return nil
@@ -202,15 +165,9 @@ func queue_claim_for_peer(peer string, limit int) []QueueEntry {
 	return rows
 }
 
-// queue_claim_for_self atomically claims up to `limit` direct rows
-// whose target is net_id, marking them status='sending' in the same
-// statement so queue_process won't double-pick them. Used by
-// self_loop_drain (the symmetric counterpart to Sender.pull_loop).
-// Same SQL shape as queue_claim_for_peer; the queue_target_priority_retry
-// index handles both equally well.
-//
-// File pushes are excluded — file/push to self is a no-op nobody
-// emits; if one ever appears, queue_process picks it up.
+// queue_claim_for_self is queue_claim_for_peer for target == net_id, claimed by
+// self_loop_drain. File pushes are excluded: file/push to self is a no-op
+// nobody emits, and queue_process picks one up if it ever appears.
 func queue_claim_for_self(limit int) []QueueEntry {
 	if net_id == "" || limit <= 0 {
 		return nil
@@ -250,50 +207,27 @@ func queue_next_retry(attempts int) int64 {
 	return now() + delay + jitter
 }
 
-// queue_warn_rows / queue_warn_attempts are the pending-backlog
-// thresholds past which queue_watchdog warns for a (target, service)
-// bucket. The News feed self-loop wedge (2026-07-06 to 2026-07-15)
-// accumulated 1.4M undeliverable rows over a week with the WAL watchdog
-// firing as the only, indirect signal; either threshold surfaces that
-// class within hours of onset. Both describe a local wedge - rows or
-// retries piling up here - whatever the destination's state.
-//
-// queue_warn_age is deliberately NOT a per-bucket criterion. One
-// destination holding an old undelivered row says nothing about this
-// server: a peer that never published an address, or left, is that
-// operator's state, and the only remedy the admin has is deleting the
-// row. Warned per bucket, every departed peer produced a daily email for
-// the ~6 weeks between its first failure and health parking it, which is
-// exactly the ghost-subscriber noise the classified-rows exclusion below
-// was added to stop, one layer earlier. Age is instead a BREADTH signal:
+// Per-(target, service) backlog thresholds queue_watchdog warns past: a local
+// wedge, whatever the destination's state. Age is deliberately not per-bucket -
 // see queue_warn_stale_targets. var (not const) so tests can lower them.
 var queue_warn_rows int64 = 10000
 var queue_warn_age int64 = 2 * 86400
 var queue_warn_attempts int64 = 100
 
-// queue_warn_stale_targets is how many distinct destinations must hold an
-// unclassified pending row older than queue_warn_age before the age
-// signal warns. A single unreachable peer cannot be told apart from our
-// side - no address and no answer look the same whether they left or we
-// cannot resolve them - but breadth can: several destinations going stale
-// together while nothing else is wrong is not several peers leaving at
-// once, it is directory resolution or connectivity broken here.
+// queue_warn_stale_targets is how many distinct destinations must hold a stale
+// unclassified row before the age signal warns. One unreachable peer cannot be
+// told from a local fault; several going stale together can.
 var queue_warn_stale_targets int64 = 5
 
 // queue_warn_silence is how long with no successful delivery to ANY
 // destination, while stale rows are pending, before the age signal warns
-// regardless of breadth. One stale destination with deliveries flowing
-// elsewhere proves resolution and transport work and that peer is simply
-// gone; the same destination with nothing delivering anywhere is
-// indistinguishable from this server being off the network, and that
-// is worth an email even when it turns out to be a quiet night.
+// regardless of breadth: nothing delivering anywhere reads as this server being
+// off the network.
 var queue_warn_silence int64 = 6 * 3600
 
 // queue_delivered is the unix time of the last successful delivery to any
-// destination, stamped by both ack paths. Zero until the first delivery
-// after start, which the silence check treats as "no evidence either
-// way" rather than as silence - a freshly started server has not had time
-// to deliver anything.
+// destination, stamped by both ack paths. Zero means nothing since start, which
+// the silence check treats as no evidence rather than as silence.
 var queue_delivered atomic.Int64
 
 var queue_stale_warned int64 // last age-breadth warn unix
@@ -306,45 +240,23 @@ var queue_warn_repeat int64 = 86400
 var queue_warned sync.Map // target+"|"+service -> last warn unix
 
 // queue_park_attempts is the retry budget before queue_fail parks a row
-// (status='parked', outside every claim path) instead of rescheduling
-// it. With the backoff ladder capped at an hour, 50 attempts is roughly
-// two days of failures — long past transient, days before the age
-// budget deletes the data. var (not const) so tests can lower it.
+// (status='parked', outside every claim path). At an hourly backoff cap, 50
+// attempts is about two days. var (not const) so tests can lower it.
 var queue_park_attempts = 50
 
-// queue_warn_suspended is the count of recipients suspended WITHIN THE
-// PAST DAY past which queue_watchdog warns. The signal is the burst —
-// systemic resolution or connectivity breakage suspends many recipients
-// at once, which no per-recipient machinery will fix. The stock of
-// older suspensions is deliberately excluded: handled residue (departed
-// peers, wiped dev instances, test churn) accumulates on any long-lived
-// server and stays above any useful threshold forever (88 on the dev
-// rig and 14 on production within a day of this warn first shipping,
-// all of it residue), which would re-email daily about ghosts the
-// health machinery already owns.
+// queue_warn_suspended is how many recipients suspended WITHIN THE PAST DAY
+// make queue_watchdog warn. The burst is the signal; older suspensions are
+// excluded because handled residue accumulates forever on a long-lived server.
 var queue_warn_suspended int64 = 10
 
 // queue_suspended_warned is the last unix time the breadth warn fired.
 // Only queue_watchdog's manager goroutine touches it.
 var queue_suspended_warned int64
 
-// Per-recipient delivery health. The queue's rows each re-learn a dead
-// recipient from scratch — fifty dials per event, forever, until the
-// directory forgets the recipient's host (30 days, and a re-announcing
-// ghost resets that clock). The health table remembers per RECIPIENT:
-// exhausting a full retry budget with no contradicting success suspends
-// them, suspension stops broadcast fan-out enqueueing anything beyond a
-// periodic probe, and after queue_evict_age the owning app is told to
-// drop the subscriber. Scope: the gate applies ONLY to broadcast-class
-// fan-out (api_broadcast_send), where the resync/floor catch-up makes
-// skipped events recoverable — direct correspondence (chat invites,
-// interactive requests) always queues normally.
-//
-// queue_denial_limit is the fast path: an authoritative unknown_user
-// answer means the host is alive and says the recipient does not exist
-// there — three of those beat fifty timeouts. queue_probe_interval
-// exceeds the ~2 days a probe row takes to burn its ladder, so probes
-// never overlap. var (not const) so tests can lower them.
+// Per-recipient delivery health: an exhausted retry budget with no
+// contradicting success suspends a recipient, cutting broadcast fan-out (only)
+// to a periodic probe and eventually evicting the subscriber. var, so tests can
+// lower them.
 var queue_denial_limit int64 = 3
 var queue_probe_interval int64 = 3 * 86400
 var queue_evict_age int64 = 30 * 86400
@@ -362,24 +274,18 @@ func health_success(recipient string) {
 	// case, which returns early, still counts.
 	queue_delivered.Store(now())
 	db := db_open("db/queue.db")
-	// Point read before the write: the healthy common case has no
-	// health row, and this runs on delivery hot paths (queue_ack, the
-	// self-loop dispatch) where an unconditional write transaction
-	// per message would be a real cost. The read-to-write race is
-	// harmless — a row inserted in between records a fresh failure
-	// the next ack clears.
+	// Point read first: the healthy common case has no health row, and this runs
+	// on delivery hot paths where an unconditional write transaction per message
+	// would cost. The read-to-write race is harmless; the next ack clears it.
 	if ok, _ := db.exists("select 1 from health where recipient=?", recipient); !ok {
 		return
 	}
 	db.exec_bg("health success", "update health set failures=0, denials=0, success=?, suspended=0 where recipient=?", now(), recipient)
 }
 
-// health_failure records a row that exhausted its whole retry budget
-// (parked) against the recipient. Suspends when the ladder ran with no
-// contradicting success: the row burned every backoff step since
-// `created` and nothing from this recipient landed in that window. A
-// success mid-window (success >= created) blocks suspension — mixed
-// outcomes are a per-message problem, not a dead recipient.
+// health_failure records a parked row - a whole retry budget burned - against
+// the recipient. Suspends only when nothing from them landed since `created`: a
+// success mid-window is a per-message problem, not a dead recipient.
 func health_failure(recipient string, created int64) {
 	if recipient == "" {
 		return
@@ -404,13 +310,9 @@ func health_denial(recipient string) {
 	db.exec_bg("health suspend on denial", "update health set suspended=? where recipient=? and suspended=0 and denials >= ?", moment, recipient, queue_denial_limit)
 }
 
-// health_gate is consulted by broadcast fan-out per subscriber. Healthy
-// recipients (no row, or not suspended) pass. Suspended recipients are
-// skipped — their streams catch up via resync when they return — except
-// one probe row per queue_probe_interval, which passes through as a
-// normal send: its ack unsuspends, its park re-confirms. Past
-// queue_evict_age the caller should stop probing and tell the owning
-// app to drop the subscriber instead.
+// health_gate is consulted by broadcast fan-out per subscriber. Suspended
+// recipients are skipped except one probe per queue_probe_interval, which goes
+// as a normal send: its ack unsuspends, its park re-confirms.
 func health_gate(recipient string) (skip bool, evict bool) {
 	db := db_open("db/queue.db")
 	var h struct {
@@ -434,14 +336,9 @@ func health_gate(recipient string) (skip bool, evict bool) {
 	return true, false
 }
 
-// health_evict_record throttles the eviction dispatch to once per day
-// per (app, recipient) and remembers whether the overdue warn has
-// fired. In-memory, which costs at most one extra dispatch and one
-// repeated warn per restart — neither changes what the app is told.
-// The overdue CLOCK is deliberately not kept here: it reads
-// health.evicted, because a server deployed to weekly restarts more
-// often than health_evict_overdue, so an in-memory clock could never
-// reach the threshold.
+// health_evict_record throttles the eviction dispatch to once per day per (app,
+// recipient). In-memory, so a restart costs one extra dispatch. The overdue
+// clock lives in health.evicted instead: restarts outpace health_evict_overdue.
 type health_evict_record struct {
 	last   int64
 	warned bool
@@ -449,20 +346,15 @@ type health_evict_record struct {
 
 var health_evict_state sync.Map // app.id+"|"+recipient -> health_evict_record
 
-// health_evict_overdue is how long an (app, recipient) pair may keep
-// receiving daily eviction dispatches before the app is presumed to be
-// ignoring them and the operator is warned. A handling app drops the
-// subscriber on the first dispatch, which ends the fan-out consults that
-// trigger dispatching — still being here a week later means the app has
-// no subscriber/unreachable handler, so its subscriber row will never be
-// dropped and every later post pays for the dead host again.
+// health_evict_overdue is how long an (app, recipient) pair may keep receiving
+// daily eviction dispatches before the operator is warned. A handling app drops
+// the subscriber on the first one, so still being here means it has no handler.
 var health_evict_overdue int64 = 7 * 86400
 
-// health_evict_dispatch tells the owning app — once per day per (app,
-// recipient) — that a subscriber has been unreachable past
-// queue_evict_age, so it can drop the subscriber row. Fired lazily from
-// the fan-out gate: exactly where the cost recurs and where app context
-// exists, so no scheduler is involved. Apps without a handler no-op.
+// health_evict_dispatch tells the owning app - once per day per (app,
+// recipient) - that a subscriber has been unreachable past queue_evict_age.
+// Fired from the fan-out gate, where the cost recurs and app context exists; no
+// handler, no-op.
 func health_evict_dispatch(user *User, app *App, service, recipient string) {
 	key := app.id + "|" + recipient
 	moment := now()
@@ -481,13 +373,9 @@ func health_evict_dispatch(user *User, app *App, service, recipient string) {
 		Evicted   int64 `db:"evicted"`
 	}
 	_ = db.scan(&h, "select since, suspended, evicted from health where recipient=?", recipient)
-	// Stamp the first dispatch. This is what marks the row as "the owning
-	// app has been told", the one condition under which queue_cleanup may
-	// delete it — an unstamped row keeps gating, because forgetting it
-	// would let the subscriber recycle through a fresh retry ladder with
-	// its subscriber row still in place. An update rather than an upsert:
-	// the only caller is health_gate's evict branch, which already found a
-	// suspended row, and a health row means a failure history.
+	// Stamp the first dispatch: this is what lets queue_cleanup delete the row. An
+	// unstamped row keeps gating, because forgetting it would let the subscriber
+	// recycle a fresh retry ladder with its subscriber row in place.
 	if h.Evicted == 0 {
 		h.Evicted = moment
 		db.exec("update health set evicted=? where recipient=? and evicted=0", moment, recipient)
@@ -507,31 +395,9 @@ func health_evict_dispatch(user *User, app *App, service, recipient string) {
 // capture eviction dispatches without standing up an app registry.
 var subscriber_dispatch = error_dispatch
 
-// queue_watchdog runs every db_manager tick. It groups pending queue
-// rows by (target, service) and warns when a bucket's row count or
-// attempt count says deliveries to that destination are not draining.
-// Retries make a transient outage invisible, which also makes a
-// permanent failure invisible — each individual retry is routine, so
-// undeliverable rows accumulate with no signal until something
-// downstream (disk, WAL churn) breaks. This is the direct signal.
-//
-// Scope: only rows the system has NOT yet classified. Parked rows and
-// rows for suspended recipients are excluded — the health machinery owns
-// those (probe, evict, reap) and re-warning about them daily until the
-// reaper deletes the evidence is noise (the 2026-07 ghost-subscriber
-// emails). A destination warns while its failure is still unexplained
-// and goes quiet the moment health classifies it dead.
-//
-// Every warn here is meant to name something THIS server's operator can
-// act on. A remote peer that never published an address, or that left,
-// is that operator's state, not ours, and it can only be told from a
-// fault here by breadth: one stale destination while others deliver is
-// them; several going stale together, or nothing delivering to anyone,
-// is us. So rows and attempts warn per bucket (a local wedge whatever
-// the destination), age warns only across buckets (queue_warn_stale_targets
-// / queue_warn_silence), and the breadth warn at the end covers many
-// recipients suspended at once - a systemic resolution failure, not
-// routine residue.
+// queue_watchdog runs every db_manager tick and warns when a (target, service)
+// bucket is not draining. Only rows health has not classified count. Rows and
+// attempts warn per bucket; age warns only across buckets (breadth or silence).
 func queue_watchdog() {
 	db := db_open("db/queue.db")
 	if db == nil {
@@ -581,14 +447,9 @@ func queue_watchdog() {
 		return true
 	})
 
-	// Age, across buckets. Stale destinations warn when there are enough
-	// of them to implicate this side, or when nothing at all has been
-	// delivered anywhere for queue_warn_silence - a peer being gone does
-	// not stop deliveries to everyone else, so that silence is ours. A
-	// zero delivery stamp means no delivery since start, which is no
-	// evidence either way and does not count as silence. Silence is only
-	// a signal while there is something stale to explain: a quiet server
-	// with an empty queue has nothing undelivered.
+	// Age, across buckets: enough stale destinations to implicate this side, or
+	// nothing delivered anywhere for queue_warn_silence. A zero delivery stamp is
+	// no evidence, and silence only counts while something is stale.
 	delivered := queue_delivered.Load()
 	silent := len(stale) > 0 && delivered != 0 && now-delivered >= queue_warn_silence
 	if int64(len(stale)) < queue_warn_stale_targets && !silent {
@@ -648,11 +509,10 @@ func queue_add_broadcast(id, from_entity, to_entity, service, event, from_app st
 		id, from_entity, to_entity, service, event, from_app, from_services, content, data, expires, now(), now(), queue_priority(service, event))
 }
 
-// Mark a message as acknowledged (remove from queue). A successful
-// delivery also confirms the target peer in the sender's learned
-// directory (directory_user_confirm is throttled and cheap; the batch
-// ack-flush path skips this — partial confirm coverage is fine, the
-// learned rows never age out).
+// Mark a message as acknowledged (remove from queue). A successful delivery
+// also confirms the target peer in the learned directory; the batch ack-flush
+// path skips that, and partial coverage is fine since learned rows never age
+// out.
 func queue_ack(id string) {
 	db := db_open("db/queue.db")
 	var q QueueEntry
@@ -668,11 +528,9 @@ func queue_ack(id string) {
 	//debug("Queue ACK received for %q", id)
 }
 
-// queue_ack_ch buffers IDs successfully handled by the worker pool or
-// resolved by /mochi/2 Sender read loops. queue_ack_batcher drains it
-// and collapses the deletes into one DELETE ... WHERE id IN (...) per
-// batch. Capacity is generous so a brief acks-burst from the worker
-// pool doesn't fall through to the synchronous fallback.
+// queue_ack_ch buffers IDs from the worker pool and Sender read loops;
+// queue_ack_batcher collapses them into one DELETE per batch. Capacity is
+// generous so an ack burst does not fall through to the synchronous fallback.
 var queue_ack_ch = make(chan string, 4096)
 
 // queue_ack_batch caps a single DELETE's IN-list size; SQLite's default
@@ -687,10 +545,8 @@ const queue_ack_batch = 256
 const queue_ack_interval = 20 * time.Millisecond
 
 // queue_ack_async pushes id onto queue_ack_ch for batched deletion.
-// Non-blocking: if the channel is full (very high sustained ack rate),
-// falls back to the synchronous queue_ack so progress is never lost.
-// Used by queue_reply.ack() in the worker pool and by sender_read's
-// ack-frame handler — the two hot-path ack sources.
+// Non-blocking: a full channel falls back to synchronous queue_ack so progress
+// is never lost.
 func queue_ack_async(id string) {
 	if id == "" {
 		return
@@ -702,18 +558,10 @@ func queue_ack_async(id string) {
 	}
 }
 
-// queue_ack_batcher drains queue_ack_ch, batching IDs into a single
-// DELETE per flush. Saves a SQLite transaction (and the writer-mutex
-// contention behind it) per ack vs the per-row queue_ack path.
-//
-// Flush triggers: batch fills (queue_ack_batch=256), or
-// queue_ack_interval (20ms) elapses with a non-empty batch.
-//
-// Crash-loss window: an ID sitting in the buffer when the process
-// dies will replay on next startup (the row stays 'sending' in
-// queue.db until the timeout, then queue_check_ack_timeout re-pends
-// it). message_seen dedup catches the replay on the receiver. The
-// 20ms ceiling keeps the window small.
+// queue_ack_batcher drains queue_ack_ch into one DELETE per flush, saving a
+// SQLite transaction per ack. An ID buffered when the process dies replays
+// after restart: the row stays 'sending' until the timeout, and message_seen
+// dedups it.
 func queue_ack_batcher() {
 	batch := make([]string, 0, queue_ack_batch)
 	timer := time.NewTimer(queue_ack_interval)
@@ -787,15 +635,10 @@ func queue_ack_flush(ids []string) {
 	db.exec_bg("queue ack flush", "delete from queue where id in ("+string(placeholders)+")", args...)
 }
 
-// queue_drain_entity waits up to `wait` for every queued message from
-// `entity` to leave the queue (sent and resolved, or dropped). Used by
-// account teardown: farewell messages (membership departs, user/purge)
-// are signed with the user's identity key, which the caller is about to
-// delete — once the key is gone, unsent rows can no longer be claimed
-// and are silently dropped. Draining first lets the normal send complete;
-// on timeout (peer offline) teardown proceeds and the farewell is lost,
-// which receivers self-heal from (their own closure tick re-derives an
-// account-gone purge; stream traffic at a departed host fails visibly).
+// queue_drain_entity waits up to `wait` for every queued message from `entity`
+// to leave the queue. Teardown deletes the signing key, after which unsent rows
+// can never be claimed; on timeout the farewell is lost and receivers
+// self-heal.
 func queue_drain_entity(entity string, wait time.Duration) {
 	if entity == "" {
 		return
@@ -813,14 +656,10 @@ func queue_drain_entity(entity string, wait time.Duration) {
 	info("Queue drain timeout: farewell messages from entity %q still queued at teardown", entity)
 }
 
-// queue_drop removes a queue row without scheduling a retry. Use when
-// the receiver's NACK carries a Reason hint that further attempts
-// would deterministically NACK with the same outcome - e.g.
-// "broadcast-gap" means the subscriber is already requesting catch-up
-// via its own resync path and re-sending the same in-order live event
-// is wasted work that just floods the queue. queue_fail is the
-// default for unspecified failures (network blip, peer offline);
-// queue_drop is the explicit-give-up path keyed off a known reason.
+// queue_drop removes a queue row without scheduling a retry. Use when the
+// receiver's NACK reason says another attempt would fail identically (e.g.
+// "broadcast-gap", already being caught up by resync). queue_fail is the
+// default.
 func queue_drop(id, reason string) {
 	db := db_open("db/queue.db")
 	var q QueueEntry
@@ -913,23 +752,17 @@ func queue_is_inflight(id string) bool {
 	return s == "sending"
 }
 
-// queue_defer pushes a row's next_retry forward without incrementing
-// attempts. Use when a row was deliberately skipped (target peer is
-// in the silent-failure cache) - we want it to drop out of the ready
-// set for a while, but the row isn't actually "failing" so the
-// attempts counter / retry-backoff escalation shouldn't escalate.
+// queue_defer pushes a row's next_retry forward without incrementing attempts:
+// a deliberately skipped row is not failing, so the backoff must not escalate.
 func queue_defer(id string, delay int64) {
 	db := db_open("db/queue.db")
 	db.exec_bg("queue defer", "update queue set next_retry = ? where id = ?", now()+delay, id)
 }
 
-// queue_defer_target pushes every pending row for a target forward to
-// `until` in one UPDATE. Used to park a silent or stalled peer's entire
-// backlog so queue_select stops re-scanning it — deferring row-by-row
-// instead walks the whole backlog (one defer per tick), which is the
-// O(n^2) spin behind the 2026-06-02 incident. Idempotent: only rows due
-// before `until` are moved. Resurrected by queue_resurrect_peer when the
-// peer recovers.
+// queue_defer_target pushes every pending row for a target forward in one
+// UPDATE, so queue_select stops re-scanning a silent peer's backlog. Row-by-row
+// deferral walks the whole backlog once per tick. Idempotent; only rows due
+// before `until`.
 func queue_defer_target(target string, until int64) {
 	if target == "" {
 		return
@@ -938,11 +771,9 @@ func queue_defer_target(target string, until int64) {
 	db.exec_bg("queue defer target", "update queue set next_retry = ? where target = ? and status = 'pending' and next_retry < ?", until, target, until)
 }
 
-// queue_resurrect_peer brings every deferred row for a peer back into
-// the ready set. Called from peer_connect's success path so a reviving
-// peer's backlog drains immediately instead of waiting out the deferred
-// next_retry timer set by queue_process's silent-peer pre-filter. No-op
-// if there are no rows in the future for that peer.
+// queue_resurrect_peer brings every deferred row for a peer back into the ready
+// set, called from peer_connect so a reviving peer's backlog drains at once
+// instead of waiting out the deferred next_retry.
 func queue_resurrect_peer(target string) {
 	if target == "" {
 		return
@@ -987,21 +818,13 @@ func queue_fail(id string, err string) {
 		// live route with a fresh budget. Checked before parking, so a row does
 		// not spend the rest of its age waiting on a peer that has moved.
 	} else if attempts >= queue_park_attempts {
-		// Retry budget exhausted while the row is still inside its age
-		// budget: park it instead of grinding hourly retries for the
-		// remaining days (1.4M wedged rows at attempts up to 157 were
-		// the write churn that starved queue.db's WAL checkpoint,
-		// 2026-07-15). Parked rows keep their data — they revive when
-		// the target peer reconnects (queue_resurrect_peer) and age out
-		// through the queue_cleanup sweep, which is status-blind.
+		// Retry budget spent while still inside the age budget: park rather than
+		// grind hourly retries for the remaining days. Parked rows keep their data,
+		// revive on queue_resurrect_peer, and age out through the status-blind sweep.
 		db.exec_bg("queue fail park", "update queue set status = 'parked', attempts = ?, last_error = ? where id = ?", attempts, err, id)
-		// A parked row is a full retry budget burned against this
-		// recipient — feed the per-recipient health record. The park
-		// itself is the machinery working, not an operator problem:
-		// health_failure suspends the recipient, the sending app hears
-		// via message/timeout and subscriber/unreachable dispatches, and
-		// queue_watchdog emails only for unclassified or systemic
-		// failures. Log for forensics, no admin email.
+		// A parked row is a full retry budget burned against this recipient, so feed
+		// the health record. The park is the machinery working: log for forensics, no
+		// admin email.
 		health_failure(q.ToEntity, q.Created)
 		if q.Target == "" {
 			// No peer to reconnect: the recipient entity never resolved
@@ -1018,15 +841,9 @@ func queue_fail(id string, err string) {
 	}
 }
 
-// queue_expand_empty_target is the retry-time fan-out: if a row has
-// an empty target (entity_peers returned nothing at enqueue) and
-// entity_peers now finds N live locations, clone (N-1) sibling rows
-// targeting the additional peers and return the first peer for this
-// attempt. Returns the empty string if entity_peers is still empty
-// (caller should fail the row for retry later).
-//
-// Split out from queue_send_direct so the expansion logic is unit-
-// testable without dragging in libp2p.
+// queue_expand_empty_target is the retry-time fan-out: a row with an empty
+// target clones (N-1) siblings for the extra peers entity_peers now finds and
+// returns the first for this attempt. Empty string when there is still no peer.
 func queue_expand_empty_target(q *QueueEntry) string {
 	peers := entity_peers_for(q.FromEntity, q.ToEntity)
 	if len(peers) == 0 {
@@ -1039,39 +856,11 @@ func queue_expand_empty_target(q *QueueEntry) string {
 	return peers[0]
 }
 
-// queue_retarget re-resolves a row whose pinned peer is no longer a route to
-// the recipient, and reports whether it did.
-//
-// A direct row's target is chosen once, at enqueue, from entity_peers_for, and
-// nothing has ever rewritten it: the four update statements above touch
-// next_retry and status and are keyed BY target. So an entity that moves hosts
-// after a row is queued strands that row against the old peer - it retries for
-// fifty attempts, parks, and waits for a reconnect that cannot come, until the
-// seven-day reap drops it.
-//
-// The damage is not confined to the message. Parking calls
-// health_failure(q.ToEntity, ...), which records the failure against the
-// RECIPIENT - so a full retry budget burned on our own stale routing suspends a
-// host that was reachable all along, and for an entity this host also fans out
-// to, suspension gates real broadcast delivery down to a periodic probe. That
-// amplification has been observed in production, with the suspended entities
-// live in db/directory.db at a peer other than the one their rows named.
-//
-// The trigger is deliberately narrow. Re-resolving whenever a send fails would
-// trample queue_resurrect_peer, which exists for the peer that is merely
-// offline and will come back. Retargeting happens only when the pinned peer is
-// no longer among the routes entity_peers_for returns AND some other route is -
-// "this address is gone", not "this address is not answering". Asking the
-// resolver rather than the directory tables directly means the test cannot
-// drift from what routing actually does.
-//
-// Fan-out matches queue_expand_empty_target: siblings are cloned for the
-// remaining peers, because two re-resolution paths that disagree about fan-out
-// is how the next version of this bug gets written.
-//
-// Attempts reset because the budget was spent on a different destination. The
-// age cap still bounds the row, and the retarget cannot loop: the new target
-// came from entity_peers_for, so it IS among the routes on the next failure.
+// queue_retarget re-resolves a row whose pinned peer is no longer among the
+// routes entity_peers_for returns, and reports whether it did. Narrow on
+// purpose - "this address is gone", not "not answering", which is
+// queue_resurrect_peer's job. Attempts reset because the budget was spent on a
+// different destination.
 func queue_retarget(db *DB, q *QueueEntry) bool {
 	if q.Type != "direct" || q.Target == "" {
 		return false
@@ -1094,20 +883,9 @@ func queue_retarget(db *DB, q *QueueEntry) bool {
 }
 
 // queue_retarget_parked re-resolves parked rows, which never reach queue_fail
-// again and so would never be retargeted by it.
-//
-// A row that parked before this existed is exactly the stranded case: its retry
-// budget already spent, its recipient already suspended, and nothing left to
-// revive it but the reconnect of a peer that has moved. Hourly is soon enough -
-// it has been parked for days.
-//
-// The decision is per destination, not per row, so the sweep groups first. That
-// matters twice over: the resolver is asked once per (sender, recipient, peer)
-// rather than once per row, and the rows themselves - which carry the message
-// content and any file data - are never loaded for a destination that is not
-// moving, which is every destination on a healthy server. Parking exists
-// because this queue has held rows by the million; a sweep that reads them all
-// into one slice to decide nothing would be its own outage.
+// and so are never retargeted by it. Grouped per destination, not per row: this
+// queue has held rows by the million and must not be loaded wholesale to decide
+// nothing.
 func queue_retarget_parked() {
 	db := db_open("db/queue.db")
 	destinations, err := db.rows("select distinct from_entity, to_entity, target from queue where status = 'parked' and type = 'direct' and target != ''")
@@ -1151,13 +929,8 @@ func queue_retarget_parked() {
 	}
 }
 
-// Send a queued direct message (reads challenge before sending, waits for ACK)
-//
-// Multi-host fan-out: if the row was enqueued with an empty target
-// (entity_peers returned nothing at the time, so send_work couldn't
-// fan out) and entity_peers now finds multiple live locations, expand
-// this row to N peers by inserting (N-1) sibling rows with fresh IDs.
-// Send the primary copy on this attempt to whichever peer comes first.
+// Send a queued direct message (reads challenge before sending, waits for ACK).
+// An empty target is expanded to the recipient's live peers first.
 func queue_send_direct(q *QueueEntry) bool {
 	peer := q.Target
 	if peer == "" {
@@ -1167,26 +940,17 @@ func queue_send_direct(q *QueueEntry) bool {
 		return false
 	}
 
-	// Self-loop fast path. The wire envelope (CBOR encode + sign + pipe
-	// transit + verify + decode + ACK round-trip) costs ~1-5ms per row,
-	// and every byte of it is wasted ceremony when the receiver is this
-	// process. The queue table is a trusted store: every queue_add_*
-	// call site validates the row's from_entity against the writing
-	// user (messages.go api_message_send line 365 is the canonical
-	// check; internal callers use server-controlled values). So we don't
-	// need to re-prove identity to ourselves via the signature - the
-	// presence of the row in queue.db IS the proof. File sends still
-	// need the slow path to push bytes through the stream API.
+	// Self-loop fast path: the wire envelope is wasted when the receiver is this
+	// process. Every queue_add_* call site validates from_entity against the
+	// writing user, so the row itself is the proof. File sends still need the slow
+	// path.
 	if peer == net_id {
 		return queue_send_self_loop_fast(q)
 	}
 
-	// /mochi/2/messages path: build a Frame and hand to peer_send. The
-	// Sender handles claim, codec, framing, ack matching, and updates
-	// the queue row itself (queue_ack / queue_fail) via the inflight
-	// resolver. Return false either way: on success the async resolver
-	// owns the row (status 'sending'); on a stream-open failure we roll
-	// back to 'pending' and queue_process retries on a later tick.
+	// /mochi/2/messages path: the Sender owns claim, framing, ack matching and
+	// resolving the row. Return false either way - on success the async resolver
+	// owns it; on a stream-open failure it rolls back to pending for a later tick.
 	f, err := frame_for_queue(q)
 	if err != nil {
 		queue_drop(q.ID, fmt.Sprintf("frame build failed: %v", err))
@@ -1203,29 +967,10 @@ func queue_send_direct(q *QueueEntry) bool {
 	return false
 }
 
-// queue_send_self_loop_fast bypasses the wire envelope when delivering
-// to ourselves. Routes through the per-(user, app) worker pool (same
-// path remote /mochi/2/messages frames take) so self-loop frames
-// serialise with remote frames for the same handler — preserves the
-// "handler invocations for the same (user, app) never overlap"
-// guarantee across both sources.
-//
-// Differences from the pre-/mochi/2 version (which ran e.route()
-// inline):
-//   - Temporal: the call returns after enqueueing, not after the
-//     handler runs. The queue row is resolved later by queue_reply
-//     when the worker finishes (queue_ack / queue_fail / queue_drop).
-//   - Serial guarantee: self-loop now serialises with remote sends
-//     for the same (user, app).
-//   - Panic isolation: now lives in the worker's handle() rather than
-//     here. The defer recover guards only the dispatch path (resolve
-//     user from To, decode Content) — the handler proper runs on the
-//     worker goroutine which has its own recover.
-//
-// Returns true on successful enqueue (the worker will resolve the
-// queue row), false only if the row can't be enqueued at all (decode
-// fails). queue_process's caller treats false the same way as a
-// failed remote send: queue_fail with standard backoff.
+// queue_send_self_loop_fast bypasses the wire envelope when delivering to
+// ourselves, via the per-(user, app) worker pool so self-loop frames serialise
+// with remote ones. True means enqueued, not handled; queue_reply resolves the
+// row.
 func queue_send_self_loop_fast(q *QueueEntry) (ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1303,42 +1048,10 @@ func queue_send_broadcast(q *QueueEntry) bool {
 	return true
 }
 
-// queue_select pulls the next batch of due rows for queue_process to
-// dispatch. Two sub-batches, both filtered to status='pending' AND
-// next_retry<=now:
-//
-//  1. Direct rows with a target peer: ONE row per target peer, picked
-//     as the highest-priority earliest-next_retry row for that peer.
-//     Up to queue_pick_direct_limit (50) distinct peers per tick.
-//
-//  2. Broadcasts (target='pubsub') and empty-target rows (target=”):
-//     picked normally by priority+next_retry, up to
-//     queue_pick_other_limit (20) per tick. Each is independent of
-//     any specific peer so the per-peer dedup doesn't apply.
-//
-// Why pick-by-peer? Without it, queue_select's 50-row budget was
-// dominated by whichever peer had the largest backlog — at wasabi
-// scale, an offline peer with 150k queued rows fills nearly every
-// pick, leaving online peers waiting many ticks for their first slot.
-// With pick-by-peer, every peer with due work gets a fair shot at
-// every tick; queue_process's tick latency is bounded by the slowest
-// single goroutine rather than scaling with backlog imbalance. Once
-// a peer has a Sender, pull_loop takes over and queue_process's
-// pre-filter skips that peer entirely (senders_has fast path), so
-// queue_select's job for that peer is just "bootstrap the Sender on
-// the first row".
-//
-// Why no bulk-floor lane? The old model needed a reserved floor
-// because urgent traffic could fill all 50 slots and starve bulk
-// (replication) work. With pick-by-peer, every peer gets at most one
-// slot per tick regardless of priority — a peer with only bulk rows
-// gets its slot just the same as a peer with urgent rows. No
-// starvation possible at the picker layer.
-//
-// SQLite cost: the PARTITION BY target ROW_NUMBER uses the
-// queue_target_priority_retry index (target, priority desc, next_retry)
-// without sorting — SQLite streams the index and emits the first row
-// per partition.
+// queue_select pulls the next batch of due rows: one row per distinct target
+// peer (queue_pick_direct_limit), plus broadcasts and empty-target rows by
+// priority (queue_pick_other_limit). Pick-by-peer stops one peer's backlog
+// filling the budget and starving every other peer.
 const (
 	queue_pick_direct_limit = 50
 	queue_pick_other_limit  = 20
@@ -1420,13 +1133,9 @@ func queue_process() int {
 				continue
 			}
 		}
-		// Silent-peer pre-filter: defer rows whose target is in the
-		// in-memory silent-failure cache (peer_is_silent) so they
-		// don't waste bucket slots on a peer we know is unreachable.
-		// Defer for queue_silent_defer (1h); resurrected eagerly on
-		// peer_connect via queue_resurrect_peer. Broadcast type has
-		// no specific target (pubsub fan-out), so the check only
-		// applies to direct + file/push.
+		// Silent-peer pre-filter: defer rows for a peer known unreachable so they do
+		// not waste bucket slots; peer_connect resurrects them eagerly. Broadcasts
+		// have no specific target, so this applies to direct rows only.
 		if q.Type != "broadcast" && q.Target != "" && peer_is_silent(q.Target) {
 			queue_defer_target(q.Target, now()+queue_silent_defer)
 			processed++
@@ -1445,29 +1154,18 @@ func queue_process() int {
 			processed++
 			continue
 		}
-		// Sender pull_loop pre-filter: skip direct rows whose target
-		// has an active /mochi/2/messages Sender — pull_loop is
-		// claiming them atomically and feeding them onto the Sender's
-		// outbox directly. queue_process attempting the same row would
-		// race for the same outbox slot and block on peer_send for
-		// sender_send_timeout when pull_loop has it full, dragging
-		// out the whole tick and starving self-loop / offline-peer
-		// work in the same batch. Skipping here leaves
-		// the row pending; pull_loop's next tick (≤1s) will claim it.
-		// File pushes don't ride the Sender pipeline (separate
-		// /mochi/2/stream per file), so they stay with queue_process.
-		// Broadcasts have no specific target.
+		// Sender pre-filter: pull_loop owns direct rows for a peer with an active
+		// Sender. Competing for the same outbox blocks peer_send for
+		// sender_send_timeout and drags out the tick. File pushes ride their own
+		// stream.
 		if q.Type == "direct" && q.Event != "file/push" && q.Target != "" && senders_has(q.Target) {
 			// Don't increment processed — the row isn't drained or
 			// deferred, just routed to a different mechanism.
 			continue
 		}
-		// Self-loop pre-filter: same logic for target == net_id.
-		// self_loop_drain claims these rows atomically and dispatches
-		// them straight to the per-(user, app) worker via
-		// queue_send_self_loop_fast — no need (and no benefit) for
-		// queue_process to compete. File pushes to self are a no-op
-		// nobody emits; if one ever appears, queue_process handles it.
+		// Self-loop pre-filter: self_loop_drain owns rows targeting net_id. File
+		// pushes to self are a no-op nobody emits; queue_process handles one if it
+		// appears.
 		if q.Type == "direct" && q.Event != "file/push" && q.Target != "" && q.Target == net_id {
 			continue
 		}
@@ -1478,15 +1176,9 @@ func queue_process() int {
 		return processed
 	}
 
-	// Per-peer semaphore: at most N in-flight sends per target peer.
-	// Different peers proceed in parallel. The semaphore is allocated
-	// lazily per peer; a single tick's worth of goroutines share these
-	// channels. After this function returns, the semaphores are GC'd.
-	//
-	// Broadcasts share one bucket (no specific target). File pushes
-	// use the same per-peer mechanism but with concurrency=1 — one
-	// large file at a time per peer (parallel pushes would just
-	// divide bandwidth).
+	// Per-peer semaphore: at most N in-flight sends per target peer, allocated
+	// lazily and GC'd when this function returns. Broadcasts share one bucket;
+	// file pushes use concurrency 1, since parallel pushes only divide bandwidth.
 	semaphores := map[string]chan struct{}{}
 	var semaphore_lock sync.Mutex
 	get_semaphore := func(peer string, cap int) chan struct{} {
@@ -1513,13 +1205,9 @@ func queue_process() int {
 			bucket = "\x00file\x00" + q.Target
 			cap = queue_per_peer_file_concurrency
 		default:
-			// Serialise per (target peer, from-entity) so SQL ops for
-			// the same user to the same peer apply in order on the
-			// receiver. Without this, FK-dependent ops can arrive
-			// before their parents (e.g. subscribers INSERT landing
-			// before the parent feeds row INSERT) and fail with FK
-			// violations. Different users on the same peer still
-			// parallelise, retaining most of the throughput win.
+			// Serialise per (target peer, from-entity) so one user's ops apply in order
+			// on the receiver: otherwise a child row can land before its parent and fail
+			// the foreign key. Different users on the same peer still parallelise.
 			bucket = "\x00direct\x00" + q.Target + "\x00" + q.FromEntity
 			cap = 1
 		}
@@ -1555,34 +1243,18 @@ func queue_process() int {
 // Check for sent messages that haven't received ACK (timeout)
 func queue_check_ack_timeout() {
 	db := db_open("db/queue.db")
-	// Rows still claimed 60 seconds after they were claimed: a sender that
-	// died mid-flight, or a process that went away holding them.
-	//
-	// Keyed on `claimed`, not `created`. created is the enqueue time and is
-	// never rewritten - the retry path bumps attempts and next_retry and
-	// leaves it - so a row that had ever been retried was already older than
-	// any threshold, and this swept it back to pending the instant it was
-	// claimed, while the sender still held it. The manager loops straight
-	// back into this whenever it acted on a row rather than waiting for its
-	// tick, so that fired continuously on a busy queue: a duplicate on the
-	// wire (caught downstream by message_seen dedup) and a retry ladder
-	// advancing on a message that was never failing.
+	// Rows still claimed 60 seconds on: a sender that died mid-flight. Keyed on
+	// `claimed`, not `created` - created is the enqueue time and is never
+	// rewritten, so any retried row would be swept the instant its sender claimed
+	// it.
 	stuck := now() - queue_claim_timeout
 	db.exec_bg("queue stuck-sending requeue", "update queue set status = 'pending', next_retry = ? where status = 'sending' and claimed < ?",
 		queue_next_retry(0), stuck)
 }
 
-// queue_check_entity is called when an entity's location is discovered.
-// Nudges the queue manager — the single processing goroutine will pick
-// up any rows targeted at the entity in its next pass.
-//
-// Earlier versions ran this in a fresh goroutine that re-scanned the
-// queue and re-sent rows itself. That meant multiple discovery events
-// fired concurrent SELECT * FROM queue scans, each cloning every row's
-// content/data blob via sqlx → bytes.Clone (the live capture showed
-// 4.7 GB pinned across 8 stacked goroutines after the source emitted a
-// 3.7 MB manifest-result for the 21,612-entry apps scope). Funnelling
-// through queue_wake removes that fan-out: one goroutine, one scan.
+// queue_check_entity is called when an entity's location is discovered. Nudge
+// the queue manager rather than scanning here: concurrent discovery events each
+// cloning every row's content blob pinned gigabytes.
 func queue_check_entity(entity string) {
 	queue_wake()
 }
@@ -1596,10 +1268,6 @@ func queue_check_peer(peer string) {
 // Clean up old entries
 func queue_cleanup() {
 	db := db_open("db/queue.db")
-	// One retention floor. This was two - replication ops kept 30 days so an
-	// offline replica could still replay, everything else 7 - and the first
-	// arm has been unmatchable since replication was removed, while the second
-	// (service != 'replication') was true of every row.
 	aged := "created < ?"
 	cutoff := now() - queue_age_maximum
 
@@ -1626,15 +1294,9 @@ func queue_cleanup() {
 		queue_error_dispatch(q, error_code_message_timeout, "timeout")
 	}
 
-	// A row that burned its whole retention window undelivered is at
-	// least as strong a failure signal as a park — and it is the ONLY
-	// signal for rows whose attempts never climb: a gossip-announced
-	// ghost peer with no reachable addresses short-circuits before
-	// queue_fail, freezing attempts below the park threshold, so without
-	// this hook such recipients never suspend and every fan-out mints
-	// fresh rows forever. One call per recipient per sweep, on the
-	// newest reaped row; suspension still requires no delivery success
-	// since that row was created.
+	// A row that burned its whole retention undelivered is the ONLY failure signal
+	// for recipients whose attempts never climb (a ghost peer with no addresses
+	// short-circuits before queue_fail), so feed health here too.
 	reaped := map[string]int64{}
 	for i := range old {
 		q := &old[i]
@@ -1646,34 +1308,16 @@ func queue_cleanup() {
 		health_failure(recipient, created)
 	}
 
-	// Health residue: a recipient suspended past twice the evict age AND
-	// evicted at least once has had its owning app told to drop it, so no
-	// fan-out consults the row again. If the host ever returns, inbound
-	// contact rebuilds state from scratch anyway.
-	//
-	// The evicted check is not decoration. Eviction fires from the fan-out
-	// gate, so a recipient whose owner posts nothing between the evict age
-	// and twice it is never dispatched at all; deleting that row on age
-	// alone made it read healthy again while the app's subscriber row was
-	// still in place, and the next post burned a full retry ladder before
-	// re-suspending it — forever, one cycle per residue window.
+	// Health residue: delete a suspended row only once its app has been told to
+	// drop the subscriber. On age alone the row reads healthy again while the
+	// subscriber row is still in place, and the next post burns a fresh retry
+	// ladder.
 	db.exec_bg("health cleanup", "delete from health where suspended != 0 and suspended < ? and evicted != 0", now()-2*queue_evict_age)
 }
 
-// queue_drain waits, up to timeout, for the rows that are actually in flight
-// at shutdown.
-//
-// "sending" is that set: a row is marked sending when a sender claims it and
-// returns to pending on failure. It is not "pending" - on a busy server new
-// rows arrive continuously, so waiting for an empty pending set would always
-// burn the whole timeout and never mean anything.
-//
-// This counted status='sent' until 2026-08-20. Nothing in the server has ever
-// written that status, so the count was always zero, the function returned on
-// its first iteration and logged "Queue drained" on every shutdown without
-// checking anything. Little was lost - a row still sending is swept back to
-// pending by queue_check_ack_timeout and retried after restart, and SQLite is
-// crash-safe - but the log line asserted a drain that had not happened.
+// queue_drain waits, up to timeout, for the rows actually in flight - status
+// 'sending'. Not 'pending': on a busy server new rows arrive continuously, so
+// waiting for an empty pending set would always burn the whole timeout.
 func queue_drain(timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	db := db_open("db/queue.db")
@@ -1697,34 +1341,11 @@ func queue_drain(timeout time.Duration) {
 	}
 }
 
-// self_loop_drain owns queue.db's self-loop slice (direct rows with
-// target == net_id). Symmetric with Sender.pull_loop, which owns the
-// per-peer slice. Wakes on a 1-second tick (heartbeat) or a queue_wake
-// nudge; claims a batch via queue_claim_for_self; dispatches each row
-// through queue_send_self_loop_fast (which decodes content, resolves
-// (user, app), and enqueues onto the worker's inbox). The worker's
-// reply target (queue_reply) resolves the row via queue_ack / queue_fail
-// after the handler runs.
-//
-// Why a dedicated goroutine instead of folding into queue_process:
-//
-//   - queue_process's WaitGroup.Wait at end-of-tick blocks until every
-//     dispatched goroutine returns. When the batch includes a slow
-//     offline-peer connect timeout (libp2p dial), the tick drags
-//     out to sender_send_timeout (~5s), starving everything else in
-//     the next batch. A dedicated drain only ever handles self-loop
-//     rows — nothing slow can hold it up.
-//   - Backpressure visibility: when the worker pool saturates,
-//     worker_dispatch blocks self_loop_drain and the queue.db depth
-//     for self-loop rows visibly rises (mochictl queue-length /
-//     pipelining status). With the queue_process path the same
-//     backpressure shows up as opaque goroutine stalls.
-//   - Symmetric with pull_loop, so the architecture is "every queue
-//     consumer has its own reader".
-//
-// Batch size mirrors queue_select's 50: large enough to amortise the
-// claim cost, small enough that worker_dispatch back-pressure shows up
-// promptly on the next iteration.
+// self_loop_drain owns queue.db's self-loop slice (direct rows targeting
+// net_id), symmetric with Sender.pull_loop. Dedicated goroutine because
+// queue_process waits for its whole batch at end of tick and one offline-peer
+// dial would stall it. Batch mirrors queue_select's 50, so worker back-pressure
+// shows next iteration.
 const self_loop_batch = 50
 
 func self_loop_drain() {
@@ -1750,19 +1371,9 @@ func self_loop_drain() {
 	}
 }
 
-// Queue manager goroutine. Single processing loop owns every outbound
-// send so that fan-out to a peer is serialised — multiple send_peer()
-// callers don't race each other onto the wire.
-//
-// Drain shape: while queue_process is finding rows to act on, the loop
-// re-enters immediately with no wait, so a 1.7M-row backlog drains at
-// the SQL+send speed rather than the tick interval. The tick is just a
-// heartbeat safety net for the idle case: if no row enqueue or peer
-// reconnect fires queue_wake_ch, the heartbeat still fires every second
-// so the manager picks up any rows whose next_retry has come due since
-// the last pass. Worst-case latency between send_peer and the wire is
-// the wake-pickup roundtrip (sub-millisecond) for new rows; up to one
-// second for newly-due retries during a fully-idle period.
+// Queue manager goroutine. One processing loop owns every outbound send, so
+// fan-out to a peer is serialised. While queue_process keeps finding rows the
+// loop re-enters with no wait; the tick is only a heartbeat for the idle case.
 func queue_manager() {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()

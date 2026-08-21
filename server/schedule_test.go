@@ -337,16 +337,10 @@ func TestScheduleValid(t *testing.T) {
 	})
 }
 
-// TestScheduleHandleUnrunnable covers handling of a due event that can't run
-// on this host: a bootstrapping (pending) user is deferred, because its app
-// and data may not have finished landing. Everything else stale — an absent
-// user, or an active user or system event whose app is gone — has its
-// recurring row dropped so it stops re-firing. The drop is local; one-shot
-// rows were already removed by schedule_claim.
-//
-// The absent case deferred until 2026-08, on the premise that a peer would
-// run it. With no replication there is no peer, so deferring meant re-claiming
-// the row every interval for the life of the server.
+// TestScheduleHandleUnrunnable: a pending user's due event is deferred (its app
+// and data may still be landing); anything else stale has its recurring row
+// dropped so it stops re-firing. One-shots were already removed by
+// schedule_claim.
 func TestScheduleHandleUnrunnable(t *testing.T) {
 	data_dir = t.TempDir()
 	os.MkdirAll(data_dir+"/db", 0755)

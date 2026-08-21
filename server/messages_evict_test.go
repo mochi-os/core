@@ -11,11 +11,8 @@ import (
 	"testing"
 )
 
-// The dedup map has a ceiling, and hitting it sheds the OLDEST entries.
-//
-// The TTL alone does not bound the map: the stream rate limit is charged per
-// stream OPEN, not per frame, so one authenticated peer can hold a stream
-// open and add an entry per message for the whole 8h window.
+// The dedup map has a ceiling, and hitting it sheds the OLDEST entries. The TTL
+// alone does not bound it: the stream rate limit is charged per stream OPEN.
 func TestMessageSeenEvictHonoursTheCeiling(t *testing.T) {
 	saved_maximum := seen_messages_maximum
 	seen_messages_lock.Lock()
@@ -83,14 +80,8 @@ func TestMessageSeenEvictLeavesAnUnderfullMapAlone(t *testing.T) {
 	}
 }
 
-// Verification codes are drawn uniformly from the unambiguous alphabet.
-//
-// The previous implementation read crypto/rand into bytes and took them
-// modulo the alphabet length. 256 is not a multiple of 54, so indices 0..39
-// came up 5/256 of the time and 40..53 only 4/256 - a 25% excess across the
-// first 40 characters. It also ignored rand.Read's error, so a failing
-// entropy source yielded an all-zeroes buffer and therefore the SAME code
-// every call, silently.
+// Verification codes are drawn uniformly from the unambiguous alphabet: a byte
+// taken modulo the alphabet length favours the first (256 mod n) characters.
 func TestAccountGenerateCodeIsUniform(t *testing.T) {
 	const samples = 100000
 	counts := make(map[rune]int, len(unambiguous))
@@ -106,11 +97,8 @@ func TestAccountGenerateCodeIsUniform(t *testing.T) {
 		}
 	}
 
-	// Taking a uniform byte modulo n favours the first (256 mod n) indices,
-	// which get one extra representative among the 256 byte values. Derive
-	// that split from the alphabet rather than hardcoding it, so the test
-	// stays honest if the alphabet changes - as it already caught once, the
-	// set being 55 characters and not the 54 first assumed here.
+	// Derive the (256 mod n) split from the alphabet rather than hardcoding it;
+	// the set has already changed size once.
 	runes := []rune(unambiguous)
 	excess := 256 % len(runes)
 	if excess == 0 {

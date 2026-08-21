@@ -1,23 +1,13 @@
 // Mochi server: Directory
 //
-// One row per (entity, peer): each row is one host's listing of one entity,
-// asserted by that host alone. There are no global rows — a host may only
-// publish or delete rows naming itself, so no key holder can suppress
-// another host's listing or de-list an entity network-wide. Account
-// deletion converges per host: each host deletes its own row as it purges,
-// the same way the data layer converges.
-//
-// Rows are self-verifying: `signature` is the entity's ed25519 signature
-// over the whole row, peer included (the entity id IS the public key). Only
-// the entity's key can name a host for it, so trust never depends on the
-// arrival path — pubsub relays, the sync stream, and bootstrap peers are all
-// untrusted carriers. Covering seen as well means a captured row cannot be
-// re-flooded with a fresher timestamp to outrank the real host.
+// One row per (entity, peer): a host publishes and deletes only rows naming
+// itself, and every row carries the entity's ed25519 signature over the whole
+// row, peer and seen included, so no arrival path has to be trusted.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -53,11 +43,8 @@ var api_directory = sls.FromStringDict(sl.String("mochi.directory"), sl.StringDi
 	"search": sl.NewBuiltin("mochi.directory.search", api_directory_search),
 })
 
-// directory_init registers the built-in directory app and its handlers.
-//
-// Called explicitly from main_serve rather than run as a package init():
-// registration is a startup step with a defined position, not a side effect
-// of importing the file.
+// directory_init registers the directory app and its handlers; called from
+// main_serve.
 func directory_init() {
 	a := app("directory")
 	a.service("directory")
@@ -116,33 +103,16 @@ func entry_store(en *Entry, source string) bool {
 		debug("Directory dropping row with bad timestamps for %q from %s", en.Entity, source)
 		return false
 	}
-	// Before anything below acts on the row. The two branches that follow
-	// both reason from who signed it - the ghost withdrawal from "only the
-	// entity's key could have named this peer", the owner-authoritative drop
-	// from "a clone's rows verify" - and neither claim is true of a row whose
-	// signature nobody has checked. The ghost branch is the sharp one: it
-	// reaches it on push and sync, where the whole Entry is read off the wire
-	// and the entity is a string the sender chose, and it answers with a
-	// host-signed broadcast. One invented entity id per row bought one
-	// signature and one publish from us.
-	//
-	// Costs an ed25519 verify on rows the cheaper checks below would have
-	// rejected. That is the right way round: signing and broadcasting on
-	// unauthenticated input is worse than verifying something we then drop.
+	// Verify before the branches below act on the row: the ghost branch answers
+	// with a host-signed broadcast, so an unverified entity id read off the wire
+	// would buy a signature and a publish from us.
 	if !entry_verify(en) {
 		info("Directory dropping row with bad signature: entity=%q peer=%q from %s", en.Entity, en.Peer, source)
 		return false
 	}
-	// This host is authoritative for its own rows; they are rebuilt only by
-	// directory_create. A replayed copy must not override local state — but
-	// it is evidence: a row naming this host for an entity that no longer
-	// exists locally is a pre-wipe ghost other servers still hold, invisible
-	// to the daily orphan sweep (which scans only the local table), and only
-	// this host's key can withdraw it. Answer the echo with a deletion. The
-	// existence check protects every live entity, and a row naming this peer
-	// cannot be forged (only the entity's key can sign one, and this host
-	// held it), so the echo is always a claim a previous incarnation of this
-	// server really made.
+	// A row naming this host for an entity gone locally is a pre-wipe ghost only
+	// this host's key can withdraw: answer the echo with a deletion. A replayed
+	// copy never overrides local state, which directory_create alone rebuilds.
 	if en.Peer == net_id {
 		users := db_open("db/users.db")
 		exists, _ := users.exists("select 1 from entities where id=?", en.Entity)
@@ -152,15 +122,9 @@ func entry_store(en *Entry, source string) bool {
 		}
 		return false
 	}
-	// Owner-authoritative: this host is the single home of the entities in
-	// its users.db, so a row naming a DIFFERENT peer for a locally-owned
-	// entity is stale — a restored backup, a cloned test instance, or a
-	// pre-migration host. A clone holds the entity's keys, so its rows
-	// VERIFY; ownership, not the signature, is what makes them wrong.
-	// Storing one offers delivery fan-out a foreign route for a local
-	// subscriber (the 2026-07-06 News feed wedge trigger class). The
-	// fail-safe entity_local refuses the store when the check itself
-	// errors; the row is re-gossiped later.
+	// Owner-authoritative: a row naming a DIFFERENT peer for a locally-owned
+	// entity is stale. A clone or restored backup holds the entity's keys, so its
+	// rows VERIFY; ownership, not the signature, is what makes them wrong.
 	if local, ok := entity_local(en.Entity); !ok || local {
 		if local {
 			debug("Directory dropping foreign row for locally-owned %q (peer=%q) from %s", en.Entity, en.Peer, source)
@@ -188,11 +152,8 @@ func entry_store(en *Entry, source string) bool {
 }
 
 // directory_create builds or refreshes this host's row for a local entity.
-// The signature covers seen, so every heartbeat re-signs — the key is local
-// and ed25519 signing is negligible beside the hourly cadence. Unchanged
-// content keeps its version; changed content takes version = now(), and a
-// rename also resets created, so an impersonator can't inherit an old
-// entity's seniority in search ordering.
+// Unchanged content keeps its version; a change takes version = now() and a
+// rename also resets created, so an impersonator cannot inherit seniority.
 func directory_create(e *Entity) {
 	debug("Directory creating entry %q %q", e.ID, e.Name)
 	now := now()
@@ -345,15 +306,9 @@ func directory_sync() {
 	}
 }
 
-// directory_push_watermark tracks, per sync peer, the highest self-row
-// `seen` already delivered over a push stream, so only rows re-attested
-// since the last successful push are sent — steady-state one push per
-// hourly re-attest cycle, not one per 5-minute sync tick. In-memory by
-// design: a restart repeats one full push, which the receiver's
-// entry_store ordering rules dedup; and because every self-row's seen
-// advances on the hourly re-attest, a receiver that lost rows (wiped
-// directory) is made whole within an hour regardless of the watermark.
-// Touched only from the directory_manager goroutine.
+// directory_push_watermark is the highest self-row `seen` already pushed to
+// each sync peer. In-memory: a restart repeats one full push, which entry_store
+// dedups. Touched only from the directory_manager goroutine.
 var directory_push_watermark = map[string]int64{}
 
 // directory_push_rows returns this host's own rows re-attested after the
@@ -368,13 +323,10 @@ func directory_push_rows(watermark int64) []Entry {
 	return rows
 }
 
-// directory_push_to_peer delivers this host's own rows to one sync peer
-// over a stream. Pubsub republish remains the low-latency path, but a
-// republish burst larger than gossipsub's per-peer outbound queue is
-// silently truncated (observed live: only ~40 of a 154-row burst
-// survived), so correctness rides on this reliable push to the same
-// peers directory_sync pulls from; the rest of the fleet picks the rows
-// up from there.
+// directory_push_to_peer delivers this host's own rows to one sync peer over a
+// stream. Pubsub republish is the low-latency path but silently truncates
+// bursts larger than gossipsub's per-peer outbound queue, so correctness rides
+// on this.
 func directory_push_to_peer(peer string) {
 	rows := directory_push_rows(directory_push_watermark[peer])
 	if len(rows) == 0 {
@@ -396,25 +348,16 @@ func directory_push_to_peer(peer string) {
 	debug("Directory pushed %d rows to peer %q", len(rows), peer)
 }
 
-// directory_push_rows_maximum bounds one push stream. The stream's own
-// byte cap is cumulative and defaults to 100MB, which is several hundred
-// thousand rows - and the cost here is per ROW, not per byte: four
-// validators, up to three SQLite queries and an ed25519 verification each.
-//
-// A legitimate push carries only the sending host's own re-attested rows,
-// and the largest one it ever sends is the full set after a restart clears
-// its watermark. This is far above that.
+// directory_push_rows_maximum bounds one push stream. The stream's own cap is
+// cumulative bytes; the cost here is per ROW - four validators, up to three
+// SQLite queries and an ed25519 verification each - and far above any
+// legitimate push.
 const directory_push_rows_maximum = 100000
 
-// Receive a directory push: a peer delivering rows over a stream. Each
-// row passes the same verification gate as a live publish, so the worst
-// a malicious pusher can do is deliver valid rows; the sender is just a
-// carrier.
-//
-// Anonymous by design, like its directory_sync_event sibling, and the same
-// reasoning applies harder: sync is a peer asking us to read, push is a peer
-// making us write, and the peer decides how many rows that is. Bounded on
-// both axes - how often a peer may push, and how much one push may carry.
+// directory_push_event receives a peer's directory rows over a stream. Every
+// row passes the same verification gate as a live publish, so the sender is
+// only a carrier. Anonymous, so bounded on both axes: push rate and rows per
+// push.
 func directory_push_event(e *Event) {
 	if e.peer != "" && !rate_limit_directory_push.allow(e.peer) {
 		debug("Directory push refused: peer %q over the push rate limit", e.peer)
@@ -436,11 +379,9 @@ func directory_push_event(e *Event) {
 	debug("Directory push from peer %q truncated at %d rows: %d stored", e.peer, directory_push_rows_maximum, stored)
 }
 
-// directory_sync_from_peer pulls rows updated since our watermark from one
-// peer over /mochi/2/stream. The watermark is max(seen) minus an hour of
-// overlap — seen moves on every re-attestation, and entry_store makes
-// re-delivery of the overlap idempotent. Every received row passes the same
-// verification gate as a live publish; the sender is just a carrier.
+// directory_sync_from_peer pulls rows updated since our watermark from one peer
+// over /mochi/2/stream. The watermark is max(seen) minus an hour of overlap;
+// entry_store makes the overlap idempotent and verifies every row.
 func directory_sync_from_peer(peer string) bool {
 	start := int64(0)
 	db := db_open("db/directory.db")
@@ -503,11 +444,8 @@ func directory_sync_event(e *Event) {
 	}
 	for _, en := range results {
 		if err := e.stream.write(en); err != nil {
-			// Routine: the peer that requested this sync closed the stream
-			// early (it reconnected, already had what it needed, or the
-			// connection flapped). Same class of transient as the
-			// open-failure and read-EOF paths above, so debug — not an
-			// admin-emailing warn.
+			// The requesting peer closed the stream early: a transient, so debug rather
+			// than an admin-emailing warn.
 			debug("Directory sync to %q interrupted (peer closed stream): %v", en.Entity, err)
 			return
 		}
@@ -520,15 +458,9 @@ func directory_sync_event(e *Event) {
 // considered.
 const directory_location_age_maximum = 14 * 86400 // 14 days
 
-// directory_cleanup_manager runs once per hour and forgets peers that have
-// been demonstrably unreachable for a long time. See directory_forget_peer
-// for the cleanup action and directory_cleanup_dead_peers for the selection
-// criteria.
-//
-// Decoupled from directory_manager (which handles sync + a daily row-level
-// expiry) because this sweep operates at peer granularity: when ONE peer is
-// dead, every row it asserted needs cleaning, and the queue.db rows
-// targeting it need clearing in the same step.
+// directory_cleanup_manager runs hourly and forgets peers unreachable for a
+// long time. Separate from directory_manager because this sweep is per-peer:
+// one dead peer means all its rows and its queue rows go together.
 func directory_cleanup_manager() {
 	// Stagger the first sweep so it doesn't pile on startup work.
 	time.Sleep(5 * time.Minute)
@@ -538,22 +470,10 @@ func directory_cleanup_manager() {
 	}
 }
 
-// directory_cleanup_dead_peers scans entries grouped by peer and forgets
-// peers that meet ALL of the following:
-//
-//   - Not net_id (self never silenced).
-//   - Not a bootstrap peer (trusted infrastructure; never forget).
-//   - Most recent `seen` for this peer < now - directory_location_age_maximum.
-//   - peer_is_silent(peer) == true: the in-memory silent-cache has
-//     confirmed via repeated failed stream opens that the peer is
-//     genuinely unreachable, not just absent from the directory due
-//     to a transient announcement gap.
-//
-// Both the time and silent criteria matter — `seen` alone would
-// prematurely forget a peer that's only briefly offline; silent-cache
-// alone would forget a peer that's down for an hour. Together they
-// catch only peers that have been gone long enough to be considered
-// dead, AND that we've recently tried to reach.
+// directory_cleanup_dead_peers forgets peers that are neither self nor
+// bootstrap, whose newest `seen` predates directory_location_age_maximum AND
+// that peer_is_silent confirms unreachable. Either alone forgets a
+// merely-offline peer.
 func directory_cleanup_dead_peers() {
 	cutoff := now() - directory_location_age_maximum
 	ddb := db_open("db/directory.db")
@@ -574,28 +494,17 @@ func directory_cleanup_dead_peers() {
 			continue
 		}
 		if !peer_is_silent(peer) {
-			// Stale `seen` but the silent-cache hasn't confirmed
-			// unreachable. Could be transient (we just restarted and
-			// the cache is cold; or the peer hasn't been pinged
-			// recently). Skip this round; the next hourly sweep will
-			// re-evaluate.
+			// Stale `seen` but the silent-cache has not confirmed unreachable - a cold
+			// cache after a restart looks the same. Retry next sweep.
 			continue
 		}
 		directory_forget_peer(peer)
 	}
 }
 
-// directory_forget_peer deletes every trace of `peer` from this server's
-// per-host state: directory rows it asserted, queue rows targeting it,
-// peers.db addresses for it, and the in-memory peer/reachability/reconnect
-// caches.
-//
-// Purely local — directory.db, queue.db, and peers.db are per-host state, so
-// no coordination is needed.
-// The peer can come back later: a fresh libp2p connect drives republish +
-// sync, and the rows + peers.db addresses re-populate with current data.
-//
-// Logs row counts at info so the operator can see what happened.
+// directory_forget_peer deletes every trace of `peer` from this host's local
+// state. Not permanent: a fresh libp2p connect drives republish and sync, which
+// re-populate the rows and addresses.
 func directory_forget_peer(peer string) {
 	if peer == "" || peer == net_id {
 		return
@@ -675,13 +584,8 @@ func directory_manager() {
 
 	directory_sync()
 
-	// Zero, not now(): the cleanup must run on the FIRST tick after start
-	// and then daily. Anchoring it to process start meant a host restarted
-	// daily (yuzu, during active release periods) never reached the 24h
-	// mark and never cleaned at all — stale-entry expiry, ghost
-	// withdrawal, and the owner-authoritative foreign-claim purge all sit
-	// behind this gate. The sweep is idempotent and cheap; running it
-	// minutes after boot is strictly better than maybe-never.
+	// Zero, not now(): a host restarted daily would never reach the 24h mark and
+	// never clean at all. The sweep is idempotent and cheap.
 	cleanup := int64(0)
 	for range time.Tick(5 * time.Minute) {
 		directory_sync()
@@ -702,12 +606,9 @@ func directory_manager() {
 				}
 			}
 
-			// Owner-authoritative purge: drop foreign-peer rows for
-			// entities this host owns. Clones and restored backups sign
-			// valid rows for our entities (they hold the keys); ownership,
-			// not the signature, is what makes them wrong. entry_store
-			// refuses new ones; this clears any stored before that guard
-			// existed (e.g. the 2026-07 failover-drill ghosts).
+			// Owner-authoritative purge: clones and backups sign valid rows for our
+			// entities, so ownership decides. Clears any stored before entry_store began
+			// refusing them.
 			rows, _ = db.rows("select distinct entity from entries where peer<>?", net_id)
 			for _, row := range rows {
 				id := row["entity"].(string)

@@ -1,22 +1,14 @@
-// Mochi server: a requester that goes away mid-transfer is not an operator problem.
+// Mochi server: a requester that goes away mid-transfer is not an operator
+// problem.
 //
-// A browser navigating off a market listing abandons every image still in
-// flight. The abandonment propagated back down the relay - HTTP/2 stream
-// closed, so the market's a.write.stream() copy failed, so the Comptroller's
-// e.write.file() copy failed - and surfaced at the event dispatcher, which
-// warn()ed, and warn() mails the operator. The identical abandonment of a
-// locally served file logged quietly, so whether the admin got an email
-// depended on the transport rather than on anything being wrong.
-//
-// The discrimination io.Copy cannot do is the substance here: it returns one
-// error whether the source or the destination gave out, so a vanished peer and
-// an unreadable disk were the same value. Only the destination wrapper tells
-// them apart.
+// io.Copy returns one error whether the source or the destination gave out, so
+// only the destination wrapper can tell a vanished peer from an unreadable
+// disk, and only then can the dispatcher stay quiet about the first.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

@@ -5,19 +5,14 @@
 
 // Mochi server: self-service account closure.
 //
-// A user closes their own account by calling mochi.user.close() (step-up
-// re-authenticated by the calling app, mirroring export). Closure is a soft
-// delete: the account's status flips to "closing", a purge timestamp is set
-// `account_closing_days` in the future, and every session is revoked so the
-// account immediately looks gone. During the grace window the user can
-// re-authenticate and reach the reactivation interstitial, which calls
-// /_/auth/close/cancel to restore the account. Once the purge timestamp
-// passes, closure_manager hard-deletes the account via user_delete, which
+// mochi.user.close() soft-deletes: status flips to "closing", a purge timestamp
+// is set `account_closing_days` ahead, and every session is revoked. During the
+// grace window the user re-authenticates and /_/auth/close/cancel restores the
+// account; after it, closure_manager hard-deletes via user_delete, which
 // broadcasts the network tombstone.
 //
-// Administrators cannot close their own account: a self-closed sole admin
-// would strand the server. They must hand off the role (or be closed by
-// another admin) first.
+// Administrators cannot close their own account - a self-closed sole admin
+// would strand the server.
 package main
 
 import (
@@ -42,10 +37,9 @@ func account_closing_days() int {
 	return days
 }
 
-// api_user_close is mochi.user.close(): the caller marks their OWN account
-// for deletion after the grace period. Returns the purge timestamp (unix
-// seconds). Step-up re-authentication is enforced by the calling app via
-// mochi.user.session.reauthenticate before this runs, mirroring export.
+// api_user_close is mochi.user.close(): the caller marks their OWN account for
+// deletion after the grace period, returning the purge timestamp. Step-up
+// re-authentication is enforced by the calling app before this runs.
 func api_user_close(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "user/close"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -93,9 +87,8 @@ func user_close(user *User, language string) (int64, error) {
 	purge := now() + int64(account_closing_days())*86400
 	db.exec("update users set status='closing', purge=? where uid=? and status='active'", purge, user.UID)
 
-	// Soft delete: drop every active session so the account looks gone
-	// immediately. The user re-authenticates to reach the reactivation
-	// interstitial during the grace window.
+	// Drop every active session so the account looks gone immediately; the user
+	// re-authenticates to reach the reactivation interstitial.
 	sessions_revoke_all(user.UID)
 
 	email_account_closing(user, user.Username, purge, language)
@@ -103,10 +96,8 @@ func user_close(user *User, language string) (int64, error) {
 }
 
 // web_auth_close_cancel handles POST /_/auth/close/cancel: a user who has
-// re-authenticated during the grace window cancels the pending closure and
-// reactivates their account. The fresh session minted by the login they just
-// completed identifies them — only the holder of the account's login factors
-// can reach this, never a stale cookie (closure revoked them all).
+// re-authenticated during the grace window reactivates their account. Closure
+// revoked every session, so only a fresh login can reach this.
 func web_auth_close_cancel(c *gin.Context) {
 	u := web_auth(c)
 	if u == nil {
@@ -138,11 +129,8 @@ func user_purge(uid string) int64 {
 }
 
 // closure_manager hard-deletes accounts whose grace period has elapsed. Runs
-// shortly after startup — a purge that came due while the server was down
-// should not wait an hour for the first tick, but the P2P layer needs a moment
-// to connect first, so the farewell messages the teardown sends (see
-// queue_drain_entity) can still reach the peers holding this user's
-// subscriptions — then hourly; a coarse tick is fine for a multi-day timer.
+// shortly after startup so a purge due while the server was down does not wait
+// an hour, but late enough for P2P to carry the farewell messages, then hourly.
 func closure_manager() {
 	time.Sleep(time.Minute)
 	closure_run_due(now())
@@ -151,11 +139,9 @@ func closure_manager() {
 	}
 }
 
-// closure_run_due purges every account whose purge timestamp has passed.
-//
-// The one cross-host side effect is the signed directory tombstone each of the
-// account's entities broadcasts on deletion. It is idempotent on receivers, so
-// a receiver that has already withdrawn the entity is unaffected by a repeat.
+// closure_run_due purges every account whose purge timestamp has passed. The
+// one cross-host effect is each entity's directory tombstone, idempotent on
+// receivers.
 func closure_run_due(t int64) {
 	db := db_open("db/users.db")
 	rows, err := db.rows("select uid from users where status='closing' and purge>0 and purge<=?", t)
@@ -178,16 +164,10 @@ func closure_run_due(t int64) {
 	}
 }
 
-// email_account_closing tells the user their account is scheduled for
-// deletion. Localised to the user's language via the core label resolver.
-// Deduped per (address, purge), so a closure processed twice - a restart
-// landing on the same tick, a retry - sends one email.
-//
-// The email deliberately contains NO link or action button. A "your account
-// is scheduled for deletion — click here to cancel" message is a prime
-// phishing template; including a real cancel link would train users to click
-// such links. The body instead tells them to sign in to their account
-// themselves (the reactivation page is reached through normal login).
+// email_account_closing tells the user their account is scheduled for deletion,
+// deduped per (address, purge). The body deliberately carries no link or action
+// button - a "click here to cancel" deletion notice is a phishing template, so
+// it tells the user to sign in themselves.
 func email_account_closing(user *User, to string, purge int64, language string) {
 	event_id := fmt.Sprintf("closing:%d", purge)
 	if user != nil && email_already_delivered(user, to, event_id) {

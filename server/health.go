@@ -33,13 +33,9 @@ func health_status() (gin.H, int) {
 		database_status = "not started"
 		overall = http.StatusServiceUnavailable
 	} else if err := db.internal.Ping(); err != nil {
-		// Scrubbed: this body is served unauthenticated, and a driver error
-		// names the file it failed on - an absolute path under data_dir, which
-		// hands an anonymous caller the server's layout at exactly the moment
-		// it is unhealthy. path_scrub leaves the relative name, which is a
-		// documented part of the data layout and is what makes the field worth
-		// reporting at all. The man page promises "503 with detail otherwise",
-		// and this is that detail without the disclosure.
+		// Scrubbed: this body is served unauthenticated, and a driver error names an
+		// absolute path under data_dir. path_scrub leaves the relative name, which is
+		// the detail the man page promises.
 		database_status = "error: " + path_scrub(err.Error())
 		overall = http.StatusServiceUnavailable
 	}

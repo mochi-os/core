@@ -64,11 +64,8 @@ func (n *mdns_notifee) HandlePeerFound(p p2p_peer.AddrInfo) {
 func net_connect(peer string, addresses []string) bool {
 	//debug("Net connecting to peer %q at %v", peer, addresses)
 
-	// Defensive: a send_peer goroutine spawned before net_start
-	// initialized net_me would panic on the Connect() call below.
-	// Pre-p2p emit sites should be reordered (see main.go ordering),
-	// but guard here too so the class of race is robust against
-	// future regressions.
+	// A send_peer goroutine spawned before net_start initialised net_me would
+	// panic on Connect below.
 	if net_me == nil {
 		return false
 	}
@@ -113,13 +110,9 @@ func net_connect(peer string, addresses []string) bool {
 	return true
 }
 
-// net_drop_rotated_addresses inspects a failed dial for per-address peer-id
-// mismatches: an address we hold for `peer` that now answers as a DIFFERENT
-// peer — its identity rotated (a re-paired or rebuilt server reusing the same
-// host/port with a fresh key). Such an address is provably stale, so drop it;
-// otherwise the reconnect manager re-dials the defunct id forever, each dial a
-// CRYPTO_ERROR peer-id-mismatch (the high-CPU churn, #48). Ordinary dial
-// failures (offline, transient, no transport) are left untouched.
+// net_drop_rotated_addresses drops an address that now answers as a DIFFERENT
+// peer - a rebuilt server reusing the host/port with a fresh key. Left alone it
+// makes the reconnect manager re-dial the defunct id forever (#48).
 func net_drop_rotated_addresses(peer string, dial_error error) {
 	var de *p2p_swarm.DialError
 	if !errors.As(dial_error, &de) {
@@ -220,13 +213,9 @@ func net_start() {
 		opts = append(opts, p2p.ListenAddrStrings(fb...))
 	}
 
-	// AutoRelay: when behind NAT, reserve a slot on a relay. Candidates
-	// come from a dynamic source (relay.go) — the bootstrap relays plus
-	// any public peer that announces it relays — rather than a fixed
-	// list, so a NAT'd server is not limited to the bootstraps. Our own
-	// relay service is started dynamically once AutoNAT finds us public
-	// (relay_service_update from the reachability watcher), not as a
-	// construction-time option, since reachability is unknown here.
+	// AutoRelay: when behind NAT, reserve a slot on a relay. Candidates come
+	// dynamically from relay.go, so a NAT'd server is not limited to the
+	// bootstraps. Our own relay service starts when AutoNAT finds us public.
 	opts = append(opts, p2p.EnableAutoRelayWithPeerSource(net_relay_candidates))
 
 	net_me = must(p2p.New(opts...))
@@ -290,17 +279,10 @@ func net_start() {
 		warn("mDNS peer discovery disabled: %v", err)
 	}
 
-	// Start pubsubs. The topic validator must be registered before Join, so
-	// no message can be relayed in the window between joining and gating.
-	//
-	// Peer scoring (WithPeerScore) is deliberately NOT enabled. Its only
-	// useful input here would be invalid-message deliveries, driven by the
-	// validator returning Reject — and the traffic this validator refuses is
-	// indistinguishable from a peer running an older wire format. Enabling
-	// scoring would therefore have turned the 2026-07-25 flag day into a
-	// graylisting of every old node by every new one. Revisit only with a
-	// signal that separates "hostile" from "out of date"; see
-	// pubsub_validate.
+	// Start pubsubs. The topic validator must be registered before Join, so no
+	// message is relayed between joining and gating. Peer scoring stays off: the
+	// validator cannot tell hostile from out-of-date, and would graylist old
+	// nodes.
 	gs := must(p2p_pubsub.NewGossipSub(net_context, net_me))
 	must(gs.RegisterTopicValidator(pubsub_topic, pubsub_validate))
 	net_pubsub = must(gs.Join(pubsub_topic))
@@ -336,17 +318,9 @@ func net_watch_disconnect() {
 	}
 }
 
-// net_addresses returns this server's dialable multiaddresses, each
-// carrying the /p2p/<id> suffix — the format peers.db and the
-// [bootstrap] addresses option use. The set comes from the libp2p host:
-// interface listen addresses (wildcard binds expanded per interface),
-// identify-observed public addresses, and relay circuit addresses once
-// AutoRelay holds a reservation — the latter being what makes a NAT-ed
-// server dialable at all. Loopback and container-bridge addresses are
-// filtered (host-local; the containers they're valid for learn them
-// over mDNS); LAN-private addresses stay (they're how same-network
-// servers without working multicast reach each other). Empty before
-// net_start.
+// net_addresses returns this server's dialable multiaddresses, each with the
+// /p2p/<id> suffix peers.db and [bootstrap] use. Loopback and container-bridge
+// addresses are filtered; LAN-private ones stay. Empty before net_start.
 func net_addresses() []string {
 	if net_me == nil {
 		return nil
@@ -383,16 +357,8 @@ func net_addresses_render(addrs []multiaddr.Multiaddr) []string {
 }
 
 // net_address_dialable reports whether a remote host could use this address to
-// reach us. Loopback, unspecified and link-local cannot leave the machine or
-// the segment, so they are noise to every consumer of the published list -
-// worse than noise in peers_publish, which truncates at
-// peers_publish_addresses_maximum and would spend that budget on addresses no
-// peer can dial.
-//
-// Private addresses are kept on purpose. A peer on the same network dials
-// 10.x or 192.168.x successfully, and that is a supported deployment; only
-// addresses that are undialable from ANY other host are dropped. A name-based
-// address has no IP to judge and is kept.
+// reach us. Private addresses are kept on purpose - a same-network peer dials
+// them - and only addresses undialable from ANY other host are dropped.
 func net_address_dialable(a multiaddr.Multiaddr) bool {
 	text := net_address_ip(a)
 	if text == "" {
@@ -419,11 +385,9 @@ func net_address_ip(a multiaddr.Multiaddr) string {
 	return ""
 }
 
-// net_container_addresses returns the IPs of local interfaces created
-// by container and VM tooling — host-local bridges whose addresses are
-// dialable only from containers on this machine, which learn them over
-// mDNS. Announcing them tells every other server to dial its own
-// bridge. Best-effort: enumeration failure filters nothing.
+// net_container_addresses returns the IPs of local container and VM bridges:
+// dialable only from this machine, so announcing them tells peers to dial their
+// own bridge. Best-effort - enumeration failure filters nothing.
 func net_container_addresses() map[string]bool {
 	out := map[string]bool{}
 	interfaces, err := gonet.Interfaces()
@@ -447,11 +411,9 @@ func net_container_addresses() map[string]bool {
 	return out
 }
 
-// net_container_interface reports whether an interface name matches the
-// auto-generated names container and VM tooling uses for host-local
-// bridges. A deliberately-named primary bridge (br0, bridge0) does not
-// match — only the tool-generated forms (docker0, br-1a2b3c4d, virbr0,
-// veth..., cni0, podman1, flannel.1, lxcbr0, lxdbr0, kube-bridge).
+// net_container_interface reports whether an interface name is one of the
+// tool-generated container and VM bridge forms. A deliberately-named primary
+// bridge (br0, bridge0) does not match.
 func net_container_interface(name string) bool {
 	for _, prefix := range []string{"docker", "br-", "virbr", "veth", "cni", "podman", "flannel", "lxcbr", "lxdbr", "kube"} {
 		if strings.HasPrefix(name, prefix) {
@@ -506,12 +468,8 @@ func net_watch_reachability() {
 			net_reachability.Store("unknown")
 		}
 		debug("Net reachability now %q", net_reachable())
-		// The relay decision is NOT driven from here. AutoNAT verdicts
-		// flap (a couple of failed probes flip public<->unknown and back),
-		// and acting on every raw event churns the relay service — each
-		// Close drops the reservations NAT'd peers hold on us. The raw
-		// verdict stored above feeds net_reachability_manager, which
-		// debounces it before touching the relay.
+		// The relay decision is NOT driven from here: AutoNAT verdicts flap, and each
+		// relay Close drops the reservations NAT'd peers hold on us.
 	}
 }
 
@@ -542,9 +500,7 @@ type reachability_debounce_state struct {
 }
 
 // reachability_debounce_step folds one raw observation into the state and
-// reports whether the stable verdict should flip now. The dwell required
-// depends on direction — reachability_confirm_public to go up,
-// reachability_confirm_not_public to go down. Pure so the hysteresis is
+// reports whether the stable verdict should flip. Pure, so the hysteresis is
 // unit-testable.
 func reachability_debounce_step(s reachability_debounce_state, raw_public bool, t int64) (next reachability_debounce_state, flip bool) {
 	if raw_public == s.stable_public {

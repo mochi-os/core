@@ -1,17 +1,12 @@
-// Mochi server: Peer display names — the hostname a peer announces in
-// peers/publish, stored per peer and shown wherever a peer is presented
-// to a human.
-//
-// A name is a self-asserted label, not a credential. A peer announces its
-// own hostname (the `hostname` setting, or the OS hostname); receivers
-// display it as-is and the reader decides what to trust. Nothing keys
-// logic off a name, and a peer's authoritative identity is its peer ID /
-// fingerprint, which a name can never override or impersonate.
+// Mochi server: Peer display names - the hostname a peer announces in
+// peers/publish, shown wherever a peer is presented to a human. A name is
+// self-asserted, never a credential: nothing keys logic off it, and the
+// authoritative identity is the peer ID.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -93,10 +88,8 @@ func peer_names_announce() string {
 	return name
 }
 
-// peer_names_apply stores the name a peer announced, replacing whatever it
-// claimed before. An announcement with no name from a peer that
-// previously claimed one clears it (the operator turned announcing off —
-// honor it).
+// peer_names_apply stores the name a peer announced, replacing any earlier
+// claim. An announcement with no name clears the stored one.
 func peer_names_apply(id string, names []string) {
 	if id == "" || id == net_id {
 		return

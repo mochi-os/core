@@ -1,36 +1,13 @@
 // Mochi server: a variant's cache entry names the image it came from.
 //
-// api_image_variant keyed the entry on filepath.Base(file), throwing the
-// directory away, and short-circuited on the entry merely existing:
-//
-//	name := "variants/" + variant_name(filepath.Base(file), kind)
-//	if file_exists(destination) { return sl.String(name), nil }
-//
-// So photos/a/cat.jpg and photos/b/cat.jpg both keyed to
-// variants/cat_thumbnail.jpg, and the second request was served the first
-// image's render. The cache base is cache_dir/apps/<uid>/<app.id>, so a
-// collision cannot cross apps or users - but one app routinely holds several
-// entities at different visibility levels for one owner, and the variant is
-// served through a.write.cache, which an anonymous visitor reaches. A private
-// entity's thumbnail on a public page.
-//
-// Nothing collided: both shipped callers pass attachment_filename(id, name),
-// which is "<id>_<cleaned>" - flat, so base == whole path. That is what kept
-// it Low and also what made it a trap, since the first app to organise images
-// into subdirectories would have hit it silently.
-//
-// The fix is the name, not a provenance record. This cache is a bare
-// filesystem with no index: cache_evict_to walks it, sorts every FILE by
-// mtime, and removes them one at a time. A sidecar recording the source would
-// be evicted independently of the variant it describes, and
-// attachments.star's mochi.cache.delete would orphan one on every attachment
-// change. A self-describing name needs no metadata and leaves exactly one file
-// per variant, so eviction, backup and delete keep working untouched.
+// The entry keys on the whole relative path: two images sharing a base name in
+// different directories are different images. A flat name must key exactly as
+// before, since lib/starlark/attachments.star derives the same string.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -64,12 +41,9 @@ func TestVariantNameKeepsTheDirectory(t *testing.T) {
 	}
 }
 
-// TestVariantNameIsUnchangedForAFlatName is what makes this safe to ship. Both
-// shipped callers pass a flat name, lib/starlark/attachments.star derives the
-// same string independently to invalidate the entry, and
-// attachment_variant_room reserves exactly len("_thumbnail") when truncating.
-// A name that moved would break all three and silently strand every cached
-// variant already on disk.
+// TestVariantNameIsUnchangedForAFlatName: a flat name must key exactly as it
+// does today - lib/starlark/attachments.star derives the same string to
+// invalidate the entry, and attachment_variant_room reserves len("_thumbnail").
 func TestVariantNameIsUnchangedForAFlatName(t *testing.T) {
 	for _, c := range []struct{ input, kind, want string }{
 		{"image.png", "thumbnail", "image_thumbnail.png"},
@@ -213,11 +187,8 @@ func variant_key_shade(t *testing.T, path string) color.RGBA {
 	return color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
 }
 
-// TestTwoImagesWithOneNameRenderSeparately drives api_image_variant itself,
-// rather than the naming function, because the defect was at the CALL SITE -
-// variant_name was always given a path it handled correctly, and the base was
-// taken before it was called. Only an end-to-end render can show the second
-// image being served the first one's bytes.
+// TestTwoImagesWithOneNameRenderSeparately drives api_image_variant end to end:
+// the key is taken at the call site, not inside variant_name.
 func TestTwoImagesWithOneNameRenderSeparately(t *testing.T) {
 	original_data, original_cache := data_dir, cache_dir
 	data_dir, cache_dir = t.TempDir(), t.TempDir()

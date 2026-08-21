@@ -1,14 +1,12 @@
 // Mochi server: macOS peer-credential check for the admin UDS.
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// macOS has no SO_PEERCRED. The equivalent is LOCAL_PEERCRED, which returns an
-// xucred carrying the peer's uid and its group list (primary group first, up
-// to 16 entries). There is no pid, so admin_credential.pid stays 0. The xucred group
-// list gives the supplementary-group membership directly, so no /proc-style
-// lookup is needed.
+// macOS has no SO_PEERCRED. LOCAL_PEERCRED returns an xucred carrying the
+// peer's uid and group list (primary first, up to 16) and no pid, so
+// admin_credential.pid stays 0.
 
 //go:build darwin
 
@@ -20,12 +18,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// admin_account is the unprivileged user/group the server runs as; macOS
-// daemon accounts are conventionally underscore-prefixed (see the _mochi
-// account created by the .pkg preinstall). Note that under the static
-// (CGO_ENABLED=0) darwin build os/user cannot query OpenDirectory, so this
-// lookup is best-effort; the root/owner authorization path does not depend on
-// it.
+// admin_account is the unprivileged user/group the server runs as; macOS daemon
+// accounts are underscore-prefixed. Under the static (CGO_ENABLED=0) build
+// os/user cannot query OpenDirectory, so this lookup is best-effort.
 const admin_account = "_mochi"
 
 // admin_peer_authorized reads LOCAL_PEERCRED off a connected UnixConn and

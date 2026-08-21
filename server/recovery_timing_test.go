@@ -1,16 +1,10 @@
-// Mochi server: the recovery-login dummy comparison has to cost what a real one costs.
-//
-// The unknown-user branch compared against a hand-written 57-byte placeholder.
-// bcrypt's minimum is 59 and a real hash is 60, so CompareHashAndPassword
-// returned ErrHashTooShort on a length check before reaching the KDF - 12ns,
-// against 407ms for a user holding ten codes. A single request distinguished a
-// registered address from an unregistered one, and the comment above the line
-// asserted the opposite.
+// Mochi server: the recovery-login dummy comparison has to cost what a real one
+// costs.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -99,10 +93,6 @@ func TestRecoveryUnknownUserMatchesTheWorstKnownCase(t *testing.T) {
 	}
 	source := string(body)
 
-	// The handler by name. Searching for the audit reason instead found the
-	// first of three "user_not_found" sites, in a different handler with no
-	// preceding row check - which is how this test first panicked rather than
-	// reported.
 	at := strings.Index(source, "func web_recovery_login(")
 	if at < 0 {
 		t.Fatal("web_recovery_login not found; this test is looking in the wrong place")

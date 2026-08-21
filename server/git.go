@@ -111,21 +111,11 @@ func (l *git_loader) Load(ep *transport.Endpoint) (storer.Storer, error) {
 	}, nil
 }
 
-// git_storage wraps storer.Storer to hide PackfileWriter, forcing the packfile
-// parser to resolve thin pack delta references from the existing object store.
-//
-// That parser path is also why a push needs a second, decoded limit. Bounding
-// the request body bounds only the pack as sent, and a pack stores its objects
-// deltified against each other: a base object plus many small deltas decodes
-// into that many separate full objects, so a modest pack can land a far larger
-// footprint than its own size. The parser hands every decoded object to
-// SetEncodedObject, so metering there is the one place that sees the true
-// total, and it fails the push before receive-pack updates any ref.
-//
-// The meter counts decoded bytes while the quota it is charged against measures
-// bytes on disk, where objects are compressed - so it is deliberately
-// conservative: a push is refused a little before the owner's quota is truly
-// exhausted, never after.
+// git_storage wraps storer.Storer to hide PackfileWriter, so the packfile
+// parser resolves thin-pack deltas from the object store and hands every
+// decoded object to SetEncodedObject - the one place that sees what a pack
+// expands to. The meter counts decoded bytes against a quota measured on disk,
+// so it refuses early.
 type git_storage struct {
 	storer.Storer
 	remaining int64 // decoded bytes still allowed, when metered
@@ -169,13 +159,10 @@ func (m *git_diff_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs 
 	return api_git_diff(thread, nil, args, kwargs)
 }
 
-// Get the path to a repository for a given owner, calling app, and entity ID.
-// The directory uses the calling app's id so per-user storage lines up with
-// every other path-composing API (db_app, db_app_system, files): published
-// apps land at users/<uid>/<app-entity-id>/<repo-entity>/, dev apps at
-// users/<uid>/<app-name>/<repo-entity>/. The literal "repositories" string
-// was a pre-v54 accident that worked on dev (app.id == "repositories") but
-// diverged from convention on every published deployment.
+// git_repo_path returns a repository's directory. It uses the calling app's id,
+// so it lines up with every other path-composing API: published apps land at
+// users/<uid>/<app-entity-id>/<repo-entity>/, dev apps at
+// users/<uid>/<app-name>/<repo-entity>/.
 func git_repo_path(owner *User, app *App, entity string) string {
 	return fmt.Sprintf("%s/users/%s/%s/%s", data_dir, owner.UID, app.id, entity)
 }
@@ -187,16 +174,9 @@ func git_open(owner *User, app *App, entity string) (*git.Repository, error) {
 }
 
 // git_can_write reports whether the thread's authenticated identity holds
-// repository/<entity> write in owner's repositories ACL. This is the same
-// check the git Smart-HTTP receive-pack path applies (see the access_check in
-// git_http_handler), so performing a merge or mutating a branch through the
-// Starlark git API requires exactly what a `git push` to that repository
-// requires. Fails closed: a missing owner/app, no authenticated identity, no
-// app system DB, or no matching grant all deny. The acting identity is the
-// session user locally; across a P2P boundary the inbound event runs as the
-// entity owner, so callers that must authorize a remote initiator (e.g. the
-// repositories merge event) check that initiator's verified `from` themselves
-// before reaching here - this is the same-host backstop, not that gate.
+// repository/<entity> write in owner's repositories ACL - the same grant a git
+// push requires - and fails closed. A P2P event runs as the entity owner, so a
+// caller authorizing a remote initiator must check its verified `from` itself.
 func git_can_write(t *sl.Thread, owner *User, app *App, entity string) bool {
 	if owner == nil || app == nil || entity == "" {
 		return false
@@ -224,22 +204,12 @@ func git_can_write(t *sl.Thread, owner *User, app *App, entity string) bool {
 	return app_db.access_check(owner, identity_id, user.Role, "repository/"+entity, "write")
 }
 
-// git_can_read reports whether the thread's authenticated identity - or anyone,
-// for a repository carrying a public "*" read grant - holds repository/<entity>
-// read in owner's repositories ACL. Every read primitive calls it (refs,
-// branches, tags, commits, tree, blob, merge base, archive, size, diff,
-// merge-check) so the server boundary fails closed rather than trusting each
-// Starlark caller to have checked first. Unlike git_can_write it does NOT fail
-// closed on a missing identity: an empty identity is passed through to
-// access_check, where it still matches a public "*" read grant - preserving
-// anonymous read of public repositories.
-//
-// What this cannot see, and what therefore still needs a gate in the app: core
-// runs an anonymous request to a `public: true` action as the entity OWNER
-// (web.go), and a cross-app service call as the CALLING user - both of which
-// hold the owner's grant here. So this stops an authenticated third party whose
-// identity has no grant; it does not stop an anonymous caller reaching a
-// private repository through a public action. That one is the app's to refuse.
+// git_can_read reports whether the thread's identity - or anyone, for a public
+// "*" read grant - holds repository/<entity> read. Unlike git_can_write it does
+// not fail closed on a missing identity, so anonymous read of public
+// repositories survives. It cannot see that core runs a `public: true` action
+// as the entity OWNER and a service call as the CALLING user; refusing those is
+// the app's job.
 func git_can_read(t *sl.Thread, owner *User, app *App, entity string) bool {
 	if owner == nil || app == nil || entity == "" {
 		return false
@@ -261,15 +231,10 @@ func git_can_read(t *sl.Thread, owner *User, app *App, entity string) bool {
 	return app_db.access_check(owner, identity_id, role, "repository/"+entity, "read")
 }
 
-// Initialize a new bare repository
-// git_init creates a bare repository with no commits and no refs — only HEAD
+// git_init creates a bare repository with no commits and no refs - only HEAD
 // pointing symbolically at refs/heads/main, so the first pushed branch lands as
-// main. No placeholder commit: one used to be manufactured here so the web view
-// had a ref to resolve, but it made every first push into a web-created repo a
-// divergent-history rejection (the pusher's real history shares no ancestor
-// with the synthetic root) and left a meaningless Mochi-authored root commit in
-// every repository forever. The display layer now treats a repo with no refs as
-// empty instead of erroring, which is the only thing the placeholder bought.
+// main. No placeholder commit: one makes every first push a divergent-history
+// rejection. The display layer treats a repo with no refs as empty.
 func git_init(owner *User, app *App, entity string) error {
 	path := git_repo_path(owner, app, entity)
 
@@ -288,26 +253,11 @@ func git_init(owner *User, app *App, entity string) error {
 	return repo.Storer.SetReference(head)
 }
 
-// git_placeholder_sweep returns repositories created before git_init stopped
-// manufacturing a placeholder commit to their intended empty state, so a first
-// push lands as an ordinary new branch instead of being refused as unrelated
-// history. Runs once at startup.
-//
-// A repository qualifies only on an exact signature: refs/heads/main is the
-// single ref, and its commit has no parent, the empty tree
-// (4b825dc642cb6eb9a060e54bf8d69288fbee4904), the message "Initial commit" and
-// the Mochi <mochi@localhost> author. Nothing a person authored can match -
-// their commit either has a parent, a non-empty tree, or their own identity -
-// so a repository holding real work is never touched. Deleting the ref leaves
-// the unreachable objects for git's own gc; nothing references them.
-//
-// The glob spans every app directory rather than a named one, because
-// git_repo_path composes users/<uid>/<app.id>/<entity> and app.id is the app's
-// NAME only on a dev install - on a published one it is the app's entity id.
-// Naming "repositories" here would sweep dev and silently find nothing
-// everywhere else, which is the same pre-v54 assumption git_repo_path was
-// fixed for. Candidates cost one stat: anything without a HEAD is skipped, and
-// the signature check below decides the rest.
+// git_placeholder_sweep restores repositories created before git_init stopped
+// manufacturing a placeholder commit, so a first push is not refused as
+// unrelated history. Runs once at startup. The glob spans every app directory
+// because app.id is the app's entity id on a published install, not the app's
+// name.
 func git_placeholder_sweep() {
 	const empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 	candidates, err := filepath.Glob(filepath.Join(data_dir, "users", "*", "*", "*"))
@@ -384,16 +334,9 @@ func git_size(owner *User, app *App, entity string) (int64, error) {
 }
 
 // git_branch_reference builds refs/heads/<name> and validates it before any
-// storer sees it. plumbing concatenates without checking, and the filesystem
+// storer sees it. plumbing concatenates without checking and the filesystem
 // storer joins the result onto the repository directory, so a name containing
-// ".." is cleaned into a path that escapes the ref namespace: "../../config"
-// becomes refs/heads/../../config, which resolves to the bare repository's own
-// config file. Creating such a branch overwrote it with a hash and deleting one
-// removed it; HEAD, packed-refs and loose object paths are reachable the same
-// way. go-billy's chroot stops the path leaving the repository directory, so
-// the damage is contained to the repository - but corrupting or destroying it
-// is well within what a write-permission holder could do. ReferenceName's own
-// Validate rejects these names; nothing was calling it.
+// ".." resolves onto the repository's own config, HEAD or packed-refs.
 func git_branch_reference(name string) (plumbing.ReferenceName, error) {
 	reference := plumbing.NewBranchReferenceName(name)
 	if err := reference.Validate(); err != nil {
@@ -412,12 +355,10 @@ func git_tag_reference(name string) (plumbing.ReferenceName, error) {
 }
 
 // git_update_branch points branch at hash, but only while the branch still
-// holds expected. A merge resolves its target tip, then does tree work that can
-// take a while on a large repository; an unconditional SetReference at the end
-// would overwrite - and silently discard - any push that landed in the
-// meantime. CheckAndSetReference re-reads the stored value under the ref lock
-// and returns storage.ErrReferenceHasChanged instead, which surfaces to the
-// caller as a failed merge it can retry against the new tip.
+// holds expected. A merge does tree work after resolving its target, so an
+// unconditional SetReference would silently discard a push that landed
+// meanwhile; CheckAndSetReference returns storage.ErrReferenceHasChanged
+// instead.
 func git_update_branch(repo *git.Repository, branch string, expected plumbing.Hash, hash plumbing.Hash) error {
 	name, err := git_branch_reference(branch)
 	if err != nil {
@@ -494,12 +435,9 @@ func git_resolve_ref(repo *git.Repository, ref string) (*plumbing.Hash, error) {
 
 // mochi.git.init(entity) -> bool: Initialize a bare git repository
 //
-// Deliberately ungated, unlike every other mutating git API. There is no
-// resource to authorise against yet: an app creates the entity, initialises
-// its repository, and only then writes the access grants - so a git_can_write
-// here would consult an ACL that does not exist and refuse every creation.
-// Repositories are written under the CALLING app's own directory
-// (git_repo_path), so an app can only initialise them in its own namespace.
+// Deliberately ungated: the entity's access grants are written after this runs,
+// so a git_can_write here would consult an ACL that does not exist yet.
+// Repositories are created under the calling app's own directory.
 func api_git_init(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <entity: string>")
@@ -1396,11 +1334,8 @@ func api_git_tree(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		entries = append(entries, e)
 	}
 
-	// Deliberately unsorted by name. A raw < is byte order, which puts "cafe"
-	// after "z" once accents are involved and is locale-blind, and the project
-	// rule is that the consumer sorts user-facing strings - the web already
-	// re-sorts these with naturalCompare, grouping directories first. Entries
-	// arrive in git's own tree order.
+	// Deliberately unsorted: the consumer sorts user-facing strings (the web
+	// re-sorts with naturalCompare). Entries arrive in git's own tree order.
 
 	return sl_encode(entries), nil
 }
@@ -2787,13 +2722,10 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 		return true
 	}
 
-	// Determine operation. An RPC endpoint IS the operation, so it is taken
-	// from the path alone: the ?service= query is caller-controlled, and
-	// honouring it here let POST .../git-receive-pack?service=git-upload-pack
-	// be authorised as a read and then dispatched as a push - anonymous write
-	// access to any public repository. Only info/refs, which advertises refs
-	// for a service the client names in the query, may read it, and then only
-	// after git_service_name rejects anything but the two known services.
+	// The operation comes from the path, never from the caller-controlled
+	// ?service= query: honouring that let a receive-pack POST be authorised as a
+	// read and dispatched as a push. Only info/refs may read the query, and only
+	// through git_service_name.
 	service := ""
 	if strings.HasSuffix(path, "git-upload-pack") {
 		service = "git-upload-pack"
@@ -2811,14 +2743,9 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 		user = git_authenticate(c, a)
 	}
 
-	// Check access control. A missing app-system database is refused, not
-	// skipped: db_app_system returns nil when the handle cannot be opened at
-	// all - the directory or file cannot be created, or either SQLite pool
-	// fails - which is disk exhaustion, lost permissions, a read-only
-	// filesystem or a corrupt app.db. Treating that as "no rules to apply"
-	// handed anonymous callers both clone and push on every repository,
-	// exactly when the server was least able to cope. git_can_read and
-	// git_can_write already fail closed on the same condition.
+	// A missing app-system database is refused, not skipped: db_app_system returns
+	// nil when the handle cannot be created at all, and treating that as "no rules
+	// to apply" would hand anonymous callers clone and push.
 	app_db := db_app_system(owner, a)
 	if app_db == nil {
 		info("git_http_handler: no app-system database for user %q app %q; refusing", owner.UID, a.id)
@@ -2955,14 +2882,10 @@ func git_authenticate(c *gin.Context, a *App) *User {
 		return nil
 	}
 
-	// ...and minted for git. A git client authenticates over Basic, where no
-	// api_token is parsed, so the action binding web_action enforces before
-	// dispatch is never consulted here - that binding is what stops a git
-	// credential being replayed as a Bearer token against the app's management
-	// actions, and this scope is the matching gate in the other direction,
-	// stopping a token minted for something else (an RSS feed, say) from
-	// cloning or pushing. Tokens carrying no scopes still mean "all", so
-	// credentials minted before scoping keep working.
+	// ...and minted for git. Basic auth parses no api_token, so web_action's
+	// action binding is never consulted here; this scope is the matching gate,
+	// stopping a token minted for something else from cloning or pushing. Tokens
+	// carrying no scopes still mean "all".
 	if !token_has_scope(token, "git") {
 		return nil
 	}
@@ -2970,11 +2893,10 @@ func git_authenticate(c *gin.Context, a *App) *User {
 	return user_by_uid(token.User)
 }
 
-// git_info_refs handles GET /info/refs?service=git-upload-pack|git-receive-pack
 // git_service_name returns the requested service only when it names one of the
 // two git services, and "" otherwise. info/refs is the one endpoint whose
 // service legitimately comes from the query string, so the value is whitelisted
-// before it can decide whether the request is authorised as a read or a write.
+// first.
 func git_service_name(requested string) string {
 	if requested == "git-upload-pack" || requested == "git-receive-pack" {
 		return requested
@@ -2983,56 +2905,30 @@ func git_service_name(requested string) string {
 }
 
 // git_upload_pack_advertise adds the fetch capabilities this server implements
-// to an upload-pack advertisement.
-//
-// None of them come from go-git, whose session advertises only agent and
-// ofs-delta and rejects a request asking for anything else ("unsupported
-// capability"). They are answered by git_upload_pack, which is why that
-// function builds the packfile itself rather than calling upSession.UploadPack.
-//
-// A client only ever asks for what it is offered here, so this list is the one
-// place that decides what the protocol can do - and every entry must have a
-// matching implementation below, since advertising a capability we do not
-// honour is worse than not advertising it at all.
+// to an upload-pack advertisement. None come from go-git, whose session rejects
+// anything beyond agent and ofs-delta - which is why git_upload_pack builds the
+// packfile itself. Every entry here must have a matching implementation below.
 func git_upload_pack_advertise(capabilities *capability.List) {
-	// multi_ack_detailed tells the client, DURING negotiation, which of its
-	// commits we already share.
-	//
-	// Without it there is nothing to say but NAK, and a client on the
-	// stateless HTTP transport never learns it has found common ground: it
-	// keeps offering haves in batches of 16, working backwards through its
-	// history, until it runs out. Only then does it send "done" - and each
-	// POST carries only that round's batch, so the request that finally asks
-	// for the pack holds the OLDEST commits it offered. They exclude almost
-	// nothing, and the pack is very nearly the whole repository: measured
-	// against a 40-commit fixture, a client three commits behind was sent 105
-	// of 120 objects, and in production 566 of 586. With the capability the
-	// client stops at the first round we acknowledge, while its haves are
-	// still the recent commits, and "done" carries the ones that actually
-	// exclude history.
+	// multi_ack_detailed tells the client during negotiation which commits we
+	// already share. Without it there is only NAK, so a client on the stateless
+	// HTTP transport keeps offering haves until it runs out and the request that
+	// finally asks for the pack carries its oldest haves, excluding almost
+	// nothing.
 	capabilities.Add(capability.MultiACKDetailed)
 	capabilities.Add(capability.MultiACK)
 
-	// side-band-64k multiplexes the packfile with progress and error messages
-	// so the client can report what the server is doing. Without it a clone
-	// shows nothing at all from the remote end - measured, zero "remote:"
-	// lines - which on a slow link is indistinguishable from a hang, and there
-	// is no channel to explain a failure that happens after the pack has
-	// started. side-band is the 1000-byte legacy form, offered for clients too
-	// old to know the 64k one; no-progress is how a client says it wants the
-	// band for the pack but not the commentary.
+	// side-band-64k multiplexes the packfile with progress and error messages;
+	// without it a clone shows no "remote:" lines at all and a failure after the
+	// pack starts has no channel to explain itself. side-band is the 1000-byte
+	// legacy form; no-progress asks for the band without the commentary.
 	capabilities.Add(capability.Sideband64k)
 	capabilities.Add(capability.Sideband)
 	capabilities.Add(capability.NoProgress)
 
-	// shallow lets a client bound how much history it takes. Without it
-	// `git clone --depth 1` does not degrade to a full clone - it fails
-	// outright, "Server does not support shallow clients" - so no CI system,
-	// container build or automation that checks out shallowly by default can
-	// use this server at all. deepen-since and deepen-not are the other two
-	// ways of naming a boundary (--shallow-since, --shallow-exclude), and
-	// deepen-relative is how `git fetch --deepen` asks for a boundary measured
-	// from where the client's own history currently stops.
+	// shallow lets a client bound how much history it takes. Without it `git clone
+	// --depth 1` fails outright rather than degrading to a full clone.
+	// deepen-since and deepen-not name a boundary; deepen-relative measures it
+	// from where the client's history currently stops.
 	capabilities.Add(capability.Shallow)
 	capabilities.Add(capability.DeepenSince)
 	capabilities.Add(capability.DeepenNot)
@@ -3044,19 +2940,15 @@ func git_upload_pack_advertise(capabilities *capability.List) {
 	// may use are the ones it also carries.
 	capabilities.Add(capability.ThinPack)
 
-	// filter is partial clone. Unadvertised, `git clone --filter=blob:none`
-	// did not fail - it printed "filtering not recognized by server, ignoring"
-	// and cloned everything, so the client asked for less and quietly got the
-	// lot. include-tag saves a second round trip for the tags on a branch
-	// being cloned.
+	// filter is partial clone: unadvertised, `git clone --filter=blob:none`
+	// silently cloned everything. include-tag saves a round trip for the tags on a
+	// branch being cloned.
 	capabilities.Add(capability.Filter)
 	capabilities.Add(capability.IncludeTag)
 
-	// A partial clone comes back later for the objects it skipped, asking for
-	// them by name rather than by ref. These say it may: this server serves
-	// any object it holds within a repository the caller is already allowed to
-	// read, so the advertisement describes what it already does rather than
-	// granting anything new.
+	// A partial clone comes back for skipped objects by name rather than by ref.
+	// These say it may; this server already serves any object it holds in a
+	// repository the caller may read, so nothing new is granted.
 	capabilities.Add(capability.AllowTipSHA1InWant)
 	capabilities.Add(capability.AllowReachableSHA1InWant)
 }
@@ -3079,20 +2971,11 @@ func git_advertise_peeled(storage storer.Storer, refs *packp.AdvRefs) {
 // sits in no tree.
 type git_filter_rule func(kind plumbing.ObjectType, size int64, depth int) bool
 
-// git_filter_apply drops the objects a partial-clone filter excludes.
-//
-// A specification this server does not implement is refused rather than
-// ignored. Before the capability was advertised the client was told plainly
-// that filtering was not recognised and fell back to a full clone; now that we
-// advertise it, the client has been told we honour what it asked for, and
-// silently sending the whole repository would be the worse answer.
-// A filter never removes an object the client named as a want, only ones
-// reached from them. That is git's own rule - `git rev-list --objects
-// --filter=blob:none <blob>` prints that blob - and it is what makes a partial
-// clone usable: the lazy fetch for an omitted blob asks for it by name and
-// carries the repository's filter with it, so a filter that applied to wants
-// would refuse to hand over the very object it had previously withheld
-// ("could not fetch <oid> from promisor remote").
+// git_filter_apply drops the objects a partial-clone filter excludes. An
+// unimplemented specification is refused rather than ignored, since the client
+// has been told we honour it. A filter never removes an object named as a want,
+// only ones reached from them - otherwise a lazy fetch could never retrieve its
+// blob.
 func git_filter_apply(storage storer.Storer, objects []plumbing.Hash, specification string, wants []plumbing.Hash) ([]plumbing.Hash, error) {
 	rules, measured, err := git_filter_parse(specification)
 	if err != nil {
@@ -3294,15 +3177,10 @@ func git_include_tags(storage storer.Storer, objects []plumbing.Hash) ([]plumbin
 	return objects, err
 }
 
-// git_request is an upload-pack request: what the client wants, what it already
-// has, and how much history it is asking for.
-//
-// It is parsed here rather than by packp.UploadRequest.Decode, which cannot
-// represent several things this server now advertises. That decoder holds a
-// single Depth value, so it can carry one deepen-not and cannot combine it with
-// a deepen-since; and it has no case at all for a "filter" line, which it
-// reports as "unexpected payload while expecting a want" - a 400 on a request
-// the client only made because we advertised the capability.
+// git_request is an upload-pack request: what the client wants, what it has,
+// and how much history it asks for. Parsed here rather than by
+// packp.UploadRequest.Decode, which holds a single Depth (so it cannot combine
+// deepen-not with deepen-since) and rejects a "filter" line outright.
 type git_request struct {
 	capabilities *capability.List
 	wants        []plumbing.Hash
@@ -3331,12 +3209,9 @@ func (r *git_request) shallow() bool {
 	return len(r.shallows) > 0 || r.deepening()
 }
 
-// git_request_decode reads a whole upload-pack request body.
-//
-// One pass covers it: every line in the v0 grammar is tagged by its keyword, so
-// the want section, the shallow and deepen lines, the haves and the final
-// "done" can be told apart without tracking which section we are in. Flush
-// packets separate those sections and carry nothing else, so they are skipped.
+// git_request_decode reads a whole upload-pack request body in one pass: every
+// line in the v0 grammar is tagged by its keyword, so the sections need not be
+// tracked, and flush packets carry nothing and are skipped.
 func git_request_decode(reader io.Reader) (*git_request, error) {
 	request := &git_request{capabilities: capability.NewList()}
 	scanner := pktline.NewScanner(reader)
@@ -3458,11 +3333,9 @@ func git_info_refs(c *gin.Context, repo_path string, service string) bool {
 		}
 		git_upload_pack_advertise(refs.Capabilities)
 
-		// go-git's advertisement carries no peeled refs (its setReferences
-		// leaves a TODO where they belong), so an annotated tag advertised
-		// only as its tag object gives the client no way to see the commit
-		// behind it without fetching. `git ls-remote` shows no "^{}" lines
-		// against this server for the same reason.
+		// go-git's advertisement carries no peeled refs, so an annotated tag gives
+		// the client no way to see the commit behind it and `git ls-remote` shows no
+		// "^{}" lines.
 		if storage, err := (&git_loader{}).Load(ep); err == nil {
 			git_advertise_peeled(storage, refs)
 		}
@@ -3546,12 +3419,11 @@ func git_storage_budget(owner *User) int64 {
 	return remaining
 }
 
-// git_request_maximum returns the largest request body this service may send,
-// given the owner's remaining storage as computed by git_storage_budget. A
-// receive-pack body becomes repository content, so it is bounded by that
-// storage; an upload-pack body is negotiation that is never stored, so it gets
-// the much smaller fixed ceiling above. This bounds only the pack as sent -
-// git_storage meters what it decodes to.
+// git_request_maximum returns the largest request body this service may send. A
+// receive-pack body becomes repository content, so it is bounded by the owner's
+// remaining storage; upload-pack negotiation is never stored and gets the fixed
+// ceiling above. This bounds the pack as sent - git_storage meters what it
+// decodes to.
 func git_request_maximum(service string, budget int64) int64 {
 	if service != "git-receive-pack" {
 		return git_negotiation_maximum
@@ -3567,14 +3439,10 @@ func git_request_maximum(service string, budget int64) int64 {
 
 // git_service_rpc handles POST /git-upload-pack and /git-receive-pack
 func git_service_rpc(c *gin.Context, repo_path string, service string, owner *User) bool {
-	// Bound the request body. git pack bodies are exempt from web_body_limit
-	// because a push legitimately exceeds it, which left both the compressed
-	// body and — with Content-Encoding: gzip — its decompressed expansion
-	// unbounded. A small gzip bomb from any client allowed to fetch (public
-	// repositories permit anonymous reads) would otherwise expand without
-	// limit. Same class as the zstd frame bomb on the peer protocol.
-	// Measured once: it walks the owner's storage directory, and both the body
-	// ceiling and the decode meter are charged against the same figure.
+	// Bound the request body. git pack bodies are exempt from web_body_limit, so
+	// without this both the compressed body and its gzip expansion are unbounded
+	// and any client allowed to fetch can send a decompression bomb. Measured
+	// once: the budget walk is a storage-directory traversal.
 	budget := git_storage_budget(owner)
 	maximum := git_request_maximum(service, budget)
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maximum)
@@ -3619,11 +3487,9 @@ func git_service_rpc(c *gin.Context, repo_path string, service string, owner *Us
 
 // Protocol version 2 ---------------------------------------------------------
 
-// git_protocol_version reads the protocol version a client asked for. Over HTTP
-// that arrives in the Git-Protocol header as a colon-separated list of extra
-// parameters, of which version= is the only one that matters here. A client
-// asking for a version this server does not speak is answered in v0, which is
-// the documented fallback and what every client did before v2 existed.
+// git_protocol_version reads the version a client asked for from the
+// Git-Protocol header's colon-separated parameters. An unknown version is
+// answered in v0, the documented fallback.
 func git_protocol_version(c *gin.Context) int {
 	for _, parameter := range strings.Split(c.GetHeader("Git-Protocol"), ":") {
 		if value, ok := strings.CutPrefix(strings.TrimSpace(parameter), "version="); ok {
@@ -3637,13 +3503,8 @@ func git_protocol_version(c *gin.Context) int {
 
 // git_v2_advertise answers the opening info/refs request in protocol v2: a
 // version line and the commands this server implements, and notably NOT the
-// references.
-//
-// That omission is the point of v2 here. The v0 advertisement sends every ref
-// on every connection, clone and fetch alike - measured against production,
-// 1,395 bytes for a 22-ref repository and 22,262 bytes for core's 356 refs,
-// paid before a single object moves and growing with every release tag. In v2
-// the client asks for the refs it wants, and may name a prefix.
+// references. That omission is the point - v0 sends every ref on every
+// connection, tens of kilobytes before an object moves; in v2 the client asks.
 func git_v2_advertise(c *gin.Context, service string) bool {
 	c.Status(http.StatusOK)
 	c.Header("Content-Type", fmt.Sprintf("application/x-%s-advertisement", service))
@@ -3684,11 +3545,9 @@ const (
 	git_packet_end
 )
 
-// git_pktline reads packet lines, telling the special packets apart.
-//
-// go-git's scanner cannot be used for this: it was written for v0, where a
-// length of 1 or 2 cannot occur, and it rejects a delimiter packet outright as
-// an invalid packet length.
+// git_pktline reads packet lines, telling the special packets apart. go-git's
+// scanner was written for v0, where a length of 1 or 2 cannot occur, and
+// rejects a delimiter packet as an invalid length.
 type git_pktline struct {
 	reader *bufio.Reader
 }
@@ -3942,11 +3801,9 @@ func git_v2_fetch(c *gin.Context, storage storer.Storer, repo_path string, argum
 		known = append(known, commit)
 	}
 
-	// "ready" says a pack can be built from what has been found in common,
-	// and commits this response to carrying it. Without it the client keeps
-	// offering haves until it runs out, and on the stateless transport each
-	// request carries only its own batch - the trap that made every
-	// incremental fetch ship almost the whole repository under v0.
+	// "ready" says a pack can be built from what has been found in common, and
+	// commits this response to carrying it. Without it the client keeps offering
+	// haves until it runs out.
 	ready := !request.done && len(known) > 0
 
 	selection, err := git_upload_pack_select(storage, request, known, request.done || ready)
@@ -4091,11 +3948,9 @@ type git_selection struct {
 	thin    bool            // the client will resolve deltas against bases the pack does not carry
 }
 
-// git_upload_pack_select decides what a fetch sends.
-//
-// pack is false for an exploratory negotiation round, which still needs the
-// shallow boundary answered but wants no packfile, and so must not pay for the
-// object walk that would build one.
+// git_upload_pack_select decides what a fetch sends. pack is false for an
+// exploratory negotiation round, which still needs the shallow boundary
+// answered but must not pay for the object walk that would build a packfile.
 func git_upload_pack_select(storage storer.Storer, request *git_request, known []plumbing.Hash, pack bool) (*git_selection, error) {
 	selection := &git_selection{
 		known: known,
@@ -4119,17 +3974,10 @@ func git_upload_pack_select(storage storer.Storer, request *git_request, known [
 		return selection, git_upload_pack_trim(storage, request, selection)
 	}
 
-	// Sort the wants. The walk below is over commits, so a want that names an
-	// annotated tag is peeled to the commit behind it and the tag object
-	// travels alongside.
-	//
-	// A want that is not history at all - a blob or a tree named directly - is
-	// content to include rather than a tip to walk from. That is how a partial
-	// clone comes back for an object it was not sent, and it carries its
-	// shallow lines with it, so this path sees it. Peeling one to a commit
-	// fails, which answered every such fetch with a 500: "could not fetch
-	// <oid> from promisor remote", on a shallow partial clone - the
-	// combination CI actually runs.
+	// Sort the wants. The walk below is over commits, so a want naming an
+	// annotated tag is peeled and the tag object travels alongside. A want that is
+	// a blob or tree is content to include, not a tip to walk from - that is how a
+	// partial clone comes back for an object, and peeling one fails.
 	var tips, tags, named []plumbing.Hash
 	for _, want := range request.wants {
 		object, err := storage.EncodedObject(plumbing.AnyObject, want)
@@ -4184,11 +4032,9 @@ func git_upload_pack_select(storage storer.Storer, request *git_request, known [
 	return selection, git_upload_pack_trim(storage, request, selection)
 }
 
-// git_upload_pack_trim adds the tags the client asked to have travel with the
-// pack, drops whatever a partial-clone filter excludes, and settles the order.
-//
-// Tags first: include-tag is about what the pack should carry, and a filter is
-// entitled to remove one again (object:type=blob does exactly that).
+// git_upload_pack_trim adds the tags include-tag asked to travel with the pack,
+// drops whatever a partial-clone filter excludes, and settles the order. Tags
+// first, since a filter is entitled to remove one again.
 func git_upload_pack_trim(storage storer.Storer, request *git_request, selection *git_selection) error {
 	var err error
 	if request.tags {
@@ -4205,13 +4051,9 @@ func git_upload_pack_trim(storage storer.Storer, request *git_request, selection
 	return nil
 }
 
-// git_sort_hashes puts an object list in a stable order.
-//
-// The pack is written from this list in order, so a stable order means the same
-// fetch produces the same pack twice. revlist returns its result by iterating a
-// Go map, whose order is randomised per run: without this, two identical
-// fetches differ by a few dozen bytes, and any measurement of whether a change
-// made packs larger or smaller is measuring the shuffle.
+// git_sort_hashes puts an object list in a stable order. The pack is written
+// from it in order, and revlist returns its result by iterating a Go map, so
+// without this two identical fetches produce different bytes.
 func git_sort_hashes(hashes []plumbing.Hash) {
 	sort.Slice(hashes, func(i, j int) bool { return bytes.Compare(hashes[i][:], hashes[j][:]) < 0 })
 }
@@ -4219,11 +4061,9 @@ func git_sort_hashes(hashes []plumbing.Hash) {
 // git_upload_pack_history works out which commits a shallow fetch covers, and
 // which of them end up on the boundary.
 func git_upload_pack_history(storage storer.Storer, request *git_request, tips []plumbing.Hash) (included, boundary []plumbing.Hash, err error) {
-	// deepen-relative measures the depth from where the client's history
-	// currently stops rather than from the tips, so the new boundary is worked
-	// out from its shallow commits first and the tips are then walked down to
-	// it. Counting a shallow commit itself as 1, depth+1 adds exactly the
-	// number of generations asked for.
+	// deepen-relative measures depth from where the client's history stops, so the
+	// new boundary comes from its shallow commits first. Counting a shallow commit
+	// itself as 1, depth+1 adds exactly the generations asked for.
 	if request.relative && request.depth > 0 && len(request.shallows) > 0 {
 		_, edge, err := git_history(storage, request.shallows, nil, git_depth_limit(request.depth+1))
 		if err != nil {
@@ -4386,13 +4226,10 @@ func git_history(
 	return reached, boundary, nil
 }
 
-// git_objects turns two commit sets into the objects to send: everything the
-// wanted commits reach that the held commits do not, plus the commits and any
-// tag objects themselves.
-//
-// Only trees are walked, never parents. The caller has already decided which
-// commits are in play - by depth, or at a client's boundary - and a walk that
-// followed parents itself would undo that decision.
+// git_objects turns two commit sets into the objects to send: what the wanted
+// commits reach and the held ones do not, plus the commits and tag objects.
+// Only trees are walked, never parents - the caller has already decided which
+// commits are in play.
 func git_objects(storage storer.Storer, wanted, held, tags, named []plumbing.Hash) ([]plumbing.Hash, error) {
 	held_trees, err := git_trees(storage, held)
 	if err != nil {
@@ -4481,16 +4318,11 @@ func git_hash_set(hashes []plumbing.Hash) map[plumbing.Hash]bool {
 	return set
 }
 
-// git_upload_pack handles the git-upload-pack service (fetch/clone).
-//
-// The packfile is built here rather than by go-git's upSession.UploadPack.
-// That method validates every requested capability against the two go-git
-// implements - agent and ofs-delta - and refuses the whole fetch with
-// "unsupported capability" for anything else, so every capability
-// git_upload_pack_advertise offers would have to be deleted from the request
-// before handing it over, and the features they name would still be
-// unimplemented on the other side. What UploadPack does that is genuinely
-// needed is two revlist walks and a packfile encode, which is what this does.
+// git_upload_pack handles the git-upload-pack service (fetch/clone). The
+// packfile is built here rather than by go-git's upSession.UploadPack, which
+// refuses any capability beyond agent and ofs-delta - so every capability
+// advertised would have to be stripped from the request and would still be
+// unimplemented.
 func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) bool {
 	ep := &transport.Endpoint{Path: repo_path}
 
@@ -4501,14 +4333,10 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 		return true
 	}
 
-	// The whole body is read in one pass - wants and their capabilities, the
-	// shallow and deepen lines, the haves, and the final "done". Reading the
-	// negotiation section is not optional: without the haves every fetch
-	// shipped the full repository, and a round without "done" answered with a
-	// packfile the client wasn't expecting, which it fatals on with "bad line
-	// length character: PACK" - breaking every incremental fetch of a
-	// repository large enough that the client's first round doesn't already
-	// end in "done".
+	// The whole body in one pass - wants and capabilities, shallow and deepen
+	// lines, haves, and the final "done". The negotiation section is not optional:
+	// without haves every fetch ships the full repository, and a round without
+	// "done" must not answer with a packfile ("bad line length character: PACK").
 	request, err := git_request_decode(reader)
 	if err != nil {
 		c.String(http.StatusBadRequest, "Failed to decode request: %v", err) // i18n-ok: git protocol, read by the client not a person
@@ -4537,12 +4365,9 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 	c.Header("Content-Type", "application/x-git-upload-pack-result")
 	c.Header("Cache-Control", "no-cache")
 
-	// Where the client's history stops, and where this request moves it to.
-	// That has to be settled even for an exploratory round: a deepening client
-	// on the stateless transport repeats its deepen lines in every request and
-	// reads back a shallow list, terminated by a flush, before it will look at
-	// a single acknowledgement. The packfile is another matter, so an
-	// exploratory round does not pay for the object walk that builds one.
+	// The shallow boundary has to be settled even for an exploratory round: a
+	// deepening client reads the shallow list and its flush before it will look at
+	// an acknowledgement. The packfile is another matter, so no object walk here.
 	selection, err := git_upload_pack_select(storage, request, known, request.done)
 	if err != nil {
 		info("git_upload_pack: selecting objects for %s failed: %v", repo_path, err)
@@ -4551,22 +4376,11 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 	}
 
 	if !request.done {
-		// An exploratory round: the client is discovering common history and
-		// expects only acknowledgement lines, never a packfile.
-		//
-		// multi_ack_detailed is advertised (see git_info_refs), so each have
-		// we hold is acknowledged as "common" and the last one as "ready",
-		// which tells the client we can build a pack from here and it should
-		// stop offering. That matters on the stateless HTTP transport: a POST
-		// carries only its own batch of haves, and the client offers them
-		// newest-first, so every round it spends still searching pushes the
-		// eventual "done" request onto older and less useful commits. Ending
-		// negotiation early is what keeps the recent haves in the request
-		// that finally asks for the pack.
-		//
-		// A bare "ACK <sha>" with no status word must NOT be used here: in
-		// the single-ack protocol that means "negotiation over, pack next",
-		// and the client would expect a packfile in this response.
+		// An exploratory round: the client expects acknowledgement lines, never a
+		// packfile. Each have we hold is acknowledged "common" and the last "ready",
+		// which ends negotiation while the client's haves are still recent. A bare
+		// "ACK <sha>" must NOT be used - in single-ack that means "pack next", and
+		// the client would expect one in this response.
 		c.Status(http.StatusOK)
 		if selection.update != nil {
 			if err := selection.update.Encode(c.Writer); err != nil {
@@ -4574,17 +4388,10 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 				return true
 			}
 
-			// A deepening client's first request carries the wants and the
-			// deepen lines and nothing else. It is asking only where its
-			// history will stop, and it reads the shallow list, its flush, and
-			// then stops reading this response entirely.
-			//
-			// Anything written after that is not discarded. The HTTP transport
-			// hands fetch-pack one continuous stream across requests, so a
-			// stray acknowledgement surfaces at the head of the NEXT response
-			// and is read as that round's first line: "fatal: git fetch-pack:
-			// expected shallow list", which is how every --depth clone failed
-			// until the shallow list was the whole answer here.
+			// A deepening client's first request asks only where its history will stop:
+			// it reads the shallow list and its flush, then stops reading. Anything
+			// written after that surfaces at the head of the NEXT response ("fatal: git
+			// fetch-pack: expected shallow list").
 			if len(request.haves) == 0 {
 				return true
 			}
@@ -4597,12 +4404,9 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 		for _, have := range known {
 			e.Encodef("ACK %s common\n", have.String())
 		}
-		// NAK terminates the round. It is not "nothing in common" here - the
-		// acknowledgements above already said what is - it is the marker that
-		// every have in this request has been answered. The client reads
-		// acknowledgements until one of them ends the round, so leaving it out
-		// blocks fetch-pack on the socket, and a flush packet in its place is
-		// refused outright ("expected ACK/NAK, got a flush packet").
+		// NAK terminates the round - not "nothing in common", but "every have here
+		// has been answered". Omitting it blocks fetch-pack on a socket read, and a
+		// flush packet in its place is refused outright.
 		e.Encodef("NAK\n")
 		return true
 	}
@@ -4619,15 +4423,10 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 		}
 	}
 
-	// The final round answers with the last commit found in common, then the
-	// pack. A single ACK here is the multi_ack_detailed close: it tells the
-	// client which commit the pack was built against. With nothing in common
-	// the list stays empty and NAK goes out instead, which is the full-clone
-	// case. Exactly one ACK - more would be the "common" lines that belong to
-	// the exploratory rounds above.
-	//
-	// This section is always plain pkt-line. The side band, if the client
-	// asked for one, begins at the packfile and never covers what precedes it.
+	// The final round: a single ACK naming the commit the pack was built against,
+	// or NAK when nothing is in common. Exactly one - more would be the "common"
+	// lines of the exploratory rounds. Always plain pkt-line; the side band, if
+	// any, begins at the packfile.
 	acknowledgement := packp.ServerResponse{}
 	if len(known) > 0 {
 		acknowledgement.ACKs = []plumbing.Hash{known[len(known)-1]}
@@ -4671,14 +4470,9 @@ const git_thin_maximum = 50000
 const git_thin_object_maximum = 64 << 20
 
 // Most a candidate pack may occupy in memory. Comparing thin against whole
-// means holding both at once, and the object ceiling above does not bound bytes
-// at all - one large blob is one object, and a client fetching after a long
-// absence is sent most of the repository. A pack over this is streamed by the
-// ordinary encoder instead, which holds no more than its copy buffer.
-//
-// A variable rather than a constant so a test can lower it and exercise the
-// refusal without building a repository large enough to reach it, the same way
-// the git tests already reassign data_dir.
+// holds both at once, and the object ceiling bounds no bytes at all - one large
+// blob is one object. A pack over this is streamed by the ordinary encoder
+// instead. A variable rather than a constant so a test can lower it.
 var git_pack_memory_maximum = 64 << 20
 
 // git_pack_oversize reports a candidate pack that outgrew the memory allowed
@@ -4701,14 +4495,9 @@ func (c *git_capped) Write(p []byte) (int, error) {
 }
 
 // git_upload_pack_send encodes objects as a packfile and writes it to the band.
-//
-// When the client asked for a thin pack, two candidates are built and the
-// smaller is sent. A thin pack deltifies against what the client already has,
-// which the ordinary encoder cannot do at all; the ordinary encoder deltifies
-// objects against each other, which the thin one does not. Neither wins every
-// time, and building both costs one extra encode of a set that is small by
-// construction - a fetch large enough for that to matter is over the ceiling
-// above and skips the attempt.
+// For a thin pack two candidates are built and the smaller sent: thin deltifies
+// against what the client already holds, the ordinary encoder deltifies within
+// the pack, and neither wins every time. Oversize fetches skip the comparison.
 func git_upload_pack_send(band *git_band, storage storer.Storer, selection *git_selection) error {
 	if chosen := git_upload_pack_candidate(storage, selection); chosen != nil {
 		written, err := band.send(bytes.NewReader(chosen))
@@ -4921,12 +4710,9 @@ func git_pack_entry(writer io.Writer, kind plumbing.ObjectType, size int64) erro
 }
 
 // git_thin_bases pairs each object about to be sent with an object the client
-// already holds at the same path.
-//
-// Path is the signal that matters: the previous version of a file is
-// overwhelmingly the best base for the new one, and it is what git's own
-// "preferred base" selection uses. Matching by size or similarity instead would
-// mean scanning the client's whole store for every object.
+// already holds at the same path. Path is the signal git's own "preferred base"
+// selection uses; matching by size or similarity would mean scanning the
+// client's whole store per object.
 func git_thin_bases(storage storer.Storer, objects []plumbing.Hash, known []plumbing.Hash) (map[plumbing.Hash]plumbing.Hash, error) {
 	held := map[string]plumbing.Hash{}
 	if err := git_walk_paths(storage, known, func(path string, hash plumbing.Hash) {
@@ -5003,13 +4789,9 @@ func git_walk_paths(storage storer.EncodedObjectStorer, commits []plumbing.Hash,
 	return nil
 }
 
-// git_band writes the packfile section of an upload-pack response.
-//
-// Without a side band the packfile is simply the rest of the body. With one it
-// is multiplexed into pkt-lines across three channels - pack data, progress,
-// errors - which is what lets a client print "remote:" lines while a transfer
-// is in flight, and lets the server explain a failure that happens after the
-// pack has started and the status code is long gone.
+// git_band writes the packfile section of an upload-pack response. Without a
+// side band the packfile is simply the rest of the body; with one it is
+// multiplexed into pkt-lines across pack, progress and error channels.
 type git_band struct {
 	writer   gin.ResponseWriter
 	muxer    *sideband.Muxer // nil when the client asked for no side band

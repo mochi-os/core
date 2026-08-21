@@ -1,22 +1,13 @@
 // Mochi server: the world socket's growth is bounded.
 //
-// db/world.db and the outbound gossip both scale with the number of DISTINCT
-// world ids, and nothing bounded either. The per-world debounce is keyed on the
-// id, so it paces one world's cadence and is no constraint at all on a caller
-// whose id varies - a world server deriving its id from a match or a restart
-// counter rather than from its own identity writes a fresh row per push, and
-// every fresh id has published == 0, which makes the interval check trivially
-// true and floods the mesh on the spot.
-//
-// The socket is a local UDS behind a 0660 group and an SO_PEERCRED check, so
-// the caller is software the administrator installed, not an attacker; the
-// realistic failure is a buggy world server. What makes it worth bounding is
-// that the cost is paid OUTWARD - every distinct id is a flood to every peer.
-//
+// db/world.db and the outbound gossip both scale with the number of distinct
+// world ids. The per-world debounce is keyed on the id, so a caller whose id
+// varies writes a fresh row per push and floods every peer, which is where the
+// cost is paid.//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

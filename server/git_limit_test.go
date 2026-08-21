@@ -18,13 +18,8 @@ import (
 )
 
 // TestGitLimitedReaderStopsDecompressionBomb pins the bound on a gzipped git
-// request body.
-//
-// git pack bodies are exempt from web_body_limit, so before this the
-// compressed body and its decompressed expansion were both unbounded — a small
-// gzip bomb from any client allowed to fetch (public repositories permit
-// anonymous reads) expanded without limit. Same class as the zstd frame bomb
-// on the peer protocol.
+// request body: pack bodies are exempt from web_body_limit, so nothing else
+// bounds the compressed body or its expansion.
 func TestGitLimitedReaderStopsDecompressionBomb(t *testing.T) {
 	// 64 MB of zeros compresses to a few tens of KB.
 	var compressed bytes.Buffer
@@ -103,11 +98,9 @@ func (zero_reader) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// The service decides whether a git request is authorised as a read or a
-// write. Taking it from the caller-controlled ?service= query let
-// POST .../git-receive-pack?service=git-upload-pack be authorised as a read
-// and then dispatched as a push, so info/refs - the one endpoint that may read
-// it - whitelists the value first.
+// The service decides whether a git request is authorised as a read or a write,
+// so info/refs - the one endpoint that may read it from the query - whitelists
+// the value first.
 func TestGitServiceNameWhitelist(t *testing.T) {
 	for _, service := range []string{"git-upload-pack", "git-receive-pack"} {
 		if got := git_service_name(service); got != service {
@@ -181,13 +174,10 @@ func TestGitStorageMetersDecodedObjects(t *testing.T) {
 	}
 }
 
-// The meter counts DECODED object bytes while the quota it is charged against
-// measures compressed bytes on disk, so it necessarily refuses a little early.
-// This pins how early: it stores a realistic, compressible blob and reports the
-// decoded total against what actually landed, so the conservatism is a measured
-// number rather than an assumption. It also pins the boundary itself - a push
-// that exactly fills the budget must succeed, and one byte more must not, since
-// an off-by-one here refuses a push that legitimately fits.
+// The meter counts decoded object bytes while the quota measures compressed
+// bytes on disk, so it refuses a little early; this measures how early. It also
+// pins the boundary: a push that exactly fills the budget must succeed, one
+// byte more must not.
 func TestGitStorageBudgetBoundary(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()

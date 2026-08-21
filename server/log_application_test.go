@@ -1,38 +1,13 @@
 // Mochi server: an app cannot forge a journal line, or drown one.
 //
-// Two defects, both reachable by any installed app through mochi.log.*.
-//
-// FLOOD. log_repeat_allow keys on the format string. For core that is the call
-// site's fixed identity and the suppression works; for an app the format is
-// whatever it passes, so a format built from data - mochi.log.debug("item " +
-// id) - is a fresh key every call, every fresh key is a first occurrence, and
-// nothing suppresses. Measured before the fix: 5,000 varying-format calls all
-// printed, while 5,000 calls on one fixed format printed 20. Only the TABLE was
-// bounded (log_repeat_maximum), never the write rate. This is not theoretical -
-// warn_application's own comment records the 2026-07 flood that cut yuzu's
-// journald history to ~35 minutes, evicting the evidence needed to diagnose it.
-//
-// FORGERY. log_writer.Write stamps the time once per Write, not per line, so a
-// newline inside app text produced a second line the writer never touched.
-// Measured before the fix, from a single mochi.log.debug call:
-//
-//	2026-08-20 17:09:08.675875 App 12abc:handler() upload failed
-//	2026-08-20 14:00:00.000000 Server shutting down for maintenance
-//
-// The second line carries a timestamp of the app's choosing and is
-// indistinguishable from core's own output. The "App <id>:<function>()" prefix
-// sl_log forces is the only thing limiting impersonation, and it only ever
-// reaches the first line.
-//
-// A permission would be the wrong fix: logging is a universal facility, and
-// gating it means apps stop logging, which costs the operator more than the
-// noise does. The fixes are escaping, and a budget keyed on the one thing an
-// app cannot vary - itself.
+// mochi.log.* lets an app choose its format string, so the per-format window
+// never suppresses it, and a newline in app text forged a second line the
+// writer never stamped. The fixes: escaping, and a budget keyed on the app.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -171,11 +146,8 @@ func TestAppLineBudgetKeySpaceIsBounded(t *testing.T) {
 	}
 }
 
-// TestApplicationLoggingIsEscapedAndBudgeted is the gate, on sl_log - the one
-// choke point every mochi.log.* call passes through. Both fixes belong here
-// rather than in debug/info/warn_application: those format internally, after
-// their own repeat check, and an app's text has to be formatted BEFORE it is
-// escaped because the values are app-supplied too.
+// TestApplicationLoggingIsEscapedAndBudgeted is the gate on sl_log, the one
+// choke point every mochi.log.* call passes through.
 func TestApplicationLoggingIsEscapedAndBudgeted(t *testing.T) {
 	source, err := os.ReadFile("log.go")
 	if err != nil {

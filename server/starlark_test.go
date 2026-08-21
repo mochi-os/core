@@ -478,12 +478,9 @@ def cpu_hog():
 		t.Fatal("Expected error from step limit, got nil")
 	}
 
-	// The runaway script must be stopped — by either the step limit or
-	// the timeout. The step counter is the preferred trigger, but
-	// under -race the per-step atomic ops are heavily serialised, so
-	// the wall-clock timeout can fire first. Either is acceptable as
-	// long as cpu_hog was cancelled and didn't actually run to
-	// completion.
+	// Either the step limit or the timeout may stop the runaway script: under
+	// -race the per-step atomics serialise enough that wall clock can win. What
+	// matters is that cpu_hog was cancelled rather than running to completion.
 	if !strings.Contains(err.Error(), "cancelled") {
 		t.Errorf("expected cancellation error, got: %v", err)
 	}

@@ -23,12 +23,9 @@ func serves_file(accept string, aa *AppAction) bool {
 	return web_serves_file(c, aa)
 }
 
-// TestServesFileDecidesTheAuthBypass. shell_static skips three checks - the
-// authentication gate, the app-token match and user_allowed - and it used to
-// be true whenever an action DECLARED a file. Two requests took that bypass
-// without ever reaching a file: an action carrying file+function+opengraph
-// reached its FUNCTION on a non-HTML Accept, and a files action with no
-// suffix skipped the checks on its way to a 400. Both now answer false here.
+// shell_static skips the authentication gate, the app-token match and
+// user_allowed, so it must be true only when a file is really served - a
+// negotiated action on a non-HTML Accept runs its function instead.
 func TestServesFileDecidesTheAuthBypass(t *testing.T) {
 	plain := &AppAction{File: "index.html"}
 	negotiated := &AppAction{File: "index.html", Function: "action_post", OpenGraph: "og_post"}
@@ -62,11 +59,8 @@ func TestServesFileDecidesTheAuthBypass(t *testing.T) {
 	}
 }
 
-// TestServesFileMatchesTheServingBranch: the bypass and the branch that
-// actually writes the file ask the same function, so they cannot disagree
-// about which of file-or-function an action is about to do. This is the
-// property that makes the narrowing safe - if they diverged, either the
-// bypass would be too wide again or a legitimate file would 403.
+// The bypass and the branch that writes the file ask the same function, so they
+// cannot disagree about whether an action serves a file or runs its function.
 func TestServesFileMatchesTheServingBranch(t *testing.T) {
 	source, err := os.ReadFile("web.go")
 	if err != nil {

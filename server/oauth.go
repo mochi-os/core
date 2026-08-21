@@ -67,23 +67,9 @@ type oauth_state struct {
 	Return    oauth_return `json:"return"`
 }
 
-// oauth_binding_cookie is the cookie that ties a web login ceremony to the
-// browser that began it. Its value is minted at /begin, stored in the ceremony
-// row, and required at the callback - so a callback URL captured from one
-// browser cannot be completed in another.
-//
-// The state parameter alone does not give this: it proves the callback matches
-// SOME ceremony that SOMEONE began, and the PKCE verifier is held server-side
-// under the same key, so neither ties the round trip to a user agent. Without
-// the tie an attacker completes the provider consent with their own account,
-// captures the callback URL, and has the victim open it - SameSite=Lax lets the
-// session cookie be set on that top-level GET, and the victim is silently
-// signed in to the attacker's account.
-//
-// Only web LOGIN ceremonies carry it. A link ceremony is bound to the session
-// that authorised it (checked at the callback); a mobile ceremony to the app's
-// PKCE verifier at /exchange; a step-up ceremony to the account whose provider
-// identity is being re-proved. See oauth_ceremony_bound.
+// oauth_binding_cookie ties a web LOGIN ceremony to the browser that began it -
+// minted at /begin, stored in the row, required at the callback. Without it a
+// captured callback URL, opened by a victim, signs them in as the attacker.
 const oauth_binding_cookie = "oauth"
 
 // oauth_binding_path scopes the cookie to the OAuth endpoints, so it rides only
@@ -91,10 +77,7 @@ const oauth_binding_cookie = "oauth"
 const oauth_binding_path = "/_/auth/oauth/"
 
 // oauth_binding_set writes the binding cookie. Lax, not Strict: the callback is
-// a top-level cross-site navigation from the provider, and Strict cookies are
-// withheld on exactly that. Same-origin XHR from the login app receives it;
-// the sandboxed shell iframe would not, which is why the flows that begin from
-// there use a different binding.
+// a top-level cross-site navigation, on which Strict cookies are withheld.
 func oauth_binding_set(c *gin.Context, value string) {
 	secure := web_https && !web_is_localhost(c)
 	c.SetSameSite(http.SameSiteLaxMode)
@@ -109,16 +92,9 @@ func oauth_binding_unset(c *gin.Context) {
 	c.SetCookie(oauth_binding_cookie, "", -1, oauth_binding_path, "", secure, true)
 }
 
-// oauth_return carries the values echoed back to a native client on the
-// deep-link redirect.
-//
-// Its Nonce is NOT the Nonce above. That one is the OIDC nonce: it is sent to
-// the PROVIDER and bound into the ID token, so it must never appear in a URL
-// the app receives. This one never leaves the pair (this server, this app) and
-// exists only so the app can tell its own return from an injected one — the
-// activity handling mochi:oauth-return is exported and BROWSABLE, so any app or
-// web page can deliver one, and accepting it consumes the PKCE verifier and
-// kills the genuine ceremony.
+// oauth_return carries the values echoed to a native client on the deep-link
+// redirect. Its Nonce is NOT the OIDC nonce: it lets the app reject an injected
+// return, since the mochi:oauth-return activity is exported and BROWSABLE.
 type oauth_return struct {
 	Nonce string `json:"nonce,omitempty"`
 }
@@ -328,10 +304,9 @@ func web_oauth_begin(c *gin.Context) {
 		}
 	}
 
-	// Linking requires an authenticated session; the user is stored in the
-	// ceremony row so the callback knows to take the link branch. The
-	// settings app runs sandboxed — cookies aren't sent, so fall back to the
-	// Bearer token in the Authorization header (same pattern as websockets).
+	// Linking requires an authenticated session, stored in the ceremony row. The
+	// settings app runs sandboxed, so cookies aren't sent - fall back to the
+	// Bearer token, as websockets do.
 	var link_user string
 	if body.Link {
 		user := web_auth(c)
@@ -348,14 +323,9 @@ func web_oauth_begin(c *gin.Context) {
 			respond_error(c, http.StatusUnauthorized, "not_authenticated", "errors.not_authenticated", nil)
 			return
 		}
-		// Linking ADDS a way to sign in, under an identity the caller names,
-		// and it survives every later passphrase, passkey and TOTP change - so
-		// a session alone must not be enough, the same as for every other
-		// credential change (passkey register, TOTP setup, recovery codes, and
-		// unlink, which are gated in the settings app). The proof is spent here
-		// rather than at the callback because this is the request carrying the
-		// session; the ceremony row it writes is already bound to link_user and
-		// expires in 600 seconds.
+		// Linking ADDS a way to sign in and outlives every later passphrase, passkey
+		// and TOTP change, so a session alone is not enough - the same gate as
+		// passkey register, TOTP setup, recovery codes and unlink.
 		if !reauthentication_consume(user, body.Token) {
 			respond_error(c, http.StatusForbidden, "reauthentication_required", "errors.reauthentication_required", nil)
 			return
@@ -552,14 +522,9 @@ func oauth_callback_destination(st *oauth_state, link_user string) string {
 	}
 }
 
-// oauth_callback_ceremony resolves the ceremony a callback names: it looks the
-// row up, consumes it, parses the stored state, checks it belongs to the
-// provider on the URL, and checks the caller is entitled to complete it. On
-// failure it has already written the error redirect and returns ok=false.
-//
-// The row is consumed before the binding check, deliberately: a callback URL
-// presented by the wrong browser is dead afterwards, so it cannot be tried
-// again in the right one.
+// oauth_callback_ceremony resolves and consumes the ceremony a callback names.
+// On failure it has already written the error redirect. The row is consumed
+// before the binding check, so a callback in the wrong browser is dead after.
 func oauth_callback_ceremony(c *gin.Context, name, state string) (*oauth_state, string, bool) {
 	db := db_open("db/sessions.db")
 	row, _ := db.row("select user, data from ceremonies where id=? and type='oauth' and expires>?", state, now())
@@ -593,28 +558,11 @@ func oauth_callback_ceremony(c *gin.Context, name, state string) (*oauth_state, 
 	return &st, link_user, true
 }
 
-// oauth_ceremony_bound checks that whoever presents a callback is entitled to
-// complete the ceremony, and returns the audit reason when they are not. Each
-// kind of ceremony is tied to the party that began it in the only way its
-// transport allows:
-//
-//   - A web login ceremony is tied to the browser: the binding cookie set at
-//     /begin must come back, and match the value stored in the row.
-//   - A web link ceremony is tied to the session that authorised it: the row's
-//     user must be the user whose session cookie arrives with the callback.
-//     The cookie above would not do, because the settings app begins the link
-//     from the sandboxed shell iframe, whose responses cannot set cookies; but
-//     the callback is a top-level navigation and does carry the session.
-//   - A mobile ceremony is tied to the app instance at /exchange, where the
-//     PKCE verifier the app holds must match the challenge stored at /begin.
-//     The browser is only a conduit and may not be the one that called /begin.
-//     A mobile LINK goes the same way and is additionally tied to the account
-//     it names, by the Bearer token presented at the exchange - see
-//     oauth_mobile_link and oauth_exchange_link.
-//   - A step-up ceremony is tied to the account being re-proved: the provider
-//     identity must already be linked to the row's user, and the proof is
-//     released only to that user. Android completes it in a browser with no
-//     server session, so a session check would break it.
+// oauth_ceremony_bound checks that whoever presents a callback may complete the
+// ceremony, returning the audit reason when they may not. Web login: the /begin
+// binding cookie. Web link: the session, since the settings app's sandboxed
+// iframe cannot set a cookie. Mobile: nothing here - bound at /exchange by the
+// PKCE verifier. Step-up: nothing here - Android's browser holds no session.
 func oauth_ceremony_bound(c *gin.Context, st *oauth_state, link_user string) string {
 	switch {
 	case st.Mode == "mobile":
@@ -659,12 +607,8 @@ func oauth_link(c *gin.Context, provider string, p *oauth_profile, user_id strin
 	c.Redirect(http.StatusFound, target+sep+"oauth_linked="+provider)
 }
 
-// oauth_link_apply writes the identity link, and reports whether it took. It
-// is false only when this (provider, subject) already belongs to a different
-// user - re-linking one's own identity refreshes it instead.
-//
-// Shared by the browser path above and the app exchange, which differ in how
-// they answer the caller but must not differ in what they record.
+// oauth_link_apply writes the identity link and reports whether it took: false
+// only when this (provider, subject) already belongs to a different user.
 func oauth_link_apply(provider string, p *oauth_profile, user_id string) bool {
 	db := db_open("db/users.db")
 
@@ -687,18 +631,9 @@ func oauth_link_apply(provider string, p *oauth_profile, user_id string) bool {
 	return true
 }
 
-// oauth_mobile_link completes a link ceremony that a native app began. The
-// link is NOT written here: the browser holding this callback is only a
-// conduit, and on Android it is a Custom Tab carrying no session, so nothing
-// in this request identifies the app - or the user - that asked for the link.
-// Writing it here would let an attacker who begins a link on their own device
-// hand the provider URL to a victim and collect the victim's provider identity
-// against the attacker's account.
-//
-// Instead the profile is stashed under the app's PKCE challenge and the app is
-// deep-linked. The link is written at /exchange, where the app presents the
-// verifier (this app instance began the ceremony) and its Bearer token (whose
-// user must be the one the ceremony names).
+// oauth_mobile_link completes a link ceremony a native app began. The link is
+// NOT written here - the callback's browser proves nothing about the app or the
+// user; it is stashed under the PKCE challenge and written at /exchange.
 func oauth_mobile_link(c *gin.Context, provider string, p *oauth_profile, st *oauth_state, link_user string) {
 	code, err := oauth_mobile_store(st.Challenge, map[string]any{
 		"link":     true,
@@ -865,15 +800,9 @@ func oauth_set_profile_cookie(c *gin.Context, p *oauth_profile) {
 		return
 	}
 	secure := web_https && !web_is_localhost(c)
-	// Lax (not Strict) because the callback redirects to /login/identity via a
-	// chain initiated by the upstream provider (github.com etc.). Strict holds
-	// the cookie back on that top-level cross-site navigation, so the identity
-	// form sees no prefill.
-	// Use http.SetCookie directly, not Gin's helper: Gin url.QueryEscape's the
-	// value and encodes spaces as '+' (application/x-www-form-urlencoded), which
-	// decodeURIComponent on the client does NOT turn back into a space. That
-	// produces names like "Alistair+Cunningham" in the prefill. url.PathEscape
-	// encodes spaces as %20 which decodes cleanly.
+	// Lax, not Strict: the callback is a top-level cross-site navigation, on which
+	// Strict cookies are withheld. http.SetCookie directly, not Gin's helper: Gin
+	// encodes spaces as '+', which decodeURIComponent keeps.
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     "mochi_me",
 		Value:    url.PathEscape(string(data)),
@@ -1185,12 +1114,10 @@ func api_user_oauth_verify_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 	return sl_encode(result), nil
 }
 
-// oauth_reauthenticate completes a popup OAuth step-up: it confirms the
-// authenticated provider identity is already linked to the user, advances the
-// oauth re-authentication factor, and stashes the resulting proof (token or
-// remaining factors) keyed by the caller's challenge for verify.finish to
-// retrieve. Always renders the auto-close page; a mismatched account simply
-// stores nothing, so finish returns None.
+// oauth_reauthenticate completes a popup OAuth step-up: it advances the oauth
+// factor for an identity already linked to the user and stashes the proof under
+// the caller's challenge. A mismatched account stores nothing, so finish gets
+// None.
 func oauth_reauthenticate(c *gin.Context, provider string, p *oauth_profile, user *User, challenge string) {
 	users := db_open("db/users.db")
 	owner := ""
@@ -1210,13 +1137,9 @@ func oauth_reauthenticate(c *gin.Context, provider string, p *oauth_profile, use
 			result["remaining"] = remaining
 		}
 		if body, err := json.Marshal(result); err == nil {
-			// The caller's challenge goes in the challenge column, not in id.
-			// id is the primary key of a table shared by every ceremony type
-			// and every user, and this was the one row whose key an
-			// authenticated caller chose: a value already squatted made this
-			// insert a constraint violation, and db.exec panics on one, so the
-			// victim's callback answered 500 and their proof was never stored.
-			// Every other ceremony is keyed on a server-generated value.
+			// The caller's challenge goes in the challenge column, not in id: id is the
+			// shared primary key, and a squatted value makes this insert a constraint
+			// violation, which db.exec panics on.
 			db_open("db/sessions.db").exec(
 				"insert into ceremonies (id, type, user, challenge, data, expires) values (?, 'reauthentication_oauth', ?, ?, ?, ?)",
 				uid(), user.UID, []byte(challenge), string(body), now()+120)
@@ -1233,11 +1156,9 @@ func oauth_reauthenticate_page(c *gin.Context) {
 		[]byte("<!doctype html><meta charset=utf-8><script>try{window.opener&&window.opener.postMessage('mochi-oauth-done','*')}catch(e){}window.close()</script>"))
 }
 
-// oauth_update_profile refreshes the email/name/verified fields for an
-// existing (provider, subject) link. The WHERE clause matches only when at
-// least one value differs, so unchanged logins (the common case — providers
-// rarely change a user's claims between logins) skip the write entirely and
-// keep users.db cold.
+// oauth_update_profile refreshes email/name/verified for an existing link. The
+// WHERE clause matches only when a value differs, so an unchanged login writes
+// nothing and users.db stays cold.
 func oauth_update_profile(db *DB, provider string, p *oauth_profile) {
 	verified := boolint(p.Verified)
 	db.exec(`update oauth set email=?, name=?, verified=?
@@ -1342,25 +1263,15 @@ func user_has_other_login(user *User, leaving string) bool {
 // Mobile (native app) OAuth flow
 // ============================================================================
 //
-// Browsers complete OAuth by setting a session cookie and redirecting back to
-// a web page. Native apps cannot read cookies from a Custom Tabs session, so
-// we substitute a deep-link return: the callback redirects to
-// <scheme>:oauth-return?code=<exchange_code>, and the app then POSTs the
-// exchange code (plus a PKCE verifier) to /_/auth/oauth/exchange to retrieve
-// the actual session token. The exchange row is single-use and short-lived.
-//
-// The URI is opaque (no `//`) per the mochi: URI scheme — see
-// claude/plans/mochi-uri-scheme.md. OAuth providers never see this URI; the
-// pre-registered redirect_uri is the server's `https://<host>/_/auth/oauth/<provider>/callback`,
-// which the server then 302s to the opaque deep-link URI as the final hop to
-// the device. Android (and any other Mochi client) catches the URI via a
-// scheme="mochi" intent filter.
+// A native app cannot read cookies from a Custom Tab, so the callback 302s to
+// the opaque deep-link <scheme>:oauth-return?code=<exchange_code> (mochi: URI
+// scheme, no `//`), and the app POSTs that code plus its PKCE verifier to
+// /_/auth/oauth/exchange for the session token. The exchange row is single-use.
+// Providers only ever see the server's own https redirect_uri.
 
-// oauth_valid_mobile_scheme rejects schemes that aren't the consolidated
-// super-app's "mochi" or one of the legacy "mochi-<app>" forms (kept for the
-// transitional window while users update third-party provider registrations).
-// Callbacks redirect to <scheme>:oauth-return — letting arbitrary schemes
-// through would turn this into an open redirect.
+// oauth_valid_mobile_scheme accepts "mochi" and the legacy "mochi-<app>" forms.
+// Callbacks redirect to <scheme>:oauth-return, so an arbitrary scheme would
+// make this an open redirect.
 func oauth_valid_mobile_scheme(s string) bool {
 	if s == "mochi" {
 		return true
@@ -1380,19 +1291,16 @@ func oauth_valid_mobile_scheme(s string) bool {
 	return true
 }
 
-// oauth_mobile_redirect 302s to the app's deep-link return URL with either an
-// exchange code (success / MFA / identity-needed) or an error code.
-// Takes the whole state rather than just the scheme so the return nonce cannot
-// be forgotten at a call site: an error path that omitted it would be silently
-// unauthenticated, and the error paths are the ones an attacker picks.
+// oauth_mobile_redirect 302s to the app's deep-link return with an exchange
+// code or an error code. Takes the whole state, not just the scheme, so a call
+// site cannot omit the return nonce - the error paths are the ones an attacker
+// picks.
 func oauth_mobile_redirect(c *gin.Context, st *oauth_state, exchange_code, error_code string, extras map[string]string) {
 	oauth_mobile_redirect_named(c, st, oauth_login_return, exchange_code, error_code, extras)
 }
 
 // The deep-link names a native client is sent back on. A link and a login end
-// in different places in the app - one refreshes a settings page, the other
-// establishes a session - and the app must not feed one to the other's
-// handler, so they are separate returns rather than one carrying a discriminator.
+// in different places in the app, so they are separate returns.
 const (
 	oauth_login_return = "oauth-return"
 	oauth_link_return  = "oauth-link-return"
@@ -1510,10 +1418,8 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 			return
 		}
 
-		// Full login. Create the session now so the exchange just hands it back.
-		// This path bypasses auth_establish_session, so clear the per-IP counter
-		// here too. OAuth never engages the per-account throttle (it is not a
-		// guessable factor), so there is nothing to settle there.
+		// Full login. This path bypasses auth_establish_session, so clear the per-IP
+		// counter here; OAuth never engages the per-account throttle.
 		rate_limit_login.reset(rate_limit_client_ip(c))
 		session := login_create(user.UID, c.ClientIP(), c.GetHeader("User-Agent"))
 		db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.UID, now())
@@ -1632,11 +1538,8 @@ func web_oauth_exchange(c *gin.Context) {
 		return
 	}
 
-	// Link branch: the verifier above proves this is the app instance that
-	// began the ceremony, and the Bearer proves which user is completing it.
-	// Both are needed - the ceremony names the account the identity will be
-	// attached to, and the browser that carried the callback proved nothing
-	// about it.
+	// Link branch: the verifier proves the app instance, the Bearer proves the
+	// user. Both are needed - the callback's browser proved neither.
 	if link, _ := data["link"].(bool); link {
 		oauth_exchange_link(c, data)
 		return
@@ -1666,13 +1569,8 @@ func web_oauth_exchange(c *gin.Context) {
 }
 
 // oauth_exchange_link writes the identity link a native app began, once the
-// caller has proved it is that app (the PKCE verifier, checked by the caller)
-// AND that it acts for the account the ceremony names (the Bearer token here).
-//
-// The token is read from the Authorization header rather than a session
-// cookie: the app holds per-app JWTs, and the ceremony was begun the same way.
-// Any of the user's app tokens is accepted, as at /begin - jwt_verify is
-// core-level and the app binding says nothing about which user it is.
+// PKCE verifier (checked by the caller) has proved the app instance and the
+// Bearer token here proves the user. Any of the user's app tokens is accepted.
 func oauth_exchange_link(c *gin.Context, data map[string]any) {
 	link_user, _ := data["user"].(string)
 	provider, _ := data["provider"].(string)

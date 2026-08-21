@@ -5,31 +5,11 @@ import (
 	"sync/atomic"
 )
 
-// Resolution caches.
-//
-// app_for_service / app_for_path / class_app_for and App.active are
-// called on the hot paths — app_for_service per routed P2P event (see
-// events.go route()), app_for_path per web request (web.go), and each
-// asks for the resolved app's active version. Every call previously ran
-// several uncached SQL queries: the per-user binding and the system
-// binding (a per-app version pin, service/path/class binding), plus —
-// when nothing was bound — a fallback that scanned every installed app,
-// resolving each one's version with yet more queries. Under load the
-// SQLite parser dominated CPU.
-//
-// These caches collapse the steady-state resolution to a map lookup:
-//   - version cache: (user, app)     -> resolved *AppVersion
-//   - service cache: (user, service) -> resolved *App
-//   - path cache:    (user, path)    -> resolved *App
-//   - class cache:   (user, class)   -> resolved *App
-//
-// Invalidation is two-layered. A generation counter is bumped on every
-// local write that changes a resolution input (version prefs, service/
-// path/class bindings, system defaults/tracks, app version load/reload);
-// a bump makes every cache discard its contents on next access, so a user
-// who changes a binding sees it immediately. As a backstop for any write that
-// does not invalidate, entries also expire after resolution_cache_ttl, bounding
-// both staleness and memory.
+// Resolution caches: (user, app) -> *AppVersion and (user, service|path|class)
+// -> *App, collapsing the hot-path resolution queries to a map lookup.
+// Invalidated by a generation counter bumped on any local write that changes a
+// resolution input, with resolution_cache_ttl as the backstop for a missed
+// bump.
 
 // resolution_cache_ttl is how long (seconds) a resolved entry is trusted
 // before it is recomputed. Short enough that a missed invalidation self-heals

@@ -15,12 +15,9 @@ import (
 	sl "go.starlark.net/starlark"
 )
 
-// TestCacheCopyStaysInOneNamespace. Under domain routing an action runs for a
-// visitor while serving the route owner's site, and the two user resolutions
-// diverge: cache_base goes through principal_storage and returns the OWNER,
-// while api_cache_copy read its destination from t.Local("user") and got the
-// VISITOR. So the copy read the owner's cached bytes and wrote them into the
-// visitor's own file storage, charged against the visitor's quota.
+// TestCacheCopyStaysInOneNamespace. Under domain routing the two user
+// resolutions diverge - cache_base takes the route OWNER, t.Local("user") the
+// VISITOR - so the copy read the owner's bytes into the visitor's storage.
 func TestCacheCopyStaysInOneNamespace(t *testing.T) {
 	tmp := t.TempDir()
 	original_data, original_cache := data_dir, cache_dir

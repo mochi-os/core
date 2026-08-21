@@ -101,12 +101,9 @@ func oauth_callback_context(state string, cookies ...*http.Cookie) (*gin.Context
 	return c, w
 }
 
-// TestOauthLoginCeremonyBoundToBrowser covers the login-CSRF gap: before the
-// binding, the callback accepted any browser that presented a live state, so
-// an attacker who completed the provider consent themselves and captured the
-// callback URL could have a victim open it and be signed in to the attacker's
-// account. Now /begin sets a cookie whose value is stored in the ceremony, and
-// the callback requires it back.
+// TestOauthLoginCeremonyBoundToBrowser: /begin sets a cookie whose value the
+// ceremony stores and the callback requires, so a callback URL captured in one
+// browser cannot be completed in another.
 func TestOauthLoginCeremonyBoundToBrowser(t *testing.T) {
 	defer oauth_binding_setup(t)()
 	sessions := db_open("db/sessions.db")
@@ -174,14 +171,9 @@ func TestOauthLoginCeremonyBoundToBrowser(t *testing.T) {
 	}
 }
 
-// TestOauthLinkCeremonyBoundToSession covers the link-hijack variant of the
-// same gap: a link ceremony names the account it will attach the provider
-// identity to, so a victim tricked into completing it in their own browser
-// would hand their provider identity to that account. The callback must arrive
-// with the session of the user who authorised the link. The settings app
-// begins the link from the sandboxed shell iframe, whose responses cannot set
-// a cookie, so the session - which the top-level callback navigation does
-// carry - is the binding here rather than the login cookie.
+// TestOauthLinkCeremonyBoundToSession: the callback must carry the session of
+// the user who authorised the link. The login cookie would not do - the
+// settings app begins the link from the sandboxed iframe, which cannot set one.
 func TestOauthLinkCeremonyBoundToSession(t *testing.T) {
 	defer oauth_binding_setup(t)()
 	sessions := db_open("db/sessions.db")
@@ -240,11 +232,10 @@ func TestOauthLinkCeremonyBoundToSession(t *testing.T) {
 	}
 }
 
-// TestOauthMobileCeremonyNotBrowserBound: the app calls /begin from its own
-// HTTP client and the provider opens in a system browser, so no cookie can tie
-// the two - and none is needed, because the result is released only at
-// /exchange to the holder of the PKCE verifier. The callback must therefore
-// pass with no cookie and no session.
+// TestOauthMobileCeremonyNotBrowserBound: no cookie can tie /begin to the
+// system browser, and none is needed - the result is released at /exchange to
+// the holder of the PKCE verifier. The callback must pass with no cookie and no
+// session.
 func TestOauthMobileCeremonyNotBrowserBound(t *testing.T) {
 	defer oauth_binding_setup(t)()
 
@@ -266,11 +257,9 @@ func TestOauthMobileCeremonyNotBrowserBound(t *testing.T) {
 	}
 }
 
-// TestOauthStepupCeremonyNotSessionBound: the step-up ceremony is bound to the
-// account being re-proved (oauth_reauthenticate accepts only a provider
-// identity already linked to it, and releases the proof to that user alone),
-// and Android completes it in a browser that holds no server session - so the
-// callback must pass without one.
+// TestOauthStepupCeremonyNotSessionBound: the step-up is bound to the account
+// being re-proved, and Android's browser holds no session, so the callback must
+// pass without one.
 func TestOauthStepupCeremonyNotSessionBound(t *testing.T) {
 	defer oauth_binding_setup(t)()
 
@@ -352,15 +341,9 @@ func oauth_linked_owner(provider, subject string) string {
 }
 
 // TestOauthMobileLinkCompletesInTheApp is the mobile half of the link-hijack
-// defence. A link the app began used to be written by whatever browser
-// presented the callback - on Android a Custom Tab carrying no session, so
-// nothing in that request identified the app or the user. An attacker who
-// began a link on their own device could hand the provider URL to a victim and
-// collect the victim's provider identity against the attacker's account.
-//
-// Now the callback only stashes the profile and deep-links the app; the link
-// is written at /exchange, where the verifier proves the app instance and the
-// Bearer proves the user.
+// defence: the callback only stashes the profile and deep-links the app, and
+// the link is written at /exchange where the verifier and Bearer prove app and
+// user.
 func TestOauthMobileLinkCompletesInTheApp(t *testing.T) {
 	defer oauth_binding_setup(t)()
 	sessions := db_open("db/sessions.db")

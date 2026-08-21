@@ -25,20 +25,9 @@ import (
 
 const recovery_code_count = 10
 
-// recovery_dummy is a real bcrypt hash at the cost the stored ones use, so a
-// comparison against it does the work a comparison against a stored hash does.
-//
-// Generated on first use rather than written as a constant: a literal would be
-// pinned to whatever cost bcrypt.DefaultCost meant on the day it was pasted,
-// and would drift silently if that changed - which is the same class of
-// mistake as the 57-byte string it replaces.
-//
-// This equalises the unknown-user path against the WORST known-user case. It
-// does not make the endpoint constant-time: a used code is deleted, so a user
-// with three codes left spends three comparisons and finishes sooner than an
-// unknown address does. That residue tells an attacker how many codes an
-// account has left, which is not the account's existence and is a far narrower
-// signal than the one removed here.
+// recovery_dummy is a real bcrypt hash at the cost the stored ones use, so the
+// unknown-user path spends what a known user spends. Generated rather than
+// written as a literal, which would pin the cost and drift silently.
 var (
 	recovery_dummy_once sync.Once
 	recovery_dummy_hash []byte
@@ -125,12 +114,9 @@ func web_login_verify(c *gin.Context) {
 	auth_complete_login(c, user)
 }
 
-// auth_method_state returns the configured state of a login method: one of
-// "required", "allowed", or "disabled". Reads the per-method setting (e.g.
-// auth_email, auth_passkey) with the appropriate default. Only email can be
-// required server-wide (it's the one method every account always has); a
-// legacy "required" stored on any other method is treated as "allowed", since
-// requiring a credential a user may not have would lock them out.
+// auth_method_state returns a login method's configured state: "required",
+// "allowed" or "disabled". Only email can be required server-wide, so a stored
+// "required" on any other method reads as "allowed".
 func auth_method_state(method string) string {
 	state := setting_effective("auth_" + method)
 	if state == "" {
@@ -174,11 +160,8 @@ func auth_methods_allowed_list() []string {
 }
 
 // auth_remaining_methods returns the factors still required after completing
-// the given method. The effective required set is the user's required methods
-// plus email when the operator requires it server-wide — email is always
-// available so it's always enforceable, and it's the only method that can be
-// system-required, so it's the only policy addition here. Returned in
-// canonical order.
+// the given method: the user's required set plus email when the operator
+// requires it server-wide (the only method that can be). Canonical order.
 func auth_remaining_methods(user *User, completed string) []string {
 	return auth_remaining_after(user, map[string]bool{completed: true})
 }
@@ -201,20 +184,15 @@ func auth_remaining_after(user *User, completed map[string]bool) []string {
 	return remaining
 }
 
-// auth_remaining_oauth returns the factors still required after an OAuth
-// login. OAuth proves control of a linked third-party account, not the
-// account's email inbox (the OAuth address may differ from the account
-// email), so it satisfies no required factor: the user must still complete
-// every method they require. OAuth alone signs in only when nothing is
-// required (an all-allowed account, where any one factor suffices).
+// auth_remaining_oauth returns the factors still required after an OAuth login.
+// OAuth proves control of a linked third-party account, not the account's
+// inbox, so it satisfies no required factor.
 func auth_remaining_oauth(user *User) []string {
 	return auth_remaining_methods(user, "oauth")
 }
 
-// auth_establish_session does the shared work of creating a login session: load
-// identity if missing, create per-device session with its JWT secret, set the
-// browser cookie, and audit the success. Used by both JSON and redirect finish
-// paths.
+// auth_establish_session creates a login session, shared by the JSON and
+// redirect finish paths.
 func auth_establish_session(c *gin.Context, user *User) {
 	if user != nil && user.Identity == nil {
 		user.Identity = user.identity()
@@ -246,12 +224,9 @@ func auth_complete_login(c *gin.Context, user *User) {
 	c.JSON(http.StatusOK, response)
 }
 
-// redirect_local returns target only if it is a safe same-site relative path,
-// otherwise "". The post-login redirect target is client-supplied (the OAuth
-// begin body), so without this check an attacker could point the redirect at
-// an external origin (open redirect / phishing) once the session is
-// established. A single leading "/" that is not "//" or "/\" keeps it on this
-// origin; anything else falls back to the caller's default.
+// redirect_local returns target only if it is a same-site relative path, else
+// "". The post-login target is client-supplied, so without this it is an open
+// redirect. A single leading "/" that is not "//" or "/\" stays on this origin.
 func redirect_local(target string) string {
 	if strings.HasPrefix(target, "/") && !strings.HasPrefix(target, "//") && !strings.HasPrefix(target, "/\\") {
 		return target
@@ -259,9 +234,8 @@ func redirect_local(target string) string {
 	return ""
 }
 
-// auth_redirect_login creates a full session and redirects the browser to the
-// given target. Used by OAuth callback flows where the response is a browser
-// redirect rather than an XHR JSON body.
+// auth_redirect_login creates a full session and redirects the browser - the
+// OAuth callback form of auth_complete_login.
 func auth_redirect_login(c *gin.Context, user *User, target string) {
 	auth_establish_session(c, user)
 	target = redirect_local(target)
@@ -287,11 +261,9 @@ func auth_create_app_token(user_uid string, login string, app string) string {
 		return ""
 	}
 
-	// The session names the one account its secret may sign for. Every caller
-	// takes both arguments from the same cookie, so the pair matches today -
-	// this is what makes that a property of the issuer rather than a habit of
-	// its callers, and it is the half of the binding jwt_verify cannot do
-	// alone.
+	// The session names the one account its secret may sign for. Binding it here
+	// makes that a property of the issuer rather than a habit of its callers - the
+	// half jwt_verify cannot do alone.
 	if s.User != user_uid {
 		return ""
 	}
@@ -440,13 +412,9 @@ func jwt_verify(token_string string) (string, string, error) {
 		return "", "", errors.New("invalid token")
 	}
 
-	// A valid signature proves only that the token was signed with THIS
-	// session's secret, not that it names this session's user. The user came
-	// from the token body and went straight to user_by_uid, so without this a
-	// single session secret authenticated as any account named in a token it
-	// signed - a per-device key acting as a key over the whole user table.
-	// Checked after the signature so an unauthenticated caller learns nothing
-	// from which error it gets.
+	// A valid signature proves the token was signed with THIS session's secret,
+	// not that it names this session's user - without this one per-device secret
+	// authenticates as any account named in a token it signed.
 	if claims.User != s.User {
 		return "", "", errors.New("token user does not match the session that signed it")
 	}
@@ -526,12 +494,9 @@ func user_method_disabled(user *User, method string) bool {
 	return methods_parse(user.Disabled)[method]
 }
 
-// user_method_state returns the effective state for a method as shown in the
-// settings grid. Operator policy wins: disabled server-wide reads as "disabled"
-// and email required server-wide reads as "required", whatever the user set.
-// Otherwise it reflects the user's own setting: "required" if in their required
-// set, "disabled" if they turned it off or its credential is missing, else
-// "allowed".
+// user_method_state returns the effective state shown in the settings grid.
+// Operator policy wins: disabled server-wide reads "disabled", email required
+// server-wide reads "required". Otherwise the user's own setting applies.
 func user_method_state(user *User, method string) string {
 	switch auth_method_state(method) {
 	case "disabled":
@@ -555,11 +520,9 @@ func user_method_usable(user *User, method string) bool {
 	return auth_method_state(method) != "disabled" && !user_method_disabled(user, method) && user_method_available(user, method)
 }
 
-// user_login_factors returns the address-then-prove factors the login
-// screen offers after the user enters their email — email code, passkey,
-// authenticator — filtered to those usable for this account. OAuth is
-// excluded because its buttons identify the user before any address is
-// typed, so they're driven by the system settings, not per-user state.
+// user_login_factors returns the address-then-prove factors usable for this
+// account. OAuth is excluded: its buttons identify the user before an address
+// is typed, so they follow the system settings, not per-user state.
 func user_login_factors(user *User) []string {
 	var out []string
 	for _, m := range []string{"email", "passkey", "totp"} {
@@ -570,13 +533,9 @@ func user_login_factors(user *User) []string {
 	return out
 }
 
-// user_login_offered returns the factors the login screen should offer after
-// the user enters their email. When the account requires specific factors,
-// only those can complete the login, so a usable-but-not-required factor is
-// omitted - offering it would imply an alternative that doesn't exist, since
-// the required factors must be completed regardless. With nothing required
-// (methods is empty), any one usable factor suffices, so all are offered.
-// Always non-nil.
+// user_login_offered returns the factors the login screen offers. When the
+// account requires specific factors only those are offered - anything else
+// would imply an alternative that cannot complete the login. Always non-nil.
 func user_login_offered(user *User) []string {
 	usable := user_login_factors(user)
 	required := auth_remaining_methods(user, "")
@@ -617,11 +576,8 @@ func user_has_login_factor(user *User, required, disabled map[string]bool) bool 
 }
 
 // user_factor_removal_blocked reports why removing the user's last credential
-// for a factor must be refused, or "" if it is safe. "required" - the factor
-// is still in the required set, so removing its credential would make login
-// impossible (the user must un-require it first); "last" - it is the only
-// factor that could still sign the user in (e.g. they disabled email and rely
-// on this one). Shared by the passkey-delete and authenticator-disable guards.
+// for a factor must be refused, or "": "required" (still in the required set,
+// un-require it first) or "last" (the only factor that could still sign in).
 func user_factor_removal_blocked(user *User, method string) string {
 	required := methods_parse(user.Methods)
 	if required[method] {
@@ -635,13 +591,10 @@ func user_factor_removal_blocked(user *User, method string) string {
 	return ""
 }
 
-// user_methods_configure sets one login method to a state ("disabled",
-// "allowed", or "required") for the user, enforcing the operator policy
-// floor/ceiling, credential availability, and the at-least-one-factor
-// rule. Returns "" on success, or a short error code the caller maps to a
-// translated message: "invalid" (unknown method/state), "blocked" (policy
-// forbids it), "credential" (nothing to enable), "last" (would remove the
-// user's only way to sign in).
+// user_methods_configure sets one login method to "disabled", "allowed" or
+// "required", enforcing operator policy, credential availability and the
+// at-least-one-factor rule. Returns "", "invalid", "blocked", "credential" or
+// "last".
 func user_methods_configure(user *User, method, state string) string {
 	known := false
 	for _, m := range auth_method_list {
@@ -1126,15 +1079,9 @@ func api_user_totp_setup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "failed to generate TOTP: %v", err)
 	}
 
-	// Park the new secret as pending rather than replacing the row.
-	//
-	// `replace into` overwrote secret and reset verified to 0, and
-	// user_method_available reports TOTP available only while verified is 1 -
-	// so starting an enrolment disabled the authenticator the user already
-	// had, whether or not they went on to finish. Abandoning the flow (closing
-	// the tab, never scanning the code) left them with no second factor and
-	// login silently degraded to an email code. The live secret is untouched
-	// until api_user_totp_verify proves the new one.
+	// Park the new secret as pending rather than replacing the row: a replace
+	// clears verified, and user_method_available needs verified=1, so starting an
+	// enrolment would disable the authenticator the user already has.
 	db := db_open("db/users.db")
 	created := now()
 	db.exec(`insert into totp (user, secret, verified, pending, created) values (?, '', 0, ?, ?)
@@ -1174,13 +1121,9 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "invalid code")
 	}
 
-	// Throttle per account before validating anything. A six-digit code is
-	// guessable and the per-IP limiter is defeated by rotating addresses -
-	// the same reasoning the login path states at account_gate_guard - and
-	// the proof this mints unlocks mochi.user.export, which carries entity
-	// private keys. A refusal is reported as a bad code so a caller learns
-	// nothing from the difference; the sleep inside the reserve is what
-	// actually costs the guesser.
+	// Throttle per account before validating: a six-digit code is guessable and
+	// the per-IP limiter is defeated by rotating addresses. A refusal reports a
+	// bad code so the caller learns nothing from the difference.
 	if !stepup_gate_reserve(user.UID) {
 		return sl.None, nil
 	}
@@ -1197,11 +1140,9 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	verified, _ := row["verified"].(int64)
 	pending, _ := row["pending"].(string)
 
-	// An enrolment in flight is settled first: a code matching the pending
-	// secret promotes it and retires whatever it replaces. Tried before the
-	// step-up branch below so a user who is re-enrolling can still complete it
-	// while their existing authenticator remains valid — a code from the old
-	// one simply falls through and re-authenticates as usual.
+	// Settle an enrolment in flight first, before the step-up branch, so a
+	// re-enrolling user can finish while their existing authenticator stays valid
+	// - a code from the old one falls through and re-authenticates.
 	if pending != "" && totp.Validate(code, pending) {
 		proven = true
 		db.exec("update totp set secret=?, verified=1, pending='' where user=?", pending, user.UID)
@@ -1306,15 +1247,9 @@ func web_recovery_login(c *gin.Context) {
 	db := db_open("db/users.db")
 	row, _ := db.row("select uid from users where username=?", email_address(input.Username))
 	if row == nil {
-		// Spend what a known user spends. The placeholder here used to be a
-		// hand-written 57-byte string, two short of bcrypt's 59-byte minimum,
-		// so CompareHashAndPassword rejected it on length before touching the
-		// KDF: measured at 12ns against 407ms for a user holding ten codes.
-		// The comment claimed the property the value destroyed.
-		//
-		// recovery_code_count compares rather than one, because the loop below
-		// runs once per stored code and the worst case is what an attacker
-		// times against.
+		// Spend what a known user spends. recovery_code_count comparisons, not one:
+		// the loop below runs once per stored code, and the worst case is what an
+		// attacker times against.
 		for i := 0; i < recovery_code_count; i++ {
 			bcrypt.CompareHashAndPassword(recovery_dummy(), []byte(code))
 		}
@@ -1448,15 +1383,10 @@ func partial_delete(sdb *DB, partial string) {
 	sdb.exec("delete from partial where id=?", partial)
 }
 
-// partial_continue records a just-completed login factor. When the caller's
-// login_partial cookie names a live partial for the same user, the factor is
-// folded into it — so factors complete in any order, and the passkey and
-// OAuth endpoints continue a sequence begun by a code factor instead of
-// minting a fresh partial that forgets the ones already done (which made an
-// account requiring both a code factor and a passkey or OAuth impossible to
-// sign in to). Otherwise a fresh partial is created. Returns the partial id
-// and the factors still remaining; when none remain the partial is deleted
-// and the empty id tells the caller to create the full session.
+// partial_continue records a just-completed login factor, folding it into the
+// live partial the login_partial cookie names so factors complete in any order.
+// Returns the partial id and what remains; an empty id means create the
+// session.
 func partial_continue(c *gin.Context, user *User, method string) (string, []string) {
 	sdb := db_open("db/sessions.db")
 	completed := map[string]bool{method: true}

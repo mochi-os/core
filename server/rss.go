@@ -20,14 +20,10 @@ import (
 	"golang.org/x/net/html"
 )
 
-// rss_maximum bounds one feed document. Separate from url_response_size_maximum so
-// that changing what a general outbound fetch may return does not silently
-// change this, and the reverse: a feed is text with a known shape, where an
-// arbitrary URL fetch is not.
-//
-// Real feeds are small - measured 2026-08-18, xkcd 2 KB, Hacker News 12 KB,
-// SMBC 14 KB, LWN 20 KB - so this is orders of magnitude above any of them and
-// bounds only the pathological case.
+// rss_maximum bounds one feed document. Separate from url_response_size_maximum
+// so changing what a general outbound fetch may return does not silently change
+// this. Real feeds are small - tens of kilobytes - so this bounds only the
+// pathological case.
 const rss_maximum = 100 * 1024 * 1024
 
 // mochi.rss.fetch(url, headers?) -> dict: Fetch and parse an RSS or Atom feed
@@ -191,12 +187,8 @@ var rss_ttl_element = regexp.MustCompile(`(?is)<ttl[^>]*>\s*([0-9]+)\s*</ttl>`)
 var rss_first_item = regexp.MustCompile(`(?is)<(item|entry)[\s>]`)
 
 // rss_extract_ttl reads the channel's TTL in minutes, or 0 when there is none.
-//
-// gofeed's unified Feed does not expose ttl, and this used to recover it by
-// running a SECOND full parse of the whole document through rss.Parser - a
-// complete extra tree, at the cap, for one integer, and on every Atom and JSON
-// feed too, where the element does not exist at all. Scanning the channel
-// header instead answers the same question without building anything.
+// gofeed's unified Feed does not expose ttl; scanning the channel header avoids
+// a second full parse of the document for one integer.
 func rss_extract_ttl(body []byte) int {
 	header := body
 	if at := rss_first_item.FindIndex(body); at != nil {

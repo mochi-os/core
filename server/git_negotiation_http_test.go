@@ -1,16 +1,13 @@
 // Mochi server: git smart-HTTP fetch negotiation, end to end.
 //
-// git_negotiation_test.go drives git_upload_pack directly and passes: given a
-// want and haves in one body, the pack excludes the common history. Production
-// does not. The difference is the transport - a real client negotiates over
-// several stateless POSTs - so this serves the handlers over HTTP and points
-// the real git binary at them, which is the only arrangement that reproduces
-// what git.mochi-os.org actually does.
+// Driving git_upload_pack directly passes where production does not, because a
+// real client negotiates over several stateless POSTs. These serve the handlers
+// over HTTP and point the real git binary at them.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -69,12 +66,9 @@ func git_client_objects(t *testing.T, dir string) int {
 	return total
 }
 
-// git_versions is the two wire protocols this server speaks.
-//
-// Since git 2.26 a client defaults to v2, so a test that does not say which one
-// it wants silently exercises only that one - and the v0 negotiation fix these
-// tests exist for would stop being covered the moment v2 was advertised. Every
-// end-to-end test runs against both.
+// git_versions is the two wire protocols this server speaks. A client defaults
+// to v2 since git 2.26, so a test that does not name a version silently
+// exercises only that one; every end-to-end test runs against both.
 var git_versions = []string{"0", "2"}
 
 // git_protocol prepends the wire-protocol selection to a git invocation.
@@ -107,14 +101,9 @@ func git_run(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
-// TestGitFetchOverHttpExcludesCommonHistory — the production regression. A
-// clone that is a few commits behind must be sent those commits, not the
-// repository. Measured against git.mochi-os.org, a clone one commit behind
-// received 566 of 586 objects.
-//
-// The history is deliberately long enough that the client needs more than one
-// negotiation round: git offers haves in batches of 16, and the single-round
-// case already passes in git_negotiation_test.go.
+// TestGitFetchOverHttpExcludesCommonHistory - a clone a few commits behind must
+// be sent those commits, not the repository. The history is long enough to need
+// more than one negotiation round; git offers haves in batches of 16.
 func TestGitFetchOverHttpExcludesCommonHistory(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not available")

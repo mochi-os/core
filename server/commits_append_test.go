@@ -1,17 +1,9 @@
 // Mochi server: a commit-log row is identified by the insert, not by a search.
 //
-// commits_append used to insert and then re-query "the newest unfired row with
-// this (name, kind, row_uid)" to recover the seq. Those three columns do not
-// identify a row: the same table row committing twice writes two commits rows
-// with all three equal. Any insert landing between another caller's insert and
-// its re-query hands both callers the same seq, so one row is marked fired
-// twice and the other never - it stays pending, and every later fire redrains
-// it and reruns the handler for work already done.
-//
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -37,10 +29,8 @@ func commits_test_db(t *testing.T) *DB {
 	return db
 }
 
-// TestCommitsAppendGivesEachCallerItsOwnRow is the regression. Every caller
-// commits the SAME (table, kind, row_uid), which is what the old re-query
-// keyed on, and they are released together so their inserts and recoveries
-// actually overlap.
+// Every caller commits the same (table, kind, row_uid) and is released
+// together, so the inserts and seq recoveries overlap.
 func TestCommitsAppendGivesEachCallerItsOwnRow(t *testing.T) {
 	db := commits_test_db(t)
 
@@ -109,10 +99,7 @@ func TestCommitsAppendLeavesNothingPending(t *testing.T) {
 	}
 }
 
-// TestCommitsAppendReturnsTheRowItInserted: the seq must name this call's row,
-// not merely some row. Distinguished by row_uid, which the old re-query keyed
-// on and so could never get wrong in a single-caller test - hence the
-// concurrent tests above. This one guards the simple case.
+// The returned seq must name this call's row, distinguished by row_uid.
 func TestCommitsAppendReturnsTheRowItInserted(t *testing.T) {
 	db := commits_test_db(t)
 

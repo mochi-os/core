@@ -3,18 +3,9 @@
 // This file is part of Mochi, licensed under the GNU AGPL v3 with the
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-// Tests for the two tables the log package keys on caller-supplied strings.
-//
-// log_repeat_state takes a key per distinct format, and mochi.log.debug lets an
-// app choose the format, so a format built from data grew it without bound on
-// every system regardless of email configuration.
-//
-// warn_email_state has the same shape but only matters where email.admin is
-// configured — warn() returns before touching it otherwise. There the old
-// per-format key meant an app varying its text sent an admin mail per call,
-// because the first occurrence of any key always sends. warn_application keys
-// on the app instead, so the admin still receives app warnings but at one per
-// app per window.
+// Tests for the two tables the log package keys on caller-supplied strings:
+// log_repeat_state, keyed per format an app may vary, and warn_email_state,
+// which warn_application keys on the app so it is bounded by installed apps.
 
 package main
 
@@ -88,10 +79,6 @@ func TestLogRepeatStillSuppressesAfterEviction(t *testing.T) {
 	}
 }
 
-// TestWarnEmailKeyIsPerApplication: the throttle key for an app's warning is
-// the app, not its text. With the old per-format key a varying message opened a
-// new key per call and each first occurrence sent, which is the flood; the
-// admin must still get the first one, and then no more that window.
 func TestWarnEmailKeyIsPerApplication(t *testing.T) {
 	log_tables_reset(t)
 	defer log_tables_reset(t)
@@ -115,13 +102,9 @@ func TestWarnEmailKeyIsPerApplication(t *testing.T) {
 	}
 }
 
-// TestWarnApplicationKeysOnTheApp checks that the production path uses the key
-// the tests above exercise. Those call warn_email_allow directly, so all of
-// them still pass if warn_application goes back to keying on the app-supplied
-// message — which is the whole bug. Driving the real path needs email.admin
-// configured, and the ini package only loads from a file, so setting it would
-// mutate global config for every other test in the binary. Asserting on the
-// call keeps the wiring honest at no such cost.
+// TestWarnApplicationKeysOnTheApp checks the production path uses that key: the
+// tests above call warn_email_allow directly and pass either way. Asserted on
+// the source because ini only loads from a file, so email.admin cannot be set.
 func TestWarnApplicationKeysOnTheApp(t *testing.T) {
 	source, err := os.ReadFile("log.go")
 	if err != nil {

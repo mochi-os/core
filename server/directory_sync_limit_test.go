@@ -14,11 +14,9 @@ func directory_sync_limit_reset() {
 	rate_limit_directory_sync.lock.Unlock()
 }
 
-// The asymmetry is the point. One small anonymous frame makes the server read
-// and stream every directory row at or after the requester's watermark, and a
-// request carrying no watermark means the whole table. Capping the ROWS would
-// break bootstrap - a joining peer legitimately needs all of them - so what is
-// bounded is how often a peer may ask.
+// One small anonymous frame makes the server stream every directory row at or
+// after the requester's watermark. Capping rows would break bootstrap, so what
+// is bounded is how often a peer may ask.
 func TestDirectorySyncLimitBoundsRepeatedRequests(t *testing.T) {
 	directory_sync_limit_reset()
 
@@ -75,15 +73,9 @@ func TestDirectorySyncLimitLeavesRoomForRealSyncs(t *testing.T) {
 	}
 }
 
-// The wiring, not the policy. The three tests above exercise the limiter
-// directly and pass even with the check deleted from the handler - so on their
-// own they would let the whole fix be removed and stay green. This one calls
-// the handler and asserts the limiter was consulted.
-//
-// Observed through the limiter's own bookkeeping: a handler that checks leaves
-// an entry for the peer, one that does not leaves the map untouched. An
-// earlier version of this test watched for a database panic instead, which
-// never came - db_open succeeds here - so it passed with the check deleted.
+// The three tests above exercise the limiter directly and pass with the check
+// deleted from the handler. This one calls the handler and asserts the limiter
+// was consulted, observed through the entry it leaves for the peer.
 func TestDirectorySyncEventConsultsTheLimit(t *testing.T) {
 	directory_sync_limit_reset()
 

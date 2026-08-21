@@ -3,13 +3,6 @@
 // This file is part of Mochi, licensed under the GNU AGPL v3 with the
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-// Tests for protocol2_handshake.go — hello / caps / claim helpers, plus
-// the surrounding authentication semantics: per-(stream, entity) claim
-// signing, cross-stream replay rejection, multi-entity claims, and the
-// entity-key rotation hook.
-//
-// Phase 3b per claude/plans/protocol2.md → Testing strategy.
-
 package main
 
 import (
@@ -44,14 +37,9 @@ func must_challenge(t *testing.T) []byte {
 	return c
 }
 
-// new_entity_keys generates a fresh ed25519 keypair, base58-encodes the
-// public key as the entity ID (matching entity_id() in entities.go),
-// and inserts the row into the test users.db so claim_sign can find the
-// private key. Returns the entity ID + the raw private key for tests
-// that need to forge or replay-test signatures.
-//
-// Inserts the owning user row first if it isn't already present, since
-// entities.user has a FK to users.uid.
+// new_entity_keys generates an entity keypair and inserts it into the test
+// users.db so claim_sign can find the private key. Inserts the owning user row
+// first: entities.user has a FK to users.uid.
 func new_entity_keys(t *testing.T) (id string, private ed25519.PrivateKey) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -317,17 +305,9 @@ func TestClaimVerifyRejectsCrossEntityReplay(t *testing.T) {
 	}
 }
 
-// TestClaimVerifyRejectsRelayedClaim is the attack the receiver binding
-// exists for, and the one the cross-stream replay test above cannot
-// express: it uses two INDEPENDENTLY RANDOM challenges, so it never
-// exercises a challenge the attacker chose.
-//
-// M opens a stream to victim V and captures V's fresh challenge. M then
-// induces the key holder to open a stream to M, plays receiver, and hands
-// back that same challenge. The signature it gets is genuine and covers
-// exactly the bytes V is expecting, so with only {challenge, entity}
-// signed, relaying it to V used to succeed — and M could then speak as
-// the entity and poison the directory route for it.
+// TestClaimVerifyRejectsRelayedClaim: a claim signed for one receiver must not
+// verify at another, so a genuine signature captured by a middle peer cannot be
+// relayed on. Uses two independent challenges - neither is attacker-chosen.
 func TestClaimVerifyRejectsRelayedClaim(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -592,10 +572,8 @@ func TestSessionIDFresh(t *testing.T) {
 
 // --- responder proof ---------------------------------------------------
 //
-// The answering side's half of the mutual authentication: proof that the
-// host which answered actually holds the entity the opener addressed.
-// Without it an opener knows only which host replied, so any peer it was
-// told to use could answer for any entity.
+// The answering side proves it holds the entity the opener addressed; without
+// it an opener knows only which host replied.
 
 func TestResponderProofRoundTrip(t *testing.T) {
 	cleanup := setup_replication_test(t)

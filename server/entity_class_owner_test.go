@@ -1,22 +1,15 @@
-// Mochi server: an app may only change or destroy entities of a class it handles.
+// Mochi server: an app may only change or destroy entities of a class it
+// handles.
 //
-// entity_class_allowed asks app_declares_class, which reads the calling app's
-// OWN manifest. For every class but "person" that is a self-assertion: an app
-// that adds "classes": ["feed"] to its app.json could rename, re-privacy and
-// destroy the user's feeds, and mochi.entity.update/delete carry no permission
-// gate of their own - the class check is the entire authorization.
-//
-// The answer was already in the tree. class_app_for resolves a class to its
-// handler from the user's binding, then the system binding, then install order:
-// three sources the calling app does not control. Creating still goes on the
-// manifest, because two apps may legitimately create one class (Apps and
-// Publisher both create "app" entities) and the resolution deliberately names
-// a single handler.
+// entity_class_allowed reads the calling app's own manifest, a self-assertion
+// for every class but "person", and entity update/delete carry no other gate.
+// class_app_for resolves the handler from sources the app does not control.
+// Creating still goes on the manifest, since two apps may create one class.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -295,12 +288,9 @@ func TestSharedClassesAreDeclaredWhereTheyAreCreated(t *testing.T) {
 	}
 }
 
-// TestSharedSurvivesAManifestReload. Classes and Shared are read together by
-// the create check, so they have to be refreshed together: app.json hot-reloads
-// for a development app, and a field left out of that copy keeps whatever it
-// held at load while its sibling moves on. Source-level because the reload path
-// wants a real app directory on disk, and the failure is a missing line rather
-// than a wrong answer.
+// TestSharedSurvivesAManifestReload. The create check reads Classes and Shared
+// together, so the hot reload has to copy both; a field left out keeps whatever
+// it held at load. Source-level, because the failure is a missing line.
 func TestSharedSurvivesAManifestReload(t *testing.T) {
 	body, err := os.ReadFile("apps.go")
 	if err != nil {
@@ -317,13 +307,11 @@ func TestSharedSurvivesAManifestReload(t *testing.T) {
 	}
 }
 
-// TestHandlerChoiceIsStableAcrossRestarts. Which app handles a class decides
-// who may change and destroy the user's entities, and candidates reach
-// app_select_best in Go map order, which is randomised per process. Install
-// time settles it only when the times differ, and a default app set installs
-// in one batch - on the production server 24 of 26 apps share two adjacent
-// seconds. Without a deterministic tie-break the answer would move from one
-// restart to the next.
+// TestHandlerChoiceIsStableAcrossRestarts. Candidates reach app_select_best in
+// Go map order, randomised per process, and a default app set installs in one
+// batch with tied times - without a deterministic tie-break the handler moves
+// between restarts, and the handler decides who may change and destroy the
+// user's entities.
 func TestHandlerChoiceIsStableAcrossRestarts(t *testing.T) {
 	cleanup := create_test_routing_env(t)
 	defer cleanup()

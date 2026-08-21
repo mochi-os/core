@@ -1,19 +1,13 @@
 // Mochi server: git smart-HTTP thin packs.
 //
-// A pack may only deltify an object against a base it also carries, so before
-// this every changed file travelled in full however small the edit. thin-pack
-// lifts that: the base can be an object the client already holds, named by hash
-// in a REF_DELTA, and the client resolves it from its own store.
-//
-// go-git's encoder cannot produce one - writeBaseIfDelta puts every base in the
-// pack, and the entry point that takes pre-built deltas is unexported - so the
-// pack written here is ours, and these assert both halves of that: that it
-// saves what it is supposed to save, and that real git can read it.
+// A thin pack may deltify against a base the client already holds, named by
+// hash in a REF_DELTA. go-git's encoder cannot produce one, so the pack written
+// here is ours; these assert that it saves bytes and that real git can read it.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -101,11 +95,9 @@ func TestGitFetchThinPackShrinksAModifiedFile(t *testing.T) {
 	}
 }
 
-// TestGitFetchThinPackNeverLargerThanWhole — thin deltifies against the
-// client's objects but not between the pack's own, and the ordinary encoder
-// does the opposite, so neither wins every time. A fetch of entirely new files
-// has nothing on the client's side to delta against, and must not come out
-// worse for having asked.
+// TestGitFetchThinPackNeverLargerThanWhole - a fetch of entirely new files has
+// nothing on the client's side to delta against, and must not come out worse
+// for having asked for a thin pack.
 func TestGitFetchThinPackNeverLargerThanWhole(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not available")
@@ -144,11 +136,9 @@ func TestGitFetchThinPackNeverLargerThanWhole(t *testing.T) {
 	}
 }
 
-// TestGitPackMemoryIsBounded — comparing a thin pack against a whole one means
-// holding both in memory, and the object-count ceiling bounds neither: one
-// large blob is one object. A client fetching after a long absence is sent most
-// of the repository, so the comparison has to give up rather than allocate it
-// twice.
+// TestGitPackMemoryIsBounded - comparing thin against whole holds both packs in
+// memory, and the object-count ceiling bounds no bytes at all, so the
+// comparison has to give up rather than allocate twice.
 func TestGitPackMemoryIsBounded(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not available")
@@ -206,11 +196,9 @@ func TestGitPackMemoryIsBounded(t *testing.T) {
 	}
 }
 
-// TestGitPackIsDeterministic — the same fetch twice has to produce the same
-// bytes. revlist returns its objects by iterating a Go map, so the pack was
-// built in a different order on every request; two identical fetches differed
-// by a few dozen bytes, which is enough to make any measurement of pack size -
-// including the one the thin/whole choice above is decided by - noise.
+// TestGitPackIsDeterministic - revlist returns its objects by iterating a Go
+// map, so without a stable sort two identical fetches differ by a few dozen
+// bytes and any pack-size measurement is noise.
 func TestGitPackIsDeterministic(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not available")

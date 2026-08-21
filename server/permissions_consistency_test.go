@@ -14,11 +14,9 @@ import (
 	sl "go.starlark.net/starlark"
 )
 
-// verbs that are deliberately not read or write. A consent dialog has to say
-// what is being granted, and these do not mutate a resource: signing produces
-// an assertion, sending delivers one, installing runs code, closing destroys
-// the account, exporting hands over a copy. Calling any of them "write" would
-// describe the wrong thing.
+// verbs that are deliberately not read or write: they name capabilities rather
+// than mutations, so calling any of them "write" would describe the wrong
+// thing.
 var permission_verbs_exempt = map[string]bool{
 	"accounts/ai": true, "accounts/notify": true,
 	"apps/install": true, "camera": true, "entity/sign": true, "microphone": true,
@@ -133,12 +131,10 @@ func TestReadAndWriteHalvesAreSplitHonestly(t *testing.T) {
 	}
 }
 
-// TestSettingReadsAreGatedByTheSettingAlone. A permission is one boolean for a
-// set spanning operator_name and relay, so it cannot say what the four tiers on
-// SystemSetting already say. It also sits in front of them: an administrator-only
-// permission refuses every non-administrator before the UserReadable tier is
-// consulted, which makes that tier unreachable and no test of gate ordering can
-// see it. Reads are classified per setting; writes keep settings/write.
+// TestSettingReadsAreGatedByTheSettingAlone: a permission in front of a setting
+// read refuses non-administrators before the UserReadable tier is consulted,
+// making that tier unreachable. Reads are per-setting; writes keep
+// settings/write.
 func TestSettingReadsAreGatedByTheSettingAlone(t *testing.T) {
 	body, err := os.ReadFile("settings.go")
 	if err != nil {
@@ -232,11 +228,7 @@ func TestDefaultAppsHoldWhatTheyCall(t *testing.T) {
 		"Settings": {"apps/read", "settings/write", "server/read",
 			"documents/read", "documents/write", "domains/read", "domains/write",
 			"user/verification/write",
-			// notifications/category/list, which the settings app calls to draw
-			// the notification categories page. Its absence 500'd that page and
-			// mailed the operator on every visit; the app held write and send
-			// but not read, so this was a plain omission when the permission
-			// was split.
+			// notifications/category/list draws the notification categories page.
 			"notifications/read"},
 	}
 	for name, permissions := range required {
@@ -288,17 +280,9 @@ func TestVerificationCodesAreNotExport(t *testing.T) {
 
 var _ = sl.None
 
-// TestDefaultGrantsReachExistingInstalls. Adding a permission to apps_default
-// is only half a fix: an account set up before the addition already has an
-// `apps` row, and if setup were skipped for it the app would stay broken on
-// every existing install while looking correct in the source. app_user_setup
-// records len(defaults)+1 and re-runs whenever that count no longer matches,
-// which is what carries a newly added grant to accounts that already exist.
-//
-// This pins the counter's relationship to the default set. A change that
-// recorded a constant, or the length without the +1, would leave every prior
-// account stranded on the old grants - and the symptom is a 500 the operator
-// receives by mail, which is how the missing notifications/read surfaced.
+// TestDefaultGrantsReachExistingInstalls pins app_user_setup's counter to
+// len(defaults)+1: re-running when the count changes is what carries a newly
+// added apps_default grant to accounts that already exist.
 func TestDefaultGrantsReachExistingInstalls(t *testing.T) {
 	body, err := os.ReadFile("permissions.go")
 	if err != nil {

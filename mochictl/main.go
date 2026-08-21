@@ -1,17 +1,12 @@
 // mochictl: Mochi server admin/ops CLI.
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// mochictl is the operator's control tool for a running mochi-server. It
-// connects to the server's admin listener — a UDS at <data_dir>/run/admin.sock
-// on Linux/macOS, a named pipe on Windows — authenticated by the transport
-// itself (Unix peer credentials / pipe security descriptor), no tokens, no
-// network. Builds and runs on every platform; only the systemd/Docker service
-// lifecycle behind `mochictl start` stays Linux-only (stubbed elsewhere).
-//
-// See claude/plans/mochictl.md for the design.
+// Talks to the server's admin listener - a UDS at <data_dir>/run/admin.sock, a
+// named pipe on Windows - authenticated by the transport itself. Only the
+// service lifecycle behind `mochictl start` is Linux-only.
 
 package main
 
@@ -51,15 +46,9 @@ type command struct {
 // Subcommand handlers are populated in commands.go to keep main.go small.
 var commands map[string]command
 
-// client builds an HTTP client targeting the admin transport.
-// Resolution order:
-//  1. -s flag if set
-//  2. Unix: <data_dir>/run/admin.sock from the loaded mochi.conf, falling
-//     back to the platform default data directory
-//  3. Windows: the fixed \\.\pipe\mochi-admin named pipe
-//
-// Optional timeout overrides the default 30-second deadline. Pass 0 for
-// long-running endpoints (e.g. /_/admin/backup streams the whole tarball).
+// client builds an HTTP client targeting the admin transport: -s if set, else
+// the platform default socket. Optional timeout overrides the 30-second
+// default; pass 0 for streaming endpoints such as /_/admin/backup.
 func client(timeouts ...time.Duration) *adminclient.Client {
 	path := socket
 	if path == "" {

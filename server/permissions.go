@@ -41,38 +41,25 @@ func (e *PermissionError) Error() string {
 	return fmt.Sprintf("permission required: %s (%s)", e.Permission, level)
 }
 
-// permissions defines all available permissions except dynamic url permissions
-// Permission names are <resource>/read and <resource>/write. The exceptions are
-// deliberate and should stay exceptions: sign, send, notify, install, close,
-// export, create and update name capabilities that do not read or write a
-// resource, and a consent dialog has to say what is actually being granted -
-// "change notifications" would not tell a user that an app may send one as
-// them. Do not add a new verb without that argument; do not fold an existing
-// one into write to tidy the list up.
+// permissions defines all available permissions except dynamic url permissions.
+// Names are <resource>/read and <resource>/write; sign, send, notify, install,
+// close, export, create and update are deliberate exceptions naming
+// capabilities that do not read or write a resource. Do not fold them into
+// write.
 var permissions = []Permission{
 	// Standard permissions
 	{"accounts/read", false, false},
 	{"accounts/write", false, false},
 	{"accounts/ai", false, false},
-	// The friend graph and group membership are the same class of data, and both
-	// are things an app has an ordinary reason to ask for - a game offering to
-	// invite a friend, an app offering to share with a group. Standard rather
-	// than restricted so the request dialog can actually grant them; a restricted
-	// permission renders with no Allow button and sends the user hunting through
-	// settings for a routine capability.
+	// Standard, not restricted: a restricted permission has no Allow button in the
+	// request dialog, and asking to invite a friend is an ordinary request.
 	{"friends/read", false, false},
-	// Every object the user owns across every app - each feed, forum, wiki,
-	// repository and project. entity.owned enumerates them with no argument at
-	// all and entity.get hands over the data blob, so it was worth gating; but
-	// standard rather than restricted for the same reason friends/read is, and
-	// twelve first-party apps need it: letting the user pick one of their own
-	// objects is an ordinary thing for an app to ask.
+	// entity.owned enumerates every object the user owns across every app, so it
+	// is gated - but standard, since picking one's own object is routine.
 	{"entity/read", false, false},
-	// mochi.access.check resolves its subject against core data - the target's
-	// role out of users.db - so it answers "is this identity a local account,
-	// and an administrator?" for any identity an app holds, which accounts/read
-	// otherwise gates. The other seven access APIs touch only the app's own
-	// table and stay ungated.
+	// mochi.access.check resolves the subject's role out of users.db, which
+	// accounts/read otherwise gates. The other access APIs touch only the app's
+	// own table and stay ungated.
 	{"access/read", false, false},
 	{"groups/write", false, false},
 	{"groups/read", false, false},
@@ -87,20 +74,12 @@ var permissions = []Permission{
 
 	// Restricted permissions
 	{"accounts/notify", true, false},
-	// Installing an app writes executable code to disk under an app's entity
-	// id, so this is the permission to run code as any app on the server. It
-	// is deliberately not admin-only: apps_install_user decides whether a
-	// non-administrator may install, and that check lives on the user in the
-	// install APIs. This one answers the separate question of whether the
-	// calling APP may. Restricted rather than standard because a consent
-	// dialog asking to "install applications" is one a user cannot safely
-	// evaluate in passing - see user/authentication/sign below.
+	// Installing writes executable code to disk under an app's entity id: this is
+	// permission to run code as any app. Not admin-only - apps_install_user gates
+	// the USER; this gates the calling app.
 	{"apps/install", true, false},
-	// Signing arbitrary bytes with an entity's private key. The key is the
-	// entity id, so a signature made here is checkable by anyone, anywhere,
-	// forever - and core reuses the same keys for export manifests and pubsub
-	// frames. Restricted for the reason user/authentication/sign is: a dialog
-	// asking to sign on the user's behalf is one they cannot evaluate in passing.
+	// Signing arbitrary bytes with an entity's private key - checkable by anyone
+	// forever, and core reuses those keys for export manifests and pubsub frames.
 	{"entity/sign", true, false},
 	// The app registry: which app answers a URL prefix, a class or a service
 	// name, and which version is active. apps/write can point the login prefix
@@ -111,11 +90,9 @@ var permissions = []Permission{
 	// The operator's own pages - terms, privacy - served to every visitor.
 	{"documents/read", true, true},
 	{"documents/write", true, true},
-	// Domain routing decides which account a public hostname serves, and both
-	// halves are restricted: the read side returns the DNS verification token,
-	// the write side repoints the hostname. Not administrator-only -
-	// domain_can_manage_route lets a delegate manage a path, and that user check
-	// stays; these answer the separate question of whether the calling APP may.
+	// Domain routing decides which account a hostname serves: read returns the DNS
+	// verification token, write repoints the hostname. Not administrator-only -
+	// domain_can_manage_route gates the user; these gate the calling app.
 	{"domains/read", true, false},
 	{"domains/write", true, false},
 	{"notifications/write", true, false},
@@ -136,34 +113,18 @@ var permissions = []Permission{
 	{"server/update", true, true},
 	{"settings/write", true, true},
 	{"tokens/create", true, false},
-	// Signing with the user's passkey. The shell hosts WebAuthn ceremonies for
-	// sandboxed apps, which cannot reach navigator.credentials themselves, and
-	// a ceremony runs on the real Mochi origin - so the assertion it returns is
-	// valid for Mochi whoever asked, and the browser's prompt names the relying
-	// party rather than the caller. Restricted, so it is granted deliberately
-	// from settings rather than by a consent dialog an app can raise at a moment
-	// of its choosing: a prompt the user cannot attribute is one they cannot
-	// safely answer under pressure.
+	// The shell hosts WebAuthn ceremonies for sandboxed apps, and a ceremony runs
+	// on the real Mochi origin - so the assertion is valid for Mochi whoever
+	// asked, and the browser prompt names Mochi, not the caller. Restricted:
+	// granted from settings, never from a dialog the app raises.
 	{"user/authentication/sign", true, false},
-	// Rewriting how the account authenticates. mochi.user.recovery.generate
-	// returns ten codes that bypass every second factor and invalidates the
-	// set the user already holds; mochi.user.totp.setup replaces the stored
-	// authenticator, and because a factor counts as available only while its
-	// row is verified, that alone drops the user's authenticator out of their
-	// usable factors and leaves login on an email code. Restricted for the
-	// same reason as sign above: an app can raise a consent dialog whenever it
-	// likes, and "change how you log in" is not a question a user can weigh in
-	// passing. Login and Settings hold it through apps_default, so the two
-	// legitimate holders are unaffected.
+	// Rewriting how the account authenticates: recovery.generate invalidates the
+	// codes the user holds, and totp.setup drops their authenticator out of the
+	// usable factors until re-verified. Restricted; Login and Settings hold it by
+	// default.
 	{"user/authentication/write", true, false},
-	// Closing the account. mochi.user.close marks it for deletion after the
-	// grace period and revokes every session, so the user is signed out
-	// everywhere and their account is on its way out - recoverable only if
-	// they notice in time and cancel. Restricted for the same reason as the
-	// two above, and because it is strictly more destructive than export
-	// below, which has been restricted all along: the pair is one flow in the
-	// settings app and there is no reading under which copying the data out
-	// needs deliberate consent but scheduling its deletion does not.
+	// mochi.user.close schedules deletion and revokes every session - recoverable
+	// only if the user cancels in time. Restricted, matching user/export.
 	{"user/close", true, false},
 	{"user/export", true, false},
 	// Confirming the account's own address. Sends a code to the user's stored
@@ -357,16 +318,9 @@ func permission_granted(u *User, app_id string, permission string) bool {
 		return true
 	}
 
-	// Default apps' permissions are lazily granted on first check, but ONLY
-	// while the user is still bootstrapping from another host: app_user_setup()
-	// is skipped for a user_pending user (it can't open the per-user DB while
-	// it's being rename(2)-swapped by the backfill), so the default grants
-	// aren't seeded yet, and a create-time hook (database_create) or migration
-	// firing during the bootstrap would otherwise be denied. Gating on
-	// user_pending mirrors app_user_setup's own skip, so this covers exactly
-	// the window setup misses — and a normal, set-up user never auto-acquires a
-	// permission it wasn't granted. A user-revoked permission has an explicit
-	// granted=0 row, so it is never re-granted here.
+	// Default grants are seeded lazily only while the user is still bootstrapping
+	// from another host, the window app_user_setup skips. A revoked permission has
+	// an explicit granted=0 row, so it is never re-granted here.
 	if user_pending(u) {
 		if seeded, _ := db.exists("select 1 from permissions where app=? and permission=? and object=?", app_id, name, object); !seeded {
 			for _, p := range apps_default_get(app_id) {
@@ -443,11 +397,9 @@ func permissions_list(u *User, app_id, language string) []map[string]any {
 	return result
 }
 
-// permissions_setup creates the permissions table: one row per (app, permission,
-// object) recording the user's own decision that this app may have this
-// permission. A revoke writes granted=0 rather than deleting the row, and that
-// surviving row is what makes permissions_default's insert-or-ignore safe - see
-// there.
+// permissions_setup creates the permissions table: one row per (app,
+// permission, object). A revoke writes granted=0 rather than deleting, which is
+// what makes permissions_default's insert-or-ignore safe.
 func (db *DB) permissions_setup() {
 	db.exec("create table if not exists permissions ( app text not null, permission text not null, object text not null default '', granted integer not null default 0, created integer not null default 0, primary key ( app, permission, object ) )")
 }
@@ -478,14 +430,9 @@ func app_user_setup(u *User, app_id string) {
 		return
 	}
 
-	// Skip while the user's per-user DBs are still being bootstrapped
-	// from another host. db_user(u, "user") below opens user.db, and
-	// during a per-user replication backfill that file is being
-	// rename(2)-swapped underneath us — opening it mid-swap raised
-	// "database disk image is malformed" and crashed the server
-	// (2026-05-21). Setup re-runs harmlessly once the user flips to
-	// active: the `setup != expected` check makes the next call a
-	// real setup pass.
+	// Skip while the user's per-user DBs are being bootstrapped: user.db is
+	// rename(2)-swapped underneath us, and opening it mid-swap reads a malformed
+	// image. The `setup != expected` check makes the next call a real setup pass.
 	if user_pending(u) {
 		return
 	}
@@ -570,13 +517,10 @@ func require_permission(t *sl.Thread, fn *sl.Builtin, permission string) error {
 	}
 }
 
-// require_permission_acting checks a permission against the user the call
-// actually acts for, rather than against t.Local("user") alone. An anonymous
-// request to a public action runs as the owner - the caller is nil while the
-// call still reads the owner's data - so plain require_permission refuses on
-// "no user context" and takes the public page down with it. Use this on APIs
-// that legitimately answer an anonymous caller; use require_permission
-// everywhere else, where a missing user is a real refusal.
+// require_permission_acting checks against the user the call acts for, not the
+// caller. Use it on APIs that legitimately answer an anonymous caller - a
+// public action runs as the owner, where plain require_permission refuses on
+// "no user context". Use require_permission everywhere else.
 func require_permission_acting(t *sl.Thread, fn *sl.Builtin, permission string) error {
 	app, _ := t.Local("app").(*App)
 	if app == nil {

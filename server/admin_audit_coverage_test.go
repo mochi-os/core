@@ -1,34 +1,11 @@
-// Mochi server: the local sockets record who did what.
-//
-// Two gaps, one on each socket.
-//
-// The admin socket audited four routes of seventeen, and the four were the
-// obvious writes - snapshot, vacuum, stop, restart. Not audited: migrate,
-// which runs schema migrations; backup, which streams the entire data
-// directory out; config, which dumps the effective configuration; and every
-// pprof endpoint, which hands out process memory, stacks and goroutine state.
-// An audit trail with those missing answers "what did this server do" while
-// leaving "what left this server" blank.
-//
-// pprof was worse than unlisted. admin_register_routes built it as
-// r.Group("/_/admin/debug/pprof") - a sibling of the ROUTER, not of the admin
-// group - so it inherited none of admin's middleware and could not have been
-// audited by adding a map entry. It is now admin.Group("/debug/pprof"), same
-// paths, and anything later added to admin.Use reaches it too.
-//
-// The world socket dropped its credential. world_conn_listener.Accept read the
-// peer credential, used it to describe a REJECTION, and returned the bare
-// net.Conn on success - and world_start set no ConnContext, so there was
-// nothing for a handler to read even if it wanted to. That socket's authority
-// is its group, deliberately looser than the admin socket's (mochi-world
-// rather than mochi, per world_unix.go's own header), and POST /_/world/status
-// gossips the pushed name and address on to other hosts' join pages. A looser
-// group with no attribution is the weaker half of both.
+// Mochi server: the local sockets record who did what - every admin route in
+// admin_audited_routes plus the pprof group, and the world socket's peer
+// credential.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -179,10 +156,8 @@ func TestWorldPushIsAudited(t *testing.T) {
 	}
 }
 
-// TestWorldSocketAttachesItsCredential is the wiring the audit depends on.
-// Reading the source rather than dialling a socket: world_unix.go is behind a
-// build tag, needs a real UDS and a mochi-world group, and the defect was
-// structural - a value computed and then dropped.
+// Reads the source rather than dialling: world_unix.go is behind a build tag
+// and needs a real UDS and a mochi-world group.
 func TestWorldSocketAttachesItsCredential(t *testing.T) {
 	source, err := os.ReadFile("world_unix.go")
 	if err != nil {

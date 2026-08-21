@@ -36,11 +36,8 @@ var (
 	starlark_semaphore       chan struct{}
 	starlark_default_timeout time.Duration
 	// starlark_file_timeout bounds a call that has handed the response to the
-	// client and is streaming bytes. Such a call must outlive the compute
-	// timeout — the Starlark work is already done — but it still needs a
-	// bound, or a client that reads slowly (or stops) holds a concurrency slot
-	// indefinitely. Initialised here as well as in starlark_configure, so a
-	// zero value can never cut a download short before the INI is read.
+	// client and is only streaming bytes. Initialised here as well as in
+	// starlark_configure, so a zero value cannot cut a download short pre-INI.
 	starlark_file_timeout = starlark_file_default
 )
 
@@ -102,24 +99,10 @@ func starlark(files []string) *Starlark {
 		//debug("Starlark reading file %q", file)
 		defined, err := sl.ExecFile(s.thread, file, nil, s.globals)
 		if err != nil {
-			// The file is named explicitly because the error often does not
-			// name it. A syntax or resolve error carries its own position, so
-			// the path appeared by luck; an error from a mochi.* call at module
-			// level is a bare Go error with none, and the line read "Starlark
-			// error reading file no app context: mochi.entity.get() no app
-			// context" - the word "file" followed by no file. That is the class
-			// #66 created by turning those panics into errors, so it is now the
-			// likely one.
-			//
-			// warn rather than info: ExecFile returns nothing usable on error,
-			// so EVERY definition in the file is lost - including functions
-			// whose def executed before the failing statement - and the app
-			// runs on with a partial global set, each missing handler reporting
-			// "unknown function" from somewhere unrelated. Outside dev_reload
-			// the result is cached by starlark_once for the process lifetime,
-			// so a fix does not take effect until a restart. That is worth an
-			// operator's attention, and the format is fixed so the admin email
-			// is throttled to one per window however many files fail.
+			// Name the file explicitly: an error from a mochi.* call at module level is
+			// a bare Go error carrying no position. warn, not info - ExecFile loses
+			// every definition in the file, and starlark_once caches that partial set
+			// for the process lifetime outside dev_reload.
 			warn("Starlark error reading %s: %v", file, err)
 			continue
 		}
@@ -408,18 +391,10 @@ func sl_error(fn *sl.Builtin, e any, values ...any) (sl.Value, error) {
 	return sl.None, final_error
 }
 
-// Mark this thread as having handed its response to the client: the Starlark
-// work is done and only HTTP I/O remains. The flag is an atomic because the
-// call's own goroutine sets it while Starlark.call may be reading it after the
-// compute timeout has fired.
-//
-// Also bounds the write. The listener deliberately sets no WriteTimeout — it
-// would cut off legitimate git packs and large attachment transfers — so
-// without a deadline here a client that simply stops reading blocks the write
-// forever. That is the one blocking operation in a Starlark call whose
-// duration an outside party chooses, and the call holds a concurrency slot
-// throughout. The budget matches starlark_file_timeout, so the deadline the
-// writer enforces and the bound Starlark.call waits for are the same number.
+// Mark this thread as having handed its response to the client. The flag is an
+// atomic because Starlark.call may read it after the compute timeout fires.
+// Also sets a write deadline: the listener has no WriteTimeout, so a client
+// that stops reading would otherwise hold this concurrency slot for ever.
 func starlark_serving_set(t *sl.Thread, writer http.ResponseWriter) {
 	if serving, ok := t.Local("file_serving").(*atomic.Bool); ok {
 		serving.Store(true)
@@ -432,17 +407,9 @@ func starlark_serving_set(t *sl.Thread, writer http.ResponseWriter) {
 }
 
 // starlark_transfer_set marks a call as moving bulk bytes rather than
-// computing, so the transfer bound applies instead of the compute one.
-//
-// The compute timeout exists to stop a handler thinking for too long. A call
-// pulling a large object from a peer is not thinking - it is one io.Copy whose
-// duration is the size of the object over the speed of the link, and at the
-// largest object the platform stores it cannot finish inside a compute budget
-// on any ordinary connection. Bounding it by that budget would not protect
-// anything: the copy sits inside a built-in that does not check for
-// cancellation, so the timeout abandons the caller while the transfer runs on
-// regardless. It is the same reasoning that gives a call streaming a response
-// the longer bound; here the bytes are arriving rather than leaving.
+// computing, so the transfer bound applies instead of the compute one. The copy
+// sits inside a built-in that ignores cancellation, so a compute bound would
+// abandon the caller while the transfer ran on regardless.
 func starlark_transfer_set(t *sl.Thread) {
 	starlark_serving_set(t, nil)
 }
@@ -453,14 +420,10 @@ func starlark_serving_get(t *sl.Thread) bool {
 	return ok && serving.Load()
 }
 
-// starlark_context returns the calling thread's context, cancelled when the
-// call times out. Builtins that block inside Go — database queries above all —
-// must pass it down, because thread.Cancel is only observed between
-// interpreter steps: a statement that has already entered SQLite runs to
-// completion no matter how long the call has overrun. The driver honours
-// context cancellation, so this is what actually stops it.
-//
-// Falls back to a background context for calls made outside Starlark.call.
+// starlark_context returns the calling thread's context, cancelled at the call
+// timeout. Builtins that block inside Go must pass it down: thread.Cancel is
+// only observed between interpreter steps, so a statement already inside SQLite
+// runs to completion. Falls back to a background context outside Starlark.call.
 func starlark_context(t *sl.Thread) context.Context {
 	if ctx, ok := t.Local("context").(context.Context); ok && ctx != nil {
 		return ctx
@@ -487,24 +450,10 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 		kw = kwargs[0]
 	}
 
-	// Acquire a concurrency slot, released on return.
-	//
-	// The release belongs to the caller, not to the goroutine below, because
-	// Starlark calls nest: mochi.service.call dispatches into another app,
-	// commit hooks fire from inside a handler, and a database migration runs
-	// on first use from inside a mochi.db builtin. Each of those runs a second
-	// Starlark.call while the first still holds its slot. Releasing from the
-	// goroutine instead means that when every slot is taken, a nested acquire
-	// blocks forever — and because a channel send is not interrupted by
-	// thread.Cancel, the holder can never reach its release, so the slot is
-	// lost for good. Lose them all and the engine stops: the acquire runs
-	// before any timeout handling, so callers wait with nothing to rescue
-	// them. Releasing here keeps that self-healing, at the known cost that an
-	// abandoned call no longer counts against the cap while it winds down.
-	//
-	// The bound is a backstop for the same shape of problem: a slot held by a
-	// call stuck in an uncancellable builtin is not recoverable, so waiting
-	// for one must fail loudly rather than hang a request forever.
+	// Acquire a concurrency slot, released by the CALLER, not the goroutine below:
+	// Starlark calls nest (mochi.service.call, commit hooks, migrations), and a
+	// blocked nested acquire cannot be interrupted by thread.Cancel, so releasing
+	// from the goroutine would lose the slot for good.
 	select {
 	case starlark_semaphore <- struct{}{}:
 	case <-time.After(starlark_queue_timeout):
@@ -541,25 +490,17 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 	done := make(chan starlark_result, 1)
 
 	go func() {
-		// Recover panics so a fault in one Starlark call (a malformed
-		// SQLite DB, a nil deref in a Go-side API, etc.) becomes an
-		// error the caller can report — instead of unwinding an
-		// unguarded goroutine and taking the whole server down. gin's
-		// Recovery middleware only wraps HTTP handlers; this goroutine
-		// is spawned outside it, so without this defer a single bad DB
-		// crashed the process (2026-05-21: a user DB mid-bootstrap-swap
-		// panicked here and killed mochi2).
+		// Recover panics so a fault in one Starlark call becomes an error the caller
+		// can report. gin's Recovery middleware only wraps HTTP handlers; this
+		// goroutine is spawned outside it, so an unguarded panic kills the process.
 		var out starlark_result
 		defer func() {
 			if r := recover(); r != nil {
 				out = starlark_result{err: fmt.Errorf("Starlark call %q panicked: %v", function, r)}
 			}
-			// Cleanup belongs to the goroutine that owns this thread, not to
-			// the caller. Doing it in the caller raced with a timed-out call
-			// that was still running: its streams were closed and its
-			// transaction rolled back out from under it, on the same thread it
-			// was still using. Here it happens exactly once, when the work has
-			// genuinely finished.
+			// Cleanup belongs to the goroutine that owns this thread. Doing it in the
+			// caller raced a timed-out call still running: its streams were closed and
+			// its transaction rolled back out from under it.
 			if streams, ok := s.thread.Local("streams").([]*Stream); ok {
 				for _, stream := range streams {
 					stream.close()
@@ -585,11 +526,9 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 		}
 		return out.value, out.err
 	case <-time.After(starlark_default_timeout):
-		// A call that has handed the response to the client has finished its
-		// Starlark work and is only streaming bytes, so cancelling it at the
-		// compute timeout would truncate a legitimate download. Give it the
-		// longer file bound instead — but do bound it, so a client that stops
-		// reading cannot hold this concurrency slot forever.
+		// A call that has handed the response to the client is only streaming bytes,
+		// so the compute timeout would truncate a legitimate download. Give it the
+		// longer file bound - but bound it, or a stalled reader holds the slot.
 		if serving.Load() {
 			select {
 			case out := <-done:

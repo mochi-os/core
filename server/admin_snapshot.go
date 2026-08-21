@@ -1,19 +1,12 @@
 // Mochi server: admin snapshot / vacuum / backup handlers.
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// Snapshot writes a `.backup` sibling next to every live `*.db` in the data
-// dir using SQLite's online backup API (sqlite3_backup_init), so page offsets
-// stay stable and rsync delta is tight. Static files are not touched — rsync
-// transfers them from their live paths directly. The legacy `.snap` suffix
-// from before the 2026-05-27 rename is still recognised by the
-// reap/restore/tar paths so pre-existing on-disk files keep working.
-//
-// All of this is transport-agnostic. Only the snapshot lock is
-// platform-specific (flock on Unix, LockFileEx on Windows); snapshot_acquire_
-// lock / snapshot_release_lock live in the per-OS transport files.
+// Snapshot writes a `.backup` sibling next to every live `*.db` using SQLite's
+// online backup API, so page offsets stay stable and rsync delta is tight. The
+// legacy `.snap` suffix is still recognised. Only the snapshot lock is per-OS.
 
 package main
 
@@ -115,10 +108,8 @@ func snapshot_trim_backup_suffix(name string) (string, bool) {
 // snapshot_copy_db lives in db_snapshot.go (cross-platform); the
 // bootstrap protocol calls it on every platform too.
 
-// snapshot_in_place writes a `.backup` sibling next to every live DB in the
-// data dir, then reaps any stale `.backup` (or legacy `.snap`) whose live
-// `.db` no longer exists. Acquires the snapshot lock for the duration of
-// the call.
+// snapshot_in_place writes a `.backup` beside every live DB, then reaps any
+// stale `.backup` or legacy `.snap` whose `.db` is gone.
 func snapshot_in_place() snapshot_summary {
 	start := time.Now()
 	out := snapshot_summary{}

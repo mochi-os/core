@@ -1,15 +1,12 @@
 // Mochi server: peer address discovery unit tests
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// Tests for the peers/publish + peers/request address-discovery path
-// (ticket #424): a server that knows another only by peer id must be
-// able to learn its addresses from a signed pubsub announcement, and
-// the send path must be able to solicit one. The original mechanism
-// was disabled in v0.1.6 when wildcard binds removed the single
-// self-evident listen address; these tests pin the revived behaviour.
+// The peers/publish + peers/request path (#424): a server that knows another
+// only by peer id learns its addresses from a signed pubsub announcement, and
+// the send path can solicit one.
 
 package main
 
@@ -149,13 +146,9 @@ func TestPeerRequestAddressesRateLimit(t *testing.T) {
 	}
 }
 
-// TestPeerConnectRetryEnrollsFailedDial: a failed startup dial must
-// enroll the peer in the reconnect manager's backoff probes. The other
-// enrollment triggers (libp2p disconnect, silent-failure threshold)
-// require having reached the peer or having traffic for it, so without
-// this a server that boots before its network is ready stays isolated
-// until restart (observed live: hotel network blocking the bootstrap
-// port left instances out of the mesh indefinitely).
+// TestPeerConnectRetryEnrollsFailedDial: the other enrollment triggers require
+// having reached the peer, so without this a server that boots before its
+// network is ready stays isolated until restart.
 func TestPeerConnectRetryEnrollsFailedDial(t *testing.T) {
 	cleanup := setup_peer_discovery_test(t)
 	defer cleanup()

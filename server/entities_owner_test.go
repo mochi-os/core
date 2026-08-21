@@ -73,12 +73,9 @@ func entity_get_ids(t *testing.T, thread *sl.Thread, id string) []string {
 	return out
 }
 
-// TestEntityGetResolvesCallerNotOwner is the regression guard for the class
-// where six apps read "does the caller own this" off a function that answers
-// "which database do I open". On a domain route carrying a context the two
-// diverge, and every logged-in visitor was reported as owning the owner's
-// entities - which gated profile writes, wiki comment deletion and publisher's
-// access check.
+// TestEntityGetResolvesCallerNotOwner guards the class where "does the caller
+// own this" is read off principal_storage, which answers "which database do I
+// open". On a domain route carrying a context the two diverge.
 func TestEntityGetResolvesCallerNotOwner(t *testing.T) {
 	setup_test_data_dir(t)
 	defer cleanup_test_data_dir(t)
@@ -123,11 +120,8 @@ func TestEntityGetResolvesCallerNotOwner(t *testing.T) {
 		t.Errorf("owner by fingerprint got %v, want their own entity", got)
 	}
 
-	// Guard against the whole test passing for the wrong reason. The visitor
-	// cases above are only meaningful because the storage selector genuinely
-	// does resolve to someone else here - that divergence IS the bug. If
-	// principal_storage ever stopped substituting, these assertions would still
-	// pass while proving nothing, so pin the thing they depend on.
+	// Pin the divergence the cases above depend on: if principal_storage stopped
+	// substituting the owner, they would still pass while proving nothing.
 	storage, err := principal_storage(entity_get_thread(owner, visitor, "site"))
 	if err != nil || storage == nil || storage.UID != owner.UID {
 		t.Errorf("principal_storage on a contexted route = %v, want the owner - "+

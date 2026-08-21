@@ -9,14 +9,8 @@ package main
 import "testing"
 
 // TestQueueRetentionIsOneFloor: queue_cleanup keeps every message class for
-// queue_age_maximum (7d).
-//
-// It used to be two floors - replication ops kept 30 days (T_forget) so an
-// offline replica could still replay and merge. Replication was removed in
-// July 2026 and nothing sends that service, so the replication arm of the
-// predicate could not match and the other arm (service != 'replication') was
-// true of every row. The service names below are kept as ordinary strings: a
-// message naming one gets the same 7 days as anything else.
+// queue_age_maximum (7d). The service names below are ordinary strings - naming
+// one buys no extra retention.
 func TestQueueRetentionIsOneFloor(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -54,11 +48,6 @@ func TestQueueRetentionIsOneFloor(t *testing.T) {
 // TestRetentionOrderingInvariant: the dedup window must outlive the longest
 // retry gap, or a retry arrives after the receiver has forgotten the message
 // and is delivered twice.
-//
-// This also asserted replication_op_retention >= queue_age_maximum, guarding
-// the 7-vs-30 bug where replication ops were trimmed on the shorter schedule
-// and the safe-merge window silently shrank. There is one floor now, so there
-// is no ordering left to violate.
 func TestRetentionOrderingInvariant(t *testing.T) {
 	var maximum_retry int64
 	for _, d := range retry_delays {

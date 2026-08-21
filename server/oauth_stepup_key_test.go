@@ -1,17 +1,10 @@
-// Mochi server: an OAuth step-up proof is not keyed on a value its caller picks.
-//
-// ceremonies is one table shared by every ceremony type and every user, keyed
-// on id. Every kind is keyed on a server-generated random_alphanumeric(32) -
-// except the step-up proof, which used the caller's own challenge as the
-// primary key and left the challenge column empty. A challenge
-// already occupied made the victim's insert a constraint violation, and
-// db.exec panics on one, so their OAuth callback answered 500 and their proof
-// was never stored: the step-up could not complete until the squat expired.
+// Mochi server: an OAuth step-up proof is keyed on a server-generated id, not
+// on the caller's challenge, so two accounts may hold the same challenge.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -132,10 +125,8 @@ func TestTheChallengeIsStoredInItsOwnColumn(t *testing.T) {
 	}
 }
 
-// TestEachUserReadsTheirOwnProof: with the challenge no longer unique, the
-// user filter is the only thing separating two rows that share one. If that
-// were dropped, an attacker who guessed a challenge would read the victim's
-// step-up token - far worse than the denial this replaces.
+// TestEachUserReadsTheirOwnProof: two rows may share a challenge, so the user
+// filter is the only thing keeping each account's proof separate.
 func TestEachUserReadsTheirOwnProof(t *testing.T) {
 	defer stepup_env(t)()
 
@@ -170,9 +161,6 @@ func TestFinishScopesOnUserAndChallenge(t *testing.T) {
 	if strings.Contains(body, "where id=? and type='reauthentication_oauth'") {
 		t.Error("verify.finish still treats the caller's challenge as the row id")
 	}
-	// The consumption has to name the row it just read. Deleting by challenge
-	// would take every account's row that shares one - which is now possible,
-	// because the challenge is no longer unique.
 	if strings.Contains(body, `delete from ceremonies where challenge=?`) {
 		t.Error("verify.finish consumes by challenge, so one user's step-up deletes another's stored proof")
 	}
@@ -181,9 +169,6 @@ func TestFinishScopesOnUserAndChallenge(t *testing.T) {
 	}
 }
 
-// TestTwoAccountsCoexistUnderOneChallenge is what makes the delete-by-id
-// assertion above matter: with the challenge no longer a key, two rows really
-// can share one, so consuming either must leave the other standing.
 func TestTwoAccountsCoexistUnderOneChallenge(t *testing.T) {
 	defer stepup_env(t)()
 

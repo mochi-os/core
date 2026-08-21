@@ -1,19 +1,13 @@
 // Mochi server: the calling app must be read through principal_app.
 //
-// An unset thread local is a nil INTERFACE, and a nil interface does not
-// assert to a concrete type - it panics. Every `app := t.Local("app").(*App)`
-// therefore panicked on exactly the input its own `if app == nil` guard was
-// written to catch, and the locals are unset for the whole of module load, so
-// a module-level mochi.* call in an app's .star file reached a builtin with no
-// app. The panic escaped starlark(), and in production that call sits inside
-// starlark_once.Do - which counts a panicking f as done - leaving the app
-// version with nil globals and every later action reporting "unknown
-// function", silently, until the process restarts.
+// An unset thread local is a nil interface, which does not assert to a concrete
+// type - it panics. Locals are unset for the whole of module load, so a
+// module-level mochi.* call reaches a builtin with no app.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -40,9 +34,6 @@ func module_level(t *testing.T, statement string) (panicked any) {
 	return nil
 }
 
-// TestModuleLevelApiCallsDoNotPanic is the regression proper. Every one of
-// these panicked before principal_app; each now reaches the error its builtin
-// already had written for the case.
 func TestModuleLevelApiCallsDoNotPanic(t *testing.T) {
 	entity := strings.Repeat("e", 50)
 	for _, statement := range []string{
@@ -72,18 +63,9 @@ func TestModuleLevelApiCallsDoNotPanic(t *testing.T) {
 	}
 }
 
-// TestModuleLoadPanicDoesNotPoisonTheAppVersion is why the panic mattered
-// more than a panic usually does.
-//
-// starlark() loads an app's files in order. A panic in one unwinds out of the
-// whole call, so the files after it never load - and in production that call
-// sits inside starlark_once.Do, which counts a panicking f as done. The app
-// version kept nil globals for the life of the process: no second panic, no
-// further log line, just an app whose every function had vanished.
-//
-// Here the offending statement is in the FIRST file and the handler in the
-// second, so the test fails if the first file can still take the second one
-// down with it.
+// A panic loading one file unwinds out of starlark(), and starlark_once.Do
+// counts a panicking f as done - the app version keeps nil globals for the life
+// of the process. The fault is in the first file, the handler in the second.
 func TestModuleLoadPanicDoesNotPoisonTheAppVersion(t *testing.T) {
 	dir := t.TempDir()
 	first := filepath.Join(dir, "constants.star")

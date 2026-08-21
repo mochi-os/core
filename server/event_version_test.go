@@ -1,20 +1,14 @@
 // Mochi server: routing an event to an app with no loadable version.
 //
-// route() screens a nil version on the app_by_id branch ("No active version
-// for this app") and then calls active() a second time for the branch that
-// reaches it by service, unchecked - so av.Events dereferenced nil.
-//
-// The nil is reachable from the wire: app_external registers an App into the
-// registry BEFORE its version is read, so a failed load leaves an app with an
-// empty version map for the life of the process, and app_for_service_resolve
-// looks an inbound service name up as an app id. The panic is contained by the
-// guard() at each P2P entry point, so the cost is a warn - which emails the
-// operator - and a reset stream, not a crash.
+// app_external registers an App into the registry before its version is read,
+// so a failed load leaves an empty version map for the life of the process -
+// and app_for_service_resolve looks an inbound service name up as an app id,
+// which makes the nil reachable from the wire.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -97,12 +91,10 @@ func TestAMissingVersionIsPermanent(t *testing.T) {
 	}
 }
 
-// TestTheEventLookupReleasesItsLockOnPanic is what turned this from noisy into
-// fatal. apps_lock is a process-global mutex every app lookup takes, and the
-// lookup used a bare Lock/Unlock pair, so a panic between them left it held -
-// the guard() at each P2P entry point then contained the faulted goroutine and
-// the server stopped routing anything at all. The nil check makes THIS panic
-// impossible; the deferred unlock makes the next one survivable.
+// TestTheEventLookupReleasesItsLockOnPanic. apps_lock is a process-global mutex
+// every app lookup takes; a panic between a bare Lock/Unlock pair leaves it
+// held and the server stops routing at all. The deferred unlock makes the next
+// one survivable.
 func TestTheEventLookupReleasesItsLockOnPanic(t *testing.T) {
 	done := make(chan struct{})
 	go func() {

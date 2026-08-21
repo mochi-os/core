@@ -31,11 +31,9 @@ func shell_nonce() string {
 	return base64.RawURLEncoding.EncodeToString(b[:])
 }
 
-// Shell template files (shell.html, shell.js, iframe-shim.js) live in
-// the menu app's build output (apps/menu/web/dist/) so that frontend
-// rebuilds pick them up without restarting the server. shell_file_load
-// reads and caches them by mtime — re-reads from disk only when the
-// file has changed.
+// Shell template files (shell.html, shell.js, iframe-shim.js) live in the menu
+// app's build output, so frontend rebuilds are picked up without a restart.
+// shell_file_load caches by mtime.
 
 type shell_file_entry struct {
 	mtime   time.Time
@@ -78,11 +76,9 @@ func shell_file_load(path string) (string, error) {
 // web_should_serve_shell adds the authentication requirements on top.
 func shell_wrap_candidate(c *gin.Context) bool {
 	// Sec-Fetch-Dest classifies the request: "document" for top-level navigations,
-	// "iframe" for iframe loads, "script"/"style"/"image"/etc for assets, and
-	// "empty" for fetch/XHR. Modern browsers always send it, but older browsers,
-	// privacy-strict browsers, and some reverse proxies may strip it. Treat
-	// "document" or missing as a possible top-level navigation; reject any
-	// explicit non-document value.
+	// "iframe" for iframe loads, "empty" for fetch. Some browsers and proxies
+	// strip it, so treat missing as a possible navigation and reject explicit
+	// non-document.
 	dest := c.GetHeader("Sec-Fetch-Dest")
 	if dest != "" && dest != "document" {
 		return false
@@ -98,19 +94,10 @@ func shell_wrap_candidate(c *gin.Context) bool {
 		return false
 	}
 
-	// Iframe loads (within the shell) carry _shell=1 — never wrap them in
-	// another shell. Honour it only when Sec-Fetch-Dest is absent: a browser
-	// sends "iframe" for a real iframe load, which the check above already
-	// handles, so the parameter is needed only for clients and proxies that
-	// strip the header.
-	//
-	// On an explicit "document" it must NOT be honoured. The shell sandboxes
-	// apps without allow-same-origin but with allow-popups-to-escape-sandbox,
-	// so an app can open its own URL in a popup that is not sandboxed; serving
-	// raw app HTML there runs the app's bundle top-level, same-origin and
+	// Iframe loads carry _shell=1, but honour it only when Sec-Fetch-Dest is
+	// absent. On an explicit "document" the request may be an un-sandboxed popup;
+	// serving raw app HTML there runs the app's bundle same-origin and
 	// cookie-bearing, where POST /_/token mints a JWT for every installed app.
-	// Wrapping instead gives the popup the shell's own nonce-CSP page, which
-	// the opener cannot script.
 	if dest == "" && c.Query("_shell") == "1" {
 		return false
 	}
@@ -121,39 +108,19 @@ func shell_wrap_candidate(c *gin.Context) bool {
 		return false
 	}
 
-	// The login app (auth flow, identity setup, replication/restore waiting
-	// pages, and the closure reactivation interstitial) is always full-page,
-	// never shell-wrapped. It's reached precisely when the user is between
-	// states — and a session-bearing user with an identity (e.g. a "closing"
-	// account) would otherwise be wrapped, loading the interstitial into the
-	// shell's sandboxed iframe where its cookies are stripped and it loops.
-	//
-	// Resolved through app_login_owns rather than matched against "login",
-	// because the path is the login_app setting and both directions of a
-	// literal bite. A renamed login app gets wrapped, which is the loop above
-	// and the #414 class again. And an app that merely binds the path `login`
-	// stops being wrapped, which hands it the thing the wrap exists to deny:
-	// its bundle running top-level, same-origin and cookie-bearing, where
-	// POST /_/token mints a JWT for every installed app. The closing gate in
-	// web.go asks the same question the same way, so the two shell-level gates
-	// cannot disagree about which paths are the login app's.
+	// The login app is always full-page: wrapping loads its interstitials into the
+	// sandboxed iframe with cookies stripped, where they loop. Resolved through
+	// app_login_owns, not a literal "login": a rename would loop, and an app that
+	// squatted the path would get its bundle running top-level and cookie-bearing.
 	if app_login_owns(strings.Trim(path, "/")) {
 		return false
 	}
 
-	// Resource routes (attachment downloads, git Smart-HTTP) are never app
-	// HTML. Serving them inside the shell loads the response body into the
-	// shell's sandboxed iframe, which has an opaque origin — Chrome's PDF
-	// viewer (and any feature that relies on same-origin access from inside
-	// the rendered document) then fails with "Sandbox access violation".
-	// These URLs are always direct resource downloads and must reach the
-	// browser as top-level responses, not iframe contents.
-	//
-	// The list itself lives with web_resource_guard, which sandboxes anything
-	// on these paths that comes back as an executable document: the exemption
-	// is decided from a path the apps author, so the guard is what stops an app
-	// naming an action to escape the shell. One definition, so the two cannot
-	// disagree about which paths skip the wrap.
+	// Resource routes (attachment downloads, git Smart-HTTP) never take the shell:
+	// the sandboxed iframe's opaque origin breaks Chrome's PDF viewer. The path
+	// list lives with web_resource_guard, which sandboxes anything on these paths
+	// that comes back as an executable document, so exemption and mitigation
+	// cannot drift.
 	if shell_resource_path(path) {
 		return false
 	}
@@ -244,9 +211,9 @@ func web_serve_shell(c *gin.Context, app_id string) {
 		"{{MENU_CSS}}", menu_css,
 	).Replace(shell_html)
 
-	// Clear stale mochi-theme cookie (no longer used)
-	// The connection itself, not a claim about it: nothing sits in front of
-	// this server, so X-Forwarded-Proto would be caller-supplied input.
+	// Clear the stale mochi-theme cookie. Secure comes from the connection itself:
+	// nothing sits in front of this server, so X-Forwarded-Proto would be caller
+	// input.
 	secure := c.Request.TLS != nil
 	c.SetCookie("mochi-theme", "", -1, "/", "", secure, false)
 
@@ -276,11 +243,9 @@ func shell_menu_app(user *User) *App {
 	return app_for_path(user, "menu")
 }
 
-// shell_iframe_shim_load returns the JS shim injected into iframe-served
-// app HTML — provides in-memory fallbacks for cookies, localStorage, and
-// sessionStorage which are unavailable in sandboxed iframes without
-// allow-same-origin. Returns empty string if the menu app or its build
-// is missing; callers should skip injection in that case.
+// shell_iframe_shim_load returns the JS shim injected into iframe-served app
+// HTML: in-memory fallbacks for cookies and storage, unavailable in a sandboxed
+// iframe without allow-same-origin. Empty string means skip injection.
 func shell_iframe_shim_load(user *User) string {
 	menu := shell_menu_app(user)
 	if menu == nil {
@@ -438,11 +403,9 @@ func web_shell_init(c *gin.Context) {
 	// re-resolving.
 	result["appearance"] = user_preference_get(user, "appearance", "auto")
 
-	// Source-server cleanup banner: set when this account arrived via a
-	// server-move restore. Carried here so home/settings render the banner
-	// (and the pending re-link list) without a separate fetch. Shown by
-	// default; the user can dismiss it permanently, which sets the
-	// restore.show preference to "false" (account-wide, survives reload).
+	// Source-server cleanup banner, set when the account arrived via a server-move
+	// restore. Carried here so home/settings render it without a separate fetch;
+	// the restore.show preference records a permanent dismissal.
 	if user.Preferences["restore.show"] != "false" {
 		udb := db_open("db/users.db")
 		if row, _ := udb.row("select restore_source, restore_passkeys from users where uid=?", user.UID); row != nil {
@@ -467,15 +430,10 @@ func web_shell_init(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// web_is_iframe_request returns true if the request is from a sandboxed iframe.
-// Detects two cases:
-//  1. Shell sets iframe.src → browser sends Sec-Fetch-Dest: iframe
-//  2. Navigation within the shell iframe → URL contains _shell=1 query parameter
-//     (added by web_serve_shell to the iframe src)
-//
-// Previously, case 2 used Sec-Fetch-Site: cross-site, but this also matches
-// cross-site top-level navigations (e.g., links from Reddit), causing the
-// login/landing page to be skipped for external visitors.
+// web_is_iframe_request reports whether the request comes from a sandboxed
+// iframe: Sec-Fetch-Dest: iframe, or _shell=1 when the browser sent no
+// classification. Sec-Fetch-Site is not usable - "cross-site" also matches
+// top-level navigations from external links.
 func web_is_iframe_request(c *gin.Context) bool {
 	dest := c.GetHeader("Sec-Fetch-Dest")
 	if dest == "iframe" {

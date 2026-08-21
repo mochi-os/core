@@ -49,28 +49,18 @@ func event_id() int64 {
 	return id
 }
 
-// events_init wires the broadcast pending-drain dispatcher.
-//
-// Called explicitly from main_serve rather than run as a package init():
-// registration is a startup step with a defined position, not a side effect
-// of importing the file.
+// events_init wires the broadcast pending-drain dispatcher; called from
+// main_serve.
 func events_init() {
-	// Wire the broadcast pending-drain dispatcher. The
-	// drain loop in broadcast_pending_drain_chain calls this for
-	// each in-order buffered row; we synthesise an Event from the
-	// stored fields and re-run the matching app event handler.
-	// Decoupled via a package-level var so broadcast_pending.go
-	// doesn't have to depend on the routing graph.
+	// Decoupled via a package-level var so broadcast_pending.go does not have to
+	// depend on the routing graph.
 	broadcast_pending_dispatch = broadcast_pending_dispatch_run
 }
 
-// broadcast_pending_dispatch_run is the dispatcher installed at
-// init. sysdb is the per-app system DB (app.db) where pending rows
-// live; the handler itself runs against the app's data DB (opened
-// here separately) so mochi.db.* calls reach the app's own tables.
-// Returns true if the row's handler ran cleanly (caller advances +
-// deletes); false on lookup or handler failure (caller leaves the
-// row in pending for a future drain attempt).
+// broadcast_pending_dispatch_run replays one buffered row. sysdb is the per-app
+// system DB where pending rows live; the handler runs against the app's data
+// DB, opened here, so mochi.db.* reaches the app's own tables. False on lookup
+// or handler failure, leaving the row for a future drain.
 func broadcast_pending_dispatch_run(row *broadcast_pending_row, sysdb *DB) bool {
 	if sysdb == nil || sysdb.user == nil {
 		return false
@@ -198,25 +188,12 @@ func (e *Event) route() error {
 	// Get the version to use for this event
 	av := a.active(e.user)
 	if av == nil {
-		// The same nil the app_by_id branch above screens for, on the branch
-		// that reaches here instead. active() falls back to a.latest, and an
-		// app registered by app_external whose version load then failed keeps
-		// an empty version map for the life of the process - reachable from
-		// the wire, because app_for_service_resolve looks a service name up as
-		// an app id. Every use of av below dereferences it.
+		// The same nil the app_by_id branch screens for, reached by service instead:
+		// app_external registers an app before its version loads, so a failed load
+		// leaves an empty map that app_for_service_resolve can reach from the wire.
 		debug("Event dropping to app %q with no active version for service %q", a.id, e.service)
 		return fmt.Errorf("no active version for app %q", a.id)
 	}
-
-	// The built-in _attachment/* events are gone. They dispatched here, ahead
-	// of the app.json lookup below, so an app could neither decline them nor
-	// check the sender - and the only sender gate was a service name the sender
-	// writes about itself, which constrains nobody. Attachments are now owned by
-	// each app: a peer asking for bytes reaches a declared attachment/fetch
-	// event whose handler authorises the requester against its own state, the
-	// same as any other app event. An unrecognised _attachment/* event now falls
-	// through to the app lookup and is refused there, which is correct: nothing
-	// in the platform answers it any more. See claude/plans/attachments-to-apps.md.
 
 	// System broadcast events. Handled internally, bypassing app-level
 	// event registration since every subscription app gets the same
@@ -230,12 +207,9 @@ func (e *Event) route() error {
 			info("Event dropping broadcast event for nil user")
 			return fmt.Errorf("broadcast event requires user")
 		}
-		// Broadcast tables (_log, _received, _acknowledged, _sequence,
-		// _broadcast_pending) live in the per-app system DB (app.db),
-		// not the app's writable data DB, so apps can't tamper with
-		// the metadata the server reads back trustingly. Same pattern
-		// as attachments and access. Migration target: claude/sessions/
-		// 2026-05-25-broadcast-app-db-move.md.
+		// Broadcast tables live in the per-app system DB (app.db), not the app's
+		// writable data DB, so apps cannot tamper with metadata the server reads back
+		// trustingly.
 		e.db = db_app_system(e.user, a)
 		if e.db == nil {
 			info("Event app %q failed to open system database", a.id)
@@ -260,13 +234,9 @@ func (e *Event) route() error {
 		return fmt.Errorf("unknown event %q", e.event)
 	}
 
-	// Seed the app's default permissions, as web_action does for an HTTP action.
-	// An inbound event can be the very first time a user touches an app - a
-	// friend starts a chess game with someone who has never opened chess - and
-	// until this ran, that app held no grants at all. A handler calling a
-	// permissioned service (chat and the games check friendship via friends/get)
-	// was then denied, and because an event has no user in front of it, the
-	// failure surfaced only as the message silently never arriving.
+	// Seed the app's default permissions, as web_action does for an HTTP action:
+	// an inbound event can be a user's first touch of an app, and a handler denied
+	// a permissioned service fails silently, with no user in front of it.
 	app_user_setup(e.user, a.id)
 
 	// Load a database file for the app
@@ -291,22 +261,10 @@ func (e *Event) route() error {
 		return fmt.Errorf("unsigned message")
 	}
 
-	// Check sender app against allowed apps list (if specified).
-	//
-	// A ROUTING HINT, NOT AUTHORIZATION. Both this and the services list below
-	// are matched against fields the sender writes about ITSELF - Frame.FromApp
-	// and Frame.Services, plain CBOR with nothing signing them. The claim
-	// signature covers {v, stream, entity, receiver, protocol}: it authenticates
-	// who is speaking, never what app they are running. Any authenticated peer
-	// can name whatever an allowlist contains and pass.
-	//
-	// So these lists keep honest callers on the intended path and stop nothing
-	// else. A handler that needs to restrict its callers must authorise on
-	// e.header("from"), the authenticated sender - see forums/projects
-	// _app_event_is_self, which requires the sender to BE the user the event
-	// acts for. The same conclusion was reached once before for the removed
-	// _attachment/* events (see the comment above), and the general mechanism
-	// was left as-is; this comment is the missing half of that.
+	// A ROUTING HINT, NOT AUTHORIZATION. This list and the services list below
+	// match fields the sender writes about ITSELF; the claim signature covers who
+	// is speaking, never what app they run. A handler that must restrict its
+	// callers authorises on e.header("from"), the authenticated sender.
 	if len(ae.Apps) > 0 {
 		allowed := false
 		for _, entry := range ae.Apps {
@@ -350,21 +308,11 @@ func (e *Event) route() error {
 		}
 	}
 
-	// Broadcast gap detection. Events carrying _key + _sequence in
-	// content are part of a sequenced broadcast stream from e.peer.
-	// We dedup duplicates, BUFFER out-of-order events in
-	// _broadcast_pending and ACK them (sender can drop the queue
-	// row, subscriber's resync path fills the missing predecessors,
-	// drain replays the buffered ones in chain order), and advance
-	// _received after a successful handler.
-	//
-	// Broadcast tracking lives in the per-app SYSTEM DB (app.db)
-	// alongside attachments and access, so apps can't tamper with
-	// the metadata the server reads back trustingly. The handler
-	// itself still runs against e.db (the app's data DB) so
-	// mochi.db.* calls reach the app's own tables. Two DBs open
-	// during a broadcast event; the system DB closes when route()
-	// returns.
+	// Broadcast gap detection. Events carrying _key + _sequence are part of a
+	// sequenced stream from e.peer: duplicates dropped, out-of-order events
+	// buffered in _broadcast_pending and ACKed, _received advanced after a
+	// successful handler. Tracking lives in the per-app system DB; the handler
+	// runs against e.db.
 	bkey, _ := e.content[broadcast_content_key].(string)
 	bseq := event_int64(e.content[broadcast_content_sequence])
 	broadcast_check := bkey != "" && bseq > 0 && e.peer != "" && e.user != nil
@@ -382,13 +330,9 @@ func (e *Event) route() error {
 			//debug("Broadcast duplicate seq=%d <= last=%d for (peer=%s, key=%s)", bseq, last, e.peer, bkey)
 			return nil
 		}
-		// Owner and actor guards (2026-07-15 attachment destruction):
-		// advance + ack WITHOUT running the app handler when this
-		// receiver must not apply the event — see broadcast_skip_for.
-		// Checked before the gap branch (a gapped stream needs none of
-		// this content either), and receive-side deliberately, not just
-		// send-side: existing logs already hold destructive events that
-		// any replay would re-emit.
+		// Advance and ack WITHOUT running the app handler when this receiver must not
+		// apply the event - see broadcast_skip_for. Before the gap branch, and
+		// receive-side, since existing logs hold events a replay would re-emit.
 		if broadcast_skip_for(e.user, e.from, e.to, e.content) {
 			broadcast_advance_local(bdb, e.peer, bkey, bseq)
 			broadcast_send_ack(e.user, a, e.to, e.from, bkey, e.peer, bseq)
@@ -406,14 +350,9 @@ func (e *Event) route() error {
 				strings.Join(e.sender_services, ","),
 				cbor_encode(e.content))
 			if !stored {
-				// Buffer is full. NACK with pending-full reason
-				// so the sender keeps the row queued and retries
-				// with exponential backoff; the buffer drains as
-				// resync advances _received and frees slots. ACKing
-				// here would silently lose the event - the sender
-				// deletes the queue row on ACK and the receiver
-				// would never see this seq again unless a later
-				// resync round happened to cover it.
+				// Buffer full: NACK with pending-full so the sender keeps the row and
+				// retries with backoff. ACKing would lose the event outright - the sender
+				// deletes the queue row on ACK and never resends this sequence.
 				return fmt.Errorf("pending buffer full for (peer=%s, key=%s): %w", e.peer, bkey, ErrBroadcastPendingFull)
 			}
 			// ACK to the sender (return nil) - we have the event
@@ -430,12 +369,9 @@ func (e *Event) route() error {
 	if broadcast_check && handler_error == nil {
 		broadcast_advance_local(bdb, e.peer, bkey, bseq)
 		broadcast_send_ack(e.user, a, e.to, e.from, bkey, e.peer, bseq)
-		// Continuation: this apply (often the tail of a replay batch)
-		// advanced the watermark but buffered rows remain above the new
-		// cursor — request the next batch now. Without it, catch-up on a
-		// quiet stream stalls after each batch until the next live event
-		// happens to trip the gap detector. The in-flight gate (just
-		// cleared by the advance) dedups concurrent continuations.
+		// This apply advanced the watermark but buffered rows remain above the new
+		// cursor - request the next batch now, or catch-up on a quiet stream stalls
+		// until the next live event trips the gap detector.
 		if last := broadcast_received_get(bdb, e.peer, bkey); last >= bseq {
 			if pending, _ := bdb.exists("select 1 from pending where peer=? and key=? and sequence > ? limit 1", e.peer, bkey, last); pending {
 				go broadcast_request_resync(e.user, a, e.to, e.from, bkey, e.peer, last)
@@ -479,24 +415,14 @@ func (e *Event) run_handler(a *App, av *AppVersion, ae AppEvent) (handler_error 
 		s.set("user", e.user)
 		s.set("owner", e.user)
 
-		//debug("App event %s:%s(): %v", a.id, ae.Function, e)
-		// Returned, not discarded. The caller treats a nil here as "the
-		// handler ran": it acks to the sender and advances the broadcast
-		// watermark past this sequence, so a dropped error loses the
-		// event outright — the retry it should have provoked arrives
-		// below the watermark and is classed as a duplicate. Not wrapped,
-		// because worker_failure_reason classifies on the message prefix
-		// and Starlark.call's own wording is what it matches.
+		// Returned, not discarded: the caller treats nil as "the handler ran", acks
+		// and advances the watermark, so a dropped error loses the event. Not
+		// wrapped, because worker_failure_reason classifies on the message prefix.
 		_, handler_error = s.call(ae.Function, sl.Tuple{e})
 		if handler_error != nil {
 			if e.stream != nil && e.stream.abandoned {
-				// The requester went away mid-transfer. A browser that
-				// navigates off a page abandons every image still in flight,
-				// so this is the ordinary end of a transfer nobody is waiting
-				// for any more - not something to wake an operator for. It was
-				// warned about, and warn() mails, only when the bytes happened
-				// to be relayed from another host: the identical abandonment of
-				// a locally served file has always been logged quietly.
+				// The requester went away mid-transfer - a browser navigating off a page
+				// abandons every image in flight. Ordinary, so info: warn() mails.
 				info("Event handler %s:%s() for %q abandoned by the requester: %v", a.id, ae.Function, e.event, handler_error)
 			} else {
 				warn("Event handler %s:%s() for %q failed: %v", a.id, ae.Function, e.event, handler_error)
@@ -563,11 +489,9 @@ func (e *Event) Attr(name string) (sl.Value, error) {
 	case "read":
 		return &EventRead{event: e}, nil
 	case "stream":
-		// sl.None, not the typed nil. A nil *Stream returned as an sl.Value is
-		// a non-nil interface wrapping a nil pointer: Truth() reports true
-		// unconditionally, so `if e.stream:` passes for an event that has
-		// none, and String() dereferences and panics when it is printed.
-		// e.stream is nil for any frame that carried no packed segments.
+		// sl.None, not the typed nil: a nil *Stream returned as an sl.Value is a
+		// non-nil interface, so Truth() reports true and String() panics. e.stream is
+		// nil for any frame that carried no packed segments.
 		if e.stream == nil {
 			return sl.None, nil
 		}
@@ -610,11 +534,9 @@ func (er *EventRead) AttrNames() []string {
 func (er *EventRead) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "file":
-		// The builtin binds to er.event.stream, which is nil for any frame
-		// that carried no packed segments. Binding a method value to a nil
-		// receiver is legal and silent - the dereference happens later, inside
-		// close_read, so without this the app gets a handler panic instead of
-		// an error it can read.
+		// er.event.stream is nil for any frame with no packed segments, and binding a
+		// method value to a nil receiver is legal and silent - without this the app
+		// gets a handler panic instead of an error it can read.
 		if er.event.stream == nil {
 			return nil, fmt.Errorf("e.read.file: this event carries no stream")
 		}
@@ -645,11 +567,9 @@ func (ew *EventWrite) AttrNames() []string {
 }
 
 func (ew *EventWrite) Attr(name string) (sl.Value, error) {
-	// Each builtin below binds to ew.event.stream, nil for any frame that
-	// carried no packed segments. Worse than the read side: all three open
-	// with `defer s.close_write()`, so a nil receiver panics on every call
-	// before the arguments are even checked, and panics again on the way out
-	// of the early error returns.
+	// Each builtin below binds to ew.event.stream, nil for any frame with no
+	// packed segments. All three open with `defer s.close_write()`, so a nil
+	// receiver panics before the arguments are even checked.
 	switch name {
 	case "asset", "cache", "file":
 		if ew.event.stream == nil {
@@ -743,13 +663,9 @@ func (e *Event) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	case "peer":
 		return sl_encode(e.peer), nil
 	case "local":
-		// True when the event originated in-process on this host: the
-		// self-loop stream path sets e.peer to net_id, while a remote stream
-		// carries the dialing peer's real id. Unforgeable from off-host (a
-		// remote peer can't make e.peer == our net_id), so handlers can use
-		// it to grant a local caller access a remote peer must not have — e.g.
-		// the publisher serving a restricted app to this host's own app-update
-		// loopback while still refusing remote peers.
+		// True only for an in-process self-loop: a remote peer cannot make e.peer
+		// equal our net_id, so handlers may grant a local caller access a remote peer
+		// must not have - the publisher's own app-update loopback.
 		return sl.Bool(net_id != "" && e.peer == net_id), nil
 	default:
 		return sl_error(fn, "invalid header %q", header)

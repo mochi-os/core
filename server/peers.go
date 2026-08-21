@@ -1,29 +1,13 @@
-// Mochi server: Peer registry — identity, addresses, persistence.
-//
-// This file owns the in-memory `peers` map of known libp2p peers and
-// the on-disk peers.db that backs it. Connection lifecycle
-// (peer_connect, peer_disconnected, reconnect manager, shutdown bye)
-// lives in peer_connect.go; the silent-cache fast-fail logic lives in
-// peer_reachability.go.
-//
-// Why not libp2p's Peerstore for addresses?
-//
-// Peerstore (AddAddrs / Addrs) covers the in-memory side, but its TTL
-// model is push-driven (Addresses expire when their TTL elapses) and
-// it's unbounded. We need three things Peerstore doesn't give us:
-// (a) a hard cap on addresses per peer (peer_address_maximum=20) so a
-// noisy multiaddr-broadcasting peer can't blow our footprint up,
-// (b) on-disk persistence across restarts (peers.db) so a freshly-
-// started server has somewhere to dial before bootstrap+DHT discovery
-// fills in, (c) explicit last-seen timestamps for the 14-day pruning
-// sweep. We do read from Peerstore where libp2p has already
-// populated it (peer_refresh_connected_address uses the connection's
-// remote multiaddr), but the authoritative store is this map.
+// Mochi server: Peer registry - identity, addresses, and the peers.db that
+// backs the in-memory map. Connection lifecycle is peer_connect.go; the
+// silent-cache is peer_reachability.go. libp2p's Peerstore is not the store of
+// record: we need a hard per-peer address cap, on-disk persistence, and
+// last-seen for pruning.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -36,12 +20,9 @@ import (
 	multiaddr "github.com/multiformats/go-multiaddr"
 )
 
-// peer_state is the current libp2p-level connection state for a peer.
-// Transitions are gated by peers_lock; the connecting → connected /
-// disconnected transition happens after a synchronous net_connect call
-// outside the lock (libp2p connect can block for the full TCP
-// timeout). The connecting state prevents two concurrent callers from
-// racing onto net_connect for the same peer.
+// peer_state is the libp2p-level connection state, gated by peers_lock. The
+// connecting state stops two callers racing onto net_connect, which runs
+// outside the lock because a libp2p connect can block for the full TCP timeout.
 type peer_state int
 
 const (
@@ -57,12 +38,9 @@ type Peer struct {
 	state     peer_state
 }
 
-// PeerAddress tracks a peer's address with usefulness evidence: when it
-// was last seen (announced, discovered, or refreshed), when a
-// connection last succeeded on it, and how many whole-peer dial rounds
-// have failed since that success. Dialing hands every address to libp2p
-// at once, so failures only accrue peer-wide (no address worked);
-// per-address differentiation comes from successes.
+// PeerAddress tracks an address with usefulness evidence. Dialing hands every
+// address to libp2p at once, so failures only accrue peer-wide; per-address
+// differentiation comes from successes.
 type PeerAddress struct {
 	Address string
 	Updated int64
@@ -103,34 +81,17 @@ const (
 // serves the published-app catalogue.
 const peer_default_publisher_hardcoded = "12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR" // yuzu
 
-// bootstrap_addresses_hardcoded is the fallback list of bootstrap
-// multiaddresses when mochi.conf doesn't override [bootstrap]
-// addresses. Comma-separated multiaddrs; each includes /p2p/<peer-id>
-// so the peer identity is recoverable. Out-of-the-box installs need
-// at least one reachable bootstrap to discover the wider network.
-//
-// The 1443 entries are the normal path. The 443 entries are the
-// hostile-network fallback: QUIC over UDP/443, plus WSS over TCP/443 on
-// the project's own mochi-os.org name (the cert the bootstrap holds) for a
-// firewall that blocks 1443 and UDP but allows HTTPS — it cannot tell WSS
-// from HTTPS. They activate once the bootstrap serves on 443; until then
-// dialling them fails harmlessly while 1443 carries the connection. The
-// one domain here is the project's own bootstrap name — a curated dial
-// target, NOT a server advertising itself (servers never advertise a
-// domain as their own address).
-//
-// yuzu (primary) is listed first; wasabi second as failover. A server
-// keeps a connection to the most-preferred reachable bootstrap, so wasabi
-// is dialled only while yuzu is unreachable, and yuzu is preferred again
-// the moment it recovers.
+// bootstrap_addresses_hardcoded is the fallback bootstrap list when mochi.conf
+// does not set [bootstrap] addresses: comma-separated multiaddrs, each carrying
+// /p2p/<peer-id>, in priority order. The 443 entries are the hostile-network
+// fallback - QUIC over UDP/443 and WSS over TCP/443 on the project's own name,
+// which a firewall cannot tell from HTTPS.
 const bootstrap_addresses_hardcoded = "/ip4/51.178.97.142/tcp/1443/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR, /ip6/2001:41d0:30f:8e00::1/tcp/1443/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR, /ip4/51.178.97.142/udp/443/quic-v1/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR, /ip6/2001:41d0:30f:8e00::1/udp/443/quic-v1/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR, /ip4/217.182.75.108/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip6/2001:41d0:601:1100::61f7/tcp/1443/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip4/217.182.75.108/udp/443/quic-v1/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /ip6/2001:41d0:601:1100::61f7/udp/443/quic-v1/p2p/12D3KooWRbpjpRmFiK7v6wRXA6yvAtTXXfvSE6xjbHVFFSaxN8SH, /dns/mochi-os.org/tcp/443/tls/ws/p2p/12D3KooWELMRq3U9TrJE2FJs8pcXSQotDrtXwhajTNV2CN7fWdyR"
 
 var (
-	// peer_default_publisher + peers_bootstrap start at the hardcoded
-	// defaults so package init() and tests that read them before
-	// net_start see usable values. peers_bootstrap_load() reruns at
-	// startup and replaces them with whatever mochi.conf specifies (or
-	// the same hardcoded defaults if unset).
+	// Hardcoded defaults so anything reading these before net_start (tests,
+	// package init) sees a usable list; peers_bootstrap_load() replaces them at
+	// startup.
 	peer_default_publisher                 = peer_default_publisher_hardcoded
 	peers_bootstrap                        = bootstrap_addresses_parse(bootstrap_addresses_hardcoded)
 	peers                  map[string]Peer = map[string]Peer{}
@@ -173,18 +134,9 @@ func bootstrap_addresses_parse(list string) []Peer {
 	return out
 }
 
-// peers_bootstrap_load reloads peers_bootstrap + peer_default_publisher
-// from mochi.conf, falling back to the hardcoded defaults. Called from
-// net_start after ini_load so operator overrides take effect; the
-// package-level `var` form is the same defaults so anything that reads
-// peers_bootstrap before net_start (tests, package init) still sees a
-// working list.
-//
-// Each entry in [bootstrap] addresses is a full libp2p multiaddress
-// including /p2p/<id>, so the single config option carries both
-// address and identity. Same multi-address-per-peer grouping as the
-// hardcoded form. [publisher] peer overrides the default publisher
-// peer id used by app version checks.
+// peers_bootstrap_load reloads peers_bootstrap and peer_default_publisher from
+// mochi.conf after ini_load, falling back to the hardcoded defaults. Each
+// [bootstrap] addresses entry carries its own /p2p/<id>: address and identity.
 func peers_bootstrap_load() {
 	peer_default_publisher = ini_string("publisher", "peer", peer_default_publisher_hardcoded)
 
@@ -205,13 +157,9 @@ func peers_bootstrap_load() {
 // promptly once it recovers from an outage.
 const bootstrap_recheck = 30 * time.Second
 
-// bootstrap_manager maintains a connection to the most-preferred reachable
-// bootstrap. peers_bootstrap is in priority order (primary first); the
-// manager makes every bootstrap's addresses known up front, then dials
-// down the list and stops at the first that is or becomes connected — so a
-// backup (e.g. wasabi) is dialled only while every higher-priority
-// bootstrap (e.g. yuzu) is unreachable, and the primary is preferred again
-// the moment it recovers. Replaces dialling every bootstrap at once.
+// bootstrap_manager holds a connection to the most-preferred reachable
+// bootstrap. peers_bootstrap is priority order: it makes every bootstrap's
+// addresses known, then dials down the list and stops at the first connected.
 func bootstrap_manager() {
 	for _, p := range peers_bootstrap {
 		if p.ID != net_id {
@@ -224,11 +172,9 @@ func bootstrap_manager() {
 	}
 }
 
-// bootstrap_connect_preferred ensures a connection to the highest-priority
-// reachable bootstrap: it walks peers_bootstrap in priority order and stops
-// at the first that connects (peer_connect returns true for an already-open
-// connection), leaving lower-priority backups untouched while a higher one
-// holds.
+// bootstrap_connect_preferred walks peers_bootstrap in priority order and stops
+// at the first that connects (peer_connect is true for an already-open
+// connection).
 func bootstrap_connect_preferred() {
 	for _, p := range peers_bootstrap {
 		if p.ID == net_id {
@@ -266,11 +212,8 @@ type mesh_isolation_state struct {
 }
 
 // mesh_isolation_step folds one mesh sample into the isolation state and
-// reports what the manager should do this tick. Pure (no I/O, no clock) so
-// the confirm / stand-down / alert logic is unit-testable; the manager
-// wires it to the live mesh, the re-dial, and warn(). `remediate` asks for
-// a re-dial round, `alert` fires the once-per-episode operator warning,
-// `recovered` reports the mesh came back after we had alerted.
+// reports what the manager should do this tick. Pure (no I/O, no clock) so the
+// confirm / stand-down / alert logic is unit-testable.
 func mesh_isolation_step(s mesh_isolation_state, peers int, t int64) (next mesh_isolation_state, remediate, alert, recovered bool) {
 	if peers > 0 {
 		// A peer is in the mesh: stand down, resetting all memory. Report
@@ -292,21 +235,10 @@ func mesh_isolation_step(s mesh_isolation_state, peers int, t int64) (next mesh_
 	return s, true, false, false
 }
 
-// mesh_isolation_manager watches the GossipSub broadcast mesh and switches
-// from the passive per-peer reconnect cadence to active remediation when
-// the mesh empties — this server is its only member, so it can neither
-// send nor receive broadcasts. While isolated it re-dials every bootstrap
-// (not just the most-preferred one) and resets the known-peer reconnect
-// backoffs so peer_reconnect_manager retries them at once instead of
-// waiting out the exponential delay (which only grows while we're cut
-// off), and nudges a peers/request for fresh addresses.
-//
-// The remediation runs only while the mesh is empty and stands down the
-// instant a peer appears, so the action (re-dial) directly clears its own
-// trigger (the mesh grows) and cannot run away: the dial set is finite and
-// nothing fires faster than the recheck tick. If isolation persists past
-// mesh_isolation_alert_after the operator is warned once (warn() is itself
-// email-throttled per format), and recovery is logged.
+// mesh_isolation_manager watches the GossipSub mesh and, while it is empty,
+// re-dials every bootstrap, resets known-peer reconnect backoffs, and requests
+// fresh addresses. Warns the operator once if isolation outlasts
+// mesh_isolation_alert_after.
 func mesh_isolation_manager() {
 	var state mesh_isolation_state
 	for range time.Tick(mesh_isolation_recheck) {
@@ -328,11 +260,7 @@ func mesh_isolation_manager() {
 	}
 }
 
-// mesh_isolation_remediate makes one aggressive attempt to rejoin the
-// mesh: dial every bootstrap concurrently (each dial can block for the
-// libp2p connect timeout, and the set is small), reset every known-peer
-// reconnect backoff so the next peer_reconnect_manager tick retries them
-// all, and request fresh addresses from anyone still able to hear us.
+// mesh_isolation_remediate makes one aggressive attempt to rejoin the mesh.
 func mesh_isolation_remediate() {
 	for _, p := range peers_bootstrap {
 		if p.ID != net_id {
@@ -350,11 +278,10 @@ func mesh_isolation_remediate() {
 	peers_publish_request()
 }
 
-// peer_addresses_normalise validates operator-supplied multiaddresses
-// for a peer and returns them in registry form (each carrying the
-// /p2p/<id> suffix). An entry may omit the suffix; one that carries it
-// must name the expected peer. Returns the normalised list and the
-// first rejected input ("" when all were valid).
+// peer_addresses_normalise validates operator-supplied multiaddresses and
+// returns them with the /p2p/<id> suffix. An entry may omit the suffix; one
+// that carries it must name this peer. Returns the list and the first rejected
+// input.
 func peer_addresses_normalise(id string, addresses []string) ([]string, string) {
 	var out []string
 	for _, address := range addresses {
@@ -405,14 +332,9 @@ func peer_bootstrap_addresses(id string) map[string]bool {
 	return out
 }
 
-// peer_address_insert merges one address into a peer's list, refreshing
-// the timestamp when already present and evicting the least useful
-// entry when the cap is reached. Returns whether the address was new.
-// Eviction never removes a bootstrap address and drops never-proven
-// entries before ones a connection has succeeded on (oldest success
-// first, then oldest seen) — so a roaming peer's churn of dead LAN
-// addresses cannot push out the one address that works. Caller holds
-// peers_lock.
+// peer_address_insert merges one address into a peer's list, evicting the least
+// useful entry at the cap: never a bootstrap address, never-proven before
+// proven. Returns whether the address was new. Caller holds peers_lock.
 func peer_address_insert(p *Peer, address string, t int64) bool {
 	for i, a := range p.addresses {
 		if a.Address == address {
@@ -577,11 +499,9 @@ var (
 	peer_waiters_lock sync.Mutex
 )
 
-// peer_await_addresses blocks until a discovered address lands for `id`
-// or `timeout` elapses, reporting which. It turns the asynchronous
-// peers/request answer into a bounded inline wait for synchronous
-// request paths (remote_reach); the queue's equivalent recovery is its
-// retry loop, re-woken by queue_check_peer.
+// peer_await_addresses blocks until a discovered address lands for id or
+// timeout elapses, reporting which - the bounded inline wait for synchronous
+// paths (remote_reach). The queue recovers through its retry loop instead.
 func peer_await_addresses(id string, timeout time.Duration) bool {
 	arrival := make(chan struct{})
 	peer_waiters_lock.Lock()
@@ -646,11 +566,9 @@ func peer_addresses_failed(id string) {
 	db.exec("update peers set failure=failure+1 where id=?", id)
 }
 
-// peer_address_drop removes a single stale address from `id` (both the in-memory
-// peer and peers.db). `bare` is the dialled multiaddr as it appears in a swarm
-// dial error — without the trailing /p2p/<id> the stored form carries — so match
-// the stored address either bare or with that suffix. See
-// net_drop_rotated_addresses (#48).
+// peer_address_drop removes one stale address from id, in memory and peers.db.
+// `bare` is the multiaddr as a swarm dial error reports it, without the
+// /p2p/<id> suffix the stored form carries, so match either shape. See #48.
 func peer_address_drop(id, bare string) {
 	peers_lock.Lock()
 	if p, found := peers[id]; found {
@@ -684,12 +602,9 @@ func peers_manager() {
 	}
 }
 
-// peers_prune drops stale addresses: anything unseen for peer_expiry,
-// and never-proven addresses unseen for peer_unproven — the junk a
-// roaming machine accumulates (other networks' LAN addresses) dies in
-// days instead of weeks, while addresses a connection has succeeded on
-// get the full window. Live peers' addresses never age: every hourly
-// announcement refreshes them. Bootstrap addresses never prune.
+// peers_prune drops addresses unseen for peer_expiry, and never-proven ones
+// unseen for peer_unproven, so a roaming machine's dead LAN addresses die in
+// days while proven ones get the full window. Bootstrap addresses never prune.
 func peers_prune() {
 	t := now()
 	expiry := t - peer_expiry
@@ -721,13 +636,10 @@ func peers_prune() {
 	peers_lock.Unlock()
 }
 
-// peers_purge_self_relay drops every stored address that relays through
-// this server itself — a circuit address with our own peer ID in the relay
-// slot. We can never use our own relay to reach the peer (we hold a direct
-// reservation connection to it), so the address is dead weight: registry
-// bloat and a wasted dial. Called once at startup to shed any accumulated
-// before this filter existed; peer_apply_addresses keeps new ones out. The
-// address stays valid for every other peer, who keep advertising it.
+// peers_purge_self_relay drops stored addresses that relay through this server:
+// we hold the direct connection the reservation was made on, so our own relay
+// can never reach the peer. Startup sweep; peer_apply_addresses keeps new ones
+// out.
 func peers_purge_self_relay() {
 	if net_id == "" {
 		return

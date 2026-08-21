@@ -29,10 +29,8 @@ import (
 	"io"
 )
 
-// session_id returns a fresh 8-byte hex string used as the log
-// correlation token on hello frames. Logged on both sides at stream
-// open and close; `grep session=abc123` reconstructs an interaction
-// without correlating clocks.
+// session_id returns a fresh 8-byte hex log-correlation token, logged on both
+// sides at stream open and close.
 func session_id() string {
 	var b [8]byte
 	if _, err := crand.Read(b[:]); err != nil {
@@ -54,10 +52,6 @@ func hello_challenge() ([]byte, error) {
 	return b, nil
 }
 
-// hello_write writes the receiver's hello frame. `version` is the
-// protocol-major version (2 for both /mochi/2/* protocols), `session`
-// is the freshly-generated correlation ID, `codecs` / `features` are
-// what the receiver advertises supporting.
 func hello_write(w io.Writer, version int, session string, challenge []byte,
 	codecs, features []string) error {
 	return frame_write(w, &Frame{
@@ -91,15 +85,9 @@ func hello_read(r io.Reader, version int) (*Frame, error) {
 	return f, nil
 }
 
-// caps_write writes the sender's caps frame. MUST be the first frame
-// the sender writes; receiver MUST close the stream if it sees any
-// non-caps frame before this. caps is mandatory in /mochi/2.
-//
-// challenge is the opener's half of the mutual authentication: the
-// answering side signs it with the key of the entity being addressed,
-// and returns the signature on the ack. Mandatory — the receiver rejects
-// a caps frame without a well-formed one, so neither side can decline
-// the exchange.
+// caps_write writes the sender's caps frame. MUST be the sender's first frame;
+// the receiver closes the stream on anything else. The challenge is mandatory:
+// the answering side signs it to prove it holds the entity being addressed.
 func caps_write(w io.Writer, codecs, features []string, challenge []byte) error {
 	return frame_write(w, &Frame{
 		Type:      frame_type_caps,
@@ -123,11 +111,8 @@ func caps_read(r io.Reader) (*Frame, error) {
 	return f, nil
 }
 
-// claim_write writes one `claim` frame for `entity`. Signature is
-// computed via canonical-CBOR over {v, stream, entity, receiver,
-// protocol}. Returns the frame (or an error) so the caller can pipeline
-// it ahead of the first message frame without waiting for an ack.
-// receiver must be the authenticated peer this stream runs to.
+// claim_write writes one `claim` frame for `entity`. receiver must be the
+// authenticated peer this stream runs to.
 func claim_write(w io.Writer, entity string, challenge []byte, receiver string, protocol string) error {
 	sig := claim_sign(entity, challenge, receiver, protocol)
 	if sig == nil {

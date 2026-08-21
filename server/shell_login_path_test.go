@@ -1,18 +1,13 @@
 // Mochi server: the shell's login exemption follows the login_app setting.
 //
-// shell_wrap_candidate matched the literal "/login", but the login app's path
-// is the login_app setting, and a literal is wrong in both directions. Rename
-// the login app and its interstitials start being shell-wrapped, which loads
-// them into the sandboxed iframe with their cookies stripped and loops - the
-// #414 class, which app_is_login already carries a comment about. Bind some
-// other app to the path `login` and it stops being wrapped, handing it exactly
-// what the wrap denies: its bundle running top-level, same-origin and
-// cookie-bearing, where POST /_/token mints a JWT for every installed app.
+// A literal "/login" is wrong in both directions - a renamed login app gets
+// wrapped and loops, and an app that binds the path `login` stops being wrapped
+// and gets its bundle running top-level, same-origin and cookie-bearing.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

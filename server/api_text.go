@@ -71,26 +71,14 @@ func api_text_sortkey(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 }
 
 // regex_session_maximum bounds one Starlark session's regex cache. A session is
-// a single action or event invocation - AppVersion.starlark() builds a fresh
-// thread per call, sharing only the compiled globals - and starlark_semaphore caps
-// concurrent sessions at 32, so the worst case is that many caches of this size,
-// all released when their handlers return.
+// a single action or event invocation, and starlark_semaphore caps concurrency
+// at 32, so the worst case is 32 caches of this size, all released on return.
 const regex_session_maximum = 1000
 
-// regex_session compiles pattern into a cache on the calling Starlark thread,
-// for patterns an app supplies rather than the compile-time constants
-// regex_cached holds.
-//
-// The process-global cache cannot hold these. Its key space would be whatever
-// an app cares to invent, each entry retaining a compiled program for the life
-// of the process - measured at ~2KB, so a loop reaches gigabytes and never
-// gives them back. Nor is a ceiling on the global cache enough: core's own
-// validators compile lazily on first use, so a flood that filled it would leave
-// some of them recompiling on every request forever.
-//
-// Past the ceiling patterns still compile and still work; they are simply not
-// retained, which turns the cost into CPU inside the caller's own timeout
-// rather than heap nobody can reclaim.
+// regex_session compiles an app-supplied pattern into a per-thread cache. The
+// process-global cache cannot hold these: its key space would be the app's,
+// each entry retained for the life of the process. Past the ceiling patterns
+// still compile, they are simply not retained.
 func regex_session(t *sl.Thread, pattern string) (*regexp.Regexp, error) {
 	if t == nil {
 		return regexp.Compile(pattern)

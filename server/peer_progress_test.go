@@ -59,11 +59,6 @@ func TestPeerStallThresholdAndWindow(t *testing.T) {
 	}
 }
 
-// TestQueueDeferTargetParksWholeBacklog: queue_defer_target pushes every
-// pending row for a target forward in one shot, so queue_select stops
-// returning that target — the fix for the per-tick re-scan spin. A
-// different peer's rows are untouched, and queue_resurrect_peer brings the
-// parked backlog back.
 func TestQueueDeferTargetParksWholeBacklog(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

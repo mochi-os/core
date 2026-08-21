@@ -26,12 +26,9 @@ func world_test_services(players int64) string {
 	return string(b)
 }
 
-// A gossiped announcement stores keyed by its ORIGINATOR — e.origin, the
-// GossipSub signature-verified GetFrom — never by e.peer, the last-hop mesh
-// neighbour that forwarded it, and never by anything in the payload. Keying
-// on the forwarder filed one world under every neighbour that relayed it, so
-// a single server appeared twice in the join list until the stale copy aged
-// out (seen live 2026-08-12: yuzu's listing under a dev instance's peer id).
+// A gossiped announcement stores under its originator - e.origin, the
+// signature-verified GetFrom - never under e.peer, the forwarding neighbour,
+// which filed one world under every relay.
 func TestWorldPublishEventStores(t *testing.T) {
 	defer setup_world_test(t)()
 	e := &Event{peer: "relay1", origin: "origin1", service: "world", event: "publish", content: map[string]any{

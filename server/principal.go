@@ -1,33 +1,20 @@
-// Mochi server: who a Starlark call is for.
+// Mochi server: who a Starlark call is for. Four separate questions, one
+// accessor each:
 //
-// Three separate questions were being answered by one thread local. They are
-// not the same question and they do not always have the same answer:
+//   - CALLER  - who made this request. nil is a valid answer (anonymous).
+// Authorize against this.
+//   - STORAGE - whose databases, files and cache this call operates on.
+//   - OWNER   - who owns the entity the request addressed.
+//   - APP     - which app the call runs as; half of every permission grant.
 //
-//   - CALLER  - who made this request. nil is a real, valid answer: an
-//     anonymous crawler, a public webhook, an unauthenticated
-//     P2P frame. Authorize against this.
-//   - STORAGE - whose databases, attachments, files and cache this call
-//     operates on. Never nil on a call that reads anything.
-//   - OWNER   - who owns the entity the request addressed. A fact about the
-//     object, not about the request.
-//   - APP     - which app the call runs as. Permission grants are (user, app)
-//     pairs, so this is half of every authorization decision.
-//
-// Conflating the first two is the ambient-ownership bug class: the only way
-// to reach one account's data was to claim the requester WAS that account, so
-// "anonymous" got expressed as "the caller is the owner" - a statement that is
-// false, and that every app then has to remember to see through. Four
-// OpenGraph handlers carry a comment warning about it; check-ambient-ownership.py
-// exists to catch the Starlark half.
-//
-// Read through these accessors rather than the locals. A gate that reads
-// t.Local("user") itself is making an independent decision about which of the
-// three questions it is asking, and those decisions drift.
+// Conflating caller and storage is the ambient-ownership bug class: "anonymous"
+// must not be expressed as "the caller is the owner". Read through these
+// accessors rather than the locals, or the decisions drift.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -54,34 +41,18 @@ func principal_owner(t *sl.Thread) *User {
 }
 
 // principal_app returns the app the call runs as, or nil when the thread has
-// none.
-//
-// A bare t.Local("app").(*App) panics in that case rather than yielding nil:
-// an unset local is a nil INTERFACE, and a nil interface does not assert to a
-// concrete type. So every `if app == nil` guard written below such an
-// assertion was unreachable on the one input it was defending against. The
-// locals are unset for the whole of module load - the interpreter executes an
-// app's .star files before any entry point has set them - so a module-level
-// `BASE = mochi.app.url()` reached a builtin with no app and took out the
-// interpreter rather than getting the error the builtin had ready.
+// none. Use it rather than a bare t.Local("app").(*App): an unset local is a
+// nil interface and does not assert to a concrete type, so that form panics -
+// and the locals are unset for the whole of module load.
 func principal_app(t *sl.Thread) *App {
 	app, _ := t.Local("app").(*App)
 	return app
 }
 
-// principal_storage returns the account whose data this call operates on.
-//
-// A dispatcher that knows the answer states it, by setting the storage local.
-// OpenGraph does, because it renders one account's entity for any viewer.
-// Everywhere else the caller and the storage account are the same person, and
-// the fallback below decides.
-//
-// The domain-routing arm should move out to web_action, the only dispatcher
-// where routing exists - a resolver shared by every dispatch path has no
-// business knowing about HTTP. It stays for now because moving it is not
-// behaviour-neutral: threads built directly, as the tests and any future
-// non-web dispatcher build them, would stop seeing the rule. That is its own
-// change with its own evidence, not a rider on this one.
+// principal_storage returns the account whose data this call operates on. A
+// dispatcher that knows the answer sets the storage local (OpenGraph does,
+// since it renders one account's entity for any viewer); otherwise the fallback
+// below decides.
 func principal_storage(t *sl.Thread) (*User, error) {
 	if storage, ok := t.Local("storage").(*User); ok && storage != nil {
 		return storage, nil

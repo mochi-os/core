@@ -15,12 +15,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestWebLoginBeginMethods guards web_login_begin's response shape: `methods`
-// must marshal to a JSON array, never null, even when the user requires nothing
-// (the login client calls .includes() on it, so null throws "can't access
-// property includes"), and it must fold in the system email floor so a
-// server-wide email=Required shows up at login even when the user requires
-// nothing personally.
+// web_login_begin's `methods` must marshal to [] not null - the login client
+// calls .includes() on it - and must fold in the system email floor.
 func TestWebLoginBeginMethods(t *testing.T) {
 	cleanup := create_test_users_db(t)
 	defer cleanup()

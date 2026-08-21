@@ -19,18 +19,9 @@ func run_dir() string {
 	return filepath.Join(data_dir, "run")
 }
 
-// run_dir_create ensures <data_dir>/run/ exists.
-// Called early during startup, before the UDS admin listener tries to bind.
-//
-// Mode 0751: owner all, the server's group may list, everyone else may only
-// TRAVERSE. The traverse bit is load-bearing, not a loosening. Each socket in
-// here is gated by its own 0660 and its own group — admin.sock to the mochi
-// group, world.sock to mochi-world — and a member of one group is generally
-// not a member of the other, so at 0750 a mochi-world process that is not the
-// server's own user could not reach world.sock at all and the socket's group
-// was decorative. Traversal without read is the standard way to publish one
-// named endpoint out of a private directory: you must already know the name,
-// and the socket's own permissions still decide who may speak to it.
+// run_dir_create ensures <data_dir>/run/ exists, before the UDS admin listener
+// binds. Mode 0751: the traverse bit is load-bearing - each socket is gated by
+// its own 0660 and group, and a mochi-world process is not in the mochi group.
 func run_dir_create() error {
 	if err := os.MkdirAll(run_dir(), 0751); err != nil {
 		return err
@@ -43,11 +34,9 @@ func run_dir_create() error {
 // 107 bytes are usable.
 const socket_path_maximum = 107
 
-// socket_path_check rejects a path too long to bind, naming the limit and what
-// to shorten. Past the limit bind returns EINVAL, which Go renders as "invalid
-// argument" - a message that says nothing about length and sends the operator
-// looking at permissions or SELinux. Both Unix sockets sit under data_dir, so
-// that is the one thing worth pointing at.
+// socket_path_check rejects a path too long to bind. Past the limit bind
+// returns EINVAL, which Go renders as "invalid argument" - a message that sends
+// the operator looking at permissions instead of at data_dir's length.
 func socket_path_check(kind, path string) error {
 	if len(path) <= socket_path_maximum {
 		return nil

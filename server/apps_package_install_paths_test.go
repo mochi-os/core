@@ -1,19 +1,12 @@
-// Mochi server: installing a package resolves path conflicts.
-//
-// app_download_version and the startup load both run app_resolve_paths between
-// reading a manifest and loading it, so an app whose declared prefix is already
-// taken is demoted to its own fingerprint. mochi.app.package.install did not,
-// so a package kept a contested prefix and became a candidate for it. `login`
-// is the sharp one: core exempts whatever serves that prefix from its own
+// Mochi server: installing a package resolves path conflicts. All three
+// manifest-load sites must run app_resolve_paths, or a package keeps a
+// contested prefix - `login` included, which core exempts from its
 // authentication gates.
-//
-// Reach is wider than administrator-only - the API admits any user when
-// apps_install_user is "true", which is its default.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -170,10 +163,8 @@ func TestPackageInstallKeepsAnUncontestedPath(t *testing.T) {
 	}
 }
 
-// TestPackageInstallMatchesItsSiblings. The three places that load a manifest
-// must stay in step; this one was the odd one out, and a source pin is what
-// catches it being dropped again - the behavioural test above cannot see a
-// second site regressing.
+// TestPackageInstallMatchesItsSiblings pins all three manifest-load sites; the
+// behavioural test above cannot see a second site regressing.
 func TestPackageInstallMatchesItsSiblings(t *testing.T) {
 	source, err := os.ReadFile("apps.go")
 	if err != nil {

@@ -59,45 +59,18 @@ func variant_size(variant string) uint {
 	return thumbnail_size
 }
 
-// These two caps bound the memory a single variant render can hold, and are
-// meant to be read together: the file cap covers the compressed bytes, the
-// pixel cap covers what they decode to.
-//
-// image_decode_pixels_maximum caps the pixel count of an image decoded from a
-// possibly-hostile source. A small file can declare enormous dimensions (a
-// decompression bomb) and exhaust memory when decoded, so DecodeConfig is
-// consulted before image.Decode allocates. 100 megapixels is far above any
-// legitimate photo and still bounds the allocation.
-//
-// image_file_bytes_maximum caps the file itself, which the pixel cap cannot:
-// the dimensions are only readable once the bytes are in memory, so a large
-// file is resident before anything has looked at it. An upload is bounded only
-// by the uploader's remaining storage quota, so without this a multi-gigabyte
-// file becomes multi-gigabyte of heap the moment a thumbnail is requested.
-//
-// A 100 megapixel JPEG runs to roughly 20-30 MB, so 100 MB clears any real
-// photograph several times over. Lossless formats are denser and a 100
-// megapixel PNG can exceed this, meaning the file cap binds first for those -
-// deliberately, since such a file is not one to be generating a 250px preview
-// from.
+// Bound the memory one variant render can hold: the file cap covers the
+// compressed bytes, the pixel cap what they decode to. DecodeConfig is
+// consulted before image.Decode, so a small file declaring huge dimensions
+// cannot allocate.
 const (
 	image_decode_pixels_maximum = 100_000_000
 	image_file_bytes_maximum    = 100 << 20
 )
 
-// image_render_parallel bounds how many variants are decoded at once.
-//
-// The two caps above bound ONE render: 100 MB of file bytes held while EXIF,
-// the config header and the decode each read them, plus the decoded pixels -
-// 100 megapixels at 4 bytes each is 400 MB - and then a rotate and a resize
-// allocate their own destinations. Nothing bounded how many ran together, and
-// the HTTP path renders synchronously in the request goroutine, so concurrency
-// was whatever arrived: a gallery of uncached images, or several requests for
-// the SAME uncached variant, each decoding the identical bytes.
-//
-// Four rather than the Starlark pool's 32, because a slot here is worth half a
-// gigabyte rather than a goroutine. A constant rather than a setting: this is a
-// memory-safety bound, not a knob worth an operator's attention.
+// image_render_parallel bounds concurrent decodes. One render can hold 100 MB
+// of file bytes plus 400 MB of pixels, and the HTTP path decodes in the request
+// goroutine - so a slot here is worth half a gigabyte, not a goroutine.
 const image_render_parallel = 4
 
 // image_render_wait is how long a request waits for a slot before giving up on
@@ -106,11 +79,8 @@ var image_render_wait = 30 * time.Second
 
 var image_render_slots = make(chan struct{}, image_render_parallel)
 
-// image_render_acquire takes a decode slot, returning the release. The error
-// means the pool stayed full: the caller then reports no variant, which every
-// caller already handles - the HTTP path serves the original bytes and
-// mochi.image.variant answers None - so a busy server degrades to full-size
-// images rather than to a queue of requests holding half a gigabyte each.
+// image_render_acquire takes a decode slot, returning the release. On error the
+// caller reports no variant, so a busy server degrades to full-size images.
 func image_render_acquire() (func(), error) {
 	timer := time.NewTimer(image_render_wait)
 	defer timer.Stop()
@@ -295,19 +265,9 @@ func api_image_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl.None, nil
 	}
 
-	// The whole relative path, not its base: two images with the same file
-	// name in different directories are different images, and keying on the
-	// base alone gave the second one the first one's render. The entry name IS
-	// the provenance here - the cache is a bare filesystem with no index, so
-	// recording the source separately would mean a sidecar the eviction sweep
-	// removes independently of the variant it describes.
-	//
-	// variant_name takes the path unchanged: filepath.Ext stops at a separator,
-	// so a directory containing a dot is not mistaken for an extension. For a
-	// flat name - every shipped caller, since attachment_filename returns
-	// "<id>_<name>" - the result is byte-identical to before, so no cached
-	// entry is invalidated and lib/starlark/attachments.star's own derivation
-	// still agrees.
+	// The whole relative path, not its base: two images with the same file name in
+	// different directories are different images. lib/starlark/attachments.star
+	// derives this same name to invalidate the entry, so it must not move.
 	name := "variants/" + variant_name(file, kind)
 	destination, err := cache_file(t, name)
 	if err != nil {
@@ -319,11 +279,8 @@ func api_image_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if result, err := variant_render(source, kind, destination); err != nil || result == "" {
 		return sl.None, nil
 	}
-	// The third path that adds bytes to the cache without going through
-	// cache_write_file, and so the third that has to account for them: an app
-	// that renders a variant per image would otherwise fill the cache with the
-	// budget checked only by the hourly sweep. The entry is new by
-	// construction - an existing one returned above - so the whole size counts.
+	// Adds bytes to the cache without going through cache_write_file, so it
+	// accounts for them itself. The entry is new - an existing one returned above.
 	if information, err := os.Stat(destination); err == nil {
 		cache_admit(information.Size())
 	}

@@ -1,14 +1,11 @@
 // Mochi server: the audit event for a sign-in change is named for what changed.
-//
-// audit_password_changed emitted "password_changed" at ten call sites, none of
-// which is a password change - Mochi has no password login at all. The event
-// name is the key an operator greps and a log pipeline parses, so it named a
-// credential that does not exist and hid every real change behind it.
+// Mochi has no password login, so an event named "password_changed" names a
+// credential that does not exist and hides every real change behind it.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -81,12 +78,9 @@ func audit_event_string(t *testing.T, path, function string) string {
 	return match[1]
 }
 
-// TestBothPlatformsEmitTheSameAuthenticationEvent is the drift guard, and it
-// is the reason this is a test rather than a compiler's job: audit_windows.go
-// is behind //go:build windows, so nothing on a Linux build ever looks at it.
-// The two files already disagree about which functions exist - the Windows one
-// still carries eight audit_replication_* helpers for a subsystem removed in
-// July 2026 - which is what that invisibility costs.
+// TestBothPlatformsEmitTheSameAuthenticationEvent is the drift guard:
+// audit_windows.go is behind //go:build windows, so no Linux build ever
+// compiles it and the two files drift unnoticed.
 func TestBothPlatformsEmitTheSameAuthenticationEvent(t *testing.T) {
 	unix := audit_event_string(t, "audit_unix.go", "audit_authentication_changed")
 	windows := audit_event_string(t, "audit_windows.go", "audit_authentication_changed")

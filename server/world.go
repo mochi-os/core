@@ -1,29 +1,17 @@
 // Mochi server: World server listings
 //
-// A mochi-world server running on this machine pushes its status — name,
-// address, per-service player counts — to this server over a local socket
-// (world_unix.go / world_windows.go), and this server announces it to the
-// network over pubsub. A listing is an attribute of the PEER, not of any
-// user or entity: GossipSub's StrictSign already authenticates the sending
-// peer, so announcements need no entity keys and no extra signatures, and
-// there is no "which user owns the listing" question at all.
-//
-// Rows are keyed (peer, world id) and age out when refresh stops: the world
-// pushes on change and on a 10-15 minute idle floor, so a listing that has
-// not been refreshed for three floors (45 minutes) is gone, not idle. Only
-// the latest state matters — there is no log, no replay, and no repair
-// stream; the floor republish IS the repair.
-//
-// Deliberately NOT app JWTs for the push: an app token is signed with the
-// SESSION's secret (auth_create_app_token), so it dies silently on logout,
-// session expiry, or a sessions.db wipe — all designed-for operations — and
-// it authenticates a whole user to a whole app, far more than a status push
-// should hold. The local socket's group permission is the entire credential.
-//
+// A co-located mochi-world server pushes its status over a local socket
+// (world_unix.go / world_windows.go) and this server gossips it over pubsub. A
+// listing is an attribute of the PEER - GossipSub's StrictSign already
+// authenticates the sender, so no entity keys are involved. Rows are keyed
+// (peer, world id), hold only the latest state, and age out after three missed
+// refresh floors. The socket's group permission is the entire credential: an
+// app JWT is signed with the session secret and would die on logout or a
+// sessions.db wipe.//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -47,14 +35,10 @@ const (
 	world_services_most   = 16   // services one world may announce: a bound, not a target
 	world_name_most       = 64   // runes in a display name: it renders on every server's join page
 
-	// world_ids_most bounds distinct worlds one peer may hold rows for. The
-	// per-world debounce below is keyed on the id, so it constrains one world's
-	// cadence and does nothing against a caller whose id varies - a world server
-	// deriving its id from a match or a restart counter rather than from its own
-	// identity writes a fresh row every push. replace into keeps a repeated id
-	// free, so only new ids grow the table; past the cap the least recently seen
-	// row is evicted rather than the push refused, since a legitimate world must
-	// not be lost because a buggy neighbour filled the table.
+	// world_ids_most bounds distinct worlds one peer may hold rows for: the
+	// per-world debounce is keyed on the id, so a caller whose id varies writes a
+	// fresh row per push. Past the cap the least recently seen row is evicted,
+	// never the push refused.
 	world_ids_most = 100
 )
 
@@ -65,11 +49,10 @@ type world_service struct {
 	Name    string `json:"name,omitempty"` // optional per-service display name; the world name serves otherwise
 }
 
-// world_recent debounces outbound gossip per world id: an unchanged push
-// inside the minimum interval stores locally but does not flood. Swept by
-// world_manager on the table's own expiry, so debounce state cannot outlive the
-// listing it debounces - nothing deleted from it before, and an id seen once
-// stayed for the life of the process.
+// world_recent debounces outbound gossip per world id: an unchanged push inside
+// the minimum interval stores locally but does not flood. Swept by
+// world_manager on the table's own expiry, so it cannot outlive the listing it
+// debounces.
 var (
 	world_lock   sync.Mutex
 	world_recent = map[string]struct {
@@ -104,10 +87,7 @@ func world_manager() {
 }
 
 // world_recent_prune drops debounce entries for worlds that have stopped
-// pushing, on the same expiry as the rows they belong to. Without it the map
-// only ever grew: the table ages a silent world out after world_seen_expiry
-// while its entry stayed for the life of the process, so the two disagreed
-// about which worlds exist.
+// pushing, on the same expiry as the rows they belong to.
 func world_recent_prune() {
 	cutoff := now() - world_seen_expiry
 	world_lock.Lock()
@@ -125,21 +105,11 @@ func world_recent_prune() {
 // scheme from a host:port by what follows the colon.
 var match_world_address_scheme = regexp.MustCompile(`(?i)^([a-z][a-z0-9+.-]*):`)
 
-// world_address_valid accepts the shapes a world server is actually reachable
-// at - an authority (host, or host:port) or an explicit http/https URL - and
-// refuses every other scheme.
-//
-// valid(address, "url") is a charset check, and its class contains ":" and the
-// percent sign, so "javascript:alert%281%29" passes it: a browser decodes the
-// escapes, and the listing is gossiped between servers and rendered on every
-// join page that shows a server list. The air client happens to run addresses
-// through normalize_server, which forces an http/https prefix onto anything
-// without one, but core hands this string to any app through mochi.world.list
-// and cannot assume each one does that.
-//
-// The "url" case in valid() is left alone: mochi.text.valid exposes it to
-// apps as a general URL check, so narrowing it there would change what every
-// app's own validation means. This is the world's rule, so it lives here.
+// world_address_valid accepts what a world server is reachable at - a host,
+// host:port, or an http/https URL - and refuses every other scheme.
+// valid(address, "url") is only a charset check: "javascript:alert%281%29"
+// passes it, and the listing is gossiped on and rendered on other hosts' join
+// pages.
 func world_address_valid(address string) bool {
 	if address == "" || !valid(address, "url") {
 		return false
@@ -242,12 +212,9 @@ func world_status_handler(c *gin.Context) {
 
 	world_store(net_id, input.World.ID, input.World.Name, input.World.Address, input.World.Version, string(services))
 
-	// Audited because the effect leaves the machine: the row gossips on, so
-	// the name and address a world advertises reach other hosts' join pages.
-	// The socket's group is the authority and is deliberately looser than the
-	// admin socket's, which is why WHICH member pushed is worth recording. The
-	// world id is the identifying detail - "a listing changed" alone says
-	// nothing.
+	// Audited because the effect leaves the machine: the row gossips on to other
+	// hosts' join pages, and this socket's group is looser than the admin
+	// socket's, so which member pushed and which world matter.
 	uid, gid, pid := audit_peer_identity(c.Request.Context())
 	audit_log_daemon(fmt.Sprintf("world.status peer_uid=%d peer_gid=%d peer_pid=%d world=%q",
 		uid, gid, pid, input.World.ID))
@@ -282,22 +249,10 @@ func world_health(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"peer": net_id})
 }
 
-// world_register_routes wires the world socket's engine: ONLY these routes.
-// The world socket's permissions are looser than the admin socket's (a
-// service group rather than the operator), so it must never serve the admin
-// engine — that would hand stop/restart and the pprof suite to every group
-// member.
-// world_body_maximum bounds a status push. Not a security boundary: this
-// socket is a local UDS behind both a 0660 group and an SO_PEERCRED check, so
-// the caller is software the administrator installed on this machine and put in
-// the mochi-world group - and it can already open unbounded connections here,
-// which is cheaper than a large body. This is insurance against a BUGGY world
-// server: ShouldBindJSON reads to completion before world_validate runs, so
-// without a cap a runaway payload OOMs the server and the operator gets a dead
-// process with no explanation. With one they get a 413 naming the caller.
-//
-// A push is a world id, name, address, version and a short services list, so
-// 64KB is orders of magnitude above the real payload.
+// world_body_maximum bounds a status push. Not a security boundary - the socket
+// is a local UDS behind a 0660 group and an SO_PEERCRED check - but insurance
+// against a buggy world server: ShouldBindJSON reads to completion before
+// world_validate runs, so an uncapped runaway payload OOMs the server.
 const world_body_maximum = 64 << 10
 
 // world_register_routes wires the world socket's handlers. Shared by the Unix
@@ -321,26 +276,19 @@ var rate_limit_world_publish = &rate_limiter{
 	window:  60,
 }
 
-// rate_limit_world_gossip bounds what this server floods OUTWARD, across all
-// worlds. world_publish_minimum is per id, so it paces one world and is no
-// constraint at all on a caller whose id varies: every fresh id has
-// published == 0, which makes the interval check trivially true and floods the
-// mesh on the spot. Matched to the inbound limiter above, which is what a peer
-// receiving this traffic will apply to it anyway.
+// rate_limit_world_gossip bounds what this server floods outward across all
+// worlds: world_publish_minimum is per id, and every fresh id has published ==
+// 0, so a caller whose id varies passes the interval check every time.
 var rate_limit_world_gossip = &rate_limiter{
 	entries: make(map[string]*rate_limit_entry),
 	limit:   30,
 	window:  60,
 }
 
-// world_publish_event stores a listing announced by another peer. The peer
-// identity comes from the pubsub layer (StrictSign), never from content —
-// and it is e.origin, the signature-verified ORIGINATOR, not e.peer, the
-// last-hop mesh neighbour that forwarded the message. A listing is a claim
-// about its originator: keying rows on the forwarder filed one world under
-// every neighbour that relayed it, so a single server showed up twice in the
-// join list until the stale copy aged out. Rate limiting stays on e.peer,
-// the identity the transport actually delivers from.
+// world_publish_event stores a listing announced by another peer, keyed on
+// e.origin - the StrictSign-verified originator - never on e.peer, the last-hop
+// forwarder, which filed one world under every relaying neighbour. Rate
+// limiting stays on e.peer.
 func world_publish_event(e *Event) {
 	if e.origin == "" || e.origin == net_id {
 		return // own announcements come back around the flood (the local row is already authoritative); "" is a direct stream, which never carries a world listing

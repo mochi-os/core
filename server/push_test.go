@@ -1,16 +1,9 @@
 // Mochi server: a push that fails once is retried, not lost.
 //
-// api_account_notify used to give a push exactly one attempt: it called the
-// per-provider deliver function, counted a failure and moved on. A destination
-// that was unreachable for a few seconds therefore lost the notification
-// outright - no row, no record, nothing to retry it. On 2026-08-17 a
-// seven-second FCM INTERNAL burst on yuzu did exactly that, outlasting the
-// in-call retry fcm.go added for blips of a second or two.
-//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -29,9 +22,8 @@ import (
 )
 
 // push_test_setup gives a test a data directory, the queue and user databases,
-// and one verified url account pointed at the caller's server. The url provider
-// is the only one whose destination a test can stand up locally and control the
-// response of, so every queue test here drives that one; the queue itself is
+// and one verified url account pointed at the caller's server - the only
+// provider whose destination a test can stand up locally. The queue is
 // provider-agnostic.
 func push_test_setup(t *testing.T, endpoint string) *User {
 	t.Helper()
@@ -329,11 +321,9 @@ func TestPushQueueDropsRowsForAnUnknownProvider(t *testing.T) {
 	}
 }
 
-// TestEveryNotifyProviderHasADeliverer is the drift guard the delivery table
-// exists to make possible. A provider that declares the notify capability and
-// has no entry is silently undeliverable: api_account_notify's !handled branch
-// skips it without counting a failure, so it does not even appear in the sent
-// or failed totals the caller sees.
+// TestEveryNotifyProviderHasADeliverer: a notify provider with no entry in the
+// table is silently undeliverable - api_account_notify's !handled branch skips
+// it without counting a failure, so it appears in no total the caller sees.
 func TestEveryNotifyProviderHasADeliverer(t *testing.T) {
 	for _, p := range providers {
 		if !provider_has_capability(p.Type, "notify") {
@@ -399,11 +389,9 @@ func TestPushesTableOnAnUpgrade(t *testing.T) {
 	}
 }
 
-// TestPushManagerIsStarted. The queue is inert without it: rows accumulate,
-// nothing retries them, and the expiry sweep never runs either - strictly worse
-// than the one-shot behaviour it replaces. Checked against main.go's source
-// because starting the real manager in a test would leave a ticker goroutine
-// running for the rest of the run.
+// TestPushManagerIsStarted. Without it rows accumulate and nothing retries or
+// expires them. Checked against main.go's source: starting the real manager
+// here would leave a ticker goroutine running for the rest of the run.
 func TestPushManagerIsStarted(t *testing.T) {
 	source, err := os.ReadFile("main.go")
 	if err != nil {

@@ -1,21 +1,12 @@
-// Mochi server: an app's install timestamp is stamped once.
-//
-// load_version runs on every startup load, not only on install, so REPLACE INTO
-// re-stamped every app with the boot time. app_select_best breaks path and
-// class ties on "earliest install wins", and with every value rewritten to the
-// same second that comparison never fires - the winner falls through to the
-// order Go happens to range the apps map in, redrawn whenever the 30-second
-// resolution cache expires. Where a startup did straddle a second boundary the
-// order came from the sorted app-id load instead, which a publisher chooses.
-//
-// The overwrite existed to re-emit a system-set op for the other host in a
-// replication pair. That layer was removed in 2026-07 and apps_record no longer
-// emits anything.
+// Mochi server: an app's install timestamp is stamped once. load_version runs
+// on every startup load, not only on install, so a rewriting insert flattens
+// every timestamp and app_select_best's "earliest install wins" tie-break stops
+// firing.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

@@ -46,24 +46,19 @@ pkg_arm64 = /tmp/mochi-server_$(version)_darwin_arm64.pkg
 build_windows = /tmp/mochi-server_$(version)_windows_amd64
 msi = $(build_windows).msi
 
-# Build flags. build_platform tags release builds so the daily update_manager
-# can poll the right packages.mochi-os.org/<path>/versions.json. Empty for
-# `make` from source — those binaries don't poll.
-#
-# -s -w drops the Go symbol table and DWARF debug info: smaller binary
-# without needing the cross-arch `*-strip` binutils. Pure-Go means
-# CGO_ENABLED=0 everywhere.
+# Build flags. build_platform tags release builds so update_manager polls the
+# right packages.mochi-os.org/<path>/versions.json; empty for `make` from
+# source, which does not poll. -s -w drops the symbol table and DWARF instead of
+# strip.
 ldflags_linux   = -s -w -X main.build_version=$(version) -X main.build_platform=linux
 ldflags_windows = -s -w -X main.build_version=$(version) -X main.build_platform=windows
 ldflags_macos   = -s -w -X main.build_version=$(version) -X main.build_platform=macos
 ldflags_docker  = -s -w -X main.build_version=$(version) -X main.build_platform=docker
 ldflags_mochictl = -s -w -X main.build_version=$(version)
 
-# Source prerequisites for the Go build targets. go.mod / go.sum are listed so
-# a dependency or `toolchain` bump rebuilds the binaries on an incremental
-# `make` — without them only *.go changes triggered a rebuild, so a
-# go.mod-only change (e.g. a Go toolchain pin) was silently ignored until the
-# next `make clean`. Simply-expanded (:=) so the find runs once at parse time.
+# Source prerequisites for the Go build targets. go.mod / go.sum are listed so a
+# dependency or toolchain bump rebuilds on an incremental `make`.
+# Simply-expanded (:=) so the find runs once at parse time.
 go_sources_server   := $(shell find server -name '*.go') $(shell find common -name '*.go') go.mod go.sum
 go_sources_mochictl := $(shell find mochictl -name '*.go') $(shell find common -name '*.go') go.mod go.sum
 
@@ -80,11 +75,8 @@ $(bin):
 	mkdir -p $(bin)
 
 # --------------------------------------------------------------------------
-# Native Linux amd64 binaries
-#
-# SQLite is bundled via github.com/ncruces/go-sqlite3 (pure-Go, WASM via
-# wazero). cgo is no longer required at all, so every target below is a
-# plain GOOS/GOARCH build with CGO_ENABLED=0 — no cross-toolchains.
+# Native Linux amd64 binaries. SQLite is pure-Go (ncruces/go-sqlite3 on wazero),
+# so every target below is a plain GOOS/GOARCH build with CGO_ENABLED=0.
 # --------------------------------------------------------------------------
 
 $(bin)/mochi-server: $(go_sources_server) | $(bin)
@@ -381,11 +373,10 @@ macos: $(bin)/mochi-server-darwin-amd64 $(bin)/mochi-server-darwin-arm64
 docker_image = ghcr.io/mochi-os/mochi-server
 docker_minor = $(word 1,$(subst ., ,$(version))).$(word 2,$(subst ., ,$(version)))
 
-# Docker-tagged server binaries. Identical to the linux builds except for
-# -X main.build_platform=docker, so a containerised server polls the docker
-# versions.json (server/update.go update_url_path). Only ldflags differ, so
-# these relink in well under a second against the warm Go cache. mochictl
-# carries no platform tag, so the linux mochictl binaries are reused as-is.
+# Docker-tagged server binaries: the linux builds with -X
+# main.build_platform=docker, so a containerised server polls the docker
+# versions.json. mochictl carries no platform tag, so the linux binaries are
+# reused as-is.
 $(bin)/mochi-server-docker-amd64: $(go_sources_server) | $(bin)
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -v -ldflags "$(ldflags_docker)" -o $(bin)/mochi-server-docker-amd64 ./server
 
@@ -408,11 +399,9 @@ docker-stage: $(bin)/mochi-server-docker-amd64 $(bin)/mochi-server-docker-arm64 
 docker-local: docker-stage
 	docker build -t $(docker_image):dev .
 
-# Reachability-aware vulnerability scan of the Go code. Unlike a version
-# comparison, this builds the call graph and reports only advisories this
-# code can actually reach, so a finding here is a real exposure. Mirrors the
-# govulncheck job in .github/workflows/security.yml — run it locally before
-# pushing a dependency change rather than discovering the failure in CI.
+# Reachability-aware vulnerability scan: builds the call graph, so a finding
+# here is a real exposure. Mirrors the govulncheck job in
+# .github/workflows/security.yml.
 vulnerability-scan:
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
@@ -430,11 +419,7 @@ dependency-scan:
 	    --ignorefile /.trivyignore /src
 
 # Report whether the base image tag has moved past the digest the Dockerfile
-# pins. Pinning trades a silent-change risk for a silent-staleness one, so this
-# exists to make the second one a single command rather than a registry lookup
-# nobody remembers to do. Run it when cutting a release; if it differs, bump the
-# digest in the Dockerfile deliberately and let the container scan judge the
-# result.
+# pins. Run when cutting a release; if it differs, bump the digest deliberately.
 base-digest:
 	@ref=$$(sed -n 's/^FROM \([^ ]*\).*/\1/p' Dockerfile | head -1); \
 	image=$${ref%%@*}; pinned=$${ref#*@}; repo=$${image%%:*}; tag=$${image##*:}; \
@@ -445,13 +430,9 @@ base-digest:
 	if [ "$$pinned" = "$$current" ]; then echo "base-digest: $$image is current ($$current)"; \
 	else echo "base-digest: $$image has MOVED"; echo "  pinned:  $$pinned"; echo "  current: $$current"; fi
 
-# Run Trivy against the locally-built image. Fails (exit 1) on any HIGH or
-# CRITICAL finding — useful as a manual pre-release check, intentionally NOT
-# wired into make release because Trivy occasionally flags transitive deps
-# that don't affect us in practice. Mounts the host's docker.sock so the
-# trivy container can inspect images without needing its own daemon.
-# First run downloads the ~50 MB vulnerability DB from mirror.gcr.io and
-# may take several minutes; subsequent runs use the cache at ~/.cache/trivy.
+# Trivy against the locally-built image; fails on any HIGH or CRITICAL. A manual
+# pre-release check, deliberately not wired into `make release` - Trivy flags
+# transitive deps that do not affect us. First run downloads a ~50 MB database.
 docker-scan: docker-local
 	docker run --rm \
 	    -v /var/run/docker.sock:/var/run/docker.sock \
@@ -463,16 +444,9 @@ docker-scan: docker-local
 	    --ignorefile /.trivyignore \
 	    $(docker_image):dev
 
-# Multi-arch build + push to GHCR. Tags applied:
-#     X.Y.Z      exact version (matches deb/rpm/pkg)
-#     X.Y        newest patch in this minor line
-#     latest     docker convention for the newest production release
-#     production explicit alias, matches versions.json track names
-# --sbom and --provenance attach a Software Bill of Materials and SLSA
-# build provenance so consumers can audit the image contents.
-# Requires a multi-arch buildx builder (docker buildx create --use
-# --platform linux/amd64,linux/arm64) and docker login ghcr.io with a
-# PAT scoped to write:packages.
+# Multi-arch build + push to GHCR, tagged X.Y.Z, X.Y, latest and production
+# (matching the versions.json track names). Requires a multi-arch buildx builder
+# and docker login ghcr.io with a PAT scoped to write:packages.
 docker: docker-stage
 	@t=$$(date +%s); docker buildx build \
 	    --platform linux/amd64,linux/arm64 \
@@ -484,12 +458,9 @@ docker: docker-stage
 	    --push \
 	    . && echo ">>> docker build+push: $$(($$(date +%s)-t))s" | tee -a $(timing)
 
-# Reclaim disk left by repeated image builds: dangling images from :dev
-# retags, plus build cache from both the default daemon builder and the
-# buildx container builder. The default builder's cache is already capped at
-# 5GB by /etc/docker/daemon.json (builder.gc); this target is the on-demand
-# sweep, mainly for the buildx builder, which daemon.json does not govern.
-# Leaves tagged images (:dev, release tags) untouched.
+# Reclaim disk from repeated image builds: dangling :dev images and the build
+# cache of both builders. daemon.json caps the default builder at 5GB but does
+# not govern the buildx one. Tagged images are left alone.
 docker-clean:
 	docker image prune -f
 	docker builder prune -af
@@ -499,19 +470,11 @@ docker-clean:
 # Release
 # --------------------------------------------------------------------------
 
-# `release` runs a parallel build phase then a serial publish phase. `clean`
-# runs first in its own sub-make so the rebuild can't race a stale binary; the
-# build and publish phases are separate sub-makes so `-j$(JOBS)` applies only
-# to the parallel-safe build (the publish steps must stay ordered).
-# Each phase prints its wall-clock as `>>> phase ...: Ns` so a release self-
-# reports where the time goes (grep the output for `>>>`). The build phase
-# figure includes the docker build+push; the publish figure includes the apt /
-# rpm reindex and the rsync to both hosts, each timed individually below.
-#
-# The whole run executes in one shell with an EXIT trap so release-clean fires
-# whether the release finishes or fails partway; release-clean also runs up
-# front to remove strays from a previous run that was killed before its trap
-# could fire.
+# `release` runs a parallel build phase then a serial publish phase, each as its
+# own sub-make so -j applies only to the parallel-safe build. Each phase prints
+# its wall-clock as `>>> phase ...: Ns`. An EXIT trap fires release-clean
+# whether the run finishes or fails, and it also runs up front to clear earlier
+# strays.
 release:
 	@: > $(timing)
 	@$(MAKE) --no-print-directory release-tree
@@ -521,27 +484,12 @@ release:
 	t=$$(date +%s); $(MAKE) release-publish || exit 1; echo ">>> phase publish (reindex + rsync): $$(($$(date +%s)-t))s" | tee -a $(timing); \
 	echo; echo "=== release $(version) timing summary ==="; cat $(timing)
 
-# Record what the release is built from. `make release` builds the WORKING
-# TREE - go build runs in place - so uncommitted changes ship, and a tag on
-# the commit that later records the version bump names source that may not
-# be what was built. Two things are stamped into the release report:
-#
-# - The tree hash: `git stash create` writes the index and worktree as a real
-#   commit object without touching either. It is git's own name for exactly
-#   what was built. The object is unreferenced, so it is pinned under
-#   refs/releases/<version> - otherwise the next gc reclaims it and the hash
-#   in the report names nothing. `git show refs/releases/<version>` (or the
-#   hash) then shows what shipped after the tree has moved on. Empty output
-#   means the tree is clean at HEAD, in which case HEAD is the answer and
-#   the ref points there.
-# - A warning naming every modified file other than this Makefile's version
-#   bump. The bump is the one change a release is expected to carry; anything
-#   else is work - usually another session's - that will ship without a
-#   commit describing it. Named, not blocked: release-before-commit is the
-#   workflow, and the point is that the report says so.
-#
-# Cheap, read-only, and separate from the trap so a failure here (not a git
-# checkout, say) cannot start release-clean.
+# Record what the release is built from: `make release` builds the WORKING TREE,
+# so uncommitted changes ship. `git stash create` names that tree as a real
+# commit object; it is unreferenced, so it is pinned under
+# refs/releases/<version> or the next gc reclaims it. Empty output means the
+# tree is clean at HEAD. Also warns about modified files other than the version
+# bump, which would ship undescribed.
 release-tree:
 	@head=$$(git rev-parse --short=12 HEAD 2>/dev/null) || { echo ">>> tree: not a git checkout" | tee -a $(timing); exit 0; }; \
 	tree=$$(git stash create 2>/dev/null); \
@@ -558,20 +506,15 @@ release-tree:
 	    echo "$$foreign" | sed 's/^/>>>     /' | tee -a $(timing); \
 	fi
 
-# Remove the release temporaries from /tmp: staging trees, rpmbuild trees, and
-# the packaged artefacts, which release-publish only copies into ../packages.
-# Every path is versioned, so this scrubs all versions, not just the current
-# one — stranded packages from earlier releases are what filled /tmp. $(timing)
-# is deliberately kept: fixed name, a few hundred bytes, and the post-release
-# report reads it after this target has run.
+# Remove the release temporaries from /tmp. Every path is versioned, so this
+# scrubs all versions - stranded packages from earlier releases are what filled
+# /tmp. $(timing) is kept: the post-release report reads it after this runs.
 release-clean:
 	-rm -rf /tmp/mochi-server_* /tmp/mochi-server-*.rpm /tmp/mochi-rpmbuild-*
 
-# Parallel-safe build of every release artefact. The deb/rpm/msi/pkg/docker
-# branches are independent: each rpm target has its own _topdir, each deb its
-# own staging dir, pkg uses mktemp, and docker stages pre-built binaries — so
-# -j fans them across cores with no shared-state races. Shared binary targets
-# (mochi-server*, mochictl*, man pages) are built once and reused by make.
+# Parallel-safe: each rpm target has its own _topdir, each deb its own staging
+# dir, pkg uses mktemp, and docker stages pre-built binaries, so -j has no
+# shared-state races.
 release-build: deb rpm msi pkg docker
 
 release-publish:
@@ -585,28 +528,17 @@ release-publish:
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/apt/versions.json
 	rm -f ../packages/rpm/Packages/mochi-server-*.rpm
 	cp $(rpm_x86_64) $(rpm_aarch64) $(rpm_armv7hl) ../packages/rpm/Packages
-	# Publish the repo definition from source, not from a hand-edited file left
-	# in the untracked packages tree. It carries gpgcheck=1 / repo_gpgcheck=1 /
-	# gpgkey, the settings that make the package signing above mean anything, so
-	# a tree wipe or an old-backup restore silently reverting it to gpgcheck=0 —
-	# no error, no diff, verification just off — is exactly the regression this
-	# copy prevents. Reproducible like versions.json and mochi.asc.
+	# Publish the repo definition from source, not from the untracked packages
+	# tree. It carries gpgcheck=1 / repo_gpgcheck=1 / gpgkey, and a tree wipe
+	# reverting those turns verification off with no error and no diff.
 	cp build/rpm/mochi.repo ../packages/rpm/mochi.repo
 	@t=$$(date +%s); ./build/scripts/rpm-repository-update ../packages/rpm `cat local/gpg.txt | tr -d '\n'` && echo ">>> rpm reindex (createrepo): $$(($$(date +%s)-t))s" | tee -a $(timing)
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/rpm/versions.json
-	# Two copies: the stable name for humans clicking a download link, and a
-	# version-stamped name for the self-updater. The self-updater must fetch
-	# the exact version it decided to install — the stable path is overwritten
-	# in place every release, and this rsync is not atomic, so a server that
-	# read versions.json seconds earlier could otherwise download a different
-	# build than the one it recorded. Pruned like the apt pool: current only.
-	#
-	# The stable name is a relative symlink to the stamped file, not a second
-	# copy: uploading the same 27MB twice was 12% of a release over a domestic
-	# uplink. It has to be relative, and to name a file in this same directory,
-	# because a.write.file opens through os.Root and a link that leaves the
-	# served directory is refused. The publish below is what makes the link
-	# safe - see the two-pass rsync there.
+	# Two names: a stable one for humans and a version-stamped one the self-updater
+	# fetches, since this rsync is not atomic and the stable path is overwritten in
+	# place. The stable name is a relative symlink to the stamped file in the same
+	# directory - a.write.file opens through os.Root and refuses a link that leaves
+	# the served directory. See the two-pass rsync below.
 	rm -f ../packages/windows/mochi-server-*.msi
 	gpg --armor --export `cat local/gpg.txt | tr -d '\n'` > ../packages/mochi.asc
 	cp $(msi) ../packages/windows/mochi-server-$(version).msi
@@ -619,14 +551,10 @@ release-publish:
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/macos/versions.json
 	mkdir -p ../packages/docker
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/docker/versions.json
-	# Sign every versions.json with the release key. The server verifies this
-	# detached ed25519 signature against a public key pinned in its binary
-	# before trusting anything in the manifest, so a compromise of this host
-	# cannot substitute an update: the digests inside the manifest only bind
-	# the artifacts to it, and the signature is what binds it to us. Done here,
-	# after every manifest is written and before the single rsync below, so the
-	# .sig files ship in the same atomic push and no manifest is ever published
-	# without its signature. Ed25519, so openssl needs -rawin (3.0+).
+	# Sign every versions.json with the release key: the server verifies this
+	# detached ed25519 signature against a pinned public key before trusting the
+	# manifest. Done after every manifest is written and before the single rsync,
+	# so none is ever published unsigned. -rawin needs openssl 3.0+.
 	@for platform in apt rpm windows macos docker; do \
 	    openssl pkeyutl -sign -rawin -inkey local/update-signing.key \
 	        -in ../packages/$$platform/versions.json \
@@ -634,23 +562,12 @@ release-publish:
 	        && echo "signed $$platform/versions.json" \
 	        || exit 1; \
 	done
-	# Publish to yuzu by name (not the packages.mochi-os.org alias) so the
-	# target is deterministic regardless of where that record points. Wasabi is
-	# frozen as a pre-decouple backup and receives no packages.
-	#
-	# Two passes, because the stable download names are symlinks to the
-	# version-stamped file beside them. rsync creates a symlink in its generator
-	# pass, up front, while the file it points at arrives with the bulk transfer
-	# minutes later - so a single pass leaves the download URL pointing at
-	# nothing for the whole upload, every release. Measured, and neither
-	# --delete-after nor --delay-updates changes it.
-	#
-	# Pass one carries everything except those links and deletes nothing, so the
-	# previous build stays in place and the existing links keep resolving while
-	# the new one uploads. Pass two repoints the links, now that their targets
-	# are present, and only then prunes the previous version - --delete-after,
-	# so no link is left pointing at a file that was deleted a moment earlier.
-	# Pass two moves a few hundred bytes; the timing below covers both.
+	# Publish to yuzu by name, not the packages.mochi-os.org alias, so the target
+	# is deterministic. Two passes: rsync creates the stable-name symlinks in its
+	# generator pass, before the version-stamped files they point at arrive, so a
+	# single pass leaves every download URL broken for the whole upload. Pass one
+	# deletes nothing, so the previous build keeps the links resolving; pass two
+	# repoints them and prunes with --delete-after.
 	@t0=$$(date +%s); \
 	rsync -av --exclude=/windows/mochi-server.msi --exclude=/android/mochi.apk \
 	    ../packages/ root@yuzu.mochi-os.org:/srv/packages/ || exit 1; \
@@ -670,11 +587,9 @@ format:
 run: $(bin)/mochi-server
 	$(bin)/mochi-server
 
-# Run the server test suite. test is the fast pass (CGO disabled, no
-# race detector); test-race adds the race detector at the cost of
-# requiring cgo and roughly 8x slower test execution. test-race must
-# pass before any commit that touches replication or other shared
-# mutable state.
+# test is the fast pass (CGO disabled, no race detector); test-race adds the
+# race detector, needs cgo, and is roughly 8x slower. Run test-race before
+# committing a change to shared mutable state.
 test:
 	CGO_ENABLED=0 go test -count=1 -timeout 180s ./server
 

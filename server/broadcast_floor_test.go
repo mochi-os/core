@@ -1,17 +1,11 @@
-// Mochi server: unfillable-gap escape hatch regressions.
-//
-// The 2026-07 News feed wedge exposed three healing failures: the pending GC
-// skipped one hole per hourly pass (never converging against a sparse
-// buffer), the replay log age-trimmed rows a wedged subscriber still needed
-// (making the gap permanently unfillable), and a resync request below the
-// log floor replayed useless far-future events instead of saying so. These
-// tests cover the fixes: the looping skip, the ack-floor-aware trim, and
-// the broadcast/floor skip handler.
+// Mochi server: unfillable-gap escape hatch regressions - the looping
+// pending-GC skip, the ack-floor-aware log trim, and the broadcast/floor skip
+// handler.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -20,11 +14,8 @@ import (
 	"testing"
 )
 
-// TestBroadcastSkipEscalation — a single unfillable skip is a log line
-// only; the operator email fires on recurrence (the same stream again
-// inside broadcast_skip_recurrence) and on breadth (broadcast_skip_breadth
-// distinct streams inside a day), and records past the recurrence window
-// are pruned in passing.
+// TestBroadcastSkipEscalation - one skip is a log line; the email fires on
+// recurrence or on breadth, and stale records are pruned in passing.
 func TestBroadcastSkipEscalation(t *testing.T) {
 	breadth := broadcast_skip_breadth
 	broadcast_skip_breadth = 3

@@ -1,20 +1,15 @@
-// Mochi server: the cache budget is enforced when a write lands, not an hour later.
+// Mochi server: the cache budget is enforced when a write lands, not an hour
+// later.
 //
 // The cache is exempt from the per-user storage quota in exchange for being
-// unconditionally evictable - cache.go says so at the top of the file - but that
-// bargain was honoured only by an hourly sweep. cache_write_file never consulted
-// cache_budget, and cache_evict had exactly one caller, at the end of the hourly
-// cache sweep. Between two sweeps an app could write until the disk filled, and
-// cache_dir is shared with every user on the host.
-//
-// Evicting rather than refusing keeps the other half of the bargain: an app is
-// promised that a miss re-obtains, so a write that fails is a contract this code
-// does not have.
+// unconditionally evictable; between hourly sweeps an app could otherwise fill
+// the disk cache_dir shares with every user. Admission evicts rather than
+// refusing - an app is promised that a miss re-obtains.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -89,14 +84,9 @@ func TestCacheWriteKeepsWhatItJustWrote(t *testing.T) {
 	}
 }
 
-// TestCacheWriteClearsHeadroom. cache_evict stops the instant it reaches the
-// budget, so evicting to exactly that would leave the very next write over
-// again and walk the whole tree once per write. Admission evicts to a margin
-// below instead, so one walk serves many writes.
-//
-// Measured on the write that crosses, not at the end of a run: the margin is
-// meant to be refilled by the writes that follow, so a total near the budget
-// later is correct and says nothing about the target used.
+// TestCacheWriteClearsHeadroom. cache_evict stops at the budget, so admission
+// evicts to a margin below it and one walk serves many writes. Measured on the
+// write that crosses - a total near the budget later is correct.
 func TestCacheWriteClearsHeadroom(t *testing.T) {
 	cache_admission_setup(t, 1000)
 
@@ -232,11 +222,9 @@ func TestCacheApiDeleteReleasesBudget(t *testing.T) {
 	}
 }
 
-// TestCacheArchiveIsAdmitted. mochi.archive.write(cache=True) is the one cache
-// write that does not go through cache_write_file - it opens the destination
-// itself and sets its byte limit to MaxInt64, the cache being exempt from the
-// per-user quota. An admission rule on mochi.cache.write alone leaves this path
-// as an unmetered way to the same directory.
+// TestCacheArchiveIsAdmitted. mochi.archive.write(cache=True) does not go
+// through cache_write_file, so a rule on mochi.cache.write alone leaves it
+// unmetered.
 func TestCacheArchiveIsAdmitted(t *testing.T) {
 	base, thread := file_api_environment(t)
 	cache_admission_setup(t, 1000000)

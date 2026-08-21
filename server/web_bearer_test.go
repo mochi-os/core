@@ -5,18 +5,9 @@
 
 // Regression tests for the app-token gate in web_action.
 //
-// A non-public app action requires a Bearer token bound to that app; the
-// session cookie alone is not enough, because a cookie is ambient authority
-// over every app the user has installed and the whole per-app boundary rests
-// on the token being app-specific.
-//
-// The gate was defeatable twice over. has_bearer was set from the "Bearer "
-// prefix before the token was validated, so the literal string "Bearer x"
-// satisfied it; and an unverified token leaves the app claim empty, which the
-// app match then skipped as having nothing to compare. Together a session
-// cookie plus any nonsense header reached every app's actions - confirmed
-// against a running server, where the cookie alone answered 403 and the cookie
-// with a garbage token answered 200.
+// A non-public app action requires a Bearer token bound to that app: a session
+// cookie is ambient authority over every app the user has installed, so the
+// per-app boundary rests entirely on the token being app-specific.
 
 package main
 
@@ -48,13 +39,10 @@ func web_bearer_env(t *testing.T) (*App, *User, string, func()) {
 	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default '', disabled text not null default '', status text not null default 'active')")
 	users.exec("insert into users (uid, username, role, status) values ('bearer-user', 'bearer@example.com', 'user', 'active')")
 
-	// A person entity, because web_action refuses an authenticated user with
-	// no identity before it reaches the token check. Columns follow the
-	// entities table create_web_test_env already made; user carries the uid
-	// because that is what User.identity() matches on.
-	// Recreated to match the Entity struct: identity() does a select * and
-	// scans into it, so a column set that differs from the struct fails the
-	// scan and the user reads as having no identity.
+	// A person entity: web_action refuses an authenticated user with no identity
+	// before the token check. identity() does a select * into the Entity struct,
+	// so a differing column set fails the scan and the user reads as
+	// identity-less.
 	users.exec("drop table if exists entities")
 	users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'private', data text not null default '', published integer not null default 0)")
 	identity := test_entity_id('b')
@@ -80,12 +68,8 @@ func web_bearer_env(t *testing.T) (*App, *User, string, func()) {
 }
 
 // web_bearer_status runs one request through web_action and reports the status
-// and body the auth decision produced.
-//
-// The assertions below check for the gate's own refusal rather than "not 200".
-// A bypass here does not surface as a 200: it surfaces as the request reaching
-// the handler, which for this fixture's function-less action is a 500. Testing
-// for "not 200" would pass against the very bug this file exists for.
+// and body. Assert the gate's own refusal, not "not 200": a bypass surfaces as
+// a 500 from this fixture's function-less action, which "not 200" would pass.
 func web_bearer_status(t *testing.T, app *App, session string, authorization string) (int, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)

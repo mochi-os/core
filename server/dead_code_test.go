@@ -1,20 +1,12 @@
 // Mochi server: symbols removed as dead, and the behaviour that outlived them.
 //
-// Seven deletions across three packages. Six were unreachable from any
-// production path; the seventh (file_content_type) went with the attachment
-// bridge before this file was written. Three carried doc comments asserting
-// behaviour the code did not have, which is the reason a gate is worth having
-// at all - a resurrected helper brings its wrong comment back with it.
-//
-// The behavioural tests below matter more than the gate. Two of the removed
-// functions were the only readers their tests used, so the risk in deleting
-// them is not a compile error - it is a test quietly asserting less than it
-// did. These pin what those tests were actually for.
+// The gate refuses their return; the behavioural tests below pin what the tests
+// that used them were actually asserting.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -73,11 +65,8 @@ func TestRemovedSymbolsStayRemoved(t *testing.T) {
 	}
 }
 
-// TestErrorEventCarriesNoUnreadFields is #86. The two fields were assigned in
-// the constructor and read nowhere; the same values reach the handler as
-// thread locals, set from the local variables four lines further down. A
-// field that is written and never read is a claim the struct carries state it
-// does not.
+// TestErrorEventCarriesNoUnreadFields (#86): the handler gets user and app as
+// thread locals, so struct fields for them would be written and never read.
 func TestErrorEventCarriesNoUnreadFields(t *testing.T) {
 	data, err := os.ReadFile("error_event.go")
 	if err != nil {
@@ -104,10 +93,8 @@ func TestErrorEventCarriesNoUnreadFields(t *testing.T) {
 	}
 }
 
-// TestDedupStillMarksSeenMessages is #83's behaviour. Deleting the function a
-// test used to seed the map must not leave that test asserting nothing, so
-// pin the pair production actually relies on: message_seen_mark marks, and
-// message_seen then reports it.
+// TestDedupStillMarksSeenMessages (#83) pins the pair production relies on:
+// message_seen_mark marks, and message_seen then reports it.
 func TestDedupStillMarksSeenMessages(t *testing.T) {
 	const id = "dead-code-test-dedup-id"
 	defer func() {

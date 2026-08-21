@@ -37,9 +37,8 @@ func TestSendWorkFansOutToAllPeers(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 	defer stub_message_attempt_send()()
-	// Entity resolution is strict about the ownership check since the
-	// 2026-07 fail-safe: entity_local errors (no entities table) resolve
-	// to nothing rather than falling through to directory routes.
+	// entity_local errors (no entities table) resolve to nothing rather than
+	// falling through to directory routes, so the schema is required here.
 	setup_users_test_schema()
 
 	// Directory: entity has 3 active locations.

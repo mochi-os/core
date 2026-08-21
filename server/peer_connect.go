@@ -1,20 +1,12 @@
-// Mochi server: Peer connection lifecycle.
-//
-// Owns peer_connect / peer_disconnected and everything they need:
-// the libp2p-state machine transitions (via Peer.state in peers.go),
-// the reconnect backoff manager, the disconnect-hook registry that
-// /mochi/2 and future subsystems plug into, the publish/request
-// pubsub plumbing for peer-discovery announcements, and the shutdown
-// bye-and-drain sequence.
-//
-// The Peer registry itself (identity, addresses, peers.db
-// persistence) lives in peers.go; the reachability silent-cache lives
-// in peer_reachability.go.
+// Mochi server: Peer connection lifecycle - connect/disconnect, the reconnect
+// backoff manager, the disconnect-hook registry, and the peer-discovery pubsub.
+// The registry is peers.go; the reachability silent-cache is
+// peer_reachability.go.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -28,11 +20,9 @@ import (
 	multiaddr "github.com/multiformats/go-multiaddr"
 )
 
-// peers_init registers the built-in peers app and its handlers.
-//
-// Called explicitly from main_serve rather than run as a package init():
-// registration is a startup step with a defined position, not a side effect
-// of importing the file.
+// peers_init registers the built-in peers app and its handlers. Called from
+// main_serve, not a package init(): registration has a defined startup
+// position.
 func peers_init() {
 	a := app("peers")
 	a.service("peers")
@@ -54,24 +44,17 @@ var (
 	peer_publish_chan = make(chan bool, 1) // buffer-1 so peer_request_event doesn't block on a slow publisher
 )
 
-// peer_disconnect_hooks fires once per disconnect, in registration
-// order. Subsystems with per-peer state (the /mochi/2 protocol cache,
-// the /mochi/2 Sender registry, future caches) self-register via
-// peer_register_disconnect_hook in their init() so this file stays
-// ignorant of /mochi/2 internals.
+// peer_disconnect_hooks fires once per disconnect, in registration order.
+// Subsystems with per-peer state self-register via
+// peer_register_disconnect_hook.
 var (
 	peer_disconnect_hooks      []func(string)
 	peer_disconnect_hooks_lock sync.Mutex
 )
 
-// peer_register_disconnect_hook adds a callback that runs each time
-// peer_disconnected fires. Hooks run synchronously in registration
-// order. Use this for "tear down my per-peer state on disconnect" —
-// typical examples: cache invalidation, in-flight goroutine shutdown,
-// metric counters.
-//
-// Hooks must be cheap (they all run synchronously on the libp2p
-// disconnect event dispatch path); offload anything expensive.
+// peer_register_disconnect_hook adds a callback run on each peer_disconnected.
+// Hooks run synchronously on the libp2p disconnect dispatch path, so keep them
+// cheap and offload anything expensive.
 func peer_register_disconnect_hook(fn func(string)) {
 	if fn == nil {
 		return
@@ -81,14 +64,10 @@ func peer_register_disconnect_hook(fn func(string)) {
 	peer_disconnect_hooks = append(peer_disconnect_hooks, fn)
 }
 
-// Connect to a peer if possible. Call peer_add_known(),
-// peer_discovered(), or peer_discovered_address() first.
-//
-// Uses the peer_state machine to prevent concurrent connect attempts
-// for the same peer racing onto net_connect. A caller that finds the
-// peer already in `connecting` returns false immediately rather than
-// piling on; the in-flight goroutine will resolve the state. Callers
-// that need a "wait for the connect" semantic must loop and retry.
+// Connect to a peer if possible. Call peer_add_known(), peer_discovered() or
+// peer_discovered_address() first. Returns false at once if a connect is
+// already in flight, so a caller needing "wait for the connect" must loop and
+// retry.
 func peer_connect(id string) bool {
 	if id == net_id {
 		return true
@@ -132,13 +111,8 @@ func peer_connect(id string) bool {
 	if ok {
 		peer_refresh_connected_address(id)
 		peer_reconnected(id)
-		// Clear the silent-cache BEFORE resurrecting deferred rows.
-		// queue_resurrect_peer pulls rows forward to now() so they
-		// run on the next queue_process tick, but peer_protocol_open's
-		// peer_is_silent fast-fail would short-circuit each one for
-		// up to peer_silent_skip_window seconds (60s) after the
-		// reconnect. Resetting reachability lets the resurrected rows
-		// actually trial the new connection.
+		// Clear the silent cache before resurrecting deferred rows, or peer_is_silent
+		// short-circuits every resurrected row for up to peer_silent_skip_window.
 		peer_mark_reachable(id)
 		// Any queue rows deferred by queue_process's silent-peer
 		// pre-filter (1h next_retry push when peer_is_silent) become
@@ -150,14 +124,9 @@ func peer_connect(id string) bool {
 	return ok
 }
 
-// peer_connect_retry dials a peer and, on failure, enrolls it in the
-// reconnect manager's backoff probes. Startup dials (the bootstrap list
-// and the peers.db restore) use this instead of bare peer_connect: a
-// server that boots before its network is ready fails every initial
-// dial, and without enrollment nothing ever retries — the reconnect
-// machinery's other triggers (a libp2p disconnect, the silent-failure
-// threshold) both require having reached the peer or having traffic for
-// it, so a never-connected idle server stays isolated until restart.
+// peer_connect_retry dials a peer and, on failure, enrolls it in the reconnect
+// manager's backoff probes. Startup dials need this: every other enrollment
+// trigger requires having already reached the peer.
 func peer_connect_retry(id string) {
 	if !peer_connect(id) {
 		peer_schedule_reconnect(id)
@@ -226,23 +195,9 @@ func peer_disconnected(id string) {
 	peer_schedule_reconnect(id)
 }
 
-// peer_schedule_reconnect adds id to peer_reconnects[] with an initial
-// retry delay if not already scheduled. Three callers:
-//
-//   - peer_disconnected (above): libp2p reports a peer we were
-//     connected to has gone away.
-//   - peer_mark_send_failed (peer_reachability.go) when crossing the
-//     silent-failure threshold: a peer we couldn't open a stream to
-//     enough times in a row is treated the same as one that
-//     disconnected, so peer_reconnect_manager probes it periodically.
-//   - peer_connect_retry (above): a startup dial failed, typically
-//     because the server booted before its network was ready.
-//
-// Without the second path, a peer we discovered via DHT but never
-// successfully connected to would stay silent forever — peer_is_silent
-// is durable (no time-based lapse), and only peer_reconnect_manager's
-// successful probe (which goes through peer_connect → peer_mark_reachable)
-// can clear silence. Self and empty id are no-ops.
+// peer_schedule_reconnect adds id to peer_reconnects[] with an initial retry
+// delay if not already scheduled; self and empty id are no-ops. Silence is
+// durable, so enrollment here is the only path back for a peer never reached.
 func peer_schedule_reconnect(id string) {
 	if id == "" || id == net_id {
 		return
@@ -265,13 +220,8 @@ func peer_reconnected(id string) {
 	// the offline badge.
 }
 
-// peer_reconnect_parallel caps how many reconnect attempts can run
-// concurrently. Each attempt can block for the full libp2p TCP-connect
-// timeout (~10s) on an unreachable peer, so serial-3-per-tick (the
-// previous limit) is too slow at scale — 100 disconnected peers take
-// 5+ minutes to retry each. 20 parallel attempts × 10s timeout =
-// 100 attempts/minute worst case, still bounded by libp2p resource
-// limits.
+// peer_reconnect_parallel caps concurrent reconnect attempts. Each can block
+// for the full libp2p connect timeout (~10s), so serial retries do not scale.
 const peer_reconnect_parallel = 20
 
 // Reconnect to disconnected peers with exponential backoff. Per-tick:
@@ -329,20 +279,14 @@ func peer_reconnect_manager() {
 // interval instead of one per request.
 const peers_publish_minimum_interval = 30 * time.Second
 
-// peers_publish_addresses_maximum caps how many addresses one publish
-// carries and how many a receiver applies from one event. Generous —
-// a host with several interfaces plus observed and relay addresses
-// stays comfortably under it — while bounding what a hostile publisher
-// can push into receivers' peers.db.
+// peers_publish_addresses_maximum caps how many addresses one publish carries
+// and how many a receiver applies, bounding what a hostile publisher can push
+// into receivers' peers.db.
 const peers_publish_addresses_maximum = 16
 
-// Publish our own information — identity plus dialable addresses — to
-// the pubsub regularly, when another server requests it, or when our
-// address set changes (net_watch_addresses). The addresses are how a
-// server that knows this server only by peer id (any bare-peer-id send)
-// becomes able to dial it: receivers verify the
-// pubsub envelope names us as originator and merge the addresses into
-// their peer registry.
+// Publish our identity and dialable addresses to the pubsub: regularly, on
+// request, and when our address set changes (net_watch_addresses). This is how
+// a server that knows us only by peer id learns where to dial.
 func peers_publish() {
 	for {
 		m := message("", "", "peers", "publish")
@@ -388,23 +332,16 @@ func peers_publish_request() {
 	}
 }
 
-// Received a peer publish event from another server: merge the
-// originator's announced addresses into the peer registry. Two trust
-// roots, preferred in order: a signed peer record (self-certifying —
-// its own libp2p signature proves the addresses, with sequence-based
-// replay rejection), then the plain address list (trusted via the
-// GossipSub envelope, which StrictSign-verifies the originating peer
-// into e.origin). A direct-stream message spoofing this event has no
-// origin and is ignored, as is any address whose /p2p/ suffix names a
-// different peer.
+// Merge an announcing peer's addresses, preferring its signed record
+// (self-certifying, replay-protected) over the plain list (trusted only via the
+// StrictSign-verified origin). An empty origin is a direct-stream spoof.
 func peer_publish_event(e *Event) {
 	if e.origin == "" || e.origin == net_id {
 		return
 	}
 
-	// Claimed names apply (or clear) independently of addresses: a
-	// publish with no claims from a peer that previously claimed names
-	// means its operator turned announcements off — honor it.
+	// Names apply independently of addresses: a publish with no claims from a peer
+	// that previously claimed one clears it.
 	var names []string
 	if n := strings.ToLower(strings.TrimSpace(e.get("name", ""))); n != "" && peer_name_valid(n) {
 		names = append(names, n)
@@ -432,13 +369,8 @@ func peer_publish_event(e *Event) {
 	peer_apply_addresses(e.origin, addresses)
 }
 
-// peer_apply_addresses merges discovered addresses for a peer through
-// the receive-side hygiene shared by direct announcements and relayed
-// records: cap the count, drop entries whose /p2p/ suffix names a
-// different peer, drop circuit addresses that relay through ourselves,
-// and reject loopback or unspecified addresses (junk for every receiver —
-// the same-host peers they'd be valid for learn them over mDNS, not the
-// mesh).
+// peer_apply_addresses merges discovered addresses through the receive-side
+// hygiene shared by direct announcements and relayed records.
 func peer_apply_addresses(id string, addresses []string) {
 	applied := 0
 	for _, address := range addresses {
@@ -454,11 +386,8 @@ func peer_apply_addresses(id string, addresses []string) {
 		if err != nil || information.ID.String() != id {
 			continue
 		}
-		// Drop circuit addresses that relay through ourselves: we can
-		// never use our own relay to reach the peer (we hold a direct
-		// connection — the reservation it made with us), so the address is
-		// dead weight here, both registry bloat and a wasted dial. It
-		// stays valid for every other peer, who keep advertising it.
+		// A circuit address relaying through ourselves is dead weight: we hold the
+		// direct connection it reserved. It stays valid for every other peer.
 		if net_id != "" && strings.Contains(address, "/p2p/"+net_id+"/p2p-circuit") {
 			continue
 		}
@@ -468,17 +397,9 @@ func peer_apply_addresses(id string, addresses []string) {
 	}
 }
 
-// Reply to a peers/request. If it names us, republish ourselves
-// (non-blocking — a pending publish collapses with it). If it names a
-// peer we are not, and we hold that peer's signed record, relay it on
-// their behalf — the address-book-exchange path that lets a server find
-// a peer that is offline or never heard the request.
-//
-// The origin check comes first, as it does in peer_publish_event: a
-// direct-stream message spoofing this event has no origin, and answering one
-// means an unverified caller decides when we announce ourselves to the whole
-// mesh. All three peers/* messages are published over pubsub, so there is no
-// legitimate direct-stream sender to lose.
+// Reply to a peers/request: republish ourselves if it names us, else relay that
+// peer's signed record if we hold one. Check the origin first - peers/* only
+// arrives over pubsub, so an unverified event must not trigger our announce.
 func peer_request_event(e *Event) {
 	if e.origin == "" || e.origin == net_id {
 		return
@@ -494,22 +415,15 @@ func peer_request_event(e *Event) {
 	peer_record_relay(id)
 }
 
-// Received a relayed signed record: some server is vouching for a
-// third party's addresses by carrying that peer's record. Trust is in
-// the record's own signature, not the carrier, so the relayer's
-// identity is irrelevant — we verify the record, apply it to the peer
-// it names (with the same replay and hygiene guards as a direct
-// announcement), and note the answer so our own relay suppresses.
+// A relayed signed record vouches for a third party's addresses. Trust is in
+// the record's own signature, so the carrier's identity is irrelevant.
 func peer_record_event(e *Event) {
 	id, addresses, sequence, data, ok := peer_record_verify(e.get("record", ""))
 	if !ok || id == net_id {
 		return
 	}
-	// Only an answer that is not stale suppresses our own relay. A signed
-	// record is self-certifying and never expires, and every holder has seen
-	// it on the mesh, so replaying an old one otherwise silenced every
-	// legitimate relay for the answered window - the address-book exchange is
-	// how a server finds a peer that is offline or never heard the request.
+	// Only a non-stale answer suppresses our relay: signed records never expire,
+	// so a replayed old one would otherwise silence every legitimate relay.
 	if peer_record_current(id, sequence) {
 		peer_record_seen(id)
 	}
@@ -519,13 +433,9 @@ func peer_record_event(e *Event) {
 	peer_apply_addresses(id, addresses)
 }
 
-// peer_request_addresses broadcasts a peers/request asking the named peer to
-// publish itself — the recovery path for sending to a peer we know only by id,
-// or whose stored addresses have gone stale. The target answers with a
-// peers/publish carrying its addresses; peer_publish_event applies them
-// and the queued messages deliver on the next wake. Rate limited per
-// target so the queue retrying an unreachable peer doesn't flood the
-// mesh. Returns whether a request was broadcast.
+// peer_request_addresses broadcasts a peers/request asking a peer to publish
+// itself - the recovery path for a peer known only by id or at stale addresses.
+// Rate limited per target. Returns whether a request was broadcast.
 func peer_request_addresses(id string) bool {
 	if id == "" || id == net_id {
 		return false

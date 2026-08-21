@@ -1,13 +1,11 @@
 // Mochi server: directory ghost-withdrawal unit tests
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// Tests covering entry_store's self-row echo handling: a received row
-// naming this host for an entity that no longer exists locally is a
-// pre-wipe ghost, answered with a host-signed entry_delete_self; a row
-// for a live entity is dropped without withdrawal.
+// entry_store answers a self-row echo for a deleted entity with a host-signed
+// entry_delete_self, and drops a row for a live entity without withdrawing.
 
 package main
 
@@ -157,15 +155,10 @@ func TestEntryStoreKeepsLiveSelfRow(t *testing.T) {
 	}
 }
 
-// TestEntryStoreRefusesForeignRowForLocalEntity confirms a row naming a
-// DIFFERENT peer for an entity this host owns is refused even though it
-// verifies (owner-authoritative): clones and restored backups hold the
-// entity's keys, so their rows VERIFY — ownership, not the signature, is
-// the deciding check. The row here is genuinely signed, which is what
-// makes the test meaningful; an unsigned one would now be refused a step
-// earlier and prove nothing about ownership. Storing one would offer
-// delivery fan-out a foreign route for a local subscriber (the 2026-07-06
-// News feed wedge trigger).
+// TestEntryStoreRefusesForeignRowForLocalEntity: a row naming a DIFFERENT peer
+// for a locally-owned entity is refused even though it verifies - ownership
+// decides, not the signature. It must be genuinely signed, or it is refused a
+// step earlier.
 func TestEntryStoreRefusesForeignRowForLocalEntity(t *testing.T) {
 	cleanup := create_test_directory_db(t)
 	defer cleanup()
@@ -207,12 +200,9 @@ func TestEntryStoreWithdrawalRateLimited(t *testing.T) {
 	}
 }
 
-// TestEntryStoreIgnoresUnsignedGhostRow is the finding. The ghost branch
-// answers an echo with a host-signed directory/delete broadcast, and it ran
-// before entry_verify - so on push and sync, where the whole Entry is read
-// off the wire, an invented entity id bought a signature and a publish from
-// us. Observable here as the marker row surviving: entry_delete_self must
-// never have run.
+// TestEntryStoreIgnoresUnsignedGhostRow: the ghost branch answers an echo with
+// a host-signed broadcast, so it must run after entry_verify. Observable as the
+// marker row surviving - entry_delete_self must never have run.
 func TestEntryStoreIgnoresUnsignedGhostRow(t *testing.T) {
 	cleanup := create_test_directory_db(t)
 	defer cleanup()
@@ -230,11 +220,10 @@ func TestEntryStoreIgnoresUnsignedGhostRow(t *testing.T) {
 	}
 }
 
-// TestEntryStoreUnsignedGhostSpendsNoRateLimit is the other half of the
-// cost. The limiter is keyed on the entity, so an unverified row that
-// reaches the branch also inserts an attacker-chosen key that lives for the
-// full window - unbounded in breadth however tight the per-entity limit is.
-// Spending no budget is what proves the branch was never entered.
+// TestEntryStoreUnsignedGhostSpendsNoRateLimit: the limiter is keyed on the
+// entity, so a row reaching the branch unverified also inserts an
+// attacker-chosen key. Spending no budget is what proves the branch was never
+// entered.
 func TestEntryStoreUnsignedGhostSpendsNoRateLimit(t *testing.T) {
 	cleanup := create_test_directory_db(t)
 	defer cleanup()

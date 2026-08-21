@@ -1,16 +1,14 @@
 // Mochi server: entity creation from an app is rate limited.
 //
-// A public entity is not a local row. entity_create mints a keypair, signs an
-// announcement, writes users.db and directory.db, then floods the mesh - where
-// every peer verifies the signature and writes its own row. One call is N
-// remote writes, and the publish also lands a durable queue.db row that is only
-// acked when peers_sufficient(). Nothing bounded how many calls an app could
-// make; only WITHDRAWAL was limited, which is the wrong way round.
+// entity_create mints a keypair, signs an announcement, writes two databases
+// and floods the mesh - where every peer verifies and writes its own row - plus
+// a durable queue.db row acked only on peers_sufficient(). One call is N remote
+// writes.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

@@ -18,11 +18,10 @@ import (
 // status. The mochi-world package's postinst puts its service user here.
 const world_account_group = "mochi-world"
 
-// world_peer_authorized reads SO_PEERCRED off a connected UnixConn and
-// reports whether the peer may push world status: the mochi-world group
-// (primary or supplementary), or anyone the ADMIN socket would accept —
-// root, the mochi user, the mochi group — so an operator can hand-test with
-// curl and a development machine with no mochi-world group still works.
+// world_peer_authorized reads SO_PEERCRED off a connected UnixConn and reports
+// whether the peer may push world status: the mochi-world group (primary or
+// supplementary), or anyone the admin socket accepts - root, mochi user, mochi
+// group.
 func world_peer_authorized(c *net.UnixConn) (bool, *admin_credential) {
 	raw, err := c.SyscallConn()
 	if err != nil {

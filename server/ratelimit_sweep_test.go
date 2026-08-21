@@ -52,18 +52,9 @@ func TestCleanupRemovesExpiredEntries(t *testing.T) {
 	}
 }
 
-// TestEveryRateLimiterIsSwept — the regression test for the actual defect.
-//
-// Six of the seventeen limiters were missing from ratelimit_manager, three of
-// them keyed on values a caller chooses, so their maps grew from remote input
-// with no ceiling. Nothing detected that: an unswept limiter makes exactly the
-// same decisions as a swept one, because allow and spend both treat an expired
-// entry as absent. Only memory suffers, and silently.
-//
-// So this reads the source rather than the runtime - a package variable cannot
-// be enumerated otherwise - and fails when a limiter is declared without being
-// added to the sweep. Adding a limiter and forgetting the manager is the
-// mistake it exists to catch.
+// TestEveryRateLimiterIsSwept: an unswept limiter decides exactly as a swept
+// one does and only its map grows, silently, so nothing else detects one. Reads
+// the source, since package variables cannot be enumerated at runtime.
 func TestEveryRateLimiterIsSwept(t *testing.T) {
 	source, err := os.ReadFile("ratelimit.go")
 	if err != nil {

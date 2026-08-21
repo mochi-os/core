@@ -1,29 +1,13 @@
 // Mochi server: a doc comment sits on the thing it names.
 //
-// Go attaches a comment block to whatever declaration follows it, with no
-// blank line between. That makes one particular decay invisible: delete or move
-// a function and its doc does not go with it, it silently becomes the opening
-// paragraph of the NEXT function's documentation. go doc and every IDE hover
-// then present one function's description under another function's name, and
-// the text usually reads plausibly enough that nobody notices.
-//
-// Eight of these had accumulated. Three shapes:
-//
-//   - The function is gone. db.go carried seven lines describing
-//     sql_target_table, which no longer exists, glued to the top of
-//     sql_is_mutating's own comment. relay.go carried a superseded copy of
-//     net_relay_candidates' doc while the function had a fuller current one.
-//   - The function was renamed and the doc was not: worker_count opened
-//     "worker_inbox_count returns...".
-//   - The function is elsewhere in the same file: broadcast_log_append,
-//     broadcast_log_age_trim, entity_class_owned, peer_relay_seen, and both
-//     db_upgrade_7 and db_upgrade_8, whose docs were stacked two-deep above
-//     db_upgrade_9's.
+// Go attaches a comment block to whatever declaration follows it, so a deleted
+// or moved function silently leaves its doc as the opening paragraph of the
+// NEXT function's documentation, where go doc and every IDE hover present it.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

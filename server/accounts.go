@@ -198,15 +198,9 @@ func provider_has_capability(ptype, capability string) bool {
 	return false
 }
 
-// account_generate_code generates a random verification code.
-//
-// Delegates rather than drawing its own bytes. The local version read
-// crypto/rand into a byte slice and took it modulo the alphabet length,
-// which biases the result: 256 is not a multiple of 54, so the first 40
-// characters of the set came up fractionally more often. It also discarded
-// rand.Read's error, so a failing entropy source produced a code of zeroes -
-// the same code every time - with nothing said. random_unambiguous uses
-// rand.Int over the exact range, which is unbiased and fails loudly.
+// account_generate_code generates a random verification code. Delegates rather
+// than drawing its own bytes: modulo over a 54-character alphabet biases the
+// result, and random_unambiguous fails loudly on a dead entropy source.
 func account_generate_code(length int) string {
 	return random_unambiguous(length)
 }
@@ -231,13 +225,9 @@ func account_redact(row map[string]any) map[string]any {
 // not in the payload so account edits never clobber it.
 var reg_accounts = upsert_def{"accounts", []string{"id"}, []string{"type", "label", "identifier", "data", "created", "verified", "enabled", "default"}}
 
-// accounts_migrate rebuilds a legacy accounts table (integer autoincrement id) into
-// the text-id form. Existing rows keep their identity as id=str(old id) — a
-// deterministic rewrite, so both hosts of a paired account converge on the same
-// string and stored references (notifications destinations targets, etc.) keep
-// matching — while new accounts get a mochi.uid(). The autoincrement id was the
-// multi-master collision hazard (two hosts assigning the same integer); a uid key
-// removes it. No-op once migrated.
+// accounts_migrate rebuilds a legacy integer-id accounts table into text ids,
+// keeping each row's identity as str(old id) so stored references keep matching.
+// New accounts get a mochi.uid(). No-op once migrated.
 func (db *DB) accounts_migrate() {
 	if kind, _ := db.exists("select 1 from pragma_table_info('accounts') where name='id' and type='text' collate nocase"); kind {
 		return
@@ -565,25 +555,16 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		}
 
 	case "unifiedpush":
-		// UnifiedPush subscription. endpoint may be either an absolute
-		// URL (third-party distributor like ntfy.sh — used verbatim at
-		// delivery time as RFC 8030 Web Push) OR a path-only string
-		// like "/menu/-/push/inbound/<sub>" synthesised by
-		// function_push_register for the local-distributor case (where
-		// the deliver fast-path forwards via in-process WebSocket
-		// instead of a self-HTTP-call). Either way, we store it
-		// verbatim along with the auth + p256dh keys.
+		// UnifiedPush endpoint: either an absolute URL (third-party distributor, used
+		// verbatim as RFC 8030 Web Push) or a path-only string synthesised by
+		// function_push_register for the local distributor. Stored verbatim either
+		// way.
 		endpoint, _ := fields["endpoint"].(string)
 		auth, _ := fields["auth"].(string)
 		p256dh, _ := fields["p256dh"].(string)
 
-		// Re-registration is idempotent: each Android app re-runs
-		// MochiPushClient.register at every launch, so the App side
-		// hits /menu/-/push/register with the same endpoint each
-		// time. If we kept inserting we'd accumulate duplicate
-		// account rows + destinations forever. Mirror the browser
-		// case: update the existing row in place when a row with the
-		// same endpoint already exists.
+		// Re-registration is idempotent: the Android client registers at every
+		// launch, so update the existing row rather than accumulating duplicates.
 		if endpoint != "" {
 			existing, _ := db.row("select id from accounts where type='unifiedpush' and identifier=?", endpoint)
 			if existing != nil {
@@ -603,13 +584,8 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		data["p256dh"] = p256dh
 
 	case "fcm":
-		// Firebase Cloud Messaging device token. The Android client calls
-		// /notifications/-/push/register/fcm after FirebaseMessaging.getToken
-		// resolves (and again on onNewToken). The Firebase Installations ID
-		// (install_id) is the stable per-install handle used as `identifier`
-		// so token refreshes update the existing row in place, while a
-		// second phone (different FID) creates a separate row — both can
-		// receive pushes concurrently.
+		// FCM device token, keyed on the Firebase Installations ID: a token refresh
+		// updates the existing row, while a second device gets its own.
 		token, _ := fields["token"].(string)
 		install_id, _ := fields["install_id"].(string)
 		if token == "" {
@@ -1007,49 +983,24 @@ type AccountTestResult struct {
 	Message string `json:"message"`
 }
 
-// account_client is the HTTP client for every account provider whose address
-// the user supplies - the external-URL webhook, ntfy, MCP, and the browser and
-// UnifiedPush endpoints. It carries url_transport, so the destination is
-// checked in the dialer against the resolved address on every hop.
-//
-// A user names these addresses, which makes them a request the server will
-// make on the user's behalf from inside whatever network it sits in. Checking
-// the URL string is not enough and never was: a hostname the user controls can
-// resolve to an internal address, a literal can be written in decimal or octal,
-// an allowed host can redirect inward, and DNS can change between the check and
-// the connection. url_address_allowed sees the socket rather than the string,
-// so it covers all four.
-//
-// Providers at fixed vendor addresses (Pushbullet, Anthropic, OpenAI, FCM) are
-// deliberately not routed through here - there is no caller-supplied address to
-// guard, and pointing them at the guard would only obscure that difference.
+// account_client is the HTTP client for every provider whose address the user
+// supplies: url_transport checks the resolved address on each hop, which a URL
+// string test cannot. Fixed-vendor providers have no such address and skip it.
 func account_client(timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout, Transport: url_transport}
 }
 
-// account_failure logs the underlying transport error and returns the plain
-// user-facing message, without it.
-//
-// The detail is an oracle on a user-supplied address: "connection refused"
-// separates a closed port from a filtered one, "no such host" separates DNS
-// from routing, and a status code confirms a service. Repeated over a range,
-// that maps a network the caller cannot otherwise see. Operators still get the
-// full error in the log, where it is useful and not a probe.
-//
-// key is the plain label ("accounts.test.connection_failed" or
-// "accounts.test.push_failed"); the matching _detail form is used only for the
-// fixed-vendor providers, where the error describes a public endpoint the
-// caller could have contacted directly.
+// account_failure logs the transport error and returns the plain user-facing
+// message without it: the detail is a network oracle on a user-supplied
+// address. key is the plain label; the _detail form is for fixed-vendor
+// providers only.
 func account_failure(language string, key string, provider string, err error) AccountTestResult {
 	info("Account test failed for %s provider: %v", provider, err)
 	return AccountTestResult{Success: false, Message: resolve_core_label(language, key, nil)}
 }
 
-// account_display_label returns a friendly name for a connected account for
-// use in test-notification bodies. Prefers the user-set label; falls back to
-// a localised provider-typed string ("Android device", "Email", etc.), or to
-// the identifier for email accounts when no label is set, or to the raw type
-// as a last resort.
+// account_display_label returns a friendly name for a connected account, for
+// use in test-notification bodies.
 func account_display_label(row map[string]any, language string) string {
 	if label, _ := row["label"].(string); label != "" {
 		return label
@@ -1307,13 +1258,9 @@ func account_test_unifiedpush(data map[string]any, language string, account_labe
 	return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.push_failed", nil)}
 }
 
-// account_test_fcm sends a test notification via Firebase Cloud Messaging,
-// reusing the same delivery path the production notification flow uses so
-// any service-account / API-key misconfiguration surfaces with the same
-// failure mode the user would otherwise hit. Returns the test result plus
-// retire=true when the row holds a permanently-dead token (Google
-// UNREGISTERED / INVALID_ARGUMENT) so the caller can drop it — same
-// semantics as the production-push path in api_account_notify.
+// account_test_fcm sends a test notification through the production delivery
+// path. The bool is retire: the token is permanently dead (UNREGISTERED /
+// INVALID_ARGUMENT) and the caller should drop the row.
 func account_test_fcm(data map[string]any, language string, account_label string) (AccountTestResult, bool) {
 	if setting_effective("fcm.service_account") == "" {
 		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.fcm_not_configured", nil)}, false
@@ -1576,18 +1523,11 @@ func account_test_url(url, secret, language string) AccountTestResult {
 }
 
 // mochi.account.notify(app, category, object, title, body, link, urgency?, account?, id?) -> dict:
-// Notify the user across one or all of their verified notification accounts. Iterates
-// accounts with the "notify" capability and dispatches via the matching provider driver
-// (browser push, email, pushbullet, ntfy, external URL). Returns {sent, failed} counts.
-//
-// id (optional): the notification row id from the notifications app. When set, it is
-// echoed in unifiedpush / fcm push payloads so the device can call -/read on tap and
-// clear the matching row from the user's web bell.
-//
-// Dispatch runs in core because account secrets (push subscriptions, API tokens, HMAC
-// signing keys) are never exposed to apps. For policy-aware notification routing
-// (topics, categories, per-user destinations), call the notifications app's service
-// instead: mochi.service.call("notifications", "send", ...).
+// Notify the user across one or all verified notification accounts, dispatching
+// via the matching provider driver. Returns {sent, failed}. id echoes the
+// notifications row id into push payloads so a tap can clear it. For
+// policy-aware routing call
+// mochi.service.call("notifications", "send", ...) instead.
 func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "accounts/notify"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -1615,14 +1555,9 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	db := db_user(user, "user")
 
-	// Opportunistic TTL: drop unifiedpush rows that haven't been delivered
-	// to in 366 days. We only support local distributors, so a "dead"
-	// subscription costs nothing per attempt (websockets_send is a no-op
-	// when no client subscribes), but the rows accumulate forever without
-	// this. 366 days absorbs leap-year drift — a user pushing exactly once
-	// a year on the same calendar date never trips the cleanup. The
-	// last_delivered > 0 guard skips freshly-registered subscriptions
-	// that haven't received their first push yet.
+	// Opportunistic TTL: drop unifiedpush rows undelivered for 366 days (a year
+	// plus leap drift, so a once-a-year push never trips it). last_delivered > 0
+	// spares freshly-registered subscriptions.
 	db.exec(
 		"delete from accounts where type='unifiedpush' and last_delivered > 0 and last_delivered < ?",
 		time.Now().Unix()-366*86400,
@@ -1695,11 +1630,9 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			continue
 		}
 
-		// Everything else is treated as transient and queued. Only the deliver
-		// function knows whether a unifiedpush or url failure was permanent
-		// (404/410) or transient (timeout, 5xx, network), and until that signal
-		// is plumbed the ladder's attempt cap and expiry bound the cost of
-		// guessing wrong.
+		// Everything else is queued as transient: the deliver functions do not report
+		// whether a failure was permanent, so the attempt cap and expiry bound the
+		// cost of guessing wrong.
 		push_queue_add(p)
 	}
 
@@ -1759,20 +1692,9 @@ func account_deliver_browser(data map[string]any, title, body, link, tag string)
 	return resp.StatusCode == 201
 }
 
-// account_deliver_unifiedpush sends a notification to a UnifiedPush distributor.
-// The endpoint URL belongs to whichever distributor the user picked: it may be
-// on this Mochi server (when the user picked our distributor) or on a
-// third-party push server like ntfy.sh.
-//
-// Two paths:
-//   - **Local fast-path**: when the endpoint is path-only (starts with "/"),
-//     it was synthesised by function_push_register for the Mochi-distributor
-//     case. Skip the RFC 8030 wrap entirely and forward the cleartext payload
-//     to the device via the existing per-user WebSocket (the Mochi distributor
-//     subscribes to the well-known key "unifiedpush"). One in-process hop
-//     instead of HTTP self-call + Web Push round-trip.
-//   - **Remote (RFC 8030)**: any absolute URL — third-party distributors
-//     (ntfy, NextPush, Mozilla autopush). Same code path as browser push.
+// account_deliver_unifiedpush sends to the distributor the user picked. A
+// path-only endpoint is our own: forward the cleartext payload over the user's
+// WebSocket. An absolute URL is a third-party distributor: RFC 8030 Web Push.
 func account_deliver_unifiedpush(user *User, account string, data map[string]any, title, body, link, tag, app, id string) bool {
 	endpoint, _ := data["endpoint"].(string)
 	if endpoint == "" {
@@ -1788,11 +1710,9 @@ func account_deliver_unifiedpush(user *User, account string, data map[string]any
 		"id":    id,
 	})
 
-	// Local fast-path: path-only endpoint synthesised by our own register
-	// flow. Forward to the Mochi distributor over the existing user WebSocket.
-	// The envelope carries `account` (the integer accounts.id) so the on-device
-	// distributor can ack the matching push_pending row on receipt — without
-	// it, every live event leaves a stuck row until the 7-day TTL sweep.
+	// Local fast-path. The envelope carries `account` so the on-device distributor
+	// can ack the matching push_pending row; without it rows stick until the TTL
+	// sweep.
 	if strings.HasPrefix(endpoint, "/") {
 		sub_id := endpoint
 		if i := strings.LastIndex(endpoint, "/"); i >= 0 {

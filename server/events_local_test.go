@@ -5,9 +5,8 @@
 
 // Mochi server: e.header("local") unit tests
 //
-// "local" must be true ONLY for an in-process self-loop stream (e.peer ==
-// net_id) and false for any remote peer — it gates serving restricted apps to
-// a host's own app-update loopback, so a remote peer must never read true.
+// "local" is true ONLY for an in-process self-loop (e.peer == net_id): it gates
+// serving restricted apps to a host's own app-update loopback.
 
 package main
 

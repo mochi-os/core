@@ -1,16 +1,12 @@
-// Mochi server: backup-restore unzip guards (#21).
-//
-// The signup-via-restore bundle is uploaded by an unauthenticated caller, so
-// restore_unzip must reject path traversal (zip-slip) and bound decompression
-// so a zip-bomb can't exhaust the disk. The byte cap is the per-user storage
-// quota for an ordinary restore (admins get a generous ceiling, set by the
-// caller). Cross-user containment is separately ensured by the destination
-// using a fresh server-generated uid, never the bundle's.
+// Mochi server: backup-restore unzip guards (#21). The bundle is uploaded by an
+// unauthenticated caller, so restore_unzip must reject zip-slip paths and bound
+// decompression. Cross-user containment comes separately from the destination's
+// fresh server-generated uid.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

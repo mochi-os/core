@@ -30,13 +30,8 @@ func TestIsProtocolNotSupportedRecognisesMultistream(t *testing.T) {
 }
 
 func TestIsProtocolNotSupportedRecognisesProtocolIDSpecialisation(t *testing.T) {
-	// Regression: libp2p's basic_host returns ErrNotSupported[protocol.ID]
-	// (a typed-string alias), not ErrNotSupported[string]. errors.As only
-	// matches exact types; missing this specialisation meant a peer that
-	// doesn't speak /mochi/2/stream wasn't recognised as not-supported, so
-	// peer_protocol_open mishandled it (the publisher's "directory_download
-	// stream_open failed" was retried as a transient error rather than
-	// silenced).
+	// libp2p's basic_host returns ErrNotSupported[protocol.ID], not
+	// ErrNotSupported[string], and errors.As only matches the exact type.
 	err := multistream.ErrNotSupported[p2p_protocol.ID]{Protos: []p2p_protocol.ID{p2p_protocol.ID(protocol_stream)}}
 	if !is_protocol_not_supported(err) {
 		t.Error("ErrNotSupported[protocol.ID] not recognised")

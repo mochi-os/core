@@ -15,12 +15,10 @@ import (
 	sl "go.starlark.net/starlark"
 )
 
-// TestEveryDomainAPIIsGated. domains.go had no require_permission anywhere: the
-// writers checked the USER (administrator or delegate) and the readers checked
-// nothing at all, so any app an administrator opened could repoint a hostname,
-// and any app at all could read the DNS verification token out of the
-// server-global domains.db. The read/write split matches what the API does, not
-// who may call it - domain_can_manage keeps answering that.
+// TestEveryDomainAPIIsGated. Without require_permission any app an
+// administrator opened could repoint a hostname or read the DNS verification
+// token. The read/write split matches what the API does; domain_can_manage
+// answers who may.
 func TestEveryDomainAPIIsGated(t *testing.T) {
 	source, err := os.ReadFile("domains.go")
 	if err != nil {
@@ -43,10 +41,8 @@ func TestEveryDomainAPIIsGated(t *testing.T) {
 }
 
 // TestDomainPermissionsAreRestrictedButNotAdministratorOnly. Restricted, so no
-// consent dialog can hand an app control of the server's hostnames. NOT
-// administrator-only, because domain_can_manage_route deliberately lets a
-// delegate manage one path - marking the permission administrator-only would
-// refuse those users before their own check ever ran.
+// consent dialog hands an app the server's hostnames; not administrator-only,
+// because domain_can_manage_route lets a delegate manage one path.
 func TestDomainPermissionsAreRestrictedButNotAdministratorOnly(t *testing.T) {
 	for _, permission := range []string{"domains/read", "domains/write"} {
 		if !permission_restricted(permission) {
@@ -98,11 +94,8 @@ func TestDomainVerifyChecksTheUser(t *testing.T) {
 		t.Fatalf("refused with %v, want a domains/write PermissionError", err)
 	}
 
-	// With the grant the app gets past the permission and must then be stopped
-	// by the user check, which is the half that was missing entirely. The domain
-	// has to exist for this to mean anything: an unregistered name fails inside
-	// domain_verify for an unrelated reason, which is why asserting only that
-	// some error came back proves nothing.
+	// The domain must exist, or domain_verify fails for an unrelated reason and
+	// asserting that some error came back proves nothing.
 	db := db_user(user, "user")
 	db.permissions_setup()
 	db.permissions_upsert(app.id, "domains/write", "", 1)

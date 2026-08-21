@@ -1,22 +1,13 @@
 // Mochi server: git fetch negotiation, asserted as a conversation.
 //
-// The tests written for the #70 negotiation fix assert object counts: a client
-// three commits behind receives nine objects, not a hundred and five. That
-// proves the outcome and says nothing about the shape of the exchange that
-// produced it - and the shape is where this keeps going wrong.
-//
-// Every protocol defect in this work was invisible to an object count. A flush
-// packet terminating an exploratory round is refused ("expected ACK/NAK, got a
-// flush packet"). An "ACK <sha> ready" on its own hangs fetch-pack on a socket
-// read. A trailing NAK after a deepen probe's shallow list surfaces at the head
-// of the NEXT response ("fatal: git fetch-pack: expected shallow list"). Each
-// was found by reading GIT_TRACE_PACKET output by hand; these assert the same
-// thing mechanically.
+// The negotiation tests elsewhere assert object counts, which say nothing about
+// the shape of the exchange - and every protocol defect here was invisible to a
+// count. These assert the packet lines themselves.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -93,11 +84,9 @@ func TestGitAcknowledgementLinesV0(t *testing.T) {
 	held := commits[:3]
 
 	t.Run("exploratory round acknowledges each have and ends with NAK", func(t *testing.T) {
-		// Every have this repository holds is acknowledged as "common", and
-		// the round is terminated by NAK - which here means "that is all of
-		// them", not "nothing in common". A flush packet in its place is
-		// refused outright, and leaving the terminator out blocks fetch-pack
-		// on a socket read.
+		// NAK here means "every have has been answered", not "nothing in common". A
+		// flush packet in its place is refused, and omitting it blocks fetch-pack on
+		// a socket read.
 		want := []string{}
 		for _, hash := range held {
 			want = append(want, "ACK "+hash.String()+" common")
@@ -130,11 +119,9 @@ func TestGitAcknowledgementLinesV0(t *testing.T) {
 	})
 
 	t.Run("done round sends exactly one bare ACK then the pack", func(t *testing.T) {
-		// A bare ACK with no status word is the multi_ack_detailed close: it
-		// names the commit the pack was built against. It must be the LAST
-		// have found in common - the most recent - and there must be exactly
-		// one, because more would be the "common" lines belonging to the
-		// rounds above.
+		// A bare ACK is the multi_ack_detailed close, naming the commit the pack was
+		// built against: it must be the last common have, and there must be exactly
+		// one.
 		want := []string{"ACK " + held[len(held)-1].String(), "<pack>"}
 		got := git_packets(t, git_negotiation_response(t, repo_path, head, held))
 		if !git_same_lines(got, want) {
@@ -170,13 +157,10 @@ func git_unrelated_repo(t *testing.T, user *User, repo_id string, commits int) (
 	return repo_path, hashes
 }
 
-// TestGitUnknownHaves — a client offering commits this repository has never
-// seen. That is not a hypothetical: it is what happens the moment anyone adds a
-// second remote, because the client offers whatever it has locally.
-//
-// Unknown haves are filtered out before the history walk, because revlist fails
-// outright on a hash it cannot resolve. If that filter were dropped the fetch
-// would not degrade, it would 500.
+// TestGitUnknownHaves - a client offering commits this repository has never
+// seen, which is what a second remote produces. Unknown haves must be filtered
+// before the history walk: revlist fails outright on a hash it cannot resolve,
+// so the fetch would 500 rather than degrade.
 func TestGitUnknownHaves(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not available")

@@ -3,15 +3,8 @@
 // This file is part of Mochi, licensed under the GNU AGPL v3 with the
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-// Tests for protocol2_sender.go — failure-reason resolver, rate limit,
-// inflight/ping sweep, shutdown drain, activity-resets-ping.
-//
-// Phase 3e per claude/plans/protocol2.md → Testing strategy.
-//
-// Most of these exercise pieces of the Sender state machine that don't
-// need a libp2p stream — resolve_fail, rate_gate, sweep, shutdown can
-// run on a synthetic Sender with stream=nil. Stream-IO behavior lands
-// in the end-to-end integration tests.
+// Tests for protocol2_sender.go. Most run on a synthetic Sender with stream =
+// nil; stream IO behaviour is covered by the integration tests.
 
 package main
 
@@ -507,11 +500,6 @@ func (f *fake_writer) Write(p []byte) (int, error) {
 
 // (sender_stream methods Reset/Close not needed by write_one)
 
-// TestWriteOneAddsToInflight covers the "insert BEFORE write" invariant.
-// We can't easily call write_one without a stream, but we can confirm
-// the inflight map's per-write behavior by inserting + checking the
-// state at known points. The full window-blocking behavior is exercised
-// in the integration tests.
 func TestWriteOneInflightInvariant(t *testing.T) {
 	t.Skip("write_one requires a real stream; integration tests cover the inflight-before-write invariant")
 }

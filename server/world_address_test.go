@@ -1,20 +1,13 @@
 // Mochi server: a world listing's address is an endpoint, not any URL.
 //
-// world_validate used valid(address, "url"), which is a charset check whose
-// class contains ":" and "%". "javascript:alert%281%29" fits it, and a browser
-// decodes the escapes. The listing is not local data: it arrives by gossip
-// from other peers, is stored, re-served to every app through
-// mochi.world.list, and rendered on join pages that show a server list.
-//
-// The air client happens to run addresses through normalize_server, which
-// forces an http/https prefix onto anything lacking one, so today the string
-// is defused at that one consumer. Core cannot assume the next consumer does
-// the same.
-//
+// world_validate used valid(address, "url"), a charset check whose class holds
+// ":" and "%", so "javascript:alert%281%29" fits it. The listing arrives by
+// gossip, is re-served through mochi.world.list, and is rendered on join
+// pages.//
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

@@ -36,11 +36,8 @@ func image_write(t *testing.T, dir string, name string, width int, height int) s
 	return path
 }
 
-// TestVariantRenderRefusesOversizeFile — the defect this bounds. The pixel cap
-// below it cannot cover this case: dimensions are only readable once the bytes
-// are in memory, so an arbitrarily large file was already resident by the time
-// anything had looked at it. Uploads are bounded only by the uploader's
-// remaining storage quota, so "large" here means gigabytes, not megabytes.
+// TestVariantRenderRefusesOversizeFile: the pixel cap cannot cover this -
+// dimensions are only readable once the whole file is in memory.
 func TestVariantRenderRefusesOversizeFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "big.png")
@@ -99,11 +96,8 @@ func TestVariantRenderAllowsFileWithinCap(t *testing.T) {
 	}
 }
 
-// TestVariantRenderRefusalDegradesToOriginal — the refusal must return
-// ("", nil), not an error. web.go serves the original when the variant comes
-// back empty and no error was raised; an error on this path would be
-// indistinguishable from a corrupt file and is equally survivable, but ("", nil)
-// is what the neighbouring pixel-cap refusal returns and the two should agree.
+// TestVariantRenderRefusalDegradesToOriginal: the refusal returns ("", nil),
+// not an error - web.go serves the original only when both hold.
 func TestVariantRenderRefusalDegradesToOriginal(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "big.png")

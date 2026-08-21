@@ -1,15 +1,13 @@
 // Mochi server: git smart-HTTP side band.
 //
-// Without a side band the packfile is the whole response body and the server
-// has no way to say anything during a transfer. Measured against
-// git.mochi-os.org 2026-08-16, `git clone --progress` produced zero "remote:"
-// lines, so a large clone over a slow link is indistinguishable from a hang,
-// and a failure after the pack starts can only be an abrupt disconnect.
+// Without a side band the packfile is the whole response body: a clone prints
+// no "remote:" lines, and a failure after the pack starts can only be an abrupt
+// disconnect.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

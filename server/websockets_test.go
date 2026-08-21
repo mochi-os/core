@@ -83,10 +83,8 @@ func websocket_registered(u *User, key, id string) bool {
 	return present
 }
 
-// TestTerminateToleratesNilConnection — websockets_send used to re-look-up the
-// connection in its termination pass, which yields nil once the reader
-// goroutine has already removed it. CloseNow dereferences its receiver, so
-// that nil was a panic on the ordinary disconnect path.
+// The termination pass can hold a connection the reader goroutine already
+// removed; CloseNow dereferences its receiver, so a nil must not panic.
 func TestTerminateToleratesNilConnection(t *testing.T) {
 	u := &User{UID: "user-nil"}
 	websocket_register(t, u, "key", "other", nil)

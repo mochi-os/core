@@ -3,14 +3,9 @@
 // This file is part of Mochi, licensed under the GNU AGPL v3 with the
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-// Tests for the resource-route response guard.
-//
-// The shell exempts attachment and git URLs from wrapping, decided from the raw
-// path — which apps author. An app that names an action so the path matches has
-// its own HTML served top-level, same-origin and cookie-bearing, where
-// POST /_/token mints app JWTs. The guard sandboxes any resource-route response
-// that arrives as an executable document, so the path an app chose no longer
-// decides whether its script runs with the user's session.
+// Tests for the resource-route response guard: any response on a shell-exempt
+// path that arrives as an executable document is sandboxed, so the path an app
+// chose no longer decides whether its script runs with the user's session.
 
 package main
 
@@ -75,9 +70,6 @@ func TestResourceGuardSandboxesSVG(t *testing.T) {
 	}
 }
 
-// TestResourceGuardLeavesRealResourcesAlone is the regression that protects the
-// reason the exemption exists: a PDF needs a real origin or Chrome's viewer
-// fails with "Sandbox access violation". A blanket sandbox would re-break it.
 func TestResourceGuardLeavesRealResourcesAlone(t *testing.T) {
 	for _, content_type := range []string{"application/pdf", "image/png", "video/mp4", "application/x-git-upload-pack-result"} {
 		w := resource_guard_response("/repo/-/attachments/file", content_type, "bytes")
@@ -97,12 +89,9 @@ func TestResourceGuardIgnoresOrdinaryPaths(t *testing.T) {
 	}
 }
 
-// TestResourceGuardSandboxesARedirect covers the ordering that the unit tests
-// above cannot: c.Redirect calls c.Status(302) first, and http.Redirect sets
-// Content-Type only afterwards. Applying the policy on WriteHeader therefore
-// read an empty content type and latched, and the redirect — a text/html body
-// with a link in it — went out with no policy at all. Found against the running
-// server, not here, which is why it now has its own case.
+// TestResourceGuardSandboxesARedirect covers the ordering the unit tests above
+// cannot: c.Redirect calls c.Status(302) first and http.Redirect sets
+// Content-Type only afterwards, so applying on WriteHeader latched on nothing.
 func TestResourceGuardSandboxesARedirect(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
@@ -121,12 +110,9 @@ func TestResourceGuardSandboxesARedirect(t *testing.T) {
 	}
 }
 
-// TestResourceGuardIsRegistered checks the middleware is actually in the
-// server's chain. The tests above build their own router, so every one of them
-// would still pass if the r.Use call were dropped and the guard never ran in
-// production. web_start binds its ports as it builds the engine, so there is no
-// engine to exercise from a test; asserting on the registration line is the
-// cheap way to keep the wiring honest.
+// TestResourceGuardIsRegistered checks web.go's r.Use call: the tests above
+// build their own router, and web_start binds its ports as it builds the
+// engine, so there is no engine a test could exercise instead.
 func TestResourceGuardIsRegistered(t *testing.T) {
 	source, err := os.ReadFile("web.go")
 	if err != nil {
@@ -137,11 +123,9 @@ func TestResourceGuardIsRegistered(t *testing.T) {
 	}
 }
 
-// TestResourceGuardTracksTheShellExemption pins the pairing the fix depends on:
-// every path that skips the shell wrap is one the guard covers. They now share
-// shell_resource_path, so this holds by construction — but the property is what
-// matters, not the sharing, and re-inlining the list in either place fails
-// here.
+// TestResourceGuardTracksTheShellExemption: every path that skips the shell
+// wrap must be one the guard covers. Sharing shell_resource_path makes this
+// hold by construction; re-inlining the list in either place fails here.
 func TestResourceGuardTracksTheShellExemption(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	paths := []string{

@@ -1,18 +1,11 @@
-// Mochi server: Starlark API table construction tests
-//
-// The table used to be built by a package init(), which made the app-visible
-// API surface a side effect of importing the package. api_init makes it a
-// startup step instead. That only works if every entry point calls it - hence
-// TestMain below, and hence a test that the surface is actually populated
-// rather than silently empty.
-//
-// An empty table is the dangerous failure: scripts would still evaluate, and
-// every mochi.* reference would fail as an undefined name deep inside an app.
+// Mochi server: Starlark API table construction tests. api_init must be called
+// from every entry point (hence TestMain): an empty table still evaluates
+// scripts, failing later as undefined mochi.* names deep inside an app.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -87,12 +80,9 @@ func TestApiTableIsStable(t *testing.T) {
 	}
 }
 
-// The globals starlark() hands to a script are the ones api_init built.
-// starlark() must READ api_globals, never call a builder: calling one puts the
-// table in the package initialization graph, which has a cycle
-// (api_app -> ... -> starlark -> api_table -> api_app) that does not compile.
-// This catches the refactor that reintroduces it having only been run against
-// a build that happened to still work.
+// The globals starlark() hands a script are the ones api_init built. starlark()
+// must READ api_globals: calling a builder puts the table in the package
+// initialization graph, which has a cycle and does not compile.
 func TestStarlarkGlobalsComeFromApiGlobals(t *testing.T) {
 	s := starlark(nil)
 	if s == nil {
@@ -113,15 +103,9 @@ func TestApiGlobalsIsAPlainTable(t *testing.T) {
 	var _ sl.StringDict = api_globals
 }
 
-// The built-in apps and their handlers are registered.
-//
-// This is the hazard the init() hoist introduces: registration used to happen
-// for every binary and every test simply by importing the file, and now it
-// depends on an explicit call. An entry point that forgets one loses the
-// directory or peers service ENTIRELY - pubsub announcements would route
-// nowhere, with no error at startup and no missing symbol to catch it at
-// build time. Cheap to assert, and the only thing standing between a dropped
-// call and a silently deaf node.
+// The built-in apps and their handlers are registered. Registration is an
+// explicit call now, and an entry point that forgets it loses the directory or
+// peers service entirely - no startup error, no missing symbol.
 func TestBuiltinAppsAreRegistered(t *testing.T) {
 	for _, c := range []struct {
 		app    string

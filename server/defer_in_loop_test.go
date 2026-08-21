@@ -1,31 +1,14 @@
 // Mochi server: a deferred close inside a loop is not a close.
 //
-// load_version opened each of an app's label files and wrote `defer f.Close()`.
-// A defer runs when the FUNCTION returns, not when the loop iteration ends, so
-// every label file stayed open for the rest of the call. Apps carry 99 locale
-// files, so one load_version held 99 descriptors where it needed one.
-//
-// The twin three hundred lines down in reload() does it correctly - open,
-// scan, f.Close() at the end of the iteration - which is what this now matches.
-//
-// This was never going to exhaust anything: the box allows 524,288 open files.
-// It matters because it is the shape that becomes a leak silently, the moment
-// the loop grows or the function is restructured, and because the file
-// contradicted itself about how to do the same job twice.
-//
-// Three shapes are NOT this defect, and the detector below knows all three:
-//
-//   - A defer inside a `go func() { ... }()` spawned in a loop belongs to the
-//     goroutine, which is exactly right (peer_connect, push, queue, schedule).
-//   - A loop that returns on the iteration reaching the defer runs it at most
-//     once - the "find the entry, use it, return" shape in files.go and
-//     utilities.go.
-//   - A defer in a loop inside a nested function literal is that function's.
+// A defer runs when the function returns, so a file opened per iteration stays
+// open for the rest of the call. Not the defect, and excluded below: a defer
+// inside a `go func()` spawned in a loop, a loop body whose tail returns, and a
+// defer in a nested literal.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

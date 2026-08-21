@@ -1,23 +1,11 @@
 // Mochi server: app assets are read through an os.Root, not a symlink check.
-//
-// The five app-asset readers used to join the caller's path onto the app
-// directory and then ask file_is_symlink about the result. os.Lstat declines
-// to follow the FINAL component and follows every intermediate one, so a
-// symlinked parent - "assets/secret" where assets points out of the app
-// directory - resolved to the far side, reported the target's mode, and passed
-// a check that was only ever looking at the leaf.
-//
-// os.Root refuses symlink traversal at any depth as a property of the API, so
-// there is no ordering to get wrong and no shape to miss. Seventeen other
-// sites in this package already read that way; these five were the holdouts.
-//
-// Installed packages cannot carry symlinks, so this only ever mattered for a
-// dev app, where whoever authors the app can write its directory.
+// os.Lstat on a joined path follows every intermediate component, so a
+// leaf-only check passes a file reached through a symlinked parent directory.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -30,10 +18,9 @@ import (
 	sl "go.starlark.net/starlark"
 )
 
-// asset_symlink_fixture builds an app directory containing a legitimate file,
-// a symlink whose TARGET is outside (the shape the old leaf check caught), and
-// a symlinked DIRECTORY through which an outside file is reachable (the shape
-// it missed). Returns the app directory and the outside directory.
+// asset_symlink_fixture builds an app directory with a legitimate file, a
+// symlink pointing outside, and a symlinked directory through which an outside
+// file is reachable. Returns the app directory and the outside directory.
 func asset_symlink_fixture(t *testing.T) (string, string) {
 	t.Helper()
 	base := t.TempDir()
@@ -96,9 +83,8 @@ func TestAssetRootRefusesSymlinksAtEveryDepth(t *testing.T) {
 	}
 }
 
-// TestLeafOnlyCheckMissedTheSymlinkedParent pins WHY the old guard was
-// insufficient, so the reasoning survives even if os.Root is ever swapped out.
-// os.Lstat on a path whose parent is a symlink reports the TARGET, not a link.
+// os.Lstat on a path whose parent is a symlink reports the target, not a link,
+// so a leaf-only symlink check lets it through.
 func TestLeafOnlyCheckMissedTheSymlinkedParent(t *testing.T) {
 	base, _ := asset_symlink_fixture(t)
 
@@ -116,11 +102,9 @@ func TestLeafOnlyCheckMissedTheSymlinkedParent(t *testing.T) {
 	// So: a leaf-only symlink test sees a regular file and lets this through.
 }
 
-// TestAppAssetPathContains is the helper the two path-consuming callers use -
-// a.write.asset, which hands the path to gin, and the stream writer, which
-// hands it to os.Open. They cannot take a handle without changing what they
-// call, so the helper establishes containment through the same os.Root and
-// returns the path only when that succeeds.
+// app_asset_path serves the two callers that need a path rather than a handle
+// (a.write.asset hands it to gin, the stream writer to os.Open); it proves
+// containment through the same os.Root and returns "" when that fails.
 func TestAppAssetPathContains(t *testing.T) {
 	base, _ := asset_symlink_fixture(t)
 	// internal is the branch App.active resolves first, with no database
@@ -170,11 +154,8 @@ func TestNoAssetReaderUsesALeafOnlySymlinkCheck(t *testing.T) {
 	}
 }
 
-// TestAssetApisRefuseASymlinkedParent drives the three exported APIs, not the
-// mechanism underneath them. The tests above would pass against the old
-// leaf-only check too - os.Root has always behaved this way, and the helper
-// they exercise is new - so this is the one that fails if the APIs are ever
-// wired back to a joined path.
+// TestAssetApisRefuseASymlinkedParent drives the exported APIs rather than the
+// helper underneath, so it fails if they are wired back to a joined path.
 func TestAssetApisRefuseASymlinkedParent(t *testing.T) {
 	base, _ := asset_symlink_fixture(t)
 	app := &App{id: "test", internal: &AppVersion{Version: "1.0", base: base}}

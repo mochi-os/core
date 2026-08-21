@@ -18,18 +18,15 @@ import (
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 )
 
-// The directory is one row per (entity, peer), each asserted by the peer it
-// names and self-verifying: entry_store checks the entity's content
-// signature and the host's claim attestation from the payload before
-// anything is stored. These tests mint real ed25519 entity keys and real
-// libp2p host identities so the verification paths run for real.
+// The directory is one row per (entity, peer), self-verifying: entry_store
+// checks the entity's signature before storing. These tests mint real ed25519
+// keys and libp2p host identities so the verification paths run for real.
 
 func setup_directory_test(t *testing.T) func() {
 	cleanup := setup_replication_test(t) // sets data_dir + net_id="self"
 	protocol2_init()                     // canonical_encoder for the signables
-	// entry_store and entity resolution are strict about the ownership
-	// check since the 2026-07 fail-safe: an errored check (no entities
-	// table) refuses the row instead of falling through.
+	// entry_store refuses a row when the ownership check itself errors, so the
+	// entities table has to exist or every store fails.
 	setup_users_test_schema()
 	db := db_open("db/directory.db")
 	db.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, message text not null default '', expires text not null default '', signature text not null default '', primary key ( entity, peer ) )")

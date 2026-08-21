@@ -1,17 +1,13 @@
 // Mochi server: /mochi/2 topic validator unit tests
 //
-// The validator is what stops this node RELAYING junk. Every check it makes
-// used to live in pubsub_manager, after s.Next() — by which point
-// go-libp2p-pubsub had already forwarded the message to the mesh, so the node
-// amplified a flood and only then decided it was junk. These pin both halves:
-// that refusals really are refusals, and that the two things which would
-// silently break the mesh (refusing our own publishes, penalising a peer on
-// an older wire format) do not happen.
+// The validator refuses before go-libp2p-pubsub forwards to the mesh. These pin
+// that refusals refuse, and that our own publishes and peers on an older wire
+// format are never among them.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -28,14 +24,9 @@ import (
 )
 
 // pubsub_message builds the Message shape go-libp2p-pubsub hands a validator.
-//
-// Takes a peer.ID rather than a string on purpose: peer.ID holds RAW
-// multihash bytes and String() base58-encodes them, so peer.ID("12D3KooW...")
-// is not the peer whose String() is "12D3KooW...". The validator compares
-// ReceivedFrom.String() against net_id, and production sets net_id from
-// net_me.ID().String(), so both sides encode identically - a test that builds
-// the id from a display string is comparing two different encodings and will
-// fail for a reason the production path does not have.
+// Takes a peer.ID, not a string: peer.ID holds raw multihash bytes that
+// String() base58-encodes, so an id built from a display string never matches
+// net_id.
 func pubsub_message(data []byte, received p2p_peer.ID) *p2p_pubsub.Message {
 	return &p2p_pubsub.Message{
 		Message:      &pb.Message{Data: data},
@@ -137,15 +128,9 @@ func TestPubsubValidateRateLimitsBeforeRelaying(t *testing.T) {
 	}
 }
 
-// Nothing the validator refuses may return Reject.
-//
-// Reject penalises the sender under GossipSub peer scoring. Everything
-// refused here - an undecodable payload, an envelope whose shape we do not
-// recognise - is exactly what a peer on an older wire format produces, and
-// pubsub.go already notes that "during a format change every relay looks
-// guilty". The 2026-07-25 flag day partitioned old peers; a Reject would have
-// had every new node graylist the entire old fleet on top of it. Ignore stops
-// the relay without turning a rollout into a mesh split.
+// Nothing the validator refuses may return Reject: Reject penalises the sender
+// under GossipSub peer scoring, and an undecodable or unrecognised envelope is
+// what a peer on an older wire format produces. Ignore stops the relay instead.
 func TestPubsubValidateNeverRejects(t *testing.T) {
 	cases := []struct {
 		name string

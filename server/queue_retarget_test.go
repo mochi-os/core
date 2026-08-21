@@ -1,39 +1,13 @@
 // Mochi server: a queued message follows the recipient when it moves hosts.
 //
-// A direct row's target is chosen once, at enqueue, from entity_peers_for, and
-// nothing rewrote it afterwards - the four update statements in queue.go touch
-// next_retry and status, and are keyed BY target. queue_send_direct re-resolves
-// only when the target is EMPTY:
-//
-//	peer := q.Target
-//	if peer == "" {
-//	    peer = queue_expand_empty_target(q)
-//	}
-//
-// So an entity that moves hosts after a row is queued strands that row: fifty
-// attempts against the old peer, then parked, waiting on a reconnect that
-// cannot come, until the seven-day reap drops it.
-//
-// The system already has the concept. At the reap, queue_fail calls
-// directory_user_forget with the comment "the learned route is proven dead, not
-// merely old" - it knows a route can die, and acts on it only after abandoning
-// the delivery.
-//
-// AMPLIFICATION. Parking calls health_failure(q.ToEntity, ...), against the
-// RECIPIENT. A retry budget burned on our own stale routing therefore suspends
-// a host that was reachable throughout, and for an entity this host also fans
-// out to, suspension gates real broadcast delivery down to a periodic probe.
-// Observed in production: entities suspended while live in db/directory.db at a
-// peer other than the one their rows named.
-//
-// The trigger is narrow on purpose: "this address is gone", never "this address
-// is not answering". The second is queue_resurrect_peer's job and a broader
-// trigger would trample it.
+// A direct row's target is pinned at enqueue, so an entity that moves strands
+// the row against the old peer - and parking it records the failure against the
+// RECIPIENT, suspending a host that was reachable throughout.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

@@ -39,16 +39,9 @@ func Test_account_test_localised(t *testing.T) {
 	}
 }
 
-// A message carrying a placeholder must substitute it, not print the ICU
-// source or drop the detail.
-//
-// Resolved directly rather than through a provider. This used to call
-// account_test_mcp against a closed port and read the error off the result,
-// but the providers that take a caller-supplied address no longer report the
-// underlying error - the difference between "refused", "timed out" and "no
-// such host" is an oracle on an address the caller chose. The _detail form is
-// still used by the fixed-vendor providers, and substitution is what this test
-// is actually about.
+// A message carrying a placeholder must substitute it, not print the ICU source
+// or drop the detail. Resolved directly: the providers taking a caller-supplied
+// address deliberately do not report the underlying error.
 func Test_account_test_localised_arguments(t *testing.T) {
 	load_core_labels()
 

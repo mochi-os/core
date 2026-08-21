@@ -3,15 +3,9 @@
 // This file is part of Mochi, licensed under the GNU AGPL v3 with the
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-// Tests for protocol2_messages.go — Receiver drain-and-batch acks,
-// dispatch gating, ping/pong/bye behavior.
-//
-// Phase 3d per claude/plans/protocol2.md → Testing strategy.
-//
-// We avoid spinning up a real libp2p stream by constructing a Receiver
-// with `stream = nil` (only the reply writer touches it; tests that
-// exercise the writer install a `fake_writer` instead). End-to-end
-// stream tests live in protocol2_integration_test.go.
+// Tests for protocol2_messages.go. Receivers are built with stream = nil (only
+// the reply writer touches it); end-to-end stream tests live in
+// protocol2_integration_test.go.
 
 package main
 
@@ -390,11 +384,8 @@ func TestHandleHelloOnMessagesStreamClosed(t *testing.T) {
 	}
 }
 
-// TestCoalesceOneShipsClaimFrames guards the drop that the cross-instance
-// run caught: write_replies dispatches on frame type, and a type absent
-// from its list is discarded without a trace. A responder proof travels
-// as a claim frame, so a claim that never reaches the wire leaves the
-// far side waiting for a proof that was generated and thrown away.
+// TestCoalesceOneShipsClaimFrames: a responder proof travels as a claim frame,
+// and a frame type absent from write_replies' switch is discarded silently.
 func TestCoalesceOneShipsClaimFrames(t *testing.T) {
 	stream, peer_side := new_stream_pair()
 	r := &Receiver{peer: "12D3KooWCoalesceTest", stream: stream}

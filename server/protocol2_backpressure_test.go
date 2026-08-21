@@ -1,16 +1,10 @@
-// Inbound flow-control regression guard (threat-model #92,
-// claude/plans/replication-threat-model.md). worker_dispatch propagates
-// back-pressure into libp2p flow control by BLOCKING on a full, bounded inbox
-// rather than buffering unbounded or dropping — so a fast or flooding sender
-// (including a same-machine/same-LAN peer) is paced by TCP, never dropped.
-// This is the mechanism that bounds an inbound op-flood; the test fails if a
-// future change makes the inbox send non-blocking (select/default drop) or the
-// inbox unbounded.
-//
+// Guards inbound flow control: worker_dispatch BLOCKS on a full bounded inbox,
+// so a flooding sender is paced by TCP rather than dropped. Fails if the inbox
+// send becomes non-blocking or unbounded.//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

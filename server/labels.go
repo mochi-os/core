@@ -31,32 +31,17 @@ var core_labels_fs embed.FS
 var core_labels = map[string]map[string]string{}
 
 // Regional variants whose nearest translated catalog isn't reached by the
-// default subtag-stripping fallback. Each entry redirects to the locale whose
-// catalog should serve it; the resolver then walks that target's own parents.
-//
-// This is deliberately NOT a copy of the web lingui.config fallbackLocales
-// map, and the two are not expected to agree entry for entry. They answer
-// different questions: lingui's map also decides which locales the translation
-// tooling treats as overlays and skips filling (i18n_glossary.overlay_locales
-// reads it directly), so listing a locale there stops it being translated at
-// all. This map only says where a missing label degrades to, which is a
-// separate choice - see the nn entry below.
-//
-// Most Commonwealth English speakers (en-gb, en-au, en-nz, en-ie, en-za, en-in,
-// en-sg, en-hk, en-ca) need no entry: they fall back directly to `en` because
-// the source `en` catalog is already Commonwealth-flavoured. Only en-PH follows
-// US conventions and so routes through en-us first.
+// default subtag-stripping fallback; the resolver then walks the target's own
+// parents. Not the web lingui.config fallbackLocales map - that one also
+// decides which locales the tooling skips filling, so the two are not expected
+// to agree.
 var variant_redirects = map[string]string{
 	"en-ph": "en-us",   // Philippine English follows US conventions
 	"zh-hk": "zh-hant", // Hong Kong uses Traditional Chinese
 	"yue":   "zh-hant", // Written Cantonese uses Traditional Chinese
 	"es-ar": "es-419",  // Argentine Spanish resolves to Latin American Spanish
-	// nn is a full locale, not an overlay: nn.conf is complete in core and in
-	// every app, and its text diverges from nb in 74% of shared entries, so it
-	// is a separate written standard rather than a spelling variant. nb is only
-	// its degradation target for a key it has yet to translate, which serves a
-	// Nynorsk reader far better than dropping straight to English - "nn" has no
-	// subtag to strip, so without this entry the chain would be ["nn", "en"].
+	// nn is a full locale, not an overlay - nn.conf is complete everywhere. nb is
+	// only its degradation target, and "nn" has no subtag to strip.
 	"nn": "nb",
 }
 
@@ -228,21 +213,12 @@ func parse_accept_language(header string) []string {
 
 // request_language resolves the language for a request. Priority:
 //  1. The user's stored `language` preference (logged-in users only).
-//  2. The `mochi_language` cookie set by the anonymous LanguagePicker — keeps
-//     the pre-login pick honoured through and after sign-in until the user
-//     sets an explicit preference.
+//  2. The `mochi_language` cookie set by the anonymous LanguagePicker.
 //  3. The best-priority Accept-Language tag from the browser.
 //  4. "en".
 //
-// The returned tag flows into the label resolver where the fallback chain
-// handles catalog-not-installed cases automatically.
-//
-// As a side effect, when an authenticated user's resolved language came from
-// fallback (cookie / Accept-Language — i.e. their explicit pref is empty or
-// "auto"), the resolved tag is persisted as `last_language`. Async paths
-// (email and push notifications composed outside a request, queued jobs)
-// have no `c`, but they still need a sensible language for label lookup —
-// they read this preference via user_language(u).
+// Persists the resolved tag as `last_language` when it came from fallback, so
+// async senders with no gin.Context can read it via user_language(u).
 func request_language(c *gin.Context, u *User) string {
 	pref := ""
 	if u != nil {
@@ -299,13 +275,9 @@ func user_language(u *User) string {
 	return "en"
 }
 
-// negotiate_language picks the best installed catalog for a list of
-// q-sorted Accept-Language tags. For each tag it walks language_fallbacks
-// to find a parent that has a catalog on disk, so a browser saying
-// `Accept-Language: pt-br` lands on `pt` if only `pt` is installed, and
-// `Accept-Language: zz, fr;q=0.9` lands on `fr` rather than the unsupported
-// `zz` (which would degrade through "zz" -> "en" and lose the user's
-// genuine fallback preference). Returns "" if no tag resolves.
+// negotiate_language picks the best installed catalog for a list of q-sorted
+// Accept-Language tags, walking language_fallbacks for each: `pt-br` lands on
+// `pt` if only `pt` is installed. Returns "" if no tag resolves.
 func negotiate_language(tags []string) string {
 	if len(tags) == 0 {
 		return ""
@@ -324,14 +296,9 @@ func negotiate_language(tags []string) string {
 	return ""
 }
 
-// installed_languages returns the union of BCP 47 tags across every loaded
-// catalog — core_labels (this server's own error strings) and every app
-// version's labels map. Used by the picker UI to populate the language
-// list. The set of supported languages is therefore data-driven: drop a
-// labels/<lang>.conf file into core/server/labels/ or apps/<app>/labels/
-// and the language appears in the picker on next load. The server itself
-// holds no list of language tags. Locked-down read of apps_lock; callers
-// tolerate transient stale results during hot-reload.
+// installed_languages returns the union of BCP 47 tags across core_labels and
+// every app version's labels map, so dropping a labels/<lang>.conf file is what
+// adds a language. Locked read of apps_lock; stale results during hot-reload.
 func installed_languages() []string {
 	seen := map[string]struct{}{}
 	for tag := range core_labels {
@@ -361,11 +328,8 @@ func web_languages(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"languages": installed_languages()})
 }
 
-// web_serve_labels handles the built-in /<app>/-/labels and
-// /<app>/-/labels/<tag> endpoints. With no tag, returns a sorted list of
-// installed language tags for the app. With a tag, returns the {key: format}
-// map for that catalog. Used by tooling (Translate Mochi, dev introspection)
-// rather than the web SPA.
+// web_serve_labels handles /<app>/-/labels (installed tags) and
+// /<app>/-/labels/<tag> (the {key: format} map). For tooling, not the SPA.
 func web_serve_labels(c *gin.Context, av *AppVersion, suffix string) bool {
 	if av == nil {
 		respond_error(c, http.StatusNotFound, "labels_not_loaded", "errors.labels_not_loaded", nil)
@@ -477,11 +441,8 @@ func load_core_labels() {
 	}
 }
 
-// respond_text answers with a translated plain-text message, for the handful of
-// routes a browser reaches by navigation rather than by fetch: the shell page
-// and the HTML file serving. respond_error's JSON body is right for an API
-// caller and wrong to render in a window, so the shape is kept and only the
-// language fixed.
+// respond_text answers with a translated plain-text message, for routes a
+// browser reaches by navigation rather than by fetch.
 func respond_text(c *gin.Context, status int, key string, args map[string]any) {
 	c.String(status, resolve_core_label(request_language(c, nil), key, args))
 	c.Abort()

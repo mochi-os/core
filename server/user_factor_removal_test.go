@@ -8,11 +8,9 @@ package main
 
 import "testing"
 
-// TestUserFactorRemovalBlocked covers the guard shared by the passkey-delete
-// and authenticator-disable paths: removing a factor's last credential is
-// refused when the factor is still required, or when it's the user's only
-// remaining way to sign in (the case the old "is it in methods" substring
-// check missed once methods could be empty and email could be disabled).
+// TestUserFactorRemovalBlocked covers the guard shared by passkey-delete and
+// authenticator-disable: a factor's last credential cannot be removed while the
+// factor is required, or while it is the only remaining way to sign in.
 func TestUserFactorRemovalBlocked(t *testing.T) {
 	cleanup := create_test_users_db(t)
 	defer cleanup()

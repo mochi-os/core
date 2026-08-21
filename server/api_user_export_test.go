@@ -16,11 +16,6 @@ import (
 	"testing"
 )
 
-// TestUserExportRoundTrip exercises the whole export engine: it builds a
-// migration bundle for a user with a real person-entity keypair, then
-// verifies the zip contains a signed manifest that validates against the
-// entity's public key and a keys.age that decrypts with the passphrase
-// and carries the entity private key.
 func TestUserExportRoundTrip(t *testing.T) {
 	cleanup := create_test_users_db(t)
 	defer cleanup()

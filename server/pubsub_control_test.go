@@ -10,15 +10,8 @@ import (
 	"testing"
 )
 
-// TestPubsubControlBudgetIsSeparate pins that application traffic cannot
-// starve the peers service.
-//
-// One shared budget meant a host flooding directory announcements — whose
-// volume follows user activity and is effectively unbounded — consumed the
-// same allowance as the messages hosts use to learn each other's addresses.
-// A synchronous remote request blocks for five seconds on one of those
-// answers (remote_reach), so losing it reports a peer that is online and
-// actively exchanging messages as unreachable.
+// TestPubsubControlBudgetIsSeparate: unbounded application traffic must not
+// exhaust the budget the peers service uses to answer address lookups.
 func TestPubsubControlBudgetIsSeparate(t *testing.T) {
 	peer := "12D3KooWTestPeerForControlBudget"
 

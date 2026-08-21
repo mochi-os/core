@@ -1,14 +1,12 @@
 // mochictl: subcommand implementations.
-// Copyright © 2026 Mochisoft OÜ
+// Copyright (c) 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// Each subcommand is a function value in the `commands` map (declared in
-// main.go). Every server-talking subcommand uses the UDS admin client —
-// including `health`, which hits /_/admin/health rather than the public
-// /_/health, because TLS-only deploys reject 127.0.0.1 handshakes on SNI
-// mismatch. External monitors keep using the public /_/health endpoint.
+// Each subcommand is a function value in the `commands` map in main.go, and
+// every server-talking one uses the UDS admin client - `health` included, since
+// a TLS-only deploy rejects a 127.0.0.1 handshake on SNI mismatch.
 
 package main
 
@@ -23,11 +21,9 @@ import (
 	"time"
 )
 
-// http_error formats a non-2xx admin-socket response as a user-friendly
-// error string. Tries the JSON `message` field first (server-side
-// translated text from respond_error), then the `error` code, and
-// finally falls back to the raw trimmed body. Drops the HTTP status —
-// CLI users care about the cause, not the code; use -v if you need it.
+// http_error formats a non-2xx admin-socket response: the JSON `message`
+// (translated by respond_error), then the `error` code, then the raw body. The
+// HTTP status is dropped - use -v.
 func http_error(status int, body []byte) error {
 	trimmed := strings.TrimSpace(string(body))
 	if len(trimmed) == 0 {
@@ -156,11 +152,9 @@ func get_dump(path string, order ...string) error {
 	return render(body, order...)
 }
 
-// post_action is for lifecycle endpoints (stop/restart) where the JSON
-// response body is just `{"status": "..."}`. Silent on success by default;
-// prints `human_msg` (e.g. "Stopping server") only with -v. In -t / -j
-// mode it falls through to post_dump and renders the raw response so
-// scripts can parse it.
+// post_action is for lifecycle endpoints whose body is just `{"status":
+// "..."}`. Silent on success; prints `message` with -v, and defers to post_dump
+// under -t or -j so scripts get the raw response.
 func post_action(path, message string) error {
 	if flag_tabs || flag_json {
 		return post_dump(path)
@@ -180,11 +174,8 @@ func post_action(path, message string) error {
 	return nil
 }
 
-// post_silent POSTs to path and returns the response body verbatim only when
-// the caller has asked for output (-v, -t, or -j); otherwise it succeeds
-// without printing anything. Used for routine maintenance commands like
-// `mochictl snapshot` that are typically run from cron — the operator only
-// cares about the exit code unless they passed -v.
+// post_silent POSTs and prints the body only under -v, -t or -j. Cron-run
+// maintenance commands otherwise report through the exit code alone.
 func post_silent(path string, order ...string) error {
 	if flag_verbose || flag_tabs || flag_json {
 		return post_dump(path, order...)
@@ -243,12 +234,9 @@ func cmd_version(args []string) error {
 
 	resp, err := client().Get("/_/admin/version")
 	if err != nil {
-		// Server unreachable. Still print the client version - knowing which
-		// mochictl you are holding is useful precisely when the server is down
-		// - but report the failure, so this does not read as success. Returning
-		// nil here meant `mochictl version` exited 0 against a dead server,
-		// with only a missing server_version field to distinguish it, and
-		// anything using it as a liveness probe saw a healthy host.
+		// Server unreachable. Print the client version anyway, but return an error:
+		// exiting 0 here makes a dead server look healthy to anything using this as a
+		// liveness probe.
 		out, _ := json.Marshal(map[string]string{"mochictl_version": build_version})
 		if err := render(out, order...); err != nil {
 			return err
@@ -303,22 +291,16 @@ func cmd_backup(args []string) error {
 	}
 
 	if out == nil {
-		// 0600: the archive is the whole data directory. db/users.db carries
-		// every account's entity private keys, db/sessions.db the live
-		// session secrets, and p2p/private.key the host identity, and
-		// admin_backup preserves each file's own 0600 inside the tar - so a
-		// world-readable container undoes all of it at once.
+		// 0600: the archive holds every account's entity private keys, the live
+		// session secrets and the libp2p host identity.
 		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 		if err != nil {
 			return err
 		}
 		defer f.Close()
-		// The mode above applies only where the open created the file. A
-		// nightly cron writing to a fixed path truncates an existing one
-		// instead, keeping whatever mode it already had, so set it
-		// explicitly. Refuse the backup if that cannot be done rather than
-		// stream the keys into a file we cannot protect - `mochictl backup -`
-		// is the way to take charge of the destination yourself.
+		// The mode above applies only if the open created the file; a rerun
+		// truncating an existing one keeps its mode. Refuse rather than stream keys
+		// into a file we cannot protect.
 		if err := f.Chmod(0o600); err != nil {
 			return fmt.Errorf("unable to make %s private: %w", path, err)
 		}
@@ -337,10 +319,8 @@ func cmd_backup(args []string) error {
 }
 
 // rsync_filter_rules is the canonical filter set for backing up the data dir
-// with rsync (or restic / borg / S3 sync). Live SQLite files, in-flight
-// snapshot temps, and the runtime state directory are excluded; *.db.backup
-// siblings (and legacy *.db.snap from before the 2026-05-27 rename) produced
-// by `mochictl snapshot` are kept.
+// with rsync (or restic / borg / S3 sync): live SQLite files, in-flight
+// snapshot temps and run/ are excluded; the *.db.backup siblings are kept.
 var rsync_filter_rules = []string{
 	"- *.db",
 	"- *.db-wal",
@@ -360,18 +340,10 @@ func cmd_rsync_filter(args []string) error {
 	return nil
 }
 
-// cmd_restore walks the given directory tree and renames every *.db.backup
-// file (and any legacy *.db.snap from before the 2026-05-27 rename) to its
-// sibling with the suffix stripped. Run after rsync brings a backup to a
-// destination, before starting the server there. The server must be stopped
-// during this operation.
-//
-// Replication state (db/replication.db) is stripped after the rename
-// pass: the restored host comes back unpaired so it won't auto-reconnect
-// to its previous pair partner with stale cursors and silently lose
-// self-emitted ops between the snapshot and the crash. Re-establishing
-// the pair is an explicit operator step after restore; see the
-// backup-restore wiki page for the documented procedure.
+// cmd_restore walks the given directory tree and renames every *.db.backup (and
+// legacy *.db.snap) file to its sibling with the suffix stripped, then removes
+// any legacy db/replication.db. Run with the server stopped, after rsync brings
+// a backup to the destination.
 func cmd_restore(args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("restore <dir>: directory argument required")

@@ -1,17 +1,14 @@
 // Mochi server: only a signature-verified broadcast can make us republish.
 //
-// e.origin is set in exactly one place - pubsub.go, from GossipSub's
+// e.origin is set in one place - pubsub.go, from GossipSub's
 // StrictSign-verified GetFrom - so a direct-stream event always carries "".
-// peer_publish_event says so in its own doc comment and checks it first;
-// peer_request_event checked it only on the relay branch, so an event naming
-// US reached peers_publish_request() with nothing verified. Any peer able to
-// open a /mochi/2 stream could then decide when we announce our addresses,
-// signed record, relay load and name to the whole mesh.
+// peer_request_event must check it before either branch, not only on the relay
+// branch.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

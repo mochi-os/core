@@ -32,11 +32,9 @@ type App struct {
 	versions    map[string]*AppVersion
 	latest      *AppVersion // Highest installed version (external apps)
 	internal    *AppVersion // Single version for internal Go apps
-	// development marks apps not installed from a publisher (the dev
-	// directory and internal Go apps). Set at load; drives dev-precedence
-	// in service/path/class selection and the "development" field in the
-	// app APIs. Never inferred from the id's shape - entity ids are 49-51
-	// characters, and length-based guesses misclassified the 49s.
+	// development marks apps not installed from a publisher (the dev directory and
+	// internal Go apps). Set at load; drives dev-precedence in service/path/class
+	// selection. Never inferred from the id's shape.
 	development bool
 }
 
@@ -47,14 +45,9 @@ type AppAction struct {
 	Feature  string `json:"feature"`
 	Cache    string `json:"cache"`
 	Public   bool   `json:"public"`
-	// Site marks an action that publishes a website, where serving a document
-	// that renders is the entire point. Everything else gets the safe-serve
-	// policy - SVG sanitized, unsafe types forced to download - because a files
-	// directory otherwise holds what someone else uploaded. Declared here rather
-	// than inferred from the request having arrived on a domain route: routing
-	// is how a reader reached the action, not what the app meant by it, and a
-	// domain pointed at any other app would have silently taken the exemption
-	// with it.
+	// Site marks an action that publishes a website, exempting it from the
+	// safe-serve policy (SVG sanitized, unsafe types forced to download).
+	// Declared, never inferred from the request arriving on a domain route.
 	Site      bool   `json:"site"`
 	OpenGraph string `json:"opengraph"` // Starlark function to generate Open Graph meta tags
 
@@ -87,15 +80,9 @@ type AppFunction struct {
 	Permission string `json:"permission,omitempty"`
 }
 
-// AppTheme is one theme entry in an app's `themes` array. The bundled
-// themes live in apps/themes/app.json but any installed app may ship its
-// own. IconMask, IconBackground, and Icons drive future icon-pack
-// support (apps.go:2110): a theme can ship a CSS mask + tile background
-// applied to every home-screen icon, and an Icons map that points to
-// alternative icon files (served from the theme app's /icons/ folder)
-// keyed by the target app's path. No installed theme exercises these
-// fields yet; the resolution code path is in place so a "Brutalist" or
-// "Material" theme can plug in without a server change.
+// AppTheme is one theme entry in an app's `themes` array. Bundled themes live
+// in apps/themes/app.json; any installed app may ship its own. IconMask,
+// IconBackground and Icons drive icon packs no installed theme uses yet.
 type AppTheme struct {
 	ID             string            `json:"id"`
 	Label          string            `json:"label"`
@@ -116,11 +103,9 @@ type AppVersion struct {
 	Version string   `json:"version"`
 	Label   string   `json:"label"`
 	Classes []string `json:"classes"`
-	// Shared names classes this app is willing to have other apps create in.
-	// A subset of Classes, and only meaningful alongside the handler check in
-	// entity_class_shared: a class opens to co-creation when the app that
-	// HANDLES it says so, so declaring a class shared here cannot let an app
-	// into somebody else's class, only invite others into its own.
+	// Shared names classes this app invites other apps to create in. A subset of
+	// Classes, honoured only by entity_class_shared's handler check, so it can
+	// never open somebody else's class.
 	Shared   []string `json:"shared"`
 	Paths    []string `json:"paths"`
 	Services []string `json:"services"`
@@ -157,11 +142,9 @@ type AppVersion struct {
 	Events       map[string]AppEvent    `json:"events"`
 	Errors       map[string]AppError    `json:"errors"`
 	Functions    map[string]AppFunction `json:"functions"`
-	// Commit.Function is the name of a Starlark function the framework invokes
-	// after any committed write to this app's per-user DB. Apps put WebSocket
-	// emission and other "after the row lands" work here rather than inline in
-	// the handler. Handlers MUST be idempotent: commit_hook_drain retries a row
-	// whose handler failed.
+	// Commit.Function names a Starlark function called after any committed write
+	// to this app's per-user DB. Handlers MUST be idempotent: commit_hook_drain
+	// retries a row whose handler failed.
 	Commit struct {
 		Function string `json:"function"`
 	} `json:"commit,omitempty"`
@@ -270,13 +253,9 @@ func (a *App) tracks() map[string]string {
 	return result
 }
 
-// active resolves which version a user should see for this app.
-// Resolution order:
-// 1. User's preference (if user is not nil)
-// 2. System default (from apps.db)
-// 3. Highest installed version (fallback)
-// If a track is specified, it is resolved to a version.
-// Note: For anonymous entity access, pass the entity owner as the user.
+// active resolves which version a user should see: the user's preference, then
+// the system default, then the highest installed version. A track resolves to a
+// version. For anonymous entity access, pass the entity owner as the user.
 func (a *App) active(user *User) *AppVersion {
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
@@ -537,11 +516,9 @@ var (
 	apps                 = map[string]*App{}
 	apps_lock            = &sync.Mutex{}
 
-	// internal_services maps a core service name (replication, directory,
-	// peers) to its built-in handler. Populated once at startup when an
-	// internal app calls service(); never written afterwards. Lets core
-	// P2P traffic resolve directly (see app_for_service) instead of
-	// scanning every installed app on each event.
+	// internal_services maps a core service name to its built-in handler.
+	// Populated once at startup when an internal app calls service(), never
+	// written afterwards, so app_for_service can resolve core traffic directly.
 	internal_services = map[string]*App{}
 
 	api_app_package = sls.FromStringDict(sl.String("mochi.app.package"), sl.StringDict{
@@ -820,19 +797,9 @@ func app_has_version(id, version string) bool {
 	return exists
 }
 
-// Download and install a specific version of an app (without activating it).
-//
-// An optional peer names where to ask, for an app the directory does not
-// list — a restricted or unpublished one, reachable only through the link
-// its publisher gave you. Naming a peer decides only WHERE to ask: the
-// /mochi/2/stream handshake makes the answering host prove it holds `id`,
-// so a peer that does not hold the app's key cannot serve it whatever the
-// caller was told. That is what lets this be one function rather than a
-// safe path and a dangerous one.
-//
-// Accepts an entity id as the peer and resolves it, mirroring
-// remote_connect — a publisher is usually known by its entity, not by the
-// libp2p id of the host it currently runs on.
+// Download and install a specific version of an app, without activating it. An
+// optional peer (libp2p id or entity id) names where to ask for an app the
+// directory does not list; the stream handshake still proves the host holds id.
 func app_download_version(id, version string, peer ...string) bool {
 	debug("App %q downloading version %q", id, version)
 
@@ -911,12 +878,9 @@ func app_download_version(id, version string, peer ...string) bool {
 // 2. System binding (in apps.db)
 // 3. Fallback: First app that declares this service (dev apps first, then by install time)
 func app_for_service(user *User, service string) *App {
-	// 0. Core internal services (replication, directory, peers) have a
-	// single built-in handler registered at startup. Resolve them
-	// directly: this skips the user/system binding lookups and the
-	// O(apps) fallback scan that would otherwise run on every core P2P
-	// event, and guarantees a user-installed app cannot shadow a core
-	// service by declaring its name.
+	// 0. Core internal services (replication, directory, peers) resolve
+	// directly to their built-in handler, so a user-installed app cannot shadow
+	// one by declaring its name, and core P2P skips the fallback scan.
 	if a := internal_service_app(service); a != nil {
 		return a
 	}
@@ -993,10 +957,8 @@ func app_services(a *App, user *User) []string {
 }
 
 // internal_service_app returns the built-in app handling a core internal
-// service (replication, directory, peers), or nil. The map is written
-// only at startup (service()), so the locked read is a tight, cheap
-// critical section that never nests with the locks app_for_service's
-// other steps take.
+// service, or nil. The map is written only at startup, so this locked read
+// never nests with the locks app_for_service's other steps take.
 func internal_service_app(service string) *App {
 	apps_lock.Lock()
 	a := internal_services[service]
@@ -1027,13 +989,9 @@ func app_for_service_fallback(user *User, service string) *App {
 	return app_select_best(candidates)
 }
 
-// app_login_path is the URL path the login app is served at. The
-// login_app system setting names it (default "login"); an administrator
-// can point it at another app's path to replace the login experience —
-// landing page and interstitials — with their own app. Resolving by
-// path, not by app id, keeps it mode-independent (the path is the same
-// on a development and a published install), which is what stopped the
-// published-install redirect loop in ticket #414.
+// app_login_path is the URL path the login app is served at, named by the
+// login_app setting (default "login"). Resolving by path rather than app id
+// keeps it the same on development and published installs (#414).
 func app_login_path() string {
 	return setting_effective("login_app")
 }
@@ -1067,9 +1025,6 @@ func app_login_route(name string) string {
 	return "/" + app_login_path() + "/" + name
 }
 
-// app_login_owns reports whether a trimmed request path belongs to the
-// login app (its path or a sub-path) — used to exempt it from the
-// shell-level closing gate.
 func app_login_owns(raw string) bool {
 	p := app_login_path()
 	return raw == p || strings.HasPrefix(raw, p+"/")
@@ -1261,17 +1216,9 @@ func app_select_best(candidates []*App) *App {
 		candidates = published
 	}
 
-	// If multiple, pick the one with earliest install time, and settle a tie on
-	// the id. The tie is the common case rather than the odd one - a default
-	// app set installs in a batch, and 24 of the 26 apps on the production
-	// server share two adjacent seconds - and candidates arrive here in Go map
-	// order, which is randomised per process. That was tolerable while this
-	// only chose who RENDERS an entity; entity_class_owned now asks the same
-	// question to decide who may change or destroy one, and a security answer
-	// must not vary from one restart to the next.
-	//
-	// Install time still leads, so an app installed after an incumbent can
-	// never take its class.
+	// Earliest install time wins, ties settled on the id. Ties are the common case
+	// - a default app set installs in one batch - and map order is randomised, but
+	// entity_class_owned decides ownership from this answer.
 	var best *App
 	var best_time int64 = 0
 	for _, a := range candidates {
@@ -1380,16 +1327,9 @@ func apps_path_delete(path string) {
 	resolution_invalidate() // system path binding removed
 }
 
-// apps_record stamps an app's install timestamp, once. The first write wins:
-// load_version runs on every startup load as well as on install, so REPLACE
-// INTO re-stamped every app with the boot time and left app_select_best - which
-// breaks path and class ties on "earliest install wins" - comparing values that
-// were all equal, or ordered by nothing more than which directory sorted first.
-//
-// It used to always write, to re-emit a system-set op so the other host in a
-// replication pair pulled the new code. That layer was removed in 2026-07 and
-// this function no longer emits anything, so the reason for overwriting went
-// with it.
+// apps_record stamps an app's install timestamp, once - load_version runs on
+// every startup load, not only on install, and app_select_best breaks path and
+// class ties on the earliest install winning.
 func apps_record(app string) {
 	db := db_apps()
 	db.exec("insert into apps (app, installed) values (?, ?) on conflict(app) do nothing", app, now())
@@ -1536,11 +1476,9 @@ func apps_dir() string {
 	return filepath.Join(data_dir, "apps")
 }
 
-// apps_dir_create ensures <data_dir>/apps/ exists. Called during startup
-// alongside run_dir_create: without it a server that has never installed an
-// app has no such directory, and the listing below warns - which emails the
-// administrator - every start until the first install. 0700 matches what
-// installs already leave on disk; an existing directory keeps its own mode.
+// apps_dir_create ensures <data_dir>/apps/ exists. Without it the listing in
+// apps_manager warns - which emails the administrator - on every start until
+// the first install. An existing directory keeps its own mode.
 func apps_dir_create() error {
 	return os.MkdirAll(apps_dir(), 0700)
 }
@@ -1588,11 +1526,8 @@ func apps_manager() {
 		// service name (see apps_pin_default_services).
 		apps_pin_default_services(apps_default)
 
-		// Re-apply each default app's permission grants to already-set-up
-		// users, so a change to an app's apps_default set reaches users
-		// provisioned before the change — and a service app driven only by
-		// inbound P2P events (the Comptroller) gets its defaults seeded at all
-		// (app_user_setup otherwise fires only from a same-host service call).
+		// Re-apply default apps' permission grants to already-set-up users (see
+		// apps_seed_default_permissions).
 		apps_seed_default_permissions()
 
 		// Wait out the poll. There was an early-wake channel here, signalled
@@ -1602,19 +1537,10 @@ func apps_manager() {
 	}
 }
 
-// apps_pin_default_services binds each default app's declared services to that
-// app via a system service binding, so name-based service resolution for core
-// services (repositories, notifications, ...) cannot fall through to the
-// fallback and be captured by an imposter app that declares the same service
-// name. Deliberately conservative:
-//   - it never overwrites an existing system binding, so an administrator
-//     override (set via mochi.app.service.set) survives;
-//   - it skips any service a dev app provides, so local-development precedence
-//     (dev apps win) is preserved.
-//
-// A user's own binding (a.user.app.service.set) always takes precedence over the
-// system binding, so per-user overrides are unaffected either way. Idempotent:
-// safe to run on every apps_manager pass.
+// apps_pin_default_services binds each default app's declared services to it,
+// so a core service name cannot fall through the fallback to an imposter app.
+// Never overwrites an existing binding, skips dev-provided services,
+// idempotent.
 func apps_pin_default_services(defaults []DefaultApp) {
 	default_ids := map[string]bool{}
 	for _, d := range defaults {
@@ -1659,17 +1585,8 @@ func apps_pin_default_services(defaults []DefaultApp) {
 }
 
 // apps_seed_default_permissions re-applies every default app's apps_default
-// permission grants to each already-set-up user. The normal grant path,
-// app_user_setup(), runs only from a same-host service call (api_service_call /
-// service_call_as_server), so two gaps exist: a service app driven solely by
-// inbound P2P events (the Comptroller) never has its defaults seeded for its
-// owner, and a CHANGE to an existing app's apps_default set never reaches users
-// provisioned before the change. This sweep closes both. It is safe to run on
-// every apps_manager pass: app_user_setup is idempotent and count-change-aware
-// (it early-returns when the stored grant count already matches, and uses
-// insert-or-ignore so a user-revoked grant is never re-granted), so it is a
-// cheap no-op once every user is current. user_pending users are skipped inside
-// app_user_setup — they are seeded when their bootstrap completes.
+// grants to each active user, covering what app_user_setup's same-host service
+// call misses: a P2P-only service app, and a changed apps_default set.
 func apps_seed_default_permissions() {
 	db := db_open("db/users.db")
 	if db == nil {
@@ -1692,14 +1609,8 @@ func apps_seed_default_permissions() {
 }
 
 // manifest_validate checks every field of a parsed app.json that the server
-// later trusts as a name, a path or a function.
-//
-// Extracted so app_read and AppVersion.reload run the same checks. reload
-// re-applies fourteen manifest fields onto a live version and used to re-run
-// only themes_validate, so an action's file path - concatenated onto the app's
-// base directory and served without further checking - reached the filesystem
-// having passed nothing. That gap is how the two lists drift: themes_validate
-// was added to reload when themes landed, and nothing generalised it.
+// later trusts as a name, a path or a function. Extracted so app_read and
+// AppVersion.reload run the same checks.
 func manifest_validate(av *AppVersion) error {
 	if !valid(av.Version, "version") {
 		return fmt.Errorf("App bad version %q", av.Version)
@@ -2158,16 +2069,9 @@ func (a *App) service(service string) {
 	apps_lock.Unlock()
 }
 
-// Find the action best matching the specified name
 // event returns the handler this version declares for an event name, falling
-// back to the catch-all "" entry.
-//
-// The unlock is deferred, unlike the two open-coded copies this replaces. A
-// panic between a bare Lock and Unlock leaves apps_lock held for the life of
-// the process - and it is a global mutex every app lookup takes, so the
-// guard() at each P2P entry point contains the faulted goroutine and the
-// server stops routing anything. That is how a nil version dereferenced
-// inside this window turned one bad frame into a dead host.
+// back to the catch-all "" entry. The unlock is deferred: apps_lock is global
+// and a panic while it is held stops the server routing anything.
 func (av *AppVersion) event(name string) (AppEvent, bool) {
 	apps_lock.Lock()
 	defer apps_lock.Unlock()
@@ -2208,15 +2112,9 @@ func (av *AppVersion) find_action(name string) *AppAction {
 		}
 	})
 
-	// Split the requested path once. Every matcher below compares whole
-	// segments of it, so re-splitting bought nothing and cost a great deal:
-	// the file/feature prefix walk re-split the entire remaining path on each
-	// iteration while shrinking it by one segment, making route matching
-	// quadratic in path segments, and the dynamic matcher re-split it once per
-	// candidate. A 1MB URL (MaxHeaderBytes) carries roughly half a million
-	// segments, and with ReadTimeout and WriteTimeout deliberately unset
-	// (web.go) nothing bounded the resulting CPU burn - on any URL of any app,
-	// before authorization, from an unauthenticated caller.
+	// Split the requested path once. Re-splitting per candidate and per prefix
+	// made route matching quadratic in path segments, unbounded (no ReadTimeout)
+	// and reachable before authorization from any caller.
 	name_segments := strings.Split(name, "/")
 
 	for _, aa := range candidates {
@@ -2226,13 +2124,9 @@ func (av *AppVersion) find_action(name string) *AppAction {
 			return &aa
 		}
 
-		// If type files or feature, check for matching parent.
-		// Supports parameterized patterns like :wiki/-/assets.
-		//
-		// Only the prefix carrying exactly as many segments as the pattern can
-		// match: string equality implies equal segment counts, and the
-		// parameterized comparison demands it outright. So test that one depth
-		// rather than walking every prefix from the full path down.
+		// Files/feature routes match a parent prefix, including parameterized
+		// patterns like :wiki/-/assets. Only the prefix with exactly as many segments
+		// as the pattern can match, so test that one depth.
 		if aa.Files != "" || aa.Feature != "" {
 			key_segments := strings.Split(aa.name, "/")
 			if len(key_segments) <= len(name_segments) {
@@ -2407,16 +2301,9 @@ func (av *AppVersion) reload() {
 		return
 	}
 
-	// Reload skips app_read, so its validation runs here instead - all of it,
-	// not just the themes boundary this used to re-check. Every field applied
-	// below is one the server later trusts as a name, a path or a function; an
-	// action's file, in particular, is concatenated onto av.base and served
-	// with nothing else looking at it. A manifest that fails keeps the loaded
-	// version.
-	//
-	// Ahead of the Execute paths being made absolute below, because
-	// manifest_validate checks them as relative filepaths, exactly as app_read
-	// does before its own conversion.
+	// Reload skips app_read, so its validation runs here. Ahead of the Execute
+	// paths being made absolute below, because manifest_validate checks them as
+	// relative filepaths, exactly as app_read does before its own conversion.
 	if err := manifest_validate(&fresh); err != nil {
 		info("App reload rejected %q: %v", path, err)
 		return
@@ -2546,14 +2433,9 @@ func api_app_label(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl.String(""), nil
 	}
 
-	// Language priority: user preference (logged in, including last_language
-	// fallback for "auto") > thread-local from request handler (anonymous
-	// Accept-Language) > "en". The handler in web.go calls
-	// request_language(c, user) and stashes the result via s.set("language",
-	// ...) so anonymous public-action calls still get a translated label set.
-	// For composed-then-deferred sends (email/push notifications), the user
-	// is set on the thread but no request context is available; user_language
-	// reads the persisted last_language for those callers.
+	// Language priority: user preference (including the last_language fallback for
+	// "auto") > the request handler's thread-local (anonymous Accept-Language) >
+	// "en". Deferred sends have a user but no request.
 	language := "en"
 	if user != nil {
 		language = user_language(user)
@@ -2705,11 +2587,9 @@ func api_app_package_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no app")
 	}
 
-	// Read the two entries this needs straight out of the archive. It used to
-	// extract the whole package to a temp directory and delete it moments
-	// later, having read only app.json and labels/en.conf - so an app could
-	// have a bomb written to disk for nothing. Reading in place removes the
-	// surface rather than bounding it, and is the faster path anyway.
+	// Read the two entries this needs straight out of the archive rather than
+	// extracting the package: an app must not be able to have a bomb written to
+	// disk for a metadata read.
 	archive, err := zip.OpenReader(api_file_path(user, a, file))
 	if err != nil {
 		return sl_error(fn, "failed to open archive: %v", err)
@@ -2825,11 +2705,9 @@ func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	if !check_only {
-		// Demote to the fingerprint if the manifest's paths are already taken,
-		// as app_download_version and the startup load both do before their own
-		// load_version. Without it a package keeps a contested prefix and
-		// becomes a candidate for it - `login` included, which core exempts
-		// from its own authentication gates.
+		// Demote to the fingerprint if the manifest's paths are already taken, as
+		// app_download_version and the startup load do; otherwise a package keeps a
+		// contested prefix, `login` included, which core exempts from auth gates.
 		app_resolve_paths(av, id)
 
 		na := app_external(id)
@@ -2945,12 +2823,9 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 
 	apps_lock.Lock()
 
-	// Gather all (app, version, theme) tuples, then drop any whose visual
-	// definition is byte-for-byte identical to one we've already seen. Dev
-	// apps win the dedup so a developer iterating on a manifest doesn't see
-	// their themes shadowed by a published copy of the same app. Diverging
-	// any field — hue, spacing, override, background — produces a distinct
-	// signature and both themes are shown.
+	// Drop any theme whose definition is byte-for-byte identical to one already
+	// seen; dev apps win the dedup so a developer's edits are not shadowed by a
+	// published copy of the same app.
 	type entry struct {
 		app   *App
 		av    *AppVersion
@@ -3024,11 +2899,9 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	return sl_encode(results), nil
 }
 
-// mochi.app.presets() -> dict: Get the per-density CSS-var bundles
-// referenced by a theme's spacing or the user's density override. The
-// result has one entry per density ("compact", "comfortable", "spacious")
-// mapping every CSS custom property the preset emits to its value. Lets
-// the client apply density changes without duplicating the table.
+// mochi.app.presets() -> dict: The per-density CSS-var bundles referenced by a
+// theme's spacing or the user's density override, one entry per density
+// ("compact", "comfortable", "spacious").
 func api_app_presets(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	result := map[string]any{}
 	for _, density := range []string{"compact", "comfortable", "spacious"} {
@@ -3215,10 +3088,8 @@ func api_app_service_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 }
 
 // mochi.app.url() -> string: The calling app's URL path prefix - its first
-// declared path, or its id when it declares none. This is the segment that
-// begins every route the app serves (/<prefix>/<entity>/-/action), so an app
-// building an absolute URL to one of its own routes prefixes it with this.
-// Matches the prefix core used when it built attachment URLs.
+// declared path, or its id when it declares none. This begins every route the
+// app serves (/<prefix>/<entity>/-/action).
 func api_app_url(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	app := principal_app(t)
 	if app == nil {
@@ -3229,10 +3100,8 @@ func api_app_url(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple)
 }
 
 // mochi.app.services() -> list: The services the calling app is the active
-// handler for. P2P frames route by SERVICE, and an app whose URL path prefix
-// differs from its service (paths ["comptroller"], services ["market"]) sends
-// frames nobody handles if it derives the header from mochi.app.url() - the
-// two happen to coincide for most apps, which is what let the mistake work.
+// handler for. P2P frames route by service, not by URL path prefix - the two
+// differ for some apps (paths ["comptroller"], services ["market"]).
 func api_app_services(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	app := principal_app(t)
 	if app == nil {
@@ -3394,13 +3263,8 @@ func api_app_version_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 // handshake requires the answering host to prove it holds app_id.
 func api_app_version_download(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Same permission as mochi.app.package.install: this reaches the same
-	// app_install, so gating only the other one would leave the fix
-	// bypassable by calling this instead. The bytes here are constrained to
-	// what the app's real publisher serves - the stream handshake proves the
-	// far side holds the app's entity - so this cannot inject foreign code
-	// the way a file install can. It can still make the server install app
-	// versions of the caller's choosing, which is not an arbitrary app's to
-	// decide.
+	// app_install, so gating only that one leaves it bypassable here - the
+	// handshake bounds what may be served, not which version gets installed.
 	if err := require_permission(t, fn, "apps/install"); err != nil {
 		return sl_error(fn, "%v", err)
 	}

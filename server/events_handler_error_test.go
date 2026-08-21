@@ -5,15 +5,11 @@
 
 // Tests for the failure path of a Starlark event handler.
 //
-// run_handler used to discard Starlark.call's error and return nil, which
-// the caller reads as "the handler ran": it acks to the sender and advances
-// the broadcast watermark past the sequence. The event was then lost for
-// good, because the retry it should have caused arrives at or below the
-// watermark and is classed as a duplicate.
-//
-// Propagating the error is only half of it. The dedup mark is set before
-// dispatch, so the retry a failure asks for is coalesced away unless the
-// worker forgets the id — see message_seen_clear.
+// A discarded handler error reads as "the handler ran": the caller acks and
+// advances the broadcast watermark, and the retry then arrives below it as a
+// duplicate. Propagating the error is only half - the dedup mark is set before
+// dispatch, so the retry is coalesced away unless the worker forgets the id
+// (message_seen_clear).
 
 package main
 
@@ -29,11 +25,9 @@ import (
 // the tests below need, and returns the App/AppVersion pair to run them.
 func starlark_event_app(t *testing.T) (*App, *AppVersion) {
 	t.Helper()
-	// main() sizes the concurrency semaphore at startup; in a test binary it
-	// is nil, and every acquire then blocks for the full queue timeout and
-	// returns "no concurrency slot available". That error is not nil, so a
-	// test asserting only "an error came back" passes without the handler
-	// ever running. Same guard the other Starlark tests use.
+	// main() sizes the concurrency semaphore at startup; in a test binary it is
+	// nil and every acquire returns "no concurrency slot available", so a test
+	// asserting only that an error came back passes without the handler running.
 	if starlark_semaphore == nil {
 		starlark_semaphore = make(chan struct{}, 4)
 	}

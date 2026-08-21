@@ -26,11 +26,6 @@ func verify_against(public ed25519.PublicKey, manifest, signature []byte) bool {
 	return ed25519.Verify(public, manifest, sig)
 }
 
-// TestManifestVerifyRejectsSubstitution pins the property that matters: a
-// manifest edited after signing, or signed by a key other than the release
-// key, must not verify. The digests inside a manifest only bind an artifact to
-// the manifest, so a host compromise could rewrite both together; the
-// signature is what a compromised host cannot forge.
 func TestManifestVerifyRejectsSubstitution(t *testing.T) {
 	public, private, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -84,12 +79,9 @@ func TestPinnedKeyIsValid(t *testing.T) {
 	}
 }
 
-// TestReleaseSigningRoundTrip is the real end-to-end check: the private key in
-// core/local signs a manifest through openssl exactly as the release does, and
-// the pinned public key verifies it through the server's own code. If signer
-// and verifier ever disagree on format, every real update check breaks; this
-// catches it here rather than in production. Skipped where the key or openssl
-// is absent, which is anywhere but the release machine.
+// TestReleaseSigningRoundTrip signs with the real release key through openssl,
+// exactly as the release does, and verifies with the pinned key: a format
+// disagreement between signer and verifier breaks every real update check.
 func TestReleaseSigningRoundTrip(t *testing.T) {
 	key := filepath.Join("..", "local", "update-signing.key")
 	if _, err := exec.LookPath("openssl"); err != nil {

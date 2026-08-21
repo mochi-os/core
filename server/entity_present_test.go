@@ -1,18 +1,14 @@
 // Mochi server: an entity that has been deleted is not a signing fault.
 //
-// pubsub_sign returns nil for two unrelated reasons - the entity row is gone,
-// or it is present with an unusable private key - and entity_sign already
-// separates them, logging info for the first and warn for the second. Both
-// callers then warned on any nil, which re-escalated the benign case: a
-// publish already in flight when the entity was deleted mailed the operator
-// about a race it had handled correctly. On 2026-08-17 the p2p harness created
-// and purged its fixture users and produced 14 of these across 7 entities in
-// one second.
+// pubsub_sign returns nil both when the entity row is gone and when its key is
+// unusable; entity_sign already separates them, info for the first and warn for
+// the second. A caller that warns on any nil mails the operator about a handled
+// race.
 //
-// Copyright © 2026 Mochisoft OÜ
+// Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

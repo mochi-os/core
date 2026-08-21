@@ -52,16 +52,10 @@ func main() {
 	}
 }
 
-// server_arguments parses a command line into the configuration path. The
-// server takes one flag; reporting the running version is mochictl's job
-// (`mochictl version`, and `mochictl status`), and a second way to ask would
-// be one more thing to keep consistent for no gain.
-//
-// Its own FlagSet with ContinueOnError rather than the global
-// flag.CommandLine, which is ExitOnError: on a bad flag that calls
-// os.Exit, which ends a test process along with the server. Returning the
-// error instead makes the flag surface testable and leaves the exit code
-// to the one caller that owns it.
+// server_arguments parses a command line into the configuration path. Reporting
+// the version is mochictl's job, so there is no -version flag. Its own FlagSet
+// with ContinueOnError: flag.CommandLine's ExitOnError would kill a test
+// process.
 func server_arguments(arguments []string, default_config string, output io.Writer) (config string, err error) {
 	set := flag.NewFlagSet("mochi-server", flag.ContinueOnError)
 	set.SetOutput(output)
@@ -69,11 +63,8 @@ func server_arguments(arguments []string, default_config string, output io.Write
 	if err = set.Parse(arguments); err != nil {
 		return config, err
 	}
-	// The flag package stops at the first non-flag argument and reports no
-	// error, so `mochi-server version` - the subcommand spelling anyone who
-	// has used mochictl will try - silently ignored the word and started a
-	// server. The server takes no positional arguments, so any is a mistake
-	// and is refused rather than dropped.
+	// The flag package stops at the first non-flag argument and reports no error,
+	// so `mochi-server version` would silently start a server.
 	if set.NArg() > 0 {
 		err = fmt.Errorf("unexpected argument %q: mochi-server takes no positional arguments", set.Arg(0))
 		fmt.Fprintln(output, err)
@@ -82,13 +73,9 @@ func server_arguments(arguments []string, default_config string, output io.Write
 	return config, err
 }
 
-// main_serve runs the full server lifecycle: parse flags, load config, start
-// managers, wait for a shutdown trigger, drain, exit. Returns the exit code.
-//
-// The optional ready callback is invoked once initialisation is complete and
-// the server has started serving requests — used by the Windows service
-// handler to transition from StartPending to Running at the right moment.
-// Pass nil in interactive mode.
+// main_serve runs the full server lifecycle and returns the exit code. The
+// optional ready callback fires once the server is serving; the Windows service
+// handler uses it to reach Running. Pass nil in interactive mode.
 func main_serve(ready func()) int {
 	// Platform-aware default paths, shared with mochictl
 	default_config := paths.Config()
@@ -97,18 +84,14 @@ func main_serve(ready func()) int {
 
 	config, err := server_arguments(os.Args[1:], default_config, os.Stderr)
 	if err != nil {
-		// server_arguments has already written the error and the usage.
-		// Exit 2 is what flag.CommandLine's ExitOnError used to produce
-		// for the same input, so callers and scripts see no change.
+		// server_arguments has already written the error and the usage. Exit 2 is the
+		// conventional flag-parse status.
 		return 2
 	}
 	config_file = config
 
-	// Announced only once the arguments are known good. Logging it first
-	// meant every rejected invocation - a typo, or a `--version` an
-	// operator reached for - wrote "Mochi X starting" to the journal and
-	// then exited without starting, leaving a start record with no
-	// matching shutdown for whoever read the log later.
+	// Announced only once the arguments are known good, so a rejected invocation
+	// leaves no start record without a matching shutdown.
 	if build_platform != "" {
 		info("Mochi %s starting on %s", build_version, build_platform)
 	} else {
@@ -134,28 +117,18 @@ func main_serve(ready func()) int {
 		warn("Unable to create app directory %s: %v", apps_dir(), err)
 	}
 	temporary_configure()
-	// Build the Starlark API table and register the built-in apps and hooks
-	// before anything can evaluate a script, route an event, or open a
-	// stream. Explicit rather than package init()s, so the app-visible API
-	// surface and the built-in handler set are startup steps with a defined
-	// position rather than side effects of importing a file.
-	//
-	// log.go and streams.go keep their init()s deliberately - see the note
-	// on each. They must be in place before ANY code can log or decode,
-	// including package-level variable initialisers, which run before this.
+	// Build the API table and register built-in apps and hooks before anything can
+	// evaluate a script, route an event, or open a stream. log.go and streams.go
+	// keep their init()s: they must precede package-level variables.
 	api_init()
 	events_init()
 	directory_init()
 	world_init()
 	peers_init()
 	senders_init()
-	// Confirm the data directory is writable. On Windows, the MSI
-	// installer creates %ProgramData%\Mochi\data owned by SYSTEM with
-	// restrictive ACLs so the auto-installed mochi-server service
-	// (running as LocalSystem) can write to it. Running
-	// mochi-server.exe interactively from a non-admin shell hits a
-	// permission wall that previously surfaced as a panic from deep
-	// inside setting_set; bail early with a clear message instead.
+	// Confirm the data directory is writable: on Windows %ProgramData%\Mochi\data
+	// is SYSTEM-owned, so an interactive non-admin run cannot write there. Bail
+	// here rather than panicking inside setting_set.
 	if err := data_dir_writable_check(); err != nil {
 		warn("Data directory %q is not writable: %v.", data_dir, err)
 		switch runtime.GOOS {
@@ -255,14 +228,9 @@ func main_serve(ready func()) int {
 		ready()
 	}
 
-	// Wait for a shutdown trigger. Sources:
-	//   - os.Interrupt (Ctrl-C, cross-platform)
-	//   - SIGTERM (docker stop, systemctl stop)
-	//   - shutdown_request channel (mochictl stop / restart, exit code carried;
-	//     also driven by the Windows service handler when the SCM sends Stop)
-	// SIGHUP is registered too but ignored — config reload was dropped, and
-	// not registering it would let kill -HUP terminate the process via the
-	// default signal action.
+	// Wait for a shutdown trigger: os.Interrupt, SIGTERM, or shutdown_request
+	// (mochictl stop / restart, carrying the exit code). SIGHUP is registered only
+	// so its default action does not terminate the process.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, append([]os.Signal{os.Interrupt}, extra_signals()...)...)
 
@@ -286,29 +254,17 @@ loop:
 
 	audit_server_stop()
 
-	// Run the drain + close sequence under an overall deadline. queue_drain
-	// and peers_shutdown are individually bounded, but on a busy PUBLIC host
-	// libp2p's host Close (and the relay/transport shutdown beneath it) can
-	// block indefinitely when a connection or listener won't quiesce —
-	// observed on yuzu hanging the full systemd TimeoutStopSec (90s) before
-	// SIGKILL, while an idle NAT'd instance shuts down in milliseconds. Cap
-	// the whole phase well under 90s so we exit cleanly on our own terms
-	// instead of being force-killed mid-write. SQLite is crash-safe (WAL
-	// recovery on next open), so a forced exit here loses no committed data,
-	// and peers treat the dropped connection like any other and reconnect.
+	// Cap the whole drain and close under a deadline: libp2p's host Close can
+	// block indefinitely on a busy public host, and systemd SIGKILLs at 90s.
+	// SQLite is crash-safe, so a forced exit loses no committed data.
 	const shutdown_grace = 30 * time.Second
 	done := make(chan struct{})
 	go func() {
 		queue_drain(10 * time.Second) // outbound queue (bounded)
 		peers_shutdown()              // bye to connected peers (bounded)
-		// relay_shutdown (relay_service.Close) and net_me.Close (the libp2p host
-		// close) are BOTH unbounded libp2p teardowns, and on a busy PUBLIC host
-		// they reliably never quiesce: the web server is still accepting on the
-		// shared :443 listener and the QUIC/relay connections won't drain, so
-		// this phase WAS the entire 30s hang-then-kill on every restart (an idle
-		// NAT'd host closes in milliseconds). Give it a brief window for a clean
-		// close, then move on — peers already got goodbye, the OS reclaims the
-		// sockets on exit, and peers treat the dropped connection like any other.
+		// relay_shutdown and net_me.Close are both unbounded libp2p teardowns and on
+		// a busy public host never quiesce. Give them a brief window, then move on -
+		// peers already got goodbye and the OS reclaims sockets.
 		netdone := make(chan struct{})
 		go func() {
 			relay_shutdown() // stop the circuit-relay service
@@ -330,11 +286,8 @@ loop:
 	case <-done:
 		info("Shutdown complete")
 	case <-time.After(shutdown_grace):
-		// Backstop only: the libp2p teardown is individually bounded above, so
-		// reaching here means queue_drain / peers_shutdown / audit_close itself
-		// overran — rare. info, not warn: the forced exit is the designed, safe
-		// fallback (SQLite is crash-safe; the alternative was the 90s SIGKILL),
-		// so it's not operator-actionable — log it, don't email a "Mochi error".
+		// Backstop: reaching here means the drain itself overran. info, not warn -
+		// the forced exit is the designed fallback, not operator-actionable.
 		info("Shutdown exceeded %s; forcing exit", shutdown_grace)
 		os.Exit(exit_code)
 	}

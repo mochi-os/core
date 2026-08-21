@@ -1,14 +1,12 @@
 // Mochi server: signed peer record unit tests
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// Pins the trust and replay properties of signed peer records: a record
-// must carry its own valid libp2p signature, name the GossipSub-verified
-// sender, and advance the stored sequence; a replay or a record for the
-// wrong peer is rejected; and the sequence survives a restart so an
-// attacker cannot roll a peer's addresses back across one.
+// Trust and replay properties: a record must carry its own valid libp2p
+// signature, name the GossipSub-verified sender, and advance a stored sequence
+// that survives a restart.
 
 package main
 

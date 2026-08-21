@@ -5,21 +5,14 @@
 # Mochi Application Interface Exception - see license.txt and license-exception.md.
 
 """CI guard: every key in server/labels/en.conf must be translated in all
-sibling <lang>.conf catalogs.
+sibling <lang>.conf catalogs. Exits non-zero with a per-locale breakdown.
 
-"Translated" means present and non-empty. A value identical to the English
-source is allowed only when the source is acceptable-English: every alphabetic
-word in it (placeholders stripped) is a keep-word — a brand/protocol token,
-loanword, or colour name. A real error or notification message always has an
-ordinary word, so it is never exempted; only standalone brand/loanword labels
-are.
+"Translated" means present and non-empty. A value identical to the English is
+allowed only when every alphabetic word in the source is a keep-word - a brand
+or protocol token, loanword, or colour name.
 
-Exits non-zero with a per-locale breakdown when any catalog is incomplete, so
-the i18n-check workflow fails the PR.
-
-KEEP_WORDS is an inline copy of the canonical list in the monorepo's
-claude/scripts/i18n_glossary.py (that module can't be imported here — separate
-repo). Keep the two in sync.
+KEEP_WORDS is an inline copy of claude/scripts/i18n_glossary.py in the monorepo
+(separate repo, so it cannot be imported). Keep the two in sync.
 """
 import re
 import sys
@@ -61,14 +54,8 @@ KEEP_ENGLISH = frozenset({
 })
 
 def _strip_placeholders(value):
-    """Remove every {...} group, including nested ICU constructs.
-
-    A regex cannot do this: a {...} pattern stops at the first closing brace,
-    so `{count, plural, one {#m} other {#m}}` loses `{count, plural, one {#m}`
-    and leaves ` other {#m}}` behind - which then reads as the English word
-    "other" and makes a translated plural look like untranslated prose.
-    Mirrors claude/scripts/i18n_glossary.py strip_placeholders; keep in sync.
-    """
+    """Remove every {...} group, nested ICU constructs included - a regex stops at the first closing
+    brace and leaves ` other {#m}}` behind. Mirrors i18n_glossary.py strip_placeholders; keep in sync."""
     out = []
     depth = 0
     for c in value:

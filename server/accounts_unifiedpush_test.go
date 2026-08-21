@@ -181,10 +181,8 @@ func TestUnifiedPushDeliverEmptyEndpoint(t *testing.T) {
 	}
 }
 
-// TestUnifiedPushDeliverRoutesToStoredEndpoint verifies that the endpoint
-// from the account's data column is the one the deliver function POSTs to —
-// not some hardcoded URL or default. Catches a regression where the path
-// logic accidentally rewrites foreign endpoints.
+// The deliver function must POST to the endpoint stored on the account, not a
+// rewritten or default URL.
 func TestUnifiedPushDeliverRoutesToStoredEndpoint(t *testing.T) {
 	private_endpoints_allowed(t)
 	expected_host := ""

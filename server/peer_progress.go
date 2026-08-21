@@ -1,34 +1,13 @@
-// Mochi server: Peer send-progress (app-level "stalled") cache.
-//
-// peer_reachability.go tracks libp2p CONNECT failures. This tracks the
-// distinct failure mode that cache deliberately ignores ("the peer IS
-// reachable; the failure is application- or protocol-level, handled
-// separately"): a peer whose /mochi/2/messages stream OPENS fine but whose
-// inflight frames repeatedly time out without an ack.
-//
-// Without this, queue_process keeps surfacing that target's backlog every
-// tick, the manager re-enters immediately (queue.go drain loop), and
-// queue_select re-scans the whole pending set each pass — a large enough
-// backlog to one dead target pins a core.
-//
-// When a target crosses the threshold it is "stalled" for
-// peer_stall_window; queue_process defers its entire backlog in one shot
-// (queue_defer_target) so queue_select stops scanning it. After the
-// window the deferred rows come due again and get one trial send: an ack
-// clears the stall and resurrects the backlog; another timeout re-stalls.
-// A trial is a cheap frame send (the stream is already open), so unlike
-// the connect-level silent cache there is no libp2p-dial cost to a
-// periodic trial — the time-windowed model the silent cache rejects is
-// safe here.
-//
-// Signals, fed from the per-peer Sender where the peer is known:
-//   - ack frame resolved an inflight entry  -> peer_mark_progress
-//   - inflight entry timed out without ack   -> peer_mark_no_progress
+// Mochi server: Peer send-progress ("stalled") cache. peer_reachability.go
+// tracks libp2p connect failures; this tracks a peer whose /mochi/2 stream
+// opens but whose frames time out without an ack. A stalled target's whole
+// backlog is deferred for peer_stall_window, then gets one trial send that
+// clears or re-stalls it. Fed from the per-peer Sender.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

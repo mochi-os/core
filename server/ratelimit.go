@@ -42,13 +42,10 @@ var (
 		window:  300,
 	}
 
-	// Login-code sends, keyed on the account rather than the IP: 5 per 15
-	// minutes. code_send is reachable both from /_/auth/code, which the login
-	// middleware covers, and from mochi.user.code.send(), which any app
-	// holding user/export can call — so the limit lives on the function every
-	// caller shares. Each send also leaves another hour-long code valid (the
-	// codes table keys on the code, not the account), so this bounds how many
-	// can be outstanding at once as well as the mail volume.
+	// Login-code sends, keyed on the account rather than the IP: 5 per 15 minutes.
+	// code_send is reachable from /_/auth/code and from mochi.user.code.send(), so
+	// the limit lives on the shared function. Each send leaves an hour-long code
+	// valid.
 	rate_limit_code = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
 		limit:   5,
@@ -71,76 +68,37 @@ var (
 		window:  1,
 	}
 
-	// Pubsub inbound control-plane rate limiter: 10 per second per peer,
-	// for the peers service only. Separate from rate_limit_pubsub_in so
-	// application traffic cannot starve the messages hosts use to learn
-	// each other's addresses — a synchronous remote request blocks on one
-	// of those answers, and losing it reports an online peer as unreachable.
-	//
-	// A peer's legitimate control traffic is a few messages per minute, not
-	// per second: senders self-limit to one address request and one relayed
-	// record per minute per target (rate_limit_peer_request,
-	// rate_limit_record_relay) and re-announce hourly. 10 per second is
-	// therefore orders of magnitude of headroom for a burst while still
-	// bounding what a flooder can push through this path.
+	// Pubsub inbound control plane: 10 per second per peer, peers service only.
+	// Separate from rate_limit_pubsub_in so application traffic cannot starve
+	// address learning; legitimate control traffic is a few messages per minute.
 	rate_limit_pubsub_control = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
 		limit:   10,
 		window:  1,
 	}
 
-	// Directory sync serving: 6 per minute per requesting peer.
-	//
-	// A sync request is one small anonymous frame, and answering it reads and
-	// streams every directory row at or after the requester's watermark - a
-	// request with no watermark means the whole table. The asymmetry is the
-	// problem, not the size: the rows are public, the node already stores
-	// them all, and a joining peer legitimately needs every one, so capping
-	// how MANY rows go back would break bootstrap. What has no legitimate
-	// form is asking again immediately.
-	//
-	// directory_sync runs on a 5-minute tick, so 6 per minute is two orders
-	// of magnitude of headroom for a peer that restarts, reconnects and
-	// re-syncs in quick succession.
+	// Directory sync serving: 6 per minute per requesting peer. Answering streams
+	// every row at or after the requester's watermark, so capping the row count
+	// would break bootstrap; capping how often it may be asked does not.
 	rate_limit_directory_sync = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
 		limit:   6,
 		window:  60,
 	}
 
-	// Directory push receiving: 6 per minute per pushing peer.
-	//
-	// The sibling of rate_limit_directory_sync, and the same reasoning applies
-	// harder. Sync is anonymous and costs a read; push is anonymous and costs
-	// a WRITE per row the peer chooses to send - four validators, up to three
-	// SQLite queries and an ed25519 verification each - and the peer decides
-	// how many rows there are. It had no limiter at all.
-	//
-	// directory_sync drives one push per 5-minute tick at most, and the
-	// sender's watermark makes steady state one per hourly re-attest cycle, so
-	// 6 per minute is two orders of magnitude of headroom for a peer that
-	// restarts, reconnects and re-pushes in quick succession.
+	// Directory push receiving: 6 per minute per pushing peer. The sibling of
+	// rate_limit_directory_sync and costlier: each row the peer chooses to send
+	// costs validators, SQLite queries and an ed25519 verification.
 	rate_limit_directory_push = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
 		limit:   6,
 		window:  60,
 	}
 
-	// Entity creation from an app: 30 per minute per user.
-	//
-	// A public entity is not a local row. entity_create mints a keypair, signs
-	// an announcement, writes users.db and directory.db, and then floods the
-	// mesh - where every peer verifies the signature and writes its own row. One
-	// call is therefore N remote writes, and nothing bounded how many calls an
-	// app could make. Only WITHDRAWAL was limited (rate_limit_entry_withdraw),
-	// which is the wrong way round for a resource.
-	//
-	// Keyed on the user rather than the app, so a busy server's other accounts
-	// are unaffected by one app looping for one of them, and so the bound
-	// follows the account the entities belong to. Every app call site creates
-	// one entity per user action - none is inside a loop - so 30 a minute is far
-	// above hand-driven creation while turning an unbounded loop into one every
-	// two seconds.
+	// Entity creation from an app: 30 per minute per user. entity_create mints a
+	// keypair, writes users.db and directory.db and floods the mesh, so one call
+	// is N remote writes. Keyed on the user so one app's loop cannot bind other
+	// accounts.
 	rate_limit_entity_create = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
 		limit:   30,
@@ -166,11 +124,9 @@ var (
 		window:  60,
 	}
 
-	// Directory ghost-withdrawal rate limiter: 1 broadcast per hour per
-	// entity. Until a withdrawal propagates, every directory sync echoes
-	// the same ghost row back (5-minute cadence); this bounds the
-	// duplicate delete broadcasts entry_store would otherwise answer
-	// each echo with.
+	// Directory ghost-withdrawal: 1 broadcast per hour per entity. Until a
+	// withdrawal propagates every 5-minute directory sync echoes the ghost row
+	// back, and this bounds the duplicate deletes entry_store would answer with.
 	rate_limit_entry_withdraw = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
 		limit:   1,
@@ -191,86 +147,40 @@ var (
 		window:  1,
 	}
 
-	// Broadcast fan-out, charged one per RECIPIENT: mochi.broadcast.send turns
-	// one call into N wire messages and N queue.db rows, and had no limiter.
-	//
-	// Separate from rate_limit_net_send for the reason rate_limit_verification
-	// is separate from rate_limit_code - a shared bucket would let one fan-out
-	// exhaust the budget the app's direct sends need - and cannot reuse its
-	// size, because charging per recipient changes the unit: feeds broadcasts
-	// once per imported RSS item to every subscriber, so a backfill of a few
-	// hundred items to a few dozen subscribers legitimately exceeds 1000 in a
-	// burst. The minute window absorbs such a burst and bounds sustained volume
-	// instead. Per app, so it bounds each app's contribution to the shared
-	// queue rather than the total.
+	// Broadcast fan-out, charged one per RECIPIENT: one mochi.broadcast.send
+	// becomes N wire messages and N queue rows. Separate from rate_limit_net_send
+	// so a fan-out cannot exhaust the app's direct-send budget; the minute window
+	// absorbs a backfill.
 	rate_limit_broadcast = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
 		limit:   20000,
 		window:  60,
 	}
 
-	// Outbound remote request/stream/ping/peer, per app AND target.
-	// mochi.remote.* was the one outbound primitive with no limit, while
-	// mochi.url.* and mochi.message.send have had one for a long time. Apps
-	// proxy a remote entity's assets through public actions - a person's avatar,
-	// a feed's image - so an anonymous caller can make this server re-fetch
-	// someone else's bytes as fast as it will go.
-	//
-	// Keyed on the TARGET as well as the app, not on the app alone like its
-	// siblings. Keying on the app alone would let a flood against one entity
-	// exhaust the budget every other user of that app shares, turning a
-	// bandwidth nuisance into a denial of service against ourselves.
-	//
-	// The ceiling is set by the largest legitimate fan-out at a SINGLE target,
-	// which is the apps update sweep: apps.star queries one publisher entity
-	// once per app in the catalogue, so a cold-cache sweep costs as many calls
-	// as there are apps (27 today). A refusal there does not degrade - Starlark
-	// has no try/except, so the builtin error aborts the whole action and the
-	// updates page 500s - so this has to clear a catalogue several times larger
-	// than today's, not merely today's. 600/minute leaves room to ~600 apps
-	// while still turning an unbounded loop into 10/second.
-	//
-	// It bounds the REQUEST rate, not bytes: 600 banner fetches a minute is
-	// still a lot of traffic. Byte accounting is a separate mechanism this does
-	// not attempt.
+	// Outbound remote request/stream/ping/peer, per app AND target. Keyed on the
+	// target too, so a flood against one entity cannot exhaust the budget every
+	// other user of that app shares. Sized to clear the apps update sweep, which
+	// costs one call per catalogue app against a single publisher.
 	rate_limit_remote_entity = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
 		limit:   600,
 		window:  60,
 	}
 
-	// Bytes relayed out of a.write.stream, per app and CLIENT, 2GB per minute.
-	// Measured in kilobytes: rate_limit_entry.count is an int, and a byte count
-	// this size would overflow it on a 32-bit build.
-	//
-	// This is the half the per-call cap cannot do. The cap bounds ONE relay; this
-	// bounds how many a caller may induce, which is what turns 600 fetches of a
-	// 10MB banner from 6GB of traffic into a bounded figure.
-	//
-	// Keyed on the CLIENT, deliberately not on the target entity like its
-	// call-counting sibling. A per-target byte budget is shared by everyone
-	// viewing that entity, so a much-visited profile would exhaust it and start
-	// refusing legitimate viewers - it would meter popularity rather than abuse.
-	// The client is who induces the cost, so the client is what to bound.
-	//
-	// Sized to clear one transfer of the largest object the platform stores, and
-	// held there by TestStorageLimitsAgree. A budget below that does not stop
-	// abuse, it truncates honest traffic part-way: the largest real transfers -
-	// a repository archive, a market asset download, a video attachment - are
-	// public routes an anonymous caller uses honestly, and a fast one completes
-	// well inside a single window. It is a ceiling on one client, not a tight
-	// quota, and it is the reason object_maximum cannot be raised on its own.
+	// Bytes relayed out of a.write.stream, per app and CLIENT, 2GB per minute. In
+	// kilobytes: rate_limit_entry.count is an int and a byte count would overflow
+	// it. Keyed on the client, not the target, so it does not meter popularity.
+	// Sized to clear one object_maximum transfer, and held there by
+	// TestStorageLimitsAgree.
 	rate_limit_stream_client = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
 		limit:   10 * 1024 * 1024, // kilobytes: one object_maximum transfer
 		window:  60,
 	}
 
-	// Same accounting per app, as a circuit breaker against the same flood spread
-	// across many addresses, which per-client keying cannot see. Set far above any
-	// plausible honest minute so ordinary load never reaches it: a limit low
-	// enough to bind in normal use would be shared fate, refusing every user of an
-	// app because one of them is being abused.
+	// Same accounting per app, as a circuit breaker against a flood spread across
+	// many addresses. Far above any plausible honest minute: a binding limit would
+	// refuse every user of an app because one is being abused.
 	rate_limit_stream_app = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
 		limit:   80 * 1024 * 1024, // kilobytes: eight per-client budgets
@@ -306,14 +216,9 @@ var (
 		window:  60,
 	}
 
-	// Account verification, in two buckets. Per recipient bounds what one
-	// mailbox receives; per sender bounds a spray across many addresses, which
-	// the recipient bucket never sees because each victim gets only one.
-	//
-	// Separate from rate_limit_code rather than sharing it: a shared bucket
-	// would let verification traffic aimed at an address exhaust the budget
-	// that address needs to receive a login code, which is the lockout core
-	// 266798d0 kept step-up out of the login bucket to avoid.
+	// Account verification, in two buckets: per recipient bounds what one mailbox
+	// receives, per sender bounds a spray across many addresses. Separate from
+	// rate_limit_code so verification cannot lock an address out of login codes.
 	rate_limit_verification = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
 		limit:   5,
@@ -327,24 +232,11 @@ var (
 	}
 )
 
-// RateLimitError is a refusal that the HTTP layer turns into a 429 rather than
-// the generic 500 every other builtin error becomes.
-//
-// Starlark has no try/except, so a limiter refusing inside a builtin unwinds the
-// whole action, and web_action_error saw only an opaque error: it answered 500
-// with the error text, which named the internal function and the budget. A 500
-// is not merely untidy - it reads as "the server faulted", so a correct client
-// retries it, and each retry recharges the budget the limiter is trying to
-// protect. Modelled on PermissionError, which already survives the unwind this
-// way (sl_error wraps with %w precisely so errors.As keeps working).
-//
-// Retry is seconds until the window resets, for Retry-After. Zero means unknown,
-// in which case no header is sent rather than a guessed one.
-//
-// detail names which budget was exhausted and how large it is. It reaches the log
-// and never the client: the numbers are what the old 500 disclosed to anonymous
-// callers, and an operator reading "which limit fired" is the only party who needs
-// them.
+// RateLimitError is a refusal the HTTP layer turns into a 429 rather than the
+// generic 500 every other builtin error becomes: a 500 reads as a server fault,
+// so clients retry and each retry recharges the budget. Retry is seconds until
+// reset (0 = unknown, no header); detail names the budget and reaches the log
+// only.
 type RateLimitError struct {
 	Retry  int
 	detail string
@@ -357,11 +249,8 @@ func (e *RateLimitError) Error() string {
 	return "rate limit exceeded (" + e.detail + ")"
 }
 
-// retry reports seconds until key's window resets, for Retry-After. Zero when no
-// window is live, which the caller reports as "unknown" rather than as "retry
-// now". reset and now() are both Unix seconds, so the difference is already whole
-// seconds and is at least 1 whenever it is positive - there is no rounding to do,
-// and no way to answer a misleading 0 while a window is still open.
+// retry reports seconds until key's window resets, for Retry-After. Zero means
+// no live window, which the caller reports as unknown rather than as retry now.
 func (r *rate_limiter) retry(key string) int {
 	r.lock.Lock()
 	defer r.lock.Unlock()
@@ -378,16 +267,9 @@ func (r *rate_limiter) retry(key string) int {
 }
 
 // remote_rate_limit charges one outbound mochi.remote.* call against both the
-// per-target and per-app budgets. Returns nil to proceed, or a *RateLimitError so
-// the HTTP layer answers 429 with Retry-After instead of a generic 500.
-// The target is an entity id for request/stream/ping and a URL for peer; either
-// way it is the thing we are about to dial, which is what needs bounding.
-//
-// The detail (which budget, and how large) goes into the error text for the log
-// only - the response body carries a translated label with no numbers in it. The
-// numbers come from the limiters themselves rather than being written out here: a
-// hardcoded figure drifts the moment a limit is retuned, and then names a budget
-// that is not the one being enforced.
+// per-target and per-app budgets, returning a *RateLimitError so the caller
+// answers
+// 429. The target is an entity id, or a URL for peer - whatever is about to be dialled.
 func remote_rate_limit(t *sl.Thread, target string) error {
 	app, _ := t.Local("app").(*App)
 	if app == nil {
@@ -406,13 +288,9 @@ func remote_rate_limit(t *sl.Thread, target string) error {
 	return nil
 }
 
-// spend charges n units against key's budget, for limiters that meter a quantity
-// (kilobytes relayed) rather than counting events. Returns false when the budget
-// was already gone BEFORE this charge.
-//
-// The charge still lands when it returns false, so an overshoot is recorded
-// rather than discarded - a caller that blows the budget by 30MB should wait for
-// that, not have it forgiven.
+// spend charges n units against key's budget, for limiters metering a quantity
+// rather than counting events. False means the budget was already gone before
+// this charge, which still lands, so an overshoot is not forgiven.
 func (r *rate_limiter) spend(key string, n int) bool {
 	r.lock.Lock()
 	defer r.lock.Unlock()
@@ -504,15 +382,9 @@ func (r *rate_limiter) allow(key string) bool {
 	return true
 }
 
-// since reports how long ago the current window for key began — i.e. how long
-// ago the first (and, for a limit-1 limiter, only) allowed action in this
-// window happened. Returns a large sentinel when there is no live window, so a
-// caller treating "no recent action" as "long ago" needs no special case.
-//
-// Used by remote_reach: when an address request for a target was suppressed
-// because one already went out this minute, this says how stale that request
-// is, so the wait for its answer can be bounded by when it was actually sent
-// rather than restarting a full window.
+// since reports how long ago key's current window began, or a large sentinel
+// when no window is live, so "no recent action" needs no special case.
+// remote_reach uses it to bound the wait for an already-sent address request.
 func (r *rate_limiter) since(key string) time.Duration {
 	r.lock.Lock()
 	defer r.lock.Unlock()
@@ -565,21 +437,11 @@ func rate_limit_api_middleware(c *gin.Context) {
 	c.Next()
 }
 
-// Per-account login throttle for the guessable factors (authenticator, MFA,
-// recovery codes), keyed by user uid so it follows the account across rotating
-// source addresses (the per-IP limiter alone does not).
-//
-// It is a reservation gate, NOT a read-then-sleep: each attempt atomically
-// claims the next verification slot under the lock, so concurrent guesses
-// against one account are serialised into distinct future slots and cannot all
-// slip through the free tier at once (the bug a plain "read count, sleep,
-// verify" has — every concurrent request observes the same pre-failure count).
-// It is also NOT a hard window: a correct credential submitted in a quiet
-// period reserves an immediate slot, verifies, and clears the account, so a
-// legitimate user is never locked out. Only when an account's reserved queue
-// already stretches past account_wait_maximum is a request refused (429) rather
-// than held — which both bounds the guess rate per account and caps how many
-// handler goroutines ever sleep at once.
+// Per-account login throttle for the guessable factors, keyed by uid so it
+// follows the account across rotating addresses. A reservation gate, not a
+// read-then-sleep: each attempt claims the next slot under the lock, so
+// concurrent guesses cannot all slip through on one pre-failure count. Past
+// account_wait_maximum it refuses (429).
 type account_gate_entry struct {
 	failures int
 	pending  int   // reservations issued but not yet settled (in-flight attempts)
@@ -626,12 +488,9 @@ func account_gate_spacing(failures int) int64 {
 	return gap
 }
 
-// reserve atomically assigns this attempt a verification slot. It returns the
-// seconds the caller must wait before verifying, and false when the account's
-// reserved queue is already deeper than account_wait_maximum — in which case the
-// caller rejects (429) instead of holding a goroutine. Serialising the slot
-// assignment under the lock is what stops parallel guesses bypassing the
-// throttle.
+// reserve atomically assigns this attempt a verification slot, returning the
+// seconds to wait and false when the queue is deeper than account_wait_maximum
+// - in which case the caller answers 429 instead of holding a goroutine.
 func (g *account_gate) reserve(uid string) (int64, bool) {
 	g.lock.Lock()
 	defer g.lock.Unlock()
@@ -647,13 +506,9 @@ func (g *account_gate) reserve(uid string) (int64, bool) {
 		start = now
 	}
 	wait := start - now
-	// Accept only when this attempt's whole slot (its wait plus the spacing it
-	// reserves) fits inside the window, so entry.next never climbs past
-	// now+account_wait_maximum. That bounds recovery after a flood to at most
-	// account_wait_maximum (a slot that started at the window edge cannot push next
-	// a further spacing beyond it) and stops next ratcheting away under
-	// sustained load. A front-of-queue attempt (wait 0) always fits, so a
-	// correct credential on a quiet account is never refused.
+	// Accept only when the whole slot (wait plus the spacing it reserves) fits
+	// inside the window, so entry.next never climbs past now+account_wait_maximum
+	// under sustained load. A front-of-queue attempt always fits.
 	gap := account_gate_spacing(entry.failures)
 	if wait+gap > account_wait_maximum {
 		return wait, false
@@ -663,12 +518,10 @@ func (g *account_gate) reserve(uid string) (int64, bool) {
 	return wait, true
 }
 
-// done settles a reservation from reserve. ok reports whether the credential
-// verified. A wrong guess widens the spacing owed on later attempts. A correct
-// credential clears the accumulated penalty — but only drops the whole entry
-// (rewinding the slot timeline) when this was the last in-flight attempt;
-// while other reservations are still sleeping it keeps their reserved slots so
-// a mid-flight success cannot rewind next and let new requests overlap them.
+// done settles a reservation from reserve. A wrong guess widens the spacing; a
+// correct one clears the penalty but drops the entry only when no other
+// reservation is still sleeping, so a mid-flight success cannot rewind their
+// slots.
 func (g *account_gate) done(uid string, ok bool) {
 	g.lock.Lock()
 	defer g.lock.Unlock()
@@ -710,12 +563,9 @@ func (g *account_gate) cleanup() {
 	}
 }
 
-// account_gate_guard reserves a slot for a guessable-factor verification and
-// waits out the (bounded) delay. It returns false after answering 429 when the
-// account's queue is already too deep; the caller just returns. On the normal
-// path the caller MUST settle the reservation exactly once with
-// account_login.done(uid, verified) — a deferred done(uid, false) is the safe
-// pattern, flipped to true once the credential verifies.
+// account_gate_guard reserves a slot and waits out the bounded delay. False
+// means it already answered 429 and the caller should return. Otherwise the
+// caller MUST settle exactly once with account_login.done(uid, verified).
 func account_gate_guard(c *gin.Context, uid string) bool {
 	wait, ok := account_login.reserve(uid)
 	if !ok {
@@ -782,26 +632,14 @@ func ratelimit_manager() {
 }
 
 // account_stepup is the guessing gate for step-up re-authentication, keyed on
-// the account like account_login and with the same spacing.
-//
-// Separate from account_login on purpose. Sharing one bucket would stop an
-// attacker refreshing their budget by alternating between the two, but it
-// would also let a step-up attacker exhaust the legitimate user's LOGIN
-// budget - locking them out of signing in, using only their address. The
-// login path already carries that denial-of-service property; a second
-// trigger for it is not worth the marginal gain, since the two credentials
-// guard different things.
+// the account like account_login and with the same spacing. Separate on
+// purpose: a shared bucket would let a step-up attacker exhaust the user's
+// LOGIN budget.
 var account_stepup = &account_gate{entries: make(map[string]*account_gate_entry)}
 
-// stepup_gate_reserve slows a step-up guess, sleeping out the spacing this
-// account has earned. Reports false when the queue is deeper than
-// account_wait_maximum, i.e. refuse rather than hold the caller any longer.
-//
-// The context-free half of account_gate_guard: the Starlark step-up builtins
-// have no gin.Context to hang a Retry-After header on, and a gate an app has
-// to remember to call is not a gate. Settle every reservation with
-// stepup_gate_done - a wrong guess is what widens the spacing, so failing to
-// report one leaves the gate open.
+// stepup_gate_reserve sleeps out the spacing this account has earned, reporting
+// false when the queue is deeper than account_wait_maximum. Settle every
+// reservation with stepup_gate_done - a wrong guess is what widens the spacing.
 func stepup_gate_reserve(uid string) bool {
 	if uid == "" {
 		return false

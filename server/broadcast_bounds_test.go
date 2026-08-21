@@ -1,17 +1,12 @@
 // Mochi server: the gap path's state is bounded against an unsigned key.
 //
-// An inbound broadcast event carries its stream key in content, which nothing
-// signs, and the gap branch in events.go buffers, notes a stall and requests a
-// resync BEFORE any app handler runs. A peer inventing a key per event
-// therefore wrote three stores with no app-level check having happened: the
-// pending table, broadcast_stalls and broadcast_resync_inflight. The table was
-// capped per stream and collected after days; the two maps had no ceiling and
-// no sweep at all, so they grew for the process lifetime.
+// The pending table, broadcast_stalls and broadcast_resync_inflight are all
+// written before any app handler runs, from a stream key nothing signs.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -84,11 +79,8 @@ func TestBroadcastStallCeilingKeepsTrackedStreams(t *testing.T) {
 	}
 }
 
-// TestBroadcastStallSweepDropsOnlyIdleEntries. A genuinely stalled stream is
-// re-noted by every arrival that gaps on it, so it stays; an abandoned key
-// goes. Sweeping on last-note rather than on stall age is the whole point -
-// sweeping on age would evict exactly the long stall the map exists to warn
-// about.
+// TestBroadcastStallSweepDropsOnlyIdleEntries - the sweep is on last-note, not
+// stall age: sweeping on age would evict exactly the long stall it warns about.
 func TestBroadcastStallSweepDropsOnlyIdleEntries(t *testing.T) {
 	broadcast_bounds_reset()
 	defer broadcast_bounds_reset()

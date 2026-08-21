@@ -33,26 +33,17 @@ import (
 var (
 	match_react = regexp.MustCompile(`assets/.*-[\w-]{8}\.(js|css)$`)
 	web_https   = false
-	// Redact credential-bearing query values so the access log never holds
-	// replayable secrets: ?token= (bearer tokens on websocket upgrades and
-	// sandboxed-iframe resource fetches) and the OAuth provider callback's
-	// ?code= (authorization code, exchangeable for tokens) and ?state= (CSRF
-	// nonce). Anchored to a query delimiter so it only touches those exact
-	// keys, never substrings like ?barcode=.
+	// Redact credential query values from the access log: ?token=, and the OAuth
+	// callback's ?code= and ?state=. Anchored to a query delimiter so it never
+	// matches a substring such as ?barcode=.
 	web_log_secret_query = regexp.MustCompile(`([?&](?:token|code|state)=)[^&]*`)
 )
 
-// web_server builds a listener with explicit connection limits. gin's r.Run
-// leaves every timeout unset, so any client can open a connection, dribble
-// headers (or send nothing at all) and hold a goroutine and file descriptor
-// indefinitely — slowloris, needing no authentication.
-//
-// ReadTimeout and WriteTimeout are deliberately NOT set. They bound the entire
-// request and entire response, which would break every path that legitimately
-// takes a long time: git pack upload/receive, restore-bundle uploads, large
-// attachment transfers, and websocket upgrades that stay open for the life of
-// the session. ReadHeaderTimeout bounds only the header phase and IdleTimeout
-// only the gap between keep-alive requests, so neither touches those.
+// web_server builds a listener with explicit connection limits: gin's r.Run
+// leaves every timeout unset, so any client can hold a goroutine and descriptor
+// indefinitely. ReadTimeout and WriteTimeout are deliberately NOT set - they
+// bound the whole request and response, breaking git packs, large uploads and
+// websockets.
 func web_server(addr string, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              addr,
@@ -63,31 +54,15 @@ func web_server(addr string, handler http.Handler) *http.Server {
 	}
 }
 
-// Default ceiling on simultaneously accepted connections. Half the fd budget
-// the packaged unit grants (LimitNOFILE=65535), leaving the rest for
-// databases, peer connections and app files.
-//
-// It is not a throughput limit and never binds in normal operation: HTTP/2
-// multiplexes a browser onto one connection per origin, iframed apps included
-// since they are same-origin, so this is on the order of sixteen thousand
-// simultaneous users against a steady state of ten connections. Everything
-// above legitimate use is only room for an attacker to occupy before
-// backpressure starts, which is why it is a fixed ceiling rather than as high
-// as the machine could bear.
+// Default ceiling on simultaneously accepted connections: half the fd budget
+// the packaged unit grants (LimitNOFILE=65535), leaving the rest for databases,
+// peer connections and app files. A fixed ceiling, not a throughput limit.
 const web_connections_default = 32768
 
 // web_listen opens a listener bounded by the configured connection ceiling.
-//
-// The timeouts on web_server bound one connection's header phase and its gap
-// between requests; nothing bounded how many could exist at once, and each one
-// costs a goroutine, a file descriptor and read and write buffers.
-//
-// The bound is applied to the raw TCP listener, so a connection counts from
-// accept rather than from the end of any TLS handshake. Past the ceiling
-// LimitListener stops accepting: excess connections wait in the kernel's
-// backlog, holding no descriptor of ours, and the kernel refuses them itself
-// once that fills. That is cheaper than accepting in order to refuse, which
-// would spend a descriptor to send the rejection.
+// Applied to the raw TCP listener, so a connection counts from accept rather
+// than from the end of the TLS handshake; past the ceiling excess waits in the
+// kernel backlog, holding no descriptor of ours.
 func web_listen(addr string, maximum int) (net.Listener, error) {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -106,18 +81,10 @@ func web_connections_maximum() int {
 	return ini_int("web", "connections", web_connections_default)
 }
 
-// web_serve_tls serves HTTPS on :443 and ACME/redirect on :80. It replaces
-// autotls.RunWithManagerAndTLSConfig, which overwrote the tls.Config's
-// GetCertificate with the bare autocert manager's — silently discarding
-// domains_get_certificate and with it every manually installed certificate.
-// Wildcards can only ever be manual (ACME issues none over TLS-ALPN-01 or
-// HTTP-01), so those domains fell through to autocert and failed to serve.
-// The domain, verification and TLS-enabled checks were not lost with it: the
-// manager's HostPolicy (domains_host_policy) already enforces all three.
-//
-// Ports match autotls exactly (:443 and :80, all interfaces) so the listener
-// topology is unchanged; the only differences are the retained GetCertificate
-// and the connection limits from web_server.
+// web_serve_tls serves HTTPS on :443 and ACME/redirect on :80. Not autotls: it
+// overwrites the tls.Config's GetCertificate with the bare autocert manager's,
+// discarding domains_get_certificate and every manually installed certificate.
+// Domain, verification and TLS checks stay with the manager's HostPolicy.
 func web_serve_tls(handler http.Handler) error {
 	tls_config := web_tls_config()
 
@@ -155,10 +122,8 @@ func web_serve_tls(handler http.Handler) error {
 // server actually uses, rather than a copy of it that could drift.
 func web_tls_config() *tls.Config {
 	return &tls.Config{
-		// Retaining domains_get_certificate is the whole point: it tries a
-		// manually installed certificate first and only then falls through to
-		// ACME. autotls used to replace this with the bare autocert manager's,
-		// silently discarding every manual certificate.
+		// domains_get_certificate tries a manually installed certificate first and
+		// only then ACME. Must not be replaced with the bare manager's.
 		GetCertificate: domains_get_certificate,
 		// acme-tls/1 must stay advertised or TLS-ALPN-01 validation breaks:
 		// autocert answers those challenges through GetCertificate, and
@@ -169,15 +134,10 @@ func web_tls_config() *tls.Config {
 }
 
 // web_https_serves reports whether the HTTPS listener could present a
-// certificate for host, following domains_get_certificate step for step: a
-// manually installed certificate wins outright, and everything else ends up at
-// the ACME manager, which answers only for hosts its own HostPolicy admits.
-// Deferring to domains_host_policy rather than re-deriving its rules is what
-// keeps the two listeners agreeing — it also rejects an unverified domain
-// while domains_verification is on, and a domain whose automatic certificates
-// are switched off. Note the ordering: the policy is authoritative only for
-// issuance, so it must not be consulted before the manual map, or a
-// hand-certificated host — the only kind a wildcard can be — would be refused.
+// certificate for host, following domains_get_certificate: the manual map
+// first, then the ACME manager's HostPolicy. Order matters - the policy governs
+// issuance only, so consulting it first refuses a hand-certificated host, the
+// only kind a wildcard is.
 func web_https_serves(host string) bool {
 	if domains_manual_cert(host) != nil {
 		return true
@@ -188,15 +148,10 @@ func web_https_serves(host string) bool {
 	return domains_host_policy(context.Background(), host) == nil
 }
 
-// web_redirect_https sends a plain-HTTP request to the same URL over HTTPS,
-// provided HTTPS can actually answer for that host. Host is supplied by the
-// caller, so reflecting it unchecked issues a permanent redirect to wherever
-// the caller names; and a host this server holds no certificate for — never
-// configured, or configured with automatic certificates switched off — would
-// be sent to a handshake that is refused. The Location carries the REQUESTED
-// name minus any port: a wildcard row's own Domain is the pattern
-// "*.example.com", which is no use as a destination, and an unstripped port
-// lets a configured domain bounce a caller onto an arbitrary one.
+// web_redirect_https redirects plain HTTP to HTTPS, only for a host HTTPS can
+// actually answer for - Host is caller-supplied. The Location carries the
+// requested name minus any port: a wildcard row's Domain is a pattern, not a
+// destination.
 func web_redirect_https(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
 	if name, _, err := net.SplitHostPort(host); err == nil {
@@ -219,12 +174,10 @@ func web_log_redact(path string) string {
 	return web_log_secret_query.ReplaceAllString(path, "${1}redacted")
 }
 
-// Call a web action
 // routing names how an action was reached, surfaced to Starlark as a.routing.
-// Declared by each dispatch site rather than inferred here: the security-relevant
-// distinction is whether the entity was chosen by the CALLER (routing_path,
-// routing_direct) or configured by the OPERATOR (routing_domain), and only the
-// dispatcher knows which branch it took.
+// Declared by each dispatch site: only the dispatcher knows whether the entity
+// was chosen by the caller (path, direct) or configured by the operator
+// (domain).
 const (
 	routing_class  = "class"  // /<app>/-/<action>, no entity
 	routing_path   = "path"   // /<app>/<entity>/-/<action>, entity from the URL
@@ -233,16 +186,10 @@ const (
 	routing_hosted = "hosted" // domain route, method=app, no entity
 )
 
-// web_action_error renders an action that aborted. Starlark has no try/except, so
-// any builtin refusing unwinds the whole action and lands here; the type of the
-// error is the only remaining signal for what status the caller deserves.
-//
-// The generic case stays a 500 with the scrubbed text, which is right for a
-// genuine fault. The two typed cases are refusals rather than faults, and saying
-// so matters: a client is entitled to retry a 500, so reporting a deliberate
-// refusal as one invites the retry that recharges the very budget being
-// protected, and makes a working limiter indistinguishable from an outage in the
-// logs.
+// web_action_error renders an action that aborted. Starlark has no try/except,
+// so any builtin refusing unwinds the whole action and lands here; the error
+// type is the only signal for the status. A refusal must not be a 500 - clients
+// retry those.
 func web_action_error(c *gin.Context, app string, err error) {
 	var permission *PermissionError
 	if errors.As(err, &permission) {
@@ -259,27 +206,15 @@ func web_action_error(c *gin.Context, app string, err error) {
 
 	var limit *RateLimitError
 	if errors.As(err, &limit) {
-		// Retry-After carries the machine-readable wait; the body carries a
-		// translated label with no numbers in it. The full detail - which budget,
-		// how large - goes to the log only. That detail is exactly what the old
-		// generic 500 handed to anonymous callers along with the internal function
-		// name.
+		// Retry-After carries the wait; the body carries a translated label with no
+		// numbers. Which budget, and how large, goes to the log only.
 		if limit.Retry > 0 {
 			c.Header("Retry-After", strconv.Itoa(limit.Retry))
 		}
 		// info, not warn: warn mails the administrator, and a limiter refusing a
-		// caller is the limiter working. The refusal is already a clean 429 with
-		// Retry-After, so there is nothing for an operator to do - while the mail
-		// arrives for every distinct app that trips a budget, which on a public
-		// server is whatever a flood happens to touch. The line stays in the log
-		// for anyone reading it back.
-		//
-		// One line per app per minute, not one per refusal. A refused caller is
-		// usually a flood, so logging each one hands an anonymous attacker control
-		// of our log volume and disk - and the second identical line tells an
-		// operator nothing the first did not. The detail is logged rather than the
-		// wrapped error because sl_error folds the builtin name into text that
-		// already contains it, which reads as the same sentence twice.
+		// caller is the limiter working. One line per app per minute, so a flood
+		// cannot drive our log volume. The detail, not the wrapped error - sl_error
+		// repeats itself.
 		if rate_limit_refusal_log.allow(app) {
 			info("web: %s rate limited (%s), retry after %ds", app, limit.detail, limit.Retry)
 		}
@@ -335,15 +270,10 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		user = web_auth(c)
 	}
 
-	// Always extract Bearer token for app authorization, even if user already
-	// identified via session cookie.
-	//
-	// has_bearer means "a token was presented AND it verified", not "a header
-	// was sent". Setting it from the prefix alone made the app-token
-	// requirement below satisfiable by the literal string "Bearer x": the
-	// session cookie supplied the user, the garbage token left jwt_app empty,
-	// and an empty jwt_app skips the app-match check - so any page holding the
-	// cookie could call any app's actions.
+	// Always extract the Bearer token for app authorization, even when the session
+	// cookie already identified the user. has_bearer means a token verified, never
+	// that a header was sent: the prefix alone made "Bearer x" satisfy the app
+	// gate.
 	auth_header := c.GetHeader("Authorization")
 	if strings.HasPrefix(auth_header, "Bearer ") {
 		bearer := strings.TrimPrefix(auth_header, "Bearer ")
@@ -396,18 +326,13 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		return true
 	}
 
-	// Block app actions for users whose restore hasn't completed. The /login
-	// app stays reachable so the user can see the waiting page. Without this
-	// gate the user could navigate to /<app>/ while the restore is still
-	// rename(2)-ing DBs and either (a) corrupt the running DB connection (the
-	// "disk image malformed" panic caught 2026-05-20), or (b) see a half-empty
-	// dashboard with no signal that anything is wrong.
+	// Block app actions for users whose restore hasn't completed; /login stays
+	// reachable for the waiting page. Reaching an app mid-restore can corrupt the
+	// running database connection while the restore renames files underneath it.
 	if user_pending(user) && !app_is_login(a) {
-		// A browser navigating to a gated app loads HTML, not XHR — returning
-		// a JSON error there dumps raw JSON in the page, because the SPA
-		// (which would route to the waiting screen) never runs. So redirect
-		// HTML navigations to the /login waiting page; API/XHR callers still
-		// get the JSON their request layer expects.
+		// A browser navigating to a gated app loads HTML, not XHR, and the SPA never
+		// runs - a JSON error renders as raw JSON in the page. Redirect HTML
+		// navigations; API callers still get JSON.
 		accept := c.GetHeader("Accept")
 		html := strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
 		if user.Status == "pending-restore" {
@@ -429,16 +354,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		return true
 	}
 
-	// Block app actions for accounts pending closure (soft-deleted): the
-	// session is valid only to reach the reactivation interstitial, which
-	// lives in the /login app and so stays reachable. The user re-activates
-	// via /_/auth/close/cancel or lets the grace period purge the account.
-	//
-	// A browser navigating to a gated app loads HTML, not XHR — returning a
-	// JSON 403 there would render raw JSON, because the SPA (which carries the
-	// account_closing redirect) never gets to run. So redirect HTML
-	// navigations straight to the interstitial; API/XHR callers still get the
-	// JSON 403 their request layer expects.
+	// Block app actions for accounts pending closure: the session is valid only to
+	// reach the reactivation interstitial, which lives in /login and stays
+	// reachable. HTML navigations redirect there; API callers get the JSON 403.
 	if user != nil && user.Status == "closing" && !app_is_login(a) {
 		accept := c.GetHeader("Accept")
 		if strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json") {
@@ -500,12 +418,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		return false
 	}
 
-	// A token may be bound to one action and entity. This is the check that
-	// makes a feed URL a feed URL: presenting it satisfies the app-JWT
-	// requirement below and routing ignores the method, so without this an
-	// RSS token was equally good on the app's delete action. Matched on the
-	// action pattern (":wiki/-/rss"), not the requested path, so the entity is
-	// compared separately rather than by string. Unbound tokens stay app-wide.
+	// A token may be bound to one action and entity: routing ignores the method,
+	// so without this an RSS token is equally good on the app's delete action.
+	// Matched on the action pattern (":wiki/-/rss"); unbound tokens stay app-wide.
 	if api_token != nil {
 		entity_id := ""
 		if e != nil {
@@ -551,17 +466,10 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		}
 	}
 
-	// Static asset files (JS/CSS/fonts) requested from sandboxed iframes have
-	// no cookies (opaque origin). These files are safe to serve without auth —
-	// they're already public static assets. The actual API auth is handled via
-	// Bearer tokens delivered through postMessage.
-	//
-	// True only when a file will actually be served, not merely declared:
-	// declaring one used to be enough, so a negotiated action reached its
-	// function unauthenticated and a suffix-less files request skipped the
-	// checks on its way to a 400. Not narrowed further to iframes - a
-	// top-level navigation carries a session cookie and no Bearer, so the
-	// app-token check below would refuse every deep link and bookmark.
+	// Static assets from sandboxed iframes carry no cookies (opaque origin) and
+	// are public, so they skip auth. True only when a file will actually be
+	// served, not merely declared, and not narrowed to iframes - deep links carry
+	// no Bearer.
 	shell_static := web_serves_file(c, aa) || (aa.Files != "" && aa.filepath != "")
 
 	// Require authentication for non-public actions
@@ -607,11 +515,8 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			respond_error(c, http.StatusForbidden, "app_token_required", "errors.app_token_required", nil)
 			return true
 		}
-		// Exact match, not "match unless empty". Reaching here with has_bearer
-		// means a JWT verified (a verified mochi- token sets api_token and
-		// skips this block), and auth_create_app_token is the only issuer -
-		// it always stamps an app. So an empty claim is not a legitimate
-		// token, and treating it as a pass was a second way past this check.
+		// Exact match, not "match unless empty": auth_create_app_token is the only
+		// issuer and always stamps an app, so an empty claim is not a real token.
 		if jwt_app != a.id {
 			debug("403 app token mismatch: jwt_app=%s a.id=%s action=%s method=%s", jwt_app, a.id, name, c.Request.Method)
 			respond_error(c, http.StatusForbidden, "app_token_mismatch", "errors.app_token_mismatch", nil)
@@ -701,16 +606,10 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		}
 	}
 
-	// Carry the route only when one actually matched, so a.domain.route is None
-	// for a request that reached the app by its own path instead of a hosted
-	// domain. An app whose action is public and serves the owner's files needs
-	// to tell those apart: reached directly it runs as the first administrator.
-	//
-	// The route's owner rides along for the file-serving path, which has to read
-	// one fixed directory whoever is asking. It is deliberately not used as the
-	// action's `owner`: apps take owner == user to mean the requester owns the
-	// data they are reading, so handing them another account's owner makes them
-	// authorize as that account.
+	// Carry the route only when one matched, so a.domain.route is None for a
+	// request that arrived by the app's own path. The route's owner is for the
+	// file-serving path only - apps read the action's `owner` as "the requester
+	// owns this data".
 	domain := &DomainInfo{}
 	if _, routed := c.Get("domain_route"); routed {
 		domain.route = &DomainRouteInfo{
@@ -750,11 +649,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		action.inputs[e.Class] = e.ID
 	}
 
-	// Capture the raw request body so a.body can return it for signature
-	// verification (Stripe webhooks etc.) and parse JSON from the captured
-	// bytes. Restore Request.Body so downstream code (multipart upload,
-	// form parsing) can still read it — io.ReadAll otherwise leaves the
-	// body at EOF and breaks every non-JSON action.
+	// Capture the raw body so a.body can return it for signature verification
+	// (Stripe webhooks), then restore Request.Body - io.ReadAll leaves it at EOF
+	// and breaks multipart and form parsing downstream.
 	content_type := c.Request.Header.Get("Content-Type")
 	if c.Request.Body != nil && (strings.HasPrefix(content_type, "application/json") || strings.HasPrefix(content_type, "text/")) {
 		raw, err := io.ReadAll(c.Request.Body)
@@ -773,26 +670,18 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		}
 	}
 
-	// A body key named after the routed entity's class would repoint the app at
-	// a different entity, and token_allows above compared the token against the
-	// ROUTED one. Restore the route's value so an entity-bound credential cannot
-	// be aimed at anything else: it authenticates as its issuer, so the app's own
-	// access check would pass for whatever that issuer owns. Only tokens are
-	// constrained — a session-authenticated caller is checked against whatever it
-	// addresses either way, and apps do pass a class-named key legitimately.
+	// A body key named after the routed entity's class would repoint the app at a
+	// different entity, and token_allows compared the token against the ROUTED
+	// one. Restore the route's value so an entity-bound token cannot be aimed
+	// elsewhere.
 	if api_token != nil && api_token.Entity != "" && e != nil && e.Class != "" {
 		action.inputs[e.Class] = e.ID
 	}
 
-	// Read the entire multipart body BEFORE running the action: uploads
-	// arrive at the client's network speed, and parsing them lazily inside
-	// a.file() charged the transfer time against the Starlark timeout — a
-	// 22 MB app upload over a slow uplink died at the 90 s cap before the
-	// handler had run at all. Parsing here spools large parts to disk and
-	// the action then reads them at disk speed, so the timeout stays a pure
-	// compute cap. Parts over 32 MB spill from memory to temp files, which
-	// net/http removes after the response. A parse error is left for the
-	// handler's own a.file()/form call to surface, preserving behaviour.
+	// Read the entire multipart body BEFORE running the action: parsing lazily
+	// inside a.file() charges the client's transfer time against the 90s Starlark
+	// timeout. A parse error is left for the handler's own a.file()/form call to
+	// surface.
 	if strings.HasPrefix(content_type, "multipart/form-data") {
 		// Bound the body before parsing it. Content-Length is a hint a client
 		// controls, so it only saves us reading a body we already know is too
@@ -839,24 +728,14 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		s.set("app", a)
 		s.set("host", c.Request.Host)
 		s.set("origin", request_origin(c))
-		// For `public: true` actions invoked anonymously (webhooks, OAuth
-		// callbacks, public APIs) there is no Mochi-authenticated caller, and
-		// the caller is bound as exactly that: nothing. It used to be bound to
-		// the owner, on the CGI-runs-as-a-fixed-user argument, but the two
-		// things that argument conflates are the account whose data is read
-		// and the identity the request carries. principal_storage answers the
-		// first, and answers it the same way, so nothing loses access; saying
-		// the anonymous caller IS the owner only ever added a false claim on
-		// top - and the apps believed it. feeds carries a guard, and a comment
-		// about a stranger being told they owned the feed, because of this.
+		// A `public: true` action invoked anonymously has no Mochi-authenticated
+		// caller, and is bound as exactly that: nothing. principal_storage answers
+		// which account's data is read, so binding the owner adds only a false claim.
 		s.set("user", user)
 		s.set("owner", owner)
-		// The caller's own session, so an API can tell which of the user's
-		// sessions is the one making the request. Only mochi.user.session.list
-		// reads it, to mark the current row - the settings UI was guessing
-		// "most recently accessed", which labels another device's session as
-		// yours whenever it was used more recently. Empty for anonymous and
-		// for app-token callers, which have no browser session.
+		// The caller's own session, so mochi.user.session.list can mark the current
+		// row. Empty for anonymous and app-token callers, which have no browser
+		// session.
 		s.set("session", web_cookie_get(c, "session", ""))
 		s.set("language", request_language(c, user))
 		if e != nil {
@@ -877,13 +756,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			if result != sl.None {
 				c.JSON(http.StatusOK, sl_decode(result))
 			} else if !starlark_serving_get(s.thread) {
-				// NoRoute pre-sets status to 404 — override when a fire-and-forget
-				// action succeeded without writing a response (e.g. POSTs). NOT when
-				// the action served a file: http.ServeContent may have set 304 Not
-				// Modified (no body written, so Writer.Written() is false), and
-				// forcing 200 here yields a 200 with an empty body — which breaks
-				// conditional GETs such as apt's If-Modified-Since on the repo
-				// InRelease, failing with "Clearsigned file isn't valid, got NOSPLIT".
+				// NoRoute pre-sets 404 - override when a fire-and-forget action wrote no
+				// response. NOT when a file was served: ServeContent may have set 304 with
+				// no body, and forcing 200 breaks conditional GETs such as apt's InRelease.
 				c.Status(http.StatusOK)
 			}
 		}
@@ -906,22 +781,11 @@ func web_auth(c *gin.Context) *User {
 	return user
 }
 
-// Ask browser to cache static files
-// web_serve_svg sanitizes SVG content and serves the result. App SVGs are
-// attacker-controlled under the untrusted-app model, and an SVG opened as a
-// top-level document runs its scripts in this server's origin. The regex
-// sanitizer below is best-effort and bypassable, so the real guarantee is the
-// Content-Security-Policy: scripts, plugins, frames and network fetches are all
-// blocked even if a payload slips past svg_sanitize. Inline styles and data:
-// images are allowed so ordinary self-contained SVGs still render.
-//
-// The content arrives as an open handle rather than a path so that whatever the
-// caller checked to obtain it - the containment check a hosted file goes
-// through, the cache lookup a pulled copy goes through - still holds here.
-// Sanitizing needs the whole document in memory, so one too large to buffer is
-// served as a download instead: a download cannot execute, which makes it the
-// safe answer for a file that is far more likely to be a mislabelled upload
-// than a real drawing.
+// web_serve_svg sanitizes SVG content and serves it. svg_sanitize is
+// best-effort and bypassable, so the Content-Security-Policy is the real
+// guarantee. Content arrives as an open handle so the caller's own check still
+// holds; a document too large to buffer is served as a download, which cannot
+// execute.
 func web_serve_svg(c *gin.Context, reader io.Reader) {
 	buffer, err := io.ReadAll(io.LimitReader(reader, stream_svg_maximum+1))
 	if err != nil {
@@ -1018,15 +882,10 @@ func web_cookie_set(c *gin.Context, name string, value string) {
 	c.SetCookie(name, value, 365*86400, "/", "", secure, true)
 }
 
-// Check if request is from localhost.
-//
-// Reads the socket peer rather than ClientIP, so no header can reach it. The
-// engine trusts no proxy, which already makes the two equivalent; this is
-// deliberate belt and braces, because what hangs off this answer is whether a
-// cookie carries Secure and whether an OAuth callback is advertised as https,
-// and neither should become forgeable if a trusted-proxy list is ever
-// configured. Recording where a user logged in from is the opposite case and
-// stays on ClientIP.
+// Check if request is from localhost. Reads the socket peer rather than
+// ClientIP, so no header can reach it even if a trusted-proxy list is ever
+// configured: this decides cookie Secure and whether an OAuth callback is
+// advertised as https.
 func web_is_localhost(c *gin.Context) bool {
 	ip := c.RemoteIP()
 	return ip == "127.0.0.1" || ip == "::1" || ip == "localhost"
@@ -1087,19 +946,11 @@ func web_body_limit(c *gin.Context) {
 	c.Next()
 }
 
-// web_multipart_maximum returns the largest multipart body this caller may
-// send. Derived rather than fixed, so it tracks the storage limits instead of
-// drifting from them: whatever a caller is allowed to store, they are allowed
-// to upload, plus framing.
-//
-// The limit exists because multipart is exempt from web_body_limit and
-// ParseMultipartForm spools the whole body before the handler runs — and it
-// spools to os.TempDir(), which on a systemd host is usually a tmpfs, so an
-// unbounded body is consumed as memory rather than disk.
-//
-// Gated on the authenticated user, never on the entity owner: an anonymous
-// request to a public action runs as the owner, so reading a quota from the
-// owner would hand every anonymous caller the owner's upload budget.
+// web_multipart_maximum bounds a multipart body, derived from the caller's
+// storage quota: multipart is exempt from web_body_limit and ParseMultipartForm
+// spools the whole body to os.TempDir(), usually a tmpfs. Gated on the
+// authenticated user, never the owner - an anonymous request to a public action
+// runs as the owner.
 func web_multipart_maximum(user *User) int64 {
 	// An anonymous caller has no storage quota and nothing holding them
 	// accountable, and so gets no more room for a multipart body than for any
@@ -1139,21 +990,10 @@ func web_serves_file(c *gin.Context, aa *AppAction) bool {
 	return strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
 }
 
-// Serve HTML file with dynamic Open Graph meta tags
-// opengraph_absolute turns an app's og:image into the absolute URL the protocol
-// requires. OpenGraph consumers are crawlers fetching the page from outside, so a
-// relative reference has nothing to resolve against and is simply dropped - people
-// and feeds both emitted "-/avatar" and neither has ever shown an image in a link
-// preview.
-//
-// Resolved here rather than in each app because the app cannot do it: the handler
-// receives only its route parameters, not the scheme or host it was reached on,
-// and those vary per request across the domains a server answers for.
-//
-// The path is treated as a directory even when it does not end in "/". A profile
-// served at /people/<fingerprint> keeps its avatar at /people/<fingerprint>/-/avatar,
-// so ordinary relative resolution - which would discard the last segment and give
-// /people/-/avatar - is wrong for every entity route.
+// opengraph_absolute makes an app's og:image absolute: a crawler fetching from
+// outside has nothing to resolve a relative reference against and drops it. The
+// path is treated as a directory even without a trailing slash, which is what
+// entity routes such as /people/<fingerprint> need.
 func opengraph_absolute(image, scheme, host, path string) string {
 	if strings.Contains(image, "://") || strings.HasPrefix(image, "//") {
 		return image
@@ -1189,12 +1029,9 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 	// Call Starlark function to get OG data
 	s := av.starlark()
 	s.set("app", a)
-	// Who is asking and whose data is being read are two different questions,
-	// and binding user to the owner answered both with the owner - so an
-	// authenticated stranger arrived as the owner, and any handler gating on
-	// "is this the owner?" would have granted. The caller is now whoever
-	// actually asked, nobody included; storage keeps the reads on the owner's
-	// databases regardless, which is what lets the two be separated at all.
+	// The caller is whoever actually asked, nobody included; `storage` keeps the
+	// reads on the owner's databases. Binding user to the owner would hand an
+	// authenticated stranger the owner's identity.
 	s.set("user", user)
 	s.set("owner", owner)
 	s.set("storage", owner)
@@ -1443,12 +1280,8 @@ func regexp_replace_meta(html, property, value string) string {
 	pattern := regexp.MustCompile(`<meta\s+property="` + regexp.QuoteMeta(property) + `"\s+content="[^"]*"\s*/?>`)
 	replacement := `<meta property="` + property + `" content="` + value + `" />`
 	// Literal, not ReplaceAllString: $ in the replacement is a capture-group
-	// reference, the value is app-supplied, and escape_attribute covers the
-	// HTML-significant characters rather than this one. The pattern has no
-	// groups, so every $N and $name resolved to empty and took the digits or
-	// word after it with them - "Cost: $100" rendered as "Cost: ". Silent, and
-	// only in the preview that Slack, Discord and crawlers fetch, never in the
-	// page the author sees.
+	// reference and the value is app-supplied, so "Cost: $100" rendered as "Cost:
+	// ".
 	return pattern.ReplaceAllLiteralString(html, replacement)
 }
 
@@ -1504,14 +1337,9 @@ func web_login_begin(c *gin.Context) {
 		return
 	}
 
-	// The required factors are AND-ed at login (empty = any one allowed
-	// factor suffices). allowed is the set the login screen offers after
-	// email entry: email code, passkey, authenticator — filtered to those
-	// usable for this account, with anything the user disabled removed.
-	// methods is the effective required set the login AND-s: the user's own
-	// required factors plus the system email floor (auth_remaining_methods folds
-	// it in, with nothing completed yet). Force non-nil so it marshals to [] not
-	// null — the login client calls .includes() on it.
+	// allowed is the set the login screen offers after email entry; methods is the
+	// effective required set the login AND-s, including the system email floor.
+	// Force non-nil so it marshals to [] not null - the client calls .includes().
 	methods := auth_remaining_methods(user, "")
 	if methods == nil {
 		methods = []string{}
@@ -1530,11 +1358,9 @@ func web_login_begin(c *gin.Context) {
 		}
 	}
 
-	// Offer OAuth in the verification step when it can verify this account: the
-	// provider is usable, and OAuth is either required or nothing else is (so
-	// any one factor, including OAuth, completes the login). The button carries
-	// the entered email so the callback can confirm OAuth resolves to this
-	// account, not a different one.
+	// Offer OAuth at verification when it can verify this account: the provider is
+	// usable, and OAuth is required or nothing is. The button carries the entered
+	// email so the callback can confirm OAuth resolves to this account.
 	offer_oauth := user_method_usable(user, "oauth") && (len(methods) == 0 || oauth_required)
 
 	c.JSON(http.StatusOK, gin.H{
@@ -1704,14 +1530,9 @@ func web_login_identity(c *gin.Context) {
 		return
 	}
 
-	// Persist the language the user explicitly chose before signup as their
-	// language preference, so the Settings page and layout direction match the
-	// UI they already see. Source order: an explicit `language` field in the
-	// request body (the web login client sends it; non-web clients can too),
-	// else the `mochi_language` cookie the LanguagePicker writes. A browser
-	// whose only signal is Accept-Language provides neither and stays on
-	// auto-detect, which is correct. Only set it when the user has no explicit
-	// preference yet, and never the "auto" sentinel.
+	// Persist the language chosen before signup. Source order: an explicit
+	// `language` field, else the `mochi_language` cookie. Only when the user has
+	// no explicit preference yet, and never the "auto" sentinel.
 	lang := strings.ToLower(strings.TrimSpace(input.Language))
 	if lang == "" {
 		if cookie, cerr := c.Cookie("mochi_language"); cerr == nil {
@@ -1724,11 +1545,9 @@ func web_login_identity(c *gin.Context) {
 		}
 	}
 
-	// Simple notification hook. Deduped per (admin_address, new_user_uid)
-	// so a repeated signup event doesn't email the admin twice.
-	// [email] signup = false silences these notices without disabling
-	// the admin address for error mail — set it on development instances,
-	// where test harnesses create throwaway users in bulk.
+	// Deduped per (admin_address, new_user_uid) so a repeated signup event doesn't
+	// mail twice. [email] signup = false silences these without disabling the
+	// admin address for error mail - set it on development instances.
 	admin := ini_string("email", "admin", "")
 	if admin != "" && ini_bool("email", "signup", true) {
 		event_id := "new-user:" + u.UID
@@ -1743,10 +1562,8 @@ func web_login_identity(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// Abandon a half-finished signup: delete the user (only allowed if no
-// identity has been created yet) and clear the session. Used by the
-// /login/identity page to let the user back out of a signup started via
-// OAuth or email-code when they reached the identity form by mistake.
+// Abandon a half-finished signup: delete the user (only when no identity exists
+// yet) and clear the session.
 func web_abandon(c *gin.Context) {
 	u := web_auth(c)
 	if u == nil {
@@ -1759,10 +1576,8 @@ func web_abandon(c *gin.Context) {
 		return
 	}
 
-	// Delete the half-finished account first. Only once that succeeds do we
-	// tear down the session cookie — reversing the order would leave the
-	// browser with no session but a still-live account on any delete failure,
-	// and every following request would then 401.
+	// Delete the account before clearing the session cookie: the reverse leaves
+	// the browser with no session but a live account whenever the delete fails.
 	target, err := user_delete(u.UID)
 	if err != nil {
 		respond_error(c, http.StatusInternalServerError, "server_error", "errors.server_error", nil)
@@ -1799,12 +1614,9 @@ func web_logout(c *gin.Context) {
 func web_path(c *gin.Context) {
 	//debug("Web path %q", c.Request.URL.Path)
 
-	// A soft-deleted ("closing") account must never load the shell or an app —
-	// only the /login reactivation interstitial. Redirect top-level document
-	// navigations there before the shell renders; otherwise the shell loads
-	// and its gated app fetches bounce it in a loop. The /login app is exempt
-	// (it serves the interstitial itself). XHR/app-action requests are handled
-	// by the web_action gate.
+	// A "closing" account may load only the /login reactivation interstitial.
+	// Redirect top-level navigations before the shell renders, or the shell loads
+	// and its gated app fetches bounce it in a loop.
 	if web_should_serve_shell(c) {
 		raw := strings.Trim(c.Request.URL.Path, "/")
 		if !app_login_owns(raw) {
@@ -1986,11 +1798,9 @@ func web_path(c *gin.Context) {
 			return
 		}
 
-		// The app is resolved from the entity's class, but it is absent from the
-		// URL - so without this the SPA is served with no mochi:app meta tag and
-		// getAppPath() in lib/web returns "", leaving an app unable to build a
-		// class-level URL at all (its class endpoints came out as /-/groups).
-		// Publish the resolved path so entity-routed pages know their own app.
+		// The app is resolved from the entity's class and is absent from the URL, so
+		// publish it: without the mochi:app meta tag getAppPath() returns "" and the
+		// app cannot build a class-level URL.
 		c.Set("mochi_app_path", a.url_path(owner))
 
 		action := e.Fingerprint
@@ -2013,9 +1823,7 @@ func web_path(c *gin.Context) {
 // Return Net connection info for this server
 func web_p2p_info(c *gin.Context) {
 	// net_addresses is the one rendering of this list: it drops container and
-	// undialable addresses, stamps the peer id once, and deduplicates. This
-	// handler used to loop over net_me.Addrs() itself and so published none of
-	// that, to anonymous callers, while the mesh got the filtered form.
+	// undialable addresses, stamps the peer id once, and deduplicates.
 	addresses := net_addresses()
 	if addresses == nil {
 		addresses = []string{}
@@ -2064,15 +1872,10 @@ func web_start() {
 	}
 	gin.DefaultWriter = log.Writer()
 	r := gin.New()
-	// Mochi terminates TLS itself and is not intended to run behind a reverse
-	// proxy, so no proxy is trusted. Gin's default is the opposite — it trusts
-	// every source — which would let any caller set their own apparent address
-	// through X-Forwarded-For, and with it the login records and every decision
-	// derived from the address. With no trusted proxy, ClientIP falls through
-	// to the socket peer, so this one call closes all of them at the root.
-	// If proxy support is ever added, this becomes a configured list rather
-	// than a deletion: the header is only ever as trustworthy as the hop that
-	// set it.
+	// Mochi terminates TLS itself and trusts no proxy. Gin's default trusts every
+	// source, letting any caller set their apparent address through
+	// X-Forwarded-For. If proxy support is added, this becomes a configured list
+	// rather than a deletion.
 	if err := r.SetTrustedProxies(nil); err != nil {
 		// Cannot fail for a nil list, but a silent failure would leave Gin's
 		// trust-everything default in place with nobody the wiser.

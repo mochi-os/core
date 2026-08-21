@@ -177,18 +177,9 @@ func TestBroadcastReplayQuery(t *testing.T) {
 	}
 }
 
-// TestBroadcastNextLocalConcurrentNoDuplicates is the regression
-// test for the race surfaced on wasabi 2026-05-24..26 (468
-// event_ai_tag panics: "UNIQUE constraint failed: log.key, log.peer,
-// log.sequence"). The previous UPSERT-then-SELECT pair let two
-// goroutines both read the higher of two interleaved updates and
-// emit the same sequence number. Fix uses RETURNING so each call
-// sees its own atomic post-update value. Test fires N goroutines,
-// collects every returned sequence, asserts:
-//   - all sequences are unique (no duplicates -> no log UNIQUE
-//     violation)
-//   - the set of sequences is exactly {1..N}
-//   - the final sequence.last equals N
+// TestBroadcastNextLocalConcurrentNoDuplicates. Concurrent allocations must
+// each see their own value: an UPSERT-then-SELECT pair emits duplicate
+// sequences.
 func TestBroadcastNextLocalConcurrentNoDuplicates(t *testing.T) {
 	db, cleanup := setup_broadcast_log_test(t)
 	defer cleanup()
@@ -228,12 +219,8 @@ func TestBroadcastNextLocalConcurrentNoDuplicates(t *testing.T) {
 	}
 }
 
-// TestBroadcastResyncThrottle — same (user, peer, key) with a
-// resync already in flight blocks; different tags pass through.
-// The gate is per-in-flight rather than
-// time-based. Independent-tags coverage is duplicated in
-// broadcast_test.go's TestBroadcastResyncThrottleIndependentTags but
-// kept here too so the legacy test name still surfaces in a grep.
+// TestBroadcastResyncThrottle - the gate is per-in-flight, not time-based: the
+// same (user, peer, key) blocks while a resync is out; different tags pass.
 func TestBroadcastResyncThrottle(t *testing.T) {
 	// Reset the global cache between subtests.
 	broadcast_resync_lock.Lock()
@@ -257,33 +244,23 @@ func TestBroadcastResyncThrottle(t *testing.T) {
 	}
 }
 
-// broadcast_acknowledge_reset_for_test clears the pending-ack map so any
-// in-flight coalesce-window AfterFunc timers scheduled by a test find no
-// entry and return at broadcast_acknowledge_flush's nil-check, before the
-// user_by_uid -> db_open call that reads the data_dir global. Registered via
-// t.Cleanup by tests that enqueue acks, so a leaked 250 ms timer can't race
-// a later test's data_dir reset.
+// broadcast_acknowledge_reset_for_test clears the pending-ack map so a leaked
+// 250 ms coalesce timer flushes into an empty map and returns before the
+// user_by_uid -> db_open call that reads data_dir, racing a later test's reset.
 func broadcast_acknowledge_reset_for_test() {
 	broadcast_acknowledge_lock.Lock()
 	broadcast_acknowledge_pending_map = map[string]*broadcast_acknowledge_pending{}
 	broadcast_acknowledge_lock.Unlock()
 }
 
-// TestBroadcastAcknowledgeCoalesce — burst enqueues for the same
-// (user, key, peer) tuple bump the pending sequence in place rather
-// than queuing N separate flushes. Different tuples track
-// independently. Inspects the in-memory pending map directly to keep
-// the test fast and avoid the (real) 250 ms timer wait.
+// TestBroadcastAcknowledgeCoalesce - a burst for one (user, key, peer) bumps
+// the pending sequence in place. Inspects the map directly to skip the 250 ms
+// timer.
 func TestBroadcastAcknowledgeCoalesce(t *testing.T) {
 	// Reset the global state between subtests.
 	broadcast_acknowledge_lock.Lock()
 	broadcast_acknowledge_pending_map = map[string]*broadcast_acknowledge_pending{}
 	broadcast_acknowledge_lock.Unlock()
-	// Drain the pending map at test end so the 250 ms AfterFunc timers this
-	// test schedules fire into an empty map — broadcast_acknowledge_flush
-	// no-ops on a missing tag instead of calling user_by_uid -> db_open,
-	// which reads the data_dir global and would race a later test's
-	// data_dir reset (pre-existing flaky -race).
 	t.Cleanup(broadcast_acknowledge_reset_for_test)
 
 	// First enqueue for (u1, k, p1) creates an entry at seq=5.

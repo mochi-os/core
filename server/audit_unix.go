@@ -20,10 +20,9 @@ var (
 	audit_ops    *syslog.Writer // LOG_LOCAL0: application configuration/operations
 )
 
-// audit_syslog_available reports whether a syslog daemon is reachable. On
-// hosts with no /dev/log socket (distroless containers, future macOS) syslog
-// is structurally unavailable, so audit_init shouldn't warn the admin —
-// nothing's broken, the audit-to-syslog path is just inert.
+// audit_syslog_available reports whether a syslog daemon is reachable. Hosts
+// with no /dev/log (distroless containers) have no syslog at all, so audit_init
+// must not warn the administrator there.
 func audit_syslog_available() bool {
 	_, err := os.Stat("/dev/log")
 	return err == nil
@@ -136,9 +135,8 @@ func audit_admin_escalation(admin string, target string, action string) {
 	audit_log_auth(fmt.Sprintf("admin_escalation admin=%s target=%s action=%s", admin, target, action))
 }
 
-// audit_signature_failed logs signature verification failures
-//
-//lint:ignore U1000 audit vocabulary: the call exists so a future caller reaches for the right event name rather than inventing one
+// lint:ignore U1000 audit vocabulary: the call exists so a future caller
+// reaches for the right event name rather than inventing one
 func audit_signature_failed(from string, reason string) {
 	audit_log_auth(fmt.Sprintf("signature_failed from=%s reason=%s", from, reason))
 }
@@ -194,9 +192,7 @@ func audit_identity_deleted(user string, entity string) {
 
 // audit_authentication_changed logs a change to how an account signs in: a
 // passkey or authenticator added or removed, recovery codes regenerated, an
-// OAuth identity unlinked, the required-factor set edited, or an administrator
-// reset. Mochi has no password login, so none of those is a password change;
-// the event name is the operator's search key and has to match what happened.
+// OAuth identity unlinked, the required-factor set edited, or an admin reset.
 func audit_authentication_changed(user string, method string) {
 	audit_log_auth(fmt.Sprintf("authentication_changed user=%s method=%s", user, method))
 }
@@ -228,8 +224,6 @@ func audit_server_stop() {
 	audit_log_daemon("server_stop")
 }
 
-// audit_schema_migrated logs server schema migrations
-//
 //lint:ignore U1000 audit vocabulary: see audit_signature_failed
 func audit_schema_migrated(from_version int, to_version int) {
 	audit_log_daemon(fmt.Sprintf("schema_migrated from=%d to=%d", from_version, to_version))
@@ -242,8 +236,6 @@ func audit_app_installed(app string, version string) {
 	audit_log_ops(fmt.Sprintf("app_installed app=%s version=%s", app, version))
 }
 
-// audit_app_removed logs app removal
-//
 //lint:ignore U1000 audit vocabulary: see audit_signature_failed
 func audit_app_removed(app string) {
 	audit_log_ops(fmt.Sprintf("app_removed app=%s", app))

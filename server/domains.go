@@ -59,11 +59,9 @@ type route struct {
 	Updated  int64  `db:"updated"`
 }
 
-// DomainRouteInfo exposes route info to Starlark as a.domain.route.
-//
-// owner is the account the route publishes. It is not exposed to Starlark and
-// is not the action's owner - it exists so serving a file from a hosted domain
-// reads one fixed directory whoever is asking.
+// DomainRouteInfo exposes route info to Starlark as a.domain.route. owner is
+// not exposed and is not the action's owner: it makes a hosted domain serve one
+// fixed directory whoever is asking.
 type DomainRouteInfo struct {
 	context   string
 	remainder string
@@ -128,30 +126,17 @@ type delegation struct {
 	Updated int64  `db:"updated"`
 }
 
-// domains_certificates is where autocert keeps the ACME account key and the
-// issued certificates.
-//
-// Under data_dir, not cache_dir, because neither is a cache. /var/cache is for
-// data the server can regenerate locally and lose without harm; an ACME account
-// key is a long-lived credential whose deletion is data loss, and a certificate
-// can only be reobtained from an external service that rate-limits, needs
-// inbound reachability, and can fail. They belong with data_dir/p2p/private.key,
-// the other cryptographic identity the server registers once and keeps.
-//
-// This was cache_dir/certs, where cache_cleanup deleted both every seven days
-// (files.go) — silently, because autocert also caches in memory, so the loss
-// only surfaced on the next restart, when every domain had to be issued again
-// at once and a new ACME account registered.
+// domains_certificates is where autocert keeps the ACME account key and issued
+// certificates. Under data_dir, not cache_dir, whose sweeper deletes files the
+// server cannot regenerate locally.
 func domains_certificates() string {
 	directory := domains_acme_directory()
 	if directory == "" {
 		return domains_certificates_base()
 	}
-	// Certificates from another authority get their own directory. A staging
-	// certificate is signed by a root no browser trusts, so one served to a
-	// real visitor is a full-page security error - worse than the expiry this
-	// whole area exists to prevent. The ACME account key lives here too, and
-	// an account belongs to exactly one authority.
+	// Certificates from another authority get their own directory: a staging
+	// certificate served to a real visitor is a full-page security error, and an
+	// ACME account key belongs to exactly one authority.
 	return filepath.Join(domains_certificates_base(), domains_authority(directory))
 }
 
@@ -220,16 +205,9 @@ func domains_init_acme() {
 }
 
 // domains_certificates_migrate copies an existing autocert cache from its old
-// home under cache_dir to domains_certificates(), once, on first start after
-// the move. Without it every install would re-issue every certificate and
-// register a fresh ACME account on upgrade — the exact burst the move exists
-// to prevent.
-//
-// Deliberately cautious: it does nothing unless the destination is absent or
-// empty, it never deletes the destination, and any failure is a warning rather
-// than fatal. The worst case of giving up is an empty cache, which autocert
-// refills by issuing — the same position the old behaviour left every restart
-// in anyway.
+// home under cache_dir, once. Without it every install re-issues every
+// certificate and registers a fresh ACME account on upgrade. Never deletes; a
+// failure is a warning.
 func domains_certificates_migrate() {
 	destination := domains_certificates_base()
 	if entries, err := os.ReadDir(destination); err == nil && len(entries) > 0 {
@@ -439,11 +417,8 @@ func domain_register(name string) (*domain, error) {
 }
 
 // domains_seed_config registers the domain named in [web] domain, if set, so a
-// fresh server serves HTTPS for it on first boot — letting first-run setup
-// happen over HTTPS instead of plain HTTP. Idempotent: a no-op once the domain
-// exists (seeded earlier, or added in Settings). The domain must resolve to
-// this server and ports 80/443 must be reachable for the certificate to
-// provision via Let's Encrypt.
+// fresh server serves HTTPS for it on first boot. Idempotent. The domain must
+// resolve here and ports 80/443 be reachable for the certificate to provision.
 func domains_seed_config() {
 	name := strings.TrimSpace(ini_string("web", "domain", ""))
 	if name == "" || name == "localhost" {
@@ -456,11 +431,9 @@ func domains_seed_config() {
 		warn("Unable to register configured domain %s: %v", name, err)
 		return
 	}
-	// Mark it verified. The operator naming the domain in mochi.conf is itself
-	// the authorization for this host to serve it — no DNS-token check needed.
-	// Without this the row stays verified=0, and once domains_verification is
-	// enabled the host policy would refuse a certificate for this server's OWN
-	// configured domain.
+	// Mark it verified: naming the domain in mochi.conf is itself the
+	// authorization, and without it domains_verification would refuse a
+	// certificate for this server's own configured domain.
 	if err := domain_update(name, map[string]any{"verified": 1}); err != nil {
 		warn("Unable to mark configured domain %s verified: %v", name, err)
 	}
@@ -559,14 +532,10 @@ func domain_match(host, path string) *route_match {
 	return nil
 }
 
-// route_context_valid reports whether a route context is usable by the app that
-// receives it. A context names a subdirectory the route is scoped to, so it has
-// to survive being used as one path segment: ASCII only, no separators, and
-// short enough to leave room for a filename within the path limit.
-//
-// Checked when the route is written rather than only when it is served, because
-// nothing rejected a context the serving side could not use - a route reading
-// as correctly configured while every request to it failed.
+// route_context_valid reports whether a route context survives use as one path
+// segment: ASCII only, no separators, short enough to leave room for a
+// filename. Checked at write time so an unusable context is refused, not failed
+// per request.
 func route_context_valid(context string) bool {
 	if context == "" {
 		return true
@@ -882,14 +851,10 @@ func api_domain_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl_encode(rows), nil
 }
 
-// domain_certificate annotates a domain row with the two facts the tls column
-// cannot answer on its own. certificate says a certificate was installed by
-// hand, which overrides the column entirely and is what decides whether
-// switching automatic certificates off costs anything. https says the server
-// could actually present a certificate for this name today, which additionally
-// depends on the verification policy and on ACME being configured — neither
-// visible to a client — so it is computed here rather than re-derived there.
-// Mutates and returns the row so the get and list paths cannot drift.
+// domain_certificate adds two facts the tls column cannot answer: certificate
+// (a hand-installed one, which overrides the column) and https (whether the
+// server could present one today). Mutates the row so get and list cannot
+// drift.
 func domain_certificate(row map[string]any) map[string]any {
 	name, _ := row["domain"].(string)
 	row["certificate"] = domains_manual_cert(name) != nil
@@ -1179,11 +1144,9 @@ func api_domain_route_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "access denied")
 	}
 
-	// Owner defaults to user's UID; admins can override.
-	//
-	// The override is checked to name a real account: a route is what tells the
-	// serving side whose data a hostname publishes, and one naming nobody used
-	// to be stored happily and then answer requests from whoever was asking.
+	// The owner override must name a real account: a route tells the serving side
+	// whose data a hostname publishes, and one naming nobody still answers
+	// requests.
 	owner := user.UID
 	if owner_override != "" && user.administrator() {
 		if user_by_uid(owner_override) == nil {

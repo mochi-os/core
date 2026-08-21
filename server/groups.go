@@ -262,17 +262,11 @@ func api_group_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 // mochi.group.list() -> list: List all groups
 func api_group_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Enumerating the user's groups reveals their whole group structure to an app
-	// that knew nothing beforehand, which is why this is gated while
-	// mochi.group.get is not: get resolves an id the app already holds in its own
-	// access rules, and ids are unguessable uids.
-	//
-	// That last clause is an assumption about callers, not something this
-	// function can check, and it is load-bearing - a group created as "family"
-	// would be readable by any app without groups/read. The people app is the
-	// only creator of groups and enforces the uid shape on a caller-supplied id
-	// for exactly this reason; anything else that starts creating groups has to
-	// do the same, or this exemption stops being safe.
+	// Enumerating groups reveals the user's whole group structure, which is why
+	// this is gated and mochi.group.get is not: get resolves an id the app already
+	// holds, and ids are unguessable uids. That is an assumption about callers -
+	// the people app enforces the uid shape on creation, and anything else that
+	// creates groups must do the same or this exemption stops being safe.
 	if err := require_permission(t, fn, "groups/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}

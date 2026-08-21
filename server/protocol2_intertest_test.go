@@ -2,30 +2,19 @@
 
 // Mochi server: inter-instance test harness.
 //
-// These tests drive the two REAL local systemd instances — mochi1 and
-// mochi2 — over their actual libp2p transport, rather than mocknet or a
-// fork/exec'd throwaway. Real processes catch transport realism that
-// in-memory networks don't: TCP windowing, real GC pauses, real signal
-// handling, real stream resets. The trade-off is that they need the
-// instances running and (for some scenarios) a wiped mochi2, so they're
-// gated behind the `intertest` build tag and never compile into a normal
-// `go test ./server/` run:
+// These tests drive the two real local systemd instances, mochi1 and mochi2,
+// over their actual libp2p transport, so they need both running and are gated
+// behind the `intertest` build tag:
 //
-//	go test -tags intertest ./server/ -run TestInter -v
+// go test -tags intertest ./server/ -run TestInter -v
 //
-// Wipe safety (see claude/plans/protocol2.md):
-//   - mochi1 is NEVER wiped — it's the operator's working instance.
-//   - mochi2 may be wiped ONLY with per-run operator approval, passed
-//     in via the MOCHI2_WIPE env var (full | partial | surgical). A
-//     test that needs a wipe scope the operator didn't approve calls
-//     t.Skip rather than wiping. `go test` can't prompt mid-run, so the
-//     approval handshake happens out-of-band: the operator approves a
-//     scope, then the run is launched with MOCHI2_WIPE set to it.
-//
+// Wipe safety: mochi1 is NEVER wiped. mochi2 may be wiped only with the scope
+// named in MOCHI2_WIPE (full | partial | surgical); a test needing an
+// unapproved scope skips.//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -168,19 +157,13 @@ func inter_mochi2_state(t *testing.T) (version string, queue int) {
 	return version, queue
 }
 
-// inter_mochi2_wipe performs an operator-approved wipe of mochi2 and
-// restarts it. The scope must match the MOCHI2_WIPE env var or the test
-// is skipped — this is the safety interlock that prevents an
-// accidental `go test -tags intertest` run from destroying mochi2's
-// state without explicit per-run approval. mochi1 has no wipe helper by
-// design; it's never wiped.
+// inter_mochi2_wipe wipes mochi2 and restarts it, skipping the test unless
+// MOCHI2_WIPE names the same scope. mochi1 is never wiped.
 //
 // Scopes:
-//   - full:     stop, delete the entire data dir (including the libp2p
-//     host key → fresh peer identity on restart), start.
-//   - partial:  stop, delete data DBs but preserve db/host.key so the
-//     peer identity survives, start.
-//   - surgical: stop, delete only the named DBs (extra args), start.
+//   - full:     delete the entire data dir (new libp2p peer identity).
+//   - partial:  delete data DBs but preserve db/host.key.
+//   - surgical: delete only the named DBs (extra args).
 //
 // Returns once mochi2 answers /_/health again.
 func inter_mochi2_wipe(t *testing.T, scope string, surgical ...string) {

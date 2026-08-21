@@ -1,19 +1,14 @@
 // Mochi server: a scheduled event belongs to one user, and a caller who is
 // nobody is not that user.
 //
-// Both guards read `user != nil && se.User != user.UID`, so a nil user skipped
-// the ownership test entirely and only the app test remained. An anonymous
-// request reaches Starlark with no user on the thread - web_action and
-// web_serve_file_with_opengraph both bind whatever web_auth returned, which is
-// nil without a session - so any app serving a public action could read every
-// other user's scheduled events for that app, or delete them. Row ids are
-// sequential rowids and no schedule API requires a permission, so enumeration
-// costs nothing.
+// An anonymous request reaches Starlark with a nil user, so an ownership test
+// written `user != nil && se.User != user.UID` leaves only the app test - and
+// row ids are sequential rowids, so enumeration costs nothing.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

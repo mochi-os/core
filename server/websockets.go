@@ -26,36 +26,23 @@ var (
 	websocket_context = context.Background()
 )
 
-// websocket_client is one live connection and the app that opened it.
-//
-// The registry is keyed (user, key, connection id) and the key is whatever the
-// client passed in the query string, so it never identified an app. Most keys
-// are entity fingerprints, which mochi.entity.owned hands to any app ungated,
-// and some are bare literals like "notifications" - so without the app here,
-// mochi.websocket.write in one app reached sockets belonging to another. The
-// app comes from the JWT the connection already verifies; it cannot be claimed
-// by the client, unlike the key.
+// websocket_client is one live connection and the app that opened it. The
+// registry key is whatever the client passed in the query string and never
+// identified an app; the app comes from the JWT, which the client cannot claim.
 type websocket_client struct {
 	ws  *websocket.Conn
 	app string
 }
 
-// websockets_maximum bounds how many connections one user may hold at once.
-// Each is a goroutine parked in ws.Read plus a file descriptor and three map
-// entries, held until the client goes away, and nothing else limited them.
-//
-// Set well above real use rather than tightly: a frontend opens one socket per
-// view it is watching, and the whole app tree addresses four keys
-// (notifications, staff-events, market-thread-<id>, and entity fingerprints).
+// websockets_maximum bounds how many connections one user may hold at once;
+// each is a parked goroutine, a file descriptor and three map entries. Set well
+// above real use - a frontend opens one socket per view it is watching.
 const websockets_maximum = 32
 
-// websockets_held counts a user's live connections across every key.
-//
-// Read before the upgrade so a refusal is an HTTP status rather than a socket
-// that opens and closes, which means simultaneous connects can each see the
-// same count and a burst can land a little over the cap. That is the right
-// trade for a resource bound: the point is that the number cannot grow without
-// limit, not that it is never momentarily 33.
+// websockets_held counts a user's live connections across every key. Read
+// before the upgrade so a refusal is an HTTP status, which means simultaneous
+// connects can each see the same count and a burst can land a little over the
+// cap.
 func websockets_held(u *User) int {
 	websockets_lock.RLock()
 	defer websockets_lock.RUnlock()
@@ -70,10 +57,8 @@ func websocket_connection(c *gin.Context) {
 	u := web_auth(c)
 	token_auth := false
 	// The app this socket belongs to, from its JWT. A cookie-authenticated
-	// connection has none: it then receives core's own sends but no app's,
-	// because there is nothing to say which app's sends it should get.
-	// Frontends always hold an app token - the shell supplies one and
-	// standalone mode fetches its own - so this is the unusual path.
+	// connection has none and receives core's own sends but no app's; frontends
+	// always hold an app token, so this is the unusual path.
 	app := ""
 	if u == nil {
 		// Check Authorization header (Bearer token)
@@ -105,11 +90,9 @@ func websocket_connection(c *gin.Context) {
 		}
 
 		if u == nil {
-			// A bare return here is a 200 with an empty body: the handshake
-			// still fails, since there is no 101 and no Upgrade header, but
-			// the reason never reaches the caller and the access log records
-			// an authentication failure as a success. The origin check below
-			// already answers with a status; this one did not.
+			// A bare return here is a 200 with an empty body: the handshake still fails,
+			// but the caller learns nothing and the access log records the auth failure
+			// as a success.
 			c.Status(401)
 			return
 		}
@@ -128,11 +111,9 @@ func websocket_connection(c *gin.Context) {
 		}
 	}
 
-	// The key names the channel this socket listens on. mochi.websocket.write
-	// validates it as a constant, and the two ends have to agree: taking
-	// whatever the query string holds let a client occupy keys no app could
-	// ever address, and made an arbitrarily long string a map key for the life
-	// of the connection.
+	// mochi.websocket.write validates the key as a constant and both ends must
+	// agree: an unvalidated query string let a client occupy keys no app could
+	// address, and made an arbitrary string a map key for the connection's life.
 	key := c.Query("key")
 	if !valid(key, "constant") {
 		c.Status(400)
@@ -180,26 +161,17 @@ func websocket_connection(c *gin.Context) {
 	}
 }
 
-// websockets_send delivers content to a user's connections on this key.
-//
-// app scopes the delivery: a non-empty value reaches only the connections that
-// app opened, which is what stops one app writing into another's socket. Core's
-// own sends pass "" and reach every connection on the key, because core is not
-// the boundary being enforced and its callers predate any app binding.
+// websockets_send delivers content to a user's connections on this key. A
+// non-empty app reaches only that app's connections; core passes "" and reaches
+// every connection on the key.
 func websockets_send(u *User, app string, key string, content any) {
 	// debug("Websocket sending to user %d, key %q: %+v", u.UID, key, content)
 	j := ""
 
-	// The connection is carried through to the termination pass rather than
-	// looked up again. The write failing is the same event that makes ws.Read
-	// fail on this connection's own reader goroutine, which terminates it and
-	// deletes the entry - so a second lookup races that deletion and yields a
-	// nil, and CloseNow dereferences its receiver. Nothing exotic is needed to
-	// reach it: an ordinary disconnect drives both paths at once.
-	//
-	// Termination cannot happen under the read lock, since it takes the write
-	// lock, which is why this is a second pass at all. That only requires
-	// deferring the CLOSE, not re-fetching a reference already in hand.
+	// The connection is carried into the termination pass, not looked up again:
+	// the reader goroutine deletes the entry on the same failure, so a second
+	// lookup races it and CloseNow panics on nil. Termination needs the write
+	// lock, hence a second pass.
 	type dead struct {
 		id string
 		ws *websocket.Conn
@@ -238,10 +210,8 @@ func websocket_targets(u *User, app string, key string) map[string]*websocket_cl
 }
 
 // websocket_terminate closes a connection and removes it from the registry.
-// Safe to call more than once for the same id, and safe with a nil connection:
-// the map deletes below are no-ops on an entry that has already gone, and a
-// caller that no longer holds the connection should still be able to clear the
-// registry rather than dereference nothing.
+// Safe to call twice for the same id and safe with a nil connection, so a
+// caller that no longer holds one can still clear the registry.
 func websocket_terminate(ws *websocket.Conn, u *User, key string, id string) {
 	if ws != nil {
 		ws.CloseNow()

@@ -4,13 +4,8 @@
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 
 // Tests for enrolling a TOTP authenticator without disturbing the current one.
-//
-// Setup used to `replace into totp`, overwriting the row and resetting verified
-// to 0. user_method_available reports TOTP available only while verified is 1,
-// so merely starting an enrolment took the user's working authenticator out of
-// their usable factors — and abandoning the flow left it that way, with login
-// silently degraded to an email code. The new secret now waits in pending until
-// a code proves it.
+// The new secret waits in pending until a code proves it: overwriting the row
+// would reset verified and drop TOTP out of the user's usable factors.
 
 package main
 

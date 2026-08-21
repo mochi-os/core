@@ -74,11 +74,8 @@ func TestActionErrorRateLimitUnknownRetry(t *testing.T) {
 	}
 }
 
-// TestActionErrorSurvivesWrapping is the assumption the whole design rests on: the
-// typed error is raised deep inside a builtin and has to survive sl_error's
-// wrapping and the Starlark unwind. sl_error wraps with %w for exactly this, and
-// PermissionError already relies on it - but if that ever stops holding, every
-// refusal silently reverts to a 500, which is the bug this change fixes.
+// The typed error is raised inside a builtin and must survive sl_error's %w
+// wrapping and the Starlark unwind, or every refusal falls back to a 500.
 func TestActionErrorSurvivesWrapping(t *testing.T) {
 	limit := &RateLimitError{Retry: 7}
 
@@ -137,13 +134,6 @@ func TestActionErrorPermissionUnchanged(t *testing.T) {
 	}
 }
 
-// TestActionErrorGenericStaysA500 keeps a real fault reported as a fault. Turning
-// every abort into a 429 would hide genuine breakage, which is the opposite
-// failure to the one being fixed.
-//
-// It also holds the detail back from the caller. err carries the internal
-// Starlark function name, and from a database failure the driver's own message;
-// the body says only that the server failed, and the log carries the rest.
 func TestActionErrorGenericStaysA500(t *testing.T) {
 	recorder := action_error_response(errors.New("division by zero"))
 
@@ -159,19 +149,9 @@ func TestActionErrorGenericStaysA500(t *testing.T) {
 	}
 }
 
-// TestActionErrorRateLimitDoesNotMailTheOperator. warn() mails the address in
-// [email] admin; info() does not. A limiter refusing a caller is the limiter
-// working - the caller already has a 429 with Retry-After and there is nothing
-// for an operator to do - so mailing them is wrong, and on a public server the
-// mail arrives for every distinct app a flood happens to touch. Every other
-// rate-limit refusal in the server logs at debug; this one line was at warn,
-// and mailed albatross for a test suite exercising its own limiter.
-//
-// Asserted on the source. warn only reaches the mail when [email] admin is set,
-// the ini package loads from a file only, and setting it would mutate global
-// config for every other test in this binary - the same reason
-// TestWarnApplicationKeysOnTheApp asserts this way. Scoped to the branch, so a
-// warn elsewhere in web_action_error is not caught by accident.
+// warn() mails the address in [email] admin; info() does not, and a refused
+// caller needs no operator. Asserted on the source because warn only mails when
+// [email] admin is set, and the ini package loads that from a file only.
 func TestActionErrorRateLimitDoesNotMailTheOperator(t *testing.T) {
 	source, err := os.ReadFile("web.go")
 	if err != nil {

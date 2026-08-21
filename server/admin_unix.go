@@ -1,18 +1,13 @@
-// Mochi server: Unix admin transport — UDS listener, peer-credential auth,
+// Mochi server: Unix admin transport - UDS listener, peer-credential auth,
 // admin_start, and the flock-based snapshot lock.
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// The admin listener exposes /_/admin/* (registered in admin_routes.go) over a
-// Unix domain socket at <data_dir>/run/admin.sock with mode 0660 (group
-// mochi). On accept, the peer credentials verify the peer is the mochi user,
-// root, or in the mochi group; any other peer is dropped before reaching Gin.
-// The kernel call that reads those credentials differs per OS (SO_PEERCRED on
-// Linux, LOCAL_PEERCRED on macOS), so admin_peer_authorized lives in the
-// platform files admin_cred_linux.go / admin_cred_darwin.go. The Windows
-// transport (named pipe) is in admin_windows.go.
+// /_/admin/* is served over <data_dir>/run/admin.sock, mode 0660, group mochi.
+// On accept the peer must be the mochi user, root, or in the mochi group; the
+// kernel call that reads that differs per OS (admin_cred_linux/darwin.go).
 
 //go:build linux || darwin
 
@@ -40,11 +35,9 @@ var (
 	admin_creds_once sync.Once
 )
 
-// admin_credential_basic_authorized reports whether the peer uid/gid alone clears
-// the gate: root, the mochi user, or a primary group of mochi. The per-OS
-// admin_peer_authorized calls this first, then falls back to a supplementary-
-// group check that needs platform-specific data (/proc on Linux, the xucred
-// group list on macOS).
+// admin_credential_basic_authorized reports whether uid/gid alone clears the
+// gate: root, the mochi user, or a primary group of mochi. The per-OS
+// admin_peer_authorized calls this first, then checks supplementary groups.
 func admin_credential_basic_authorized(uid, gid uint32) bool {
 	if uid == 0 || uid == admin_mochi_uid {
 		return true
@@ -68,11 +61,9 @@ func admin_socket_path() string {
 	return filepath.Join(run_dir(), "admin.sock")
 }
 
-// admin_resolve_creds populates admin_mochi_uid/gid from the OS user/group
-// database (admin_account is "mochi" on Linux, "_mochi" on macOS). If that
-// account does not exist (e.g. development environment, or a static darwin
-// build that cannot query OpenDirectory), the server's effective UID is used
-// as a fallback so the operator can run mochictl as the owner or root.
+// admin_resolve_creds populates admin_mochi_uid/gid from the OS user database.
+// When that account does not exist (development, or a static darwin build that
+// cannot query OpenDirectory) the server's effective UID is used instead.
 func admin_resolve_creds() {
 	admin_creds_once.Do(func() {
 		if u, err := user.Lookup(admin_account); err == nil {

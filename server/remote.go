@@ -66,11 +66,9 @@ func peer_connect_url(url string) (string, error) {
 		url = "https://" + url
 	}
 
-	// Rebuild from scheme and host alone. The app supplies this string and it
-	// used to be concatenated straight onto "/_/p2p/info", so a trailing "?x="
-	// carried an arbitrary path and query through, and a trailing "#" discarded
-	// the suffix entirely - either way an app-chosen GET against any public
-	// host. Dropping userinfo with the rest also stops credentials riding along.
+	// Rebuild from scheme and host alone: an app-supplied string concatenated onto
+	// the path would carry an arbitrary path, query or fragment - and userinfo -
+	// into an app-chosen GET against any public host.
 	parsed, err := neturl.Parse(url)
 	if err != nil || parsed.Host == "" {
 		return "", fmt.Errorf("invalid server URL")
@@ -116,24 +114,15 @@ func peer_connect_url(url string) (string, error) {
 	return information.Peer, nil
 }
 
-// remote_address_wait bounds how long a synchronous remote request
-// waits for the mesh to answer a peers/request about a peer we hold no
-// addresses for (first contact: the entity resolved via the directory,
-// but we have never exchanged traffic with its server). Record-holding
-// relays answer a peers/request on the target's behalf, so a live
-// target's addresses normally arrive well inside a second; five
-// seconds is headroom for slow relayed paths, matching the hole-punch
-// and shutdown-drain bounds.
+// remote_address_wait bounds a synchronous remote request's wait for a
+// peers/request answer about a peer we hold no addresses for. Record-holding
+// relays normally answer inside a second; five seconds is headroom for relayed
+// paths.
 var remote_address_wait = 5 * time.Second
 
-// remote_reach connects to the first reachable of `candidates` (peer
-// ids in failover order). When no candidate connects from stored
-// addresses, it broadcasts a peers/request for each and retries as
-// answers arrive, all within one shared remote_address_wait budget.
-// Without this recovery a synchronous request to a never-seen peer
-// fails instantly — peer_connect requires prior discovery — while
-// queued events to the same peer self-heal through the queue's retry
-// loop. Returns the connected peer id, or "".
+// remote_reach connects to the first reachable of `candidates` (peer ids in
+// failover order), broadcasting a peers/request and retrying within one shared
+// remote_address_wait budget when none connects. Returns the peer id, or "".
 func remote_reach(candidates []string) string {
 	for _, p := range candidates {
 		if peer_connect(p) {
@@ -146,24 +135,15 @@ func remote_reach(candidates []string) string {
 			requested = true
 		}
 	}
-	// The answer to that request arrives over pubsub, which drops inbound
-	// messages once a peer exceeds its budget. Peer control traffic has its
-	// own budget (rate_limit_pubsub_control) so an application flood can no
-	// longer starve these announcements, but a flood on the control plane
-	// itself, or a genuinely absent peer, can still leave us empty-handed.
-	// Snapshot the drop counter so a failure below can say whether messages
-	// were being discarded while we waited, rather than leaving "unreachable"
-	// indistinguishable from a peer that never answered.
+	// Snapshot the pubsub drop counter: the answer arrives over pubsub, which
+	// drops inbound messages past a budget, so a failure below can say whether
+	// messages were being discarded rather than the peer never answering.
 	dropped := pubsub_dropped.Load()
 
-	// Bound the wait. remote_address_wait is sized for a fresh request's answer
-	// to arrive. When we broadcast one, wait the full window. When every
-	// candidate was suppressed because a request already went out this minute,
-	// wait only for the remainder of that request's answer window, measured
-	// from when it was actually sent: exactly one broadcast happens per minute
-	// per target, so once its window has elapsed no answer is coming until the
-	// next, and sitting the full remote_address_wait is the pointless delay
-	// that turned a rate-limited cold probe into a multi-second hang.
+	// Bound the wait. A fresh broadcast waits the full window; when every
+	// candidate was rate-limited, wait only the remainder of the in-flight
+	// request's window - exactly one broadcast happens per minute per target, so
+	// no answer is coming.
 	budget := remote_address_wait
 	if !requested {
 		freshest := remote_address_wait
@@ -202,12 +182,9 @@ func remote_reach(candidates []string) string {
 	}
 }
 
-// Connect to a remote entity, returning the peer ID.
-//
-// If `peer` is explicitly given (libp2p id or entity id), uses that
-// after a single resolution. If only `entity_id` is given, tries each
-// location from entity_peers_failover in order, returning the first
-// peer we can reach. Same multi-host failover policy as stream().
+// Connect to a remote entity, returning the peer ID. An explicit `peer` (libp2p
+// or entity id) is resolved once and used; otherwise each location from
+// entity_peers_failover is tried in order, same policy as stream().
 func remote_connect(from string, entity_id string, peer string) (string, error) {
 	if peer != "" {
 		// If peer is an entity ID, resolve it first (single shot —
@@ -439,11 +416,9 @@ func api_remote_ping(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		caller = user.Identity.ID
 	}
 
-	// A bare ping (no explicit peer) must not confirm the existence of a
-	// private local entity to an unrelated caller — its unlisting is meant to
-	// hide exactly that. An explicit peer is a deliberate probe of a known
-	// location and is allowed. request/stream are not gated: their receiving
-	// handler is the access boundary.
+	// A bare ping must not confirm a private local entity's existence to an
+	// unrelated caller. An explicit peer is a deliberate probe and is allowed;
+	// request/stream are not gated, since the receiving handler is their boundary.
 	if peer == "" && entity_private_local_foreign(caller, entity_id) {
 		return sl_encode(map[string]any{"reachable": false}), nil
 	}

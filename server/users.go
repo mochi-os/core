@@ -126,17 +126,13 @@ func (m *user_get_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs 
 	return api_user_get_id(thread, nil, args, kwargs)
 }
 
-// code_send sends a login code to the given email address. Returns empty string
-// on success, or an error reason: "invalid_email" or "signup_disabled". The
-// gin.Context is used to resolve the email language: the recipient's stored
-// preference if they're an existing user, otherwise Accept-Language from the
-// request that triggered the send.
+// code_send sends a login code to an email address. Returns "" on success, or a
+// reason: "invalid_email", "signup_disabled", "too_many_codes". The gin.Context
+// resolves the email language when the recipient has no stored preference.
 func code_send(email string, c *gin.Context) string {
-	// Canonical from here down. mail.ParseAddress accepts "Alice <a@b.com>",
-	// " a@b.com " and "A@B.com" for the one mailbox, and the code row's
-	// username becomes the account's username when the code is redeemed - so
-	// keying anything below on what the caller typed hands a user who wrote
-	// their address a second way a second, empty account.
+	// Canonical from here down: mail.ParseAddress accepts several spellings of one
+	// mailbox, and the code row's username becomes the account's username when the
+	// code is redeemed.
 	address := email_address(email)
 	if address == "" {
 		return "invalid_email"
@@ -166,11 +162,9 @@ func code_send(email string, c *gin.Context) string {
 	return ""
 }
 
-// code_consume verifies and consumes a one-time login code for an
-// already-known user, returning true if the code was valid and
-// unexpired. Used for step-up re-authentication (data export): the
-// session already identifies the user, so the code is matched to their
-// username and an attacker can't burn a different user's pending code.
+// code_consume verifies and consumes a one-time login code for a known user.
+// Matched to their own username, so a step-up caller cannot burn a different
+// user's pending code.
 func code_consume(user *User, code string) bool {
 	if user == nil {
 		return false
@@ -178,18 +172,9 @@ func code_consume(user *User, code string) bool {
 	return code_consume_email(user.Username, code)
 }
 
-// code_consume_email is the same check keyed on the address rather than an
-// account, for a caller proving control of an address that has no user yet.
-// code_send already stores codes against the address (it emails one for an
-// unknown address whenever signup is open), so nothing new is issued here -
-// this is only the matching consumption.
-//
-// Restore needs this: the passphrase authenticates the BUNDLE, not the person
-// holding it, so without a code that route would mint an account for an
-// address nobody had shown they could receive mail at.
-//
-// Single-use and expiry-checked in one statement: the delete-and-return means
-// two concurrent attempts cannot both succeed on the same code.
+// code_consume_email is the same check keyed on an address rather than an
+// account, for restore: the passphrase authenticates the bundle, not the person
+// holding it. Delete-and-return in one statement makes it single-use.
 func code_consume_email(email string, code string) bool {
 	email = email_address(email)
 	if email == "" || code == "" {
@@ -204,14 +189,9 @@ func code_consume_email(email string, code string) bool {
 }
 
 // api_user_code_send is mochi.user.code.send(): email the calling user a
-// one-time login code, reusing the login-code mechanism. The export flow
-// sends it when the download dialog opens and requires it back as a
-// second factor before building the (key-bearing) bundle — so a stolen
-// session alone can't extract the user's private keys, and the code
-// email doubles as an alert that an export was attempted. Gated on
-// user/export so only that flow can trigger a send. Returns "" when the
-// code was sent, or a short reason ("too_many_codes", "invalid_email",
-// "signup_disabled") for the caller to map to a translated message.
+// one-time login code. Gated on user/verification/write. Returns "" when sent,
+// or a reason ("too_many_codes", "invalid_email", "signup_disabled") for the
+// caller to translate.
 func api_user_code_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "user/verification/write"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -231,11 +211,9 @@ func api_user_code_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl.String(code_send(user.Username, web)), nil
 }
 
-// api_user_code_verify is mochi.user.code.verify(code): verify+consume an
-// emailed login code as the email factor of a step-up re-authentication,
-// advancing the accrual. Returns a dict {"token": ...} once every required
-// factor is satisfied, {"remaining": [...]} if more are needed, or None if
-// the code is wrong/expired (the action maps None to a translated error).
+// api_user_code_verify is mochi.user.code.verify(code): consume an emailed code
+// as the email factor of a step-up. Returns {"token": ...} once every required
+// factor is satisfied, {"remaining": [...]} if not, or None if it is wrong.
 func api_user_code_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "user/verification/write"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -254,11 +232,8 @@ func api_user_code_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl.None, nil
 	}
 
-	// Throttled like the TOTP step-up, and for the same reason: an emailed
-	// code is guessable, code_consume is a single unthrottled lookup, and the
-	// proof it mints is what api_user_code_send's own comment says stops a
-	// stolen session extracting the user's private keys. Without a gate here
-	// that sentence is a description of intent rather than of behaviour.
+	// Throttled like the TOTP step-up: an emailed code is guessable and
+	// code_consume is a single unthrottled lookup.
 	if !stepup_gate_reserve(user.UID) {
 		return sl.None, nil
 	}
@@ -273,12 +248,8 @@ func api_user_code_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 }
 
 // api_user_session_reauthenticate is mochi.user.session.reauthenticate(token):
-// spend a step-up re-authentication proof for the current user, returning
-// True if it was valid (and consuming it), else False. A settings action
-// calls this before a sensitive mutation (data export, replication
-// approval, an account-security change); the proof is earned by
-// re-verifying the user's login factor(s) via mochi.user.code.verify /
-// mochi.user.totp.verify / mochi.user.passkey.verify.
+// spend a step-up proof, returning True if valid (and consuming it). The proof
+// is earned through mochi.user.code.verify / totp.verify / passkey.verify.
 func api_user_session_reauthenticate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "user/sessions/write"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -351,17 +322,9 @@ func user_by_uid(uid string) *User {
 	return &u
 }
 
-// user_suspended reports whether uid names a suspended account.
-//
-// user_by_uid returns nil for a suspended user, deliberately - it is the "get
-// the acting user" lookup and a suspended user must not act. That collapses
-// three outcomes into one nil (no such user, suspended, no identity), which is
-// fine everywhere except the login paths, whose whole job at that point is to
-// explain the refusal. Five of them carried a status check AFTER the lookup,
-// so a suspended user was told the account did not exist, or that the identity
-// provider had failed, or got a 500.
-//
-// Called only on the nil branch, so the extra read is on a failure path.
+// user_suspended reports whether uid names a suspended account. user_by_uid
+// returns nil for suspended, no-such-user and no-identity alike; login paths
+// call this on that nil branch when they must explain the refusal.
 func user_suspended(uid string) bool {
 	if uid == "" {
 		return false
@@ -463,13 +426,9 @@ func user_from_code(code string) (*User, string) {
 	return user_create(c.Username)
 }
 
-// user_create inserts a new user with the given username (email), applies the
-// first-user-becomes-administrator rule, and sends the admin notification. Used
-// by both email-code signup and OAuth signup paths. New users have no required
-// login factor (methods=”); any one registered factor signs them in, and a
-// mandatory factor is an explicit opt-in. Returns the created user
-// and an error reason ("" on success, "invalid" if the row could not be read
-// back).
+// user_create inserts a new user, applying the first-user-becomes-administrator
+// rule. New users have no required login factor (methods=""): any registered
+// factor signs them in. Returns "" or "invalid" if the row cannot be read back.
 func user_create(username string) (*User, string) {
 	// The last gate before an address becomes an account. Canonical here as
 	// well as at each caller, so a future signup route cannot reintroduce a
@@ -481,13 +440,9 @@ func user_create(username string) (*User, string) {
 
 	db := db_open("db/users.db")
 
-	// First-user-becomes-administrator, decided INSIDE the insert. Reading the
-	// table first and passing the answer in is a check-then-act across two
-	// statements: two signups that both find the table empty both insert an
-	// administrator. Measured at 16 concurrent user_create calls on an empty
-	// table, that produced two administrators about one run in six. SQLite
-	// admits one writer at a time, so evaluating the subquery as part of the
-	// insert makes the decision atomic with the row it decides for.
+	// First administrator decided INSIDE the insert. Reading the table first is a
+	// check-then-act: two concurrent signups both find it empty and both insert an
+	// administrator.
 	db.exec(`insert into users (uid, username, role, methods)
 		values (?, ?, case when exists (select 1 from users) then 'user' else 'administrator' end, '')`,
 		uid(), username)
@@ -860,11 +815,8 @@ func api_user_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return sl_encode(rows[offset:end]), nil
 }
 
-// users_sort orders user rows by the named column. Username comparison is
-// case-insensitive; username is also the secondary key so ordering is stable
-// when the primary key has duplicates. Sort by "status" matches what the
-// admin UI shows in that column (role badge + suspension): active admins,
-// active users, suspended admins, suspended users.
+// users_sort orders user rows by the named column. Username is compared
+// case-insensitively and is also the secondary key, so ties order stably.
 func users_sort(rows []map[string]any, sort string, order string) {
 	asc := order != "desc"
 	username := func(r map[string]any) string {
@@ -1191,11 +1143,8 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		if row != nil {
 			old = row["role"].(string)
 		}
-		// Demoting the only administrator leaves nobody able to promote one
-		// back, and the server offers no route out of that. Closing your own
-		// account is already refused for the same reason (account.star), and
-		// the comptroller applies the same rule to its own last admin; this is
-		// the one place the invariant was never expressed.
+		// Demoting the only administrator leaves nobody able to promote one back, and
+		// the server offers no route out of that.
 		if old == "administrator" && role != "administrator" {
 			administrators, _ := db.row("select count(*) as count from users where role='administrator' and status='active'")
 			if administrators != nil {
@@ -1341,11 +1290,9 @@ func user_purge_local(id string) (string, error) {
 	sdb.exec("delete from passkeys where user=?", id)
 	sdb.exec("delete from verifications where user=?", id)
 
-	// Scheduled events live in a shared core database, not under users/<uid>/,
-	// so db_purge_prefix below does not reach them. A recurring row left here
-	// is re-claimed every interval for the life of the server: schedule_claim
-	// advances its due time, schedule_valid rejects it for the missing user,
-	// and nothing retires it.
+	// Scheduled events live in a shared core database, so db_purge_prefix below
+	// does not reach them. A row left here is re-claimed every interval for the
+	// life of the server and nothing retires it.
 	schedule_db().exec("delete from schedule where user=?", id)
 
 	db.exec("delete from credentials where user=?", id)
@@ -1363,38 +1310,15 @@ func user_purge_local(id string) (string, error) {
 	return target.Username, nil
 }
 
-// user_is_fresh returns true if the local user identified by uid shows no
-// signs of activity. Used by:
-//   - dump/restore overwrite protection (refuse to restore into a populated account)
-//   - per-user replication defence-in-depth (refuse the identity-key transfer
-//     if the destination placeholder has somehow accumulated data)
-//
-// Three checks against the destination user, all must pass:
-//
-//  1. Per-user user.db content tables empty (`accounts`, `groups`,
-//     `group_members`, `interests`). These have no system defaults; any row
-//     is the result of user activity (linking a notification destination,
-//     joining/creating a group, opening home or feeds).
-//  2. No attachments — walk users/<uid>/, refuse if any `*/files/`
-//     directory contains files. Attachments are never scaffolded.
-//  3. No entity-scoped subdirectories — refuse if any subdir under
-//     users/<uid>/ is named like an entity id. The directory layout creates
-//     users/<uid>/<app-name>/ lazily for app data and
-//     users/<uid>/<entity-id>/ only when entity-scoped writes happen — an
-//     entity-shaped subdir is unambiguous evidence of activity.
-//
-// Returns true if fresh; false otherwise. Callers surface a generic
-// "destination account is not empty" message at their own UI layer.
-// Preferences and settings are intentionally ignored — those rows are
-// trivial to redo and don't represent real activity.
+// user_is_fresh reports whether a local user shows no sign of activity, so
+// restore refuses to overwrite a populated account. Content rows, attachment
+// files and entity-shaped subdirectories appear only through activity.
 func user_is_fresh(uid string) bool {
 	u := &User{UID: uid}
 
-	// Whole queries as literals rather than a table name interpolated into
-	// one. The interpolated form was safe - the names came from this very
-	// slice - but a reader has to prove that each time, and a later change
-	// that sources a name from anywhere else turns it into an injection with
-	// no visible edit at the query site.
+	// Whole queries as literals rather than a table name interpolated into one: a
+	// later change that sources a name from elsewhere would turn the interpolated
+	// form into an injection with no visible edit here.
 	udb := db_user(u, "user")
 	for _, query := range []string{
 		"select 1 from accounts limit 1",
@@ -1557,13 +1481,9 @@ func api_user_session_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "database error")
 	}
 
-	// Replace raw session codes with hashed identifiers, and mark the row the
-	// caller is using. Only the server can identify it: the session cookie is
-	// HttpOnly, so the browser cannot hash its own code and compare. Without
-	// this the UI had to guess, and "most recently accessed" is wrong whenever
-	// another device was used more recently - labelling someone else's session
-	// as yours, which is the wrong way round for a screen whose purpose is
-	// spotting a session that should not be there.
+	// Hashed identifiers replace raw session codes, and the server marks the
+	// caller's own row: the cookie is HttpOnly, so the browser cannot identify its
+	// own session and the UI would otherwise have to guess.
 	current, _ := t.Local("session").(string)
 	for _, row := range rows {
 		if code, ok := row["code"].(string); ok {
@@ -1850,17 +1770,9 @@ func (p *UserAppClass) String() string        { return "UserAppClass" }
 func (p *UserAppClass) Truth() sl.Bool        { return sl.True }
 func (p *UserAppClass) Type() string          { return "UserAppClass" }
 
-// The four binding families below decide which app answers for a class, a
-// service, a URL path or a version - for this user, on every host of the
-// account. They are read and written through a.user.app.*, so any installed app
-// could reach them, and repointing a binding is how an app makes itself the
-// answer to a question it was not asked. mochi.entity.update and delete now
-// resolve the class handler to decide who may change or destroy an entity, so
-// an ungated setter here would hand back exactly what that check takes away.
-//
-// apps/write and apps/read rather than a new permission: this is the app
-// registry, the Apps app is the only caller in the tree, and it already holds
-// both.
+// The four binding families below decide which app answers for a class,
+// service, URL path or version. Any installed app can reach them through
+// a.user.app.*, so an ungated setter lets an app make itself the answer.
 
 // a.user.app.class.get(class) -> string | None: Get user class binding
 func (p *UserAppClass) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {

@@ -43,11 +43,8 @@ func TestRateLimiterSince(t *testing.T) {
 	}
 }
 
-// TestAddressWaitBudget pins the rule remote_reach applies: a fresh request
-// waits the full window for its answer, a request already several seconds old
-// waits only the remainder, and a stale one is not waited on at all. This is
-// the calculation inline in remote_reach, exercised directly so the intent is
-// pinned even though the surrounding loop needs a live mesh.
+// TestAddressWaitBudget pins remote_reach's wait calculation: a fresh request
+// gets the full window, an older one the remainder, a stale one nothing.
 func TestAddressWaitBudget(t *testing.T) {
 	limiter := &rate_limiter{entries: map[string]*rate_limit_entry{}, limit: 1, window: 60}
 	target := "12D3KooWTarget"

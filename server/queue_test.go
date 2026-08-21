@@ -11,15 +11,9 @@ import (
 	"testing"
 )
 
-// TestQueuePriority covers the classifier that assigns a message to a priority
-// tier from its service and event.
-//
-// Every message is interactive. The only classification this ever made was for
-// service "replication" - bulk for the sql/op and system row ops, control for
-// link, membership and keys - and replication was removed in July 2026, taking
-// with it the one service that could reach either tier. The cases below
-// include those service and event names deliberately: they are ordinary
-// strings now, and a message naming one must be treated like any other.
+// TestQueuePriority: every message is interactive. The replication service and
+// event names below are ordinary strings now and must earn no lane of their
+// own.
 func TestQueuePriority(t *testing.T) {
 	for _, c := range []struct{ service, event string }{
 		{"feeds", "post/new"},
@@ -60,11 +54,9 @@ func queue_test_insert_target(db *DB, id, target string, priority int) {
 		id, target, now()-1, now()-1, priority)
 }
 
-// TestQueueSelectPriorityOrder: across distinct peers, queue_select returns
-// the most urgent peer first. Stated in the two tiers that still have a
-// producer - a resync reply at priority_replay must not be delivered behind
-// ordinary interactive traffic, which is the whole reason broadcast_resync
-// asks for that lane by name.
+// TestQueueSelectPriorityOrder: across distinct peers the most urgent peer
+// comes first - a resync reply at priority_replay must not queue behind
+// interactive traffic.
 func TestQueueSelectPriorityOrder(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -85,11 +77,9 @@ func TestQueueSelectPriorityOrder(t *testing.T) {
 	}
 }
 
-// TestQueueSelectPickByPeerDedupesByTarget: with N rows all for the
-// same target peer, queue_select returns ONE row — the highest-priority
-// earliest-next_retry one. The old "top 50 rows" model would have
-// returned all N (starving every other peer); pick-by-peer guarantees
-// every peer with due work gets exactly one slot per tick.
+// TestQueueSelectPickByPeerDedupesByTarget: N rows for one peer yield ONE row,
+// the highest-priority earliest-next_retry one, so no peer's backlog starves
+// the others.
 func TestQueueSelectPickByPeerDedupesByTarget(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -125,12 +115,9 @@ func TestQueueSelectPickByPeerDedupesByTarget(t *testing.T) {
 	}
 }
 
-// TestQueueSelectNoLowPriorityStarvation: with a flood of higher-priority rows
-// spread across many peers AND one lower-priority row for a different peer,
-// that row IS returned — pick-by-peer naturally gives every peer its slot, so
-// a dedicated floor lane is unnecessary. Written in the bulk tier until that
-// tier lost its last producer; the property is about the ordering, not about
-// which tiers happen to exist.
+// TestQueueSelectNoLowPriorityStarvation: a lower-priority row for its own peer
+// is still picked - pick-by-peer gives every peer a slot, so no floor lane is
+// needed.
 func TestQueueSelectNoLowPriorityStarvation(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -149,13 +136,9 @@ func TestQueueSelectNoLowPriorityStarvation(t *testing.T) {
 
 	entries := queue_select(db)
 
-	// The picker takes the top 50 distinct peers ordered by
-	// priority+next_retry. Interactive (priority 20) outranks bulk
-	// (priority 10), so interactive fills the first 50 slots and the
-	// bulk row falls outside this tick's pick. Next tick (after
-	// queue_process drains some of the interactive slots), the bulk
-	// row wins its peer's slot — no starvation. Verify by claiming
-	// the bulk peer's lone row directly.
+	// The picker takes the top 50 distinct peers by priority then next_retry, so
+	// the replay rows fill this tick and the interactive row waits for the next
+	// one. Verified by re-querying after some replay rows drain.
 	for _, e := range entries {
 		if e.Priority == priority_interactive {
 			// The low row made it into a 50-slot batch — that's fine and
@@ -178,11 +161,9 @@ func TestQueueSelectNoLowPriorityStarvation(t *testing.T) {
 	t.Errorf("the low-priority row was never picked across two ticks; pick-by-peer should give every peer a slot")
 }
 
-// TestQueueAckFlushDeletesAllIds: queue_ack_flush issues a single
-// DELETE that removes every id in the batch and leaves other rows
-// untouched. Load-bearing for the batching savings — if the IN-list
-// is built wrong (off-by-one comma, mis-counted placeholders) we'd
-// lose ack semantics for whole batches.
+// TestQueueAckFlushDeletesAllIds: one DELETE removes every id in the batch and
+// leaves other rows untouched. A mis-built IN-list loses acks for whole
+// batches.
 func TestQueueAckFlushDeletesAllIds(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -325,24 +306,10 @@ func TestQueueSelfLoopFastDecodeFailureReturnsFalse(t *testing.T) {
 	}
 }
 
-// TestQueueSelfLoopFastPanicRecovered confirms the defer recover
-// guard catches a panic from e.route() and surfaces it as a normal
-// retryable failure instead of killing the queue_process goroutine.
-// We force the panic by overriding event_next to a value that makes
-// route() panic - the simpler hook is to use a content that triggers
-// the broadcast-tracking path with nil db.user (e.route() does NOT
-// panic naturally for that, it returns an error). So we trigger the
-// panic via a dummy entity-resolve that route() calls via valid().
-// Easier: set up the panic path explicitly via a stubbed handler.
-//
-// Since route() needs real user/app infrastructure to actually invoke
-// a handler, the cleanest way to prove panic recovery without
-// rebuilding the whole event infra is to pass a from_entity that
-// route() processes far enough to panic on a downstream call. As a
-// fallback, this test just verifies that the function returns
-// cleanly (no panic to the test runner) on a basic input - confirming
-// the defer recover wrapper is present and correctly typed. A failed
-// recover would crash the test runner here.
+// TestQueueSelfLoopFastPanicRecovered: route() needs real user/app
+// infrastructure to reach a panic, so this only proves the defer recover
+// wrapper is present and correctly typed - a failed recover would crash the
+// test runner here.
 func TestQueueSelfLoopFastPanicRecovered(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -430,11 +397,8 @@ func TestQueueClaimForSelfNoNetId(t *testing.T) {
 	}
 }
 
-// TestQueueProcessSkipsSelfLoopRows: queue_process must NOT dispatch
-// direct rows whose target is net_id — self_loop_drain owns them.
-// Same reasoning as TestQueueProcessSkipsRowsWithActiveSender: avoid
-// two paths competing for the same workload, keep queue_process tick
-// fast.
+// TestQueueProcessSkipsSelfLoopRows: queue_process must not dispatch rows
+// targeting net_id - self_loop_drain owns them.
 func TestQueueProcessSkipsSelfLoopRows(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -462,16 +426,9 @@ func TestQueueProcessSkipsSelfLoopRows(t *testing.T) {
 	}
 }
 
-// TestQueueProcessSkipsRowsWithActiveSender: queue_process must NOT
-// dispatch direct rows whose target has an active /mochi/2/messages
-// Sender — pull_loop owns them. If queue_process competes for the
-// Sender's outbox, peer_send blocks for sender_send_timeout when
-// pull_loop has it full, dragging out the whole tick and starving
-// self-loop / offline-peer work in the same batch.
-//
-// This test installs a synthetic Sender for a peer, queues a row for
-// that peer, runs queue_process, and confirms the row stays pending
-// (untouched) so pull_loop can claim it.
+// TestQueueProcessSkipsRowsWithActiveSender: pull_loop owns direct rows for a
+// peer with an active Sender. Competing for its outbox blocks peer_send for
+// sender_send_timeout and drags out the whole tick.
 func TestQueueProcessSkipsRowsWithActiveSender(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

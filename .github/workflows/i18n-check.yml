@@ -17,10 +17,9 @@ jobs:
       - name: Check hardcoded English in user-facing server responses
         run: |
           # Flags Go `c.JSON(..., "error|message": "literal")` and Starlark
-          # `a.error(status, "literal")` — the label-aware forms are
-          # `respond_error(c, status, code, key, args)` and
-          # `a.error.label(status, key, ...)`. Allowlist intentional cases
-          # with a `# i18n-ok: <reason>` trailing comment.
+          # `a.error(status, "literal")`; the label-aware forms are
+          # `respond_error(...)` and `a.error.label(...)`. Allowlist with `#
+          # i18n-ok: <reason>`.
           python3 - <<'PY'
           import re, sys
           from pathlib import Path

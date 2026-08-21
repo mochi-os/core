@@ -1,15 +1,13 @@
 // Mochi server: log line flood suppression regression.
 //
-// The 2026-07 broadcast gap flood wrote ~60 debug lines/sec and cut yuzu's
-// journald retention to ~35 minutes, evicting the evidence needed to diagnose
-// the incident. log_repeat_allow suppresses a format past
-// log_repeat_threshold lines per window, keyed by format string so distinct
-// call sites never throttle each other.
+// log_repeat_allow suppresses a format past log_repeat_threshold lines per
+// window, keyed by format string so distinct call sites never throttle each
+// other.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

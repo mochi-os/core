@@ -1,28 +1,14 @@
 // Mochi server: the placeholder sweep has to look where repositories are.
 //
 // git_repo_path composes users/<uid>/<app.id>/<entity>, and app.id is the app's
-// NAME only on a dev install - on a published one it is the app's entity id.
-// git.go:176 says so explicitly, because git_repo_path itself was fixed for
-// that exact assumption before v54.
-//
-// git_placeholder_sweep kept it. Its glob named the literal "repositories", so
-// it swept the dev rig and found nothing on every published deployment - and
-// found nothing quietly, because the sweep only logs when it sweeps something.
-// The repositories it was meant to repair are the ones that refuse a first push
-// as unrelated history, so the failure surfaces to a user pushing to a new
-// repository, not to the operator.
-//
-// The glob now spans every app directory. That is safe because the sweep was
-// already signature-gated rather than path-gated: a candidate without a HEAD
-// costs one stat, and to be touched a repository must have refs/heads/main as
-// its ONLY ref, pointing at a parentless commit with the empty tree, the
-// message "Initial commit" and the Mochi <mochi@localhost> author. Nothing a
-// person authored can match all five.
+// name only on a dev install - on a published one it is the app's entity id.
+// The sweep's glob therefore spans every app directory, which is safe because
+// it is signature-gated rather than path-gated.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

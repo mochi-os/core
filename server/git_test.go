@@ -621,13 +621,9 @@ func TestGitBranchOperations(t *testing.T) {
 
 // ============ Merge / branch-mutation access control ============
 
-// TestGitMergeAccessControl is the unit-level proof of the repository-merge
-// ACL: git_can_write - the shared gate for api_git_merge_perform and
-// the branch create/delete/default-set primitives - authorizes a mutation only
-// when the acting identity holds repository/<id> write, the same grant a git
-// push requires, and fails closed otherwise. This encodes the plan's acceptance
-// criteria: merge without repo write is denied; with the grant it is allowed;
-// the repository owner ('*') is allowed; an absent identity is denied.
+// TestGitMergeAccessControl pins git_can_write, the shared gate for
+// api_git_merge_perform and the branch create/delete/default-set primitives: a
+// mutation needs repository/<id> write, the same grant a git push requires.
 func TestGitMergeAccessControl(t *testing.T) {
 	owner, _, cleanup := create_git_test_env(t)
 	defer cleanup()
@@ -687,12 +683,9 @@ func TestGitMergeAccessControl(t *testing.T) {
 	}
 }
 
-// TestGitReadAccessControl proves git_can_read - the gate on the diff and
-// merge-check primitives - permits public ("*") repositories including
-// anonymous callers, permits identities with an explicit read grant, and denies
-// identities (and anonymous callers) without one. This closes the read-preview
-// gap where another app could diff/merge-check a private repository it lacks
-// read access to.
+// TestGitReadAccessControl pins git_can_read, the gate on the diff and
+// merge-check primitives: public ("*") repositories permit anonymous callers,
+// and an identity without a read grant is denied.
 func TestGitReadAccessControl(t *testing.T) {
 	owner, _, cleanup := create_git_test_env(t)
 	defer cleanup()
@@ -978,11 +971,9 @@ func TestGitUpdateBranchRefusesChangedTarget(t *testing.T) {
 	}
 }
 
-// Genuine concurrency, not a simulated stale hash: every worker reads the same
-// tip and then tries to move the branch, which is exactly the shape of a merge
-// that resolved its target before a push landed. Compare-and-swap must let
-// precisely one through - two winners would mean a silently discarded update,
-// the bug this replaced.
+// Genuine concurrency rather than a simulated stale hash: every worker reads
+// the same tip and then tries to move the branch. Compare-and-swap must let
+// exactly one through; two winners would be a lost update.
 func TestGitUpdateBranchConcurrentWritersLoseAtMostOne(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()
@@ -1033,22 +1024,10 @@ func TestGitUpdateBranchConcurrentWritersLoseAtMostOne(t *testing.T) {
 }
 
 // The git handlers must refuse when the app-system database cannot be opened,
-// not skip the access check. Treating that as "no rules to apply" gave
-// anonymous callers clone and push on every repository, precisely when the
-// server was least able to cope.
-//
-// Two things this test had to get right, both learned the hard way:
-//   - db_app_system returns nil only when app.db cannot be CREATED (MkdirAll or
-//     os.Create failing - disk full, lost permissions, read-only filesystem).
-//     If the file exists but SQLite cannot open it, the first use PANICS via
-//     must() instead, so that is a different failure mode and not this one.
-//     Here the app directory is made unwritable, so os.Create fails.
-//   - Only app.db is broken; the repository stays perfectly serviceable. An
-//     earlier version broke data_dir wholesale, so the fall-through it was
-//     meant to catch died later at session creation and returned 500 anyway -
-//     the test passed against the fixed AND the unfixed handler. With the
-//     repository intact the unfixed handler advertises refs, so the two are
-//     distinguishable.
+// not skip the access check. The fixture makes only the app directory
+// unwritable: db_app_system returns nil only when app.db cannot be CREATED, and
+// breaking data_dir wholesale makes the unfixed handler fail later anyway, so
+// the test would pass either way.
 func TestGitHandlerRefusesWithoutAppDatabase(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()

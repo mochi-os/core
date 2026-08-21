@@ -1,14 +1,11 @@
 // mochictl: supervisor stub for non-Linux platforms.
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// Service lifecycle (`mochictl start`) shells out to systemd/Docker, which
-// only exist on Linux. On Windows and macOS the OS service manager owns the
-// mochi-server lifecycle, so this returns a clear pointer there. Every other
-// mochictl subcommand talks to the admin transport (UDS / named pipe) and
-// works on all platforms.
+// `mochictl start` shells out to systemd/Docker, which only exist on Linux;
+// elsewhere the OS service manager owns the mochi-server lifecycle.
 
 //go:build !linux
 

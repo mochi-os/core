@@ -24,13 +24,9 @@ type Setting struct {
 }
 
 // SystemSetting defines a system setting with validation and access control.
-//
-// Read access is decided by the setting's own classification and nothing else:
-// Public is readable by anyone including anonymous callers, UserReadable by any
-// signed-in user, neither by administrators only, and Secret by no one - the
-// stored value is never returned, so a credential cannot be read back through
-// any caller. Writing is separate and needs the restricted settings/write
-// permission, because there is no per-setting statement of who may write.
+// Read access is decided by the classification alone - Public, UserReadable,
+// neither (administrators), Secret (never returned). Writing is separate and
+// needs the restricted settings/write permission.
 type SystemSetting struct {
 	Name         string // Setting name
 	Pattern      string // Validation pattern for valid()
@@ -554,11 +550,10 @@ func setting_get(name string, def string) string {
 	return def
 }
 
-// setting_effective resolves a setting the way the settings API and UI do:
-// the stored value if present, else the setting's registered default.
-// Enforcement sites must use this rather than setting_get with an inline
-// default, which can silently disagree with the declared default
-// (apps_install_user was enforced as "" while registered as "true").
+// setting_effective resolves a setting as the settings API and UI do: stored
+// value, else the registered default. Enforcement sites must use this rather
+// than setting_get with an inline default that can disagree with the
+// registration.
 func setting_effective(name string) string {
 	definition, exists := system_settings[name]
 	if !exists {
@@ -572,12 +567,11 @@ func setting_set(name string, value string) {
 	db.exec("replace into settings ( name, value ) values ( ?, ? )", name, value)
 }
 
-// setting_delete removes a setting row entirely. Distinguished from
-// setting_set(name, "") which leaves an explicit empty row. Used by
-// callers that want subsequent setting_get to return the default
-// rather than an empty string.
+// setting_delete removes a setting row entirely, so a later setting_get returns
+// the default. setting_set(name, "") leaves an explicit empty row instead.
 //
-//lint:ignore U1000 removes a row entirely, which setting_set(name, "") deliberately does not; the distinction is the point and is documented above
+// lint:ignore U1000 removes a row entirely, which setting_set(name, "")
+// deliberately does not
 func setting_delete(name string) {
 	db := db_open("db/settings.db")
 	db.exec("delete from settings where name=?", name)

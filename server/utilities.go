@@ -51,19 +51,9 @@ var (
 	locks         = map[string]*sync.Mutex{}
 	locks_lock    sync.Mutex
 	match_hyphens = regexp.MustCompile(`-`)
-	// Every control character except carriage return and line feed. Those two
-	// are admitted ON PURPOSE: valid() applies this to every input, and the
-	// "text" type - entity data, directory entries - carries multi-line
-	// content, so excluding them here rejects every payload with a newline in
-	// it. Nothing else depends on the exemption: of the other validators only
-	// "line" and "name" could match a newline at all, and both exclude it in
-	// their own pattern; the rest use character classes that cannot.
-	//
-	// A validator needing no newline therefore says so itself rather than
-	// asking this to say it. themes.go applies it to font names and override
-	// values, which reach a style attribute - harmless, because that output
-	// escapes the quote that delimits the attribute and both call sites refuse
-	// the semicolon a second declaration would need.
+	// Every control character except carriage return and line feed, which are
+	// admitted on purpose: valid() applies this to every input and the "text" type
+	// is multi-line. Validators needing no newline exclude it themselves.
 	match_non_controls = regexp.MustCompile("^[\\P{Cc}\\r\\n]*$")
 	regex_cache        = map[string]*regexp.Regexp{}
 	regex_cache_mu     sync.Mutex
@@ -305,16 +295,9 @@ func uid() string {
 	return match_hyphens.ReplaceAllLiteralString(u.String(), "")
 }
 
-// Extraction bounds for an app package. The largest package shipped today
-// unpacks to 34 MB across 185 entries, and the biggest ordinary app to 12 MB
-// across 681; legitimate packages expand 1.3x to 3x because their bulk is
-// already-compressed assets and minified bundles. A bomb expands thousands of
-// times, so there is no overlap to trade off against - these are set for the
-// growth of a real package (a 3D game gaining models and audio), not to sit
-// close to today's largest.
-//
-// The byte cap stops one entry decompressing to petabytes; the entry cap stops
-// the other shape, millions of tiny files exhausting inodes rather than disk.
+// Extraction bounds for an app package: real packages expand 1.3x to 3x, a bomb
+// thousands. The byte cap stops one entry decompressing to petabytes; the entry
+// cap stops millions of tiny files exhausting inodes.
 const (
 	unzip_maximum_bytes   = 256 << 20
 	unzip_maximum_entries = 10_000
@@ -436,22 +419,14 @@ func url_is_cloud_metadata(url string) bool {
 		strings.Contains(url, "metadata.google.internal")
 }
 
-// url_allow_private permits outbound requests to loopback, private, and
-// link-local addresses. Off by default: mochi.url.*, RSS fetching, link
-// previews and mochi.remote.peer() all take an app-supplied URL, so an
-// unrestricted client is an SSRF pivot into whatever the host can reach.
-// Peer-to-peer traffic is unaffected — libp2p dials multiaddrs directly and
-// never goes through url_request — so this only constrains app-driven HTTP.
-// Tests that serve from httptest (127.0.0.1) set it, as may a deployment that
-// genuinely federates over a LAN.
+// url_allow_private permits outbound requests to loopback, private and
+// link-local addresses. Off by default: mochi.url.*, RSS and link previews all
+// take an app-supplied URL. Tests serving from httptest set it.
 var url_allow_private = false
 
-// url_address_allowed reports whether a resolved dial address is a permitted
-// outbound destination. It is called from the dialer with the address actually
-// being connected to, after DNS resolution, so unlike inspecting the request
-// URL it also covers hostnames that resolve inward, alternate textual or
-// numeric IP forms, DNS rebinding between validation and connection, and
-// redirects into internal ranges.
+// url_address_allowed reports whether a resolved dial address may be reached.
+// Called from the dialer after DNS, so it also covers inward-resolving
+// hostnames, alternate IP forms, rebinding and redirects into internal ranges.
 func url_address_allowed(address string) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
@@ -474,11 +449,9 @@ func url_address_allowed(address string) error {
 		ip.IsInterfaceLocalMulticast(), ip.IsMulticast():
 		return fmt.Errorf("blocked outbound request to non-public address %s", ip)
 	}
-	// The standard library's helpers stop at the well-known private ranges,
-	// which leaves the rest of the special-purpose registry reachable. Carrier
-	// -grade NAT is the one that matters in practice: hosting providers and
-	// mesh VPNs put internal services on 100.64.0.0/10, so a host there is
-	// every bit as internal as a 10.0.0.0/8 one.
+	// The standard library's helpers stop at the well-known private ranges.
+	// Carrier-grade NAT is the one that matters: providers and mesh VPNs put
+	// internal services on 100.64.0.0/10.
 	for _, block := range url_blocked_networks {
 		if block.Contains(ip) {
 			return fmt.Errorf("blocked outbound request to non-public address %s", ip)
@@ -518,11 +491,9 @@ var url_blocked_networks = func() []*net.IPNet {
 // request. The dialer's Control hook runs per connection, so the check applies
 // to the initial request and to every redirect hop on the same client.
 var url_transport = &http.Transport{
-	// No proxy, deliberately. With one configured the dialer connects to the
-	// proxy and the Control hook below sees the proxy's address, not the
-	// destination — so HTTP_PROXY in the server's environment would silently
-	// void the whole guard and hand apps a route to any internal host. Mochi
-	// has no egress-proxy configuration, so nothing legitimately relies on it.
+	// No proxy, deliberately: with one configured the Control hook below sees the
+	// proxy's address rather than the destination, so HTTP_PROXY in the
+	// environment would silently void the guard.
 	Proxy: nil,
 	DialContext: (&net.Dialer{
 		Timeout:   10 * time.Second,
@@ -557,15 +528,9 @@ func url_timeout(options map[string]string) time.Duration {
 	return timeout
 }
 
-// Make an HTTP request to a URL.
-//
-// ctx cancels the request when the calling Starlark action ends, including when
-// it ends by timing out. Without it an app could start a request with a long
-// timeout, have its action abandoned at the compute timeout, and leave the
-// request running with no concurrency slot (released to the caller) and no
-// cancellation — accumulating. Non-Starlark callers pass context.Background().
-//
-// If allowed_domains is non-empty, redirect targets are validated against them.
+// Make an HTTP request to a URL. ctx cancels when the calling Starlark action
+// ends, so an abandoned action does not leave a request running with no
+// concurrency slot; non-Starlark callers pass context.Background().
 func url_request(ctx context.Context, method string, url string, options map[string]string, headers map[string]string, body any, allowed_domains ...string) (*http.Response, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -607,11 +572,9 @@ func url_request(ctx context.Context, method string, url string, options map[str
 
 	c := &http.Client{Timeout: url_timeout(options), Transport: url_transport}
 
-	// Redirects are validated for every caller, not only those that passed
-	// allowed domains: RSS fetching, link previews and peer discovery supply
-	// none, and previously followed redirects entirely unchecked. The dialer
-	// already refuses non-public destinations on each hop; these checks add the
-	// metadata-name, hop-count and granted-domain limits on top.
+	// Redirects are checked for every caller, not only those that passed allowed
+	// domains. The dialer already refuses non-public destinations per hop; these
+	// add the metadata-name, hop-count and granted-domain limits.
 	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if url_is_cloud_metadata(req.URL.String()) {
 			return fmt.Errorf("redirect to cloud metadata service is blocked")
@@ -635,14 +598,8 @@ func url_request(ctx context.Context, method string, url string, options map[str
 }
 
 // valid checks s against a named validator type, or against match itself as a
-// regex when the name is not one of them. The raw-regex fallthrough has real
-// callers - the system_settings table validates most of its values with one -
-// so it stays.
-//
-// Patterns reaching here are compile-time constants, so they compile once into
-// a process-global cache and MustCompile cannot fail. mochi.text.valid does NOT
-// come through this door: an app chooses its own pattern string, which is
-// neither constant nor bounded in variety. See valid_with and regex_session.
+// regex when the name is not one. Patterns here are compile-time constants, so
+// the process-global cache is bounded; app-chosen patterns use valid_with.
 func valid(s string, match string) bool {
 	return valid_with(s, match, func(pattern string) *regexp.Regexp { return regex_cached(pattern) })
 }
@@ -691,21 +648,9 @@ func valid_with(s string, match string, compile func(string) *regexp.Regexp) boo
 	case "json":
 		match = "^[0-9a-zA-Z{}:\"]{1,1000}$"
 	case "display":
-		// A name that will be rendered to people other than whoever chose
-		// it: a world listing, a directory entry. Two things beyond "name":
-		//
-		// The global filter above excludes category Cc, which is why a
-		// terminal escape never reaches mochictl's world table. It does not
-		// exclude Cf, a different category, so the bidirectional overrides
-		// and isolates pass - "Server\u202Egnip" renders as its own reversal
-		// from the override onward, and no amount of HTML escaping helps
-		// because the effect is in the text layer, not the markup.
-		// path_component_valid already refuses Cf for exactly this reason;
-		// this brings the rule to names that are displayed rather than
-		// opened.
-		//
-		// Angle brackets go for the reason "name" excludes them: the value
-		// is interpolated by consumers this server does not control.
+		// A name rendered to people other than whoever chose it. The global filter
+		// excludes Cc but not Cf, so bidirectional overrides pass and no HTML
+		// escaping helps - the effect is in the text layer, not the markup.
 		for _, character := range s {
 			if unicode.Is(unicode.Cf, character) {
 				return false
@@ -751,11 +696,8 @@ func valid_with(s string, match string, compile func(string) *regexp.Regexp) boo
 		if strings.Contains(s, "..") {
 			return false
 		}
-		// First char alphanumeric (no leading ".", "-" or "_" — mirrors the
-		// filepath validator, blocks a bare "."). Hyphen last so it is a
-		// literal, not a range endpoint: the old "[0-9a-zA-Z.-_]" made ".-_"
-		// a range (0x2E-0x5F) that matched "/", "\\" and ":", allowing path
-		// traversal in app install.
+		// First char alphanumeric, and the hyphen last so it is a literal: as a range
+		// endpoint ".-_" spans 0x2E-0x5F and matches "/", "\\" and ":".
 		match = "^[0-9a-zA-Z][0-9a-zA-Z._-]{0,19}$"
 	}
 
@@ -767,11 +709,8 @@ func valid_with(s string, match string, compile func(string) *regexp.Regexp) boo
 }
 
 // The ASCII punctuation allowed in a path component. Everything that can act -
-// shell expansion, command separation, redirection, wildcards, cmd.exe escapes,
-// header injection - is ASCII, so ASCII is held to this exact list while
-// non-ASCII is judged by Unicode category in path_component_valid. The list is
-// the POSIX portable filename set plus the punctuation all of Linux, Windows
-// and macOS accept and no shell or URL parser assigns semantics to.
+// shell expansion, redirection, wildcards, header injection - is ASCII, so
+// ASCII is an exact list while non-ASCII is judged by category.
 const path_punctuation = " !#%&'()+,-.=@[]_~"
 
 // Windows reserves these device names case-insensitively, with or without an
@@ -791,16 +730,10 @@ func path_ascii(r rune) bool {
 	return strings.ContainsRune(path_punctuation, r)
 }
 
-// path_valid reports whether s is a relative path safe to store and serve on
-// every platform an attachment can reach. A name travels to subscribers over
-// P2P, so the rule is the intersection of Linux, Windows and macOS rather than
-// the rules of whichever one this server runs on. This replaced an ASCII
-// allow-list that refused every accented, CJK and Cyrillic name outright - no
-// non-English speaker could name a file in their own language.
-//
-// None of this is the traversal defence: os.Root confines every file syscall
-// to its base directory whatever the name says, and a symlink is invisible to
-// any check on the name alone.
+// path_valid reports whether s is a relative path safe on every platform an
+// attachment can reach - names travel over P2P, so the rule is the
+// Linux/Windows/macOS intersection. os.Root, not this, is the traversal
+// defence.
 func path_valid(s string) bool {
 	if s == "" || len(s) > 4096 || !utf8.ValidString(s) {
 		return false
@@ -832,11 +765,9 @@ func path_component_valid(component string) bool {
 		return false
 	}
 	first, _ := utf8.DecodeRuneInString(component)
-	// A leading dot hides the file - on every component, not just the first:
-	// "apt/.git/config" once passed and was served, publishing a hosted git
-	// tree's history. A leading hyphen reads as a flag to any tool given the
-	// name, a leading tilde as a home directory to a shell, and a combining
-	// mark with nothing to combine with renders onto the path separator.
+	// A leading dot hides the file on every component, not just the first
+	// ("apt/.git/config"); a leading hyphen reads as a flag, a tilde as a home
+	// directory, and a leading combining mark renders onto the separator.
 	if strings.ContainsRune(".-~ ", first) || unicode.In(first, unicode.M) {
 		return false
 	}
@@ -856,13 +787,9 @@ func path_component_valid(component string) bool {
 			}
 			continue
 		}
-		// Letters, marks, digits, punctuation and symbols of every script,
-		// which admits café, 写真, отчёт and emoji. Excluded by absence:
-		// controls (Cc: bell, newline, escape), format characters (Cf: the
-		// bidirectional overrides that render "photo<RLO>gnp.exe" as
-		// "photo.png", zero-width joiners), private use, unassigned, and every
-		// separator except the ASCII space - a no-break or ideographic space
-		// makes two names that display identically address different files.
+		// Letters, marks, digits, punctuation and symbols of every script. Excluded
+		// by absence: controls, format characters (bidi overrides), private use,
+		// unassigned, and every separator but the ASCII space.
 		if !unicode.In(r, unicode.L, unicode.M, unicode.N, unicode.P, unicode.S) {
 			return false
 		}
@@ -879,12 +806,9 @@ func path_component_valid(component string) bool {
 	return true
 }
 
-// path_clean reduces an arbitrary client-supplied name to one path_valid
-// accepts, so the upload boundary repairs instead of refusing: the browser
-// hands over whatever the user's own filesystem allowed. For every legitimate
-// name - café.png, 写真.png, Report (final).pdf - this is the identity
-// function; only names carrying invisible characters, forbidden ASCII or a
-// device stem change. Idempotent, and its output always passes path_valid.
+// path_clean reduces a client-supplied name to one path_valid accepts, so the
+// upload boundary repairs instead of refusing. Identity for any legitimate
+// name; idempotent, and its output always passes path_valid.
 func path_clean(name string, maximum int) string {
 	if maximum < 16 || maximum > 255 {
 		maximum = 255
@@ -990,11 +914,9 @@ func regex_cached(pattern string) *regexp.Regexp {
 	return re
 }
 
-// path_scrub removes the server's filesystem prefix from a message bound for
-// an HTTP client. The data_dir root and the per-user path segment reveal the
-// server's disk layout and the owning user's id while explaining nothing to
-// the caller; the app-relative remainder (which database or file failed) is
-// kept so the message stays fully diagnostic.
+// path_scrub removes the server's data_dir root and the per-user path segment
+// from a message bound for an HTTP client. The app-relative remainder is kept,
+// so the message still names which database or file failed.
 func path_scrub(message string) string {
 	if data_dir == "" {
 		return message
@@ -1015,23 +937,9 @@ func path_scrub(message string) string {
 	}
 }
 
-// guard runs f, containing any panic it raises rather than letting it reach
-// the goroutine's top and take the process with it.
-//
-// recover() only ever sees panics raised on its OWN goroutine, so a guard
-// around the function that spawns a goroutine catches nothing: every entry
-// point that runs on its own goroutine and is fed by remote input needs one of
-// its own. That is why this exists at each of the three inbound P2P entry
-// points - receive_messages, receive_stream and pubsub_receive - rather than
-// once around the dispatch they share.
-//
-// Said "two" until 2026-08, while receive_messages had no guard. The count was
-// the only statement of which entry points were covered, so being wrong about
-// it is what let the busiest one stay unguarded without looking like a gap.
-//
-// `after` runs during recovery to shut the faulted subject down - resetting a
-// stream, say - and is itself guarded, so a second panic while cleaning up
-// cannot defeat the first.
+// guard runs f, containing any panic rather than letting it take the process
+// down. recover() only sees panics on its OWN goroutine, so every remote-fed
+// entry point needs its own guard, not one around the dispatch they share.
 func guard(name string, after func(), f func()) {
 	defer func() {
 		fault := recover()

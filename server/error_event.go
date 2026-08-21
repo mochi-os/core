@@ -1,20 +1,15 @@
 // Mochi server: server-to-app error events
 //
-// Core-originated failure callbacks. When an operation an app initiated
-// fails terminally, core calls the app's declared handler (the `errors`
-// block in app.json) in-process, on the host that observed the failure —
-// never queued or routed. See claude/plans/error-events.md.
-//
-// The catalogue below is fixed and core-owned, like HTTP status codes;
-// apps subscribe to codes, they don't invent them. Dispatch mirrors the
-// starlark branch of (*Event).run_handler / schedule_run_event: the
-// handler's mochi.db.* resolves to db_app(user, app) via the user/app
-// thread-locals.
+// Core-originated failure callbacks: when an operation an app initiated fails
+// terminally, core calls the app's declared handler (app.json `errors`)
+// in-process on the host that observed the failure, never queued or routed. The
+// catalogue below is fixed and core-owned - apps subscribe to codes, they don't
+// invent them.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -88,12 +83,10 @@ func (e *ErrorEvent) String() string        { return "error" }
 func (e *ErrorEvent) Truth() sl.Bool        { return sl.True }
 func (e *ErrorEvent) Type() string          { return "error" }
 
-// error_dispatch delivers a core-originated error event to the sending
-// app's declared handler, in-process on this host. It is a no-op when the
-// app declares no handler for code — and crucially the detail thunk is NOT
-// invoked in that case, so callers may pass an expensive detail builder
-// (e.g. an entity_peers lookup) freely. Fires per host, deliberately
-// ungated: each host reacts to its own observation.
+// error_dispatch delivers a core-originated error event to the sending app's
+// declared handler, in-process. A no-op when the app declares no handler, and
+// the detail thunk is NOT invoked then, so callers may pass an expensive
+// builder. Fires per host: each host reacts to its own observation.
 func error_dispatch(user *User, app *App, code, reason, service, entity string, original map[string]any, detail func() map[string]any) {
 	if user == nil || app == nil {
 		return

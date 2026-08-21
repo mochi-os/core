@@ -424,11 +424,8 @@ func TestFramePriorityForMapsQueueTiers(t *testing.T) {
 	}
 }
 
-// TestFrameDecompressBounded pins the zstd-bomb defence: a frame that is tiny
-// on the wire but expands past frame_maximum must be rejected rather than
-// allocated. Without the decoder's size cap a single such frame — sendable by
-// any peer that can open a stream, before its claimed entity is authenticated —
-// exhausts process memory.
+// TestFrameDecompressBounded pins the zstd-bomb defence: a frame tiny on the
+// wire that expands past frame_maximum must be rejected before it is allocated.
 func TestFrameDecompressBounded(t *testing.T) {
 	protocol2_init()
 
@@ -450,11 +447,8 @@ func TestFrameDecompressBounded(t *testing.T) {
 	if err == nil {
 		t.Fatalf("frame_decompress accepted a payload expanding to %d bytes (cap %d)", len(oversized), frame_maximum)
 	}
-	// The rejection must come from the decoder's own size cap, which refuses
-	// before allocating. The post-hoc length check in frame_decompress would
-	// also reject, but only after the memory has already been committed - so
-	// asserting on the sentinel proves the actual DoS defence is the one that
-	// fired, not the backstop.
+	// Assert on the decoder's own sentinel: frame_decompress' post-hoc length
+	// check would also reject, but only after the memory is committed.
 	if !errors.Is(err, zstd.ErrDecoderSizeExceeded) {
 		t.Errorf("expected the decoder size cap to reject before allocating, got: %v", err)
 	}

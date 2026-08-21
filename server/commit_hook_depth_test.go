@@ -55,11 +55,9 @@ func TestCommitFireRefusesPastTheDepthCap(t *testing.T) {
 	}
 }
 
-// TestCommitDepthCapProtectsTheSlotPool. The cap has to be below the Starlark
-// concurrency floor, not merely finite: every nesting level holds a slot, so a
-// cap the size of service.call's 1000 would let the pool empty long before the
-// guard fired. The floor is 4 (starlark_configure clamps a smaller
-// configuration up to it), so the cap has to leave room under that.
+// The cap must stay below the Starlark concurrency default: every nesting level
+// holds a slot, so a cap at or above it empties the pool before the guard
+// fires.
 func TestCommitDepthCapProtectsTheSlotPool(t *testing.T) {
 	if commit_hook_depth_maximum >= 32 {
 		t.Errorf("commit_hook_depth_maximum is %d, at or above the default slot count of 32 - the guard cannot prevent slot exhaustion",
@@ -74,11 +72,8 @@ func TestCommitDepthCapProtectsTheSlotPool(t *testing.T) {
 	}
 }
 
-// TestCommitDepthReachesTheNestedThread. The guard reads t.Local("depth"), but
-// the handler runs on a thread commit_hook_invoke creates from scratch - so
-// unless the depth is written onto that new thread, every level reads 1 and the
-// cap never binds. That propagation is the whole mechanism, and it is invisible
-// at the call site, so pin it.
+// The depth must be written onto the thread commit_hook_invoke creates, or
+// every level reads 1 and the cap never binds.
 func TestCommitDepthReachesTheNestedThread(t *testing.T) {
 	source, err := os.ReadFile("commit_hook.go")
 	if err != nil {

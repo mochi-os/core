@@ -98,14 +98,9 @@ func document_bundled(name, language string) string {
 	return string(data)
 }
 
-// document_render performs literal placeholder substitution. Recognised
-// placeholders are {{operator.name}}, {{operator.email}}, and
-// {{operator.jurisdiction}}, all from system settings. Empty operator
-// settings render as the localised `document.not_configured` core label
-// (e.g. "[not configured]" in en, "[non configuré]" in fr) so it is
-// visually obvious they have not been filled in. We use literal string
-// replacement rather than text/template so the placeholder syntax in the
-// markdown files is exactly what operators see and edit.
+// document_render substitutes {{operator.*}} placeholders from system settings.
+// An unset setting renders as the localised `document.not_configured` label.
+// Literal replacement, so the markdown shows operators the syntax they edit.
 func document_render(body, language string) string {
 	replacements := []struct {
 		placeholder string
@@ -197,10 +192,9 @@ var api_document = sls.FromStringDict(sl.String("mochi.document"), sl.StringDict
 })
 
 // mochi.document.get(name, language=None) -> string: Get the rendered body of a document.
-// Public — no authentication required. Applies the four-step fallback chain
-// (operator override → bundled default, in language → in en) and renders
-// {{operator.*}} and {{server.host}} placeholders. Language defaults to the
-// request's locale.
+// Public - no authentication. Applies the fallback chain (override → bundled,
+// then language → en) and renders placeholders. Language defaults to the
+// request locale.
 func api_document_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
 		return sl_error(fn, "syntax: <name: string>, [language: string]")

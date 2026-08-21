@@ -81,18 +81,11 @@ func TestHealthDegradedWhenDbAndP2pMissing(t *testing.T) {
 	}
 }
 
-// TestHealthScrubsTheDatabaseError is the finding. The body is served
-// unauthenticated (the man page says so outright), and a driver failure names
-// the file it failed on - an absolute path under data_dir. That handed an
-// anonymous caller the server's layout at the moment it was least able to
-// answer for itself, while every other path that surfaces an internal error to
-// a caller either scrubs it or withholds it entirely.
-//
-// The fixture makes users.db a DIRECTORY, which is the failure that reproduces
-// the leak: ncruces reports "unable to open database file: open <path>: is a
-// directory". A handle that was merely closed reports "sql: database is
-// closed", which carries no path and so cannot show the defect at all - the
-// first version of this test used one and passed against unscrubbed code.
+// TestHealthScrubsTheDatabaseError: the body is served unauthenticated, so a
+// driver failure must not name an absolute path under data_dir. The fixture
+// makes users.db a DIRECTORY on purpose - a merely closed handle reports "sql:
+// database is closed", which carries no path and would pass against unscrubbed
+// code.
 func TestHealthScrubsTheDatabaseError(t *testing.T) {
 	reset_state(t)
 
@@ -132,12 +125,9 @@ func TestHealthScrubsTheDatabaseError(t *testing.T) {
 	}
 }
 
-// TestHealthKeepsItsDocumentedFields. The body is a published contract: the
-// man page prints it field for field and says "No auth", mochictl's health
-// command mirrors the field set on purpose so monitors and HEALTHCHECK see one
-// shape, and the inter-instance tests read version from it. Trimming a field to
-// reduce disclosure would break all three, so the field set is pinned here
-// rather than left to be quietly narrowed.
+// TestHealthKeepsItsDocumentedFields. The body is a published contract: the man
+// page prints it field for field, mochictl mirrors the field set, and the
+// inter-instance tests read version from it. Narrowing it breaks all three.
 func TestHealthKeepsItsDocumentedFields(t *testing.T) {
 	reset_state(t)
 

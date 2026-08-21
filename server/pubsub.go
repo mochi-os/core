@@ -1,37 +1,25 @@
 // Mochi server: GossipSub pubsub.
 //
-// Server-level peer-discovery and directory announcements ride GossipSub
-// on the /mochi/2 topic. This file owns the subscribe loop, the
-// receive-side decode/route, and the single publish path shared by every
-// producer (directory / peer announcements via Message.publish, and the
-// queue's broadcast re-flood via queue_send_broadcast). See
-// claude/plans/pubsub.md.
+// Peer-discovery and directory announcements ride GossipSub on the /mochi/2
+// topic. This file owns the subscribe loop, the receive-side decode/route, and
+// the single publish path. See claude/plans/pubsub.md.
 //
-// Each message is a self-contained Announcement. When it carries a from —
-// the entity the message is ABOUT — that entity signs the whole thing:
-// canonical {v, id, from, service, event, expires, content}, everything but
-// the signature itself. A from that fails to verify is dropped, never
-// downgraded to anonymous, because an identity is either proven or it is a
-// claim by an attacker. Receivers dedup a re-flood or multi-path delivery
-// via message_seen_mark.
+// Each message is a self-contained Announcement. A from - the entity the
+// message is ABOUT - signs canonical {v, id, from, service, event, expires,
+// content}. A from that fails to verify is dropped, never downgraded to
+// anonymous. Receivers dedup via message_seen_mark.
 //
-// Every field a receiver acts on is signed or refused. An addressee is
-// refused outright (a broadcast has none, and an unsigned one would let a
-// relay re-target routing), and segment data cannot ride at all. That is
-// what lets a directory row's subject be its from rather than a field read
-// out of content: the row is proven, not asserted, and because the row
-// stores the announcement it arrived as, the same signature re-verifies
-// when it is re-served over the sync stream.
+// Every field a receiver acts on is signed or refused: an addressee is refused
+// outright and segment data cannot ride at all, which is what lets a directory
+// row's subject be its from rather than a field read out of content.
 //
-// Pubsub is best-effort and one-way: no per-message challenge, no
-// ack/nack, no reply writer. GossipSub's StrictSign authenticates the
-// relaying peer at the mesh layer, which is a different question from who
-// the message is about — hence the entity signature above.
-//
+// Best-effort and one-way: no per-message challenge, no ack, no reply writer.
+// GossipSub's StrictSign authenticates the relaying peer, which is a different
+// question from who the message is about.//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -60,15 +48,8 @@ var (
 	pubsub_received  atomic.Int64
 	pubsub_last      atomic.Int64
 	// pubsub_dropped counts inbound messages discarded by the rate limiter.
-	// Counted rather than logged because the drop log line is repeat-
-	// suppressed after log_repeat_threshold occurrences per window, so the
-	// log undercounts a burst by design — and because the limiter runs
-	// before the frame is parsed, so naming the discarded topic would mean
-	// parsing every excess message, making a flood cost more rather than
-	// less. Read as a snapshot either side of an operation to tell whether
-	// drops coincided with it. Process-wide, not per peer: a non-zero delta
-	// means messages were being discarded, not necessarily from the peer the
-	// caller cared about.
+	// Counted, not logged: the drop log is repeat-suppressed, and the limiter runs
+	// before the frame is parsed. Process-wide, not per peer.
 	pubsub_dropped atomic.Int64
 )
 
@@ -80,15 +61,10 @@ const (
 	// schema MUST bump it.
 	pubsub_domain = "mochi/2/pubsub"
 
-	// pubsub_expires_ttl is how long after flooding an announcement stays
-	// valid. Lower-bounded by the maximum queue-broadcast retry interval
-	// (retry_delays' 3600s) so a queue-held re-flood is never already
-	// expired, and kept above the hourly peers_publish cadence so a peer
-	// announcement stays valid until the next one. Asserted by
-	// TestPubsubExpiresTTLExceedsMaxRetry. Upper bound is the replay-window
-	// vs re-announce-cadence tradeoff; bulk directory download
-	// (directory_download) is the catch-up backstop for entries whose
-	// flood has expired.
+	// pubsub_expires_ttl is how long a flooded announcement stays valid. Must
+	// exceed the longest queue-broadcast retry interval (retry_delays' 3600s) and
+	// the hourly peers_publish cadence; asserted by
+	// TestPubsubExpiresTTLExceedsMaxRetry.
 	pubsub_expires_ttl = 2 * 3600 // 2 hours
 
 	// pubsub_expires_maximum bounds how far in the future an Expires may sit
@@ -125,26 +101,17 @@ func announcement_read(data []byte) (*Announcement, error) {
 	return &a, nil
 }
 
-// announcement_valid runs the envelope-level checks: well-formed from,
-// service, event and id. Content is validated by the event handler.
-// Delegates so the pubsub and /mochi/2/messages paths cannot disagree about
-// what a well-formed envelope is, which is how the id bound came to be
-// enforced on this path only.
+// announcement_valid runs the envelope-level checks; content is the event
+// handler's business. Delegates so the pubsub and /mochi/2/messages paths
+// cannot disagree about what a well-formed envelope is.
 func announcement_valid(a *Announcement) bool {
 	return envelope_valid(a.From, a.Service, a.Event, a.ID)
 }
 
-// pubsub_limiter chooses which inbound budget a message is charged against.
-//
-// The peers service is the control plane: the messages by which hosts learn
-// each other's addresses, and which a synchronous remote request blocks on
-// for remote_address_wait. It gets its own budget so the application plane —
-// directory announcements and lookups, whose volume follows user activity and
-// is effectively unbounded — cannot starve it, which it previously did
-// exactly when a host was busiest and address resolution mattered most.
-//
-// Separated from pubsub_manager so the routing decision is testable; the loop
-// itself only runs against a live subscription.
+// pubsub_limiter chooses which inbound budget a message is charged against. The
+// peers service is the control plane - a synchronous remote request blocks on
+// it for remote_address_wait - so it gets a budget the unbounded application
+// plane cannot starve.
 func pubsub_limiter(service string) *rate_limiter {
 	if service == "peers" {
 		return rate_limit_pubsub_control
@@ -152,33 +119,17 @@ func pubsub_limiter(service string) *rate_limiter {
 	return rate_limit_pubsub_in
 }
 
-// pubsub_validate is the GossipSub topic validator for /mochi/2, registered
-// by net_start. It decodes, shape-checks and rate limits BEFORE the message
-// is relayed.
+// pubsub_validate is the GossipSub topic validator for /mochi/2, registered by
+// net_start. It decodes, shape-checks and rate limits BEFORE the message is
+// relayed; the same checks after s.Next() would already have amplified a flood.
 //
-// Placement is the whole point. Every check used to run in pubsub_manager,
-// after s.Next() — by which time go-libp2p-pubsub has already forwarded the
-// message to our mesh neighbours. The node therefore amplified a flood and
-// only afterwards decided it was junk. A validator runs inside the pubsub
-// machinery ahead of propagation, so a message we refuse is a message we do
-// not pass on.
-//
-// The cost ordering is unchanged and still deliberate: announcement_read
-// bounds the payload before allocating and then CBOR-decodes, and
-// announcement_valid is a handful of string checks, so what an
-// unauthenticated flooder forces here is one bounded decode. The expensive
-// part — entity signature verification — stays behind the rate limit in
+// The cost ordering is deliberate: announcement_read bounds the payload before
+// decoding, and signature verification stays behind the rate limit in
 // pubsub_receive.
 //
-// Every refusal is Ignore, never Reject. Reject additionally penalises the
-// sender under GossipSub peer scoring, and the things we refuse here are
-// exactly the things a version skew produces: pubsub.go's own note that
-// "during a format change every relay looks guilty" is the reason. The
-// 2026-07-25 wire-format flag day partitioned old peers already; a Reject
-// would have had every up-to-date node graylist the entire old fleet on top
-// of that. Ignore stops the relay, which is the finding, without turning a
-// rollout into a mesh split. Peer scoring is left disabled for the same
-// reason - see net_start.
+// Every refusal is Ignore, never Reject - Reject penalises the sender under
+// peer scoring, and what is refused here is exactly what a version skew
+// produces.
 func pubsub_validate(ctx context.Context, from p2p_peer.ID, m *p2p_pubsub.Message) p2p_pubsub.ValidationResult {
 	// ReceivedFrom is the last-hop mesh peer, not the originator — the right
 	// identity for rate limiting. Nothing here treats it as the author:
@@ -223,12 +174,9 @@ func pubsub_validate(ctx context.Context, from p2p_peer.ID, m *p2p_pubsub.Messag
 	return p2p_pubsub.ValidationAccept
 }
 
-// pubsub_manager subscribes to the /mochi/2 topic and dispatches each
-// inbound message. One goroutine for the process, started from net_start
-// once the topic is joined.
-//
-// Decode, shape and rate-limit checks have already run in pubsub_validate,
-// ahead of propagation; what arrives here is accepted traffic.
+// pubsub_manager subscribes to the /mochi/2 topic and dispatches each inbound
+// message. One goroutine for the process, started from net_start. Decode, shape
+// and rate-limit checks have already run in pubsub_validate.
 func pubsub_manager() {
 	s := must(net_pubsub.Subscribe())
 
@@ -254,34 +202,20 @@ func pubsub_manager() {
 		}
 		pubsub_received.Add(1)
 		pubsub_last.Store(now())
-		// GetFrom is the originating peer, authenticated by GossipSub's
-		// StrictSign policy (the message signature is verified against
-		// this id before delivery). Handlers that act on the *author* of
-		// a flooded message (peers/publish address announcements) read it
-		// from Event.origin; ReceivedFrom stays the identity for rate
-		// limiting and neighbour discovery.
+		// GetFrom is the originating peer, authenticated by StrictSign; handlers that
+		// act on the author read it from Event.origin. ReceivedFrom stays the
+		// identity for rate limiting and neighbour discovery.
 		pubsub_receive(f, peer, m.GetFrom().String())
 		peer_discovered(peer)
 		peer_connect(peer)
 	}
 }
 
-// pubsub_receive routes one decoded /mochi/2 announcement. The
-// frame is self-contained: routing envelope, an Expires freshness bound,
-// and (for signed announcements) the entity signature all travel in the
-// one message — there is no stream or handshake context. Best-effort and
-// one-way, so there is no challenge, no ack/nack, and no reply stream.
-//
-// origin is the GossipSub-authenticated originating peer (may equal
-// peer when the originator is a direct mesh neighbour); "" when the
-// caller has no authenticated originator.
-// The frame arrives already decoded and shape-checked: pubsub_manager needs
-// the service to choose a rate limit, so it decodes first and passes the
-// result rather than having it parsed twice.
-// Runs on pubsub_manager's goroutine, which reads the subscription for the
-// life of the process: an escaping panic here does not lose one frame, it ends
-// pubsub for the server. Nothing to shut down on recovery - the frame is
-// dropped and the manager reads the next one.
+// pubsub_receive routes one decoded /mochi/2 announcement. origin is the
+// GossipSub-authenticated originating peer, "" when the caller has none; the
+// frame arrives already decoded and shape-checked by pubsub_validate. Guarded:
+// this runs on pubsub_manager's goroutine, so an escaping panic ends pubsub for
+// the process.
 func pubsub_receive(f *Announcement, peer, origin string) {
 	guard("pubsub_receive", nil, func() { pubsub_receive_guarded(f, peer, origin) })
 }
@@ -327,15 +261,10 @@ func pubsub_fresh(expires string) bool {
 	return exp > 0 && now() < exp && exp <= now()+pubsub_expires_maximum
 }
 
-// pubsub_publish floods one message to the /mochi/2 topic as a
-// self-contained announcement. Producers (directory / peer announcements via
-// Message.publish, the queue's broadcast re-flood via
-// queue_send_broadcast) call this. The announcement carries the routing
-// envelope, an Expires freshness bound, and — for a signed announcement
-// (from != "") — a domain-separated entity signature over the canonical
-// {v, from, service, event, expires, content}. Expires and the signature
-// are recomputed on every (re-)flood, so a queue-held broadcast re-floods
-// with a fresh, still-valid window.
+// pubsub_publish floods one self-contained announcement to the /mochi/2 topic.
+// For a signed announcement (from != "") it carries a domain-separated entity
+// signature over {v, from, service, event, expires, content}. Expires and the
+// signature are recomputed on every re-flood.
 func pubsub_publish(from, service, event, id string, content []byte) {
 	if net_pubsub == nil {
 		return
@@ -383,13 +312,10 @@ func pubsub_publish(from, service, event, id string, content []byte) {
 
 // --- Entity signature (signed announcements) --------------------------
 
-// pubsub_string_content projects a content map to map[string]string. ok
-// is false if any value isn't a string: signed announcements are
-// all-string by construction (numbers ride as decimal strings), so a
-// non-string value on receipt means a tampered or malformed frame and the
-// caller rejects it. All-string content is also what makes the canonical
-// CBOR reconstruct byte-identically on the receiver — a map[string]any of
-// mixed types would not round-trip reliably.
+// pubsub_string_content projects a content map to map[string]string; ok is
+// false if any value is not a string. Signed announcements are all-string by
+// construction, which is what makes the canonical CBOR round-trip
+// byte-identically.
 func pubsub_string_content(content map[string]any) (map[string]string, bool) {
 	out := make(map[string]string, len(content))
 	for k, v := range content {
@@ -402,17 +328,10 @@ func pubsub_string_content(content map[string]any) (map[string]string, bool) {
 	return out, true
 }
 
-// pubsub_signable returns the canonical CBOR an entity signs for a pubsub
-// announcement: every frame field except the signature itself, sorted
-// bytewise-lexical. Mirrors claim_signable; any schema change MUST bump
-// pubsub_domain.
-//
-// Nothing meaningful is left out. id is covered so a captured message cannot
-// be re-flooded under fresh ids to defeat dedup, and expires is covered so the
-// sender owns the replay window rather than whoever relays it — an unsigned
-// expires makes pubsub_expires_maximum decorative, since an attacker simply
-// rewrites it every window. The frame type is NOT covered: pubsub carries only
-// message frames, so v already implies it.
+// pubsub_signable returns the canonical CBOR an entity signs: every frame field
+// except the signature, sorted bytewise-lexical. Any schema change MUST bump
+// pubsub_domain. id is covered so a captured message cannot be re-flooded under
+// fresh ids, and expires so the sender owns the replay window, not the relay.
 func pubsub_signable(id, from, service, event, expires string, content map[string]string) ([]byte, error) {
 	payload := map[string]any{
 		"v":       pubsub_domain,

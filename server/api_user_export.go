@@ -1,28 +1,15 @@
 // Mochi server: user data export (GDPR download + server-move bundle)
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// mochi.user.export(passphrase) -> path builds a .zip bundle of
-// everything the server holds about the calling user and returns its
-// path. The settings app streams the file to the browser. The bundle
-// carries the user's private keys, so the settings action gates this
-// behind step-up re-authentication (mochi.user.session.reauthenticate)
-// before calling it.
-//
-// Every export is a complete, restorable backup: the user's data plus
-// keys.age, a passphrase-encrypted blob of their entity private keys, so
-// the bundle can be restored onto another server as the same network
-// identity. The data files inside the zip are plaintext (the user can
-// always read their own data); only the keys are passphrase-protected.
-// A non-restorable "data only" variant was deliberately dropped — a
-// backup you can't restore is a footgun.
-//
-// The bundle is self-describing via manifest.json, which carries a
-// per-file sha256 and a signature over those hashes made with the
-// user's primary entity key. Restore verifies both before doing
-// anything destructive (see auth_restore.go).
+// mochi.user.export(passphrase) -> path builds a .zip of everything the server
+// holds about the calling user. Every export is restorable: data files are
+// plaintext, keys.age holds the entity private keys under the passphrase, so
+// the calling action must gate on step-up re-authentication. manifest.json
+// carries a per-file sha256 signed with the primary entity key, which restore
+// verifies.
 
 package main
 
@@ -66,12 +53,9 @@ type export_entity struct {
 	Data        string `json:"data"`
 }
 
-// export_account is the user's core users.db row plus entity records.
-// username and role are recorded for the user's own reference (GDPR
-// completeness) but are operator-owned and never imported on restore.
-// methods/disabled (the per-user login-requirement config) ARE imported on
-// restore, filtered to the factors whose credential can be re-established on
-// the destination (see restore_safe_methods).
+// export_account is the user's users.db row plus entity records. username and
+// role are for the user's own reference and are never imported on restore;
+// methods/disabled are, filtered by restore_safe_methods.
 type export_account struct {
 	UID      string          `json:"uid"`
 	Username string          `json:"username"`
@@ -102,11 +86,9 @@ type export_recovery struct {
 	Created int64  `json:"created"`
 }
 
-// export_secrets is the passphrase-encrypted secrets.age payload: the
-// credentials that are safe and reliable to restore (authenticator secret,
-// recovery-code hashes). Passkeys are deliberately excluded — they're bound
-// to the source origin and won't authenticate after a server/domain move, so
-// the user re-registers them on the destination.
+// export_secrets is the passphrase-encrypted secrets.age payload: authenticator
+// secret and recovery-code hashes. Passkeys are excluded - they are bound to
+// the source origin and will not authenticate after a move.
 type export_secrets struct {
 	Totp     *export_totp      `json:"totp"`
 	Recovery []export_recovery `json:"recovery"`
@@ -162,10 +144,8 @@ func api_user_export(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "passphrase required")
 	}
 
-	// The domain the user accessed the web interface through, recorded in
-	// the manifest as the source server. Also the client IP for the audit
-	// log below: a key-bearing operation, and the durable trail if a
-	// stolen session ever triggers one.
+	// The domain the user reached the web interface through is recorded as the
+	// source server; the client IP is the audit trail for a key-bearing operation.
 	host, ip := "", ""
 	if action, ok := t.Local("action").(*Action); ok && action.web != nil {
 		host = action.web.Request.Host
@@ -182,11 +162,9 @@ func api_user_export(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.String(path), nil
 }
 
-// user_export assembles the bundle for uid and writes the finished .zip
-// into the calling app's files directory under mochi-export/, returning
-// the app-relative path so the action can stream it with a.write.file.
-// The bundle is built in a staging tree under users/<uid>/export/ first,
-// then zipped across into the app files area.
+// user_export builds the bundle under users/<uid>/export/, then zips it into
+// the calling app's files directory under mochi-export/ and returns the
+// app-relative path for a.write.file.
 func user_export(uid, app, passphrase, host string) (string, error) {
 	if passphrase == "" {
 		return "", fmt.Errorf("passphrase required")
@@ -490,11 +468,9 @@ func export_keys_age(udb *DB, uid, passphrase, path string) error {
 	return out.Close()
 }
 
-// export_secrets_age writes the user's restorable auth credentials
-// (authenticator secret + recovery-code hashes) to secrets.age,
-// passphrase-encrypted with age (scrypt) — the same protection tier as
-// keys.age, which already carries the entity private keys. Always written so
-// the restore path is uniform; an account with neither yields empty fields.
+// export_secrets_age writes the restorable auth credentials (authenticator
+// secret, recovery-code hashes) to secrets.age, passphrase-encrypted with age.
+// Always written, even when empty, so restore is uniform.
 func export_secrets_age(udb *DB, uid, passphrase, path string) error {
 	secrets := export_secrets{Recovery: []export_recovery{}}
 	if row, _ := udb.row("select secret, verified, created from totp where user=?", uid); row != nil {
@@ -618,12 +594,10 @@ func export_store_uncompressed(rel string) bool {
 	return strings.Contains(filepath.ToSlash(rel), "/files/")
 }
 
-// export_source_server returns this server's public https URL for the
-// manifest and the destination's re-link banner. Prefers the domain the
-// user actually accessed the web interface through (host), so a server
-// that serves several domains records the right one rather than whichever
-// sorts first. Falls back to the first configured domain, else the
-// email-from domain, else empty.
+// export_source_server returns this server's public https URL for the manifest.
+// Prefers the domain the user actually reached, so a multi-domain server
+// records the right one; else the first configured domain, the email-from
+// domain, or "".
 func export_source_server(host string) string {
 	db := db_open("db/domains.db")
 
@@ -678,11 +652,9 @@ func as_int64(v any) int64 {
 	return 0
 }
 
-// export_cleanup_orphans removes export staging trees and finished
-// bundles older than an hour — left behind by a crash or an abandoned
-// download. Piggybacks on the next export rather than running as a
-// periodic per-user sweep (which multiplies badly at scale; see the
-// no-scheduled-per-user-tasks rule).
+// export_cleanup_orphans removes staging trees and finished bundles older than
+// an hour, left by a crash or an abandoned download. Piggybacks on the next
+// export rather than a periodic per-user sweep.
 func export_cleanup_orphans(uid, app string) {
 	cutoff := now() - 3600
 	for _, dir := range []string{

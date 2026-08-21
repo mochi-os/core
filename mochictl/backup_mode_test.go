@@ -1,15 +1,13 @@
 // Mochi mochictl: the backup tarball is written private to its owner.
 //
-// The archive is the entire data directory - entity private keys, session
-// secrets and the libp2p host key - and admin_backup preserves each file's
-// own 0600 inside the tar. A world-readable container gives all of it away
-// in one step, and the documented no-argument form drops the file in
-// whatever directory cron happened to pick.
+// The archive is the whole data directory - entity private keys, session
+// secrets, the libp2p host key - so a world-readable container gives all of it
+// away regardless of the 0600 modes preserved inside the tar.
 //
-// Copyright © 2026 Mochisoft OÜ
+// Copyright (c) 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

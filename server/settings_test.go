@@ -355,11 +355,6 @@ func TestSettingSet(t *testing.T) {
 	}
 }
 
-// setting_effective must resolve exactly as the settings API and UI do: the
-// stored value if present, else the registered default. Enforcement sites
-// reading a different default than the registration silently split policy
-// between what admins see and what the server does (the apps_install_user
-// and domains_verification bugs).
 func TestSettingEffective(t *testing.T) {
 	tmp_dir, err := os.MkdirTemp("", "mochi_settings_test")
 	if err != nil {

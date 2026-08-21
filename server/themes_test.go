@@ -54,13 +54,8 @@ func TestThemesValidate(t *testing.T) {
 		{"font injection", []AppTheme{theme(func(t *AppTheme) { t.FontSans = `x</style>` })}, nil, "bad theme font"},
 		{"bad icon mask", []AppTheme{theme(func(t *AppTheme) { t.IconMask = "hexagon" })}, nil, "bad theme icon mask"},
 		{"icon mask shape", []AppTheme{theme(func(t *AppTheme) { t.IconMask = "squircle"; t.IconBackground = "oklch(0.5 0.1 250)" })}, nil, ""},
-		// IconBackground is the other app-supplied theme value, and it used
-		// to get only the charset check. That class was written for colour
-		// syntax - # for hex, and () and % for rgb()/hsl() - so admitting
-		// parentheses admitted function calls generally. Each value below
-		// fits the charset and so passed before the fetch blocklist was
-		// applied here as well as to override values. None needs : or /,
-		// which the charset does exclude.
+		// Each fits the icon-background charset, which admits parentheses and so
+		// function calls; the fetch blocklist is what refuses them.
 		{"icon background relative url", []AppTheme{theme(func(t *AppTheme) { t.IconBackground = "url(evil.example)" })}, nil, "bad theme icon background"},
 		{"icon background bare url", []AppTheme{theme(func(t *AppTheme) { t.IconBackground = "url(a.b)" })}, nil, "bad theme icon background"},
 		{"icon background element", []AppTheme{theme(func(t *AppTheme) { t.IconBackground = "element(#target)" })}, nil, "bad theme icon background"},
@@ -77,11 +72,9 @@ func TestThemesValidate(t *testing.T) {
 		{"ordinary property key", []AppTheme{theme(func(t *AppTheme) { t.Overrides = map[string]string{"display": "none"} })}, nil, "bad theme override"},
 		{"font-size key", []AppTheme{theme(func(t *AppTheme) { t.Overrides = map[string]string{"font-size": "200%"} })}, nil, "bad theme override"},
 		{"override value injection", []AppTheme{theme(func(t *AppTheme) { t.Overrides = map[string]string{"--primary-l": `0.5;display:none`} })}, nil, "bad theme override value"},
-		// Every construct below was verified fetching in Chrome when set as
-		// --background-image, which lib/web's base layer consumes as a real
-		// background-image. A theme has no legitimate reason to fetch, so
-		// same-origin and relative references are refused too rather than
-		// leaving a shape for an attacker to aim at.
+		// Each construct below fetches when set as --background-image, which lib/web
+		// consumes as a real background-image. Relative and same-origin references
+		// are refused too - a theme has no reason to fetch at all.
 		{"external url", []AppTheme{theme(func(t *AppTheme) {
 			t.Overrides = map[string]string{"--background-image": "url(https://evil.example/beacon)"}
 		})}, nil, "bad theme override value"},
@@ -152,21 +145,16 @@ func TestThemesValidate(t *testing.T) {
 	}
 }
 
-// TestWebUserThemeStyleEscapes covers the boundary rather than the value: the
-// style attribute is HTML, so whatever reaches it must leave escaped. The
-// radius preference is the shortest path to a value the caller controls, and
-// its own check (like every check that reasons about the raw string) does not
-// stop a character reference — u&#114l( is url( only after the HTML parser has
-// decoded it, which happens after every string check in the server has run.
+// TestWebUserThemeStyleEscapes covers the boundary, not the value: the style
+// attribute is HTML, and a character reference (u&#114l() becomes url( only
+// after the parser decodes it, which is after every string check has run.
 func TestWebUserThemeStyleEscapes(t *testing.T) {
 	user, cleanup := create_test_user(t)
 	defer cleanup()
 
-	// theme is set empty so the active-theme lookup is skipped: this test is
-	// about the attribute, not about resolving a theme. The references are
-	// deliberately unterminated — a trailing semicolon would be caught by the
-	// existing literal-semicolon check, whereas `&#59` reaches the attribute
-	// and was verified in Chrome decoding to `;` and injecting the declaration.
+	// theme is empty so the active-theme lookup is skipped. The references are
+	// unterminated on purpose: a literal semicolon would be caught by the existing
+	// check, whereas `&#59` reaches the attribute and decodes to ";".
 	user.Preferences = map[string]string{
 		"theme":  "",
 		"radius": "1rem&#59background-&#105mage:u&#114l(https://evil.example/x)",
@@ -191,11 +179,9 @@ func TestWebUserThemeStyleEscapes(t *testing.T) {
 	}
 }
 
-// The shell re-reads the theme from /_/shell when an app reports that the
-// preference changed, and installs the result on the trusted root — so the
-// declarations must arrive as CSS, not as the HTML attribute the page template
-// wants. A style="..." wrapper or an escaped ampersand reaching setProperty is
-// a value the browser drops, which would silently leave the chrome unthemed.
+// The shell installs these declarations on the trusted root with setProperty,
+// so they must arrive as CSS: an attribute wrapper or an escaped ampersand is a
+// value the browser silently drops.
 func TestWebUserThemeDeclarations(t *testing.T) {
 	user, cleanup := create_test_user(t)
 	defer cleanup()
@@ -234,11 +220,9 @@ func TestWebUserThemeDeclarations(t *testing.T) {
 	}
 }
 
-// The class the server renders for "auto" is only what the preference resolved
-// to at that moment. A client that reads the class as the preference freezes
-// there — and because the freeze only happens when the OS was dark at load, the
-// same preference behaves differently depending on the time of day. So the
-// preference itself has to survive into the page.
+// The class rendered for "auto" is only what the preference resolved to at
+// load, so the preference itself must reach the page or a client reading the
+// class stops following the system.
 func TestWebUserAppearanceAttrsStatesTheAutoPreference(t *testing.T) {
 	user, cleanup := create_test_user(t)
 	defer cleanup()
@@ -270,17 +254,10 @@ func TestWebUserAppearanceAttrsStatesTheAutoPreference(t *testing.T) {
 	}
 }
 
-// TestThemeValueFamiliesAgreeOnFetchConstructs is the consistency property the
-// icon-background gap was a violation of. A theme carries two families of
-// app-supplied value - override values and IconBackground - and a construct
-// that makes the browser fetch must be refused in both. The gap existed
-// because they were validated by different code with no test tying them
-// together: the fetch blocklist was applied to one and not the other, so
-// url(evil.example) was refused as an override and accepted as a background.
-//
-// Only constructs the background charset can express are listed. An absolute
-// url(http://...) needs : and /, which that charset excludes, so it is
-// refused there for a different reason and proves nothing about this.
+// Override values and IconBackground must agree: a construct that makes the
+// browser fetch is refused in both. Only constructs the background charset can
+// express are listed - an absolute URL needs : and /, which it already
+// excludes.
 func TestThemeValueFamiliesAgreeOnFetchConstructs(t *testing.T) {
 	fetching := []string{
 		"url(evil.example)",

@@ -14,12 +14,8 @@ import (
 	"testing"
 )
 
-// TestMessageSeenMarkAtomic: under concurrent receivers sharing the dedup
-// map — the pubsub manager and the direct-stream workers — exactly one
-// caller may win "not seen" and process; the rest must dedup. Guards the
-// check-then-mark race that separate message_seen / message_mark_seen
-// calls lose (first observed live as a directory/delete processed twice
-// during the /mochi/1 + /mochi/2 dual-run).
+// TestMessageSeenMarkAtomic: with concurrent receivers sharing the dedup map,
+// exactly one caller may win "not seen"; the rest must dedup.
 func TestMessageSeenMarkAtomic(t *testing.T) {
 	id := uid()
 	const n = 64
@@ -48,11 +44,8 @@ func TestMessageSeenMarkAtomic(t *testing.T) {
 // idempotent) so they pass regardless of test file ordering.
 
 // TestPubsubExpiresTTLExceedsMaxRetry: the freshness TTL must outlive the
-// longest queue-broadcast retry interval, so a queue-held re-flood is
-// never already expired by the time it lands (and a peer announcement
-// stays valid past the hourly peers_publish cadence). The Expires +
-// signature are recomputed per flood, but the invariant is the cheap
-// guard against a future TTL change dipping below the retry ceiling.
+// longest queue-broadcast retry interval, or a queue-held re-flood lands
+// already expired.
 func TestPubsubExpiresTTLExceedsMaxRetry(t *testing.T) {
 	var maximum int64
 	for _, d := range retry_delays {
@@ -102,11 +95,8 @@ func TestPubsubStringContent(t *testing.T) {
 	}
 }
 
-// TestPubsubSignableDeterministic: the canonical signable is byte-identical
-// whether the content arrives as a freshly-built map[string]string or as
-// the map[string]any a frame decodes to — the property the all-string
-// rule exists to guarantee. If it ever diverges, signature verification
-// silently breaks on the receiver.
+// TestPubsubSignableDeterministic: the canonical signable is byte-identical for
+// a freshly-built map[string]string and the map[string]any a frame decodes to.
 func TestPubsubSignableDeterministic(t *testing.T) {
 	protocol2_init()
 	from := test_entity_id('a')
@@ -221,11 +211,9 @@ func directory_announcement(t *testing.T, en *Entry, key ed25519.PrivateKey, exp
 	}
 }
 
-// TestPubsubReceiveRoutesDirectory: a signed directory publish announcement
-// carrying a self-verifying row decodes, routes, verifies in entry_store,
-// and lands in directory.db; a lower-version row is dropped by LWW; an
-// expired announcement is dropped before routing. Exercises the whole /mochi/2
-// receive path with the payload-borne trust model.
+// TestPubsubReceiveRoutesDirectory exercises the whole receive path: a signed
+// directory publish lands in directory.db; a lower-version row is dropped by
+// LWW; an expired announcement is dropped before routing.
 func TestPubsubReceiveRoutesDirectory(t *testing.T) {
 	protocol2_init()
 	cleanup := setup_replication_test(t)

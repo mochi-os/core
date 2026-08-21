@@ -871,11 +871,6 @@ func TestCacheCleanup(t *testing.T) {
 	}
 }
 
-// TestArchiveRoundTrip covers the container an export uses instead of embedding
-// bytes in its own JSON. The manifest goes in from a string and the content
-// streams in from file storage, which is the whole point: an attachment may be
-// as large as the uploader's quota, and the old shape held every one of them
-// base64-expanded in memory at once.
 func TestArchiveRoundTrip(t *testing.T) {
 	base, thread := file_api_environment(t)
 
@@ -1000,11 +995,9 @@ func TestArchiveExtractIgnoresEntryName(t *testing.T) {
 	}
 }
 
-// TestStorageLimitsAgree pins the relationship the sizes depend on: what the
-// platform stores and what it transfers are one figure, not two. When they
-// drift the larger wins on the way in and the smaller silently truncates on
-// the way out - an attachment above the stream cap is stored whole by its owner
-// and received as a prefix by every subscriber, with no error at either end.
+// TestStorageLimitsAgree pins the chain the sizes depend on: what the platform
+// stores must not exceed what it transfers, or a stored object truncates
+// silently on the way out.
 func TestStorageLimitsAgree(t *testing.T) {
 	if int64(stream_maximum_default) < int64(object_maximum) {
 		t.Errorf("stream cap = %d is below the largest storable object (%d), so that object cannot be transferred whole - the owner keeps it and every subscriber receives a prefix",
@@ -1037,11 +1030,9 @@ func TestStorageLimitsAgree(t *testing.T) {
 	}
 }
 
-// TestTransferSetUsesTheTransferBound covers the marker a bulk pull sets. The
-// compute timeout would abandon the caller part-way through a large transfer
-// while the copy ran on regardless - it sits inside a built-in that does not
-// check for cancellation - so a call moving bytes has to be bounded by the
-// transfer timeout instead.
+// TestTransferSetUsesTheTransferBound covers the marker a bulk pull sets: the
+// copy runs inside a built-in that never checks for cancellation, so a call
+// moving bytes must take the transfer timeout rather than the compute one.
 func TestTransferSetUsesTheTransferBound(t *testing.T) {
 	thread := &sl.Thread{Name: "test"}
 	var serving atomic.Bool
@@ -1062,20 +1053,11 @@ func TestTransferSetUsesTheTransferBound(t *testing.T) {
 	}
 }
 
-// TestCacheReadBoundSurvivesReplacement pins the reason mochi.cache.read holds
-// one handle rather than resolving the name twice. Cache writes are a temporary
-// renamed into place, so between a Stat of the path and a ReadFile of the path
-// the name can come to mean a different, larger file - and the limit would then
-// describe bytes that are not the bytes returned.
-//
-// Reproducing that interleaving would mean interposing on the rename, so this
-// does not exercise api_cache_read and would NOT fail if someone rewrote it to
-// resolve the path twice. What it pins is the property that fix relies on - a
-// descriptor keeps referring to the file it opened, so a measurement taken
-// through the handle still describes what a read through the same handle
-// returns - and it records why the function is shaped the way it is, next to a
-// demonstration that the path-based alternative would have measured 5 bytes and
-// returned 4096.
+// TestCacheReadBoundSurvivesReplacement pins why mochi.cache.read holds one
+// handle: cache writes rename into place, so a Stat and a later ReadFile of the
+// same path can describe different files. It demonstrates the descriptor
+// property only - it does not exercise api_cache_read and would not fail on a
+// rewrite.
 func TestCacheReadBoundSurvivesReplacement(t *testing.T) {
 	original := cache_dir
 	cache_dir = t.TempDir()

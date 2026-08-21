@@ -1,20 +1,13 @@
 // Mochi server: the scheduler's payload and dispatch are bounded.
 //
-// db/schedule.db is a single global table shared by every user and app, and it
-// sits outside the per-user storage quota, so an unbounded payload is
-// server-wide disk an app fills for free.
-//
-// Dispatch was worse: schedule_due materialised every due row with no LIMIT and
-// schedule_run_due did `go schedule_run(item)` per row, each of which spawns a
-// watchdog goroutine of its own and then enters Starlark. N rows made due at
-// one instant became 2N goroutines queueing on the 32-slot pool - and `at`
-// accepts a past timestamp while `after` accepts a delay of zero, so arranging
-// it needs no waiting.
+// db/schedule.db is one global table outside the per-user storage quota, and
+// `at` accepts a past timestamp while `after` accepts zero, so an unbounded due
+// batch needs no waiting to arrange.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -169,14 +162,9 @@ func TestScheduleDispatchBlocksAtCapacity(t *testing.T) {
 		t.Fatal("dispatch did not resume after a slot was freed")
 	}
 
-	// schedule_run_due returns as soon as it has ACQUIRED the slot and
-	// spawned the handler, so the handler outlives it - and it opens
-	// databases under the t.TempDir() this test is about to remove. The
-	// handler's slot release is the completion signal: schedule_run_due
-	// defers it until schedule_run has fully returned, and schedule_run's
-	// only inner goroutine is the stuck-watchdog, which touches no storage.
-	// Without this wait the suite fails intermittently on "TempDir RemoveAll
-	// cleanup: directory not empty" rather than on any assertion.
+	// Wait for the handler's slot release: schedule_run_due returns once the
+	// handler is spawned, and the handler opens databases under the t.TempDir()
+	// this test is about to remove.
 	deadline := time.Now().Add(5 * time.Second)
 	for len(schedule_slots) > schedule_concurrency-1 {
 		if time.Now().After(deadline) {
@@ -285,10 +273,8 @@ func TestScheduleCapIsPerAppAndUser(t *testing.T) {
 	}
 }
 
-// schedule_bounds_log captures what the server logs for the duration of a test.
-// warn and info both go through the standard logger, so this is the only place
-// the warning is observable without an SMTP fixture - and log_repeat_allow
-// cannot be probed instead, because probing it consumes the window and would
+// schedule_bounds_log captures what the server logs during a test. Probing
+// log_repeat_allow instead is not an option: it consumes the window and would
 // suppress the very line under test.
 type schedule_bounds_log struct {
 	lock sync.Mutex
@@ -316,11 +302,8 @@ func schedule_bounds_capture(t *testing.T) *schedule_bounds_log {
 	return captured
 }
 
-// TestScheduleWarnsOnCrossingHalfTheCap. The operator hears about it while
-// there is still room to act, rather than when the app breaks - a cap reached
-// without notice fails as an aborted handler, a 500 and an email, which is the
-// worst moment to find out. On the crossing only: a pair legitimately sitting
-// above half would otherwise warn for ever.
+// TestScheduleWarnsOnCrossingHalfTheCap: the warning fires on the crossing
+// only, so a pair legitimately above half does not warn for ever.
 func TestScheduleWarnsOnCrossingHalfTheCap(t *testing.T) {
 	thread := schedule_bounds_setup(t)
 	log_tables_reset(t)

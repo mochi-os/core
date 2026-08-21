@@ -14,11 +14,9 @@ import (
 	sl "go.starlark.net/starlark"
 )
 
-// TestEntitySignNeedsAPermission. mochi.entity.sign checked only that the user
-// owned the entity, which every app in that user's session satisfies, so any
-// installed app could mint an ed25519 signature over caller-supplied bytes
-// under the account's identity key - a key core also signs export manifests
-// and pubsub frames with.
+// TestEntitySignNeedsAPermission. Owning the entity is satisfied by every app
+// in the user's session, so without a grant any installed app could mint an
+// ed25519 signature under the account's identity key.
 func TestEntitySignNeedsAPermission(t *testing.T) {
 	cleanup := create_test_routing_env(t)
 	defer cleanup()

@@ -1,23 +1,13 @@
 // Mochi server: the shutdown drain waits for what is actually in flight.
 //
-// queue_drain counted status='sent'. The queue's statuses are pending, sending
-// and parked - nothing in the server has ever written 'sent' - so the count
-// was always zero, the loop returned on its first iteration, and every
-// shutdown logged "Queue drained" without having checked anything.
-//
-// Little was lost: a row left sending is swept back to pending by
-// queue_check_ack_timeout and retried after restart, and SQLite is crash-safe.
-// What was wrong is that the log asserted a drain that never happened, and the
-// ten-second budget main.go hands it was never spent on anything.
-//
-// This is the second instance of one defect. The first removal took the same
-// dead count out of queue_check_ack_timeout and gated it - but scoped the gate
-// to that one function, so this one survived. The gate is now file-wide.
+// queue_drain must count status='sending'; nothing in the server writes 'sent',
+// so counting that returned on the first iteration and logged a drain it never
+// did.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -55,9 +45,8 @@ func queue_drain_row(t *testing.T, db *DB, id, status string) {
 	db.exec("insert into queue (id, type, status, created) values (?, 'direct', ?, ?)", id, status, now())
 }
 
-// TestDrainWaitsForSendingRows is the regression. A row in flight must hold
-// the drain until its budget runs out; before the fix the loop returned on its
-// first iteration whatever the queue held.
+// TestDrainWaitsForSendingRows: a row in flight must hold the drain until its
+// budget runs out.
 func TestDrainWaitsForSendingRows(t *testing.T) {
 	db := queue_drain_db(t)
 	queue_drain_row(t, db, "inflight", "sending")

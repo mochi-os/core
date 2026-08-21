@@ -14,12 +14,6 @@ import (
 	"testing"
 )
 
-// TestBroadcastLagScanDB exercises the per-DB scanner against a
-// seeded received + log pair. Verifies:
-//   - lag math when both tables exist for the same (key, peer)
-//   - lag absent when only received exists (this host is pure
-//     subscriber, owner log is remote)
-//   - pending buffer count is reported when the table exists
 func TestBroadcastLagScanDB(t *testing.T) {
 	tmp_dir, err := os.MkdirTemp("", "mochi_bcast_lag")
 	if err != nil {

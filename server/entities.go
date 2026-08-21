@@ -137,11 +137,8 @@ func entities_manager() {
 				db.exec("update entities set published=? where id=?", now(), e.ID)
 				directory_create(&e)
 				directory_publish(&e, false)
-				// A tight burst overflows gossipsub's per-peer outbound
-				// queue and the excess is silently dropped (observed live:
-				// only ~40 of a 154-row burst survived); spread the
-				// broadcasts. Reliable delivery to sync peers additionally
-				// rides directory_push_to_peer.
+				// A tight burst overflows gossipsub's per-peer outbound queue and the
+				// excess is silently dropped, so spread the broadcasts.
 				time.Sleep(50 * time.Millisecond)
 			}
 		}
@@ -252,14 +249,10 @@ func entity_peer(id string) string {
 	return ""
 }
 
-// entity_local reports whether `id` is owned by a user on this host, with
-// ok=false when the check itself failed. Callers MUST fail their resolution
-// on !ok rather than fall through to remote routes: a transient users.db
-// error swallowed here silently demotes a locally-owned entity to remote
-// resolution, sending its events to whatever stale peer the directory still
-// advertises — and for sequenced broadcasts, permanently skipping those
-// sequences on the real, local subscriber (the probable trigger of the
-// 2026-07-06 News feed wedge: a ~16-event window that never healed).
+// entity_local reports whether `id` is owned by a user on this host, ok=false
+// when the check itself failed. Callers MUST fail resolution on !ok - falling
+// through sends a local entity's events to a stale peer and skips broadcast
+// sequences.
 func entity_local(id string) (local bool, ok bool) {
 	exists, err := db_open("db/users.db").exists("select 1 from entities where id=?", id)
 	if err != nil {
@@ -290,14 +283,10 @@ func entity_peers(id string) []string {
 	return out
 }
 
-// entity_peers_for is entity_peers plus the sending user's learned
-// directory, for delivery to private entities (never directory-listed).
-// `from` is the sending entity; its owner's directory is consulted. The
-// merge is ordered freshest-seen first across both sources, deduplicated
-// per peer — so a stale public entry loses to yesterday's verified
-// contact, and vice versa. User rows carry no age filter (see
-// directory_user.go). Sends with no resolvable owner (system, anonymous)
-// degrade to the public directory alone.
+// entity_peers_for is entity_peers plus the sending user's learned directory,
+// for delivery to private entities. Merged freshest-seen first, deduplicated
+// per peer, no age filter on learned rows; no resolvable owner uses the public
+// directory.
 func entity_peers_for(from string, id string) []string {
 	local, ok := entity_local(id)
 	if !ok {
@@ -351,19 +340,10 @@ func entity_peers_for(from string, id string) []string {
 	return out
 }
 
-// entity_peers_failover returns peers hosting `id` ordered for
-// stream / RPC failover.
-//
-// Tier 1 — "active": peers whose `seen` is within 2× the entity
-// republish interval (2 hours). They're presumed alive; among them the
-// MOST-recently-attested comes first — freshest liveness, hence the most
-// likely to be up.
-//
-// Tier 2 — "stale but not aged out": peers with seen older than the
-// active window but still within the 30-day directory retention.
-// Used as a last-ditch fallback when no active peer accepts a stream.
-//
-// Local entity short-circuits to [self].
+// entity_peers_failover orders peers hosting `id` for stream / RPC failover:
+// those seen within 2x the republish interval first, most recent first, then
+// the rest inside the 30-day retention. A local entity short-circuits to
+// [self].
 func entity_peers_failover(id string) []string {
 	local, ok := entity_local(id)
 	if !ok {
@@ -391,14 +371,10 @@ func entity_peers_failover(id string) []string {
 	return out
 }
 
-// entity_private_local_foreign reports whether `id` is a PRIVATE entity local
-// to this server owned by a DIFFERENT user than the caller `from`. Used to
-// gate mochi.remote.ping: a private entity is unlisted precisely so its
-// existence is unknowable, but the bare local self-loop let any co-tenant
-// confirm one it knew the id of via a liveness probe. Only ping is gated —
-// request/stream run the receiving app's handler, which does its own access
-// control, so they stay reachable for legitimate cross-user calls (a member's
-// access/check on a private forum). The entity's owner is never blocked.
+// entity_private_local_foreign reports whether `id` is a PRIVATE local entity
+// owned by a different user than `from`. Gates mochi.remote.ping alone - a
+// probe would confirm the entity exists; request and stream run the app's own
+// access control.
 func entity_private_local_foreign(from string, id string) bool {
 	ent := entity_by_any(id)
 	if ent == nil || ent.Privacy != "private" {
@@ -411,22 +387,13 @@ func entity_private_local_foreign(from string, id string) bool {
 	return sender == nil || sender.User != ent.User
 }
 
-// entity_peers_failover_for is entity_peers_failover plus the sending
-// user's learned directory as a final tier — for streams and RPC to
-// private entities (a subscriber's sync pull from a private project).
-// Public tiers first: they carry live attestation the learned rows
-// lack. Learned rows are the only lead for a private entity, so they
-// are tried regardless of age.
+// entity_peers_failover_for adds the sending user's learned directory as a
+// final tier, for streams and RPC to private entities. Public tiers first -
+// they carry live attestation; learned rows are tried regardless of age.
 func entity_peers_failover_for(from string, id string) []string {
-	// A locally-owned entity's only correct route is the self-loop;
-	// appending the caller's learned rows would offer ghost peers that
-	// advertised it (drill/clone residue), and remote_reach can pick one
-	// when the self-dial doesn't instantly win — a stream to a dead peer
-	// returns EOF (the 2026-07-17 "unable to read segment: EOF" viewing a
-	// local feed). entity_peers_failover already returns [net_id] here;
-	// stop before the learned-row merge. Mirrors the entity_peers_for
-	// guard on the delivery path. The fail-safe local check refuses to
-	// fall through on a users.db error.
+	// A locally-owned entity's only correct route is the self-loop: appending the
+	// caller's learned rows offers ghost peers, and remote_reach can pick one when
+	// the self-dial does not instantly win. Mirrors the entity_peers_for guard.
 	if local, ok := entity_local(id); !ok || local {
 		return entity_peers_failover(id)
 	}
@@ -460,26 +427,15 @@ func entity_peers_failover_for(from string, id string) []string {
 // as active. Peers outside this window fall to the stale-fallback tier.
 const directory_active_window = 2 * 60 * 60
 
-// Sign a string using an entity's private key
-// entity_domain_application prefixes what mochi.entity.sign produces, so an
-// app-minted signature can never validate where core expects one of its own.
-// Core signs export manifests (api_user_export.go) and pubsub frames
-// (pubsub.go) with the same keys and no tag, and an app can emit those exact
-// bytes - without separation the two are indistinguishable.
-//
-// Deliberately applied to the APP side, not to core's: tagging what core signs
-// would change what remote peers verify, which is a wire break. This way core's
-// signing is untouched and only mochi.entity.verify has to learn the tag.
+// entity_domain_application prefixes what mochi.entity.sign produces, so an app
+// signature never validates where core expects its own - core signs export
+// manifests and pubsub frames with the same keys, untagged. App side only,
+// since tagging core's signing would break the wire.
 const entity_domain_application = "mochi/application/1\n"
 
 // entity_present reports whether an entity row still exists on this host.
-//
-// Signing fails for two unrelated reasons: the entity is gone, or it is present
-// with an unusable key. entity_sign already draws that line - info for the
-// first, warn for the second - and only the second is a fault an operator
-// should be mailed about. A caller that warns on any nil signature undoes that
-// distinction, and an entity deleted while a publish was already in flight
-// then mails the operator about a race it handled correctly.
+// Callers use it to keep a nil signature for a deleted entity at info; only an
+// unusable key is a fault worth mailing the operator about.
 func entity_present(id string) bool {
 	if id == "" {
 		return false
@@ -571,10 +527,8 @@ func (e *Entity) Type() string {
 const entity_class_identity = "person"
 
 // entity_class_allowed reports whether the calling app may act on this class.
-// app_declares_class reads the app's own manifest, so it is a self-assertion -
-// any app can add a class to its app.json. For the login identity that is not
-// enough: mochi.user.identity.update makes the same mutation on the same row
-// behind user/identity/write, so entity.* must not be the ungated way in.
+// app_declares_class reads the app's own manifest, so it is a self-assertion;
+// the login identity additionally needs user/identity/write.
 func entity_class_allowed(t *sl.Thread, fn *sl.Builtin, app *App, user *User, class string) error {
 	if class == entity_class_identity {
 		if err := require_permission(t, fn, "user/identity/write"); err != nil {
@@ -588,22 +542,10 @@ func entity_class_allowed(t *sl.Thread, fn *sl.Builtin, app *App, user *User, cl
 }
 
 // entity_class_shared is the question for a NEW entity: may this app add to
-// this class at all?
-//
-// entity_class_allowed alone was a self-assertion here too - an app that added
-// "classes": ["feed"] to its manifest could mint feed entities in the user's
-// account, which the Feeds app then lists as the user's own. It cannot be the
-// handler check that update and delete use, because two apps legitimately
-// create "app" entities: Publisher mints one when a developer publishes, Apps
-// mints one when a user sideloads a package, and the resolution names only one
-// handler.
-//
-// So a class opens to co-creation when the app that HANDLES it declares it
-// shared, and a second app may join only by declaring it shared as well. Both
-// halves are read from manifests, but the newcomer's half is worthless on its
-// own - it cannot make itself the handler, and the handler is resolved from
-// the user's binding, the system binding, then install order. An app declaring
-// someone else's class shared invites nobody anywhere.
+// this class at all? A class opens to co-creation only when the app that
+// HANDLES it declares it shared and the newcomer declares it shared too. Not
+// the handler check update and delete use, because two apps legitimately create
+// "app" entities.
 func entity_class_shared(t *sl.Thread, fn *sl.Builtin, app *App, user *User, class string) error {
 	if err := entity_class_allowed(t, fn, app, user, class); err != nil {
 		return err
@@ -618,27 +560,11 @@ func entity_class_shared(t *sl.Thread, fn *sl.Builtin, app *App, user *User, cla
 	return fmt.Errorf("app may not create in class %q for this user", class)
 }
 
-// entity_class_owned is the stricter question, for an entity that already
-// exists: is the calling app the one that HANDLES this class for this user?
-//
-// entity_class_allowed above answers from the calling app's own manifest, which
-// for every class but "person" is a self-assertion - an app that adds
-// "classes": ["feed"] to its app.json can rename, re-privacy and destroy the
-// user's feeds, and mochi.entity.update/delete have no permission gate of their
-// own. class_app_for answers from somewhere the app does not control: the
-// user's binding, then the system binding, then install order.
-//
-// Only for changing and destroying, not for creating. Two apps may legitimately
-// create entities of one class - Apps and Publisher both create "app" entities -
-// and class_app_for deliberately resolves to a single handler, so the strict
-// question has no useful answer at create time. Creating is also the reversible
-// one: it adds an entity rather than taking one over. Every update and delete in
-// the app tree is by the app that also handles the class, so this costs nothing
-// and closes the destructive half.
-//
-// A class no app handles falls back to the manifest check alone. That cannot
-// arise from the caller (it declares the class, so it is a candidate), but a
-// nil handler must not become a refusal that strands somebody's entity.
+// entity_class_owned is the stricter question for an existing entity: is the
+// calling app the one that HANDLES this class for this user? class_app_for
+// answers from the user's binding, the system binding, then install order - not
+// from the app itself. Change and destroy only; a class no app handles falls
+// back to the manifest check.
 func entity_class_owned(t *sl.Thread, fn *sl.Builtin, app *App, user *User, class string) error {
 	if err := entity_class_allowed(t, fn, app, user, class); err != nil {
 		return err
@@ -769,16 +695,10 @@ func api_entity_fingerprint(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 // mochi.entity.sign(id, text) -> string: Sign text with an entity's private key,
 // returning a base58 ed25519 signature ("" if the entity has no usable key).
 //
-// Only entities belonging to the effective user can be signed with, so an app
-// cannot mint an assertion in someone else's name. Note that "effective user"
-// carries the usual anonymous-runs-as-owner caveat: an anonymous request to a
-// public action resolves to the entity owner, so a caller must establish a real
-// authenticated user (a.user) before signing anything attributed to a person.
-//
-// Signatures verify against the entity id alone, because a Mochi entity id IS
-// its base58 ed25519 public key. That is what makes person-level authorship
-// checkable on a remote host with no key exchange, directory lookup or network
-// round trip - see mochi.entity.verify.
+// Only entities of the effective user can be signed with, and an anonymous
+// request to a public action resolves to the owner - establish a real a.user
+// first. Signatures verify against the entity id, which IS the base58 public
+// key.
 func api_entity_sign(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "entity/sign"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -818,10 +738,8 @@ func api_entity_sign(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // mochi.entity.verify(id, text, signature) -> bool: Check that signature is a
 // valid signature over text by the entity id.
 //
-// Pure and self-contained: an entity id is its base58 ed25519 public key, so
-// this needs neither the entity to exist locally nor any network access. That
-// is the point - a host receiving a replicated object can check who really
-// wrote it without trusting the peer that relayed it.
+// Pure: an entity id is its base58 ed25519 public key, so this needs neither a
+// local entity nor network access.
 func api_entity_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
 		return sl_error(fn, "syntax: <id: string>, <text: string>, <signature: string>")
@@ -855,17 +773,9 @@ func api_entity_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 // mochi.entity.get(id) -> list: Get an entity owned by the AUTHENTICATED user,
 // empty for an anonymous caller. Accepts either an entity ID or a fingerprint.
 //
-// Every caller uses this to answer "does the caller own this", so it resolves
-// the caller and nothing else. It used to ask principal_storage, which answers
-// a different question - which per-user database to open - and returns the
-// OWNER for an anonymous caller or a domain route carrying a context. Reading a
-// storage-routing decision as an identity claim meant that on such a route every
-// logged-in visitor was reported as the owner of the owner's entities, and six
-// apps inferred ownership from exactly that (feeds/forums owned(), wikis comment
-// deletion, publisher's 403 gate, repositories, people). Core keeps the two
-// apart everywhere else - access_check takes owner AND user as separate
-// arguments - and principal_storage stays as it is for the two consumers that
-// genuinely want storage: opening the app database, and resolving attachments.
+// Resolves the CALLER, never principal_storage, which answers a different
+// question (which per-user database to open) and returns the owner on a domain
+// route carrying a context.
 func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission_acting(t, fn, "entity/read"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -899,18 +809,10 @@ func api_entity_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 
 // mochi.entity.name(id) -> string or None: Get the name of any entity (local or directory)
 func api_entity_name(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	// Deliberately not behind entity/read, unlike owned, get and information. This
-	// resolves one display string for an id the caller already holds, and an
-	// entity id is an unguessable ed25519 public key - the same exemption
-	// mochi.group.get relies on and groups.go documents. owned enumerates with
-	// no argument, get returns the data blob and info returns class, privacy
-	// and creator for any local entity; none of those need an id you were
-	// already given.
-	//
-	// It is also the only one of the four reachable with no way to hold the
-	// grant: comptroller resolves names inside event_staff_accounts_list, an
-	// inbound P2P handler, and comptroller is not a default app, so nothing
-	// seeds it a permission and no consent dialog can.
+	// Deliberately not behind entity/read: this resolves one display string for an
+	// id the caller already holds, and an entity id is an unguessable public key -
+	// the exemption mochi.group.get relies on. It is also reached from an inbound
+	// P2P handler in a non-default app, where nothing can seed a grant.
 
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: string>")

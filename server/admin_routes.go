@@ -2,14 +2,11 @@
 // platform-neutral peer-credential type.
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// These pieces are transport-agnostic: the same Gin router and audit
-// middleware are served over a Unix domain socket (Linux/macOS, admin_unix.go)
-// or a named pipe (Windows, admin_windows.go). The per-OS transport file owns
-// the listener, the connection-level authorization (UDS peer credentials or
-// the pipe's security descriptor), and admin_start.
+// Transport-agnostic: the per-OS file (admin_unix.go, admin_windows.go) owns
+// the listener, the connection-level authorization, and admin_start.
 
 package main
 
@@ -26,11 +23,9 @@ import (
 // admin_register_routes and serves it over that platform's listener.
 var admin_router *gin.Engine
 
-// admin_credential is the platform-neutral peer identity for an accepted admin
-// connection. On Linux/macOS the transport fills it from the socket's peer
-// credentials (SO_PEERCRED / LOCAL_PEERCRED); on Windows the pipe's security
-// descriptor gates access at connect time, so no per-connection credential is
-// attached and admin_peer_credential returns nil. pid is 0 when unknown.
+// admin_credential is the platform-neutral peer identity for an admin
+// connection. Windows gates at connect time through the pipe's security
+// descriptor and attaches none, so admin_peer_credential returns nil there.
 type admin_credential struct {
 	uid uint32
 	gid uint32
@@ -41,11 +36,8 @@ type admin_credential struct {
 // to the request context so handlers and middleware can read it.
 type peer_credential_key struct{}
 
-// audit_peer_identity returns the connecting peer's uid, gid and pid for an
-// audit line, or -1 for each where the transport attached no credential -
-// Windows, where the pipe's security descriptor gates at connect time and
-// there is nothing per-connection to attach. Shared by both local sockets so
-// an unknown peer reads the same on each.
+// audit_peer_identity returns the peer's uid, gid and pid for an audit line, or
+// -1 each where the transport attached no credential.
 func audit_peer_identity(ctx context.Context) (uid, gid, pid int) {
 	credential := admin_peer_credential(ctx)
 	if credential == nil {
@@ -109,13 +101,8 @@ func admin_register_routes(r *gin.Engine) {
 // -- Audit middleware ------------------------------------------------------
 
 // admin_audited_routes maps "<METHOD> <fullPath>" to the subcommand label to
-// record. Anything not in this map, and not under the profiling prefix, is not
-// audited.
-//
-// The reads are here as well as the writes. An audit trail that records a
-// vacuum but not a full data export, a schema migration, or a dump of the
-// effective config answers "what did this server do" while leaving "what left
-// this server" blank - and on a socket this quiet, a row costs nothing.
+// record; anything absent, and not under the profiling prefix, is not audited.
+// Reads belong here too: an export or config dump is what left this server.
 var admin_audited_routes = map[string]string{
 	"POST /_/admin/snapshot": "admin.snapshot",
 	"POST /_/admin/vacuum":   "admin.vacuum",

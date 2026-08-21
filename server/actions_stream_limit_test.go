@@ -107,11 +107,6 @@ func (r *stream_counting_reader) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// TestStreamLimitDefaultClearsTheLargestLegitimateRelay pins the backstop against
-// what actually flows through this function. Two callers relay things far larger
-// than an image - repositories' archive and market's asset download - so a cap
-// chosen for avatars would break a clone. The default therefore tracks the largest
-// object the platform stores, and the real tightening is per-call.
 func TestStreamLimitDefaultClearsTheLargestLegitimateRelay(t *testing.T) {
 	if stream_maximum_default != object_maximum {
 		t.Errorf("default cap is %d, want object_maximum (%d): a repository archive or market download can be as large as the largest stored object",

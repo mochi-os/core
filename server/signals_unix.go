@@ -21,10 +21,8 @@ func extra_signals() []os.Signal {
 	return []os.Signal{syscall.SIGTERM, syscall.SIGHUP}
 }
 
-// is_ignorable_signal reports whether a signal should be logged and ignored
-// rather than triggering shutdown. SIGHUP is the only one currently — it
-// used to mean "reload config" but reload was dropped (config changes
-// require restart). Receiving it now is a no-op.
+// is_ignorable_signal reports whether a signal is logged and ignored rather
+// than triggering shutdown. SIGHUP only: config changes require a restart.
 func is_ignorable_signal(s os.Signal) bool {
 	return s == syscall.SIGHUP
 }

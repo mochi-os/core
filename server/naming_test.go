@@ -1,19 +1,13 @@
 // Mochi server: the naming rules, enforced.
 //
-// CLAUDE.md's rule is that every identifier leaving a function is one single,
-// full English word - snake_case, no camelCase, no abbreviations. Four sweeps
-// brought core/server to that state; this keeps it there, because a naming
-// rule that is only ever applied by hand drifts back within weeks. The gofmt
-// gate exists for the same reason.
-//
-// Scope is deliberately narrow: DECLARATIONS in this repository. A camelCase
-// name arriving from a dependency (svc.ChangeRequest, cbor.DecMode) is not
-// ours to rename, and matching identifier USES would flag every one of them.
+// CLAUDE.md's rule: every identifier leaving a function is one single, full
+// English word, snake_case. Scope is DECLARATIONS in this repository - a
+// camelCase name from a dependency is not ours to rename.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -187,10 +181,9 @@ func TestNoLocalShadowsTheLogger(t *testing.T) {
 	})
 }
 
-// TestNoSessionTaskNumbersInComments: a comment saying "task #83" points at a
-// numbering that lived in one session's todo list and means nothing to a later
-// reader - and the numbers get reused, so it points at the WRONG thing rather
-// than at nothing. Say what the code does instead.
+// TestNoSessionTaskNumbersInComments: "task #83" names one session's todo list,
+// and the numbers get reused, so it points at the wrong thing. Say what the
+// code does instead.
 func TestNoSessionTaskNumbersInComments(t *testing.T) {
 	set := token.NewFileSet()
 	for _, directory := range naming_directories {

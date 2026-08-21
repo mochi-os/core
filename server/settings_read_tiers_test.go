@@ -1,19 +1,15 @@
 // Mochi server: reading a system setting is authorized by that setting's own
 // classification, and by nothing else.
 //
-// SystemSetting already states four tiers - Public, UserReadable, neither
-// (administrators), and Secret - so an app-level permission adds one boolean to
-// a set that spans operator_name and relay, and cannot describe it. Worse, an
-// administrator-only permission sits in FRONT of the tiers: require_permission
-// tests the administrator flag before the grant and before the function body, so
-// every non-administrator is turned away at the door and the UserReadable tier
-// is never consulted. These tests exercise each tier through the real builtin so
-// an unreachable tier fails here rather than in a user's browser.
+// An administrator-only permission sits in FRONT of the tiers -
+// require_permission tests the administrator flag before the function body - so
+// the UserReadable tier would never be consulted. Each tier is exercised
+// through the real builtin.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

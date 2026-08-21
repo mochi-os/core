@@ -15,11 +15,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestOauthReauthenticate covers the popup OAuth step-up gate: an OAuth identity
-// already linked to the user mints a single-use proof keyed by the caller's
-// challenge; an unlinked provider account mints nothing. It also exercises the
-// retrieval contract that mochi.user.oauth.verify.finish enforces (user-scoped,
-// single-use).
+// TestOauthReauthenticate covers the popup OAuth step-up gate: a linked
+// identity mints a single-use proof keyed by the caller's challenge, an
+// unlinked one mints nothing. Also the user-scoped, single-use retrieval
+// verify.finish enforces.
 func TestOauthReauthenticate(t *testing.T) {
 	cleanup := create_test_users_db(t)
 	defer cleanup()

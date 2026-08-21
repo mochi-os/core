@@ -45,14 +45,9 @@ func create_test_db(t *testing.T) (*DB, func()) {
 	return db, cleanup
 }
 
-// Test db.exec creates tables
-// TestPreparedStatementCache exercises the prepared-statement cache:
-// every *DB query method routed through a cached prepared statement, that
-// repeated calls reuse the cache, that writes stay visible to cached
-// reads, and — the critical safety case — that a cached `SELECT *` picks
-// up a column added by ALTER (ncruces prepare_v3 auto-re-prepares on
-// SQLITE_SCHEMA). Also checks stmts_close clears the cache and queries
-// still work afterwards.
+// TestPreparedStatementCache covers the prepared-statement cache: every *DB
+// query method routes through it, writes stay visible to cached reads, a cached
+// `SELECT *` picks up an ALTER'd column, and stmts_close clears it.
 func TestPreparedStatementCache(t *testing.T) {
 	db, cleanup := create_test_db(t)
 	defer cleanup()
@@ -118,13 +113,9 @@ func TestPreparedStatementCache(t *testing.T) {
 	}
 }
 
-// TestPreparedStatementCacheMigrationSafety covers the #10 fix: schema
-// introspection (pragma_*/sqlite_master/sqlite_schema) is never cached, and
-// the cache is bypassed entirely while a migration runs. Both keep migration
-// idempotency guards reading the live schema, so an "add column if absent"
-// guard runs its ALTER exactly once instead of re-running it (which crashed
-// on enable). The real cross-connection reproduction is mochi2's data; this
-// asserts the fix mechanisms are in place.
+// TestPreparedStatementCacheMigrationSafety (#10): schema introspection is
+// never cached and the cache is bypassed while a migration runs, so an "add
+// column if absent" guard reads the live schema and runs its ALTER once.
 func TestPreparedStatementCacheMigrationSafety(t *testing.T) {
 	db, cleanup := create_test_db(t)
 	defer cleanup()
@@ -166,12 +157,9 @@ func TestPreparedStatementCacheMigrationSafety(t *testing.T) {
 	}
 }
 
-// TestStmtCacheClosedRetry covers the "sql: statement is closed" fix: when
-// prepared() hands back a cached statement that a concurrent stmts_close (DDL
-// flush / 512-overflow / eviction) closed before the caller executes it, the
-// query helpers must retry on the uncached pool path instead of surfacing the
-// error. Reproduced deterministically by closing the cached statement in place
-// so the next prepared() returns a closed handle.
+// TestStmtCacheClosedRetry: a cached statement closed by a concurrent
+// stmts_close must be retried on the uncached path, not surfaced as "sql:
+// statement is closed".
 func TestStmtCacheClosedRetry(t *testing.T) {
 	db, cleanup := create_test_db(t)
 	defer cleanup()
@@ -230,11 +218,8 @@ func TestStmtCacheClosedRetry(t *testing.T) {
 	}
 }
 
-// TestStmtCacheConcurrentClose reproduces the race directly: many goroutines
-// run cached reads/writes while another hammers stmts_close (standing in for a
-// DDL flush / overflow / eviction). With the uncached-retry fix every operation
-// must still succeed — without it, some surface "sql: statement is closed".
-// Run under -race to also catch any data race on the cache.
+// TestStmtCacheConcurrentClose: cached reads and writes must all succeed while
+// another goroutine hammers stmts_close. Run under -race for the cache itself.
 func TestStmtCacheConcurrentClose(t *testing.T) {
 	db, cleanup := create_test_db(t)
 	defer cleanup()
@@ -697,14 +682,9 @@ func BenchmarkDBRows(b *testing.B) {
 	}
 }
 
-// TestStarlarkAuthoriserPolicy exercises the per-action authoriser policy
-// on the Starlark connection pool. The internal pool has no authoriser by
-// design and is not tested here; the starlark pool is what untrusted app
-// code sees via api_db_query.
-//
-// Cases marked deny=true must produce an error from db.starlark.Exec.
-// Cases marked deny=false must succeed. Each case runs in its own
-// sub-test so failures point at a specific row.
+// TestStarlarkAuthoriserPolicy exercises the authoriser on the Starlark pool -
+// what untrusted app code sees through api_db_query. The internal pool has no
+// authoriser by design and is not tested here.
 func TestStarlarkAuthoriserPolicy(t *testing.T) {
 	db, cleanup := create_test_db(t)
 	defer cleanup()
@@ -756,13 +736,9 @@ func TestStarlarkAuthoriserPolicy(t *testing.T) {
 		// against a non-vtable goes through SQLITE_DROP_TABLE (allowed),
 		// so we exercise the rule via the policy inspection only.
 
-		// ---- denied: VACUUM / ANALYZE (string-prefix check) ----
-		// SQLite has no authoriser action codes for VACUUM/ANALYZE, so
-		// these come through the api-layer string check rather than the
-		// driver authoriser. They cannot be reached via db.starlark.Exec
-		// directly — the string check is in api_db_query — so we
-		// assert via db_starlark_sql_blocked() instead. See
-		// TestStarlarkSQLPrefixBlocked below.
+		// ---- denied: VACUUM / ANALYZE ---- Not reachable through db.starlark.Exec
+		// here; asserted via db_starlark_sql_blocked in TestStarlarkSQLPrefixBlocked
+		// below.
 
 		// ---- allowed: ordinary CRUD ----
 		{"SELECT", "SELECT id, name FROM base WHERE id = 1", false},
@@ -881,8 +857,6 @@ func TestStarlarkSQLPrefixBlocked(t *testing.T) {
 }
 
 // Test database page-count limit. 4 KB page size × 6,553,600 pages = 25 GB.
-// Bumped from 262_144 pages (1 GB) on 2026-05-15 so legitimate per-user
-// app DBs (e.g. feeds.db on heavy users) don't hit the cap.
 func TestDbMaxPageCountConstant(t *testing.T) {
 	expected_limit := 6_553_600
 	if db_page_count_maximum != expected_limit {
@@ -1078,11 +1052,9 @@ func TestAppSystemNoSettingsTable(t *testing.T) {
 	}
 }
 
-// TestAttachmentExportSweep: a store with rows is written to the app's file
-// storage as attachments.json - own rows naming their stored file, remote rows
-// not - and then dropped with core's generated variants; a store without rows
-// is dropped and leaves no file; an app.db without the table is untouched; an
-// export already on disk is kept; a second pass changes nothing.
+// TestAttachmentExportSweep: a store with rows exports then drops, an empty one
+// drops with no file, a missing table is untouched, an existing export is kept,
+// a second pass is a no-op.
 func TestAttachmentExportSweep(t *testing.T) {
 	tmp_dir, err := os.MkdirTemp("", "mochi_db_test")
 	if err != nil {
@@ -1193,10 +1165,8 @@ func TestAttachmentExportSweep(t *testing.T) {
 	}
 }
 
-// BenchmarkStarlarkPoolExec measures the round-trip cost of the
-// per-call Connx + ExecContext + Close pattern that api_db_query uses.
-// Useful as a floor — if this regresses materially, the change is
-// worth looking at.
+// BenchmarkStarlarkPoolExec measures the per-call Connx + ExecContext + Close
+// round-trip that api_db_query uses.
 func BenchmarkStarlarkPoolExec(b *testing.B) {
 	db, cleanup := create_test_db_b(b)
 	defer cleanup()
@@ -1286,24 +1256,9 @@ func create_test_db_b(b *testing.B) (*DB, func()) {
 	return db, cleanup
 }
 
-// TestStarlarkPoolConcurrent stresses the Starlark connection pool by
-// running many goroutines simultaneously through the same paths
-// api_db_query takes (Connx + Exec/Query, plus the defensive ROLLBACK
-// path). Catches conn leaks (would deadlock or starve), data races
-// under -race, and the multistmt-bypass-then-poison scenario where one
-// goroutine's failed BEGIN/PRAGMA/COMMIT must not break another's
-// independent transaction.
-//
-// The test alternates four kinds of work across 8 goroutines × 200
-// iterations:
-//
-//   - simple INSERT
-//   - SELECT with parameter
-//   - full Beginx/Commit transaction
-//   - multistmt with denied PRAGMA inside (poisons the conn if the
-//     defensive ROLLBACK in api_db_query weren't there — but here we
-//     exercise the same pattern via raw db.starlark.Exec to confirm
-//     the pool itself, not just the api_db_query wrapper, recovers)
+// TestStarlarkPoolConcurrent stresses the Starlark pool through the paths
+// api_db_query takes: connection leaks, data races under -race, and one
+// goroutine's failed BEGIN/PRAGMA/COMMIT poisoning another's transaction.
 func TestStarlarkPoolConcurrent(t *testing.T) {
 	db, cleanup := create_test_db(t)
 	defer cleanup()
@@ -1433,12 +1388,10 @@ func TestStarlarkPoolConcurrent(t *testing.T) {
 	}
 }
 
-// TestDbUserForThread covers principal_storage, the shared helper that picks
-// which user's perspective mochi.db.* and mochi.entity.* act from. The
-// "logged-in + entity owned by other user" case is a regression guard for the
-// silent owner-DB swap removed from db_for_thread: subscribe-style writes
-// must always land in the requesting user's database, never the entity
-// owner's.
+// TestDbUserForThread covers principal_storage, which picks whose database
+// mochi.db.* acts on. The "logged-in + entity owned by another user" case
+// guards the rule that subscribe-style writes land in the requester's database,
+// never the owner's.
 func TestDbUserForThread(t *testing.T) {
 	alice := &User{UID: "alice"}
 	bob := &User{UID: "bob"}
@@ -1490,9 +1443,6 @@ func TestDbUserForThread(t *testing.T) {
 			owner: alice,
 			want:  alice,
 		},
-		// Regression guard: prior to the fix this returned bob,
-		// causing subscribe-style writes to land in the entity owner's
-		// database instead of the requester's. See mochi-dev-345.
 		{
 			name:  "logged_in_other_entity_keeps_own_db",
 			user:  alice,
@@ -1564,12 +1514,8 @@ func TestDbUserForThread(t *testing.T) {
 	}
 }
 
-// TestDbCreateIdempotentOverPreservedDB (#30) regression: a restore can preserve
-// directory.db (and other local-only DBs), then a restart runs the fresh-install
-// db_create. db_create used non-idempotent CREATE TABLE, so it panicked ("table
-// entries already exists") on the preserved directory.db and aborted before
-// finishing the rest of the schema. Hit live on wasabi 2026-06-18. db_create must
-// run cleanly over a preserved directory.db and be safely re-runnable.
+// TestDbCreateIdempotentOverPreservedDB (#30): db_create must run cleanly over
+// a directory.db a restore preserved, and be safely re-runnable.
 func TestDbCreateIdempotentOverPreservedDB(t *testing.T) {
 	orig := data_dir
 	data_dir = t.TempDir()

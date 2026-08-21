@@ -16,11 +16,9 @@ import (
 	"testing"
 )
 
-// TestUpdateInstallDownloadVerifies pins the integrity check on the
-// self-install download. The artifact goes straight to msiexec, which runs it
-// as LocalSystem with no verification of its own, so anything that does not
-// match the manifest exactly must be rejected AND removed — a rejected
-// artifact left on disk could be mistaken for a good download later.
+// TestUpdateInstallDownloadVerifies: the artifact goes straight to msiexec as
+// LocalSystem, so anything not matching the manifest must be rejected and the
+// partial removed.
 func TestUpdateInstallDownloadVerifies(t *testing.T) {
 	body := []byte("pretend this is an MSI")
 	sum := sha256.Sum256(body)

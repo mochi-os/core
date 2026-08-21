@@ -1,21 +1,15 @@
 // Mochi server: startup must not fail illegibly, and must not alarm on a state
 // that is simply new.
 //
-// Both Unix sockets live under <data_dir>/run/, so a long directories.data can
-// push them past sockaddr_un's 108-byte sun_path. The kernel answers EINVAL,
-// Go prints "invalid argument", and nothing in that says "your path is two
-// bytes too long" - the operator goes looking at permissions and SELinux.
-//
-// <data_dir>/apps/ was never created at startup the way <data_dir>/run/ is, so
-// a server that has not yet installed an app had no such directory and the
-// startup listing warned - which emails the administrator - on every start
-// until the first install. The same missing directory was already tolerated
-// silently fifteen lines earlier in the same function.
+// A long directories.data pushes both Unix sockets past sun_path's 108 bytes,
+// where the kernel's EINVAL reads only as "invalid argument". <data_dir>/apps/
+// must be created at startup, or a server with no app installed warns every
+// time.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

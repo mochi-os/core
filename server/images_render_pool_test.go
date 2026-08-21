@@ -1,16 +1,12 @@
 // Mochi server: bound how many image decodes run at once.
 //
-// The two existing caps bound ONE render - a 100 MB file and 100 megapixels,
-// which is 400 MB of RGBA before the rotate and resize allocate their own
-// destinations. Nothing bounded how many ran together, and the HTTP path
-// renders synchronously in the request goroutine, so the concurrency was
-// whatever arrived: a gallery of uncached images, or several requests for the
-// same uncached variant each decoding the identical bytes.
+// The file and pixel caps bound ONE render - 100 MB plus 400 MB of RGBA - and
+// the HTTP path decodes in the request goroutine, so nothing bounded the total.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

@@ -1,14 +1,11 @@
 // mochictl: broadcast subcommands (operator visibility).
-// Copyright © 2026 Mochisoft OÜ
+// Copyright (c) 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// `mochictl broadcast lag` -> GET /_/admin/broadcast/lag
-//   Surfaces subscribers that have fallen behind the broadcast owner
-//   without firing user-visible errors. From the broadcast investigation
-//   session report; see claude/sessions/2026-05-25-broadcast-resync-
-//   seq-643-investigation.md.
+// `mochictl broadcast lag` -> GET /_/admin/broadcast/lag Subscribers that have
+// fallen behind the broadcast owner without firing user-visible errors.
 
 package main
 

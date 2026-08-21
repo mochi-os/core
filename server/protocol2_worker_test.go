@@ -496,11 +496,6 @@ func TestWorkerReaperSparesNonEmptyInbox(t *testing.T) {
 	w := worker_create(key)
 	w.last_used.Store(0)
 
-	// Inject a frame the worker won't consume immediately — block its
-	// reply so it stays in handle() and the inbox is one short.
-	// Easier: just stuff something into inbox without running.
-	// Actually we can't bypass the running goroutine; instead drain
-	// inbox then add one and check len() right away.
 	for len(w.inbox) > 0 {
 		<-w.inbox
 	}
@@ -576,12 +571,10 @@ func TestWorkersDrainWaitsForInflight(t *testing.T) {
 
 // --- Event wiring: peer + segment-via-stream -------------------------
 
-// internal_capture_event captures the *Event passed to a registered
-// internal handler so tests can assert on it. The handler decodes one
-// CBOR segment from e.stream — exercising the Frame.Data → e.stream
-// wiring path that pair-join's join-request handler relies on.
+// capture_target captures the *Event passed to a registered internal handler so
+// tests can assert on it.
 //
-//lint:ignore U1000 test scaffolding
+// lint:ignore U1000 test scaffolding
 type capture_target struct {
 	mu      sync.Mutex
 	peer    string
@@ -618,11 +611,9 @@ func TestWorkerWiresEventPeer(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("worker didn't fire reply")
 	}
-	// The worker can't actually invoke a real handler here (no app
-	// registered for the service), so the reply path is via fail.
-	// The wiring we care about is the e.peer assignment, asserted in
-	// TestWorkerEventStreamCarriesFrameData below where we DO have a
-	// path that observes e.
+	// No app is registered for the service, so the reply path is fail and nothing
+	// observes the Event here; e.peer is asserted in
+	// TestWorkerEventStreamCarriesFrameData below.
 	_ = captured
 }
 
@@ -635,16 +626,8 @@ func (f *fake_capture_reply) ack()               { f.done <- struct{}{} }
 func (f *fake_capture_reply) fail(reason string) { f.done <- struct{}{} }
 
 func TestWorkerEventStreamCarriesFrameData(t *testing.T) {
-	// Frame.Data carries the CBOR-encoded segments the sender packed
-	// after the content map. The worker MUST wire it into e.stream so
-	// handlers calling e.segment(&v) can decode them — that's how
-	// the per-message segment chain stays decodable.
-	//
-	// We can't easily inject a fake internal handler into the app
-	// registry from a test, so this asserts the wiring layer directly:
-	// after worker.handle constructs the Event, e.stream should be
-	// non-nil iff Frame.Data is set, and e.segment should be able to
-	// decode whatever the sender packed.
+	// Frame.Data carries the segments the sender packed after the content map; the
+	// worker must wire it into e.stream so e.segment() can decode them.
 	type sample struct {
 		Foo string `cbor:"foo"`
 		Bar int    `cbor:"bar"`
@@ -655,11 +638,8 @@ func TestWorkerEventStreamCarriesFrameData(t *testing.T) {
 		t.Fatalf("cbor.Marshal: %v", err)
 	}
 
-	// Calls the same helper worker.handle does, rather than restating its
-	// rule: this test used to carry its own copy of the condition, and the
-	// copy said len(f.Data) > 0 while handle said
-	// `len(f.Data) > 0 || f.Data != nil`. A test that mimics the code it
-	// checks cannot notice when the two disagree.
+	// Call the same helper worker.handle does; a copy of its condition here could
+	// not notice the two disagreeing.
 	f := &Frame{Type: frame_type_message, ID: "x", Data: data}
 	st := frame_segment_stream(f.Data)
 	if st == nil {

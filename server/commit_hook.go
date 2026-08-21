@@ -13,25 +13,14 @@ import (
 
 // api_commit exposes mochi.db.commit.{hook,fire}.
 //
-//   - mochi.db.commit.hook(function_name) — register a Starlark function
-//     to invoke after every committed write the framework knows about for
-//     this app. Typically called once at module load.
-//   - mochi.db.commit.fire(table, kind, row_uid) — manually fire the hook
-//     for a local write the app just made. Replication-applied writes
-//     fire the hook automatically.
+//   - mochi.db.commit.hook(function_name) — register a Starlark function to
+//     invoke after every committed write the framework knows about for this app.
+//   - mochi.db.commit.fire(table, kind, row_uid) — fire the hook for a local
+//     write the app just made.
 //
-// Handlers MUST be idempotent: the hook can fire more than once for the
-// same (table, kind, row_uid) if a replication op replays after a local
-// fire of the same row. The receive-side dedup prevents the underlying
-// SQL apply from running twice, but the hook fires on each invocation.
-//
-// Limitations:
-//   - The commits log + drainer is best-effort: a handler crash between the
-//     commit and the log insert still means a missed fire (the underlying SQL
-//     write is durable, the hook fire is not).
-//   - Firing is opt-in: an app calls mochi.db.commit.fire after its write.
-//   - Only one handler per app version. Apps that need fan-out can dispatch
-//     from their single registered handler.
+// Handlers MUST be idempotent: the hook can fire more than once for the same
+// (table, kind, row_uid). Firing is best-effort - a crash between the commit
+// and the log insert loses the fire - and there is one handler per app version.
 var api_commit = sls.FromStringDict(sl.String("mochi.db.commit"), sl.StringDict{
 	"hook": sl.NewBuiltin("mochi.db.commit.hook", api_commit_hook),
 	"fire": sl.NewBuiltin("mochi.db.commit.fire", api_commit_fire),
@@ -63,19 +52,11 @@ func api_commit_hook(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.None, nil
 }
 
-// commit_hook_depth_maximum bounds how deep commit hooks may nest. A handler
-// runs on a fresh Starlark thread with app and user set, so it can fire again,
-// and each level holds one of the global Starlark slots for the whole descent -
-// see the semaphore acquire in starlark.go, which spells out that nested calls
-// keep the outer slot. The drain loop multiplies that by up to 100 pending rows
-// per level, so an unguarded descent pins the engine for every user on the
-// host, not just the one whose request started it.
-//
-// Far below mochi.service.call's cap of 1000 because a different resource runs
-// out first: the slot pool is 32 by default and can be configured down to 4, so
-// a depth in the hundreds exhausts it long before the stack. Nothing nests
-// today - the seven apps that call fire all do so from an action handler, and
-// no on_db_commit fires again - so this is headroom, not a working limit.
+// commit_hook_depth_maximum bounds commit-hook nesting. Each level holds one of
+// the global Starlark slots for the whole descent, and the drain multiplies
+// that by up to 100 pending rows per level, so an unguarded descent pins the
+// engine for every user on the host. The pool is 32 by default, configurable
+// down to 4.
 const commit_hook_depth_maximum = 8
 
 // api_commit_fire is the trigger apps call after a committed write so the
@@ -107,18 +88,11 @@ func api_commit_fire(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.None, nil
 }
 
-// commit_hook_fire invokes the app's registered commit-hook function.
-// No-op when the app isn't installed locally, the user isn't on this
-// host, or the app version declares no commit hook.
-//
-// The call writes a pending row to the per-app `commits` table in the
-// app system DB (app.db) before invoking the handler, then marks it
-// fired on success. A failed handler leaves the row pending so
-// commit_hook_drain retries on the next fire. Crash between the commit
-// and the log insert is the documented V1 gap — the underlying SQL write
-// is already durable but the hook fire would be lost. The log lives in
-// app.db (server-only, like access/attachments), so an app cannot tamper
-// with its own pending-fire bookkeeping via mochi.db.execute.
+// commit_hook_fire invokes the app's registered commit-hook function, a no-op
+// when the app is not installed locally, the user is not on this host, or the
+// version declares no hook. A pending row is written to `commits` before the
+// handler runs and marked fired on success, so a failure is retried by
+// commit_hook_drain. The log lives in app.db, which apps cannot write via SQL.
 func commit_hook_fire(user, app, table, kind, row_uid string, depth int) {
 	u, a, av := commit_hook_resolve(user, app)
 	if u == nil || a == nil || av == nil {
@@ -133,9 +107,8 @@ func commit_hook_fire(user, app, table, kind, row_uid string, depth int) {
 	if sys == nil {
 		return
 	}
-	// Opportunistic retry of any previously-failed hooks before logging
-	// the new one — keeps the log from growing unboundedly while the
-	// app is active.
+	// Retry previously-failed hooks first, so the log stays bounded while the app
+	// is active.
 	commit_hook_drain(sys, av, a, u, function, depth)
 
 	seq := commits_append(sys, table, kind, row_uid)
@@ -233,13 +206,10 @@ func commits_table_create(db *DB) {
 	}
 }
 
-// commits_setup opens the app system DB (app.db), ensures the `commits`
-// table, and returns the handle. On first creation it drops the
-// pre-relocation `_commit_log` orphan from the app's data DB — the log
-// used to live there, where an app could tamper with it via
-// mochi.db.execute; it now lives in app.db alongside access/attachments,
-// which apps cannot write via SQL. The drop is gated on `commits` not
-// having existed, so it touches the data DB at most once per (user, app).
+// commits_setup opens the app system DB (app.db) and ensures the `commits`
+// table. On first creation it drops the pre-relocation `_commit_log` orphan
+// from the app's data DB, so that touches the data DB at most once per (user,
+// app).
 func commits_setup(u *User, a *App) *DB {
 	sys := db_app_system(u, a)
 	if sys == nil {
@@ -248,11 +218,9 @@ func commits_setup(u *User, a *App) *DB {
 	existed, _ := sys.exists("select name from sqlite_master where type='table' and name='commits'")
 	commits_table_create(sys)
 	if !existed {
-		// FUTURE CLEANUP (post-relocation migration): drops the pre-relocation
-		// `_commit_log` orphan from the app's data DB. Removable once no system
-		// in the fleet can still carry the old table — manually confirmed gone
-		// on yuzu/wasabi/mochi1/mochi2 (2026-06-20). When removing, delete this
-		// `if !existed` branch and the now-unused `existed` lookup above.
+		// FUTURE CLEANUP: drops the pre-relocation `_commit_log` orphan. Removable
+		// once no system in the fleet can carry the old table - delete this `if
+		// !existed` branch and the `existed` lookup above.
 		if data := db_app(u, a); data != nil {
 			data.exec("drop table if exists _commit_log")
 		}
@@ -265,42 +233,24 @@ func commits_setup(u *User, a *App) *DB {
 // it doesn't collide with SQL reserved-word handling).
 func commits_append(db *DB, table, kind, row_uid string) int64 {
 	commits_table_create(db)
-	// LastInsertId, not a re-query. The row this call created is the only
-	// thing the caller may mark fired, and (name, kind, row_uid) does not
-	// identify it: the same row committing twice writes two rows with those
-	// three columns equal, so "the newest unfired one" is whichever insert
-	// landed last, not ours. Two overlapping fires then both mark the same
-	// seq and the other row stays pending for good, redrained and rehandled
-	// on every later fire. Measured at 16 concurrent appends: 41% of callers
-	// were handed a seq another caller also got.
-	//
-	// Same shape as schedule_add, which has always taken the id this way.
+	// LastInsertId, not a re-query: (name, kind, row_uid) does not identify this
+	// row, so two overlapping fires would both mark the same seq and leave the
+	// other pending for good, redrained on every later fire.
 	result := must(db.internal.Exec("insert into commits (name, kind, row_uid, ts, fired) values (?, ?, ?, ?, 0)", table, kind, row_uid, now()))
 	seq, _ := result.LastInsertId()
 	return seq
 }
 
-// commits_attempts_maximum is the retry budget for one commit-log row.
-//
-// Fifty matches queue_park_attempts, but what spends the budget differs: the
-// queue retries on a timer with an hour-capped backoff, so fifty attempts is
-// days, while a commit-log row is retried once per commit to the same app, so
-// a busy app can spend the whole budget in seconds. That is the right way
-// round. The budget exists because an unfired row costs a Starlark call and a
-// starlark_sem slot on EVERY later commit, up to a hundred rows at a time - so
-// the faster an app commits, the more the retries cost it and the sooner the
-// bound should apply.
-//
-// Giving up is safe to the extent that commit handlers are required to be
-// idempotent and the app's own tables are the source of truth; this log is how
-// the app is told, not where the data lives.
+// commits_attempts_maximum is the retry budget for one commit-log row. A row is
+// retried once per commit to the same app, so a busy app can spend the budget
+// in seconds - which is right, since an unfired row costs a Starlark call and a
+// starlark_sem slot on every later commit. Giving up is safe: handlers must be
+// idempotent and the app's own tables are the source of truth.
 const commits_attempts_maximum = 50
 
-// commits_failed records one failed invocation of the row at seq. Below the
-// budget it counts the attempt; at the budget it gives up - marking the row
-// fired so the drain stops picking it up, and leaving it to age out through
-// the ordinary trim so a day of evidence survives. "fired" means "no longer to
-// be retried", which is what has become true either way.
+// commits_failed records one failed invocation of the row at seq. At the budget
+// it gives up by marking the row fired - "no longer to be retried" - and lets
+// the ordinary trim age it out so a day of evidence survives.
 func commits_failed(db *DB, seq, attempts int64, app, function, table, kind, row_uid string) {
 	if seq <= 0 {
 		return
@@ -328,23 +278,12 @@ func commits_mark_fired(db *DB, seq int64) {
 // is just a short debugging window.
 const commits_log_age = 86400 // 1 day
 
-// commits_trim deletes fired rows older than commits_log_age, using the
-// commits_fired (fired, ts) index. Unfired (pending) rows are never trimmed, so
-// a stuck handler's retries are preserved regardless of age.
-//
-// The trim is activity-driven, and only for pairs that still have a hook: its
-// one caller is commit_hook_drain, whose one caller is commit_hook_fire, which
-// returns at `function == ""` above it. So a (user, app) pair reclaims its rows
-// only by committing again through an app that still declares a hook. A pair
-// that goes quiet, or an app whose manifest drops "commit", keeps whatever it
-// had — the table is bounded for active pairs, not in general.
-//
-// Accepted rather than fixed: fired rows are inert, and the ones that can never
-// be collected are in apps that no longer write any. Measured across both
-// development instances 2026-08-21: 3840 fired rows over 1105 app databases,
-// 3043 of them in apps declaring no hook at all, median age 8 days. Collecting
-// those would need a sweep over every app database on a timer, which costs more
-// than the rows it reclaims.
+// commits_trim deletes fired rows older than commits_log_age. Pending rows are
+// never trimmed, so a stuck handler's retries survive. The trim is
+// activity-driven - its only caller is commit_hook_drain - so a pair that goes
+// quiet, or an app whose manifest drops "commit", keeps whatever rows it had.
+// Accepted: those rows are inert, and collecting them needs a timed sweep over
+// every app database.
 func commits_trim(db *DB) {
 	db.exec("delete from commits where fired=1 and ts < ?", now()-commits_log_age)
 }

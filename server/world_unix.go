@@ -1,16 +1,13 @@
-// Mochi server: Unix world-status transport — the UDS a co-located
-// mochi-world server pushes its listing to.
+// Mochi server: Unix world-status transport - the UDS a co-located mochi-world
+// server pushes its listing to.
 //
-// Same shape as the admin socket (admin_unix.go), different authority: the
-// admin socket answers to the operator (mode 0660, group mochi), this one to
-// the mochi-world SERVICE (group mochi-world), and it serves its own minimal
-// engine — world_register_routes only — because its looser group must never
-// reach the admin routes.
-//
+// Same shape as the admin socket (admin_unix.go), different authority: group
+// mochi-world rather than mochi, and it serves world_register_routes only,
+// because its looser group must never reach the admin routes.//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 //go:build linux || darwin
 
@@ -41,11 +38,9 @@ func world_socket_path() string {
 	return filepath.Join(run_dir(), "world.sock")
 }
 
-// world_resolve_creds populates world_gid from the OS group database. A
-// missing group (development machine, no mochi-world package) is fine: the
-// socket then answers to root, the server's own user, and the mochi group —
-// the same people the admin socket answers to — so a developer's own world
-// process still connects.
+// world_resolve_creds populates world_gid from the OS group database. A missing
+// group (a development machine with no mochi-world package) is fine: the socket
+// then answers to the same people the admin socket does.
 func world_resolve_creds() {
 	world_creds_once.Do(func() {
 		if g, err := user.LookupGroup(world_account_group); err == nil {

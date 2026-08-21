@@ -66,11 +66,6 @@ func TestSenderCheckAllowsOwnedEntity(t *testing.T) {
 	}
 }
 
-// TestSenderCheckRefusesRoutedEntity — the defect. Reaching
-// /<app>/<entity>/... used to be accepted as licence to speak as that entity:
-// the entity segment is resolved globally with no check that the caller owns
-// it, so any user could pair any app with any entity and have claim_sign
-// produce a genuine signature by that entity's key.
 func TestSenderCheckRefusesRoutedEntity(t *testing.T) {
 	me, _, _, theirs, cleanup := setup_sender_test(t)
 	defer cleanup()
@@ -100,11 +95,6 @@ func TestSenderCheckRefusesUnroutedForeignEntity(t *testing.T) {
 	}
 }
 
-// TestSenderCheckRefusesDeletedEntity — the case that was actually relying on
-// the old grant: wikis' unsubscribe deleted its replica entity and then sent a
-// farewell as it. Ownership cannot be established for a row that no longer
-// exists, and the entity's key is gone too, so such a send could never have
-// been signed - it only appeared to work.
 func TestSenderCheckRefusesDeletedEntity(t *testing.T) {
 	me, _, mine, _, cleanup := setup_sender_test(t)
 	defer cleanup()

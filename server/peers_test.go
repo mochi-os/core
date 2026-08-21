@@ -1,14 +1,11 @@
 // Mochi server: peers subsystem unit tests
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// Tests covering the in-memory peer-silence fast-fail.
-// The gate sits in peer_protocol_open so every outbound send path
-// (queue_send_direct, file_push, directory, messages) gets the
-// benefit; the tests exercise the gate directly to keep the
-// libp2p layer out of the picture.
+// The in-memory peer-silence fast-fail. The gate lives in peer_protocol_open;
+// these tests drive it directly, keeping the libp2p layer out of the picture.
 
 package main
 
@@ -85,16 +82,8 @@ func TestPeerIsSilentSuccessResetsCounter(t *testing.T) {
 	}
 }
 
-// TestPeerIsSilentIsDurable: once the silent-failure threshold is
-// crossed, peer_is_silent stays true regardless of how long ago the
-// last attempt was. The earlier "60s skip window" semantics were
-// dropped because the trial probe it enabled was paid by whatever
-// queue_process goroutine happened to pick a silenced row right after
-// the window expired — each probe blocked for the full ~10s libp2p
-// connect timeout, dragging out queue_process's tick and starving
-// every other peer in the same batch. Trial probes are now driven by
-// peer_reconnect_manager (which has proper backoff + concurrency cap);
-// see peer_mark_send_failed → peer_schedule_reconnect.
+// TestPeerIsSilentIsDurable: silence stays true however old the last attempt
+// is. Only peer_mark_reachable or peer_mark_send_success clears it.
 func TestPeerIsSilentIsDurable(t *testing.T) {
 	reset_peer_reachability(t)
 	id := "12D3KooWFakePeerForTest5"
@@ -109,12 +98,9 @@ func TestPeerIsSilentIsDurable(t *testing.T) {
 	}
 }
 
-// TestPeerCrossingThresholdSchedulesReconnect: the failure that first
-// crosses the silent-failure threshold must schedule the peer for
-// periodic reconnect probing via peer_reconnect_manager. Without this,
-// a peer we discovered via DHT but never libp2p-disconnected from
-// would stay silent forever (peer_reconnects[] is otherwise only
-// populated by libp2p disconnect events) and never recover.
+// TestPeerCrossingThresholdSchedulesReconnect: crossing the threshold is the
+// only enrollment path for a peer never libp2p-disconnected from, so without it
+// silence is permanent.
 func TestPeerCrossingThresholdSchedulesReconnect(t *testing.T) {
 	reset_peer_reachability(t)
 	id := "12D3KooWFakePeerForReconnectSchedule"
@@ -150,14 +136,8 @@ func TestPeerCrossingThresholdSchedulesReconnect(t *testing.T) {
 	peer_reconnect_lock.Unlock()
 }
 
-// TestPeerMarkReachableClearsSilence: a peer that has tripped the
-// failure threshold (so peer_is_silent==true) must become non-silent
-// immediately after peer_mark_reachable, NOT wait for
-// peer_silent_skip_window. peer_connect's success path calls
-// peer_mark_reachable so that rows woken by queue_resurrect_peer can
-// actually trial the new connection — without this, every resurrected
-// row fast-failed for up to 60s after the libp2p reconnect, defeating
-// the silent-defer optimisation.
+// TestPeerMarkReachableClearsSilence: silence must clear immediately, so rows
+// woken by queue_resurrect_peer can trial the new connection.
 func TestPeerMarkReachableClearsSilence(t *testing.T) {
 	reset_peer_reachability(t)
 	id := "12D3KooWFakePeerForTest6"

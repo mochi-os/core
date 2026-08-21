@@ -16,18 +16,10 @@ import (
 	sl "go.starlark.net/starlark"
 )
 
-// TestStarlarkNestedCallReleasesSlot pins that a Starlark call which re-enters
-// Starlark.call — which mochi.service.call does, at api.go's `s.call(...)` —
-// cannot permanently consume a concurrency slot.
-//
-// The semaphore is not reentrant: the outer call holds a slot while the inner
-// one tries to acquire another. When every slot is taken, the inner acquire
-// blocks, and a channel send is not interrupted by thread.Cancel, so the
-// outer goroutine can never reach its cleanup. Whether the slot comes back
-// decides between a transient stall and a permanent loss of capacity, and
-// losing every slot locks the whole Starlark engine: the acquire at the top
-// of Starlark.call runs before any timeout handling, so callers block forever
-// with no timeout to rescue them.
+// TestStarlarkNestedCallReleasesSlot: the semaphore is not reentrant, and a
+// nested acquire (mochi.service.call) blocks on a channel send thread.Cancel
+// cannot interrupt. Lose every slot and the engine locks - the acquire runs
+// before any timeout handling, so callers block with nothing to rescue them.
 func TestStarlarkNestedCallReleasesSlot(t *testing.T) {
 	original_semaphore := starlark_semaphore
 	original_timeout := starlark_default_timeout

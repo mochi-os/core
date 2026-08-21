@@ -3,17 +3,10 @@
 // This file is part of Mochi, licensed under the GNU AGPL v3 with the
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-// Tests that each inbound P2P entry point is guarded.
-//
-// guard_test.go covers guard() itself. These cover the wiring, which is where
-// the defect actually was: guard worked correctly and receive_messages simply
-// never called it, so a panic beneath the busiest of the three entry points
-// reached the top of a libp2p goroutine and ended the process. Nothing failed
-// when that guard was missing, because every test exercised guard directly.
-//
-// Each entry point runs on a goroutine libp2p or the pubsub manager spawned,
-// and recover() only sees panics on its own goroutine, so the guard has to be
-// at the entry point itself and cannot be hoisted to the dispatch they share.
+// Tests that each inbound P2P entry point is guarded. guard_test.go covers
+// guard() itself; these cover the wiring, which is where the defect was.
+// recover() only sees panics on its own goroutine, so the guard has to be at
+// the entry point and cannot be hoisted to the dispatch they share.
 
 package main
 
@@ -52,11 +45,8 @@ func TestReceiveMessagesContainsPanic(t *testing.T) {
 	}
 }
 
-// TestReceiveStreamContainsPanic: the entry point that was already guarded.
-// Here so both stream handlers are pinned, not just the one found broken.
-// pubsub_receive's equivalent already lives in guard_test.go - it got a wiring
-// test when its guard was added, and receive_messages never did, which is why
-// the gap survived.
+// TestReceiveStreamContainsPanic pins the other stream handler;
+// pubsub_receive's equivalent lives in guard_test.go.
 func TestReceiveStreamContainsPanic(t *testing.T) {
 	stream := &panicking_stream{}
 	defer func() {

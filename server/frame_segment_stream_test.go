@@ -1,33 +1,13 @@
 // Mochi server: a frame with no segments gets no segment stream.
 //
-// worker.handle decided whether to build e.stream with
-//
-//	if len(f.Data) > 0 || f.Data != nil {
-//
-// A slice with len > 0 is necessarily non-nil, so the left operand could never
-// be the deciding one and the whole expression was exactly `f.Data != nil` -
-// one live term and one dead one, with the surviving term being the opposite of
-// the one a reader's eye lands on first.
-//
-// The two spellings are not equivalent in principle. A nil slice gives no
-// stream; an empty non-nil slice gave a 0-byte stream, and e.segment() on one
-// of those builds a CBOR decoder, hits EOF and logs at info before returning
-// the same false a nil stream returns immediately.
-//
-// They are equivalent in practice, which is why nothing broke. Frame.Data is
-// tagged `cbor:"data,omitempty"`, so an empty slice is omitted from the encoded
-// frame and decodes back as nil - absent and empty are indistinguishable across
-// the transport by construction. On the self-loop Data comes from m.data, which
-// starts nil and only ever grows by append, so it is nil or non-empty too.
-//
-// Keying on length rather than nil is what makes the local and remote paths
-// agree: an empty slice on the self-loop now behaves exactly as the same event
-// would after a round trip.
+// The decision keys on length, not nil: an empty non-nil slice must behave as a
+// nil one, so the self-loop and a round trip (where cbor omitempty turns an
+// empty slice back into nil) agree.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

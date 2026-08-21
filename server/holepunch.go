@@ -1,20 +1,15 @@
 // Mochi server: hole-punch (DCUtR) observability.
 //
-// Two NAT'd servers cannot dial each other directly; they meet over a
-// circuit relay, then DCUtR (Direct Connection Upgrade through Relay)
-// coordinates simultaneous dials to punch through both NATs and upgrade
-// to a direct connection. This matters because relayed connections are
-// deliberately throttled (the relay caps duration and bytes per
-// circuit), so without a successful punch two NAT'd servers cannot hold
-// a sustained connection — replication between two home servers would
-// stall. Hole punching is enabled in net_start; this tracer makes its
-// outcomes visible (logs plus success/failure counters for the status
-// page), since otherwise it is enabled but entirely unobserved.
+// Two NAT'd servers meet over a circuit relay, then DCUtR coordinates
+// simultaneous dials to upgrade to a direct connection. Relayed connections are
+// throttled by duration and bytes, so without a successful punch two NAT'd
+// servers cannot hold a sustained connection. Hole punching is enabled in
+// net_start; this tracer logs its outcomes and counts them for the status page.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

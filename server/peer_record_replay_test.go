@@ -1,24 +1,14 @@
 // Mochi server: a stale record replay does not silence the holders.
 //
-// peer_record_seen stamps the suppression map that peer_record_relay consults
-// after its jitter sleep, and it ran before the monotonic gate - so replaying
-// an old but validly signed record marked the peer answered and every holder
-// mid-jitter dropped its relay. A signed record never expires and is broadcast
-// on the open mesh, so anyone can keep one forever; peers/request is a
-// broadcast too, so an attacker sees the same request the holders do and
-// replays within their 0-3s jitter. The casualty is the address-book exchange
-// that finds a peer which is offline or never heard the request.
-//
-// The obvious fix - move the stamp below the gate - would delete the feature.
-// peer_record_store returns false for an EQUAL sequence as well as an older
-// one, and equal is the ordinary case: every holder stores the same envelope
-// at the same sequence, and one of them relaying it is exactly what the others
-// are meant to suppress on.
+// peer_record_seen stamps the suppression map peer_record_relay consults after
+// its jitter, so it must be gated on peer_record_current. Moving the stamp
+// below peer_record_store instead would delete the feature: store returns false
+// for an EQUAL sequence, and equal is the ordinary case.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

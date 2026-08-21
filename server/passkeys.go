@@ -36,20 +36,10 @@ var api_user_passkey = sls.FromStringDict(sl.String("mochi.user.passkey"), sl.St
 	}),
 })
 
-// webauthn_for_origin returns a WebAuthn instance bound to the request's
-// actual origin (scheme + host + optional port), so each distinct (scheme,
-// host, port) the server is reached at gets its own configured instance —
-// production HTTPS and any localhost port the operator binds to all work
-// without a hardcoded port allowlist.
-//
-// Built per call rather than cached. The origin comes from the request's Host
-// header, which the client chooses freely, and POST /_/auth/passkey/begin
-// reaches here unauthenticated — so a cache keyed on it grew by one permanent
-// 346-byte entry per distinct header value and never shrank. Construction is
-// a url.Parse, four default-filling checks and a two-word allocation, measured
-// at 236ns, on a path that runs a handful of times per user session; the cache
-// was saving a quarter of a microsecond per ceremony in exchange for a map an
-// anonymous caller could grow without limit.
+// webauthn_for_origin returns a WebAuthn instance bound to the request's own
+// origin, so any address the server is reached at works without a port
+// allowlist. Never cached: the client-chosen Host header would grow the cache
+// without limit.
 func webauthn_for_origin(origin string) *webauthn.WebAuthn {
 	if origin == "" {
 		return nil
@@ -345,24 +335,13 @@ func web_passkey_login_finish(c *gin.Context) {
 const passkey_clone_anomaly = "passkey_clone_warning"
 
 // passkey_credential_finalize records a just-validated assertion: the
-// sign-count replay-prevention update (users.db, authoritative) and the
-// cosmetic last-used upsert (sessions.db, self-healing). Shared by login and
-// step-up re-auth; it never creates a session.
-//
-// address is the client the assertion arrived from, or "" for the step-up
-// path, which runs under Starlark where no client address is in scope.
+// sign-count update (users.db) and the last-used upsert (sessions.db). Creates
+// no session. address is "" on the step-up path, where no client address is in
+// scope.
 func passkey_credential_finalize(user *User, credential *webauthn.Credential, address string) {
-	// The counter exists for exactly one purpose: to notice that two copies of
-	// a credential's private key are in use. go-webauthn computes that and
-	// sets CloneWarning, but by design never fails the ceremony - the spec
-	// leaves the response to the relying party - so a flag nobody reads leaves
-	// the column written, read, and asked nothing.
-	//
-	// Recorded rather than refused. A backup-eligible credential is synced
-	// across devices on purpose and its counter is not dependable across them,
-	// so refusing would lock a user out of their own account on a false
-	// positive - worse than the cloning it guards against, which additionally
-	// requires a private key extracted from an authenticator.
+	// Recorded rather than refused: a backup-eligible credential is synced across
+	// devices on purpose and its counter is not dependable across them, so
+	// refusing would lock the user out of their own account on a false positive.
 	if credential.Authenticator.CloneWarning {
 		audit_session_anomaly(user.Username, address, passkey_clone_anomaly)
 		warn("Passkey signature counter for user %q did not advance: the authenticator may be cloned, or may be malfunctioning", user.Username)

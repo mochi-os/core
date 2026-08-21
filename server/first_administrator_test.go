@@ -1,20 +1,12 @@
-// Mochi server: exactly one account can be the first, so exactly one can be
-// the administrator.
-//
-// Both signup paths decided the role with a read and then used the answer in a
-// later write. Two requests that both found the users table empty both inserted
-// an administrator. Measured at 16 concurrent user_create calls on an empty
-// table, that produced two administrators roughly one run in six.
-//
-// The restore path was worse, and needed no concurrency at all: the role was
-// settled BEFORE the multipart parse, so an ordinary signup completing while a
-// multi-gigabyte bundle was still arriving left the restore inserting a stale
-// "administrator" beside it. The window was the length of the upload.
+// Mochi server: exactly one account can be the first, so exactly one can be the
+// administrator. Both signup paths decide the role inside the insert rather
+// than with a separate read, so concurrent signups cannot both become
+// administrator.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -53,13 +45,9 @@ func administrator_count(t *testing.T) int64 {
 	return total
 }
 
-// TestConcurrentSignupsProduceOneAdministrator drives the race directly.
-//
-// Forty rounds, not one: the defect surfaced about one round in six when
-// measured against the original code, so a single round would report a pass
-// most of the time. With the role decided inside the insert this is not
-// probabilistic at all - SQLite admits one writer at a time, so the second
-// insert's subquery always sees the first's row.
+// TestConcurrentSignupsProduceOneAdministrator drives the race directly. Forty
+// rounds because the defect surfaced about one round in six, so a single round
+// would report a pass most of the time.
 func TestConcurrentSignupsProduceOneAdministrator(t *testing.T) {
 	const rounds = 40
 	for round := 0; round < rounds; round++ {

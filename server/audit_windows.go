@@ -67,10 +67,8 @@ func audit_write(facility string, message string) {
 	}
 }
 
-// audit_log_daemon writes to the daemon facility. The Unix build logs to
-// syslog's LOG_DAEMON; here it routes through the file logger. Provided so the
-// cross-platform admin audit middleware (admin_routes.go) can record on every
-// platform.
+// audit_log_daemon writes to the daemon facility. The Unix build uses syslog's
+// LOG_DAEMON; here it routes through the file logger.
 func audit_log_daemon(message string) {
 	audit_write("DAEMON", message)
 }
@@ -177,9 +175,7 @@ func audit_identity_deleted(user string, entity string) {
 
 // audit_authentication_changed logs a change to how an account signs in: a
 // passkey or authenticator added or removed, recovery codes regenerated, an
-// OAuth identity unlinked, the required-factor set edited, or an administrator
-// reset. Mochi has no password login, so none of those is a password change;
-// the event name is the operator's search key and has to match what happened.
+// OAuth identity unlinked, the required-factor set edited, or an admin reset.
 func audit_authentication_changed(user string, method string) {
 	audit_write("AUTH", fmt.Sprintf("authentication_changed user=%s method=%s", user, method))
 }

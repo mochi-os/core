@@ -1,23 +1,13 @@
 // Mochi server: retry for pushes whose destination was momentarily unreachable.
 //
-// A push used to get exactly one attempt. api_account_notify called the
-// per-provider deliver function, counted a failure, and moved on - so a
-// destination that was down for a few seconds lost the notification outright,
-// with nothing to retry it and no record that it had been dropped. On
-// 2026-08-17 a seven-second FCM INTERNAL burst on yuzu did exactly that: the
-// in-call retry in fcm.go covers a blip of a second or two and was outlasted.
-//
-// This is the same shape queue.go solves for P2P messages, so it borrows the
-// same ideas - a durable row, an exponential ladder with jitter, a bounded
-// number of attempts - and adds one they do not need: an expiry. A P2P message
-// is worth delivering late; a notification is not, so a row that has not landed
-// within push_expiry is dropped rather than buzzing a phone about something
-// hours stale.
+// Same shape as queue.go's P2P retry - durable row, exponential ladder with
+// jitter, bounded attempts - plus an expiry: a row that has not landed within
+// push_expiry is dropped rather than buzzing a phone about stale news.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -58,16 +48,9 @@ type Push struct {
 // tag is the collapse key the client groups notifications by.
 func (p *Push) tag() string { return p.App + "-" + p.Category + "-" + p.Object }
 
-// push_deliverers is the delivery table: provider type to the function that
-// sends to it. Everything that sends a push goes through it - the live path in
-// api_account_notify and the retry path below - so a provider is wired once and
-// both get it. The alternative, a second switch in the queue, is the drift that
-// has already cost this codebase a validation guard present in one of three
-// copies of stream_asset.
-//
-// Being a table rather than a switch also makes the coverage checkable, which
-// is what push_test asserts: every provider declaring the notify capability has
-// an entry here.
+// push_deliverers maps provider type to its delivery function. Both the live
+// path (api_account_notify) and the retry path below go through it, so a
+// provider is wired once; push_test asserts every notify provider has an entry.
 var push_deliverers = map[string]func(*Push) (success, retire bool){
 	"browser": func(p *Push) (bool, bool) {
 		return account_deliver_browser(p.Data, p.Title, p.Body, p.Link, p.tag()), false
@@ -98,11 +81,10 @@ var push_deliverers = map[string]func(*Push) (success, retire bool){
 	},
 }
 
-// account_deliver sends one push to one account.
-//
-// handled is false for a provider the table above does not know, which the
-// caller treats as "not a delivery attempt at all" rather than a failure to
-// retry. retire is true only when the destination is permanently dead.
+// account_deliver sends one push to one account. handled is false for a
+// provider the table does not know, which the caller treats as no attempt
+// rather than a failure to retry; retire is true only when the destination is
+// permanently dead.
 func account_deliver(p *Push) (success, retire, handled bool) {
 	deliver := push_deliverers[p.Type]
 	if deliver == nil {
@@ -133,22 +115,17 @@ func push_queue_add(p *Push) {
 		queue_next_retry(0), now())
 }
 
-// push_queue_batch is how many due rows one pass takes, and push_queue_workers
-// how many of them are in flight at once. Sending serially would mean a single
-// unreachable destination holding the whole queue for its timeout: at fifteen
-// seconds a batch, that is twenty-five minutes during which nobody else's
-// notification is retried. The P2P queue sends in parallel for the same reason.
+// push_queue_batch is how many due rows one pass takes, push_queue_workers how
+// many are in flight at once. Serial sending would let one unreachable
+// destination hold the whole queue for its timeout.
 const (
 	push_queue_batch   = 100
 	push_queue_workers = 8
 )
 
-// push_queue_process makes one pass over the rows that are due, and reports how
-// many it acted on so the manager can loop straight back in when it is busy.
-//
-// The three phases are deliberate: read and screen the rows, send concurrently,
-// then apply the outcomes. Every database write stays on this goroutine, so the
-// concurrency buys the network wait and nothing else.
+// push_queue_process makes one pass over the due rows and reports how many it
+// acted on, so the manager can loop straight back in. Read, send concurrently,
+// then apply outcomes: every database write stays on this goroutine.
 func push_queue_process() int {
 	db := db_open("db/queue.db")
 

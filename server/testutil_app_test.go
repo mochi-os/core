@@ -58,9 +58,8 @@ func setup_replication_test(t *testing.T) func() {
 	}
 }
 
-// setup_users_test_schema creates a minimal users.db schema for tests that
-// exercise the keys-transfer or session-replication apply paths. Mirrors
-// the v53 schema: uid is the PK on users, FKs reference users(uid).
+// setup_users_test_schema creates a minimal users.db schema, mirroring db.go's
+// uid-keyed tables.
 func setup_users_test_schema() {
 	users := db_open("db/users.db")
 	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', disabled text not null default '', status text not null default 'active')")
@@ -77,10 +76,9 @@ func setup_users_test_schema() {
 	users.exec("create table tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0)")
 }
 
-// setup_sessions_test_schema creates the sessions table for tests that
-// exercise session-replication apply paths.
+// setup_sessions_test_schema creates the sessions table for tests.
 //
-//lint:ignore U1000 test scaffolding
+// lint:ignore U1000 test scaffolding
 func setup_sessions_test_schema() {
 	sessions := db_open("db/sessions.db")
 	sessions.exec("create table sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")

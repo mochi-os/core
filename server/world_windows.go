@@ -1,17 +1,14 @@
-// Mochi server: Windows world-status transport — the named pipe a co-located
+// Mochi server: Windows world-status transport - the named pipe a co-located
 // mochi-world server pushes its listing to.
 //
-// The pipe's security descriptor is the group membership, in Windows idiom.
-// v1 grants LocalSystem and Administrators, the same principals as the admin
-// pipe: there is no packaged Windows mochi-world service account yet to
-// grant, so a Windows world server currently runs elevated to push status.
-// Widen the SDDL to that account when the MSI grows one — do NOT widen it to
-// Authenticated Users, which would be every local user.
-//
+// The pipe's descriptor grants LocalSystem and Administrators, as the admin
+// pipe does; there is no packaged mochi-world service account yet, so a Windows
+// world server runs elevated. Widen the SDDL to that account when the MSI grows
+// one, never to Authenticated Users.//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 //go:build windows
 

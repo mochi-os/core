@@ -1,22 +1,14 @@
 // Mochi server: broadcast fan-out is metered by recipient count.
 //
-// mochi.message.send and mochi.message.send_peer each charge one against
-// rate_limit_net_send. Broadcast — the only send API that turns one call
-// into N wire messages and N queue.db rows — charged nothing at all, so
-// the one amplifying path was the one unmetered path. An uncapped
-// recipient list is an uncapped write to a database whose 1GB ceiling has
-// already been reached and panicked in production (see send_peer in
-// messages.go).
-//
-// It is charged against rate_limit_broadcast, its own bucket, sized for
-// the per-recipient unit; sharing rate_limit_net_send's 1000-per-second
-// would refuse feeds' RSS ingest, which broadcasts once per imported item
-// to every subscriber.
+// Broadcast is the only send API that turns one call into N wire messages and N
+// queue.db rows. It charges rate_limit_broadcast, its own bucket sized for the
+// per-recipient unit: sharing rate_limit_net_send would refuse feeds' RSS
+// ingest, which broadcasts once per imported item to every subscriber.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -76,11 +68,9 @@ func broadcast_limit_send(thread *sl.Thread, feed string, subscribers []sl.Value
 	return err
 }
 
-// broadcast_limit_sequences counts log rows written for this stream. Zero
-// means the call was refused before broadcast_log_append allocated a
-// sequence — which is the property that matters, because resync replays
-// from the log and would hand a half-delivered sequence to the recipients
-// who never received it.
+// broadcast_limit_sequences counts log rows for the stream. Zero means the call
+// was refused before a sequence was allocated, which is the property that
+// matters.
 func broadcast_limit_sequences(t *testing.T, thread *sl.Thread, key string) int {
 	t.Helper()
 	user, _ := thread.Local("user").(*User)
@@ -119,10 +109,8 @@ func TestBroadcastChargesOnePerRecipient(t *testing.T) {
 		t.Error("four recipients did not spend a budget of four - the call is being charged as one message, not as one per recipient")
 	}
 
-	// This is the only test here whose send reaches the fan-out, and m.send()
-	// runs on a goroutine. Wait for the rows: a goroutine still in flight when
-	// setup_replication_test tears the temp directory down writes to a queue.db
-	// that no longer has its table, and panics the whole package's test binary.
+	// m.send() runs on a goroutine: a row still in flight when
+	// setup_replication_test removes the temp directory panics the test binary.
 	broadcast_limit_await(t, recipients)
 }
 
@@ -141,11 +129,8 @@ func broadcast_limit_await(t *testing.T, recipients []string) {
 	}
 }
 
-// TestBroadcastRefusesASpentBudgetBeforeTheLogAppend. The refusal has to
-// land before the sequence is allocated. Refusing partway through the
-// fan-out would leave a log row that only some subscribers ever received,
-// and resync — which replays from that log — would hand it to the rest
-// later as though the original delivery had happened.
+// TestBroadcastRefusesASpentBudgetBeforeTheLogAppend. Refusing partway through
+// the fan-out would leave a log row resync replays to the rest as a delivery.
 func TestBroadcastRefusesASpentBudgetBeforeTheLogAppend(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -224,12 +209,8 @@ func TestBroadcastCapAdmitsExactlyTheMaximum(t *testing.T) {
 	}
 }
 
-// TestBroadcastLimiterIsSeparateFromDirectSends. The two budgets must not be
-// merged. Sharing would break both directions: a fan-out would exhaust the
-// budget the app's direct mochi.message.send calls need, and broadcast would
-// inherit a per-second budget sized for one-message-per-call — which feeds'
-// RSS ingest, broadcasting once per imported item to every subscriber,
-// exceeds in a burst while doing nothing wrong.
+// TestBroadcastLimiterIsSeparateFromDirectSends. Merging the budgets would let
+// a fan-out starve direct sends, and cap broadcast at a per-message rate.
 func TestBroadcastLimiterIsSeparateFromDirectSends(t *testing.T) {
 	if rate_limit_broadcast == rate_limit_net_send {
 		t.Fatal("broadcast shares the direct-send bucket; a fan-out can now starve mochi.message.send")

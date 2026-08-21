@@ -23,15 +23,9 @@ func admin_dial(ctx context.Context, path string) (net.Conn, error) {
 	return winio.DialPipeContext(ctx, path)
 }
 
-// connect_hint maps the common Windows dial failures to one-line errors
-// with the action the operator needs. ERROR_FILE_NOT_FOUND means the pipe
-// doesn't exist (the service isn't running); ERROR_ACCESS_DENIED means the
-// pipe's security descriptor rejected the caller — it admits only
-// LocalSystem and Administrators (see core/server/admin_windows.go), so a
-// non-elevated prompt is the usual cause. UAC disables the Administrators
-// group in non-elevated tokens even for administrator accounts, which is
-// why the elevation state is reported. Returns nil for unrecognised
-// errors.
+// connect_hint maps common Windows dial failures to a one-line error naming the
+// operator's next action; nil for anything unrecognised. Elevation is reported
+// because UAC disables the Administrators group in a non-elevated token.
 func connect_hint(socket string, err error) error {
 	switch {
 	case errors.Is(err, windows.ERROR_FILE_NOT_FOUND):

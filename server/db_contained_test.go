@@ -1,33 +1,13 @@
 // Mochi server: a database path cannot leave the data directory.
 //
-// Every database path is a template with interpolated components -
-// users/<uid>/<app>/db/<file>, users/<uid>/<app>/app.db - and filepath.Join
-// resolves ".." lexically rather than rejecting it. A component carrying one
-// therefore escapes, and what follows the join is a plain os.MkdirAll,
-// os.Create and a name-based driver open, none of which would object:
-//
-//	filepath.Join("/var/lib/mochi", "users/../../../../etc/shadow")
-//	  == "/etc/shadow"
-//
-// Nothing reaches it today, which is why this is a guard and not a fix. Uids
-// come from uid(), app ids validate as "entity" or arrive as directory entry
-// names, and an app's declared database file passes valid(..., "filename") -
-// whose first character class omits ".", so a leading dot, and therefore "..",
-// cannot be expressed. All of that is enforced in other files. A call site
-// added later interpolating something new inherits none of it, and
-// db_open_work is the one place every database path passes through.
-//
-// SCOPE. Lexical containment only. A symlink inside the data directory
-// pointing outside it still resolves, because os.Create follows it - only
-// os.Root refuses, and the driver cannot be handed one (its VFS is name-based,
-// and the shared-memory path opens its own file per platform). The symlink half
-// is deliberately not claimed here; TestContainmentDoesNotClaimSymlinkSafety
-// pins that so a future reader does not assume more than the check gives.
+// Lexical containment only: a symlink inside the data directory pointing
+// outside it still resolves, which TestContainmentDoesNotClaimSymlinkSafety
+// pins.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -85,12 +65,9 @@ func TestContainmentRefusesAnEscape(t *testing.T) {
 	}
 }
 
-// TestContainmentConfinesAnAbsoluteComponent. filepath.Join treats its second
-// element as relative whatever it looks like, so an absolute-looking component
-// is folded under the root rather than honoured: Join(root, "/etc/shadow") is
-// root + "/etc/shadow". That is containment doing its job, not an escape, and
-// it is worth pinning because the opposite - Join honouring the absolute path -
-// would be a silent hole that reads identically at the call site.
+// TestContainmentConfinesAnAbsoluteComponent: filepath.Join folds an
+// absolute-looking component under the root rather than honouring it, so the
+// result stays contained.
 func TestContainmentConfinesAnAbsoluteComponent(t *testing.T) {
 	root := contained_root(t)
 
@@ -213,12 +190,9 @@ func TestOpenStillWorksForOrdinaryPaths(t *testing.T) {
 	}
 }
 
-// TestContainmentDoesNotClaimSymlinkSafety records the deliberate limit. A
-// symlink inside the data directory that points outside it still resolves,
-// because os.Create follows it; only os.Root refuses, and the driver's VFS is
-// name-based so it cannot be given one. If this test ever starts failing,
-// something has gained symlink resistance and the comments saying otherwise
-// need revisiting.
+// TestContainmentDoesNotClaimSymlinkSafety records the deliberate limit: a
+// symlink out of the data directory still resolves. A failure here means the
+// scope changed.
 func TestContainmentDoesNotClaimSymlinkSafety(t *testing.T) {
 	root := contained_root(t)
 

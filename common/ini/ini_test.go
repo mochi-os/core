@@ -203,16 +203,8 @@ func TestEffectiveRedactsSensitiveKeys(t *testing.T) {
 	}
 }
 
-// TestRedactMatchesOnContainment is the regression. redact tested
-// HasSuffix(low, marker) || Contains(low, marker); the first is implied by the
-// second, so the pair reduced to containment alone - and the dead half was the
-// one Effective's documentation described ("*password, *secret, *key,
-// *token", glob suffix notation). Two readings of the same rule coexisted
-// because the redundant operand let each look supported.
-//
-// These keys contain a marker without ending in one, so they are exactly what
-// the two readings disagree about. Every one is a plausible config key, and
-// none appears in the repo today - which is why nothing had caught it.
+// TestRedactMatchesOnContainment: keys that contain a marker without ending in
+// one, which a suffix rule would leave unmasked at /_/admin/config.
 func TestRedactMatchesOnContainment(t *testing.T) {
 	for _, key := range []string{
 		"key_file",

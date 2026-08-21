@@ -13,13 +13,6 @@ import (
 	"testing"
 )
 
-// TestUserRestoreRoundTrip builds a bundle with user_export, then drives
-// the restore helpers (unzip, decrypt, signature, schema guard, swap,
-// entities, schedule, finish) to import it into a fresh destination uid.
-// It asserts that the identity and its private key, an attachment file,
-// the durable schedule event (re-keyed to the destination), and
-// restore_source all land. This is the complement to
-// TestUserExportRoundTrip and guards the restore path against regression.
 func TestUserRestoreRoundTrip(t *testing.T) {
 	cleanup := create_test_users_db(t)
 	defer cleanup()

@@ -1,17 +1,10 @@
-// Mochi server: the /mochi/2/stream pre-open phase is bounded.
-//
-// receive_stream_guarded drained claim frames until the peer chose to send
-// open. Nothing capped how many, nothing capped how slowly they arrived, and a
-// claim that failed verification only `continue`d - so an unauthenticated peer
-// could hold a goroutine and a stream indefinitely while spending one ed25519
-// verify per frame and one map entry per distinct entity id, which are free to
-// mint. libp2p's 128 inbound streams per peer bounds concurrency, not work per
-// stream, and a peer identity is free to mint too.
-//
+// Mochi server: the /mochi/2/stream pre-open phase is bounded on both count and
+// time. libp2p's 128 inbound streams per peer bounds concurrency, not work per
+// stream, and a peer identity is free to mint.//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -307,9 +300,6 @@ func TestStreamDeadlinesTheSlowDrip(t *testing.T) {
 	}
 }
 
-// TestStreamRejectsUnverifiableClaims. A claim that fails verification used to
-// `continue`, so invalid claims were unlimited as well - and they are the
-// cheap ones to produce, costing the peer nothing and this host a verify each.
 func TestStreamRejectsUnverifiableClaims(t *testing.T) {
 	s := new_claims_stream()
 

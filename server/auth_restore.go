@@ -1,22 +1,14 @@
 // Mochi server: POST /_/auth/restore — signup-with-restore-from-bundle
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// The "Advanced disclosure / restore" path on the signup form. The user
-// uploads a backup bundle (produced by mochi.user.export) and its
-// passphrase. Restore is single-shot: the destination becomes the new home for
-// the account's data and network identity, and the source is left untouched
-// (the user deletes it themselves — see the post-restore banner driven
-// by users.restore_source).
-//
-// Validation that should give the user a fast inline error (bad passphrase,
-// schema too new) runs synchronously;
-// the actual unpack-and-swap runs in a goroutine so
-// a multi-GB restore doesn't block the HTTP response past its timeout.
-// The placeholder sits in status='pending-restore' until the swap
-// completes, gating every app but /login (see user_pending).
+// Restore is single-shot: the destination becomes the new home for the
+// account's data and network identity, and the source is left untouched. Fast
+// inline errors (bad passphrase, schema too new) are checked synchronously; the
+// unpack-and-swap runs in a goroutine with the user in
+// status='pending-restore'.
 
 package main
 
@@ -39,11 +31,8 @@ import (
 )
 
 // restore_cleanup_orphans deletes pending-restore placeholders left by a
-// server restart mid-restore. The apply step runs in a goroutine that
-// does not survive a process exit, so any user still pending-restore at
-// startup has an incomplete (and unusable) account — delete it so the
-// user can simply sign up and restore again. Runs once at startup, not
-// periodically.
+// restart mid-restore - the apply goroutine does not survive a process exit, so
+// the account is incomplete and unusable. Runs once at startup.
 func restore_cleanup_orphans() {
 	udb := db_open("db/users.db")
 	rows, err := udb.rows("select uid from users where status='pending-restore'")
@@ -60,31 +49,17 @@ func restore_cleanup_orphans() {
 	}
 }
 
-// restore_upload_maximum bounds the compressed account-restore bundle a single
-// unauthenticated POST /_/auth/restore may spool to disk before any validation
-// runs (the route is public and multipart is exempt from the global body
-// limit). A fixed internal DoS bound — deliberately NOT an operator setting;
-// it is separate from the per-user storage quota (file_maximum_storage) so it
-// tracks the host's disk headroom, not the amount a restored account may
-// eventually store. The same cap covers the first-user path, so a fresh server
-// never exposes a large unauthenticated spool. A var, not a const, only so
-// tests can lower it.
+// restore_upload_maximum bounds the compressed bundle an unauthenticated POST
+// /_/auth/restore spools before validation - the route is public and multipart
+// is exempt from the global body limit. A var only so tests can lower it.
 var restore_upload_maximum int64 = 2 * 1024 * 1024 * 1024 // 2 GiB
 
 // web_auth_restore is POST /_/auth/restore.
 // multipart/form-data: email, passphrase, bundle (file).
 func web_auth_restore(c *gin.Context) {
-	// Before anything is read from the body. Restore is a signup, so a server
-	// with signups off can never answer this request - and the check depends
-	// on nothing the caller sent, costing one indexed row from settings.db.
-	// It used to sit after the multipart parse, which meant an anonymous
-	// caller could make a closed server accept and spool a 2 GiB bundle it
-	// was always going to refuse; ParseMultipartForm spools to os.TempDir(),
-	// a tmpfs on a systemd host, so that was resident memory rather than
-	// disk. Answering here does mean a client still uploading sees the
-	// response before it has finished sending, which some clients surface as
-	// a reset rather than the 403 - the right trade against holding gigabytes
-	// for a request that cannot succeed.
+	// Before anything is read from the body: restore is a signup, so a server with
+	// signups off can never answer, and this check reads nothing the caller sent.
+	// Later would mean spooling a 2 GiB bundle to os.TempDir (tmpfs).
 	if !setting_signup_enabled() {
 		respond_error(c, http.StatusForbidden, "signup_disabled", "errors.signup_disabled", nil)
 		return
@@ -92,11 +67,9 @@ func web_auth_restore(c *gin.Context) {
 
 	udb := db_open("db/users.db")
 
-	// Cap the compressed bundle before the first PostForm call parses — and
-	// spools to disk — the multipart body. restore_upload_maximum bounds the
-	// upload itself; the separate decompressed-content cap (restore_cap, the
-	// account's storage quota) is the zip-bomb guard passed to restore_unzip.
-	// The headroom covers multipart framing and per-file zip overhead.
+	// Cap the compressed bundle before the first PostForm call parses - and spools
+	// - the multipart body. The decompressed-content cap is separate (restore_cap,
+	// passed to restore_unzip). Headroom covers zip framing.
 	restore_cap := file_maximum_storage
 	limit := restore_upload_maximum + 64*1024*1024
 	if c.Request.ContentLength > limit {
@@ -113,9 +86,8 @@ func web_auth_restore(c *gin.Context) {
 		}
 		return
 	}
-	// Remove any multipart parts spooled to a temp file once the handler
-	// returns — SaveUploadedFile has copied the bundle to zip_path by then, so
-	// the spool is no longer needed and should not linger on disk.
+	// SaveUploadedFile has copied the bundle to zip_path by now, so the spooled
+	// multipart parts should not linger on disk.
 	defer func() {
 		if c.Request.MultipartForm != nil {
 			c.Request.MultipartForm.RemoveAll()
@@ -148,16 +120,9 @@ func web_auth_restore(c *gin.Context) {
 		return
 	}
 
-	// Prove the caller controls the address before an account exists for it.
-	// The passphrase authenticates the bundle, not the person holding it, so
-	// on its own it says nothing about whether this address is theirs -
-	// restore was the one route that could mint an account, and on an empty
-	// server an administrator, for an address nobody had shown they could
-	// receive mail at. The code comes from the ordinary /_/auth/code flow.
-	//
-	// Consumed here rather than earlier so that a request failing any of the
-	// cheap checks above does not burn the user's single-use code. It still
-	// precedes the placeholder row and every byte of bundle processing.
+	// Prove the caller controls the address before an account exists for it: the
+	// passphrase authenticates the bundle, not the person holding it. Consumed
+	// after the cheap checks so a failure does not burn the code.
 	code := strings.TrimSpace(c.PostForm("code"))
 	if code == "" {
 		respond_error(c, http.StatusBadRequest, "missing_code", "errors.missing_code", nil)
@@ -168,16 +133,9 @@ func web_auth_restore(c *gin.Context) {
 		return
 	}
 
-	// Create the placeholder with a fresh destination-side uid. The source
-	// uid in the bundle is informational only; the destination's uid is
-	// canonical.
-	// First-user-becomes-administrator, decided inside the insert exactly as
-	// user_create does - the role is never taken from the bundle, and never
-	// from a read that happened earlier. The gap here was the whole upload:
-	// the role used to be settled before the multipart parse, so an ordinary
-	// signup completing while a multi-gigabyte bundle was still arriving left
-	// the restore inserting a stale "administrator" alongside it. No
-	// concurrency needed - just two overlapping requests.
+	// Fresh destination-side uid; the bundle's uid is informational only.
+	// First-user-becomes-administrator is decided inside the insert as user_create
+	// does - never from the bundle, never from an earlier read.
 	uid := uid()
 	udb.exec(`insert into users (uid, username, role, methods, status)
 		values (?, ?, case when exists (select 1 from users) then 'user' else 'administrator' end, '', 'pending-restore')`,
@@ -324,11 +282,8 @@ func restore_apply(uid, bundle string, manifest export_manifest, account export_
 		}
 	}
 
-	// Integrity: every restored sqlite DB must pass quick_check. The manifest
-	// file-hash above is self-attested (the user signs their own bundle), so it
-	// does not prove a DB is structurally sound — without this a corrupt or
-	// malicious sqlite would be swapped in and only caught later by the runtime
-	// quarantine sweep, after an admin alert.
+	// The manifest file-hash is self-attested (the user signs their own bundle),
+	// so it cannot prove a DB is structurally sound.
 	if bad, _ := restore_integrity_guard(bundle); bad != "" {
 		fail("bundle_corrupt: " + bad)
 		return
@@ -348,15 +303,9 @@ func restore_apply(uid, bundle string, manifest export_manifest, account export_
 	restore_auth(uid, account, secrets)
 	restore_finish_account(uid, manifest, bundle)
 
-	// A bundle exported before the attachments library migration carries
-	// app.db attachment stores; export-and-drop them NOW, before the account
-	// activates. The startup sweep guarantees export-before-migration by
-	// running ahead of the web server, but this is the one path that adds
-	// user data to a running server - without this, the first request's
-	// migration finds neither bridge nor export, reads "no rows", and
-	// consumes its version with the rows still in app.db. A store whose
-	// export cannot be written keeps its table (warned, admin emailed) and
-	// the startup sweep retries at the next boot.
+	// A pre-library bundle carries app.db attachment stores; export-and-drop them
+	// before the account activates. This is the one path that adds user data to a
+	// running server, which the startup sweep cannot cover.
 	if exported, dropped := attachment_export_user(uid); dropped > 0 {
 		info("Attachment export (restore %q): %d stores exported, %d tables dropped", uid, exported, dropped)
 	}
@@ -403,16 +352,9 @@ func restore_swap(uid, bundle string) error {
 	return nil
 }
 
-// restore_entities inserts the bundle's entities under the destination
-// uid with their private keys, and republishes public ones to the
-// directory so the network learns the new host.
-//
-// An entity whose key is absent from the bundle is skipped rather than
-// inserted keyless. Such a row would look locally owned to
-// user_owning_entity, so this host would answer streams addressed to it
-// and then fail to prove possession — the entity would be silently
-// unreachable, with the cause several layers from the symptom. Better to
-// refuse it at the point the key is missing and say so.
+// restore_entities inserts the bundle's entities under the destination uid and
+// republishes public ones. An entity whose key is absent is skipped: a keyless
+// row looks locally owned, so the host would answer streams it cannot prove.
 func restore_entities(uid string, account export_account, keys map[string]string) {
 	udb := db_open("db/users.db")
 	for _, e := range account.Entities {
@@ -446,12 +388,8 @@ func restore_schedule(uid, bundle string) {
 }
 
 // restore_source_origin reduces a bundle's claimed source server to a bare
-// https origin, or returns empty for anything else. The value is
-// attacker-controlled in a crafted bundle and lands in an anchor href on
-// the destination (the delete-your-old-account banner), so only the shape
-// export_source_server produces — https scheme, host, nothing else — is
-// stored. Empty means the banner link simply doesn't render; the restore
-// itself is unaffected.
+// https origin, or "" for anything else. The value is attacker-controlled and
+// lands in an anchor href on the destination; "" just drops the link.
 func restore_source_origin(source string) string {
 	u, err := url.Parse(strings.TrimSpace(source))
 	if err != nil || u.Scheme != "https" || u.User != nil || u.Opaque != "" || u.Hostname() == "" {
@@ -479,14 +417,9 @@ func restore_finish_account(uid string, manifest export_manifest, bundle string)
 	}
 }
 
-// restore_entries_maximum caps the bundle's file count; maximum_bytes (passed in) caps
-// the total decompressed size. The bundle is uploaded by an unauthenticated
-// signup-via-restore caller (when signup is enabled), so without these a
-// zip-bomb could exhaust the disk. The byte cap is the per-user storage quota
-// (file_maximum_storage) for an ordinary restore — a backup decompressing to more
-// than that is for an over-quota account and shouldn't restore here;
-// administrators are quota-exempt (see user_storage_remaining) and get a
-// generous finite ceiling, set by the caller.
+// restore_entries_maximum caps the bundle's file count; maximum_bytes caps
+// total decompressed size. The uploader is unauthenticated, so without both a
+// zip-bomb could exhaust the disk. The byte cap is the caller's storage quota.
 const restore_entries_maximum = 5_000_000
 
 // restore_unzip extracts zip_path into dest and returns the bundle root
@@ -614,12 +547,9 @@ func restore_decrypt_secrets(path, passphrase string) (*export_secrets, error) {
 	return &secrets, nil
 }
 
-// restore_auth re-establishes the authenticator secret and recovery-code
-// hashes that travel safely (the device-independent credentials), then
-// restores the per-user login-requirement config filtered to the factors
-// that are actually usable on the destination — so a requirement on a factor
-// that couldn't come back (a passkey, an unverified authenticator) can never
-// lock the user out. Passkeys and OAuth links are re-established by the user.
+// restore_auth re-establishes the device-independent credentials (authenticator
+// secret, recovery-code hashes) and restores the login-requirement config
+// filtered to usable factors, so a lost passkey can never lock the user out.
 func restore_auth(uid string, account export_account, secrets *export_secrets) {
 	udb := db_open("db/users.db")
 	totp_restored := false
@@ -651,14 +581,9 @@ func restore_auth(uid string, account export_account, secrets *export_secrets) {
 	udb.exec("update users set methods=?, disabled=?, restore_passkeys=? where uid=?", methods, disabled, passkeys, uid)
 }
 
-// restore_safe_methods filters a bundle's methods (required) and disabled
-// sets down to what's safe on the destination, where only email (always),
-// the restored authenticator, and restored recovery codes are usable —
-// passkeys and OAuth aren't yet re-established. It (1) drops any required
-// factor whose credential isn't available, (2) never leaves the user with no
-// usable login path (un-disabling email as the guaranteed fallback), and (3)
-// never requires a disabled factor. Output is canonical-ordered for
-// replication determinism.
+// restore_safe_methods filters a bundle's required and disabled sets to what is
+// usable on the destination: no required factor without a credential, always at
+// least one usable login path, never a required-and-disabled factor.
 func restore_safe_methods(methods_csv, disabled_csv string, totp_restored, recovery_restored bool) (string, string) {
 	required := methods_parse(methods_csv)
 	disabled := methods_parse(disabled_csv)
@@ -753,15 +678,9 @@ func restore_schema_guard(bundle string) (string, error) {
 	return newer, err
 }
 
-// restore_integrity_guard rejects a bundle containing a sqlite DB file that fails
-// quick_check (corrupt, or unverifiable). The manifest file-hash is self-attested —
-// the user signs their own bundle — so it does not prove a DB is structurally
-// sound: a corrupt or malicious sqlite with a matching hash would otherwise be
-// swapped in (restore_swap) and only caught later by the runtime quarantine sweep,
-// after an admin alert. Returns the name of the first offending file, or "" if every
-// DB is clean. Reuses snapshot_integrity_ok — the same gate the bootstrap snapshot
-// uses (#6). Only *.db files are checked; their -wal/-shm siblings are not standalone
-// databases.
+// restore_integrity_guard returns the name of the first *.db in the bundle that
+// fails quick_check, or "". The manifest file-hash is self-attested, so it
+// cannot prove a DB is sound. -wal/-shm siblings are not standalone databases.
 func restore_integrity_guard(bundle string) (string, error) {
 	var bad string
 	err := filepath.WalkDir(bundle, func(path string, d fs.DirEntry, err error) error {

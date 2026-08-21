@@ -48,16 +48,9 @@ const (
 	worker_reaper_tick = 60 * time.Second
 )
 
-// reply_target abstracts where a worker's handler-result reply goes.
-// Two implementations exist:
-//
-//	stream_reply — for frames from a remote sender via /mochi/2/messages.
-//	               Routes back to the source Receiver's replies channel,
-//	               where receiver_reply batches them into ack frames.
-//
-//	queue_reply  — for frames from the self-loop fast path. Bypasses
-//	               the wire entirely; ack/fail map straight to
-//	               queue_ack / queue_fail / queue_drop.
+// reply_target abstracts where a worker's handler-result reply goes:
+// stream_reply routes back to the source Receiver's batched acks; queue_reply
+// and local_reply answer self-loop frames.
 type reply_target interface {
 	// ack signals the handler succeeded.
 	ack()
@@ -66,13 +59,9 @@ type reply_target interface {
 	fail(reason string)
 }
 
-// worker_frame pairs a Frame with its reply target plus the
-// originating peer. Sent to the per-(user, app) worker via its inbox.
-//
-// `peer` is the libp2p peer ID of the sender — needed because the
-// worker registry is per-host (not per-Receiver), so a frame's origin
-// can't be inferred from the worker alone. Self-loop frames pass
-// net_id here.
+// worker_frame pairs a Frame with its reply target and the originating peer.
+// `peer` travels explicitly because the worker registry is per-host, so origin
+// cannot be inferred from the worker; self-loop frames pass net_id.
 type worker_frame struct {
 	frame *Frame
 	peer  string
@@ -103,11 +92,10 @@ var (
 	app_workers      = map[user_app_key]*app_worker{}
 )
 
-// worker_dispatch finds-or-creates the worker for the given (user, app)
-// and pushes wf onto its inbox. Blocks if the inbox is full —
-// receiver_read uses this to propagate back-pressure into libp2p's flow
-// control. Self-loop callers also block, which serialises their writes
-// against in-flight remote frames for the same (user, app).
+// worker_dispatch finds-or-creates the worker for (user, app) and pushes wf
+// onto its inbox. Blocks when the inbox is full: that is what propagates
+// back-pressure into libp2p flow control and serialises self-loop writes
+// against remote frames.
 func worker_dispatch(user, app string, wf *worker_frame) {
 	key := user_app_key{user: user, app: app}
 
@@ -122,17 +110,10 @@ func worker_dispatch(user, app string, wf *worker_frame) {
 	w.inbox <- wf
 }
 
-// worker_inbox_offer is a try-once non-blocking enqueue into the
-// (user, app) worker's inbox, creating the worker if absent. Returns:
-//
-//	true  — frame accepted; worker will process it
-//	false — inbox full
-//
-// Used by message_self_loop_dispatch. The enqueue is deliberately
-// non-blocking: a full inbox means the worker is saturated, and the
-// caller is inside a send path — spilling to queue.db's at-least-once
-// machinery is better than blocking the sender behind a slow app
-// handler, and the backlog stays visible as queue depth.
+// worker_inbox_offer is a try-once non-blocking enqueue into the (user, app)
+// worker's inbox, creating the worker if absent; false means full. Non-blocking
+// by design: the caller is in a send path, and spilling to queue.db keeps the
+// backlog visible as queue depth.
 func worker_inbox_offer(user, app string, wf *worker_frame) bool {
 	key := user_app_key{user: user, app: app}
 	app_workers_lock.RLock()
@@ -185,19 +166,9 @@ func (w *app_worker) run() {
 	}
 }
 
-// frame_segment_stream returns the Stream carrying the CBOR segments a sender
-// packed after the content map - /mochi/2 packs them all into Frame.Data as one
-// []byte - so e.segment() and handlers using e.stream.read() can take them one
-// at a time. No segments means no stream, which is what e.segment() already
-// treats as "nothing to read".
-//
-// Keyed on length, not on nil. The two are the same thing here: Frame.Data is
-// tagged `cbor:"data,omitempty"`, so a sender's empty slice is omitted from the
-// frame and arrives back as nil. Distinguishing them would give a self-loop
-// frame a 0-byte stream that the identical remote frame could never produce -
-// and a 0-byte stream is not free, since every e.segment() call on one builds a
-// decoder, hits EOF, and logs before returning the false a nil stream returns
-// immediately.
+// frame_segment_stream wraps the CBOR segments a sender packed into Frame.Data
+// so e.segment() can take them one at a time. Keyed on length, not nil: Data is
+// `omitempty`, so a sender's empty slice arrives back as nil.
 func frame_segment_stream(data []byte) *Stream {
 	if len(data) == 0 {
 		return nil
@@ -248,12 +219,9 @@ func (w *app_worker) handle(wf *worker_frame) {
 	wf.reply.ack()
 }
 
-// worker_fail answers a frame with a failure reason, first clearing the
-// dedup mark when the reason is one the sender will retry. The mark is
-// set before dispatch (receive_messages), so without this the retry the
-// failure asks for is coalesced away as a duplicate and the message is
-// lost. Clearing precedes the reply because a retry-now disposition puts
-// the row back on the wire immediately.
+// worker_fail answers a frame with a failure reason, first clearing the dedup
+// mark when the reason is one the sender retries: the mark is set before
+// dispatch, so without this the retry is coalesced away and the message lost.
 func worker_fail(wf *worker_frame, reason string) {
 	if wf.frame != nil && wf.frame.ID != "" && fail_retryable(reason) {
 		message_seen_clear(wf.frame.ID)
@@ -274,16 +242,8 @@ func fail_retryable(reason string) bool {
 	return true
 }
 
-// worker_failure_reason maps an Event.route() error to a wire failure
-// reason. Routing errors fall into one of three buckets:
-//
-//   - "unknown user / no handler / no service" → drop, retry will
-//     never succeed. unsupported / unknown_user.
-//   - ErrBroadcastPendingFull → transient, checked by sentinel rather
-//     than left to the default below. Retry-not-drop is the whole
-//     point of returning that error, and a property inherited from a
-//     catch-all is one a later prefix rule can take away silently.
-//   - Default → transient (the catch-all retry-later disposition).
+// worker_failure_reason maps an Event.route() error to a wire failure reason:
+// unknown user / no handler / no service drop, everything else is transient.
 func worker_failure_reason(err error) string {
 	if err == nil {
 		return ""
@@ -376,15 +336,9 @@ func worker_count() (workers, pending int) {
 	return workers, pending
 }
 
-// workers_drain_test blocks until every worker's inbox is empty. Used
-// by unit-test cleanups so the test's tmp_dir / mutated globals
-// (data_dir, net_id) aren't torn down while a background worker is
-// mid-processing a frame that references them.
-//
-// Safe to call from tests only — production code has no reason to
-// drain workers, and a stuck worker holding its inbox open would block
-// indefinitely. Bounded by timeout so a broken handler doesn't wedge
-// the whole test suite.
+// workers_drain_test blocks until every worker's inbox is empty, so a test's
+// tmp_dir and mutated globals are not torn down mid-frame. Tests only, and
+// bounded by timeout so a stuck worker cannot wedge the suite.
 func workers_drain_test(timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -446,14 +400,9 @@ func (s stream_reply) fail(reason string) {
 	}
 }
 
-// queue_reply implements reply_target for frames originating in the
-// self-loop fast path. Bypasses the wire — ack and fail map directly
-// to queue_ack / queue_fail / queue_drop on the local queue.db row.
-//
-// Both ack() and fail() wrap their DB writes in a recover() because
-// they run on the worker goroutine — a torn-down queue.db (e.g. unit
-// tests cleaning up the tmp_dir before the worker drains) would
-// otherwise panic the worker.
+// queue_reply implements reply_target for self-loop frames: ack and fail map
+// straight to queue_ack / queue_fail / queue_drop. Both recover() because they
+// run on the worker goroutine, where a torn-down queue.db would panic it.
 type queue_reply struct {
 	id string
 }
@@ -488,17 +437,10 @@ func (q queue_reply) fail(reason string) {
 	}
 }
 
-// local_reply implements reply_target for self-loop frames that never
-// passed through queue.db (message_self_loop_dispatch hot path). No
-// queue row to ack/delete; ack() is a no-op, fail() just logs at the
-// matching severity for the failure-reason class.
-//
-// Why not retry on fail? Self-loop has no network unreliability — the
-// handler runs in-process. A failure is a code error (handler returned
-// fail, panicked, decoded badly): retrying the same code with the same
-// input would deterministically fail again. Better to log loudly and
-// move on than to recycle the row through queue.db's exponential
-// backoff.
+// local_reply implements reply_target for self-loop frames that never passed
+// through queue.db: no row to ack, so ack() is a no-op and fail() only logs. A
+// self-loop failure is a code error, so retrying the same input would fail
+// again.
 type local_reply struct {
 	message string
 	service string
@@ -532,37 +474,12 @@ func (l local_reply) fail(reason string) {
 	}
 }
 
-// message_self_loop_dispatch tries to enqueue m onto the local
-// per-(user, app) worker inbox without going through queue.db. Returns
-// true on success. Returns false when:
-//
-//   - m.target is not net_id (caller should use the normal queue path)
-//   - m has a file payload (queue.db owns large-payload tracking)
-//   - the recipient does not resolve to a local user (queue.db owns
-//     resolution and failure handling for that case)
-//   - the worker inbox is full (caller falls back to queue.db so the
-//     row gets the usual at-least-once retry semantics)
-//
-// `content` is the CBOR-encoded body produced by the caller's
-// `cbor_encode(m.content)`; we decode it once here for the worker
-// frame rather than have the worker re-decode it.
-//
-// Why bypass queue.db at all? Self-loop is in-process — there's no
-// network to fail, no peer to retry against. Insert-into-queue +
-// queue_select pick-up + queue_send_self_loop_fast dispatch +
-// queue_ack-on-success is four SQLite round-trips for a message that
-// never leaves the process. Direct dispatch is zero. At 80k+ self-loop
-// rows backlogged on wasabi this matters; even at idle it shaves the
-// happy-path send latency from "next queue tick" (≤1s) to "next
-// scheduler slice" (μs).
-//
-// Older self-loop rows already in queue.db keep draining via
-// queue_send_self_loop_fast. Worker order: the direct-dispatch path
-// may jump ahead of those queue.db rows for the same (user, app)
-// because both feed the same worker inbox. Self-loop has no FK chain
-// across messages, so this re-ordering is benign — and once the
-// backlog drains, the queue.db source goes silent and direct-dispatch
-// is the only path.
+// message_self_loop_dispatch enqueues m onto the local (user, app) worker
+// inbox, bypassing queue.db. Returns false - caller uses the normal queue path
+// - when m.target is not net_id, m has a file payload, the recipient is not
+// local, or the inbox is full. `content` is the caller's already-CBOR-encoded
+// body. May overtake queue.db rows for the same (user, app), which is benign:
+// self-loop messages carry no cross-message ordering.
 func message_self_loop_dispatch(m *Message, content []byte) bool {
 	if m.target != net_id || net_id == "" {
 		return false
@@ -619,10 +536,7 @@ func message_self_loop_dispatch(m *Message, content []byte) bool {
 		reply: local_reply{message: m.ID, service: m.Service, event: m.Event, to: to},
 	}
 
-	// Non-blocking enqueue, creating the worker on first use. The one
-	// remaining miss is a full inbox: the worker is saturated, so the
-	// frame falls back to queue.db and the back-pressure shows up as
-	// queue depth (visible via `mochictl pipelining status` and queue
-	// length metrics) rather than as a blocked send call.
+	// Non-blocking, creating the worker on first use. A full inbox falls back to
+	// queue.db, where the back-pressure shows up as queue depth.
 	return worker_inbox_offer(user, m.Service, wf)
 }

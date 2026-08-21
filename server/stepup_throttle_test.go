@@ -3,17 +3,10 @@
 // This file is part of Mochi, licensed under the GNU AGPL v3 with the
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-// Tests for the per-account throttle on step-up re-authentication.
-//
-// The login path states the reasoning at account_gate_guard: six-digit codes
-// are guessable and a per-IP limiter is defeated by rotating addresses, so the
-// throttle has to key on the account. The step-up paths minted the same class
-// of proof with no such gate — and that proof unlocks mochi.user.export, which
-// carries entity private keys.
-//
-// A separate bucket from account_login on purpose: sharing would let a step-up
-// attacker exhaust the legitimate user's LOGIN budget with nothing but their
-// address.
+// Tests for the per-account throttle on step-up re-authentication. Six-digit
+// codes are guessable and a per-IP limiter is defeated by rotating addresses,
+// so the throttle keys on the account - in its own bucket, so a step-up
+// attacker cannot exhaust the legitimate user's login budget.
 
 package main
 

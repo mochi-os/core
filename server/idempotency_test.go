@@ -1,22 +1,12 @@
 // Mochi server: the per-app idempotency cache table.
 //
-// idempotency_setup once regressed badly: a rename refactor left it calling
-// itself, so the first idempotent mochi.url.post recursed until the stack
-// overflowed, and the `idempotency` table the lookup and store queries depend
-// on was never created. That is what these tests are for.
-//
-// The setup used to carry a post-rename migration too: a sqlite_master lookup
-// to learn whether the table already existed, and a `drop table if exists
-// _idempotent_calls` gated on it having not. Both are gone, deliberately and
-// with no replacement migration. A pre-rename app.db restored from an old
-// backup bundle therefore keeps that orphan table for ever - a dead five-column
-// table costing a few KB, which is the accepted price of not carrying migration
-// code indefinitely.
+// No migration drops the pre-rename `_idempotent_calls` table; a restored old
+// app.db keeps it as an inert orphan, deliberately.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -103,10 +93,6 @@ func TestIdempotencySetupDoesNotMigrate(t *testing.T) {
 	}
 }
 
-// TestIdempotencySetupLeavesAnOrphanAlone states the consequence of the removal
-// rather than hiding it: a restored pre-rename app.db keeps the old table, and
-// that is fine. Written as a test so the behaviour is recorded as intended
-// rather than discovered later and read as a bug.
 func TestIdempotencySetupLeavesAnOrphanAlone(t *testing.T) {
 	db := idempotency_db(t)
 

@@ -1,36 +1,15 @@
 // Mochi server: e.read and e.write refuse an event that carries no stream.
 //
-// Both attribute sets reached the stream through the event and bound a method
-// value to it:
-//
-//	return sl.NewBuiltin("read.file", er.event.stream.sl_read_file), nil
-//
-// er.event.stream is nil for any frame that carried no packed segments. Binding
-// a method value to a nil pointer receiver is legal Go and silent - the
-// dereference is deferred to the call. Probed before the fix:
-//
-//	e.read           -> *main.EventRead (nil interface? false)
-//	e.read.file bind -> *starlark.Builtin err=<nil>   (bind did NOT panic)
-//	calling it       -> recovered=invalid memory address or nil pointer dereference
-//
-// The write side is worse. sl_write_file, sl_write_cache and sl_write_asset all
-// open with `defer s.close_write()` as their FIRST statement (streams.go:667,
-// :726, :755), and close_write reads s.writer on its own first line (:220). So
-// a nil stream panics on every call before the arguments are checked, and
-// panics again unwinding the sl_error early returns.
-//
-// app_worker's recover() catches it, so the frame ends as a handler panic: the
-// message is dropped and the operator gets a warning naming the app rather than
-// the cause.
-//
-// NOT covered by the sibling fix in Event.Attr, which returns sl.None for a nil
-// e.stream. e.read and e.write never touch the "stream" attribute - they hold
-// the event and dereference it themselves.
+// er.event.stream is nil for any frame that carried no packed segments, and
+// binding a method value to a nil receiver is legal and silent - the
+// dereference is deferred to the call. The write builtins are worse: all three
+// open with `defer s.close_write()`, which dereferences before the arguments
+// are checked.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

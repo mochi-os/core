@@ -310,14 +310,9 @@ func TestWebPathRemainingPath(t *testing.T) {
 	}
 }
 
-// TestLocalhostIgnoresForwardedFor pins that a caller cannot talk its way into
-// being treated as local. web_is_localhost decides whether a cookie carries
-// Secure and whether an OAuth callback is advertised as https, so a request
-// that merely CLAIMS to come from 127.0.0.1 must not qualify.
-//
-// The engine trusts no proxy, which is the root fix, but this asserts the
-// behaviour rather than the configuration call: it also fails if someone later
-// routes this decision back through ClientIP.
+// web_is_localhost decides cookie Secure and the OAuth callback scheme, so a
+// request merely claiming 127.0.0.1 must not qualify. Asserts the behaviour, so
+// it also fails if the decision is ever routed back through ClientIP.
 func TestLocalhostIgnoresForwardedFor(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

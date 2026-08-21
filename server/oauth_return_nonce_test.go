@@ -37,18 +37,10 @@ func redirect_query(t *testing.T, st *oauth_state, code, error_code string, extr
 	return query
 }
 
-// The deep-link return must carry the ceremony's return nonce on EVERY branch.
-//
-// The activity that receives mochi:oauth-return is exported and BROWSABLE, so
-// any installed app or web page can deliver one. Without a value the app can
-// check, an injected return is indistinguishable from the real one: accepting
-// it consumes the PKCE verifier before the exchange, so the genuine callback
-// then fails with "missing verifier" and the login cannot complete.
-//
-// The error branch matters at least as much as the success branch. A forged
-// error needs no plausible exchange code, so it is the cheaper forgery, and it
-// was the branch that stayed unauthenticated when only success carried an
-// identifier.
+// The deep-link return must carry the ceremony's return nonce on EVERY branch,
+// the error one included. mochi:oauth-return is exported and BROWSABLE, and an
+// uncheckable injected return consumes the PKCE verifier and kills the
+// ceremony.
 func TestMobileRedirectCarriesReturnNonce(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	st := &oauth_state{Scheme: "mochi", Return: oauth_return{Nonce: "nonce-abc"}}

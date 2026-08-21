@@ -1,17 +1,12 @@
 // Mochi server: a closed server refuses a restore before reading the bundle.
 //
-// web_auth_restore parsed the multipart body - up to 2 GiB + 64 MiB - and only
-// then asked whether signups were enabled at all. The check takes no argument
-// and reads one indexed row from settings.db, so every byte of that spool was
-// read for a request the server was always going to refuse. ParseMultipartForm
-// spools to os.TempDir(), which is a tmpfs on a systemd host (32G on yuzu), so
-// the cost was resident memory rather than disk, and the route's rate limit
-// bounds requests per IP but not how many are in flight at once.
+// ParseMultipartForm spools up to 2 GiB + 64 MiB to os.TempDir(), a tmpfs on a
+// systemd host, so the signup check must run before the body is parsed.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

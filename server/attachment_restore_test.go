@@ -1,17 +1,12 @@
 // Mochi server: the restore path exports attachment stores before activation.
-//
-// The startup sweep guarantees export-before-migration by running ahead of the
-// web server. restore_apply is the one path that adds user data to a RUNNING
-// server: a bundle exported before the attachments library migration carries
-// app.db attachment rows, and without an export in place the restored user's
-// first request runs the app migration, finds neither bridge nor export, reads
-// "no rows", and consumes its schema version - stranding the rows in a table
-// the next boot exports to a file nothing will ever read.
+// restore_apply is the one path that adds user data to a running server, so it
+// must export itself: otherwise the first request's migration reads "no rows"
+// and consumes the schema version with the rows still in app.db.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

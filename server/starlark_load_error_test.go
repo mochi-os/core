@@ -1,41 +1,14 @@
 // Mochi server: a file that fails to load says which file, and says it loudly.
 //
-// starlark() loads an app's files in order and, on error, discarded the whole
-// file and logged:
-//
-//	info("Starlark error reading file %v", err)
-//
-// Two problems, and the second is worse than it reads.
-//
-// NAMING. The format interpolates only the error. A syntax or resolve error
-// carries its own position, so the path appeared by luck. An error from a
-// mochi.* call at module level is a bare Go error with no position, and the
-// line read:
-//
-//	Starlark error reading file no app context: mochi.entity.get() no app context
-//
-// The word "file" followed by no file, and the message twice. That is exactly
-// the class #66 created by turning those panics into errors, so it is now the
-// likely one - the operator has nothing to grep for.
-//
-// LEVEL. ExecFile returns nothing usable on error, so EVERY definition in the
-// file is lost - including functions whose def executed before the failing
-// statement, which this file measures. The app then runs with a partial global
-// set and each missing handler reports "unknown function" from somewhere
-// unrelated. Outside dev_reload that partial set is cached by starlark_once for
-// the process lifetime, so fixing the file changes nothing until a restart -
-// and dev_reload defaults to false, while both development instances set
-// reload = true. The failure is therefore transient exactly where it would be
-// noticed and permanent where it would not.
-//
-// Deliberately NOT changed: continue-vs-abort, and whether a failed load should
-// invalidate starlark_once. Both are behaviour changes on the startup path, and
-// partial registration may be intended.
+// An error from a mochi.* call at module level is a bare Go error with no
+// position, so the format must interpolate the path. warn, not info: ExecFile
+// loses every definition in the file, and starlark_once caches that partial set
+// for the process lifetime wherever dev_reload is off.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -75,9 +48,6 @@ func TestLoadErrorNamesTheFileForAResolveError(t *testing.T) {
 	}
 }
 
-// TestLoadErrorNamesTheFileForABuiltinError is the regression. A module-level
-// mochi.* call fails with a bare Go error carrying no position, so before the
-// fix this line named nothing at all.
 func TestLoadErrorNamesTheFileForABuiltinError(t *testing.T) {
 	log_tables_reset(t)
 	defer log_tables_reset(t)
@@ -140,11 +110,9 @@ func TestAnEarlierFileSurvivesALaterFailure(t *testing.T) {
 	}
 }
 
-// TestLoadErrorIsNotRepeatSuppressed is the behavioural half of the level
-// change. info() runs through log_repeat_allow and stops after the threshold;
-// warn() does not. With the format now fixed, every failing file in an app
-// shares one key, so at info the operator would see the first twenty and
-// nothing after - and the twenty-first missing file is as broken as the first.
+// TestLoadErrorIsNotRepeatSuppressed: info() runs through log_repeat_allow and
+// stops after the threshold, warn() does not. Every failing file shares one
+// format key, and the twenty-first missing file is as broken as the first.
 func TestLoadErrorIsNotRepeatSuppressed(t *testing.T) {
 	log_tables_reset(t)
 	defer log_tables_reset(t)

@@ -49,11 +49,8 @@ const (
 	challenge_size_v2     = 32               // hello.Challenge length
 	id_length_maximum     = 64               // maximum Frame.ID / message id length; enforced by envelope_valid
 
-	// Pre-open bounds on /mochi/2/stream. An opener claims the entities it is
-	// about to address - a handful - so anything approaching these is a peer
-	// spending our verifies and our goroutine rather than opening a stream.
-	// Real openers send one claim; the ceiling is generous so a legitimate
-	// multi-entity opener is never the one that trips it.
+	// Pre-open bounds on /mochi/2/stream: a peer that keeps claiming without
+	// opening spends our verifies and a goroutine. Real openers send one claim.
 	stream_claims_maximum = 64               // claim frames accepted before open
 	stream_open_timeout   = 30 * time.Second // whole pre-open phase, cleared after
 
@@ -199,12 +196,9 @@ func protocol2_init() {
 		}
 		zstd_decoder, err = zstd.NewReader(nil,
 			zstd.WithDecoderConcurrency(0),
-			// Bound the DECOMPRESSED size. frame_maximum caps a frame on the
-			// wire, but without this a small, highly compressible frame (a
-			// zstd bomb) expands without limit and exhausts process memory —
-			// remotely, before the claimed entity is ever authenticated. A
-			// compressed frame must not decode to more than an uncompressed
-			// frame is allowed to be, so the same cap applies to the output.
+			// Bound the DECOMPRESSED size: frame_maximum caps the wire frame, but a
+			// small zstd bomb expands without limit and exhausts memory before the
+			// claimed entity is authenticated.
 			zstd.WithDecoderMaxMemory(frame_maximum))
 		if err != nil {
 			panic(fmt.Sprintf("protocol2: zstd decoder init failed: %v", err))
@@ -315,22 +309,10 @@ func frame_decompress(payload []byte, codec byte) ([]byte, error) {
 	return nil, fmt.Errorf("frame: unsupported codec %d", codec)
 }
 
-// claim_signable returns the canonical CBOR bytes signed by an entity
-// for a per-stream claim. Schema is fixed: {v, stream, entity, receiver,
-// protocol} sorted bytewise-lexical per RFC 8949 §4.2. Any change to the
-// schema MUST bump claim_domain.
-//
-// receiver and protocol are what make a claim non-transferable. Signing
-// only the challenge leaves the signature a bearer token for any stream
-// presenting the same bytes: a hostile peer plays receiver to the key
-// holder, hands it a challenge captured from a third party, and relays
-// the answer on to be accepted as that entity.
-//
-// BOTH MUST come from the authenticated libp2p connection and the
-// handler's own protocol constant — never from a wire field. The remote
-// identity is established by the security handshake, which is why an
-// attacker cannot be authenticated as someone else; take it from a frame
-// and it becomes attacker-chosen, and this is worth nothing.
+// claim_signable returns the canonical CBOR signed for a per-stream claim; any
+// schema change MUST bump claim_domain. receiver and protocol must come from
+// the authenticated connection, never a wire field, or the signature is
+// relayable.
 func claim_signable(challenge []byte, entity string, receiver string, protocol string) ([]byte, error) {
 	payload := map[string]any{
 		"v":        claim_domain,
@@ -346,12 +328,9 @@ func claim_signable(challenge []byte, entity string, receiver string, protocol s
 	return out, nil
 }
 
-// claim_sign produces the signature for the given (challenge, entity)
-// pair using the entity's private key. Returns nil if the entity isn't
-// local or its key can't be loaded — caller logs and skips the claim.
-// receiver is the peer this claim is being sent TO, taken from the
-// authenticated connection; protocol is the caller's own protocol
-// constant.
+// claim_sign signs a (challenge, entity) claim for `receiver`. Returns nil when
+// the entity is not local or its key cannot be loaded; the caller skips the
+// claim.
 func claim_sign(entity string, challenge []byte, receiver string, protocol string) []byte {
 	if entity == "" || len(challenge) != challenge_size_v2 || receiver == "" || protocol == "" {
 		return nil
@@ -375,11 +354,10 @@ func claim_sign(entity string, challenge []byte, receiver string, protocol strin
 	return ed25519.Sign(private, signable)
 }
 
-// claim_verify checks an inbound claim. The entity ID IS the base58-
-// encoded ed25519 public key — no directory lookup needed. Returns nil
-// on success, descriptive error on failure (logged by caller).
-// receiver MUST be this host's own peer ID and protocol the handler's
-// own constant: that is what rejects a claim signed for somebody else.
+// claim_verify checks an inbound claim; the entity id IS the base58 ed25519
+// public key, so no directory lookup is needed. receiver must be this host's
+// own peer id and protocol the handler's own constant, or a relayed claim
+// passes.
 func claim_verify(entity string, challenge, signature []byte, receiver string, protocol string) error {
 	if entity == "" {
 		return errors.New("claim: empty entity")
@@ -410,19 +388,9 @@ func claim_verify(entity string, challenge, signature []byte, receiver string, p
 	return nil
 }
 
-// responder_signable returns the canonical CBOR the ANSWERING side signs
-// to prove it holds the entity the opener addressed.
-//
-// Deliberately a separate domain from claim_signable rather than a reuse
-// of it. The two proofs travel in opposite directions over the same
-// protocol constant, and a single domain would make them structurally
-// identical whenever an opener's caps challenge happened to equal a
-// hello challenge it had issued elsewhere - the receiver binding already
-// makes that unexploitable, but a distinct domain makes it impossible
-// rather than merely hard, and costs one constant.
-//
-// Any change to this payload's shape or field set MUST bump
-// responder_domain, exactly as claim_domain governs the claim payload.
+// responder_signable returns the canonical CBOR the ANSWERING side signs to
+// prove it holds the entity the opener addressed. Deliberately a domain of its
+// own; any change to the field set MUST bump responder_domain.
 func responder_signable(challenge []byte, entity string, opener string, protocol string) ([]byte, error) {
 	payload := map[string]any{
 		"v":        responder_domain,
@@ -438,15 +406,9 @@ func responder_signable(challenge []byte, entity string, opener string, protocol
 	return out, nil
 }
 
-// responder_sign proves possession of `entity`'s private key against the
-// opener's challenge. Returns nil when the entity is not local or its key
-// cannot be loaded; the caller answers fail_unproven rather than acking,
-// so an entity whose key is missing fails visibly instead of serving
-// unauthenticated bytes.
-//
-// opener is the peer that opened the stream, taken from the authenticated
-// libp2p connection - that binding is what stops a proof collected on one
-// connection being replayed to a different opener.
+// responder_sign proves possession of `entity`'s key against the opener's
+// challenge. Returns nil when the entity is not local or its key is missing;
+// opener comes from the authenticated connection, which stops proof replay.
 func responder_sign(entity string, challenge []byte, opener string, protocol string) []byte {
 	if entity == "" || len(challenge) != challenge_size_v2 || opener == "" || protocol == "" {
 		return nil
@@ -474,13 +436,9 @@ func responder_sign(entity string, challenge []byte, opener string, protocol str
 	return ed25519.Sign(private, signable)
 }
 
-// responder_verify is the opener's check that the far side holds the
-// entity it addressed. The entity id IS the base58 ed25519 public key, so
-// this needs no directory lookup and no prior relationship - which is
-// what lets it authenticate a publisher this host has never met.
-//
-// opener MUST be this host's own peer id: that is what rejects a proof
-// signed for somebody else's connection.
+// responder_verify is the opener's check that the far side holds the entity it
+// addressed; the entity id IS the base58 ed25519 public key, so no directory
+// lookup is needed. opener MUST be this host's own peer id.
 func responder_verify(entity string, challenge, signature []byte, opener string, protocol string) error {
 	if entity == "" {
 		return errors.New("responder: empty entity")
@@ -525,11 +483,8 @@ func frame_reject_challenge(challenge []byte) error {
 	return nil
 }
 
-// frame_priority_for maps the queue's existing priority constant to the
-// per-frame Priority byte. The bulk/interactive/control split mirrors
-// the queue lane discipline so the receiver knows which tier the
-// message belonged to (currently informational; future ordering work
-// may use it).
+// frame_priority_for maps a queue priority constant to the per-frame Priority
+// byte. Informational on the receiver today; no ordering depends on it.
 func frame_priority_for(queue_priority int) byte {
 	if queue_priority == priority_replay {
 		return frame_priority_control
@@ -537,11 +492,9 @@ func frame_priority_for(queue_priority int) byte {
 	return frame_priority_interactive
 }
 
-// codec_intersect returns the codecs the sender should consider after
-// intersecting its supported list with the receiver's advertised list
-// from hello. Order follows the receiver's preference. zstd is always
-// in the result because both sides MUST decode it (the advertised list
-// is for additional codecs; an empty intersection still yields zstd).
+// codec_intersect returns the codecs both sides support. zstd is always in the
+// result: both sides MUST decode it, so an empty intersection still yields
+// zstd.
 func codec_intersect(sender, receiver []string) []string {
 	have := map[string]bool{}
 	for _, c := range receiver {
@@ -586,13 +539,8 @@ func contains_string(haystack []string, needle string) bool {
 
 // --- Operator-tunable settings ----------------------------------------
 //
-// All /mochi/2 timing and buffering defaults live in the matching
-// `*_default` constants above and in protocol2_sender.go /
-// protocol2_worker.go. The functions below expose those defaults as
-// ini-tunable getters under the [peer] section, so an operator can
-// adjust them via mochi.conf without recompiling. Names match the
-// plan's "peer.*" namespace; unset settings fall back to the
-// compile-time default.
+// Each getter reads a [peer] setting from mochi.conf, falling back to the
+// matching compile-time default.
 
 // peer_window returns the per-peer inflight cap. Local memory bound on
 // the Sender.inflight map; wire-level back-pressure rides on libp2p.
@@ -633,29 +581,14 @@ func peer_worker_inbox() int {
 	return ini_int("peer", "worker_inbox", worker_inbox_default)
 }
 
-// peer_rate is the per-Sender outbound message rate cap in
-// messages/second. Default 0 (unlimited) per claude/plans/protocol2.md
-// Decision points — operators set this only after observing a runaway
-// producer, since the inflight cap (peer_window) is the natural
-// back-pressure mechanism.
+// peer_rate is the per-Sender outbound message rate cap in messages/second.
+// Default 0 (unlimited): the inflight cap (peer_window) is the back-pressure.
 func peer_rate() int { return ini_int("peer", "rate", 0) }
 
-// envelope_valid runs the addressing-level checks shared by every inbound
-// path: the entity a frame claims to be from, the service and event it names,
-// and the length of its id. Content is the handler's business.
-//
-// Shared because the two paths had drifted. id_length_maximum is declared here,
-// beside the Frame it names, and was enforced only in announcement_valid on
-// the pubsub path - so /mochi/2/messages accepted an id and a service of any
-// length and shape. Both become keys in maps that outlive the stream and are
-// chosen by the sending peer: Frame.Service keys app_workers, where a miss
-// does not merely add an entry but starts a goroutine with a buffered inbox
-// and holds it for the worker idle window; Frame.ID keys seen_messages, whose
-// ceiling counts entries on the assumption that an id is id-sized; and an
-// unresolvable service also populates the negative-result resolution cache.
-//
-// Empty is allowed for each - plenty of frames legitimately carry no from,
-// service or id - so this rejects only what is present and malformed.
+// envelope_valid runs the addressing checks shared by every inbound path.
+// Frame.Service and Frame.ID become peer-chosen keys in maps that outlive the
+// stream, so both must be bounded. Empty is allowed; only malformed is
+// rejected.
 func envelope_valid(from, service, event, id string) bool {
 	if from != "" && !valid(from, "entity") {
 		return false

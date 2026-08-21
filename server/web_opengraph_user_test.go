@@ -1,16 +1,11 @@
 // Mochi server: OpenGraph rendering runs as the viewer, on the owner's data.
 //
-// The handler bound `user` to the entity owner unconditionally, so an
-// authenticated stranger reached the app's OpenGraph function wearing the
-// owner's identity - the ambient-ownership trap, in the one place core had
-// not closed it. Who is asking and whose data is read are separate
-// questions; `storage` is what lets them be answered separately, and these
-// tests pin both halves.
-//
+// Who is asking and whose data is read are separate questions; `storage` is
+// what answers the second, and these tests pin both halves.//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -29,10 +24,6 @@ func opengraph_test_users() (*User, *User) {
 		&User{UID: "u-viewer", Username: "viewer@example.com"}
 }
 
-// TestStorageOverridesTheCallerForDatabaseReads is the seam the fix rests on.
-// With `storage` set, the data a call reads is the storage account's however
-// the caller is bound - so the OpenGraph handler no longer has to claim the
-// viewer IS the owner in order to read the owner's entity.
 func TestStorageOverridesTheCallerForDatabaseReads(t *testing.T) {
 	owner, viewer := opengraph_test_users()
 
@@ -87,14 +78,6 @@ func TestStorageAbsentLeavesResolutionUnchanged(t *testing.T) {
 		t.Errorf("with no storage local, reads resolved to %q, want the caller %q", resolved.UID, viewer.UID)
 	}
 }
-
-// The owner-fallback tests that stood here were removed with step 4: they
-// asserted a crawler is run as the owner, which is precisely the substitution
-// that change deletes. Their real content - that an anonymous viewer still
-// reaches the owner's data - is now
-// TestAnonymousCallerStillReachesTheOwnersData in
-// web_anonymous_caller_test.go, asserted through principal_storage rather than
-// through a false caller identity.
 
 // TestOpenGraphDoesNotImpersonateTheOwner is the finding. The handler must
 // bind the real requester, falling back to the owner only when there is no

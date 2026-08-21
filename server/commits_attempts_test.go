@@ -1,21 +1,13 @@
 // Mochi server: the commit log's retry is bounded.
 //
-// commits_trim deletes only fired rows, and nothing counted attempts, so a row
-// whose handler failed was retried on every later commit to that app forever.
-// The cost is not one wasted call: commit_hook_drain takes up to a hundred
-// pending rows per fire, and each one is an av.starlark() build, an s.call and
-// a starlark_sem slot - so a broken handler multiplies the Starlark cost of
-// every write to that app until someone notices.
-//
-// It had not happened on either dev instance when this was written: 1,095
-// app.db files carried a commits table, 3,870 fired rows and zero pending. The
-// budget is for the case that has not occurred rather than one being cleaned
-// up after.
+// commits_trim deletes only fired rows, so without an attempt budget a failed
+// handler is retried - a Starlark build, call and slot each - on every later
+// commit.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

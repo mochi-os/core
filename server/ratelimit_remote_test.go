@@ -190,13 +190,10 @@ func TestRemoteRateLimitClearsRealUse(t *testing.T) {
 	}
 }
 
-// TestRemoteRateLimitClearsUpdateSweep pins the constraint that actually sizes
-// the per-target ceiling. apps.star's update check queries ONE publisher entity
-// once per app in the catalogue, so a cold-cache sweep costs as many calls to a
-// single target as there are apps. Exceeding the budget there does not degrade
-// gracefully: Starlark has no try/except, so the builtin error aborts the action
-// and the updates page 500s. The limit therefore has to clear a catalogue
-// several times larger than today's 27 apps.
+// TestRemoteRateLimitClearsUpdateSweep pins the constraint that sizes the
+// per-target ceiling: a cold-cache update sweep costs one call per catalogue
+// app against one publisher, and a refusal aborts the whole action rather than
+// skipping one app.
 func TestRemoteRateLimitClearsUpdateSweep(t *testing.T) {
 	// Well above today's catalogue, so growth does not quietly walk into the
 	// ceiling. If this fails, the limit was lowered - raise it or batch the

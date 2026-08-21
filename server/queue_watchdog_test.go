@@ -1,17 +1,13 @@
 // Mochi server: queue backlog watchdog regression.
 //
-// The News feed self-loop wedge (2026-07-06 to 2026-07-15) accumulated 1.4M
-// undeliverable pending rows over a week with no direct alert — the WAL
-// watchdog fired as an indirect side effect a week after onset. queue_watchdog
-// warns per (target, service) bucket when rows or attempts say deliveries are
-// not draining, warns across buckets when enough distinct destinations have
-// gone stale or nothing is delivering anywhere, and re-warns at most once per
-// queue_warn_repeat while a condition persists.
+// queue_watchdog warns per (target, service) bucket when rows or attempts say
+// deliveries are not draining, across buckets when destinations go stale or
+// nothing is delivering anywhere, and at most once per queue_warn_repeat.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -67,10 +63,8 @@ func TestQueueWatchdog(t *testing.T) {
 		t.Error("bucket re-warned within queue_warn_repeat")
 	}
 
-	// Age is NOT a per-bucket criterion: one destination holding an old
-	// row is a departed peer, not a fault here, and warned per bucket it
-	// was a daily email for every dead subscriber for the ~6 weeks before
-	// health parked it. Age warns across buckets - see
+	// Age is not a per-bucket criterion: one destination holding an old row is a
+	// departed peer, not a fault here. Breadth warns instead - see
 	// TestQueueWatchdogStaleBreadth.
 	add("stale", "peer-c", "forums", now()-queue_warn_age-10, 0)
 	queue_watchdog()
@@ -94,13 +88,10 @@ func TestQueueWatchdog(t *testing.T) {
 	}
 }
 
-// TestQueueWatchdogClassified — rows the health machinery has already
-// classified are outside the watchdog's scope: parked rows and pending
-// rows for suspended recipients must not count however old they are,
-// while an unclassified recipient's old rows still do. Re-warning about
-// classified rows until the reaper deleted them was ~5 admin emails per
-// day per ghost subscriber (2026-07). Asserted through the stale-target
-// breadth count, since age no longer warns per bucket.
+// TestQueueWatchdogClassified - parked rows and rows for suspended recipients
+// are the health machinery's business and must not count however old; an
+// unclassified recipient's still do. Asserted through the stale-target breadth
+// count.
 func TestQueueWatchdogClassified(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -135,11 +126,9 @@ func TestQueueWatchdogClassified(t *testing.T) {
 	}
 }
 
-// TestQueueWatchdogStaleBreadth — age is a breadth signal. One or two
-// destinations holding an old undelivered row is a departed peer and
-// must not email; queue_warn_stale_targets of them together is a
-// resolution or connectivity fault on this side and must. The re-warn
-// window and recovery clearing behave like the other watchdog signals.
+// TestQueueWatchdogStaleBreadth - one or two stale destinations are departed
+// peers and must not email; queue_warn_stale_targets of them together is a
+// fault on this side and must.
 func TestQueueWatchdogStaleBreadth(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -196,12 +185,9 @@ func TestQueueWatchdogStaleBreadth(t *testing.T) {
 	}
 }
 
-// TestQueueWatchdogSilence — a single stale destination is not evidence
-// of anything while deliveries flow elsewhere, but the same destination
-// with nothing delivered to ANYONE for queue_warn_silence is
-// indistinguishable from this server being off the network, and warns
-// regardless of breadth. A zero delivery stamp (nothing since start) is
-// no evidence either way and must not count as silence.
+// TestQueueWatchdogSilence - a stale destination with nothing delivered to
+// ANYONE for queue_warn_silence warns regardless of breadth. A zero delivery
+// stamp is no evidence and must not count as silence.
 func TestQueueWatchdogSilence(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -305,11 +291,9 @@ func TestQueueWatchdogSuspendedBreadth(t *testing.T) {
 	}
 }
 
-// TestQueueFailParksAtAttemptCap — a row that exhausts queue_park_attempts
-// is parked (status='parked', outside every claim path) instead of being
-// rescheduled forever, and queue_resurrect_peer revives it when its target
-// peer reconnects. The 1.4M-row News wedge ground hourly retries for a week
-// (attempts up to 157) and starved queue.db's WAL checkpoint.
+// TestQueueFailParksAtAttemptCap - a row past queue_park_attempts is parked
+// instead of rescheduled forever, and queue_resurrect_peer revives it on
+// reconnect.
 func TestQueueFailParksAtAttemptCap(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

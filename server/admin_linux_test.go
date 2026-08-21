@@ -132,8 +132,7 @@ func TestSnapshotReapsStaleBackup(t *testing.T) {
 	}
 }
 
-// TestSnapshotReapsStaleLegacySnap covers the compat path: a `.db.snap`
-// from before the 2026-05-27 rename whose live `.db` was deleted should
+// The compat path: a legacy `.db.snap` whose live `.db` was deleted should
 // still be reaped.
 func TestSnapshotReapsStaleLegacySnap(t *testing.T) {
 	tmp := t.TempDir()

@@ -1,20 +1,13 @@
 // Mochi server: mochi.text.valid's pattern is the app's, not core's.
 //
-// valid() falls through to the raw pattern when the name is not a known
-// validator type, and that landed in regex_cached: MustCompile, so "(" panicked
-// out of the builtin, into a process-global map with no ceiling, keyed on
-// whatever the app cared to invent. Measured at ~2KB retained per entry, held
-// for the life of the process - a loop reaches gigabytes and never gives them
-// back, across every user on the server.
-//
-// The raw-regex fallthrough itself stays: system_settings validates most of its
-// values with one, and four app call sites use one too. What changes is where
-// an app's pattern is compiled and how long the result lives.
+// The raw-regex fallthrough stays - system_settings and four app call sites use
+// one - but an app's pattern compiles into the session cache, not the unbounded
+// process-global map, and an uncompilable one is an error rather than a panic.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -33,9 +26,6 @@ func text_valid_call(t *testing.T, thread *sl.Thread, s, match string) (sl.Value
 	return api_text_valid(thread, fn, sl.Tuple{sl.String(s), sl.String(match)}, nil)
 }
 
-// TestTextValidBadPatternIsAnError. "(" used to reach MustCompile and panic out
-// of the builtin; the operator got a stack trace for what is purely an app bug.
-// It is now reported to the author, naming the pattern.
 func TestTextValidBadPatternIsAnError(t *testing.T) {
 	thread := &sl.Thread{}
 	_, err := text_valid_call(t, thread, "x", "(")
@@ -70,9 +60,6 @@ func TestTextValidAppPatternsStayOffTheGlobalCache(t *testing.T) {
 	}
 }
 
-// TestTextValidSessionCacheIsBounded. Within a session the cache is what makes
-// a loop over one pattern cheap, but its key space is still the app's, so it
-// needs a ceiling of its own.
 func TestTextValidSessionCacheIsBounded(t *testing.T) {
 	thread := &sl.Thread{}
 	for i := 0; i < regex_session_maximum+200; i++ {

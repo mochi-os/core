@@ -1,15 +1,9 @@
 // Mochi server: Accept-Encoding is a list with weights, not a string to search.
 //
-// negotiate_encoding tested the header with strings.Contains, which is wrong in
-// both directions. "br;q=0" contains "br", so a client explicitly refusing
-// brotli - how a proxy that cannot pass it through says so - was sent brotli
-// and could not decode the reply. "*" contains neither "br" nor "gzip", so a
-// client accepting every coding was sent an uncompressed response.
-//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

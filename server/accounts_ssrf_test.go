@@ -1,14 +1,11 @@
-// Mochi server: account providers with caller-supplied addresses
-//
-// A notification account names the address the server will contact. That makes
-// every such provider a request the caller can aim, issued from wherever the
-// server sits - so it has to go through url_transport, whose dialer checks the
-// resolved address on every hop, rather than a string test on the URL.
+// Mochi server: account providers with caller-supplied addresses must issue
+// their requests through url_transport, whose dialer checks the resolved
+// address on every hop.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -21,15 +18,9 @@ import (
 	"testing"
 )
 
-// with_private_allowed runs f with the guard off, so a case can show that a
-// destination is reachable but for the guard, and restores it immediately
-// afterwards - t.Cleanup would not, since it fires at the end of the test
-// rather than the end of the block.
-//
-// Idle connections are dropped on both edges. url_transport pools them and the
-// dialer's Control hook only runs on a fresh dial, so a connection opened while
-// the guard was off would otherwise be reused by the very request that is meant
-// to be refused.
+// with_private_allowed runs f with the guard off and restores it immediately;
+// t.Cleanup would fire too late. Idle connections are dropped on both edges
+// because the dialer's Control hook only runs on a fresh dial.
 func with_private_allowed(t *testing.T, f func()) {
 	t.Helper()
 	previous := url_allow_private
@@ -40,13 +31,9 @@ func with_private_allowed(t *testing.T, f func()) {
 	url_transport.CloseIdleConnections()
 }
 
-// private_endpoints_allowed does the same for a whole test, for delivery tests
-// that stand up a stub server on 127.0.0.1 and are exercising the delivery
-// mechanics rather than the guard.
-//
-// They need it explicitly: a blocked request fails, and a test asserting that
-// delivery FAILS (on 410 Gone, say) would keep passing while no longer testing
-// anything - the guard would be refusing before the stub was ever reached.
+// private_endpoints_allowed does the same for a whole test. Delivery tests need
+// it explicitly: with the guard on, a test asserting that delivery fails would
+// pass without ever reaching its stub.
 func private_endpoints_allowed(t *testing.T) {
 	t.Helper()
 	previous := url_allow_private
@@ -156,18 +143,9 @@ func TestAccountFailureCarriesNoDetail(t *testing.T) {
 	}
 }
 
-// TestAccountProvidersUseGuardedTransport — the regression test for the defect
-// itself, and the reason it is worth reading the source: seven call sites each
-// built their own http.Client, five behind a substring test for two literals
-// and two behind nothing at all. A bare client makes exactly the same requests
-// as a guarded one to every destination that is allowed, so nothing observable
-// distinguishes them until someone points one inward.
-//
-// A provider whose address the user supplies must use account_client. The
-// test asserts that presence, not merely the absence of a bare http.Client:
-// webpush-go builds its own bare client when Options.HTTPClient is nil, so a
-// function can omit the guard without ever writing `&http.Client{` itself,
-// and only the positive check sees that.
+// A provider whose address the user supplies must use account_client. Asserted
+// as presence, not absence of `&http.Client{`: webpush-go builds its own bare
+// client when Options.HTTPClient is nil, which only a positive check sees.
 func TestAccountProvidersUseGuardedTransport(t *testing.T) {
 	source, err := os.ReadFile("accounts.go")
 	if err != nil {

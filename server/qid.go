@@ -27,17 +27,10 @@ import (
 )
 
 const (
-	// How long a cached row is served. Each table is also pruned at its own
-	// value, so a row is deleted exactly when it stops being served and the two
-	// numbers cannot drift into "serving rows the prune already removed" or
-	// "keeping rows nothing will read".
-	//
-	// Labels are cached far longer than searches because they are far more
-	// stable: a Wikidata label is a property of one entity and rarely changes,
-	// while a search is a ranking over the whole corpus and moves as entities
-	// are added. Wikimedia's API etiquette also asks clients to cache
-	// aggressively, and every miss costs a round trip paced at one per second
-	// for the whole server.
+	// How long a cached row is served. Each table prunes at its own value, so a
+	// row is deleted exactly when it stops being served. Labels outlast searches:
+	// a label rarely changes, a ranking moves, and every miss is a paced round
+	// trip.
 	qid_lookup_ttl       = 30 * 24 * time.Hour
 	qid_search_ttl       = 7 * 24 * time.Hour
 	qid_search_empty_ttl = time.Hour
@@ -79,11 +72,9 @@ func qid_db() *DB {
 }
 
 // qid_rate_wait paces Wikidata requests at 1/second and reports whether the
-// caller may proceed. It returns false when a 429 backoff window is active so
-// the caller skips the request and returns empty/cached immediately, instead of
-// blocking: a Starlark handler must not sleep out the 40-50s backoff, which
-// stacked on the AI call blew past the 90s watchdog (#35). The 1-request/second
-// spacing still applies to requests that do proceed.
+// caller may proceed. False means a 429 backoff is active: return cached or
+// empty rather than blocking, since a Starlark handler cannot sleep out 40-50s
+// (#35).
 func qid_rate_wait() bool {
 	qid_backoff_lock.Lock()
 	active := time.Now().Before(qid_backoff_until)

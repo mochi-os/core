@@ -46,17 +46,10 @@ func web_compress_middleware(c *gin.Context) {
 	w.close()
 }
 
-// accept_encoding_weights parses an Accept-Encoding header into the weight the
-// client gave each coding, as RFC 9110 section 12.5.3 defines it: a
-// comma-separated list, each element optionally carrying ";q=<value>", with an
-// absent q meaning 1.0 and a q of 0 meaning "not acceptable".
-//
-// The "*" entry stands for every coding the header does not name, so it is kept
-// as an ordinary key and consulted only when the specific one is absent.
-//
-// Returned weights are hundredths, so a comparison is integer: q is at most
-// three decimal places, and 0.001 apart is not a distinction worth carrying
-// float rounding for.
+// accept_encoding_weights parses an Accept-Encoding header into per-coding
+// weights (RFC 9110 12.5.3): absent q is 1.0, q=0 is a refusal, "*" is kept as
+// an ordinary key for codings the header does not name. Weights are hundredths,
+// so integer.
 func accept_encoding_weights(accept string) map[string]int {
 	weights := map[string]int{}
 	for _, element := range strings.Split(strings.ToLower(accept), ",") {
@@ -72,11 +65,8 @@ func accept_encoding_weights(accept string) map[string]int {
 				continue
 			}
 			weight = 0
-			// Parsed by hand rather than through ParseFloat: the grammar is a
-			// digit, optionally a point and up to three more digits, and an
-			// unparseable value should read as an absent q rather than a zero,
-			// since treating a malformed header as a refusal would silently
-			// stop compressing for that client.
+			// An unparseable q reads as an absent q, not a refusal - treating a
+			// malformed header as q=0 would silently stop compressing for that client.
 			value := strings.TrimPrefix(parameter, "q=")
 			if number, err := strconv.ParseFloat(value, 64); err == nil {
 				weight = int(number*100 + 0.5)
@@ -103,20 +93,9 @@ func accept_encoding_allows(weights map[string]int, coding string) int {
 	return 0
 }
 
-// negotiate_encoding picks brotli or gzip based on the server config and
-// what the client accepts. Returns "" when no compression should be used.
-//
-// The header is parsed rather than searched for substrings. strings.Contains
-// answered the wrong question in both directions: "br;q=0" contains "br", so a
-// client explicitly refusing brotli - which is how a proxy that cannot pass it
-// through says so - was sent brotli anyway and could not decode the reply,
-// while "*" contains neither token, so a client accepting everything got an
-// uncompressed response.
-//
-// In auto the client's own preference decides between the two, since parsing q
-// at all makes the ordering free. The explicit modes name one coding, so they
-// send it or nothing: an operator who set web.compress to br asked for br, not
-// for a fallback they did not choose.
+// negotiate_encoding picks brotli or gzip from the server config and the
+// client's weights, or "" for none. In auto the client's preference decides;
+// the explicit modes send their named coding or nothing.
 func negotiate_encoding(accept string) string {
 	weights := accept_encoding_weights(accept)
 	brotli := accept_encoding_allows(weights, "br")
@@ -153,21 +132,17 @@ type compress_writer struct {
 	written  bool
 }
 
-// Written reports whether any payload has been handed to this writer, even
-// when compression has buffered it inside the encoder and not yet flushed to
-// the underlying gin.ResponseWriter. Without this override, action handlers
-// (e.g. web.go's "if !c.Writer.Written()" check) treat a buffered a.error()
-// response as "nothing written" and overwrite its status with 200.
+// Written reports whether any payload reached this writer, including bytes
+// still buffered inside the encoder. Without it, web.go's !c.Writer.Written()
+// check overwrites a buffered a.error() status with 200.
 func (w *compress_writer) Written() bool {
 	return w.written || w.ResponseWriter.Written()
 }
 
-// decide sets up compression headers based on Content-Type. Called from
-// both WriteHeader (so HEAD responses get correct headers) and Write
-// (so Gin render flows, which set Content-Type after c.Status, work).
-// No-op if Content-Type is not yet set — caller will retry.
-// The underlying writer is created lazily on first Write so HEAD
-// responses don't emit an empty-stream envelope.
+// decide sets the compression headers once Content-Type is known; it is a no-op
+// until then and the caller retries. Called from both WriteHeader and Write.
+// The underlying writer is created on first Write so HEAD emits no empty
+// stream.
 func (w *compress_writer) decide() {
 	if w.decided {
 		return

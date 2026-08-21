@@ -1,14 +1,13 @@
 // Mochi server: optional directories.ensure mkdir/chown + privilege drop.
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// When [directories] ensure = true (default off), the server starts as root,
-// creates and chowns cache/data/run dirs to the configured uid/gid, then
-// drops privileges via Setgid/Setuid before serving any request. Used in
-// the Docker image; left disabled in deb/rpm where systemd already starts
-// the process as the mochi user.
+// With [directories] ensure = true (default off) the server starts as root,
+// creates and chowns the cache/data/run directories, then drops to the
+// configured uid/gid before serving. Used by the Docker image; deb/rpm let
+// systemd start as the mochi user.
 
 //go:build linux
 
@@ -48,9 +47,8 @@ func directories_ensure() error {
 		warn("directories.ensure: chown %s: %v", data_dir, err)
 	}
 
-	// Order matters: setgid first (while still root), then setuid drops the
-	// remaining privilege. After setuid the process can no longer regain
-	// root, so any later code runs as the unprivileged user.
+	// setgid first, while still root: after setuid the process cannot regain root
+	// and the setgid would fail.
 	if err := syscall.Setgid(gid); err != nil {
 		return fmt.Errorf("setgid(%d): %w", gid, err)
 	}

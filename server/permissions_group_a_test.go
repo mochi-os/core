@@ -18,10 +18,8 @@ import (
 )
 
 // TestEntityReadersNeedAPermission. entity.owned enumerates every object the
-// user owns across every app with no argument at all - the disclosure
-// mochi.group.list is gated to prevent, in that function's own words - and
-// entity.get hands over the data blob with it. info and name leak the same
-// shape for any local entity.
+// user owns across every app with no argument at all, and entity.get hands over
+// the data blob; info leaks the same shape for any local entity.
 func TestEntityReadersNeedAPermission(t *testing.T) {
 	cleanup := create_test_routing_env(t)
 	defer cleanup()
@@ -54,9 +52,8 @@ func TestEntityReadersNeedAPermission(t *testing.T) {
 		})
 	}
 
-	// Granted, the call gets past the permission and on to the query. The test
-	// environment has no entities table, so it fails there instead - which is
-	// the point: the refusal is no longer the permission.
+	// Granted, the call fails on the missing entities table instead - the point
+	// being that the refusal is no longer the permission.
 	db := db_user(user, "user")
 	db.permissions_setup()
 	db.permissions_upsert(app.id, "entity/read", "", 1)
@@ -68,12 +65,9 @@ func TestEntityReadersNeedAPermission(t *testing.T) {
 }
 
 // TestEntityNameStaysUngated. name resolves one display string for an id the
-// caller already holds, and entity ids are unguessable public keys - the
-// exemption mochi.group.get relies on. It is also the only one of the four an
-// inbound P2P handler reaches: comptroller calls it from
-// event_staff_accounts_list and, not being a default app, has no way to hold a
-// grant at all. Gating it took comptroller's staff endpoints down
-// with a 500 on 2026-08-15.
+// caller already holds, and entity ids are unguessable. It is also the only one
+// an inbound P2P handler reaches - comptroller is not a default app and cannot
+// hold a grant.
 func TestEntityNameStaysUngated(t *testing.T) {
 	source, err := os.ReadFile("entities.go")
 	if err != nil {
@@ -108,11 +102,8 @@ func TestEntityReadIsStandard(t *testing.T) {
 }
 
 // TestAccessCheckNeedsAPermission. The other seven mochi.access.* builtins
-// touch only the calling app's own table. check is different: it resolves the
-// subject's role out of core's users.db, so an app that writes
-// allow("#administrator", ...) into its own table can then ask, for any
-// identity it holds, whether that identity is a local account and an
-// administrator - which accounts/read otherwise gates.
+// touch only the app's own table; check resolves the subject's role out of
+// core's users.db, which accounts/read otherwise gates.
 func TestAccessCheckNeedsAPermission(t *testing.T) {
 	cleanup := create_test_routing_env(t)
 	defer cleanup()
@@ -144,22 +135,11 @@ func TestAccessCheckNeedsAPermission(t *testing.T) {
 	}
 }
 
-// TestQidReachesOnlyTheFixedEndpoint. Both APIs used to require the
-// url:www.wikidata.org grant, on the reasoning that every other outbound call
-// in core requires one. That was consistency with a rule rather than the rule:
-// the url: grant answers WHICH HOST an app may reach, and core answers that
-// here at compile time - the app supplies a QID matching ^Q[0-9]+$, a language
-// tag, or a search term, and every one of them becomes a query parameter on a
-// constant endpoint.
-//
-// The grant was also strictly worse than nothing, because url:<domain> is one
-// permission string shared with mochi.url.* and mochi.rss: an app granted it so
-// that qid.lookup would work could then make arbitrary requests to any path on
-// wikidata.org. Requiring it widened every legitimate caller.
-//
-// This is the property that decision rests on, so it is the property to pin. If
-// the endpoint ever becomes app-supplied the reasoning collapses and the gate
-// has to come back.
+// TestQidReachesOnlyTheFixedEndpoint. No url: grant, because the endpoint is a
+// constant and the app supplies only query parameters - and url:<domain> is
+// shared with mochi.url.*, so requiring it would let the app reach any path on
+// the host. If the endpoint ever becomes app-supplied, the gate has to come
+// back.
 func TestQidReachesOnlyTheFixedEndpoint(t *testing.T) {
 	if !strings.HasPrefix(qid_endpoint, "https://") {
 		t.Errorf("qid_endpoint = %q, want an https URL", qid_endpoint)
@@ -216,12 +196,9 @@ func TestQidLanguageIsValidated(t *testing.T) {
 	}
 }
 
-// TestPeerConnectUrlCannotReachAnArbitraryPath. The app supplies this string
-// and it used to be concatenated onto "/_/p2p/info": a trailing "?x=" carried
-// a path and query through, and a trailing "#" discarded the suffix, so either
-// way the app chose the GET. Rebuilding from scheme and host is what closes it,
-// and it is why this needs no url: grant - unlike the sibling APIs, the host
-// here is a Mochi server the user picked, not a domain known in advance.
+// TestPeerConnectUrlCannotReachAnArbitraryPath. The URL is rebuilt from scheme
+// and host rather than concatenated, or a trailing "?x=" or "#" lets the app
+// choose the GET. No url: grant - the host is a Mochi server the user picked.
 func TestPeerConnectUrlCannotReachAnArbitraryPath(t *testing.T) {
 	source, err := os.ReadFile("remote.go")
 	if err != nil {
@@ -243,10 +220,8 @@ func TestPeerConnectUrlCannotReachAnArbitraryPath(t *testing.T) {
 }
 
 // TestAppSignaturesAreDomainSeparated. Core signs export manifests and pubsub
-// frames with the same entity keys and no tag, and an app can emit those exact
-// bytes - so without separation an app-minted signature is indistinguishable
-// from a core-issued one. The tag goes on the APP side: tagging what core signs
-// would change what remote peers verify, which is a wire break.
+// frames with the same entity keys and no tag, so app signatures carry the tag.
+// Tagging what core signs changes what remote peers verify: a wire break.
 func TestAppSignaturesAreDomainSeparated(t *testing.T) {
 	cleanup := create_test_routing_env(t)
 	defer cleanup()
@@ -308,12 +283,9 @@ func TestAppSignaturesAreDomainSeparated(t *testing.T) {
 	}
 }
 
-// TestStreamWriterPreservesItsInterfaces. streams.go type-asserts on s.writer
-// in three places - close_write reaches for CloseWrite, and write and write_raw
-// both reach for SetWriteDeadline. A metering wrapper that did not carry those
-// across would fail the assertions silently: half-close would become a full
-// close, and every write deadline would vanish. That is the hazard that makes
-// this wrapper worth a test rather than a glance.
+// TestStreamWriterPreservesItsInterfaces. streams.go type-asserts s.writer for
+// CloseWrite and SetWriteDeadline. A wrapper that drops them fails silently:
+// half-close becomes a full close and write deadlines vanish.
 func TestStreamWriterPreservesItsInterfaces(t *testing.T) {
 	underlying := &stream_writer_probe{}
 	w := &stream_writer{inner: underlying, app: "prober"}

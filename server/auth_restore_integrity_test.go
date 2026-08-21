@@ -1,13 +1,11 @@
 // restore_integrity_guard quick_checks every *.db in a user-supplied restore
-// bundle before it is swapped into place. The manifest file-hash is self-attested
-// (the user signs their own bundle), so it can't prove a DB is sound; without this
-// guard a corrupt or malicious sqlite would be restored and only caught later by the
-// runtime quarantine sweep. Threat-model #95, claude/plans/replication-threat-model.md.
+// bundle before it is swapped into place. The manifest file-hash is
+// self-attested, so it cannot prove a DB is sound.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

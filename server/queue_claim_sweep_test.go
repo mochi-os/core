@@ -1,23 +1,12 @@
 // Mochi server: the stuck-sending safety net measures how long a row has been
-// claimed, not how long ago it was enqueued.
-//
-// queue.created is the enqueue time and is never rewritten - the retry path
-// bumps attempts and next_retry and leaves it - so `status='sending' AND
-// created < now()-60` was already true for any row that had ever been retried,
-// which is every row on a flaky link, the exact population the net exists for.
-// It swept them back to pending the instant they were claimed, while the
-// sender still held them. queue_manager loops straight back into the sweep
-// whenever it acted on a row rather than waiting for its tick, so on a busy
-// queue that fired continuously.
-//
-// The other line in that function requeued status='sent'. Nothing in the
-// server has ever set 'sent', so it matched nothing, for ever; it is gone.
-// (#88 covers the surviving count in queue_drain.)
+// claimed, not how long ago it was enqueued. queue.created is the enqueue time
+// and is never rewritten, so keying on it swept live rows away from their
+// sender.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -155,11 +144,8 @@ func TestSweepIsKeyedOnClaimed(t *testing.T) {
 		t.Error("the dead status='sent' requeue is back; nothing in the server sets that status, so it matches nothing")
 	}
 
-	// The whole file, not just this function. The first removal scoped its
-	// gate to queue_check_ack_timeout and left the identical count in
-	// queue_drain, which then went on asserting a drain it never performed
-	// for another three months. A status the server never writes is wrong
-	// everywhere, so check everywhere.
+	// A status the server never writes is wrong everywhere, so check the whole
+	// file, not just this function.
 	for number, line := range strings.Split(text, "\n") {
 		if !strings.Contains(line, "'sent'") {
 			continue

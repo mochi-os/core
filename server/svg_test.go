@@ -52,10 +52,8 @@ func TestContentTypeBase(t *testing.T) {
 	}
 }
 
-// TestSvgSanitizeStripsScripts checks the best-effort sanitizer removes the
-// obvious dangerous constructs, including the self-closing <script/> that a "/"
-// in an attribute value used to smuggle past. The Content-Security-Policy on
-// the SVG response is the real guarantee; this only covers the sanitizer layer.
+// TestSvgSanitizeStripsScripts covers the best-effort sanitizer layer only. The
+// Content-Security-Policy on the SVG response is the real guarantee.
 func TestSvgSanitizeStripsScripts(t *testing.T) {
 	stripped := []struct {
 		name  string

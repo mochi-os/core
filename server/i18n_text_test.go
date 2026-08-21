@@ -1,16 +1,12 @@
 // Mochi server: a plain-text error body is user-facing text too.
 //
-// check-i18n-server.py greps c.JSON, so every route answering with c.String
-// was invisible to it - which is how "Shell unavailable", "Missing repository"
-// and "File not found" stayed English long after the rest of core was
-// translated. respond_error's JSON body is right for an API caller and wrong to
-// render in a browser window, so these keep their shape through respond_text
-// and gain only a language.
+// check-i18n-server.py greps c.JSON, so a route answering with c.String is
+// invisible to it; respond_text is what gives those bodies a language.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -160,10 +156,8 @@ func TestGateSeesPlainTextBodies(t *testing.T) {
 	}
 }
 
-// TestGitProtocolIsMarkedMachineFacing. Git prints its own message for most
-// failures and discards the body, and a git client carries no Mochi session to
-// resolve a language against - so these stay English by decision, recorded
-// where a reader will find it rather than left looking like an oversight.
+// TestGitProtocolIsMarkedMachineFacing. Git responses stay English by decision:
+// a git client carries no Mochi session to resolve a language against.
 func TestGitProtocolIsMarkedMachineFacing(t *testing.T) {
 	body, err := os.ReadFile("git.go")
 	if err != nil {

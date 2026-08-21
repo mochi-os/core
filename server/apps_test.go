@@ -846,9 +846,6 @@ func TestStarlarkAPITrackFunctions(t *testing.T) {
 		t.Fatalf("api_app_track_set failed: %v", err)
 	}
 
-	// List tracks — single-getter (mochi.app.track.get) was removed in
-	// 144fea8 in favour of the listing form, so we verify by reading
-	// the listed track entry.
 	result, err := api_app_track_list(thread, nil, sl.Tuple{sl.String("test-app")}, nil)
 	if err != nil {
 		t.Fatalf("api_app_track_list failed: %v", err)
@@ -1082,12 +1079,8 @@ func TestAppForServiceForResolution(t *testing.T) {
 	}
 }
 
-// TestAppForServiceInternalFastPath verifies that core internal services
-// (directory, peers) resolve directly to their built-in
-// handler — ahead of, and immune to, user/system bindings — so a
-// user-installed app cannot shadow a core service by declaring its name,
-// and so core P2P traffic never triggers the O(apps) fallback scan. It
-// also confirms the fast path leaves ordinary service resolution intact.
+// TestAppForServiceInternalFastPath: core internal services resolve to their
+// built-in handler ahead of, and immune to, user and system bindings.
 func TestAppForServiceInternalFastPath(t *testing.T) {
 	cleanup := create_test_routing_env(t)
 	defer cleanup()
@@ -1127,11 +1120,6 @@ func TestAppForServiceInternalFastPath(t *testing.T) {
 	}
 }
 
-// TestResolutionCacheInvalidation verifies the version-resolution cache
-// serves correct results across the writes that must invalidate it: a
-// system-default change and a per-user preference change are both
-// reflected immediately, and the anonymous and per-user keys stay
-// independent.
 func TestResolutionCacheInvalidation(t *testing.T) {
 	cleanup := create_test_routing_env(t)
 	defer cleanup()
@@ -1232,11 +1220,6 @@ func TestAppForPathForResolution(t *testing.T) {
 	}
 }
 
-// TestResolutionCachePathClass verifies the path and class resolution
-// caches invalidate when a binding is changed: re-binding the same path
-// or class to a different app must be reflected immediately (not served
-// stale from cache), and the anonymous and per-user keys stay
-// independent.
 func TestResolutionCachePathClass(t *testing.T) {
 	cleanup := create_test_routing_env(t)
 	defer cleanup()

@@ -19,46 +19,23 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 )
 
-// Wire content keys for broadcast metadata riding alongside the app's own
-// payload fields in an event's content map. Underscore-prefixed so an app
-// payload field named "key" or "sequence" can't collide. Shared constants
-// because the sender (api_broadcast_send, broadcast_resync replay) and the
-// receiver (events.go gap detection) MUST agree: a 2026-05-26 table-rename
-// find/replace turned the sender's "_sequence" into "sequence" and silently
-// disabled all sequencing for six weeks — with these constants that class
-// of divergence no longer compiles.
+// Wire content keys for broadcast metadata riding alongside an app's own
+// payload fields. Underscore-prefixed so an app field cannot collide; shared
+// constants so the sender and the receiver's gap detection cannot diverge.
 const (
 	broadcast_content_key      = "_key"
 	broadcast_content_sequence = "_sequence"
 	broadcast_content_exclude  = "_exclude"
 )
 
-// Ceiling on one broadcast's recipient list. A call fans out one queued
-// message per subscriber, so an uncapped list is an uncapped write to
-// queue.db - the shape that took instance 1's queue to SQLite's 1GB limit
-// and panicked (see send_peer in messages.go). Well above any real
-// subscriber count.
+// Ceiling on one broadcast's recipient list: each subscriber costs one queue.db
+// row, and an uncapped list has taken queue.db to SQLite's 1GB limit. Well
+// above any real subscriber count.
 const broadcast_recipients_maximum = 10000
 
-// broadcast_skip_for reports whether a sequenced broadcast event must be
-// acknowledged WITHOUT running the app handler at this receiver. Two cases:
-//
-//   - The receiving user owns the `from` entity: their DB is where the
-//     event originated, and running a subscriber-side handler against the
-//     canonical copy destroys it — a resync-replayed post/edit ran feeds'
-//     attachment clear+store on the owner and deleted its files from disk
-//     (2026-07-15). Holds for every broadcast app because app DBs are
-//     per-user: for chat, `from` is the member identity, and even two
-//     identities of one user share one DB, so dropping the echo is right.
-//
-//   - The recipient is the excluded actor named in _exclude: they already
-//     applied their own action locally. Exclusion used to skip the send,
-//     which left a permanent hole at that sequence in their stream —
-//     resync, blind to the exclusion, then redelivered the event anyway.
-//
-// Applies only to sequenced broadcasts (the caller is inside the
-// _key/_sequence wrapper); plain direct events may have legitimate
-// self-sends.
+// broadcast_skip_for reports whether a sequenced broadcast must be acknowledged
+// without running the app handler: the receiver owns `from` (their DB is the
+// canonical copy a subscriber handler would destroy), or is the excluded actor.
 func broadcast_skip_for(user *User, from, to string, content map[string]any) bool {
 	if owner := user_owning_entity(from); owner != nil && user != nil && owner.UID == user.UID {
 		return true
@@ -70,16 +47,8 @@ func broadcast_skip_for(user *User, from, to string, content map[string]any) boo
 }
 
 // broadcast_inbound_class classifies an inbound sequenced event against the
-// receiver's stream watermark. "apply" covers three cases: the in-order next
-// event (bseq == last+1), a fresh stream starting at 1, and ANCHOR ADOPTION —
-// last == 0 with bseq > 1 means this receiver has never applied a sequenced
-// event for the stream (legacy pre-sequencing stream, rebuilt app.db, or a
-// subscriber added mid-stream). Treating that first arrival as a gap would
-// wedge the stream forever: resync replays `sequence > 0` from a log whose
-// early rows are age/ack-trimmed, so the replay can never reach seq 1 and
-// nothing ever applies. Adopting the event as the anchor loses nothing the
-// pre-sequencing behaviour had (history is the app's own catch-up problem),
-// and gaps after the anchor heal via the normal buffer + resync machinery.
+// receiver's watermark. last == 0 adopts the first event as anchor at any
+// sequence - resync cannot reach past the sender's log trim, so a gap wedges.
 func broadcast_inbound_class(last, bseq int64) string {
 	if bseq <= last {
 		return "duplicate"
@@ -90,30 +59,15 @@ func broadcast_inbound_class(last, bseq int64) string {
 	return "apply"
 }
 
-// broadcast_stall_age is how long a stream may keep gapping on the same
-// received watermark before it warns: a healing stream's watermark
-// advances between gap events as resync replies land, so an unmoved
-// watermark across hours of gap events means resync is not working.
-// The News feed wedge (2026-07-06 to 2026-07-15) spent 9 days in
-// exactly that state with no signal. var (not const) so tests can
-// lower it. broadcast_stall_repeat is the re-warn cadence while the
-// stall persists.
+// broadcast_stall_age is how long a stream may gap on an unmoved watermark
+// before warning; a healing stream's advances as resync replies land.
+// broadcast_stall_repeat is the re-warn cadence. var so tests can lower them.
 var broadcast_stall_age int64 = 6 * 3600
 var broadcast_stall_repeat int64 = 86400
 
-// broadcast_stall_maximum bounds the tracking map, and broadcast_stall_idle
-// drops an entry nothing has re-noted for that long.
-//
-// Both exist because the map key carries the broadcast key, which arrives in
-// an inbound event's content with nothing signing it. The gap branch notes a
-// stall before any app handler runs, so a peer inventing a key per event grew
-// this map for the process lifetime. The ceiling is what actually bounds
-// memory; the idle sweep is hygiene for keys that are simply abandoned.
-//
-// A genuinely stalled stream is re-noted by every arrival that gaps on it -
-// the 2026-07 News feed wedge gapped continuously for 9 days - so an hour of
-// silence means no diagnostic is being lost. Ten thousand is far above any
-// real population: a stream appears here only while it is actively gapping.
+// broadcast_stall_maximum bounds the tracking map; broadcast_stall_idle drops
+// entries nothing re-notes for that long. The key is unsigned and noted before
+// any app handler runs, so an invented-key peer would grow the map unbounded.
 const broadcast_stall_maximum = 10000
 const broadcast_stall_idle = int64(3600)
 
@@ -196,20 +150,9 @@ func broadcast_stall_sweep() {
 	}
 }
 
-// ErrBroadcastPendingFull signals the receiver's per-stream pending
-// buffer was full and a gapped event could not be stored. The sender
-// must NOT drop the row: this is transient backpressure that clears
-// as resync drains the buffer. Without the signal the receiver would
-// ACK silently on overflow and the event would be lost - the sender
-// deletes the queue row on ACK, and the receiver would never see that
-// seq again unless a later resync round happened to walk it.
-//
-// worker_failure_reason checks this sentinel and answers
-// fail_transient. It is checked rather than left to that function's
-// catch-all: retry-not-drop is the whole point of returning an error
-// here, and inheriting it from a default means a later prefix rule
-// matching "pending buffer full", or a reworded fmt.Errorf, flips the
-// behaviour to drop with nothing to notice.
+// ErrBroadcastPendingFull signals a full receiver pending buffer: transient
+// backpressure the sender must retry, never drop (it deletes the queue row on
+// ACK). worker_failure_reason matches the sentinel, so a reword cannot flip it.
 var ErrBroadcastPendingFull = errors.New("broadcast pending buffer full")
 
 // mochi.broadcast.* — sequenced broadcast with a durable log per
@@ -272,15 +215,9 @@ func broadcast_received_table_create(db *DB) {
 	}
 }
 
-// broadcast_log_table_create creates the log table for an app DB. Called
-// eagerly from db_app open and defensively from the append/replay paths.
-//
-// Apps that adopt mochi.broadcast.send after their per-app DB
-// already has data don't get a retroactive log for pre-upgrade
-// events (claude/plans/broadcast.md: "No backfill on migration").
-// Subscribers reaching for those older sequences fall back to the
-// per-app request_resync helper, which pulls a fresh schema dump
-// from the owner instead of a per-op replay.
+// broadcast_log_table_create creates the log table for an app DB. Called from
+// db_app open and defensively from the append/replay paths. No backfill: an app
+// adopting broadcast late leaves subscribers to the per-app request_resync.
 func broadcast_log_table_create(db *DB) {
 	db.exec("create table if not exists log (key text not null, peer text not null, sequence integer not null, event text not null, data text not null, created integer not null, primary key (key, peer, sequence))")
 	db.exec("create index if not exists log_created on log(created)")
@@ -294,31 +231,15 @@ func broadcast_subscribed_table_create(db *DB) {
 	db.exec("create table if not exists subscribed (key text not null, peer text not null, subscriber text not null, updated integer not null default 0, primary key (key, peer, subscriber))")
 }
 
-// A subscription record expires on the same clock as the hard log cap. The
-// binding rule is that the gate must never refuse a replay the log can still
-// serve: an ack floor pins log rows out to broadcast_log_age_maximum, so a
-// subscriber quiet for less than that may still have rows waiting, and a
-// shorter window would turn a returning laggard into a wedge.
-//
-// This is garbage collection, not revocation. A removed subscriber keeps a
-// live record until it expires, and the log is a rolling window, so they could
-// replay events created after their removal for as long as the record lasts.
-// mochi.broadcast.subscriber.remove is what actually revokes; the expiry only
-// stops rows accumulating for members who have genuinely gone.
+// A subscription record expires on the same clock as the hard log cap: the gate
+// must never refuse a replay the log can still serve. This is garbage
+// collection, not revocation - subscriber.remove is what revokes.
 const broadcast_subscribed_age = broadcast_log_age_maximum
 
-// broadcast_subscribed_record notes that this host fanned out to each of
-// `subscribers` on (key, peer), and drops records past the expiry.
-//
-// The set is a UNION over sends, never a replacement: apps legitimately send to
-// a partial list - every chat call site excludes the sender, and the leave /
-// member-remove / member-add sites exclude the affected member - so replacing
-// would evict a member who simply was not a recipient of the latest event, and
-// then refuse them a resync.
-// How stale a record may get before a send refreshes it. Without this every
-// send rewrote a row per recipient, doubling the write cost of a fan-out - a
-// feed with ten thousand subscribers paid ten thousand upserts per post. A day
-// is far inside the expiry, so an actively-served subscriber never lapses.
+// broadcast_subscribed_record unions `subscribers` into the (key, peer) record
+// set and drops records past the expiry. Union, never replacement: apps
+// legitimately send to a partial list, so replacing would refuse a resync to a
+// member merely left out. broadcast_subscribed_refresh throttles the rewrites.
 const broadcast_subscribed_refresh = 86400
 
 func broadcast_subscribed_record(db *DB, key, peer string, subscribers []string) {
@@ -339,11 +260,8 @@ func broadcast_subscribed_record(db *DB, key, peer string, subscribers []string)
 	}
 
 	// Marker row, subscriber "": records that this stream HAS a known set,
-	// separately from who is in it. The gate keys "is this stream gated" on
-	// the marker alone, so a subscriber recorded by broadcast_subscribed_add
-	// before the stream's first send cannot gate it early and lock out members
-	// nobody has recorded yet. An empty subscriber is refused by the gate, so
-	// the marker never grants access itself.
+	// separately from who is in it, so a member recorded before the stream's first
+	// send cannot gate it early. The gate refuses an empty subscriber.
 	if !fresh[""] {
 		db.exec("insert into subscribed (key, peer, subscriber, updated) values (?, ?, '', ?) on conflict(key, peer, subscriber) do update set updated = excluded.updated", key, peer, now)
 	}
@@ -356,18 +274,10 @@ func broadcast_subscribed_record(db *DB, key, peer string, subscribers []string)
 	db.exec("delete from subscribed where key=? and peer=? and updated < ?", key, peer, now-broadcast_subscribed_age)
 }
 
-// broadcast_subscribed_add records a subscriber without sending to them.
-//
-// Membership is otherwise only learned from a fan-out, which misses anyone a
-// send deliberately excludes: chat's member/add broadcast goes to the EXISTING
-// members, so the member being added is absent from the very event that admits
-// them. That send still marks the stream gated, so without this the new member
-// is refused a resync until some later send happens to include them - and a
-// quiet stream leaves them stuck, which is worse than the exposure the gate
-// closes.
-//
-// Deliberately does NOT write the marker: a stream with no sends yet must stay
-// fail-open, or adding one member would lock out every member recorded nowhere.
+// broadcast_subscribed_add records a subscriber without sending to them: a
+// member/add broadcast goes to the EXISTING members, so the joiner is absent
+// from the event that admits them and would be refused a resync. Deliberately
+// does not write the marker, so a stream with no sends yet stays fail-open.
 func broadcast_subscribed_add(db *DB, key, peer, subscriber string) bool {
 	if key == "" || peer == "" || subscriber == "" {
 		return false
@@ -378,19 +288,10 @@ func broadcast_subscribed_add(db *DB, key, peer, subscriber string) bool {
 	return !existed
 }
 
-// broadcast_subscribed_allowed reports whether `subscriber` may read the
-// (key, peer) stream.
-//
-// Fails OPEN until this host has fanned the stream out at least once, which is
-// what the marker row records. That makes the gate deployable without a flag
-// day: on an upgraded server every existing stream starts unmarked, and
-// refusing them would wedge every subscriber at once - the failure mode that
-// ground the News feed for nine days in 2026-07. A stream becomes gated the
-// moment it next sends, so the exposure closes on its own as traffic flows.
-//
-// Keyed on the marker rather than on "any row exists" so that
-// broadcast_subscribed_add can record a member of a stream that has not sent
-// yet without gating it against everyone else.
+// broadcast_subscribed_allowed reports whether `subscriber` may read the (key,
+// peer) stream. Fails OPEN until this host has fanned the stream out once
+// - refusing every unmarked stream on an upgraded server would wedge them all.
+// Keyed on the marker row, not on any row existing.
 func broadcast_subscribed_allowed(db *DB, key, peer, subscriber string) bool {
 	if subscriber == "" {
 		return false
@@ -406,17 +307,10 @@ func broadcast_subscribed_allowed(db *DB, key, peer, subscriber string) bool {
 	return allowed
 }
 
-// broadcast_next_local allocates and returns the next outbound sequence
-// number on the given DB for (key, peer). Per-(key, peer) PK gives each peer
-// its own sequence space.
-//
-// Atomic via RETURNING. The previous UPSERT-then-SELECT pair raced
-// when two goroutines hit the same (key, peer) concurrently: both
-// SELECTs read the higher of the two interleaved UPSERTs, emit
-// duplicate sequences, fail UNIQUE on the matching log INSERT. See
-// wasabi 2026-05-24..26 event_ai_tag panics (468 occurrences over
-// ~48h). RETURNING reports the post-UPSERT value as part of the same
-// atomic statement, so each goroutine sees its own allocation.
+// broadcast_next_local allocates the next outbound sequence for (key, peer) on
+// the given DB. Atomic via RETURNING: an UPSERT-then-SELECT pair lets two
+// concurrent callers read the same value, emit duplicate sequences, and fail
+// UNIQUE on the matching log INSERT.
 func broadcast_next_local(db *DB, key, peer string) int64 {
 	broadcast_sequence_table_create(db)
 	const allocate = "insert into sequence (key, peer, last) values (?, ?, 1) on conflict(key, peer) do update set last = sequence.last + 1 returning last"
@@ -437,11 +331,9 @@ func broadcast_received_get(db *DB, sender, key string) int64 {
 }
 
 // broadcast_seen_get returns the host-local time of the most recent applied
-// broadcast for key across all senders - the idle-resync (#165) gate. Reads
-// max(seen) ignoring sender, so paired owners (several (peer, key) rows) and
-// owner host-migration (new peer, same key) need no special handling. 0 when
-// the table or the seen column is absent (pre-migration db), which reads as
-// "very stale" and triggers one re-establish on first access after upgrade.
+// broadcast for key, max over senders so paired owners and owner host-migration
+// need no special handling. 0 when the seen column is absent, which reads
+// stale.
 func broadcast_seen_get(db *DB, key string) int64 {
 	if exists, _ := db.exists("select 1 from pragma_table_info('received') where name='seen'"); !exists {
 		return 0
@@ -458,20 +350,13 @@ func broadcast_touch_local(db *DB, key string) {
 	db.exec("insert into received (sender, key, last, seen) values ('', ?, 0, ?) on conflict(sender, key) do update set seen = excluded.seen", key, now())
 }
 
-// broadcast_advance_local is the public advance: bumps received,
-// clears the in-flight resync gate, then drains any pending-buffer
-// rows that chain onto the new received.last. Callers (events.go,
-// api_broadcast_advance) just want "this seq is done, do all
-// follow-ups" - the drain is part of that.
+// broadcast_advance_local is the public advance: bump received, clear the
+// in-flight resync gate, then drain any pending rows that chain onto it.
 func broadcast_advance_local(db *DB, sender, key string, sequence int64) {
 	broadcast_advance_local_simple(db, sender, key, sequence)
-	// Any advance is evidence the resync request (if any) is
-	// producing replies, so the in-flight gate clears and the next
-	// gap-detection can fire its follow-up batch immediately rather
-	// than waiting out a fixed time window. db.user can be nil for
-	// the api_broadcast_advance Starlark callsite without a user
-	// context - skip the clear there; the throttle has its own
-	// timeout fallback for the no-user case.
+	// Any advance is evidence resync is producing replies, so clear the gate and
+	// let the next gap-detection fire immediately. db.user is nil at the
+	// api_broadcast_advance callsite - the throttle's timeout covers that case.
 	if db.user != nil && db.user.UID != "" {
 		broadcast_resync_clear(db.user.UID, sender, key)
 		if db.app != nil {
@@ -483,14 +368,9 @@ func broadcast_advance_local(db *DB, sender, key string, sequence int64) {
 	broadcast_pending_drain_chain(db, sender, key)
 }
 
-// broadcast_advance_local_simple is the bare advance with no drain
-// recursion. broadcast_pending_drain_chain calls this directly after
-// dispatching a buffered row, so the drain's own advance doesn't
-// re-enter the drain loop. Keep this in sync with the SQL in the
-// public advance above.
-//
-// received is receiver-side apply state: it records what THIS host has already
-// applied, so the gap detector can tell a fresh sequence from a duplicate.
+// broadcast_advance_local_simple is the bare advance with no drain recursion,
+// called by broadcast_pending_drain_chain so its own advance does not re-enter
+// the drain loop. Keep the SQL in sync with the public advance above.
 func broadcast_advance_local_simple(db *DB, sender, key string, sequence int64) {
 	broadcast_received_table_create(db)
 	// seen = now() stamps the host-local idle-resync (#165) signal on every
@@ -500,21 +380,10 @@ func broadcast_advance_local_simple(db *DB, sender, key string, sequence int64) 
 }
 
 // broadcast_payload_decode reads a stored broadcast-log payload back, keeping
-// whole numbers whole.
-//
-// The log stores the payload as JSON, and JSON has no integer type: a plain
-// Unmarshal into `any` turns every number into a float64, so a replayed
-// timestamp reaches the app as 1.7534e+09 rather than 1753400000. Apps
-// validate such a field by pattern (`str(value)` against an integer regex),
-// which the exponent form fails - so the handler returned early and the row
-// was silently dropped, on the one path that exists to repair missed
-// deliveries. Chat lost every gap-recovered message and edit this way
-// (2026-07-25), and the same shape is live in projects, crm, chess, go and
-// words.
-//
-// The live path carries CBOR, which preserves int64. Decoding with UseNumber
-// and restoring integers here makes replay match delivery, without changing
-// what is already written to disk.
+// whole numbers whole: the log is JSON, where a plain Unmarshal makes every
+// number a float64 and an app validating an integer field by pattern rejects
+// "1.7534e+09". The live path carries CBOR, so this makes replay match
+// delivery.
 func broadcast_payload_decode(raw string, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader([]byte(raw)))
 	decoder.UseNumber()
@@ -577,23 +446,18 @@ func broadcast_log_append(db *DB, key, peer, event string, data []byte) int64 {
 	return sequence
 }
 
-// broadcast_log_age_maximum is the hard retention cap: a lagging
-// subscriber's ack floor protects rows past broadcast_log_age, but only
-// this long — beyond it one dead subscriber would grow the log forever.
-// Evicting past a live floor is alerted: that subscriber's next resync
-// gets a broadcast/floor skip and its app re-fetches.
+// broadcast_log_age_maximum is the hard retention cap: an ack floor protects
+// rows past broadcast_log_age, but only this long, else one dead subscriber
+// grows the log forever. Evicting past a live floor warns and forces a
+// re-fetch.
 const broadcast_log_age_maximum = 4 * broadcast_log_age
 
 // broadcast_log_age_trim deletes log rows older than the age cap for the given
 // (key, peer). Called on send; no-op when nothing's aged out.
 func broadcast_log_age_trim(db *DB, key, peer string) {
-	// The age trim respects the lowest acknowledged subscriber floor:
-	// trimming rows a live subscriber still needs converts its fillable
-	// gap into an unfillable one (the 2026-07 News feed wedge became
-	// permanent exactly this way). Rows below every floor age out
-	// normally; rows a laggard pins survive to the hard cap. Streams
-	// with no acknowledged subscriber at all keep the plain age trim —
-	// there is no floor to respect.
+	// The age trim respects the lowest acknowledged subscriber floor: trimming
+	// rows a live subscriber still needs turns its fillable gap into an unfillable
+	// one. With no acknowledged subscriber there is no floor.
 	floor := int64(0)
 	if row, _ := db.row("select min(last) as m from acknowledged where key=? and peer=?", key, peer); row != nil {
 		if m, ok := row["m"].(int64); ok && m > 0 {
@@ -608,14 +472,9 @@ func broadcast_log_age_trim(db *DB, key, peer string) {
 	if pinned, _ := db.exists("select 1 from log where key=? and peer=? and created < ? limit 1", key, peer, now()-broadcast_log_age_maximum); pinned {
 		warn("Broadcast log for (key=%q, peer=%q) evicting rows past the hard retention cap that a subscriber at ack floor %d still needs; that subscriber will skip the lost span and re-fetch on its next resync.", key, peer, floor)
 		db.exec("delete from log where key=? and peer=? and created < ?", key, peer, now()-broadcast_log_age_maximum)
-		// Drop ack floors the surviving log can no longer replay to
-		// (the subscriber's next needed sequence precedes the oldest
-		// surviving row). Such a subscriber can only be floor-skipped
-		// into a re-fetch, which reads nothing from acknowledged, and a
-		// live one re-inserts its row with its next ack — but a floor
-		// left by a subscriber that is gone for good (unsubscribed,
-		// deleted, host wiped) never advances, and kept it would pin
-		// the trim and this warning forever.
+		// Drop ack floors the surviving log can no longer replay to. A live
+		// subscriber re-inserts its row on the next ack; a floor left by one that is
+		// gone for good would pin the trim and this warning forever.
 		if row, _ := db.row("select min(sequence) as m from log where key=? and peer=?", key, peer); row != nil {
 			if oldest, ok := row["m"].(int64); ok {
 				db.exec("delete from acknowledged where key=? and peer=? and last+1 < ?", key, peer, oldest)
@@ -644,13 +503,8 @@ func broadcast_log_ack_trim(db *DB, key, peer string) {
 
 // mochi.broadcast.subscriber.add(key, subscriber) -> bool: record a subscriber
 // of this host's (key) stream without sending to them. Returns whether the
-// record is new.
-//
-// Call this when a member joins. Membership is otherwise learned only from
-// mochi.broadcast.send's recipient list, which misses anyone a send
-// deliberately excludes - the member/add broadcast goes to the EXISTING
-// members, so the joiner is absent from the very event that admits them, and
-// would be refused a resync until some later send happened to include them.
+// record is new. Call this when a member joins: a member/add broadcast goes to
+// the existing members, so the joiner is absent from the event admitting them.
 func api_broadcast_subscriber_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var key, subscriber string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "key", &key, "subscriber", &subscriber); err != nil {
@@ -677,17 +531,9 @@ func api_broadcast_subscriber_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 }
 
 // mochi.broadcast.subscriber.remove(key, subscriber) -> bool: revoke a
-// subscriber's access to replay this host's (key) stream. Returns whether a
-// record was removed.
-//
-// Call this when a member leaves or is removed. Dropping them from the
-// subscriber list passed to mochi.broadcast.send stops future deliveries but
-// NOT replay: their record ages out on the log's own clock, and until then
-// they can resync events created after they left. This is the call that makes
-// revocation immediate.
-//
-// Scoped to this host's own stream (key, net_id) - an app may revoke access to
-// what it broadcasts, never to another host's stream.
+// subscriber's replay access to this host's (key) stream, scoped to (key,
+// net_id). Returns whether a record was removed. Dropping someone from the send
+// list stops deliveries but not replay; this is what revokes immediately.
 func api_broadcast_subscriber_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var key, subscriber string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "key", &key, "subscriber", &subscriber); err != nil {
@@ -852,23 +698,10 @@ func api_broadcast_advance(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 }
 
 // mochi.broadcast.send(from, key, subscribers, service, event, data, exclude=None) -> int
-//
-// Allocates a sequence for (key, this_host), writes the event to the
-// per-app log table, and fans out one mochi.message.send per
-// subscriber. Each outbound message carries _key and sequence in
-// content; the receiver's peer header identifies the originating host.
-//
-// `from` is the sender entity ID (must be owned by the calling user).
-// `key` is the broadcast stream key (typically the same entity ID;
-// apps that want multiple streams per scope can use other keys).
-// `subscribers` is a list of recipients: each element is either an
-// entity ID string, or a {"id": entity, "peer": peer} dictionary. A
-// non-empty peer pins delivery to that peer instead of resolving the
-// entity via the directory — required when the recipient is a private
-// entity (not directory-listed), such as a wiki replica; the app
-// stores the peer at subscribe time from the event's peer header.
-// `exclude` skips a single entity (typically the original event
-// author).
+// Allocates a sequence for (key, this_host), logs the event, and fans out one
+// mochi.message.send per subscriber carrying _key and _sequence. A subscriber
+// is an entity id, or {"id": entity, "peer": peer} to pin delivery when the
+// recipient is a private entity the directory cannot resolve.
 func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var from, key, service, event, exclude string
 	var subscribers *sl.List
@@ -909,13 +742,10 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "from %q not owned by caller", from)
 	}
 
-	// Cost is the recipient count, not one: this is the only send API that
-	// amplifies. Charged on the LIST length rather than the delivered count,
-	// and settled BEFORE the log append - the self-owned and suspended
-	// recipients skipped below are only known part-way through the loop, and
-	// refusing partway would leave a sequence in the log that only some
-	// subscribers received, which resync would replay to the rest later as
-	// though delivery had happened.
+	// Cost is the recipient count: this is the only send API that amplifies.
+	// Charged on the list length and settled BEFORE the log append - refusing
+	// partway would log a sequence only some subscribers received, which resync
+	// would replay to the rest as though delivery had happened.
 	recipients := subscribers.Len()
 	if recipients > broadcast_recipients_maximum {
 		return sl_error(fn, "too many subscribers: %d exceeds %d", recipients, broadcast_recipients_maximum)
@@ -933,14 +763,10 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if payload == nil {
 		payload = map[string]any{}
 	}
-	// The exclusion rides IN the payload, before the log append, so the
-	// log row and every delivery and resync replay carry it identically;
-	// the receive wrapper skips the handler for the excluded actor.
-	// Send-time skipping (the old mechanism) left a permanent hole at
-	// this sequence in the excluded subscriber's stream, and resync —
-	// blind to the exclusion — replayed the event to them anyway: the
-	// echoed post/edit ran feeds' subscriber handler against the OWNER's
-	// canonical DB and destroyed its attachment files (2026-07-15).
+	// The exclusion rides IN the payload, before the log append, so the log row,
+	// every delivery and every resync replay carry it identically; the receive
+	// wrapper skips the handler for the excluded actor. Send-time skipping left a
+	// hole that resync, blind to the exclusion, redelivered anyway.
 	if exclude != "" {
 		payload[broadcast_content_exclude] = exclude
 	}
@@ -962,11 +788,9 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	content[broadcast_content_sequence] = sequence
 
 	services := app_services(app, user)
-	// Who this stream fans out to, for the resync gate. Recorded from the
-	// whole list rather than from the delivery loop below, which skips
-	// recipients the sending user owns and subscribers the health gate has
-	// suspended - both are still entitled to replay, and a suspended one is
-	// exactly who needs it when they come back.
+	// Who this stream fans out to, for the resync gate. Taken from the whole list,
+	// not the delivery loop, which skips self-owned and health-suspended
+	// recipients - both are still entitled to replay.
 	recorded := []string{}
 	iter := subscribers.Iterate()
 	defer iter.Done()
@@ -986,23 +810,16 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		if sub == "" {
 			continue
 		}
-		// Never enqueue to a recipient owned by the sending user: their
-		// DB is the canonical copy the event was written to, so delivery
-		// is at best a no-op and at worst destructive (the owner guard in
-		// events.go is the backstop). Safe for stream continuity — gap
-		// detection only fires on arrival, so a never-delivered stream
-		// cannot resync. The excluded actor, by contrast, IS still sent
-		// to (when remote): the delivery advances their watermark and the
-		// receive wrapper skips their handler via _exclude.
+		// Never enqueue to a recipient owned by the sending user: their DB is the
+		// canonical copy, so delivery is at best a no-op and at worst destructive.
+		// The excluded actor IS still sent to when remote - the delivery advances
+		// their watermark and the receive wrapper skips their handler.
 		if owner := user_owning_entity(sub); owner != nil && owner.UID == user.UID {
 			continue
 		}
-		// Recipient health gate: a suspended subscriber (a full retry
-		// budget burned with no contradicting success) gets no fan-out
-		// rows — their stream catches up via resync when they return —
-		// except one probe row per interval. Past the evict age the
-		// owning app is told to drop the subscriber instead. Applies to
-		// broadcast fan-out only; direct correspondence never gates.
+		// Recipient health gate: a suspended subscriber gets no fan-out rows beyond
+		// one probe per interval and catches up by resync; past the evict age the
+		// owning app is told to drop it. Broadcast fan-out only.
 		skip, evict := health_gate(sub)
 		if evict {
 			health_evict_dispatch(user, app, service, sub)
@@ -1028,11 +845,8 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 }
 
 // mochi.broadcast.replay(key, peer, after, limit=100) -> [{sequence, event, data}, ...]
-//
-// Reads log rows from the per-app log table for the given (key, peer)
-// stream starting at sequence > after, capped at limit. Used by the
-// broadcast/resync event handler to feed a resync request — apps
-// shouldn't normally call this directly.
+// Reads log rows for the (key, peer) stream at sequence > after. Used by the
+// broadcast/resync handler; apps should not normally call it directly.
 func api_broadcast_replay(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var key, peer string
 	var after int64
@@ -1085,12 +899,9 @@ func api_broadcast_replay(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.NewList(out), nil
 }
 
-// broadcast_resync handles an inbound broadcast/resync event. The
-// subscriber's content has {key, peer, after}: we read the matching
-// rows from log and re-emit each one to the requester via
-// send_peer (direct libp2p delivery, not fanned). Replayed events
-// flow through the normal event pipeline at the receiver, where the
-// gap wrapper applies them in order.
+// broadcast_resync handles an inbound broadcast/resync event: content carries
+// {key, peer, after}, and each matching log row is re-emitted to the requester
+// via send_peer, applied in order by the gap wrapper at the receiver.
 const broadcast_replay_limit = 100
 
 func (e *Event) broadcast_resync(a *App, av *AppVersion) error {
@@ -1106,26 +917,18 @@ func (e *Event) broadcast_resync(a *App, av *AppVersion) error {
 		return nil
 	}
 
-	// The requester must be someone this stream fans out to. `key` is the
-	// object entity id, so it is known to every current member, every FORMER
-	// member, and anyone who has seen a share link - without this, knowing an
-	// id was enough to replay a private stream's history, and removal from a
-	// group revoked nothing. Silent: a refused requester learns nothing about
-	// whether the stream exists.
+	// The requester must be someone this stream fans out to. `key` is the object
+	// entity id, known to every former member and anyone with a share link, so
+	// without this an id was enough to replay a private stream. Silent refusal.
 	if !broadcast_subscribed_allowed(e.db, key, peer, e.from) {
 		info("Broadcast refusing resync of (key=%q, peer=%q) to non-subscriber %q", key, peer, e.from)
 		return nil
 	}
 
-	// Floor signal: when the requester asks for sequences below the
-	// retained log, the gap below the floor is PROVABLY unfillable —
-	// replaying from the floor would only feed the requester more
-	// far-future events to buffer against a hole that can never fill
-	// (the 2026-07 News feed wedge ground for 9 days in exactly that
-	// state). Tell the requester where the log starts so it can skip
-	// the lost span now and hand its app the broadcast/gap re-fetch.
-	// A fully-trimmed log floors at head+1: everything is unfillable,
-	// the requester re-anchors at the head.
+	// Floor signal: a request below the retained log asks for a provably
+	// unfillable span, and replaying from the floor would only buffer more
+	// far-future events. Tell the requester where the log starts so it can skip
+	// the lost span. A fully-trimmed log floors at head+1.
 	floor := int64(0)
 	if row, _ := e.db.row("select min(sequence) as low from log where key=? and peer=?", key, peer); row != nil {
 		if low, ok := row["low"].(int64); ok {
@@ -1176,13 +979,9 @@ func (e *Event) broadcast_resync(a *App, av *AppVersion) error {
 		m.FromApp = a.id
 		m.Services = services
 		m.content = content
-		// Replay messages ride the priority_replay tier so they
-		// overtake the live-broadcast backlog in the requester's
-		// (target, from_entity) outbound queue bucket. Without
-		// this, resync replies serialise behind any pending live
-		// traffic at the per-bucket cap=1 and the subscriber's
-		// catch-up rate degrades to the bucket's drain rate
-		// (~0.7 events/sec observed live with a 12k-deep bucket).
+		// Replay messages ride priority_replay so they overtake the live backlog in
+		// the requester's outbound queue bucket; behind it the per-bucket cap=1
+		// drains catch-up at roughly one event per second.
 		m.send_peer_priority(e.peer, priority_replay)
 	}
 	return nil
@@ -1200,19 +999,10 @@ func (e *Event) broadcast_acknowledge() error {
 		return fmt.Errorf("broadcast/acknowledge requires key, peer, and sequence")
 	}
 
-	// Clamp to what this host actually allocated for the stream. The
-	// sequence rides in from the network and was taken on trust, so a
-	// subscriber could claim a watermark far beyond anything sent; the
-	// acknowledged row then feeds broadcast_log_ack_trim, which deletes
-	// every log row below the lowest subscriber floor. A watermark above
-	// the head is not a claim we can honour - nobody can have received an
-	// event that was never allocated - so cap it at the head rather than
-	// refuse, which keeps a subscriber that is merely ahead of our own
-	// view (a re-apply, a reseed) from wedging on a rejected ack.
-	//
-	// No sequence row means this host never originated the stream, so
-	// there is nothing to acknowledge and nothing to trim: drop it
-	// quietly rather than recording a floor against a log we do not own.
+	// Clamp to what this host allocated: the sequence arrives over the network and
+	// feeds broadcast_log_ack_trim, which deletes every row below the lowest
+	// floor. Clamping rather than refusing keeps a subscriber merely ahead of our
+	// view from wedging. No sequence row means we never originated the stream.
 	head := int64(0)
 	if row, _ := e.db.row("select last from sequence where key=? and peer=?", key, peer); row != nil {
 		head, _ = row["last"].(int64)
@@ -1240,14 +1030,10 @@ func (e *Event) broadcast_acknowledge() error {
 	return nil
 }
 
-// A skipped unfillable gap is self-healing — the floor handler and the
-// pending GC both tell the app to re-fetch — so a single skip is a log
-// line, not an admin email. The operator signals are recurrence (the
-// same stream skipping again within broadcast_skip_recurrence: re-fetch
-// is not settling it) and breadth (broadcast_skip_breadth distinct
-// streams skipping within one day: origins are trimming replay logs
-// faster than subscribers catch up generally, which no per-stream
-// re-fetch fixes). var (not const) so tests can lower them.
+// A skipped unfillable gap is self-healing, so one skip is a log line, not an
+// email. The operator signals are recurrence (the same stream within
+// broadcast_skip_recurrence) and breadth (broadcast_skip_breadth distinct
+// streams in a day). var so tests can lower them.
 var broadcast_skip_recurrence int64 = 7 * 86400
 var broadcast_skip_breadth int64 = 25
 
@@ -1312,19 +1098,11 @@ func broadcast_skip_warn(user, app, peer, key string, first, last int64) {
 	warn("Broadcast streams skipped unfillable sequences on %d distinct streams within a day (threshold %d): origins are trimming replay logs faster than subscribers catch up; per-stream re-fetch will not fix this.", streams, broadcast_skip_breadth)
 }
 
-// broadcast_floor handles an inbound broadcast/floor event: the stream
-// origin's answer to a resync request that asked for sequences below its
-// retained log. The gap below the floor is provably unfillable — the log
-// rows are trimmed — so waiting recovers nothing: skip to floor-1 now,
-// drain whatever chains onto it, record the skip (escalating to the
-// operator only on recurrence or breadth), and hand the app its
-// broadcast/gap error for a full re-fetch. Without this signal the
-// receiver grinds until the pending-GC TTL (the News feed wedge spent 9
-// days there, 2026-07). Only the origin is authoritative about its own
-// log, so the event must arrive from the peer it names — which for the
-// self-loop is this host itself. A forged floor from the real origin
-// peer is equivalent to that origin trimming its log: it can only move
-// its own stream.
+// broadcast_floor handles an inbound broadcast/floor event: the origin's answer
+// to a resync below its retained log. The gap is provably unfillable, so skip
+// to floor-1, drain what chains on, and hand the app a broadcast/gap re-fetch.
+// Must arrive from the peer it names - only the origin is authoritative about
+// its log.
 func (e *Event) broadcast_floor(a *App) error {
 	key, _ := e.content["key"].(string)
 	peer, _ := e.content["peer"].(string)
@@ -1342,11 +1120,9 @@ func (e *Event) broadcast_floor(a *App) error {
 	}
 	first := last + 1
 	broadcast_advance_local(e.db, peer, key, floor-1)
-	// Sweep the orphaned buffer rows the skip jumped over: the chain-drain
-	// only deletes rows it dispatches, so below-cursor rows would linger
-	// as permanent sediment (same sweep the pending-GC runs after its
-	// skips). Sweep to the fresh watermark — the drain may have chained
-	// past floor-1.
+	// Sweep the buffer rows the skip jumped over: the chain-drain only deletes
+	// rows it dispatches, so below-cursor rows linger. Sweep to the fresh
+	// watermark - the drain may have chained past floor-1.
 	e.db.exec("delete from pending where peer=? and key=? and sequence<=?", peer, key, broadcast_received_get(e.db, peer, key))
 	audit_broadcast_pending_purged(e.user.UID, a.id, peer, key, first, floor-1, floor-1-last)
 	broadcast_skip_warn(e.user.UID, a.id, peer, key, first, floor-1)
@@ -1361,34 +1137,16 @@ func (e *Event) broadcast_floor(a *App) error {
 	return nil
 }
 
-// broadcast_resync_throttle gates resync requests per (user, peer, key)
-// to at most ONE IN FLIGHT, not one per time window. Previous design
-// locked out for 60 seconds after every request regardless of whether
-// the request succeeded - a 300-event gap took 3+ minutes minimum
-// even on a fast link, because four sequential 100-event resyncs
-// each waited out 60s of throttle. New design tracks "request out,
-// no advance yet" as a bool; clears it on any received.last advance
-// for the (user, peer, key) tuple (broadcast_advance_local calls
-// broadcast_resync_clear). A timeout fallback covers the case where
-// the resync reply never arrives - same throttle behaviour as before
-// but only when something is actually stuck, not after every success.
-//
-// Burst dedup (the original throttle's load-bearing property) still
-// holds: if 50 inbound events trip the gap detector in 200ms, only
-// the first sees broadcast_resync_inflight=false and proceeds; the
-// other 49 see the flag and return. Once that resync's replies start
-// advancing received, the flag clears and the next gap-detection
-// request fires immediately.
-//
-// See claude/sessions/2026-05-25-broadcast-resync-seq-643-
-// investigation.md.
+// broadcast_resync_throttle gates resync requests per (user, peer, key) to one
+// IN FLIGHT, not one per time window: the flag clears on any received.last
+// advance, so a multi-round catch-up is not serialised behind a fixed wait. It
+// still dedups bursts, and a timeout fallback covers a reply that never
+// arrives.
 const broadcast_resync_timeout = 30 * time.Second
 
-// broadcast_resync_maximum bounds the in-flight map. An entry is only
-// meaningful for broadcast_resync_timeout, but it is deleted on an advance
-// that a deliberately-gapped stream never makes, so the ceiling is what
-// bounds it. Matched to broadcast_stall_maximum - both are keyed on the
-// same unsigned broadcast key.
+// broadcast_resync_maximum bounds the in-flight map: an entry is deleted on an
+// advance that a deliberately-gapped stream never makes, so the ceiling is what
+// bounds it. Matched to broadcast_stall_maximum - same unsigned key.
 const broadcast_resync_maximum = 10000
 
 var (
@@ -1415,12 +1173,9 @@ func broadcast_resync_throttle(user_uid, peer, key string) bool {
 			return false
 		}
 	}
-	// Past the ceiling only an already-tracked stream may re-arm. The tag
-	// carries the broadcast key, which arrives in an inbound event with
-	// nothing signing it, and this runs before any app handler - so a peer
-	// inventing a key per event both grew this map for the process lifetime
-	// and drew a resync request back to itself each time. Refusing is the
-	// safe direction: it sends nothing rather than sending unthrottled.
+	// Past the ceiling only an already-tracked stream may re-arm: the tag carries
+	// an unsigned broadcast key noted before any app handler, so a peer inventing
+	// a key per event both grew this map and drew a resync request back each time.
 	if !inflight && len(broadcast_resync_inflight) >= broadcast_resync_maximum {
 		return false
 	}
@@ -1442,27 +1197,17 @@ func broadcast_resync_sweep() {
 	}
 }
 
-// broadcast_resync_clear marks the in-flight resync for the given
-// (user, peer, key) tuple complete - subsequent gap-detections can
-// fire the next request without waiting. Called from
-// broadcast_advance_local on every received.last advance; idempotent
-// when no flag is set, so safe to call on every advance whether or
-// not a resync was in flight.
+// broadcast_resync_clear marks the in-flight resync for (user, peer, key)
+// complete. Called on every advance; idempotent when no flag is set.
 func broadcast_resync_clear(user_uid, peer, key string) {
 	broadcast_resync_lock.Lock()
 	defer broadcast_resync_lock.Unlock()
 	delete(broadcast_resync_inflight, broadcast_resync_tag(user_uid, peer, key))
 }
 
-// broadcast_resync_jitter_maximum bounds the random delay added before
-// a resync request leaves the subscriber. Spreads simultaneous gap
-// detections - after a server restart, a sleep / wake cycle, or any
-// event that causes thousands of subscribers to detect a gap on their
-// first inbound event - across the interval, so the owner doesn't get
-// every subscriber's resync request landing in the same second. The
-// 60-second per-(user, peer, key) throttle above prevents same-stream
-// churn; jitter prevents cross-subscriber thundering-herd at the
-// owner.
+// broadcast_resync_jitter_maximum bounds the random delay before a resync
+// request leaves the subscriber, spreading a restart's simultaneous gap
+// detections so the owner does not take every request in one second.
 const broadcast_resync_jitter_maximum = 5 * time.Second
 
 // broadcast_resync_jitter returns a uniform random delay in
@@ -1477,19 +1222,10 @@ func broadcast_resync_jitter() time.Duration {
 	return time.Duration(int(buffer[0])<<8|int(buffer[1])) * time.Millisecond % broadcast_resync_jitter_maximum
 }
 
-// broadcast_request_resync sends a fire-and-forget broadcast/resync to
-// the originating host asking for replay of (key, peer) starting after
-// the receiver's current last. Called from the gap-detection wrapper
-// in events.go when an out-of-order event arrives.
-//
-// from: the subscriber entity (the local user's entity that's
-//
-//	subscribed to the broadcast)
-//
-// to:   the broadcast owner entity
-// peer: the libp2p peer ID of the originating host (matches e.peer on
-//
-//	the inbound event)
+// broadcast_request_resync sends a fire-and-forget broadcast/resync to the
+// originating host asking for replay of (key, peer) after the receiver's
+// current last. Called from the gap-detection wrapper in events.go. peer is the
+// originating libp2p host, matching e.peer on the inbound event.
 func broadcast_request_resync(user *User, a *App, from, to, key, peer string, last int64) {
 	if user == nil || a == nil {
 		return
@@ -1518,41 +1254,11 @@ func broadcast_request_resync(user *User, a *App, from, to, key, peer string, la
 	m.send_peer(peer)
 }
 
-// broadcast_send_ack delivers a broadcast/acknowledge event back to
-// the originating host of a broadcast we've just applied. Fired by
-// the receiver wrapper in events.go after each successful advance;
-// the owner's broadcast_acknowledge handler upserts acknowledged
-// for (key, peer, subscriber=us) and runs broadcast_log_ack_trim,
-// which drops log rows below the slowest subscriber's progress.
-//
-// Self-loops (peer == net_id) are skipped: the owner is its own
-// subscriber and already knows its state; the 7d age trim handles
-// log cleanup for self-loop streams without needing a network
-// round-trip.
-//
-// Bursts coalesce within broadcast_acknowledge_coalesce_window per
-// (user, key, peer) - a chat full of messages or a fast game's move
-// sequence sends one outbound ack per window per stream instead of
-// one per applied event. Semantically equivalent because each ack
-// carries the latest applied sequence (not a delta); a single ack at
-// seq=N is the same as N individual acks at seqs 1..N. The owner
-// upserts max(existing, new) in either case.
-//
-// Fire-and-forget: the flushed message goes to the queue and retries;
-// an ack that fails to deliver is harmless because the next applied
-// event will trigger a fresh ack carrying an equal-or-higher sequence.
-//
-// from: the local subscriber entity (e.to of the inbound broadcast —
-//
-//	the local entity that received the event).
-//
-// to:   the broadcast owner entity (e.from of the inbound — who
-//
-//	broadcast it).
-//
-// peer: the originating libp2p peer ID (e.peer of the inbound — the
-//
-//	host to send the ack back to).
+// broadcast_send_ack delivers a broadcast/acknowledge back to the originating
+// host after an applied broadcast; the owner upserts acknowledged and trims its
+// log. Self-loops are skipped. Bursts coalesce per (user, key, peer): each ack
+// carries the latest applied sequence, not a delta, so one ack at seq N is
+// equivalent to N. Fire-and-forget - the next applied event re-acks.
 func broadcast_send_ack(user *User, a *App, from, to, key, peer string, sequence int64) {
 	if user == nil || a == nil {
 		return
@@ -1566,12 +1272,9 @@ func broadcast_send_ack(user *User, a *App, from, to, key, peer string, sequence
 	broadcast_acknowledge_enqueue(user.UID, a.id, from, to, key, peer, sequence)
 }
 
-// broadcast_acknowledge_coalesce_window bounds how long a pending ack
-// is held before flushing. Larger = more batching; smaller = lower
-// latency to the owner's log trim. 250ms means bursty subscribers
-// emit one ack per quarter-second per stream; an idle stream sees
-// no extra latency because the first applied event after idle starts
-// the timer fresh.
+// broadcast_acknowledge_coalesce_window bounds how long a pending ack is held
+// before flushing: larger batches more, smaller lowers latency to the owner's
+// log trim. An idle stream sees no extra latency - the first apply starts it.
 const broadcast_acknowledge_coalesce_window = 250 * time.Millisecond
 
 // broadcast_acknowledge_pending holds one pending ack between its
@@ -1656,12 +1359,9 @@ func broadcast_acknowledge_flush(tag string) {
 	m.send_peer(pending.peer)
 }
 
-// broadcast_manager runs the periodic pending GC for unfillable gaps.
-// Hourly cadence matches replication_manager's GC interval: the TTL
-// is days, so a tighter loop just burns CPU on the per-app DB walk
-// without operational benefit. Always force=false here - the
-// configured TTL gate is the whole point of the background pass;
-// force-skip is an operator-only path via the admin endpoint.
+// broadcast_manager runs the periodic pending GC for unfillable gaps. Hourly:
+// the TTL is days, so a tighter loop just walks per-app DBs for nothing. Always
+// force=false - force-skip is an operator-only path via the admin endpoint.
 func broadcast_manager() {
 	for range time.Tick(time.Duration(broadcast_pending_gc_period_seconds) * time.Second) {
 		broadcast_pending_gc(false)

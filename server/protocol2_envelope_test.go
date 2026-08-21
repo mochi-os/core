@@ -3,15 +3,8 @@
 // This file is part of Mochi, licensed under the GNU AGPL v3 with the
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-// Tests for envelope validation on the /mochi/2/messages path.
-//
-// id_length_maximum is declared in protocol2.go beside the Frame it names, and was
-// enforced only by announcement_valid on the pubsub path. The messages
-// receiver took Frame.Service and Frame.ID of any length and shape straight
-// into two maps that outlive the stream and are keyed by the sending peer:
-// app_workers, where a miss starts a goroutine with a buffered inbox and holds
-// it for the idle window, and seen_messages, whose one-million-entry ceiling
-// was sized on the assumption that an id is id-sized.
+// Tests for envelope validation on the /mochi/2/messages path: Frame.Service
+// and Frame.ID are peer-chosen map keys, so both must be bounded.
 
 package main
 
@@ -86,17 +79,10 @@ func TestHandleRejectsMalformedService(t *testing.T) {
 	}
 }
 
-// TestServiceValidatorAdmitsSlashesAndDots documents what the shared
-// "constant" validator does NOT reject, so the boundary is visible rather than
-// assumed. It is the validator five other call sites already use for a service
-// name (api.go, broadcast.go, apps.go, messages.go x2), and this path uses it
-// for consistency — but it permits "/" and ".", so a traversal-shaped service
-// name is well-formed by its rules.
-//
-// Harmless here: Frame.Service becomes a map key, never a path. Recorded
-// because tightening "constant" would affect every caller and is a wider
-// decision than bounding this path, and because a future caller that does
-// build a path from a service name would need to know.
+// The shared "constant" validator permits "/" and ".", so a traversal-shaped
+// service name is well-formed by its rules. Harmless here - Frame.Service
+// becomes a map key, never a path - but five other call sites share the
+// validator.
 func TestServiceValidatorAdmitsSlashesAndDots(t *testing.T) {
 	if !envelope_valid("", "../../etc/passwd", "", "") {
 		t.Skip("\"constant\" has been tightened to reject traversal shapes; re-check every caller that relies on slashes, e.g. nested event names")

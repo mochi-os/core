@@ -47,13 +47,10 @@ func identity_with_token(token string) *httptest.ResponseRecorder {
 	return w
 }
 
-// TestIdentityRefusesBoundToken covers the disclosure this endpoint used to
-// allow. A bound token names one action on one entity and is minted to be
-// handed out: the feeds RSS token lives in the feed URL a user pastes into
-// readers, so it also lives in their history, their reader's server and every
-// proxy log in between. Presented here it used to answer with the owner's
-// email address, status and identity entity, because the handler read
-// token.User and consulted neither the binding nor the scope.
+// A bound token names one action on one entity and is minted to be handed out -
+// an RSS token lives in the feed URL, its reader's server and every proxy log
+// between. /_/identity must not answer it with the owner's email, status and
+// identity.
 func TestIdentityRefusesBoundToken(t *testing.T) {
 	mint, cleanup := identity_token_setup(t)
 	defer cleanup()

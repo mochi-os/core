@@ -1,34 +1,14 @@
-# syntax=docker/dockerfile:1.7
-# Single-stage Dockerfile for the Mochi server.
-#
-# The server and mochictl are NOT compiled here. `make docker` stages the
-# pre-built static binaries — built once on the host, reusing the warm Go
-# build cache — into build/docker/bin/ named by GOARCH, and this image just
-# COPYs the right one per TARGETARCH. That removes the two full in-container
-# Go compiles (amd64 + arm64) that previously ran against a cold, separate
-# build cache on every release.
-#
-# The server binaries staged here are built with -X main.build_platform=docker
-# so a containerised server polls the docker versions.json for updates (see
-# server/update.go update_url_path); mochictl carries no platform tag, so its
-# host build is reused as-is.
-#
-# Runtime: gcr.io/distroless/static-debian12 — fully static binary, no libc
-# dependency at runtime.
+# syntax=docker/dockerfile:1.7 Single-stage image for the Mochi server. The
+# binaries are NOT compiled here: `make docker` stages host-built static
+# binaries into build/docker/bin/ named by GOARCH, and this image COPYs the one
+# matching TARGETARCH. The server is built with -X main.build_platform=docker so
+# it polls the docker versions.json (server/update.go); mochictl carries no
+# platform tag.
 
-# Pinned by digest, not by tag: a floating tag means the same commit can build
-# different images, and a moved or compromised upstream tag propagates with
-# nothing recording that it changed. This is the manifest LIST digest, which is
-# what a multi-architecture buildx needs - a per-architecture digest would build
-# one arch and fail the other.
-#
-# Bump it deliberately as part of a release; `make base-digest` reports whether
-# the tag has moved. The scheduled Trivy container scan in the Security workflow
-# is what makes a stale pin visible, by reporting the base image's CVEs.
-#
-# The tag this tracks is :latest, which runs as ROOT - unlike world, which uses
-# :nonroot. That is not settled either way here: core binds 80 and 443, which is
-# the obvious reason, but nothing records whether it was decided or inherited.
+# Pinned by digest, not tag, so the same commit always builds the same image.
+# This is the manifest LIST digest - a per-architecture digest builds one arch
+# and fails the other. `make base-digest` reports whether the tag has moved;
+# bump it deliberately as part of a release.
 FROM gcr.io/distroless/static-debian12:latest@sha256:a9fcaedd4c9b59e12dd65d954f0b5044f19b0647a8a3712e77205df9e7b102cd AS runtime
 ARG TARGETARCH
 

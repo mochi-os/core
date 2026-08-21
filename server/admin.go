@@ -1,13 +1,10 @@
 // Mochi server: cross-platform /_/admin/* handlers (read-only and lifecycle).
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// Handlers run only on the UDS admin listener (registered in admin_linux.go).
-// Read-only handlers (status, version, config, identity) read internal state
-// without mutating it. Lifecycle handlers (stop, restart, reload) trigger
-// graceful shutdown via shutdown_request or re-read the config in place.
+// Handlers run only on the admin listener, registered in admin_linux.go.
 
 package main
 
@@ -114,11 +111,10 @@ func admin_restart(c *gin.Context) {
 	}
 }
 
-// admin_migrate walks every user and opens every installed app's data DB,
-// which runs any pending database migrations (per-user app DBs migrate on
-// demand, so rarely-touched users lag behind). Run before a schema baseline
-// change so every database reaches the current schema while the migration
-// code still exists. Synchronous; reports per-user counts.
+// admin_migrate opens every installed app's data DB for every user, running any
+// pending migrations - per-user DBs migrate on demand, so rarely-touched users
+// lag. Run before removing migration code. Synchronous; reports per-user
+// counts.
 func admin_migrate(c *gin.Context) {
 	users := db_open("db/users.db")
 	rows, err := users.rows("select uid from users")
@@ -137,15 +133,9 @@ func admin_migrate(c *gin.Context) {
 	skipped := 0
 	for _, r := range rows {
 		uid, _ := r["uid"].(string)
-		// Deliberately not user_by_uid: that refuses a suspended user and one
-		// that has not created an identity yet, and both own real databases.
-		// An administrator running this expects every database migrated, and
-		// leaving some behind is worst precisely where the sweep is used -
-		// before removing migration code, where a database it silently passed
-		// over is stranded at its old schema permanently.
-		//
-		// Only the identifier is needed from here: it addresses the database
-		// directory, and the per-user version resolution keys off it too.
+		// Deliberately not user_by_uid: it refuses suspended users and users with no
+		// identity, and both own real databases that would be stranded at an old
+		// schema.
 		u := &User{}
 		if !users.scan(u, "select uid, username, role, methods, disabled, status from users where uid=?", uid) {
 			skipped++

@@ -39,29 +39,15 @@ var api_schedule = sls.FromStringDict(sl.String("mochi.schedule"), sl.StringDict
 // schedule_wake is used to wake up the scheduler when a new event is created
 var schedule_wake = make(chan struct{}, 1)
 
-// schedule_data_maximum bounds one row's payload. db/schedule.db is a single
-// global table shared by every user and app, and it sits outside the per-user
-// storage quota, so an unbounded blob here is server-wide disk an app fills for
-// free. Far above what a payload is for: a scheduled event carries the ids the
-// handler needs to find its work, not the work itself - the largest payload any
-// app in the tree can construct is about 110 bytes, and every row currently
-// stored holds an empty dictionary.
+// schedule_data_maximum bounds one row's payload. db/schedule.db is one global
+// table outside the per-user storage quota, so an unbounded blob is server-wide
+// disk an app fills for free. A payload carries ids, not work.
 const schedule_data_maximum = 4 * 1024
 
-// schedule_rows_maximum bounds how many rows one (app, user) pair may hold. The
-// payload cap bounds a row; without this nothing bounds the count, and the two
-// multiply into unbounded shared disk.
-//
-// Keyed on the pair because that is how the table is keyed and how the abuse
-// happens - a per-app cap would punish an app for being installed by many
-// users, and a per-user cap could not say which app was responsible. Ten
-// thousand matches directory_user_cap, and is chosen well clear of the busiest
-// real caller rather than close to it: comptroller's schedule rows are created
-// inside P2P event handlers, which run on the marketplace's host as the
-// marketplace operator, so every seller's listings and every buyer's bids land
-// in one pair - two rows per auctioned listing, plus one per bid extension,
-// finalisation and review. A cap that a busy marketplace could reach would fail
-// the way an app hitting it fails: an aborted handler, a 500, and an email.
+// schedule_rows_maximum bounds how many rows one (app, user) pair may hold, so
+// the payload cap and the row count cannot multiply into unbounded shared disk.
+// Keyed on the pair because that is how the table is keyed and how abuse
+// happens.
 const schedule_rows_maximum = 10000
 
 // schedule_rows_warning is the level at which the operator hears about it,
@@ -69,12 +55,10 @@ const schedule_rows_maximum = 10000
 // sitting legitimately above it does not warn for ever.
 const schedule_rows_warning = schedule_rows_maximum / 2
 
-// schedule_interval_floor is the shortest repeat a caller may ask for. The
-// clamp it replaces was one second, which is 86,400 firings a day for as long
-// as the row lives - and a recurring row lives until something cancels it,
-// since schedule_claim re-arms it with due = due + interval. Every use of
-// mochi.schedule.every in the tree is a daily watchdog, so a minute is far
-// below anything real while removing the per-second case entirely.
+// schedule_interval_floor is the shortest repeat a caller may ask for. A
+// recurring row lives until something cancels it, so a one-second interval is
+// 86,400 firings a day for ever; every real use in the tree is a daily
+// watchdog.
 const schedule_interval_floor = 60
 
 // schedule_due_maximum bounds one pass, so the due query cannot materialise an
@@ -84,18 +68,14 @@ const schedule_interval_floor = 60
 const schedule_due_maximum = 100
 
 // schedule_concurrency bounds how many scheduled handlers run at once. Each
-// one enters Starlark, so without it a batch of rows made due at the same
-// instant queues on the 32-slot pool and starves every interactive request on
-// the host - and `at` accepts a past timestamp while `after` accepts a delay of
-// zero, so nobody has to wait to arrange that. Well under the pool, so
-// scheduled work leaves most of it for requests.
+// enters Starlark, so an unbounded batch made due at one instant would take the
+// 32-slot pool and starve interactive requests. Well under the pool
+// deliberately.
 const schedule_concurrency = 8
 
-// schedule_slots is acquired before a handler is dispatched and released when
-// it returns. Acquired BLOCKING: skipping at capacity would return to a manager
-// whose next sleep is zero (the skipped rows are still due), which is a busy
-// spin. Blocking paces the loop instead, and a wedged handler holds one slot
-// rather than all of them, so the rest keep running.
+// schedule_slots is acquired before a handler is dispatched, released when it
+// returns. Acquired BLOCKING: skipping at capacity returns to a manager whose
+// next sleep is zero, which is a busy spin. Blocking paces the loop instead.
 var schedule_slots = make(chan struct{}, schedule_concurrency)
 
 // schedule_data_encode serialises a payload, refusing one past the size cap.
@@ -190,13 +170,10 @@ func schedule_next() *ScheduledEvent {
 	return &se
 }
 
-// schedule_valid checks if the user and app still exist
-// schedule_valid reports whether a due event can actually run on THIS host
-// right now: the user, the app, an active version for that user, AND a
-// handler for the event must all be present. It is the single source of
-// truth used by schedule_run — anything it rejects is routed through
-// schedule_handle_unrunnable rather than reaching schedule_run_event,
-// whose own equivalent checks are then only a TOCTOU backstop.
+// schedule_valid reports whether a due event can run on this host now: user,
+// app, an active version for that user, and a handler for the event must all be
+// present. schedule_run routes anything it rejects to
+// schedule_handle_unrunnable.
 func schedule_valid(se *ScheduledEvent) bool {
 	// Resolve the user ("" = system, always valid).
 	var user *User
@@ -223,18 +200,10 @@ func schedule_valid(se *ScheduledEvent) bool {
 	return av.starlark().has(se.Event)
 }
 
-// schedule_handle_unrunnable deals with a due event that schedule_valid
-// rejected. It stays quiet (no admin email) either way:
-//
-//   - User still bootstrapping (pending): leave the row alone. Its app and
-//     data may not have finished landing, so the handler could become
-//     runnable shortly.
-//   - User absent: drop the row. Nothing will ever make it runnable - there
-//     is no other host that could run it, so deferring means re-claiming it
-//     every interval for the life of the server.
-//   - Active user, or a system event, whose app / version / handler is gone:
-//     drop the row. A recurring one would otherwise re-fire every interval
-//     forever. One-shot rows were already removed by schedule_claim.
+// schedule_handle_unrunnable deals with a due event schedule_valid rejected,
+// quietly either way: a pending user's row is left alone (its app may still be
+// landing), anything else is dropped so a recurring row stops re-firing for
+// ever.
 func schedule_handle_unrunnable(se *ScheduledEvent) {
 	if se.User != "" {
 		// Read the users row directly — NOT user_by_uid, which also returns nil
@@ -340,11 +309,9 @@ func schedule_run_due(t time.Time) {
 	}
 }
 
-// schedule_claim atomically claims a scheduled event for execution. Returns
-// true if this call claimed the event, false if another goroutine got there
-// first. A recurring event advances its due time by one interval; a one-shot is
-// deleted. Both are conditional on due <= now, so the rows-affected count is
-// what decides the claim.
+// schedule_claim atomically claims a due event: recurring rows advance by one
+// interval, one-shots are deleted. Both are conditional on due <= now, so the
+// rows-affected count is what decides the claim.
 func schedule_claim(id int64, interval int64) bool {
 	db := schedule_db()
 	var result int64
@@ -384,14 +351,9 @@ func schedule_run(se ScheduledEvent) {
 		return
 	}
 
-	// Run the event handler. Normal runs are not logged — failures have
-	// their own lines (panic recovery above, missing user/app warns and
-	// handler errors in schedule_run_event and the app framework). The
-	// watchdog covers the one case those miss: a handler that doesn't
-	// return. A run past schedule_stuck_seconds gets a stuck line, and a
-	// finished line when it eventually returns, so a stuck line with no
-	// finished line means the handler is still wedged (or died with the
-	// process).
+	// Run the handler. Normal runs are not logged - the watchdog covers the one
+	// case the other log lines miss, a handler that never returns: a stuck line
+	// with no matching finished line means it is still wedged.
 	started := now()
 	done := make(chan struct{})
 	go func() {
@@ -416,12 +378,9 @@ const schedule_stuck_seconds = 5 * 60
 
 // schedule_run_event dispatches the scheduled event to the app's event handler
 func schedule_run_event(se *ScheduledEvent) {
-	// Get the user (nil for system events)
-	// These four checks duplicate schedule_valid (already run in
-	// schedule_run, which routes a rejection to schedule_handle_unrunnable
-	// and never reaches here). They survive only as a TOCTOU backstop —
-	// the user/app could vanish between the two calls — so they log at
-	// debug, never warn-email.
+	// These four checks duplicate schedule_valid, which schedule_run already ran.
+	// They survive only as a TOCTOU backstop, so they log at debug, never
+	// warn-email.
 	var user *User
 	if se.User != "" {
 		user = user_by_uid(se.User)
@@ -844,11 +803,9 @@ func api_schedule_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl.None, nil
 	}
 
-	// Verify the event belongs to this app and user. A nil user owns nothing:
-	// an anonymous caller reaches Starlark with no user on the thread, so
-	// testing `user != nil && ...` skipped the ownership check for exactly
-	// those callers and left only the app test - every other user's events for
-	// this app were readable, and the ids are sequential rowids.
+	// Verify the event belongs to this app AND this user. A nil user owns nothing:
+	// testing `user != nil && ...` would skip the ownership check for anonymous
+	// callers, and the ids are sequential rowids.
 	if se.App != app.id {
 		return sl.None, nil
 	}
@@ -860,9 +817,7 @@ func api_schedule_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 }
 
 // mochi.schedule.cancel(id) -> bool: Cancel a previously scheduled event.
-// Returns True if the event was found and cancelled, False if not found or
-// if it doesn't belong to the calling app and user (silent — same scoping
-// pattern as mochi.schedule.get).
+// False when not found, or not owned by the calling app and user (silent).
 func api_schedule_cancel(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: int>")

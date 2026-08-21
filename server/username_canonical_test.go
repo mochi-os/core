@@ -1,18 +1,13 @@
 // Mochi server: one mailbox is one account.
 //
-// A username is an email address, and email_valid is mail.ParseAddress, which
-// accepts "Alice <a@b.com>", " a@b.com " and "A@B.com" for the same mailbox.
-// Every login path took the caller's spelling verbatim: code_send stored it as
-// the codes row's username, user_from_code read it back out, and user_create
-// inserted it - so a user who typed their address a second way received the
-// code at their real mailbox and was signed in to a second, empty account. The
-// unique index on users.username does not prevent it: SQLite compares TEXT
-// with BINARY collation, so the two spellings are two rows.
+// email_valid is mail.ParseAddress, which accepts "Alice <a@b.com>", " a@b.com
+// " and "A@B.com" for one mailbox. The unique index on users.username does not
+// merge them: SQLite compares TEXT with BINARY collation, so they are two rows.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -295,15 +290,9 @@ var username_canonical_sources = []string{
 	"users.go", "authentication.go", "oauth.go", "auth_restore.go", "web.go",
 }
 
-// TestUsernameQueriesAreCanonical is the gate. Every query keyed on
+// TestUsernameQueriesAreCanonical is the gate: every query keyed on
 // users.username must bind a value that has been through email_address, and
-// every comparison against a stored username must reduce the other side, or
-// one mailbox is two accounts again.
-//
-// Source-level because the sites are spread over five files and several are
-// deep inside HTTP handlers with a browser ceremony in front of them: a
-// behavioural test would cover the ones that are easy to reach and leave the
-// rest, which is how the OAuth comparison came to be missed in the first place.
+// every comparison against a stored username must reduce the other side.
 func TestUsernameQueriesAreCanonical(t *testing.T) {
 	// Bare identifiers that are already canonical where they are bound: a value
 	// read back out of the users table, or one the enclosing function reduced
@@ -353,13 +342,10 @@ func TestUsernameQueriesAreCanonical(t *testing.T) {
 	}
 }
 
-// TestRestoreSeesAnExistingAccountAcrossSpellings. Restore reserves the
-// username with a placeholder row, and its "already taken" check is what stops
-// it minting a second account for an address that has one. Spelled a second
-// way that check missed, and restore is the route that can also make the new
-// account an administrator on an empty server.
-//
-// The taken check runs before the code check, so no code is needed to reach it.
+// Restore's "already taken" check is what stops a second account for an address
+// that has one, and on an empty server restore can also make that account an
+// administrator. The taken check runs before the code check, so no code is
+// needed.
 func TestRestoreSeesAnExistingAccountAcrossSpellings(t *testing.T) {
 	defer create_test_users_db(t)()
 	restore_tables_create(t)

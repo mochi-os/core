@@ -1,18 +1,12 @@
 // mochictl: pre-deploy validation subcommands.
-// Copyright © 2026 Mochisoft OÜ
+// Copyright (c) 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// `mochictl check starlark <path>` - parse every .star file under
-// the given path (or the file itself) using the same go.starlark.net
-// parser the server uses at load time. Returns non-zero on the first
-// parse error with file:line:col + reason. Intended for the deploy.sh
-// pre-flight check so a Python-ism like implicit string concatenation
-// (a valid Python construct that Starlark rejects) fails the deploy
-// locally rather than silently breaking every action in the app once
-// the server tries to load the deployed bundle. See
-// claude/memory/feedback_starlark_no_implicit_concat.md.
+// `mochictl check starlark <path>` - parse every .star file under the path with
+// the same go.starlark.net parser the server uses at load time. Non-zero on the
+// first parse error, with file:line:col. deploy.sh's pre-flight gate.
 
 package main
 
@@ -25,15 +19,9 @@ import (
 	"go.starlark.net/syntax"
 )
 
-// cmd_check_starlark handles `mochictl check starlark <path>`.
-//
-// Single-file mode: parse exactly the named file.
-// Directory mode: walk recursively, parse every *.star file.
-//
-// Errors stop at the first failure so the caller (deploy.sh, /commit
-// hook, ad-hoc dev check) gets immediate feedback on the bad file
-// rather than a wall of redundant noise from downstream files that
-// were going to fail too.
+// cmd_check_starlark handles `mochictl check starlark <path>`, a file or a
+// directory walked recursively. Stops at the first parse error rather than
+// reporting every downstream file that was going to fail too.
 func cmd_check_starlark(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: mochictl check starlark <file-or-directory>")
@@ -51,17 +39,9 @@ func cmd_check_starlark(args []string) error {
 				return walk_error
 			}
 			if d.IsDir() {
-				// Skip only the two trees that are not the app's own source:
-				// git's object store and installed dependencies. Both nest, so
-				// both are matched at any depth.
-				//
-				// `web` used to be skipped here too, on the grounds that a
-				// frontend directory holds no runtime Starlark. That is true of
-				// every app today, and it made the check unable to say so: a
-				// .star file placed under web/ was skipped rather than parsed,
-				// and this walk is deploy.sh's blocking pre-deploy gate, so it
-				// would have shipped without ever being read. Walking it costs
-				// a few hundred directory entries per app.
+				// Skip only the trees that are not the app's own source. `web` is
+				// deliberately not skipped: this walk is deploy.sh's blocking gate, and a
+				// .star it skips ships unparsed.
 				name := d.Name()
 				if name == ".git" || name == "node_modules" {
 					return filepath.SkipDir
@@ -92,11 +72,8 @@ func cmd_check_starlark(args []string) error {
 		if err != nil {
 			return fmt.Errorf("read %q: %v", p, err)
 		}
-		// syntax.Parse returns *syntax.File and an error. The error's
-		// String() already includes file:line:col when the file name
-		// is passed in (which we do here). Mode 0 = parser defaults,
-		// same as the server's runtime path which loads apps via
-		// starlark.ExecFile with no custom parse mode.
+		// Mode 0 matches the server's starlark.ExecFile. The error's String() carries
+		// file:line:col because the file name is passed in.
 		_, err = syntax.Parse(p, content, 0)
 		if err != nil {
 			return fmt.Errorf("%v", err)

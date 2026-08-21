@@ -1,20 +1,13 @@
 // Mochi server: git wire protocol version 2, and partial clone.
 //
-// Two measured gaps, both against git.mochi-os.org on 2026-08-16. The server
-// was v0 only, so every connection - clone and fetch alike - carried the whole
-// reference advertisement: 1,395 bytes for a 22-ref repository and 22,262 for
-// core's 356 refs, before a single object moved. And `git clone
-// --filter=blob:none` answered "filtering not recognized by server, ignoring"
-// and quietly cloned everything, so a client asking for less got the lot.
-//
-// go-git has no protocol v2 at all - no ls-refs, no fetch command, and its
-// pkt-line scanner rejects the delimiter packet v2 introduced - so the whole of
-// it is implemented here.
+// go-git has no v2 at all - no ls-refs, no fetch command, and its pkt-line
+// scanner rejects the delimiter packet v2 introduced - so the whole of it is
+// implemented here, along with the filter capability partial clone needs.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -133,10 +126,9 @@ func TestGitAdvertisementOmitsReferencesInV2(t *testing.T) {
 	}
 }
 
-// TestGitPushAdvertisementStaysV0 — push is still served by go-git's session,
-// which has no v2 at all. A client asks for v2 on every connection including a
-// push, so the one that matters is that it is answered in v0 and falls back
-// rather than being handed a version nothing behind it implements.
+// TestGitPushAdvertisementStaysV0 - push is still served by go-git's session,
+// which has no v2, so a client asking for v2 on a push must be answered in v0
+// and fall back.
 func TestGitPushAdvertisementStaysV0(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not available")
@@ -392,14 +384,10 @@ func TestGitCloneFilterBlobNone(t *testing.T) {
 	}
 }
 
-// TestGitCloneShallowFilterLazyFetch — a shallow partial clone, which is what
-// CI actually runs, and then the lazy fetch for a blob it was not sent.
-//
-// Measured against git.mochi-os.org on 2026-08-17: HTTP 500. The lazy fetch
-// asks for the blob by name and carries the client's shallow lines with it, so
-// the request takes the shallow path - where every want is peeled to the commit
-// it names, and a blob peels to nothing. Neither half alone reaches it: the
-// unshallow filter test passes, and the shallow tests never ask for a blob.
+// TestGitCloneShallowFilterLazyFetch - a shallow partial clone, then the lazy
+// fetch for a blob it was not sent. That request carries shallow lines, so it
+// takes the shallow path where every want is peeled to a commit and a blob
+// peels to nothing. Neither the shallow nor the filter tests reach it alone.
 func TestGitCloneShallowFilterLazyFetch(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not available")

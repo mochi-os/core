@@ -1,13 +1,10 @@
-// Mochi server: #47 — peer_protocol_open must not hang forever when a stale
-// "Connected" peer forces net_me.NewStream to dial an address it can't reach.
-// Before the fix, NewStream was called with net_context (no deadline) and the
-// open looped indefinitely (the 13h prod reseed hang). Now it is bounded by
-// peer_stream_open_timeout.
-//
+// Mochi server: #47 - peer_protocol_open must not hang when a stale "Connected"
+// peer forces net_me.NewStream to dial an unreachable address; the open is
+// bounded by peer_stream_open_timeout.//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -20,11 +17,8 @@ import (
 	multiaddr "github.com/multiformats/go-multiaddr"
 )
 
-// TestPeerProtocolOpenTimesOut reproduces the #47 hang shape: Mochi believes it
-// is connected to a peer (peer_connect short-circuits to NewStream) but the only
-// libp2p address is a black-holed TEST-NET one, so NewStream must dial and can
-// never complete. With the bounded context the open returns an error within the
-// (lowered) timeout; without it the test's own 5s guard trips on the hang.
+// TestPeerProtocolOpenTimesOut: a peer believed connected whose only address is
+// black-holed must fail within the timeout, not hang.
 func TestPeerProtocolOpenTimesOut(t *testing.T) {
 	cleanup := setup_peer_discovery_test(t)
 	defer cleanup()

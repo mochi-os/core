@@ -1,12 +1,9 @@
 name: Security
 
-# Vulnerability scanning, split from the Test workflow so a dependency advisory
-# published overnight is visible as its own red job rather than as a confusing
-# failure in a workflow named "Test".
-#
-# The container scan runs on a schedule rather than per-PR: base-image CVEs
-# appear without anyone touching this repository, and the scan needs a full
-# cross-arch build, which is too slow to sit in front of every pull request.
+# Vulnerability scanning, split from Test so a dependency advisory published
+# overnight shows as its own job. The container scan is scheduled rather than
+# per-PR: base-image CVEs appear without a commit, and it needs a cross-arch
+# build.
 
 on:
   push:
@@ -45,12 +42,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Dependency scan (Trivy)
-        # Complements govulncheck: no build, no reachability analysis, but it
-        # sees every module in the graph and catches advisories the Go
-        # vulnerability database has not picked up. Invoked through the
-        # container rather than a marketplace action so this runs the same
-        # command as `make dependency-scan`, and so a renamed or retagged
-        # action cannot silently change what executes here.
+        # Complements govulncheck: no reachability analysis, but sees every
+        # module in the graph. Run through the container so this is the same
+        # command as `make dependency-scan`.
         run: |
           docker run --rm -v "$PWD":/src:ro \
             -v "$PWD/.trivyignore":/.trivyignore:ro \

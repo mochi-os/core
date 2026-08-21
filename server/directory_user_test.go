@@ -1,12 +1,11 @@
 // Mochi server: the per-user learned directory. Rows are learned from
-// claim-verified contact, refreshed with a write throttle, confirmed on
-// delivery success, evicted only on terminal send failure or beyond the
-// LRU cap — never by age (a quiet relationship is not a dead host).
+// claim-verified contact, confirmed on delivery success, and evicted only on
+// terminal send failure or beyond the LRU cap - never by age.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -144,14 +143,10 @@ func TestEntityPeersForMerge(t *testing.T) {
 	}
 }
 
-// A locally-owned entity must resolve to the self-loop only, on BOTH the
-// delivery (entity_peers_for) and RPC/stream (entity_peers_failover_for)
-// paths — never appending the caller's learned rows. Pre-fix, a stale
-// learned ghost row for a local feed made entity_peers_failover_for offer a
-// dead peer, and a synchronous remote.request to it opened a stream that
-// returned EOF (the 2026-07-17 "unable to read segment: EOF" on a local
-// feed view). directory_user_learn refuses local entities now, so the stale
-// row is inserted directly to model a pre-guard learned row.
+// A locally-owned entity resolves to the self-loop only, on both
+// entity_peers_for and entity_peers_failover_for; a learned row is never
+// appended. directory_user_learn refuses local entities, so the fixture row is
+// inserted directly.
 func TestLocalEntityResolutionIgnoresLearnedGhosts(t *testing.T) {
 	orig := net_id
 	net_id = "self"

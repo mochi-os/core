@@ -112,12 +112,9 @@ func TestPermissionRestrictedRestricted(t *testing.T) {
 	}
 }
 
-// TestAuthenticationWriteHoldersKeepTheirDefaultGrant guards the risk the
-// reclassification actually carries. Restricted permissions cannot be granted
-// through the in-app consent dialog, so the two apps that legitimately rewrite
-// authentication have to arrive holding it: their apps_default entry is what
-// carries them across, and losing it would leave TOTP and recovery-code
-// management dead with no way for the user to re-grant from the dialog.
+// TestAuthenticationWriteHoldersKeepTheirDefaultGrant: a restricted permission
+// cannot be granted from the consent dialog, so Login and Settings must arrive
+// holding it - losing the apps_default entry leaves TOTP management dead.
 func TestAuthenticationWriteHoldersKeepTheirDefaultGrant(t *testing.T) {
 	if !permission_restricted("user/authentication/write") {
 		t.Fatal("user/authentication/write is not restricted; this test guards the consequences of it being so")
@@ -410,12 +407,9 @@ func TestPermissionRevoke(t *testing.T) {
 	}
 }
 
-// TestPermissionRevokeSurvivesResetup locks the soft-delete behaviour of
-// permission_revoke. app_user_setup re-applies an app's default
-// permissions with `insert or ignore` whenever the default set changes
-// (a server update). When revoke removed the row, a revoked default was
-// silently re-granted on the next re-setup; revoke now writes a
-// granted=0 row, which insert-or-ignore leaves untouched.
+// TestPermissionRevokeSurvivesResetup: revoke writes granted=0 rather than
+// deleting, so app_user_setup's insert-or-ignore cannot re-grant a revoked
+// default.
 func TestPermissionRevokeSurvivesResetup(t *testing.T) {
 	setup_test_data_dir(t)
 	defer cleanup_test_data_dir(t)
@@ -448,13 +442,10 @@ func TestPermissionRevokeSurvivesResetup(t *testing.T) {
 	}
 }
 
-// TestFriendsAndGroupsReadDefaults guards the grants that keep friend-gated
-// features working once friends/read and groups/read are enforced. Chat, Chess,
-// Go and Words check friendship inside P2P event handlers, where a missing grant
-// aborts the handler and drops the event with nothing shown to anyone - so a
-// dropped entry here surfaces as messages and moves silently vanishing, not as a
-// permission prompt. groups/write does not imply groups/read (permission_granted
-// matches exactly), which is why People carries both.
+// TestFriendsAndGroupsReadDefaults: Chat, Chess, Go and Words check friendship
+// in P2P event handlers, where a missing grant aborts the handler and the event
+// vanishes with no prompt. groups/write does not imply groups/read, so People
+// carries both.
 func TestFriendsAndGroupsReadDefaults(t *testing.T) {
 	setup_test_data_dir(t)
 	defer cleanup_test_data_dir(t)
@@ -983,12 +974,8 @@ func TestAPIPermissionCheckInternalApp(t *testing.T) {
 	}
 }
 
-// TestAPIPermissionLevel exercises the unified mochi.permission.level
-// API that replaced mochi.permission.restricted and
-// mochi.permission.administrator (commit 8fb4466). Returns one of
-// "standard" / "restricted" / "administrator", with administrator
-// strictly stronger than restricted (admin-only permissions report
-// "administrator" even though they're also restricted internally).
+// TestAPIPermissionLevel: administrator is strictly stronger than restricted,
+// so an admin-only permission reports "administrator".
 func TestAPIPermissionLevel(t *testing.T) {
 	thread := &sl.Thread{Name: "test"}
 
@@ -1827,9 +1814,9 @@ func TestAPIWebPushSendRequiresPermission(t *testing.T) {
 
 // --- URL Request Permission Tests ---
 //
-// api_url_request returns a {status, headers, body} response value
-// even on permission failure (status 403, no Go-level error). Tests
-// inspect the response status, not err.
+// api_url_request returns a {status, headers, body} value even on permission
+// failure (status 403, no Go error), so these tests inspect the status, not
+// err.
 
 // expect_url_status asserts that the response from api_url_request has the
 // given status. Returns true if the status matched.
@@ -2057,9 +2044,8 @@ func TestPermissionProjectsHoldsRepositoriesDefaults(t *testing.T) {
 	}
 }
 
-// A permission granted by default that no longer exists in the catalogue is
-// dead weight, and a typo in either list is invisible until an integration
-// fails at runtime. url is excluded: it is a dynamic permission whose object
+// A default grant naming a permission that does not exist is invisible until an
+// integration fails at runtime. url is excluded: it is dynamic, its object
 // carries the domain.
 func TestPermissionDefaultsAreRegistered(t *testing.T) {
 	registered := map[string]bool{"url": true}
@@ -2086,19 +2072,10 @@ func TestPermissionCatalogueHasNames(t *testing.T) {
 	}
 }
 
-// TestUserCloseIsRestrictedAndSettingsHoldsIt guards the gate on
-// mochi.user.close, which schedules the account for deletion and revokes every
-// session. Before it, the API checked only that a user was present and was not
-// an administrator - both facts about the USER, neither about the calling app -
-// so any installed app could sign its user out everywhere and start the
-// deletion clock. The step-up in apps/settings is that app gating itself, and
-// lives in Starlark another app can simply not write.
-//
-// Restricted rather than standard, matching user/export, which this mirrors:
-// a restricted permission cannot be obtained from the in-app consent dialog, so
-// closure is granted deliberately or not at all. That makes the apps_default
-// entry load-bearing - without it the settings app's own close flow would have
-// no way to obtain the permission - which is what the second half checks.
+// TestUserCloseIsRestrictedAndSettingsHoldsIt. mochi.user.close schedules
+// deletion and revokes every session, so the gate must be about the calling
+// app, not the user. Restricted means it cannot come from a consent dialog,
+// which makes the Settings apps_default entry load-bearing.
 func TestUserCloseIsRestrictedAndSettingsHoldsIt(t *testing.T) {
 	if !permission_restricted("user/close") {
 		t.Error("user/close is not restricted; an app could obtain it from a consent dialog raised at a moment of its choosing")
@@ -2200,11 +2177,9 @@ func TestUserCloseGateRefusesUngrantedApp(t *testing.T) {
 	}
 }
 
-// TestUsersWriteGatesEveryWriteAPI: the five APIs that create, update, delete,
-// suspend and activate accounts checked only user.administrator(), a fact about
-// the user rather than the calling app, while their read siblings had required
-// users/read all along. An app an administrator happened to be using could mint
-// a second administrator.
+// TestUsersWriteGatesEveryWriteAPI: the five account-mutating APIs must gate on
+// users/write, not on user.administrator() alone - that is a fact about the
+// user, not about the calling app.
 func TestUsersWriteGatesEveryWriteAPI(t *testing.T) {
 	source, err := os.ReadFile("users.go")
 	if err != nil {
@@ -2306,9 +2281,7 @@ func TestUsersWriteGateRefusesUngrantedApp(t *testing.T) {
 
 // TestTokensCreateIsRestrictedAndMintersHoldIt: mochi.token.create mints a
 // bearer credential that authenticates as the user, survives logout (tokens
-// live in users.db, sessions_revoke_all clears only sessions.db) and has no
-// user-facing management surface. It checked only that a user and an app were
-// present on the thread - both "is there a context", neither an authorisation.
+// live in users.db) and has no user-facing management surface.
 func TestTokensCreateIsRestrictedAndMintersHoldIt(t *testing.T) {
 	if !permission_restricted("tokens/create") {
 		t.Error("tokens/create is not restricted; a durable credential must not be grantable from a consent dialog")
@@ -2339,9 +2312,8 @@ func TestTokensCreateIsRestrictedAndMintersHoldIt(t *testing.T) {
 
 // TestTokenExpiryCapped: an unbound token authenticates across the whole app
 // and reaches /_/identity, so it gets an outside limit. A bound token is
-// confined to one action and lives in a URL a reader stores for years, so the
-// cap must not touch it - all nine call sites in the app tree pass expires=0
-// with an action, and every one of them would break.
+// confined to one action and lives in a URL kept for years, so the cap must not
+// touch it.
 func TestTokenExpiryCapped(t *testing.T) {
 	horizon := now() + token_maximum_lifetime
 

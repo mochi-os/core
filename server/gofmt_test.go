@@ -1,22 +1,13 @@
 // Mochi server: the tree stays gofmt-clean.
 //
-// This drift kept resurfacing during unrelated work - a file would be listed by
-// gofmt -l, get noticed mid-task, and be left alone because reformatting it
-// would have buried the change under review. A gate turns that into a failure
-// at the moment it is introduced, when it is one file and obvious, rather than
-// a periodic sweep of two dozen.
-//
-// It is deliberately not a `gofmt -w` fixer. Go 1.19's doc-comment rules do
-// more than align: they smart-quote, so a doc comment that writes an empty value
-// as a pair of single quotes has that pair replaced by one curly quote, and the
-// comment stops meaning what it said. Three comments in this package needed
-// rewording before formatting was safe, which is judgement no gate should be
-// making unattended.
+// Deliberately a gate, not a `gofmt -w` fixer: Go 1.19's doc-comment rules
+// smart-quote, so a comment writing an empty value as a pair of single quotes
+// has it replaced by one curly quote and stops meaning what it said.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -55,12 +46,9 @@ func TestSourceIsFormatted(t *testing.T) {
 		"the doc-comment rules smart-quote, so '' in a comment becomes a curly quote and stops reading as an empty value.")
 }
 
-// TestDocCommentsDoNotDocumentEmptyWithQuotePairs is the specific trap that made
-// the sweep unsafe to run blind. A doc comment writing an empty value as a pair
-// of single quotes, or of backticks, has that pair rewritten by gofmt into one
-// curly quote, so the comment silently stops saying what it said. Inside a
-// function body the same text is left alone, which is why this checks doc
-// comments only - and why it went unnoticed for so long.
+// TestDocCommentsDoNotDocumentEmptyWithQuotePairs: gofmt rewrites a pair of
+// single quotes or backticks in a doc comment into one curly quote. Inside a
+// function body the same text is left alone, so only doc comments are checked.
 func TestDocCommentsDoNotDocumentEmptyWithQuotePairs(t *testing.T) {
 	names, err := filepath.Glob("*.go")
 	if err != nil {

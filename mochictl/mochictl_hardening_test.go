@@ -1,25 +1,9 @@
 // Mochi mochictl: output correctness, ambient inputs, and exit codes.
 //
-// Six review items, five of them fixed here and one ruled not a defect:
-//
-//   #71 -j decoded without UseNumber, so the scripted-consumption mode was the
-//       one path that rounded integers above 2^53 - the human and -t paths get
-//       it right, and say why in render's own comment.
-//   #72 broadcast and pipelining truncated display strings by byte index,
-//       splitting a multi-byte rune and miscounting the column width.
-//   #75 NOT A DEFECT: MOCHI_DIRECTORIES_DATA is a documented override
-//       (mochi.conf.5 "ENVIRONMENT OVERRIDES") that the SERVER honours through
-//       the same ini.String. Ignoring it in mochictl would send the two to
-//       different sockets in exactly the container deployments the variable
-//       exists for. See TestTheDataDirectoryOverrideIsDeliberate.
-//   #76 systemctl resolved through PATH, inherited, in a tool run as root.
-//   #107 cmd_health rendered the body before checking the status code.
-//   #108 version exited 0 against an unreachable server.
-//
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -180,11 +164,9 @@ func TestSystemctlPathAcceptsOnlyAbsolutePaths(t *testing.T) {
 	}
 }
 
-// TestTheDataDirectoryOverrideIsDeliberate records why #75 was closed rather
-// than fixed. mochi.conf.5 documents MOCHI_<SECTION>_<KEY> for every key and
-// names this one in its table, and the server reads the same key through the
-// same ini.String - so making mochictl ignore it would point the two at
-// different sockets in the container deployments the variable exists for.
+// mochictl honours MOCHI_DIRECTORIES_DATA because the server reads the same
+// key: ignoring it would point the two at different sockets. This fails if the
+// manual page stops documenting the override.
 func TestTheDataDirectoryOverrideIsDeliberate(t *testing.T) {
 	data, err := os.ReadFile("../docs/mochi.conf.5.md")
 	if err != nil {

@@ -30,13 +30,9 @@ func grant(t *testing.T, user *User, app string, permission string) {
 }
 
 // TestIdentityClassNeedsTheIdentityPermission. app_declares_class asks the
-// calling app's OWN manifest whether it may act on a class, so any app buys
-// authority over the account's login identity with one line of its app.json:
-// "classes": ["person"]. Nothing else gated entity.create/update/delete, so a
-// third-party app could delete the identity and its private key, rename it, or
-// mint fresh ones until it captured the account's primary. mochi.user.identity
-// .update already required user/identity/write for the very same mutation on
-// the very same row; the entity APIs now require it too.
+// calling app's own manifest, so "classes": ["person"] alone would buy an app
+// authority over the account's login identity; the entity mutators need
+// user/identity/write.
 func TestIdentityClassNeedsTheIdentityPermission(t *testing.T) {
 	cleanup := create_test_routing_env(t)
 	defer cleanup()
@@ -83,14 +79,9 @@ func TestIdentityClassNeedsTheIdentityPermission(t *testing.T) {
 }
 
 // TestIdentityClassGateCoversEveryEntityMutator: create, delete and update all
-// reach the class decision, so none can be hardened or missed on its own.
-// app_declares_class is the self-assertion being wrapped - a second caller
-// would be a second way around the permission.
-//
-// Two helpers rather than one since the handler check was added: create calls
-// entity_class_allowed, and delete and update call entity_class_owned, which
-// calls entity_class_allowed itself. Counting one name would pass while a
-// mutator sat on nothing at all, so the property is checked per mutator.
+// reach the class decision, so none can be missed on its own. Checked per
+// mutator across both helpers - counting one name would pass with a mutator
+// sitting on nothing.
 func TestIdentityClassGateCoversEveryEntityMutator(t *testing.T) {
 	source, err := os.ReadFile("entities.go")
 	if err != nil {

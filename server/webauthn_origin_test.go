@@ -1,20 +1,13 @@
-// Mochi server: the WebAuthn instance cache was keyed on the Host header.
+// Mochi server: nothing may be keyed on the WebAuthn origin.
 //
 // request_origin builds its key from c.Request.Host, which the client chooses
-// freely, and POST /_/auth/passkey/begin reaches webauthn_for_origin as its
-// first statement with no authentication. Every distinct header value inserted
-// a permanent map entry - 346 bytes measured, no cap, no eviction - so an
-// anonymous caller grew the map for as long as it cared to.
-//
-// The cache is gone rather than bounded. webauthn.New is a url.Parse, four
-// default-filling checks and a two-word allocation (236ns measured) on a path
-// that runs a handful of times per user session, so there was nothing worth
-// caching and therefore no eviction policy worth tuning.
-//
+// freely on an unauthenticated path. The cache is gone rather than bounded:
+// webauthn.New is cheap on a path that runs a few times per session, so there
+// is nothing to cache.//
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -28,9 +21,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestOriginsAreNotRetained is the defect. Every distinct Host an anonymous
-// caller sends used to be kept for the life of the process; nothing may
-// accumulate per origin now.
 func TestOriginsAreNotRetained(t *testing.T) {
 	// Warm up first: the first calls pull in lazily-initialised library and
 	// runtime state, which would otherwise be charged to the measurement.
@@ -52,10 +42,8 @@ func TestOriginsAreNotRetained(t *testing.T) {
 	runtime.GC()
 	runtime.ReadMemStats(&after)
 
-	// 346 bytes per entry was the measured cost of the map that was removed,
-	// so 50k distinct origins retained ~17MB. A budget of 32 bytes each is far
-	// under anything a per-origin structure could cost and far above the noise
-	// of an unrelated allocation landing in the same window.
+	// The removed map cost 346 bytes per entry. A 32-byte budget is far under any
+	// per-origin structure and far above unrelated allocation noise.
 	var retained int64
 	if after.HeapAlloc > before.HeapAlloc {
 		retained = int64(after.HeapAlloc - before.HeapAlloc)
@@ -86,10 +74,8 @@ func TestEachOriginGetsItsOwnInstance(t *testing.T) {
 	}
 }
 
-// TestRelyingPartyIdentifierStripsSchemeAndPort: the browser only returns
-// credentials whose stored RPID matches exactly, so the same site reached over
-// http, https and any port must produce one identifier. A regression here
-// silently stops existing passkeys from being offered.
+// The browser only returns credentials whose stored RPID matches exactly, so
+// http, https and any port must produce one identifier.
 func TestRelyingPartyIdentifierStripsSchemeAndPort(t *testing.T) {
 	for _, origin := range []string{
 		"https://mochi-os.org",

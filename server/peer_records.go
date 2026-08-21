@@ -1,28 +1,13 @@
-// Mochi server: Signed peer records — self-certifying address claims.
-//
-// Why signed records on top of the plain peers/publish address list?
-//
-// The plain list is already trusted: GossipSub StrictSign proves the
-// sender is e.origin, so receivers apply its addresses only to that
-// peer. But that binds trust to the transport, which makes address
-// knowledge non-transferable — server A cannot tell server C where B
-// is, because C has no way to tell honest relaying from address
-// poisoning. A libp2p signed peer record (a peer.PeerRecord sealed in a
-// record.Envelope, signed by the peer's own identity key) moves the
-// trust into the data: anyone holding the bytes verifies them without
-// trusting the carrier. That buys two things — monotonic-sequence
-// replay rejection now, and a relayable, cacheable record that makes
-// address-book exchange between peers (answering peers/request with a
-// cached third-party record) safe to build next.
-//
-// The envelope libp2p already maintains for our own host (identify
-// keeps it in the certified address book) is exactly what we announce;
-// nothing here re-signs or re-derives addresses.
+// Mochi server: Signed peer records - self-certifying address claims. Trust is
+// in the record's own libp2p signature rather than the transport, so any holder
+// can verify it and relay it on the subject's behalf, and the monotonic
+// sequence rejects replays. We announce the envelope libp2p already keeps for
+// our host.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -46,11 +31,9 @@ type SignedRecord struct {
 	Updated  int64
 }
 
-// peer_record_row is the sqlx scan target for the peers.db records
-// table. Sequence is a uint64 in libp2p; sqlite stores it as a signed
-// integer, which is lossless for the timestamp-derived values libp2p
-// generates (nanoseconds since epoch stay well inside int64 for
-// centuries).
+// peer_record_row is the sqlx scan target for the peers.db records table.
+// Sequence is a libp2p uint64; sqlite's signed integer holds its
+// nanosecond-timestamp values losslessly.
 type peer_record_row struct {
 	ID       string
 	Record   []byte
@@ -113,14 +96,10 @@ func peer_record_announce() string {
 	return base64.StdEncoding.EncodeToString(data)
 }
 
-// peer_record_verify checks a signed record's own integrity and returns
-// the self-asserted peer id, its addresses (each suffixed /p2p/<id>),
-// the sequence, and the envelope bytes. Mirrors libp2p identify's
-// consumeSignedPeerRecord: the envelope signature must validate and the
-// signing key must derive to the embedded PeerID. That PeerID is
-// trustworthy no matter who delivered the record — which is exactly
-// what makes relaying a third party's record safe. Returns ok=false on
-// any failure.
+// peer_record_verify returns a signed record's self-asserted peer id, its
+// /p2p-suffixed addresses, sequence and envelope bytes. The signature must
+// validate and its key derive to the embedded PeerID, which is what makes a
+// third party's record safe to relay. ok=false on any failure.
 func peer_record_verify(encoded string) (id string, addresses []string, sequence uint64, data []byte, ok bool) {
 	if encoded == "" {
 		return "", nil, 0, nil, false
@@ -150,11 +129,8 @@ func peer_record_verify(encoded string) (id string, addresses []string, sequence
 	return id, addresses, rec.Seq, data, true
 }
 
-// peer_record_store records a verified record as the latest for its
-// peer, but only when its sequence is strictly newer than the stored
-// one. Returns whether it was newer — i.e. whether its addresses are
-// worth (re)applying. The replay/rollback guard; persists across
-// restarts via peer_record_save.
+// peer_record_store keeps a verified record only when its sequence is strictly
+// newer than the stored one, and reports whether it was - the replay guard.
 func peer_record_store(id string, sequence uint64, data []byte) bool {
 	peer_records_lock.Lock()
 	if stored, found := peer_records[id]; found && sequence <= stored.Sequence {
@@ -167,12 +143,9 @@ func peer_record_store(id string, sequence uint64, data []byte) bool {
 	return true
 }
 
-// peer_record_apply verifies a record received as a direct
-// announcement: it must be the sender's own (the record's PeerID equals
-// the GossipSub-verified origin) and newer than what we hold. Returns
-// its addresses, or (nil, false) so the caller falls back to the plain
-// address list. The origin binding is what separates this from a
-// relayed record (peer_record_event), where any peer may carry it.
+// peer_record_apply verifies a record announced by its own subject: the
+// record's PeerID must equal the GossipSub-verified origin. That binding is
+// what separates this from a relayed record, which any peer may carry.
 func peer_record_apply(origin string, encoded string) ([]string, bool) {
 	id, addresses, sequence, data, ok := peer_record_verify(encoded)
 	if !ok || id != origin {
@@ -184,13 +157,9 @@ func peer_record_apply(origin string, encoded string) ([]string, bool) {
 	return addresses, true
 }
 
-// peer_record_relay answers a peers/request for a peer we are not, by
-// broadcasting that peer's signed record on its behalf — the
-// address-book-exchange path. Safe because the record self-certifies:
-// the requester trusts it without trusting us. Bounded three ways: a
-// per-target rate limit, a freshness floor (don't reintroduce a peer at
-// a stale address), and jitter-plus-suppression so a crowd of holders
-// collapses to a few answers.
+// peer_record_relay answers a peers/request for another peer by broadcasting
+// that peer's signed record - safe because the record self-certifies. Bounded
+// by a rate limit, a freshness floor, and jitter-plus-suppression.
 func peer_record_relay(id string) {
 	if !peer_record_relayable(id) {
 		return
@@ -233,17 +202,9 @@ func peer_record_relayable(id string) bool {
 }
 
 // peer_record_current reports whether a relayed record is at least as new as
-// the one we hold, so peer_record_event can tell a real answer from a replay.
-//
-// The distinction cannot come from peer_record_store's return value, which is
-// false for an EQUAL sequence as well as an older one - and equal is the
-// ordinary case: a peer publishes its record once, every holder stores the
-// same envelope at the same sequence, and suppressing on one of them relaying
-// it is exactly the thundering-herd collapse the answered map exists for.
-// Only a strictly older sequence is a replay.
-//
-// No record held reports current: we cannot relay what we do not have
-// (peer_record_relayable requires it), so suppressing then costs nothing.
+// the one we hold. peer_record_store's return cannot answer this: it is false
+// for an EQUAL sequence too, and equal is the ordinary case. Holding no record
+// reports current, since we cannot relay what we do not have.
 func peer_record_current(id string, sequence uint64) bool {
 	peer_records_lock.Lock()
 	defer peer_records_lock.Unlock()

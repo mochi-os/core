@@ -1,15 +1,12 @@
 // Mochi server: SQLite online-backup helper
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// Cross-platform wrapper around the ncruces driver's online-backup
-// API (sqlite3_backup_init). Page-copying preserves byte offsets
-// across snapshots, so rsync delta stays tight. Originally lived in
-// admin_linux.go alongside the admin backup HTTP handler; extracted
-// here so the bulk-bootstrap protocol (which runs on every platform
-// because it ships in core) can also call it.
+// Wraps the ncruces driver's online-backup API. Page-copying preserves byte
+// offsets across snapshots, so rsync delta stays tight. Ships in core, so every
+// platform.
 
 package main
 
@@ -23,13 +20,10 @@ import (
 	sqlitedrv "github.com/ncruces/go-sqlite3/driver"
 )
 
-// db_quick_check runs PRAGMA quick_check on the database file at path, read-only
-// (so it can't touch a WAL). It returns the check result and whether the check
-// actually ran to a verdict. ran=false means the check couldn't complete — an
-// open or lock error, i.e. transient, NOT a corruption finding. ran=true with
-// result != "ok" is a definitive corruption finding. A malformed DB makes
-// quick_check itself error rather than return a row; that error text IS the
-// corruption verdict (the prod 2026-06-23 signature), so it maps to ran=true.
+// db_quick_check runs PRAGMA quick_check read-only and returns the result and
+// whether it reached a verdict. ran=false is transient (open or lock), NOT
+// corruption. A malformed DB makes quick_check itself error; that error text is
+// the verdict, so it maps to ran=true.
 func db_quick_check(path string) (result string, ran bool) {
 	d, err := sql.Open("sqlite3", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
@@ -47,12 +41,9 @@ func db_quick_check(path string) (result string, ran bool) {
 	return r, true
 }
 
-// snapshot_integrity_ok reports whether the SQLite database at path is provably
-// clean. Gates a freshly-fetched bootstrap snapshot before it is landed, so a
-// corrupt source or transfer is rejected and retried rather than installed and
-// then re-propagated to other peers — the corruption ping-pong that wrecked
-// feeds.db (#6). A check that couldn't run (ran=false) is treated as not-ok: an
-// unverifiable snapshot must not be landed.
+// snapshot_integrity_ok reports whether the database at path is provably clean;
+// it gates a fetched bootstrap snapshot before landing. A check that could not
+// run counts as not-ok: an unverifiable snapshot must not be landed.
 func snapshot_integrity_ok(path string) bool {
 	result, ran := db_quick_check(path)
 	return ran && result == "ok"

@@ -1,16 +1,10 @@
-// Mochi server: reading one integer should not cost a second parse or a third copy.
-//
-// api_rss_fetch read the feed into a []byte, then converted it to a string
-// twice - once for gofeed and once for the TTL - and a Go string is immutable,
-// so each conversion copies the whole document. Three live representations at a
-// 100 MB cap. The TTL copy also drove a SECOND full parse through rss.Parser,
-// building a complete extra document tree for one number, on every Atom and
-// JSON feed too, where <ttl> does not exist at all.
+// Mochi server: reading one integer should not cost a second parse or a third
+// copy.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

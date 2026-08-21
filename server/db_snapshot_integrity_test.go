@@ -1,13 +1,9 @@
 // Mochi server: bootstrap integrity-gate regression (#6).
 //
-// A freshly-fetched bootstrap snapshot is quick_check'd before it is landed, so
-// a corrupt source/transfer is rejected and retried rather than installed and
-// re-propagated (the corruption ping-pong that wrecked feeds.db).
-//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -36,9 +32,7 @@ func TestSnapshotIntegrityGate(t *testing.T) {
 		t.Fatal("clean snapshot must pass the integrity gate")
 	}
 
-	// Corrupt a copy: garble a swath of btree pages (pages 2..10) in the main
-	// file — invalid page-type bytes are exactly the btreeInitPage corruption
-	// the prod incident showed.
+	// Corrupt a copy: garble pages 2..10 so their page-type bytes are invalid.
 	corrupt_path := filepath.Join(data_dir, "gate-corrupt.db")
 	data, err := os.ReadFile(clean_path)
 	if err != nil {

@@ -1,20 +1,13 @@
 // Mochi server: a timed-out call must not leave a write lock held.
 //
 // thread.Cancel is only observed between interpreter steps, so a statement
-// already inside SQLite runs to completion however far the call has overrun -
-// starlark_context says exactly that, and api_db_query passes the context down
-// for exactly that reason. The transaction handle used the non-Context
-// variants, including the Beginx that opens it, so nothing about a cancelled
-// call reached the statement or the transaction it holds a write lock for.
-//
-// Starlark.call abandons a call stuck in a builtin rather than waiting, so the
-// cleanup hook that would roll the transaction back is queued behind the very
-// statement it meant to interrupt.
+// already inside SQLite runs to completion - the transaction must carry the
+// call's context.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

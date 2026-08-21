@@ -1,20 +1,11 @@
 // Mochi server: a hot-reloaded manifest is validated like a loaded one.
-//
-// reload() re-applies fourteen manifest fields onto a live AppVersion and
-// re-ran only themes_validate - its own comment said so. Everything else
-// app_read checks was skipped, and an action's File is concatenated onto
-// av.base and handed to c.File with nothing else looking at it, so a reloaded
-// "../../../etc/shadow" was served.
-//
-// Dev-only: reload runs under dev_reload, which is off by default and unset on
-// yuzu. The exposure is a machine where the manifest's author already has the
-// filesystem - so this is a validation layer that silently was not there, not
-// a privilege boundary.
+// reload() re-applies fourteen manifest fields onto a live AppVersion; without
+// manifest_validate an action's File reaches c.File unchecked. Dev-only.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -123,9 +114,6 @@ func TestReloadValidatesBeforeMakingExecuteAbsolute(t *testing.T) {
 	}
 }
 
-// TestReloadAndLoadShareOneValidation pins the shape. Two lists of checks is
-// how this drifted: themes_validate was added to reload when themes landed and
-// nothing generalised it.
 func TestReloadAndLoadShareOneValidation(t *testing.T) {
 	for _, function := range []string{"func app_read(", "func (av *AppVersion) reload()"} {
 		body := function_body(t, "apps.go", function)

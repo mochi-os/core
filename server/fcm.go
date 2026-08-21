@@ -1,20 +1,15 @@
 // Mochi server: Firebase Cloud Messaging (FCM) delivery
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// FCM HTTP v1 push delivery. The server admin pastes a Firebase service
-// account JSON into the "fcm.service_account" setting; we mint an OAuth2
-// access token (RS256-signed JWT exchanged for a Bearer token), cache it
-// for ~50 minimum, and POST the message envelope to
-// https://fcm.googleapis.com/v1/projects/<project_id>/messages:send.
-//
-// Per-server Firebase project: each Mochi server has its own; the client
-// learns the public-facing config via the menu app's push/setup action and
-// initialises Firebase Messaging against the matching project. Resulting
-// token is stored as a per-user account with type="fcm" (set by
-// function_push_register_fcm) and looked up by account_deliver_fcm.
+// FCM HTTP v1. The "fcm.service_account" setting holds a Firebase service
+// account JSON; an RS256-signed JWT is exchanged for a cached OAuth2 Bearer
+// token and the envelope is POSTed to
+// https://fcm.googleapis.com/v1/projects/<project_id>/messages:send. Each
+// server has its own Firebase project; device tokens are per-user accounts with
+// type="fcm".
 
 package main
 
@@ -86,16 +81,9 @@ var (
 	fcm_access_token_cache_key string
 )
 
-// account_deliver_fcm sends a notification to one user's FCM token. Token
-// lives in the account row's data blob (`{"token": "..."}`), set by
-// notifications/push/register/fcm.
-//
-// Returns (success, retire, detail).
-//   - retire=true means the token is permanently dead (Google returned
-//     404 UNREGISTERED, INVALID_ARGUMENT on token, or the row's data has
-//     no token at all) and api_account_notify should delete the row.
-//   - detail is a short human-readable failure reason for surfaces like
-//     the connected-accounts "Test" button. Empty on success.
+// account_deliver_fcm sends a notification to one user's FCM token, which lives
+// in the account row's data blob (`{"token": "..."}`). retire=true means the
+// token is permanently dead and the caller should delete the row.
 func account_deliver_fcm(data map[string]any, title, body, link, tag, app, id string) (success bool, retire bool, detail string) {
 	token, _ := data["token"].(string)
 	if token == "" {
@@ -122,11 +110,9 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app, id st
 	envelope := map[string]any{
 		"message": map[string]any{
 			"token": token,
-			// Data-only message so the Android side
-			// (MochiFirebaseMessagingService) keeps control of channel
-			// routing and the pending intent shape. No "notification"
-			// field, which would let Android post a default-styled
-			// notification on its own.
+			// Data-only: no "notification" field, so Android does not post a
+			// default-styled notification and the app keeps channel routing and
+			// pending-intent shape.
 			"data": map[string]string{
 				"title": title,
 				"body":  body,
@@ -171,22 +157,9 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app, id st
 	return false, retire, fcm_summarise_error(resp.StatusCode, body_bytes)
 }
 
-// fcm_post sends one prepared envelope, retrying once on a failure that will
-// plausibly have cleared two seconds later, and returns the response for the
-// caller to classify. A push has no queue behind it: whatever this returns is
-// the only attempt the notification gets, so a failure here is a phone that
-// never buzzes.
-//
-// Both retriable cases are transient and Google-side. A 5xx (INTERNAL,
-// UNAVAILABLE) is documented by Google as retriable. A transport error - TLS
-// handshake timeout, connection reset, DNS failure - never reached Google at
-// all, so it is at least as likely to succeed on a second attempt; it used to
-// return immediately, which excluded the most recoverable failure there is
-// from the mechanism built for recoverable failures.
-//
-// Two attempts, never more. The response body of a retried attempt is closed
-// here; the returned one is the caller's to close. Logging the final failure
-// is the caller's too, so both failure kinds keep their own message.
+// fcm_post sends one prepared envelope, retrying once on a 5xx or a transport
+// error - both transient, and a push has no queue behind it. Two attempts,
+// never more; the returned response is the caller's to close.
 func fcm_post(client *http.Client, url, access_token string, payload []byte) (*http.Response, error) {
 	var resp *http.Response
 	for attempt := 1; ; attempt++ {
@@ -214,15 +187,9 @@ func fcm_post(client *http.Client, url, access_token string, payload []byte) (*h
 	}
 }
 
-// fcm_retire reports whether a non-200 FCM response names the token
-// itself as permanently dead, so the caller should drop the row and let
-// the phone's next register create a fresh one. That is 404 UNREGISTERED
-// ("the app was uninstalled or the token was rotated by Google") or 400
-// INVALID_ARGUMENT whose message blames the registration token. A 404
-// without UNREGISTERED means the request path was rejected (wrong project
-// in fcm.service_account) and a blanket INVALID_ARGUMENT can be a payload
-// bug — retiring on those would delete live registrations one send at a
-// time.
+// fcm_retire reports whether a non-200 response names the token itself as dead:
+// 404 UNREGISTERED, or 400 INVALID_ARGUMENT blaming the registration token.
+// Retiring on a bare 404 or INVALID_ARGUMENT would delete live registrations.
 func fcm_retire(status int, body []byte) bool {
 	code := fcm_error_code(body)
 	return (status == 404 && code == "UNREGISTERED") ||

@@ -1,19 +1,11 @@
-// Mochi server: command-line surface.
-//
-// The banner used to be logged before the arguments were parsed, so a rejected
-// invocation wrote "Mochi X starting" to the journal and then exited without
-// starting, leaving a start record with no matching shutdown. Worse, the flag
-// package stops at the first non-flag argument and reports no error, so
-// `mochi-server version` dropped the word and started a server with the
-// default config. These cover the argument surface that both depend on.
-//
-// Reporting the running version is mochictl's job; the server deliberately has
-// no -version flag, so it is rejected like any other unknown flag.
+// Mochi server: command-line surface. The banner is logged only after the
+// arguments parse, positional arguments are refused (the flag package silently
+// stops at the first), and there is deliberately no -version flag.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -45,9 +37,8 @@ func TestServerArguments(t *testing.T) {
 		{name: "-version is refused", arguments: []string{"-version"}, fails: true},
 		{name: "--version is refused", arguments: []string{"--version"}, fails: true},
 
-		// The regression that mattered: the flag package stops at the first
-		// non-flag argument and returns no error, so each of these used to
-		// start a server with the word silently dropped.
+		// The flag package stops at the first non-flag argument and returns no error,
+		// so each of these would otherwise start a server.
 		{name: "bare version subcommand is refused", arguments: []string{"version"}, fails: true},
 		{name: "any positional argument is refused", arguments: []string{"serve"}, fails: true},
 		{name: "positional after a valid flag is refused", arguments: []string{"-f", "/tmp/x.conf", "serve"}, fails: true},

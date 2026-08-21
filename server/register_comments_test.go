@@ -1,30 +1,15 @@
-// Mochi server: the comments describe the code that is here.
+// Mochi server: no comment may describe core's tables as versioned
+// LWW-Registers.
 //
-// A family of comments described core's user.db tables as versioned
-// LWW-Registers - "each (app, permission, object) carries a per-key Lamport
-// `version` and an originating-host `writer`... on a version tie a deny beats a
-// grant (fail-closed)". None of it was true. No table in core has a writer
-// column, none has a per-key version, and there is no tie-break code. The
-// mechanism belonged to multi-host replication, removed July 2026, which also
-// took the "converges across the account's hosts" premise underneath it.
-//
-// Two of these were traps rather than untidiness:
-//
-//   - permission_revoke's comment credited the revoke's survival to carrying a
-//     higher version than the app's default. The revoke does survive, but
-//     because permissions_default is insert-or-ignore and the granted=0 row is
-//     already there. A reader who believed the version story could "simplify"
-//     that insert-or-ignore into a plain upsert and silently resurrect every
-//     permission every user ever revoked.
-//   - access_list_resource/_subject both claimed "active rules only; tombstones
-//     hidden". Their queries have no filter at all, because access_revoke hard
-//     deletes. Anyone adding soft-delete later would have trusted a WHERE clause
-//     that was never there.
+// That mechanism belonged to multi-host replication, removed July 2026. No
+// table carries a version or writer column, and permissions_default's
+// insert-or-ignore
+// - not a version - is what keeps a revoke from being resurrected.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -80,10 +65,9 @@ func comment_lines(source string) map[int]string {
 // P2P between users is a live system and legitimately uses the word).
 var removed_mechanism = regexp.MustCompile(`(?i)LWW|Lamport|versioned register|versioned-register|versioned LWW|versioned tombstone|convergent set|convergence audit|pair member|paired host|pair-replicat|passive replica|replica-pair|replicated apply|replication apply|exec_app_user`)
 
-// TestNoCommentClaimsTheRemovedRegisterMechanism is the gate. It is written
-// against the vocabulary rather than the exact sentences that were fixed,
-// because the failure mode is a new comment reasoning from the old design - the
-// same way the ones this replaced were written.
+// TestNoCommentClaimsTheRemovedRegisterMechanism matches the vocabulary rather
+// than fixed sentences: the failure mode is a new comment reasoning from the
+// removed design.
 func TestNoCommentClaimsTheRemovedRegisterMechanism(t *testing.T) {
 	for name, source := range source_files(t) {
 		for number, line := range comment_lines(source) {
@@ -269,10 +253,6 @@ func TestGroupMembersRemoveDeletesTheRows(t *testing.T) {
 	}
 }
 
-// TestManifestHasNoReplicateField covers the dead manifest struct removed with
-// these comments. Nothing read AppManifest.Replicate; it described which writes
-// "fan out to the user's other hosts", and pointed at a plan file
-// (claude/plans/replication.md) that no longer exists.
 func TestManifestHasNoReplicateField(t *testing.T) {
 	source, err := os.ReadFile("apps.go")
 	if err != nil {

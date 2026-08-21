@@ -1,20 +1,12 @@
 // Mochi server: a refused websocket handshake says why.
 //
-// The auth branch ended in a bare `return`, which Gin answers as 200 with an
-// empty body. The handshake still fails - there is no 101 and no Upgrade header
-// - so nothing connects either way, but the caller cannot tell "not
-// authenticated" from "wrong path" or "server broken", and the access log
-// records an authentication failure as a success. The origin check three lines
-// below always answered with a status; this one did not.
-//
-// The same function took the channel key from the query string unvalidated
-// while mochi.websocket.write validated it as a constant, and bounded nothing
-// about how many connections one user could hold.
-//
+// A bare `return` in the auth branch is a 200 with an empty body: nothing
+// connects either way, but the caller cannot tell why and the access log
+// records an authentication failure as a success.//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -65,11 +57,9 @@ func websocket_attempt_as(t *testing.T, session string, query string) int {
 		defer func() { recover() }()
 		websocket_connection(c)
 	}()
-	// c.Writer.Status(), not the recorder's Code: gin buffers the status and
-	// flushes it when the engine finishes the request, which a test calling the
-	// handler directly never reaches. The recorder would read 200 for a
-	// refusal that does reach the wire as 401 - which is the very confusion
-	// this test exists to prevent.
+	// c.Writer.Status(), not the recorder's Code: gin buffers the status until the
+	// engine finishes the request, which a direct handler call never reaches, so
+	// the recorder reads 200 for a refusal that goes out as 401.
 	return c.Writer.Status()
 }
 
@@ -184,9 +174,6 @@ func websocket_session(t *testing.T, user string) string {
 	return code
 }
 
-// TestWebsocketCapIsEnforcedOnTheRequest drives the handler with a real session
-// for a user already at the cap. Counting is one thing; refusing is another,
-// and only this shows a client the 429 rather than a socket that opens.
 func TestWebsocketCapIsEnforcedOnTheRequest(t *testing.T) {
 	cleanup := create_test_users_db(t)
 	defer cleanup()

@@ -3,18 +3,9 @@
 // This file is part of Mochi, licensed under the GNU AGPL v3 with the
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-// End-to-end intra-instance integration tests for /mochi/2/messages.
-//
-// Phase 3g per claude/plans/protocol2.md → Testing strategy.
-//
-// We wire a Sender ↔ Receiver pair via io.Pipe and exercise the full
-// wire protocol: hello → caps → claim → message → ack — without
-// libp2p. Useful for:
-//   - Full handshake round-trip
-//   - Drain-and-batch ack arrival on the sender side
-//   - Ordering preserved within a single stream
-//   - Bye drain
-//   - Stream death recovery
+// End-to-end intra-instance integration tests for /mochi/2/messages: a Sender
+// and Receiver wired over io.Pipe run the full hello -> caps -> claim ->
+// message -> ack sequence without libp2p.
 
 package main
 
@@ -118,14 +109,9 @@ func TestEndToEndHandshakeOverPipe(t *testing.T) {
 
 // --- Full Sender (with Receiver mock) ----------------------------------
 
-// run_test_receiver starts a goroutine that performs the receiver-side
-// handshake then sits in a read loop, sending an ack frame for every
-// message frame it receives. Returns a channel that emits the IDs of
-// every message it dispatched.
-// receiver is the peer ID this fake is playing, and MUST match the peer
-// the Sender under test was installed for: the real sender signs its
-// claim for the peer it believes it is talking to, so a mismatch here
-// means every claim is correctly rejected and no message is delivered.
+// run_test_receiver plays the receiver: handshake, then ack every message
+// frame; the returned channel emits dispatched message ids. `receiver` MUST be
+// the peer the Sender under test was installed for, or every claim is rejected.
 func run_test_receiver(t *testing.T, stream wire_stream, challenge []byte, receiver string) <-chan string {
 	t.Helper()
 	got := make(chan string, 128)
@@ -150,13 +136,9 @@ func run_test_receiver(t *testing.T, stream wire_stream, challenge []byte, recei
 					claimed[f.From] = true
 				}
 			case frame_type_prove:
-				// Answer the sender's possession demand the way a real
-				// receiver does: sign ITS challenge (from caps) with the
-				// addressed entity's key.
-				// Bound to the OPENER's peer id — the Sender under test,
-				// whose id is net_id in this process — not to the peer this
-				// fake is playing. Signing for the wrong side is exactly
-				// what responder_verify is there to reject.
+				// Sign the sender's caps challenge with the addressed entity's key, bound
+				// to the OPENER's peer id (net_id here), not the peer this fake plays -
+				// responder_verify rejects the wrong side.
 				signature := responder_sign(f.To, caps.Challenge, net_id, protocol_messages)
 				if signature == nil {
 					_ = frame_write(stream, &Frame{Type: frame_type_fail, From: f.To, Reason: fail_unproven})
@@ -217,14 +199,9 @@ func install_sender_for(t *testing.T, peer string, stream wire_stream, hello *Fr
 	}()
 	return s, func() {
 		s.shutdown()
-		// Block until read_loop has fully exited before returning. The
-		// caller's cleanup resets the data_dir / net_id globals, and a
-		// still-running read_loop (handle_inbound -> peer_mark_progress ->
-		// db_open, which reads data_dir) would race that reset — the
-		// pre-existing flaky -race in this and later tests. shutdown()
-		// Resets the stream, which closes the io.Pipe and unblocks
-		// read_loop's frame_read, so this never hangs. Production never
-		// resets data_dir, so this is purely a test-isolation concern.
+		// Block until read_loop has exited: the caller's cleanup resets data_dir /
+		// net_id, which a still-running read_loop would race. shutdown() resets the
+		// stream, so this cannot hang.
 		<-read_done
 		restore()
 	}
@@ -373,11 +350,8 @@ func TestEndToEndPipelinesClaimAndMessage(t *testing.T) {
 }
 
 func TestEndToEndUnclaimedTriggersReclaim(t *testing.T) {
-	// Receiver returns fail{unclaimed} on a message that's never been
-	// claimed → sender's resolver clears its claimed cache and the
-	// next send re-issues the claim before the message. We verify by
-	// dropping the FIRST claim before responding to the message, then
-	// observing the sender's resolve_fail directly.
+	// fail{unclaimed} must make the sender clear its claimed cache so the next
+	// send re-issues the claim before the message.
 	cleanup := setup_replication_test(t)
 	defer cleanup()
 	setup_users_test_schema()
@@ -482,18 +456,10 @@ func TestEndToEndStreamDeathQueueFailsInflight(t *testing.T) {
 
 // --- /mochi/2/stream content-segment routing ---------------------------
 
-// TestStreamOpenShipsContentAsFirstPostAckSegment guards the bug found
-// in Phase 6 manual testing: when a caller passes `content` to
-// stream_open, it MUST land on the wire as the first post-ack CBOR
-// segment so the receiver's receive_stream picks it up as e.content.
-// Earlier code packed it into open.Content where the receiver never
-// looked, breaking auth_replicate's user-lookup ("No such user on the
-// source server").
-//
-// We can't run the real /mochi/2/stream receiver here without libp2p,
-// so we hand-construct the receiver side over an io.Pipe and assert
-// that the first frame the sender writes after the ack is the content
-// map.
+// TestStreamOpenShipsContentAsFirstPostAckSegment: `content` passed to
+// stream_open must reach the wire as the first post-ack CBOR segment, which is
+// where the receiver reads e.content. The receiver side is hand-built over a
+// pipe.
 func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -576,20 +542,9 @@ func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
 	}
 }
 
-// TestStreamOpenSelfLoopUsesV2Native is the regression test for the
-// market/staff → Comptroller outage: a mochi.remote.stream() to a
-// locally-hosted entity resolves peer==net_id, and the wire path ends
-// in net_me.NewStream(self), which libp2p refuses. stream_open_or_self
-// must route self to the in-process loopback (stream_self_loop) rather
-// than attempting (and failing) the wire path.
-//
-// In the test environment net_me is nil, so the wire attempt would
-// return error_sender_unreachable; the self-loop path must return a non-nil
-// near end with no error.
-//
-// Note: the far-end dispatch goroutine resolves "to-entity" to no local
-// user and closes its pipe end — that's fine; this test only asserts
-// the routing decision (the near end is returned, raw, no error).
+// TestStreamOpenSelfLoopUsesV2Native: peer == net_id must route to the
+// in-process loopback, since net_me.NewStream(self) is refused by libp2p.
+// net_me is nil here, so the wire attempt would error; the self-loop must not.
 func TestStreamOpenSelfLoopUsesV2Native(t *testing.T) {
 	cleanup := setup_replication_test(t) // sets net_id = "self"
 	defer cleanup()
@@ -602,11 +557,9 @@ func TestStreamOpenSelfLoopUsesV2Native(t *testing.T) {
 	if s == nil {
 		t.Fatal("self-loop returned nil stream; mochi.remote.stream() to a local entity would report 'not available'")
 	}
-	// Drain the near end. The far-end goroutine resolves "to-entity" to
-	// no local user and closes its pipe end, so this read returns EOF.
-	// Reading also synchronises with the goroutine's DB access (the
-	// resolve happens-before its close, which happens-before this read
-	// returns) so the detached goroutine can't race test teardown.
+	// Drain the near end: the far-end goroutine closes its pipe end, so this
+	// returns EOF, and the read synchronises with its DB access so the detached
+	// goroutine cannot race teardown.
 	var discard map[string]any
 	_ = s.read(&discard)
 	s.close()
@@ -640,12 +593,9 @@ func TestQueueSendDirectUnreachablePeerFails(t *testing.T) {
 	}
 }
 
-// TestStreamSelfLoopAnswersErrors: the loopback answers failures in-band
-// instead of a bare close — a requester must be able to tell "the far
-// side refused or failed" from "the connection died" (the 2026-07-17/19
-// "unable to read segment: EOF" class). The wire receiver answers the
-// unknown-user case at the open handshake; the loopback skips the
-// handshake, so both cases answer with an error segment.
+// TestStreamSelfLoopAnswersErrors: the loopback must answer failures in-band,
+// not with a bare close, so a requester can tell refusal from a dead
+// connection.
 func TestStreamSelfLoopAnswersErrors(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

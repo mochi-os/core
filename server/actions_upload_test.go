@@ -1,21 +1,11 @@
 // Mochi server: a.upload writes through os.Root, as every other write to app
-// storage does.
-//
-// It was the last one using gin's SaveUploadedFile, which is MkdirAll plus
-// Create - both symlink-following. The path string is validated, but a symlink
-// is not in the string, so a link left in the app's file directory redirected
-// the write outside it. a.write.file records the same reasoning for the read
-// side, in the same file.
-//
-// It also read a.user, the RAW requester, where every mochi.file.* call reads
-// the thread's user. Those differ on an anonymous request to a public action:
-// the auth gate admits one (it refuses only when user AND owner are absent),
-// a.user is nil, and user_storage_dir dereferenced it.
+// storage does, and reads the thread's user rather than a.user - a.user is nil
+// on an anonymous request to a public action.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

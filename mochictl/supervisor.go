@@ -1,13 +1,11 @@
 // mochictl: supervisor detection + shell-out for `mochictl start`.
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// `mochictl start` is awkward by definition — if the server isn't running,
-// the UDS socket doesn't exist and we have nothing to talk to. Best we can
-// do is detect the supervisor (systemd, Docker, or none) and shell to it,
-// or error with a useful hint.
+// The server is not running, so there is no admin socket to talk to: detect the
+// supervisor (systemd, Docker, or none) and shell to it.
 
 //go:build linux
 
@@ -21,12 +19,8 @@ import (
 )
 
 // systemctl_path returns the absolute path to systemctl, or "" when it is not
-// where a systemd host puts it.
-//
-// Not exec.LookPath: mochictl runs as root to start a service, and PATH is
-// inherited from whoever invoked it, so a writable directory earlier in it
-// would decide which binary root executes. sudo's secure_path already covers
-// the common case; a root shell does not.
+// where a systemd host puts it. Not exec.LookPath: mochictl runs as root and
+// inherits PATH, so a writable directory in it would choose the binary.
 func systemctl_path() string {
 	for _, candidate := range []string{"/usr/bin/systemctl", "/bin/systemctl", "/usr/sbin/systemctl", "/sbin/systemctl"} {
 		if information, err := os.Stat(candidate); err == nil && !information.IsDir() {

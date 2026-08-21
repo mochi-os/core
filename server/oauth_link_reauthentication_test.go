@@ -29,12 +29,9 @@ func begin_link(session string, body string) int {
 	return w.Code
 }
 
-// TestOauthLinkRequiresReauthentication covers the step-up gate on OAuth
-// linking. Linking ADDS a way to sign in and outlives every later passphrase,
-// passkey and TOTP change, so a session cookie alone must not be enough - the
-// same rule the settings app already applies to passkey registration, TOTP
-// setup, recovery regeneration and unlink. Before this gate a stolen session
-// could attach an attacker-controlled provider as a durable backdoor.
+// TestOauthLinkRequiresReauthentication: linking ADDS a way to sign in and
+// outlives every later credential change, so a session cookie alone is not
+// enough - the same gate as passkey registration, TOTP setup and unlink.
 func TestOauthLinkRequiresReauthentication(t *testing.T) {
 	cleanup := create_test_users_db(t)
 	defer cleanup()

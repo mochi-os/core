@@ -1,14 +1,11 @@
 // Mochi server: broadcast pending buffer tests
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// Tests for the per-app pending table and the chain-drain
-// loop. The dispatcher itself (broadcast_pending_dispatch_run in
-// events.go) requires a registered app + user; here we stub the
-// dispatcher with a simple synchronous callback so the buffer +
-// drain logic can be exercised without spinning up the app graph.
+// The dispatcher is stubbed with a synchronous callback, so the buffer and
+// chain-drain logic runs without a registered app and user.
 
 package main
 
@@ -212,11 +209,8 @@ func TestBroadcastPendingCapEnforced(t *testing.T) {
 
 // --- broadcast pending GC -----------------------------------------
 //
-// The GC walks per-app DBs and skips unfillable gaps; tests below
-// exercise the classifier and the skip+drain integration. The
-// orchestration function broadcast_pending_gc itself needs registered
-// user/app globals to resolve handlers, so it's exercised end-to-end
-// in the harness-driven tests rather than here.
+// The classifier and the skip+drain integration. broadcast_pending_gc itself
+// needs registered user/app globals, so it is exercised in the harness tests.
 
 func setup_broadcast_pending_gc_test(t *testing.T) (string, func()) {
 	t.Helper()
@@ -287,11 +281,8 @@ func TestBroadcastPendingStalledDBClassifiesGap(t *testing.T) {
 	}
 }
 
-// TestBroadcastPendingStalledDBSkipsContiguous confirms a stream that
-// would drain naturally (min(pending.seq) == last+1) is NOT flagged.
-// Without this guard the GC would treat every transient out-of-order
-// arrival as an unfillable gap and start skipping events that were
-// about to apply on the next tick.
+// TestBroadcastPendingStalledDBSkipsContiguous - a stream that would drain on
+// the next arrival must not be flagged, or the GC skips events about to apply.
 func TestBroadcastPendingStalledDBSkipsContiguous(t *testing.T) {
 	_, cleanup := setup_broadcast_pending_gc_test(t)
 	defer cleanup()
@@ -341,13 +332,8 @@ func TestBroadcastPendingStalledWalkFindsMultipleApps(t *testing.T) {
 	}
 }
 
-// TestBroadcastPendingStalledDBStalePendingHidden is the regression
-// test for the bug found during the first force-skip on wasabi: stale
-// pending entries below received.last must NOT hide a genuinely stuck
-// stream from the classifier. Pre-fix, min(sequence)=11 with
-// received.last=866 made the test minimum_sequence <= last+1 trivially true
-// (11 <= 867) and the stream was reported as "drains naturally" -
-// missing the real gap at sequence 1310.
+// TestBroadcastPendingStalledDBStalePendingHidden - a stale pending row below
+// received.last must not hide a genuinely stuck stream from the classifier.
 func TestBroadcastPendingStalledDBStalePendingHidden(t *testing.T) {
 	_, cleanup := setup_broadcast_pending_gc_test(t)
 	defer cleanup()
@@ -390,11 +376,8 @@ func TestBroadcastPendingStalledDBStalePendingHidden(t *testing.T) {
 	}
 }
 
-// TestBroadcastAdvanceSkipsAndDrains confirms the actual unstick:
-// after broadcast_advance_local jumps received.last past the gap, the
-// chain-drain picks up the now-contiguous tail. This is the core of
-// what broadcast_pending_gc does; testing it against a real DB
-// without the user/app globals proves the SQL is right.
+// TestBroadcastAdvanceSkipsAndDrains - once received.last jumps the gap, the
+// chain-drain picks up the now-contiguous tail.
 func TestBroadcastAdvanceSkipsAndDrains(t *testing.T) {
 	_, cleanup := setup_broadcast_pending_gc_test(t)
 	defer cleanup()

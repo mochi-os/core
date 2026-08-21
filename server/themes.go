@@ -18,26 +18,16 @@ var (
 	match_theme_override_key = regexp.MustCompile(`^--[A-Za-z0-9_-]{1,64}$`)
 	match_theme_radius       = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?(rem|em|px)$`)
 	match_theme_background   = regexp.MustCompile(`^[0-9a-zA-Z#(),.% -]{1,100}$`)
-	// Function names that make the browser fetch. A custom property like
-	// --background-image is consumed as a real background-image, so a value
-	// naming any of these turns a theme into a beacon that reports every
-	// page view to a third party. Matching the construct rather than the URL
-	// shape is deliberate: a blocklist of URL shapes is bypassable, and
-	// url(h\74tp://...), image-set('http://...' 1x), -webkit-image-set(...)
-	// and even \75rl(...) were all verified fetching in Chrome against a
-	// scheme-matching pattern. No legitimate theme value needs to fetch —
-	// gradients, colours, lengths, shadows and font stacks name none of these.
+	// Function names that make the browser fetch: a theme value naming one turns
+	// every page view into a third-party beacon. Matched by construct, not URL
+	// shape - escaped forms like \75rl( defeat a scheme pattern.
 	match_theme_fetch = regexp.MustCompile(`(?i)url|image|src|element|cross-fade|paint`)
 )
 
-// themes_validate checks an app manifest's themes and theme_icons blocks.
-// Themes cross a trust boundary — any installed app may ship themes the user
-// can apply platform-wide — so identifiers, numeric ranges, enums, paths and
-// override properties are constrained at load, not at render. Override keys
-// are restricted to CSS custom properties by shape, not by allowlist: the
-// contract is "any variable theme.css defines", and the --* restriction is
-// what stops a theme setting ordinary properties (display, pointer-events)
-// on another app's root element.
+// themes_validate constrains an app manifest's themes at load: any installed
+// app may ship themes the user applies platform-wide. Override keys must be
+// --*, so a theme cannot set display or pointer-events on another app's root
+// element.
 func themes_validate(av *AppVersion) error {
 	if len(av.Themes) > 100 {
 		return fmt.Errorf("App has too many themes (%d)", len(av.Themes))
@@ -84,18 +74,9 @@ func themes_validate(av *AppVersion) error {
 		default:
 			return fmt.Errorf("App bad theme icon mask %q in theme %q", t.IconMask, t.ID)
 		}
-		// Same fetch blocklist as the override values below. The charset
-		// above was written for colour syntax - # for hex, and (), and %
-		// for rgb()/hsl() - and admitting parentheses admits function
-		// calls generally: url(evil.example), element(#id), paint(name),
-		// cross-fade() and the image-set family all fit it. The class
-		// happens to exclude : and /, so no absolute URL can be written,
-		// and the one consumer today assigns this to backgroundColor,
-		// where the CSSOM drops a non-colour. Neither is a guarantee: a
-		// consumer that used the background shorthand, which accepts an
-		// <image>, would make every one of them live. The charset already
-		// covers the rest of what the override check bans - ; < > " \ &
-		// and /* cannot be written with it.
+		// The charset was written for colour syntax, and its parentheses admit
+		// function calls generally - url(), element(), paint(), image-set() - so the
+		// fetch blocklist applies here as well as to override values.
 		if t.IconBackground != "" && (!match_theme_background.MatchString(t.IconBackground) ||
 			match_theme_fetch.MatchString(t.IconBackground)) {
 			return fmt.Errorf("App bad theme icon background %q in theme %q", t.IconBackground, t.ID)
@@ -108,15 +89,9 @@ func themes_validate(av *AppVersion) error {
 			if !match_theme_override_key.MatchString(key) {
 				return fmt.Errorf("App bad theme override %q in theme %q", key, t.ID)
 			}
-			// Backslash, ampersand and comment syntax are refused outright:
-			// each lets an identifier be written so it doesn't read as itself,
-			// which is how a name-based check is evaded. \75rl( is url( to the
-			// CSS tokenizer, and u&#114l( is url( to the HTML parser, which
-			// decodes the style attribute before CSS sees it. A value carrying
-			// none of them cannot name a function it doesn't spell. The style
-			// attribute is escaped on output too (web_user_theme_style) — this
-			// is so a manifest that tries fails loudly at load rather than
-			// silently rendering something inert.
+			// Backslash, ampersand and comment syntax are refused outright: each lets a
+			// function be named without spelling it (\75rl( to the CSS tokenizer,
+			// u&#114l( to the HTML parser, which decodes first).
 			if len(value) > 500 || strings.ContainsAny(value, `;<>"\&`) || strings.Contains(value, "/*") ||
 				!match_non_controls.MatchString(value) || match_theme_fetch.MatchString(value) {
 				return fmt.Errorf("App bad theme override value for %q in theme %q", key, t.ID)
@@ -152,12 +127,9 @@ func themes_validate(av *AppVersion) error {
 	return nil
 }
 
-// web_user_appearance_attrs returns the html-tag class attribute and an
-// optional <script> that selects dark/light mode according to the user's
-// "appearance" preference. The script is empty for explicit light/dark
-// preferences and resolves system-prefers-dark when set to "auto".
-// If nonce is non-empty it's added as a script nonce attribute (for
-// callers serving under a strict CSP, like the shell page).
+// web_user_appearance_attrs returns the html-tag class attribute and, for the
+// "auto" preference, a <script> resolving system-prefers-dark. A non-empty
+// nonce is applied to that script for callers under a strict CSP.
 func web_user_appearance_attrs(user *User, nonce string) (string, string) {
 	appearance := user_preference_get(user, "appearance", "auto")
 	script_attrs := ""
@@ -171,11 +143,8 @@ func web_user_appearance_attrs(user *User, nonce string) (string, string) {
 		return `class="dark"`, ""
 	case "auto":
 		// The script resolves the scheme before first paint so the page does not
-		// flash. The attribute carries the PREFERENCE, which the resolved class
-		// alone destroys: a client reading only the class sees "dark" and cannot
-		// tell a user who chose dark from one who chose auto on a dark desktop,
-		// so it stops following the system for exactly half the users who asked
-		// it to.
+		// flash. The attribute carries the PREFERENCE: the resolved class alone
+		// cannot distinguish "dark" from "auto" on a dark desktop.
 		return `data-appearance="auto"`, `<script` + script_attrs + `>if(window.matchMedia('(prefers-color-scheme:dark)').matches)document.documentElement.classList.add('dark')</script>`
 	default:
 		return "", ""
@@ -241,11 +210,9 @@ func font_stacks(pref string) (sans, mono string) {
 	case "serif":
 		return `Georgia, 'Times New Roman', Cambria, 'Source Serif Pro', serif`, ""
 	case "dyslexia":
-		// Atkinson Hyperlegible is loaded as a web font in lib/web's
-		// theme.css so this stack actually takes effect. OpenDyslexic
-		// (preferred by some readers) isn't on Google Fonts and would
-		// have to be self-hosted; Comic Sans is a last-resort local
-		// fallback some dyslexic readers find legible.
+		// Atkinson Hyperlegible is loaded as a web font in lib/web's theme.css, so
+		// this stack takes effect; OpenDyslexic is not on Google Fonts and would have
+		// to be self-hosted.
 		return `'Atkinson Hyperlegible', 'OpenDyslexic', 'Comic Sans MS', sans-serif`, ""
 	}
 	return "", ""
@@ -336,18 +303,9 @@ func append_style_preset(style_parts *[]string, density string) {
 	}
 }
 
-// web_user_theme_declarations returns the user's resolved theme as CSS
-// declaration text ("--hue: 250; --radius: 0.5rem"), unescaped and without an
-// attribute wrapper. web_user_theme_style wraps it for HTML output; the shell
-// init endpoint returns it as JSON so the shell can refresh the trusted root
-// from the server rather than from an app's postMessage.
-//
-// Honours per-axis user overrides — density, radius, background, font_size —
-// each defaulting to "theme" (inherit from the active theme). For anonymous
-// requests (user == nil) the per-user overrides resolve to "theme" via
-// user_preference_get's nil-guard, and the active theme falls through to the
-// system-wide default_theme so login / landing / public-anon pages render
-// branded.
+// web_user_theme_declarations returns the user's resolved theme as raw CSS
+// declaration text - unescaped and unwrapped, for web_user_theme_style and the
+// shell init endpoint. Anonymous requests fall through to the default_theme.
 func web_user_theme_declarations(user *User) string {
 	user_density := user_preference_get(user, "density", "theme")
 	user_radius := user_preference_get(user, "radius", "theme")
@@ -384,10 +342,8 @@ func web_user_theme_declarations(user *User) string {
 		append_radius_variables_from_base(&style_parts, radius)
 	}
 
-	// Background: the standard gentle gradient, suppressed when the user opts
-	// out. One design for every theme - it tints itself through var(--primary),
-	// so it follows the active theme (and appearance) automatically. Replaces
-	// the per-theme SVG backgrounds (decision 2026-07-05).
+	// One gradient for every theme: it tints through var(--primary), so it follows
+	// the active theme and appearance automatically.
 	if user_background != "off" {
 		style_parts = append(style_parts,
 			"--background-image: radial-gradient(ellipse at top, color-mix(in oklch, var(--primary) 12%, transparent), transparent 70%)",
@@ -466,23 +422,15 @@ func web_user_theme_style(user *User) string {
 	if declarations == "" {
 		return ""
 	}
-	// The attribute goes into HTML, and the parser decodes character
-	// references before CSS ever parses the value — so a theme value carrying
-	// `u&#114l(` or `red&#59;background-image:url(` reconstructs a fetching
-	// function or a whole extra declaration on <html> that none of the checks
-	// in web_user_theme_declarations, or the manifest validation, ever saw as
-	// such. Escaping at the point of output is the boundary that holds
-	// whatever reached here, and it costs nothing in fidelity: the parser
-	// decodes each reference back to the character the theme meant, so the
-	// quotes in a font stack still arrive as quotes.
+	// The HTML parser decodes character references before CSS parses the value, so
+	// `u&#114l(` reconstructs a fetching function that no string check upstream
+	// ever saw. Escaping here is the boundary, and it is lossless.
 	return `style="` + html.EscapeString(declarations) + `"`
 }
 
-// web_apply_user_document_theme injects user appearance/theme into a full
-// HTML document — used when serving raw app HTML directly (no shell wrapper).
-// Anonymous (user == nil) requests fall through to the system default_theme
-// and "auto" appearance, so login / landing / public-anon pages render
-// branded.
+// web_apply_user_document_theme injects user appearance/theme into a full HTML
+// document, for raw app HTML served without the shell wrapper. Anonymous
+// requests fall through to the system default_theme and "auto".
 func web_apply_user_document_theme(content string, user *User) string {
 	html_class, appearance_script := web_user_appearance_attrs(user, "")
 	content = web_add_html_attribute(content, html_class)

@@ -1,36 +1,14 @@
 // Mochi server: serving a file over P2P gets the transfer budget, like HTTP.
 //
-// Starlark.call runs on two budgets. The compute one (90s, [starlark] timeout)
-// bounds a handler that is thinking. The transfer one (900s, [starlark]
-// file_timeout) bounds a call that has stopped thinking and is only moving
-// bytes, because how long THAT takes is the size of the object over the speed
-// of the other end's link, and no compute budget can be set high enough to
-// cover a slow link without also letting a genuinely stuck handler sit on a
-// concurrency slot for the same time.
+// A call opts into the transfer bound (900s) over the compute one (90s) by
+// flipping its file_serving atomic. The stream writers never did, so the same
+// file served over P2P timed out inside io.Copy, which ignores cancellation -
+// the call was abandoned rather than stopped.
 //
-// A call opts in by flipping its file_serving atomic - starlark_serving_set for
-// an HTTP response, starlark_transfer_set where there is no ResponseWriter to
-// put a deadline on. actions.go does it at seven sites and git.go at one.
-//
-// The stream writers never did. sl_write_file is, by its own doc, "the Go-level
-// implementation behind both s.* and e.* file writers", so the same file served
-// over HTTP got 900 seconds and served over P2P got 90. Publisher's event_get
-// ends in e.write.file(), which is how a server downloading an app package on a
-// link slower than about 1 Mbit/s produced
-//
-//	Event handler <publisher>:event_get() for "get" failed: starlark: timeout after 1m30s
-//
-// on yuzu. Worse than a clean cancellation: io.Copy does not check for
-// cancellation, so the runtime could not stop the call and abandoned it. The
-// transfer ran on, possibly to completion, while the event was reported failed.
-//
-// starlark.go's own note recorded the assumption that produced this - "set
-// mid-call by the a.write.* builtins" - naming only the HTTP namespace.
-//
-// Copyright © 2026 Mochisoft OU
+// Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

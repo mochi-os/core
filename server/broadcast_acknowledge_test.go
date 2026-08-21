@@ -50,10 +50,8 @@ func log_count(t *testing.T, db *DB, key, peer string) int64 {
 	return count
 }
 
-// TestAcknowledgeClampsAboveHead — a watermark past anything this host
-// allocated is capped at the head. The sequence arrives over the network and
-// was previously taken on trust, and it feeds broadcast_log_ack_trim, which
-// deletes every log row below the lowest subscriber floor.
+// TestAcknowledgeClampsAboveHead - the sequence arrives over the network and
+// feeds broadcast_log_ack_trim, so a watermark past the head is capped.
 func TestAcknowledgeClampsAboveHead(t *testing.T) {
 	db, cleanup := setup_acknowledge_test(t)
 	defer cleanup()

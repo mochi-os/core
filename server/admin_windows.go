@@ -1,20 +1,14 @@
-// Mochi server: Windows admin transport — named-pipe listener, admin_start,
-// and the LockFileEx-based snapshot lock.
+// Mochi server: Windows admin transport - named-pipe listener, admin_start, and
+// the LockFileEx-based snapshot lock.
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// Windows has no Unix-socket peer credentials (SO_PEERCRED / LOCAL_PEERCRED),
-// so the admin channel is a named pipe whose security descriptor gates access
-// at connect time: only LocalSystem (SY) and the Administrators group (BA) may
-// open it. That mirrors the Unix design — the OS, not a token, proves the
-// caller's identity — so no per-connection credential check is needed and no
-// admin_credential is attached (admin_peer_credential returns nil, and the audit row logs
-// peer_uid/gid as -1). The same /_/admin/* router (admin_routes.go) is served
-// over the pipe. The server runs as the LocalSystem service installed by the
-// MSI, so it can create the pipe with this descriptor; the operator runs
-// mochictl from an elevated (Administrator) prompt.
+// Windows has no UDS peer credentials, so the pipe's security descriptor gates
+// at connect time: only LocalSystem and Administrators may open it. Nothing
+// per-connection is attached, so admin_peer_credential returns nil and audit
+// rows log peer_uid/gid as -1.
 
 //go:build windows
 

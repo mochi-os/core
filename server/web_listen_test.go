@@ -12,12 +12,6 @@ import (
 	"time"
 )
 
-// TestWebListenBoundsConnections pins that the listener stops accepting past
-// its ceiling.
-//
-// web_server's timeouts bound one connection's header phase and its gap
-// between requests; nothing bounded how many could exist at once, and each one
-// costs a goroutine, a file descriptor and read and write buffers.
 func TestWebListenBoundsConnections(t *testing.T) {
 	listener, err := web_listen("127.0.0.1:0", 2)
 	if err != nil {

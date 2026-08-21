@@ -1,36 +1,15 @@
 // Mochi server: a nil field reaches Starlark as None, not as a typed nil.
 //
-// Event.Attr returned the pointer straight through:
-//
-//	case "stream":
-//	    return e.stream, nil
-//	case "user":
-//	    return e.user, nil
-//
-// A nil *Stream returned as an sl.Value is a NON-nil interface wrapping a nil
-// pointer, so Starlark sees a value that exists but dereferences nothing:
-//
-//   - (*Stream).Truth() returns sl.True unconditionally (streams.go:521) and
-//     never touches the receiver, so it is nil-safe but wrong - `if e.stream:`
-//     passes for an event that has no stream.
-//   - (*Stream).String() is fmt.Sprintf("Stream %d", s.id) (streams.go:517),
-//     which dereferences and panics when the value is printed.
-//
-// e.stream is nil for any frame carrying no packed segments, which is the
-// ordinary case for remote frames - three existing guards (events.go:492,
-// events.go:536, directory.go:484) exist because of it. e.user is nil-reachable
-// too, guarded at events.go:162, :229 and :274, and *User has the identical
-// pair: Truth() unconditionally true, String() dereferencing UID.
-//
-// The panic is caught by the worker's recover(), so the frame ends as a handler
-// panic: the message is dropped and the operator gets a warning naming the app
-// rather than the cause. The truthiness half is quieter and worse in kind - no
-// panic, no warning, just a branch taken wrongly.
+// A nil *Stream or *User returned as an sl.Value is a non-nil interface
+// wrapping a nil pointer: Truth() is unconditionally true, so `if e.stream:`
+// passes for an event that has none, and String() dereferences and panics when
+// printed. e.stream is nil for any frame carrying no packed segments, the
+// ordinary remote case.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

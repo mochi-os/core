@@ -1,21 +1,11 @@
-// Mochi server: a dollar sign in an OpenGraph value is text, not a reference.
-//
-// The three replacers build a replacement string with the app-supplied value
-// inside it and handed it to ReplaceAllString, which reads $ as a capture-group
-// reference. escape_attribute covers the HTML-significant characters - &, ", <, > -
-// and not this one, because $ is regexp-replacement syntax rather than HTML.
-// The patterns have no capture groups, so every $N and $name resolved to empty
-// and took the digits or word after it with them: "Cost: $100" rendered as
-// "Cost: ".
-//
-// It only ever deletes, never introduces markup, so this is silent corruption
-// rather than injection - and it lands in the preview Slack, Discord and
-// crawlers fetch, never in the page the author is looking at.
+// Mochi server: a dollar sign in an OpenGraph value is text, not a regexp
+// replacement reference. escape_attribute does not cover $ - it is not
+// HTML-significant - so the replacers must take the value literally.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -56,13 +46,9 @@ func TestOpenGraphKeepsDollarSigns(t *testing.T) {
 	}
 }
 
-// TestEscapeAttrLeavesDollarAlone states why the fix belongs in the replacer
-// rather than in escape_attribute. Escaping $ to $$ there would also make the
-// dollar-sign test above pass - but escape_attribute has twelve other callers in
-// web.go that build HTML by concatenation with no regexp anywhere near them
-// (<base href>, mochi:app, mochi:class, mochi:entity, mochi:fingerprint,
-// mochi:domain), and every one of those would then render a doubled dollar. $$
-// is regexp-replacement syntax; escape_attribute produces HTML attribute escaping.
+// TestEscapeAttrLeavesDollarAlone: the fix belongs in the replacer, not in
+// escape_attribute - $ is not HTML-significant, and doubling it there would
+// corrupt the callers that concatenate the result straight into markup.
 func TestEscapeAttrLeavesDollarAlone(t *testing.T) {
 	for _, value := range []string{"$", "$$", "Cost: $100", "a $name b"} {
 		if got := escape_attribute(value); got != value {

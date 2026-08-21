@@ -1,17 +1,13 @@
 // Mochi server: a suspended account is told it is suspended.
 //
-// user_by_uid returns nil for a suspended user, deliberately - it is the "get
-// the acting user" lookup and a suspended user must not act. Five login paths
-// then checked user.Status == "suspended" AFTER that lookup, so the check could
-// never run and the suspended user got whatever the nil branch said instead:
-// a 500 on recovery login, "user not found" on MFA verify and passkey login,
-// and "provider_error" on both OAuth paths - which blames the identity provider
-// for what is purely the local account's state.
+// user_by_uid returns nil for a suspended user deliberately, so a user.Status
+// == "suspended" check placed AFTER that lookup can never run and the caller
+// reports whatever its nil branch says instead.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

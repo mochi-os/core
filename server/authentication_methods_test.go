@@ -14,11 +14,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestUserMethodsConfigure covers the per-method tri-state setter: valid
-// transitions (required <-> allowed <-> disabled), the operator policy
-// floor/ceiling, credential availability, and the at-least-one-factor guard
-// that stops a lockout. It also checks the derived per-method state and that
-// auth_remaining_methods tracks only the required set.
 func TestUserMethodsConfigure(t *testing.T) {
 	cleanup := create_test_users_db(t)
 	defer cleanup()
@@ -161,11 +156,7 @@ func TestUserMethodStateOperatorClamp(t *testing.T) {
 }
 
 // TestPartialContinue verifies MFA factors converge onto one partial in any
-// completion order: a factor completed with a live login_partial cookie folds
-// into that partial instead of minting a fresh one (which forgot the factors
-// already done and made accounts requiring a code factor plus passkey or
-// OAuth impossible to sign in to), a satisfied partial is deleted, and
-// another user's cookie is never merged.
+// completion order, and that another user's cookie is never merged.
 func TestPartialContinue(t *testing.T) {
 	cleanup := create_test_sessions_db(t)
 	defer cleanup()
@@ -248,13 +239,9 @@ func TestAccountGateSpacing(t *testing.T) {
 	}
 }
 
-// TestAccountGateReserve is the anti-parallel test the old (read-count, sleep,
-// verify) throttle failed: concurrent guesses all serialise through the gate
-// lock, so calling reserve repeatedly on one account (which is exactly what N
-// concurrent requests do — one at a time under the lock) hands out DISTINCT,
-// increasing wait slots, not the same free-tier slot to everyone. Past the
-// maximum-wait depth the gate refuses rather than queue, bounding both the guess
-// rate per account and the number of handlers that ever sleep.
+// TestAccountGateReserve: concurrent guesses serialise through the gate lock
+// and get distinct, increasing wait slots; past the maximum-wait depth the gate
+// refuses rather than queue.
 func TestAccountGateReserve(t *testing.T) {
 	gate := &account_gate{entries: make(map[string]*account_gate_entry)}
 
@@ -292,12 +279,9 @@ func TestAccountGateReserve(t *testing.T) {
 	}
 }
 
-// TestAccountGateDone is the regression for the reset race: a correct
-// credential settling WHILE other reservations are still sleeping must not
-// rewind the timeline (which would let new requests reserve slots overlapping
-// the sleepers, and lose the sleepers' failure accounting). It clears the
-// penalty but keeps the reserved slots until the last in-flight attempt
-// settles; only then is the entry fully dropped.
+// TestAccountGateDone: a credential settling while other reservations sleep
+// clears the penalty but must not rewind the timeline; the entry drops only
+// when the last in-flight attempt settles.
 func TestAccountGateDone(t *testing.T) {
 	gate := &account_gate{entries: make(map[string]*account_gate_entry)}
 

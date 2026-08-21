@@ -1,22 +1,13 @@
 // Mochi server: an anonymous caller is nobody, not the owner.
 //
-// A public action invoked with no authentication used to be run as the entity
-// owner. The two things that conflated are the account whose data is read and
-// the identity the request carries: the first is answered by principal_storage
-// and is unchanged, the second was a false claim laid on top. Apps believed it
-// - feeds guards owned_set() against it and says so in a comment about a
-// stranger being told they owned the feed.
-//
-// The gates that a public action can actually reach were audited: eight of the
-// 119 permission-gated APIs, all now on require_permission_acting so they
-// resolve against the storage account rather than refusing a nil caller. These
-// tests pin both halves - the binding, and the eight - because getting only one
-// right turns every public page into a 500 at the first gate.
-//
+// The account whose data is read and the identity a request carries are
+// separate questions; principal_storage answers the first. These tests pin the
+// binding and the permission gates a public action can reach, which must
+// tolerate a nil caller.//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -64,10 +55,8 @@ func TestAnonymousCallerIsNotTheOwner(t *testing.T) {
 	}
 }
 
-// TestReachableGatesTolerateAnAnonymousCaller is the other half. Strict
-// require_permission returns "no user context" before it ever looks at a
-// grant, so any of these left strict turns its public route into a 500 - which
-// is exactly what was measured before the change.
+// Strict require_permission returns "no user context" before it looks at a
+// grant, so any of these left strict turns its public route into a 500.
 func TestReachableGatesTolerateAnAnonymousCaller(t *testing.T) {
 	sources := map[string]string{}
 	for _, name := range []string{"access.go", "accounts.go", "ai.go", "entities.go", "interests.go"} {

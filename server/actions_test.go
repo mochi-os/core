@@ -1,12 +1,10 @@
 // Mochi server: a.dump / a.error HTML response tests. Actions run under gin's
-// NoRoute handler, which pre-sets 404 — a page written without an explicit
-// status ships with it — and every response carries X-Content-Type-Options:
-// nosniff, so the Content-Type must be set explicitly rather than left to
-// net/http detection.
+// NoRoute handler, which pre-sets 404, and every response carries nosniff, so
+// the Content-Type must be set explicitly.
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -122,11 +120,9 @@ func TestWriteStreamSvgOversizeDownloads(t *testing.T) {
 	}
 }
 
-// write_file_environment builds a files directory for one user and app, and
-// returns a function that serves a path from it the way an action would. hosted
-// picks which of the two callers is being modelled: a request that arrived on a
-// domain route, which publishes a site and may render it, or a plain request to
-// the app, which serves stored content and may not.
+// write_file_environment builds a files directory for one user and app and
+// returns a server for it. hosted picks the caller modelled: a domain route,
+// which may render a site, or a plain app request, which may not.
 func write_file_environment(t *testing.T, url string, hosted bool) (string, func(string) *httptest.ResponseRecorder) {
 	t.Helper()
 
@@ -218,14 +214,8 @@ func TestWriteFileFollowsInternalSymlink(t *testing.T) {
 	}
 }
 
-// TestWriteFileFollowsSiblingFileSymlink covers the other in-directory shape:
-// a link whose final component points at a sibling file rather than at a
-// directory, which resolves by a different path through os.Root - a final
-// component is opened, not walked. The release publishes each installer under
-// a version-stamped name and leaves the stable download name beside it as a
-// link, so it is uploaded once instead of twice; if this stopped resolving the
-// download URL would 404 while the updater, which fetches the stamped name
-// directly, kept working and hid it.
+// A link whose final component points at a sibling file resolves by a different
+// path through os.Root - a final component is opened, not walked.
 func TestWriteFileFollowsSiblingFileSymlink(t *testing.T) {
 	base, serve := write_file_environment(t, "/files/mochi-server.msi", true)
 
@@ -370,11 +360,8 @@ func TestWriteFileSetsCachePolicy(t *testing.T) {
 	}
 }
 
-// TestWriteFileDownloadsDocument covers the stored-content case: a files
-// directory holds what its app was given, and most apps are given it by someone
-// other than the reader - an attachment, a photo, a purchased asset. A document
-// among them served inline would run in this origin with the reader's session,
-// so anything outside the inline allowlist has to arrive as a download.
+// Stored content: anything outside the inline allowlist must arrive as a
+// download, or it would run in this origin with the reader's session.
 func TestWriteFileDownloadsDocument(t *testing.T) {
 	base, serve := write_file_environment(t, "/feeds/entity/-/attachment", false)
 
@@ -461,11 +448,8 @@ func TestWriteFileHostedSiteRendersDocument(t *testing.T) {
 	}
 }
 
-// TestDomainRouteDoesNotGrantSiteServing is the point of moving the exemption
-// onto the declaration. A domain route pointed at an app that serves uploads -
-// rather than at one publishing a site - used to carry the exemption with it,
-// so that app served uploaded documents raw on the route's hostname. Routing is
-// how a reader arrived, not what the app meant.
+// A domain route must not itself grant site serving: routing is how a reader
+// arrived, not what the app meant.
 func TestDomainRouteDoesNotGrantSiteServing(t *testing.T) {
 	original := data_dir
 	data_dir = t.TempDir()
@@ -596,11 +580,9 @@ func TestWriteFileUsesRouteOwner(t *testing.T) {
 	}
 }
 
-// TestWriteFileDirectRequestKeepsOwner is the other half: with no route, the
-// action's own owner still decides which directory is read. Redirecting that
-// generally would be an escalation - apps read owner == user as "the requester
-// owns this data", so an authenticated stranger handed the published account's
-// owner is authorized as that account.
+// With no route, the action's own owner decides which directory is read.
+// Redirecting that generally would authorize a stranger as the published
+// account.
 func TestWriteFileDirectRequestKeepsOwner(t *testing.T) {
 	base, serve := write_file_environment(t, "/files/index.html", false)
 
@@ -615,11 +597,8 @@ func TestWriteFileDirectRequestKeepsOwner(t *testing.T) {
 	}
 }
 
-// TestWriteFileUnresolvedRouteOwnerFailsClosed covers a hosted domain whose
-// account no longer resolves - most often because it was deleted after the
-// route was made, leaving a live hostname pointing at nobody. Falling back to
-// the requester would put back the behaviour the route owner lookup exists to
-// remove: one URL answering with whoever happens to be asking.
+// A hosted domain whose account no longer resolves must fail closed; falling
+// back to the requester would make one URL answer with whoever is asking.
 func TestWriteFileUnresolvedRouteOwnerFailsClosed(t *testing.T) {
 	original := data_dir
 	data_dir = t.TempDir()

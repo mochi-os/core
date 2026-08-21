@@ -1,17 +1,12 @@
 // Mochi server: /_/admin/broadcast/* handlers
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// Operator visibility into the broadcast subsystem. Today: lag
-// detection - scan every per-user-app DB for received
-// vs log to surface subscribers that have fallen behind the owner
-// without firing user-visible errors. The original broadcast
-// investigation report (claude/sessions/2026-05-25-broadcast-resync-
-// stuck-diagnosis.md) called this out as fix #5 - drift that the
-// gap-detector can't self-detect (idle owner) was invisible to the
-// operator and only surfaced when a user noticed wrong data.
+// Operator visibility into the broadcast subsystem: lag detection scans for
+// received vs log, surfacing subscribers that have fallen behind an idle owner,
+// which the gap detector cannot see for itself.
 
 //go:build linux || darwin || windows
 
@@ -27,12 +22,8 @@ import (
 )
 
 // BroadcastLagRow is the per-stream lag report. owner_log_maximum is the
-// owner-side log.max(sequence) for the same (key, peer) when this
-// host happens to own that broadcast (the (key, peer) pair lives in
-// the local log too). It's null when this host is a pure subscriber
-// for the stream, in which case lag has to be computed cross-host -
-// the receiver-side report alone shows "we're at N", not "we should
-// be at M". Operator follows up with a remote query if needed.
+// owner-side log maximum for the same (key, peer), null when this host is a
+// pure subscriber - lag then has to be computed cross-host.
 type BroadcastLagRow struct {
 	User            string `json:"user"`
 	App             string `json:"app"`
@@ -44,16 +35,9 @@ type BroadcastLagRow struct {
 	Pending         int    `json:"pending"`
 }
 
-// admin_broadcast_lag is GET /_/admin/broadcast/lag. Scans every
-// per-user-app DB under users/<uid>/<app>/db/*.db, gathers received
-// and log rows, and produces a single flat list keyed on
-// (user, app, peer, key). When the local host is also the owner of
-// the stream (same (key, peer) appears in log on this same DB),
-// lag = log.maximum - received.last; otherwise omitted.
-//
-// Query param: ?threshold=N reports only rows with Lag > N. Default
-// 0 = all rows including healthy ones, useful for a periodic
-// dashboard scrape.
+// admin_broadcast_lag is GET /_/admin/broadcast/lag. One row per (user, app,
+// peer, key); lag is included only when this host also owns the stream.
+// ?threshold=N reports only rows above N; the default 0 reports every row.
 func admin_broadcast_lag(c *gin.Context) {
 	threshold := int64(0)
 	if v := c.Query("threshold"); v != "" {
@@ -84,15 +68,10 @@ func admin_broadcast_lag(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"rows": out})
 }
 
-// broadcast_lag_scan walks the user tree and assembles one
-// BroadcastLagRow per (user, app, peer, key) in received. Tables
-// that don't exist are skipped silently - most apps don't use the
-// broadcast subsystem, so absent tables are the common case.
-//
-// The broadcast tables (received, log, pending, etc.)
-// live in the per-app system DB (users/<uid>/<app>/app.db), NOT in
-// the app's writable data DB, for architectural reasons. The scanner therefore looks for app.db, not the
-// per-app db/*.db files.
+// broadcast_lag_scan walks the user tree, one BroadcastLagRow per (user, app,
+// peer, key). The broadcast tables live in the per-app system DB
+// (users/<uid>/<app>/app.db), not the app's data DB. Missing tables are
+// skipped.
 func broadcast_lag_scan() []BroadcastLagRow {
 	var out []BroadcastLagRow
 	users_root := filepath.Join(data_dir, "users")
@@ -126,19 +105,9 @@ func broadcast_lag_scan() []BroadcastLagRow {
 	return out
 }
 
-// admin_broadcast_pending_gc is POST /_/admin/broadcast/pending/gc.
-// Runs the unfillable-gap skip pass on demand and returns the count
-// of gaps skipped. Exposed so
-// an operator who's just shipped a fix can immediately unstick the
-// existing pile of stalled streams instead of waiting for the hourly
-// scheduled pass.
-//
-// ?force=true bypasses the TTL gate. Default false means the endpoint
-// behaves like the background pass: only entries older than the
-// configured TTL get skipped. Set force=true when an operator KNOWS
-// the buffered gap is unfillable (the gap-fill seqs are pruned from
-// the sender's log) and waiting for natural TTL expiry is just a
-// formality.
+// admin_broadcast_pending_gc is POST /_/admin/broadcast/pending/gc. Runs the
+// unfillable-gap skip pass on demand and returns the count skipped. ?force=true
+// bypasses the TTL gate, for an operator who knows the gap can never be filled.
 func admin_broadcast_pending_gc(c *gin.Context) {
 	force := c.Query("force") == "true"
 	skipped := broadcast_pending_gc(force)

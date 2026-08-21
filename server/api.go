@@ -33,28 +33,12 @@ import (
 
 const url_response_size_maximum = 100 * 1024 * 1024 // 100 MB
 
-// api_globals returns the Starlark global table every app script is
-// evaluated against, building it once on first use.
-//
-// This was a package init() writing a package var. That made the app-visible
-// API surface a side effect of importing the package: it could not be built
-// differently, inspected before use, or exercised by a test without also
-// getting whatever else init() ordering dragged in. api_init makes the
-// construction a step in startup, and api_table stays directly callable -
-// which is what lets TestApiTableIsExplicit assert the surface rather than
-// trust it.
-//
-// api_globals MUST stay a plain variable with no initializer, and starlark()
-// must read it rather than call a builder. Any form that has starlark() call
-// into api_table puts the table in the package initialization graph, and that
-// graph has a cycle:
-//
-//	api_app -> api_app_version -> ... -> stream -> route -> starlark
-//	        -> api_table -> api_app
-//
-// which the compiler rejects. An init() body is exempt from that analysis,
-// which is the only reason the original compiled; an explicit call from
-// main_serve is exempt for the same reason and is honest about when it runs.
+// api_globals is the Starlark global table every app script is evaluated
+// against. It MUST stay a plain variable with no initializer, and starlark()
+// must read it rather than call a builder: any form that calls api_table from
+// starlark() puts the table in the package initialization graph, which has a
+// cycle (api_app -> ... -> starlark -> api_table -> api_app) and will not
+// compile.
 var api_globals sl.StringDict
 
 // api_init builds the Starlark global API table. Called once from main_serve
@@ -306,11 +290,10 @@ func api_random_integer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl.MakeInt64(int64(mn) + offset.Int64()), nil
 }
 
-// mochi.random.unambiguous(length) -> string: Generate a cryptographically
-// random string of `length` characters drawn from a 54-character alphabet that
-// excludes confusable chars (0/1/O/I/l/i). For one-time codes, recovery codes,
-// short shareable IDs that humans need to read or transcribe. Length must be
-// in 1..1000.
+// mochi.random.unambiguous(length) -> string: Generate a cryptographically random
+// string of `length` characters from a 54-character alphabet excluding
+// confusable characters (0/1/O/I/l/i), for codes humans transcribe. Length must
+// be 1..1000.
 func api_random_unambiguous(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <length: integer>")
@@ -443,18 +426,10 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return result, err
 }
 
-// service_call_as_server invokes a service function from the running Mochi
-// server itself rather than from a calling app. The handler sees app="" in
-// its v3+ context dict; the notifications app treats that as the reserved
-// "Mochi server" sender id (see apps/notifications/notifications.star).
-//
-// target_user is the user whose app context the call runs in — for instance
-// the admin whose notifications.db should receive the row. Suspended users
-// or users without an identity are skipped silently and a nil error is
-// returned.
-//
-// args is encoded as kwargs onto the Starlark function call; positional
-// parameters after the prepended context dict are not used.
+// service_call_as_server invokes a service function as the server rather than
+// an app: the handler sees app="" in its context dict. target_user is the user
+// whose app context it runs in; suspended users and users without an identity
+// are skipped silently. args is passed as kwargs.
 func service_call_as_server(target_user_uid string, service string, function string, args Map) error {
 	user := user_by_uid(target_user_uid)
 	if user == nil {
@@ -751,13 +726,9 @@ func api_server_update_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 }
 
 // mochi.server.update.install([version]) -> dict: Trigger an unattended
-// self-install of the latest known upgrade (or the given version) on
-// Windows. Returns {pending: <version>} on success. Errors on platforms
-// that don't support self-install (currently anything except Windows).
-//
-// Requires the restricted, administrator-only server/update permission:
-// this replaces the running server and restarts the service, so it must
-// not be reachable from an app just because a user has it installed.
+// self-install of the latest known upgrade (or the given version). Returns
+// {pending: <version>}; errors on platforms without self-install (Windows
+// only). Requires the restricted, administrator-only server/update permission.
 func api_server_update_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "server/update"); err != nil {
 		return nil, err
@@ -800,16 +771,11 @@ func (m *stream_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []
 	return api_stream(thread, nil, args, kwargs)
 }
 
-// stream_headers_validate resolves the calling user and checks the routing
-// headers a stream may be opened with, returning the sender's app id and
-// service list for the outgoing frame.
-//
-// Shared by mochi.stream and mochi.stream.peer, which carried a
-// line-for-line copy of this each. The from check is the reason it must not
-// drift: it is what stops an app opening a stream AS an entity its user does
-// not own, and a fix applied to one copy and not the other would leave that
-// hole open on whichever call site was missed. sender_check is that test, and
-// is shared with message.send for the same reason.
+// stream_headers_validate resolves the calling user and checks a stream's
+// routing headers, returning the sender's app id and service list. Shared by
+// mochi.stream and mochi.stream.peer so the from check - what stops an app
+// opening a stream as an entity its user does not own - cannot drift between
+// them.
 func stream_headers_validate(t *sl.Thread, headers map[string]string) (*User, string, []string, error) {
 	user := principal_caller(t)
 	if user == nil {
@@ -867,12 +833,9 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 
 	s, err := stream(headers["from"], headers["to"], headers["service"], headers["event"], from_app, services)
 	if err != nil {
-		// A peer being unreachable is an ordinary runtime condition, not a
-		// caller mistake, and Starlark has no way to catch an error - so
-		// raising here made every failure-handling branch after a stream call
-		// dead code, and an offline peer aborted the handler instead of
-		// engaging its backoff. Validation failures above still raise; only
-		// the dial reports by value.
+		// An unreachable peer is a runtime condition, not a caller mistake, and
+		// Starlark cannot catch an error, so the dial reports by value. Validation
+		// failures above still raise.
 		debug("mochi.stream to %q failed: %v", headers["to"], err)
 		return sl.None, nil
 	}
@@ -1002,12 +965,10 @@ func api_time_now(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 }
 
 // mochi.time.parse(s, format?) -> int | None: Parse a string into a Unix
-// timestamp. The inverse of mochi.time.local. Default format is "rfc3339" —
-// the format used by virtually every JSON API. Returns None on any parse
-// error so callers can substitute a fallback. Same five named formats as
-// local: datetime, date, time, rfc822, rfc3339. For datetime/date/time
-// (which carry no timezone), the user's timezone preference is assumed —
-// matching local's direction so parse(local(ts)) round-trips.
+// timestamp; the inverse of mochi.time.local. Default format is "rfc3339", same
+// five named formats as local. Returns None on any parse error. For
+// datetime/date/time the user's timezone is assumed, so parse(local(ts))
+// round-trips.
 func api_time_parse(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
 		return sl_error(fn, "syntax: <s: string>, [format: string]")
@@ -1147,12 +1108,9 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		body = sl_decode(args[3])
 	}
 
-	// idempotency_key kwarg: caller-supplied stable key derived from the
-	// source event UID so a replayed call (server restart, host failover,
-	// queue retry) doesn't produce a duplicate side-effect at the remote
-	// API. Stripe and other modern APIs honour the Idempotency-Key header
-	// natively; for APIs that don't, the per-app idempotency cache
-	// (below) suppresses the duplicate request before it leaves.
+	// idempotency_key: a caller-supplied stable key so a replayed call does not
+	// repeat a side effect at the remote API. Sent as the Idempotency-Key header;
+	// for APIs that ignore it, the response cache below suppresses the duplicate.
 	var idempotency_key string
 	for _, kw := range kwargs {
 		k, _ := sl.AsString(kw[0])
@@ -1167,11 +1125,8 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		}
 	}
 
-	// Response cache: when idempotency_key is set and we have a user+app
-	// context, check the per-(user, app) cache for a recent response with
-	// the same key. A hit returns the cached response without making
-	// another HTTP request — the safety net for APIs that ignore the
-	// Idempotency-Key header.
+	// Response cache for APIs that ignore the Idempotency-Key header: a hit
+	// returns the earlier response without issuing another request.
 	user := principal_caller(t)
 	if idempotency_key != "" && app != nil && user != nil {
 		if cached := url_idempotency_lookup(user, app, idempotency_key); cached != nil {
@@ -1282,11 +1237,9 @@ func api_url_preview(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "%v", err)
 	}
 
-	// Use a recognizable, Mozilla-prefixed UA so sites that gate content on
-	// "browser-ish" user-agents still serve us their og:image-bearing HTML
-	// rather than a stripped/anti-bot variant. The self-identifying URL lets
-	// responsible operators throttle deliberately without us trying to evade
-	// detection.
+	// A Mozilla-prefixed, self-identifying UA: sites that gate on browser-ish
+	// agents still serve the og:image-bearing HTML, and operators can throttle
+	// deliberately.
 	r, err := url_request(starlark_context(t), "GET", rawurl,
 		map[string]string{"timeout": "10"},
 		map[string]string{
@@ -1302,12 +1255,9 @@ func api_url_preview(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl.String(""), nil
 	}
 
-	// Stream-parse rather than reading the whole body into memory. The
-	// parser breaks at <body> (or `</head>`) so we usually consume <100 KB.
-	// The LimitReader cap is a safety bound for pathological pages — 16 MB
-	// is well past any real-world <head> length (heavy news/media sites
-	// rarely exceed 500 KB, even with embedded preload/JSON-LD/analytics)
-	// while still preventing a malicious endpoint from streaming gigabytes.
+	// Stream-parsed: the parser stops at <body>, so a normal page costs under 100
+	// KB. The 16 MB LimitReader bounds pathological pages and stops a malicious
+	// endpoint streaming forever.
 	return sl.String(url_extract_preview(io.LimitReader(r.Body, 16*1024*1024), rawurl)), nil
 }
 

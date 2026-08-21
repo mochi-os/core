@@ -1,20 +1,10 @@
-// Mochi server: what an app's own SQL may and may not do.
-//
-// db_starlark_sql_blocked reads the first token of the first statement, so
-// "/*x*/ANALYZE", "-- c\nANALYZE", "select 1; analyze" and
-// "BEGIN; ANALYZE; COMMIT" all walked past it - and nothing behind it stopped
-// them, because the authoriser had no ANALYZE case. VACUUM was never a hole:
-// it attaches a temporary database, so AUTH_ATTACH denies it in every form.
-//
-// The string check is deliberately left as it is. Splitting on ";" to reach
-// later statements would refuse "select 'a; analyze'", turning working SQL
-// into an error; the authoriser sees parsed input and cannot be evaded by
-// spelling, so that is where the decision belongs.
+// Mochi server: what an app's own SQL may and may not do. The first-token
+// string check is courtesy; the authoriser is what decides.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -139,10 +129,8 @@ func TestTheStringGateIsStillFriendly(t *testing.T) {
 	}
 }
 
-// TestTheDataDatabaseCarriesNoCommitLog: the live log is on the system DB, and
-// a second copy on the data DB is app-writable and shadows the real one in any
-// later diagnosis - which is what the broadcast tables did in the 2026-07 News
-// wedge.
+// TestTheDataDatabaseCarriesNoCommitLog: the live log is on the system DB; a
+// copy on the data DB is app-writable and shadows the real one.
 func TestTheDataDatabaseCarriesNoCommitLog(t *testing.T) {
 	body := function_body(t, "db.go", "func db_app(")
 	if strings.Contains(body, "commits_table_create(") {

@@ -11,11 +11,9 @@ import (
 	"time"
 )
 
-// TestReachabilityDebounceStep exercises the asymmetric hysteresis: a
-// "public" verdict must hold for the (short) up-confirm window before the
-// relay-gating verdict flips on; a transient drop that recovers before the
-// (long) down-confirm window leaves it on (so the relay's reservations
-// survive a flap); only a sustained drop past the down window flips it off.
+// TestReachabilityDebounceStep: public must hold for the up-confirm window
+// before relay gating turns on, and only a drop sustained past the down-confirm
+// window turns it off.
 func TestReachabilityDebounceStep(t *testing.T) {
 	base := int64(1_000_000)
 	up := int64(reachability_confirm_public / time.Second)

@@ -1,12 +1,9 @@
-// Mochi server: the accounts id→uid migration. A legacy integer-autoincrement
-// accounts table must rebuild into the text-id register form, preserving each
-// row's identity as the legacy integer rendered as a string (deterministic, so
-// paired hosts converge and stored references keep matching).
+// Mochi server: the accounts id->uid migration.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

@@ -62,12 +62,9 @@ type Action struct {
 	definition *AppAction
 }
 
-// action_entity is the routed entity as a.entity sees it.
-//
-// A dict, not an object with attributes: `class` is a reserved word in Starlark,
-// so `a.entity.class` is a parse error ("not an identifier") and the field would
-// be unreachable. A dict also matches mochi.entity.info(), which apps already
-// read with entity.get("class").
+// action_entity is the routed entity as a.entity sees it. A dict, not an
+// object: `class` is a Starlark reserved word, so a.entity.class would not
+// parse.
 func action_entity(e *Entity) sl.Value {
 	return sl_encode(map[string]any{
 		"id":    e.ID,
@@ -226,13 +223,10 @@ func (a *Action) dump(values ...any) {
 	a.web.Writer.WriteString("</pre></body></html>")
 }
 
-// error_label writes an error whose message comes from core's own label
-// catalogue, resolved into the request's language. a.error.label reads the
-// calling app's catalogue, which is right for messages the app authored and
-// useless for the ones core raises itself - an app cannot translate a string it
-// never wrote, so those reached the reader in English whatever language they
-// had asked for. The resolved text is passed as an argument rather than as the
-// format string so a label containing a percent verb cannot corrupt the output.
+// error_label writes an error from core's own label catalogue in the request's
+// language; a.error.label reads the app's, which cannot hold core's own
+// strings. Passed as an argument, not a format string, so a percent verb cannot
+// corrupt it.
 func (a *Action) error_label(code int, key string) {
 	a.error(code, "%s", resolve_core_label(request_language(a.web, a.user), key, nil))
 }
@@ -302,15 +296,10 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		}
 		return action_entity(a.entity), nil
 	case "owner":
-		// Does the AUTHENTICATED caller own the routed entity. Read a.user, not
-		// the effective user: web_action substitutes the owner into the thread
-		// local for an anonymous request to a public action, and resolving this
-		// through that substitution is the defect this field exists to retire -
-		// it would simply move into core, where every app inherits it.
-		//
-		// Always a bool, never None: an app writing `if a.owner` on a
-		// class-level action gets False rather than an error, so the guard
-		// fails closed instead of failing loudly in the wrong place.
+		// Does the AUTHENTICATED caller own the routed entity. a.user, not the
+		// effective user: web_action substitutes the owner for an anonymous request
+		// to a public action. Always a bool, so a class-level `if a.owner` fails
+		// closed.
 		if a.user == nil || a.entity == nil {
 			return sl.Bool(false), nil
 		}
@@ -544,10 +533,8 @@ func (a *Action) sl_error(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // a.error.label(status, key, **kwargs) -> None: Resolve a label key from the
 // calling app's labels/<lang>.conf and return it as the HTTP error message.
-// kwargs become ICU MessageFormat substitutions. Language is the caller's
-// preference (logged in) or Accept-Language (anonymous), via the same
-// request_language() machinery the resolver uses. Pass log=False to suppress
-// the diagnostic log line, as with a.error().
+// kwargs become ICU MessageFormat substitutions; the language is the caller's
+// preference or Accept-Language. Pass log=False to suppress the log line.
 func (a *Action) sl_error_label(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 2 {
 		return sl_error(fn, "syntax: <status: int>, <key: string>, **kwargs")
@@ -740,22 +727,15 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no file %d for field %q", index, field)
 	}
 
-	// A per-call ceiling, for a caller storing one kind of thing: an attachment
-	// has to stay within what a transfer can carry, or its owner keeps it whole
-	// and every subscriber receives a prefix. Zero means the quota is the only
-	// bound, which suits a caller storing something that is legitimately larger
-	// than any single object - an import container holding many of them.
+	// Per-call ceiling: an attachment must stay within what a transfer can carry,
+	// or subscribers receive a prefix. Zero leaves the quota as the only bound.
 	if maximum > 0 && ff.Size > maximum {
 		return sl_error(fn, "file too large: %d bytes exceeds %d", ff.Size, maximum)
 	}
 
-	// The thread's user, not a.user. a.user is the raw requester and is nil on
-	// an anonymous request to a public action - the auth gate admits one, since
-	// it refuses only when user AND owner are absent - so reading it here
-	// dereferenced nil in user_storage_dir before the write was even attempted.
-	// web.go resolves the thread's user to the owner for exactly that case, and
-	// it is what every mochi.file.* call reads, so the upload lands in the
-	// directory those calls will read it back from.
+	// The thread's user, not a.user: a.user is nil on an anonymous request to a
+	// public action, and every mochi.file.* call reads the thread's user, so the
+	// upload lands where those calls read it back.
 	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
@@ -770,16 +750,9 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "storage limit exceeded")
 	}
 
-	// Through os.Root, like every other write to app storage. The path string
-	// is validated above, but a symlink is not in the string: gin's
-	// SaveUploadedFile does MkdirAll then Create, both of which follow one, so
-	// a link left behind in the app's file directory - by an rsync, an
-	// unpacked tarball, or an earlier upload - redirected the write anywhere
-	// the server could reach, its own databases included. This is the same
-	// reasoning a.write.file records for the read side.
-	// Ensure base directory exists before opening root, as mochi.file.write
-	// does: OpenRoot will not create it, and the first upload for a user and
-	// app arrives before anything else has.
+	// Through os.Root, like every other write to app storage: the path string is
+	// validated but a symlink is not in the string, and MkdirAll+Create both
+	// follow one. Create the base first - OpenRoot will not.
 	base := api_file_base(user, app)
 	if err := os.MkdirAll(base, 0755); err != nil {
 		return sl_error(fn, "unable to create files directory: %v", err)
@@ -907,17 +880,10 @@ func (a *Action) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // a.write.file(path) -> None: Serve file from app's data directory
 //
-// Opened through os.Root, like every other mochi.file.* call, so a symlink
-// cannot serve anything outside the app's own directory. The path validator
-// checks the string and a symlink is not in the string, so before this a link
-// left behind by an rsync or an unpacked tarball - the ordinary way a file
-// host is filled - served whatever it pointed at, the server's own databases
-// included. Links that stay inside the directory still resolve, which the
-// "latest -> v2" layouts of package repositories depend on.
-//
-// A directory is answered from its index.html or not at all. http.ServeFile
-// generates an HTML index for a directory that has none, which made every
-// hosted tree browsable by anyone who could reach it.
+// Opened through os.Root, so a symlink cannot serve outside the app's
+// directory; links that stay inside still resolve. A directory is answered from
+// its index.html or not at all - http.ServeFile would generate a browsable
+// index.
 func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var path string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path); err != nil {
@@ -931,21 +897,9 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 
 	owner := principal_owner(t)
 
-	// A hosted domain publishes one account's files, and that has to hold for
-	// every visitor alike. Resolving to the requester whenever one was signed in
-	// meant a single URL served the route owner's site to anonymous visitors and
-	// the visitor's own - almost always empty - directory to anyone logged in,
-	// so a hosted site 404'd for exactly the people who had accounts.
-	//
-	// Only the bytes served are redirected, not the action's owner: apps read
-	// owner == user as "the requester owns this data", so moving the action's
-	// owner would have them authorize a stranger as the account being published.
-	//
-	// A route whose account cannot be resolved fails closed. Falling back to the
-	// requester would put back exactly the behaviour above - one URL answering
-	// with whoever is asking - and the way a route loses its account is not an
-	// administrator mistyping one but the account being deleted afterwards,
-	// leaving a live hostname pointing at nobody.
+	// A hosted domain publishes one account's files to every visitor alike, so the
+	// route's owner picks the directory, not the requester. Only the bytes move:
+	// the action's owner must not, and an unresolvable route owner fails closed.
 	if a.domain != nil && a.domain.route != nil {
 		if a.domain.route.owner == nil {
 			warn("Domain route serving %q has no resolvable owner; refusing to serve a file", a.web.Request.Host)
@@ -1015,20 +969,10 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	}
 	defer file.Close()
 
-	// A files directory holds whatever was put there, and for most apps that
-	// means content someone else supplied - an attachment, a photo, a purchased
-	// asset. Served inline on the app's own origin, an .html or an active .svg
-	// among them executes with the reader's session, so the same policy the cache
-	// path applies to a pulled copy applies here: SVG is sanitized and served
-	// under a script-blocking policy, other known media serve inline, everything
-	// else downloads.
-	//
-	// The exception is an action that DECLARES it publishes a site ("site": true
-	// in app.json), because rendering a document is what such an action is for.
-	// Declared rather than inferred from the request having arrived on a domain
-	// route: routing is how a reader reached the action, not what the app meant
-	// by it, so a domain pointed at any other app used to carry the exemption
-	// along with it and serve that app's uploads raw on the route's hostname.
+	// A files directory holds content someone else supplied, so anything outside
+	// the inline allowlist downloads and SVG is sanitized. Exempt only when the
+	// action declares "site": true - a domain route is not itself a licence to
+	// render.
 	if a.definition == nil || !a.definition.Site {
 		content_type := file_name_type(path)
 		if content_type == "image/svg+xml" {
@@ -1041,14 +985,9 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		}
 	}
 
-	// Which bytes this path yields depends on whose directory is being read, so
-	// the response must never land in a shared cache: an app serves its own
-	// caller's files here (a purchased asset, an account export) as readily as a
-	// domain route serves one fixed owner's. must-revalidate with an ETag keeps
-	// that safe while still making a repeat fetch cheap - ServeContent answers
-	// If-None-Match from the header set here, and If-Modified-Since from the
-	// modification time. Without either, a replaced or deleted file could be
-	// served from cache indefinitely.
+	// The bytes depend on whose directory is read, so the response must never
+	// reach a shared cache. must-revalidate plus an ETag keeps a repeat fetch
+	// cheap and stops a replaced or deleted file being served from cache.
 	if a.web.Writer.Header().Get("Cache-Control") == "" {
 		a.web.Header("Cache-Control", "private, must-revalidate")
 	}
@@ -1063,12 +1002,8 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 
 // a.write.cache(name, content_type="") -> bool: Serve a cache entry to the HTTP
 // response, returning False on a cache miss so the caller can fill and retry.
-// The entry holds re-obtainable bytes (a pulled remote copy, a generated image
-// variant); the calling action MUST authorise the request first, as with
-// a.write.file. Content type and disposition are set safely by core - SVG is
-// sanitised and served under a script-blocking policy, other known media serve
-// inline, everything else downloads - so a cached foreign file cannot execute
-// in this origin.
+// The calling action MUST authorise the request first, as with a.write.file.
+// Content type and disposition are set safely by core.
 func (a *Action) sl_write_cache(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var name, content_type string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name, "content_type?", &content_type); err != nil {
@@ -1145,12 +1080,8 @@ func (a *Action) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 
 	// An app's bundled SVG is attacker-controlled under the untrusted-app model,
-	// and opened as a top-level document it runs its scripts in this server's
-	// origin. The static-file routes divert to web_serve_svg for exactly that
-	// reason (web_serve_file), so serving the same files through this primitive
-	// has to do the same - otherwise which protection applies depends on how the
-	// app happened to route them. Overrides any Content-Type the app set:
-	// sanitising wins over an app's opinion about its own bytes.
+	// so it is sanitized here as the static-file routes do. Overrides any
+	// Content-Type the app set.
 	if strings.HasSuffix(strings.ToLower(path), ".svg") {
 		starlark_serving_set(t, a.web.Writer)
 		web_serve_svg_path(a.web, file)
@@ -1167,14 +1098,9 @@ func (a *Action) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	return sl.None, nil
 }
 
-// stream_maximum_default backstops a.write.stream when the app names no limit of
-// its own. It matches object_maximum, the largest object the platform stores,
-// because two callers legitimately relay things that big - a repository archive
-// and a market asset download - and a limit that breaks a clone is worse than no
-// limit at all.
-//
-// It is a backstop, not the real bound. An app relaying an image knows a far
-// tighter figure and should pass it: see the maximum argument.
+// stream_maximum_default backstops a.write.stream when the app names no limit.
+// It matches object_maximum because a repository archive and a market asset
+// download legitimately run that large. Apps relaying images should pass less.
 const stream_maximum_default = object_maximum
 
 // stream_limit_reader relays at most remaining bytes and records whether the far
@@ -1226,12 +1152,11 @@ func (r *stream_limit_reader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// a.write.stream(stream, maximum=bytes, cache=name) -> int: Pipe Net stream content directly to HTTP response, returns bytes written
+// a.write.stream(stream, maximum=bytes, cache=name) -> int: Pipe Net stream
+// content directly to HTTP response, returns bytes written
 //
-// cache names a cache entry to fill as a side effect: the body is teed into
-// the entry while it streams to the client, and only a complete relay is
-// renamed into place - a curtailed, spent or aborted one is discarded, so a
-// partial body never becomes a cache hit.
+// cache names an entry to fill as a side effect: only a complete relay is
+// renamed into place, so a partial body never becomes a cache hit.
 func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var stream_value sl.Value
 	maximum := int64(stream_maximum_default)
@@ -1251,19 +1176,9 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	// Mark as file serving so the timeout handler waits for I/O to complete
 	starlark_serving_set(t, a.web.Writer)
 
-	// Get the raw reader (includes any buffered bytes from CBOR decoder).
-	//
-	// Bounded before anything else reads from it. raw_reader deliberately returns
-	// the UNWRAPPED reader - the 100MB cbor_maximum_size LimitReader wraps the CBOR
-	// decoder, so it caps decoded messages and not the byte body - and every
-	// caller of this function is relaying bytes a remote peer chose. Without a cap
-	// here, an anonymous request to a public asset route makes this server pull
-	// whatever the far end feels like sending, for as long as it sends it, and the
-	// per-call rate limit bounds calls against an unbounded per-call cost. Wrapped
-	// here rather than in each branch so the SVG path inherits it too.
-	// Refuse before writing anything when this client's budget is already gone, so
-	// they get a clean 429 with Retry-After rather than a body that stops partway.
-	// Once the copy starts the status and headers are sent and cannot be retracted.
+	// raw_reader is UNWRAPPED - the CBOR limit caps decoded messages, not the byte
+	// body - and every caller relays bytes a remote peer chose, so bound it first.
+	// Refuse an exhausted budget before writing: the status cannot be retracted.
 	app_id := ""
 	if a.app != nil {
 		app_id = a.app.id
@@ -1295,13 +1210,9 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 		a.web.Header("Content-Type", "application/octet-stream")
 	}
 
-	// An app streaming through here is serving bytes it did not author - a
-	// person's avatar, a feed's image - and takes the content type from the far
-	// end, so the type is the remote peer's claim rather than this server's.
-	// Apply the policy web_serve_attachment already applies to stored files:
-	// sanitize SVG and serve it under a script-blocking CSP, let other
-	// inline-safe media through, and force everything else to download so a
-	// peer cannot have us execute their document in our own origin.
+	// The content type is the remote peer's claim, not this server's: sanitize
+	// SVG, inline other known media, and force everything else to download, as
+	// web_serve_attachment does for stored files.
 	content_type := content_type_base(a.web.Writer.Header().Get("Content-Type"))
 	if content_type == "image/svg+xml" {
 		written, err := a.write_stream_svg(fn, reader)
@@ -1362,13 +1273,9 @@ func (a *Action) write_stream_spent(fn *sl.Builtin, written int64) (sl.Value, er
 	})
 }
 
-// write_stream_curtailed reports a peer that tried to send more than the caller
-// allowed. The bytes are already on the wire, so the response cannot be retracted
-// - the point is that we stopped reading, and that this does not pass for success.
-//
-// Erroring rather than returning the byte count matters because the caller cannot
-// otherwise tell a complete asset from a curtailed one, and would cache or
-// announce a truncated image as though it were the real thing.
+// write_stream_curtailed reports a peer that sent more than the caller allowed.
+// It errors rather than returning the byte count so the caller cannot cache or
+// announce a truncated asset as complete.
 func (a *Action) write_stream_curtailed(fn *sl.Builtin, maximum, written int64) (sl.Value, error) {
 	app := ""
 	if a.app != nil {

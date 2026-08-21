@@ -57,15 +57,9 @@ func render(body []byte, order ...string) error {
 	return nil
 }
 
-// render_json pretty-prints JSON (re-marshalled with 2-space indent so the
-// output is consistent regardless of whether the server compacted it).
-//
-// Decoded with UseNumber for the same reason render does, and more urgently:
-// this is the scripted-consumption mode, so it was the one path whose output
-// is parsed by other programs and the only one that corrupted the value. Plain
-// Unmarshal takes every number through float64, which rounds an integer above
-// 2^53 - a uint64 peer count printed as 18446744073709552000, with nothing in
-// the output to say it had been changed.
+// render_json pretty-prints JSON, re-marshalled with a 2-space indent. Decoded
+// with UseNumber: plain Unmarshal routes every number through float64, which
+// silently rounds an integer above 2^53 in the mode other programs parse.
 func render_json(body []byte) error {
 	var v any
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -197,13 +191,8 @@ func humanise(k string) string {
 	return strings.ToUpper(out[:1]) + out[1:]
 }
 
-// humanise_value formats a leaf value for human-readable output, applying
-// field-name-based heuristics:
-//   - "uptime" or "*_seconds": render as a compact duration ("5s", "5m 3s")
-//   - "*_ms": render in ms or rounded to the nearest second
-//   - keys containing "bytes": render with a binary unit suffix ("1.6 GB")
-//
-// Falls back to a clean number/string representation for everything else.
+// humanise_value formats a leaf value for human-readable output, choosing a
+// duration, millisecond or binary-size rendering from the key's name.
 func humanise_value(key string, v any) string {
 	switch {
 	case key == "uptime" || strings.HasSuffix(key, "_seconds"):

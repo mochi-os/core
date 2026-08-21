@@ -3,16 +3,10 @@
 // This file is part of Mochi, licensed under the GNU AGPL v3 with the
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-// Tests for the app scoping of websocket delivery.
-//
-// The registry is keyed on (user, key, connection), and the key comes from the
-// client's query string. Keys are not secrets: most are entity fingerprints,
-// which mochi.entity.owned returns to any app with no permission check, and the
-// rest are literals like "notifications". So before the app was recorded
-// alongside each connection, mochi.websocket.write in one app delivered into
-// another app's live sockets — which matters most for the consumers that trust
-// the payload rather than treating it as a refetch signal (the shared game
-// hook reads name, body and winner straight out of the frame).
+// Tests for the app scoping of websocket delivery. Registry keys come from the
+// client's query string and are not secrets - most are entity fingerprints,
+// which mochi.entity.owned returns to any app - so an unscoped write crossed
+// apps.
 
 package main
 
@@ -199,11 +193,9 @@ func TestStarlarkWriteRequiresAnApp(t *testing.T) {
 	}
 }
 
-// TestWebsocketAppSendSkipsUnidentifiedConnections: a connection with no app
-// cannot be attributed, so no app may write to it. This is the behaviour change
-// worth knowing about — a cookie-authenticated socket stops receiving its app's
-// frames — and it is safe because both token paths supply an app: the shell
-// mints with a.id and standalone fetches its own from /_/token.
+// A connection with no app cannot be attributed, so no app may write to it. A
+// cookie-authenticated socket therefore stops receiving its app's frames; both
+// token paths supply an app.
 func TestWebsocketAppSendSkipsUnidentifiedConnections(t *testing.T) {
 	websocket_registry_reset()
 	defer websocket_registry_reset()

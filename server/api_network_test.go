@@ -1,13 +1,12 @@
 // Mochi server: api_server_network unit tests
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// Verifies the outbound-queue counts surfaced by mochi.server.network():
-// broadcasts (target='pubsub') under "queued", and direct messages whose
-// recipient host is not yet known (empty target) under "unresolved".
-// Neither has a target peer, so neither appears in the peers() rollup.
+// Broadcasts (target='pubsub') count under "queued" and messages with an
+// unknown recipient host (empty target) under "unresolved"; neither has a
+// target peer.
 
 package main
 

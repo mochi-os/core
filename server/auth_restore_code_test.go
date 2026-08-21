@@ -1,16 +1,12 @@
-// Mochi server: restore requires a verified email address
-//
-// Restore creates an account from an uploaded bundle. The passphrase that
-// decrypts the bundle authenticates the BUNDLE, not the person holding it, so
-// on its own it says nothing about whether the address being claimed belongs
-// to the caller. Ordinary signup emails a code; restore did not, which left it
-// as the one route that could mint an account - and on an empty server an
-// administrator - for an unproven address.
+// Mochi server: restore requires a verified email address The passphrase
+// authenticates the BUNDLE, not the person holding it, so without an emailed
+// code restore could mint an account - an administrator on an empty server -
+// for an address the caller never proved they control.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -53,11 +49,9 @@ func restore_tables_create(t *testing.T) {
 	db_open("db/schedule.db").exec("create table if not exists schedule ( id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null )")
 }
 
-// restore_post drives the handler with a multipart body carrying whatever
-// fields are set, and reports the status, the error code, and whether an
-// account now exists. The error code matters as well as the status: a refused
-// code and an unreadable bundle are both 400, so only the code distinguishes
-// "stopped at the gate" from "passed the gate and failed later".
+// restore_post drives the handler with a multipart body and reports status,
+// error code, and whether an account now exists. A refused code and an
+// unreadable bundle are both 400, so only the code separates them.
 func restore_post(t *testing.T, email string, code string) (int, string, bool) {
 	t.Helper()
 	body := &bytes.Buffer{}

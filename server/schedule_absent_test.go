@@ -1,36 +1,12 @@
 // Mochi server: a scheduled event whose owner is gone is retired, not deferred.
 //
-// schedule_handle_unrunnable deferred for any user with no users row, on the
-// premise that another host would run it:
-//
-//	row, _ := db_open("db/users.db").row("select status from users where uid=?", se.User)
-//	if row == nil {
-//	    return
-//	}
-//
-// That premise was multi-host replication, removed July 2026. There is no other
-// host. A recurring row therefore never runs and never dies: schedule_claim
-// advances its due time by one interval on every pass, schedule_valid rejects
-// it again, and the early return above skips the delete. The row is immortal
-// and the work is pure churn. One-shot rows are bounded - schedule_claim
-// deletes those before the handler is reached.
-//
-// Measured on the development rig while this was written: 24 schedule rows, all
-// recurring, 14 of them owned by users with no users row - 58%, the oldest
-// cycling for 15.8 days.
-//
-// THE GENERATOR is the other half. Nothing deleted schedule rows by user, so
-// every account deletion left its recurring rows behind permanently. That is
-// not an anomaly path; it is what closing an account did. Retiring the row when
-// it next comes due is the backstop; not creating the orphan is the fix.
-//
-// The pending case still defers, deliberately: a bootstrapping user's app and
-// data may be seconds from landing.
+// There is no other host to run it, so deferring means re-claiming a recurring
+// row every interval for ever. A pending (bootstrapping) user still defers.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -67,9 +43,6 @@ func absent_rows(user string) int {
 	return schedule_db().integer("select count(*) from schedule where user=?", user)
 }
 
-// TestUnrunnableRetiresARowForAnAbsentUser is the regression. Nothing will ever
-// make this row runnable, so deferring it means re-claiming it every interval
-// for the life of the server.
 func TestUnrunnableRetiresARowForAnAbsentUser(t *testing.T) {
 	absent_setup(t)
 
@@ -116,11 +89,9 @@ func TestUnrunnableRetiresARowForAnActiveUser(t *testing.T) {
 	}
 }
 
-// TestUnrunnableDefersWhenTheLookupFails is the safety half, and the reason the
-// error is read rather than discarded. db.row returns (nil, nil) for "no such
-// user" and (nil, err) for "could not tell" - collapsing those would let a
-// transient users.db fault destroy a live user's schedule. Dropping the users
-// table makes the query fail.
+// TestUnrunnableDefersWhenTheLookupFails: db.row returns (nil, nil) for "no
+// such user" and (nil, err) for "could not tell". Collapsing those would let a
+// transient users.db fault destroy a live user's schedule.
 func TestUnrunnableDefersWhenTheLookupFails(t *testing.T) {
 	absent_setup(t)
 	absent_user(t, "live", "active")

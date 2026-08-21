@@ -18,14 +18,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// load_shell reads a shell asset (shell.html / shell.js) from the menu app's
-// source tree (apps/menu/web/public/) — a different directory that a concurrent
-// build or edit may be rewriting. It retries briefly to ride out the atomic
-// rename window, and t.Skip()s the calling test if the file is still
-// unreadable. Loading per-test rather than in a panicking TestMain means a
-// transient unavailability skips only the handful of tests that inspect these
-// files, instead of aborting the entire package. Production loads the same
-// assets via shell_file_load from the active menu's dist directory.
+// load_shell reads a shell asset from apps/menu/web/public/, which a concurrent
+// build may be rewriting. It retries briefly and t.Skip()s the calling test if
+// still unreadable, so a transient miss skips these tests instead of the
+// package.
 func load_shell(t *testing.T, name string) string {
 	t.Helper()
 	path := "../../apps/menu/web/public/" + name
@@ -70,12 +66,9 @@ func TestShellRejectsNonDocumentDest(t *testing.T) {
 	}
 }
 
-// Test web_should_serve_shell rejects iframe loads (carry _shell=1) only when
-// the browser did not classify the request itself. An explicit "document" is a
-// top-level navigation whatever the query string says: honouring _shell=1 there
-// serves raw app HTML into a popup that allow-popups-to-escape-sandbox has
-// un-sandboxed, giving an app a same-origin cookie-bearing context in which
-// POST /_/token mints a JWT for every installed app.
+// Test web_should_serve_shell honours _shell=1 only when the browser did not
+// classify the request. An explicit "document" is a top-level navigation, where
+// serving raw app HTML hands an un-sandboxed popup a cookie-bearing origin.
 func TestShellRejectsIframeLoads(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -152,11 +145,9 @@ func TestShellSkipsSystemEndpoints(t *testing.T) {
 	}
 }
 
-// Test web_should_serve_shell rejects resource routes (attachments, git
-// Smart-HTTP). Browsers send Accept: text/html on target=_blank clicks even
-// when the link points at a PDF or other binary; without this bypass, the
-// shell would wrap the response in its sandboxed iframe and Chrome's PDF
-// viewer would fail to render.
+// Test web_should_serve_shell rejects resource routes. Browsers send Accept:
+// text/html on target=_blank clicks even for a PDF, so without this bypass the
+// response would be wrapped and Chrome's viewer would fail.
 func TestShellRejectsResourceRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

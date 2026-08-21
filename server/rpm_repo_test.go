@@ -13,13 +13,9 @@ import (
 	"testing"
 )
 
-// TestRPMRepoRequiresVerification pins the security-relevant settings in the
-// canonical RPM repo definition, so a change that silently disables signature
-// verification is caught in review rather than in a package a user installs.
-//
-// The file is published from source at release (release-publish copies it into
-// the untracked packages tree), so this is now the single source of truth for
-// whether dnf verifies Mochi packages.
+// TestRPMRepoRequiresVerification pins signature verification in the canonical
+// RPM repo definition. release-publish copies this file from source, so it is
+// the single source of truth for whether dnf verifies Mochi packages.
 func TestRPMRepoRequiresVerification(t *testing.T) {
 	path := filepath.Join("..", "build", "rpm", "mochi.repo")
 	body, err := os.ReadFile(path)

@@ -307,11 +307,8 @@ func TestSubscribedAddRecordsWithoutSending(t *testing.T) {
 	}
 }
 
-// TestSubscribedAddDoesNotGateAnUnsentStream — the footgun this design avoids.
-// If add marked the stream, then recording one joiner on a stream that has not
-// fanned out since the upgrade would gate it against every other member, none
-// of whom is recorded yet. The gate keys on the marker, which only a send
-// writes.
+// TestSubscribedAddDoesNotGateAnUnsentStream - recording one joiner must not
+// gate a stream that has never sent; only a send writes the marker.
 func TestSubscribedAddDoesNotGateAnUnsentStream(t *testing.T) {
 	db, cleanup := setup_subscribed_test(t)
 	defer cleanup()
@@ -336,9 +333,8 @@ func TestSubscribedAddDoesNotGateAnUnsentStream(t *testing.T) {
 	}
 }
 
-// TestSubscribedRecordSkipsFreshRows — the write-amplification fix. A fan-out
-// used to rewrite one row per recipient every send; a feed with ten thousand
-// subscribers paid ten thousand upserts per post.
+// TestSubscribedRecordSkipsFreshRows - a fan-out must not rewrite a row per
+// recipient on every send.
 func TestSubscribedRecordSkipsFreshRows(t *testing.T) {
 	db, cleanup := setup_subscribed_test(t)
 	defer cleanup()

@@ -1,29 +1,15 @@
-// Mochi server: names other people see get more than a newline check.
+// Mochi server: names other people see are checked for more than newlines.
 //
-// world_validate and the directory entry check used the "line" type, which is
-// ^[^\r\n]{1,1000}$. Two families got through.
-//
-// Angle brackets: "name" has excluded them for entity names all along; a world
-// or directory name is the same kind of string and used the weaker type.
-//
-// Bidirectional controls: valid_with's global filter is ^[\P{Cc}\r\n]*$, which
-// excludes category Cc - that is why a terminal escape never reaches
-// mochictl's world table. The overrides and isolates are category Cf, a
-// different category, so they passed both the global filter and the per-type
-// pattern. A name carrying U+202E renders as its own reversal from the
-// override onward, and HTML escaping does not touch it because the effect is
-// in the text layer rather than the markup. path_component_valid already
-// refuses Cf for exactly this reason, with tests; the rule simply had not
-// reached names that are displayed rather than opened.
-//
-// Every such character below is written as a \u escape on purpose. Pasted raw
-// they are invisible in a diff, in a terminal and in a review - which is the
-// whole problem, and which is also why writing this file needed two attempts.
+// Bidirectional overrides and isolates are category Cf, so they pass
+// valid_with's Cc-only global filter; a name carrying U+202E renders reversed
+// and HTML escaping does not touch it. Angle brackets are excluded as they are
+// for entity names. Every such character below is a \u escape on purpose - raw
+// they are invisible.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

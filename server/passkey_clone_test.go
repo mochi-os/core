@@ -1,16 +1,11 @@
 // Mochi server: the passkey signature counter is read, not just stored.
-//
-// WebAuthn's signature counter exists for one purpose: to notice that two
-// copies of a credential's private key are in use. go-webauthn computes that
-// during ValidateLogin and sets Authenticator.CloneWarning, but by design
-// never fails the ceremony - the spec leaves the response to the relying
-// party. Nothing in core read the flag, so the column was written on every
-// registration, read on every assertion, and asked nothing.
+// go-webauthn sets Authenticator.CloneWarning during ValidateLogin but never
+// fails the ceremony - responding to it is the relying party's job.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -78,10 +73,8 @@ func TestCloneWarningIsReported(t *testing.T) {
 }
 
 // TestCloneWarningDoesNotLowerTheStoredCounter: the counter must never move
-// backwards. UpdateCounter leaves it alone when it raises the warning, so a
-// write-back is a no-op TODAY - this pins the invariant rather than the
-// library's current behaviour, because an attacker replaying an old assertion
-// is exactly who benefits from the counter being reduced.
+// backwards. UpdateCounter already leaves it alone on a clone warning, so this
+// pins the invariant rather than the library's current behaviour.
 func TestCloneWarningDoesNotLowerTheStoredCounter(t *testing.T) {
 	user, cleanup := passkey_clone_env(t, 40)
 	defer cleanup()
@@ -139,11 +132,9 @@ func TestLastUsedIsRecordedEvenWhenCloneWarned(t *testing.T) {
 	}
 }
 
-// TestCloneWarningReachesTheAuditTrail pins the durable record, which the
-// captured log cannot see: audit_log_auth writes to a syslog handle that is
-// nil in a test binary, so the call is a no-op here and only the source shows
-// it happens. The syslog auth trail, not the mochi log, is where an operator
-// reconstructs an authentication incident afterwards.
+// TestCloneWarningReachesTheAuditTrail: audit_session_anomaly writes to a
+// syslog handle that is nil in a test binary, so only the source shows the call
+// happens - hence the source scan rather than a log assertion.
 func TestCloneWarningReachesTheAuditTrail(t *testing.T) {
 	body := function_body(t, "passkeys.go", "func passkey_credential_finalize(")
 

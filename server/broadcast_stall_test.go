@@ -1,15 +1,13 @@
 // Mochi server: broadcast stream stall watchdog regression.
 //
-// The News feed self-loop wedge (2026-07-06 to 2026-07-15) kept gapping on
-// the same received watermark for 9 days while resync never healed it, with
-// no signal. broadcast_stall_note tracks gapping streams and warns once the
-// watermark has been stuck for broadcast_stall_age, resetting whenever the
-// watermark moves (a healing stream must never warn).
+// broadcast_stall_note tracks gapping streams and warns once the watermark has
+// been stuck for broadcast_stall_age, resetting whenever it moves: a healing
+// stream must never warn.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

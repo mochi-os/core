@@ -1,23 +1,13 @@
 // Mochi server: git smart-HTTP fetch negotiation.
 //
-// A client that already holds most of a repository offers what it has as
-// "have" lines, and the server must answer with a pack containing only what
-// is missing. Measured against git.mochi-os.org 2026-08-16, it did not: a
-// clone one commit behind was sent the entire repository (566 of 586
-// objects), and core itself sent 16,144 objects to deliver a 506-object
-// delta. github, given the identical repository and rollback, sent exactly
-// the delta.
-//
-// The negotiation section is parsed and passed to UploadPack as req.Haves, so
-// these assert the part that actually matters: that the resulting pack
-// EXCLUDES what the client said it had. Counting objects rather than
-// inspecting protocol lines, because the protocol looked correct throughout
-// while the pack did not.
+// A client offers what it holds as "have" lines and the pack must exclude them.
+// These count objects rather than inspecting protocol lines, because the
+// protocol looked correct throughout while the pack did not.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -184,10 +174,9 @@ func truncate_for_test(s string) string {
 	return s
 }
 
-// TestGitUploadPackExcludesHaves — the regression. A client one commit behind
-// must be sent that commit's objects, not the repository. The whole-repository
-// figure is measured in the same test so the assertion is a comparison rather
-// than a guessed constant.
+// TestGitUploadPackExcludesHaves - a client one commit behind must be sent that
+// commit's objects, not the repository. The whole-repository figure is measured
+// in the same test rather than guessed.
 func TestGitUploadPackExcludesHaves(t *testing.T) {
 	user, _, cleanup := create_git_test_env(t)
 	defer cleanup()

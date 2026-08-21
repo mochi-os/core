@@ -1,18 +1,12 @@
 // Mochi server: the world socket bounds a status push.
 //
-// Not a security boundary. The socket is a local UDS behind both a 0660 group
-// and an SO_PEERCRED check, so the caller is software the administrator
-// installed on this machine and placed in the mochi-world group - and it can
-// already open unbounded connections here, which is cheaper than a large body.
-//
-// This is insurance against a BUGGY world server. ShouldBindJSON reads the body
-// to completion before world_validate runs, so without a cap a runaway payload
-// OOMs the server and leaves the operator a dead process with no explanation.
-//
+// Not a security boundary - the socket is a local UDS behind a 0660 group and
+// an SO_PEERCRED check - but insurance against a buggy world server:
+// ShouldBindJSON reads the body to completion before world_validate runs.//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -61,12 +55,9 @@ func (r *counting_reader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// TestWorldBodyOversizedIsNotReadToCompletion is the finding, and it has to be
-// measured in BYTES CONSUMED rather than status code: ShouldBindJSON answers
-// 400 either way - on a JSON error when the cap truncates the read, and on
-// world_validate when it does not - so the status cannot tell the two apart.
-// What the cap changes is that the server stops reading, which is the whole
-// point when the sender is a buggy world server with a runaway payload.
+// Measured in bytes consumed, not status: ShouldBindJSON answers 400 either way
+// - a JSON error when the cap truncates the read, world_validate when it does
+// not - so the status cannot tell the two apart.
 func TestWorldBodyOversizedIsNotReadToCompletion(t *testing.T) {
 	router := world_body_router()
 

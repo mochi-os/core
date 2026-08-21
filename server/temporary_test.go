@@ -12,13 +12,9 @@ import (
 	"testing"
 )
 
-// TestTemporaryConfigure pins that the process spools temporary files under
-// cache_dir rather than the system default.
-//
-// Go writes the part of a multipart upload that exceeds its in-memory
-// threshold to os.TempDir(). On a systemd host that is normally a tmpfs, so
-// the "spill to disk" that bounds memory does the opposite — a large upload is
-// held in RAM, competing with the server itself.
+// TestTemporaryConfigure pins that temporary files spool under cache_dir rather
+// than os.TempDir(), which is a tmpfs on a systemd host - there the "spill to
+// disk" that bounds memory does the opposite.
 func TestTemporaryConfigure(t *testing.T) {
 	original_cache := cache_dir
 	original_tmpdir, had_tmpdir := os.LookupEnv("TMPDIR")

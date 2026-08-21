@@ -21,17 +21,10 @@ import (
 	"golang.org/x/crypto/acme"
 )
 
-// TestManualCertificateIsServed pins the regression fixed in cfea87d8.
-//
-// The HTTPS listener used to be started through autotls, which overwrote the
-// tls.Config's GetCertificate with the bare autocert manager's — silently
-// discarding domains_get_certificate and with it every manually installed
-// certificate. Wildcards can only ever be manual, since ACME issues none over
-// TLS-ALPN-01 or HTTP-01, so those domains failed to serve entirely.
-//
-// This drives a real TLS handshake against the configuration the server
-// actually uses, so a future change that drops GetCertificate again fails here
-// instead of in production.
+// TestManualCertificateIsServed drives a real TLS handshake against the
+// configuration the server actually uses, so a change that drops GetCertificate
+// - discarding every manually installed certificate, wildcards included - fails
+// here, not in production.
 func TestManualCertificateIsServed(t *testing.T) {
 	original := domains_certs
 	t.Cleanup(func() { domains_certs = original })

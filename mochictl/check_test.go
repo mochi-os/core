@@ -28,11 +28,9 @@ func TestCheckStarlarkValid(t *testing.T) {
 	}
 }
 
-// TestCheckStarlarkImplicitConcat reproduces the projects 2.29
-// failure mode (Python-style adjacent-string concatenation; valid
-// Python, Starlark parse error). The subcommand must return an
-// error mentioning the file path so deploy.sh's exit-1 carries
-// enough context for the operator to locate the bad line.
+// TestCheckStarlarkImplicitConcat: adjacent-string concatenation is valid
+// Python and a Starlark parse error. The error must name the file so
+// deploy.sh's exit tells the operator where to look.
 func TestCheckStarlarkImplicitConcat(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.star")
@@ -83,12 +81,9 @@ func TestCheckStarlarkSkipNonStar(t *testing.T) {
 	}
 }
 
-// TestCheckStarlarkSkipExcludedDirs: the walk skips .git and node_modules. A
-// bad .star in either does NOT fail the check - neither is the app's own
-// source.
-//
-// `web` used to be in this list, and this test used to assert it. It was
-// removed on purpose: see TestCheckStarlarkChecksWebDirectory.
+// TestCheckStarlarkSkipExcludedDirs: a bad .star under .git or node_modules
+// does not fail the check - neither is the app's own source. `web` is not
+// excluded; see TestCheckStarlarkChecksWebDirectory.
 func TestCheckStarlarkSkipExcludedDirs(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "ok.star"), []byte("def a(): return 1\n"), 0644); err != nil {
@@ -108,11 +103,8 @@ func TestCheckStarlarkSkipExcludedDirs(t *testing.T) {
 	}
 }
 
-// TestCheckStarlarkChecksWebDirectory is the regression. The walk used to skip
-// any directory named `web`, on the grounds that a frontend directory holds no
-// runtime Starlark - true of every app today, and exactly what made the check
-// unable to say so. This walk is deploy.sh's blocking pre-deploy gate, so a
-// .star it skips ships without ever being parsed.
+// TestCheckStarlarkChecksWebDirectory: web/ must not be skipped. This walk is
+// deploy.sh's blocking pre-deploy gate, so a .star it skips ships unparsed.
 func TestCheckStarlarkChecksWebDirectory(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "ok.star"), []byte("def a(): return 1\n"), 0644); err != nil {

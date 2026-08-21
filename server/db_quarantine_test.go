@@ -1,11 +1,10 @@
-// Mochi server: corrupt-DB resilience — a corrupt user DB must not crash the
-// multi-user process. Covers the corruption matcher, the quarantine
-// lifecycle, and exec_bg's skip/no-over-quarantine behaviour.
+// Mochi server: corrupt-DB resilience - a corrupt user DB must not crash the
+// multi-user process.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

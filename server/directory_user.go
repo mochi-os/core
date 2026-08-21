@@ -6,26 +6,11 @@
 
 package main
 
-// The user directory is each user's private routing memory: entity → peer
-// mappings learned from claim-verified inbound traffic. It resolves delivery
-// to PRIVATE entities, which the public directory deliberately never lists —
-// a private subscriber's posts, a private project's comments (#202, #209).
-//
-// Provenance is the privacy model: a row exists only for entities that have
-// contacted this user, so delivery capability mirrors the relationships the
-// counterpart itself created. Rows are never shared between users (a
-// co-tenant's relationship must not extend another user's reach), never
-// synced, never served to peers.
-//
-// Lifecycle differs from the public directory on purpose. Public entries are
-// refreshed by traffic-independent hourly republish, so silence means the
-// host is gone and time-based expiry is garbage collection. Here the refresh
-// source is contact, whose cadence is workload-dependent — a feed that posts
-// twice a year is quiet, not dead — so rows never expire by age. Eviction is
-// event-driven only: fresher contact re-upserts, a send that exhausts the
-// queue's retry budget deletes the proven-dead row, and a generous LRU cap
-// bounds growth against contact spam (minting entities is free, so a spammer
-// could otherwise grow the table without limit).
+// The user directory is each user's private routing memory: entity → peer rows
+// learned from claim-verified contact, never shared or served, and the only
+// route to PRIVATE entities the public directory never lists. Rows never expire
+// by age - a quiet relationship is not a dead host - so eviction is
+// event-driven only.
 
 const (
 	// directory_user_cap bounds rows per user; beyond it rows are evicted
@@ -33,13 +18,9 @@ const (
 	// counts sit far below this — the cap exists for spam, not for users.
 	directory_user_cap = 10000
 
-	// directory_user_peer_cap bounds how many rows one peer may hold in a
-	// single user's directory. A real peer hosts a handful of entities any
-	// given user corresponds with; a spammer's thousands arrive from one or
-	// a few peers. Secondary to the eviction order below, which is what
-	// actually protects the user's rows - peer identities are as free to
-	// mint as entity ids, so this bounds one identity's share, not the
-	// attack.
+	// directory_user_peer_cap bounds one peer's rows in a single user's directory.
+	// Peer identities are free to mint, so this bounds one identity's share, not
+	// the attack - the eviction order below does that.
 	directory_user_peer_cap = 1000
 
 	// directory_user_refresh throttles seen updates: a row refreshed
@@ -99,21 +80,9 @@ func directory_user_learn(user *User, entity string, peer string) {
 	}
 	db.exec("insert or replace into directory (entity, peer, fingerprint, created, seen) values (?, ?, ?, ?, ?)",
 		entity, peer, fingerprint(entity), now_ts, now_ts)
-	// Cap: evict never-confirmed rows first, least recently seen within each
-	// group.
-	//
-	// Ordering on seen alone made the cap work for the spammer. Inbound
-	// contact is free - minting entities is free, so is minting the peer
-	// identity that carries them - so a flood's rows are always the freshest
-	// in the table, and `order by seen asc` deleted the user's own quiet
-	// counterparts first. That is precisely what this file's design note says
-	// must not happen: a feed that posts twice a year is quiet, not dead, and
-	// for a private entity these rows are the only route to it.
-	//
-	// confirmed is the evidence a flood cannot manufacture: it is set by
-	// directory_user_confirm on a SUCCESSFUL DELIVERY to the row, so it marks
-	// a relationship this user actually uses outbound. A flooder can make
-	// this server learn a row; it cannot make this server deliver to one.
+	// Evict never-confirmed rows first, least recently seen within each group.
+	// Ordering on seen alone hands a flood the win - its rows are always the
+	// freshest - and confirmed, set only on successful delivery, cannot be faked.
 	if total := db.integer("select count(*) from directory"); total > directory_user_cap {
 		db.exec("delete from directory where (entity, peer) in (select entity, peer from directory order by confirmed asc, seen asc limit ?)",
 			total-directory_user_cap)
@@ -135,11 +104,9 @@ func directory_user_confirm(user *User, entity string, peer string) {
 	now_ts := now()
 	db.exec("update directory set seen=? where entity=? and peer=? and seen <= ?",
 		now_ts, entity, peer, now_ts-directory_user_refresh)
-	// Marking is deliberately outside the seen throttle: it decides eviction
-	// priority, and a relationship whose only delivery ever fell inside the
-	// refresh window would otherwise never be marked - exactly the quiet
-	// counterpart the cap must not evict. It writes once per row, since the
-	// predicate stops matching afterwards.
+	// Outside the seen throttle deliberately: a relationship whose only delivery
+	// fell inside the refresh window would never be marked, and the cap would then
+	// evict exactly the quiet counterpart it must protect.
 	db.exec("update directory set confirmed=? where entity=? and peer=? and confirmed=0",
 		now_ts, entity, peer)
 }

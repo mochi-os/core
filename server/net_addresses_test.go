@@ -1,19 +1,11 @@
 // Mochi server: the published address list carries only addresses another host
-// could dial, and there is one rendering of it.
-//
-// web_p2p_info looped over net_me.Addrs() itself rather than calling
-// net_addresses, so the anonymous HTTP endpoint published the raw set - no
-// container filter, no deduplication, and the peer id appended even to relay
-// circuits that already carried one - while the mesh got the filtered form.
-//
-// Loopback is worse than cosmetic in peers_publish, which truncates at
-// peers_publish_addresses_maximum: on yuzu half the advertised set is 127.0.0.1
-// and ::1, so half that budget went to addresses no peer can dial.
+// could dial, and there is one rendering of it - net_addresses_render. Loopback
+// matters most in peers_publish, which truncates its address budget.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -94,9 +86,8 @@ func TestPrivateAddressesAreDeliberatelyKept(t *testing.T) {
 	}
 }
 
-// TestRenderStampsThePeerIdOnce. The old handler appended /p2p/<id>
-// unconditionally, so a relay circuit - which already ends in the target peer
-// id - came back with it twice.
+// TestRenderStampsThePeerIdOnce: a relay circuit already ends in the target
+// peer id, so an unconditional /p2p/<id> append doubles it.
 func TestRenderStampsThePeerIdOnce(t *testing.T) {
 	original := net_id
 	net_id = "12D3KooWPd68TanRD1mgWmPZJ3iRantH8z3nFBFpsFSTodsxyMu7"
@@ -191,11 +182,8 @@ func TestPeerInfoUsesTheSharedRendering(t *testing.T) {
 }
 
 // TestRealCaptureRendersCorrectly runs the renderer over an address set copied
-// verbatim from a running server, which is the only way to be sure the filter
-// does not quietly eat relay circuits. A circuit's leading IP is the RELAY's,
-// so an over-eager filter drops exactly the addresses a NAT-ed server depends
-// on - and it would look like the relay reservation had simply not been made,
-// which is indistinguishable from normal startup.
+// from a running server. A circuit's leading IP is the RELAY's, so an
+// over-eager filter drops exactly the addresses a NAT-ed server depends on.
 func TestRealCaptureRendersCorrectly(t *testing.T) {
 	original := net_id
 	net_id = "12D3KooWPd68TanRD1mgWmPZJ3iRantH8z3nFBFpsFSTodsxyMu7"

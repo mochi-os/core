@@ -33,14 +33,9 @@ var (
 	})
 )
 
-// Deliberately a package init(), not a call from main_serve.
-//
-// This must be in place before ANY code can log, and package-level variable
-// initialisers throughout the package run before main() is entered - a
-// hoisted version would leave anything logging during that phase writing
-// through Go's default logger with its own flags and destination. The other
-// startup registrations moved into main_serve (api_init, directory_init,
-// peers_init, events_init, senders_init); this one cannot follow them.
+// Deliberately a package init(): package-level variable initialisers run before
+// main(), and anything logging then would use Go's default logger. The other
+// startup registrations moved into main_serve; this one cannot follow them.
 func init() {
 	log.SetFlags(0)
 	log.SetOutput(new(log_writer))
@@ -87,11 +82,8 @@ func warn_application(app string, message string, values ...any) {
 	warn_application_email(app, warn_log(message, values...))
 }
 
-// warn_application_email sends the admin mail for an app warning that has
-// already been written to the journal. Split from warn_application because
-// sl_log formats and escapes the line itself - it has to, since the app
-// supplies the values as well as the format - and so cannot hand text back to
-// a function that would format it again.
+// warn_application_email sends the admin mail for a line already written to the
+// journal - sl_log formats and escapes app text itself and cannot hand it back.
 func warn_application_email(app string, out string) {
 	admin := ini_string("email", "admin", "")
 	if admin == "" {
@@ -156,15 +148,9 @@ func server_hostname() string {
 	return name
 }
 
-// log_repeat_threshold / log_repeat_window: a format string emitting more
-// than threshold lines inside one window is suppressed for the rest of that
-// window, ending with a single rollup line when the window rolls. A flooding
-// diagnostic call site otherwise destroys journal retention — the 2026-07
-// broadcast gap flood wrote ~60 lines/sec and cut yuzu's journald to ~35
-// minutes of history, evicting the evidence needed to diagnose it. Core's
-// warn() is exempt: its warns are rare, important, and already email-throttled.
-// An app's are not - mochi.log.warn goes through warn_application, which
-// suppresses. var (not const) so tests can lower them.
+// log_repeat_threshold / log_repeat_window: a format emitting more than
+// threshold lines in one window is suppressed for the rest of it, with a rollup
+// when the window rolls. Core's warn() is exempt. var so tests can lower them.
 var log_repeat_threshold = 20
 var log_repeat_window int64 = 60
 
@@ -174,25 +160,8 @@ type log_repeat_record struct {
 }
 
 // log_app_lines_maximum is how many journal lines ONE APP may write per
-// log_repeat_window, whatever text it varies.
-//
-// log_repeat_allow keys on the format string. For core that is the call site's
-// fixed identity and the suppression works. For an app the format is whatever
-// the app passes, so a format built from data - mochi.log.debug("item " + id) -
-// is a fresh key on every call, every fresh key is a first occurrence, and
-// nothing suppresses: measured, 5,000 such calls all printed while 5,000 calls
-// on one fixed format printed 20. Only the TABLE was bounded, never the write
-// rate.
-//
-// warn_application already re-keyed its admin email on the app for exactly this
-// reason; its journal write stayed on the format key, as did debug and info.
-// This is that same fix for the journal.
-//
-// Deliberately far above core's per-format threshold. An app's whole budget is
-// one key, shared across every call site it has, where core gets 20 per site;
-// the point is to bound a flood by orders of magnitude, not to ration ordinary
-// debugging. The 2026-07 flood that cut yuzu's history to ~35 minutes ran at
-// ~60 lines/sec - this caps an app at 5.
+// log_repeat_window, whatever it varies: an app builds its format from data, so
+// log_repeat_allow's per-format key never repeats. One key for all its sites.
 var log_app_lines_maximum = 300
 
 var (
@@ -201,11 +170,8 @@ var (
 )
 
 // log_app_allow reports whether app may write another journal line now, and
-// prints a rollup when a window that suppressed lines rolls over.
-//
-// Unlike log_repeat_state this needs no eviction: the key space is the set of
-// installed apps, which the apps do not choose. That is the whole point of
-// keying on it.
+// prints a rollup when a suppressing window rolls over. No eviction needed: the
+// key space is the installed apps, which the apps do not choose.
 func log_app_allow(app string) bool {
 	if app == "" {
 		return true
@@ -226,19 +192,9 @@ func log_app_allow(app string) bool {
 	return record.count <= log_app_lines_maximum
 }
 
-// log_escape renders app-supplied text as a single journal line.
-//
-// log_writer.Write stamps the time once per Write, not per line, so a newline
-// inside app text produced a second line the writer never touched - carrying
-// whatever the app wrote, including a timestamp of its own choosing, and
-// indistinguishable from core's own output to an operator or to anything
-// parsing the journal. The "App <id>:<function>()" prefix sl_log forces only
-// ever reaches the first line.
-//
-// Other C0 controls go too: the journal is read in a terminal, and an escape
-// sequence there is the same class of problem as the bidirectional controls
-// refused from display names. Tab survives - it is legitimate spacing and
-// starts no line.
+// log_escape renders app-supplied text as a single journal line. log_writer
+// stamps the time once per Write, not per line, so a newline in app text forges
+// a line indistinguishable from core's own. Tab survives; other C0 goes.
 func log_escape(s string) string {
 	var out strings.Builder
 	for _, character := range s {
@@ -258,11 +214,9 @@ func log_escape(s string) string {
 	return out.String()
 }
 
-// log_line writes one already-formatted, already-escaped line at the given
-// level. Split out because an app's text has to be formatted BEFORE it is
-// escaped - Sprintf splices the values in, and a newline can arrive inside one
-// of them - while debug and info format internally, after their own repeat
-// check. Core keeps using those; only sl_log needs this.
+// log_line writes one already-formatted, already-escaped line. Only sl_log
+// needs it: app text must be formatted before it is escaped, since a newline
+// can arrive inside a value.
 func log_line(level string, line string) {
 	if level == "mochi.log.warn" {
 		log.Print(line + "\n")
@@ -274,17 +228,9 @@ func log_line(level string, line string) {
 	log.Print(line + "\n")
 }
 
-// log_repeat_maximum bounds log_repeat_state.
-//
-// The key is the format string, and mochi.log.debug lets an app choose it. A
-// format built from data - mochi.log.debug("rejected: " + text) reads like an
-// ordinary diagnostic - is a fresh key on every call, so the table gains an
-// entry per line and nothing else here ever removes one. The window rollover
-// only replaces the entry for a format that recurs.
-//
-// Over the ceiling the oldest windows go. They are the ones least likely to be
-// actively suppressing anything, and losing one is harmless: the format simply
-// opens a fresh window on its next line.
+// log_repeat_maximum bounds log_repeat_state. The key is the format string and
+// an app chooses its own, so a format built from data adds an entry per line
+// and nothing else removes one. Over the ceiling the quietest windows go.
 const log_repeat_maximum = 10000
 
 var (
@@ -292,13 +238,9 @@ var (
 	log_repeat_mutex sync.Mutex
 )
 
-// log_repeat_allow reports whether a line with this format may print now.
-// Keyed by format string, not formatted output: the arguments vary per
-// line, the template is the call site's identity (same scheme as
-// warn_email_allow below). When a window that suppressed lines rolls over,
-// the first line of the new window is preceded by a rollup naming the
-// format and the suppressed count. A format that stops flooding entirely
-// emits its final rollup on its next line, whenever that is.
+// log_repeat_allow reports whether a line with this format may print now. Keyed
+// by format string, not formatted output - the template is the call site's
+// identity. A rollup precedes the first line of the next window.
 func log_repeat_allow(format string) bool {
 	now := now()
 	log_repeat_mutex.Lock()
@@ -321,32 +263,18 @@ type warn_email_record struct {
 	suppressed int
 }
 
-// log_repeat_evict drops the oldest windows until the table is back under its
-// ceiling. Caller holds log_repeat_mutex.
-//
-// Sheds a slice at a time so this runs O(n) rarely rather than on every insert
-// once the ceiling is reached, matching message_seen_evict.
-//
-// Reports through log.Printf rather than warn(): this runs with
-// log_repeat_mutex held, and warn() sends the admin email inline over SMTP, so
-// routing it there would hold the lock across a network round trip and stall
-// every other log line on the server.
+// log_repeat_evict drops the quietest windows until the table is under its
+// ceiling. Caller holds log_repeat_mutex, which is why this reports through
+// log.Printf: warn() would send the admin mail over SMTP under the lock.
 func log_repeat_evict() {
 	if len(log_repeat_state) <= log_repeat_maximum {
 		return
 	}
 	target := len(log_repeat_state) - log_repeat_maximum + log_repeat_maximum/10
 
-	// Ordered by count first, then age. Dropping purely by age does not work:
-	// now() has second resolution, so a burst of fresh formats all carry the
-	// same start and a strict "older than the cutoff" test matches none of
-	// them - the table stays over its ceiling and re-sorts on every insert.
-	//
-	// Count first also decides the right victims. A window with a high count is
-	// actively suppressing a flood, and dropping it would let that flood clear
-	// its own suppression by opening enough new formats to push it out, then
-	// resume. A window at count 1 has printed one line and costs nothing to
-	// reopen.
+	// Count first, then age. now() has second resolution, so a burst of fresh
+	// formats share a start and a pure age test matches none of them; and a
+	// high-count window is actively suppressing a flood that would else resume.
 	formats := make([]string, 0, len(log_repeat_state))
 	for format := range log_repeat_state {
 		formats = append(formats, format)
@@ -417,11 +345,8 @@ func sl_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.
 		format = fmt.Sprintf("App %s:%s() %s", a.id, t.Local("function"), log_escape(format))
 	}
 
-	// Bounded here rather than in debug/info/warn_application, because those
-	// suppress on the format string and an app chooses its own - a format built
-	// from data never repeats, so it never suppresses. One key per app is the
-	// only key an app cannot vary. The per-format suppression still applies
-	// underneath; whichever bound is tighter wins.
+	// Bounded here, not in debug/info/warn_application: those suppress on the
+	// format string, and one key per app is the only key an app cannot vary.
 	if !log_app_allow(app) {
 		return sl.None, nil
 	}

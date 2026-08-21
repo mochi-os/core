@@ -11,11 +11,9 @@ import (
 	"testing"
 )
 
-// TestUserLoginOffered checks that the login screen offers only factors that
-// can actually complete the login: when the account requires specific factors,
-// usable-but-not-required ones are dropped (they can't substitute); when
-// nothing is required, every usable factor is offered (any one suffices). The
-// system email floor is folded in like the login bar itself.
+// TestUserLoginOffered: when the account requires factors, usable-but-not-
+// required ones are dropped (they cannot substitute); when nothing is required,
+// every usable factor is offered.
 func TestUserLoginOffered(t *testing.T) {
 	cleanup := create_test_users_db(t)
 	defer cleanup()

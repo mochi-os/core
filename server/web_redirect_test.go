@@ -79,13 +79,9 @@ func TestRedirectHTTPS(t *testing.T) {
 	}
 }
 
-// TestACMEChallengeIsNotRedirected pins the composition the :80 listener
-// serves: autocert's handler in front of the HTTPS redirect.
-//
-// Order is the whole point. HTTP-01 validation fetches
-// /.well-known/acme-challenge/<token> over plain HTTP, so if the redirect saw
-// that path first it would answer 301 and validation could never complete —
-// no certificate would ever be issued. Everything else must still redirect.
+// Order is the whole point: autocert's handler sits in front of the HTTPS
+// redirect, or HTTP-01 validation of /.well-known/acme-challenge/<token> is
+// answered with a 301 and no certificate is ever issued.
 func TestACMEChallengeIsNotRedirected(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
@@ -160,10 +156,8 @@ func TestRedirectHTTPSHost(t *testing.T) {
 	}
 }
 
-// TestRedirectHTTPSIssuanceBlocked pins the two conditions that stop a
-// certificate being issued for an otherwise well-formed domain. Both sit
-// behind the ACME manager rather than in the domains table, so a predicate
-// that reads the table alone reports HTTPS as available and sends callers to a
+// Both conditions that block issuance sit behind the ACME manager, not in the
+// domains table, so a predicate reading the table alone sends callers to a
 // handshake that is refused.
 func TestRedirectHTTPSIssuanceBlocked(t *testing.T) {
 	cleanup := create_domains_test_env(t)
@@ -205,12 +199,9 @@ func TestRedirectHTTPSIssuanceBlocked(t *testing.T) {
 	}
 }
 
-// TestRedirectHTTPSManualCertificate pins that a manually certificated host is
-// still redirected even with no row in the domains table. domains_get_certificate
-// tries the manual map first, so HTTPS serves such a host; refusing to send
-// callers there would strand it on plain HTTP. Wildcard certificates make this
-// ordinary rather than exotic — ACME issues none over TLS-ALPN-01 or HTTP-01,
-// so every wildcard is manual and its subdomains need no rows of their own.
+// A manually certificated host is redirected even with no domains row:
+// domains_get_certificate tries the manual map first. Every wildcard is manual
+// - ACME issues none over TLS-ALPN-01 or HTTP-01 - so subdomains need no rows.
 func TestRedirectHTTPSManualCertificate(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()
@@ -243,12 +234,9 @@ func TestRedirectHTTPSManualCertificate(t *testing.T) {
 	}
 }
 
-// TestRedirectHTTPSAutomaticCertificatesOff pins what the domains table's tls
-// column does to the redirect. Switching a domain off means no ACME issuance,
-// so unless a certificate was installed by hand there is nothing for the
-// handshake to present and sending callers to HTTPS strands them. A manual
-// certificate is checked first and overrides the column, exactly as
-// domains_get_certificate does.
+// The domains table's tls column switches off ACME issuance, so HTTPS strands
+// callers unless a certificate was installed by hand - checked first, and it
+// overrides the column.
 func TestRedirectHTTPSAutomaticCertificatesOff(t *testing.T) {
 	cleanup := create_domains_test_env(t)
 	defer cleanup()

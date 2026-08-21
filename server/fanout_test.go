@@ -1,16 +1,13 @@
 // Mochi server: multi-host fan-out delivery resilience tests
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// These pin the two properties audited here: a message to an
-// entity that lives on several hosts fans out to an independent queue
-// row per host, and a single unreachable host is deferred out of the
-// send path rather than stalling or dropping delivery to the reachable
-// ones. The pick-by-peer fairness half (one slot per peer per tick, so a
-// dead host's backlog can't crowd out live peers) is covered by
-// TestQueueSelectPickByPeerDedupesByTarget in queue_test.go.
+// A message to an entity on several hosts fans out to one queue row per host,
+// and an unreachable host is deferred rather than stalling or dropping delivery
+// to the others. Pick-by-peer fairness is
+// TestQueueSelectPickByPeerDedupesByTarget.
 
 package main
 
@@ -18,13 +15,10 @@ import (
 	"testing"
 )
 
-// TestQueueExpandEmptyTargetFansOutToAllHosts: a row whose target could
-// not be resolved at enqueue time re-resolves on retry and fans out to
-// every live host of the entity — one independent row per host, the
-// most-recently-seen returned for the in-flight attempt and a sibling
-// queued for each of the others. This is both the fan-out mechanism and
-// the self-heal: a row that arrived before the directory knew any host
-// expands as soon as hosts are known.
+// TestQueueExpandEmptyTargetFansOutToAllHosts: a row whose target could not be
+// resolved at enqueue time re-resolves on retry into one row per live host -
+// both the fan-out mechanism and the self-heal for a row enqueued before any
+// host known.
 func TestQueueExpandEmptyTargetFansOutToAllHosts(t *testing.T) {
 	cleanup := setup_replication_test(t) // sets net_id = "self", temp data dir
 	defer cleanup()
@@ -75,13 +69,10 @@ func TestQueueExpandEmptyTargetFansOutToAllHosts(t *testing.T) {
 	}
 }
 
-// TestQueueProcessDefersSilentHost: when one host of a fan-out is in the
-// silent-failure cache (repeatedly unreachable), queue_process parks its
-// row for queue_silent_defer instead of attempting a send — so a dead
-// host neither stalls the tick on a connect timeout nor consumes a send
-// slot, and its row is deferred (not dropped) to retry once the host
-// revives. Delivery to the reachable hosts (separate rows, separate
-// targets) is unaffected.
+// TestQueueProcessDefersSilentHost: a host in the silent-failure cache has its
+// row parked for queue_silent_defer instead of attempted, so it neither stalls
+// the tick nor consumes a send slot, and the row is deferred rather than
+// dropped.
 func TestQueueProcessDefersSilentHost(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

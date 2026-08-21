@@ -1,13 +1,11 @@
 // Package adminclient is mochictl's HTTP client for the server's admin
-// listener. It's a thin wrapper around net/http.Client with a custom
-// DialContext that dials the local admin transport — a Unix domain socket on
-// Linux/macOS, a named pipe on Windows (see admin_dial in the platform files);
-// the rest of mochictl makes regular http.Get / http.Post calls.
+// listener: net/http.Client with a DialContext onto the local admin transport,
+// a Unix socket on Linux/macOS and a named pipe on Windows (see admin_dial).
 //
-// Copyright © 2026 Mochisoft OÜ
+// Copyright (c) 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package adminclient
 

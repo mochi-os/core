@@ -17,59 +17,24 @@ import (
 
 // Deduplication cache for processed messages.
 //
-// TTL invariant (claude/plans/protocol2.md → Failure recovery →
-// Ack loss): seen_messages_ttl MUST be ≥ 2× the longest gap in
-// retry_delays. queue.go caps retries at 3600s (1h), so the dedup
-// window has to outlive 2× that = 7200s. We pick 8h for the safety
-// margin — a late retry under chained ack-loss + sender-restart can
-// arrive several retry cycles after the original apply, and a 1h
-// TTL was already on the edge. Memory cost is bounded by the cache
-// cleanup that runs hourly; at typical traffic this is single-digit
-// MB. The relation is enforced by TestDedupWindowExceedsMaxRetryInterval.
-//
-// IN MEMORY ON PURPOSE, and NOT a replay defence. A restart empties this,
-// so a captured announcement can be re-delivered inside its (2h) freshness
-// window. That is deliberate: every handler reachable this way already
-// refuses a stale message on its own terms, which is where the property
-// belongs — dedup is a fast path that saves work, not the boundary.
-//
-//	directory publish  version/seen monotonic; a non-newer row returns early
-//	directory delete   bounded by `seen<=?`, so it cannot remove a row
-//	                   published after the attested time
-//	peers publish      signed peer records are sequence-numbered by libp2p;
-//	                   the unsigned fallback only re-applies addresses and a
-//	                   name, where a stale value simply fails to dial
-//
-// Persisting this would add a database write per message to defend
-// something the handlers already reject. If a future pubsub handler is NOT
-// monotonic, that handler needs its own guard — do not reach for
-// persistence here. TestDirectoryDeleteIsBoundedByAttestedTime pins the
-// least obvious of the three.
+// seen_messages_ttl MUST be at least 2x the longest gap in retry_delays
+// (queue.go caps at 1h); TestDedupWindowExceedsMaxRetryInterval enforces it. In
+// memory on purpose and NOT a replay defence: every handler reachable this way
+// already refuses a stale message on its own terms.
 var (
 	seen_messages      = make(map[string]int64) // id -> timestamp
 	seen_messages_lock sync.Mutex
 	seen_messages_ttl  = int64(8 * 3600) // 8 hours
 
-	// Ceiling on the dedup map, because the TTL alone does not bound it.
-	// Entries are shed hourly by age, but nothing limits how fast they
-	// arrive: the stream rate limit is charged per stream OPEN, not per
-	// frame, so one authenticated peer can hold a single stream open and
-	// add an entry per message for the whole 8h window.
-	//
-	// At roughly 100 bytes an entry this is ~100 MB of headroom, far above
-	// any real traffic and well below a level that threatens the process.
-	// Over it, message_seen_evict drops the OLDEST entries: they are the
-	// closest to expiring anyway, and a retry needs the RECENT half of the
-	// window (retry_delays tops out at 1h against an 8h TTL), so the
-	// entries sacrificed are the ones least likely to be asked about.
+	// Ceiling on the dedup map: the TTL alone does not bound it, since the stream
+	// rate limit is charged per stream OPEN, not per frame. Eviction drops the
+	// OLDEST entries, which a retry (1h ladder, 8h TTL) never needs.
 	seen_messages_maximum = 1000000
 )
 
-// message_seen_evict drops the oldest entries until the map is back under
-// its ceiling. Caller holds seen_messages_lock.
-//
-// Sheds a slice rather than one entry per call so this runs O(n) rarely
-// instead of O(n) per insert once the ceiling is reached.
+// message_seen_evict drops the oldest entries until the map is back under its
+// ceiling. Caller holds seen_messages_lock; sheds a slice at a time, so this is
+// O(n) rarely rather than per insert.
 func message_seen_evict() {
 	if len(seen_messages) <= seen_messages_maximum {
 		return
@@ -101,13 +66,9 @@ func message_seen(id string) bool {
 	return exists
 }
 
-// message_seen_mark atomically reports whether id was already processed
-// and, if not, marks it seen — both under one lock. The separate
-// message_seen / message_mark_seen pair has a check-then-mark gap that two
-// concurrent receivers can both slip through; the pubsub manager and the
-// direct-stream workers share this dedup map, so a message arriving on
-// both paths needs this atomic coalescing. Returns true when id was
-// already seen (caller drops the duplicate).
+// message_seen_mark atomically reports whether id was already processed and, if
+// not, marks it seen. The pubsub manager and the direct-stream workers share
+// this map, so the separate check-then-mark pair is not safe here.
 func message_seen_mark(id string) bool {
 	seen_messages_lock.Lock()
 	defer seen_messages_lock.Unlock()
@@ -119,22 +80,9 @@ func message_seen_mark(id string) bool {
 	return false
 }
 
-// message_seen_clear forgets id, so a later delivery of the same message
-// is dispatched instead of being coalesced away as a duplicate.
-//
-// The mark is set before the handler runs (see the dedup block in
-// receive_messages), which is what closes the double-apply window when a
-// retry arrives on a fresh stream while the first copy is still queued.
-// The cost is that a handler failure leaves the id marked, and the retry
-// the failure asks for then looks like a duplicate: the receiver acks it
-// without dispatching, the sender deletes its queue row, and the message
-// is lost — the exact outcome the retry existed to prevent. Every retry
-// lands inside the window, because the backoff ladder tops out at an hour
-// against an 8h TTL.
-//
-// So the worker clears the mark whenever it answers with a reason the
-// sender will retry. Only those: clearing on a drop reason would reopen a
-// message the receiver has deliberately given up on.
+// message_seen_clear forgets id so a later delivery is dispatched rather than
+// coalesced away as a duplicate. The mark is set before the handler runs, so
+// clear it only on a reason the sender will retry, never on a drop reason.
 func message_seen_clear(id string) {
 	seen_messages_lock.Lock()
 	defer seen_messages_lock.Unlock()
@@ -242,25 +190,9 @@ func (m *Message) send() {
 	go m.send_work()
 }
 
-// Send a completed outgoing message to a specified peer. Persists the
-// message to queue.db and signals the queue manager to drain — does
-// NOT spawn a goroutine to try the send immediately. The queue manager
-// handles every outbound message serially within its single goroutine,
-// so multiple send_peer() calls for the same peer can't race each
-// other into N concurrent libp2p streams (which trip the receiver's
-// per-peer rate limit and snowball into unbounded queue.db growth —
-// observed live as instance 1's queue hitting the 1GB SQLite cap and
-// panicking after ~1100 unack'd bootstrap-db-chunks accumulated).
-//
-// Latency: worst case is the queue tick interval (1 second). For
-// interactive operations like an Approve click → join-approved emit,
-// that's imperceptible. For high-volume operations like bulk bootstrap
-// chunk delivery, the queue drains 50 entries per tick — sufficient
-// throughput because the drain is serial through one peer's connection
-// rather than fan-out from many goroutines.
-//
-// send_work is retained as the per-message wire send helper used by
-// queue_process; no longer called from send_peer directly.
+// send_peer queues a message for a specified peer and wakes the queue manager
+// rather than sending inline: the manager is serial, so concurrent calls cannot
+// open N streams to one peer and trip its rate limit. Latency is one tick (1s).
 func (m *Message) send_peer(peer string) {
 	m.target = peer
 	if m.ID == "" {
@@ -291,22 +223,10 @@ func (m *Message) send_peer_priority(peer string, priority int) {
 	queue_wake()
 }
 
-// Do the work of sending (queue-first, read challenge before sending, wait for ACK)
-//
-// Multi-peer fan-out: when the caller didn't pin a specific peer (the usual
-// case for app-level `mochi.message.send`), look up every live peer hosting the
-// recipient entity and queue one row per peer with its target set. Each gets the
-// event directly from the source, so one peer being briefly unreachable does not
-// stop the others, and a stale directory entry cannot pin routing at a dead
-// peer.
-//
-// `send_peer` (target already set) keeps single-row behaviour — it's
-// the path for system-to-system / replication messages where the
-// sender already picked which peer to talk to.
-//
-// When entity_peers returns nothing (entity unknown to local directory)
-// the original single empty-target row is queued so the queue retry
-// can attempt resolution again later via entity_peer.
+// send_work queues the message and, with no peer pinned, fans out one row per
+// live peer hosting the recipient entity, so one peer's outage does not stop
+// the others. With no peers known, one empty-target row queues for later
+// resolution.
 func (m *Message) send_work() {
 	if m.ID == "" {
 		m.ID = uid()
@@ -319,12 +239,8 @@ func (m *Message) send_work() {
 		}
 		queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
 		if m.target == net_id {
-			// Self-loop dispatch fell back to queue.db (no worker yet,
-			// or inbox full). Don't inline-attempt: message_attempt_send
-			// → peer_send(net_id) → net_me.NewStream(self) self-dials
-			// and fails. self_loop_drain owns target==net_id rows; nudge
-			// it so the row drains on the next tick rather than waiting
-			// out the heartbeat.
+			// Never inline-attempt a self-loop row: peer_send(net_id) self-dials and
+			// fails. self_loop_drain owns these; nudge it.
 			queue_wake()
 			return
 		}
@@ -340,18 +256,9 @@ func (m *Message) send_work() {
 		return
 	}
 
-	// Multi-host fan-out: one peer gets the primary inline send (using
-	// m.ID), the rest queue with fresh uids. Self-loop peers (peer ==
-	// net_id) divert through the direct-dispatch path that skips
-	// queue.db entirely; they fall back to queue_add_direct only when
-	// the worker inbox is full.
-	//
-	// m.ID is held back for the first peer that actually lands a row
-	// in queue.db, because message_attempt_send below uses m.ID to
-	// drive queue_sending / peer_send / queue_ack. Direct-dispatched
-	// rows get fresh uids — they're consumed by the worker and never
-	// touch queue.db, so giving them m.ID would orphan the inline
-	// send (no row for it to ack against, receiver gets a duplicate).
+	// One peer gets the inline send under m.ID; the rest queue with fresh uids.
+	// m.ID must stay with a row in queue.db, since message_attempt_send drives
+	// queue_sending / queue_ack through it. Self-loop peers divert to dispatch.
 	primary_peer := ""
 	self_queued := false
 	for _, peer := range peers {
@@ -389,11 +296,8 @@ func (m *Message) send_work() {
 	}
 }
 
-// message_attempt_send is the inline send-now path extracted from
-// send_work for the single-peer case. Splits naturally now that
-// send_work loops over peers. Package-level var so unit tests can
-// stub it out — the real implementation reaches into the libp2p
-// infrastructure which isn't set up under in-process tests.
+// message_attempt_send is the inline send-now path for a single peer. A
+// package-level var so tests can stub out the libp2p reach-through.
 var message_attempt_send = message_attempt_send_real
 
 func message_attempt_send_real(m *Message, peer string, content []byte) {
@@ -423,24 +327,9 @@ func (m *Message) set(in ...string) *Message {
 	}
 }
 
-// sender_check reports whether user owns the entity named in a from header.
-// Shared by message.send, message.send.peer and the stream openers, which each
-// carried a copy: the check is what stops an app speaking as an entity its user
-// does not own, so a change applied to one copy and not the others would leave
-// the gap open on whichever site was missed.
-//
-// Ownership is the only test. Being routed to an entity is deliberately not a
-// second way to pass: /<app>/<entity>/... takes the app from one URL segment
-// and resolves the entity globally from the next, with no check that the caller
-// owns it, that its class belongs to that app, or any authorization between the
-// two - core leaves that to the app. Treating the route as licence to speak as
-// the entity therefore granted, on the strength of a URL, what claim_sign then
-// turned into a real signature by that entity's key. mochi.entity.sign has
-// always refused the same request outright.
-//
-// Returns false (not an error) for a refusal, having logged it. The log names
-// the routed-entity case specifically, so a path that relied on the old grant
-// is diagnosable rather than a bare "invalid from header".
+// sender_check reports whether user owns the entity named in a from header, for
+// message.send, message.send.peer and the stream openers. Ownership is the only
+// test: /<app>/<entity>/... routing carries no ownership check of its own.
 func sender_check(t *sl.Thread, user *User, from string, context string) (bool, error) {
 	db := db_open("db/users.db")
 	owned, err := db.exists("select id from entities where id=? and user=?", from, user.UID)

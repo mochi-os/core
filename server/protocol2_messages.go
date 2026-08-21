@@ -82,16 +82,9 @@ type Receiver struct {
 	closed    atomic.Bool
 }
 
-// receive_messages is the libp2p stream handler registered for
-// /mochi/2/messages in net_start. Runs in a fresh goroutine per stream.
-//
-// Guarded like the other two inbound entry points. This is the busiest of the
-// three and had no recover of its own, so a panic anywhere beneath it reached
-// the top of a libp2p goroutine and took the process down - and plenty can
-// panic: directory_user_learn on the claim path reaches db.exec, which is
-// must(...) and panics on any SQL error, so a locked or damaged database turned
-// an inbound message from a remote peer into a server-wide outage. Resetting
-// the stream on the way out tells that peer to stop waiting.
+// receive_messages is the libp2p stream handler for /mochi/2/messages,
+// registered in net_start and run on a fresh goroutine per stream. Guarded: a
+// panic below here reaches the top of a libp2p goroutine and ends the process.
 func receive_messages(s p2p_network.Stream) {
 	guard("receive_messages", func() { s.Reset() }, func() { receive_messages_guarded(s) })
 }
@@ -191,13 +184,8 @@ func (r *Receiver) read_loop() {
 // handle dispatches one inbound frame. Returns false to terminate the
 // read loop (used by `bye` and protocol violations).
 func (r *Receiver) handle(f *Frame) bool {
-	// Addressing checked before anything keys a map on it. Frame.Service and
-	// Frame.ID both become keys that outlive the stream — app_workers, which
-	// starts a goroutine per distinct service, and seen_messages, whose
-	// ceiling counts entries assuming an id is id-sized — and both are chosen
-	// by the sending peer. Rejecting closes the stream rather than failing the
-	// frame: a peer sending a malformed envelope is not one whose next frame
-	// is worth parsing.
+	// Checked before anything keys a map on Frame.Service or Frame.ID. A peer
+	// sending a malformed envelope gets the stream closed, not a frame failure.
 	if !envelope_valid(f.From, f.Service, f.Event, f.ID) {
 		info("Messages: protocol violation peer=%q session=%s — malformed envelope (service=%d bytes, id=%d bytes)",
 			r.peer, r.session, len(f.Service), len(f.ID))
@@ -227,12 +215,8 @@ func (r *Receiver) handle(f *Frame) bool {
 		return true
 
 	case frame_type_prove:
-		// The sender will not hand us a message for this entity until we
-		// show we hold its key. Mirror image of the claim above: there
-		// the sender proves who it speaks for, here we prove who we
-		// answer for. Answering with our own entity's signature over the
-		// sender's challenge is the only thing that distinguishes this
-		// host from any other that could route the connection.
+		// Mirror of the claim above: the sender proves who it speaks for, this host
+		// proves who it answers for before the sender will send.
 		r.prove(f.To)
 		return true
 
@@ -309,11 +293,8 @@ func (r *Receiver) dispatch_message(f *Frame) {
 		}
 	}
 
-	// Resolve (user, app). The user we serve owns f.To. The handler
-	// dispatch (e.route()) picks the right app — we use the service
-	// name as the worker key so frames addressed to the same logical
-	// app serialise even if a different (sub-)app would also have
-	// answered.
+	// The user we serve owns f.To. The worker key is the service name, not the app
+	// e.route() picks, so frames for the same logical app serialise.
 	to := f.To
 	if to != "" && valid(to, "fingerprint") {
 		if ent := entity_by_any(to); ent != nil {
@@ -332,18 +313,9 @@ func (r *Receiver) dispatch_message(f *Frame) {
 		}
 	}
 
-	// Authoritative dedup: check and mark in one step, immediately before
-	// handing off. The mark used to sit AFTER worker_dispatch, which BLOCKS
-	// when the inbox is full, so the gap between the fast-path read above
-	// and the mark spanned that block — a sender retry arriving on a fresh
-	// stream inside the window passed the read and was applied twice.
-	// pubsub already used the atomic form; the two paths share the map.
-	//
-	// It sits after the claim and codec checks on purpose: those reply with
-	// a failure the sender retries, and marking before them would make the
-	// retry look like a duplicate and lose the message. ID == "" frames
-	// can't dedup; they ack/fail as normal but might double-apply on a
-	// retry — acceptable for the rare ID-less frame.
+	// Check and mark in one step immediately before handing off: worker_dispatch
+	// blocks on a full inbox, and a retry arriving in that gap applies twice. Must
+	// stay after the claim and codec checks, whose failures ask for a retry.
 	if f.ID != "" && message_seen_mark(f.ID) {
 		debug("Messages: duplicate message %q, ack only peer=%q", f.ID, r.peer)
 		r.reply(&Frame{Type: frame_type_ack, Replies: []string{f.ID}})
@@ -357,18 +329,12 @@ func (r *Receiver) dispatch_message(f *Frame) {
 	})
 }
 
-// reply posts a frame onto the per-stream replies channel. Drops the
-// frame (with a debug log) if the channel is full — same recovery
-// path as a dropped stream: sender's sweeper times the inflight out,
-// retry, receiver_mark_seen catches the dup.
-// prove answers a `prove` demand for `entity`: a claim frame carrying
-// this host's signature over the sender's challenge when the entity is
-// ours to sign for, otherwise a fail the sender can distinguish.
+// reply posts a frame onto the per-stream replies channel, dropping it if the
+// channel is full - the sender's sweeper times the inflight out and retries.
 //
-// fail_unknown_user means the entity is not hosted here and the sender
-// should look elsewhere; fail_unproven means it is hosted here but the
-// key is missing, which is an operator problem on this side and must not
-// be silently downgraded into serving the entity unauthenticated.
+// prove answers a `prove` demand for `entity`. fail_unknown_user means it is
+// not hosted here; fail_unproven means it is but the key is missing, which must
+// not be downgraded into serving the entity unauthenticated.
 func (r *Receiver) prove(entity string) {
 	if entity == "" || !valid(entity, "entity") {
 		r.reply(&Frame{Type: frame_type_fail, From: entity, Reason: fail_unknown_user})
@@ -398,12 +364,9 @@ func (r *Receiver) reply(f *Frame) {
 	}
 }
 
-// write_replies is the per-stream reply writer. Implements the
-// drain-and-batch policy: block on the first frame, then non-blockingly
-// pull every other frame ready right now; coalesce all acks into one
-// ack frame; flush any fail (carries a single Reason, so they don't
-// batch) on its own. No timer-based waiting — batches grow naturally
-// under load, look identical to per-message acks at low load.
+// write_replies is the per-stream reply writer: block on the first frame, then
+// drain whatever is ready, coalescing acks into one frame. No timer - batches
+// grow naturally under load.
 func (r *Receiver) write_replies() {
 	pending_acks := make([]string, 0, 64)
 
@@ -438,14 +401,9 @@ func (r *Receiver) write_replies() {
 	}
 }
 
-// coalesce_one is the per-frame branch inside write_replies' drain
-// loop: ack frames merge into pending_acks (one ack frame per drain
-// batch); any other frame (fail, pong, claim) flushes the accumulated
-// acks first then ships standalone. A type missing from that list is
-// dropped silently, which is why the list must be kept in step with
-// whatever reply() can enqueue. Preserves wire ordering — a sender
-// observing an ack always sees it before any frame queued after the
-// ack, so inflight-resolution stays consistent with arrival order.
+// coalesce_one merges ack frames into pending_acks; any other frame flushes the
+// acks first, then ships standalone, so a sender always sees an ack before
+// anything queued after it. A frame type missing from the switch is dropped.
 func (r *Receiver) coalesce_one(f *Frame, pending_acks *[]string) {
 	if f.Type == frame_type_ack {
 		for _, id := range f.Replies {

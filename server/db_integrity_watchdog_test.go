@@ -1,13 +1,9 @@
 // Mochi server: proactive corruption-detection watchdog regression (#6/#7).
 //
-// The 2026-06-23 feeds.db corruption ran silently for hours. db_integrity_watchdog
-// quick_checks open DBs on a rolling schedule and flags+warns the moment one is
-// corrupt, so it surfaces as an alert in minutes instead of a silent outage.
-//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

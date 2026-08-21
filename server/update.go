@@ -1,13 +1,11 @@
 // Mochi server: Update check
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// Daily HTTPS poll of packages.mochi-os.org/<platform>/versions.json. When a
-// newer release for the running track is detected, send a Mochi notification
-// to every administrator. The settings system status page renders a banner
-// with platform-specific upgrade instructions.
+// Daily HTTPS poll of packages.mochi-os.org/<platform>/versions.json. A newer
+// release on the running track notifies every administrator.
 
 package main
 
@@ -51,16 +49,9 @@ const (
 var update_install_lock sync.Mutex
 
 // update_manifest_public_key is the release-signing public key, ed25519, base64
-// of its 32 raw bytes. Its private half lives only on the release machine
-// (core/local/update-signing.key).
-//
-// Pinned in the binary rather than fetched, which is the whole point: the
-// manifest carries a SHA-256 of each artifact, but that digest and the artifact
-// come from the same host, so a host or pipeline compromise could rewrite both
-// in lockstep and the digest would still match. A signature the server checks
-// against a key it already carries cannot be forged that way — the attacker can
-// serve any versions.json they like but cannot sign it. Rotating the key is a
-// code change and a release, which is correct for a trust anchor.
+// of its 32 raw bytes; the private half lives only on the release machine
+// (core/local/update-signing.key). Pinned rather than fetched: the manifest's
+// digests come from the same host as the artifacts they describe.
 const update_manifest_public_key = "e8W9tRQLNhmcqDAxIYSuKyXGPSThMC90FWSQMCktMAA="
 
 // update_versions is the per-platform versions.json. Releases is keyed by
@@ -115,10 +106,8 @@ func update_fetch(url string, maximum int64) ([]byte, error) {
 }
 
 // update_manifest_verify checks the detached signature over the manifest bytes
-// against the pinned public key. It is what turns the manifest from
-// same-origin (a digest that a host compromise could rewrite alongside the
-// artifact) into authentic (a signature that host cannot forge). A malformed
-// pinned key is a build mistake, so it fails closed rather than skipping.
+// against the pinned public key. A malformed pinned key is a build mistake, so
+// it fails closed rather than skipping.
 func update_manifest_verify(manifest, signature []byte) error {
 	key, err := base64.StdEncoding.DecodeString(update_manifest_public_key)
 	if err != nil || len(key) != ed25519.PublicKeySize {
@@ -186,11 +175,9 @@ func update_manager() {
 	}
 }
 
-// update_install_clear_on_match runs at startup. If update_notified or
-// update_pending equals build_version, the install we triggered last time
-// succeeded — clear both so the banner disappears. update_pending is also
-// cleared if it points to a version that's no longer the latest, so a stale
-// "Installing…" indicator can't outlive a server crash.
+// update_install_clear_on_match runs at startup. update_notified or
+// update_pending at build_version means the install succeeded; a stale pending
+// is cleared too, so an "Installing…" indicator cannot outlive a crash.
 func update_install_clear_on_match() {
 	notified := setting_get("update_notified", "")
 	if notified != "" && version_compare(notified, build_version) <= 0 {
@@ -292,23 +279,16 @@ func exists(path string) bool {
 	return err == nil
 }
 
-// update_install_start kicks off an unattended self-install of the named
-// version on Windows. Writes the in-flight indicator update_pending=<version>
-// and spawns update_install_run in a goroutine. Returns an error if the
-// platform doesn't support self-install or if no upgrade is currently
-// available. Safe to call concurrently — the install lock prevents overlap.
+// update_install_start begins an unattended self-install of the named version
+// on Windows: writes update_pending and runs update_install_run in a goroutine.
+// Errors if the platform cannot self-install or no upgrade is available.
 func update_install_start(version string) error {
 	if version == "" {
 		return fmt.Errorf("no version to install")
 	}
-	// Before anything else, including the setting write below: this string
-	// becomes a filename under data_dir/tmp and then a quoted argument on a
-	// cmd.exe line that runs msiexec as the service account, so a quote or a
-	// separator in it is a command injection and a "../" is a traversal. The
-	// manifest lookup in update_install_run would refuse an unknown key
-	// anyway, but that is an argument about a remote file rather than about
-	// this input, and it happens after update_pending has already been
-	// written. Every other place a version becomes a path calls this.
+	// Before the setting write below: this string becomes a filename under
+	// data_dir/tmp and a quoted argument on the cmd.exe line that runs msiexec, so
+	// a quote is command injection and a "../" is traversal.
 	if !valid(version, "version") {
 		return fmt.Errorf("invalid version %q", version)
 	}
@@ -332,15 +312,9 @@ func update_install_start(version string) error {
 	return nil
 }
 
-// update_install_run downloads the new MSI to %ProgramData%\Mochi\tmp and
-// hands it off to a detached msiexec invocation. Returns once msiexec has
-// been launched; the running service is then expected to receive a Stop from
-// the SCM (driven by msiexec's ServiceControl Stop=both rule via the WiX
-// MajorUpgrade) shortly after.
-//
-// We push to shutdown_request defensively so the service exits cleanly even
-// if msiexec's Stop arrives slowly. The 5-second pre-wait inside the cmd
-// invocation ensures we're stopped before msiexec tries to replace files.
+// update_install_run downloads the new MSI and hands it to a detached msiexec,
+// returning once msiexec is launched; the SCM then stops this service (WiX
+// MajorUpgrade). The pre-wait and shutdown_request make sure we exit first.
 func update_install_run(version string) error {
 	// Re-read the manifest rather than trusting the daily check's cached
 	// version: it names the exact artifact for this version and carries the
@@ -390,15 +364,9 @@ func update_install_run(version string) error {
 	return nil
 }
 
-// update_install_download streams a URL to disk with a generous timeout — MSIs
-// are tens of megabytes and corporate links can be slow — and refuses to
-// publish the result unless it is exactly the artifact the manifest described.
-//
-// The digest is what makes the whole path safe to hand to msiexec, which runs
-// the file as LocalSystem with no verification of its own. It also catches the
-// benign case: a release landing between the version check and this download
-// leaves the manifest and the artifact briefly out of step, and installing
-// whatever bytes arrive would silently install a version nobody chose.
+// update_install_download streams a URL to disk and publishes it only if it is
+// exactly the artifact the manifest described. msiexec runs the file as
+// LocalSystem with no verification of its own, so the digest is the whole gate.
 func update_install_download(url, dest string, release update_release) error {
 	if release.Size > update_artifact_maximum {
 		return fmt.Errorf("manifest size %d exceeds maximum %d", release.Size, update_artifact_maximum)
@@ -461,11 +429,9 @@ func update_install_download(url, dest string, release update_release) error {
 	return nil
 }
 
-// update_notify_admins dispatches one Mochi notification per administrator
-// for the new version. The notifications service is invoked with app="" so
-// the receiving user sees the sender as "Mochi server". Title and body are
-// resolved per-recipient against core labels so each admin sees the
-// notification in their own language.
+// update_notify_admins sends one notification per administrator. app="" makes
+// the sender read as "Mochi server"; title and body resolve per recipient
+// against core labels.
 func update_notify_admins(latest string) {
 	db := db_open("db/users.db")
 	rows, err := db.rows("select uid, username from users where role = ?", "administrator")

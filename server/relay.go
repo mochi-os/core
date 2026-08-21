@@ -1,34 +1,14 @@
 // Mochi server: circuit-relay participation.
 //
-// Most home servers are behind NAT and not directly dialable. libp2p's
-// circuit relay lets a publicly-reachable server act as a hop: a NAT'd
-// peer reserves a slot on it and advertises a /p2p-circuit/ address
-// through it. The relay network is therefore what makes NAT'd servers
-// reachable at all.
-//
-// Two halves live here:
-//
-//   - Serve. A server that AutoNAT has found to be publicly reachable
-//     auto-enables its own relay service, growing the relay pool with
-//     the network instead of funnelling every NAT'd peer through the
-//     handful of hand-configured bootstrap relays. The relay service
-//     is started and stopped on the running host as the reachability
-//     verdict changes; the `relay` system setting (default on) is the
-//     operator opt-out for those who don't want to donate the
-//     bandwidth.
-//
-//   - Discover. AutoRelay's candidate relays come from a dynamic
-//     source (net_relay_candidates) rather than a static list: the
-//     bootstrap relays plus any peer that has announced it relays. A
-//     relaying server sets a `relay` flag in its peers/publish; that
-//     flag is not security-sensitive (a peer falsely claiming it just
-//     fails to grant reservations), so it rides the plain content, not
-//     the signed record.
+// Serve: a server AutoNAT has found publicly reachable auto-enables its relay
+// service; the `relay` setting is the operator opt-out. Discover: AutoRelay
+// candidates come from net_relay_candidates - bootstrap relays plus peers whose
+// plain (unsigned) publish carries a `relay` flag, not security-sensitive.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -74,11 +54,9 @@ var (
 	relay_rejected     atomic.Int64 // reservation requests refused since startup (cumulative)
 )
 
-// relay_metrics implements libp2p's relay MetricsTracer so the relay
-// service's live load can be surfaced (mochi.server.network().relaying).
-// The relay calls these from its own goroutines, so the counters are
-// atomic. A saturated relay (reservations near the cap, rejected climbing)
-// is what leaves NAT'd peers Unreachable with no other signal.
+// relay_metrics implements libp2p's relay MetricsTracer, surfacing live relay
+// load through mochi.server.network().relaying. The relay calls these from its
+// own goroutines, so the counters are atomic.
 type relay_metrics struct{}
 
 func (relay_metrics) RelayStatus(bool)                     {}
@@ -125,15 +103,9 @@ func relay_utilization() map[string]any {
 	}
 }
 
-// relay_resources builds the relay service's resource limits from the
-// [relay] config, sized for a dedicated relay rather than libp2p's
-// conservative bootstrap-only defaults. A relay must never impose a
-// per-connection transfer ceiling below what the application itself allows
-// (1 GB per file, 10 GB per user) or it silently truncates file sharing
-// for NAT'd users — so the per-connection Data/Duration limit is unbounded
-// by default. A bandwidth-constrained relay can cap it with [relay] data
-// (bytes) and/or [relay] duration (seconds); setting either enables the
-// limit.
+// relay_resources sizes the relay service for a dedicated relay rather than
+// libp2p's bootstrap defaults. Per-connection transfer is unbounded by default:
+// a ceiling below the app's own limits (1 GB per file) truncates file sharing.
 func relay_resources() relay.Resources {
 	rc := relay.DefaultResources()
 	rc.MaxReservations = ini_int("relay", "reservations", relay_reservations_default)
@@ -221,11 +193,9 @@ func relay_load_tier(load int) int {
 // relay_load_changed touches it.
 var relay_announced_tier atomic.Int32
 
-// relay_load_changed requests a republish when our relay's load tier moves,
-// so peers learn it is filling up (or freeing) without waiting for the hourly
-// publish. Cheap to call on every reservation change: the tier debounce limits
-// republishes to boundary crossings, and the publish loop's minimum interval
-// rate-limits further.
+// relay_load_changed requests a republish when our advertised load tier moves,
+// so peers learn it without waiting for the hourly publish. Cheap on every
+// reservation change: only tier boundaries republish.
 func relay_load_changed() {
 	tier := int32(relay_load_tier(relay_load_percent()))
 	if relay_announced_tier.Swap(tier) != tier {
@@ -233,11 +203,6 @@ func relay_load_changed() {
 	}
 }
 
-// relay_service_update starts or stops the relay service to match the
-// current state: serve iff the operator permits it and AutoNAT has
-// found us publicly reachable. Called from the reachability watcher and
-// when the `relay` setting changes. Announces the transition so NAT'd
-// peers learn we became (or stopped being) a relay.
 func relay_service_update() {
 	if net_me == nil {
 		return
@@ -290,20 +255,11 @@ func relay_manager() {
 	}
 }
 
-// relay_saturation_threshold is the fraction of MaxReservations at or above
-// which refused reservations mean genuine saturation — the relay is full and
-// turning NAT'd peers away. Below it, a refusal comes from libp2p's per-peer /
-// per-IP / per-ASN sub-limits (enforced independently of the global cap) on a
-// near-empty relay, which is normal and not actionable: raising [relay]
-// reservations or adding relays wouldn't change it, so it must not page the
-// admin.
+// relay_saturation_threshold: at or above this fraction of MaxReservations a
+// refusal means the relay is genuinely full. Below it, refusals come from
+// libp2p's per-peer/IP/ASN sub-limits and are not actionable.
 const relay_saturation_threshold = 0.8
 
-// relay_saturation_alert reports whether refused reservations warrant an admin
-// alert: there must be NEW refusals since the last check (rejected > alerted)
-// AND the relay must be near its global capacity (held at/above the threshold
-// fraction of maximum). This is what keeps a lone per-peer/per-IP refusal at
-// low utilisation from firing the "relay full" alert.
 func relay_saturation_alert(rejected, alerted, held, maximum int64) bool {
 	if rejected <= alerted || maximum <= 0 {
 		return false
@@ -311,12 +267,9 @@ func relay_saturation_alert(rejected, alerted, held, maximum int64) bool {
 	return float64(held) >= relay_saturation_threshold*float64(maximum)
 }
 
-// relay_saturation_check warns the admin when the relay refused reservations
-// since the last check WHILE near capacity — genuine "turning peers away"
-// saturation, the signal to raise [relay] reservations or stand up more relays.
-// The watermark advances regardless so a benign low-utilisation refusal is
-// remembered (not re-counted) but never alerts. warn()'s per-format dedup
-// throttles the email to at most once per hour.
+// relay_saturation_check warns the admin about refused reservations while near
+// capacity. The watermark advances either way, so a benign low-utilisation
+// refusal is remembered but never alerts; warn() throttles the email hourly.
 func relay_saturation_check() {
 	if !relay_enabled() {
 		relay_rejected_alerted = relay_rejected.Load()
@@ -436,13 +389,10 @@ func relay_latency_bucket(latency time.Duration) int {
 	return int(latency / (50 * time.Millisecond))
 }
 
-// net_relay_candidates is the AutoRelay candidate source: bootstrap relays
-// plus peers that recently advertised they relay. It drops candidates we
-// already know are unreachable, and orders the rest so a NAT'd peer reserves
-// on the best relay available — by lowest advertised load tier, then nearest
-// latency, with a shuffle spreading peers across equally-good relays. The
-// fullest relays sort last as a fallback rather than being excluded, so a
-// peer with only loaded relays still has something to try.
+// net_relay_candidates is the AutoRelay candidate source: bootstrap relays plus
+// peers that recently advertised they relay, minus known-unreachable ones,
+// ordered by load tier then latency. Full relays sort last rather than dropping
+// out.
 func net_relay_candidates(ctx context.Context, num int) <-chan p2p_peer.AddrInfo {
 	out := make(chan p2p_peer.AddrInfo, num)
 	go func() {

@@ -25,12 +25,9 @@ func email_tls_policy() gm.TLSPolicy {
 	return gm.NoTLS
 }
 
-// email_identifier returns a Message-ID value for an outbound message, built
-// from the sender's domain. Left to the library, the Message-ID is generated
-// from the machine's hostname, which is commonly a short name rather than
-// fully qualified — and receiving filters penalise a Message-ID whose
-// right-hand side is not an FQDN. The sender address always carries the
-// operator's chosen mail domain.
+// email_identifier returns a Message-ID value built from the sender's domain.
+// The library would derive it from the machine's hostname, often not fully
+// qualified, and receiving filters penalise a non-FQDN right-hand side.
 func email_identifier(from string) string {
 	domain := "localhost"
 	if address, err := mail.ParseAddress(from); err == nil {
@@ -42,11 +39,9 @@ func email_identifier(from string) string {
 }
 
 // email_send_dedup is email_send with a per-user (address, event_id) dedup
-// gate. When event_id is non-empty and the user already received an email for
-// the same (address, event_id) within the TTL window, the send is suppressed,
-// so a notification emitted more than once produces one email per recipient
-// address. The small concurrent-emit race is accepted: the cost of losing it is
-// a duplicate email.
+// gate: a notification emitted more than once produces one email per recipient
+// address within the TTL window. The concurrent-emit race costs a duplicate
+// email.
 func email_send_dedup(u *User, event_id, to, subject, body string) {
 	if event_id != "" && u != nil && email_already_delivered(u, to, event_id) {
 		debug("email dedup: address=%q event_id=%q already delivered", to, event_id)
@@ -113,12 +108,9 @@ func email_deliverable(address string) bool {
 
 // email_send sends a plain text email.
 func email_send(to string, subject string, body string) {
-	// Never attempt delivery to a reserved / non-deliverable domain (RFC 2606
-	// + 6761): example.com/.net/.org and the .test/.example/.invalid/.localhost
-	// TLDs can never receive mail, so a send only produces a bounce back to the
-	// admin. Test harnesses sign up throwaway @example.com users; this stops
-	// their verification codes from bouncing, on every instance, while real
-	// addresses (including the admin error-mail recipient) are unaffected.
+	// Never attempt delivery to a reserved domain (RFC 2606 / 6761): example.com
+	// and the .test/.example/.invalid/.localhost TLDs can never receive mail, so a
+	// send only produces a bounce to the admin. Test harnesses sign up such users.
 	if !email_deliverable(to) {
 		debug("Email suppressed to reserved/undeliverable address %q", to)
 		return
@@ -187,12 +179,9 @@ func email_send_html(to string, subject string, html string) {
 	}
 }
 
-// email_login_code sends a styled HTML email with a login code, localised to
-// the given language (BCP 47 tag) via the core label resolver's fallback
-// chain. When `user` is non-nil, the send is deduped per (address, code), so a
-// login round processed twice does not produce two emails for the same browser
-// session. Each issued code is distinct, so the dedup never blocks a legitimate
-// later code.
+// email_login_code sends a styled HTML login code, localised via the core label
+// fallback chain. With a non-nil user it dedups per (address, code); codes are
+// distinct, so a later legitimate code is never blocked.
 func email_login_code(user *User, to string, code string, language string) {
 	if user != nil && email_already_delivered(user, to, "login:"+code) {
 		debug("email_login_code dedup: address=%q already delivered", to)
@@ -294,13 +283,10 @@ func email_valid(address string) bool {
 	return true
 }
 
-// email_address reduces a header value to the bare mailbox it addresses, so
-// that one mailbox is one key: "Alice <a@b.com>", " a@b.com " and "A@B.com"
-// all yield "a@b.com". Empty when the value does not parse.
-//
-// Anything keyed on an email address - a rate limiter above all - must key on
-// this rather than on what the caller typed, or the budget is per spelling
-// instead of per recipient.
+// email_address reduces a header value to the bare lowercase mailbox, so "Alice
+// <a@b.com>", " a@b.com " and "A@B.com" are one key; empty when it does not
+// parse. Anything keyed on an address - a rate limiter above all - must key on
+// this.
 func email_address(value string) string {
 	parsed, err := mail.ParseAddress(value)
 	if err != nil {

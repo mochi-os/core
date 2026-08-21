@@ -1,16 +1,9 @@
 // Mochi server: per-recipient delivery health regressions.
 //
-// A dead subscriber used to cost fifty dials per fan-out event forever,
-// until the directory forgot their host (30 days, resettable by ghost
-// re-announcements). The health record remembers failure per RECIPIENT:
-// an exhausted retry budget with no contradicting success suspends them,
-// suspension gates broadcast fan-out down to a periodic probe, and past
-// the evict age the owning app is told to drop the subscriber.
-//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -359,10 +352,8 @@ func TestHealthEvictOverdue(t *testing.T) {
 }
 
 // TestHealthEvictOverdueSurvivesRestart: the overdue clock lives in
-// health.evicted, not in health_evict_state. A server deployed to weekly
-// restarts more often than health_evict_overdue, so an in-memory clock
-// reset on every start could never reach the threshold and the warn for
-// an app with no subscriber/unreachable handler was unreachable.
+// health.evicted, not in memory - servers restart more often than
+// health_evict_overdue.
 func TestHealthEvictOverdueSurvivesRestart(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -392,14 +383,9 @@ func TestHealthEvictOverdueSurvivesRestart(t *testing.T) {
 	}
 }
 
-// TestHealthEvictedColumnOnAnUpgrade covers every server already
-// running: their health table predates the evicted column, and without
-// the migration the stamp write and the sweep's condition both fail on a
-// missing column. Driven through db_upgrade rather than by calling
-// db_upgrade_10 directly, so a missing `case 10:` fails here too. The
-// rows already suspended on those servers must survive the upgrade
-// reading never-evicted — that is exactly the state that stops them
-// being swept and recycling.
+// TestHealthEvictedColumnOnAnUpgrade: existing installs predate health.evicted,
+// which the stamp write and the sweep both need. Driven through db_upgrade so a
+// missing `case 10:` fails here too; already-suspended rows must survive it.
 func TestHealthEvictedColumnOnAnUpgrade(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()
@@ -430,13 +416,10 @@ func TestHealthEvictedColumnOnAnUpgrade(t *testing.T) {
 	}
 }
 
-// TestHealthCleanupKeepsUnevicted: the residue sweep deletes a suspended
-// row only once its owning app has been told to drop the subscriber.
-// Eviction fires from the fan-out gate, so a recipient whose owner posts
-// nothing between the evict age and twice it is never dispatched at all;
-// deleting that row on age alone made it read healthy again while the
-// app's subscriber row was still in place, so the next post burned a
-// fresh retry ladder and re-suspended it, one cycle per residue window.
+// TestHealthCleanupKeepsUnevicted: the residue sweep deletes a suspended row
+// only once its owning app has been told to drop the subscriber - on age alone
+// the recipient reads healthy again and the next post burns a fresh retry
+// ladder.
 func TestHealthCleanupKeepsUnevicted(t *testing.T) {
 	cleanup := setup_replication_test(t)
 	defer cleanup()

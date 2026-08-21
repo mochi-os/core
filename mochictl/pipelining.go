@@ -17,11 +17,6 @@ import (
 	"os"
 )
 
-// cmd_pipelining_status handles `mochictl pipelining status`.
-//
-// With -j / -t the response is dumped raw for scripted consumption.
-// Default output is a per-peer table plus a one-line summary of worker
-// + sender counts.
 func cmd_pipelining_status(args []string) error {
 	path := "/_/admin/pipelining/status"
 	if flag_json || flag_tabs {

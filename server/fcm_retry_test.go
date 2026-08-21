@@ -1,18 +1,10 @@
-// Mochi server: a push gets two attempts, and the second one covers transport
+// Mochi server: a push gets two attempts, and the second covers transport
 // failures as well as 5xx.
-//
-// A push has no queue behind it. account_deliver_fcm's caller keeps the account
-// row on a transport failure (the token is fine) and then moves on, so whatever
-// fcm_post returns is the only attempt the notification gets - a failure is a
-// phone that never buzzes. The retry existed for exactly that reason but only
-// covered a 5xx *response*; a transport error returned on the spot. yuzu showed
-// both arms in one fortnight: a 500 on 2026-08-12 was retried and recovered, and
-// a TLS handshake timeout on 2026-08-17 was dropped.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

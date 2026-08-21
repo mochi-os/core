@@ -26,13 +26,9 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 )
 
-// MigrationAbort is raised by mochi.db.abort() from a database_upgrade to say
-// "I cannot complete this migration, and the schema version must NOT advance."
-// The upgrade loop stamps a failed migration's version by default (the repair
-// ships as the next version), which is wrong when the migration is blocked on
-// something transient - a store it copies from not being readable yet.
-// Aborting leaves the database at its previous version so the migration
-// retries verbatim on the next request once the block clears.
+// MigrationAbort, raised by mochi.db.abort(), stops a database_upgrade without
+// advancing the schema version, so the same step retries on the next request.
+// For a migration blocked on something transient, not for a coding error.
 type MigrationAbort struct {
 	Reason string
 }
@@ -41,9 +37,7 @@ func (e *MigrationAbort) Error() string { return "migration aborted: " + e.Reaso
 
 // mochi.db.abort(reason) -> never returns: Abort the running database_upgrade
 // without advancing the schema version, so the same migration step retries on
-// the next request. For a migration blocked on a transient precondition (a
-// data-source that has not yet appeared), not a coding error. Like every
-// builtin error it unwinds the handler; the upgrade loop recognises it.
+// the next request. For a transient precondition, not a coding error.
 func api_db_abort(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	reason := ""
 	if len(args) > 0 {
@@ -52,12 +46,9 @@ func api_db_abort(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	return nil, &MigrationAbort{Reason: reason}
 }
 
-// DB carries two connection pools per SQLite file. internal has no
-// authoriser and is used for all server-trusted queries (schema migrations,
-// PRAGMA reads, mochi.db.table/indexes etc). starlark has a strict
-// authoriser that denies ATTACH/DETACH/PRAGMA/triggers/vtables and is used
-// only for SQL strings supplied by Starlark via api_db_query and
-// api_db_transaction.
+// DB carries two connection pools per SQLite file. internal has no authoriser
+// and serves server-trusted queries; starlark carries the authoriser that
+// denies ATTACH/DETACH/PRAGMA/triggers/vtables and runs only app-supplied SQL.
 type DB struct {
 	key      string
 	path     string
@@ -65,21 +56,15 @@ type DB struct {
 	starlark *sqlx.DB
 	user     *User
 	app      *App
-	// system_setup is set once db_app_system has run access_setup /
-	// journal_setup on this handle. Gated on this — NOT on db_open_work's
-	// `reused` — so a handle first cached by a raw db_open (db_app_system_sweep,
-	// or anything else opening an app.db directly) still gets its setups, and
-	// the access-table migration, on the first db_app_system call.
-	// Guarded by lock(path) at the setup site.
+	// system_setup is set once db_app_system has run access_setup / journal_setup
+	// on this handle. Gated on this rather than db_open_work's `reused`, so a
+	// handle first cached by a raw db_open still gets its setups. Guarded by
+	// lock(path).
 	system_setup bool
-	// ready is set once db_app has finished database_create/upgrade and the
-	// core infra tables on this handle. The reused fast-path requires it, so
-	// a concurrent opener waits on lock(path) for the creator instead of
-	// querying a schema that doesn't exist yet ("no such table" on a fresh
-	// user's first concurrent requests, #227). The creating goroutine's own
-	// mochi.db.* calls never reach db_app — starlark_db hands the lifecycle
-	// connection to the Starlark thread — so waiting here cannot
-	// self-deadlock. Guarded by databases_lock, like closed.
+	// ready is set once db_app has finished database_create/upgrade on this
+	// handle; the reused fast-path requires it so a concurrent opener waits rather
+	// than querying a schema that does not exist yet (#227). Guarded by
+	// databases_lock.
 	ready bool
 	// closed is the unix timestamp when this handle was last marked
 	// idle, or 0 while in use. Always read and written under
@@ -98,12 +83,10 @@ const (
 	schema_version = 10
 )
 
-// health_schema is the CURRENT shape of queue.db's health table, shared
-// by db_create and the test harness so the two cannot drift — they did,
-// and a column added to one left every test that dispatches an eviction
-// panicking on a missing column. db_upgrade_2 deliberately does NOT use
-// this: it must keep reproducing the shape schema 2 shipped, with later
-// columns added by their own upgrade steps.
+// health_schema is the current shape of queue.db's health table, shared by
+// db_create and the test harness so the two cannot drift. db_upgrade_2 must NOT
+// use it: it reproduces the shape schema 2 shipped, later columns added by
+// later steps.
 const health_schema = "create table if not exists health ( recipient text not null primary key, failures integer not null default 0, denials integer not null default 0, success integer not null default 0, since integer not null default 0, suspended integer not null default 0, probed integer not null default 0, evicted integer not null default 0 )"
 
 var (
@@ -128,14 +111,9 @@ var (
 // foreign keys, and the per-DB size cap. It runs on every fresh
 // connection in either pool, before any query.
 func db_setup_conn(c *sqlite3.Conn) error {
-	// auto_vacuum must be set before journal_mode=WAL and before any
-	// table exists, or it silently stays NONE (setting it after WAL is a
-	// no-op even on an empty database). On a fresh file this makes every
-	// new database incremental-auto-vacuum from birth, so DB.vacuum can
-	// reclaim freed pages with the cheap PRAGMA incremental_vacuum. On an
-	// existing populated database it is a no-op; those convert lazily in
-	// DB.vacuum. Runs before the Starlark authoriser is installed, so the
-	// PRAGMA write is permitted on both pools. See claude/plans/vacuum.md.
+	// auto_vacuum must be set before journal_mode=WAL and before any table exists,
+	// or it silently stays NONE. Fresh databases are then incremental from birth;
+	// existing ones convert lazily in DB.vacuum. See claude/plans/vacuum.md.
 	if err := c.Exec("PRAGMA auto_vacuum=INCREMENTAL"); err != nil {
 		return err
 	}
@@ -158,36 +136,11 @@ func db_setup_conn_starlark(c *sqlite3.Conn) error {
 	return c.SetAuthorizer(db_authorise_starlark)
 }
 
-// db_authorise_starlark is the authoriser callback for connections that
-// will execute SQL strings supplied by Starlark code. It denies the
-// operations apps must not perform on their per-user DB:
-//
-//   - ATTACH / DETACH: would let an app peek at or write to other DBs
-//     in the same process.
-//   - PRAGMA *with argument*: would let an app override server quotas
-//     (`max_page_count = N`), journal mode, schema version, etc.
-//     Read-only PRAGMA queries (no argument, e.g. `PRAGMA query_only`)
-//     are allowed because ncruces' database/sql connector runs
-//     `PRAGMA query_only` after our ConnectHook to detect read-only
-//     mode, and denying it would break every connection on this pool.
-//     Apps gain a small info leak (they can read pragma values they
-//     wouldn't otherwise see) but cannot change behaviour.
-//   - Triggers (CREATE / DROP, persistent and TEMP): would silently
-//     fire on every write and burn CPU. No current app needs them.
-//   - Virtual tables (CREATE / DROP): wrap arbitrary modules outside
-//     the sandbox model. The built-in pragma_* table-valued functions
-//     are denied too, though not by this case: they carry their target
-//     as the PRAGMA argument, so the rule above catches them. Apps read
-//     a table's columns with mochi.db.table(), which asks over the
-//     ordinary pool.
-//   - ANALYZE: a full scan of every index, so it is CPU an app can spend
-//     on demand. Denied here rather than by the string check in
-//     db_starlark_sql_blocked, which reads only the first token of the
-//     first statement: "/*x*/ANALYZE", "-- c\nANALYZE",
-//     "select 1; analyze" and "BEGIN; ANALYZE; COMMIT" all ran past it.
-//
-// VACUUM needs no case of its own: it attaches a temporary database, so
-// AUTH_ATTACH above already denies it in every form.
+// db_authorise_starlark denies what an app must not do on its own database.
+// PRAGMA only with an argument - bare reads must pass for the driver's `PRAGMA
+// query_only`, and pragma_* vtables carry their target as one. ANALYZE needs
+// its own case because the string check misses it; VACUUM attaches, so
+// AUTH_ATTACH already covers it.
 func db_authorise_starlark(action sqlite3.AuthorizerActionCode, _, name4th, _, _ string) sqlite3.AuthorizerReturnCode {
 	switch action {
 	case sqlite3.AUTH_ATTACH, sqlite3.AUTH_DETACH,
@@ -208,22 +161,11 @@ func db_authorise_starlark(action sqlite3.AuthorizerActionCode, _, name4th, _, _
 	return sqlite3.AUTH_OK
 }
 
-// db_setup_conn_lifecycle configures the dedicated connection that runs an
-// app's database lifecycle functions (database_create / database_upgrade /
-// database_downgrade). Same rules as the Starlark pool, with two additions:
-//
-//   - `pragma user_version = N`: starlark_db stamps the schema version inside
-//     the same transaction as the app's DDL so creation and each migration
-//     step are atomic on disk (#227). Apps cannot reach PRAGMA through
-//     mochi.db.* (string check in api_db_query), and even a smuggled
-//     multi-statement user_version write is overwritten by the server's own
-//     stamp before commit, so the allowance grants apps nothing.
-//   - `pragma table_info(x)` / `pragma index_list(x)`: read-only
-//     introspection, needed because mochi.db.table/indexes must run on THIS
-//     connection during a migration to see its uncommitted DDL (feeds and
-//     wikis use them as idempotency guards). The pragma_* virtual-table forms
-//     are no alternative: their internal prepare re-fires AUTH_PRAGMA, and a
-//     denial there silently yields zero rows.
+// db_setup_conn_lifecycle configures the connection that runs an app's database
+// lifecycle functions: the Starlark rules plus `pragma user_version` (the
+// server stamps the schema version in the same transaction) and read-only
+// table_info / index_list, which must run here to see this transaction's
+// uncommitted DDL.
 func db_setup_conn_lifecycle(c *sqlite3.Conn) error {
 	if err := db_setup_conn(c); err != nil {
 		return err
@@ -279,11 +221,9 @@ func db_create() {
 	users.exec("create table if not exists recovery (id integer primary key, user text not null references users(uid) on delete cascade, hash text not null, created integer not null)")
 	users.exec("create index if not exists recovery_user on recovery(user)")
 
-	// TOTP secrets
-	// pending holds a secret from an enrolment that has not been proven yet.
-	// It is separate from secret so starting an enrolment cannot disturb the
-	// authenticator the user is currently logging in with - see
-	// api_user_totp_setup.
+	// TOTP secrets. pending holds a secret from an unproven enrolment, kept
+	// separate from secret so starting an enrolment cannot disturb the
+	// authenticator the user is currently logging in with.
 	users.exec("create table if not exists totp (user text primary key references users(uid) on delete cascade, secret text not null, verified integer not null default 0, pending text not null default '', created integer not null)")
 
 	// OAuth identity definitions (Google, GitHub, Microsoft, Facebook, X).
@@ -355,13 +295,9 @@ func db_create() {
 	sessions.exec("create table if not exists verifications (oauth integer primary key, user text not null, last integer not null default 0)")
 	sessions.exec("create index if not exists verifications_user on verifications(user)")
 
-	// Directory. One row per (entity, peer): each row is one host's listing
-	// of one entity, asserted by that host alone. There are no global rows;
-	// a host may only publish or delete rows naming itself. Rows are
-	// self-verifying: `signature` is the entity's ed25519 signature over the
-	// whole row, peer included, so only the entity's key can name a host for
-	// it and any row can be re-served and verified regardless of how it
-	// arrived.
+	// Directory. One row per (entity, peer): one host's listing of one entity,
+	// asserted by that host alone, and self-verifying - `signature` is the
+	// entity's ed25519 signature over the whole row, peer included.
 	directory := db_open("db/directory.db")
 	directory.exec("create table if not exists entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, message text not null default '', expires text not null default '', signature text not null default '', primary key ( entity, peer ) )")
 	directory.exec("create index if not exists entries_name on entries( name )")
@@ -383,13 +319,9 @@ func db_create() {
 	queue := db_open("db/queue.db")
 	// Outgoing message queue
 	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20, claimed integer not null default 0 )")
-	// (status, priority, next_retry) covers BOTH queue_select queries
-	// (main priority-desc + bulk-floor priority-range). Without the
-	// priority column, the main query's ORDER BY priority forces a
-	// 1.7M-row sort and the bulk query's priority filter scans the
-	// whole "ready" set looking for non-existent priority<=10 rows.
-	// On wasabi 2026-05-26 the missing index pushed queue_select to
-	// 1.3s per call, capping drain at ~50 rows/sec via queue_manager.
+	// (status, priority, next_retry) covers both queue_select queries. Without the
+	// priority column the main query sorts the whole ready set and the bulk query
+	// scans it.
 	queue.exec("create index if not exists queue_status_priority_retry on queue (status, priority, next_retry)")
 	queue.exec("create index if not exists queue_target on queue (target)")
 	queue.exec("create index if not exists queue_target_priority_retry on queue (target, priority desc, next_retry)")
@@ -398,15 +330,9 @@ func db_create() {
 	// transport ACK lands so journal_delivery can advance. Co-located with
 	// the ack delete so the resolve is a same-DB lookup.
 	queue.exec("create table if not exists journal_inflight (id text primary key, user text not null, peer text not null, stream text not null, sequence integer not null, created integer not null)")
-	// Per-recipient delivery health: the queue's memory of failure per
-	// RECIPIENT entity rather than per row. Rows exist only for recipients
-	// with a failure history (health_success is a bare update). Suspended
-	// recipients get no broadcast fan-out rows beyond a periodic probe,
-	// and after queue_evict_age the owning apps are told to drop the
-	// subscriber (see health_gate in queue.go). `evicted` stamps that
-	// dispatch: only a stamped row is residue the cleanup sweep may
-	// delete, since deleting an unstamped one lets the subscriber recycle
-	// through a fresh retry ladder with no app ever told to drop it.
+	// Per-recipient delivery health: failure memory per recipient entity, rows
+	// only where there is a failure history. `evicted` stamps the drop-subscriber
+	// dispatch; only a stamped row is residue the cleanup sweep may delete.
 	queue.exec(health_schema)
 	queue.exec(`create table if not exists pushes ( id text primary key, user text not null,
 		account text not null, type text not null, identifier text not null default '',
@@ -466,13 +392,8 @@ func db_apps() *DB {
 func db_user(u *User, name string) *DB {
 	path := fmt.Sprintf("users/%s/%s.db", u.UID, name)
 	db := db_open(path)
-	// Bind under databases_lock via db_bind, exactly as db_app does. These
-	// fields live on the shared cached handle, so assigning them directly
-	// races with any concurrent opener of the same user database — the race
-	// detector caught two parallel Message.send goroutines both writing
-	// db.user here, via entity_peers_for -> user_owning_entity ->
-	// user_preferences_load. db_bind is write-once, so the first binder wins
-	// and later callers (same UID, same path) leave it alone.
+	// Bind under databases_lock via db_bind: these fields live on the shared
+	// cached handle, so assigning them directly races any concurrent opener.
 	db_bind(db, u, nil)
 
 	// Create tables for user.db
@@ -519,20 +440,10 @@ func db_user(u *User, name string) *DB {
 	return db
 }
 
-// Per-database page-count cap applied to every SQLite connection via
-// the db_setup_conn PRAGMA. Acts as a safety net against runaway growth
-// — at the cap SQLite returns SQLITE_FULL, which the must() wrapper
-// turns into a panic; operator wakes up before the disk does.
-//
-// Bumped 2026-05-15 from 262_144 pages (1 GB) to 6_553_600 pages
-// (25 GB) so legitimate per-user app DBs can grow past 1 GB. A heavy
-// feeds.db hit ~2 GB in alpha testing; rough projection for a
-// medium-sized server is a few users in the 10-25 GB range, the rest
-// well under 100 MB. Headroom for the busy outliers without removing
-// the safety net for actually-runaway code.
-//
-// Total maximum disk per server is approximately (number of DB files) ×
-// 25 GB, but in practice only a handful of DBs ever approach the cap.
+// Per-database page-count cap applied to every connection by db_setup_conn. At
+// the cap SQLite returns SQLITE_FULL, which must() turns into a panic - a
+// safety net against runaway growth, sized to clear a legitimately heavy
+// per-user DB.
 const db_page_count_maximum = 6_553_600
 
 // db_app opens a database file for an app, creating, upgrading, or downgrading it as necessary.
@@ -558,11 +469,9 @@ func db_app(u *User, app *App) *DB {
 	}
 	db_bind(db, u, app)
 
-	// Fast path: a reused handle whose schema this process has already
-	// verified or created. Gated on ready, not reuse alone — a concurrent
-	// opener can be handed the pooled handle before the first goroutine has
-	// run database_create, and would otherwise query a table that doesn't
-	// exist yet (#227).
+	// Fast path: a reused handle whose schema this process has verified. Gated on
+	// ready, not reuse alone - a concurrent opener can get the handle mid-creation
+	// (#227).
 	if reused && db_ready(db) {
 		return db
 	}
@@ -623,11 +532,8 @@ func db_app(u *User, app *App) *DB {
 					break
 				}
 				warn("App %q version %q database upgrade error: %v", av.app.id, av.Version, err)
-				// A failed migration still consumes the version number (the
-				// established repair convention: the fix ships as the NEXT
-				// version) — but its partial DDL rolled back with the
-				// transaction, so the repair starts from the clean previous
-				// shape rather than a half-applied step.
+				// A failed migration still consumes its version number - the repair ships
+				// as the next one - but its DDL rolled back with the transaction.
 				db_app_schema_set(db, version)
 			}
 			audit_app_schema_migrated(av.app.id, version-1, version)
@@ -643,18 +549,10 @@ func db_app(u *User, app *App) *DB {
 		}
 	}
 
-	// No infra tables are created on the data DB. The commit-hook log lives
-	// on the per-app SYSTEM DB, which is where commits_setup creates it and
-	// where commit_hook_drain and commits_append read and write it; a copy
-	// here was never read, and left an app-writable table shadowing the real
-	// one. The broadcast tables moved for the same reason, and the stale
-	// duplicates they left behind are what misled the 2026-07 News wedge
-	// diagnosis - the per-app migrations dropping those rely on this not
-	// re-creating them. Existing data DBs keep their unused copy: a core-side
-	// drop would destroy an app's own table if one shares the name.
-	// Schema and infra tables are in place; open the reused fast-path. Never
-	// set on the error returns above, so a failed create is retried by the
-	// next opener instead of wedging the handle (#227).
+	// No infra tables on the data DB: the commit-hook and broadcast tables live on
+	// the per-app system DB, and a copy here is app-writable and shadows the real
+	// one. Never set on the error returns above, so a failed create is retried
+	// (#227).
 	db_ready_set(db)
 
 	return db
@@ -703,12 +601,9 @@ func db_app_system(u *User, app *App) *DB {
 	return db
 }
 
-// db_app_system_sweep walks every existing app.db at startup and runs the
-// idempotent app-system setups (access / journal, including the access-table
-// migration). db_app_system does the same work on demand, so the sweep is the
-// proactive half: an app.db nothing has touched since the migration landed is
-// brought up to date at startup rather than on whatever request happens to
-// reach it first.
+// db_app_system_sweep runs the idempotent app-system setups (access / journal)
+// over every existing app.db at startup, so one nothing touches is still
+// brought up to date.
 func db_app_system_sweep() {
 	users_root := filepath.Join(data_dir, "users")
 	users, err := os.ReadDir(users_root)
@@ -749,30 +644,17 @@ func db_app_system_sweep() {
 	debug("App-system sweep: setups run on %d app.db files", count)
 }
 
-// attachment_export_file is where an app finds the attachment rows core's
-// per-app store held for one user before the store was removed: a JSON list at
-// the root of the app's file storage, written only where rows existed. Each
-// entry carries the row's columns plus "file", the stored filename of an own
-// row relative to that storage ("" for a row whose bytes another host held).
-// The apps' migrations read it; nothing in core does.
+// attachment_export_file is the JSON list at the root of an app's file storage
+// holding the attachment rows core's per-app store used to keep, written only
+// where rows existed. Each entry adds "file", the own row's stored filename (""
+// if remote).
 const attachment_export_file = "attachments.json"
 
-// attachment_export_sweep walks every app.db at startup and moves its
-// attachments table out of core: a store with rows is written to the app's
-// file storage as attachment_export_file, then the table is dropped, along with
-// the thumbnail and preview variants core generated beside the originals (the
-// app regenerates those into cache space). Synchronous, before anything serves
-// a request, so an app whose migration finds no export file can read that as
-// "no rows" rather than "not exported yet". Idempotent: an app.db without the
-// table is skipped, and an export already on disk (a crash between write and
-// drop) is kept rather than rewritten. A store whose export cannot be written
-// keeps its table and is retried next start.
-//
-// This ordering holds at startup by construction, and restore_apply is the one
-// path that adds user data to a RUNNING server - it calls
-// attachment_export_user for the restored user before the account activates,
-// or a bundle from before the migration would have its rows read as "no rows"
-// by the first request's migration, stranding them.
+// attachment_export_sweep moves each app.db's attachments table out of core at
+// startup, writing attachment_export_file first and keeping the table if it
+// cannot. It runs before any request, so a migration may read "no file" as "no
+// rows" - restore_apply must therefore export a restored user before the
+// account activates.
 func attachment_export_sweep() {
 	users_root := filepath.Join(data_dir, "users")
 	users, err := os.ReadDir(users_root)
@@ -900,13 +782,10 @@ func db_app_schema_set(db *DB, version int) {
 	db.exec(fmt.Sprintf("pragma user_version=%d", version))
 }
 
-// db_vacuum_ratio is the minimum fraction of a database's pages that
-// must be on the freelist before reclaim is worthwhile; db_vacuum_minimum
-// is the minimum number of reclaimable bytes. Both must hold, so a
-// database that has not meaningfully churned is left untouched.
-// db_vacuum_period throttles the periodic pass: the db_manager tick is
-// per-minute, but the vacuum pass over open handles runs at most this
-// often (seconds).
+// A database is vacuumed only when both gates hold: db_vacuum_ratio of its
+// pages on the freelist and db_vacuum_minimum reclaimable bytes.
+// db_vacuum_period throttles the periodic pass, which the per-minute db_manager
+// tick would otherwise run.
 const (
 	db_vacuum_ratio   = 0.25
 	db_vacuum_minimum = 8 * 1024 * 1024
@@ -917,19 +796,10 @@ const (
 // and written only from the single db_manager goroutine, so no lock.
 var db_vacuum_last int64
 
-// vacuum reclaims free pages from one database when it has churned past the
-// gate (ratio and minimum). It is file maintenance rather than a logical write:
-// it changes how the rows are stored, never which rows there are. See
-// claude/plans/vacuum.md.
-//
-// auto_vacuum=INCREMENTAL databases (everything created since this landed)
-// get the cheap PRAGMA incremental_vacuum. Older auto_vacuum=NONE
-// databases convert once: set INCREMENTAL then full VACUUM, which both
-// reclaims now and flips the mode for future churn. Either way the WAL is
-// checkpointed so freed pages leave the file. The work runs on one pinned
-// connection with a busy timeout, so it waits for rather than fights
-// concurrent writers. Best-effort: any error is logged at debug and
-// skipped - never warn (which emails the admin) and never panic.
+// vacuum reclaims free pages from one database past the churn gate. INCREMENTAL
+// databases get PRAGMA incremental_vacuum; an auto_vacuum=NONE one converts
+// once. Best-effort: errors log at debug, never warn (which emails the admin)
+// and never panic.
 func (db *DB) vacuum() int64 {
 	pages := db.integer("pragma page_count")
 	if pages == 0 {
@@ -973,11 +843,9 @@ func (db *DB) vacuum() int64 {
 	return reclaimed
 }
 
-// db_vacuum_all runs the reclaim pass over every currently-open database
-// immediately and returns how many were reclaimed and the total bytes
-// freed. Backs the on-demand admin vacuum endpoint; the routine path is
-// the periodic pass in db_manager. Snapshots the open set under the lock,
-// then vacuums outside it so it does not block db_open.
+// db_vacuum_all vacuums every currently-open database now, returning the count
+// and bytes freed. Snapshots the open set under the lock, then vacuums outside
+// it.
 func db_vacuum_all() (int, int64) {
 	databases_lock.Lock()
 	open := make([]*DB, 0, len(databases))
@@ -1000,28 +868,20 @@ func db_vacuum_all() (int, int64) {
 }
 
 // db_wal_warn_bytes is the WAL size past which the watchdog force-checkpoints
-// and (if it can't reclaim) warns. A healthy WAL is single-digit MB
-// (auto-checkpoint defaults to ~4 MB); the runaway that corrupted feeds.db
-// reached 2.9 GB with NO alert. 256 MB catches a starved checkpoint ~10x
-// earlier. var (not const) so tests can lower it.
+// and, failing that, warns. A healthy WAL is single-digit MB. var so tests can
+// lower it.
 var db_wal_warn_bytes int64 = 256 * 1024 * 1024
 
-// db_wal_warn_strikes is how many consecutive over-threshold minutes before the
-// watchdog warns. A transient spike (a just-finished bootstrap land dumps the
-// DB into the WAL for a few seconds) is reclaimed by the per-minute checkpoint
-// below and never warns; only a SUSTAINED runaway the checkpoint can't drain —
-// a genuinely starved checkpoint (a long-lived reader pinning an old WAL frame,
-// or writes outpacing it) — crosses the strike count.
+// db_wal_warn_strikes is how many consecutive over-threshold minutes precede a
+// warning, so a transient spike the next checkpoint drains never warns.
 const db_wal_warn_strikes = 3
 
 var db_wal_strikes sync.Map // db.path -> consecutive over-threshold checks
 
-// db_wal_watchdog runs every db_manager tick. For each open DB whose -wal has
-// grown past db_wal_warn_bytes it force-checkpoints (TRUNCATE) to reclaim it,
-// and warns once the WAL stays oversized across db_wal_warn_strikes ticks — the
-// checkpoint-starvation that ballooned feeds.db's WAL to 2.9 GB and led to the
-// corruption (#6). Best-effort and non-fatal: a reader can block the truncate,
-// but the warning then surfaces the runaway early instead of silently.
+// db_wal_watchdog force-checkpoints (TRUNCATE) any open DB whose -wal has grown
+// past db_wal_warn_bytes, and warns once it stays oversized across
+// db_wal_warn_strikes ticks. Best-effort: a reader can block the truncate,
+// which the strikes surface.
 func db_wal_watchdog() {
 	databases_lock.Lock()
 	open := make([]*DB, 0, len(databases))
@@ -1065,8 +925,6 @@ func db_wal_watchdog() {
 }
 
 // db_integrity_period is how often each open DB is re-checked for corruption.
-// The 2026-06-23 feeds.db corruption ran silently for hours before anyone
-// noticed; an hourly quick_check turns that into a prompt alert.
 var db_integrity_period int64 = 3600
 
 // db_integrity_per_check_maximum bounds how many DBs the watchdog quick_checks per
@@ -1080,11 +938,10 @@ var db_integrity_per_check_maximum = 2
 // the "corrupt" marker here, so they share one quarantine + one alert.
 var db_integrity_state sync.Map
 
-// db_quarantined reports whether a DB has been flagged corrupt — by the
-// integrity watchdog or by a background write that hit corruption. Background
-// ops (exec_bg) skip a quarantined DB so it can't crash-loop. The flag is
-// in-memory: it clears on restart (after the operator recovers the file) and is
-// cleared eagerly when a bootstrap reseed swaps a fresh copy in.
+// db_quarantined reports whether a DB has been flagged corrupt, by the watchdog
+// or by a background write. exec_bg skips such a DB so it cannot crash-loop.
+// The flag is in-memory: it clears on restart and when a reseed swaps a fresh
+// copy in.
 func db_quarantined(path string) bool {
 	v, ok := db_integrity_state.Load(path)
 	return ok && v == "corrupt"
@@ -1144,10 +1001,8 @@ func db_error_is_transient(err error) bool {
 }
 
 // db_integrity_watchdog quick_checks a few due DBs each tick and warns the
-// moment one is found corrupt — proactive detection so corruption surfaces as
-// an alert in minutes rather than as a silent multi-hour outage (#6). The check
-// is read-only (db_quick_check opens its own ro handle), and a transient
-// open/lock miss (ran=false) is ignored rather than mistaken for corruption.
+// moment one is corrupt. The check is read-only, and a transient open/lock miss
+// (ran=false) is ignored rather than read as corruption.
 func db_integrity_watchdog() {
 	databases_lock.Lock()
 	open := make([]*DB, 0, len(databases))
@@ -1236,28 +1091,10 @@ func db_open(file string) *DB {
 }
 
 // db_path_contained reports whether an already-joined path is still inside the
-// data directory.
-//
-// Every database path is built by interpolating components into a template -
-// users/<uid>/<app>/db/<file> and so on - and filepath.Join resolves ".."
-// lexically, so a component carrying one escapes: Join("/var/lib/mochi",
-// "users/../../../../etc/shadow") is "/etc/shadow". The open that follows is a
-// plain os.Create plus a name-based driver open, so nothing downstream would
-// stop it.
-//
-// Nothing reaches this today. Every interpolated component is constrained
-// before it arrives: uids are generated, app ids validate as "entity" or come
-// from a directory listing, and an app's declared database file passes
-// valid(..., "filename"), whose first character class omits "." so a leading
-// dot - and therefore ".." - cannot be written at all. The point of the check
-// is that all of that lives in other files: a call site added later inherits
-// none of it, and this is the one place every database path passes through.
-//
-// This is containment against a lexical escape, not against symlinks - a
-// symlink inside the data directory pointing out of it still resolves. Only
-// os.Root refuses that, and the driver cannot be handed one: its VFS is
-// name-based, so confining it means registering a custom VFS and reimplementing
-// the platform-specific shared-memory path alongside it.
+// data directory. filepath.Join resolves ".." lexically, so a component
+// carrying one escapes; every component is constrained elsewhere, and this is
+// the one place every database path passes through. Lexical only - a symlink
+// out of the directory resolves.
 func db_path_contained(path string) bool {
 	// Rel cleans both arguments, so an operator config carrying a trailing
 	// slash or an interior ".." needs no separate tidying here.
@@ -1341,22 +1178,15 @@ func db_open_work(file string, keys ...string) (*DB, bool, bool) {
 	return db, created, false
 }
 
-// db_transient_dbs are the host-local, self-healing core DBs: their contents are
-// re-derived after loss (queue from per-app journals, sessions by re-auth, peers
-// by re-discovery), so a corrupt or missing one can be rebuilt fresh instead of
-// crash-looping the server. Cold/critical DBs (users, domains, replication,
-// directory, apps, settings) are deliberately NOT in this set — a corrupt one is
-// left for operator restore from backup.
+// db_transient_dbs are the host-local core DBs whose contents are re-derived
+// after loss (queue from journals, sessions by re-auth, peers by re-discovery),
+// so a corrupt one is rebuilt fresh. Cold DBs are deliberately absent: those
+// need operator restore.
 var db_transient_dbs = []string{"queue", "sessions", "peers"}
 
-// db_heal_transient checks the self-healing transient core DBs at startup: it
-// deletes a corrupt one (so it rebuilds fresh) and reports whether any is now
-// missing. It returns true iff a transient DB's schema needs (re)creating, so
-// the caller re-runs the idempotent db_create ONLY then — never on a healthy
-// start. This breaks the crash-loop a corrupt/missing queue.db/sessions.db/
-// peers.db would otherwise cause; a rebuilt DB's data is re-derived (queue
-// from journals, sessions by re-auth, peers by re-discovery). The per-start cost
-// is a quick_check of these three (normally small) DBs only.
+// db_heal_transient deletes a corrupt transient core DB at startup so it
+// rebuilds fresh, and returns true iff one is now missing - the only case in
+// which the caller re-runs db_create. Never on a healthy start.
 func db_heal_transient() bool {
 	rebuild := false
 	for _, name := range db_transient_dbs {
@@ -1378,13 +1208,10 @@ func db_heal_transient() bool {
 
 func db_start() bool {
 	fresh := !file_exists(filepath.Join(data_dir, "db", "users.db"))
-	// We do NOT run db_create on every start: re-running it touches every core DB
-	// and would recreate a *missing migrated* DB with only its base schema, after
-	// which db_upgrade skips its migrations (version reads current) — a silently
-	// incomplete schema. Instead db_heal_transient heals the self-healing
-	// transient DBs, and db_create re-runs only when one of those is actually
-	// missing/corrupt (rare), restoring that DB's schema (a no-op for the present
-	// DBs) and fixing the missing/corrupt-queue.db crash-loop.
+	// db_create must NOT run on every start: it would recreate a missing migrated
+	// DB with only its base schema, after which db_upgrade skips its migrations
+	// (the version already reads current) and leaves the schema silently
+	// incomplete.
 	rebuild := db_heal_transient()
 	switch {
 	case fresh:
@@ -1412,9 +1239,8 @@ func db_upgrade() {
 		next := schema + 1
 		info("Upgrading database schema from version %d to %d", schema, next)
 		switch next {
-		// Future migrations: add `case N: db_upgrade_N()` here, bump
-		// schema_version, and provide the matching db_upgrade_N function.
-		// History before the 2026-07 baseline squash is in git.
+		// Future migrations: add `case N: db_upgrade_N()`, bump schema_version, and
+		// provide the matching db_upgrade_N.
 		case 2:
 			db_upgrade_2()
 		case 3:
@@ -1449,19 +1275,15 @@ func db_upgrade_2() {
 	queue.exec("create table if not exists health ( recipient text not null primary key, failures integer not null default 0, denials integer not null default 0, success integer not null default 0, since integer not null default 0, suspended integer not null default 0, probed integer not null default 0 )")
 }
 
-// db_upgrade_3 added a separate directory binding column. It shipped in
-// 0.4.219 and ran on production, so the version number is spent and cannot be
-// redefined — db_upgrade_4 immediately drops the column again. Kept as the
-// historical no-op it now is so a server still at schema 2 walks the same
-// path production did.
+// db_upgrade_3 added a directory binding column that db_upgrade_4 drops again.
+// The version shipped and ran on production, so it is spent: keep the no-op so
+// a server still at schema 2 walks the same path production did.
 func db_upgrade_3() {
 }
 
-// db_upgrade_4 collapses the directory row's three signatures into one: the
-// entity now signs the whole row, peer included, so the host-key attestation
-// and the short-lived separate binding are both redundant. Stored rows keep
-// routing (they are verified only on arrival); rows from hosts that have not
-// upgraded fail the new check and age out of the active window.
+// db_upgrade_4 collapses the directory row's three signatures into one over the
+// whole row, peer included. Stored rows keep routing (verified only on
+// arrival); rows from hosts that have not upgraded fail the check and age out.
 func db_upgrade_4() {
 	directory := db_open("db/directory.db")
 	for _, column := range []string{"attestation", "binding"} {
@@ -1478,18 +1300,11 @@ func db_upgrade_4() {
 	}
 }
 
-// db_upgrade_5 binds an API token to a single action and entity. A query
-// token satisfies the app-JWT requirement (web.go) and routing is
-// method-agnostic, while the scopes recorded at creation were never enforced
-// anywhere - so an RSS feed URL was a permanent full-privilege credential for
-// its whole app, and a GET of the delete action carrying that token in the
-// query string destroyed the wiki.
-//
-// Stored tokens carry no binding. Scoped ones are the RSS family minted by
-// wikis, feeds, forums and notifications: they are revoked here and the next
-// "Copy RSS URL" mints a bound replacement, which also retires any feed URL
-// already leaked. Unscoped ones are the deliberate user-created API tokens
-// (repositories) where app-wide access is the point, so they keep working.
+// db_upgrade_5 binds an API token to one action and entity: the recorded scopes
+// were never enforced, so an RSS feed URL was a full-privilege credential for
+// its app. Scoped tokens (the RSS family) are revoked and reminted bound on
+// next use; unscoped ones are deliberate user-created API tokens and keep
+// working.
 func db_upgrade_5() {
 	users := db_open("db/users.db")
 	for _, column := range []string{"action", "entity"} {
@@ -1535,12 +1350,10 @@ func db_ready_set(db *DB) {
 	databases_lock.Unlock()
 }
 
-// db_bind associates a pooled handle with its user/app identity once. The
-// pool key embeds both, so the values never change for a given handle;
-// binding under databases_lock replaces the old unconditional per-open field
-// writes, which raced every other goroutine holding the handle (#227). Also
-// heals handles first cached by a raw db_open or the app-system sweep, which
-// carry no binding.
+// db_bind associates a pooled handle with its user/app identity once. The pool
+// key embeds both, so the values never change for a handle; binding under
+// databases_lock keeps concurrent holders from racing (#227). Also heals an
+// unbound cached handle.
 func db_bind(db *DB, u *User, app *App) {
 	databases_lock.Lock()
 	if db.user == nil {
@@ -1550,10 +1363,9 @@ func db_bind(db *DB, u *User, app *App) {
 	databases_lock.Unlock()
 }
 
-// db_purge_prefix closes and evicts every cached DB whose on-disk path lives
-// under the given directory. Use this before removing a directory (e.g. a
-// user's data dir) so that stale handles can't be reused for I/O against
-// files that no longer exist.
+// db_purge_prefix closes and evicts every cached DB under the given directory.
+// Call it before removing a directory so stale handles cannot be reused for
+// I/O.
 func db_purge_prefix(dir string) {
 	prefix := filepath.Join(data_dir, dir)
 	if !strings.HasSuffix(prefix, string(os.PathSeparator)) {
@@ -1579,20 +1391,13 @@ func db_purge_prefix(dir string) {
 // dynamically-built SQL can't grow it without bound.
 const db_statement_cache_maximum = 512
 
-// prepared returns a cached prepared statement on the internal pool for
-// query, or nil to fall back to the uncached path. These statements are
-// pool-level and are never used inside a transaction (the *DB query
-// methods all run on the pool, not on a tx), so they cannot leak a write
-// out of a transaction. Schema changes are handled by the driver: ncruces
-// prepares with prepare_v3, so a cached statement auto-re-prepares on
-// SQLITE_SCHEMA.
+// prepared returns a cached prepared statement on the internal pool, or nil to
+// fall back to the uncached path. These are pool-level and never used inside a
+// transaction, so they cannot leak a write out of one.
 func (db *DB) prepared(query string) *sqlx.Stmt {
-	// Never cache while a migration runs, and never cache schema
-	// introspection. A cached statement can carry a stale schema view on a
-	// pooled connection; that made a pragma_table_info idempotency guard
-	// report a present column as absent, re-running an ALTER and crashing a
-	// migration (#10). The uncached path prepares fresh each call, which
-	// reloads the connection's schema.
+	// Never cache while a migration runs, and never cache schema introspection: a
+	// cached statement carries a stale schema view on a pooled connection, which
+	// made a table_info guard miss a present column and re-run its ALTER (#10).
 	if db_migrating.Load() > 0 || sql_is_introspection(query) {
 		return nil
 	}
@@ -1629,15 +1434,10 @@ func (db *DB) stmts_close() {
 	db.statement_cache = nil
 }
 
-// statement_closed reports whether err is database/sql's "statement is closed"
-// sentinel. A cached prepared statement can be closed by a concurrent
-// stmts_close (DDL flush, 512-entry overflow, or eviction) in the window
-// between prepared() handing it out and the caller executing it outside
-// statement_lock — under heavy concurrent load on one DB this surfaced as
-// intermittent "sql: statement is closed" (e.g. group_memberships on the hot
-// access-check path). The query helpers treat it as a transient cache miss and
-// retry once on the uncached pool path, which re-prepares fresh. The sentinel
-// is unexported in database/sql, so match on its stable message.
+// statement_closed reports database/sql's "statement is closed" sentinel, which
+// a cached statement hits when a concurrent stmts_close beats the caller. The
+// helpers retry uncached. The sentinel is unexported, so match on its stable
+// message.
 func statement_closed(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "statement is closed")
 }
@@ -1648,11 +1448,9 @@ func statement_closed(err error) bool {
 // migration's DDL (#10). A counter so nested migrations compose.
 var db_migrating atomic.Int32
 
-// sql_is_introspection reports whether a query reads schema metadata
-// (pragma_*, sqlite_master, sqlite_schema). These must not be cached: a
-// cached introspection statement can report a stale schema on a pooled
-// connection, which breaks migration idempotency guards (see #10 and
-// prepared()).
+// sql_is_introspection reports whether a query reads schema metadata. Such a
+// query must never be cached: a stale schema view breaks migration idempotency
+// guards (#10).
 func sql_is_introspection(query string) bool {
 	q := strings.ToLower(query)
 	return strings.Contains(q, "pragma_") ||
@@ -1660,12 +1458,9 @@ func sql_is_introspection(query string) bool {
 		strings.Contains(q, "sqlite_schema")
 }
 
-// sql_is_schema reports whether a statement changes the database schema
-// (DDL). Such a statement invalidates the prepared-statement cache:
-// statements compiled against the old schema return stale or empty
-// results afterwards (verified — ncruces' prepare_v3 auto-re-prepare does
-// not save us through the database/sql + sqlx path), so the cache is
-// flushed when one runs.
+// sql_is_schema reports whether a statement changes the schema (DDL), which
+// invalidates the prepared-statement cache: statements compiled against the old
+// schema return stale or empty results afterwards, so the cache is flushed.
 func sql_is_schema(query string) bool {
 	verb, _ := sql_take_word(sql_strip_lead(query))
 	switch strings.ToUpper(verb) {
@@ -1707,12 +1502,9 @@ func (db *DB) exec_e(query string, values ...any) error {
 	return err
 }
 
-// exec_bg is the background-safe write: it NEVER panics, so a corrupt user DB
-// can't take down the whole process. A DB already quarantined (flagged
-// corrupt) is skipped without touching it. A corruption error quarantines the
-// DB — skipping all further ops on it — and alerts the admin once; any other
-// error is logged. The caller keeps serving every other user. `context` names
-// the operation for the alert/log.
+// exec_bg is the background-safe write: it never panics, so a corrupt user DB
+// cannot take down the process. A quarantined DB is skipped; a corruption error
+// quarantines it and alerts once. `context` names the operation for the alert.
 //
 // Returns nothing. It used to report a wrote/retryable/skipped tri-state for a
 // consumer that decided whether to retry; that consumer went in July 2026, and
@@ -1775,13 +1567,12 @@ func (db *DB) integer(query string, values ...any) int {
 	return result
 }
 
-// integer64 reads a single integer column as int64, so a value beyond the 32-bit
-// range (a timestamp, a large sequence, a generation epoch) is not truncated on
-// the 32-bit builds (armhf/armv7hl) where integer()'s int return would be. Use
-// this for any column whose value can exceed ~2.1e9. Returns 0 on no-row/error,
-// matching integer().
+// integer64 reads a single integer column as int64, so a value beyond the
+// 32-bit range is not truncated on the 32-bit builds. Returns 0 on
+// no-row/error.
 //
-//lint:ignore U1000 exists to stop a >2.1e9 column being truncated on the 32-bit armhf and armv7hl builds; deleting it because today's callers use small columns invites that bug back
+// lint:ignore U1000 exists to stop a >2.1e9 column being truncated on the
+// 32-bit armhf and armv7hl builds
 func (db *DB) integer64(query string, values ...any) int64 {
 	var result int64
 	var err error
@@ -1899,16 +1690,11 @@ func (db *DB) scans(out any, query string, values ...any) error {
 	return db.internal.Select(out, query, values...)
 }
 
-// starlark_db runs one of the app's database lifecycle functions
-// (database_create / database_upgrade / database_downgrade) and stamps
-// user_version, both inside a single transaction on a dedicated connection.
-// Either the function's DDL and the stamp commit together, or (error, panic,
-// process death) nothing persists — a crash can no longer leave a partial
-// schema that db_app's has_tables check mistakes for a complete one (#227).
-// The connection is handed to the Starlark thread as the "lifecycle" local:
-// mochi.db.* calls inside the function run on it directly, which both joins
-// them to the transaction and keeps them from re-entering db_app, whose
-// lock(path) this goroutine already holds (re-entry would self-deadlock).
+// starlark_db runs one of the app's database lifecycle functions and stamps
+// user_version in a single transaction on a dedicated connection, so a crash
+// cannot leave a partial schema (#227). The connection is the thread's
+// "lifecycle" local, so mochi.db.* calls run on it and never re-enter db_app,
+// whose lock this call holds.
 func (av *AppVersion) starlark_db(db *DB, u *User, function string, args sl.Tuple, stamp int) error {
 	pool, err := sqlitedrv.Open(db.path, db_setup_conn_lifecycle)
 	if err != nil {
@@ -2051,11 +1837,9 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 			return sl_error(fn, "%v", err)
 		}
 
-		// Check out a dedicated connection so a failed multi-statement
-		// query (e.g. `BEGIN; bad-sql; COMMIT;` where bad-sql is denied by
-		// the authoriser at prepare) can't return a half-open transaction
-		// to the shared pool. On error we issue a defensive ROLLBACK on
-		// the same connection before releasing it.
+		// Check out a dedicated connection so a failed multi-statement query cannot
+		// return a half-open transaction to the shared pool; on error a defensive
+		// ROLLBACK runs on the same connection before it is released.
 		pooled, err := db.starlark.Connx(ctx)
 		if err != nil {
 			return sl_error(fn, "database error: %v", err)
@@ -2144,28 +1928,18 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	return sl_error(fn, "invalid database query %q", fn.Name())
 }
 
-// db_starlark_rollback issues a best-effort ROLLBACK on the given
-// connection. Used to clear any half-open transaction left behind by a
-// multi-statement Exec whose middle statement was denied by the
-// authoriser (e.g. `BEGIN; PRAGMA …; COMMIT;` — BEGIN runs, PRAGMA is
-// denied at prepare, COMMIT never executes). On a connection without
-// an active transaction the ROLLBACK errors and is silently dropped —
-// that's expected and safe.
+// db_starlark_rollback clears any half-open transaction left by a
+// multi-statement Exec whose middle statement the authoriser denied. On a
+// connection with no active transaction the ROLLBACK errors and is dropped,
+// which is expected.
 func db_starlark_rollback(conn *sqlx.Conn) {
 	_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
 }
 
-// db_starlark_sql_blocked returns a non-empty error message if the query
-// starts with a keyword that's blocked from Starlark.
-//
-// Courtesy only. It reads the first token of the first statement, so a
-// leading comment or a second statement walks straight past it, and it is
-// deliberately not hardened: splitting on ";" to reach later statements
-// would refuse "select 'a; analyze'", turning working SQL into an error.
-// The authoriser is the layer that actually decides - it sees parsed
-// input, every statement, and cannot be evaded by spelling - and this
-// exists so the common case answers with a sentence an app author can
-// read instead of an opaque authoriser denial.
+// db_starlark_sql_blocked returns a message when a query starts with a keyword
+// blocked from Starlark. Courtesy only, and deliberately not hardened:
+// splitting on ";" would refuse "select 'a; analyze'". The authoriser is what
+// actually decides.
 func db_starlark_sql_blocked(query string) string {
 	trimmed := strings.TrimSpace(query)
 	first := trimmed
@@ -2183,11 +1957,10 @@ func db_starlark_sql_blocked(query string) string {
 	return ""
 }
 
-// TransactionHandle is the Starlark value returned by mochi.db.transaction(). It
-// exposes execute/exists/row/rows that route through the underlying SQL
-// transaction, plus commit and rollback. Forgetting to call commit() is safe —
-// the cleanup hook in starlark.go rolls back any uncommitted handles when the
-// Starlark thread tears down (script return, error, or timeout).
+// TransactionHandle is the value mochi.db.transaction() returns: execute/exists/row/
+// rows routed through the SQL transaction, plus commit and rollback. Forgetting
+// commit is safe - starlark.go's cleanup hook rolls back any uncommitted
+// handle.
 type TransactionHandle struct {
 	tx     *sqlx.Tx
 	closed bool
@@ -2375,13 +2148,10 @@ func (h *TransactionHandle) sl_rollback(t *sl.Thread, fn *sl.Builtin, args sl.Tu
 	return sl.None, nil
 }
 
-// mochi.db.transaction() -> transaction: Start a SQL transaction on the calling
-// app's per-user database. Returns a handle whose execute/exists/row/rows methods
-// run inside the transaction. Call .commit() to persist or .rollback() to discard.
-// If the Starlark thread tears down (return, error, timeout) without commit, the
-// transaction is rolled back automatically — forgetting commit is safe.
-// Nested transactions error: SQLite doesn't support real nested transactions,
-// and silent savepoint behaviour would surprise callers.
+// mochi.db.transaction() -> transaction: Start a SQL transaction on the calling app's
+// per-user database. Call .commit() to persist or .rollback() to discard; a
+// thread that tears down without commit rolls back. Nested transactions error -
+// SQLite has no real nesting.
 func api_db_transaction(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 0 {
 		return sl_error(fn, "syntax: mochi.db.transaction()")
@@ -2406,15 +2176,10 @@ func api_db_transaction(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "%v", err)
 	}
 
-	// Opened under the call's context, like every statement run on it below.
-	// thread.Cancel is only observed between interpreter steps, so a statement
-	// already inside SQLite runs to completion however far the call has
-	// overrun - and a transaction holds a write lock while it does. The
-	// timeout path abandons a call stuck in a builtin rather than waiting
-	// (see Starlark.call), so the cleanup hook that would roll this back is
-	// queued behind the very statement it meant to interrupt; with a context
-	// on the transaction, database/sql rolls it back and returns the
-	// connection when the call is cancelled.
+	// Opened under the call's context. thread.Cancel is only seen between
+	// interpreter steps, so a statement already inside SQLite runs on holding the
+	// write lock; with a context, database/sql rolls the transaction back when the
+	// call is cancelled.
 	tx, err := db.starlark.BeginTxx(starlark_context(t), nil)
 	if err != nil {
 		return sl_error(fn, "begin failed: %v", err)
@@ -2425,14 +2190,10 @@ func api_db_transaction(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return h, nil
 }
 
-// db_conn_rows runs a read query on a specific connection and returns rows in
-// the same map shape as DB.rows. Used by the introspection builtins when a
-// database lifecycle transaction is active: they must run on the lifecycle
-// connection to see its uncommitted DDL (feeds and wikis migrations use
-// mochi.db.table as column-existence idempotency guards). The direct PRAGMA
-// forms are used — the lifecycle authoriser allows table_info/index_list —
-// because the pragma_* virtual-table forms silently return zero rows on an
-// authorised connection (their internal prepare re-fires AUTH_PRAGMA).
+// db_conn_rows runs a read query on one connection, in DB.rows' shape. The
+// introspection builtins need it during a lifecycle transaction to see
+// uncommitted DDL, and must use the direct PRAGMA forms: pragma_* vtables
+// silently return no rows there.
 func db_conn_rows(conn *sqlx.Conn, query string, args ...any) ([]map[string]any, error) {
 	r, err := conn.QueryxContext(context.Background(), query, args...)
 	if err != nil {
@@ -2568,16 +2329,9 @@ func row_string(r map[string]any, key string) string {
 	return ""
 }
 
-// row_int extracts a numeric field from a map[string]any returned by
-// a CBOR-decoded payload or a sqlite row scan. The cbor library
-// decodes non-negative integers into uint64 (not int64) when the
-// target is interface{}, so callers like the bootstrap chunk-fetch
-// handler would see length=0 for every non-empty file because the
-// uint64(903) case wasn't matched and fell through to the zero
-// return. That broke file-chunk delivery — every file landed as a
-// zero-byte file on the receiver, including 21,612 entity-id app
-// files whose empty app.json then made the published-apps loader
-// silently skip the entire installed-app set.
+// row_int extracts a numeric field from a CBOR-decoded payload or a row scan.
+// The cbor library decodes non-negative integers into uint64 when the target is
+// any, so a missing uint64 case silently reads every value as zero.
 func row_int(r map[string]any, key string) int64 {
 	switch v := r[key].(type) {
 	case int64:
@@ -2633,13 +2387,10 @@ func sql_take_word(s string) (string, string) {
 	return s[:i], s[i:]
 }
 
-// sql_is_mutating reports whether sql is a row-changing statement
-// (INSERT / REPLACE / UPDATE / DELETE, including the INSERT OR ... forms).
-// Used to keep mutations out of the read-only mochi.db.row/rows/exists APIs,
-// which run the write but do NOT journal it — so the change would never
-// replicate (silent divergence). Such writes must go through mochi.db.execute.
-// CTE-prefixed mutations (WITH ... DELETE) are not detected — no app uses them
-// and the CI grep gate (#8) covers the literal case.
+// sql_is_mutating reports whether sql changes rows. Mutations are kept out of
+// the read-only mochi.db.row/rows/exists APIs, which run the write but do not
+// journal it. CTE-prefixed mutations (WITH ... DELETE) are not detected; the CI
+// grep gate covers them.
 func sql_is_mutating(sql string) bool {
 	verb, _ := sql_take_word(sql_strip_lead(sql))
 	switch strings.ToUpper(verb) {
@@ -2649,15 +2400,8 @@ func sql_is_mutating(sql string) bool {
 	return false
 }
 
-// db_upgrade_6 gives the totp table a column for an unproven secret.
-//
-// Enrolment used to `replace into totp`, which overwrote the row and reset
-// verified to 0. A factor counts as available only while its row is verified,
-// so merely starting an enrolment - and then abandoning it, or never scanning
-// the code - dropped the user's working authenticator out of their usable
-// factors and quietly left login on an email code. The new secret now waits in
-// pending until a code proves it, and the one the user is actually carrying is
-// left alone.
+// db_upgrade_6 gives the totp table a pending column: an unproven enrolment
+// must not overwrite the verified secret the user is currently logging in with.
 func db_upgrade_6() {
 	users := db_open("db/users.db")
 	if have, _ := users.exists("select 1 from pragma_table_info('totp') where name=?", "pending"); !have {
@@ -2665,19 +2409,10 @@ func db_upgrade_6() {
 	}
 }
 
-// db_upgrade_9 rewrites existing usernames into the canonical form the login
-// paths now key on. A username is an email address, and mail.ParseAddress
-// accepts "Alice <a@b.com>", " a@b.com " and "A@B.com" for the one mailbox, so
-// rows written before that was normalised would become unreachable now that
-// the lookups canonicalise.
-//
-// Two rows that reduce to the same address are LEFT ALONE. They are two
-// accounts, belonging to whoever completed each signup, and merging them here
-// would hand one person the other's data. The operator is told instead.
-//
-// Short-lived login codes in sessions.db are not migrated: they expire within
-// the hour, and a code that no longer matches simply makes the user ask for
-// another.
+// db_upgrade_9 canonicalises usernames, since a username is an email address
+// and the login paths now key on the parsed form. Two rows reducing to the same
+// address are LEFT ALONE - they are two accounts, and merging gives one person
+// the other's data.
 func db_upgrade_9() {
 	users := db_open("db/users.db")
 	rows, err := users.rows("select uid, username from users")
@@ -2720,17 +2455,10 @@ func db_upgrade_9() {
 	}
 }
 
-// db_upgrade_10 adds health.evicted, the timestamp of the first
-// subscriber/unreachable dispatch for a recipient. It is what makes a
-// suspended row residue the cleanup sweep may delete: before this, the
-// sweep deleted on age alone, so a recipient whose owner posted nothing
-// between the evict age and twice it was forgotten without any app ever
-// being told to drop the subscriber, and the next post burned a fresh
-// retry ladder against the same dead host.
-//
-// Existing rows default to 0 (never dispatched), which is the correct
-// reading — a row that has been evicted is stamped by the next dispatch,
-// and one that never was keeps gating, as it should.
+// db_upgrade_10 adds health.evicted, the timestamp of the first drop-subscriber
+// dispatch for a recipient: only a stamped row is residue the cleanup sweep may
+// delete. Existing rows default to 0, which correctly reads as never
+// dispatched.
 func db_upgrade_10() {
 	queue := db_open("db/queue.db")
 	if exists, _ := queue.exists("select 1 from pragma_table_info('health') where name='evicted'"); !exists {
@@ -2738,9 +2466,7 @@ func db_upgrade_10() {
 	}
 }
 
-// db_upgrade_8 adds the push retry queue. A push used to get one attempt and
-// then be dropped, so a destination unreachable for a few seconds lost the
-// notification outright.
+// db_upgrade_8 adds the push retry queue.
 func db_upgrade_8() {
 	queue := db_open("db/queue.db")
 	queue.exec(`create table if not exists pushes ( id text primary key, user text not null,

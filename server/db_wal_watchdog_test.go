@@ -1,14 +1,9 @@
 // Mochi server: WAL watchdog regression (#6).
 //
-// A long-lived reader starving the checkpoint ballooned feeds.db's WAL to
-// 2.9 GB with no alert before it corrupted. db_wal_watchdog force-checkpoints
-// an oversized WAL and, if a reader keeps the checkpoint from reclaiming it,
-// strikes toward a warning.
-//
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

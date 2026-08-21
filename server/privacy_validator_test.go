@@ -1,28 +1,12 @@
-// Mochi server: one place decides what an entity's privacy may be.
-//
-// utilities.go has held a "privacy" validator all along. Core checked the
-// field four ways anyway:
-//
-//   - entity_create said valid(privacy, "privacy") - correct.
-//   - api_entity_create restated the pattern as a raw regex, and spelled the
-//     alternation the other way round ("^(private|public)$" against the
-//     validator's "^(public|private)$"), which is the tell that it was written
-//     without reference to the other.
-//   - api_entity_update and entity_privacy_set each restated it again as a
-//     string comparison, reaching no validator at all.
-//   - mochi.user.settings checks nothing and relies on entity_privacy_set.
-//
-// None of that was a hole. An exact comparison against two literals is at
-// least as strict as the regex, and valid()'s leading control-character filter
-// is redundant when the accepted set is two ASCII words. The cost is drift:
-// four encodings of "the allowed privacy values" means a third value has to be
-// added in four places, and missing one leaves create accepting what update
-// rejects with no test failing.
+// Mochi server: one place decides what an entity's privacy may be -
+// utilities.go's "privacy" validator. Four separate encodings of the allowed
+// set had drifted; this pins every path to the validator so a third value is
+// added once.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -124,11 +108,9 @@ func TestPrivacyValidatorIsNamedInUtilities(t *testing.T) {
 	}
 }
 
-// TestUnknownValidatorNameCompilesAsAPattern records why the test above is a
-// Fatal rather than an Error. valid() reassigns match for a known type and
-// otherwise compiles the string as a PATTERN, so deleting a case does not fail
-// loudly anywhere - every caller naming it silently becomes an unanchored
-// match on the name's own text.
+// TestUnknownValidatorNameCompilesAsAPattern: valid() compiles an unknown type
+// name as a PATTERN rather than failing, so deleting a case silently turns
+// every caller into an unanchored match on the name's own text.
 func TestUnknownValidatorNameCompilesAsAPattern(t *testing.T) {
 	// A name no case defines is compiled as a pattern, so it matches its own
 	// text and nothing else in particular.

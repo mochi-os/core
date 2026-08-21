@@ -1,10 +1,8 @@
 package main
 
-// Tests for the app-database lifecycle path in db_app (#227): the ready gate
-// that stops concurrent first-openers from querying a schema mid-creation,
-// the re-entrancy hand-off that lets database_create's own mochi.db.* calls
-// run without touching db_app, and the transactional atomicity that keeps a
-// failed or interrupted creation from persisting a partial schema.
+// Tests for the app-database lifecycle path in db_app (#227): the ready gate,
+// the re-entrancy hand-off for database_create's own mochi.db.* calls, and the
+// transactional atomicity of a failed creation.
 
 import (
 	"fmt"
@@ -58,11 +56,9 @@ func lifecycle_test_app(t *testing.T, source string) (*App, *AppVersion, func())
 	return app, av, cleanup
 }
 
-// TestAppDatabaseConcurrentFirstAccess is the #227 regression: many
-// goroutines open a fresh app DB at once. Before the ready gate, the losers
-// were handed the pooled handle mid-creation and their first query failed
-// with "no such table". Every opener must get a queryable handle, creation
-// must run exactly once, and the schema version must be stamped.
+// TestAppDatabaseConcurrentFirstAccess (#227): many goroutines open a fresh app
+// DB at once - every opener gets a queryable handle, creation runs once, the
+// version is stamped.
 func TestAppDatabaseConcurrentFirstAccess(t *testing.T) {
 	app, _, cleanup := lifecycle_test_app(t, `
 def database_create():
@@ -118,10 +114,9 @@ def database_create():
 	}
 }
 
-// TestAppDatabaseCreateReentrancy is the regression for the first, deadlocking
-// #227 attempt: database_create's own mochi.db.* calls (including the
-// introspection builtins) must complete without re-entering db_app, and
-// mochi.db.table must see the transaction's own uncommitted DDL.
+// TestAppDatabaseCreateReentrancy: database_create's own mochi.db.* calls must
+// not re-enter db_app, and mochi.db.table must see the transaction's
+// uncommitted DDL.
 func TestAppDatabaseCreateReentrancy(t *testing.T) {
 	app, _, cleanup := lifecycle_test_app(t, `
 def database_create():
@@ -149,9 +144,8 @@ def database_create():
 }
 
 // TestAppDatabaseCreateFailureAtomic: a database_create that fails partway
-// must persist nothing (the transaction rolls back), and the next opener must
-// retry — and succeed once the create function works. Before the fix a failed
-// create left a pooled handle with a partial schema that was reused forever.
+// persists nothing, and the next opener retries rather than reusing a partial
+// schema.
 func TestAppDatabaseCreateFailureAtomic(t *testing.T) {
 	app, av, cleanup := lifecycle_test_app(t, `
 def database_create_bad():
@@ -240,11 +234,8 @@ def database_upgrade(version):
 	}
 }
 
-// TestAppDatabaseUpgradeAbort: a step that calls mochi.db.abort() does NOT
-// advance the schema version - unlike an ordinary failure, which consumes it.
-// The step retries verbatim on the next open, which is what lets a migration
-// blocked on a transient precondition (the attachments transition bridge being
-// absent) wait rather than being consumed and needing a repair version.
+// TestAppDatabaseUpgradeAbort: a step calling mochi.db.abort() holds the schema version
+// and retries verbatim, unlike an ordinary failure, which consumes it.
 func TestAppDatabaseUpgradeAbort(t *testing.T) {
 	app, av, cleanup := lifecycle_test_app(t, `
 def database_create():

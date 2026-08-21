@@ -1,17 +1,11 @@
-// Mochi server: attachments stay out of core.
-//
-// The attachment subsystem left the server in stages - built-in _attachment/*
-// events first, then the whole mochi.attachment.* bridge and the app.db
-// attachments table (exported to each app's file storage by
-// attachment_export_sweep, which is what the apps' migrations read). These
-// pins are what remains of the tests that walked it out: core must not grow
-// an attachment surface again, because it cannot authorise one - "may this
-// sender attach to, or read, this object" is app state.
+// Mochi server: attachments stay out of core. Core must not grow an attachment
+// surface again: "may this sender attach to, or read, this object" is app
+// state, which core cannot authorise.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

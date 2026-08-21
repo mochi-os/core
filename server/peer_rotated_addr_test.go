@@ -1,12 +1,11 @@
-// Mochi server: #48 — a dial that fails because the address now answers as a
-// DIFFERENT peer (an identity rotation — re-paired/rebuilt server) must drop
-// that stale address so the reconnect manager stops dialing the defunct id
-// forever (the peer-id-mismatch CPU churn).
+// Mochi server: #48 - a dial that fails because the address now answers as a
+// different peer (an identity rotation) must drop that stale address, or the
+// reconnect manager dials the defunct id forever.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

@@ -25,23 +25,18 @@ import (
 	p2p_network "github.com/libp2p/go-libp2p/core/network"
 )
 
-// receive_stream is the libp2p stream handler registered for
-// /mochi/2/stream in net_start.
+// receive_stream is the libp2p stream handler registered for /mochi/2/stream in
+// net_start.
 //
 // Wire sequence (after libp2p accepts the protocol):
 //  1. Write hello with a fresh challenge.
 //  2. Read caps (first sender frame).
-//  3. Read one or more claim frames; verify per-(stream, entity)
-//     signatures and cache claimed[From] = true.
-//  4. Read open: the sender's app-stream request. Dispatch to the
-//     app handler with the raw libp2p stream as e.stream; the
-//     handler reads/writes raw bytes for the rest of the session.
+//  3. Read one or more claim frames; verify per-(stream, entity) signatures
+//     and cache claimed[From] = true.
+//  4. Read open: dispatch to the app handler with the raw stream as e.stream.
 //
-// libp2p runs each stream handler on its own goroutine, so a panic anywhere
-// below reaches that goroutine's top and takes the process down. The dispatch
-// this reaches routes broadcast events internally rather than through
-// run_handler, so the recover there does not cover them, and db.exec panics on
-// any SQL error - a table an app has not created yet is enough.
+// Guarded: libp2p runs each handler on its own goroutine, and the dispatch
+// below routes broadcast events outside run_handler's recover.
 func receive_stream(s p2p_network.Stream) {
 	guard("receive_stream", func() { s.Reset() }, func() { receive_stream_guarded(s) })
 }
@@ -89,17 +84,9 @@ func receive_stream_guarded(s p2p_network.Stream) {
 	claimed := map[string]bool{}
 	var open *Frame
 
-	// The pre-open phase is bounded on both axes, because until open arrives
-	// the peer has spent nothing and this host has spent a goroutine, a
-	// stream, an ed25519 verify per claim and a map entry per distinct
-	// entity. frame_maximum caps how big one frame is; nothing capped how
-	// many, or how slowly they arrive. libp2p's 128 inbound streams per peer
-	// is not the answer - it bounds concurrency, not work per stream, and a
-	// peer identity is free to mint.
-	//
-	// The deadline covers this phase only and is cleared before the handler
-	// takes over: an app stream is long-lived by design and must not inherit
-	// a handshake timeout.
+	// Bound the pre-open phase on count and time: until open arrives the peer has
+	// spent nothing and this host a verify per claim. The deadline is cleared
+	// before the handler runs - an app stream is long-lived by design.
 	_ = s.SetReadDeadline(time.Now().Add(stream_open_timeout))
 	for count := 0; ; count++ {
 		if count >= stream_claims_maximum {
@@ -155,15 +142,9 @@ func receive_stream_guarded(s p2p_network.Stream) {
 		return
 	}
 
-	// Prove to the opener that this host really holds the entity it
-	// addressed, by signing the challenge it sent in caps. Without this
-	// the opener has only its own routing to go on, and a peer it was
-	// told to use can answer for any entity it likes.
-	//
-	// Only meaningful when an entity was addressed. An empty To is a
-	// host-to-host stream (directory push/sync) carrying no entity-scoped
-	// data, and libp2p has already authenticated the host, so there is
-	// nothing further to prove.
+	// Prove to the opener that this host holds the entity it addressed, by signing
+	// the caps challenge. Only when an entity was addressed: an empty To is a
+	// host-to-host stream libp2p has already authenticated.
 	ack := &Frame{Type: frame_type_ack, Replies: []string{open.ID}}
 	if to != "" {
 		proof := responder_sign(to, caps.Challenge, peer, protocol_stream)
@@ -196,14 +177,10 @@ func receive_stream_guarded(s p2p_network.Stream) {
 	// debug("Stream: closed peer=%q session=%s", peer, session)
 }
 
-// stream_resolve maps a /mochi/2/stream open target to its resolved
-// entity id and owning user. ok is false when a non-empty target has
-// no local owner: the wire receiver answers fail_unknown_user, the
-// self-loop just closes the pipe. An empty target resolves to
-// ("", nil, true) — an anonymous stream the handler may still accept.
-//
-// Shared by receive_stream (wire) and stream_self_loop (in-process) so
-// the two paths can never drift on how a target becomes a (user, app).
+// stream_resolve maps an open target to its entity id and owning user. ok is
+// false when a non-empty target has no local owner; an empty target resolves to
+// ("", nil, true). Shared by the wire receiver and the self-loop so they cannot
+// drift.
 func stream_resolve(to string) (string, *User, bool) {
 	if to == "" {
 		return "", nil, true
@@ -220,20 +197,11 @@ func stream_resolve(to string) (string, *User, bool) {
 	return to, user, true
 }
 
-// stream_dispatch runs the post-handshake half of a /mochi/2/stream
-// session: read the caller's first post-ack CBOR segment as e.content,
-// build the Event with the stream as e.stream, route it to the app
-// handler, then close.
-//
-// Shared by receive_stream (after its hello/caps/claim/ack handshake)
-// and stream_self_loop (which skips the handshake — the same-process
-// boundary is trusted, exactly as message_self_loop_dispatch skips the
-// /mochi/2/messages envelope + signature). `to` is the resolved entity
-// id; `user` its owner (may be nil for an anonymous target).
-//
-// st.read() lazy-creates a CBOR decoder backed by the stream, so
-// handler-side e.segment(&v) / e.stream.read(&v) calls afterwards reuse
-// the same decoder and pick up subsequent segments correctly.
+// stream_dispatch runs the post-handshake half of a /mochi/2/stream session:
+// read the first post-ack CBOR segment as e.content, route the Event with the
+// stream as e.stream, close. Shared by receive_stream and stream_self_loop.
+// st.read() lazy-creates one decoder, so later e.segment() calls resume from
+// it.
 func stream_dispatch(st *Stream, open *Frame, user *User, to, peer string) {
 	content := map[string]any{}
 	if err := st.read(&content); err != nil {
@@ -261,24 +229,17 @@ func stream_dispatch(st *Stream, open *Frame, user *User, to, peer string) {
 	if err := e.route(); err != nil {
 		info("Stream dispatch: handler error service=%q event=%q: %v",
 			open.Service, open.Event, err)
-		// Answer with a generic error segment instead of a bare close:
-		// without it the requester reads EOF and cannot tell a crashed
-		// handler from a dead connection (the 2026-07-17/19 "unable to
-		// read segment: EOF" reports). No internal detail crosses the
-		// host boundary — this host's log carries it.
+		// Answer with a generic error segment rather than a bare close: an EOF cannot
+		// be told from a dead connection. No internal detail crosses the host
+		// boundary.
 		stream_answer_error(st, map[string]any{"error": "remote handler failed", "code": 500, "transport": true})
 	}
 	st.close()
 }
 
-// stream_answer_error best-effort writes a final error segment. The write
-// must never block the dispatch: on a self-loop pipe a peer that only
-// WRITES (a one-way push whose far handler failed) is not reading, so a
-// bare st.write would deadlock this goroutine against the sender's next
-// write — with the sender being an app handler holding an open DB
-// transaction (the forums event_subscribe 45s stall, 2026-07-19). Write
-// in a goroutine with a short grace; on timeout the close() below the
-// call site unblocks both ends exactly as the pre-answer behaviour did.
+// stream_answer_error best-effort writes a final error segment. The write must
+// never block the dispatch: on a self-loop pipe a sender that only writes is
+// not reading, so a bare st.write deadlocks. Goroutine with a short grace.
 func stream_answer_error(st *Stream, answer map[string]any) {
 	done := make(chan struct{})
 	go func() {
@@ -291,23 +252,11 @@ func stream_answer_error(st *Stream, answer map[string]any) {
 	}
 }
 
-// stream_self_loop is the in-process /mochi/2/stream loopback for
-// peer == net_id. libp2p refuses to dial self, so instead of a wire
-// stream we io.Pipe two ends crosswise: the caller reads/writes the
-// near end; the app handler runs on the far end via stream_dispatch.
-// The hello/caps/claim/open/ack handshake is skipped entirely — the
-// same-process boundary is trusted, mirroring how the /mochi/2/messages
-// self-send (message_self_loop_dispatch) skips the envelope + signature.
-//
-// Always returns a usable near end. Target resolution and the
-// unknown-user case are handled on the far end exactly as the wire
-// receiver does, so a self-loop to an unhosted entity fails the same
-// way an over-the-wire send would (the handler never runs and the near
-// end sees the closed pipe), rather than being decided differently at
-// the sender.
-//
-// Keeps mochi.remote.stream() to a locally-hosted entity (market/staff
-// → Comptroller) working without a wire round-trip.
+// stream_self_loop is the in-process /mochi/2/stream loopback for peer ==
+// net_id, since libp2p refuses to dial self: two io.Pipes crosswise, the
+// handler running on the far end via stream_dispatch. The handshake is skipped
+// - the same-process boundary is trusted. Target resolution stays on the far
+// end so an unhosted entity fails exactly as it would over the wire.
 func stream_self_loop(from, to, service, event, from_app string, services []string) *Stream {
 	r1, w1 := io.Pipe()
 	r2, w2 := io.Pipe()
@@ -337,13 +286,8 @@ func stream_self_loop(from, to, service, event, from_app string, services []stri
 	return near
 }
 
-// stream_open is the sender side of /mochi/2/stream. Establishes the
-// libp2p stream, runs the handshake, writes the open frame, waits for
-// ack, then returns the raw stream wrapped in a *Stream so the caller
-// reads/writes bytes directly.
-//
-// Returns the wrapped Stream and the negotiated session ID (logged by
-// the caller for log correlation).
+// stream_open is the sender side of /mochi/2/stream: handshake, open frame,
+// ack, then the raw stream wrapped in a *Stream. Also returns the session id.
 func stream_open(peer, from, to, service, event, from_app string,
 	services []string, content map[string]any) (*Stream, string, error) {
 
@@ -387,14 +331,9 @@ func stream_open(peer, from, to, service, event, from_app string,
 	}
 
 	id := uid()
-	// The open frame carries routing only. Per-call content is shipped
-	// as the FIRST post-ack CBOR segment below ("routing then content").
-	// The receiver's
-	// receive_stream reads exactly one CBOR segment after the ack as
-	// e.content before dispatching, so any caller that passes
-	// `content` here is wire-compatible with handlers that already
-	// access e.content; callers that pass nil are responsible for
-	// writing their own first segment via s.write after this returns.
+	// The open frame carries routing only; per-call content ships as the FIRST
+	// post-ack CBOR segment, which is what the receiver reads as e.content. A
+	// caller passing nil writes its own first segment.
 	open := &Frame{
 		Type:     frame_type_open,
 		ID:       id,
@@ -417,11 +356,8 @@ func stream_open(peer, from, to, service, event, from_app string,
 	}
 	switch reply.Type {
 	case frame_type_ack:
-		// Check the far side really holds the entity we addressed before
-		// treating anything it sends as that entity's data. Until this
-		// passes we know only which HOST answered (libp2p), not that the
-		// host had any right to speak for `to` — which is precisely what
-		// a caller-supplied peer would otherwise decide for us.
+		// Until this passes we know only which HOST answered, not that it may speak
+		// for `to` - which a caller-supplied peer would otherwise decide for us.
 		if to != "" {
 			resolved := reply.To
 			if resolved == "" {
@@ -465,17 +401,9 @@ func stream_open(peer, from, to, service, event, from_app string,
 		fmt.Errorf("stream: unexpected reply type %q peer=%q", reply.Type, peer)
 }
 
-// stream_open_or_self opens a /mochi/2/stream to peer, routing a
-// self-target (peer == net_id) to the in-process loopback. The returned
-// stream is in raw mode: the open frame (and any `content`) is already
-// shipped and acked, so the caller reads/writes bytes directly.
-//
-// Self-loop streams can't use the wire path — peer_protocol_open ends
-// in net_me.NewStream(self), which libp2p refuses (a host can't dial
-// itself). stream_self_loop io.Pipes the two ends and runs the
-// /mochi/2/stream dispatch on the far end, skipping the handshake.
-// Without this, every mochi.remote.stream() to a locally-hosted entity
-// (market/staff → Comptroller) fails.
+// stream_open_or_self opens a /mochi/2/stream to peer, routing peer == net_id
+// to the in-process loopback (libp2p refuses to dial self). The returned stream
+// is raw: the open frame and any `content` are already shipped and acked.
 func stream_open_or_self(peer, from, to, service, event, from_app string,
 	services []string, content map[string]any) (*Stream, error) {
 

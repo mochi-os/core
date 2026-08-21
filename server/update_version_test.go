@@ -1,24 +1,13 @@
 // Mochi server: the self-install version is an argument, not a trusted token.
 //
-// update_install_start's argument reaches two places that treat it as
-// structure rather than data: filepath.Join(dir, "mochi-server-"+version+
-// ".msi"), and - through update_install_spawn - a cmd.exe line where it sits
-// inside double quotes next to msiexec, running as the service account. A
-// quote ends the argument and "&" starts a new command; "../" walks out of
-// data_dir/tmp.
-//
-// The manifest lookup in update_install_run does gate both, since the version
-// has to be a key in a manifest served from a hardcoded packages.mochi-os.org.
-// That is why this was never exploitable. It is also an argument about a
-// remote file rather than about this input, and it runs AFTER update_pending
-// has been written, so the string reaches the settings row and the status API
-// regardless. valid(version, "version") is what the other eight version-to-
-// path sites in apps.go use; this is the ninth.
+// update_install_start's argument becomes a filename under data_dir/tmp and a
+// quoted argument on the cmd.exe line that runs msiexec, so a quote chains a
+// command and "../" walks out. valid(version, "version") is the gate.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -43,9 +32,6 @@ var hostile_versions = []string{
 	`9.0.0 `,                           // trailing space: a distinct filename
 }
 
-// TestUpdateInstallRejectsHostileVersions is the regression. Every one of
-// these is refused, and refused with the version error rather than by falling
-// through to some later check that happens to stop it.
 func TestUpdateInstallRejectsHostileVersions(t *testing.T) {
 	for _, version := range hostile_versions {
 		t.Run(version, func(t *testing.T) {

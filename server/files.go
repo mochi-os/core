@@ -22,17 +22,9 @@ import (
 )
 
 // object_maximum is the largest single object the platform stores, and so the
-// largest it must be able to transfer whole. Three limits are in a chain and
-// only hold together in one order:
-//
-//	object_maximum <= stream_maximum_default <= the per-client relay byte budget
-//
-// Break it at the front and a stored object exceeds what a transfer carries, so
-// a peer receives it truncated with no error at either end. Break it at the back
-// and one honest transfer of the largest object exhausts the caller's budget
-// part-way through. Raising this therefore means raising both of the others -
-// and the byte budget is a denial-of-service control, so that is a security
-// decision rather than a arithmetic one. TestStorageLimitsAgree holds the chain.
+// largest it must transfer whole. The chain object_maximum <=
+// stream_maximum_default <= the per-client relay byte budget must hold, so
+// raising this means raising both others. TestStorageLimitsAgree pins it.
 const object_maximum = 10 * 1024 * 1024 * 1024 // 10GB
 
 // Maximum file storage per user (10GB). Equal to object_maximum, so a single
@@ -78,11 +70,8 @@ func file_exists(path string) bool {
 	return err == nil
 }
 
-// data_dir_writable_check tries to create and remove a small file inside
-// the configured data_dir. Returns nil if the calling process can write
-// there, or the underlying error otherwise. Used by main_serve to fail
-// early with an actionable message instead of panicking deep inside a
-// later DB write.
+// data_dir_writable_check probes data_dir for writability so main_serve can
+// fail early with an actionable message rather than deep inside a later write.
 func data_dir_writable_check() error {
 	if err := os.MkdirAll(data_dir, 0755); err != nil {
 		return err
@@ -147,12 +136,8 @@ func file_name_type(name string) string {
 	case ".xml":
 		return "application/xml"
 
-	// Media types, which decide whether a browser plays an attachment or
-	// downloads it: content_type_inline admits image/*, video/* and audio/*,
-	// and octet-stream falls to Content-Disposition: attachment. Their absence
-	// meant a serve deriving from the name demoted every video and audio file,
-	// which forced the remote-attachment path to trust a peer's declared type
-	// instead.
+	// Media types decide inline playback versus download: content_type_inline
+	// admits image/*, video/* and audio/*; octet-stream becomes an attachment.
 	case ".avif":
 		return "image/avif"
 	case ".flac":
@@ -225,17 +210,10 @@ func api_file_base(u *User, a *App) string {
 	return fmt.Sprintf("%s/users/%s/%s/files", data_dir, u.UID, a.id)
 }
 
-// Helper function to get the path of a file in an app's directory
 // app_asset_root opens the calling app's active version directory as an
-// os.Root, through which every app-asset read is done.
-//
-// os.Root refuses to traverse a symlink at any depth. What it replaces was an
-// os.Lstat on the joined path, which declines to follow the FINAL component
-// and follows every intermediate one - so "assets/secret", where assets is a
-// symlink out of the app directory, resolved to the far side and reported the
-// target's mode. The check saw a regular file and passed. Installed packages
-// cannot carry a symlink, so this only ever mattered for a dev app, where the
-// app's own directory is writable by whoever authors it.
+// os.Root, through which every app-asset read is done. os.Root refuses to
+// traverse a symlink at any depth; an os.Lstat on the joined path does not, and
+// a dev app's directory is writable by whoever authors it.
 func app_asset_root(a *App, u *User) (*os.Root, error) {
 	av := a.active(u)
 	if av == nil {
@@ -244,14 +222,10 @@ func app_asset_root(a *App, u *User) (*os.Root, error) {
 	return os.OpenRoot(av.base)
 }
 
-// app_asset_path returns the on-disk path of an app asset, or "" when the
-// path does not resolve to a real file inside the app's directory.
-//
-// Containment is established by opening through app_asset_root and discarding
-// the handle, so the answer carries os.Root's guarantee rather than a
-// hand-rolled check. Prefer app_asset_root and the handle itself; this exists
-// for the two callers that must hand a path to something that opens it for
-// them (gin's Context.File, and Stream.write_file).
+// app_asset_path returns the on-disk path of an app asset, or "" when it does
+// not resolve to a real file inside the app's directory (containment comes from
+// opening through app_asset_root). Prefer app_asset_root and its handle; this
+// is for the callers that must hand a path to something that opens it for them.
 func app_asset_path(a *App, u *User, file string) string {
 	root, err := app_asset_root(a, u)
 	if err != nil {
@@ -287,10 +261,8 @@ func dir_size(path string) (int64, error) {
 }
 
 // mochi.file.type(name) -> string: The content type a file name's extension
-// implies, application/octet-stream when it implies none. The same map every
-// serve path derives from, exposed so a caller labelling bytes it serves under
-// another name - a cache entry, a stream - agrees with what core would say,
-// rather than keeping its own copy of this table to drift.
+// implies, application/octet-stream when it implies none. Same map as every
+// serve path, so callers need not keep their own copy.
 func api_file_type(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var name string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name); err != nil {
@@ -300,11 +272,9 @@ func api_file_type(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 }
 
 // mochi.file.clean(name, maximum=255) -> string: Reduce a client-supplied name
-// to one every platform accepts and the "filepath" validator passes. Identity
-// for legitimate names in any script; strips invisible and forbidden
-// characters, device stems and path components, and bounds the byte length.
-// The validator and this share one implementation, so a caller storing what
-// clean returns can never be refused by the validator later.
+// to one every platform accepts and the "filepath" validator passes. Strips
+// invisible and forbidden characters, device stems and path components, and
+// bounds the byte length; shares its implementation with the validator.
 func api_file_clean(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var name string
 	maximum := 255
@@ -368,10 +338,9 @@ func root_write_file(root *os.Root, name string, source io.Reader) (int64, error
 }
 
 // mochi.file.copy(source, destination) -> integer: Copy a file within the app's
-// directory, returning the bytes copied. The bytes stream from one to the other
-// and are never held in memory, so this is the way to duplicate an attachment
-// or any other large object - mochi.file.read plus mochi.file.write would
-// materialise the whole thing as a Starlark value first.
+// directory, returning the bytes copied. The bytes stream rather than being
+// held in memory, so this is the way to duplicate an attachment or other large
+// object.
 func api_file_copy(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var source, destination string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "source", &source, "destination", &destination); err != nil {
@@ -429,20 +398,16 @@ func api_file_copy(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return sl.MakeInt64(written), nil
 }
 
-// mochi.file.max() -> integer: The largest single object the platform
-// stores, in bytes. Exposed so an app can refuse an oversized upload against
-// the same figure core enforces rather than carrying its own copy - the two
-// drifting apart is what let an object be stored larger than a transfer can
-// carry, so peers received it truncated.
+// mochi.file.max() -> integer: The largest single object the platform stores, in
+// bytes. Exposed so an app refuses an oversized upload against the same figure
+// core enforces rather than keeping its own copy.
 func api_file_maximum(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return sl.MakeInt64(object_maximum), nil
 }
 
 // mochi.file.age(file) -> integer or None: Seconds since a file was last
-// modified, or None if it does not exist or is a directory. Lets a caller tell
-// a file that has settled from one another request may still be writing: a
-// listing alone cannot, because a partially written upload and an abandoned one
-// look identical by name.
+// modified, or None if it does not exist or is a directory. A listing alone
+// cannot tell a settled file from one another request is still writing.
 func api_file_age(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <file: string>")
@@ -575,13 +540,10 @@ func api_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 }
 
 // mochi.file.read(file, maximum=0) -> bytes or None: Read a file into memory.
-// maximum refuses a file larger than that many bytes, answering None so the
-// caller can fall back to a streaming path; zero, the default, is unbounded.
-//
-// The check is made against the file, not against whatever the caller believes
-// its size to be. A caller bounding on its own metadata is bounding on a number
-// it may not control - an attachment row's size arrives from a peer - so the
-// limit has to be enforced where the real size is known.
+// maximum refuses a larger file, answering None so the caller can fall back to
+// a streaming path; zero, the default, is unbounded. The bound is checked
+// against the file itself, never a size the caller supplies - it may come from
+// a peer.
 func api_file_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var file string
 	var maximum int64
@@ -712,11 +674,9 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	return sl.None, nil
 }
 
-// mochi.file.move(from, to) -> None: Rename a file within the app's file
-// storage. Both paths are relative to the app's files directory; parent
-// directories of the destination are created. No bytes are copied, so this is
-// free relative to read-then-write, and no quota is charged - the bytes were
-// already stored.
+// mochi.file.move(from, to) -> None: Rename a file within the app's file storage.
+// Both paths are relative to the app's files directory and the destination's
+// parents are created. No bytes are copied and no quota is charged.
 func api_file_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var from, to string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "from", &from, "to", &to); err != nil {
@@ -758,23 +718,10 @@ func api_file_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 }
 
 // temporary_configure points the process's temporary directory at
-// cache_dir/tmp.
-//
-// Go spools the part of a multipart upload that exceeds its in-memory
-// threshold to os.TempDir(), which is $TMPDIR or /tmp. On a systemd host /tmp
-// is usually a tmpfs, so "spilling to a temp file" spends RAM rather than
-// relieving it, and a large upload competes with the server's own memory. On
-// yuzu /tmp is a 31 GB tmpfs while cache_dir is on disk.
-//
-// Set here rather than in the unit file so it follows directories.cache from
-// mochi.conf instead of drifting from it, and applies to every install without
-// per-host configuration. os.TempDir() re-reads the environment on each call,
-// so this reaches uploads parsed later. cache_dir/tmp rather than data_dir/tmp
-// because these files are disposable: cache_cleanup sweeps whatever leaks, and
-// nothing transient reaches the backups.
-//
-// Failure is not fatal — the server falls back to the system default, which is
-// where it wrote before.
+// cache_dir/tmp. Go spools large multipart uploads to os.TempDir(), which on a
+// systemd host is usually a tmpfs - spending RAM rather than relieving it. Set
+// here so it follows directories.cache; failure is not fatal and falls back to
+// the system default.
 func temporary_configure() {
 	temporary := filepath.Join(cache_dir, "tmp")
 	if err := os.MkdirAll(temporary, 0o700); err != nil {
@@ -821,16 +768,10 @@ func cache_cleanup() {
 // ---------------------------------------------------------------------------
 //
 // A zip container an app builds and reads without the entries passing through
-// Starlark. The reason it exists: an export that embeds attachment bytes in its
-// own JSON has to hold every one of them, base64-expanded, in memory at once,
-// and an attachment may be as large as the uploader's remaining quota. Here the
-// manifest is one small entry written from a string and each attachment is
-// streamed straight from file storage.
-//
-// Entry names inside an archive are never used as paths. write() takes the name
-// from the caller and extract() takes the destination from the caller, so a
-// hostile name in someone else's archive addresses nothing - the zip-slip
-// question does not arise.
+// Starlark, so an export streams attachments instead of holding them all
+// base64-expanded in memory. Entry names inside an archive are never used as
+// paths - write() and extract() both take their paths from the caller - so
+// zip-slip does not arise.
 
 // archive_read_maximum bounds mochi.archive.read, which exists for a manifest
 // rather than for content. Anything larger is what extract() is for.
@@ -892,11 +833,9 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "unable to measure storage: %v", err)
 	}
 
-	// An archive built for immediate download is re-obtainable, so cache is
-	// where it belongs: quota-exempt, evictable, and - unlike file storage,
-	// which a.write.file reads as the ENTITY OWNER - resolved for the same
-	// user that a.write.cache serves. A subscriber exporting someone else's
-	// container writes and reads as themselves either way.
+	// Cache rather than file storage: an archive built for immediate download is
+	// re-obtainable, quota-exempt and evictable, and it resolves for the calling
+	// user - a.write.file would read as the entity owner.
 	var out io.WriteCloser
 	var cache_path string
 	var cache_previous int64
@@ -934,13 +873,10 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 	defer out.Close()
 
-	// Account for a cached archive however this returns. An error partway
-	// through still leaves whatever the zip writer has already emitted standing
-	// in the cache, and a running total that never learns of those bytes
-	// under-evicts for the rest of the process. Measured from the file rather
-	// than from counter.written, which counts the bytes fed in and not the
-	// compressed result; out is an unbuffered os.File, so the size is settled
-	// before the deferred Close above runs.
+	// Account for a cached archive however this returns: a partial archive still
+	// occupies cache, and a running total that never learns of those bytes
+	// under-evicts. Measured from the file, since counter.written counts bytes fed
+	// in rather than the compressed result.
 	if cache_path != "" {
 		defer func() {
 			if information, err := os.Stat(cache_path); err == nil {
@@ -966,11 +902,9 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 			if !valid(source, "filepath") {
 				return sl_error(fn, "invalid file %q", source)
 			}
-			// Opened before the entry is created: a file that has gone missing
-			// is skipped rather than fatal, since an export of a hundred
-			// attachments should not be lost to one deleted blob - and creating
-			// the entry first would leave an empty one standing in for it,
-			// which an import would read back as a zero-byte attachment.
+			// Opened before the entry is created: a missing file is skipped rather than
+			// fatal, and creating the entry first would leave an empty one that an
+			// import reads back as a zero-byte attachment.
 			f, err := root.Open(source)
 			if err != nil {
 				continue

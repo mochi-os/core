@@ -8,10 +8,8 @@ package main
 
 import "testing"
 
-// TestDBAutoVacuumDefault verifies every new database is created with
-// auto_vacuum=INCREMENTAL. The pragma must be set before journal_mode=WAL
-// in db_setup_conn; if that ordering regresses, the mode silently falls
-// back to NONE and incremental_vacuum becomes a no-op.
+// TestDBAutoVacuumDefault: every new database is INCREMENTAL. The pragma must
+// run before journal_mode=WAL, or the mode silently stays NONE.
 func TestDBAutoVacuumDefault(t *testing.T) {
 	db, cleanup := create_test_db(t)
 	defer cleanup()

@@ -1,16 +1,13 @@
 // Mochi server: an app token is bound to the session that signed it.
 //
-// jwt_verify loaded the session row to get its signing secret and then returned
-// the user named inside the TOKEN, never comparing it with s.User. A valid
-// signature therefore proved only "signed with this session's secret", and
-// web.go fed the returned uid straight to user_by_uid - so one session secret
-// authenticated as any account a token it signed happened to name.
-// auth_create_app_token had the same gap from the issuing side.
+// A valid signature proves only "signed with this session's secret"; without
+// comparing the token's user against the session's, one secret authenticates as
+// any account a token it signed names.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -57,9 +54,6 @@ func session_binding_forge(user, app, kid, secret string) (string, error) {
 	return t.SignedString([]byte(secret))
 }
 
-// TestAppTokenRefusesAUserTheSessionDoesNotOwn is the issuing half of the
-// defect: the session was looked up by code and its secret used, while the
-// user came from the argument and was never checked against it.
 func TestAppTokenRefusesAUserTheSessionDoesNotOwn(t *testing.T) {
 	defer session_binding_env(t)()
 	session_binding_add("attacker", "attacker-session", "attacker-secret-32-chars-abcdefgh")
@@ -119,10 +113,9 @@ func TestJwtVerifyConfinesALeakedSecretToItsOwnAccount(t *testing.T) {
 	}
 }
 
-// TestJwtVerifyChecksTheSignatureBeforeTheBinding: a caller presenting a
-// mismatched user with a bad signature must be told the signature is bad, not
-// that the pair does not match. Otherwise the error distinguishes "this
-// account exists on this session" for someone who cannot sign at all.
+// TestJwtVerifyChecksTheSignatureBeforeTheBinding: a bad signature must be
+// reported as such, or the mismatch error tells someone who cannot sign at all
+// which accounts exist on a session.
 func TestJwtVerifyChecksTheSignatureBeforeTheBinding(t *testing.T) {
 	defer session_binding_env(t)()
 	session_binding_add("attacker", "attacker-session", "attacker-secret-32-chars-abcdefgh")

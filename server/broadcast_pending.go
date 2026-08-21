@@ -1,28 +1,13 @@
 // Mochi server: broadcast pending buffer
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// Per-app `pending` table that buffers out-of-order
-// broadcast events on the subscriber side. Replaces the previous
-// "NACK on gap" behaviour with "buffer + drain in chain order",
-// mirroring the per-row replication pending pattern in replication.go.
-//
-// Why: the queue.go per-(target, from_entity) bucket has cap=1 for
-// FK ordering on sql/op replication. Broadcast events were caught in
-// the same restriction even though their ordering is enforced
-// receiver-side by sequence. With this buffer, the sender can blast
-// multiple events to a subscriber out of order; the receiver drains
-// them in chain order via this table. Combined with the drop-on-gap
-// NACK and the one-in-flight resync gate, this closes
-// the "subscriber permanently behind" failure mode documented in
-// claude/sessions/2026-05-25-broadcast-resync-seq-643-investigation.md.
-//
-// Bounded per (peer, key) at broadcast_pending_maximum so a single
-// misbehaving stream can't grow the table unbounded. Inserts above
-// the cap are dropped (with log) - the subscriber's resync request
-// re-fetches them.
+// Per-app `pending` table buffering out-of-order broadcast events on the
+// subscriber side, drained in chain order. Bounded per (peer, key) at
+// broadcast_pending_maximum; inserts above the cap are dropped and the
+// subscriber's resync request re-fetches them.
 
 package main
 
@@ -35,30 +20,14 @@ import (
 const broadcast_pending_maximum = 1000
 
 // broadcast_pending_streams_maximum bounds how many DISTINCT streams one peer
-// may hold buffered at once for a given user and app.
-//
-// broadcast_pending_maximum alone does not bound the table. It is per (peer,
-// key), and the key arrives in the inbound event's content with nothing
-// signing it - the gap branch buffers before any app handler runs - so a
-// peer inventing a key per event draws a fresh thousand-row budget every
-// time. The unfillable-gap GC below collects those, but only after days.
-//
-// A peer with this many streams gapping at one receiver simultaneously is
-// already pathological: a real fan-out gap heals by resync in minutes, and
-// a peer serves one stream per object the receiver subscribes to.
+// may hold buffered for a user and app. broadcast_pending_maximum is per (peer,
+// key), and the key is unsigned and buffered before any app handler runs, so a
+// peer inventing a key per event draws a fresh budget every time.
 const broadcast_pending_streams_maximum = 1000
 
-// broadcast_pending_gc_default_ttl_days is the default age above which
-// a stuck-stream gap gets skipped. Tuned to broadcast_log_age (7 days)
-// - if the sender pruned the gap from its log, no amount of patience
-// will fill it. Overridable via setting
-// `broadcast.pending.unfillable_ttl_days`.
-// 2 days: the stall watchdog and queue watchdog alert within hours, so
-// the operator has a full working day to intervene before the skip; a
-// fillable gap heals via resync in minutes, and an unfillable one gets
-// its broadcast/floor skip at the next resync anyway — this TTL is only
-// the backstop for streams with no inbound traffic to trigger either.
-// (Was 7: the 2026-07 News feed wedge ground for a week under it.)
+// broadcast_pending_gc_default_ttl_days is the age above which a stuck-stream
+// gap is skipped, the backstop for streams with no inbound traffic to trigger a
+// resync floor skip. Overridable via `broadcast.pending.unfillable_ttl_days`.
 const broadcast_pending_gc_default_ttl_days = 2
 
 // broadcast_pending_gc_period_seconds is how often broadcast_manager
@@ -107,12 +76,9 @@ func broadcast_pending_streams(db *DB, peer string) int {
 	return db.integer("select count(distinct key) from pending where peer=?", peer)
 }
 
-// broadcast_pending_insert buffers one out-of-order event. Returns
-// true if the row was stored, false if dropped because the per-stream
-// cap was reached. The caller still fires the resync request - either
-// way the gap-fill path is initiated; the buffer is the
-// "we already received this, replay it in order when the gap closes"
-// optimisation, not the primary mechanism for filling missed events.
+// broadcast_pending_insert buffers one out-of-order event, returning false if
+// the per-stream cap dropped it. Either way the caller still fires the resync
+// request - the buffer is an optimisation, not the gap-fill mechanism.
 func broadcast_pending_insert(db *DB, peer, key string, sequence int64, source, target, service, event, message, sender_app, sender_services string, content []byte) bool {
 	broadcast_pending_table_create(db)
 	count := broadcast_pending_count(db, peer, key)
@@ -176,29 +142,14 @@ func broadcast_pending_delete(db *DB, peer, key string, sequence int64) {
 	db.exec("delete from pending where peer=? and key=? and sequence=?", peer, key, sequence)
 }
 
-// broadcast_pending_dispatch is the package-level callback the drain
-// loop uses to re-run a buffered event's handler. events.go sets it
-// in init() to a closure that synthesises an Event from the row and
-// invokes the same run_handler the route() path uses. Decoupled this
-// way so broadcast_pending.go doesn't depend on the routing graph.
-//
-// Returns true if the handler ran cleanly and the row should be
-// considered applied (delete + advance). False on any error: caller
-// stops draining; the row stays in pending and another drain attempt
-// happens after the NEXT advance, or after a resync round-trip
-// inserts an earlier-numbered event.
+// broadcast_pending_dispatch re-runs a buffered event's handler. events.go sets
+// it in init(), so this file does not depend on the routing graph. True means
+// applied (delete + advance); false stops the drain and leaves the row.
 var broadcast_pending_dispatch func(row *broadcast_pending_row, db *DB) bool
 
-// broadcast_pending_drain_chain walks the pending buffer for one
-// (peer, key) stream starting at the current received.last+1.
-// Each row that dispatches cleanly is removed, received advances,
-// then the loop looks for the next chain link. Stops at the first
-// missing link or first dispatch failure. Bounded by the per-stream
-// cap so it can't run forever.
-//
-// Called from broadcast_advance_local on every advance, so the
-// common case is "no pending rows" and the loop costs one indexed
-// SELECT.
+// broadcast_pending_drain_chain applies buffered rows for one (peer, key)
+// stream from received.last+1, stopping at the first missing link or dispatch
+// failure.
 func broadcast_pending_drain_chain(db *DB, peer, key string) {
 	if broadcast_pending_dispatch == nil {
 		return
@@ -222,20 +173,10 @@ func broadcast_pending_drain_chain(db *DB, peer, key string) {
 
 // --- pending GC for unfillable gaps -------------------------------
 //
-// Receivers can deadlock when the pending buffer fills with high-seq
-// rows that won't apply (gap below them) and resync replies for the
-// gap can't fit (buffer full). Sender log entries below the gap get
-// pruned at broadcast_log_age (7 days), so resync can never fill the
-// missing seqs no matter how patient the wait. Result: the stream
-// sits forever at received.last, every new arrival drops or NACKs
-// pending-full, every retry repeats the same failure.
-//
-// Same shape as replication_pending_gc (#68): walk the stuck streams,
-// for any stuck longer than the TTL skip the gap by advancing
-// received.last to just before the lowest pending sequence, then drain
-// the chain that's now contiguous. Audit-log every skip. Lose events
-// in the gap - acceptable: alternative is permanent loss of everything
-// past the gap, which is worse.
+// A stream deadlocks when the sequences below its buffered rows are pruned from
+// the sender's log: no wait can fill them. The GC skips such a gap by advancing
+// received.last to just before the lowest pending sequence, then drains what is
+// now contiguous. Losing the gap's events beats losing everything past it.
 
 // BroadcastStalledStream is one (user, app, peer, key) stream whose
 // pending buffer cannot drain. Streams that would drain on the next
@@ -252,13 +193,9 @@ type BroadcastStalledStream struct {
 	Oldest     int64 // min(pending.received), unix seconds
 }
 
-// broadcast_pending_stalled walks per-app system DBs and returns
-// streams whose pending buffer has rows below the in-buffer minimum
-// AND received.last hasn't reached the contiguous chain start.
-// Mirrors broadcast_lag_scan's walk pattern. Walks
-// users/<uid>/<app-id>/app.db; the broadcast tables live in the per-
-// app system DB. Apps that don't use broadcasts have no
-// `pending` table - skipped silently as the common case.
+// broadcast_pending_stalled walks users/<uid>/<app>/app.db and returns streams
+// whose pending buffer cannot drain. Apps that never broadcast have no
+// `pending` table and are skipped silently.
 func broadcast_pending_stalled() []BroadcastStalledStream {
 	var out []BroadcastStalledStream
 	users_root := filepath.Join(data_dir, "users")
@@ -292,17 +229,10 @@ func broadcast_pending_stalled() []BroadcastStalledStream {
 	return out
 }
 
-// broadcast_pending_stalled_db classifies one app DB's streams. A
-// stream qualifies as stalled when its lowest RELEVANT buffered
-// sequence is greater than received.last+1 - the next applyable
-// sequence is missing entirely (neither buffered nor yet arrived) and
-// the buffer can't drain until something fills it.
-//
-// The "relevant" filter (sequence > received.last) excludes orphan
-// stale entries from old-buggy-code-era inserts. Without it, an
-// orphan at sequence=11 with received.last=866 hides a genuinely
-// stuck stream with min(relevant)=1310; the classifier would see
-// min(sequence)=11 <= 867 and falsely report "would drain naturally."
+// broadcast_pending_stalled_db classifies one app DB's streams: stalled when
+// the lowest buffered sequence ABOVE received.last is greater than last+1. The
+// filter matters - an orphan row below the cursor would make a genuinely stuck
+// stream look like it drains naturally.
 func broadcast_pending_stalled_db(user, app, db_path string) []BroadcastStalledStream {
 	var out []BroadcastStalledStream
 	db := db_open(db_path)
@@ -370,15 +300,10 @@ func broadcast_pending_stalled_db(user, app, db_path string) []BroadcastStalledS
 	return out
 }
 
-// broadcast_pending_skip_stream unsticks one stream: it loops skip +
-// drain until the stream has no TTL-old unfillable hole left, returning
-// the final received.last. A sparse buffer against a large gap means
-// thousands of holes; skipping one per hourly GC pass never converges —
-// the 2026-07 News feed wedge crawled 1-3 sequences an hour for days
-// while production raced ahead. Each iteration re-reads fresh state:
-// the drain behind each skip applies buffered chains and deletes their
-// rows, moving the next hole into view. force bypasses the per-hole
-// age gate (the admin force-skip).
+// broadcast_pending_skip_stream loops skip + drain until the stream has no
+// TTL-old unfillable hole left, returning the final received.last. A sparse
+// buffer against a large gap means thousands of holes, so skipping one per
+// hourly pass never converges. force bypasses the per-hole age gate.
 func broadcast_pending_skip_stream(sysdb *DB, user, app, peer, key string, start, cutoff int64, force bool) int64 {
 	last := start
 	for iterations := 0; iterations < 10000; iterations++ {
@@ -398,12 +323,9 @@ func broadcast_pending_skip_stream(sysdb *DB, user, app, peer, key string, start
 		}
 		skip_to := low - 1
 		broadcast_advance_local(sysdb, peer, key, skip_to)
-		// Sweep any orphan pending rows below the new cursor. The
-		// chain-drain only deletes rows it actually dispatched; rows
-		// that were never re-dispatched (left over from older buggy
-		// code paths) survive and distort the next GC pass's classifier
-		// (the bug that caused the wasabi-self feeds stream to escape
-		// detection on the first force-skip attempt).
+		// Sweep orphan pending rows below the new cursor: the chain-drain only
+		// deletes rows it dispatched, and the survivors distort the next GC pass's
+		// classifier.
 		new_last := broadcast_received_get(sysdb, peer, key)
 		sysdb.exec("delete from pending where peer=? and key=? and sequence<=?",
 			peer, key, new_last)
@@ -416,19 +338,10 @@ func broadcast_pending_skip_stream(sysdb *DB, user, app, peer, key string, start
 	return last
 }
 
-// broadcast_pending_gc skips the unfillable gap on every stalled
-// stream whose pending buffer has been stuck longer than the TTL. The
-// skip advances received.last to min(pending.sequence)-1; the standard
-// chain-drain in broadcast_advance_local then picks up from there,
-// applying every buffered chain link until it hits the next missing
-// sequence or empties the buffer. Returns the number of gaps skipped
-// (not sequences lost). Safe to call on demand (admin endpoint) as
-// well as from broadcast_manager.
-//
-// force=true bypasses the TTL gate entirely - every classified-as-
-// stalled stream gets its gap skipped right now. Operator opt-in only:
-// the admin endpoint accepts ?force=true; the background manager
-// always calls with force=false so it respects the configured window.
+// broadcast_pending_gc skips the unfillable gap on every stalled stream stuck
+// longer than the TTL, advancing received.last to min(pending.sequence)-1 and
+// letting the chain-drain take it from there. Returns gaps skipped, not
+// sequences lost. force=true bypasses the TTL gate; operator opt-in only.
 func broadcast_pending_gc(force bool) int {
 	ttl_days := int64(broadcast_pending_gc_default_ttl_days)
 	if s := setting_get("broadcast.pending.unfillable_ttl_days", ""); s != "" {
@@ -472,11 +385,9 @@ func broadcast_pending_gc(force bool) int {
 			s.User, s.App, s.Peer, s.Key, s.Last+1, last, now()-s.Oldest)
 		broadcast_skip_warn(s.User, s.App, s.Peer, s.Key, s.Last+1, last)
 
-		// Tell the subscribing app it permanently lost events on this
-		// stream, so it can do a full state re-fetch — broadcast/resync
-		// can't fill a gap whose sequences are pruned from the owner's log.
-		// entity = the stream key (the source entity). Best-effort,
-		// host-local; no-op if the app declares no broadcast/gap handler.
+		// Tell the subscribing app it permanently lost events so it can re-fetch;
+		// resync cannot fill a gap pruned from the owner's log. Best-effort and
+		// host-local; a no-op if the app declares no broadcast/gap handler.
 		service := ""
 		if svcs := app_services(a, u); len(svcs) > 0 {
 			service = svcs[0]

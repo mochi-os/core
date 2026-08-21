@@ -86,13 +86,8 @@ func qid_lookup_one(t *testing.T, qid, lang string) string {
 	return label
 }
 
-// TestQidLookupCacheHasATtl is the finding. Both lookup reads selected on
-// (qid, lang) alone, so `fetched` was written on every store and read nowhere:
-// a cached label was served for as long as the row existed, and the only thing
-// that ever expired one was the daily prune. The expiry was therefore whatever
-// the prune's retention happened to be, at a site that never mentions it -
-// shorten the prune for disk and lookups silently start refetching, lengthen it
-// and labels silently go stale.
+// TestQidLookupCacheHasATtl: the single-QID read must filter on `fetched`, or a
+// cached label is served until the daily prune happens to delete it.
 func TestQidLookupCacheHasATtl(t *testing.T) {
 	qid_cache_setup(t)
 	qid_offline(t)
@@ -143,11 +138,9 @@ func TestQidLookupBatchCacheHasATtl(t *testing.T) {
 	}
 }
 
-// TestQidPrunesEachTableAtItsOwnTtl. One shared retention meant search rows
-// stopped being served after seven days and then sat in a table every app
-// shares for twenty-three more, while label rows had no TTL at all and were
-// expired by that same retention. Pruning each table at the value that governs
-// it makes a pruned row exactly one that would no longer have been served.
+// TestQidPrunesEachTableAtItsOwnTtl: each table is pruned at the TTL that
+// governs its reads, so a pruned row is exactly one that would no longer have
+// been served.
 func TestQidPrunesEachTableAtItsOwnTtl(t *testing.T) {
 	qid_cache_setup(t)
 	db := qid_db()

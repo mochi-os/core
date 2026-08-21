@@ -1,17 +1,12 @@
-// Mochi server: the learned directory's cap must not be flushable.
-//
-// Eviction ordered on seen alone handed the spammer the win. Contact is free -
-// entity ids are ed25519 public keys and peer identities are as cheap - so a
-// flood's rows are always the freshest in the table, and `order by seen asc`
-// deleted the user's own quiet counterparts first. For a private entity, which
-// the public directory deliberately never lists, those rows are the only route
-// to it, so a flushed table means the user can no longer send to the people
-// they actually correspond with.
+// Mochi server: the learned directory's cap must not be flushable. Contact is
+// free, so a flood's rows are always the freshest; eviction ordered on seen
+// alone deletes the user's quiet counterparts, the only route to private
+// entities.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -87,11 +82,9 @@ func TestDirectoryUserEvictsNeverConfirmedFirst(t *testing.T) {
 	}
 }
 
-// TestDirectoryUserConfirmMarksInsideTheThrottle. The seen rewrite is
-// throttled because user.db is the cold, backup-critical store, but the mark
-// decides eviction priority - so a relationship whose only delivery ever fell
-// inside the refresh window must still be marked, or the cap would evict
-// exactly the quiet counterpart it is meant to protect.
+// TestDirectoryUserConfirmMarksInsideTheThrottle: the seen rewrite is
+// throttled, but the mark decides eviction priority, so it must happen even
+// when the delivery falls inside the refresh window.
 func TestDirectoryUserConfirmMarksInsideTheThrottle(t *testing.T) {
 	user, cleanup := test_directory_user(t)
 	defer cleanup()

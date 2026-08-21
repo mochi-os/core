@@ -5,23 +5,9 @@
 
 // Mochi server: step-up re-authentication proofs.
 //
-// A sensitive action (data export, replication approval, an
-// account-security change) re-verifies the user with the same factor(s)
-// they log in with, then proceeds. Each factor verified through the
-// existing mochi.user.code.verify / mochi.user.totp.verify /
-// mochi.user.passkey.verify builtins advances an accrual row here; once
-// every required factor is covered, a single-use proof token is minted,
-// and the action consumes it with reauthentication_consume before doing
-// its work.
-//
-// The required factor set is the user's login methods (user.Methods), with
-// recovery excluded (break-glass, not a routine re-auth) - so the proof is
-// never below the user's own login bar. OAuth re-verifies as its own oauth
-// factor: a linked provider proves the provider account, not the email
-// inbox, so an account that requires email at login requires a real email
-// code at step-up, never a provider sign-in. The reauthentication table lives
-// in sessions.db alongside codes/partial, so a proof does not survive a
-// sessions.db wipe - which is the intended lifetime for one.
+// Required factors are the user's login methods minus recovery, so a proof is
+// never weaker than login; OAuth counts as its own factor. The accrual and
+// proof rows live in sessions.db, so a proof dies with a sessions.db wipe.
 
 package main
 
@@ -39,11 +25,9 @@ type Reauthentication struct {
 	Expires int64
 }
 
-// reauthentication_required returns the factors the user must re-verify for
-// a step-up: their required login methods, recovery excluded. Empty when
-// nothing is required - any one usable factor then satisfies the step-up
-// (mirroring all-allowed login). The verify verbs refuse a method the user
-// has disabled, so "any one" never admits a turned-off factor.
+// reauthentication_required returns the factors a step-up must re-verify: the
+// user's login methods, recovery excluded. Empty means any one usable factor
+// satisfies it; the verify verbs still refuse a disabled method.
 func reauthentication_required(user *User) []string {
 	seen := map[string]bool{}
 	var out []string

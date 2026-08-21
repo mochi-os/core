@@ -1,24 +1,9 @@
 // Mochi server: a pooled handle carries the identity something reads.
 //
-// DB.kind tagged every handle with its per-host file role. Its own comment
-// said what for: "so the matching emit/apply pair can route replicated writes
-// back into the right file on the receiver". Multi-host replication was
-// removed in July 2026 and took the apply half with it, leaving the tag
-// computed and stored on every open with nothing left to consult it - the same
-// residue #89 cleared out of the queue, one layer down.
-//
-// Nothing is lost by dropping it. The role it encoded is the shape of
-// DB.path - users/<uid>/<app>/app.db against users/<uid>/user.db - so a future
-// consumer can recover it from the handle it already has.
-//
-// DB.app was in this task too and is NOT dead: broadcast.go reads db.app.id to
-// key broadcast_stall_clear, a reader that arrived with the #11 fix after the
-// task was filed.
-//
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 
@@ -28,11 +13,8 @@ import (
 	"testing"
 )
 
-// TestBindIsWriteOnce is the property db_bind exists for, and the one the
-// parameter removal must not disturb. The pool key embeds user and app, so the
-// values never change for a handle; binding under databases_lock replaced
-// unconditional per-open writes that raced every other holder (#227 - two
-// parallel Message.send goroutines both writing db.user).
+// TestBindIsWriteOnce: the pool key embeds user and app, so a handle's binding
+// never changes - the first binder wins and later callers leave it alone.
 func TestBindIsWriteOnce(t *testing.T) {
 	first := &User{UID: "user-one"}
 	second := &User{UID: "user-two"}

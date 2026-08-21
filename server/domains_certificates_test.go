@@ -27,10 +27,8 @@ func certificates_dirs(t *testing.T) (cache string, data string) {
 }
 
 // TestCertificatesLiveOutsideTheCache pins that the autocert cache is not under
-// cache_dir. cache_cleanup deletes everything there older than cache_age_maximum,
-// which silently destroyed valid certificates and the ACME account key —
-// invisibly, because autocert also caches in memory, so the loss only appeared
-// on the next restart.
+// cache_dir, where cache_cleanup would delete valid certificates and the ACME
+// account key.
 func TestCertificatesLiveOutsideTheCache(t *testing.T) {
 	cache, data := certificates_dirs(t)
 
@@ -145,13 +143,8 @@ func within(path, directory string) bool {
 }
 
 // TestCertificatesSeparateByAuthority pins that a non-default ACME directory
-// gets its own cache.
-//
-// A staging certificate is signed by a root no browser trusts. If one landed
-// in the production cache and were served, every visitor would get a full-page
-// security error - a worse outcome than the expiry the surrounding work exists
-// to prevent. The ACME account key is cached alongside the certificates and
-// belongs to exactly one authority, so it must not be shared either.
+// gets its own cache: a staging certificate served to a real visitor is a
+// full-page security error, and the ACME account key belongs to one authority.
 func TestCertificatesSeparateByAuthority(t *testing.T) {
 	certificates_dirs(t)
 	production := domains_certificates()

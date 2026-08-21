@@ -44,11 +44,8 @@ import (
 	cbor "github.com/fxamacker/cbor/v2"
 )
 
-// senders_init registers the /mochi/2 Sender invalidation hook.
-//
-// Called explicitly from main_serve rather than run as a package init():
-// registration is a startup step with a defined position, not a side effect
-// of importing the file.
+// senders_init registers the /mochi/2 Sender invalidation hook. Called from
+// main_serve, not init().
 func senders_init() {
 	// /mochi/2 owns per-peer Sender state in the Sender registry; it
 	// needs invalidation on libp2p disconnect so the next reconnect
@@ -70,10 +67,7 @@ const (
 )
 
 // peer_stream_open_timeout bounds net_me.NewStream so a stale "Connected" peer
-// (libp2p reports the conn up but it is dead — e.g. a stale relay circuit) can't
-// hang the open forever (#47). On timeout the caller's peer_mark_send_failed →
-// reconnect path recovers. Matches the 10s per-peer op timeout net_ping_peer
-// uses. A var (not const) so tests can lower it.
+// cannot hang the open (#47). A var, not a const, so tests can lower it.
 var peer_stream_open_timeout = 10 * time.Second
 
 // error_sender_unreachable is returned by peer_send when the target peer
@@ -107,11 +101,8 @@ type Sender struct {
 	inflight  map[string]*pending
 	pings     map[string]int64
 	claimed   map[string]bool
-	// proven records entities the far side has demonstrated it holds, for
-	// the life of this connection. A messages stream is multiplexed across
-	// many targets, so the proof is per entity rather than once at open as
-	// it is on /mochi/2/stream — but it is asked for once per entity, not
-	// once per message.
+	// proven records entities the far side has shown it holds, for the life of
+	// this connection - per entity, since a messages stream is multiplexed.
 	proven       map[string]bool
 	proving      map[string]chan error
 	closed       atomic.Bool
@@ -135,12 +126,9 @@ var (
 	senders_lock sync.Mutex
 )
 
-// senders_has reports whether an open Sender exists for `peer`. Used by
-// queue_process to skip rows that the Sender's pull_loop owns, so the
-// two paths don't compete for the same outbox slot (which manifests as
-// queue_process tick latency: peer_send blocks for sender_send_timeout
-// when pull_loop has saturated the outbox, dragging out the whole tick
-// and starving self-loop / offline-peer work).
+// senders_has reports whether an open Sender exists for `peer`. queue_process
+// uses it to skip rows the Sender's pull_loop owns; competing for the outbox
+// blocks peer_send for sender_send_timeout and drags out the whole tick.
 func senders_has(peer string) bool {
 	if peer == "" {
 		return false
@@ -151,14 +139,9 @@ func senders_has(peer string) bool {
 	return s != nil && !s.closed.Load()
 }
 
-// peer_send is the entry point for /mochi/2/messages outbound. Looks
-// up (or creates) the Sender for `peer` and enqueues `frame` on its
-// outbox. Returns error_sender_unreachable / error_sender_full on failure so
-// queue_send_direct can map to queue_fail with the normal backoff.
-//
-// `queue` is the queue.id that originated this send — sender_read uses
-// it to call queue_ack / queue_fail / queue_drop when the receiver
-// replies.
+// peer_send enqueues `frame` on the Sender for `peer`, creating it if needed.
+// `queue` is the queue.id that originated the send; sender_read uses it to
+// queue_ack / queue_fail / queue_drop when the receiver replies.
 func peer_send(peer string, queue string, frame *Frame) error {
 	s, err := sender_for(peer)
 	if err != nil {
@@ -207,12 +190,9 @@ func sender_open(peer string) (*Sender, error) {
 	codecs := codec_intersect(receiver_codecs(), hello.Codecs)
 	features := features_intersect(receiver_features(), hello.Features)
 
-	// Every caps frame carries a challenge, so the two /mochi/2 protocols
-	// stay one handshake rather than two. /mochi/2/stream consumes it
-	// immediately (the ack carries the answering side's proof); the
-	// multiplexed messages path has no single addressed entity to prove
-	// at open time, so its per-target responder proof is still to come
-	// and nothing reads this one yet.
+	// Every caps frame carries a challenge so the two /mochi/2 protocols share one
+	// handshake. /mochi/2/stream consumes it at the ack; on the messages path the
+	// per-target proof comes later and nothing reads this one yet.
 	challenge, err := hello_challenge()
 	if err != nil {
 		stream.Reset()
@@ -335,11 +315,9 @@ func (s *Sender) write_one(ob *outbound) error {
 	}
 
 	if f.Type == frame_type_message && f.ID != "" {
-		// Window cap: block here when inflight has reached the
-		// per-peer limit (peer.window). Back-pressure path —
-		// outbox stays full while we wait, peer_send blocks new
-		// producers. Wire-level back-pressure rides separately on
-		// libp2p flow control.
+		// Window cap: block until inflight drops below peer.window. Back-pressure
+		// path
+		// - the outbox stays full and peer_send blocks new producers.
 		window := peer_window()
 		for {
 			s.lock.Lock()
@@ -374,17 +352,10 @@ func (s *Sender) write_one(ob *outbound) error {
 	return nil
 }
 
-// ensure_proven blocks until the far side has proven it holds `entity`,
-// asking it to if this connection has not already established it.
-//
-// Called from write_loop, so it blocks the outbox exactly as the inflight
-// window cap above does. That is the intent: a message must not be
-// written to a peer that has not shown it may act for the target, and the
-// cost is one round trip per entity per connection, not per message.
-//
-// Concurrent callers for the same entity share one demand — write_loop is
-// single-goroutine today, but the map makes that a property of the code
-// rather than an assumption about its callers.
+// ensure_proven blocks until the far side has proven it holds `entity`, asking
+// once per entity per connection. Called from write_loop, so it blocks the
+// outbox by design: nothing is written to a peer that has not shown it may act
+// for the target.
 func (s *Sender) ensure_proven(entity string) error {
 	s.lock.Lock()
 	if s.proven[entity] {
@@ -609,21 +580,11 @@ func (s *Sender) ping_loop() {
 	}
 }
 
-// pull_loop autonomously drains queue.db rows targeting s.peer into
-// s.outbox, running until s.closed. Each pull batch is sized by
-// remaining outbox capacity (peer_window minus current inflight minus
-// queued outbox) so we never claim more than will fit. Atomic UPDATE
-// RETURNING in queue_claim_for_peer marks claimed rows status='sending'
-// in the same statement, so queue_process won't double-pick them.
-//
-// Wakes on either a 1-second tick (safety net) or a queue_wake nudge
-// routed through s.wake. A busy producer pegs the pull loop to the
-// rate at which the receiver acks free outbox slots; an idle producer
-// just polls every second and finds nothing.
-//
-// On shutdown, any rows the loop has claimed but not yet pushed to
-// outbox are rolled back to status='pending' via queue_unsending so
-// the next Sender open (or queue_process fallback) picks them up.
+// pull_loop drains queue.db rows targeting s.peer into s.outbox until s.closed.
+// Batches are sized by remaining outbox capacity, and queue_claim_for_peer
+// marks claimed rows 'sending' in the same statement so queue_process cannot
+// double-pick. Wakes on a 1-second tick or a queue_wake nudge; on shutdown,
+// claimed-but-unpushed rows roll back to 'pending' via queue_unsending.
 func (s *Sender) pull_loop() {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
@@ -854,16 +815,9 @@ func senders_peer_invalidate(peer string) {
 	}
 }
 
-// senders_entity_invalidate tears down any open Sender that has
-// already claimed `entity` on its current stream. Called from an
-// entity-key rotation handler so the receiver's pre-rotation cached
-// claim (trusting the OLD pubkey) can't keep serving us. The next
-// peer_send for the entity opens a fresh Sender and issues a new
-// claim against the rotated key.
-//
-// No-op when entity rotation isn't wired (current Mochi never rotates
-// entity keys); the hook is here so a future rotation path is one line
-// of integration.
+// senders_entity_invalidate tears down any open Sender that has already claimed
+// `entity`, so a receiver's cached claim against the old pubkey stops serving
+// us after a key rotation. Mochi never rotates entity keys today.
 func senders_entity_invalidate(entity string) {
 	if entity == "" {
 		return
@@ -885,14 +839,10 @@ func senders_entity_invalidate(entity string) {
 	}
 }
 
-// peer_protocol_open opens a libp2p stream to peer for `prefer` (one of
-// the /mochi/2/* protocols), connecting first if needed.
-//
-// Returns error_sender_unreachable when the peer is silent, can't be
-// connected, or doesn't speak `prefer`. A peer that rejects `prefer`
-// with multistream's not-supported error never upgraded past /mochi/1
-// (removed in this version): it's logged loudly and silenced so we stop
-// probing it on every queue tick.
+// peer_protocol_open opens a libp2p stream to peer for `prefer`, connecting
+// first if needed. Returns error_sender_unreachable when the peer is silent,
+// cannot be connected, or does not speak `prefer` - the last silences the peer
+// so it is not probed on every queue tick.
 func peer_protocol_open(peer string, prefer string) (p2p_network.Stream, error) {
 	if peer == "" || net_me == nil {
 		return nil, error_sender_unreachable
@@ -930,17 +880,9 @@ func peer_protocol_open(peer string, prefer string) (p2p_network.Stream, error) 
 	return s, nil
 }
 
-// is_protocol_not_supported tests whether err came from libp2p's
-// multistream-select rejecting the requested protocol.
-//
-// multistream.ErrNotSupported is parameterised on the protocol-id
-// type. libp2p's host returns the protocol.ID specialisation; tests
-// sometimes construct the plain-string one. We try both via errors.As.
-//
-// As a belt-and-braces fallback we also string-match the wrapped
-// message — libp2p wraps the error in basic_host with "failed to
-// negotiate protocol:" and earlier go-libp2p releases sometimes
-// returned the wrapped form without the original error chain.
+// is_protocol_not_supported reports whether err is multistream's protocol
+// rejection. The error is parameterised on the protocol-id type: libp2p's host
+// returns the protocol.ID specialisation, tests the plain-string one.
 func is_protocol_not_supported(err error) bool {
 	if err == nil {
 		return false
@@ -963,16 +905,11 @@ func is_protocol_not_supported(err error) bool {
 
 // --- Frame adapters (queue / Message -> Frame) -----------------------
 //
-// queue_send_direct + message_attempt_send_real both build a wire
-// message from queue / Message fields; the helpers below factor out
-// the common "build a Frame and ship it via peer_send" path so the
-// two callers stay consistent.
+// Shared by queue_send_direct and message_attempt_send_real so the two callers
+// build the same frame.
 
-// frame_for_queue builds a v2 message Frame from a queue.db row.
-// Used by queue_send_direct's v2 branch. The queue row's content is
-// already CBOR-encoded as a map; decode it back so the frame can ship
-// it as a structured Content (and so the receiver doesn't have to
-// repeat the work).
+// frame_for_queue builds a v2 message Frame from a queue.db row. The row's
+// content is already CBOR; decode it so the frame ships structured Content.
 func frame_for_queue(q *QueueEntry) (*Frame, error) {
 	content := map[string]any{}
 	if len(q.Content) > 0 {

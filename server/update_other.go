@@ -1,12 +1,11 @@
 // Mochi server: stub of the Windows-only self-install spawn helper.
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 //
-// The self-install code path is guarded by `runtime.GOOS == "windows"`
-// before it ever reaches update_install_spawn, so this no-op exists
-// only to keep update.go cross-compiling on Linux and macOS.
+// Callers gate on runtime.GOOS == "windows"; this no-op only keeps update.go
+// building on Linux and macOS.
 
 //go:build !windows
 

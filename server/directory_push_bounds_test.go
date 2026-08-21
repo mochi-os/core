@@ -1,17 +1,11 @@
-// Mochi server: the anonymous directory push is bounded on both axes.
-//
-// directory_push_event is registered event_anonymous, like its
-// directory_sync_event sibling - but sync carried a documented per-peer rate
-// limit and push carried nothing. The asymmetry runs the wrong way: sync is a
-// peer asking us to read, push is a peer making us write, and the peer decides
-// how many rows that is. The stream's byte cap is cumulative and defaults to
-// 100MB, which is several hundred thousand rows, each costing four validators,
-// up to three SQLite queries and an ed25519 verification.
+// Mochi server: the anonymous directory push is bounded on both axes - how
+// often a peer may push, and how many rows one push may carry. Each row costs
+// four validators, up to three SQLite queries and an ed25519 verification.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
-// This file is part of Mochi, licensed under the GNU AGPL v3 with the
-// Mochi Application Interface Exception - see license.txt and license-exception.md.
+// This file is part of Mochi, licensed under the GNU AGPL v3 with the Mochi
+// Application Interface Exception - see license.txt and license-exception.md.
 
 package main
 

@@ -26,10 +26,8 @@ var webpush_allowed = []string{
 }
 
 // webpush_endpoint_redact reduces a push endpoint to a non-secret identifier
-// for logging. The endpoint path carries a per-subscription bearer token -
-// anyone holding it can push notifications to the user's device - so the log
-// records only the push-service host plus a short stable hash that still
-// distinguishes subscriptions without exposing the token.
+// for logging: the path carries a per-subscription bearer token, so the log
+// keeps only the push-service host plus a short stable hash.
 func webpush_endpoint_redact(endpoint string) string {
 	host := endpoint
 	if i := strings.Index(host, "://"); i >= 0 {
@@ -81,11 +79,9 @@ func api_webpush_key(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 // mochi.webpush.send(endpoint, auth, p256dh, payload, event_id="...") -> bool: Send push notification.
 //
-// `event_id` is an optional caller-supplied stable id for the logical
-// notification this send corresponds to. When provided the call dedups against
-// a per-user webpush_delivered(endpoint, event_id) row, so a notification
-// emitted more than once produces one delivery per subscription. A small
-// concurrent-emit race remains and is accepted: the cost of losing it is a
+// `event_id` dedups against a per-user webpush_delivered(endpoint, event_id)
+// row, so a notification emitted more than once produces one delivery per
+// subscription. A small concurrent-emit race is accepted; the cost is a
 // duplicate push.
 func api_webpush_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Check webpush/send permission

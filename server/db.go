@@ -1126,10 +1126,9 @@ func db_error_is_corruption(err error) bool {
 
 // db_error_is_transient reports whether err is a RETRYABLE write failure — lock
 // contention or storage pressure — rather than a permanent one (schema drift,
-// constraint, malformed SQL). It decides how exec_bg words its warning, and
-// which ExecResult it returns. Parallel-queue delivery applies N ops to one peer
-// concurrently, so a lock timeout is a normal transient event under load, not a
-// bug.
+// constraint, malformed SQL). It decides how exec_bg words its warning.
+// Parallel-queue delivery applies N ops to one peer concurrently, so a lock
+// timeout is a normal transient event under load, not a bug.
 func db_error_is_transient(err error) bool {
 	if err == nil {
 		return false
@@ -1143,16 +1142,6 @@ func db_error_is_transient(err error) bool {
 		strings.Contains(message, "database or disk is full") ||
 		strings.Contains(message, "disk is full")
 }
-
-// ExecResult is the outcome of a background write (exec_bg): whether it landed,
-// failed transiently, or failed in a way retrying cannot help.
-type ExecResult int
-
-const (
-	ExecWrote     ExecResult = iota // the write executed successfully
-	ExecRetryable                   // transient failure (lock / disk) — safe to retry
-	ExecSkipped                     // nil / quarantined DB, or a permanent error — retry won't help
-)
 
 // db_integrity_watchdog quick_checks a few due DBs each tick and warns the
 // moment one is found corrupt — proactive detection so corruption surfaces as
@@ -1724,25 +1713,28 @@ func (db *DB) exec_e(query string, values ...any) error {
 // DB — skipping all further ops on it — and alerts the admin once; any other
 // error is logged. The caller keeps serving every other user. `context` names
 // the operation for the alert/log.
-func (db *DB) exec_bg(context, query string, values ...any) ExecResult {
+//
+// Returns nothing. It used to report a wrote/retryable/skipped tri-state for a
+// consumer that decided whether to retry; that consumer went in July 2026, and
+// every one of the callers left discards the result. A retryable failure is
+// reported in the warning and nowhere else.
+func (db *DB) exec_bg(context, query string, values ...any) {
 	if db == nil || db_quarantined(db.path) {
-		return ExecSkipped
+		return
 	}
 	if err := db.exec_e(query, values...); err != nil {
 		if db_error_is_corruption(err) {
 			db_quarantine(db.path, context, err)
-			return ExecSkipped
+			return
 		}
 		if db_error_is_transient(err) {
 			// Retryable: the failure is lock contention or storage pressure, so
 			// the same statement could succeed later.
 			warn("Background DB write failed (%s, retryable) on %q: %v", context, db.path, err)
-			return ExecRetryable
+			return
 		}
 		warn("Background DB write failed (%s) on %q: %v", context, db.path, err)
-		return ExecSkipped
 	}
-	return ExecWrote
 }
 
 func (db *DB) exists(query string, values ...any) (bool, error) {

@@ -11,6 +11,9 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -87,5 +90,54 @@ func TestExecBgSkipsAndDoesNotOverQuarantine(t *testing.T) {
 	db_integrity_state.Delete(db.path)
 	if n := db.integer("select count(*) from t"); n != 1 {
 		t.Errorf("exec_bg wrote to a quarantined DB: count=%d, want 1", n)
+	}
+}
+
+// TestExecBgOnANilDatabase pins the other half of exec_bg's never-panics
+// contract. The queue calls it from background goroutines where a handle can be
+// nil, and a panic there takes the process down rather than one user's write.
+func TestExecBgOnANilDatabase(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("exec_bg panicked on a nil database: %v", r)
+		}
+	}()
+	var db *DB
+	db.exec_bg("nil handle", "insert into t (id) values (1)")
+}
+
+// TestExecBgReturnsNothing keeps the discarded tri-state from returning.
+//
+// exec_bg used to answer ExecWrote / ExecRetryable / ExecSkipped so a
+// replicated apply could decide whether to retry. Replication went in July
+// 2026 and all 27 remaining call sites - every one in queue.go - discarded it,
+// which is why removing the return compiled untouched.
+//
+// A restored return would not fail the build, since Go lets a caller ignore a
+// result: it would come back silently and be discarded exactly as before.
+// Hence a source-shape gate rather than reliance on the compiler.
+func TestExecBgReturnsNothing(t *testing.T) {
+	source, err := os.ReadFile("db.go")
+	if err != nil {
+		t.Fatalf("reading db.go: %v", err)
+	}
+	if !strings.Contains(string(source), "func (db *DB) exec_bg(context, query string, values ...any) {") {
+		t.Error("exec_bg no longer returns nothing; a result no caller reads is residue, and the one that existed outlived its only consumer by six weeks")
+	}
+
+	files, _ := filepath.Glob("*.go")
+	for _, name := range files {
+		if name == "db_quarantine_test.go" {
+			continue // this comment is the one legitimate mention
+		}
+		body, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		for _, dead := range []string{"ExecResult", "ExecWrote", "ExecRetryable", "ExecSkipped"} {
+			if strings.Contains(string(body), dead) {
+				t.Errorf("%s references %s", name, dead)
+			}
+		}
 	}
 }

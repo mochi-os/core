@@ -563,8 +563,21 @@ func (e *Event) Attr(name string) (sl.Value, error) {
 	case "read":
 		return &EventRead{event: e}, nil
 	case "stream":
+		// sl.None, not the typed nil. A nil *Stream returned as an sl.Value is
+		// a non-nil interface wrapping a nil pointer: Truth() reports true
+		// unconditionally, so `if e.stream:` passes for an event that has
+		// none, and String() dereferences and panics when it is printed.
+		// e.stream is nil for any frame that carried no packed segments.
+		if e.stream == nil {
+			return sl.None, nil
+		}
 		return e.stream, nil
 	case "user":
+		// Same shape: (*User).Truth() is unconditionally true and
+		// (*User).String() dereferences UID.
+		if e.user == nil {
+			return sl.None, nil
+		}
 		return e.user, nil
 	case "write":
 		return &EventWrite{event: e}, nil

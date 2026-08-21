@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/rand"
 	rd "runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -981,6 +982,10 @@ func queue_fail(id string, err string) {
 			}
 		}
 		queue_error_dispatch(&q, error_code_message_timeout, "timeout")
+	} else if queue_retarget(db, &q) {
+		// The failure was our routing, not the peer: the row is now aimed at a
+		// live route with a fresh budget. Checked before parking, so a row does
+		// not spend the rest of its age waiting on a peer that has moved.
 	} else if attempts >= queue_park_attempts {
 		// Retry budget exhausted while the row is still inside its age
 		// budget: park it instead of grinding hourly retries for the
@@ -1032,6 +1037,118 @@ func queue_expand_empty_target(q *QueueEntry) string {
 			strings.Split(q.FromServices, ","), q.Content, q.Data, q.File, q.Expires)
 	}
 	return peers[0]
+}
+
+// queue_retarget re-resolves a row whose pinned peer is no longer a route to
+// the recipient, and reports whether it did.
+//
+// A direct row's target is chosen once, at enqueue, from entity_peers_for, and
+// nothing has ever rewritten it: the four update statements above touch
+// next_retry and status and are keyed BY target. So an entity that moves hosts
+// after a row is queued strands that row against the old peer - it retries for
+// fifty attempts, parks, and waits for a reconnect that cannot come, until the
+// seven-day reap drops it.
+//
+// The damage is not confined to the message. Parking calls
+// health_failure(q.ToEntity, ...), which records the failure against the
+// RECIPIENT - so a full retry budget burned on our own stale routing suspends a
+// host that was reachable all along, and for an entity this host also fans out
+// to, suspension gates real broadcast delivery down to a periodic probe. That
+// amplification has been observed in production, with the suspended entities
+// live in db/directory.db at a peer other than the one their rows named.
+//
+// The trigger is deliberately narrow. Re-resolving whenever a send fails would
+// trample queue_resurrect_peer, which exists for the peer that is merely
+// offline and will come back. Retargeting happens only when the pinned peer is
+// no longer among the routes entity_peers_for returns AND some other route is -
+// "this address is gone", not "this address is not answering". Asking the
+// resolver rather than the directory tables directly means the test cannot
+// drift from what routing actually does.
+//
+// Fan-out matches queue_expand_empty_target: siblings are cloned for the
+// remaining peers, because two re-resolution paths that disagree about fan-out
+// is how the next version of this bug gets written.
+//
+// Attempts reset because the budget was spent on a different destination. The
+// age cap still bounds the row, and the retarget cannot loop: the new target
+// came from entity_peers_for, so it IS among the routes on the next failure.
+func queue_retarget(db *DB, q *QueueEntry) bool {
+	if q.Type != "direct" || q.Target == "" {
+		return false
+	}
+	peers := entity_peers_for(q.FromEntity, q.ToEntity)
+	if len(peers) == 0 {
+		return false
+	}
+	if slices.Contains(peers, q.Target) {
+		return false
+	}
+	for i := 1; i < len(peers); i++ {
+		queue_add_direct(uid(), peers[i], q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp,
+			strings.Split(q.FromServices, ","), q.Content, q.Data, q.File, q.Expires)
+	}
+	db.exec_bg("queue retarget", "update queue set target = ?, status = 'pending', attempts = 0, next_retry = ? where id = ?",
+		peers[0], now(), q.ID)
+	info("Queue retargeting %q for %q: peer %q is no longer a route, %q is", q.ID, q.ToEntity, q.Target, peers[0])
+	return true
+}
+
+// queue_retarget_parked re-resolves parked rows, which never reach queue_fail
+// again and so would never be retargeted by it.
+//
+// A row that parked before this existed is exactly the stranded case: its retry
+// budget already spent, its recipient already suspended, and nothing left to
+// revive it but the reconnect of a peer that has moved. Hourly is soon enough -
+// it has been parked for days.
+//
+// The decision is per destination, not per row, so the sweep groups first. That
+// matters twice over: the resolver is asked once per (sender, recipient, peer)
+// rather than once per row, and the rows themselves - which carry the message
+// content and any file data - are never loaded for a destination that is not
+// moving, which is every destination on a healthy server. Parking exists
+// because this queue has held rows by the million; a sweep that reads them all
+// into one slice to decide nothing would be its own outage.
+func queue_retarget_parked() {
+	db := db_open("db/queue.db")
+	destinations, err := db.rows("select distinct from_entity, to_entity, target from queue where status = 'parked' and type = 'direct' and target != ''")
+	if err != nil {
+		warn("Database error loading parked queue destinations: %v", err)
+		return
+	}
+	moved := 0
+	for _, d := range destinations {
+		from, _ := d["from_entity"].(string)
+		to, _ := d["to_entity"].(string)
+		target, _ := d["target"].(string)
+		peers := entity_peers_for(from, to)
+		if len(peers) == 0 || slices.Contains(peers, target) {
+			continue
+		}
+		moved++
+		if len(peers) == 1 {
+			// One route, so there are no siblings to clone and queue_retarget's
+			// fan-out loop would do nothing: every row for this destination
+			// moves in a single statement, with no row read at all.
+			db.exec_bg("queue retarget parked", "update queue set target = ?, status = 'pending', attempts = 0, next_retry = ? where status = 'parked' and type = 'direct' and from_entity = ? and to_entity = ? and target = ?",
+				peers[0], now(), from, to, target)
+			info("Queue retargeting parked rows for %q: peer %q is no longer a route, %q is", to, target, peers[0])
+			continue
+		}
+		// Several routes: each row needs a sibling per remaining peer, so this
+		// destination's rows are read and passed through queue_retarget - the
+		// same path queue_fail uses, so the fan-out cannot diverge between them.
+		var parked []QueueEntry
+		if err := db.scans(&parked, "select * from queue where status = 'parked' and type = 'direct' and from_entity = ? and to_entity = ? and target = ?", from, to, target); err != nil {
+			warn("Database error loading parked queue entries for %q: %v", to, err)
+			continue
+		}
+		for i := range parked {
+			queue_retarget(db, &parked[i])
+		}
+	}
+	if moved > 0 {
+		queue_wake()
+	}
 }
 
 // Send a queued direct message (reads challenge before sending, waits for ACK)
@@ -1670,6 +1787,7 @@ func queue_manager() {
 	// Cleanup runs less frequently
 	for range time.Tick(time.Hour) {
 		queue_cleanup()
+		queue_retarget_parked()
 		message_seen_cleanup()
 	}
 }

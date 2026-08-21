@@ -226,9 +226,12 @@ func schedule_valid(se *ScheduledEvent) bool {
 // schedule_handle_unrunnable deals with a due event that schedule_valid
 // rejected. It stays quiet (no admin email) either way:
 //
-//   - User absent, or still bootstrapping (pending): leave the row alone. Its
-//     app and data may not have finished landing, so the handler could become
+//   - User still bootstrapping (pending): leave the row alone. Its app and
+//     data may not have finished landing, so the handler could become
 //     runnable shortly.
+//   - User absent: drop the row. Nothing will ever make it runnable - there
+//     is no other host that could run it, so deferring means re-claiming it
+//     every interval for the life of the server.
 //   - Active user, or a system event, whose app / version / handler is gone:
 //     drop the row. A recurring one would otherwise re-fire every interval
 //     forever. One-shot rows were already removed by schedule_claim.
@@ -237,14 +240,21 @@ func schedule_handle_unrunnable(se *ScheduledEvent) {
 		// Read the users row directly — NOT user_by_uid, which also returns nil
 		// for a user whose identity hasn't loaded and would wrongly look
 		// "absent".
-		row, _ := db_open("db/users.db").row("select status from users where uid=?", se.User)
-		if row == nil {
+		row, err := db_open("db/users.db").row("select status from users where uid=?", se.User)
+		if err != nil {
+			// Could not tell whether the account exists. Defer rather than
+			// retire: a transient users.db error must never be what destroys
+			// a live user's schedule.
 			return
 		}
-		status, _ := row["status"].(string)
-		if user_pending(&User{Status: status}) {
-			return
+		if row != nil {
+			status, _ := row["status"].(string)
+			if user_pending(&User{Status: status}) {
+				return
+			}
 		}
+		// No row and no error: the account is gone. Fall through to the
+		// delete below.
 	}
 	if se.Interval > 0 {
 		schedule_db().exec("delete from schedule where id=?", se.ID)

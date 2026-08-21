@@ -1349,6 +1349,13 @@ func user_purge_local(id string, account_gone bool) (string, error) {
 	sdb.exec("delete from passkeys where user=?", id)
 	sdb.exec("delete from verifications where user=?", id)
 
+	// Scheduled events live in a shared core database, not under users/<uid>/,
+	// so db_purge_prefix below does not reach them. A recurring row left here
+	// is re-claimed every interval for the life of the server: schedule_claim
+	// advances its due time, schedule_valid rejects it for the missing user,
+	// and nothing retires it.
+	schedule_db().exec("delete from schedule where user=?", id)
+
 	db.exec("delete from credentials where user=?", id)
 	db.exec("delete from totp where user=?", id)
 	db.exec("delete from recovery where user=?", id)

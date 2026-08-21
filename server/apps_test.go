@@ -2188,29 +2188,34 @@ func TestAppIsLogin(t *testing.T) {
 	}
 }
 
-// TestAppsManagerSignal (#52) checks the wake channel coalesces: repeated
-// signals while a pass is pending collapse into a single queued wake (buffer of
-// 1), and signalling never blocks even when the buffer is full.
-func TestAppsManagerSignal(t *testing.T) {
-	// Drain any residual signal so the test starts from empty.
-	select {
-	case <-apps_manager_wake:
-	default:
+// TestAppsManagerHasNoWakeChannel replaces TestAppsManagerSignal, which
+// verified a coalescing contract for a channel nothing ever wrote.
+//
+// apps_manager_wake let a replicated publisher-catalog write trigger a pass
+// before the 24-hour poll elapsed. Replication went in July 2026 and the only
+// callers of apps_manager_signal were three lines in that test, so the early
+// arm of the manager's select could not fire outside it.
+//
+// staticcheck cannot catch this class: U1000 counts a test call as a use, so a
+// function kept alive solely by its own test reads as reachable. #87's NACK
+// vocabulary survived the same way. Hence a source-shape gate.
+func TestAppsManagerHasNoWakeChannel(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("globbing: %v", err)
 	}
-
-	apps_manager_signal()
-	apps_manager_signal() // second signal must not block; coalesces into the one slot
-	apps_manager_signal()
-
-	select {
-	case <-apps_manager_wake:
-	default:
-		t.Fatal("expected a queued wake after signalling")
-	}
-	// Exactly one wake should have been queued.
-	select {
-	case <-apps_manager_wake:
-		t.Fatal("wake channel held more than one signal — coalescing failed")
-	default:
+	for _, name := range files {
+		if name == "apps_test.go" {
+			continue // this comment is the one legitimate mention
+		}
+		source, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		for _, dead := range []string{"apps_manager_wake", "apps_manager_signal"} {
+			if strings.Contains(string(source), dead) {
+				t.Errorf("%s references %s; the early-wake path has no production signaller, so reviving it needs a real trigger and a reason, not a restored channel", name, dead)
+			}
+		}
 	}
 }

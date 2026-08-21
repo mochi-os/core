@@ -1531,20 +1531,6 @@ func app_write_publisher(base string, peer string) {
 	debug("Wrote publisher peer %q to %s", peer, path)
 }
 
-// apps_manager_wake lets a publisher-catalog write trigger an early
-// apps_manager pass instead of waiting out the 24-hour poll. Buffered at 1 so a
-// burst of publisher writes coalesces into a single queued pass.
-var apps_manager_wake = make(chan struct{}, 1)
-
-// apps_manager_signal wakes apps_manager without blocking. A full buffer means
-// a pass is already queued, so the extra signal is harmlessly dropped.
-func apps_manager_signal() {
-	select {
-	case apps_manager_wake <- struct{}{}:
-	default:
-	}
-}
-
 // apps_dir returns the directory installed apps live in.
 func apps_dir() string {
 	return filepath.Join(data_dir, "apps")
@@ -1609,13 +1595,10 @@ func apps_manager() {
 		// (app_user_setup otherwise fires only from a same-host service call).
 		apps_seed_default_permissions()
 
-		// Wait out the poll, but wake early if a publisher write signals a new
-		// version.
-		select {
-		case <-time.After(24 * time.Hour):
-		case <-apps_manager_wake:
-			debug("apps_manager woken early by a publisher write")
-		}
+		// Wait out the poll. There was an early-wake channel here, signalled
+		// by a replicated publisher-catalog write; replication went in July
+		// 2026 and nothing has signalled it since.
+		time.Sleep(24 * time.Hour)
 	}
 }
 

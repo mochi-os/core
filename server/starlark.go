@@ -102,7 +102,25 @@ func starlark(files []string) *Starlark {
 		//debug("Starlark reading file %q", file)
 		defined, err := sl.ExecFile(s.thread, file, nil, s.globals)
 		if err != nil {
-			info("Starlark error reading file %v", err)
+			// The file is named explicitly because the error often does not
+			// name it. A syntax or resolve error carries its own position, so
+			// the path appeared by luck; an error from a mochi.* call at module
+			// level is a bare Go error with none, and the line read "Starlark
+			// error reading file no app context: mochi.entity.get() no app
+			// context" - the word "file" followed by no file. That is the class
+			// #66 created by turning those panics into errors, so it is now the
+			// likely one.
+			//
+			// warn rather than info: ExecFile returns nothing usable on error,
+			// so EVERY definition in the file is lost - including functions
+			// whose def executed before the failing statement - and the app
+			// runs on with a partial global set, each missing handler reporting
+			// "unknown function" from somewhere unrelated. Outside dev_reload
+			// the result is cached by starlark_once for the process lifetime,
+			// so a fix does not take effect until a restart. That is worth an
+			// operator's attention, and the format is fixed so the admin email
+			// is throttled to one per window however many files fail.
+			warn("Starlark error reading %s: %v", file, err)
 			continue
 		}
 		// Merge defined names into globals for subsequent files

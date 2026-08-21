@@ -28,14 +28,9 @@ const (
 
 var cbor_decode_mode cbor.DecMode
 
-// Deliberately a package init(), not a call from main_serve.
-//
-// cbor_decode_mode carries the decode limits every inbound frame is bounded
-// by, and a nil mode is not a safe default - it would mean decoding with
-// library defaults and no depth, map or element caps. Establishing it at
-// package initialisation makes it impossible for any path, including one
-// reached from another file's variable initialiser, to decode before the
-// limits exist.
+// Deliberately a package init(), not a call from main_serve: a nil
+// cbor_decode_mode would decode with library defaults and no depth, map or
+// element caps, so no path can be reachable before the limits exist.
 func init() {
 	cbor_decode_mode = must(cbor.DecOptions{
 		MaxMapPairs:      cbor_maximum_pairs,
@@ -55,21 +50,14 @@ type Stream struct {
 		read  int
 		write int
 	}
-	// maximum_bytes overrides the cumulative LimitReader cap used to
-	// wrap the CBOR decoder. Zero = use cbor_maximum_size (100 MB total
-	// for the stream's lifetime); set to a larger value before the
-	// first read on streams that legitimately carry hundreds of MB
-	// or more (bulk-bootstrap DB transfer). Must be set BEFORE the
-	// first read call, since the decoder + its underlying LimitReader
-	// are constructed lazily.
+	// maximum_bytes overrides the cumulative LimitReader cap on the CBOR decoder
+	// (zero = cbor_maximum_size). Must be set BEFORE the first read: the decoder
+	// and its LimitReader are constructed lazily.
 	maximum_bytes int64
-	// abandoned records that a write failed against the REMOTE end, as
-	// opposed to against the local source the bytes were read from. A
-	// requester that goes away mid-transfer is not an operator problem -
-	// a browser navigating off a page abandons every image still in
-	// flight - so the event dispatcher logs a handler that failed this
-	// way rather than warning about it. Set only where the failure is
-	// known to be the remote's; never inferred from an error string.
+	// abandoned records that a write failed against the REMOTE end rather than the
+	// local source, so the dispatcher logs instead of warn-emailing. Set only
+	// where the failure is known to be the remote's; never inferred from an error
+	// string.
 	abandoned     bool
 	on_close      func() // Called once when stream is closed (e.g. release semaphore)
 	on_close_once sync.Once
@@ -109,14 +97,9 @@ var (
 	stream_next  int64 = 1
 )
 
-// Create a new stream with specified headers over /mochi/2/stream
-// (authenticated handshake via claim + open).
-//
-// Multi-host failover: when the recipient entity has multiple known
-// locations, try each in order until one accepts the stream. Order is
-// from entity_peers_failover — active peers (seen within 2× republish
-// interval) sorted oldest-seen first, then stale peers as a last
-// resort. Stops at the first peer that completes the handshake.
+// Create a new stream over /mochi/2/stream (authenticated handshake via claim +
+// open). When the recipient entity has several known locations, each is tried
+// in entity_peers_failover order until one completes the handshake.
 func stream(from string, to string, service string, event string, from_app string, services []string) (*Stream, error) {
 	peers := entity_peers_failover_for(from, to)
 	if len(peers) == 0 {
@@ -134,11 +117,9 @@ func stream(from string, to string, service string, event string, from_app strin
 	return nil, last_error
 }
 
-// Create a stream to a specific peer (without entity lookup). Routes a
-// self-target (peer == net_id) to the in-process loopback; otherwise
-// opens /mochi/2/stream. The returned stream is in raw mode — the open
-// frame is already shipped and acked, so the caller reads/writes bytes
-// directly.
+// Create a stream to a specific peer, without entity lookup; a self-target
+// routes to the in-process loopback. The stream is in raw mode - the open frame
+// is already shipped and acked, so the caller reads and writes bytes directly.
 func stream_to_peer(peer string, from string, to string, service string, event string, from_app string, services []string) (*Stream, error) {
 	s, err := stream_open_or_self(peer, from, to, service, event, from_app, services, nil)
 	if err != nil {
@@ -164,14 +145,9 @@ func stream_rw(r io.ReadCloser, w io.WriteCloser) *Stream {
 	return &Stream{id: stream_id(), reader: r, writer: w}
 }
 
-// stream_writer meters everything an app writes to a peer. It wraps s.writer
-// rather than each of the five sl_write* entry points because they all funnel
-// through it, so a write path added later is metered without being remembered.
-//
-// CloseWrite and SetWriteDeadline are forwarded deliberately: close_write,
-// write and write_raw all type-assert on s.writer for them, and a wrapper that
-// did not carry them would fail those assertions - silently turning a P2P
-// half-close into a full close and dropping every write deadline.
+// stream_writer meters everything an app writes to a peer, wrapping s.writer so
+// a write path added later is metered too. CloseWrite and SetWriteDeadline are
+// forwarded deliberately: the write builtins type-assert on s.writer for them.
 type stream_writer struct {
 	inner io.WriteCloser
 	app   string
@@ -285,12 +261,10 @@ func (s *Stream) read(v any) error {
 	return nil
 }
 
-// cbor_limit returns the cumulative byte limit applied to the CBOR
-// decoder via io.LimitReader. The default (cbor_maximum_size) caps total
-// decoder reads at 100 MB for a stream's lifetime, which is sufficient
-// for normal app-message streams but breaks bulk-bootstrap DB transfer
-// (a 948 MB feeds.db hits the cap at offset ~100 MB). Streams that
-// legitimately carry more bytes set s.maximum_bytes before the first read.
+// cbor_limit returns the cumulative byte limit applied to the CBOR decoder via
+// io.LimitReader. The default caps a stream's lifetime reads at 100 MB, which
+// breaks bulk DB transfer; those streams set s.maximum_bytes before the first
+// read.
 func (s *Stream) cbor_limit() int64 {
 	if s.maximum_bytes > 0 {
 		return s.maximum_bytes
@@ -666,8 +640,10 @@ func (s *Stream) sl_write_raw(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 // writers. Sends per-user data file contents as raw bytes; returns bytes written.
 func (s *Stream) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	defer s.close_write()
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <file: string>")
+	var file string
+	var offset int64
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "file", &file, "offset?", &offset); err != nil {
+		return sl_error(fn, "syntax: <file: string>, [offset: integer]")
 	}
 
 	user := principal_caller(t)
@@ -680,8 +656,7 @@ func (s *Stream) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		return sl_error(fn, "no app")
 	}
 
-	file, ok := sl.AsString(args[0])
-	if !ok || !valid(file, "filepath") {
+	if !valid(file, "filepath") {
 		return sl_error(fn, "invalid file %q", file)
 	}
 
@@ -699,14 +674,28 @@ func (s *Stream) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	}
 	defer f.Close()
 
-	// Everything above is computation and belongs inside the compute budget;
-	// from here the call is only moving bytes, and how long that takes is the
-	// size of the file over the speed of the receiver's link. The a.write.*
-	// builtins have marked that since they were written; these stream writers,
-	// which serve the same files over P2P rather than HTTP, never did - so a
-	// package download to a peer slower than about 1 Mbit/s hit the 90-second
-	// compute timeout, and hit it inside io.Copy, which does not check for
-	// cancellation, so the call was abandoned rather than stopped.
+	// A resuming transfer starts mid-file. Bounds-checked against the file
+	// itself, so a peer's stale belief about the size is refused here rather
+	// than becoming a short read the receiver cannot tell from truncation.
+	if offset < 0 {
+		return sl_error(fn, "invalid offset %d", offset)
+	}
+	if offset > 0 {
+		information, err := f.Stat()
+		if err != nil {
+			return sl_error(fn, "file not found")
+		}
+		if offset > information.Size() {
+			return sl_error(fn, "offset %d beyond the file's %d bytes", offset, information.Size())
+		}
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return sl_error(fn, "unable to seek: %v", err)
+		}
+	}
+
+	// From here the call is only moving bytes, so it takes the transfer bound, not
+	// the compute one: a slow peer would otherwise hit the 90-second timeout
+	// inside io.Copy, which ignores cancellation.
 	starlark_transfer_set(t)
 
 	n, err := s.send(f)

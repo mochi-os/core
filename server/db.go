@@ -1229,8 +1229,45 @@ func db_open(file string) *DB {
 	return db
 }
 
+// db_path_contained reports whether an already-joined path is still inside the
+// data directory.
+//
+// Every database path is built by interpolating components into a template -
+// users/<uid>/<app>/db/<file> and so on - and filepath.Join resolves ".."
+// lexically, so a component carrying one escapes: Join("/var/lib/mochi",
+// "users/../../../../etc/shadow") is "/etc/shadow". The open that follows is a
+// plain os.Create plus a name-based driver open, so nothing downstream would
+// stop it.
+//
+// Nothing reaches this today. Every interpolated component is constrained
+// before it arrives: uids are generated, app ids validate as "entity" or come
+// from a directory listing, and an app's declared database file passes
+// valid(..., "filename"), whose first character class omits "." so a leading
+// dot - and therefore ".." - cannot be written at all. The point of the check
+// is that all of that lives in other files: a call site added later inherits
+// none of it, and this is the one place every database path passes through.
+//
+// This is containment against a lexical escape, not against symlinks - a
+// symlink inside the data directory pointing out of it still resolves. Only
+// os.Root refuses that, and the driver cannot be handed one: its VFS is
+// name-based, so confining it means registering a custom VFS and reimplementing
+// the platform-specific shared-memory path alongside it.
+func db_path_contained(path string) bool {
+	// Rel cleans both arguments, so an operator config carrying a trailing
+	// slash or an interior ".." needs no separate tidying here.
+	relative, err := filepath.Rel(data_dir, path)
+	if err != nil {
+		return false
+	}
+	return relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator))
+}
+
 func db_open_work(file string, keys ...string) (*DB, bool, bool) {
 	path := filepath.Join(data_dir, file)
+	if !db_path_contained(path) {
+		warn("Database refusing to open %q: outside the data directory", file)
+		return nil, false, false
+	}
 	key := path
 	if len(keys) > 0 && keys[0] != "" {
 		key = keys[0]

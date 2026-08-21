@@ -610,6 +610,14 @@ func (er *EventRead) AttrNames() []string {
 func (er *EventRead) Attr(name string) (sl.Value, error) {
 	switch name {
 	case "file":
+		// The builtin binds to er.event.stream, which is nil for any frame
+		// that carried no packed segments. Binding a method value to a nil
+		// receiver is legal and silent - the dereference happens later, inside
+		// close_read, so without this the app gets a handler panic instead of
+		// an error it can read.
+		if er.event.stream == nil {
+			return nil, fmt.Errorf("e.read.file: this event carries no stream")
+		}
 		return sl.NewBuiltin("read.file", er.event.stream.sl_read_file), nil
 	}
 	return nil, nil
@@ -637,6 +645,18 @@ func (ew *EventWrite) AttrNames() []string {
 }
 
 func (ew *EventWrite) Attr(name string) (sl.Value, error) {
+	// Each builtin below binds to ew.event.stream, nil for any frame that
+	// carried no packed segments. Worse than the read side: all three open
+	// with `defer s.close_write()`, so a nil receiver panics on every call
+	// before the arguments are even checked, and panics again on the way out
+	// of the early error returns.
+	switch name {
+	case "asset", "cache", "file":
+		if ew.event.stream == nil {
+			return nil, fmt.Errorf("e.write.%s: this event carries no stream", name)
+		}
+	}
+
 	switch name {
 	case "asset":
 		return sl.NewBuiltin("write.asset", ew.event.stream.sl_write_asset), nil

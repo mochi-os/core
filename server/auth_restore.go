@@ -348,6 +348,19 @@ func restore_apply(uid, bundle string, manifest export_manifest, account export_
 	restore_auth(uid, account, secrets)
 	restore_finish_account(uid, manifest, bundle)
 
+	// A bundle exported before the attachments library migration carries
+	// app.db attachment stores; export-and-drop them NOW, before the account
+	// activates. The startup sweep guarantees export-before-migration by
+	// running ahead of the web server, but this is the one path that adds
+	// user data to a running server - without this, the first request's
+	// migration finds neither bridge nor export, reads "no rows", and
+	// consumes its version with the rows still in app.db. A store whose
+	// export cannot be written keeps its table (warned, admin emailed) and
+	// the startup sweep retries at the next boot.
+	if exported, dropped := attachment_export_user(uid); dropped > 0 {
+		info("Attachment export (restore %q): %d stores exported, %d tables dropped", uid, exported, dropped)
+	}
+
 	// Migrations run lazily on first app access via db_open's forward
 	// ladder; the schema guard already ruled out any downgrade. Flip to
 	// active so the gates release and the user lands on a populated home.

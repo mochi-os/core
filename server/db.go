@@ -767,6 +767,12 @@ const attachment_export_file = "attachments.json"
 // table is skipped, and an export already on disk (a crash between write and
 // drop) is kept rather than rewritten. A store whose export cannot be written
 // keeps its table and is retried next start.
+//
+// This ordering holds at startup by construction, and restore_apply is the one
+// path that adds user data to a RUNNING server - it calls
+// attachment_export_user for the restored user before the account activates,
+// or a bundle from before the migration would have its rows read as "no rows"
+// by the first request's migration, stranding them.
 func attachment_export_sweep() {
 	users_root := filepath.Join(data_dir, "users")
 	users, err := os.ReadDir(users_root)
@@ -778,51 +784,62 @@ func attachment_export_sweep() {
 		if !u.IsDir() {
 			continue
 		}
-		apps, err := os.ReadDir(filepath.Join(users_root, u.Name()))
-		if err != nil {
-			continue
-		}
-		for _, a := range apps {
-			if !a.IsDir() {
-				continue
-			}
-			path := fmt.Sprintf("users/%s/%s/app.db", u.Name(), a.Name())
-			if !file_exists(filepath.Join(data_dir, path)) {
-				continue
-			}
-			db, _, _ := db_open_work(path)
-			if db == nil {
-				continue
-			}
-			present, _ := db.exists("select 1 from sqlite_master where type='table' and name='attachments'")
-			if !present {
-				continue
-			}
-			files := filepath.Join(users_root, u.Name(), a.Name(), "files")
-			rows, err := db.rows("select * from attachments order by rowid")
-			if err != nil {
-				warn("Attachment export: unable to read %s: %v", path, err)
-				continue
-			}
-			if len(rows) > 0 {
-				if err := attachment_export_write(files, rows); err != nil {
-					warn("Attachment export: unable to write %s: %v", filepath.Join(files, attachment_export_file), err)
-					continue
-				}
-				exported++
-			}
-			if err := db.exec_e("drop table if exists attachments"); err != nil {
-				warn("Attachment export: unable to drop the attachments table in %s: %v", path, err)
-				continue
-			}
-			os.RemoveAll(filepath.Join(files, "thumbnails"))
-			os.RemoveAll(filepath.Join(files, "previews"))
-			dropped++
-		}
+		e, d := attachment_export_user(u.Name())
+		exported += e
+		dropped += d
 	}
 	if dropped > 0 {
 		info("Attachment export: %d stores exported, %d tables dropped", exported, dropped)
 	}
+}
+
+// attachment_export_user runs the attachment export-and-drop over one user's
+// stores, returning how many were exported and dropped. See
+// attachment_export_sweep for the semantics of each step.
+func attachment_export_user(uid string) (int, int) {
+	exported, dropped := 0, 0
+	apps, err := os.ReadDir(filepath.Join(data_dir, "users", uid))
+	if err != nil {
+		return 0, 0
+	}
+	for _, a := range apps {
+		if !a.IsDir() {
+			continue
+		}
+		path := fmt.Sprintf("users/%s/%s/app.db", uid, a.Name())
+		if !file_exists(filepath.Join(data_dir, path)) {
+			continue
+		}
+		db, _, _ := db_open_work(path)
+		if db == nil {
+			continue
+		}
+		present, _ := db.exists("select 1 from sqlite_master where type='table' and name='attachments'")
+		if !present {
+			continue
+		}
+		files := filepath.Join(data_dir, "users", uid, a.Name(), "files")
+		rows, err := db.rows("select * from attachments order by rowid")
+		if err != nil {
+			warn("Attachment export: unable to read %s: %v", path, err)
+			continue
+		}
+		if len(rows) > 0 {
+			if err := attachment_export_write(files, rows); err != nil {
+				warn("Attachment export: unable to write %s: %v", filepath.Join(files, attachment_export_file), err)
+				continue
+			}
+			exported++
+		}
+		if err := db.exec_e("drop table if exists attachments"); err != nil {
+			warn("Attachment export: unable to drop the attachments table in %s: %v", path, err)
+			continue
+		}
+		os.RemoveAll(filepath.Join(files, "thumbnails"))
+		os.RemoveAll(filepath.Join(files, "previews"))
+		dropped++
+	}
+	return exported, dropped
 }
 
 // attachment_export_write writes the rows of one store as attachment_export_file

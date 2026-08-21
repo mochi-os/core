@@ -201,22 +201,6 @@ func claims_signed(t *testing.T, challenge []byte) *Frame {
 	return &Frame{Type: frame_type_claim, From: entity, Signature: ed25519.Sign(private, signable)}
 }
 
-// claims_run starts the handler and reports whether it finished within grace.
-func claims_run(t *testing.T, s *claims_stream, grace time.Duration) bool {
-	t.Helper()
-	finished := make(chan struct{})
-	go func() {
-		defer close(finished)
-		receive_stream_guarded(s)
-	}()
-	select {
-	case <-finished:
-		return true
-	case <-time.After(grace):
-		return false
-	}
-}
-
 // TestStreamCapsClaimsBeforeOpen is the count half, driven with claims that
 // really verify - so the handler is doing the full work per frame, and only a
 // count cap can stop it.

@@ -354,7 +354,7 @@ func TestScheduleHandleUnrunnable(t *testing.T) {
 
 	udb := db_open("db/users.db")
 	udb.exec("insert into users (uid, username, role, status) values ('active-u', 'au', 'user', 'active')")
-	udb.exec("insert into users (uid, username, role, status) values ('pending-u', 'pu', 'user', 'pending-replication')")
+	udb.exec("insert into users (uid, username, role, status) values ('pending-u', 'pu', 'user', 'pending-restore')")
 
 	sdb := schedule_db()
 	insert := func(user string, interval int64) int64 {

@@ -90,9 +90,8 @@ func TestUnrunnableRetiresARowForAnAbsentUser(t *testing.T) {
 // survive the change above.
 func TestUnrunnableStillDefersForAPendingUser(t *testing.T) {
 	absent_setup(t)
-	// "pending-restore", not "pending": user_pending matches only
-	// "pending-restore" and "pending-replication", so a fixture using the bare
-	// word asserts nothing.
+	// "pending-restore", not "pending": that is the only status user_pending
+	// matches, so a fixture using the bare word asserts nothing.
 	absent_user(t, "booting", "pending-restore")
 
 	id, _ := schedule_create("booting", "feeds", now()-1, "watchdog", "{}", 86400)

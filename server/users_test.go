@@ -9,6 +9,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -729,5 +730,56 @@ func TestPurgeTakesNoAccountGoneParameter(t *testing.T) {
 	}
 	if strings.Contains(text, "delete_local(") {
 		t.Error("user_purge_local calls delete_local again; that is the leave-set path, and there is no host set to leave")
+	}
+}
+
+// TestUserPendingRecognisesOnlyRestore. user_pending gated two statuses:
+// "pending-restore" and "pending-replication". The second was the per-user
+// replication backfill, removed July 2026 — nothing has set it since, so the
+// arm selected a state no account could be in, and the function read as
+// covering two live bootstrapping paths when it covered one.
+//
+// The live half must keep working: during a restore the user's databases are
+// rename(2)-swapped underneath the request path, and letting an app action
+// through mid-swap is what raised "database disk image is malformed" in the
+// 2026-05-20/21 incidents.
+func TestUserPendingRecognisesOnlyRestore(t *testing.T) {
+	if !user_pending(&User{Status: "pending-restore"}) {
+		t.Error("a restoring user is not pending; app actions would run against databases being swapped underneath them")
+	}
+	if user_pending(&User{Status: "pending-replication"}) {
+		t.Error("pending-replication is still gated; nothing sets it, so the arm gates a state no account can be in")
+	}
+	for _, status := range []string{"active", "suspended", ""} {
+		if user_pending(&User{Status: status}) {
+			t.Errorf("a %q user is reported pending", status)
+		}
+	}
+	if user_pending(nil) {
+		t.Error("a nil user is reported pending")
+	}
+}
+
+// TestReplicationStatusIsGone keeps the string from returning by any route —
+// the gate, a comment, or a test fixture that would make the dead arm look
+// exercised.
+func TestReplicationStatusIsGone(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("globbing: %v", err)
+	}
+	for _, name := range files {
+		if name == "users_test.go" {
+			// The two legitimate references live here: the negative assertion
+			// above, and this loop's own error message.
+			continue
+		}
+		source, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		if strings.Contains(string(source), "pending-replication") {
+			t.Errorf("%s mentions pending-replication; nothing sets that status, so any gate or fixture using it is testing a state that cannot occur", name)
+		}
 	}
 }

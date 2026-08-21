@@ -50,6 +50,7 @@ func restore_tables_create(t *testing.T) {
 		users.exec("create table if not exists " + table + " ( user text not null )")
 	}
 	users.exec("create table if not exists settings ( name text not null primary key, value text not null )")
+	db_open("db/schedule.db").exec("create table if not exists schedule ( id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null )")
 }
 
 // restore_post drives the handler with a multipart body carrying whatever

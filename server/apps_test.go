@@ -2120,7 +2120,7 @@ func TestNotificationsAppSelfCallBypass(t *testing.T) {
 // TestAppIsLogin — the login-app exemption must match by registered
 // path, not by the id literal: on a published install the login app's
 // id is a publisher entity id, and matching on "login" made the
-// pending-replication / account-closing / identity-required gates
+// pending / account-closing / identity-required gates
 // redirect the login app's own /login/* pages to themselves forever
 // (ticket #414: /login/replicating 302ing to itself on every published
 // install, invisible on dev installs where the id IS "login").

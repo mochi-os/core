@@ -1046,7 +1046,7 @@ func app_login() *App {
 }
 
 // app_is_login reports whether a is the bound login app. The gates that
-// exempt the login app (pending-replication, account-closing,
+// exempt the login app (pending, account-closing,
 // identity-required) redirect INTO its interstitial pages, so the login
 // app must never be gated against itself — matching by the resolved app
 // rather than an id literal is what keeps that from looping on a
@@ -1060,7 +1060,7 @@ func app_is_login(a *App) bool {
 }
 
 // app_login_route is the absolute URL of one of the login app's
-// interstitial pages (replicating, restore, closing, identity) — the
+// interstitial pages (restore, closing, identity) — the
 // targets the auth gates redirect a browser to. The page names are
 // fixed conventions; only the login app's path varies.
 func app_login_route(name string) string {

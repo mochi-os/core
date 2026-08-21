@@ -154,6 +154,7 @@ func TestRestoreDoesNotUseAStaleRole(t *testing.T) {
 	for _, table := range []string{"credentials", "totp", "recovery", "oauth"} {
 		db_open("db/users.db").exec("create table if not exists " + table + " (user text not null)")
 	}
+	db_open("db/schedule.db").exec("create table if not exists schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
 	sessions.exec("insert into codes (code, username, expires) values ('123456', 'restored@example.com', ?)", now()+3600)
 
 	var raw bytes.Buffer

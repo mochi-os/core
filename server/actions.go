@@ -919,7 +919,8 @@ func (a *Action) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 // index.
 func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var path string
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path); err != nil {
+	storage := false
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "path", &path, "storage?", &storage); err != nil {
 		return nil, err
 	}
 
@@ -929,6 +930,19 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	}
 
 	owner := principal_owner(t)
+
+	// storage=True reads the CALLER's directory rather than the route owner's,
+	// resolving it the way every other storage primitive already does: mochi.db,
+	// a.upload, mochi.cache.* and mochi.image.variant all go through
+	// principal_storage. A file a non-owner uploaded lives in the uploader's
+	// storage, so serving it from the owner's finds it only while the owner
+	// happens to hold a copy. Domain routing below still wins: a hosted domain
+	// publishes one account's files whoever asks.
+	if storage {
+		if caller, err := principal_storage(t); err == nil && caller != nil {
+			owner = caller
+		}
+	}
 
 	// A hosted domain publishes one account's files to every visitor alike, so the
 	// route's owner picks the directory, not the requester. Only the bytes move:

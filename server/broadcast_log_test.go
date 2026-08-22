@@ -7,32 +7,22 @@
 package main
 
 import (
-	"os"
 	"sync"
 	"testing"
 )
 
 // setup_broadcast_log_test gives a temp dir + DB scoped to the test.
-func setup_broadcast_log_test(t *testing.T) (*DB, func()) {
+func setup_broadcast_log_test(t *testing.T) *DB {
 	t.Helper()
-	tmp_dir, err := os.MkdirTemp("", "mochi_bcast_log")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	orig := data_dir
-	data_dir = tmp_dir
+	test_data_directory(t)
 	db := db_open("db/test.db")
-	return db, func() {
-		data_dir = orig
-		os.RemoveAll(tmp_dir)
-	}
+	return db
 }
 
 // TestBroadcastLogAppend — log_append allocates sequences monotonically
 // for (key, peer) and writes one row per call.
 func TestBroadcastLogAppend(t *testing.T) {
-	db, cleanup := setup_broadcast_log_test(t)
-	defer cleanup()
+	db := setup_broadcast_log_test(t)
 
 	s1 := broadcast_log_append(db, "k1", "peerA", "event/a", []byte(`{"x":1}`))
 	s2 := broadcast_log_append(db, "k1", "peerA", "event/b", []byte(`{"x":2}`))
@@ -57,8 +47,7 @@ func TestBroadcastLogAppend(t *testing.T) {
 // TestBroadcastLogPerPeerSequence — under multi-host, host A and host B
 // each write to their own (key, peer) slot. No PK collision.
 func TestBroadcastLogPerPeerSequence(t *testing.T) {
-	db, cleanup := setup_broadcast_log_test(t)
-	defer cleanup()
+	db := setup_broadcast_log_test(t)
 
 	if s := broadcast_log_append(db, "k1", "peerA", "e", []byte(`{}`)); s != 1 {
 		t.Errorf("peerA first: got %d", s)
@@ -79,8 +68,7 @@ func TestBroadcastLogPerPeerSequence(t *testing.T) {
 
 // TestBroadcastLogAgeTrim — rows older than broadcast_log_age are dropped.
 func TestBroadcastLogAgeTrim(t *testing.T) {
-	db, cleanup := setup_broadcast_log_test(t)
-	defer cleanup()
+	db := setup_broadcast_log_test(t)
 
 	broadcast_log_table_create(db)
 
@@ -105,8 +93,7 @@ func TestBroadcastLogAgeTrim(t *testing.T) {
 // TestBroadcastLogAckTrim — after subscribers acknowledge, rows below
 // the minimum ack across all subscribers are dropped.
 func TestBroadcastLogAckTrim(t *testing.T) {
-	db, cleanup := setup_broadcast_log_test(t)
-	defer cleanup()
+	db := setup_broadcast_log_test(t)
 
 	for i := int64(1); i <= 10; i++ {
 		broadcast_log_append(db, "k", "p", "e", []byte(`{}`))
@@ -135,8 +122,7 @@ func TestBroadcastLogAckTrim(t *testing.T) {
 // acknowledged rows exist (avoid wiping the log just because nobody
 // has acked yet).
 func TestBroadcastLogAckTrimNoSubscribers(t *testing.T) {
-	db, cleanup := setup_broadcast_log_test(t)
-	defer cleanup()
+	db := setup_broadcast_log_test(t)
 
 	for i := 0; i < 3; i++ {
 		broadcast_log_append(db, "k", "p", "e", []byte(`{}`))
@@ -153,8 +139,7 @@ func TestBroadcastLogAckTrimNoSubscribers(t *testing.T) {
 // TestBroadcastReplayQuery — the underlying replay query returns rows
 // in sequence order, filtered by (key, peer) and after.
 func TestBroadcastReplayQuery(t *testing.T) {
-	db, cleanup := setup_broadcast_log_test(t)
-	defer cleanup()
+	db := setup_broadcast_log_test(t)
 
 	for i := 0; i < 5; i++ {
 		broadcast_log_append(db, "k", "peerA", "e", []byte(`{}`))
@@ -181,8 +166,7 @@ func TestBroadcastReplayQuery(t *testing.T) {
 // each see their own value: an UPSERT-then-SELECT pair emits duplicate
 // sequences.
 func TestBroadcastNextLocalConcurrentNoDuplicates(t *testing.T) {
-	db, cleanup := setup_broadcast_log_test(t)
-	defer cleanup()
+	db := setup_broadcast_log_test(t)
 
 	const N = 200
 	results := make([]int64, N)

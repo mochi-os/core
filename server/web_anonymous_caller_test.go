@@ -115,8 +115,7 @@ func TestAnonymousCallerStillReachesTheOwnersData(t *testing.T) {
 // the caller instead would refuse, and one that ignored storage would consult
 // the wrong account.
 func TestActingGatesResolveAgainstStorage(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	owner := &User{UID: "u-owner", Username: "owner@example.com"}
 	app := create_external_app("public-app")

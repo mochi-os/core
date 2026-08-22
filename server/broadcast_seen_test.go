@@ -13,8 +13,7 @@ import (
 // TestBroadcastSeenStampedOnAdvance — every applied broadcast stamps seen=now
 // for (sender, key), readable via broadcast_seen_get, without disturbing last.
 func TestBroadcastSeenStampedOnAdvance(t *testing.T) {
-	db, cleanup := setup_broadcast_log_test(t)
-	defer cleanup()
+	db := setup_broadcast_log_test(t)
 
 	if s := broadcast_seen_get(db, "feed1"); s != 0 {
 		t.Errorf("seen before any apply: got %d, want 0", s)
@@ -37,8 +36,7 @@ func TestBroadcastSeenStampedOnAdvance(t *testing.T) {
 // (two peers, same key) reports the freshest apply; owner host-migration (new
 // peer, same key) is the same shape.
 func TestBroadcastSeenMaxOverPeers(t *testing.T) {
-	db, cleanup := setup_broadcast_log_test(t)
-	defer cleanup()
+	db := setup_broadcast_log_test(t)
 
 	broadcast_advance_local(db, "peerA", "feed1", 1)
 	later := now() + 100
@@ -54,8 +52,7 @@ func TestBroadcastSeenMaxOverPeers(t *testing.T) {
 // does NOT leak into a real peer's position (the gap detector reads a specific (peer, key)),
 // and whose last=0 never shadows a later real advance.
 func TestBroadcastTouchSeedsSeen(t *testing.T) {
-	db, cleanup := setup_broadcast_log_test(t)
-	defer cleanup()
+	db := setup_broadcast_log_test(t)
 
 	before := now()
 	broadcast_touch_local(db, "feed1")
@@ -79,8 +76,7 @@ func TestBroadcastTouchSeedsSeen(t *testing.T) {
 // column (pre-#165 db) reads as seen=0, and the first advance migrates it in
 // place and stamps seen without losing last.
 func TestBroadcastSeenColumnMigration(t *testing.T) {
-	db, cleanup := setup_broadcast_log_test(t)
-	defer cleanup()
+	db := setup_broadcast_log_test(t)
 
 	// Old-schema table: no seen column.
 	db.exec("create table received (sender text not null, key text not null, last integer not null default 0, primary key (sender, key))")

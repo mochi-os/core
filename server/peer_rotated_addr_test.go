@@ -20,8 +20,7 @@ import (
 
 // TestNetDropsRotatedAddress: a peer-id mismatch on a dialled address drops it.
 func TestNetDropsRotatedAddress(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	stale, _ := test_host(t)   // defunct identity we still hold an address for
 	current, _ := test_host(t) // who that address actually belongs to now
@@ -54,8 +53,7 @@ func TestNetDropsRotatedAddress(t *testing.T) {
 // TestNetKeepsAddressOnPlainFailure: an ordinary unreachable dial (no mismatch)
 // must NOT drop the address — the peer may just be transiently offline.
 func TestNetKeepsAddressOnPlainFailure(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	id, _ := test_host(t)
 	bare := "/ip4/192.0.2.9/udp/1443/quic-v1"

@@ -1950,10 +1950,7 @@ func setup_test_data_dir(t *testing.T) {
 	t.Helper()
 
 	// Use a temporary directory for tests
-	tmp_dir, err := os.MkdirTemp("", "mochi-permissions-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	tmp_dir := t.TempDir()
 
 	// Set global data_dir
 	data_dir = tmp_dir
@@ -2121,7 +2118,7 @@ func TestUserCloseGrantedToNobodyElse(t *testing.T) {
 // ignored the permission entirely, which is how it shipped. This one calls the
 // builtin the way an app does.
 func TestUserCloseGateRefusesUngrantedApp(t *testing.T) {
-	defer create_test_users_db(t)()
+	create_test_users_db(t)
 
 	users := db_open("db/users.db")
 	users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'public', data text not null default '', published integer not null default 0)")
@@ -2242,7 +2239,7 @@ func TestUsersWriteIsRestrictedAndSettingsHoldsIt(t *testing.T) {
 // TestUsersWriteGateRefusesUngrantedApp exercises the gate rather than the
 // source text, on the API whose refusal matters most.
 func TestUsersWriteGateRefusesUngrantedApp(t *testing.T) {
-	defer create_test_users_db(t)()
+	create_test_users_db(t)
 
 	users := db_open("db/users.db")
 	users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'public', data text not null default '', published integer not null default 0)")
@@ -2342,7 +2339,7 @@ func TestTokenExpiryCapped(t *testing.T) {
 // TestTokensCreateGateRefusesUngrantedApp exercises the gate rather than the
 // registry, and checks no row is written on refusal.
 func TestTokensCreateGateRefusesUngrantedApp(t *testing.T) {
-	defer create_test_users_db(t)()
+	create_test_users_db(t)
 
 	users := db_open("db/users.db")
 	users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'public', data text not null default '', published integer not null default 0)")

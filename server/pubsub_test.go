@@ -133,8 +133,7 @@ func TestPubsubSignableDeterministic(t *testing.T) {
 // wrong verify key fails.
 func TestPubsubSignVerify(t *testing.T) {
 	protocol2_init()
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	id, _ := new_entity_keys(t)
 
@@ -172,8 +171,7 @@ func TestPubsubSignVerify(t *testing.T) {
 // not signed — pubsub carries only message frames, so the domain implies it.
 func TestPubsubSignCoversId(t *testing.T) {
 	protocol2_init()
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	id, _ := new_entity_keys(t)
 
@@ -216,8 +214,7 @@ func directory_announcement(t *testing.T, en *Entry, key ed25519.PrivateKey, exp
 // LWW; an expired announcement is dropped before routing.
 func TestPubsubReceiveRoutesDirectory(t *testing.T) {
 	protocol2_init()
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	ddb := db_open("db/directory.db")
 	ddb.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, message text not null default '', expires text not null default '', signature text not null default '', primary key ( entity, peer ) )")

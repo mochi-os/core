@@ -126,9 +126,7 @@ func TestWriteStreamSvgOversizeDownloads(t *testing.T) {
 func write_file_environment(t *testing.T, url string, hosted bool) (string, func(string) *httptest.ResponseRecorder) {
 	t.Helper()
 
-	original := data_dir
-	data_dir = t.TempDir()
-	t.Cleanup(func() { data_dir = original })
+	test_data_directory(t)
 
 	user := &User{UID: "testuser"}
 	app := &App{id: "files"}
@@ -451,9 +449,7 @@ func TestWriteFileHostedSiteRendersDocument(t *testing.T) {
 // A domain route must not itself grant site serving: routing is how a reader
 // arrived, not what the app meant.
 func TestDomainRouteDoesNotGrantSiteServing(t *testing.T) {
-	original := data_dir
-	data_dir = t.TempDir()
-	t.Cleanup(func() { data_dir = original })
+	test_data_directory(t)
 
 	user := &User{UID: "testuser"}
 	app := &App{id: "files"}
@@ -530,9 +526,7 @@ func TestRouteContextValid(t *testing.T) {
 // gave the route owner's site to anonymous visitors and the visitor's own -
 // almost always empty - directory to anyone signed in.
 func TestWriteFileUsesRouteOwner(t *testing.T) {
-	original := data_dir
-	data_dir = t.TempDir()
-	t.Cleanup(func() { data_dir = original })
+	test_data_directory(t)
 
 	publisher := &User{UID: "publisher"}
 	visitor := &User{UID: "visitor"}
@@ -600,9 +594,7 @@ func TestWriteFileDirectRequestKeepsOwner(t *testing.T) {
 // A hosted domain whose account no longer resolves must fail closed; falling
 // back to the requester would make one URL answer with whoever is asking.
 func TestWriteFileUnresolvedRouteOwnerFailsClosed(t *testing.T) {
-	original := data_dir
-	data_dir = t.TempDir()
-	t.Cleanup(func() { data_dir = original })
+	test_data_directory(t)
 
 	visitor := &User{UID: "visitor"}
 	app := &App{id: "files"}

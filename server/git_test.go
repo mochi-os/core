@@ -30,14 +30,9 @@ import (
 var test_app = &App{id: "repositories"}
 
 // Helper to create a test environment for git operations
-func create_git_test_env(t *testing.T) (*User, string, func()) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_git_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
+func create_git_test_env(t *testing.T) (*User, string) {
+	t.Helper()
+	tmp_dir := test_data_directory(t)
 
 	user := &User{UID: "u1"}
 
@@ -46,12 +41,7 @@ func create_git_test_env(t *testing.T) (*User, string, func()) {
 		t.Fatalf("Failed to create user dir: %v", err)
 	}
 
-	cleanup := func() {
-		data_dir = orig_data_dir
-		os.RemoveAll(tmp_dir)
-	}
-
-	return user, tmp_dir, cleanup
+	return user, tmp_dir
 }
 
 // Helper to create a repo with a commit
@@ -71,8 +61,7 @@ func create_repo_with_commit(t *testing.T, user *User, repo_id string) *git.Repo
 	repo_path := git_repo_path(user, test_app, repo_id)
 
 	// Use git CLI to create initial commit and push to bare repo
-	tmp_work_dir, _ := os.MkdirTemp("", "git_work")
-	defer os.RemoveAll(tmp_work_dir)
+	tmp_work_dir := t.TempDir()
 
 	run := func(args ...string) {
 		cmd := exec.Command("git", args...)
@@ -102,8 +91,7 @@ func create_repo_with_commit(t *testing.T, user *User, repo_id string) *git.Repo
 // ============ Basic Repository Tests ============
 
 func TestGitInit(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_id := "test-repo-123"
 
@@ -124,8 +112,7 @@ func TestGitInit(t *testing.T) {
 }
 
 func TestGitInitIdempotent(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_id := "idempotent-repo"
 
@@ -181,8 +168,7 @@ func TestGitRepoPathDifferentUsers(t *testing.T) {
 }
 
 func TestGitDelete(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_id := "delete-test-repo"
 
@@ -207,8 +193,7 @@ func TestGitDelete(t *testing.T) {
 }
 
 func TestGitDeleteNonExistent(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	// Deleting non-existent repo should not panic
 	err := git_delete(user, test_app, "non-existent-repo")
@@ -217,8 +202,7 @@ func TestGitDeleteNonExistent(t *testing.T) {
 }
 
 func TestGitOpen(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_id := "open-test-repo"
 	err := git_init(user, test_app, repo_id)
@@ -236,8 +220,7 @@ func TestGitOpen(t *testing.T) {
 }
 
 func TestGitOpenNonExistent(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	_, err := git_open(user, test_app, "non-existent-repo")
 	if err == nil {
@@ -246,8 +229,7 @@ func TestGitOpenNonExistent(t *testing.T) {
 }
 
 func TestGitOpenMultipleTimes(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_id := "multi-open-repo"
 	git_init(user, test_app, repo_id)
@@ -267,8 +249,7 @@ func TestGitOpenMultipleTimes(t *testing.T) {
 // ============ Size Tests ============
 
 func TestGitSizeEmpty(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_id := "size-test-repo"
 	git_init(user, test_app, repo_id)
@@ -287,8 +268,7 @@ func TestGitSizeEmpty(t *testing.T) {
 }
 
 func TestGitSizeNonExistent(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	_, err := git_size(user, test_app, "non-existent")
 	if err == nil {
@@ -299,8 +279,7 @@ func TestGitSizeNonExistent(t *testing.T) {
 // ============ Ref Resolution Tests ============
 
 func TestGitResolveRefHEAD(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_id := "resolve-ref-repo"
 	repo := create_repo_with_commit(t, user, repo_id)
@@ -316,8 +295,7 @@ func TestGitResolveRefHEAD(t *testing.T) {
 }
 
 func TestGitResolveRefInvalid(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_id := "resolve-invalid-repo"
 	git_init(user, test_app, repo_id)
@@ -330,8 +308,7 @@ func TestGitResolveRefInvalid(t *testing.T) {
 }
 
 func TestGitResolveRefFullHash(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_id := "resolve-hash-repo"
 	repo := create_repo_with_commit(t, user, repo_id)
@@ -355,8 +332,7 @@ func TestGitResolveRefFullHash(t *testing.T) {
 // ============ Multiple Repository Tests ============
 
 func TestGitMultipleRepos(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repos := []string{"repo-a", "repo-b", "repo-c"}
 
@@ -395,8 +371,7 @@ func TestGitMultipleRepos(t *testing.T) {
 }
 
 func TestGitMultipleUsers(t *testing.T) {
-	_, tmp_dir, cleanup := create_git_test_env(t)
-	defer cleanup()
+	_, tmp_dir := create_git_test_env(t)
 
 	user1 := &User{UID: "u1"}
 	user2 := &User{UID: "u2"}
@@ -431,8 +406,7 @@ func TestGitMultipleUsers(t *testing.T) {
 // ============ Repository Naming Tests ============
 
 func TestGitRepoSpecialNames(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	names := []string{
 		"simple",
@@ -460,8 +434,7 @@ func TestGitRepoSpecialNames(t *testing.T) {
 // ============ Bare Repository Verification ============
 
 func TestGitInitCreatesBareRepo(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_id := "bare-check-repo"
 	git_init(user, test_app, repo_id)
@@ -494,8 +467,7 @@ func TestGitInitCreatesBareRepo(t *testing.T) {
 // ============ Default Branch Tests ============
 
 func TestGitDefaultBranchNewRepo(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_id := "default-branch-repo"
 	git_init(user, test_app, repo_id)
@@ -516,8 +488,7 @@ func TestGitDefaultBranchNewRepo(t *testing.T) {
 // ============ Concurrent Access Tests ============
 
 func TestGitConcurrentOpen(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_id := "concurrent-repo"
 	git_init(user, test_app, repo_id)
@@ -559,8 +530,7 @@ func TestGitNilUser(t *testing.T) {
 }
 
 func TestGitEmptyRepoID(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	// Empty repo ID should probably fail
 	err := git_init(user, test_app, "")
@@ -597,8 +567,7 @@ func TestVersionCompareGit(t *testing.T) {
 // ============ Branch Operations via go-git ============
 
 func TestGitBranchOperations(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_id := "branch-ops-repo"
 	repo := create_repo_with_commit(t, user, repo_id)
@@ -625,8 +594,7 @@ func TestGitBranchOperations(t *testing.T) {
 // api_git_merge_perform and the branch create/delete/default-set primitives: a
 // mutation needs repository/<id> write, the same grant a git push requires.
 func TestGitMergeAccessControl(t *testing.T) {
-	owner, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	owner, _ := create_git_test_env(t)
 
 	repo_id := "merge-acl-repo"
 	resource := "repository/" + repo_id
@@ -687,8 +655,7 @@ func TestGitMergeAccessControl(t *testing.T) {
 // merge-check primitives: public ("*") repositories permit anonymous callers,
 // and an identity without a read grant is denied.
 func TestGitReadAccessControl(t *testing.T) {
-	owner, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	owner, _ := create_git_test_env(t)
 
 	owner_identity := "12OwnerAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	reader_identity := "12ReaderDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
@@ -896,8 +863,7 @@ func TestGitBranchReferenceRejectsTraversal(t *testing.T) {
 // The whole point of validating: the repository's own files must survive a
 // branch name that tries to address them.
 func TestGitBranchTraversalLeavesRepositoryIntact(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo := create_repo_with_commit(t, user, "repo1")
 	config_path := filepath.Join(git_repo_path(user, test_app, "repo1"), "config")
@@ -929,8 +895,7 @@ func TestGitBranchTraversalLeavesRepositoryIntact(t *testing.T) {
 // A merge resolves the target tip, then does tree work; an unconditional write
 // at the end would discard any push that landed meanwhile.
 func TestGitUpdateBranchRefusesChangedTarget(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo := create_repo_with_commit(t, user, "repo1")
 	head, err := repo.Head()
@@ -975,8 +940,7 @@ func TestGitUpdateBranchRefusesChangedTarget(t *testing.T) {
 // the same tip and then tries to move the branch. Compare-and-swap must let
 // exactly one through; two winners would be a lost update.
 func TestGitUpdateBranchConcurrentWritersLoseAtMostOne(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo := create_repo_with_commit(t, user, "repo1")
 	head, err := repo.Head()
@@ -1029,8 +993,7 @@ func TestGitUpdateBranchConcurrentWritersLoseAtMostOne(t *testing.T) {
 // breaking data_dir wholesale makes the unfixed handler fail later anyway, so
 // the test would pass either way.
 func TestGitHandlerRefusesWithoutAppDatabase(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo := "repo1"
 	if err := git_init(user, test_app, repo); err != nil {

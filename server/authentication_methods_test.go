@@ -15,8 +15,7 @@ import (
 )
 
 func TestUserMethodsConfigure(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	users := db_open("db/users.db")
 	// create_test_users_db now includes the disabled column; add the credential
@@ -127,8 +126,7 @@ func TestUserMethodsConfigure(t *testing.T) {
 // method reads "disabled" and server-required email reads "required", whatever
 // the user set or has registered.
 func TestUserMethodStateOperatorClamp(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	users := db_open("db/users.db")
 	users.exec("create table credentials (id blob primary key, user text not null, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
@@ -158,8 +156,7 @@ func TestUserMethodStateOperatorClamp(t *testing.T) {
 // TestPartialContinue verifies MFA factors converge onto one partial in any
 // completion order, and that another user's cookie is never merged.
 func TestPartialContinue(t *testing.T) {
-	cleanup := create_test_sessions_db(t)
-	defer cleanup()
+	create_test_sessions_db(t)
 
 	sessions := db_open("db/sessions.db")
 	request := func(cookie string) *gin.Context {
@@ -330,8 +327,7 @@ func TestAccountGateDone(t *testing.T) {
 // codes stay 401 indefinitely — never a 429 that a third party could hold a
 // known account in — and a correct credential is never blocked.
 func TestAccountRateLimit(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	users := db_open("db/users.db")
 	users.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, created integer not null)")

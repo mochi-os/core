@@ -320,8 +320,7 @@ func TestShellTokenRequiresAuth(t *testing.T) {
 
 // Test /_/token endpoint requires app parameter
 func TestShellTokenRequiresApp(t *testing.T) {
-	cleanup := create_web_test_env(t)
-	defer cleanup()
+	create_web_test_env(t)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -458,8 +457,7 @@ func TestEscapeAttr(t *testing.T) {
 
 // Test JWT token includes app claim
 func TestJwtAppClaim(t *testing.T) {
-	cleanup := create_web_test_env(t)
-	defer cleanup()
+	create_web_test_env(t)
 
 	// Create a session with a secret
 	db := db_open("db/sessions.db")
@@ -488,8 +486,7 @@ func TestJwtAppClaim(t *testing.T) {
 
 // Test JWT token with different app claims
 func TestJwtAppClaimDifferentApps(t *testing.T) {
-	cleanup := create_web_test_env(t)
-	defer cleanup()
+	create_web_test_env(t)
 
 	db := db_open("db/sessions.db")
 	db.exec("create table if not exists sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
@@ -516,8 +513,7 @@ func TestJwtAppClaimDifferentApps(t *testing.T) {
 
 // Test /_/token endpoint JSON response format
 func TestShellTokenResponseFormat(t *testing.T) {
-	cleanup := create_web_test_env(t)
-	defer cleanup()
+	create_web_test_env(t)
 
 	// Fix table schemas to match production (create_web_test_env uses simplified schemas)
 	db_users := db_open("db/users.db")
@@ -591,8 +587,7 @@ func TestShellTokenResponseFormat(t *testing.T) {
 // missing the shell silently keeps whatever the page loaded with, and a theme
 // change stops reaching the chrome — a failure with no error anywhere.
 func TestShellInitReturnsTheme(t *testing.T) {
-	cleanup := create_web_test_env(t)
-	defer cleanup()
+	create_web_test_env(t)
 
 	db_users := db_open("db/users.db")
 	db_users.exec("alter table users add column methods text not null default ''")

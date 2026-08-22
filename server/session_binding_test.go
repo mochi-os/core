@@ -20,13 +20,12 @@ import (
 )
 
 // session_binding_env creates the sessions table and returns the cleanup.
-func session_binding_env(t *testing.T) func() {
+func session_binding_env(t *testing.T) {
 	t.Helper()
-	cleanup := create_web_test_env(t)
+	create_web_test_env(t)
 	db := db_open("db/sessions.db")
 	db.exec("create table if not exists sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
 	db.exec("create unique index if not exists sessions_code on sessions(code)")
-	return cleanup
 }
 
 // session_binding_add inserts one live session.
@@ -55,7 +54,7 @@ func session_binding_forge(user, app, kid, secret string) (string, error) {
 }
 
 func TestAppTokenRefusesAUserTheSessionDoesNotOwn(t *testing.T) {
-	defer session_binding_env(t)()
+	session_binding_env(t)
 	session_binding_add("attacker", "attacker-session", "attacker-secret-32-chars-abcdefgh")
 
 	if token := auth_create_app_token("victim", "attacker-session", "feeds"); token != "" {
@@ -66,7 +65,7 @@ func TestAppTokenRefusesAUserTheSessionDoesNotOwn(t *testing.T) {
 // TestAppTokenStillIssuesForTheSessionOwner keeps the check from being a
 // blanket refusal - the only reason the endpoint exists is the matched pair.
 func TestAppTokenStillIssuesForTheSessionOwner(t *testing.T) {
-	defer session_binding_env(t)()
+	session_binding_env(t)
 	session_binding_add("owner", "owner-session", "owner-secret-32-characters-abcd")
 
 	token := auth_create_app_token("owner", "owner-session", "feeds")
@@ -86,7 +85,7 @@ func TestAppTokenStillIssuesForTheSessionOwner(t *testing.T) {
 // change. Both sessions are live and each has its own secret; holding one of
 // them must not authenticate as the other's owner.
 func TestJwtVerifyConfinesALeakedSecretToItsOwnAccount(t *testing.T) {
-	defer session_binding_env(t)()
+	session_binding_env(t)
 	session_binding_add("attacker", "attacker-session", "attacker-secret-32-chars-abcdefgh")
 	session_binding_add("victim", "victim-session", "victim-secret-32-characters-abc")
 
@@ -117,7 +116,7 @@ func TestJwtVerifyConfinesALeakedSecretToItsOwnAccount(t *testing.T) {
 // reported as such, or the mismatch error tells someone who cannot sign at all
 // which accounts exist on a session.
 func TestJwtVerifyChecksTheSignatureBeforeTheBinding(t *testing.T) {
-	defer session_binding_env(t)()
+	session_binding_env(t)
 	session_binding_add("attacker", "attacker-session", "attacker-secret-32-chars-abcdefgh")
 
 	forged, err := session_binding_forge("victim", "feeds", "attacker-session", "not-the-sessions-secret-at-all")

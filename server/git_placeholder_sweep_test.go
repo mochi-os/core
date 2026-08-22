@@ -110,9 +110,7 @@ func sweep_has_main(t *testing.T, path string) bool {
 // sweep_data_dir points data_dir at a temporary tree for one test.
 func sweep_data_dir(t *testing.T) string {
 	t.Helper()
-	original := data_dir
-	data_dir = t.TempDir()
-	t.Cleanup(func() { data_dir = original })
+	test_data_directory(t)
 	return data_dir
 }
 

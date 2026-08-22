@@ -21,9 +21,7 @@ import (
 // contained_root points data_dir at a temporary directory for one test.
 func contained_root(t *testing.T) string {
 	t.Helper()
-	original := data_dir
-	data_dir = t.TempDir()
-	t.Cleanup(func() { data_dir = original })
+	test_data_directory(t)
 	return data_dir
 }
 

@@ -12,8 +12,7 @@ import "testing"
 // queue_age_maximum (7d). The service names below are ordinary strings - naming
 // one buys no extra retention.
 func TestQueueRetentionIsOneFloor(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db := queue_test_table()
 
 	insert := func(id, service string, age_days int64) {

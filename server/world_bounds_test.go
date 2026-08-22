@@ -32,7 +32,7 @@ func world_bounds_rows(peer string) int {
 // TestWorldIdsAreCappedPerPeer is the finding. replace into keeps a repeated id
 // free, so only new ids grow the table - and nothing counted them.
 func TestWorldIdsAreCappedPerPeer(t *testing.T) {
-	defer setup_world_test(t)()
+	setup_world_test(t)
 
 	for i := 0; i < world_ids_most+50; i++ {
 		world_store("peer1", world_bounds_id(i), "World", "https://world.example:4433", 1, world_test_services(1))
@@ -48,7 +48,7 @@ func TestWorldIdsAreCappedPerPeer(t *testing.T) {
 // caller's churn lock every later world out; evicting the coldest row keeps the
 // table bounded while a legitimate world can always list.
 func TestWorldIdCapEvictsTheLeastRecentlySeen(t *testing.T) {
-	defer setup_world_test(t)()
+	setup_world_test(t)
 	db := db_open("db/world.db")
 
 	for i := 0; i < world_ids_most; i++ {
@@ -79,7 +79,7 @@ func TestWorldIdCapEvictsTheLeastRecentlySeen(t *testing.T) {
 // must not evict another peer's listings - on a mesh that would let one broken
 // server clear everyone else off the join page.
 func TestWorldIdCapIsPerPeer(t *testing.T) {
-	defer setup_world_test(t)()
+	setup_world_test(t)
 
 	world_store("quiet", world_bounds_id(1), "Quiet", "https://world.example:4433", 1, world_test_services(1))
 	for i := 0; i < world_ids_most+20; i++ {
@@ -99,7 +99,7 @@ func TestWorldIdCapIsPerPeer(t *testing.T) {
 // world out after world_seen_expiry - the two disagreed about which worlds
 // exist, and the map only ever grew.
 func TestWorldRecentIsPruned(t *testing.T) {
-	defer setup_world_test(t)()
+	setup_world_test(t)
 
 	world_lock.Lock()
 	world_recent = map[string]struct {

@@ -34,8 +34,7 @@ func grant(t *testing.T, user *User, app string, permission string) {
 // authority over the account's login identity; the entity mutators need
 // user/identity/write.
 func TestIdentityClassNeedsTheIdentityPermission(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	user := &User{UID: "u1", Username: "user1@example.com"}
 	fn := sl.NewBuiltin("mochi.entity.update", nil)

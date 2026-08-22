@@ -86,8 +86,7 @@ func TestBroadcastSkipEscalation(t *testing.T) {
 // unsticks in ONE pass: the loop skips each hole, the drain applies the run
 // behind it, and the stream ends at the buffer's top.
 func TestBroadcastPendingSkipStreamConverges(t *testing.T) {
-	_, cleanup := setup_broadcast_pending_gc_test(t)
-	defer cleanup()
+	setup_broadcast_pending_gc_test(t)
 
 	original := broadcast_pending_dispatch
 	defer func() { broadcast_pending_dispatch = original }()
@@ -119,8 +118,7 @@ func TestBroadcastPendingSkipStreamConverges(t *testing.T) {
 // TestBroadcastPendingSkipStreamRespectsAge — holes younger than the cutoff
 // are left to wait out their own TTL (they may still fill via resync).
 func TestBroadcastPendingSkipStreamRespectsAge(t *testing.T) {
-	_, cleanup := setup_broadcast_pending_gc_test(t)
-	defer cleanup()
+	setup_broadcast_pending_gc_test(t)
 
 	original := broadcast_pending_dispatch
 	defer func() { broadcast_pending_dispatch = original }()
@@ -147,8 +145,7 @@ func TestBroadcastPendingSkipStreamRespectsAge(t *testing.T) {
 // still needs survive the normal trim and fall only at the hard cap; a
 // floor the eviction leaves unreplayable falls with them.
 func TestBroadcastLogAgeTrimRespectsAckFloor(t *testing.T) {
-	db, cleanup := setup_broadcast_log_test(t)
-	defer cleanup()
+	db := setup_broadcast_log_test(t)
 
 	broadcast_log_table_create(db)
 	broadcast_acknowledged_table_create(db)
@@ -200,8 +197,7 @@ func TestBroadcastLogAgeTrimRespectsAckFloor(t *testing.T) {
 // peer advances the watermark to floor-1; one from any other peer is
 // refused (only the origin is authoritative about its own log).
 func TestBroadcastFloorSkips(t *testing.T) {
-	_, cleanup := setup_broadcast_pending_gc_test(t)
-	defer cleanup()
+	setup_broadcast_pending_gc_test(t)
 
 	rel := stage_stalled_stream(t, "u4", "appA", "peer1", "key1", 5, 100, 1, now()-1000)
 	db := db_open(rel)

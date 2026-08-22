@@ -26,8 +26,7 @@ func exclude_test_entities(t *testing.T) (string, string, string, string) {
 }
 
 func TestBroadcastSkipFor(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 
 	feed, identity, remote, actor := exclude_test_entities(t)
@@ -62,8 +61,7 @@ func TestBroadcastSkipFor(t *testing.T) {
 // TestBroadcastSendExcludeRidesPayloadAndSkipsSelf - the excluded subscriber is
 // still delivered to (no hole in their stream); a self-owned one is not.
 func TestBroadcastSendExcludeRidesPayloadAndSkipsSelf(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 
 	feed, self, remote, actor := exclude_test_entities(t)

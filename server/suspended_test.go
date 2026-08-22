@@ -20,9 +20,9 @@ import (
 // suspended_env creates users.db with one active and one suspended account,
 // each carrying a person entity so user_by_uid's OTHER nil - no identity -
 // cannot be mistaken for the suspension filter.
-func suspended_env(t *testing.T) func() {
+func suspended_env(t *testing.T) {
 	t.Helper()
-	cleanup := create_web_test_env(t)
+	create_web_test_env(t)
 	users := db_open("db/users.db")
 	// The shared fixture's tables predate these columns, and its entities
 	// table carries a user_uid the Entity struct has no field for, so `select
@@ -45,14 +45,13 @@ func suspended_env(t *testing.T) func() {
 		users.exec("insert into entities (id, private, fingerprint, user, class, name) values (?, '', ?, ?, 'person', ?)",
 			"entity-"+account.uid, "fingerprint-"+account.uid, account.uid, account.username)
 	}
-	return cleanup
 }
 
 // TestUserByUidHidesASuspendedAccount is the premise every claim below rests
 // on. If this ever stops being true, the checks that were removed were not
 // dead after all and their removal is a security regression.
 func TestUserByUidHidesASuspendedAccount(t *testing.T) {
-	defer suspended_env(t)()
+	suspended_env(t)
 
 	if user_by_uid("u-suspended") != nil {
 		t.Fatal("user_by_uid returned a suspended user; every caller treats a non-nil result as an account allowed to act")
@@ -68,7 +67,7 @@ func TestUserByUidHidesASuspendedAccount(t *testing.T) {
 // outcomes - no such user, suspended, no identity - and only the middle one
 // may be reported as a suspension.
 func TestUserSuspendedTellsTheReasonsApart(t *testing.T) {
-	defer suspended_env(t)()
+	suspended_env(t)
 
 	if !user_suspended("u-suspended") {
 		t.Error("a suspended account is not reported as suspended, so its login paths cannot explain the refusal")
@@ -159,7 +158,7 @@ func TestSuspensionIsCheckedBeforeTheFallback(t *testing.T) {
 // the check after it is reachable and correct. A sweep that removed every
 // post-lookup status check would break the TOTP login path silently.
 func TestLiveSuspendedChecksAreLeftAlone(t *testing.T) {
-	defer suspended_env(t)()
+	suspended_env(t)
 
 	user := user_by_username("suspended@example.com")
 	if user == nil {

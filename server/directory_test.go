@@ -22,15 +22,14 @@ import (
 // checks the entity's signature before storing. These tests mint real ed25519
 // keys and libp2p host identities so the verification paths run for real.
 
-func setup_directory_test(t *testing.T) func() {
-	cleanup := setup_replication_test(t) // sets data_dir + net_id="self"
-	protocol2_init()                     // canonical_encoder for the signables
+func setup_directory_test(t *testing.T) {
+	setup_replication_test(t) // sets data_dir + net_id="self"
+	protocol2_init()          // canonical_encoder for the signables
 	// entry_store refuses a row when the ownership check itself errors, so the
 	// entities table has to exist or every store fails.
 	setup_users_test_schema()
 	db := db_open("db/directory.db")
 	db.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, message text not null default '', expires text not null default '', signature text not null default '', primary key ( entity, peer ) )")
-	return cleanup
 }
 
 // test_identity mints an entity keypair. The entity id IS the public key.
@@ -88,7 +87,7 @@ func test_entry(t *testing.T, entity string, key ed25519.PrivateKey, peer string
 // its own peer id substituted must fail, and so must signing that claim with
 // its own entity key.
 func TestEntryStoreHostHijack(t *testing.T) {
-	defer setup_directory_test(t)()
+	setup_directory_test(t)
 
 	entity, key := test_identity(t)
 	real_peer, real_host := test_host(t)
@@ -140,8 +139,7 @@ func add_entry(t *testing.T, entity, peer string, seen int64) {
 // TestEntryStoreVerified: a fully-signed row from another peer is stored
 // with its fields intact and the fingerprint derived locally.
 func TestEntryStoreVerified(t *testing.T) {
-	cleanup := setup_directory_test(t)
-	defer cleanup()
+	setup_directory_test(t)
 
 	entity, ek := test_identity(t)
 	peer, hk := test_host(t)
@@ -166,8 +164,7 @@ func TestEntryStoreVerified(t *testing.T) {
 // TestEntryStoreRejectsSelf: this host is authoritative for its own rows;
 // a replayed copy of our row must not be stored by the receive path.
 func TestEntryStoreRejectsSelf(t *testing.T) {
-	cleanup := setup_directory_test(t)
-	defer cleanup()
+	setup_directory_test(t)
 
 	entity, ek := test_identity(t)
 	_, hk := test_host(t)
@@ -181,8 +178,7 @@ func TestEntryStoreRejectsSelf(t *testing.T) {
 // TestEntryStoreRejectsTamperedContent: flipping a content fact after
 // signing must fail the entity signature.
 func TestEntryStoreRejectsTamperedContent(t *testing.T) {
-	cleanup := setup_directory_test(t)
-	defer cleanup()
+	setup_directory_test(t)
 
 	entity, ek := test_identity(t)
 	peer, hk := test_host(t)
@@ -197,8 +193,7 @@ func TestEntryStoreRejectsTamperedContent(t *testing.T) {
 // TestEntryStoreRejectsTamperedAttestation: flipping the claim freshness
 // after attestation must fail the host signature.
 func TestEntryStoreRejectsTamperedAttestation(t *testing.T) {
-	cleanup := setup_directory_test(t)
-	defer cleanup()
+	setup_directory_test(t)
 
 	entity, ek := test_identity(t)
 	peer, hk := test_host(t)
@@ -213,8 +208,7 @@ func TestEntryStoreRejectsTamperedAttestation(t *testing.T) {
 // TestEntryStoreRejectsWrongPeer: an attestation signed by one host cannot
 // be presented as another peer's row — the peer id is the verification key.
 func TestEntryStoreRejectsWrongPeer(t *testing.T) {
-	cleanup := setup_directory_test(t)
-	defer cleanup()
+	setup_directory_test(t)
 
 	entity, ek := test_identity(t)
 	peer, hk := test_host(t)
@@ -233,8 +227,7 @@ func TestEntryStoreRejectsWrongPeer(t *testing.T) {
 // seen is an attestation refresh and replaces; equal version and seen is a
 // re-flood and is dropped; older version is always dropped.
 func TestEntryStoreOrdering(t *testing.T) {
-	cleanup := setup_directory_test(t)
-	defer cleanup()
+	setup_directory_test(t)
 
 	entity, ek := test_identity(t)
 	peer, hk := test_host(t)
@@ -295,8 +288,7 @@ func dir_delete_event(t *testing.T, entity, peer string, host p2p_crypto.PrivKey
 // row when the row's seen <= the delete time, keeps a fresher row, never
 // touches other peers' rows, and rejects an attestation by the wrong host.
 func TestDirectoryDeleteEvent(t *testing.T) {
-	cleanup := setup_directory_test(t)
-	defer cleanup()
+	setup_directory_test(t)
 
 	entity, ek := test_identity(t)
 	peer, hk := test_host(t)
@@ -334,12 +326,11 @@ func TestDirectoryDeleteEvent(t *testing.T) {
 
 // setup_directory_cleanup_test extends setup_directory_test with the
 // queue + peers schemas that directory_forget_peer touches.
-func setup_directory_cleanup_test(t *testing.T) func() {
-	cleanup := setup_directory_test(t)
+func setup_directory_cleanup_test(t *testing.T) {
+	setup_directory_test(t)
 	queue_test_table()
 	pdb := db_open("db/peers.db")
 	pdb.exec("create table if not exists peers ( id text not null, address text not null, updated integer not null, primary key (id, address) )")
-	return cleanup
 }
 
 // reset_caches clears the in-memory peer caches between tests; they're
@@ -362,8 +353,7 @@ func reset_caches(t *testing.T) {
 // (target=peer), peers.db (id=peer), AND the three in-memory caches.
 // One peer's removal must not touch other peers' rows.
 func TestDirectoryForgetPeerClearsAllStores(t *testing.T) {
-	cleanup := setup_directory_cleanup_test(t)
-	defer cleanup()
+	setup_directory_cleanup_test(t)
 	defer reset_caches(t)
 
 	dead := "12D3KooWFakeDeadPeerForForgetTest"
@@ -438,8 +428,7 @@ func TestDirectoryForgetPeerClearsAllStores(t *testing.T) {
 // it's unreachable. The two criteria together prevent forgetting a
 // peer that's only briefly offline.
 func TestDirectoryCleanupDeadPeersSkipsFreshSeen(t *testing.T) {
-	cleanup := setup_directory_cleanup_test(t)
-	defer cleanup()
+	setup_directory_cleanup_test(t)
 	defer reset_caches(t)
 
 	silent_but_recent := "12D3KooWFakeSilentButRecentlySeenPeer"
@@ -466,8 +455,7 @@ func TestDirectoryCleanupDeadPeersSkipsFreshSeen(t *testing.T) {
 // restarted, cache empty) must NOT be forgotten yet — the next hourly
 // sweep will re-evaluate once the silent-cache rebuilds.
 func TestDirectoryCleanupDeadPeersSkipsLiveCache(t *testing.T) {
-	cleanup := setup_directory_cleanup_test(t)
-	defer cleanup()
+	setup_directory_cleanup_test(t)
 	defer reset_caches(t)
 
 	stale_but_unsilenced := "12D3KooWFakeStaleButNotYetSilencedPeer"
@@ -486,8 +474,7 @@ func TestDirectoryCleanupDeadPeersSkipsLiveCache(t *testing.T) {
 // meets BOTH criteria — seen > max_age old AND silent-cache positive —
 // must be forgotten.
 func TestDirectoryCleanupDeadPeersForgetsStaleAndSilent(t *testing.T) {
-	cleanup := setup_directory_cleanup_test(t)
-	defer cleanup()
+	setup_directory_cleanup_test(t)
 	defer reset_caches(t)
 
 	dead := "12D3KooWFakeStaleSilentDeadPeer"
@@ -512,8 +499,7 @@ func TestDirectoryCleanupDeadPeersForgetsStaleAndSilent(t *testing.T) {
 // trusted infrastructure and must never be forgotten regardless of
 // silent/stale state.
 func TestDirectoryCleanupDeadPeersSkipsBootstrap(t *testing.T) {
-	cleanup := setup_directory_cleanup_test(t)
-	defer cleanup()
+	setup_directory_cleanup_test(t)
 	defer reset_caches(t)
 
 	bootstrap_id := peers_bootstrap[0].ID
@@ -537,8 +523,7 @@ func TestDirectoryCleanupDeadPeersSkipsBootstrap(t *testing.T) {
 // TestDirectoryTtlSweep: the daily sweep removes rows whose seen is past
 // the 30-day retention and keeps fresher ones.
 func TestDirectoryTtlSweep(t *testing.T) {
-	cleanup := setup_directory_test(t)
-	defer cleanup()
+	setup_directory_test(t)
 
 	add_entry(t, "ent-old", "peerY", now()-31*86400)
 	add_entry(t, "ent-new", "peerY", now()-86400)
@@ -559,8 +544,7 @@ func TestDirectoryTtlSweep(t *testing.T) {
 // TestDirectoryPushRowsSelectsOwnNewerRows: only this host's own rows
 // past the watermark are selected, oldest first.
 func TestDirectoryPushRowsSelectsOwnNewerRows(t *testing.T) {
-	cleanup := setup_directory_test(t)
-	defer cleanup()
+	setup_directory_test(t)
 
 	t0 := now()
 	add_entry(t, "ent-a", net_id, t0-100) // own, below watermark
@@ -586,8 +570,7 @@ func TestDirectoryPushRowsSelectsOwnNewerRows(t *testing.T) {
 // newest row's seen yields nothing — the steady-state no-op between
 // hourly re-attests.
 func TestDirectoryPushRowsWatermarkExcludesDelivered(t *testing.T) {
-	cleanup := setup_directory_test(t)
-	defer cleanup()
+	setup_directory_test(t)
 
 	t0 := now()
 	add_entry(t, "ent-a", net_id, t0-100)
@@ -605,8 +588,7 @@ func TestDirectoryPushRowsWatermarkExcludesDelivered(t *testing.T) {
 // streamed row through the entry_store gate — verified rows land, a
 // tampered row is dropped, and the loop survives it.
 func TestDirectoryPushEventStoresVerifiedRows(t *testing.T) {
-	cleanup := setup_directory_test(t)
-	defer cleanup()
+	setup_directory_test(t)
 
 	entity, ek := test_identity(t)
 	entity2, ek2 := test_identity(t)

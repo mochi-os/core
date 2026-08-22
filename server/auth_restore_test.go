@@ -8,14 +8,14 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
 func TestUserRestoreRoundTrip(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	db := db_open("db/users.db")
 	// create_test_users_db uses the pre-v70 users schema; add the column
@@ -241,5 +241,56 @@ func TestRestoreSourceOrigin(t *testing.T) {
 				t.Errorf("restore_source_origin(%q) = %q, want %q", c.source, got, c.want)
 			}
 		})
+	}
+}
+
+// restore_integrity_guard quick_checks every *.db in a user-supplied restore
+// bundle before it is swapped into place. The manifest file-hash is
+// self-attested, so it cannot prove a DB is sound.
+//
+// Application Interface Exception - see license.txt and license-exception.md.
+func TestRestoreIntegrityGuard(t *testing.T) {
+	bundle := t.TempDir()
+	write := func(rel string, content []byte) {
+		p := filepath.Join(bundle, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A clean sqlite DB nested in the bundle.
+	clean_path := filepath.Join(bundle, "app", "db", "clean.db")
+	if err := os.MkdirAll(filepath.Dir(clean_path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c, err := sql.Open("sqlite3", "file:"+clean_path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Exec("create table t (id integer primary key); insert into t values (1)"); err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+
+	// Non-.db files and a .db-wal sibling must be ignored (only *.db is checked).
+	write("notes.txt", []byte("not a database, and not checked"))
+	write("app/db/clean.db-wal", []byte("garbage wal, not a standalone db"))
+
+	// An all-clean bundle passes.
+	if bad, err := restore_integrity_guard(bundle); bad != "" || err != nil {
+		t.Fatalf("clean bundle rejected: bad=%q err=%v", bad, err)
+	}
+
+	// A corrupt .db is rejected and named.
+	write("app2/db/corrupt.db", []byte("this is not a sqlite database — it is garbage bytes"))
+	bad, err := restore_integrity_guard(bundle)
+	if err != nil {
+		t.Fatalf("guard errored: %v", err)
+	}
+	if bad != "corrupt.db" {
+		t.Fatalf("corrupt DB not rejected (bad=%q, want corrupt.db)", bad)
 	}
 }

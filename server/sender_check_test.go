@@ -25,8 +25,8 @@ func sender_thread(route string) *sl.Thread {
 
 // setup_sender_test creates a users.db holding two users, each owning one
 // entity, so a send can be attempted as one's own entity and as the other's.
-func setup_sender_test(t *testing.T) (*User, *User, string, string, func()) {
-	cleanup := create_test_users_db(t)
+func setup_sender_test(t *testing.T) (*User, *User, string, string) {
+	create_test_users_db(t)
 
 	db := db_open("db/users.db")
 	db.exec("create table entities (id text not null primary key, private text not null, fingerprint text not null, user text not null, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
@@ -39,15 +39,14 @@ func setup_sender_test(t *testing.T) (*User, *User, string, string, func()) {
 	db.exec("insert into entities (id, private, fingerprint, user, class, name) values (?, 'k', 'fp1', ?, 'wiki', 'Mine')", mine, me.UID)
 	db.exec("insert into entities (id, private, fingerprint, user, class, name) values (?, 'k', 'fp2', ?, 'wiki', 'Theirs')", theirs, them.UID)
 
-	return me, them, mine, theirs, cleanup
+	return me, them, mine, theirs
 }
 
 // TestSenderCheckAllowsOwnedEntity — the ordinary case. Ownership is what
 // authorizes a send, and it must keep working whether or not the request was
 // routed to that entity.
 func TestSenderCheckAllowsOwnedEntity(t *testing.T) {
-	me, _, mine, _, cleanup := setup_sender_test(t)
-	defer cleanup()
+	me, _, mine, _ := setup_sender_test(t)
 
 	for name, thread := range map[string]*sl.Thread{
 		"routed to it":             sender_thread(mine),
@@ -67,8 +66,7 @@ func TestSenderCheckAllowsOwnedEntity(t *testing.T) {
 }
 
 func TestSenderCheckRefusesRoutedEntity(t *testing.T) {
-	me, _, _, theirs, cleanup := setup_sender_test(t)
-	defer cleanup()
+	me, _, _, theirs := setup_sender_test(t)
 
 	allowed, err := sender_check(sender_thread(theirs), me, theirs, "test")
 	if err != nil {
@@ -83,8 +81,7 @@ func TestSenderCheckRefusesRoutedEntity(t *testing.T) {
 // routing involved, so the test above is known to be testing the route path
 // rather than an unrelated blanket refusal.
 func TestSenderCheckRefusesUnroutedForeignEntity(t *testing.T) {
-	me, _, _, theirs, cleanup := setup_sender_test(t)
-	defer cleanup()
+	me, _, _, theirs := setup_sender_test(t)
 
 	allowed, err := sender_check(sender_thread(""), me, theirs, "test")
 	if err != nil {
@@ -96,8 +93,7 @@ func TestSenderCheckRefusesUnroutedForeignEntity(t *testing.T) {
 }
 
 func TestSenderCheckRefusesDeletedEntity(t *testing.T) {
-	me, _, mine, _, cleanup := setup_sender_test(t)
-	defer cleanup()
+	me, _, mine, _ := setup_sender_test(t)
 
 	db := db_open("db/users.db")
 	db.exec("delete from entities where id=?", mine)
@@ -114,8 +110,7 @@ func TestSenderCheckRefusesDeletedEntity(t *testing.T) {
 // TestSenderCheckRefusesUnknownEntity — an id that never existed must not be
 // admitted by a missing row reading as anything other than "not yours".
 func TestSenderCheckRefusesUnknownEntity(t *testing.T) {
-	me, _, _, _, cleanup := setup_sender_test(t)
-	defer cleanup()
+	me, _, _, _ := setup_sender_test(t)
 
 	allowed, err := sender_check(sender_thread("entity-nonexistent"), me, "entity-nonexistent", "test")
 	if err != nil {

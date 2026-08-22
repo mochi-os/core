@@ -201,8 +201,7 @@ func TestCapsRejectsNonCapsFrame(t *testing.T) {
 // --- claim sign / verify -----------------------------------------------
 
 func TestClaimSignVerifyRoundTrip(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	id, _ := new_entity_keys(t)
 
@@ -220,8 +219,7 @@ func TestClaimSignVerifyRoundTrip(t *testing.T) {
 }
 
 func TestClaimSignMissingEntityReturnsNil(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 
 	challenge := make([]byte, challenge_size_v2)
@@ -242,8 +240,7 @@ func TestClaimSignBadChallengeReturnsNil(t *testing.T) {
 }
 
 func TestClaimVerifyRejectsForgedSignature(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	id, _ := new_entity_keys(t)
 
@@ -262,8 +259,7 @@ func TestClaimVerifyRejectsCrossStreamReplay(t *testing.T) {
 	// Plan: "A captured claim from stream A cannot be replayed on
 	// stream B because the signed input binds the per-stream
 	// challenge, which is fresh per stream."
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	id, _ := new_entity_keys(t)
 
@@ -285,8 +281,7 @@ func TestClaimVerifyRejectsCrossStreamReplay(t *testing.T) {
 }
 
 func TestClaimVerifyRejectsCrossEntityReplay(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	id_a, _ := new_entity_keys(t)
 	id_b, _ := new_entity_keys(t)
@@ -309,8 +304,7 @@ func TestClaimVerifyRejectsCrossEntityReplay(t *testing.T) {
 // verify at another, so a genuine signature captured by a middle peer cannot be
 // relayed on. Uses two independent challenges - neither is attacker-chosen.
 func TestClaimVerifyRejectsRelayedClaim(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	id, _ := new_entity_keys(t)
 
@@ -340,8 +334,7 @@ func TestClaimVerifyRejectsRelayedClaim(t *testing.T) {
 // so a claim made on the messages protocol cannot be lifted onto the
 // stream protocol even between the same two peers on the same challenge.
 func TestClaimVerifyRejectsCrossProtocolReplay(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	id, _ := new_entity_keys(t)
 
@@ -361,8 +354,7 @@ func TestClaimVerifyRejectsCrossProtocolReplay(t *testing.T) {
 // value would silently collapse the binding back to challenge-only, so
 // signing and verifying fail closed rather than proceeding.
 func TestClaimRequiresReceiverAndProtocol(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	id, _ := new_entity_keys(t)
 
@@ -402,8 +394,7 @@ func TestClaimVerifyShortInputs(t *testing.T) {
 // --- claim_write framing ----------------------------------------------
 
 func TestClaimWriteEmitsClaimFrame(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	id, _ := new_entity_keys(t)
 
@@ -430,8 +421,7 @@ func TestClaimWriteEmitsClaimFrame(t *testing.T) {
 }
 
 func TestClaimWriteFailsForUnknownEntity(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 
 	challenge := make([]byte, challenge_size_v2)
@@ -451,8 +441,7 @@ func TestSendersEntityInvalidateClosesMatching(t *testing.T) {
 	// for the rotated entity. We can't easily spin up a real Sender
 	// without libp2p, so install a synthetic one by hand into the
 	// senders registry and verify the helper finds + tears it down.
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	const peer = "peer-rotate-test"
 	id, _ := new_entity_keys(t)
@@ -576,8 +565,7 @@ func TestSessionIDFresh(t *testing.T) {
 // it an opener knows only which host replied.
 
 func TestResponderProofRoundTrip(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	id, _ := new_entity_keys(t)
 	challenge := must_challenge(t)
@@ -592,8 +580,7 @@ func TestResponderProofRoundTrip(t *testing.T) {
 }
 
 func TestResponderProofRejectsOtherEntity(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	// The core property: a host that does not hold an entity's key cannot
 	// produce a proof for it. This is what makes a caller-supplied peer
@@ -612,8 +599,7 @@ func TestResponderProofRejectsOtherEntity(t *testing.T) {
 }
 
 func TestResponderProofRejectsReplayOnAnotherStream(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	// Each stream mints a fresh challenge, so a proof captured from one
 	// stream must not authenticate another.
@@ -628,8 +614,7 @@ func TestResponderProofRejectsReplayOnAnotherStream(t *testing.T) {
 }
 
 func TestResponderProofRejectsReplayToAnotherOpener(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	// The opener binding stops a host collecting a proof on its own
 	// connection and relaying it to a victim as though it were the
@@ -644,8 +629,7 @@ func TestResponderProofRejectsReplayToAnotherOpener(t *testing.T) {
 }
 
 func TestResponderProofRejectsCrossProtocol(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	id, _ := new_entity_keys(t)
 	challenge := must_challenge(t)
@@ -657,8 +641,7 @@ func TestResponderProofRejectsCrossProtocol(t *testing.T) {
 }
 
 func TestResponderProofIsNotAClaim(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	// The two directions use separate signing domains, so a claim
 	// harvested from a sender can never be presented as a responder's

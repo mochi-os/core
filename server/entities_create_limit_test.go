@@ -51,8 +51,7 @@ func entity_limit_create(thread *sl.Thread, name string) error {
 // TestEntityCreateIsRateLimited is the finding: creation was unthrottled while
 // only withdrawal was limited.
 func TestEntityCreateIsRateLimited(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 
 	thread := entity_limit_thread(t, "u-limit")
@@ -85,8 +84,7 @@ func TestEntityCreateIsRateLimited(t *testing.T) {
 // not deny creation to every other account on the server - a shared bucket
 // would turn one misbehaving app into an outage for everyone.
 func TestEntityCreateLimitIsPerUser(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 
 	flooder := entity_limit_thread(t, "u-flood")
@@ -109,8 +107,7 @@ func TestEntityCreateLimitIsPerUser(t *testing.T) {
 // not draw on an app's budget - an account cannot be prevented from existing by
 // an app that has been busy.
 func TestEntityCreateLimitLeavesSignupAlone(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 
 	user := &User{UID: "u-signup", Username: "signup@example.com"}
@@ -133,8 +130,7 @@ func TestEntityCreateLimitLeavesSignupAlone(t *testing.T) {
 // class must not spend budget: an app with a manifest bug would otherwise burn
 // the user's allowance and block the apps that are behaving.
 func TestEntityCreateChargedAfterTheClassCheck(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 
 	thread := entity_limit_thread(t, "u-refused")

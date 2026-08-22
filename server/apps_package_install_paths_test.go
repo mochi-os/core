@@ -53,8 +53,7 @@ func package_install_zip(t *testing.T, path string, version string, paths string
 // apps/install without a grant, which is not what these tests are about.
 func package_install_setup(t *testing.T) (*sl.Thread, *User, *App, string) {
 	t.Helper()
-	cleanup := setup_replication_test(t)
-	t.Cleanup(cleanup)
+	setup_replication_test(t)
 	setup_users_test_schema()
 
 	user := &User{UID: "u-installer", Username: "installer@example.com", Role: "administrator"}

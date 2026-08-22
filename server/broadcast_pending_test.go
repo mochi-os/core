@@ -15,26 +15,17 @@ import (
 	"testing"
 )
 
-func setup_broadcast_pending_test(t *testing.T) (*DB, func()) {
+func setup_broadcast_pending_test(t *testing.T) *DB {
 	t.Helper()
-	tmp_dir, err := os.MkdirTemp("", "mochi_bcast_pend")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	orig := data_dir
-	data_dir = tmp_dir
+	test_data_directory(t)
 	db := db_open("db/test.db")
-	return db, func() {
-		data_dir = orig
-		os.RemoveAll(tmp_dir)
-	}
+	return db
 }
 
 // TestBroadcastPendingInsertAndCount confirms the table is created
 // lazily and rows accumulate per (peer, key).
 func TestBroadcastPendingInsertAndCount(t *testing.T) {
-	db, cleanup := setup_broadcast_pending_test(t)
-	defer cleanup()
+	db := setup_broadcast_pending_test(t)
 
 	if got := broadcast_pending_count(db, "p", "k"); got != 0 {
 		t.Errorf("pre-insert count: got %d, want 0", got)
@@ -62,8 +53,7 @@ func TestBroadcastPendingInsertAndCount(t *testing.T) {
 // Important so a flapping subscriber that re-receives the same seq
 // during a resync round-trip doesn't grow the buffer per delivery.
 func TestBroadcastPendingDuplicateIgnored(t *testing.T) {
-	db, cleanup := setup_broadcast_pending_test(t)
-	defer cleanup()
+	db := setup_broadcast_pending_test(t)
 
 	broadcast_pending_insert(db, "p", "k", 5, "src", "dst", "svc", "ev", "", "", "", []byte{1})
 	broadcast_pending_insert(db, "p", "k", 5, "src", "dst", "svc", "ev", "", "", "", []byte{2})
@@ -86,8 +76,7 @@ func TestBroadcastPendingDuplicateIgnored(t *testing.T) {
 // then seq=1 arrives via the regular path. broadcast_advance_local
 // (which calls drain) processes 2,3,4 in order with no further input.
 func TestBroadcastPendingDrainChainAppliesInOrder(t *testing.T) {
-	db, cleanup := setup_broadcast_pending_test(t)
-	defer cleanup()
+	db := setup_broadcast_pending_test(t)
 
 	// Stub dispatcher: append each delivered seq to a slice so the
 	// test can assert order. Always succeeds.
@@ -133,8 +122,7 @@ func TestBroadcastPendingDrainChainAppliesInOrder(t *testing.T) {
 // applies, only 2 drains (3 missing); 4 stays buffered until 3
 // arrives.
 func TestBroadcastPendingDrainStopsAtGap(t *testing.T) {
-	db, cleanup := setup_broadcast_pending_test(t)
-	defer cleanup()
+	db := setup_broadcast_pending_test(t)
 
 	original := broadcast_pending_dispatch
 	defer func() { broadcast_pending_dispatch = original }()
@@ -164,8 +152,7 @@ func TestBroadcastPendingDrainStopsAtGap(t *testing.T) {
 // event's handler errors, the row stays in pending so a future drain
 // attempt (e.g. after the underlying issue resolves) can retry.
 func TestBroadcastPendingDrainHaltsOnDispatchFailure(t *testing.T) {
-	db, cleanup := setup_broadcast_pending_test(t)
-	defer cleanup()
+	db := setup_broadcast_pending_test(t)
 
 	original := broadcast_pending_dispatch
 	defer func() { broadcast_pending_dispatch = original }()
@@ -190,8 +177,7 @@ func TestBroadcastPendingDrainHaltsOnDispatchFailure(t *testing.T) {
 // the buffer count plateaus. Smoke-tests the cap without inserting
 // 1000+ rows by lowering it temporarily.
 func TestBroadcastPendingCapEnforced(t *testing.T) {
-	db, cleanup := setup_broadcast_pending_test(t)
-	defer cleanup()
+	db := setup_broadcast_pending_test(t)
 
 	// The cap is a const; can't lower it here. Insert just enough
 	// rows to verify the cap function exists - the small-N path is
@@ -212,18 +198,10 @@ func TestBroadcastPendingCapEnforced(t *testing.T) {
 // The classifier and the skip+drain integration. broadcast_pending_gc itself
 // needs registered user/app globals, so it is exercised in the harness tests.
 
-func setup_broadcast_pending_gc_test(t *testing.T) (string, func()) {
+func setup_broadcast_pending_gc_test(t *testing.T) string {
 	t.Helper()
-	tmp_dir, err := os.MkdirTemp("", "mochi_bcast_gc")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	orig := data_dir
-	data_dir = tmp_dir
-	return tmp_dir, func() {
-		data_dir = orig
-		os.RemoveAll(tmp_dir)
-	}
+	tmp_dir := test_data_directory(t)
+	return tmp_dir
 }
 
 // stage_stalled_stream creates a per-app DB at users/<uid>/<app>/app.db
@@ -258,8 +236,7 @@ func stage_stalled_stream(t *testing.T, uid, app, peer, key string, last, minimu
 // This is the load-bearing decision: every stream the GC operates on
 // passes through this filter.
 func TestBroadcastPendingStalledDBClassifiesGap(t *testing.T) {
-	_, cleanup := setup_broadcast_pending_gc_test(t)
-	defer cleanup()
+	setup_broadcast_pending_gc_test(t)
 	rel := stage_stalled_stream(t, "u1", "appA", "peer1", "key1",
 		1555, 4255, 50, now()-100)
 	got := broadcast_pending_stalled_db("u1", "appA", rel)
@@ -284,8 +261,7 @@ func TestBroadcastPendingStalledDBClassifiesGap(t *testing.T) {
 // TestBroadcastPendingStalledDBSkipsContiguous - a stream that would drain on
 // the next arrival must not be flagged, or the GC skips events about to apply.
 func TestBroadcastPendingStalledDBSkipsContiguous(t *testing.T) {
-	_, cleanup := setup_broadcast_pending_gc_test(t)
-	defer cleanup()
+	setup_broadcast_pending_gc_test(t)
 	rel := stage_stalled_stream(t, "u2", "appA", "peer1", "key1",
 		1555, 1556, 50, now()-100)
 	got := broadcast_pending_stalled_db("u2", "appA", rel)
@@ -298,8 +274,7 @@ func TestBroadcastPendingStalledDBSkipsContiguous(t *testing.T) {
 // the broadcast tables returns empty - apps that don't use the
 // subsystem must be silently skipped, not crash the walker.
 func TestBroadcastPendingStalledDBNoTables(t *testing.T) {
-	tmp_dir, cleanup := setup_broadcast_pending_gc_test(t)
-	defer cleanup()
+	tmp_dir := setup_broadcast_pending_gc_test(t)
 	rel := filepath.Join("users", "u3", "appB", "app.db")
 	abs := filepath.Join(tmp_dir, rel)
 	if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
@@ -321,8 +296,7 @@ func TestBroadcastPendingStalledDBNoTables(t *testing.T) {
 // the production case where one user has multiple subscribed apps
 // each with their own stuck (peer, key).
 func TestBroadcastPendingStalledWalkFindsMultipleApps(t *testing.T) {
-	_, cleanup := setup_broadcast_pending_gc_test(t)
-	defer cleanup()
+	setup_broadcast_pending_gc_test(t)
 	stage_stalled_stream(t, "u1", "appA", "peer1", "key1", 100, 500, 10, now()-100)
 	stage_stalled_stream(t, "u1", "appB", "peer2", "key2", 200, 600, 10, now()-100)
 	stage_stalled_stream(t, "u2", "appA", "peer1", "key1", 300, 700, 10, now()-100)
@@ -335,8 +309,7 @@ func TestBroadcastPendingStalledWalkFindsMultipleApps(t *testing.T) {
 // TestBroadcastPendingStalledDBStalePendingHidden - a stale pending row below
 // received.last must not hide a genuinely stuck stream from the classifier.
 func TestBroadcastPendingStalledDBStalePendingHidden(t *testing.T) {
-	_, cleanup := setup_broadcast_pending_gc_test(t)
-	defer cleanup()
+	setup_broadcast_pending_gc_test(t)
 	// Stream: received.last=866, pending has 1 stale orphan at seq=11
 	// (left over from an earlier buggy code path) PLUS a genuine
 	// gap with relevant minimum=1310. The fixed classifier must pick
@@ -379,8 +352,7 @@ func TestBroadcastPendingStalledDBStalePendingHidden(t *testing.T) {
 // TestBroadcastAdvanceSkipsAndDrains - once received.last jumps the gap, the
 // chain-drain picks up the now-contiguous tail.
 func TestBroadcastAdvanceSkipsAndDrains(t *testing.T) {
-	_, cleanup := setup_broadcast_pending_gc_test(t)
-	defer cleanup()
+	setup_broadcast_pending_gc_test(t)
 
 	// Stub the dispatcher so chain-drain has something to call. We
 	// just record which sequences ran and report success.

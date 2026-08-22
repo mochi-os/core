@@ -20,8 +20,7 @@ import (
 // both the fan-out mechanism and the self-heal for a row enqueued before any
 // host known.
 func TestQueueExpandEmptyTargetFansOutToAllHosts(t *testing.T) {
-	cleanup := setup_replication_test(t) // sets net_id = "self", temp data dir
-	defer cleanup()
+	setup_replication_test(t) // sets net_id = "self", temp data dir
 
 	// Entity ent-1 lives on three remote hosts (none is self). Distinct
 	// seen times so the ordering is deterministic: host-3 most recent.
@@ -74,8 +73,7 @@ func TestQueueExpandEmptyTargetFansOutToAllHosts(t *testing.T) {
 // the tick nor consumes a send slot, and the row is deferred rather than
 // dropped.
 func TestQueueProcessDefersSilentHost(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	qdb := queue_test_table()
 	queue_test_insert_target(qdb, "row-dead", "dead-host", priority_interactive) // due now, expires 0

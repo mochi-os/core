@@ -55,8 +55,7 @@ func new_stream_pair() (*pipe_stream, *pipe_stream) {
 // --- End-to-end handshake ----------------------------------------------
 
 func TestEndToEndHandshakeOverPipe(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	reset_workers(t)
 	defer reset_workers(t)
@@ -208,8 +207,7 @@ func install_sender_for(t *testing.T, peer string, stream wire_stream, hello *Fr
 }
 
 func TestEndToEndMessageRoundTrip(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	reset_workers(t)
 	defer reset_workers(t)
@@ -281,8 +279,7 @@ func TestEndToEndPipelinesClaimAndMessage(t *testing.T) {
 	// First message from a new entity gets a claim frame pipelined
 	// ahead of it. We assert by hand: receiver sees claim then
 	// message before sending the ack.
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	reset_workers(t)
 	defer reset_workers(t)
@@ -352,8 +349,7 @@ func TestEndToEndPipelinesClaimAndMessage(t *testing.T) {
 func TestEndToEndUnclaimedTriggersReclaim(t *testing.T) {
 	// fail{unclaimed} must make the sender clear its claimed cache so the next
 	// send re-issues the claim before the message.
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	reset_workers(t)
 	defer reset_workers(t)
@@ -386,8 +382,7 @@ func TestEndToEndUnclaimedTriggersReclaim(t *testing.T) {
 func TestEndToEndStreamDeathQueueFailsInflight(t *testing.T) {
 	// Plan: "On stream death (writer or reader errors): ... Drain
 	// inflight: every queue ID gets queue_fail("stream closed")."
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	reset_workers(t)
 	defer reset_workers(t)
@@ -461,8 +456,7 @@ func TestEndToEndStreamDeathQueueFailsInflight(t *testing.T) {
 // where the receiver reads e.content. The receiver side is hand-built over a
 // pipe.
 func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	id, _ := new_entity_keys(t)
 
@@ -546,8 +540,7 @@ func TestStreamOpenShipsContentAsFirstPostAckSegment(t *testing.T) {
 // in-process loopback, since net_me.NewStream(self) is refused by libp2p.
 // net_me is nil here, so the wire attempt would error; the self-loop must not.
 func TestStreamOpenSelfLoopUsesV2Native(t *testing.T) {
-	cleanup := setup_replication_test(t) // sets net_id = "self"
-	defer cleanup()
+	setup_replication_test(t) // sets net_id = "self"
 	setup_users_test_schema() // so the far-end stream_resolve query has a table
 
 	s, err := stream_open_or_self(net_id, "", "to-entity", "market", "search", "market", nil, nil)
@@ -572,8 +565,7 @@ func TestQueueSendDirectUnreachablePeerFails(t *testing.T) {
 	// nil in tests) must unwind cleanly: peer_protocol_open returns
 	// error_sender_unreachable, queue_unsending rolls back the 'sending'
 	// mark, and the row is left for queue_process to retry.
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	saved := net_id
 	net_id = "self-not-peer"
 	defer func() { net_id = saved }()
@@ -597,8 +589,7 @@ func TestQueueSendDirectUnreachablePeerFails(t *testing.T) {
 // not with a bare close, so a requester can tell refusal from a dead
 // connection.
 func TestStreamSelfLoopAnswersErrors(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 
 	// Unknown user: in-band unknown_user, not EOF.
@@ -637,8 +628,7 @@ func TestStreamSelfLoopAnswersErrors(t *testing.T) {
 // of the stream ack proof: a message must not reach the wire until the
 // far side has shown it holds the entity being addressed.
 func TestMessagesProofPrecedesDelivery(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	reset_workers(t)
 	defer reset_workers(t)
@@ -686,8 +676,7 @@ func TestMessagesProofPrecedesDelivery(t *testing.T) {
 // per entity, not once per message — the property that makes this cheap
 // enough to be mandatory on a multiplexed stream.
 func TestMessagesProofCachedPerConnection(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	reset_workers(t)
 	defer reset_workers(t)

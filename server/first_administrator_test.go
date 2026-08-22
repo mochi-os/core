@@ -25,13 +25,12 @@ import (
 
 // administrator_env rebuilds users on the real schema; the shared fixture's
 // copy predates the columns these paths write.
-func administrator_env(t *testing.T) func() {
+func administrator_env(t *testing.T) {
 	t.Helper()
-	cleanup := create_web_test_env(t)
+	create_web_test_env(t)
 	db := db_open("db/users.db")
 	db.exec("drop table if exists users")
 	db.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default '', disabled text not null default '', status text not null default 'active', restore_source text not null default '', restore_passkeys integer not null default 0, purge integer not null default 0)")
-	return cleanup
 }
 
 // administrator_count reports how many accounts hold the role.
@@ -50,34 +49,39 @@ func administrator_count(t *testing.T) int64 {
 // would report a pass most of the time.
 func TestConcurrentSignupsProduceOneAdministrator(t *testing.T) {
 	const rounds = 40
+	// A subtest per round so each gets its own environment and its own
+	// teardown; the loop stops at the first failure the way one long test did.
 	for round := 0; round < rounds; round++ {
-		cleanup := administrator_env(t)
+		passed := t.Run(fmt.Sprintf("round-%d", round), func(t *testing.T) {
+			administrator_env(t)
 
-		var waiting sync.WaitGroup
-		start := make(chan struct{})
-		for i := 0; i < 16; i++ {
-			waiting.Add(1)
-			go func(i int) {
-				defer waiting.Done()
-				<-start
-				user_create(fmt.Sprintf("signup%d@example.com", i))
-			}(i)
-		}
-		close(start)
-		waiting.Wait()
+			var waiting sync.WaitGroup
+			start := make(chan struct{})
+			for i := 0; i < 16; i++ {
+				waiting.Add(1)
+				go func(i int) {
+					defer waiting.Done()
+					<-start
+					user_create(fmt.Sprintf("signup%d@example.com", i))
+				}(i)
+			}
+			close(start)
+			waiting.Wait()
 
-		if got := administrator_count(t); got != 1 {
-			cleanup()
-			t.Fatalf("round %d: 16 concurrent signups on an empty server produced %d administrators, want 1", round, got)
+			if got := administrator_count(t); got != 1 {
+				t.Fatalf("16 concurrent signups on an empty server produced %d administrators, want 1", got)
+			}
+		})
+		if !passed {
+			break
 		}
-		cleanup()
 	}
 }
 
 // TestFirstSignupStillBecomesAdministrator is the property the race guards.
 // Deciding the role inside the insert must not lose it.
 func TestFirstSignupStillBecomesAdministrator(t *testing.T) {
-	defer administrator_env(t)()
+	administrator_env(t)
 
 	first, reason := user_create("first@example.com")
 	if reason != "" || first == nil {
@@ -119,7 +123,7 @@ func (b *blocking_body) Close() error { return nil }
 // rather than probabilistic: the window there is the whole upload, so an
 // ordinary signup landing during it is an overlap, not a race.
 func TestRestoreDoesNotUseAStaleRole(t *testing.T) {
-	defer administrator_env(t)()
+	administrator_env(t)
 	load_core_labels()
 	setting_set("signup_enabled", "true")
 
@@ -202,7 +206,7 @@ func TestRestoreDoesNotUseAStaleRole(t *testing.T) {
 // administrator when it genuinely is first, or a server whose only account
 // arrives by restore has nobody who can administer it.
 func TestRestoreStillClaimsAnEmptyServer(t *testing.T) {
-	defer administrator_env(t)()
+	administrator_env(t)
 
 	db := db_open("db/users.db")
 	db.exec(`insert into users (uid, username, role, methods, status)

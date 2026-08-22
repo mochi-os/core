@@ -76,8 +76,7 @@ func TestDomainPermissionsAreRestrictedButNotAdministratorOnly(t *testing.T) {
 // on a match, writes verified=1 into the server-global domains.db - the flag
 // domain_match consults before serving a host.
 func TestDomainVerifyChecksTheUser(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	app := create_external_app("prober")
 	apps[app.id] = app

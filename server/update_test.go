@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -109,5 +110,34 @@ func TestUpdatePermission(t *testing.T) {
 	}
 	if !permission_administrator("server/update") {
 		t.Error("server/update should require an administrator")
+	}
+}
+
+// Mochi server: RPM repository definition tests
+// TestRPMRepoRequiresVerification pins signature verification in the canonical
+// RPM repo definition. release-publish copies this file from source, so it is
+// the single source of truth for whether dnf verifies Mochi packages.
+func TestRPMRepoRequiresVerification(t *testing.T) {
+	path := filepath.Join("..", "build", "rpm", "mochi.repo")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	text := string(body)
+
+	for _, required := range []string{
+		"gpgcheck=1",      // verify each package's signature
+		"repo_gpgcheck=1", // verify the signed metadata
+		"gpgkey=https://packages.mochi-os.org/mochi.asc", // against the published key
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("mochi.repo is missing %q: RPM signature verification would be off", required)
+		}
+	}
+
+	// Guard the inverse explicitly: a stray gpgcheck=0 anywhere disables it
+	// regardless of the line above.
+	if strings.Contains(text, "gpgcheck=0") {
+		t.Error("mochi.repo contains gpgcheck=0, which disables signature verification")
 	}
 }

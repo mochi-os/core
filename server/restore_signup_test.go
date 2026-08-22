@@ -69,7 +69,7 @@ func restore_request(t *testing.T) (*gin.Context, *httptest.ResponseRecorder, *c
 
 // TestClosedSignupRefusesBeforeReadingTheBody is the defect.
 func TestClosedSignupRefusesBeforeReadingTheBody(t *testing.T) {
-	defer create_web_test_env(t)()
+	create_web_test_env(t)
 	load_core_labels()
 	setting_set("signup_enabled", "false")
 
@@ -90,7 +90,7 @@ func TestClosedSignupRefusesBeforeReadingTheBody(t *testing.T) {
 // unconditional, and proves the zero above is the check firing rather than the
 // handler having stopped parsing altogether.
 func TestOpenSignupStillReadsTheBody(t *testing.T) {
-	defer create_web_test_env(t)()
+	create_web_test_env(t)
 	load_core_labels()
 	setting_set("signup_enabled", "true")
 

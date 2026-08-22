@@ -18,9 +18,9 @@ import (
 
 // passkey_clone_env creates a users.db with one credential at a known counter
 // and returns the user it belongs to, plus the cleanup.
-func passkey_clone_env(t *testing.T, stored uint32) (*User, func()) {
+func passkey_clone_env(t *testing.T, stored uint32) *User {
 	t.Helper()
-	cleanup := create_web_test_env(t)
+	create_web_test_env(t)
 
 	users := db_open("db/users.db")
 	users.exec("create table if not exists credentials (id blob primary key, user text not null, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
@@ -30,7 +30,7 @@ func passkey_clone_env(t *testing.T, stored uint32) (*User, func()) {
 	sessions := db_open("db/sessions.db")
 	sessions.exec("create table if not exists passkeys (credential blob primary key, user text not null, last integer not null default 0)")
 
-	return &User{UID: "u1", Username: "someone@example.com"}, cleanup
+	return &User{UID: "u1", Username: "someone@example.com"}
 }
 
 // passkey_stored_count reads the counter back.
@@ -57,8 +57,7 @@ func passkey_assertion(count uint32, cloned bool) *webauthn.Credential {
 
 // TestCloneWarningIsReported is the defect: the flag was computed and dropped.
 func TestCloneWarningIsReported(t *testing.T) {
-	user, cleanup := passkey_clone_env(t, 40)
-	defer cleanup()
+	user := passkey_clone_env(t, 40)
 	captured := capture_log(t)
 
 	passkey_credential_finalize(user, passkey_assertion(40, true), "198.51.100.7")
@@ -76,8 +75,7 @@ func TestCloneWarningIsReported(t *testing.T) {
 // backwards. UpdateCounter already leaves it alone on a clone warning, so this
 // pins the invariant rather than the library's current behaviour.
 func TestCloneWarningDoesNotLowerTheStoredCounter(t *testing.T) {
-	user, cleanup := passkey_clone_env(t, 40)
-	defer cleanup()
+	user := passkey_clone_env(t, 40)
 	capture_log(t)
 
 	passkey_credential_finalize(user, passkey_assertion(11, true), "198.51.100.7")
@@ -91,8 +89,7 @@ func TestCloneWarningDoesNotLowerTheStoredCounter(t *testing.T) {
 // tracks a healthy authenticator, so the check above cannot be satisfied by
 // freezing the column.
 func TestNormalAssertionAdvancesTheCounter(t *testing.T) {
-	user, cleanup := passkey_clone_env(t, 40)
-	defer cleanup()
+	user := passkey_clone_env(t, 40)
 	capture_log(t)
 
 	passkey_credential_finalize(user, passkey_assertion(41, false), "198.51.100.7")
@@ -106,8 +103,7 @@ func TestNormalAssertionAdvancesTheCounter(t *testing.T) {
 // Without this the reporting could be unconditional and the tests above would
 // still pass, while the operator got a warning on every sign-in.
 func TestNormalAssertionIsSilent(t *testing.T) {
-	user, cleanup := passkey_clone_env(t, 40)
-	defer cleanup()
+	user := passkey_clone_env(t, 40)
 	captured := capture_log(t)
 
 	passkey_credential_finalize(user, passkey_assertion(41, false), "198.51.100.7")
@@ -121,8 +117,7 @@ func TestNormalAssertionIsSilent(t *testing.T) {
 // valid and the login proceeds, so the cosmetic last-used must still update.
 // Putting the counter write behind the flag must not take this with it.
 func TestLastUsedIsRecordedEvenWhenCloneWarned(t *testing.T) {
-	user, cleanup := passkey_clone_env(t, 40)
-	defer cleanup()
+	user := passkey_clone_env(t, 40)
 	capture_log(t)
 
 	passkey_credential_finalize(user, passkey_assertion(40, true), "198.51.100.7")

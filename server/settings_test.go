@@ -7,19 +7,13 @@
 package main
 
 import (
-	"os"
 	"testing"
 )
 
 // Helper to create a test user with preferences
-func create_test_user(t *testing.T) (*User, func()) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_settings_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
+func create_test_user(t *testing.T) *User {
+	t.Helper()
+	test_data_directory(t)
 
 	// Create a test user
 	user := &User{
@@ -29,18 +23,12 @@ func create_test_user(t *testing.T) (*User, func()) {
 		Preferences: map[string]string{},
 	}
 
-	cleanup := func() {
-		data_dir = orig_data_dir
-		os.RemoveAll(tmp_dir)
-	}
-
-	return user, cleanup
+	return user
 }
 
 // Test db_user creates database in user directory
 func TestDbUser(t *testing.T) {
-	user, cleanup := create_test_user(t)
-	defer cleanup()
+	user := create_test_user(t)
 
 	db := db_user(user, "user")
 	if db == nil {
@@ -59,8 +47,7 @@ func TestDbUser(t *testing.T) {
 
 // Test db_user with non-settings database
 func TestDbUserOtherDb(t *testing.T) {
-	user, cleanup := create_test_user(t)
-	defer cleanup()
+	user := create_test_user(t)
 
 	db := db_user(user, "other")
 	if db == nil {
@@ -76,8 +63,7 @@ func TestDbUserOtherDb(t *testing.T) {
 
 // Test user_preferences_load with empty database
 func TestUserPreferencesLoadEmpty(t *testing.T) {
-	user, cleanup := create_test_user(t)
-	defer cleanup()
+	user := create_test_user(t)
 
 	prefs := user_preferences_load(user)
 	if prefs == nil {
@@ -90,8 +76,7 @@ func TestUserPreferencesLoadEmpty(t *testing.T) {
 
 // Test user_preferences_load with data
 func TestUserPreferencesLoadWithData(t *testing.T) {
-	user, cleanup := create_test_user(t)
-	defer cleanup()
+	user := create_test_user(t)
 
 	// Insert some preferences directly
 	db := db_user(user, "user")
@@ -116,8 +101,7 @@ func TestUserPreferencesLoadWithData(t *testing.T) {
 
 // Test user_preference_get with existing preference
 func TestUserPreferenceGetExisting(t *testing.T) {
-	user, cleanup := create_test_user(t)
-	defer cleanup()
+	user := create_test_user(t)
 
 	user.Preferences = map[string]string{
 		"theme":    "dark",
@@ -137,8 +121,7 @@ func TestUserPreferenceGetExisting(t *testing.T) {
 
 // Test user_preference_get with default
 func TestUserPreferenceGetDefault(t *testing.T) {
-	user, cleanup := create_test_user(t)
-	defer cleanup()
+	user := create_test_user(t)
 
 	user.Preferences = map[string]string{}
 
@@ -155,8 +138,7 @@ func TestUserPreferenceGetDefault(t *testing.T) {
 
 // Test user_preference_set creates new preference
 func TestUserPreferenceSetNew(t *testing.T) {
-	user, cleanup := create_test_user(t)
-	defer cleanup()
+	user := create_test_user(t)
 
 	user.Preferences = map[string]string{}
 
@@ -177,8 +159,7 @@ func TestUserPreferenceSetNew(t *testing.T) {
 
 // Test user_preference_set updates existing preference
 func TestUserPreferenceSetUpdate(t *testing.T) {
-	user, cleanup := create_test_user(t)
-	defer cleanup()
+	user := create_test_user(t)
 
 	user.Preferences = map[string]string{"theme": "light"}
 
@@ -209,8 +190,7 @@ func TestUserPreferenceSetUpdate(t *testing.T) {
 
 // Test user_preference_set with multiple preferences
 func TestUserPreferenceSetMultiple(t *testing.T) {
-	user, cleanup := create_test_user(t)
-	defer cleanup()
+	user := create_test_user(t)
 
 	user.Preferences = map[string]string{}
 
@@ -232,8 +212,7 @@ func TestUserPreferenceSetMultiple(t *testing.T) {
 
 // Test preferences survive reload
 func TestUserPreferencesPersistence(t *testing.T) {
-	user, cleanup := create_test_user(t)
-	defer cleanup()
+	user := create_test_user(t)
 
 	user.Preferences = map[string]string{}
 
@@ -259,8 +238,7 @@ func TestUserPreferencesPersistence(t *testing.T) {
 
 // Test user_preference_delete
 func TestUserPreferenceDelete(t *testing.T) {
-	user, cleanup := create_test_user(t)
-	defer cleanup()
+	user := create_test_user(t)
 
 	user.Preferences = map[string]string{}
 
@@ -298,15 +276,7 @@ func TestUserPreferenceDelete(t *testing.T) {
 
 // Test global setting_get function (existing functionality)
 func TestSettingGet(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_settings_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
+	test_data_directory(t)
 
 	// Create settings table
 	db := db_open("db/settings.db")
@@ -326,15 +296,7 @@ func TestSettingGet(t *testing.T) {
 
 // Test global setting_set function (existing functionality)
 func TestSettingSet(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_settings_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
+	test_data_directory(t)
 
 	// Create settings table
 	db := db_open("db/settings.db")
@@ -356,12 +318,7 @@ func TestSettingSet(t *testing.T) {
 }
 
 func TestSettingEffective(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_settings_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-
+	tmp_dir := test_data_directory(t)
 	orig_data_dir := data_dir
 	data_dir = tmp_dir
 	defer func() { data_dir = orig_data_dir }()
@@ -457,16 +414,7 @@ func TestSystemSettingsUserReadable(t *testing.T) {
 
 // Test setting_signup_enabled helper
 func TestSettingSignupEnabled(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_settings_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
-
+	test_data_directory(t)
 	db := db_open("db/settings.db")
 	db.exec("create table settings (name text primary key, value text not null)")
 

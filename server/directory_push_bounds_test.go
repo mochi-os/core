@@ -10,18 +10,16 @@
 package main
 
 import (
+	"github.com/fxamacker/cbor/v2"
 	"io"
 	"testing"
 	"time"
-
-	"github.com/fxamacker/cbor/v2"
 )
 
 // TestDirectoryPushRateLimitedPerPeer. One valid row per push, from one peer,
 // more times than the budget allows: the pushes past it must not be read.
 func TestDirectoryPushRateLimitedPerPeer(t *testing.T) {
-	cleanup := setup_directory_test(t)
-	defer cleanup()
+	setup_directory_test(t)
 
 	peer, hk := test_host(t)
 	rate_limit_directory_push.reset(peer)
@@ -61,8 +59,7 @@ func TestDirectoryPushRateLimitedPerPeer(t *testing.T) {
 // TestDirectoryPushRateLimitIsPerPeer. One flooding peer must not deny the
 // push path to every other peer - the fleet's whole directory rides on it.
 func TestDirectoryPushRateLimitIsPerPeer(t *testing.T) {
-	cleanup := setup_directory_test(t)
-	defer cleanup()
+	setup_directory_test(t)
 
 	flooder, _ := test_host(t)
 	rate_limit_directory_push.reset(flooder)
@@ -97,8 +94,7 @@ func TestDirectoryPushRateLimitIsPerPeer(t *testing.T) {
 // validation cheaply: the cap counts rows READ, because a row rejected by
 // entry_store still cost the validation that rejected it.
 func TestDirectoryPushRowCap(t *testing.T) {
-	cleanup := setup_directory_test(t)
-	defer cleanup()
+	setup_directory_test(t)
 
 	peer, _ := test_host(t)
 	rate_limit_directory_push.reset(peer)

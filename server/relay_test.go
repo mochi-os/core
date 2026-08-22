@@ -37,8 +37,7 @@ func TestRelayAddrinfo(t *testing.T) {
 // TestPeerRelaysExpiry: a relay flag is a candidate only within the
 // freshness window, and the sweep drops stale ones.
 func TestPeerRelaysExpiry(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	fresh, _ := test_host(t)
 	stale, _ := test_host(t)
@@ -70,8 +69,7 @@ func TestPeerRelaysExpiry(t *testing.T) {
 // TestPeerRelaySeenIgnoresSelf: we never list ourselves as a relay
 // candidate.
 func TestPeerRelaySeenIgnoresSelf(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	saved := net_id
 	id, _ := test_host(t)
@@ -89,8 +87,7 @@ func TestPeerRelaySeenIgnoresSelf(t *testing.T) {
 // TestPeerPublishEventRelayFlag: the relay flag in a publish is
 // recorded for AutoRelay candidate selection.
 func TestPeerPublishEventRelayFlag(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	id, key := test_host(t)
 	encoded := test_signed_record(t, key, id, []string{"/ip4/192.0.2.5/tcp/1443"}, 1)
@@ -120,8 +117,7 @@ func TestPeerPublishEventRelayFlag(t *testing.T) {
 // plus flagged peers with a direct address, skips self and circuit-only
 // peers, and honours the count cap.
 func TestNetRelayCandidates(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	boot, _ := test_host(t)
 	saved := peers_bootstrap
@@ -165,8 +161,7 @@ func TestNetRelayCandidates(t *testing.T) {
 // candidate selection can prefer relays with headroom, and updates on
 // re-announcement.
 func TestPeerPublishEventRelayLoad(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	id, key := test_host(t)
 	rec := test_signed_record(t, key, id, []string{"/ip4/192.0.2.7/tcp/1443"}, 1)
@@ -185,8 +180,7 @@ func TestPeerPublishEventRelayLoad(t *testing.T) {
 // TestNetRelayCandidatesPrefersLessLoaded: a heavily-loaded relay (higher
 // tier) is offered after a comfortable one.
 func TestNetRelayCandidatesPrefersLessLoaded(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	saved := peers_bootstrap
 	peers_bootstrap = nil
@@ -212,8 +206,7 @@ func TestNetRelayCandidatesPrefersLessLoaded(t *testing.T) {
 // TestRelayOffered: relay participation is on by default and the setting
 // is the opt-out.
 func TestRelayOffered(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 	db_open("db/settings.db").exec("create table if not exists settings ( name text primary key, value text not null )")
 
 	if !relay_offered() {

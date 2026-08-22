@@ -247,14 +247,14 @@ func cache_append_file(path string, reader io.Reader, offset int64, limit int64)
 	if err != nil {
 		return 0, err
 	}
-	written, copy_err := io.Copy(f, io.LimitReader(reader, limit))
-	close_err := f.Close()
+	written, copy_error := io.Copy(f, io.LimitReader(reader, limit))
+	close_error := f.Close()
 	cache_admit(written)
-	if copy_err != nil {
-		return offset + written, copy_err
+	if copy_error != nil {
+		return offset + written, copy_error
 	}
-	if close_err != nil {
-		return offset + written, close_err
+	if close_error != nil {
+		return offset + written, close_error
 	}
 	return offset + written, nil
 }

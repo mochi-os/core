@@ -11,8 +11,7 @@ import "testing"
 // TestDBAutoVacuumDefault: every new database is INCREMENTAL. The pragma must
 // run before journal_mode=WAL, or the mode silently stays NONE.
 func TestDBAutoVacuumDefault(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("create table t (x)")
 	if av := db.integer("pragma auto_vacuum"); av != 2 {
@@ -23,8 +22,7 @@ func TestDBAutoVacuumDefault(t *testing.T) {
 // TestDBVacuumReclaims verifies DB.vacuum returns freed pages to the OS
 // once a database has churned past the gate, and reports the bytes freed.
 func TestDBVacuumReclaims(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("create table t (x)")
 	db.exec("with recursive c(i) as (select 1 union all select i+1 from c where i<60000) insert into t select randomblob(200) from c")
@@ -51,8 +49,7 @@ func TestDBVacuumReclaims(t *testing.T) {
 // auto_vacuum=NONE database to INCREMENTAL while reclaiming, so existing
 // production databases self-convert on their first bloated pass.
 func TestDBVacuumConvertsLegacy(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	// Mimic a database created before this change: force it back to NONE.
 	db.exec("pragma auto_vacuum=NONE")
@@ -80,8 +77,7 @@ func TestDBVacuumConvertsLegacy(t *testing.T) {
 // TestDBVacuumSkipsUnchurned verifies a database below the gate is left
 // untouched (no needless full-file rewrite of stable databases).
 func TestDBVacuumSkipsUnchurned(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("create table t (x)")
 	db.exec("insert into t values ('a'), ('b'), ('c')")

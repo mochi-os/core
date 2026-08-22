@@ -87,8 +87,7 @@ func restore_post(t *testing.T, email string, code string) (int, string, bool) {
 // the placeholder row is what reserves the username, so minting it for an
 // unproven address is the whole defect.
 func TestRestoreRequiresCode(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 	restore_tables_create(t)
 	db_open("db/users.db").exec("insert into users (uid, username) values ('u1', 'first@example.com')")
 
@@ -104,8 +103,7 @@ func TestRestoreRequiresCode(t *testing.T) {
 // TestRestoreRefusesWrongCode — a code was demanded and supplied, but not one
 // issued to this address. Guessing must not be equivalent to receiving.
 func TestRestoreRefusesWrongCode(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 	restore_tables_create(t)
 	db_open("db/users.db").exec("insert into users (uid, username) values ('u1', 'first@example.com')")
 	restore_code_issue(t, "new@example.com", "GOODCODE12", now()+3600)
@@ -123,8 +121,7 @@ func TestRestoreRefusesWrongCode(t *testing.T) {
 // was issued to a different address. Codes are keyed on the address precisely
 // so one cannot be replayed to claim another.
 func TestRestoreRefusesAnotherAddressCode(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 	restore_tables_create(t)
 	db_open("db/users.db").exec("insert into users (uid, username) values ('u1', 'first@example.com')")
 	restore_code_issue(t, "victim@example.com", "GOODCODE12", now()+3600)
@@ -143,8 +140,7 @@ func TestRestoreRefusesAnotherAddressCode(t *testing.T) {
 // one, which is what distinguishes "code accepted" from "code rejected"), and
 // must not be reusable afterwards.
 func TestRestoreCodeAcceptedThenConsumed(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 	restore_tables_create(t)
 	db_open("db/users.db").exec("insert into users (uid, username) values ('u1', 'first@example.com')")
 	restore_code_issue(t, "new@example.com", "GOODCODE12", now()+3600)
@@ -167,8 +163,7 @@ func TestRestoreCodeAcceptedThenConsumed(t *testing.T) {
 // TestRestoreRefusesExpiredCode — expiry is enforced in the same statement
 // that consumes, so an old code cannot be presented later.
 func TestRestoreRefusesExpiredCode(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 	restore_tables_create(t)
 	db_open("db/users.db").exec("insert into users (uid, username) values ('u1', 'first@example.com')")
 	restore_code_issue(t, "new@example.com", "GOODCODE12", now()-1)
@@ -186,8 +181,7 @@ func TestRestoreRefusesExpiredCode(t *testing.T) {
 // ADMINISTRATOR (first user becomes one, as with ordinary signup), so it is
 // the case where an unproven address matters most.
 func TestRestoreBootstrapRequiresCode(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 	restore_tables_create(t)
 	// No users: web_auth_restore takes the first-user/administrator path.
 
@@ -204,8 +198,7 @@ func TestRestoreBootstrapRequiresCode(t *testing.T) {
 // a known user now delegates to it and both paths depend on the delete-and-
 // return being the thing that makes a code single-use.
 func TestCodeConsumeEmailIsSingleUse(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 	restore_tables_create(t)
 	restore_code_issue(t, "someone@example.com", "GOODCODE12", now()+3600)
 

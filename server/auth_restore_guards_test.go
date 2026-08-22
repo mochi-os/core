@@ -69,8 +69,7 @@ func TestRestoreUnzipGuards(t *testing.T) {
 // rejected outright, and a body that exceeds the cap without declaring a
 // length is cut off by MaxBytesReader during the parse. Both answer 413.
 func TestRestoreUploadCap(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 	db := db_open("db/users.db")
 	db.exec("insert into users (uid, username) values ('u1', 'first@example.com')")
 
@@ -136,8 +135,7 @@ func TestRestoreUploadCap(t *testing.T) {
 // there is no special large-allowance that would let a fresh, unauthenticated
 // server spool a huge bundle.
 func TestRestoreUploadCapBootstrap(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 	// No users inserted -> web_auth_restore takes the first-user path.
 	saved := restore_upload_maximum
 	restore_upload_maximum = 1 << 20 // 1 MiB

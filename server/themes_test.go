@@ -149,8 +149,7 @@ func TestThemesValidate(t *testing.T) {
 // attribute is HTML, and a character reference (u&#114l() becomes url( only
 // after the parser decodes it, which is after every string check has run.
 func TestWebUserThemeStyleEscapes(t *testing.T) {
-	user, cleanup := create_test_user(t)
-	defer cleanup()
+	user := create_test_user(t)
 
 	// theme is empty so the active-theme lookup is skipped. The references are
 	// unterminated on purpose: a literal semicolon would be caught by the existing
@@ -183,8 +182,7 @@ func TestWebUserThemeStyleEscapes(t *testing.T) {
 // so they must arrive as CSS: an attribute wrapper or an escaped ampersand is a
 // value the browser silently drops.
 func TestWebUserThemeDeclarations(t *testing.T) {
-	user, cleanup := create_test_user(t)
-	defer cleanup()
+	user := create_test_user(t)
 
 	user.Preferences = map[string]string{"theme": "", "radius": "1rem"}
 
@@ -212,8 +210,7 @@ func TestWebUserThemeDeclarations(t *testing.T) {
 
 	// A user with no preferences at all resolves to the system default theme;
 	// whatever that yields, the two forms must still agree.
-	empty, cleanup_empty := create_test_user(t)
-	defer cleanup_empty()
+	empty := create_test_user(t)
 	empty.Preferences = map[string]string{"theme": ""}
 	if web_user_theme_declarations(empty) == "" && web_user_theme_style(empty) != "" {
 		t.Error("empty declarations must produce an empty style attribute, not a bare style=\"\"")
@@ -224,8 +221,7 @@ func TestWebUserThemeDeclarations(t *testing.T) {
 // load, so the preference itself must reach the page or a client reading the
 // class stops following the system.
 func TestWebUserAppearanceAttrsStatesTheAutoPreference(t *testing.T) {
-	user, cleanup := create_test_user(t)
-	defer cleanup()
+	user := create_test_user(t)
 
 	user.Preferences = map[string]string{"appearance": "auto"}
 	attrs, script := web_user_appearance_attrs(user, "")

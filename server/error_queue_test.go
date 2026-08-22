@@ -32,8 +32,7 @@ func error_test_capture(calls *[]error_call) func() {
 // code (unknown/rejected), dedup/unmapped reasons fire nothing, and a
 // missing row is a safe no-op.
 func TestQueueDropFiresErrorEvent(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db := queue_test_table()
 
 	var calls []error_call
@@ -69,8 +68,7 @@ func TestQueueDropFiresErrorEvent(t *testing.T) {
 // TestQueueFailTimeout: queue_fail fires message/timeout only once the row
 // has aged past queue_age_maximum; a young row reschedules with no dispatch.
 func TestQueueFailTimeout(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db := queue_test_table()
 
 	var calls []error_call
@@ -100,8 +98,7 @@ func TestQueueFailTimeout(t *testing.T) {
 // distinct (from_entity, from_app, to_entity) — fan-out makes many rows
 // per recipient — and never touches a fresh row.
 func TestQueueCleanupTimeoutDedup(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db := queue_test_table()
 
 	seen := map[string]int{}

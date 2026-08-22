@@ -34,8 +34,7 @@ func stub_message_attempt_send() func() {
 // locations, send_work queues one row per location with each `target`
 // pre-populated. Each replica gets its own direct delivery attempt.
 func TestSendWorkFansOutToAllPeers(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	defer stub_message_attempt_send()()
 	// entity_local errors (no entities table) resolve to nothing rather than
 	// falling through to directory routes, so the schema is required here.
@@ -73,8 +72,7 @@ func TestSendWorkFansOutToAllPeers(t *testing.T) {
 // pre-existing single empty-target row so the queue retry loop can
 // re-resolve later via entity_peer.
 func TestSendWorkUnknownEntityKeepsRetryRow(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	defer stub_message_attempt_send()()
 	// Entity resolution is strict about the ownership check since the
 	// 2026-07 fail-safe: entity_local errors (no entities table) resolve
@@ -99,8 +97,7 @@ func TestSendWorkUnknownEntityKeepsRetryRow(t *testing.T) {
 // should not fan out. Used by replication / system messages that
 // already know which peer they're talking to.
 func TestSendPeerKeepsSingleRow(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	defer stub_message_attempt_send()()
 	// Entity resolution is strict about the ownership check since the
 	// 2026-07 fail-safe: entity_local errors (no entities table) resolve
@@ -130,8 +127,7 @@ func TestSendPeerKeepsSingleRow(t *testing.T) {
 // returns N peers, queue_send_direct should expand the row by adding
 // (N-1) sibling rows and use the first peer for this attempt.
 func TestQueueSendDirectExpandsEmptyTargetRow(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	// Entity resolution is strict about the ownership check since the
 	// 2026-07 fail-safe: entity_local errors (no entities table) resolve
 	// to nothing rather than falling through to directory routes.

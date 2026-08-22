@@ -195,8 +195,7 @@ func TestErrorEventAttr(t *testing.T) {
 // TestErrorDispatchGate: with no declared handler the detail thunk is never
 // invoked and nothing runs; with one, the thunk runs and the handler executes.
 func TestErrorDispatchGate(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 	udb := db_open("db/users.db")
 	udb.exec("create table if not exists users (id integer primary key, uid text not null default '', username text not null, role text not null default 'user', methods text not null default 'email', status text not null default 'active')")
 	udb.exec("insert into users (uid, username) values ('u1', 'test@example.com')")

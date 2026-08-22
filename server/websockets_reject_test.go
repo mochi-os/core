@@ -67,8 +67,7 @@ func websocket_attempt_as(t *testing.T, session string, query string) int {
 // rejected connection is indistinguishable from success to every log, metric
 // and alert that reads the status.
 func TestWebsocketUnauthenticatedIsRefusedWithAStatus(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	if code := websocket_attempt(t, "?key=notifications"); code != 401 {
 		t.Errorf("an unauthenticated handshake answered %d, want 401: a rejection that reads as success in the access log", code)
@@ -79,8 +78,7 @@ func TestWebsocketUnauthenticatedIsRefusedWithAStatus(t *testing.T) {
 // different statuses - a caller that cannot tell them apart cannot act on any
 // of them.
 func TestWebsocketRejectionsAreDistinguishable(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	// No credentials at all, whatever the key.
 	if code := websocket_attempt(t, "?key=notifications"); code != 401 {
@@ -175,8 +173,7 @@ func websocket_session(t *testing.T, user string) string {
 }
 
 func TestWebsocketCapIsEnforcedOnTheRequest(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 	websockets_lock.Lock()
 	websockets = map[string]map[string]map[string]*websocket_client{}
 	websockets_lock.Unlock()

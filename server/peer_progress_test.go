@@ -16,8 +16,7 @@ import (
 // trial window passes peer_is_stalled reopens so a parked backlog gets a
 // trial send.
 func TestPeerStallThresholdAndWindow(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	peer_progress = map[string]PeerProgress{}
 
 	peer := "peer-stall-test"
@@ -60,8 +59,7 @@ func TestPeerStallThresholdAndWindow(t *testing.T) {
 }
 
 func TestQueueDeferTargetParksWholeBacklog(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db := queue_test_table()
 
 	for i := 0; i < 8; i++ {

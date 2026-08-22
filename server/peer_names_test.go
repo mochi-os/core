@@ -12,22 +12,16 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"testing"
 )
 
 // setup_peer_names_test gives a fresh data_dir with settings, domains and
 // peers databases and empty peer registries. Returns a cleanup restoring
 // everything.
-func setup_peer_names_test(t *testing.T) func() {
+func setup_peer_names_test(t *testing.T) {
 	t.Helper()
 
-	tmp, err := os.MkdirTemp("", "mochi_peer_names_test")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	orig_data_dir := data_dir
-	data_dir = tmp
+	test_data_directory(t)
 
 	db_open("db/settings.db").exec("create table if not exists settings (name text primary key, value text not null)")
 	domains := db_open("db/domains.db")
@@ -47,16 +41,15 @@ func setup_peer_names_test(t *testing.T) func() {
 	peer_names = map[string][]PeerName{}
 	peer_names_lock.Unlock()
 
-	return func() {
+	t.Cleanup(func() {
 		peer_names_lock.Lock()
 		peer_names = saved_names
 		peer_names_lock.Unlock()
 		peers_lock.Lock()
 		peers = saved_peers
 		peers_lock.Unlock()
-		data_dir = orig_data_dir
-		os.RemoveAll(tmp)
-	}
+	})
+
 }
 
 // names_event builds the Event shape pubsub_receive hands to
@@ -90,8 +83,7 @@ func TestPeerNameValid(t *testing.T) {
 }
 
 func TestPeerPublishEventAppliesNames(t *testing.T) {
-	cleanup := setup_peer_names_test(t)
-	defer cleanup()
+	setup_peer_names_test(t)
 
 	origin, _ := test_host(t)
 	peer_publish_event(names_event(origin, "Wasabi", "mochi-os.org, Example.COM"))
@@ -113,8 +105,7 @@ func TestPeerPublishEventAppliesNames(t *testing.T) {
 }
 
 func TestPeerPublishEventClearsNames(t *testing.T) {
-	cleanup := setup_peer_names_test(t)
-	defer cleanup()
+	setup_peer_names_test(t)
 
 	origin, _ := test_host(t)
 	peer_publish_event(names_event(origin, "wasabi", ""))
@@ -134,8 +125,7 @@ func TestPeerPublishEventClearsNames(t *testing.T) {
 }
 
 func TestPeerPublishEventIgnoresDomains(t *testing.T) {
-	cleanup := setup_peer_names_test(t)
-	defer cleanup()
+	setup_peer_names_test(t)
 
 	origin, _ := test_host(t)
 	domains := ""
@@ -160,8 +150,7 @@ func TestPeerPublishEventIgnoresDomains(t *testing.T) {
 }
 
 func TestPeerNameFields(t *testing.T) {
-	cleanup := setup_peer_names_test(t)
-	defer cleanup()
+	setup_peer_names_test(t)
 
 	origin, _ := test_host(t)
 	peer_names_apply(origin, []string{"wasabi"})
@@ -182,8 +171,7 @@ func TestPeerNameFields(t *testing.T) {
 }
 
 func TestPeerNamesAnnounce(t *testing.T) {
-	cleanup := setup_peer_names_test(t)
-	defer cleanup()
+	setup_peer_names_test(t)
 
 	setting_set("hostname", "test-box")
 	// Served domains are present but must never reach the announcement.
@@ -202,8 +190,7 @@ func TestPeerNamesAnnounce(t *testing.T) {
 }
 
 func TestPeerNamesLoad(t *testing.T) {
-	cleanup := setup_peer_names_test(t)
-	defer cleanup()
+	setup_peer_names_test(t)
 
 	origin, _ := test_host(t)
 	db := db_open("db/peers.db")

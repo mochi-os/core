@@ -44,8 +44,7 @@ func TestQidRateWaitSkipsDuringBackoff(t *testing.T) {
 // qid_cache_setup gives a test the external.db cache tables and a clean slate.
 func qid_cache_setup(t *testing.T) {
 	t.Helper()
-	cleanup := setup_replication_test(t)
-	t.Cleanup(cleanup)
+	setup_replication_test(t)
 	db_create()
 	db := qid_db()
 	db.exec("delete from qids")

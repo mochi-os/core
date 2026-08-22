@@ -10,47 +10,29 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	sl "go.starlark.net/starlark"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-
-	sl "go.starlark.net/starlark"
 )
 
 // Helper to create a test database
-func create_test_db(t *testing.T) (*DB, func()) {
-	// Create a temp directory for the test database
-	tmp_dir, err := os.MkdirTemp("", "mochi_db_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	// Save original data_dir and set to temp
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-
-	// Create test database
-	db_path := "test.db"
-	db := db_open(db_path)
-
-	cleanup := func() {
-		db.close()
-		data_dir = orig_data_dir
-		os.RemoveAll(tmp_dir)
-	}
-
-	return db, cleanup
+func create_test_db(t *testing.T) *DB {
+	t.Helper()
+	test_data_directory(t)
+	db := db_open("test.db")
+	t.Cleanup(func() { db.close() })
+	return db
 }
 
 // TestPreparedStatementCache covers the prepared-statement cache: every *DB
 // query method routes through it, writes stay visible to cached reads, a cached
 // `SELECT *` picks up an ALTER'd column, and stmts_close clears it.
 func TestPreparedStatementCache(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
 	db.exec("INSERT INTO t (id, name) VALUES (?, ?)", 1, "alice")
@@ -117,8 +99,7 @@ func TestPreparedStatementCache(t *testing.T) {
 // never cached and the cache is bypassed while a migration runs, so an "add
 // column if absent" guard reads the live schema and runs its ALTER once.
 func TestPreparedStatementCacheMigrationSafety(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY)")
 
@@ -161,8 +142,7 @@ func TestPreparedStatementCacheMigrationSafety(t *testing.T) {
 // stmts_close must be retried on the uncached path, not surfaced as "sql:
 // statement is closed".
 func TestStmtCacheClosedRetry(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
 	db.exec("INSERT INTO t (id, name) VALUES (?, ?)", 1, "alice")
@@ -221,8 +201,7 @@ func TestStmtCacheClosedRetry(t *testing.T) {
 // TestStmtCacheConcurrentClose: cached reads and writes must all succeed while
 // another goroutine hammers stmts_close. Run under -race for the cache itself.
 func TestStmtCacheConcurrentClose(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 	db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
 	db.exec("INSERT INTO t (id, name) VALUES (?, ?)", 1, "alice")
 
@@ -282,8 +261,7 @@ func TestStmtCacheConcurrentClose(t *testing.T) {
 }
 
 func TestDBExec(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	// Create a test table
 	db.exec("CREATE TABLE test_table (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
@@ -300,8 +278,7 @@ func TestDBExec(t *testing.T) {
 
 // Test db.exec with insert
 func TestDBExecInsert(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, value TEXT)")
 	db.exec("INSERT INTO items (id, value) VALUES (?, ?)", 1, "hello")
@@ -321,8 +298,7 @@ func TestDBExecInsert(t *testing.T) {
 
 // Test db.exists function
 func TestDBExists(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
 	db.exec("INSERT INTO users (id, name) VALUES (1, 'Alice')")
@@ -354,8 +330,7 @@ func TestDBExists(t *testing.T) {
 
 // Test db.integer function
 func TestDBInteger(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE counts (name TEXT PRIMARY KEY, count INTEGER)")
 	db.exec("INSERT INTO counts (name, count) VALUES ('items', 42)")
@@ -374,8 +349,7 @@ func TestDBInteger(t *testing.T) {
 
 // Test db.row function
 func TestDBRow(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
 	db.exec("INSERT INTO people (id, name, age) VALUES (1, 'Alice', 30)")
@@ -404,8 +378,7 @@ func TestDBRow(t *testing.T) {
 
 // Test db.row returns nil for no results
 func TestDBRowNotFound(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE empty_table (id INTEGER PRIMARY KEY)")
 
@@ -421,8 +394,7 @@ func TestDBRowNotFound(t *testing.T) {
 
 // Test db.rows function
 func TestDBRows(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL)")
 	db.exec("INSERT INTO products (id, name, price) VALUES (1, 'Apple', 1.50)")
@@ -451,8 +423,7 @@ func TestDBRows(t *testing.T) {
 
 // Test db.rows with empty result
 func TestDBRowsEmpty(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE empty (id INTEGER PRIMARY KEY)")
 
@@ -468,8 +439,7 @@ func TestDBRowsEmpty(t *testing.T) {
 
 // Test db.rows with filtering
 func TestDBRowsFiltered(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE items (id INTEGER, category TEXT)")
 	db.exec("INSERT INTO items VALUES (1, 'A')")
@@ -489,8 +459,7 @@ func TestDBRowsFiltered(t *testing.T) {
 
 // Test db.scan with struct
 func TestDBScan(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE config (name TEXT PRIMARY KEY, value TEXT, enabled INTEGER)")
 	db.exec("INSERT INTO config VALUES ('test', 'hello', 1)")
@@ -521,8 +490,7 @@ func TestDBScan(t *testing.T) {
 
 // Test db.scan returns false for no results
 func TestDBScanNotFound(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY)")
 
@@ -540,8 +508,7 @@ func TestDBScanNotFound(t *testing.T) {
 
 // Test db.scans with struct slice
 func TestDBScans(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
 	db.exec("INSERT INTO users VALUES (1, 'Alice')")
@@ -576,15 +543,7 @@ func TestDBScans(t *testing.T) {
 
 // Test database path creation
 func TestDBOpenCreatesFile(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_db_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
+	tmp_dir := test_data_directory(t)
 
 	// Create database in nested path
 	db := db_open("nested/path/test.db")
@@ -600,8 +559,7 @@ func TestDBOpenCreatesFile(t *testing.T) {
 
 // Test concurrent database access
 func TestDBConcurrentAccess(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE counter (id INTEGER PRIMARY KEY, count INTEGER)")
 	db.exec("INSERT INTO counter VALUES (1, 0)")
@@ -625,12 +583,7 @@ func TestDBConcurrentAccess(t *testing.T) {
 
 // Benchmark db.exists
 func BenchmarkDBExists(b *testing.B) {
-	tmp_dir, _ := os.MkdirTemp("", "mochi_db_bench")
-	defer os.RemoveAll(tmp_dir)
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
+	test_data_directory(b)
 
 	db := db_open("bench.db")
 	db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY)")
@@ -644,9 +597,7 @@ func BenchmarkDBExists(b *testing.B) {
 
 // Benchmark db.row
 func BenchmarkDBRow(b *testing.B) {
-	tmp_dir, _ := os.MkdirTemp("", "mochi_db_bench")
-	defer os.RemoveAll(tmp_dir)
-
+	tmp_dir := test_data_directory(b)
 	orig_data_dir := data_dir
 	data_dir = tmp_dir
 	defer func() { data_dir = orig_data_dir }()
@@ -663,13 +614,7 @@ func BenchmarkDBRow(b *testing.B) {
 
 // Benchmark db.rows
 func BenchmarkDBRows(b *testing.B) {
-	tmp_dir, _ := os.MkdirTemp("", "mochi_db_bench")
-	defer os.RemoveAll(tmp_dir)
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
-
+	test_data_directory(b)
 	db := db_open("bench.db")
 	db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")
 	for i := 0; i < 100; i++ {
@@ -686,8 +631,7 @@ func BenchmarkDBRows(b *testing.B) {
 // what untrusted app code sees through api_db_query. The internal pool has no
 // authoriser by design and is not tested here.
 func TestStarlarkAuthoriserPolicy(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	// Seed the database with a table and a row that the allow-cases
 	// can read/write. Run on the internal pool so this setup is
@@ -774,8 +718,7 @@ func TestStarlarkAuthoriserPolicy(t *testing.T) {
 // Confirms that tx INSERT/UPDATE/SELECT all work and that the authoriser
 // doesn't break SAVEPOINT / RELEASE inside a transaction.
 func TestStarlarkPoolTransaction(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE tx (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
 
@@ -867,16 +810,9 @@ func TestDbMaxPageCountConstant(t *testing.T) {
 // Test app_user_setup grants default permissions on first app access
 func TestAppUserSetup(t *testing.T) {
 	// Create temp directory
-	tmp_dir, err := os.MkdirTemp("", "mochi_app_user_init_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
+	tmp_dir := test_data_directory(t)
 
 	// Save and set data_dir
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
 
 	// Create user directory
 	os.MkdirAll(filepath.Join(tmp_dir, "users", "1"), 0755)
@@ -922,15 +858,7 @@ func TestAppUserSetup(t *testing.T) {
 
 // Test that db_user on a fresh database creates accounts with the "default" column
 func TestDBUserCreatesAccountsWithDefault(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_dbuser_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
+	tmp_dir := test_data_directory(t)
 
 	// Create user directory
 	os.MkdirAll(filepath.Join(tmp_dir, "users", "1"), 0755)
@@ -958,8 +886,7 @@ func TestDBUserCreatesAccountsWithDefault(t *testing.T) {
 
 // Test db_app_schema_get returns 0 for new database
 func TestAppSchemaGetDefault(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	version := db_app_schema_get(db)
 	if version != 0 {
@@ -997,8 +924,7 @@ func TestPragmaBlockingWhitespace(t *testing.T) {
 
 // Test db_app_schema_set and db_app_schema_get roundtrip
 func TestAppSchemaSetGet(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db_app_schema_set(db, 5)
 	version := db_app_schema_get(db)
@@ -1015,15 +941,7 @@ func TestAppSchemaSetGet(t *testing.T) {
 
 // Test db_app_system does not create a settings table
 func TestAppSystemNoSettingsTable(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_db_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
+	tmp_dir := test_data_directory(t)
 
 	os.MkdirAll(filepath.Join(tmp_dir, "users", "1", "testapp"), 0755)
 
@@ -1056,15 +974,7 @@ func TestAppSystemNoSettingsTable(t *testing.T) {
 // drops with no file, a missing table is untouched, an existing export is kept,
 // a second pass is a no-op.
 func TestAttachmentExportSweep(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_db_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
+	tmp_dir := test_data_directory(t)
 
 	create := "create table attachments ( id text not null primary key, object text not null, entity text not null default '', name text not null, size integer not null, content_type text not null default '', creator text not null default '', caption text not null default '', description text not null default '', rank integer not null default 0, created integer not null )"
 	insert := "insert into attachments ( id, object, entity, name, size, content_type, creator, caption, description, rank, created ) values ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )"
@@ -1168,8 +1078,7 @@ func TestAttachmentExportSweep(t *testing.T) {
 // BenchmarkStarlarkPoolExec measures the per-call Connx + ExecContext + Close
 // round-trip that api_db_query uses.
 func BenchmarkStarlarkPoolExec(b *testing.B) {
-	db, cleanup := create_test_db_b(b)
-	defer cleanup()
+	db := create_test_db_b(b)
 
 	db.exec("CREATE TABLE bench (id INTEGER PRIMARY KEY, n INTEGER)")
 	ctx := context.Background()
@@ -1190,8 +1099,7 @@ func BenchmarkStarlarkPoolExec(b *testing.B) {
 
 // BenchmarkStarlarkPoolQuery is the read-side analogue.
 func BenchmarkStarlarkPoolQuery(b *testing.B) {
-	db, cleanup := create_test_db_b(b)
-	defer cleanup()
+	db := create_test_db_b(b)
 
 	db.exec("CREATE TABLE bench (id INTEGER PRIMARY KEY, n INTEGER)")
 	for i := 0; i < 1000; i++ {
@@ -1218,8 +1126,7 @@ func BenchmarkStarlarkPoolQuery(b *testing.B) {
 // internal pool — the difference between the two benchmarks is the
 // per-statement authoriser callback overhead.
 func BenchmarkInternalPoolExec(b *testing.B) {
-	db, cleanup := create_test_db_b(b)
-	defer cleanup()
+	db := create_test_db_b(b)
 
 	db.exec("CREATE TABLE bench (id INTEGER PRIMARY KEY, n INTEGER)")
 	ctx := context.Background()
@@ -1240,28 +1147,21 @@ func BenchmarkInternalPoolExec(b *testing.B) {
 
 // create_test_db_b is the bench-flavoured create_test_db. Same body —
 // testing.TB lets benchmarks share the helper without retyping it.
-func create_test_db_b(b *testing.B) (*DB, func()) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_db_bench")
-	if err != nil {
-		b.Fatalf("Failed to create temp dir: %v", err)
-	}
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
+func create_test_db_b(b *testing.B) *DB {
+	b.Helper()
+	test_data_directory(b)
 	db := db_open("bench.db")
-	cleanup := func() {
+	b.Cleanup(func() {
 		db.close()
-		data_dir = orig_data_dir
-		os.RemoveAll(tmp_dir)
-	}
-	return db, cleanup
+	})
+	return db
 }
 
 // TestStarlarkPoolConcurrent stresses the Starlark pool through the paths
 // api_db_query takes: connection leaks, data races under -race, and one
 // goroutine's failed BEGIN/PRAGMA/COMMIT poisoning another's transaction.
 func TestStarlarkPoolConcurrent(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 
 	db.exec("CREATE TABLE conc (id INTEGER PRIMARY KEY, who TEXT NOT NULL, n INTEGER NOT NULL)")
 
@@ -1534,4 +1434,157 @@ func TestDbCreateIdempotentOverPreservedDB(t *testing.T) {
 
 	// Fully re-runnable: a second db_create is a no-op, not a panic.
 	db_create()
+}
+
+// Mochi server: bootstrap integrity-gate regression (#6).
+//
+// Application Interface Exception - see license.txt and license-exception.md.
+func TestSnapshotIntegrityGate(t *testing.T) {
+	setup_replication_test(t)
+
+	clean_rel := "gate-clean.db"
+	clean_path := filepath.Join(data_dir, clean_rel)
+	c := db_open(clean_rel)
+	c.exec("create table t (id integer primary key, v blob)")
+	payload := strings.Repeat("x", 1024)
+	for i := 0; i < 300; i++ { // ~300 KB -> dozens of btree pages
+		c.exec("insert into t (id, v) values (?, ?)", i, payload)
+	}
+	c.exec("PRAGMA wal_checkpoint(TRUNCATE)") // flush the WAL into the main file
+
+	if !snapshot_integrity_ok(clean_path) {
+		t.Fatal("clean snapshot must pass the integrity gate")
+	}
+
+	// Corrupt a copy: garble pages 2..10 so their page-type bytes are invalid.
+	corrupt_path := filepath.Join(data_dir, "gate-corrupt.db")
+	data, err := os.ReadFile(clean_path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 4096; i < 40960 && i < len(data); i++ {
+		data[i] = 0xFF
+	}
+	if err := os.WriteFile(corrupt_path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot_integrity_ok(corrupt_path) {
+		t.Fatal("corrupt snapshot must be rejected by the integrity gate")
+	}
+}
+
+// Mochi server: proactive corruption-detection watchdog regression (#6/#7).
+//
+// Application Interface Exception - see license.txt and license-exception.md.
+func TestDbIntegrityWatchdog(t *testing.T) {
+	setup_replication_test(t)
+
+	orig := db_integrity_per_check_maximum
+	db_integrity_per_check_maximum = 1000 // check every due DB in one pass
+	defer func() { db_integrity_per_check_maximum = orig }()
+
+	// Clean DB: recorded as checked with an ok timestamp, not flagged.
+	clean := db_open("users/u/clean/db/app.db")
+	clean.exec("create table t (id integer primary key, v text)")
+	for i := 0; i < 50; i++ {
+		clean.exec("insert into t (id, v) values (?, 'x')", i)
+	}
+	db_integrity_watchdog()
+	v, ok := db_integrity_state.Load(clean.path)
+	if !ok {
+		t.Fatal("clean DB should be recorded as checked")
+	}
+	if _, is_time := v.(int64); !is_time {
+		t.Fatalf("clean DB state = %v, want an ok timestamp", v)
+	}
+
+	// Throttle: an immediate second pass must not re-check (recently checked).
+	db_integrity_watchdog()
+	if v2, _ := db_integrity_state.Load(clean.path); v2 != v {
+		t.Error("clean DB re-checked within the throttle period")
+	}
+
+	// Corrupt DB: garble btree pages on disk under the open handle; the
+	// watchdog's read-only quick_check sees it and flags the DB.
+	corrupt := db_open("users/u/corrupt/db/app.db")
+	corrupt.exec("create table t (id integer primary key, v blob)")
+	payload := strings.Repeat("x", 1024)
+	for i := 0; i < 300; i++ {
+		corrupt.exec("insert into t (id, v) values (?, ?)", i, payload)
+	}
+	corrupt.exec("PRAGMA wal_checkpoint(TRUNCATE)") // flush WAL into the main file
+	data, err := os.ReadFile(corrupt.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 4096; i < 40960 && i < len(data); i++ {
+		data[i] = 0xFF
+	}
+	if err := os.WriteFile(corrupt.path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	db_integrity_watchdog()
+	if state, _ := db_integrity_state.Load(corrupt.path); state != "corrupt" {
+		t.Fatalf("corrupt DB state = %v, want \"corrupt\"", state)
+	}
+}
+
+// Mochi server: WAL watchdog regression (#6).
+//
+// Application Interface Exception - see license.txt and license-exception.md.
+func TestDbWalWatchdogReclaimsTransientStrikesStarved(t *testing.T) {
+	setup_replication_test(t)
+
+	orig := db_wal_warn_bytes
+	db_wal_warn_bytes = 256 * 1024 // 256 KB so the test needs only a small WAL
+	defer func() { db_wal_warn_bytes = orig }()
+
+	db := db_open("users/u-wal/test/db/big.db")
+	db.exec("create table t (id integer primary key, v blob)")
+	payload := strings.Repeat("x", 16*1024) // 16 KB rows, below the 4 MB autocheckpoint
+
+	strikes := func() int {
+		if v, ok := db_wal_strikes.Load(db.path); ok {
+			return v.(int)
+		}
+		return -1
+	}
+
+	// Transient: an oversized WAL with no blocking reader is reclaimed by the
+	// watchdog's checkpoint, so no strike accrues.
+	for i := 0; i < 40; i++ { // ~640 KB > threshold
+		db.exec("insert into t (id, v) values (?, ?)", i, payload)
+	}
+	db_wal_watchdog()
+	if strikes() != -1 {
+		t.Fatalf("transient WAL must reclaim (no strike); got %d", strikes())
+	}
+
+	// Sustained: a reader pins an old WAL frame so the checkpoint can't reclaim;
+	// strikes accrue one per pass up to the warn threshold.
+	reader, err := db.internal.Beginx()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Rollback()
+	var c int
+	_ = reader.Get(&c, "select count(*) from t") // pin the snapshot here
+
+	for i := 100; i < 160; i++ {
+		db.exec("insert into t (id, v) values (?, ?)", i, payload)
+	}
+	for pass := 1; pass <= db_wal_warn_strikes; pass++ {
+		db_wal_watchdog()
+		if strikes() != pass {
+			t.Fatalf("strike after pass %d = %d, want %d (reader-pinned WAL must not reclaim)", pass, strikes(), pass)
+		}
+	}
+
+	// Releasing the reader lets the next pass reclaim the WAL and clear strikes.
+	reader.Rollback()
+	db_wal_watchdog()
+	if strikes() != -1 {
+		t.Fatalf("after reader released, WAL must reclaim and strike clear; got %d", strikes())
+	}
 }

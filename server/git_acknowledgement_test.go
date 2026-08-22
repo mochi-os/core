@@ -76,8 +76,7 @@ func git_same_lines(got, want []string) bool {
 
 // TestGitAcknowledgementLinesV0 — the shape of a v0 negotiation, round by round.
 func TestGitAcknowledgementLinesV0(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, commits := git_negotiation_repo(t, user, "acklines", 8)
 	head := commits[len(commits)-1]
@@ -166,8 +165,7 @@ func TestGitUnknownHaves(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, commits := git_negotiation_repo(t, user, "unknownhaves", 8)
 	head := commits[len(commits)-1]
@@ -246,8 +244,7 @@ func TestGitConcurrentFetches(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, commits := git_negotiation_repo(t, user, "concurrent", 20)
 	head := commits[len(commits)-1]
@@ -301,6 +298,9 @@ func TestGitConcurrentFetches(t *testing.T) {
 			group.Add(1)
 			go func(i int) {
 				defer group.Done()
+				// os.MkdirTemp rather than t.TempDir: this runs on its own
+				// goroutine, where the Fatal that TempDir raises on failure
+				// would not stop the test.
 				dir, err := os.MkdirTemp("", "git_concurrent")
 				if err != nil {
 					results <- fmt.Sprintf("temp dir: %v", err)
@@ -337,8 +337,7 @@ func TestGitConcurrentFetchAndPush(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	// The push budget is measured from the owner's storage directory, and a
 	// push with no measurable budget is metered at one byte and refused.
@@ -377,6 +376,9 @@ func TestGitConcurrentFetchAndPush(t *testing.T) {
 		group.Add(1)
 		go func(i int) {
 			defer group.Done()
+			// os.MkdirTemp rather than t.TempDir: this runs on its own
+			// goroutine, where the Fatal that TempDir raises on failure
+			// would not stop the test.
 			dir, err := os.MkdirTemp("", "git_racing_fetch")
 			if err != nil {
 				failures <- fmt.Sprintf("temp dir: %v", err)
@@ -414,8 +416,7 @@ func TestGitConcurrentFetchAndPush(t *testing.T) {
 // omitted ENTIRELY once the client has said done, and "ready" commits the
 // response to carrying a packfile in the same round.
 func TestGitAcknowledgementLinesV2(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, commits := git_negotiation_repo(t, user, "acklinesv2", 8)
 	head := commits[len(commits)-1]

@@ -84,8 +84,7 @@ func TestFallbackListenAddresses(t *testing.T) {
 }
 
 func TestFallbackAddrsFactory(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 	db_open("db/domains.db").exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
 
 	in := []multiaddr.Multiaddr{
@@ -127,8 +126,7 @@ func TestFallbackAddrsFactory(t *testing.T) {
 // follows the web server's HTTPS — on when serving 443 with a domain,
 // off otherwise — and the explicit setting overrides either way.
 func TestFallbackAutoEnable(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 	db_open("db/domains.db").exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
 
 	// No 443, no domain → off.

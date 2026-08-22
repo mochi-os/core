@@ -10,11 +10,10 @@
 package main
 
 import (
+	"github.com/multiformats/go-multiaddr"
 	"os"
 	"strings"
 	"testing"
-
-	"github.com/multiformats/go-multiaddr"
 )
 
 func addresses_test_parse(t *testing.T, texts ...string) []multiaddr.Multiaddr {

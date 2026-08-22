@@ -17,8 +17,7 @@ import (
 )
 
 func TestQueueWatchdog(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	rows, age, attempts := queue_warn_rows, queue_warn_age, queue_warn_attempts
 	queue_warn_rows = 5
@@ -93,8 +92,7 @@ func TestQueueWatchdog(t *testing.T) {
 // unclassified recipient's still do. Asserted through the stale-target breadth
 // count.
 func TestQueueWatchdogClassified(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	limit := queue_warn_stale_targets
 	queue_warn_stale_targets = 1
@@ -130,8 +128,7 @@ func TestQueueWatchdogClassified(t *testing.T) {
 // peers and must not email; queue_warn_stale_targets of them together is a
 // fault on this side and must.
 func TestQueueWatchdogStaleBreadth(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	limit, silence := queue_warn_stale_targets, queue_warn_silence
 	queue_warn_stale_targets = 3
@@ -189,8 +186,7 @@ func TestQueueWatchdogStaleBreadth(t *testing.T) {
 // ANYONE for queue_warn_silence warns regardless of breadth. A zero delivery
 // stamp is no evidence and must not count as silence.
 func TestQueueWatchdogSilence(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	limit, silence := queue_warn_stale_targets, queue_warn_silence
 	queue_warn_stale_targets = 1 << 40 // breadth never trips in this test
@@ -246,8 +242,7 @@ func TestQueueWatchdogSilence(t *testing.T) {
 // so crossing queue_warn_suspended is the first email about them at all:
 // that breadth is a systemic resolution failure, not ghost residue.
 func TestQueueWatchdogSuspendedBreadth(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	limit := queue_warn_suspended
 	queue_warn_suspended = 3
@@ -295,8 +290,7 @@ func TestQueueWatchdogSuspendedBreadth(t *testing.T) {
 // instead of rescheduled forever, and queue_resurrect_peer revives it on
 // reconnect.
 func TestQueueFailParksAtAttemptCap(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	park := queue_park_attempts
 	queue_park_attempts = 3

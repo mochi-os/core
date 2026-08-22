@@ -50,9 +50,9 @@ func upload_test_action(t *testing.T, requester, effective *User, app *App, fiel
 	return &Action{web: c, user: requester, app: app}, thread
 }
 
-func upload_test_setup(t *testing.T) (*User, *App, func()) {
+func upload_test_setup(t *testing.T) (*User, *App) {
 	t.Helper()
-	cleanup := setup_replication_test(t) // sets data_dir under a temp directory
+	setup_replication_test(t) // sets data_dir under a temp directory
 	user := &User{UID: "u-upload"}
 	// The account's own directory, which signup creates and the storage
 	// measurement needs. Not the app's files directory - a first upload has to
@@ -60,7 +60,7 @@ func upload_test_setup(t *testing.T) (*User, *App, func()) {
 	if err := os.MkdirAll(user_storage_dir(user), 0755); err != nil {
 		t.Fatalf("mkdir user directory: %v", err)
 	}
-	return user, &App{id: "uploader"}, cleanup
+	return user, &App{id: "uploader"}
 }
 
 func upload_test_call(a *Action, thread *sl.Thread, field, file string) (sl.Value, error) {
@@ -74,8 +74,7 @@ func upload_test_call(a *Action, thread *sl.Thread, field, file string) (sl.Valu
 // TestUploadRefusesToFollowASymlink is the finding. A link inside the app's
 // file directory must not redirect the write to whatever it points at.
 func TestUploadRefusesToFollowASymlink(t *testing.T) {
-	user, app, cleanup := upload_test_setup(t)
-	defer cleanup()
+	user, app := upload_test_setup(t)
 
 	base := api_file_base(user, app)
 	if err := os.MkdirAll(base, 0755); err != nil {
@@ -110,8 +109,7 @@ func TestUploadRefusesToFollowASymlink(t *testing.T) {
 // caller to a public action; the thread's user is the owner web.go resolved,
 // which is what the upload must use.
 func TestUploadAnonymousPublicActionDoesNotPanic(t *testing.T) {
-	owner, app, cleanup := upload_test_setup(t)
-	defer cleanup()
+	owner, app := upload_test_setup(t)
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -141,8 +139,7 @@ func TestUploadAnonymousPublicActionDoesNotPanic(t *testing.T) {
 // first upload for a user and app arrives before anything else has - so
 // swapping SaveUploadedFile's MkdirAll for a root had to keep the mkdir.
 func TestUploadCreatesTheBaseDirectory(t *testing.T) {
-	user, app, cleanup := upload_test_setup(t)
-	defer cleanup()
+	user, app := upload_test_setup(t)
 
 	base := api_file_base(user, app)
 	if _, err := os.Stat(base); err == nil {
@@ -161,8 +158,7 @@ func TestUploadCreatesTheBaseDirectory(t *testing.T) {
 // TestUploadCreatesNestedDirectories. root_write_file makes parents through
 // the root; SaveUploadedFile's MkdirAll did it outside one.
 func TestUploadCreatesNestedDirectories(t *testing.T) {
-	user, app, cleanup := upload_test_setup(t)
-	defer cleanup()
+	user, app := upload_test_setup(t)
 
 	a, thread := upload_test_action(t, user, user, app, "f", "nested.txt", "deep")
 	if _, err := upload_test_call(a, thread, "f", "a/b/nested.txt"); err != nil {
@@ -180,8 +176,7 @@ func TestUploadCreatesNestedDirectories(t *testing.T) {
 // TestUploadLandsWhereFileReadLooks. The write and the read must resolve the
 // same account, or an app stores something it cannot then find.
 func TestUploadLandsWhereFileReadLooks(t *testing.T) {
-	user, app, cleanup := upload_test_setup(t)
-	defer cleanup()
+	user, app := upload_test_setup(t)
 
 	a, thread := upload_test_action(t, user, user, app, "f", "shared.txt", "round trip")
 	if _, err := upload_test_call(a, thread, "f", "shared.txt"); err != nil {

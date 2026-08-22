@@ -28,8 +28,7 @@ import (
 func push_test_setup(t *testing.T, endpoint string) *User {
 	t.Helper()
 	private_endpoints_allowed(t)
-	cleanup := setup_replication_test(t)
-	t.Cleanup(cleanup)
+	setup_replication_test(t)
 	db_create()
 
 	users := db_open("db/users.db")
@@ -348,8 +347,7 @@ func TestEveryDelivererHasANotifyProvider(t *testing.T) {
 // TestPushesTableOnAFreshInstall: db_create has to build the table, or the
 // first failed push on a new server fails its insert instead of queueing.
 func TestPushesTableOnAFreshInstall(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	db := db_open("db/queue.db")
@@ -366,8 +364,7 @@ func TestPushesTableOnAFreshInstall(t *testing.T) {
 // migration has to add it. Driven through db_upgrade rather than by calling
 // db_upgrade_8 directly, so a missing `case 8:` fails here too.
 func TestPushesTableOnAnUpgrade(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	// Wind the install back to what a pre-migration server looks like.

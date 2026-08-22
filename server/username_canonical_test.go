@@ -33,19 +33,18 @@ var username_variants = []string{
 
 // username_test_setup gives a test its own users.db holding one account, and
 // the sessions.db table code_send writes to.
-func username_test_setup(t *testing.T) func() {
+func username_test_setup(t *testing.T) {
 	t.Helper()
-	cleanup := create_test_users_db(t)
+	create_test_users_db(t)
 	db_open("db/users.db").exec("insert into users (uid, username) values ('u1', 'alice@example.com')")
 	db_open("db/sessions.db").exec(
 		"create table if not exists codes ( code text not null primary key, username text not null, expires integer not null )")
-	return cleanup
 }
 
 // TestUserByUsernameFindsEveryVariant. The lookup is what decides whether a
 // login continues into an existing account or falls through to signup.
 func TestUserByUsernameFindsEveryVariant(t *testing.T) {
-	defer username_test_setup(t)()
+	username_test_setup(t)
 
 	for _, variant := range username_variants {
 		u := user_by_username(variant)
@@ -62,7 +61,7 @@ func TestUserByUsernameFindsEveryVariant(t *testing.T) {
 // TestUserByUsernameRejectsUnparseable. Canonicalising must not turn a
 // nonsense argument into a match on some other account.
 func TestUserByUsernameRejectsUnparseable(t *testing.T) {
-	defer username_test_setup(t)()
+	username_test_setup(t)
 
 	for _, value := range []string{"", "   ", "not an address", "@example.com"} {
 		if u := user_by_username(value); u != nil {
@@ -75,7 +74,7 @@ func TestUserByUsernameRejectsUnparseable(t *testing.T) {
 // becomes the account's username when the code is redeemed, so storing the
 // spelling the caller typed is what creates the second account.
 func TestCodeSendStoresCanonicalUsername(t *testing.T) {
-	defer username_test_setup(t)()
+	username_test_setup(t)
 
 	for _, variant := range username_variants {
 		db_open("db/sessions.db").exec("delete from codes")
@@ -100,7 +99,7 @@ func TestCodeSendStoresCanonicalUsername(t *testing.T) {
 // TestCodeSendRefusesUnparseable. The canonical form is also the validation,
 // so an address that cannot be reduced must not reach the codes table.
 func TestCodeSendRefusesUnparseable(t *testing.T) {
-	defer username_test_setup(t)()
+	username_test_setup(t)
 
 	if reason := code_send("not an address", nil); reason != "invalid_email" {
 		t.Errorf("code_send on an unparseable address returned %q, want invalid_email", reason)
@@ -114,7 +113,7 @@ func TestCodeSendRefusesUnparseable(t *testing.T) {
 // code_send and consumes it here; if the two canonicalise differently, a code
 // the user genuinely received is refused.
 func TestCodeConsumeMatchesAcrossSpellings(t *testing.T) {
-	defer username_test_setup(t)()
+	username_test_setup(t)
 
 	for _, variant := range username_variants {
 		db_open("db/sessions.db").exec("delete from codes")
@@ -135,7 +134,7 @@ func TestCodeConsumeMatchesAcrossSpellings(t *testing.T) {
 // becomes an account, and the one every signup route shares - email code,
 // OAuth and restore all arrive here.
 func TestUserCreateStoresCanonicalUsername(t *testing.T) {
-	defer username_test_setup(t)()
+	username_test_setup(t)
 
 	user, reason := user_create("Bob <BOB@Example.com>")
 	if user == nil {
@@ -152,7 +151,7 @@ func TestUserCreateStoresCanonicalUsername(t *testing.T) {
 // second way, redeem it, and land in the account that already exists rather
 // than a new empty one.
 func TestLoginCodeVariantSignsIntoExistingAccount(t *testing.T) {
-	defer username_test_setup(t)()
+	username_test_setup(t)
 
 	for _, variant := range username_variants {
 		db_open("db/sessions.db").exec("delete from codes")
@@ -182,7 +181,7 @@ func TestLoginCodeVariantSignsIntoExistingAccount(t *testing.T) {
 // TestUserCreateRejectsUnparseable. Refusing beats inserting an account whose
 // username no lookup can ever canonicalise to.
 func TestUserCreateRejectsUnparseable(t *testing.T) {
-	defer username_test_setup(t)()
+	username_test_setup(t)
 
 	if user, reason := user_create("not an address"); user != nil || reason != "invalid" {
 		t.Errorf("user_create on an unparseable address returned (%v, %q), want (nil, invalid)", user, reason)
@@ -193,7 +192,7 @@ func TestUserCreateRejectsUnparseable(t *testing.T) {
 // paths canonicalised would become unreachable once the lookups do, so the
 // migration has to bring them along.
 func TestSchemaNineCanonicalisesExistingUsernames(t *testing.T) {
-	defer create_test_users_db(t)()
+	create_test_users_db(t)
 	users := db_open("db/users.db")
 	users.exec("create table if not exists settings ( name text not null primary key, value text not null )")
 	users.exec("insert into users (uid, username) values ('u1', 'Carol <CAROL@Example.com>')")
@@ -219,7 +218,7 @@ func TestSchemaNineCanonicalisesExistingUsernames(t *testing.T) {
 // either would either fail the unique index or, worse, hand one person the
 // other's account.
 func TestSchemaNineLeavesCollidingAccountsAlone(t *testing.T) {
-	defer create_test_users_db(t)()
+	create_test_users_db(t)
 	users := db_open("db/users.db")
 	users.exec("create table if not exists settings ( name text not null primary key, value text not null )")
 	users.exec("insert into users (uid, username) values ('u1', 'frank@example.com')")
@@ -242,7 +241,7 @@ func TestSchemaNineLeavesCollidingAccountsAlone(t *testing.T) {
 // administrator route into the same table, so it needs the same reduction or
 // it reintroduces the split from the Starlark side.
 func TestApiUserCreateStoresCanonicalUsername(t *testing.T) {
-	defer username_test_setup(t)()
+	username_test_setup(t)
 
 	// An internal app, so require_permission's users/write gate (which reads
 	// grants from a database this fixture does not build) is not what the test
@@ -265,7 +264,7 @@ func TestApiUserCreateStoresCanonicalUsername(t *testing.T) {
 // TestApiUserGetFindsEveryVariant. mochi.user.get.username is how an app looks an
 // account up by address; a miss there reads as "no such user".
 func TestApiUserGetUsernameFindsEveryVariant(t *testing.T) {
-	defer username_test_setup(t)()
+	username_test_setup(t)
 
 	thread := &sl.Thread{Name: "test"}
 	thread.SetLocal("user", &User{UID: "u1", Username: "alice@example.com", Role: "administrator"})
@@ -347,7 +346,7 @@ func TestUsernameQueriesAreCanonical(t *testing.T) {
 // administrator. The taken check runs before the code check, so no code is
 // needed.
 func TestRestoreSeesAnExistingAccountAcrossSpellings(t *testing.T) {
-	defer create_test_users_db(t)()
+	create_test_users_db(t)
 	restore_tables_create(t)
 	db_open("db/users.db").exec("insert into users (uid, username) values ('u1', 'frank@example.com')")
 

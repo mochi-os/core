@@ -7,25 +7,16 @@
 package main
 
 import (
-	"os"
 	"testing"
 )
 
 // setup_acknowledge_test gives a temp dir + DB scoped to the test. Separate
 // from setup_broadcast_log_test only so the two files stay independent.
-func setup_acknowledge_test(t *testing.T) (*DB, func()) {
+func setup_acknowledge_test(t *testing.T) *DB {
 	t.Helper()
-	tmp_dir, err := os.MkdirTemp("", "mochi_bcast_ack")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	orig := data_dir
-	data_dir = tmp_dir
+	test_data_directory(t)
 	db := db_open("db/test.db")
-	return db, func() {
-		data_dir = orig
-		os.RemoveAll(tmp_dir)
-	}
+	return db
 }
 
 // acknowledged_last reads a subscriber's recorded watermark, or -1 when the
@@ -53,8 +44,7 @@ func log_count(t *testing.T, db *DB, key, peer string) int64 {
 // TestAcknowledgeClampsAboveHead - the sequence arrives over the network and
 // feeds broadcast_log_ack_trim, so a watermark past the head is capped.
 func TestAcknowledgeClampsAboveHead(t *testing.T) {
-	db, cleanup := setup_acknowledge_test(t)
-	defer cleanup()
+	db := setup_acknowledge_test(t)
 
 	for i := 0; i < 3; i++ {
 		broadcast_log_append(db, "k1", "peerA", "event/a", []byte(`{}`))
@@ -76,8 +66,7 @@ func TestAcknowledgeClampsAboveHead(t *testing.T) {
 // subscriber acking within the log records exactly what it claimed, and the
 // trim removes only what everyone has seen.
 func TestAcknowledgeHonoursHonestWatermark(t *testing.T) {
-	db, cleanup := setup_acknowledge_test(t)
-	defer cleanup()
+	db := setup_acknowledge_test(t)
 
 	for i := 0; i < 3; i++ {
 		broadcast_log_append(db, "k1", "peerA", "event/a", []byte(`{}`))
@@ -104,8 +93,7 @@ func TestAcknowledgeHonoursHonestWatermark(t *testing.T) {
 // floor against a log we do not own would let any sender create rows for
 // streams that are none of our business.
 func TestAcknowledgeIgnoredForUnknownStream(t *testing.T) {
-	db, cleanup := setup_acknowledge_test(t)
-	defer cleanup()
+	db := setup_acknowledge_test(t)
 
 	e := &Event{db: db, from: "stranger", content: map[string]any{
 		"key": "never-seen", "peer": "peerA", "sequence": int64(5),
@@ -123,8 +111,7 @@ func TestAcknowledgeIgnoredForUnknownStream(t *testing.T) {
 // max() semantics: a later, lower ack (a retry, a reordered delivery) cannot
 // walk a subscriber's floor backwards.
 func TestAcknowledgeStaysMonotonic(t *testing.T) {
-	db, cleanup := setup_acknowledge_test(t)
-	defer cleanup()
+	db := setup_acknowledge_test(t)
 
 	for i := 0; i < 4; i++ {
 		broadcast_log_append(db, "k1", "peerA", "event/a", []byte(`{}`))
@@ -150,8 +137,7 @@ func TestAcknowledgeStaysMonotonic(t *testing.T) {
 
 // TestAcknowledgeRejectsMalformed — the existing input contract is unchanged.
 func TestAcknowledgeRejectsMalformed(t *testing.T) {
-	db, cleanup := setup_acknowledge_test(t)
-	defer cleanup()
+	db := setup_acknowledge_test(t)
 
 	broadcast_log_append(db, "k1", "peerA", "event/a", []byte(`{}`))
 

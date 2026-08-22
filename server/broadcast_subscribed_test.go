@@ -7,30 +7,20 @@
 package main
 
 import (
-	"os"
 	"testing"
 )
 
-func setup_subscribed_test(t *testing.T) (*DB, func()) {
+func setup_subscribed_test(t *testing.T) *DB {
 	t.Helper()
-	tmp_dir, err := os.MkdirTemp("", "mochi_bcast_sub")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	orig := data_dir
-	data_dir = tmp_dir
+	test_data_directory(t)
 	db := db_open("db/test.db")
-	return db, func() {
-		data_dir = orig
-		os.RemoveAll(tmp_dir)
-	}
+	return db
 }
 
 // TestSubscribedGateRefusesNonSubscriber — the point of the whole change. `key`
 // is the object entity id, so knowing it must not be enough to read a stream.
 func TestSubscribedGateRefusesNonSubscriber(t *testing.T) {
-	db, cleanup := setup_subscribed_test(t)
-	defer cleanup()
+	db := setup_subscribed_test(t)
 
 	broadcast_subscribed_record(db, "k1", "peerA", []string{"member1", "member2"})
 
@@ -49,8 +39,7 @@ func TestSubscribedGateRefusesNonSubscriber(t *testing.T) {
 // without a flag day. On an upgraded server every existing stream starts with
 // no records, and refusing them would wedge every subscriber at once.
 func TestSubscribedGateFailsOpenWhenUnrecorded(t *testing.T) {
-	db, cleanup := setup_subscribed_test(t)
-	defer cleanup()
+	db := setup_subscribed_test(t)
 
 	// No table at all yet: the very first upgraded server.
 	if !broadcast_subscribed_allowed(db, "k1", "peerA", "anyone") {
@@ -73,8 +62,7 @@ func TestSubscribedGateFailsOpenWhenUnrecorded(t *testing.T) {
 // affected member. Replacing the set on each send would evict a member who
 // merely was not a recipient of the latest event and then refuse their resync.
 func TestSubscribedRecordUnions(t *testing.T) {
-	db, cleanup := setup_subscribed_test(t)
-	defer cleanup()
+	db := setup_subscribed_test(t)
 
 	// A sends, so the list omits A; then B sends, so it omits B.
 	broadcast_subscribed_record(db, "chat1", "peerA", []string{"B", "C"})
@@ -91,8 +79,7 @@ func TestSubscribedRecordUnions(t *testing.T) {
 // log is keyed. In chat every member originates their own stream, so a member
 // is absent from their own set and present in the others'.
 func TestSubscribedScopedPerStream(t *testing.T) {
-	db, cleanup := setup_subscribed_test(t)
-	defer cleanup()
+	db := setup_subscribed_test(t)
 
 	broadcast_subscribed_record(db, "chat1", "peerA", []string{"B"})
 	broadcast_subscribed_record(db, "chat1", "peerB", []string{"A"})
@@ -112,8 +99,7 @@ func TestSubscribedScopedPerStream(t *testing.T) {
 // a member who has received nothing for that long lapses. Refreshed on every
 // fan-out, so an active member never expires.
 func TestSubscribedRecordExpires(t *testing.T) {
-	db, cleanup := setup_subscribed_test(t)
-	defer cleanup()
+	db := setup_subscribed_test(t)
 
 	broadcast_subscribed_table_create(db)
 	stale := now() - broadcast_subscribed_age - 1
@@ -134,8 +120,7 @@ func TestSubscribedRecordExpires(t *testing.T) {
 // TestSubscribedRecordRefreshes — a subscriber present in a later send has its
 // clock reset, so a long-lived member never ages out mid-membership.
 func TestSubscribedRecordRefreshes(t *testing.T) {
-	db, cleanup := setup_subscribed_test(t)
-	defer cleanup()
+	db := setup_subscribed_test(t)
 
 	broadcast_subscribed_table_create(db)
 	old := now() - broadcast_subscribed_age + 100
@@ -157,8 +142,7 @@ func TestSubscribedRecordRefreshes(t *testing.T) {
 // and then leave a stream gated with nobody in it, which would refuse every
 // legitimate subscriber.
 func TestSubscribedRecordIgnoresEmpty(t *testing.T) {
-	db, cleanup := setup_subscribed_test(t)
-	defer cleanup()
+	db := setup_subscribed_test(t)
 
 	broadcast_subscribed_record(db, "k1", "peerA", []string{})
 	broadcast_subscribed_record(db, "k1", "peerA", nil)
@@ -171,8 +155,7 @@ func TestSubscribedRecordIgnoresEmpty(t *testing.T) {
 // TestResyncRefusesNonSubscriber — the gate in the handler, not just the
 // helper: a stranger who knows the key gets no rows back.
 func TestResyncRefusesNonSubscriber(t *testing.T) {
-	db, cleanup := setup_subscribed_test(t)
-	defer cleanup()
+	db := setup_subscribed_test(t)
 
 	for i := 0; i < 3; i++ {
 		broadcast_log_append(db, "k1", "peerA", "event/a", []byte(`{}`))
@@ -198,8 +181,7 @@ func TestResyncRefusesNonSubscriber(t *testing.T) {
 // broadcast_log_ack_trim trims to the LOWEST floor, so one ack of 1 from a
 // stranger pins the log forever.
 func TestAcknowledgeRefusesNonSubscriber(t *testing.T) {
-	db, cleanup := setup_subscribed_test(t)
-	defer cleanup()
+	db := setup_subscribed_test(t)
 
 	for i := 0; i < 5; i++ {
 		broadcast_log_append(db, "k1", "peerA", "event/a", []byte(`{}`))
@@ -232,8 +214,7 @@ func TestAcknowledgeRefusesNonSubscriber(t *testing.T) {
 // member keeps replay access until their record expires, and the log is a
 // rolling window, so they could read events created after they left.
 func TestSubscribedRemoveRevokes(t *testing.T) {
-	db, cleanup := setup_subscribed_test(t)
-	defer cleanup()
+	db := setup_subscribed_test(t)
 
 	broadcast_subscribed_record(db, "k1", "peerA", []string{"stays", "leaves"})
 
@@ -263,8 +244,7 @@ func TestSubscribedRemoveRevokes(t *testing.T) {
 // TestSubscribedRemoveScopedToStream — an app may revoke access to what it
 // broadcasts, never to another host's stream.
 func TestSubscribedRemoveScopedToStream(t *testing.T) {
-	db, cleanup := setup_subscribed_test(t)
-	defer cleanup()
+	db := setup_subscribed_test(t)
 
 	broadcast_subscribed_record(db, "k1", "peerA", []string{"member1"})
 	broadcast_subscribed_record(db, "k1", "peerB", []string{"member1"})
@@ -283,8 +263,7 @@ func TestSubscribedRemoveScopedToStream(t *testing.T) {
 // necessary: chat's member/add broadcast goes to the EXISTING members, so the
 // joiner is absent from the very event that admits them.
 func TestSubscribedAddRecordsWithoutSending(t *testing.T) {
-	db, cleanup := setup_subscribed_test(t)
-	defer cleanup()
+	db := setup_subscribed_test(t)
 
 	// The stream has sent, so it is gated, and the joiner was not a recipient.
 	broadcast_subscribed_record(db, "chat1", "peerA", []string{"existing"})
@@ -310,8 +289,7 @@ func TestSubscribedAddRecordsWithoutSending(t *testing.T) {
 // TestSubscribedAddDoesNotGateAnUnsentStream - recording one joiner must not
 // gate a stream that has never sent; only a send writes the marker.
 func TestSubscribedAddDoesNotGateAnUnsentStream(t *testing.T) {
-	db, cleanup := setup_subscribed_test(t)
-	defer cleanup()
+	db := setup_subscribed_test(t)
 
 	broadcast_subscribed_add(db, "chat1", "peerA", "joiner")
 
@@ -336,8 +314,7 @@ func TestSubscribedAddDoesNotGateAnUnsentStream(t *testing.T) {
 // TestSubscribedRecordSkipsFreshRows - a fan-out must not rewrite a row per
 // recipient on every send.
 func TestSubscribedRecordSkipsFreshRows(t *testing.T) {
-	db, cleanup := setup_subscribed_test(t)
-	defer cleanup()
+	db := setup_subscribed_test(t)
 
 	broadcast_subscribed_record(db, "k1", "peerA", []string{"a", "b"})
 	row, _ := db.row("select updated from subscribed where key=? and peer=? and subscriber=?", "k1", "peerA", "a")

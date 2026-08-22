@@ -15,11 +15,14 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	cbor "github.com/fxamacker/cbor/v2"
 	"github.com/klauspost/compress/zstd"
+	p2p "github.com/libp2p/go-libp2p"
+	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
+	multiaddr "github.com/multiformats/go-multiaddr"
 	"io"
 	"testing"
-
-	cbor "github.com/fxamacker/cbor/v2"
+	"time"
 )
 
 func init() {
@@ -462,5 +465,126 @@ func TestFrameDecompressBounded(t *testing.T) {
 	}
 	if !bytes.Equal(out, ordinary) {
 		t.Fatal("in-bounds payload did not round-trip")
+	}
+}
+
+// TestDedupWindowExceedsMaxRetryInterval: seen_messages_ttl must be at least 2x
+// the longest retry_delays gap, or a late retry reads as a fresh message.
+func TestDedupWindowExceedsMaxRetryInterval(t *testing.T) {
+	if len(retry_delays) == 0 {
+		t.Skip("retry_delays empty; invariant not applicable")
+	}
+	gap_maximum := retry_delays[0]
+	for _, d := range retry_delays {
+		if d > gap_maximum {
+			gap_maximum = d
+		}
+	}
+	required := 2 * gap_maximum
+	if seen_messages_ttl < required {
+		t.Errorf("dedup window invariant violated: seen_messages_ttl=%d, max retry gap=%d, required ≥ %d (2× max gap). "+
+			"Bump seen_messages_ttl OR cap retry_delays so the relation holds.",
+			seen_messages_ttl, gap_maximum, required)
+	}
+}
+
+// Guards inbound flow control: worker_dispatch BLOCKS on a full bounded inbox,
+// so a flooding sender is paced by TCP rather than dropped. Fails if the inbox
+// send becomes non-blocking or unbounded.//
+// Application Interface Exception - see license.txt and license-exception.md.
+func TestWorkerDispatchBackpressure(t *testing.T) {
+	key := user_app_key{user: "u-backpressure", app: "test"}
+	// A worker with a tiny inbox and NO run() goroutine — nothing drains it, so it
+	// fills and stays full, modelling a worker that cannot keep up with the sender.
+	w := &app_worker{user: key.user, app: key.app, inbox: make(chan *worker_frame, 2)}
+	app_workers_lock.Lock()
+	app_workers[key] = w
+	app_workers_lock.Unlock()
+	defer func() {
+		app_workers_lock.Lock()
+		delete(app_workers, key)
+		app_workers_lock.Unlock()
+	}()
+
+	// Fill to capacity (cache hit on the pre-inserted worker, so no worker_create
+	// / no run() goroutine is started).
+	worker_dispatch(key.user, key.app, &worker_frame{})
+	worker_dispatch(key.user, key.app, &worker_frame{})
+
+	// A third dispatch must BLOCK — back-pressure, not unbounded buffering or a drop.
+	done := make(chan struct{})
+	go func() { worker_dispatch(key.user, key.app, &worker_frame{}); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("worker_dispatch returned on a full inbox — no back-pressure (unbounded buffer or silent drop)")
+	case <-time.After(150 * time.Millisecond):
+		// still blocked = back-pressure holds, the sender is paced not dropped
+	}
+
+	// Freeing one slot lets the blocked dispatch proceed — paced, never dropped.
+	<-w.inbox
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker_dispatch stayed blocked after a slot freed — should have proceeded")
+	}
+}
+
+// Mochi server: #47 - peer_protocol_open must not hang when a stale "Connected"
+// peer forces net_me.NewStream to dial an unreachable address; the open is
+// bounded by peer_stream_open_timeout.//
+// Application Interface Exception - see license.txt and license-exception.md.
+// TestPeerProtocolOpenTimesOut: a peer believed connected whose only address is
+// black-holed must fail within the timeout, not hang.
+func TestPeerProtocolOpenTimesOut(t *testing.T) {
+	setup_peer_discovery_test(t)
+
+	// A real libp2p host so NewStream genuinely attempts a dial.
+	h, err := p2p.New(p2p.ListenAddrStrings("/ip4/127.0.0.1/udp/0/quic-v1"))
+	if err != nil {
+		t.Fatalf("test host: %v", err)
+	}
+	defer h.Close()
+	saved_me := net_me
+	net_me = h
+	defer func() { net_me = saved_me }()
+
+	// Peer Mochi thinks is connected (stale state) with only a black-holed
+	// address in the libp2p peerstore — the dial can never succeed.
+	id, _ := test_host(t)
+	pid, err := p2p_peer.Decode(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blackhole, err := multiaddr.NewMultiaddr("/ip4/192.0.2.50/udp/1443/quic-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Peerstore().AddAddr(pid, blackhole, time.Hour)
+	peers_lock.Lock()
+	peers[id] = Peer{ID: id, state: peer_state_connected}
+	peers_lock.Unlock()
+
+	saved_timeout := peer_stream_open_timeout
+	peer_stream_open_timeout = 300 * time.Millisecond
+	defer func() { peer_stream_open_timeout = saved_timeout }()
+
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		_, e := peer_protocol_open(id, protocol_stream)
+		done <- e
+	}()
+
+	select {
+	case e := <-done:
+		if e == nil {
+			t.Fatal("expected an error opening a stream to a black-holed peer")
+		}
+		if d := time.Since(start); d > 3*time.Second {
+			t.Fatalf("open returned in %v — NewStream not bounded by peer_stream_open_timeout", d)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("peer_protocol_open HUNG (>5s) — #47 NewStream deadline not applied")
 	}
 }

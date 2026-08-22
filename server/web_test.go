@@ -7,23 +7,16 @@
 package main
 
 import (
+	"github.com/gin-gonic/gin"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
-
-	"github.com/gin-gonic/gin"
 )
 
 // create_web_test_env sets up a test environment for web routing tests
-func create_web_test_env(t *testing.T) func() {
-	tmp_dir, err := os.MkdirTemp("", "mochi_web_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
+func create_web_test_env(t *testing.T) {
+	t.Helper()
+	test_data_directory(t)
 
 	// Create settings database
 	settings_db := db_open("db/settings.db")
@@ -49,18 +42,11 @@ func create_web_test_env(t *testing.T) func() {
 		end`)
 	users.exec("create table if not exists entities (id text primary key, user text not null, user_uid text not null default '', class text not null, name text not null, privacy text not null default 'private', data text not null default '', fingerprint text not null, created integer not null, updated integer not null)")
 
-	cleanup := func() {
-		data_dir = orig_data_dir
-		os.RemoveAll(tmp_dir)
-	}
-
-	return cleanup
 }
 
 // Test domains_middleware sets context values
 func TestDomainsMiddleware(t *testing.T) {
-	cleanup := create_web_test_env(t)
-	defer cleanup()
+	create_web_test_env(t)
 
 	// Set up domain and route
 	domain_register("test.example.com")
@@ -104,8 +90,7 @@ func TestDomainsMiddleware(t *testing.T) {
 
 // Test domains_middleware with no matching domain
 func TestDomainsMiddlewareNoMatch(t *testing.T) {
-	cleanup := create_web_test_env(t)
-	defer cleanup()
+	create_web_test_env(t)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -128,8 +113,7 @@ func TestDomainsMiddlewareNoMatch(t *testing.T) {
 
 // Test domains_middleware with path-based route
 func TestDomainsMiddlewarePathRoute(t *testing.T) {
-	cleanup := create_web_test_env(t)
-	defer cleanup()
+	create_web_test_env(t)
 
 	domain_register("example.com")
 	route_create("example.com", "/api", "app", "api", "", "", 0)
@@ -167,8 +151,7 @@ func TestDomainsMiddlewarePathRoute(t *testing.T) {
 
 // Test web_path with domain routing
 func TestWebPathDomainRouting(t *testing.T) {
-	cleanup := create_web_test_env(t)
-	defer cleanup()
+	create_web_test_env(t)
 
 	// Create a test entity
 	db := db_open("db/users.db")
@@ -212,8 +195,7 @@ func TestWebPathDomainRouting(t *testing.T) {
 
 // Test web_path falls back to normal routing without domain match
 func TestWebPathFallbackRouting(t *testing.T) {
-	cleanup := create_web_test_env(t)
-	defer cleanup()
+	create_web_test_env(t)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -239,8 +221,7 @@ func TestWebPathFallbackRouting(t *testing.T) {
 
 // Test domain routing with wildcard domain
 func TestWebPathWildcardDomain(t *testing.T) {
-	cleanup := create_web_test_env(t)
-	defer cleanup()
+	create_web_test_env(t)
 
 	domain_register("*.example.com")
 	route_create("*.example.com", "", "app", "wildcard", "", "", 0)
@@ -274,8 +255,7 @@ func TestWebPathWildcardDomain(t *testing.T) {
 
 // Test domain routing extracts correct remaining path
 func TestWebPathRemainingPath(t *testing.T) {
-	cleanup := create_web_test_env(t)
-	defer cleanup()
+	create_web_test_env(t)
 
 	domain_register("api.example.com")
 	route_create("api.example.com", "/v1", "app", "api", "", "", 0)
@@ -352,5 +332,23 @@ func TestLocalhostIgnoresForwardedFor(t *testing.T) {
 					got, test.want, test.remote, test.forwarded)
 			}
 		})
+	}
+}
+
+func Test_web_log_redact(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"/_/websocket?token=abc.def.ghi", "/_/websocket?token=redacted"},
+		{"/feeds/x/-/file?token=eyJhbGci&thumbnail=1", "/feeds/x/-/file?token=redacted&thumbnail=1"},
+		{"/feeds/x/-/file?thumbnail=1&token=eyJhbGci", "/feeds/x/-/file?thumbnail=1&token=redacted"},
+		{"/feeds/x/-/list?cursor=10", "/feeds/x/-/list?cursor=10"},
+		{"/_/health", "/_/health"},
+	}
+	for _, c := range cases {
+		if got := web_log_redact(c.path); got != c.want {
+			t.Errorf("web_log_redact(%q) = %q, want %q", c.path, got, c.want)
+		}
 	}
 }

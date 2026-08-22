@@ -97,8 +97,7 @@ func TestGitAdvertisementOmitsReferencesInV2(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, _ := git_shallow_repo(t, user, "advert", 3)
 	git_branches(t, repo_path, 200)
@@ -134,8 +133,7 @@ func TestGitPushAdvertisementStaysV0(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, _ := git_shallow_repo(t, user, "pushadvert", 2)
 
@@ -167,8 +165,7 @@ func TestGitCloneEmptyRepository(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	if err := git_init(user, test_app, "empty"); err != nil {
 		t.Fatalf("git_init: %v", err)
@@ -197,8 +194,7 @@ func TestGitPushOverHttp(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	// The push budget is measured from the owner's storage directory, and a
 	// push with no measurable budget is metered at a single byte and refused.
@@ -239,8 +235,7 @@ func TestGitLsRefsNarrowsByPrefix(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, _ := git_shallow_repo(t, user, "lsrefs", 3)
 	git_branches(t, repo_path, 20)
@@ -279,8 +274,7 @@ func TestGitAdvertisementPeelsTags(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, commits := git_shallow_repo(t, user, "peeled", 4)
 	server := git_negotiation_server(t, repo_path)
@@ -351,8 +345,7 @@ func TestGitCloneFilterBlobNone(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path := git_filter_repo(t, user, "filterblob")
 	server := git_negotiation_server(t, repo_path)
@@ -393,8 +386,7 @@ func TestGitCloneShallowFilterLazyFetch(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path := git_filter_repo(t, user, "shallowfilter")
 	server := git_negotiation_server(t, repo_path)
@@ -424,8 +416,7 @@ func TestGitCloneFilterBlobLimit(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path := git_filter_repo(t, user, "filterlimit")
 	server := git_negotiation_server(t, repo_path)
@@ -459,8 +450,7 @@ func TestGitCloneFilterTreeZero(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path := git_filter_repo(t, user, "filtertree")
 	server := git_negotiation_server(t, repo_path)
@@ -548,8 +538,7 @@ func TestGitIncludeTag(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, commits := git_shallow_repo(t, user, "includetag", 4)
 	storage, err := (&git_loader{}).Load(&transport.Endpoint{Path: repo_path})

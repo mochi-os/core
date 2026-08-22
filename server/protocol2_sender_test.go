@@ -67,8 +67,7 @@ func install_queue_row(t *testing.T, id string) {
 // --- resolve_fail vocabulary -------------------------------------------
 
 func TestResolveFailVocabulary(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	s := new_test_sender(t, "test-peer")
 
@@ -123,8 +122,7 @@ func TestResolveFailVocabulary(t *testing.T) {
 }
 
 func TestResolveFailUnclaimedClearsClaimCache(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	s := new_test_sender(t, "p")
 	s.claimed["entity-a"] = true
@@ -153,8 +151,7 @@ func TestHandleInboundUpdatesLastInbound(t *testing.T) {
 }
 
 func TestHandleInboundAckClearsInflight(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	s := new_test_sender(t, "p")
 	install_queue_row(t, "msg-1")
@@ -194,8 +191,7 @@ func TestHandleInboundAckClearsInflight(t *testing.T) {
 }
 
 func TestHandleInboundOrphanAckIgnored(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	s := new_test_sender(t, "p")
 	// No inflight entries. Ack for unknown id MUST be a no-op
@@ -222,8 +218,7 @@ func TestHandleInboundPongClearsPing(t *testing.T) {
 // --- rate_gate ---------------------------------------------------------
 
 func TestRateGateUnlimitedNoBlock(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	// Default peer.rate is 0 (unlimited). rate_gate should return
 	// immediately for any number of calls.
 	s := new_test_sender(t, "p")
@@ -237,8 +232,7 @@ func TestRateGateUnlimitedNoBlock(t *testing.T) {
 }
 
 func TestRateGateLimitsViaEnv(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	// peer.rate is read via ini_int("peer", "rate", 0). The ini
 	// package exposes env-var overrides as MOCHI_<SECTION>_<KEY>.
 	// Limit = 3 / sec → the 4th call MUST block for >= 50ms (the
@@ -316,8 +310,7 @@ func TestPingLoopSkipsWhenActive(t *testing.T) {
 // --- senders_sweep_all -------------------------------------------------
 
 func TestSendersSweepTimesOutInflight(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	s := new_test_sender(t, "sweep-peer")
 	restore := stash_sender(t, "sweep-peer", s)
@@ -352,8 +345,7 @@ func TestSendersSweepTimesOutInflight(t *testing.T) {
 }
 
 func TestSendersSweepTimesOutPings(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	s := new_test_sender(t, "ping-sweep")
 	restore := stash_sender(t, "ping-sweep", s)
@@ -374,8 +366,7 @@ func TestSendersSweepTimesOutPings(t *testing.T) {
 // --- fail_outbound -----------------------------------------------------
 
 func TestFailOutboundQueuesFail(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	s := new_test_sender(t, "p")
 	id := "outbound-fail-1"
@@ -393,8 +384,7 @@ func TestFailOutboundQueuesFail(t *testing.T) {
 }
 
 func TestFailOutboundEmptyQueueIsNoop(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	// Frames with no queue id (synthetic, e.g. bye / ping) MUST NOT
 	// touch queue.db.
 	defer func() {
@@ -409,8 +399,7 @@ func TestFailOutboundEmptyQueueIsNoop(t *testing.T) {
 // --- shutdown ----------------------------------------------------------
 
 func TestShutdownDrainsInflightToQueueFail(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	s := new_test_sender(t, "shutdown-peer")
 	restore := stash_sender(t, "shutdown-peer", s)
@@ -443,8 +432,7 @@ func TestShutdownDrainsInflightToQueueFail(t *testing.T) {
 }
 
 func TestShutdownIsIdempotent(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	s := new_test_sender(t, "idem-peer")
 	restore := stash_sender(t, "idem-peer", s)
 	defer restore()
@@ -507,8 +495,7 @@ func TestWriteOneInflightInvariant(t *testing.T) {
 // --- senders_peer_invalidate -------------------------------------------
 
 func TestSendersPeerInvalidateTearsDown(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	s := new_test_sender(t, "inv-peer")
 	restore := stash_sender(t, "inv-peer", s)
 	defer restore()

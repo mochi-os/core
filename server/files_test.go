@@ -27,9 +27,7 @@ import (
 func file_api_environment(t *testing.T) (string, *sl.Thread) {
 	t.Helper()
 
-	original := data_dir
-	data_dir = t.TempDir()
-	t.Cleanup(func() { data_dir = original })
+	test_data_directory(t)
 
 	user := &User{UID: "testuser"}
 	app := &App{id: "files"}
@@ -174,9 +172,7 @@ func TestCacheCopy(t *testing.T) {
 // that has settled from one another request may still be writing. A listing
 // cannot: a part-written upload and an abandoned one have the same name.
 func TestFileAge(t *testing.T) {
-	original := data_dir
-	data_dir = t.TempDir()
-	t.Cleanup(func() { data_dir = original })
+	test_data_directory(t)
 
 	user := &User{UID: "testuser"}
 	app := &App{id: "files"}
@@ -423,11 +419,7 @@ func TestFileExists(t *testing.T) {
 // Test file_is_directory function
 func TestFileIsDirectory(t *testing.T) {
 	// Create temp directory
-	tmp_dir, err := os.MkdirTemp("", "mochi_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
+	tmp_dir := t.TempDir()
 
 	// Create temp file
 	tmp_file, err := os.CreateTemp(tmp_dir, "file")
@@ -455,11 +447,7 @@ func TestFileIsDirectory(t *testing.T) {
 // Test file_list function
 func TestFileList(t *testing.T) {
 	// Create temp directory with files
-	tmp_dir, err := os.MkdirTemp("", "mochi_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
+	tmp_dir := t.TempDir()
 
 	// Create some files
 	files := []string{"alpha.txt", "beta.txt", "gamma.txt"}
@@ -488,11 +476,7 @@ func TestFileList(t *testing.T) {
 
 // Test file_list with empty directory
 func TestFileListEmpty(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
+	tmp_dir := t.TempDir()
 
 	result, err := file_list(tmp_dir)
 	if err != nil {
@@ -505,11 +489,7 @@ func TestFileListEmpty(t *testing.T) {
 
 // Test file_write (and round-trip via os.ReadFile)
 func TestFileWrite(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
+	tmp_dir := t.TempDir()
 
 	path := filepath.Join(tmp_dir, "test.txt")
 	content := []byte("Hello, World!")
@@ -530,11 +510,7 @@ func TestFileWrite(t *testing.T) {
 
 // Test file_write creates parent directories
 func TestFileWriteCreatesParentDirs(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
+	tmp_dir := t.TempDir()
 
 	// Write to nested path that doesn't exist
 	path := filepath.Join(tmp_dir, "subdir1", "subdir2", "file.txt")
@@ -560,11 +536,7 @@ func TestFileWriteCreatesParentDirs(t *testing.T) {
 
 // Test file_size function
 func TestFileSize(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
+	tmp_dir := t.TempDir()
 
 	path := filepath.Join(tmp_dir, "test.txt")
 	content := []byte("12345678901234567890") // 20 bytes

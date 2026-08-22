@@ -26,8 +26,7 @@ func directory_flood_entity(n int) string {
 // counterpart - learned long ago, delivered to, silent since - must survive a
 // flood large enough to turn the whole table over.
 func TestDirectoryUserFloodKeepsConfirmedRows(t *testing.T) {
-	user, cleanup := test_directory_user(t)
-	defer cleanup()
+	user := test_directory_user(t)
 
 	quiet := strings.Repeat("c", 50)
 	quiet_peer := "12D3KooWQuietCounterpart"
@@ -58,8 +57,7 @@ func TestDirectoryUserFloodKeepsConfirmedRows(t *testing.T) {
 // both kinds present and the confirmed row the STALER of the two, the
 // unconfirmed one still goes first.
 func TestDirectoryUserEvictsNeverConfirmedFirst(t *testing.T) {
-	user, cleanup := test_directory_user(t)
-	defer cleanup()
+	user := test_directory_user(t)
 	db := db_user(user, "user")
 
 	confirmed := strings.Repeat("d", 50)
@@ -86,8 +84,7 @@ func TestDirectoryUserEvictsNeverConfirmedFirst(t *testing.T) {
 // throttled, but the mark decides eviction priority, so it must happen even
 // when the delivery falls inside the refresh window.
 func TestDirectoryUserConfirmMarksInsideTheThrottle(t *testing.T) {
-	user, cleanup := test_directory_user(t)
-	defer cleanup()
+	user := test_directory_user(t)
 	db := db_user(user, "user")
 
 	entity := strings.Repeat("f", 50)
@@ -107,8 +104,7 @@ func TestDirectoryUserConfirmMarksInsideTheThrottle(t *testing.T) {
 // - peer identities are free, so this limits an identity's churn rather than
 // the attack - but a single peer must not be able to hold the whole table.
 func TestDirectoryUserPeerCap(t *testing.T) {
-	user, cleanup := test_directory_user(t)
-	defer cleanup()
+	user := test_directory_user(t)
 	db := db_user(user, "user")
 
 	peer := "12D3KooWOnePeer"
@@ -133,8 +129,7 @@ func TestDirectoryUserPeerCap(t *testing.T) {
 // user, so an existing user.db predates the column and every query naming it
 // would fail on a real upgrade.
 func TestDirectoryUserConfirmedColumnMigrates(t *testing.T) {
-	user, cleanup := test_directory_user(t)
-	defer cleanup()
+	user := test_directory_user(t)
 
 	db := db_user(user, "user")
 	db.exec("drop table if exists directory")

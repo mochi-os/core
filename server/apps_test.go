@@ -121,30 +121,18 @@ func TestVersionGreater(t *testing.T) {
 }
 
 // Helper to create test environment with apps.db
-func create_test_apps_db(t *testing.T) func() {
-	tmp_dir, err := os.MkdirTemp("", "mochi_apps_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
+func create_test_apps_db(t *testing.T) {
+	t.Helper()
+	test_data_directory(t)
 
 	// Initialize apps.db with schema
 	db_apps()
 
-	cleanup := func() {
-		data_dir = orig_data_dir
-		os.RemoveAll(tmp_dir)
-	}
-
-	return cleanup
 }
 
 // Test system binding functions for classes
 func TestAppsClassBindings(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	// Initially no binding
 	app := apps_class_get("wiki")
@@ -176,8 +164,7 @@ func TestAppsClassBindings(t *testing.T) {
 
 // Test system binding functions for services
 func TestAppsServiceBindings(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	// Initially no binding
 	app := apps_service_get("notifications")
@@ -202,8 +189,7 @@ func TestAppsServiceBindings(t *testing.T) {
 
 // Test system binding functions for paths
 func TestAppsPathBindings(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	// Initially no binding
 	app := apps_path_get("wikis")
@@ -228,8 +214,7 @@ func TestAppsPathBindings(t *testing.T) {
 
 // Test App.default_version and set_default_version
 func TestAppDefaultVersion(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	a := &App{id: "test-app"}
 
@@ -263,8 +248,7 @@ func TestAppDefaultVersion(t *testing.T) {
 
 // Test App.track and set_track
 func TestAppTracks(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	a := &App{id: "test-app"}
 
@@ -313,8 +297,7 @@ func TestAppTracks(t *testing.T) {
 
 // Test App.resolve_version
 func TestAppResolveVersion(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	a := &App{
 		id: "test-app",
@@ -361,8 +344,7 @@ func TestAppResolveVersion(t *testing.T) {
 
 // Test App.active version resolution priority
 func TestAppActiveFor(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	// Create users database for user preference tests
 	db := db_open("db/users.db")
@@ -420,8 +402,7 @@ func TestAppActiveFor(t *testing.T) {
 
 // Test track-based version resolution in active
 func TestAppActiveForWithTrack(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	a := &App{
 		id: "test-app",
@@ -453,14 +434,9 @@ func TestAppActiveForWithTrack(t *testing.T) {
 }
 
 // Helper to set up full test environment for cleanup tests
-func create_test_cleanup_env(t *testing.T) func() {
-	tmp_dir, err := os.MkdirTemp("", "mochi_cleanup_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
+func create_test_cleanup_env(t *testing.T) {
+	t.Helper()
+	test_data_directory(t)
 
 	// Initialize apps.db
 	db_apps()
@@ -473,19 +449,15 @@ func create_test_cleanup_env(t *testing.T) func() {
 	orig_apps := apps
 	apps = make(map[string]*App)
 
-	cleanup := func() {
+	t.Cleanup(func() {
 		apps = orig_apps
-		data_dir = orig_data_dir
-		os.RemoveAll(tmp_dir)
-	}
+	})
 
-	return cleanup
 }
 
 // Test cleanup keeps highest version
 func TestCleanupKeepsHighestVersion(t *testing.T) {
-	cleanup := create_test_cleanup_env(t)
-	defer cleanup()
+	create_test_cleanup_env(t)
 
 	// Create app with multiple versions
 	a := &App{
@@ -519,8 +491,7 @@ func TestCleanupKeepsHighestVersion(t *testing.T) {
 
 // Test cleanup keeps system default version
 func TestCleanupKeepsSystemDefault(t *testing.T) {
-	cleanup := create_test_cleanup_env(t)
-	defer cleanup()
+	create_test_cleanup_env(t)
 
 	a := &App{
 		id: "test-app",
@@ -552,8 +523,7 @@ func TestCleanupKeepsSystemDefault(t *testing.T) {
 
 // Test cleanup keeps versions referenced by tracks
 func TestCleanupKeepsTrackVersions(t *testing.T) {
-	cleanup := create_test_cleanup_env(t)
-	defer cleanup()
+	create_test_cleanup_env(t)
 
 	a := &App{
 		id: "test-app",
@@ -583,8 +553,7 @@ func TestCleanupKeepsTrackVersions(t *testing.T) {
 
 // Test cleanup keeps user preference versions
 func TestCleanupKeepsUserPreferences(t *testing.T) {
-	cleanup := create_test_cleanup_env(t)
-	defer cleanup()
+	create_test_cleanup_env(t)
 
 	// Create user
 	db := db_open("db/users.db")
@@ -647,8 +616,7 @@ func create_test_starlark_thread() *sl.Thread {
 
 // Test Starlark API: mochi.app.class.get/set/delete/list
 func TestStarlarkAPIClassBindings(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	thread := create_test_starlark_thread()
 
@@ -705,8 +673,7 @@ func TestStarlarkAPIClassBindings(t *testing.T) {
 
 // Test Starlark API: mochi.app.service.get/set/delete/list
 func TestStarlarkAPIServiceBindings(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	thread := create_test_starlark_thread()
 
@@ -745,8 +712,7 @@ func TestStarlarkAPIServiceBindings(t *testing.T) {
 
 // Test Starlark API: mochi.app.path.get/set/delete/list
 func TestStarlarkAPIPathBindings(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	thread := create_test_starlark_thread()
 
@@ -775,8 +741,7 @@ func TestStarlarkAPIPathBindings(t *testing.T) {
 
 // Test Starlark API: mochi.app.version.get/set
 func TestStarlarkAPIVersionFunctions(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	// Create an app in the global map
 	orig_apps := apps
@@ -822,8 +787,7 @@ func TestStarlarkAPIVersionFunctions(t *testing.T) {
 
 // Test Starlark API: mochi.app.track.get/set/list
 func TestStarlarkAPITrackFunctions(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	// Create an app
 	orig_apps := apps
@@ -860,8 +824,7 @@ func TestStarlarkAPITrackFunctions(t *testing.T) {
 // Test Starlark API: mochi.app.version.list — successor to the
 // removed mochi.app.versions (renamed in 7bc1e13).
 func TestStarlarkAPIAppVersionList(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	a := &App{
 		id: "test-app",
@@ -925,8 +888,7 @@ func TestAppHasVersion(t *testing.T) {
 
 // Test Starlark API: mochi.app.cleanup
 func TestStarlarkAPICleanup(t *testing.T) {
-	cleanup := create_test_cleanup_env(t)
-	defer cleanup()
+	create_test_cleanup_env(t)
 
 	a := &App{
 		id: "test-app",
@@ -961,14 +923,9 @@ func TestStarlarkAPICleanup(t *testing.T) {
 // =============================================================================
 
 // Helper to set up routing test environment with apps and user
-func create_test_routing_env(t *testing.T) func() {
-	tmp_dir, err := os.MkdirTemp("", "mochi_routing_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
+func create_test_routing_env(t *testing.T) {
+	t.Helper()
+	test_data_directory(t)
 
 	// Initialize apps.db
 	db_apps()
@@ -995,19 +952,15 @@ func create_test_routing_env(t *testing.T) func() {
 	// map so resolution starts clean for this test.
 	resolution_invalidate()
 
-	cleanup := func() {
+	t.Cleanup(func() {
 		apps = orig_apps
-		data_dir = orig_data_dir
-		os.RemoveAll(tmp_dir)
-	}
+	})
 
-	return cleanup
 }
 
 // Test class_app_for resolution priority
 func TestClassAppForResolution(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	// Create test apps
 	app1 := &App{id: "wiki-app-1", versions: map[string]*AppVersion{"1.0": {Version: "1.0", Classes: []string{"wiki"}}}}
@@ -1053,8 +1006,7 @@ func TestClassAppForResolution(t *testing.T) {
 
 // Test app_for_service resolution priority
 func TestAppForServiceForResolution(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	// Create test apps
 	app1 := &App{id: "notif-app-1", versions: map[string]*AppVersion{"1.0": {Version: "1.0", Services: []string{"notifications"}}}}
@@ -1082,8 +1034,7 @@ func TestAppForServiceForResolution(t *testing.T) {
 // TestAppForServiceInternalFastPath: core internal services resolve to their
 // built-in handler ahead of, and immune to, user and system bindings.
 func TestAppForServiceInternalFastPath(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	// Registered at startup by directory.go / peer_connect.go; present in
 	// internal_services even though create_test_routing_env swapped out the
@@ -1121,8 +1072,7 @@ func TestAppForServiceInternalFastPath(t *testing.T) {
 }
 
 func TestResolutionCacheInvalidation(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	av1 := &AppVersion{Version: "1.0", Services: []string{"svc"}}
 	av2 := &AppVersion{Version: "2.0", Services: []string{"svc"}}
@@ -1158,8 +1108,7 @@ func TestResolutionCacheInvalidation(t *testing.T) {
 // binding (admin override) is never overwritten; and a service that a dev app
 // provides is skipped so dev precedence is preserved.
 func TestAppsPinDefaultServices(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	canonical := "c" + strings.Repeat("a", 49) // entity-id-shaped (len 50)
 	imposter := "i" + strings.Repeat("b", 49)  // entity-id-shaped (len 50)
@@ -1194,8 +1143,7 @@ func TestAppsPinDefaultServices(t *testing.T) {
 
 // Test app_for_path resolution priority
 func TestAppForPathForResolution(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	// Create test apps
 	app1 := &App{id: "forum-app-1", versions: map[string]*AppVersion{"1.0": {Version: "1.0", Paths: []string{"forums"}}}}
@@ -1221,8 +1169,7 @@ func TestAppForPathForResolution(t *testing.T) {
 }
 
 func TestResolutionCachePathClass(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	a1 := &App{id: "app-1", versions: map[string]*AppVersion{"1.0": {Version: "1.0", Paths: []string{"shop"}, Classes: []string{"product"}}}}
 	a2 := &App{id: "app-2", versions: map[string]*AppVersion{"1.0": {Version: "1.0", Paths: []string{"shop"}, Classes: []string{"product"}}}}
@@ -1267,8 +1214,7 @@ func TestResolutionCachePathClass(t *testing.T) {
 
 // Test that binding to non-existent app falls through to next resolution step
 func TestBindingToNonExistentApp(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	// Create only one app
 	app1 := &App{id: "wiki-app", versions: map[string]*AppVersion{"1.0": {Version: "1.0", Classes: []string{"wiki"}}}}
@@ -1291,8 +1237,7 @@ func TestBindingToNonExistentApp(t *testing.T) {
 
 // Test track pointing to non-existent version falls back correctly
 func TestTrackToNonExistentVersion(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	a := &App{
 		id: "test-app",
@@ -1318,8 +1263,7 @@ func TestTrackToNonExistentVersion(t *testing.T) {
 
 // Test user preference for non-existent version falls back
 func TestUserPrefNonExistentVersion(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	// Create users database
 	db := db_open("db/users.db")
@@ -1352,8 +1296,7 @@ func TestUserPrefNonExistentVersion(t *testing.T) {
 
 // Test cleanup with no unused versions returns 0
 func TestCleanupNoUnusedVersions(t *testing.T) {
-	cleanup := create_test_cleanup_env(t)
-	defer cleanup()
+	create_test_cleanup_env(t)
 
 	// Create app with only one version (highest, always kept)
 	a := &App{
@@ -1373,8 +1316,7 @@ func TestCleanupNoUnusedVersions(t *testing.T) {
 
 // Test cleanup when all versions are referenced
 func TestCleanupAllVersionsReferenced(t *testing.T) {
-	cleanup := create_test_cleanup_env(t)
-	defer cleanup()
+	create_test_cleanup_env(t)
 
 	a := &App{
 		id: "test-app",
@@ -1424,8 +1366,7 @@ func TestVersionCompareEdgeCases(t *testing.T) {
 
 // Test resolve_version with both version and track specified (version takes precedence)
 func TestResolveVersionPrecedence(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	a := &App{
 		id: "test-app",
@@ -1449,8 +1390,7 @@ func TestResolveVersionPrecedence(t *testing.T) {
 
 // Test clearing bindings
 func TestClearBindings(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 
 	// Set then clear class binding
 	apps_class_set("wiki", "wiki-app")
@@ -1479,8 +1419,7 @@ func TestClearBindings(t *testing.T) {
 
 // Test multiple apps scenario
 func TestMultipleAppsCleanup(t *testing.T) {
-	cleanup := create_test_cleanup_env(t)
-	defer cleanup()
+	create_test_cleanup_env(t)
 
 	// Create two apps with multiple versions each
 	app1 := &App{
@@ -1545,8 +1484,7 @@ func TestVersionComparePreRelease(t *testing.T) {
 
 // Test cross-user routing: different users can have different preferences
 func TestCrossUserRouting(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	// Setup apps
 	app1 := &App{id: "wiki-app-1", versions: map[string]*AppVersion{"1.0": {Version: "1.0"}}}
@@ -1591,8 +1529,7 @@ func TestCrossUserRouting(t *testing.T) {
 
 // Test version selection: different users following different tracks
 func TestCrossUserVersionSelection(t *testing.T) {
-	cleanup := create_test_cleanup_env(t)
-	defer cleanup()
+	create_test_cleanup_env(t)
 
 	a := &App{
 		id: "test-app",
@@ -1647,8 +1584,7 @@ func TestCrossUserVersionSelection(t *testing.T) {
 
 // Test track fallback when track is deleted
 func TestTrackDeletedFallback(t *testing.T) {
-	cleanup := create_test_cleanup_env(t)
-	defer cleanup()
+	create_test_cleanup_env(t)
 
 	a := &App{
 		id: "test-app",
@@ -1689,8 +1625,7 @@ func TestTrackDeletedFallback(t *testing.T) {
 
 // Test version deleted fallback
 func TestVersionDeletedFallback(t *testing.T) {
-	cleanup := create_test_cleanup_env(t)
-	defer cleanup()
+	create_test_cleanup_env(t)
 
 	a := &App{
 		id: "test-app",
@@ -1729,8 +1664,7 @@ func TestVersionDeletedFallback(t *testing.T) {
 
 // Test multiple apps declaring same class
 func TestMultipleAppsDeclareSameClass(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	// Two apps both handle "wiki" class
 	app1 := &App{
@@ -1769,8 +1703,7 @@ func TestMultipleAppsDeclareSameClass(t *testing.T) {
 
 // Test all three routing types together
 func TestCombinedRoutingTypes(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	// Setup apps with different roles
 	wiki_app := &App{id: "wiki-app"}
@@ -1814,8 +1747,7 @@ func TestCombinedRoutingTypes(t *testing.T) {
 
 // Test nil user handling across all routing functions
 func TestNilUserRouting(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	app := &App{id: "test-app"}
 	app.versions = map[string]*AppVersion{"1.0": {Version: "1.0", Classes: []string{"test"}, Services: []string{"test-svc"}, Paths: []string{"test-path"}}}
@@ -1840,8 +1772,7 @@ func TestNilUserRouting(t *testing.T) {
 
 // Test app version selection with nil user
 func TestNilUserVersionSelection(t *testing.T) {
-	cleanup := create_test_cleanup_env(t)
-	defer cleanup()
+	create_test_cleanup_env(t)
 
 	a := &App{
 		id: "test-app",
@@ -1872,8 +1803,7 @@ func TestNilUserVersionSelection(t *testing.T) {
 
 // Test user preferences are independent (changing one user doesn't affect another)
 func TestUserPreferencesIndependent(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	app1 := &App{id: "app1"}
 	app1.versions = map[string]*AppVersion{"1.0": {Version: "1.0"}}
@@ -2108,8 +2038,7 @@ func TestNotificationsAppSelfCallBypass(t *testing.T) {
 // (ticket #414: /login/replicating 302ing to itself on every published
 // install, invisible on dev installs where the id IS "login").
 func TestAppIsLogin(t *testing.T) {
-	cleanup := create_test_apps_db(t)
-	defer cleanup()
+	create_test_apps_db(t)
 	defer apps_path_delete("login")
 
 	// The login app is resolved by the login_app path binding (default

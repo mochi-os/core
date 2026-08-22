@@ -19,11 +19,10 @@ import (
 
 // create_test_directory_db builds the users.db entities table and the
 // directory.db entries table inside the create_test_users_db temp
-// data_dir, and points net_id at a fixed test peer. Returns a cleanup
-// restoring net_id (the data_dir cleanup comes from create_test_users_db).
-func create_test_directory_db(t *testing.T) func() {
+// data_dir, and points net_id at a fixed test peer.
+func create_test_directory_db(t *testing.T) {
 	t.Helper()
-	users_cleanup := create_test_users_db(t)
+	create_test_users_db(t)
 
 	users := db_open("db/users.db")
 	users.exec("create table entities (id text not null primary key, private text not null, fingerprint text not null, user text not null, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
@@ -31,13 +30,9 @@ func create_test_directory_db(t *testing.T) func() {
 	db := db_open("db/directory.db")
 	db.exec("create table entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, message text not null default '', expires text not null default '', signature text not null default '', primary key ( entity, peer ) )")
 
-	orig_net_id := net_id
+	previous_id := net_id
 	net_id = "12D3KooWDirectoryWithdrawTestPeer"
-
-	return func() {
-		net_id = orig_net_id
-		users_cleanup()
-	}
+	t.Cleanup(func() { net_id = previous_id })
 }
 
 // withdraw_test_entity returns a fresh valid entity id (base58 ed25519
@@ -116,8 +111,7 @@ func withdraw_test_row_unsigned(entity string) *Entry {
 // nonexistent entity triggers entry_delete_self (observable as the local
 // row for that (entity, net_id) pair being deleted) and is not stored.
 func TestEntryStoreWithdrawsGhostSelfRow(t *testing.T) {
-	cleanup := create_test_directory_db(t)
-	defer cleanup()
+	create_test_directory_db(t)
 
 	ghost, key := withdraw_test_signer(t)
 	db := db_open("db/directory.db")
@@ -135,8 +129,7 @@ func TestEntryStoreWithdrawsGhostSelfRow(t *testing.T) {
 // TestEntryStoreKeepsLiveSelfRow confirms an echoed self-row for an
 // entity that exists locally is dropped WITHOUT withdrawal.
 func TestEntryStoreKeepsLiveSelfRow(t *testing.T) {
-	cleanup := create_test_directory_db(t)
-	defer cleanup()
+	create_test_directory_db(t)
 
 	live, key := withdraw_test_signer(t)
 	users := db_open("db/users.db")
@@ -160,8 +153,7 @@ func TestEntryStoreKeepsLiveSelfRow(t *testing.T) {
 // decides, not the signature. It must be genuinely signed, or it is refused a
 // step earlier.
 func TestEntryStoreRefusesForeignRowForLocalEntity(t *testing.T) {
-	cleanup := create_test_directory_db(t)
-	defer cleanup()
+	create_test_directory_db(t)
 
 	owned, key := withdraw_test_signer(t)
 	users := db_open("db/users.db")
@@ -182,8 +174,7 @@ func TestEntryStoreRefusesForeignRowForLocalEntity(t *testing.T) {
 // TestEntryStoreWithdrawalRateLimited confirms repeated echoes of the
 // same ghost within the window trigger only one withdrawal.
 func TestEntryStoreWithdrawalRateLimited(t *testing.T) {
-	cleanup := create_test_directory_db(t)
-	defer cleanup()
+	create_test_directory_db(t)
 
 	ghost, key := withdraw_test_signer(t)
 	db := db_open("db/directory.db")
@@ -204,8 +195,7 @@ func TestEntryStoreWithdrawalRateLimited(t *testing.T) {
 // a host-signed broadcast, so it must run after entry_verify. Observable as the
 // marker row surviving - entry_delete_self must never have run.
 func TestEntryStoreIgnoresUnsignedGhostRow(t *testing.T) {
-	cleanup := create_test_directory_db(t)
-	defer cleanup()
+	create_test_directory_db(t)
 
 	ghost, _ := withdraw_test_signer(t)
 	db := db_open("db/directory.db")
@@ -225,8 +215,7 @@ func TestEntryStoreIgnoresUnsignedGhostRow(t *testing.T) {
 // attacker-chosen key. Spending no budget is what proves the branch was never
 // entered.
 func TestEntryStoreUnsignedGhostSpendsNoRateLimit(t *testing.T) {
-	cleanup := create_test_directory_db(t)
-	defer cleanup()
+	create_test_directory_db(t)
 
 	ghost, key := withdraw_test_signer(t)
 	db := db_open("db/directory.db")
@@ -249,8 +238,7 @@ func TestEntryStoreUnsignedGhostSpendsNoRateLimit(t *testing.T) {
 // a cheaper claim than the ghost case - but it keeps the two branches
 // reasoning from a signature that has actually been checked.
 func TestEntryStoreIgnoresUnsignedForeignRow(t *testing.T) {
-	cleanup := create_test_directory_db(t)
-	defer cleanup()
+	create_test_directory_db(t)
 
 	owned, _ := withdraw_test_signer(t)
 	users := db_open("db/users.db")

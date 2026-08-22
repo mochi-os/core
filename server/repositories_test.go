@@ -52,40 +52,21 @@ func TestRepositoryNameValidation(t *testing.T) {
 
 // ============ Repository Database Tests ============
 
-func create_repository_test_db(t *testing.T) (*DB, string, func()) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_repo_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+func create_repository_test_db(t *testing.T) (*DB, string) {
+	t.Helper()
+	tmp_dir := test_data_directory(t)
 
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
+	db := setup_repositories_test_schema()
 
-	// Create repositories database
-	db := db_open("db/repositories.db")
-	db.exec(`CREATE TABLE IF NOT EXISTS repositories (
-		id TEXT PRIMARY KEY NOT NULL,
-		name TEXT NOT NULL DEFAULT '',
-		description TEXT NOT NULL DEFAULT '',
-		default_branch TEXT NOT NULL DEFAULT 'main',
-		size INTEGER NOT NULL DEFAULT 0,
-		created TEXT NOT NULL DEFAULT '',
-		updated TEXT NOT NULL DEFAULT ''
-	)`)
-	db.exec("CREATE INDEX IF NOT EXISTS repositories_name ON repositories(name)")
-
-	cleanup := func() {
+	t.Cleanup(func() {
 		db.close()
-		data_dir = orig_data_dir
-		os.RemoveAll(tmp_dir)
-	}
+	})
 
-	return db, tmp_dir, cleanup
+	return db, tmp_dir
 }
 
 func TestRepositoryCreate(t *testing.T) {
-	db, _, cleanup := create_repository_test_db(t)
-	defer cleanup()
+	db, _ := create_repository_test_db(t)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 	repo_id := "test-repo-id-12345"
@@ -115,8 +96,7 @@ func TestRepositoryCreate(t *testing.T) {
 }
 
 func TestRepositoryUpdate(t *testing.T) {
-	db, _, cleanup := create_repository_test_db(t)
-	defer cleanup()
+	db, _ := create_repository_test_db(t)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 	repo_id := "update-test-repo"
@@ -136,8 +116,7 @@ func TestRepositoryUpdate(t *testing.T) {
 }
 
 func TestRepositoryDelete(t *testing.T) {
-	db, _, cleanup := create_repository_test_db(t)
-	defer cleanup()
+	db, _ := create_repository_test_db(t)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 	repo_id := "delete-test-repo"
@@ -163,8 +142,7 @@ func TestRepositoryDelete(t *testing.T) {
 }
 
 func TestRepositoryListByName(t *testing.T) {
-	db, _, cleanup := create_repository_test_db(t)
-	defer cleanup()
+	db, _ := create_repository_test_db(t)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 
@@ -197,8 +175,7 @@ func TestRepositoryListByName(t *testing.T) {
 }
 
 func TestRepositoryDefaultBranch(t *testing.T) {
-	db, _, cleanup := create_repository_test_db(t)
-	defer cleanup()
+	db, _ := create_repository_test_db(t)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 	repo_id := "branch-test-repo"
@@ -224,14 +201,9 @@ func TestRepositoryDefaultBranch(t *testing.T) {
 
 // ============ Repository + Git Integration Tests ============
 
-func create_repository_git_test_env(t *testing.T) (*DB, *User, string, func()) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_repo_git_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
+func create_repository_git_test_env(t *testing.T) (*DB, *User, string) {
+	t.Helper()
+	tmp_dir := test_data_directory(t)
 
 	user := &User{UID: "u1"}
 
@@ -241,30 +213,17 @@ func create_repository_git_test_env(t *testing.T) (*DB, *User, string, func()) {
 		t.Fatalf("Failed to create user dir: %v", err)
 	}
 
-	// Create repositories database
-	db := db_open("db/repositories.db")
-	db.exec(`CREATE TABLE IF NOT EXISTS repositories (
-		id TEXT PRIMARY KEY NOT NULL,
-		name TEXT NOT NULL DEFAULT '',
-		description TEXT NOT NULL DEFAULT '',
-		default_branch TEXT NOT NULL DEFAULT 'main',
-		size INTEGER NOT NULL DEFAULT 0,
-		created TEXT NOT NULL DEFAULT '',
-		updated TEXT NOT NULL DEFAULT ''
-	)`)
+	db := setup_repositories_test_schema()
 
-	cleanup := func() {
+	t.Cleanup(func() {
 		db.close()
-		data_dir = orig_data_dir
-		os.RemoveAll(tmp_dir)
-	}
+	})
 
-	return db, user, tmp_dir, cleanup
+	return db, user, tmp_dir
 }
 
 func TestRepositoryWithGitInit(t *testing.T) {
-	db, user, tmp_dir, cleanup := create_repository_git_test_env(t)
-	defer cleanup()
+	db, user, tmp_dir := create_repository_git_test_env(t)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 	repo_id := "git-test-repo"
@@ -294,8 +253,7 @@ func TestRepositoryWithGitInit(t *testing.T) {
 }
 
 func TestRepositoryGitDelete(t *testing.T) {
-	db, user, tmp_dir, cleanup := create_repository_git_test_env(t)
-	defer cleanup()
+	db, user, tmp_dir := create_repository_git_test_env(t)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 	repo_id := "delete-git-repo"
@@ -328,8 +286,7 @@ func TestRepositoryGitDelete(t *testing.T) {
 }
 
 func TestRepositoryGitSize(t *testing.T) {
-	_, user, _, cleanup := create_repository_git_test_env(t)
-	defer cleanup()
+	_, user, _ := create_repository_git_test_env(t)
 
 	repo_id := "size-test-repo"
 
@@ -408,8 +365,7 @@ func TestRepositoryPathIsolation(t *testing.T) {
 // ============ Repository Metadata Tests ============
 
 func TestRepositoryTimestamps(t *testing.T) {
-	db, _, cleanup := create_repository_test_db(t)
-	defer cleanup()
+	db, _ := create_repository_test_db(t)
 
 	repo_id := "timestamp-test"
 	created := "2025-01-01 10:00:00"
@@ -433,8 +389,7 @@ func TestRepositoryTimestamps(t *testing.T) {
 }
 
 func TestRepositorySizeTracking(t *testing.T) {
-	db, _, cleanup := create_repository_test_db(t)
-	defer cleanup()
+	db, _ := create_repository_test_db(t)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 	repo_id := "size-tracking-test"
@@ -455,8 +410,7 @@ func TestRepositorySizeTracking(t *testing.T) {
 // ============ Repository Query Tests ============
 
 func TestRepositoryQueryByOwner(t *testing.T) {
-	db, _, cleanup := create_repository_test_db(t)
-	defer cleanup()
+	db, _ := create_repository_test_db(t)
 
 	// Note: In the actual schema, ownership is handled via entities table
 	// This test demonstrates the query pattern that would be used
@@ -478,8 +432,7 @@ func TestRepositoryQueryByOwner(t *testing.T) {
 }
 
 func TestRepositorySearchByName(t *testing.T) {
-	db, _, cleanup := create_repository_test_db(t)
-	defer cleanup()
+	db, _ := create_repository_test_db(t)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 
@@ -501,8 +454,7 @@ func TestRepositorySearchByName(t *testing.T) {
 // ============ Repository Edge Cases ============
 
 func TestRepositoryEmptyDescription(t *testing.T) {
-	db, _, cleanup := create_repository_test_db(t)
-	defer cleanup()
+	db, _ := create_repository_test_db(t)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 	repo_id := "no-desc-repo"
@@ -518,8 +470,7 @@ func TestRepositoryEmptyDescription(t *testing.T) {
 }
 
 func TestRepositoryLongDescription(t *testing.T) {
-	db, _, cleanup := create_repository_test_db(t)
-	defer cleanup()
+	db, _ := create_repository_test_db(t)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 	repo_id := "long-desc-repo"
@@ -535,8 +486,7 @@ func TestRepositoryLongDescription(t *testing.T) {
 }
 
 func TestRepositorySpecialCharactersInDescription(t *testing.T) {
-	db, _, cleanup := create_repository_test_db(t)
-	defer cleanup()
+	db, _ := create_repository_test_db(t)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 	repo_id := "special-desc-repo"
@@ -552,8 +502,7 @@ func TestRepositorySpecialCharactersInDescription(t *testing.T) {
 }
 
 func TestRepositoryUniqueID(t *testing.T) {
-	db, _, cleanup := create_repository_test_db(t)
-	defer cleanup()
+	db, _ := create_repository_test_db(t)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 	repo_id := "unique-id-test"
@@ -576,8 +525,7 @@ func TestRepositoryUniqueID(t *testing.T) {
 // ============ Repository Index Tests ============
 
 func TestRepositoryNameIndex(t *testing.T) {
-	db, _, cleanup := create_repository_test_db(t)
-	defer cleanup()
+	db, _ := create_repository_test_db(t)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 
@@ -598,8 +546,7 @@ func TestRepositoryNameIndex(t *testing.T) {
 // ============ Repository + Database + Git Combined Tests ============
 
 func TestRepositoryFullLifecycle(t *testing.T) {
-	db, user, _, cleanup := create_repository_git_test_env(t)
-	defer cleanup()
+	db, user, _ := create_repository_git_test_env(t)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 	repo_id := "lifecycle-test-repo"
@@ -655,8 +602,7 @@ func TestRepositoryFullLifecycle(t *testing.T) {
 }
 
 func TestRepositoryMultipleUsers(t *testing.T) {
-	_, _, cleanup := create_repository_test_db(t)
-	defer cleanup()
+	create_repository_test_db(t)
 
 	user1 := &User{UID: "u1"}
 	user2 := &User{UID: "u2"}

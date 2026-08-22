@@ -44,8 +44,7 @@ func shell_login_app_set(t *testing.T, path string) {
 // default the behaviour is unchanged, so the two tests below are measuring the
 // setting rather than a blanket change.
 func TestShellExemptsTheDefaultLoginPath(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 	shell_login_app_set(t, "login")
 
 	if shell_wraps("/login") {
@@ -62,8 +61,7 @@ func TestShellExemptsTheDefaultLoginPath(t *testing.T) {
 // TestShellExemptionFollowsARenamedLoginApp is the first failure direction. An
 // operator who repoints login_app must not have the new login app wrapped.
 func TestShellExemptionFollowsARenamedLoginApp(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 	shell_login_app_set(t, "welcome")
 
 	if shell_wraps("/welcome") {
@@ -79,8 +77,7 @@ func TestShellExemptionFollowsARenamedLoginApp(t *testing.T) {
 // ordinary app and must be wrapped like any other - the literal let it opt out
 // of the sandbox by choosing its path.
 func TestShellWrapsAnAppMerelyBoundToLogin(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 	shell_login_app_set(t, "welcome")
 
 	if !shell_wraps("/login") {
@@ -96,8 +93,7 @@ func TestShellWrapsAnAppMerelyBoundToLogin(t *testing.T) {
 // disagreeing, the same argument shell_wrap_candidate already makes for
 // sharing shell_resource_path with web_resource_guard.
 func TestShellAndClosingGateAgreeOnTheLoginApp(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	for _, bound := range []string{"login", "welcome"} {
 		shell_login_app_set(t, bound)

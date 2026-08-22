@@ -43,8 +43,7 @@ func sweep_test_status(t *testing.T, id string) string {
 // retried is claimed now; the sender is holding it. created is hours stale and
 // must not decide anything.
 func TestSweepLeavesAFreshlyClaimedRetry(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	sweep_test_row(t, "retried", "sending", now()-86400, now())
@@ -58,8 +57,7 @@ func TestSweepLeavesAFreshlyClaimedRetry(t *testing.T) {
 // TestSweepReclaimsAGenuinelyStuckRow is the other half: the net must still
 // catch a row whose sender really did go away.
 func TestSweepReclaimsAGenuinelyStuckRow(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	sweep_test_row(t, "abandoned", "sending", now()-86400, now()-queue_claim_timeout-10)
@@ -74,8 +72,7 @@ func TestSweepReclaimsAGenuinelyStuckRow(t *testing.T) {
 // recent must be left alone too - the control that shows the test above is not
 // passing merely because nothing is ever swept.
 func TestSweepLeavesAFreshEnqueue(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	sweep_test_row(t, "fresh", "sending", now(), now())
@@ -162,8 +159,7 @@ func TestSweepIsKeyedOnClaimed(t *testing.T) {
 // fail the sweep's query outright, and an upgrade missing it would fail on
 // every existing deployment instead.
 func TestQueueSchemaCarriesClaimed(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	db := db_open("db/queue.db")

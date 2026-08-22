@@ -10,8 +10,7 @@ package main
 import "testing"
 
 func TestAccountsMigrate(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 	// Legacy schema: integer autoincrement id, no register bookkeeping columns.
 	db.exec("create table accounts ( id integer primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1, \"default\" text not null default '', last_delivered integer not null default 0 )")
 	db.exec("insert into accounts (type, label, created) values ('email', 'x@y', 100)") // id=1
@@ -43,8 +42,7 @@ func TestAccountsMigrate(t *testing.T) {
 
 // account_set must update both account kinds, and row_remove must delete.
 func TestAccountSet(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 	db := db_user(&User{UID: "u-acct"}, "user")
 	db.exec("insert into accounts (id, type, label, created) values ('e1', 'email', 'old', 100)")
 	db.exec("insert into accounts (id, type, label, created) values ('b1', 'browser', 'dev', 100)")

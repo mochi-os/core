@@ -41,8 +41,7 @@ func class_owner_app(id string, class string) *App {
 // declares the class just as loudly and is the app the gate must stop.
 func class_owner_environment(t *testing.T) (handler *App, other *App, user *User) {
 	t.Helper()
-	cleanup := create_test_routing_env(t)
-	t.Cleanup(cleanup)
+	create_test_routing_env(t)
 
 	handler = class_owner_app("feeds", "feed")
 	other = class_owner_app("impostor", "feed")
@@ -313,8 +312,7 @@ func TestSharedSurvivesAManifestReload(t *testing.T) {
 // between restarts, and the handler decides who may change and destroy the
 // user's entities.
 func TestHandlerChoiceIsStableAcrossRestarts(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	// Four apps declaring one class, all recorded at the same instant.
 	moment := now()
@@ -343,8 +341,7 @@ func TestHandlerChoiceIsStableAcrossRestarts(t *testing.T) {
 // TestEarlierInstallStillWins. The tie-break must not displace install order:
 // an app installed after an incumbent must never take its class.
 func TestEarlierInstallStillWins(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	moment := now()
 	apps["incumbent"] = class_owner_app("incumbent", "shared")

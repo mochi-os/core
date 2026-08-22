@@ -58,8 +58,7 @@ func queue_test_insert_target(db *DB, id, target string, priority int) {
 // comes first - a resync reply at priority_replay must not queue behind
 // interactive traffic.
 func TestQueueSelectPriorityOrder(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	db := queue_test_table()
 	queue_test_insert(db, "interactive-1", priority_interactive)
@@ -81,8 +80,7 @@ func TestQueueSelectPriorityOrder(t *testing.T) {
 // the highest-priority earliest-next_retry one, so no peer's backlog starves
 // the others.
 func TestQueueSelectPickByPeerDedupesByTarget(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	db := queue_test_table()
 	// Two rows for the same peer at different priorities. Insert the lower
@@ -119,8 +117,7 @@ func TestQueueSelectPickByPeerDedupesByTarget(t *testing.T) {
 // is still picked - pick-by-peer gives every peer a slot, so no floor lane is
 // needed.
 func TestQueueSelectNoLowPriorityStarvation(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	db := queue_test_table()
 	// 55 higher-priority rows, one per distinct peer — would fill the
@@ -165,8 +162,7 @@ func TestQueueSelectNoLowPriorityStarvation(t *testing.T) {
 // leaves other rows untouched. A mis-built IN-list loses acks for whole
 // batches.
 func TestQueueAckFlushDeletesAllIds(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db := queue_test_table()
 
 	for _, id := range []string{"a", "b", "c", "d"} {
@@ -189,8 +185,7 @@ func TestQueueAckFlushDeletesAllIds(t *testing.T) {
 // (would generate `delete from queue where id in ()` which is a
 // SQLite syntax error).
 func TestQueueAckFlushEmptyIsNoOp(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	queue_test_table()
 	queue_ack_flush(nil)
 	queue_ack_flush([]string{})
@@ -200,8 +195,7 @@ func TestQueueAckFlushEmptyIsNoOp(t *testing.T) {
 // saturated, queue_ack_async must fall back to synchronous queue_ack
 // rather than dropping the ack (which would leak a 'sending' row).
 func TestQueueAckAsyncFallsBackWhenChannelFull(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db := queue_test_table()
 
 	queue_test_insert_target(db, "synced-ack", "peer-synced", priority_interactive)
@@ -227,8 +221,7 @@ func TestQueueAckAsyncFallsBackWhenChannelFull(t *testing.T) {
 // row is NOT a failed attempt. Without this, the silent-peer pre-filter
 // would escalate the backoff just by skipping the row.
 func TestQueueDeferPushesRetryWithoutBumpingAttempts(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db := queue_test_table()
 	queue_test_insert(db, "deferme", priority_interactive)
 	// Force attempts to 3 so we can prove the defer didn't touch it.
@@ -251,8 +244,7 @@ func TestQueueDeferPushesRetryWithoutBumpingAttempts(t *testing.T) {
 // is in the future. Load-bearing for "silenced peer comes back" - the
 // deferred rows need to drain immediately, not wait out the deferral.
 func TestQueueResurrectPeerPullsDeferredRowsForward(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db := queue_test_table()
 
 	// Two rows for the target peer (one deferred to the future, one
@@ -291,8 +283,7 @@ func TestQueueResurrectPeerPullsDeferredRowsForward(t *testing.T) {
 // and crucially does NOT panic. A corrupted/wrong-shape content blob
 // must surface as a normal queue_fail, never as a process crash.
 func TestQueueSelfLoopFastDecodeFailureReturnsFalse(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	q := &QueueEntry{
 		ID:         "decode-fail",
 		FromEntity: "from-x",
@@ -311,8 +302,7 @@ func TestQueueSelfLoopFastDecodeFailureReturnsFalse(t *testing.T) {
 // wrapper is present and correctly typed - a failed recover would crash the
 // test runner here.
 func TestQueueSelfLoopFastPanicRecovered(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	// Empty Event - route() returns "unknown user" error, not a panic,
 	// but exercises the full function structure including defer recover.
 	q := &QueueEntry{ID: "ok", Content: nil}
@@ -327,8 +317,7 @@ func TestQueueSelfLoopFastPanicRecovered(t *testing.T) {
 // direct rows targeting net_id and flip them to status='sending', so
 // queue_process won't double-pick them.
 func TestQueueClaimForSelf(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	queue_test_table()
 
 	saved := net_id
@@ -379,8 +368,7 @@ func TestQueueClaimForSelf(t *testing.T) {
 // pre-net_start), queue_claim_for_self must return nil rather than
 // claiming rows whose target is empty.
 func TestQueueClaimForSelfNoNetId(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	queue_test_table()
 
 	saved := net_id
@@ -400,8 +388,7 @@ func TestQueueClaimForSelfNoNetId(t *testing.T) {
 // TestQueueProcessSkipsSelfLoopRows: queue_process must not dispatch rows
 // targeting net_id - self_loop_drain owns them.
 func TestQueueProcessSkipsSelfLoopRows(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	queue_test_table()
 
 	saved := net_id
@@ -430,8 +417,7 @@ func TestQueueProcessSkipsSelfLoopRows(t *testing.T) {
 // peer with an active Sender. Competing for its outbox blocks peer_send for
 // sender_send_timeout and drags out the whole tick.
 func TestQueueProcessSkipsRowsWithActiveSender(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	queue_test_table()
 
 	// Install a fake Sender so senders_has(peer) returns true.
@@ -471,8 +457,7 @@ func TestQueueProcessSkipsRowsWithActiveSender(t *testing.T) {
 // whether to re-enter immediately or sleep on the heartbeat. Without
 // this signal the manager would have to time-poll or guess.
 func TestQueueProcessReturnsCount(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	queue_test_table()
 
 	// Empty queue: zero rows acted on.

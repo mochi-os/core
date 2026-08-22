@@ -9,20 +9,12 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 )
 
 func TestBroadcastLagScanDB(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_bcast_lag")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-	orig := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig }()
+	test_data_directory(t)
 
 	rel := filepath.Join("users", "u1", "myapp", "db", "myapp.db")
 	db := db_open(rel)
@@ -96,14 +88,7 @@ func TestBroadcastLagScanDB(t *testing.T) {
 // app DB has no broadcast traffic - apps without received are the
 // common case across the scan.
 func TestBroadcastLagScanDBNoReceived(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_bcast_lag2")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-	orig := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig }()
+	test_data_directory(t)
 
 	rel := filepath.Join("users", "u1", "noisyapp", "db", "noisyapp.db")
 	db := db_open(rel)

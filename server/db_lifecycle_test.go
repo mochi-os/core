@@ -18,7 +18,7 @@ import (
 // lifecycle_test_app writes a Starlark app source file and returns an
 // internal-style App whose single version executes it. The caller mutates
 // av.Database.* fields per test.
-func lifecycle_test_app(t *testing.T, source string) (*App, *AppVersion, func()) {
+func lifecycle_test_app(t *testing.T, source string) (*App, *AppVersion) {
 	t.Helper()
 
 	// Starlark.call needs the runtime state the server normally sets up at
@@ -29,14 +29,9 @@ func lifecycle_test_app(t *testing.T, source string) (*App, *AppVersion, func())
 		starlark_default_timeout = 90 * time.Second
 	}
 
-	tmp, err := os.MkdirTemp("", "mochi_lifecycle_test")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	orig := data_dir
-	data_dir = tmp
+	directory := test_data_directory(t)
 
-	star := filepath.Join(tmp, "app.star")
+	star := filepath.Join(directory, "app.star")
 	if err := os.WriteFile(star, []byte(source), 0644); err != nil {
 		t.Fatalf("write starlark source: %v", err)
 	}
@@ -48,19 +43,17 @@ func lifecycle_test_app(t *testing.T, source string) (*App, *AppVersion, func())
 	app := &App{id: "lifecycletest", internal: av}
 	av.app = app
 
-	cleanup := func() {
+	t.Cleanup(func() {
 		db_purge_prefix("users")
-		data_dir = orig
-		os.RemoveAll(tmp)
-	}
-	return app, av, cleanup
+	})
+	return app, av
 }
 
 // TestAppDatabaseConcurrentFirstAccess (#227): many goroutines open a fresh app
 // DB at once - every opener gets a queryable handle, creation runs once, the
 // version is stamped.
 func TestAppDatabaseConcurrentFirstAccess(t *testing.T) {
-	app, _, cleanup := lifecycle_test_app(t, `
+	app, _ := lifecycle_test_app(t, `
 def database_create():
     mochi.db.execute("create table alpha (id integer primary key autoincrement, name text not null)")
     n = 0
@@ -69,7 +62,6 @@ def database_create():
     mochi.db.execute("create table beta (marks integer not null)")
     mochi.db.execute("insert into beta (marks) values (1)")
 `)
-	defer cleanup()
 	u := &User{UID: "racetestuser"}
 
 	const openers = 24
@@ -118,7 +110,7 @@ def database_create():
 // not re-enter db_app, and mochi.db.table must see the transaction's
 // uncommitted DDL.
 func TestAppDatabaseCreateReentrancy(t *testing.T) {
-	app, _, cleanup := lifecycle_test_app(t, `
+	app, _ := lifecycle_test_app(t, `
 def database_create():
     mochi.db.execute("create table alpha (id integer primary key, name text not null)")
     columns = mochi.db.table("alpha")
@@ -131,7 +123,6 @@ def database_create():
     if row["name"] != "seed":
         fail("read-your-writes failed inside database_create")
 `)
-	defer cleanup()
 	u := &User{UID: "reentrancyuser"}
 
 	db := db_app(u, app)
@@ -147,7 +138,7 @@ def database_create():
 // persists nothing, and the next opener retries rather than reusing a partial
 // schema.
 func TestAppDatabaseCreateFailureAtomic(t *testing.T) {
-	app, av, cleanup := lifecycle_test_app(t, `
+	app, av := lifecycle_test_app(t, `
 def database_create_bad():
     mochi.db.execute("create table alpha (id integer primary key)")
     fail("simulated create crash")
@@ -157,7 +148,6 @@ def database_create():
     mochi.db.execute("create table beta (marks integer not null)")
     mochi.db.execute("insert into beta (marks) values (1)")
 `)
-	defer cleanup()
 	u := &User{UID: "atomicuser"}
 
 	av.Database.Create.Function = "database_create_bad"
@@ -194,7 +184,7 @@ def database_create():
 // preserved (the established failed-migration-consumes-the-version repair
 // convention), and mochi.db.table inside a step sees that step's own DDL.
 func TestAppDatabaseUpgradeStepAtomic(t *testing.T) {
-	app, av, cleanup := lifecycle_test_app(t, `
+	app, av := lifecycle_test_app(t, `
 def database_create():
     mochi.db.execute("create table alpha (id integer primary key)")
 
@@ -208,7 +198,6 @@ def database_upgrade(version):
         mochi.db.execute("create table gamma (id integer primary key)")
         fail("simulated migration crash")
 `)
-	defer cleanup()
 	u := &User{UID: "upgradeuser"}
 
 	if db := db_app(u, app); db == nil {
@@ -237,7 +226,7 @@ def database_upgrade(version):
 // TestAppDatabaseUpgradeAbort: a step calling mochi.db.abort() holds the schema version
 // and retries verbatim, unlike an ordinary failure, which consumes it.
 func TestAppDatabaseUpgradeAbort(t *testing.T) {
-	app, av, cleanup := lifecycle_test_app(t, `
+	app, av := lifecycle_test_app(t, `
 def database_create():
     mochi.db.execute("create table alpha (id integer primary key)")
 
@@ -248,7 +237,6 @@ def database_upgrade(version):
         mochi.db.execute("create table gamma (id integer primary key)")
         mochi.db.abort("transient precondition missing")
 `)
-	defer cleanup()
 	u := &User{UID: "abortuser"}
 
 	if db := db_app(u, app); db == nil {
@@ -287,10 +275,7 @@ def database_upgrade(version):
 // TestLifecycleAuthoriser: the dedicated lifecycle connection allows the
 // user_version stamp but keeps every other Starlark-pool restriction.
 func TestLifecycleAuthoriser(t *testing.T) {
-	tmp := t.TempDir()
-	orig := data_dir
-	data_dir = tmp
-	defer func() { data_dir = orig }()
+	tmp := test_data_directory(t)
 
 	pool, err := sqlitedrv.Open(filepath.Join(tmp, "authoriser.db"), db_setup_conn_lifecycle)
 	if err != nil {
@@ -373,12 +358,11 @@ func TestAppDatabaseUncommittedDiscarded(t *testing.T) {
 // transaction; a nested one would block on its own write lock), and the
 // aborted create must roll back.
 func TestAppDatabaseCreateTransactionBlocked(t *testing.T) {
-	app, av, cleanup := lifecycle_test_app(t, `
+	app, av := lifecycle_test_app(t, `
 def database_create():
     mochi.db.execute("create table alpha (id integer primary key)")
     tx = mochi.db.transaction()
 `)
-	defer cleanup()
 	u := &User{UID: "txblockuser"}
 
 	if db := db_app(u, app); db != nil {

@@ -223,15 +223,7 @@ func TestUnifiedPushDeliverRoutesToStoredEndpoint(t *testing.T) {
 // added the TTL-sweep column. Mirrors the existing
 // TestDBUserCreatesAccountsWithDefault pattern.
 func TestAccountsHasLastDeliveredColumn(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_unifiedpush_test")
-	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig_data_dir }()
+	tmp_dir := test_data_directory(t)
 
 	os.MkdirAll(filepath.Join(tmp_dir, "users", "42"), 0755)
 	user := &User{UID: "u42"}

@@ -114,8 +114,7 @@ func TestBroadcastStallSweepDropsOnlyIdleEntries(t *testing.T) {
 // that knows a stream moved, and it has to reach the map through db.app,
 // which nothing read before.
 func TestBroadcastAdvanceClearsStallTracking(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	broadcast_bounds_reset()
 	defer broadcast_bounds_reset()
 
@@ -194,8 +193,7 @@ func TestBroadcastResyncSweepDropsExpired(t *testing.T) {
 // it bounds nothing while the key is chosen by the sender: each invented key
 // draws its own thousand-row budget.
 func TestBroadcastPendingStreamCap(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	db := db_open("db/bounds.db")
 	if db == nil {

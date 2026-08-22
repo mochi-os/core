@@ -19,9 +19,7 @@ import (
 // absent_setup builds schedule.db and users.db in a temporary data directory.
 func absent_setup(t *testing.T) {
 	t.Helper()
-	original := data_dir
-	data_dir = t.TempDir()
-	t.Cleanup(func() { data_dir = original })
+	test_data_directory(t)
 	os.MkdirAll(data_dir+"/db", 0755)
 
 	db_open("db/schedule.db").exec(`create table schedule (id integer primary key,

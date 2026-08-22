@@ -38,11 +38,7 @@ func git_negotiation_repo(t *testing.T, user *User, repo_id string, commits int)
 	}
 	repo_path := git_repo_path(user, test_app, repo_id)
 
-	work, err := os.MkdirTemp("", "git_negotiation_work")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	defer os.RemoveAll(work)
+	work := t.TempDir()
 
 	run := func(args ...string) {
 		cmd := exec.Command("git", args...)
@@ -178,8 +174,7 @@ func truncate_for_test(s string) string {
 // commit's objects, not the repository. The whole-repository figure is measured
 // in the same test rather than guessed.
 func TestGitUploadPackExcludesHaves(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, commits := git_negotiation_repo(t, user, "negotiation", 8)
 	head := commits[len(commits)-1]
@@ -211,8 +206,7 @@ func TestGitUploadPackExcludesHaves(t *testing.T) {
 // a few commits behind a longer history. Guards against a fix that only works
 // for the single-commit case.
 func TestGitUploadPackExcludesMostHistory(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, commits := git_negotiation_repo(t, user, "negotiation2", 20)
 	head := commits[len(commits)-1]

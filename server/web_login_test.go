@@ -18,8 +18,7 @@ import (
 // web_login_begin's `methods` must marshal to [] not null - the login client
 // calls .includes() on it - and must fold in the system email floor.
 func TestWebLoginBeginMethods(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	users := db_open("db/users.db")
 	users.exec("create table credentials (id blob primary key, user text not null, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
@@ -71,8 +70,7 @@ func TestWebLoginBeginMethods(t *testing.T) {
 // partial id and its remaining factors; without it, empty (so the page falls
 // through to the login redirect rather than dead-ending).
 func TestWebAuthPartial(t *testing.T) {
-	cleanup := create_test_sessions_db(t)
-	defer cleanup()
+	create_test_sessions_db(t)
 
 	sessions := db_open("db/sessions.db")
 	sessions.exec("insert into partial (id, user, completed, remaining, expires) values ('p1', 'u1', 'oauth', 'email', ?)", now()+300)

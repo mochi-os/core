@@ -17,8 +17,8 @@ import (
 
 // identity_token_setup builds the tables /_/identity touches and one user with
 // an identity, and returns a minter for tokens of a given action binding.
-func identity_token_setup(t *testing.T) (func(action, entity, scopes string) string, func()) {
-	cleanup := create_test_users_db(t)
+func identity_token_setup(t *testing.T) func(action, entity, scopes string) string {
+	create_test_users_db(t)
 
 	users := db_open("db/users.db")
 	users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'public', data text not null default '', published integer not null default 0)")
@@ -34,7 +34,7 @@ func identity_token_setup(t *testing.T) (func(action, entity, scopes string) str
 			token_hash(token), scopes, action, entity, now())
 		return token
 	}
-	return mint, cleanup
+	return mint
 }
 
 // identity_with_token drives GET /_/identity carrying a Bearer token.
@@ -52,8 +52,7 @@ func identity_with_token(token string) *httptest.ResponseRecorder {
 // between. /_/identity must not answer it with the owner's email, status and
 // identity.
 func TestIdentityRefusesBoundToken(t *testing.T) {
-	mint, cleanup := identity_token_setup(t)
-	defer cleanup()
+	mint := identity_token_setup(t)
 
 	// The exact shape apps/feeds mints for a feed's RSS URL.
 	rss := mint(":feed/-/rss", "feed-123", `["rss"]`)
@@ -84,8 +83,7 @@ func TestIdentityRefusesBoundToken(t *testing.T) {
 // action, and asking which account it belongs to is what it is for. Refusing
 // it would break every general-purpose token.
 func TestIdentityAcceptsUnboundToken(t *testing.T) {
-	mint, cleanup := identity_token_setup(t)
-	defer cleanup()
+	mint := identity_token_setup(t)
 
 	for _, test := range []struct {
 		name   string

@@ -122,7 +122,7 @@ func TestStepupGateRefusesAnEmptyAccount(t *testing.T) {
 // actually live: every test above passes with the gate present and unused.
 // A wrong code through the real builtin must leave a penalty on the account.
 func TestTotpVerifyReachesTheGate(t *testing.T) {
-	defer setup_replication_test(t)()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	stepup_gate_reset(t)
 	thread, _ := totp_user(t)

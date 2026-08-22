@@ -48,8 +48,7 @@ func serving_domain(t *testing.T, names ...string) {
 // the path and query intact — a redirect that drops either silently breaks
 // every bookmarked deep link.
 func TestRedirectHTTPS(t *testing.T) {
-	cleanup := create_domains_test_env(t)
-	defer cleanup()
+	create_domains_test_env(t)
 	serving_domain(t, "mochi-os.org")
 
 	// Targets are origin-form, as a server receives them. Passing an absolute
@@ -83,8 +82,7 @@ func TestRedirectHTTPS(t *testing.T) {
 // redirect, or HTTP-01 validation of /.well-known/acme-challenge/<token> is
 // answered with a 301 and no certificate is ever issued.
 func TestACMEChallengeIsNotRedirected(t *testing.T) {
-	cleanup := create_domains_test_env(t)
-	defer cleanup()
+	create_domains_test_env(t)
 	serving_domain(t, "mochi-os.org")
 
 	manager := &autocert.Manager{
@@ -119,8 +117,7 @@ func TestACMEChallengeIsNotRedirected(t *testing.T) {
 // only names the domains table holds, so an unconfigured host must not become a
 // permanent redirect this server issues in its own name.
 func TestRedirectHTTPSHost(t *testing.T) {
-	cleanup := create_domains_test_env(t)
-	defer cleanup()
+	create_domains_test_env(t)
 	serving_domain(t, "mochi-os.org", "*.example.com")
 
 	tests := []struct {
@@ -160,8 +157,7 @@ func TestRedirectHTTPSHost(t *testing.T) {
 // domains table, so a predicate reading the table alone sends callers to a
 // handshake that is refused.
 func TestRedirectHTTPSIssuanceBlocked(t *testing.T) {
-	cleanup := create_domains_test_env(t)
-	defer cleanup()
+	create_domains_test_env(t)
 
 	// Unverified while the verification policy is on. This is the DEFAULT state
 	// of a freshly registered domain, not an exotic one: domain_register writes
@@ -203,8 +199,7 @@ func TestRedirectHTTPSIssuanceBlocked(t *testing.T) {
 // domains_get_certificate tries the manual map first. Every wildcard is manual
 // - ACME issues none over TLS-ALPN-01 or HTTP-01 - so subdomains need no rows.
 func TestRedirectHTTPSManualCertificate(t *testing.T) {
-	cleanup := create_domains_test_env(t)
-	defer cleanup()
+	create_domains_test_env(t)
 
 	original := domains_certs
 	domains_certs = map[string]*tls.Certificate{"*.manual.example": {}}
@@ -238,8 +233,7 @@ func TestRedirectHTTPSManualCertificate(t *testing.T) {
 // callers unless a certificate was installed by hand - checked first, and it
 // overrides the column.
 func TestRedirectHTTPSAutomaticCertificatesOff(t *testing.T) {
-	cleanup := create_domains_test_env(t)
-	defer cleanup()
+	create_domains_test_env(t)
 	serving_domain(t, "bare.example", "certificated.example")
 	db_open("db/domains.db").exec("update domains set tls=0")
 

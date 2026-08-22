@@ -67,8 +67,7 @@ func peer_stored_addresses(id string) []string {
 }
 
 func TestPeerRecordRoundTrip(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	id, key := test_host(t)
 	encoded := test_signed_record(t, key, id, []string{"/ip4/192.0.2.10/tcp/1443", "/ip4/192.0.2.10/udp/1443/quic-v1"}, 100)
@@ -95,8 +94,7 @@ func TestPeerRecordRoundTrip(t *testing.T) {
 // must not apply when the GossipSub sender is peer B — the direct-
 // announcement origin binding.
 func TestPeerRecordRejectsWrongOrigin(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	a, akey := test_host(t)
 	b, _ := test_host(t)
@@ -111,8 +109,7 @@ func TestPeerRecordRejectsWrongOrigin(t *testing.T) {
 // derive to the claimed PeerID must be rejected (ConsumeEnvelope binds
 // the signature to env.PublicKey; we bind that key to the PeerID).
 func TestPeerRecordRejectsForgedKey(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	victim, _ := test_host(t)
 	_, attacker := test_host(t)
@@ -135,8 +132,7 @@ func TestPeerRecordRejectsForgedKey(t *testing.T) {
 
 // TestPeerRecordReplayRejected: only a strictly newer sequence applies.
 func TestPeerRecordReplayRejected(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	id, key := test_host(t)
 
@@ -155,8 +151,7 @@ func TestPeerRecordReplayRejected(t *testing.T) {
 }
 
 func TestPeerRecordRejectsGarbage(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	id, _ := test_host(t)
 	for _, bad := range []string{"", "not base64 !!!", base64.StdEncoding.EncodeToString([]byte("random bytes not an envelope"))} {
@@ -169,8 +164,7 @@ func TestPeerRecordRejectsGarbage(t *testing.T) {
 // TestPeerPublishEventPrefersRecord: when a publish carries both a
 // signed record and a plain list, the record's addresses win.
 func TestPeerPublishEventPrefersRecord(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	id, key := test_host(t)
 	encoded := test_signed_record(t, key, id, []string{"/ip4/192.0.2.40/tcp/1443"}, 1)
@@ -189,8 +183,7 @@ func TestPeerPublishEventPrefersRecord(t *testing.T) {
 // TestPeerPublishEventFallsBackToList: a publish with no record still
 // applies its plain address list (older senders).
 func TestPeerPublishEventFallsBackToList(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	id, _ := test_host(t)
 	peer_publish_event(publish_event(id, "/ip4/198.51.100.7/tcp/1443/p2p/"+id))
@@ -202,8 +195,7 @@ func TestPeerPublishEventFallsBackToList(t *testing.T) {
 // TestPeerRecordsLoad: the stored sequence survives a restart, so a
 // rollback is still rejected after reload.
 func TestPeerRecordsLoad(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	id, key := test_host(t)
 	if _, ok := peer_record_apply(id, test_signed_record(t, key, id, []string{"/ip4/192.0.2.50/tcp/1443"}, 200)); !ok {
@@ -226,8 +218,7 @@ func TestPeerRecordsLoad(t *testing.T) {
 // that makes address-book exchange work. The record self-certifies, so
 // the carrier's identity is irrelevant.
 func TestPeerRecordEventAppliesRelayed(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	subject, subject_key := test_host(t)
 	encoded := test_signed_record(t, subject_key, subject, []string{"/ip4/192.0.2.60/tcp/1443"}, 10)
@@ -246,8 +237,7 @@ func TestPeerRecordEventAppliesRelayed(t *testing.T) {
 // TestPeerRecordEventReplayGuard: a relayed record with a stale sequence
 // does not roll the peer's addresses back.
 func TestPeerRecordEventReplayGuard(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	subject, subject_key := test_host(t)
 	peer_record_event(&Event{content: map[string]any{"record": test_signed_record(t, subject_key, subject, []string{"/ip4/192.0.2.70/tcp/1443"}, 100)}})
@@ -263,8 +253,7 @@ func TestPeerRecordEventReplayGuard(t *testing.T) {
 // TestPeerRecordEventIgnoresOwn: a relay of our own record is ignored
 // (we are authoritative for ourselves).
 func TestPeerRecordEventIgnoresOwn(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	saved := net_id
 	id, key := test_host(t)
@@ -280,8 +269,7 @@ func TestPeerRecordEventIgnoresOwn(t *testing.T) {
 // TestPeerRecordRelayable: only a held, fresh record for another peer
 // is relayable.
 func TestPeerRecordRelayable(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	fresh, _ := test_host(t)
 	stale, _ := test_host(t)
@@ -314,8 +302,7 @@ func TestPeerRecordRelayable(t *testing.T) {
 // a fresh record for consumes the relay rate limit (the relay path
 // fires); a request naming us does not.
 func TestPeerRequestEventRelaysThirdParty(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	subject, subject_key := test_host(t)
 	asker, _ := test_host(t)

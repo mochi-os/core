@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"testing"
 )
 
@@ -138,14 +137,7 @@ func TestPriorityReplayAbovesInteractive(t *testing.T) {
 // TestQueueAddDirectPriorityOverride - queue_add_direct_priority must write its
 // argument to queue.priority, not the (service, event)-derived default.
 func TestQueueAddDirectPriorityOverride(t *testing.T) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_queue_prio")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
-	orig := data_dir
-	data_dir = tmp_dir
-	defer func() { data_dir = orig }()
+	test_data_directory(t)
 
 	// Initialise queue.db schema.
 	q := db_open("db/queue.db")
@@ -257,5 +249,61 @@ func TestBroadcastPayloadDecodeKeepsIntegers(t *testing.T) {
 	}
 	if first, ok := list[0].(int64); !ok || first != 1753400002 {
 		t.Fatalf("list[0] = %v (%T), want int64", list[0], list[0])
+	}
+}
+
+// Mochi server: broadcast stream stall watchdog regression.
+//
+// broadcast_stall_note tracks gapping streams and warns once the watermark has
+// been stuck for broadcast_stall_age, resetting whenever it moves: a healing
+// stream must never warn.
+//
+// Application Interface Exception - see license.txt and license-exception.md.
+func TestBroadcastStallNote(t *testing.T) {
+	age, repeat := broadcast_stall_age, broadcast_stall_repeat
+	broadcast_stall_age = 0 // trip on the second gap at the same watermark
+	defer func() { broadcast_stall_age, broadcast_stall_repeat = age, repeat }()
+
+	stall := func() *broadcast_stall {
+		broadcast_stall_lock.Lock()
+		defer broadcast_stall_lock.Unlock()
+		return broadcast_stalls["u1|feeds|peer-x|key-1"]
+	}
+
+	// First gap at a watermark: tracked, not warned (no stall duration yet).
+	broadcast_stall_note("u1", "feeds", "peer-x", "key-1", 100, 500)
+	s := stall()
+	if s == nil || s.warned != 0 {
+		t.Fatal("first gap must track without warning")
+	}
+
+	// Watermark advanced between gaps: the stream is healing, tracking resets
+	// and no warn fires even though gaps continue.
+	broadcast_stall_note("u1", "feeds", "peer-x", "key-1", 150, 510)
+	s = stall()
+	if s.watermark != 150 || s.warned != 0 {
+		t.Fatal("advancing watermark must reset tracking without warning")
+	}
+
+	// Same watermark past broadcast_stall_age: warns.
+	broadcast_stall_note("u1", "feeds", "peer-x", "key-1", 150, 520)
+	s = stall()
+	if s.warned == 0 {
+		t.Fatal("stuck watermark past broadcast_stall_age must warn")
+	}
+	first := s.warned
+
+	// Still stuck inside the repeat window: no second warn stamp.
+	broadcast_stall_note("u1", "feeds", "peer-x", "key-1", 150, 530)
+	if s.warned != first {
+		t.Error("stalled stream re-warned within broadcast_stall_repeat")
+	}
+
+	// Watermark finally moves (healed or manually re-anchored): tracking
+	// resets so a later, unrelated stall warns fresh.
+	broadcast_stall_note("u1", "feeds", "peer-x", "key-1", 900, 910)
+	s = stall()
+	if s.watermark != 900 || s.warned != 0 {
+		t.Error("recovered stream must reset stall tracking")
 	}
 }

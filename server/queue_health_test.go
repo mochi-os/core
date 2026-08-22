@@ -37,8 +37,7 @@ func health_evicted(t *testing.T, recipient string) int64 {
 }
 
 func TestHealthStateMachine(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	// An uncontradicted full-budget failure suspends.
 	health_failure("r-dead", now()-3600)
@@ -78,8 +77,7 @@ func TestHealthStateMachine(t *testing.T) {
 }
 
 func TestHealthGate(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db := db_open("db/queue.db")
 
 	// No health row: healthy, passes.
@@ -111,8 +109,7 @@ func TestHealthGate(t *testing.T) {
 }
 
 func TestHealthQueueIntegration(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	park := queue_park_attempts
 	queue_park_attempts = 2
@@ -165,8 +162,7 @@ func TestHealthQueueIntegration(t *testing.T) {
 // reachable addresses short-circuits before queue_fail) — reaping must
 // suspend the recipient even though no row ever parked.
 func TestHealthCleanupReap(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	db := db_open("db/queue.db")
 	aged := now() - queue_age_maximum - 3600
@@ -188,8 +184,7 @@ func TestHealthCleanupReap(t *testing.T) {
 // suspended subscriber gets no queue row, a due probe passes one through,
 // and past the evict age the app is dispatched to instead.
 func TestBroadcastSendHealthGate(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 
 	feed, identity, healthy, down := exclude_test_entities(t)
@@ -273,8 +268,7 @@ func TestBroadcastSendHealthGate(t *testing.T) {
 // app is ignoring them (missing subscriber/unreachable handler) and its
 // ghost will recycle invisibly; the operator is warned once.
 func TestHealthEvictOverdue(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	var dispatched int
 	original := subscriber_dispatch
@@ -355,8 +349,7 @@ func TestHealthEvictOverdue(t *testing.T) {
 // health.evicted, not in memory - servers restart more often than
 // health_evict_overdue.
 func TestHealthEvictOverdueSurvivesRestart(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	var warned bool
 	original := subscriber_dispatch
@@ -387,8 +380,7 @@ func TestHealthEvictOverdueSurvivesRestart(t *testing.T) {
 // which the stamp write and the sweep both need. Driven through db_upgrade so a
 // missing `case 10:` fails here too; already-suspended rows must survive it.
 func TestHealthEvictedColumnOnAnUpgrade(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	// Wind the install back to a health table without the column, holding
@@ -421,8 +413,7 @@ func TestHealthEvictedColumnOnAnUpgrade(t *testing.T) {
 // the recipient reads healthy again and the next post burns a fresh retry
 // ladder.
 func TestHealthCleanupKeepsUnevicted(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	db := db_open("db/queue.db")
 	stale := now() - 2*queue_evict_age - 3600

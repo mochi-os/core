@@ -12,11 +12,10 @@ import (
 	"testing"
 )
 
-func setup_world_test(t *testing.T) func() {
-	cleanup := setup_replication_test(t) // temp data_dir + net_id="self"
+func setup_world_test(t *testing.T) {
+	setup_replication_test(t) // temp data_dir + net_id="self"
 	db := db_open("db/world.db")
 	db.exec("create table if not exists worlds ( peer text not null, world text not null, name text not null, address text not null, version integer not null, services text not null, seen integer not null, primary key (peer, world) )")
-	return cleanup
 }
 
 const world_test_id = "abcdefghij0123456789abcdefghij01"
@@ -30,7 +29,7 @@ func world_test_services(players int64) string {
 // signature-verified GetFrom - never under e.peer, the forwarding neighbour,
 // which filed one world under every relay.
 func TestWorldPublishEventStores(t *testing.T) {
-	defer setup_world_test(t)()
+	setup_world_test(t)
 	e := &Event{peer: "relay1", origin: "origin1", service: "world", event: "publish", content: map[string]any{
 		"world": world_test_id, "name": "Duc's World", "address": "https://world.example:4433",
 		"version": "3", "services": world_test_services(5)}}
@@ -52,7 +51,7 @@ func TestWorldPublishEventStores(t *testing.T) {
 // A direct stream carries no authenticated originator (origin ""), and no
 // legitimate world listing arrives that way: dropped.
 func TestWorldPublishEventNeedsOrigin(t *testing.T) {
-	defer setup_world_test(t)()
+	setup_world_test(t)
 	e := &Event{peer: "peer1", service: "world", event: "publish", content: map[string]any{
 		"world": world_test_id, "name": "Sneak", "address": "https://world.example:4433",
 		"version": "3", "services": world_test_services(1)}}
@@ -67,7 +66,7 @@ func TestWorldPublishEventNeedsOrigin(t *testing.T) {
 // This host is authoritative for its own rows: its announcements coming back
 // around the flood must not overwrite the local table.
 func TestWorldPublishEventIgnoresSelf(t *testing.T) {
-	defer setup_world_test(t)()
+	setup_world_test(t)
 	e := &Event{peer: "relay1", origin: net_id, service: "world", event: "publish", content: map[string]any{
 		"world": world_test_id, "name": "Echo", "address": "https://world.example:4433",
 		"version": "3", "services": world_test_services(1)}}
@@ -83,7 +82,7 @@ func TestWorldPublishEventIgnoresSelf(t *testing.T) {
 // too many services, broken JSON — drop without storing. These strings
 // render on every server's join page; the bounds are the defence.
 func TestWorldValidationRejects(t *testing.T) {
-	defer setup_world_test(t)()
+	setup_world_test(t)
 	long := strings.Repeat("x", world_name_most+1)
 	many := make([]world_service, world_services_most+1)
 	for i := range many {
@@ -110,7 +109,7 @@ func TestWorldValidationRejects(t *testing.T) {
 
 // Rows age out when refresh stops; a fresh row survives the sweep.
 func TestWorldExpiry(t *testing.T) {
-	defer setup_world_test(t)()
+	setup_world_test(t)
 	db := db_open("db/world.db")
 	db.exec("replace into worlds (peer, world, name, address, version, services, seen) values ('peer1', ?, 'Old', 'https://x:1', 3, ?, ?)",
 		world_test_id, world_test_services(0), now()-world_seen_expiry-1)
@@ -128,7 +127,7 @@ func TestWorldExpiry(t *testing.T) {
 // The per-service display name wins over the world name, and a listing not
 // hosting the requested service does not appear.
 func TestWorldServiceNameResolution(t *testing.T) {
-	defer setup_world_test(t)()
+	setup_world_test(t)
 	services, _ := json.Marshal([]world_service{
 		{Service: "air", Players: 3, Name: "Duc's Dogfight Den"},
 		{Service: "sail", Players: 1},
@@ -154,7 +153,7 @@ func TestWorldServiceNameResolution(t *testing.T) {
 // NEW announcement types roll out with no flag day, and this test is the
 // assertion the #14 design requires of it.
 func TestWorldUnknownServiceIgnored(t *testing.T) {
-	defer setup_world_test(t)()
+	setup_world_test(t)
 	e := &Event{peer: "peer1", service: "no-such-service-exists", event: "publish", content: map[string]any{"x": "y"}}
 	if err := e.route(); err == nil {
 		t.Fatal("routing to an unknown service should error (and be dropped by the caller)")

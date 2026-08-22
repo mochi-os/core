@@ -19,9 +19,9 @@ import (
 // setup_peer_discovery_test gives a fresh data_dir (via the replication
 // harness), a peers.db with schema, and an empty in-memory peer
 // registry. Returns a cleanup that restores the prior registry.
-func setup_peer_discovery_test(t *testing.T) func() {
+func setup_peer_discovery_test(t *testing.T) {
 	t.Helper()
-	cleanup := setup_replication_test(t)
+	setup_replication_test(t)
 
 	pdb := db_open("db/peers.db")
 	pdb.exec("create table if not exists peers ( id text not null, address text not null, updated integer not null, success integer not null default 0, failure integer not null default 0, primary key ( id, address ) )")
@@ -32,12 +32,11 @@ func setup_peer_discovery_test(t *testing.T) func() {
 	peers = map[string]Peer{}
 	peers_lock.Unlock()
 
-	return func() {
+	t.Cleanup(func() {
 		peers_lock.Lock()
 		peers = saved
 		peers_lock.Unlock()
-		cleanup()
-	}
+	})
 }
 
 // publish_event builds the Event shape pubsub_receive hands to
@@ -48,8 +47,7 @@ func publish_event(origin, addresses string) *Event {
 }
 
 func TestPeerPublishEventAppliesAddresses(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	origin, _ := test_host(t)
 	announced := "/ip4/192.0.2.10/tcp/1443/p2p/" + origin + ",/ip4/192.0.2.10/udp/1443/quic-v1/p2p/" + origin
@@ -64,8 +62,7 @@ func TestPeerPublishEventAppliesAddresses(t *testing.T) {
 // the peers/publish event has no GossipSub-verified origin and must be
 // ignored.
 func TestPeerPublishEventRequiresOrigin(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	origin, _ := test_host(t)
 	peer_publish_event(publish_event("", "/ip4/192.0.2.10/tcp/1443/p2p/"+origin))
@@ -79,8 +76,7 @@ func TestPeerPublishEventRequiresOrigin(t *testing.T) {
 // carry the originator's own addresses — a /p2p/ suffix naming a
 // different peer is address poisoning and must be dropped.
 func TestPeerPublishEventRejectsForeignSuffix(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	origin, _ := test_host(t)
 	victim, _ := test_host(t)
@@ -95,8 +91,7 @@ func TestPeerPublishEventRejectsForeignSuffix(t *testing.T) {
 }
 
 func TestPeerPublishEventSkipsInvalid(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	origin, _ := test_host(t)
 	announced := "not-a-multiaddr,/ip4/192.0.2.20/tcp/1443/p2p/" + origin
@@ -108,8 +103,7 @@ func TestPeerPublishEventSkipsInvalid(t *testing.T) {
 }
 
 func TestPeerPublishEventCapsAddresses(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	origin, _ := test_host(t)
 	var announced []string
@@ -128,8 +122,7 @@ func TestPeerPublishEventCapsAddresses(t *testing.T) {
 // never solicited. The broadcast itself is a no-op in unit tests
 // (peers_sufficient is false without a live pubsub).
 func TestPeerRequestAddressesRateLimit(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	id, _ := test_host(t)
 	if !peer_request_addresses(id) {
@@ -150,8 +143,7 @@ func TestPeerRequestAddressesRateLimit(t *testing.T) {
 // having reached the peer, so without this a server that boots before its
 // network is ready stays isolated until restart.
 func TestPeerConnectRetryEnrollsFailedDial(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	id, _ := test_host(t)
 	peer_add_known(id, []string{"/ip4/192.0.2.50/tcp/1443/p2p/" + id})
@@ -174,8 +166,7 @@ func TestPeerConnectRetryEnrollsFailedDial(t *testing.T) {
 // reservation), so it is dropped on apply; a third-party relay and a
 // direct address are kept.
 func TestPeerPublishEventDropsSelfRelay(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	self, _ := test_host(t)
 	saved := net_id
@@ -205,8 +196,7 @@ func TestPeerPublishEventDropsSelfRelay(t *testing.T) {
 // TestPeersPurgeSelfRelay: the startup purge sheds self-relay addresses
 // already in the registry (accumulated before the apply-time filter).
 func TestPeersPurgeSelfRelay(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	self, _ := test_host(t)
 	saved := net_id
@@ -238,8 +228,7 @@ func TestPeersPurgeSelfRelay(t *testing.T) {
 // is connected — so the backup (wasabi) is dialled only when the primary
 // (yuzu) is unavailable.
 func TestBootstrapConnectPreferred(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	primary, _ := test_host(t)
 	backup, _ := test_host(t)
@@ -271,8 +260,7 @@ func TestBootstrapConnectPreferred(t *testing.T) {
 // oldest first — so a roaming peer's churn cannot push out the address
 // connections actually succeed on.
 func TestPeerAddressEviction(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	id, _ := test_host(t)
 	proven := fmt.Sprintf("/ip4/198.51.100.1/tcp/1443/p2p/%s", id)
@@ -311,8 +299,7 @@ func TestPeerAddressEviction(t *testing.T) {
 // TestPeerAddressesFailed: a failed dial round counts against every
 // address, in memory and in peers.db.
 func TestPeerAddressesFailed(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	id, _ := test_host(t)
 	address := "/ip4/192.0.2.40/tcp/1443/p2p/" + id
@@ -338,8 +325,7 @@ func TestPeerAddressesFailed(t *testing.T) {
 // proven ones get the full peer_expiry window, and bootstrap addresses
 // never prune.
 func TestPeersPrune(t *testing.T) {
-	cleanup := setup_peer_discovery_test(t)
-	defer cleanup()
+	setup_peer_discovery_test(t)
 
 	id, _ := test_host(t)
 	t0 := now()

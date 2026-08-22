@@ -56,11 +56,7 @@ func git_sideband_repo(t *testing.T, user *User, repo_id string) (string, plumbi
 	}
 	repo_path := git_repo_path(user, test_app, repo_id)
 
-	work, err := os.MkdirTemp("", "git_sideband_work")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	defer os.RemoveAll(work)
+	work := t.TempDir()
 
 	run := func(args ...string) string {
 		cmd := exec.Command("git", args...)
@@ -105,8 +101,7 @@ func TestGitCloneReportsProgress(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, _ := git_sideband_repo(t, user, "sideband")
 	server := git_negotiation_server(t, repo_path)
@@ -122,11 +117,7 @@ func TestGitCloneReportsProgress(t *testing.T) {
 // said while it worked.
 func git_clone_progress(t *testing.T, version, url string) {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "git_sideband_clone")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	out := git_run(t, "", git_protocol(version, "clone", "--progress", url, dir)...)
 
@@ -164,19 +155,14 @@ func TestGitCloneQuietSuppressesProgress(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, _ := git_sideband_repo(t, user, "quiet")
 	server := git_negotiation_server(t, repo_path)
 
 	for _, version := range git_versions {
 		t.Run("protocol v"+version, func(t *testing.T) {
-			dir, err := os.MkdirTemp("", "git_sideband_quiet")
-			if err != nil {
-				t.Fatalf("temp dir: %v", err)
-			}
-			defer os.RemoveAll(dir)
+			dir := t.TempDir()
 
 			out := git_run(t, "", git_protocol(version, "clone", "--quiet", server.URL, dir)...)
 			if strings.Contains(out, "remote:") {
@@ -191,8 +177,7 @@ func TestGitCloneQuietSuppressesProgress(t *testing.T) {
 // with side-band-64k the packfile arrives inside channel 1 and the progress
 // arrives on channel 2, and both survive demultiplexing.
 func TestGitUploadPackSidebandMultiplexesPack(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, commits := git_negotiation_repo(t, user, "sidebandwire", 6)
 	head := commits[len(commits)-1]
@@ -230,8 +215,7 @@ func TestGitUploadPackSidebandMultiplexesPack(t *testing.T) {
 // a side band must still get the bare packfile it expects. Advertising a
 // capability must not change what happens to clients that decline it.
 func TestGitUploadPackWithoutSidebandSendsRawPack(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, commits := git_negotiation_repo(t, user, "nosideband", 6)
 	head := commits[len(commits)-1]

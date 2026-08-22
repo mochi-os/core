@@ -22,9 +22,9 @@ import (
 
 // web_bearer_env builds the minimum a web_action auth decision needs: a user
 // with a session, and an app carrying one non-public action.
-func web_bearer_env(t *testing.T) (*App, *User, string, func()) {
+func web_bearer_env(t *testing.T) (*App, *User, string) {
 	t.Helper()
-	cleanup := create_web_test_env(t)
+	create_web_test_env(t)
 
 	sessions := db_open("db/sessions.db")
 	sessions.exec("create table if not exists sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
@@ -64,7 +64,7 @@ func web_bearer_env(t *testing.T) (*App, *User, string, func()) {
 	version.app = app
 
 	user := &User{UID: "bearer-user", Username: "bearer@example.com", Role: "user"}
-	return app, user, "bearer-session", cleanup
+	return app, user, "bearer-session"
 }
 
 // web_bearer_status runs one request through web_action and reports the status
@@ -88,8 +88,7 @@ func web_bearer_status(t *testing.T, app *App, session string, authorization str
 }
 
 func TestBearerGateRejectsUnverifiedToken(t *testing.T) {
-	app, _, session, cleanup := web_bearer_env(t)
-	defer cleanup()
+	app, _, session := web_bearer_env(t)
 
 	cases := []struct {
 		name          string
@@ -114,8 +113,7 @@ func TestBearerGateRejectsUnverifiedToken(t *testing.T) {
 }
 
 func TestBearerGateRejectsCookieAlone(t *testing.T) {
-	app, _, session, cleanup := web_bearer_env(t)
-	defer cleanup()
+	app, _, session := web_bearer_env(t)
 
 	status, body := web_bearer_status(t, app, session, "")
 	if status != 403 || !strings.Contains(body, "app_token_required") {

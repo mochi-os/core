@@ -20,9 +20,9 @@ import (
 
 // stepup_env builds the users and sessions tables the step-up callback writes,
 // plus two accounts each with the same provider linked.
-func stepup_env(t *testing.T) func() {
+func stepup_env(t *testing.T) {
 	t.Helper()
-	cleanup := create_web_test_env(t)
+	create_web_test_env(t)
 
 	users := db_open("db/users.db")
 	users.exec("drop table if exists users")
@@ -42,7 +42,6 @@ func stepup_env(t *testing.T) func() {
 		users.exec("insert into oauth (user, provider, subject, created) values (?, 'github', ?, ?)",
 			account.uid, account.subject, now())
 	}
-	return cleanup
 }
 
 // stepup_callback runs the real OAuth step-up callback for one account.
@@ -80,7 +79,7 @@ func stepup_proofs(t *testing.T, uid string) int64 {
 // stores a proof under a challenge first; the victim's callback must still
 // store theirs.
 func TestASquattedChallengeDoesNotBlockAnotherUser(t *testing.T) {
-	defer stepup_env(t)()
+	stepup_env(t)
 
 	shared := stepup_challenge("the-victims-verifier")
 
@@ -107,7 +106,7 @@ func TestASquattedChallengeDoesNotBlockAnotherUser(t *testing.T) {
 // TestTheChallengeIsStoredInItsOwnColumn: the row must be findable by the
 // value the client will present, and the id must be the server's.
 func TestTheChallengeIsStoredInItsOwnColumn(t *testing.T) {
-	defer stepup_env(t)()
+	stepup_env(t)
 
 	challenge := stepup_challenge("a-verifier")
 	stepup_callback(t, "u-victim", "subject-victim", challenge)
@@ -128,7 +127,7 @@ func TestTheChallengeIsStoredInItsOwnColumn(t *testing.T) {
 // TestEachUserReadsTheirOwnProof: two rows may share a challenge, so the user
 // filter is the only thing keeping each account's proof separate.
 func TestEachUserReadsTheirOwnProof(t *testing.T) {
-	defer stepup_env(t)()
+	stepup_env(t)
 
 	shared := stepup_challenge("the-shared-verifier")
 	stepup_callback(t, "u-attacker", "subject-attacker", shared)
@@ -170,7 +169,7 @@ func TestFinishScopesOnUserAndChallenge(t *testing.T) {
 }
 
 func TestTwoAccountsCoexistUnderOneChallenge(t *testing.T) {
-	defer stepup_env(t)()
+	stepup_env(t)
 
 	shared := stepup_challenge("shared-verifier")
 	stepup_callback(t, "u-attacker", "subject-attacker", shared)

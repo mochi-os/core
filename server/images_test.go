@@ -225,11 +225,7 @@ func BenchmarkIsImage(b *testing.B) {
 // destination, bounded to the variant's box, atomically.
 func TestVariantRender(t *testing.T) {
 	// Create temp directory
-	tmp_dir, err := os.MkdirTemp("", "variant_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmp_dir)
+	tmp_dir := t.TempDir()
 
 	// Create a test image (1500x900 PNG, larger than both variant sizes)
 	img := image.NewRGBA(image.Rect(0, 0, 1500, 900))

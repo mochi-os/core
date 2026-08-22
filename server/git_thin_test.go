@@ -73,8 +73,7 @@ func TestGitFetchThinPackShrinksAModifiedFile(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, first, second := git_thin_repo(t, user, "thin")
 
@@ -103,8 +102,7 @@ func TestGitFetchThinPackNeverLargerThanWhole(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	if err := git_init(user, test_app, "thinnew"); err != nil {
 		t.Fatalf("git_init: %v", err)
@@ -144,8 +142,7 @@ func TestGitPackMemoryIsBounded(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, first, second := git_thin_repo(t, user, "thinmemory")
 	storage, err := (&git_loader{}).Load(&transport.Endpoint{Path: repo_path})
@@ -204,8 +201,7 @@ func TestGitPackIsDeterministic(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, commits := git_negotiation_repo(t, user, "deterministic", 12)
 	head := commits[len(commits)-1]
@@ -227,8 +223,7 @@ func TestGitFetchThinPackAppliedByGit(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, _, _ := git_thin_repo(t, user, "thinapply")
 	server := git_negotiation_server(t, repo_path)
@@ -269,8 +264,7 @@ func TestGitPackThinEntries(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, first, second := git_thin_repo(t, user, "thinformat")
 	storage, err := (&git_loader{}).Load(&transport.Endpoint{Path: repo_path})

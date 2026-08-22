@@ -21,8 +21,7 @@ import (
 // user owns across every app with no argument at all, and entity.get hands over
 // the data blob; info leaks the same shape for any local entity.
 func TestEntityReadersNeedAPermission(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	user := &User{UID: "u1", Username: "user1@example.com"}
 	app := create_external_app("reader")
@@ -105,8 +104,7 @@ func TestEntityReadIsStandard(t *testing.T) {
 // touch only the app's own table; check resolves the subject's role out of
 // core's users.db, which accounts/read otherwise gates.
 func TestAccessCheckNeedsAPermission(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	user := &User{UID: "u1", Username: "user1@example.com"}
 	app := create_external_app("prober")
@@ -223,8 +221,7 @@ func TestPeerConnectUrlCannotReachAnArbitraryPath(t *testing.T) {
 // frames with the same entity keys and no tag, so app signatures carry the tag.
 // Tagging what core signs changes what remote peers verify: a wire break.
 func TestAppSignaturesAreDomainSeparated(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	// An entity whose id is its public key, with the private half stored.
 	public, private, err := ed25519.GenerateKey(nil)

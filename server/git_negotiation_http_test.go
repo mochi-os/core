@@ -109,8 +109,7 @@ func TestGitFetchOverHttpExcludesCommonHistory(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, _ := git_negotiation_repo(t, user, "http", 40)
 	if out, err := exec.Command("git", "-C", repo_path, "repack", "-ad").CombinedOutput(); err != nil {
@@ -122,21 +121,13 @@ func TestGitFetchOverHttpExcludesCommonHistory(t *testing.T) {
 	for _, version := range git_versions {
 		t.Run("protocol v"+version, func(t *testing.T) {
 			// A full clone, for the baseline figure.
-			full_dir, err := os.MkdirTemp("", "git_http_full")
-			if err != nil {
-				t.Fatalf("temp dir: %v", err)
-			}
-			defer os.RemoveAll(full_dir)
+			full_dir := t.TempDir()
 			git_run(t, "", git_protocol(version, "clone", "--quiet", server.URL, full_dir)...)
 			full := git_client_objects(t, full_dir)
 
 			// A second clone rolled back three commits, with the newer objects
 			// dropped so the fetch has to transfer them again.
-			behind_dir, err := os.MkdirTemp("", "git_http_behind")
-			if err != nil {
-				t.Fatalf("temp dir: %v", err)
-			}
-			defer os.RemoveAll(behind_dir)
+			behind_dir := t.TempDir()
 			git_run(t, "", git_protocol(version, "clone", "--quiet", server.URL, behind_dir)...)
 			old := strings.TrimSpace(git_run(t, behind_dir, "-C", behind_dir, "rev-parse", "HEAD~3"))
 			git_run(t, behind_dir, "-C", behind_dir, "update-ref", "refs/heads/main", old)
@@ -172,19 +163,14 @@ func TestGitFetchOverHttpUpToDateTransfersNothing(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, _ := git_negotiation_repo(t, user, "uptodate", 10)
 	server := git_negotiation_server(t, repo_path)
 
 	for _, version := range git_versions {
 		t.Run("protocol v"+version, func(t *testing.T) {
-			dir, err := os.MkdirTemp("", "git_http_uptodate")
-			if err != nil {
-				t.Fatalf("temp dir: %v", err)
-			}
-			defer os.RemoveAll(dir)
+			dir := t.TempDir()
 			git_run(t, "", git_protocol(version, "clone", "--quiet", server.URL, dir)...)
 
 			before := git_client_objects(t, dir)

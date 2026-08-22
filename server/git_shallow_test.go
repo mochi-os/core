@@ -35,10 +35,7 @@ type git_work struct {
 
 func git_work_open(t *testing.T, name string) *git_work {
 	t.Helper()
-	dir, err := os.MkdirTemp("", name)
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
+	dir := t.TempDir()
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	work := &git_work{t: t, dir: dir, when: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
 	work.run("init", "-b", "main")
@@ -112,10 +109,7 @@ func git_clone_state(t *testing.T, dir string) (int, bool) {
 
 func git_temporary(t *testing.T, name string) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", name)
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
+	dir := t.TempDir()
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	return dir
 }
@@ -127,8 +121,7 @@ func TestGitCloneDepth(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, _ := git_shallow_repo(t, user, "depth", 8)
 	server := git_negotiation_server(t, repo_path)
@@ -171,8 +164,7 @@ func TestGitFetchInShallowClone(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	for _, version := range git_versions {
 		t.Run("protocol v"+version, func(t *testing.T) {
@@ -218,8 +210,7 @@ func TestGitFetchUnshallow(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, _ := git_shallow_repo(t, user, "unshallow", 6)
 	server := git_negotiation_server(t, repo_path)
@@ -253,8 +244,7 @@ func TestGitFetchDeepen(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	repo_path, _ := git_shallow_repo(t, user, "deepen", 8)
 	server := git_negotiation_server(t, repo_path)
@@ -289,8 +279,7 @@ func TestGitCloneShallowSince(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	// The fixture commits one a day from 2026-01-02.
 	repo_path, _ := git_shallow_repo(t, user, "since", 8)
@@ -325,8 +314,7 @@ func TestGitCloneShallowExclude(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	// The annotated tag v1 sits on the second of eight commits, so excluding
 	// it leaves the six after it.
@@ -363,8 +351,7 @@ func TestGitHistoryBoundary(t *testing.T) {
 		t.Skip("git binary not available")
 	}
 
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	if err := git_init(user, test_app, "diamond"); err != nil {
 		t.Fatalf("git_init: %v", err)

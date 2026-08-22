@@ -87,8 +87,7 @@ func broadcast_limit_sequences(t *testing.T, thread *sl.Thread, key string) int 
 // broadcast. Charging one per call (the mochi.message.send shape) would
 // leave three-quarters of the budget intact here.
 func TestBroadcastChargesOnePerRecipient(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	thread, feed, app := broadcast_limit_setup(t)
 
 	limit := rate_limit_broadcast.limit
@@ -132,8 +131,7 @@ func broadcast_limit_await(t *testing.T, recipients []string) {
 // TestBroadcastRefusesASpentBudgetBeforeTheLogAppend. Refusing partway through
 // the fan-out would leave a log row resync replays to the rest as a delivery.
 func TestBroadcastRefusesASpentBudgetBeforeTheLogAppend(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	thread, feed, app := broadcast_limit_setup(t)
 
 	rate_limit_broadcast.spend(app.id, rate_limit_broadcast.limit)
@@ -161,8 +159,7 @@ func TestBroadcastRefusesASpentBudgetBeforeTheLogAppend(t *testing.T) {
 // single list is still a single burst of queue.db rows. The cap bounds that
 // burst, and is applied before the log append for the same reason.
 func TestBroadcastCapsTheRecipientList(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	thread, feed, _ := broadcast_limit_setup(t)
 
 	// Synthetic ids: the cap is checked before the list contents are read,
@@ -189,8 +186,7 @@ func TestBroadcastCapsTheRecipientList(t *testing.T) {
 // a list AT the cap has to fall through to the rate limiter. If the cap were
 // >= it would answer first, and the error would name the wrong bound.
 func TestBroadcastCapAdmitsExactlyTheMaximum(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	thread, feed, app := broadcast_limit_setup(t)
 
 	rate_limit_broadcast.spend(app.id, rate_limit_broadcast.limit)

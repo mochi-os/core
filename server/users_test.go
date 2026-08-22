@@ -8,41 +8,28 @@ package main
 
 import (
 	"fmt"
+	sl "go.starlark.net/starlark"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	sl "go.starlark.net/starlark"
 )
 
 // Helper to create test environment with users database
-func create_test_users_db(t *testing.T) func() {
-	tmp_dir, err := os.MkdirTemp("", "mochi_users_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
+func create_test_users_db(t *testing.T) {
+	t.Helper()
+	test_data_directory(t)
 
 	// Create users table (mirrors db_create — uid is the PK, no integer id).
 	db := db_open("db/users.db")
 	db.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', disabled text not null default '', status text not null default 'active')")
 	db.exec("create unique index users_username on users (username)")
 
-	cleanup := func() {
-		data_dir = orig_data_dir
-		os.RemoveAll(tmp_dir)
-	}
-
-	return cleanup
 }
 
 // Test user_by_uid returns nil for non-existent user
 func TestUserByIdNotFound(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	u := user_by_uid("u999")
 	if u != nil {
@@ -52,8 +39,7 @@ func TestUserByIdNotFound(t *testing.T) {
 
 // Test user_by_uid returns user for existing user
 func TestUserByIdFound(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	db := db_open("db/users.db")
 	db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u1", "test@example.com", "user")
@@ -92,8 +78,7 @@ func TestUserAdministrator(t *testing.T) {
 
 // Test user creation in database
 func TestUserCreate(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	db := db_open("db/users.db")
 	db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u1", "new@example.com", "user")
@@ -116,8 +101,7 @@ func TestUserCreate(t *testing.T) {
 
 // Test user update in database
 func TestUserUpdate(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	db := db_open("db/users.db")
 	db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u1", "update@example.com", "user")
@@ -138,8 +122,7 @@ func TestUserUpdate(t *testing.T) {
 
 // Test user deletion
 func TestUserDelete(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	db := db_open("db/users.db")
 	db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u1", "delete@example.com", "user")
@@ -158,8 +141,7 @@ func TestUserDelete(t *testing.T) {
 
 // Test user count query
 func TestUserCount(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	db := db_open("db/users.db")
 
@@ -185,8 +167,7 @@ func TestUserCount(t *testing.T) {
 
 // Test user list query with pagination
 func TestUserList(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	db := db_open("db/users.db")
 
@@ -219,8 +200,7 @@ func TestUserList(t *testing.T) {
 
 // Test lookup by identity
 func TestLookupByIdentity(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	db := db_open("db/users.db")
 	db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u1", "test@example.com", "user")
@@ -247,8 +227,7 @@ func TestLookupByIdentity(t *testing.T) {
 
 // Test lookup by fingerprint
 func TestLookupByFingerprint(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	db := db_open("db/users.db")
 	db.exec("insert into users (uid, username, role) values (?, ?, ?)", "u1", "test@example.com", "user")
@@ -284,14 +263,9 @@ func TestFingerprintHyphenRemoval(t *testing.T) {
 }
 
 // Helper to create test environment with sessions database
-func create_test_sessions_db(t *testing.T) func() {
-	tmp_dir, err := os.MkdirTemp("", "mochi_sessions_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
+func create_test_sessions_db(t *testing.T) {
+	t.Helper()
+	test_data_directory(t)
 
 	// Create sessions tables
 	db := db_open("db/sessions.db")
@@ -301,20 +275,13 @@ func create_test_sessions_db(t *testing.T) func() {
 	db.exec("create table partial (id text primary key, user text not null, completed text not null default '', remaining text not null, expires integer not null)")
 	db.exec("create table reauthentication (id text primary key, user text not null, methods text not null default '', expires integer not null)")
 
-	cleanup := func() {
-		data_dir = orig_data_dir
-		os.RemoveAll(tmp_dir)
-	}
-
-	return cleanup
 }
 
 // TestCodeConsume verifies the step-up second factor used by data
 // export: a one-time login code is consumed exactly once, only for the
 // user it was issued to, and only while unexpired.
 func TestCodeConsume(t *testing.T) {
-	cleanup := create_test_sessions_db(t)
-	defer cleanup()
+	create_test_sessions_db(t)
 
 	db := db_open("db/sessions.db")
 	current := now()
@@ -357,8 +324,7 @@ func TestCodeConsume(t *testing.T) {
 
 // Test sessions_cleanup removes expired sessions
 func TestSessionsCleanup(t *testing.T) {
-	cleanup := create_test_sessions_db(t)
-	defer cleanup()
+	create_test_sessions_db(t)
 
 	db := db_open("db/sessions.db")
 	current := now()
@@ -438,8 +404,7 @@ func TestSessionsCleanup(t *testing.T) {
 // TestUserIsFreshEmpty: a uid with no on-disk presence and no user.db rows
 // counts as fresh. The function tolerates the absence of users/<uid>/.
 func TestUserIsFreshEmpty(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	if !user_is_fresh("u-fresh-empty") {
 		t.Error("user_is_fresh should be true for a uid with no data")
@@ -460,8 +425,7 @@ func TestUserIsFreshContentTables(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.table, func(t *testing.T) {
-			cleanup := create_test_users_db(t)
-			defer cleanup()
+			create_test_users_db(t)
 
 			udb := db_user(&User{UID: "u-fresh-content"}, "user")
 			udb.exec(c.ins)
@@ -476,8 +440,7 @@ func TestUserIsFreshContentTables(t *testing.T) {
 // TestUserIsFreshAttachment: any file under users/<uid>/<app>/files/ flips
 // the result to false (uploaded attachments are never scaffolded).
 func TestUserIsFreshAttachment(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	dir := fmt.Sprintf("%s/users/u-fresh-attach/some-app/files", data_dir)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -495,8 +458,7 @@ func TestUserIsFreshAttachment(t *testing.T) {
 // TestUserIsFreshEntityDir: a Base58 entity-shaped subdir under users/<uid>/
 // counts as entity activity and flips the result to false.
 func TestUserIsFreshEntityDir(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	// Valid entity-id shape per valid("entity"): [\w]{49,51}.
 	entity := strings.Repeat("a", 50)
@@ -515,8 +477,7 @@ func TestUserIsFreshEntityDir(t *testing.T) {
 // per-app dirs as a side effect of normal use; user_is_fresh ignores them
 // as long as no content tables, no attachments, no entity-shaped subdirs.
 func TestUserIsFreshAppDir(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	dir := fmt.Sprintf("%s/users/u-fresh-app/feeds/db", data_dir)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -533,8 +494,7 @@ func TestUserIsFreshAppDir(t *testing.T) {
 // returns, and mochi.user.count(query) must report the full match total
 // rather than the size of one page.
 func TestUserSearchOffsetAndCount(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	db := db_open("db/users.db")
 	// Five matches for "target", plus one that must not match.
@@ -634,8 +594,7 @@ func TestUserSearchOffsetAndCount(t *testing.T) {
 // same reasons mochi.user.list does, so "last" — which lives in sessions.db and
 // cannot be an ORDER BY column — has to work as a sort key.
 func TestUserSearchSort(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	db := db_open("db/users.db")
 	for _, name := range []string{"target-b", "target-a", "target-c"} {
@@ -780,6 +739,100 @@ func TestReplicationStatusIsGone(t *testing.T) {
 		}
 		if strings.Contains(string(source), "pending-replication") {
 			t.Errorf("%s mentions pending-replication; nothing sets that status, so any gate or fixture using it is testing a state that cannot occur", name)
+		}
+	}
+}
+
+// Mochi server: login factor-offering test
+// TestUserLoginOffered: when the account requires factors, usable-but-not-
+// required ones are dropped (they cannot substitute); when nothing is required,
+// every usable factor is offered.
+func TestUserLoginOffered(t *testing.T) {
+	create_test_users_db(t)
+
+	users := db_open("db/users.db")
+	users.exec("create table credentials (id blob primary key, user text not null, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
+	users.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, created integer not null)")
+	users.exec("create table oauth (id integer primary key, user text not null, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
+	settings := db_open("db/settings.db")
+	settings.exec("create table settings (name text primary key, value text not null)")
+	// Register a passkey and a verified authenticator so both count as usable.
+	users.exec("insert into credentials (id, user, public_key, created) values (x'01', 'u1', x'00', 1)")
+	users.exec("insert into totp (user, secret, verified, created) values ('u1', 's', 1, 1)")
+
+	got := func(methods string) string {
+		users.exec("delete from users")
+		users.exec("insert into users (uid, username, methods) values ('u1', 'a@example.com', ?)", methods)
+		var u User
+		users.scan(&u, "select uid, username, role, methods, disabled, status from users where uid='u1'")
+		return strings.Join(user_login_offered(&u), ",")
+	}
+
+	// Nothing required: any one usable factor suffices, so offer them all.
+	if g := got(""); g != "email,passkey,totp" {
+		t.Errorf("no required: offered = %q, want email,passkey,totp", g)
+	}
+	// Email required: only email can complete the login; drop the rest.
+	if g := got("email"); g != "email" {
+		t.Errorf("email required: offered = %q, want email", g)
+	}
+	// Two required: offer exactly those, still dropping non-required passkey.
+	if g := got("email,totp"); g != "email,totp" {
+		t.Errorf("email+totp required: offered = %q, want email,totp", g)
+	}
+	// System email floor applies even when the user requires nothing.
+	setting_set("auth_email", "required")
+	if g := got(""); g != "email" {
+		t.Errorf("system email floor: offered = %q, want email", g)
+	}
+}
+
+// Mochi server: last-sign-in-factor removal guard test
+// TestUserFactorRemovalBlocked covers the guard shared by passkey-delete and
+// authenticator-disable: a factor's last credential cannot be removed while the
+// factor is required, or while it is the only remaining way to sign in.
+func TestUserFactorRemovalBlocked(t *testing.T) {
+	create_test_users_db(t)
+
+	users := db_open("db/users.db")
+	users.exec("create table credentials (id blob primary key, user text not null, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
+	users.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, created integer not null)")
+	users.exec("create table oauth (id integer primary key, user text not null, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null)")
+	settings := db_open("db/settings.db")
+	settings.exec("create table settings (name text primary key, value text not null)")
+
+	load := func(methods, disabled string) *User {
+		users.exec("delete from users")
+		users.exec("insert into users (uid, username, methods, disabled) values ('u1', 'a@example.com', ?, ?)", methods, disabled)
+		var u User
+		users.scan(&u, "select uid, username, role, methods, disabled, status from users where uid='u1'")
+		return &u
+	}
+	reset := func() { users.exec("delete from credentials"); users.exec("delete from totp") }
+	passkey := func() {
+		users.exec("insert into credentials (id, user, public_key, created) values (x'01', 'u1', x'00', 1)")
+	}
+	totp := func() { users.exec("insert into totp (user, secret, verified, created) values ('u1', 's', 1, 1)") }
+
+	cases := []struct {
+		name              string
+		methods, disabled string
+		setup             func()
+		factor, want      string
+	}{
+		{"delete passkey, email available", "", "", func() { reset(); passkey() }, "passkey", ""},
+		{"delete only passkey, email disabled", "", "email", func() { reset(); passkey() }, "passkey", "last"},
+		{"delete passkey while required", "passkey", "", func() { reset(); passkey() }, "passkey", "required"},
+		{"delete passkey, totp fallback, email disabled", "", "email", func() { reset(); passkey(); totp() }, "passkey", ""},
+		{"disable only totp, email disabled", "", "email", func() { reset(); totp() }, "totp", "last"},
+		{"disable totp, email available", "", "", func() { reset(); totp() }, "totp", ""},
+		{"disable totp while required", "totp", "", func() { reset(); totp() }, "totp", "required"},
+	}
+	for _, c := range cases {
+		u := load(c.methods, c.disabled)
+		c.setup()
+		if got := user_factor_removal_blocked(u, c.factor); got != c.want {
+			t.Errorf("%s: blocked = %q, want %q", c.name, got, c.want)
 		}
 	}
 }

@@ -80,8 +80,7 @@ func tier_test_classified(t *testing.T, name, tier string) {
 // preferences page. An administrator-only permission in front of the tiers made
 // that read fail for everyone who is not an administrator.
 func TestUserReadableSettingReachesANonAdministrator(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	tier_test_classified(t, "default_theme", "user")
@@ -98,8 +97,7 @@ func TestUserReadableSettingReachesANonAdministrator(t *testing.T) {
 // TestServerVersionReachesANonAdministrator. The other inhabitant of the tier,
 // so a fixture-specific fix to default_theme does not pass this file.
 func TestServerVersionReachesANonAdministrator(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	tier_test_classified(t, "server_version", "user")
@@ -113,8 +111,7 @@ func TestServerVersionReachesANonAdministrator(t *testing.T) {
 // not widen anything: a setting in neither public tier is still administrators
 // only, decided by the setting, not by a grant.
 func TestAdministratorTierStaysRefused(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	for _, name := range []string{"email_from", "hostname", "relay", "login_app"} {
@@ -128,8 +125,7 @@ func TestAdministratorTierStaysRefused(t *testing.T) {
 // TestAdministratorReadsTheAdministratorTier. Without this the test above would
 // pass on a build where nobody can read anything.
 func TestAdministratorReadsTheAdministratorTier(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	setting_set("email_from", "noreply@example.com")
@@ -146,8 +142,7 @@ func TestAdministratorReadsTheAdministratorTier(t *testing.T) {
 // branding and its enabled sign-in methods before anyone has signed in, so the
 // public tier has to answer with no user on the thread at all.
 func TestPublicSettingStaysAnonymous(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	for _, name := range []string{"operator_name", "signup_enabled", "auth_email"} {
@@ -162,8 +157,7 @@ func TestPublicSettingStaysAnonymous(t *testing.T) {
 // express, and it is the reason the removal is safe: a credential is not handed
 // back even to an administrator who is allowed to set it.
 func TestSecretSettingIsNeverReturned(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	tier_test_classified(t, "oauth_google_client_secret", "secret")
@@ -185,8 +179,7 @@ func TestSecretSettingIsNeverReturned(t *testing.T) {
 // check in its body, so dropping the permission does not widen it - it hands
 // back every setting's value, description and which secrets are set.
 func TestSettingListStaysAdministratorOnly(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	call := func(user *User) error {

@@ -55,10 +55,7 @@ func read_test_db(t *testing.T, path string) int {
 }
 
 func TestSnapshotInPlaceProducesBackupFiles(t *testing.T) {
-	tmp := t.TempDir()
-	previous_data_directory := data_dir
-	data_dir = tmp
-	defer func() { data_dir = previous_data_directory }()
+	tmp := test_data_directory(t)
 
 	if err := os.MkdirAll(filepath.Join(tmp, "run"), 0750); err != nil {
 		t.Fatal(err)
@@ -99,12 +96,8 @@ func TestSnapshotInPlaceProducesBackupFiles(t *testing.T) {
 		return nil
 	})
 }
-
 func TestSnapshotReapsStaleBackup(t *testing.T) {
-	tmp := t.TempDir()
-	previous_data_directory := data_dir
-	data_dir = tmp
-	defer func() { data_dir = previous_data_directory }()
+	tmp := test_data_directory(t)
 
 	if err := os.MkdirAll(filepath.Join(tmp, "run"), 0750); err != nil {
 		t.Fatal(err)
@@ -135,10 +128,7 @@ func TestSnapshotReapsStaleBackup(t *testing.T) {
 // The compat path: a legacy `.db.snap` whose live `.db` was deleted should
 // still be reaped.
 func TestSnapshotReapsStaleLegacySnap(t *testing.T) {
-	tmp := t.TempDir()
-	previous_data_directory := data_dir
-	data_dir = tmp
-	defer func() { data_dir = previous_data_directory }()
+	tmp := test_data_directory(t)
 
 	if err := os.MkdirAll(filepath.Join(tmp, "run"), 0750); err != nil {
 		t.Fatal(err)
@@ -169,10 +159,7 @@ func TestSnapshotReapsStaleLegacySnap(t *testing.T) {
 // snapshot writes `.db.backup`, the legacy sibling must be dropped so the
 // tar export does not ship two copies of the same DB.
 func TestSnapshotRemovesLegacySnapAfterWrite(t *testing.T) {
-	tmp := t.TempDir()
-	previous_data_directory := data_dir
-	data_dir = tmp
-	defer func() { data_dir = previous_data_directory }()
+	tmp := test_data_directory(t)
 
 	if err := os.MkdirAll(filepath.Join(tmp, "run"), 0750); err != nil {
 		t.Fatal(err)
@@ -196,12 +183,8 @@ func TestSnapshotRemovesLegacySnapAfterWrite(t *testing.T) {
 		t.Errorf("legacy .snap sibling should have been removed: %v", err)
 	}
 }
-
 func TestSnapshotSkipsRunAndCache(t *testing.T) {
-	tmp := t.TempDir()
-	previous_data_directory := data_dir
-	data_dir = tmp
-	defer func() { data_dir = previous_data_directory }()
+	tmp := test_data_directory(t)
 
 	if err := os.MkdirAll(filepath.Join(tmp, "run"), 0750); err != nil {
 		t.Fatal(err)

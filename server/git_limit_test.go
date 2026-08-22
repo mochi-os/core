@@ -118,8 +118,7 @@ func TestGitServiceNameWhitelist(t *testing.T) {
 // request body does not bound what the body decodes to. The storer meters the
 // decoded objects and fails the push before any ref is updated.
 func TestGitStorageMetersDecodedObjects(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 
 	if err := git_init(user, test_app, "repo1"); err != nil {
 		t.Fatalf("git_init: %v", err)
@@ -179,8 +178,7 @@ func TestGitStorageMetersDecodedObjects(t *testing.T) {
 // pins the boundary: a push that exactly fills the budget must succeed, one
 // byte more must not.
 func TestGitStorageBudgetBoundary(t *testing.T) {
-	user, _, cleanup := create_git_test_env(t)
-	defer cleanup()
+	user, _ := create_git_test_env(t)
 	if err := git_init(user, test_app, "repo1"); err != nil {
 		t.Fatalf("git_init: %v", err)
 	}

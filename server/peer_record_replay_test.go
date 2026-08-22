@@ -33,7 +33,7 @@ func record_forget(id string) {
 
 // TestAStaleRecordReplayDoesNotSuppressRelays is the defect.
 func TestAStaleRecordReplayDoesNotSuppressRelays(t *testing.T) {
-	defer setup_peer_discovery_test(t)()
+	setup_peer_discovery_test(t)
 
 	subject, key := test_host(t)
 	current := test_signed_record(t, key, subject, []string{"/ip4/192.0.2.90/tcp/1443"}, 5)
@@ -55,7 +55,7 @@ func TestAStaleRecordReplayDoesNotSuppressRelays(t *testing.T) {
 // every holder carries the same envelope at the same sequence, so the herd
 // collapse depends on an equal sequence counting as a real answer.
 func TestAnEqualSequenceStillSuppresses(t *testing.T) {
-	defer setup_peer_discovery_test(t)()
+	setup_peer_discovery_test(t)
 
 	subject, key := test_host(t)
 	record := test_signed_record(t, key, subject, []string{"/ip4/192.0.2.91/tcp/1443"}, 5)
@@ -74,7 +74,7 @@ func TestAnEqualSequenceStillSuppresses(t *testing.T) {
 
 // TestANewerRecordSuppresses: a record ahead of ours is plainly a real answer.
 func TestANewerRecordSuppresses(t *testing.T) {
-	defer setup_peer_discovery_test(t)()
+	setup_peer_discovery_test(t)
 
 	subject, key := test_host(t)
 	if _, ok := peer_record_apply(subject, test_signed_record(t, key, subject, []string{"/ip4/192.0.2.92/tcp/1443"}, 5)); !ok {
@@ -94,7 +94,7 @@ func TestANewerRecordSuppresses(t *testing.T) {
 // (peer_record_relayable requires a stored record), so the stamp is harmless
 // and treating "no record" as stale would be a needless special case.
 func TestAnUnknownPeerSuppresses(t *testing.T) {
-	defer setup_peer_discovery_test(t)()
+	setup_peer_discovery_test(t)
 
 	subject, key := test_host(t)
 	record := test_signed_record(t, key, subject, []string{"/ip4/192.0.2.94/tcp/1443"}, 3)
@@ -114,7 +114,7 @@ func TestAnUnknownPeerSuppresses(t *testing.T) {
 // store's boolean cannot make this distinction, which is why the fix is not a
 // reordering.
 func TestPeerRecordCurrentSeparatesTheThreeCases(t *testing.T) {
-	defer setup_peer_discovery_test(t)()
+	setup_peer_discovery_test(t)
 
 	subject, key := test_host(t)
 	if _, ok := peer_record_apply(subject, test_signed_record(t, key, subject, []string{"/ip4/192.0.2.95/tcp/1443"}, 5)); !ok {

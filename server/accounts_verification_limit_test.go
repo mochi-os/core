@@ -128,7 +128,7 @@ func TestVerificationBudgetSeparateFromLoginCode(t *testing.T) {
 // helper: code_send is where the login-code budget is charged, and it charged
 // on what the caller typed.
 func TestCodeSendKeysOnTheCanonicalAddress(t *testing.T) {
-	defer create_test_users_db(t)()
+	create_test_users_db(t)
 	db_open("db/sessions.db").exec("create table codes (code text primary key, username text not null, expires integer not null)")
 	db_open("db/settings.db").exec("create table settings (name text primary key, value text not null default '')")
 	db_open("db/users.db").exec("insert into users (uid, username, methods) values ('u-code', 'code@example.com', 'email')")

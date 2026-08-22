@@ -7,7 +7,6 @@
 package main
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -16,16 +15,10 @@ import (
 // minimum schema needed for the documents resolver and its dependencies
 // (the `documents` and `settings` tables in db/settings.db). Returns a
 // cleanup function the caller must defer.
-func setup_documents_test(t *testing.T) func() {
+func setup_documents_test(t *testing.T) {
 	t.Helper()
 
-	tmp, err := os.MkdirTemp("", "mochi_documents_test")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-
-	orig_data_dir := data_dir
-	data_dir = tmp
+	test_data_directory(t)
 
 	settings := db_open("db/settings.db")
 	settings.exec("create table settings ( name text not null primary key, value text not null )")
@@ -35,17 +28,16 @@ func setup_documents_test(t *testing.T) func() {
 	// resolve `document.not_configured` per-locale.
 	load_core_labels()
 
-	return func() {
+	t.Cleanup(func() {
 		settings.close()
-		data_dir = orig_data_dir
-		os.RemoveAll(tmp)
-	}
+	})
+
 }
 
 // TestDocumentBundledDefault verifies that with no operator override the
 // embedded bundled default in the requested language is returned.
 func TestDocumentBundledDefault(t *testing.T) {
-	defer setup_documents_test(t)()
+	setup_documents_test(t)
 
 	body := document_get("rules", "en")
 	if body == "" {
@@ -67,7 +59,7 @@ func TestDocumentBundledDefault(t *testing.T) {
 // TestDocumentOperatorOverride verifies that an operator override beats the
 // bundled default for the same (name, language).
 func TestDocumentOperatorOverride(t *testing.T) {
-	defer setup_documents_test(t)()
+	setup_documents_test(t)
 
 	override := "# Custom French rules\n\nOperator-edited body."
 	if err := document_set("rules", "fr", override); err != nil {
@@ -83,7 +75,7 @@ func TestDocumentOperatorOverride(t *testing.T) {
 // TestDocumentLanguageFallback verifies that a request for a language with
 // no bundled default falls back to en.
 func TestDocumentLanguageFallback(t *testing.T) {
-	defer setup_documents_test(t)()
+	setup_documents_test(t)
 
 	// "zz" is not a real BCP 47 tag and no bundled file exists for it.
 	body := document_get("rules", "zz")
@@ -100,7 +92,7 @@ func TestDocumentLanguageFallback(t *testing.T) {
 // language. (For our shipped locales, bundled defaults always exist, so en
 // override only wins for unsupported language tags.)
 func TestDocumentOverrideEnFallback(t *testing.T) {
-	defer setup_documents_test(t)()
+	setup_documents_test(t)
 
 	if err := document_set("rules", "en", "# en override"); err != nil {
 		t.Fatalf("document_set: %v", err)
@@ -124,7 +116,7 @@ func TestDocumentOverrideEnFallback(t *testing.T) {
 // TestDocumentUnknownName verifies that names outside the allowlist return
 // an empty string rather than a fallback or error.
 func TestDocumentUnknownName(t *testing.T) {
-	defer setup_documents_test(t)()
+	setup_documents_test(t)
 
 	if body := document_get("nonexistent", "en"); body != "" {
 		t.Fatalf("expected empty body for unknown name, got: %q", first_line(body))
@@ -134,7 +126,7 @@ func TestDocumentUnknownName(t *testing.T) {
 // TestDocumentPlaceholderInterpolation verifies that {{operator.*}}
 // placeholders are substituted from system settings.
 func TestDocumentPlaceholderInterpolation(t *testing.T) {
-	defer setup_documents_test(t)()
+	setup_documents_test(t)
 
 	setting_set("operator_name", "Acme")
 	setting_set("operator_email", "ops@acme.example")
@@ -161,7 +153,7 @@ func TestDocumentPlaceholderInterpolation(t *testing.T) {
 // render as the [not configured] sentinel so empty operator info is
 // visually obvious.
 func TestDocumentNotConfiguredFallback(t *testing.T) {
-	defer setup_documents_test(t)()
+	setup_documents_test(t)
 
 	if err := document_set("rules", "en", "Operated by {{operator.name}}."); err != nil {
 		t.Fatalf("document_set: %v", err)
@@ -176,7 +168,7 @@ func TestDocumentNotConfiguredFallback(t *testing.T) {
 // TestDocumentSetRejectsUnknownName verifies that document_set won't write
 // rows for names outside the allowlist.
 func TestDocumentSetRejectsUnknownName(t *testing.T) {
-	defer setup_documents_test(t)()
+	setup_documents_test(t)
 
 	if err := document_set("nonexistent", "en", "body"); err == nil {
 		t.Fatal("expected document_set to reject unknown name, got nil error")
@@ -186,7 +178,7 @@ func TestDocumentSetRejectsUnknownName(t *testing.T) {
 // TestDocumentSetRejectsEmptyLanguage verifies that document_set requires
 // a non-empty language.
 func TestDocumentSetRejectsEmptyLanguage(t *testing.T) {
-	defer setup_documents_test(t)()
+	setup_documents_test(t)
 
 	if err := document_set("rules", "", "body"); err == nil {
 		t.Fatal("expected document_set to reject empty language, got nil error")
@@ -196,7 +188,7 @@ func TestDocumentSetRejectsEmptyLanguage(t *testing.T) {
 // TestDocumentLanguages verifies that document_languages enumerates the
 // bundled locale set from the embedded FS, sorted alphabetically.
 func TestDocumentLanguages(t *testing.T) {
-	defer setup_documents_test(t)()
+	setup_documents_test(t)
 
 	langs := document_languages()
 	if len(langs) == 0 {

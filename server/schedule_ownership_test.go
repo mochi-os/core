@@ -63,8 +63,7 @@ func owner_test_row(t *testing.T, uid, app string) int64 {
 // TestScheduleGetRefusesAnAnonymousCaller is the finding: no user on the
 // thread at all, which is what an anonymous request to a public action gives.
 func TestScheduleGetRefusesAnAnonymousCaller(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	id := owner_test_row(t, "victim", "reader")
@@ -78,8 +77,7 @@ func TestScheduleGetRefusesAnAnonymousCaller(t *testing.T) {
 // with a nil *User, so the thread local is a typed nil rather than absent -
 // the shape that actually occurs in production.
 func TestScheduleGetRefusesATypedNilUser(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	id := owner_test_row(t, "victim", "reader")
@@ -92,8 +90,7 @@ func TestScheduleGetRefusesATypedNilUser(t *testing.T) {
 // TestScheduleCancelRefusesAnAnonymousCaller, and leaves the row alone. A
 // refusal that still deletes would be worse than the read.
 func TestScheduleCancelRefusesAnAnonymousCaller(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	id := owner_test_row(t, "victim", "reader")
@@ -108,8 +105,7 @@ func TestScheduleCancelRefusesAnAnonymousCaller(t *testing.T) {
 // TestScheduleRefusesAnotherUser. The arm that already worked, pinned so the
 // fix did not trade one hole for another.
 func TestScheduleRefusesAnotherUser(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	id := owner_test_row(t, "victim", "reader")
@@ -125,8 +121,7 @@ func TestScheduleRefusesAnotherUser(t *testing.T) {
 // TestScheduleAllowsTheOwner is the control. Without it every test above
 // passes on a build where nobody can read anything.
 func TestScheduleAllowsTheOwner(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	owner := &User{UID: "victim", Username: "victim@example.com"}
@@ -147,8 +142,7 @@ func TestScheduleAllowsTheOwner(t *testing.T) {
 // must survive the change: the owner of an event must not reach it through a
 // different app.
 func TestScheduleStillScopesByApp(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	db_create()
 
 	owner := &User{UID: "victim", Username: "victim@example.com"}

@@ -56,7 +56,7 @@ func totp_row(t *testing.T) (secret string, verified int64, pending string) {
 // enrolment must not touch the secret the user is currently logging in with,
 // nor its verified flag.
 func TestTotpSetupLeavesTheLiveAuthenticatorAlone(t *testing.T) {
-	defer setup_replication_test(t)()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	thread, original := totp_user(t)
 
@@ -81,7 +81,7 @@ func TestTotpSetupLeavesTheLiveAuthenticatorAlone(t *testing.T) {
 // a user meets it: they open the setup page, never scan the code, and their
 // authenticator still signs them in.
 func TestTotpAbandonedEnrolmentKeepsLoginWorking(t *testing.T) {
-	defer setup_replication_test(t)()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	thread, original := totp_user(t)
 
@@ -105,7 +105,7 @@ func TestTotpAbandonedEnrolmentKeepsLoginWorking(t *testing.T) {
 // TestTotpVerifyPromotesThePendingSecret: completing the enrolment swaps the
 // new secret in and retires the old one.
 func TestTotpVerifyPromotesThePendingSecret(t *testing.T) {
-	defer setup_replication_test(t)()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	thread, original := totp_user(t)
 
@@ -147,12 +147,9 @@ func TestTotpVerifyPromotesThePendingSecret(t *testing.T) {
 // existing authenticator must still satisfy a step-up, or a user who starts an
 // enrolment locks themselves out of the very flows that guard it.
 func TestTotpVerifyWithTheOldCodeStillStepsUp(t *testing.T) {
-	defer setup_replication_test(t)()
+	setup_replication_test(t)
 	setup_users_test_schema()
 	setup_sessions_test_schema()
-	// reauthentication_result records the accrual here; the shared sessions
-	// fixture does not carry this table.
-	db_open("db/sessions.db").exec("create table reauthentication (id text primary key, user text not null, methods text not null default '', expires integer not null)")
 	thread, original := totp_user(t)
 
 	setup := sl.NewBuiltin("mochi.user.totp.setup", api_user_totp_setup)
@@ -182,7 +179,7 @@ func TestTotpVerifyWithTheOldCodeStillStepsUp(t *testing.T) {
 // TestTotpUpgradeAddsPendingColumn covers the migration on an existing install,
 // including the idempotence db_upgrade relies on.
 func TestTotpUpgradeAddsPendingColumn(t *testing.T) {
-	defer setup_replication_test(t)()
+	setup_replication_test(t)
 	users := db_open("db/users.db")
 	users.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, created integer not null)")
 

@@ -18,8 +18,7 @@ import (
 // in the user's session, so without a grant any installed app could mint an
 // ed25519 signature under the account's identity key.
 func TestEntitySignNeedsAPermission(t *testing.T) {
-	cleanup := create_test_routing_env(t)
-	defer cleanup()
+	create_test_routing_env(t)
 
 	user := &User{UID: "u1", Username: "user1@example.com"}
 	signer := create_external_app("signer")

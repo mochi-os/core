@@ -21,8 +21,7 @@ import (
 // TestEntityPresentSeesALiveEntity, and does not see one that never existed or
 // has been deleted. Everything else here rests on this answer.
 func TestEntityPresentSeesALiveEntity(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	setup_users_test_schema()
 
 	id := withdraw_test_entity(t)

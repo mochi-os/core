@@ -14,6 +14,7 @@
 package main
 
 import (
+	sl "go.starlark.net/starlark"
 	"os"
 	"path/filepath"
 	"strings"
@@ -172,5 +173,52 @@ func TestFailRetryableMatchesSenderDisposition(t *testing.T) {
 		if !fail_retryable(reason) {
 			t.Errorf("fail_retryable(%q) = false, want true — the sender re-queues this", reason)
 		}
+	}
+}
+
+// Mochi server: e.header("local") unit tests
+//
+// "local" is true ONLY for an in-process self-loop (e.peer == net_id): it gates
+// serving restricted apps to a host's own app-update loopback.
+func event_header_local(t *testing.T, peer string) bool {
+	t.Helper()
+	e := &Event{peer: peer}
+	v, err := e.sl_header(nil, sl.NewBuiltin("header", e.sl_header), sl.Tuple{sl.String("local")}, nil)
+	if err != nil {
+		t.Fatalf("sl_header(\"local\"): %v", err)
+	}
+	b, ok := v.(sl.Bool)
+	if !ok {
+		t.Fatalf("sl_header(\"local\") returned %T, want sl.Bool", v)
+	}
+	return bool(b)
+}
+
+func TestEventHeaderLocal(t *testing.T) {
+	saved := net_id
+	defer func() { net_id = saved }()
+
+	net_id = "12D3KooWSelfPeerIdentityForTest"
+
+	// In-process self-loop: peer == net_id -> local.
+	if !event_header_local(t, net_id) {
+		t.Errorf("self-loop (peer==net_id): local = false, want true")
+	}
+
+	// Remote peer: peer != net_id -> not local.
+	if event_header_local(t, "12D3KooWRemotePeerIdentity") {
+		t.Errorf("remote peer: local = true, want false")
+	}
+
+	// Empty peer (e.g. non-stream event) is not local.
+	if event_header_local(t, "") {
+		t.Errorf("empty peer: local = true, want false")
+	}
+
+	// Guard: when net_id is unset, nothing is local — even an empty peer must
+	// not match an empty net_id.
+	net_id = ""
+	if event_header_local(t, "") {
+		t.Errorf("empty net_id with empty peer: local = true, want false")
 	}
 }

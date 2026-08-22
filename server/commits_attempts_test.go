@@ -22,9 +22,7 @@ import (
 // directory and returns the handle.
 func commits_attempts_db(t *testing.T) *DB {
 	t.Helper()
-	original := data_dir
-	data_dir = t.TempDir()
-	t.Cleanup(func() { data_dir = original })
+	test_data_directory(t)
 	if err := os.MkdirAll(filepath.Join(data_dir, "db"), 0o755); err != nil {
 		t.Fatalf("creating the db directory: %v", err)
 	}

@@ -31,8 +31,7 @@ func install_queue_dispatch_row(t *testing.T, id, target, file string, content [
 // --- queue_sending / queue_unsending / queue_is_inflight ---------------
 
 func TestQueueSendingMarksRow(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	install_queue_dispatch_row(t, "qs-1", "peer", "", nil)
 	queue_sending("qs-1")
@@ -43,8 +42,7 @@ func TestQueueSendingMarksRow(t *testing.T) {
 }
 
 func TestQueueUnsendingRollsBack(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	install_queue_dispatch_row(t, "qu-1", "peer", "", nil)
 	queue_sending("qu-1")
@@ -68,8 +66,7 @@ func TestQueueUnsendingNoopWhenNotSending(t *testing.T) {
 	// queue_unsending should ONLY change the row when status='sending'.
 	// A row already in another state (e.g., pending after legitimate
 	// queue_fail) MUST NOT be touched.
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 
 	install_queue_dispatch_row(t, "nu-1", "peer", "", nil)
 	// Force status to something other than 'sending'.
@@ -84,8 +81,7 @@ func TestQueueUnsendingNoopWhenNotSending(t *testing.T) {
 }
 
 func TestQueueIsInflightFalseForUnknownID(t *testing.T) {
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	if queue_is_inflight("never-existed") {
 		t.Errorf("queue_is_inflight true for non-existent row")
 	}
@@ -98,8 +94,7 @@ func TestQueueSendDirectSelfLoopFastPath(t *testing.T) {
 	// the self-loop fast path which dispatches to the worker pool.
 	// Verify the row ends up in 'sending' state (the worker resolves
 	// it asynchronously).
-	cleanup := setup_replication_test(t)
-	defer cleanup()
+	setup_replication_test(t)
 	reset_workers(t)
 	defer reset_workers(t)
 

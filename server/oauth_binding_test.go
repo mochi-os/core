@@ -9,20 +9,19 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/gin-gonic/gin"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
-
-	"github.com/gin-gonic/gin"
 )
 
 // oauth_binding_setup creates the tables the OAuth begin and callback handlers
 // touch, two users, and a configured github provider. github's endpoints are
 // static, so no ceremony here needs the network.
-func oauth_binding_setup(t *testing.T) func() {
-	cleanup := create_test_users_db(t)
+func oauth_binding_setup(t *testing.T) {
+	create_test_users_db(t)
 
 	sessions := db_open("db/sessions.db")
 	sessions.exec("create table sessions (user text not null, code text not null primary key, secret text not null, expires integer not null, created integer not null, accessed integer not null, address text not null default '', agent text not null default '')")
@@ -43,7 +42,6 @@ func oauth_binding_setup(t *testing.T) func() {
 
 	setting_set("oauth_github_client_id", "test-client")
 	setting_set("oauth_github_client_secret", "test-secret")
-	return cleanup
 }
 
 // oauth_begin_request drives POST /_/auth/oauth/github/begin and returns the
@@ -105,7 +103,7 @@ func oauth_callback_context(state string, cookies ...*http.Cookie) (*gin.Context
 // ceremony stores and the callback requires, so a callback URL captured in one
 // browser cannot be completed in another.
 func TestOauthLoginCeremonyBoundToBrowser(t *testing.T) {
-	defer oauth_binding_setup(t)()
+	oauth_binding_setup(t)
 	sessions := db_open("db/sessions.db")
 
 	// /begin sets the cookie and stores its value in the row.
@@ -175,7 +173,7 @@ func TestOauthLoginCeremonyBoundToBrowser(t *testing.T) {
 // the user who authorised the link. The login cookie would not do - the
 // settings app begins the link from the sandboxed iframe, which cannot set one.
 func TestOauthLinkCeremonyBoundToSession(t *testing.T) {
-	defer oauth_binding_setup(t)()
+	oauth_binding_setup(t)
 	sessions := db_open("db/sessions.db")
 
 	link_session := login_create("u-link", "", "")
@@ -237,7 +235,7 @@ func TestOauthLinkCeremonyBoundToSession(t *testing.T) {
 // the holder of the PKCE verifier. The callback must pass with no cookie and no
 // session.
 func TestOauthMobileCeremonyNotBrowserBound(t *testing.T) {
-	defer oauth_binding_setup(t)()
+	oauth_binding_setup(t)
 
 	w := oauth_begin_request("", `{"mode":"mobile","scheme":"mochi","challenge":"`+strings.Repeat("c", 43)+`"}`)
 	if w.Code != http.StatusOK {
@@ -261,7 +259,7 @@ func TestOauthMobileCeremonyNotBrowserBound(t *testing.T) {
 // being re-proved, and Android's browser holds no session, so the callback must
 // pass without one.
 func TestOauthStepupCeremonyNotSessionBound(t *testing.T) {
-	defer oauth_binding_setup(t)()
+	oauth_binding_setup(t)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -345,7 +343,7 @@ func oauth_linked_owner(provider, subject string) string {
 // the link is written at /exchange where the verifier and Bearer prove app and
 // user.
 func TestOauthMobileLinkCompletesInTheApp(t *testing.T) {
-	defer oauth_binding_setup(t)()
+	oauth_binding_setup(t)
 	sessions := db_open("db/sessions.db")
 
 	link_session := login_create("u-link", "", "")
@@ -445,7 +443,7 @@ func TestOauthMobileLinkCompletesInTheApp(t *testing.T) {
 // TestOauthMobileLinkRefusesAnotherUsersIdentity: the identity is already
 // somebody else's, so the exchange reports the conflict rather than moving it.
 func TestOauthMobileLinkRefusesAnotherUsersIdentity(t *testing.T) {
-	defer oauth_binding_setup(t)()
+	oauth_binding_setup(t)
 
 	db_open("db/users.db").exec(
 		"insert into oauth (user, provider, subject, email, verified, name, created) values ('u-other', 'github', 'gh-taken', '', 1, '', ?)", now())
@@ -496,5 +494,77 @@ func TestOauthCallbackDestinations(t *testing.T) {
 				t.Errorf("destination = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+// TestOauthReauthenticate covers the popup OAuth step-up gate: a linked
+// identity mints a single-use proof keyed by the caller's challenge, an
+// unlinked one mints nothing. Also the user-scoped, single-use retrieval
+// verify.finish enforces.
+func TestOauthReauthenticate(t *testing.T) {
+	create_test_users_db(t)
+
+	users := db_open("db/users.db")
+	users.exec("create table oauth (id integer primary key, user text not null, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
+	sessions := db_open("db/sessions.db")
+	sessions.exec("create table ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")
+	sessions.exec("create table reauthentication (id text primary key, user text not null, methods text not null default '', expires integer not null)")
+	sessions.exec("create table verifications (oauth integer not null, user text not null, last integer not null, primary key (oauth, user))")
+
+	users.exec("insert into users (uid, username) values ('u-x', 'x@example.com')")
+	users.exec("insert into oauth (user, provider, subject, created) values ('u-x', 'google', 'sub-123', 1)")
+	user := &User{UID: "u-x", Username: "x@example.com", Methods: "oauth"}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	challenge := func(verifier string) string {
+		h := sha256.Sum256([]byte(verifier))
+		return base64.RawURLEncoding.EncodeToString(h[:])
+	}
+
+	// Linked identity -> a single-use proof is stored, scoped to the user.
+	v1 := random_alphanumeric(64)
+	oauth_reauthenticate(c, "google", &oauth_profile{Subject: "sub-123", Email: "x@example.com", Verified: true}, user, challenge(v1))
+	row, _ := sessions.row("select data, user from ceremonies where challenge=? and type='reauthentication_oauth' and expires>?", []byte(challenge(v1)), now())
+	if row == nil {
+		t.Fatal("linked identity stored no proof")
+	}
+	if u, _ := row["user"].(string); u != "u-x" {
+		t.Errorf("proof user = %q, want u-x", u)
+	}
+	var res map[string]any
+	json.Unmarshal([]byte(row["data"].(string)), &res)
+	if tok, _ := res["token"].(string); tok == "" {
+		t.Errorf("oauth-required user: expected a token, got %v", res)
+	}
+
+	// Unlinked provider account -> nothing minted (the stolen-session defence).
+	v2 := random_alphanumeric(64)
+	oauth_reauthenticate(c, "google", &oauth_profile{Subject: "attacker-sub", Email: "evil@example.com", Verified: true}, user, challenge(v2))
+	if r, _ := sessions.row("select 1 from ceremonies where challenge=? and type='reauthentication_oauth'", []byte(challenge(v2))); r != nil {
+		t.Error("unlinked provider account minted a proof")
+	}
+
+	// Retrieval contract (mirrors mochi.user.oauth.verify.finish): user-scoped,
+	// single-use. The wrong user cannot read u-x's proof; the right user reads
+	// it exactly once.
+	get := func(uid, verifier string) bool {
+		r, _ := sessions.row("select id from ceremonies where challenge=? and type='reauthentication_oauth' and user=? and expires>?",
+			[]byte(challenge(verifier)), uid, now())
+		if r == nil {
+			return false
+		}
+		sessions.exec("delete from ceremonies where id=?", as_string(r["id"]))
+		return true
+	}
+	if get("u-other", v1) {
+		t.Error("proof readable by the wrong user")
+	}
+	if !get("u-x", v1) {
+		t.Error("owner could not read the proof")
+	}
+	if get("u-x", v1) {
+		t.Error("proof reusable after retrieval")
 	}
 }

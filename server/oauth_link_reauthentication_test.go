@@ -33,8 +33,7 @@ func begin_link(session string, body string) int {
 // outlives every later credential change, so a session cookie alone is not
 // enough - the same gate as passkey registration, TOTP setup and unlink.
 func TestOauthLinkRequiresReauthentication(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 
 	sessions := db_open("db/sessions.db")
 	sessions.exec("create table sessions (user text not null, code text not null primary key, secret text not null, expires integer not null, created integer not null, accessed integer not null, address text not null default '', agent text not null default '')")

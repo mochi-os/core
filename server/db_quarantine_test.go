@@ -66,8 +66,7 @@ func TestDbQuarantineLifecycle(t *testing.T) {
 // exec_bg never panics: a non-corruption error logs without quarantining, a
 // clean write succeeds, and a quarantined DB is skipped entirely.
 func TestExecBgSkipsAndDoesNotOverQuarantine(t *testing.T) {
-	db, cleanup := create_test_db(t)
-	defer cleanup()
+	db := create_test_db(t)
 	defer db_integrity_state.Delete(db.path)
 	db.exec("create table t (id integer primary key)")
 

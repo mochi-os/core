@@ -12,8 +12,7 @@ import "testing"
 // single- and multi-factor accrual, and that a proof is single-use,
 // user-scoped, expiry-checked, and rejected while incomplete.
 func TestReauthentication(t *testing.T) {
-	cleanup := create_test_sessions_db(t)
-	defer cleanup()
+	create_test_sessions_db(t)
 
 	db := db_open("db/sessions.db")
 

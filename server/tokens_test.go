@@ -7,7 +7,6 @@
 package main
 
 import (
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -114,14 +113,9 @@ func TestTokenHashEmpty(t *testing.T) {
 }
 
 // Helper to create test database for token tests
-func create_token_test_db(t *testing.T) (*DB, func()) {
-	tmp_dir, err := os.MkdirTemp("", "mochi_token_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	orig_data_dir := data_dir
-	data_dir = tmp_dir
+func create_token_test_db(t *testing.T) *DB {
+	t.Helper()
+	test_data_directory(t)
 
 	// Create users database with tokens table
 	db := db_open("db/users.db")
@@ -142,19 +136,16 @@ func create_token_test_db(t *testing.T) (*DB, func()) {
 	// Create a test user
 	db.exec("INSERT INTO users (id, username) VALUES (1, 'testuser')")
 
-	cleanup := func() {
+	t.Cleanup(func() {
 		db.close()
-		data_dir = orig_data_dir
-		os.RemoveAll(tmp_dir)
-	}
+	})
 
-	return db, cleanup
+	return db
 }
 
 // Test token creation in database
 func TestTokenCreateInDB(t *testing.T) {
-	db, cleanup := create_token_test_db(t)
-	defer cleanup()
+	db := create_token_test_db(t)
 
 	token := token_generate()
 	hash := token_hash(token)
@@ -179,8 +170,7 @@ func TestTokenCreateInDB(t *testing.T) {
 
 // Test token lookup by hash
 func TestTokenLookupByHash(t *testing.T) {
-	db, cleanup := create_token_test_db(t)
-	defer cleanup()
+	db := create_token_test_db(t)
 
 	token := token_generate()
 	hash := token_hash(token)
@@ -203,8 +193,7 @@ func TestTokenLookupByHash(t *testing.T) {
 
 // Test token deletion
 func TestTokenDeleteFromDB(t *testing.T) {
-	db, cleanup := create_token_test_db(t)
-	defer cleanup()
+	db := create_token_test_db(t)
 
 	token := token_generate()
 	hash := token_hash(token)
@@ -230,8 +219,7 @@ func TestTokenDeleteFromDB(t *testing.T) {
 
 // Test listing tokens for user
 func TestTokenListForUser(t *testing.T) {
-	db, cleanup := create_token_test_db(t)
-	defer cleanup()
+	db := create_token_test_db(t)
 
 	// Create multiple tokens for user 1
 	for i := 0; i < 5; i++ {
@@ -264,8 +252,7 @@ func TestTokenListForUser(t *testing.T) {
 
 // Test token scopes stored as JSON
 func TestTokenScopesJSON(t *testing.T) {
-	db, cleanup := create_token_test_db(t)
-	defer cleanup()
+	db := create_token_test_db(t)
 
 	token := token_generate()
 	hash := token_hash(token)
@@ -282,8 +269,7 @@ func TestTokenScopesJSON(t *testing.T) {
 
 // Test token last_used update
 func TestTokenLastUsedUpdate(t *testing.T) {
-	db, cleanup := create_token_test_db(t)
-	defer cleanup()
+	db := create_token_test_db(t)
 
 	token := token_generate()
 	hash := token_hash(token)
@@ -310,8 +296,7 @@ func TestTokenLastUsedUpdate(t *testing.T) {
 
 // Test cascade delete when user is deleted
 func TestTokenCascadeDelete(t *testing.T) {
-	db, cleanup := create_token_test_db(t)
-	defer cleanup()
+	db := create_token_test_db(t)
 
 	// Need to recreate with foreign key support
 	db.exec("DROP TABLE tokens")
@@ -351,14 +336,7 @@ func TestTokenCascadeDelete(t *testing.T) {
 // the token itself (not only its hash) — so an app that kept only the token
 // string can revoke it — and that the delete stays scoped to the owning app.
 func TestTokenDeleteByTokenStringAndAppScope(t *testing.T) {
-	tmp, err := os.MkdirTemp("", "mochi_tokendel")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmp)
-	orig := data_dir
-	data_dir = tmp
-	defer func() { data_dir = orig }()
+	test_data_directory(t)
 
 	db := db_open("db/users.db")
 	db.exec(`create table tokens (hash text primary key, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null default 0, expires integer not null default 0)`)

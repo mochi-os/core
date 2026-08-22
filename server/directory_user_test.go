@@ -15,16 +15,15 @@ import (
 	"testing"
 )
 
-func test_directory_user(t *testing.T) (*User, func()) {
-	cleanup := create_test_users_db(t)
+func test_directory_user(t *testing.T) *User {
+	create_test_users_db(t)
 	db := db_open("db/users.db")
 	db.exec("create table if not exists entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'public', data text not null default '', published integer not null default 0)")
-	return &User{UID: "u-dir"}, cleanup
+	return &User{UID: "u-dir"}
 }
 
 func TestDirectoryUserLifecycle(t *testing.T) {
-	user, cleanup := test_directory_user(t)
-	defer cleanup()
+	user := test_directory_user(t)
 	entity := strings.Repeat("a", 50)
 	peer := "12D3KooWTestPeerOne"
 
@@ -82,8 +81,7 @@ func TestDirectoryUserLifecycle(t *testing.T) {
 }
 
 func TestDirectoryUserCap(t *testing.T) {
-	user, cleanup := test_directory_user(t)
-	defer cleanup()
+	user := test_directory_user(t)
 	db := db_user(user, "user")
 	// Seed cap-1 old rows directly, then learn two fresh ones: total exceeds
 	// the cap by one, and the eviction must take the oldest-seen row.
@@ -110,8 +108,7 @@ func TestDirectoryUserCap(t *testing.T) {
 }
 
 func TestEntityPeersForMerge(t *testing.T) {
-	user, cleanup := test_directory_user(t)
-	defer cleanup()
+	user := test_directory_user(t)
 	udb := db_open("db/users.db")
 	udb.exec("insert into users (uid, username) values ('u-dir', 'dir@test')")
 	sender := strings.Repeat("e", 50)
@@ -151,8 +148,7 @@ func TestLocalEntityResolutionIgnoresLearnedGhosts(t *testing.T) {
 	orig := net_id
 	net_id = "self"
 	defer func() { net_id = orig }()
-	user, cleanup := test_directory_user(t)
-	defer cleanup()
+	user := test_directory_user(t)
 	udb := db_open("db/users.db")
 	udb.exec("insert into users (uid, username) values ('u-dir', 'dir@test')")
 	viewer := strings.Repeat("e", 50)
@@ -177,8 +173,7 @@ func TestLocalEntityResolutionIgnoresLearnedGhosts(t *testing.T) {
 // entities are never foreign. request/stream and delivery are NOT gated — only
 // the bare liveness probe.
 func TestPrivateLocalForeign(t *testing.T) {
-	cleanup := create_test_users_db(t)
-	defer cleanup()
+	create_test_users_db(t)
 	db := db_open("db/users.db")
 	db.exec("create table if not exists entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'public', data text not null default '', published integer not null default 0)")
 

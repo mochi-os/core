@@ -366,7 +366,7 @@ func passkey_credential_finalize(user *User, credential *webauthn.Credential, ad
 // register.begin but uses a non-discoverable BeginLogin scoped to this
 // user's credentials, and a 'reauthentication' ceremony.
 func api_user_passkey_verify_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+	if err := require_permission(t, fn, "user/authentication/sign"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
@@ -408,7 +408,7 @@ func api_user_passkey_verify_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 // ({"token": ...} or {"remaining": [...]}), or None if the assertion fails
 // (the action maps None to a translated error). Creates no session.
 func api_user_passkey_verify_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+	if err := require_permission(t, fn, "user/authentication/sign"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 

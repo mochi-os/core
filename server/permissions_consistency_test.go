@@ -7,6 +7,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -304,5 +305,96 @@ func TestDefaultGrantsReachExistingInstalls(t *testing.T) {
 	}
 	if !strings.Contains(function, "setup == expected") {
 		t.Error("app_user_setup no longer compares the recorded counter against the current default set, so a changed default set would not re-run setup")
+	}
+}
+
+// TestPasskeyVerifyIsGatedByTheSigningPermission. verify.begin/finish run an
+// assertion and create no session, but demanded user/authentication/write -
+// which its own registry comment defines as rewriting how the account
+// authenticates, since recovery.generate invalidates the codes the user holds
+// and totp.setup drops their authenticator. An app that only wants a step-up
+// prompt had to be granted that. user/authentication/sign exists for exactly
+// this and gated nothing.
+func TestPasskeyVerifyIsGatedByTheSigningPermission(t *testing.T) {
+	body, err := os.ReadFile("passkeys.go")
+	if err != nil {
+		t.Fatalf("read passkeys.go: %v", err)
+	}
+	text := string(body)
+
+	for _, name := range []string{"api_user_passkey_verify_begin", "api_user_passkey_verify_finish"} {
+		fn := text[strings.Index(text, "func "+name+"("):]
+		fn = fn[:strings.Index(fn, "\n}")]
+		if !strings.Contains(fn, `require_permission(t, fn, "user/authentication/sign")`) {
+			t.Errorf("%s does not require user/authentication/sign", name)
+		}
+		if strings.Contains(fn, `require_permission(t, fn, "user/authentication/write")`) {
+			t.Errorf("%s still requires user/authentication/write; an assertion must not cost the power to rewrite the account's factors", name)
+		}
+	}
+
+	// The other direction. These do change the credential set, so demoting them
+	// to the assertion permission would be the same mistake inverted.
+	for _, name := range []string{
+		"api_user_passkey_register_begin", "api_user_passkey_register_finish",
+		"api_user_passkey_rename", "api_user_passkey_delete",
+	} {
+		fn := text[strings.Index(text, "func "+name+"("):]
+		fn = fn[:strings.Index(fn, "\n}")]
+		if !strings.Contains(fn, `require_permission(t, fn, "user/authentication/write")`) {
+			t.Errorf("%s does not require user/authentication/write; it mutates the credential set", name)
+		}
+	}
+}
+
+// TestEveryDeclaredPermissionIsEnforcedSomewhere. user/authentication/sign was
+// declared, granted to Settings by default, shown in the grant UI and revocable
+// - and passed to require_permission nowhere, so revoking it changed nothing. A
+// permission the user can act on has to gate something.
+//
+// The exempt names are enforced outside require_permission: app.json service
+// declarations are checked in api.go, and the capture pair is surfaced by the
+// browser's own prompt rather than by core.
+func TestEveryDeclaredPermissionIsEnforcedSomewhere(t *testing.T) {
+	elsewhere := map[string]bool{
+		"camera":              true,
+		"microphone":          true,
+		"friends/read":        true,
+		"notifications/read":  true,
+		"notifications/send":  true,
+		"notifications/write": true,
+		"repositories/read":   true,
+		"repositories/write":  true,
+	}
+
+	sources, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	enforced := ""
+	for _, file := range sources {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		body, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		enforced = enforced + string(body)
+	}
+
+	checked := 0
+	for _, permission := range permissions {
+		if elsewhere[permission.Name] {
+			continue
+		}
+		checked++
+		if !strings.Contains(enforced, `require_permission(t, fn, "`+permission.Name+`")`) &&
+			!strings.Contains(enforced, `require_permission_acting(t, fn, "`+permission.Name+`")`) {
+			t.Errorf("permission %q is declared and grantable but reaches no require_permission call; revoking it changes nothing", permission.Name)
+		}
+	}
+	if checked < 20 {
+		t.Errorf("only %d permissions scanned; the registry is not being read", checked)
 	}
 }

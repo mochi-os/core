@@ -1,10 +1,12 @@
-// Mochi server: a.header reads only an allowlisted request header.
+// Mochi server: a.header reads and writes only allowlisted headers.
 //
-// It returned any header verbatim, so a.header("Cookie") yielded the session -
-// the same bearer credential the removed a.cookie API handed over - and
-// a.header("Authorization") yielded whatever Bearer token the client sent. An
-// allowlist, not a denylist: naming only those two would expose by default
-// every sensitive header added later.
+// The read arm returned any request header verbatim, so a.header("Cookie")
+// yielded the session - the same bearer credential the removed a.cookie API
+// handed over - and a.header("Authorization") yielded whatever Bearer token
+// the client sent. The write arm set or deleted any response header, so an app
+// could write Set-Cookie or strip what web_security_headers had just set. An
+// allowlist each way, not a denylist: naming only the known-dangerous headers
+// would expose by default every sensitive header added later.
 //
 // Copyright © 2026 Mochisoft OU
 // SPDX-License-Identifier: AGPL-3.0-only
@@ -16,6 +18,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strings"
 	"testing"
 
@@ -164,6 +167,157 @@ func TestHeaderAllowlistIsCanonical(t *testing.T) {
 	for name := range header_readable {
 		if canonical := http.CanonicalHeaderKey(name); canonical != name {
 			t.Errorf("header_readable key %q is not canonical (%q); it can never match", name, canonical)
+		}
+	}
+}
+
+// TestHeaderRefusesSetCookie is the regression. Header.Set replaces every
+// Set-Cookie on the response, so this wrote the user's session cookie to a
+// value the app chose - the session-fixation primitive a.cookie.set was
+// removed for, reachable through the other arm of the same function.
+func TestHeaderRefusesSetCookie(t *testing.T) {
+	for _, spelling := range []string{"Set-Cookie", "set-cookie", "SET-COOKIE"} {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest("GET", "/", nil)
+		a := &Action{web: c, active: &AppVersion{}}
+
+		fn := sl.NewBuiltin("header", a.sl_header)
+		args := sl.Tuple{sl.String(spelling), sl.String("session=attacker; Path=/")}
+		if _, err := a.sl_header(&sl.Thread{}, fn, args, nil); err == nil {
+			t.Errorf("a.header(%q, ...) was accepted; that sets the user's session cookie", spelling)
+		}
+		if got := recorder.Header().Get("Set-Cookie"); got != "" {
+			t.Errorf("Set-Cookie = %q, want it never written", got)
+		}
+	}
+}
+
+// TestHeaderRefusesDeletingSecurityHeaders. web_security_headers is middleware
+// that calls c.Next(), so the handler runs inside it and writes to the same
+// map; gin's Header deletes on an empty value, so an app could strip what the
+// middleware had just set.
+func TestHeaderRefusesDeletingSecurityHeaders(t *testing.T) {
+	for _, name := range []string{"X-Frame-Options", "X-Content-Type-Options", "Referrer-Policy", "Content-Security-Policy"} {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest("GET", "/", nil)
+		c.Header(name, "set-by-core")
+		a := &Action{web: c, active: &AppVersion{}}
+
+		fn := sl.NewBuiltin("header", a.sl_header)
+		args := sl.Tuple{sl.String(name), sl.String("")}
+		if _, err := a.sl_header(&sl.Thread{}, fn, args, nil); err == nil {
+			t.Errorf("a.header(%q, \"\") was accepted; that deletes the header", name)
+		}
+		if got := recorder.Header().Get(name); got != "set-by-core" {
+			t.Errorf("%s = %q after the refused delete, want it intact", name, got)
+		}
+	}
+}
+
+// TestHeaderRefusesRewritingCors. The middleware sets a blanket "*"; an app
+// naming a single origin and adding Allow-Credentials would make its
+// authenticated responses readable by that origin.
+func TestHeaderRefusesRewritingCors(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest("GET", "/", nil)
+	c.Header("Access-Control-Allow-Origin", "*")
+	a := &Action{web: c, active: &AppVersion{}}
+
+	fn := sl.NewBuiltin("header", a.sl_header)
+	for name, value := range map[string]string{
+		"Access-Control-Allow-Origin":      "https://evil.example",
+		"Access-Control-Allow-Credentials": "true",
+	} {
+		if _, err := a.sl_header(&sl.Thread{}, fn, sl.Tuple{sl.String(name), sl.String(value)}, nil); err == nil {
+			t.Errorf("a.header(%q, %q) was accepted", name, value)
+		}
+	}
+	if got := recorder.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want the middleware's \"*\"", got)
+	}
+	if got := recorder.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Errorf("Access-Control-Allow-Credentials = %q, want it never written", got)
+	}
+}
+
+// TestHeaderAllowsTheThreeTheTreeSets. A grep of every two-argument a.header
+// across apps/, lib/ and the installed apps returns exactly these three names,
+// at 390 call sites; refusing any of them would break every serve path.
+func TestHeaderAllowsTheThreeTheTreeSets(t *testing.T) {
+	written := map[string]string{
+		"Cache-Control":       "private, max-age=300",
+		"Content-Disposition": `attachment; filename="export.zip"`,
+		"Content-Type":        "application/octet-stream",
+	}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest("GET", "/", nil)
+	a := &Action{web: c, active: &AppVersion{}}
+
+	fn := sl.NewBuiltin("header", a.sl_header)
+	for name, value := range written {
+		if _, err := a.sl_header(&sl.Thread{}, fn, sl.Tuple{sl.String(name), sl.String(value)}, nil); err != nil {
+			t.Errorf("a.header(%q, %q) refused: %v", name, value, err)
+			continue
+		}
+		if got := recorder.Header().Get(name); got != value {
+			t.Errorf("%s = %q, want %q", name, got, value)
+		}
+	}
+}
+
+// TestHeaderEmptyValueStillDeletesAnAllowlistedHeader. gin's Header deletes on
+// an empty value and that is kept deliberately: the allowlist bounds which
+// header an app can reach, not what it may do to one of its own.
+func TestHeaderEmptyValueStillDeletesAnAllowlistedHeader(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest("GET", "/", nil)
+	c.Header("Cache-Control", "private, max-age=300")
+	a := &Action{web: c, active: &AppVersion{}}
+
+	fn := sl.NewBuiltin("header", a.sl_header)
+	args := sl.Tuple{sl.String("Cache-Control"), sl.String("")}
+	if _, err := a.sl_header(&sl.Thread{}, fn, args, nil); err != nil {
+		t.Fatalf("a.header(\"Cache-Control\", \"\") refused: %v", err)
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "" {
+		t.Errorf("Cache-Control = %q, want it deleted", got)
+	}
+}
+
+// TestHeaderWriteAllowlistIsCanonical. Header.Set canonicalises, so a key
+// stored non-canonically here would never match and would silently refuse the
+// header it was meant to allow.
+func TestHeaderWriteAllowlistIsCanonical(t *testing.T) {
+	for name := range header_writable {
+		if canonical := textproto.CanonicalMIMEHeaderKey(name); canonical != name {
+			t.Errorf("header_writable key %q is not canonical, want %q", name, canonical)
+		}
+	}
+}
+
+// TestHeaderAllowsEtagWhicheverWayItIsSpelled. Go canonicalises ETag to Etag,
+// so the map key has to be the canonical form - spelled the conventional way
+// it would never match and the header it was meant to allow would be refused.
+func TestHeaderAllowsEtagWhicheverWayItIsSpelled(t *testing.T) {
+	for _, spelling := range []string{"ETag", "Etag", "etag"} {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest("GET", "/", nil)
+		a := &Action{web: c, active: &AppVersion{}}
+
+		fn := sl.NewBuiltin("header", a.sl_header)
+		args := sl.Tuple{sl.String(spelling), sl.String(`"abc123"`)}
+		if _, err := a.sl_header(&sl.Thread{}, fn, args, nil); err != nil {
+			t.Errorf("a.header(%q, ...) refused: %v", spelling, err)
+			continue
+		}
+		if got := recorder.Header().Get("ETag"); got != `"abc123"` {
+			t.Errorf("ETag = %q after a.header(%q, ...), want it set", got, spelling)
 		}
 	}
 }

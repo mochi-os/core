@@ -871,6 +871,21 @@ var header_readable = map[string]bool{
 	"User-Agent":       true,
 }
 
+// header_writable lists the response headers an app may set. Header.Set
+// replaces and an empty value deletes, so without this an app could write
+// Set-Cookie - the session-fixation primitive a.cookie.set was removed for -
+// or delete the headers web_security_headers sets, that middleware running
+// before the handler and writing to the same map. Same allowlist reasoning
+// and same canonical keys as header_readable. Location is absent because
+// a.redirect owns it.
+var header_writable = map[string]bool{
+	"Cache-Control":       true,
+	"Content-Disposition": true,
+	"Content-Type":        true,
+	"Etag":                true,
+	"Last-Modified":       true,
+}
+
 // a.header(name, value?) -> string|None: Get request header (1 arg) or set response header (2 args)
 func (a *Action) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var name, value string
@@ -886,7 +901,12 @@ func (a *Action) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl.String(a.web.GetHeader(name)), nil
 	}
 
-	// Two arguments: set response header
+	// Two arguments: set response header. An empty value still deletes, which
+	// is what gin's Header does - the allowlist bounds which header that can
+	// reach, not what an app may do to its own.
+	if !header_writable[textproto.CanonicalMIMEHeaderKey(name)] {
+		return sl_error(fn, "header %q is not writable by an app", name)
+	}
 	a.web.Header(name, value)
 	return sl.None, nil
 }

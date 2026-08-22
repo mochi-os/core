@@ -16,6 +16,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/textproto"
 	"os"
 	"strconv"
 	"strings"
@@ -854,6 +855,22 @@ func (a *Action) sl_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return d, nil
 }
 
+// header_readable lists the request headers an app may read. An allowlist, not a
+// denylist: Cookie carries the session, which web_auth treats as a bearer
+// credential, and Authorization carries whatever the client sent - but naming
+// only those two would expose by default every sensitive header added later.
+// Keys are canonical, because Header.Get canonicalises and "cookie" therefore
+// reaches the same value as "Cookie".
+var header_readable = map[string]bool{
+	"Accept":           true,
+	"Accept-Language":  true,
+	"Content-Type":     true,
+	"Referer":          true,
+	"Sec-Fetch-Site":   true,
+	"Stripe-Signature": true,
+	"User-Agent":       true,
+}
+
 // a.header(name, value?) -> string|None: Get request header (1 arg) or set response header (2 args)
 func (a *Action) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var name, value string
@@ -863,6 +880,9 @@ func (a *Action) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	// One argument: read request header
 	if len(args) == 1 && value == "" {
+		if !header_readable[textproto.CanonicalMIMEHeaderKey(name)] {
+			return sl_error(fn, "header %q is not readable by an app", name)
+		}
 		return sl.String(a.web.GetHeader(name)), nil
 	}
 

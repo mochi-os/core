@@ -145,11 +145,6 @@ func (ai *ActionInput) sl_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	return sl.Bool(found), nil
 }
 
-// ActionCookie provides cookie manipulation methods for actions
-type ActionCookie struct {
-	action *Action
-}
-
 // ActionAccess provides access-control methods for actions
 type ActionAccess struct {
 	action *Action
@@ -277,7 +272,7 @@ func (a *Action) input(name string) string {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access", "body", "cookie", "domain", "dump", "entity", "error", "file", "files", "header", "input", "inputs", "json", "logout", "owner", "print", "redirect", "routing", "template", "token", "upload", "user", "write"}
+	return []string{"access", "body", "domain", "dump", "entity", "error", "file", "files", "header", "input", "inputs", "json", "logout", "owner", "print", "redirect", "routing", "template", "token", "upload", "user", "write"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
@@ -286,8 +281,6 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return &ActionAccess{action: a}, nil
 	case "body":
 		return sl.String(a.body), nil
-	case "cookie":
-		return &ActionCookie{action: a}, nil
 	case "entity":
 		// None on a class-level action, so an app can tell "no entity" from
 		// "an entity I know nothing about".
@@ -1330,71 +1323,4 @@ func (a *Action) write_stream_svg(fn *sl.Builtin, reader io.Reader) (sl.Value, e
 	}
 
 	return sl.MakeInt64(int64(n)), nil
-}
-
-// ActionCookie Starlark interface
-func (c *ActionCookie) AttrNames() []string {
-	return []string{"get", "set", "unset"}
-}
-
-func (c *ActionCookie) Attr(name string) (sl.Value, error) {
-	switch name {
-	case "get":
-		return sl.NewBuiltin("get", c.sl_get), nil
-	case "set":
-		return sl.NewBuiltin("set", c.sl_set), nil
-	case "unset":
-		return sl.NewBuiltin("unset", c.sl_unset), nil
-	default:
-		return nil, nil
-	}
-}
-
-func (c *ActionCookie) Freeze()               {}
-func (c *ActionCookie) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: ActionCookie") }
-func (c *ActionCookie) String() string        { return "ActionCookie" }
-func (c *ActionCookie) Truth() sl.Bool        { return sl.True }
-func (c *ActionCookie) Type() string          { return "ActionCookie" }
-
-// a.cookie.get(name, default?) -> string or None: Get cookie value
-func (c *ActionCookie) sl_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	var name string
-	var def sl.Value
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name, "default?", &def); err != nil {
-		return nil, err
-	}
-
-	value, err := c.action.web.Cookie(name)
-	if err == nil {
-		return sl.String(value), nil
-	}
-
-	// Cookie not found
-	if def != nil {
-		return def, nil
-	}
-	if c.action.active.Architecture.Version >= 4 {
-		return sl.None, nil
-	}
-	return sl.String(""), nil
-}
-
-// a.cookie.set(name, value) -> None: Set a cookie
-func (c *ActionCookie) sl_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	var name, value string
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name, "value", &value); err != nil {
-		return nil, err
-	}
-	web_cookie_set(c.action.web, name, value)
-	return sl.None, nil
-}
-
-// a.cookie.unset(name) -> None: Remove a cookie
-func (c *ActionCookie) sl_unset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	var name string
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name); err != nil {
-		return nil, err
-	}
-	web_cookie_unset(c.action.web, name)
-	return sl.None, nil
 }

@@ -7,6 +7,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -221,4 +222,136 @@ func first_line(body string) string {
 		}
 	}
 	return body
+}
+
+// TestDocumentIndexCarriesNoBodies verifies the index lists every shipped
+// (name, language) pair and nothing else. The bodies are what made this
+// response ~4 MB; a regression that puts them back would show up here.
+func TestDocumentIndexCarriesNoBodies(t *testing.T) {
+	setup_documents_test(t)
+
+	index := document_index()
+	if len(index) == 0 {
+		t.Fatal("expected a non-empty document index")
+	}
+	expected := len(document_names) * len(document_languages())
+	if len(index) != expected {
+		t.Fatalf("expected %d entries (%d names x %d languages), got %d",
+			expected, len(document_names), len(document_languages()), len(index))
+	}
+	for _, entry := range index {
+		if len(entry) != 2 {
+			t.Fatalf("index entry should carry name and language only, got %d keys: %v", len(entry), entry)
+		}
+		for _, key := range []string{"body", "default", "updated"} {
+			if _, present := entry[key]; present {
+				t.Fatalf("index entry must not carry %q: %v", key, entry)
+			}
+		}
+		if entry["name"] == "" || entry["language"] == "" {
+			t.Fatalf("index entry missing name or language: %v", entry)
+		}
+	}
+}
+
+// TestDocumentIndexIsBounded pins the index's size against the whole-corpus
+// response it replaced. The editor shows one document; the index exists so
+// the page does not pay for 294 of them on every window focus.
+func TestDocumentIndexIsBounded(t *testing.T) {
+	setup_documents_test(t)
+
+	encoded, err := json.Marshal(document_index())
+	if err != nil {
+		t.Fatalf("index does not encode: %v", err)
+	}
+	// Every bundled body summed. The index must not be within an order of
+	// magnitude of it - if it is, the bodies are back.
+	corpus := 0
+	for _, name := range document_names {
+		for _, language := range document_languages() {
+			corpus += len(document_bundled(name, language))
+		}
+	}
+	if corpus == 0 {
+		t.Fatal("expected a non-empty bundled corpus")
+	}
+	if len(encoded) > corpus/50 {
+		t.Fatalf("index is %d bytes against a %d byte corpus; expected well under %d",
+			len(encoded), corpus, corpus/50)
+	}
+}
+
+// TestDocumentSourceIsRaw verifies the editor is handed the source text, not
+// the rendered output. document_get interpolates {{operator.*}}; saving that
+// back would replace the placeholder with its resolved value permanently.
+func TestDocumentSourceIsRaw(t *testing.T) {
+	setup_documents_test(t)
+
+	if err := document_set("rules", "en", "Contact {{operator.email}} for help."); err != nil {
+		t.Fatalf("document_set: %v", err)
+	}
+	source := document_source("rules", "en")
+	if source == nil {
+		t.Fatal("expected a source for rules/en")
+	}
+	body, _ := source["body"].(string)
+	if !strings.Contains(body, "{{operator.email}}") {
+		t.Fatalf("expected the raw placeholder in the editable body, got: %q", body)
+	}
+	if strings.Contains(document_get("rules", "en"), "{{operator.email}}") {
+		t.Fatal("document_get should have rendered the placeholder; the two accessors are not distinguishable")
+	}
+}
+
+// TestDocumentSourceCarriesDefaultAndTimestamp verifies the three fields the
+// editor needs beyond the body: the bundled default it diffs and reverts
+// against, and the override timestamp it displays.
+func TestDocumentSourceCarriesDefaultAndTimestamp(t *testing.T) {
+	setup_documents_test(t)
+
+	before := document_source("terms", "en")
+	if before == nil {
+		t.Fatal("expected a source for terms/en")
+	}
+	bundled, _ := before["default"].(string)
+	if bundled == "" {
+		t.Fatal("expected the bundled default to be carried")
+	}
+	if before["body"] != before["default"] {
+		t.Fatal("with no override the body should be the bundled default")
+	}
+	if before["updated"] != int64(0) {
+		t.Fatalf("expected updated 0 with no override, got %v", before["updated"])
+	}
+
+	if err := document_set("terms", "en", "Operator terms."); err != nil {
+		t.Fatalf("document_set: %v", err)
+	}
+	after := document_source("terms", "en")
+	if after["body"] != "Operator terms." {
+		t.Fatalf("expected the override as the body, got %v", after["body"])
+	}
+	if after["default"] != bundled {
+		t.Fatal("the bundled default must survive an override, so Revert has something to revert to")
+	}
+	if updated, _ := after["updated"].(int64); updated == 0 {
+		t.Fatal("expected a non-zero timestamp after an override")
+	}
+}
+
+// TestDocumentSourceRefusesUnknown verifies the accessor returns nothing for
+// a pair it does not ship, so the action answers 404 rather than an empty
+// editor.
+func TestDocumentSourceRefusesUnknown(t *testing.T) {
+	setup_documents_test(t)
+
+	if document_source("passwords", "en") != nil {
+		t.Fatal("expected nil for a name outside the allowlist")
+	}
+	if document_source("rules", "zz") != nil {
+		t.Fatal("expected nil for a language with no bundled default")
+	}
+	if document_source("rules", "") != nil {
+		t.Fatal("expected nil for an empty language")
+	}
 }

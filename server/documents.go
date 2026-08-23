@@ -166,6 +166,55 @@ func document_languages() []string {
 	return out
 }
 
+// document_index lists every (name, language) pair we ship a bundled body
+// for, and nothing else. The editor needs the pairs to populate its language
+// picker but only ever displays one of them, so the bodies do not belong in
+// this response: carrying them made it two orders of magnitude larger than
+// the page it feeds, and re-read on every window focus.
+func document_index() []map[string]any {
+	languages := document_languages()
+	out := []map[string]any{}
+	for _, name := range document_names {
+		for _, language := range languages {
+			if document_bundled(name, language) == "" {
+				continue
+			}
+			out = append(out, map[string]any{
+				"name":     name,
+				"language": language,
+			})
+		}
+	}
+	return out
+}
+
+// document_source returns the editable state of one document: the operator's
+// override if there is one (else the bundled body it would replace), the
+// bundled default to diff and revert against, and when the override was
+// written. Unlike document_get the body is NOT rendered - the editor edits
+// the source, so interpolating placeholders here would write them back
+// resolved. Returns nil when the pair has no bundled default.
+func document_source(name, language string) map[string]any {
+	if !document_name_valid(name) || language == "" {
+		return nil
+	}
+	bundled := document_bundled(name, language)
+	if bundled == "" {
+		return nil
+	}
+	body := document_override(name, language)
+	if body == "" {
+		body = bundled
+	}
+	return map[string]any{
+		"name":     name,
+		"language": language,
+		"body":     body,
+		"default":  bundled,
+		"updated":  document_updated(name, language),
+	}
+}
+
 // document_updated returns the unix timestamp of the operator's last edit
 // for (name, language), or 0 if no override exists.
 func document_updated(name, language string) int64 {
@@ -186,9 +235,10 @@ func document_updated(name, language string) int64 {
 // === Starlark API ===
 
 var api_document = sls.FromStringDict(sl.String("mochi.document"), sl.StringDict{
-	"get":  sl.NewBuiltin("mochi.document.get", api_document_get),
-	"list": sl.NewBuiltin("mochi.document.list", api_document_list),
-	"set":  sl.NewBuiltin("mochi.document.set", api_document_set),
+	"get":    sl.NewBuiltin("mochi.document.get", api_document_get),
+	"list":   sl.NewBuiltin("mochi.document.list", api_document_list),
+	"set":    sl.NewBuiltin("mochi.document.set", api_document_set),
+	"source": sl.NewBuiltin("mochi.document.source", api_document_source),
 })
 
 // mochi.document.get(name, language=None) -> string: Get the rendered body of a document.
@@ -256,12 +306,9 @@ func api_document_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.True, nil
 }
 
-// mochi.document.list() -> list: Returns one entry per (name × language)
-// supported. Each entry has {name, language, body, default, updated}, where
-// `body` is the raw current body (operator override if set, else bundled
-// default) and `default` is always the raw bundled default. Both are
-// un-rendered Markdown so the admin UI can show placeholder syntax verbatim.
-// `updated` is 0 if no operator override exists. Admin only.
+// mochi.document.list() -> list: Returns one {name, language} entry per
+// (name × language) pair a bundled default exists for. Bodies are not
+// included - fetch the one being edited with mochi.document.source. Admin only.
 func api_document_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "documents/read"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -277,26 +324,38 @@ func api_document_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if !user.administrator() {
 		return sl_error(fn, "not administrator")
 	}
-	languages := document_languages()
-	out := []map[string]any{}
-	for _, name := range document_names {
-		for _, lang := range languages {
-			default_body := document_bundled(name, lang)
-			if default_body == "" {
-				continue
-			}
-			body := document_override(name, lang)
-			if body == "" {
-				body = default_body
-			}
-			out = append(out, map[string]any{
-				"name":     name,
-				"language": lang,
-				"body":     body,
-				"default":  default_body,
-				"updated":  document_updated(name, lang),
-			})
-		}
+	return sl_encode(document_index()), nil
+}
+
+// mochi.document.source(name, language) -> dict: Get one document's editable
+// state - the current body, the bundled default, and the override timestamp.
+// Admin only. The body is raw, not rendered: this is what the editor edits.
+func api_document_source(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "documents/read"); err != nil {
+		return sl_error(fn, "%v", err)
 	}
-	return sl_encode(out), nil
+
+	if len(args) != 2 {
+		return sl_error(fn, "syntax: <name: string>, <language: string>")
+	}
+	name, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid document name")
+	}
+	language, ok := sl.AsString(args[1])
+	if !ok {
+		return sl_error(fn, "invalid document language")
+	}
+	user := principal_caller(t)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	document := document_source(name, language)
+	if document == nil {
+		return sl.None, nil
+	}
+	return sl_encode(document), nil
 }

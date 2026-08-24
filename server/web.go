@@ -531,8 +531,14 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		}
 	}
 
-	// Check app-level requirements (skip for static files in shell mode)
-	if !shell_static && !av.user_allowed(user) {
+	// Check app-level requirements. Skipped for static files in shell mode, and
+	// for an action the app declared public: require.role and require.function
+	// both answer "is this app for this user", which a route serving anonymous
+	// callers by design has already said it does not ask.
+	//
+	// app_visible runs the app's own require.function; it is cached per user,
+	// so a burst of requests costs one call.
+	if !shell_static && !aa.Public && (!av.user_allowed(user) || !app_visible(av, user)) {
 		debug("403 access denied: app=%s action=%s user=%v", a.id, name, user != nil)
 		respond_error(c, http.StatusForbidden, "access_denied", "errors.access_denied", nil)
 		return true

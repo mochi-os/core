@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	sl "go.starlark.net/starlark"
 )
@@ -2129,5 +2130,194 @@ func TestAppsManagerHasNoWakeChannel(t *testing.T) {
 				t.Errorf("%s references %s; the early-wake path has no production signaller, so reviving it needs a real trigger and a reason, not a restored channel", name, dead)
 			}
 		}
+	}
+}
+
+// visibility_test_app writes a Starlark source file and returns an App whose
+// single version runs it as its require.function. Mirrors lifecycle_test_app.
+func visibility_test_app(t *testing.T, source string) *AppVersion {
+	t.Helper()
+
+	// Starlark.call needs what starlark_configure normally sets up at startup:
+	// a non-nil semaphore (a nil channel blocks forever) and a non-zero
+	// timeout (zero cancels instantly).
+	if starlark_semaphore == nil {
+		starlark_semaphore = make(chan struct{}, 32)
+		starlark_default_timeout = 90 * time.Second
+	}
+
+	star := filepath.Join(test_data_directory(t), "app.star")
+	if err := os.WriteFile(star, []byte(source), 0644); err != nil {
+		t.Fatalf("write starlark source: %v", err)
+	}
+
+	av := &AppVersion{Version: "1.0", Execute: []string{star}}
+	av.Require.Function = "app_allowed"
+	av.app = &App{id: "visibilitytest", internal: av}
+
+	// Each test gets its own cache generation, or an earlier test's answer for
+	// the same (user, app) key would be served here.
+	resolution_invalidate()
+	t.Cleanup(resolution_invalidate)
+	return av
+}
+
+// A version declaring no require.function is offered to everyone, and asks
+// nothing of Starlark.
+func TestAppVisibleWithoutFunction(t *testing.T) {
+	av := &AppVersion{}
+	if !app_visible(av, nil) {
+		t.Error("app_visible should return true for nil user when no require function")
+	}
+	if !app_visible(av, &User{UID: "u1", Role: "user"}) {
+		t.Error("app_visible should return true for a user when no require function")
+	}
+}
+
+// An anonymous caller is refused without the app being consulted: there is no
+// identity for the app to decide about.
+func TestAppVisibleAnonymousRefused(t *testing.T) {
+	av := visibility_test_app(t, `
+def app_allowed():
+    fail("require function must not run for an anonymous caller")
+`)
+	if app_visible(av, nil) {
+		t.Error("app_visible should return false for a nil user when a require function is declared")
+	}
+}
+
+// The app's own answer decides, both ways.
+func TestAppVisibleHonoursAnswer(t *testing.T) {
+	yes := visibility_test_app(t, "def app_allowed():\n    return True\n")
+	if !app_visible(yes, &User{UID: "u1", Role: "user"}) {
+		t.Error("app_visible should return true when the require function approves")
+	}
+
+	no := visibility_test_app(t, "def app_allowed():\n    return False\n")
+	if app_visible(no, &User{UID: "u1", Role: "user"}) {
+		t.Error("app_visible should return false when the require function refuses")
+	}
+
+	none := visibility_test_app(t, "def app_allowed():\n    return None\n")
+	if app_visible(none, &User{UID: "u1", Role: "user"}) {
+		t.Error("app_visible should return false when the require function returns None")
+	}
+}
+
+// A failing check denies. The app is unusable when its gate cannot be
+// evaluated, and opening up on failure is the leak the gate exists to close.
+func TestAppVisibleErrorDenies(t *testing.T) {
+	av := visibility_test_app(t, `
+def app_allowed():
+    fail("comptroller unreachable")
+`)
+	if app_visible(av, &User{UID: "u1", Role: "user"}) {
+		t.Error("app_visible should return false when the require function errors")
+	}
+}
+
+// A declared function the app does not define denies rather than admitting.
+func TestAppVisibleMissingFunctionDenies(t *testing.T) {
+	av := visibility_test_app(t, "def something_else():\n    return True\n")
+	if app_visible(av, &User{UID: "u1", Role: "user"}) {
+		t.Error("app_visible should return false when the require function is not defined")
+	}
+}
+
+// The answer is cached, so a page that lists many apps does not pay for the
+// check repeatedly. Starlark freezes module globals at load, so a call counter
+// inside the app is not available; instead the declared function is renamed to
+// one the app does not define after the first call. A second call that re-ran
+// would refuse, so being allowed proves it did not run.
+func TestAppVisibleCachesAnswer(t *testing.T) {
+	av := visibility_test_app(t, "def app_allowed():\n    return True\n")
+	user := &User{UID: "u1", Role: "user"}
+	if !app_visible(av, user) {
+		t.Fatal("first call should be allowed")
+	}
+
+	av.Require.Function = "absent"
+	if !app_visible(av, user) {
+		t.Error("second call should be served from the cache, not re-run")
+	}
+}
+
+// The cache is keyed per user, not per app. Same trick: after the first user is
+// answered the function is renamed away, so a second user served from the first
+// user's entry would be allowed, and one evaluated afresh is refused.
+func TestAppVisibleCacheKeyCarriesUser(t *testing.T) {
+	av := visibility_test_app(t, "def app_allowed():\n    return True\n")
+	if !app_visible(av, &User{UID: "u1", Role: "user"}) {
+		t.Fatal("first user should be allowed")
+	}
+
+	av.Require.Function = "absent"
+	if app_visible(av, &User{UID: "u2", Role: "user"}) {
+		t.Error("second user was served the first user's cached answer")
+	}
+}
+
+// A check that cannot be answered keeps a user the app already admitted. The
+// authority being unreachable is not evidence that someone stopped being
+// staff, and refusing on it locks the console during exactly the incident it
+// is needed for.
+func TestAppVisibleUnansweredKeepsPreviousApproval(t *testing.T) {
+	av := visibility_test_app(t, "def app_allowed():\n    return True\n")
+	user := &User{UID: "u1", Role: "user"}
+	if !app_visible(av, user) {
+		t.Fatal("first call should be allowed")
+	}
+
+	// Expire the fresh answer without discarding it, then make the next check
+	// fail: the entry is still evidence of what the app said last time.
+	resolution_visibility.put(resolution_key{"u1", av.app.id}, true, -1)
+	av.Require.Function = "absent"
+	if !app_visible(av, user) {
+		t.Error("an unanswerable check should keep the previous approval")
+	}
+}
+
+// The same fallback admits nobody new: a user with no earlier answer is
+// refused when the check cannot be run.
+func TestAppVisibleUnansweredRefusesUnknownUser(t *testing.T) {
+	av := visibility_test_app(t, "def app_allowed():\n    return True\n")
+	av.Require.Function = "absent"
+	if app_visible(av, &User{UID: "u1", Role: "user"}) {
+		t.Error("an unanswerable check should refuse a user it has never admitted")
+	}
+}
+
+// A refusal is not resurrected as an approval either.
+func TestAppVisibleUnansweredKeepsPreviousRefusal(t *testing.T) {
+	av := visibility_test_app(t, "def app_allowed():\n    return False\n")
+	user := &User{UID: "u1", Role: "user"}
+	if app_visible(av, user) {
+		t.Fatal("first call should be refused")
+	}
+
+	resolution_visibility.put(resolution_key{"u1", av.app.id}, false, -1)
+	av.Require.Function = "absent"
+	if app_visible(av, user) {
+		t.Error("an unanswerable check should not turn a refusal into an approval")
+	}
+}
+
+// app_listed refuses a gated app when the thread is already inside a
+// require.function, instead of asking again and recursing.
+func TestAppListedRefusesInsideVisibilityCheck(t *testing.T) {
+	av := visibility_test_app(t, `
+def app_allowed():
+    fail("require function must not run from inside another visibility check")
+`)
+	user := &User{UID: "u1", Role: "user"}
+
+	thread := &sl.Thread{Name: "test"}
+	if !app_listed(thread, &AppVersion{}, user) {
+		t.Error("an app with no require function should be listed")
+	}
+
+	thread.SetLocal("visibility", true)
+	if app_listed(thread, av, user) {
+		t.Error("a gated app should not be listed from inside a visibility check")
 	}
 }

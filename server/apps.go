@@ -110,8 +110,13 @@ type AppVersion struct {
 	Paths    []string `json:"paths"`
 	Services []string `json:"services"`
 	Require  struct {
-		Role    string `json:"role"`
-		Version struct {
+		Role string `json:"role"`
+		// Function names a Starlark function in this app that decides whether
+		// the app is offered to a given user. Role answers that from data core
+		// holds; Function is for a gate core cannot evaluate - membership of a
+		// list another service owns, say. See app_visible.
+		Function string `json:"function"`
+		Version  struct {
 			Minimum string `json:"minimum"`
 			Maximum string `json:"maximum"`
 		} `json:"version"`
@@ -336,6 +341,111 @@ func (av *AppVersion) user_allowed(user *User) bool {
 		return false
 	}
 	return user.Role == av.Require.Role
+}
+
+// visibility_timeout bounds a require.function call. Far below the app
+// default: this runs while a page waits to render, so a check that cannot
+// answer quickly is more useful as a refusal than as a stall.
+const visibility_timeout = 5 * time.Second
+
+// app_visible answers whether this app is offered to this user, running the
+// app's own require.function to decide. Kept apart from user_allowed - a pure
+// test of the manifest - because this one calls into Starlark and so must
+// never run with apps_lock held: the call reaches service and path
+// resolution, which take that same non-reentrant lock.
+//
+// The call runs as the app being tested, not as whoever asked. Permission
+// grants are per app, so running it as the caller would mean the home screen
+// needed the union of every app's visibility dependencies just to draw an
+// icon grid.
+//
+// Every failure denies. A gate that opens when its authority is unreachable
+// is the leak it exists to close, and an app whose gate cannot be evaluated
+// is not usable anyway.
+func app_visible(av *AppVersion, user *User) bool {
+	if av == nil {
+		return false
+	}
+	if av.Require.Function == "" {
+		return true
+	}
+	// No app means no Starlark to ask and no identity to cache under.
+	if user == nil || av.app == nil {
+		return false
+	}
+
+	key := resolution_key{resolution_user_key(user), av.app.id}
+	if allowed, ok := resolution_visibility.get(key); ok {
+		return allowed
+	}
+
+	s := av.starlark()
+	if !s.has(av.Require.Function) {
+		info("App %s declares require function %q but does not define it", av.app.id, av.Require.Function)
+		return visibility_unanswered(key, av)
+	}
+	s.timeout = visibility_timeout
+	s.set("app", av.app)
+	s.set("user", user)
+	// Storage, not owner: the subject of the question is the caller, and
+	// setting owner to the caller is the ambient-ownership shape.
+	s.set("storage", user)
+	// Marks every call made below this one as part of a visibility check, so
+	// the app listings refuse to run the checks again rather than recursing
+	// back through this function.
+	s.set("visibility", true)
+
+	value, err := s.call(av.Require.Function, nil)
+	if err != nil {
+		info("App %s require function %q failed: %v", av.app.id, av.Require.Function, err)
+		return visibility_unanswered(key, av)
+	}
+
+	allowed := value != nil && bool(value.Truth())
+	resolution_visibility.put(key, allowed, visibility_cache_ttl)
+	return allowed
+}
+
+// visibility_unanswered decides what to do when the app could not be asked -
+// its authority was unreachable, the call timed out, the function is missing.
+//
+// A user the app has admitted before keeps that answer: the check is the only
+// way into the app, so treating a blip as a refusal locks people out of the
+// console exactly when something is wrong, and a stale yes offers an icon,
+// not access - the app's own handlers still gate every action. Someone with
+// no earlier answer is refused, so an outage cannot admit anybody new. Either
+// way it is held only for the short failure window, so a recovered authority
+// is asked again soon.
+func visibility_unanswered(key resolution_key, av *AppVersion) bool {
+	allowed, seen := resolution_visibility.previous(key)
+	if seen && allowed {
+		info("App %s require function %q unanswered, keeping the previous approval", av.app.id, av.Require.Function)
+	}
+	answer := seen && allowed
+	resolution_visibility.put(key, answer, visibility_cache_failure)
+	return answer
+}
+
+// visibility_checking reports whether this thread is already inside a
+// require.function call. The app listings deny rather than recurse when it is.
+func visibility_checking(t *sl.Thread) bool {
+	checking, _ := t.Local("visibility").(bool)
+	return checking
+}
+
+// app_listed is app_visible for the three builtins that enumerate apps. They
+// can be reached from inside a require.function - directly, or through a
+// service call made by one - and asking the question again there recurses
+// until the concurrency pool starves. An app that has a gate but cannot have
+// it evaluated is not listed.
+func app_listed(t *sl.Thread, av *AppVersion, user *User) bool {
+	if av.Require.Function == "" {
+		return true
+	}
+	if visibility_checking(t) {
+		return false
+	}
+	return app_visible(av, user)
 }
 
 const (
@@ -1678,6 +1788,10 @@ func manifest_validate(av *AppVersion) error {
 		return fmt.Errorf("App bad database downgrade function %q", av.Database.Downgrade.Function)
 	}
 
+	if av.Require.Function != "" && !valid(av.Require.Function, "function") {
+		return fmt.Errorf("App bad require function %q", av.Require.Function)
+	}
+
 	if av.Icon != "" && !valid(av.Icon, "filepath") {
 		return fmt.Errorf("App bad icon path %q", av.Icon)
 	}
@@ -2357,6 +2471,7 @@ func (av *AppVersion) reload() {
 	av.Classes = fresh.Classes
 	av.Shared = fresh.Shared
 	av.Architecture = fresh.Architecture
+	av.Require = fresh.Require
 	av.Execute = fresh.Execute
 	av.Themes = fresh.Themes
 	av.ThemeIcons = fresh.ThemeIcons
@@ -2488,7 +2603,15 @@ func starlark_kwargs_to_map(kwargs []sl.Tuple) (map[string]any, error) {
 // Returns {"icons": [...], "icon_mask": "...", "icon_background": "..."}
 func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := principal_caller(t)
-	var icons []map[string]any
+
+	// Each icon keeps the version that produced it, so the require.function
+	// gate can be applied after apps_lock is released - app_listed calls into
+	// Starlark, which resolves services and paths under that same lock.
+	type candidate struct {
+		av   *AppVersion
+		icon map[string]any
+	}
+	var candidates []candidate
 
 	// Resolve the user's active theme for icon overrides
 	theme_pref := user_preference_get(user, "theme", "")
@@ -2545,10 +2668,18 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 				}
 			}
 
-			icons = append(icons, map[string]any{"id": a.id, "path": icon_path, "name": a.label(user, av, i.Label), "file": icon_file, "link": path, "development": a.development})
+			candidates = append(candidates, candidate{av: av, icon: map[string]any{"id": a.id, "path": icon_path, "name": a.label(user, av, i.Label), "file": icon_file, "link": path, "development": a.development}})
 		}
 	}
 	apps_lock.Unlock()
+
+	icons := make([]map[string]any, 0, len(candidates))
+	for _, c := range candidates {
+		if !app_listed(t, c.av, user) {
+			continue
+		}
+		icons = append(icons, c.icon)
+	}
 
 	sort.Slice(icons, func(i, j int) bool {
 		return strings.ToLower(icons[i]["name"].(string)) < strings.ToLower(icons[j]["name"].(string))
@@ -2720,7 +2851,14 @@ func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 // mochi.app.list() -> list: Get list of installed apps
 func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := principal_caller(t)
-	var results []map[string]any
+
+	// As in api_app_icons: the require.function gate runs after the lock is
+	// released, so each row carries the version it came from.
+	type candidate struct {
+		av  *AppVersion
+		row map[string]any
+	}
+	var candidates []candidate
 
 	apps_lock.Lock()
 	for id, a := range apps {
@@ -2768,9 +2906,17 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 			}
 			result["themes"] = themes
 		}
-		results = append(results, result)
+		candidates = append(candidates, candidate{av: av, row: result})
 	}
 	apps_lock.Unlock()
+
+	results := make([]map[string]any, 0, len(candidates))
+	for _, c := range candidates {
+		if !app_listed(t, c.av, user) {
+			continue
+		}
+		results = append(results, c.row)
+	}
 
 	sort.Slice(results, func(i, j int) bool {
 		return strings.ToLower(results[i]["name"].(string)) < strings.ToLower(results[j]["name"].(string))
@@ -2832,15 +2978,46 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		theme AppTheme
 	}
 	entries := make([]entry, 0)
+	gated := make([]*AppVersion, 0)
 	for _, a := range apps {
 		av := a.active_locked(user)
 		if av == nil || !av.user_allowed(user) {
 			continue
 		}
+		if len(av.Themes) == 0 {
+			continue
+		}
+		if av.Require.Function != "" {
+			gated = append(gated, av)
+		}
 		for _, theme := range av.Themes {
 			entries = append(entries, entry{app: a, av: av, theme: theme})
 		}
 	}
+	apps_lock.Unlock()
+
+	// A gated app's themes are its own to offer, so they follow the same
+	// require.function answer its icon does. Resolved with the lock released,
+	// which app_listed needs, then retaken for the rest of the walk.
+	if len(gated) > 0 {
+		refused := make(map[*AppVersion]bool, len(gated))
+		for _, av := range gated {
+			if !app_listed(t, av, user) {
+				refused[av] = true
+			}
+		}
+		if len(refused) > 0 {
+			kept := entries[:0]
+			for _, e := range entries {
+				if !refused[e.av] {
+					kept = append(kept, e)
+				}
+			}
+			entries = kept
+		}
+	}
+	apps_lock.Lock()
+
 	sort.SliceStable(entries, func(i, j int) bool {
 		return entries[i].app.development && !entries[j].app.development
 	})

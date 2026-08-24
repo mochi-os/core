@@ -190,6 +190,13 @@ const (
 // so any builtin refusing unwinds the whole action and lands here; the error
 // type is the only signal for the status. A refusal must not be a 500 - clients
 // retry those.
+// web_status_deliberate reports whether a status on the writer was chosen by the
+// handler rather than pre-set by the NoRoute fallback. Anything outside the
+// 404 the fallback installs, and outside gin's 200 default, was set on purpose.
+func web_status_deliberate(status int) bool {
+	return status != http.StatusNotFound && status != http.StatusOK
+}
+
 func web_action_error(c *gin.Context, app string, err error) {
 	var permission *PermissionError
 	if errors.As(err, &permission) {
@@ -755,10 +762,13 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		if !c.Writer.Written() {
 			if result != sl.None {
 				c.JSON(http.StatusOK, sl_decode(result))
-			} else if !starlark_serving_get(s.thread) {
+			} else if !starlark_serving_get(s.thread) && !web_status_deliberate(c.Writer.Status()) {
 				// NoRoute pre-sets 404 - override when a fire-and-forget action wrote no
 				// response. NOT when a file was served: ServeContent may have set 304 with
 				// no body, and forcing 200 breaks conditional GETs such as apt's InRelease.
+				// NOT when the handler already chose a status either: gin's Redirect only
+				// writes a body for a GET, so on any other method Written() stays false and
+				// forcing 200 threw away the redirect, leaving a Location no browser acts on.
 				c.Status(http.StatusOK)
 			}
 		}

@@ -54,6 +54,14 @@ const (
 	stream_claims_maximum = 64               // claim frames accepted before open
 	stream_open_timeout   = 30 * time.Second // whole pre-open phase, cleared after
 
+	// The same bounds on /mochi/2/messages. Claims cost a verify each and prove
+	// frames cost a signature and a lookup each, so both are counted for the life
+	// of the stream rather than only before the first message: unlike stream's
+	// single open, a messages stream keeps accepting them.
+	messages_claims_maximum = 64               // claim frames accepted per stream
+	messages_proves_maximum = 64               // prove frames accepted per stream
+	messages_ready_timeout  = 30 * time.Second // until the first message, cleared after
+
 	// Codec byte values (Frame.Codec).
 	codec_none = 0
 	codec_zstd = 1

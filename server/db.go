@@ -1330,6 +1330,12 @@ func db_upgrade_5() {
 }
 
 func (db *DB) close() {
+	// db_app_system returns nil when the user, the app or the file is missing,
+	// and its callers guard for that after taking the defer. Tolerating nil here
+	// means the defer is correct wherever it is placed.
+	if db == nil {
+		return
+	}
 	databases_lock.Lock()
 	db.closed = now()
 	databases_lock.Unlock()
@@ -1453,7 +1459,11 @@ var db_migrating atomic.Int32
 // guards (#10).
 func sql_is_introspection(query string) bool {
 	q := strings.ToLower(query)
-	return strings.Contains(q, "pragma_") ||
+	// Plain "pragma", not "pragma_": mochi.db.table and mochi.db.indexes emit the
+	// bare statement form (PRAGMA table_info(x)), which matched none of the
+	// vtable spellings and so was cached - the exact stale-schema case below.
+	// Over-matching only costs a statement its cache entry.
+	return strings.Contains(q, "pragma") ||
 		strings.Contains(q, "sqlite_master") ||
 		strings.Contains(q, "sqlite_schema")
 }
@@ -1571,8 +1581,7 @@ func (db *DB) integer(query string, values ...any) int {
 // 32-bit range is not truncated on the 32-bit builds. Returns 0 on
 // no-row/error.
 //
-// lint:ignore U1000 exists to stop a >2.1e9 column being truncated on the
-// 32-bit armhf and armv7hl builds
+//lint:ignore U1000 exists to stop a >2.1e9 column being truncated on the 32-bit armhf and armv7hl builds
 func (db *DB) integer64(query string, values ...any) int64 {
 	var result int64
 	var err error

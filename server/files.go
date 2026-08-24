@@ -295,7 +295,7 @@ func api_file_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "invalid file %q", file)
 	}
 
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -353,7 +353,7 @@ func api_file_copy(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "invalid destination %q", destination)
 	}
 
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -418,7 +418,7 @@ func api_file_age(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "invalid file %q", file)
 	}
 
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -454,7 +454,7 @@ func api_file_exists(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "invalid file %q", file)
 	}
 
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -493,7 +493,7 @@ func api_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "invalid directory %q", dir)
 	}
 
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -554,7 +554,7 @@ func api_file_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "invalid file %q", file)
 	}
 
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -617,7 +617,7 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "invalid file data")
 	}
 
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -689,7 +689,7 @@ func api_file_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_error(fn, "invalid destination %q", to)
 	}
 
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -806,7 +806,7 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "entries must be a list")
 	}
 
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -855,10 +855,10 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 			return sl_error(fn, "unable to write archive")
 		}
 		cache_path = path
-		// The cache is exempt from the per-user quota, so nothing bounds this
-		// archive's size - which is why the bytes are admitted below rather
-		// than left for the hourly sweep to notice.
-		remaining = math.MaxInt64
+		// The cache is exempt from the per-user quota, so the object ceiling is
+		// what bounds this archive - without it counter.exceeded can never fire
+		// and one call fills the disk before cache_admit is consulted below.
+		remaining = object_maximum
 	} else {
 		dir := filepath.Dir(destination)
 		if dir != "." && dir != "" {
@@ -875,8 +875,9 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	// Account for a cached archive however this returns: a partial archive still
 	// occupies cache, and a running total that never learns of those bytes
-	// under-evicts. Measured from the file, since counter.written counts bytes fed
-	// in rather than the compressed result.
+	// under-evicts. Measured from the file rather than from counter.written so a
+	// partial write is counted too - the counter sits on the output side and does
+	// hold the compressed total, which is what the quota check above needs.
 	if cache_path != "" {
 		defer func() {
 			if information, err := os.Stat(cache_path); err == nil {
@@ -986,12 +987,21 @@ func (c *archive_counter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// archive is a zip reader over a file held open through the app's os.Root, so
+// the handle the containment check resolved is the handle the reader reads.
+type archive struct {
+	*zip.Reader
+	file *os.File
+}
+
+func (a *archive) Close() error { return a.file.Close() }
+
 // archive_open opens an archive inside the app's file storage.
-func archive_open(t *sl.Thread, fn *sl.Builtin, file string) (*zip.ReadCloser, error) {
+func archive_open(t *sl.Thread, fn *sl.Builtin, file string) (*archive, error) {
 	if !valid(file, "filepath") {
 		return nil, fmt.Errorf("invalid file %q", file)
 	}
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return nil, fmt.Errorf("no user")
 	}
@@ -1005,19 +1015,24 @@ func archive_open(t *sl.Thread, fn *sl.Builtin, file string) (*zip.ReadCloser, e
 	}
 	defer root.Close()
 
-	// Resolve through the root first so a symlink cannot point the reader at a
-	// file outside the app's directory, then hand the real path to zip.
+	// Read through the root handle. Resolving through it and then opening the
+	// joined path again threw the containment away: the second open re-followed
+	// whatever the check was meant to exclude, with a window in between.
 	f, err := root.Open(file)
 	if err != nil {
 		return nil, fmt.Errorf("file not found")
 	}
 	information, err := f.Stat()
-	f.Close()
 	if err != nil || information.IsDir() {
+		f.Close()
 		return nil, fmt.Errorf("file not found")
 	}
-
-	return zip.OpenReader(filepath.Join(api_file_base(user, app), file))
+	reader, err := zip.NewReader(f, information.Size())
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return &archive{Reader: reader, file: f}, nil
 }
 
 // mochi.archive.list(file) -> list or None: The archive's entries, each a dict
@@ -1094,7 +1109,7 @@ func api_archive_extract(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "invalid destination %q", destination)
 	}
 
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}

@@ -378,6 +378,10 @@ func broadcast_pending_gc(force bool) int {
 			continue
 		}
 		last := broadcast_pending_skip_stream(sysdb, s.User, s.App, s.Peer, s.Key, s.Last, cutoff, force)
+		// Closed here rather than deferred: a defer inside a loop runs when the
+		// function returns, so it would pin one handle per stalled stream. This
+		// is the last use in the iteration.
+		sysdb.close()
 		if last <= s.Last {
 			continue
 		}

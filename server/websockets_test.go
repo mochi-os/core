@@ -16,8 +16,10 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"nhooyr.io/websocket"
 )
@@ -192,4 +194,101 @@ func TestSendLeavesLiveConnectionsRegistered(t *testing.T) {
 	if !websocket_registered(u, "key", "live") {
 		t.Error("a working connection was terminated alongside the broken one")
 	}
+}
+
+// --- the write deadline -------------------------------------------------
+//
+// The send loop used to write while holding websockets_lock.RLock() with
+// context.Background(). A client that stops reading puts its socket in TCP
+// zero-window, where that write never returns - and Go's RWMutex stops
+// admitting readers once a writer queues, so the next terminate would take the
+// write lock and every later send, from commit hooks and from
+// mochi.websocket.write, would queue behind one silent connection.
+
+// A client that stops reading blocks the write for real, and only the deadline
+// can end it. Pre-fix the write used context.Background(), so this send would
+// never return and the goroutine was parked for the life of the process.
+func TestSendAppliesTheWriteDeadline(t *testing.T) {
+	previous := websocket_write_timeout
+	websocket_write_timeout = 500 * time.Millisecond
+	t.Cleanup(func() { websocket_write_timeout = previous })
+
+	u := &User{UID: "user-deadline"}
+	stalled, _ := websocket_pair(t) // its client never reads
+	websocket_register(t, u, "key", "stalled", stalled)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		websockets_send(u, "", "key", map[string]any{"a": strings.Repeat("x", 24<<20)})
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the send never returned: an unresponsive client parks this goroutine for the life of the process")
+	}
+	if websocket_registered(u, "key", "stalled") {
+		t.Error("the connection that timed out its write is still registered")
+	}
+}
+
+// The control for the test above: with the ordinary timeout, a live connection
+// is written to and stays registered, so the deadline is not simply killing
+// every send.
+func TestSendWithinTheDeadlineKeepsTheConnection(t *testing.T) {
+	u := &User{UID: "user-deadline-ok"}
+	live, _ := websocket_pair(t)
+	websocket_register(t, u, "key", "live", live)
+
+	websockets_send(u, "", "key", map[string]any{"a": 1})
+
+	if !websocket_registered(u, "key", "live") {
+		t.Error("a live connection was terminated by a send well inside the deadline")
+	}
+}
+
+// The lock must be released before the writes begin. Holding it across a write
+// is what turns one stalled client into a stalled subsystem, so the send has to
+// leave the write lock obtainable while a write is actually in flight.
+//
+// websocket_pair's client never reads, so a payload past the socket buffers
+// blocks the write for real - which is the only condition under which the lock
+// scope is observable.
+func TestSendDoesNotHoldTheLockWhileWriting(t *testing.T) {
+	previous := websocket_write_timeout
+	websocket_write_timeout = 2 * time.Second
+	t.Cleanup(func() { websocket_write_timeout = previous })
+
+	u := &User{UID: "user-lockscope"}
+	stalled, _ := websocket_pair(t)
+	websocket_register(t, u, "key", "stalled", stalled)
+
+	sent := make(chan struct{})
+	go func() {
+		defer close(sent)
+		websockets_send(u, "", "key", map[string]any{"a": strings.Repeat("x", 24<<20)})
+	}()
+
+	// Give the send time to reach the write and block in it.
+	time.Sleep(500 * time.Millisecond)
+	select {
+	case <-sent:
+		t.Skip("the write did not block; socket buffers absorbed the payload, so lock scope is not observable here")
+	default:
+	}
+
+	taken := make(chan struct{})
+	go func() {
+		websockets_lock.Lock()
+		websockets_lock.Unlock()
+		close(taken)
+	}()
+	// The fixed code grants this in microseconds; holding the read lock across
+	// the write would make it wait out the whole write deadline.
+	select {
+	case <-taken:
+	case <-time.After(1 * time.Second):
+		t.Error("the write lock was unobtainable while a send was blocked in a write: one client that stops reading stalls every other send")
+	}
+	<-sent
 }

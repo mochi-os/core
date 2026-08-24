@@ -435,7 +435,9 @@ func api_message_send_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	peer, ok := sl.AsString(args[0])
-	if !ok || peer == "" {
+	if !ok || !valid(peer, "peer") {
+		// Unvalidated, this became a queue row that can never deliver and is
+		// retried on the backoff schedule for the life of the row.
 		return sl_error(fn, "peer not specified or invalid")
 	}
 

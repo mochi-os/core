@@ -135,8 +135,7 @@ func audit_admin_escalation(admin string, target string, action string) {
 	audit_log_auth(fmt.Sprintf("admin_escalation admin=%s target=%s action=%s", admin, target, action))
 }
 
-// lint:ignore U1000 audit vocabulary: the call exists so a future caller
-// reaches for the right event name rather than inventing one
+//lint:ignore U1000 audit vocabulary: the call exists so a future caller reaches for the right event name rather than inventing one
 func audit_signature_failed(from string, reason string) {
 	audit_log_auth(fmt.Sprintf("signature_failed from=%s reason=%s", from, reason))
 }

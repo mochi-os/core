@@ -9,9 +9,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -76,9 +79,27 @@ func starlark_configure() {
 	starlark_file_timeout = time.Duration(file_secs) * time.Second
 }
 
+// ErrStarlarkLoad marks a missing function that is missing because a file in
+// the app's execute list failed to load, not because the app never declared it.
+// The two need opposite handling on the P2P path - one is transient, the other
+// is fixed until the app changes - and the message alone cannot tell them apart.
+var ErrStarlarkLoad = errors.New("starlark file failed to load")
+
 type Starlark struct {
 	thread  *sl.Thread
 	globals sl.StringDict
+
+	// timeout overrides the compute bound for this interpreter's calls. Zero
+	// means the configured default. Set it where a slow call is worse than a
+	// failed one - a visibility check blocks a page render, so it gives up
+	// early and is read as a refusal.
+	timeout time.Duration
+
+	// Files whose ExecFile failed. Every definition in them is absent from
+	// globals, and starlark_once caches that partial set for the process
+	// lifetime outside dev_reload, so a missing function has to be able to name
+	// the file that actually broke.
+	failed []string
 }
 
 // Create a new Starlark interpreter for a set of files
@@ -104,6 +125,7 @@ func starlark(files []string) *Starlark {
 			// every definition in the file, and starlark_once caches that partial set
 			// for the process lifetime outside dev_reload.
 			warn("Starlark error reading %s: %v", file, err)
+			s.failed = append(s.failed, filepath.Base(file))
 			continue
 		}
 		// Merge defined names into globals for subsequent files
@@ -436,6 +458,11 @@ func starlark_context(t *sl.Thread) context.Context {
 // anything.
 func (s *Starlark) has(function string) bool {
 	_, found := s.globals[function]
+	if !found && len(s.failed) > 0 {
+		// Not "the app does not handle this": the definition may be in a file
+		// that did not load. Say so, since the bool cannot carry the reason.
+		info("Starlark function %q absent and %s failed to load", function, strings.Join(s.failed, ", "))
+	}
 	return found
 }
 
@@ -443,6 +470,13 @@ func (s *Starlark) has(function string) bool {
 func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (sl.Value, error) {
 	f, found := s.globals[function]
 	if !found {
+		if len(s.failed) > 0 {
+			// Points the reader at the file that broke rather than at the app's
+			// handler declaration, which is usually correct, and marks the error
+			// so the P2P classifier retries instead of dropping the event.
+			return nil, fmt.Errorf("Starlark app function %q not found: %s failed to load: %w",
+				function, strings.Join(s.failed, ", "), ErrStarlarkLoad)
+		}
 		return nil, fmt.Errorf("Starlark app function %q not found", function)
 	}
 	var kw []sl.Tuple
@@ -478,6 +512,13 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 	// out of the thread's unsynchronised locals map.
 	serving := &atomic.Bool{}
 	s.thread.SetLocal("file_serving", serving)
+
+	// Compute bound for this call. s.timeout only ever shortens it: an app
+	// must not be able to buy itself more than the configured ceiling.
+	deadline := starlark_default_timeout
+	if s.timeout > 0 && (deadline <= 0 || s.timeout < deadline) {
+		deadline = s.timeout
+	}
 
 	// Reset cancel state from any previous timeout
 	s.thread.Uncancel()
@@ -525,7 +566,7 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 			}
 		}
 		return out.value, out.err
-	case <-time.After(starlark_default_timeout):
+	case <-time.After(deadline):
 		// A call that has handed the response to the client is only streaming bytes,
 		// so the compute timeout would truncate a legitimate download. Give it the
 		// longer file bound - but bound it, or a stalled reader holds the slot.
@@ -553,8 +594,8 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 		// for cancellation. Abandon it. The goroutine runs its own cleanup and
 		// frees its semaphore slot when it eventually exits; touching the
 		// thread, its streams or its transaction from here would race with it.
-		debug("Starlark %s() timed out after %s", function, starlark_default_timeout)
-		return nil, fmt.Errorf("starlark: timeout after %s", starlark_default_timeout)
+		debug("Starlark %s() timed out after %s", function, deadline)
+		return nil, fmt.Errorf("starlark: timeout after %s", deadline)
 	}
 }
 

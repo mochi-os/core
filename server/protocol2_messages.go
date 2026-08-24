@@ -23,6 +23,7 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	p2p_network "github.com/libp2p/go-libp2p/core/network"
 )
@@ -80,6 +81,26 @@ type Receiver struct {
 	claimed   map[string]bool
 	lock      sync.Mutex // guards claimed
 	closed    atomic.Bool
+
+	// Budgets for the frames that cost this host work before the sender has
+	// sent anything. Touched only from the reader goroutine, so unguarded.
+	claims int
+	proves int
+	ready  bool // a message frame has arrived; the read deadline is cleared
+}
+
+// wire_deadline is the part of a real libp2p stream that bounds a read. The
+// in-memory test shim does not implement it, so the assertion below is optional.
+type wire_deadline interface {
+	SetReadDeadline(time.Time) error
+}
+
+// deadline bounds reads until the first message frame arrives. A messages
+// stream is long-lived once it is carrying traffic, so it is cleared then.
+func (r *Receiver) deadline(t time.Time) {
+	if s, ok := r.stream.(wire_deadline); ok {
+		_ = s.SetReadDeadline(t)
+	}
 }
 
 // receive_messages is the libp2p stream handler for /mochi/2/messages,
@@ -127,6 +148,11 @@ func receive_messages_guarded(s p2p_network.Stream) {
 	// Spawn the reply writer; it lives until the replies channel
 	// closes (the reader signals end-of-stream by closing replies).
 	go r.write_replies()
+
+	// Bound the phase before the first message the way /mochi/2/stream bounds the
+	// phase before open: until a message arrives the peer has spent nothing and
+	// this host a verify per claim and a signature per prove.
+	r.deadline(time.Now().Add(messages_ready_timeout))
 
 	// Reader runs inline; on return we close the stream and let the
 	// reply writer drain whatever remains.
@@ -201,13 +227,20 @@ func (r *Receiver) handle(f *Frame) bool {
 		return false
 
 	case frame_type_claim:
+		r.claims++
+		if r.claims > messages_claims_maximum {
+			info("Messages: too many claims peer=%q session=%s — over %d", r.peer, r.session, messages_claims_maximum)
+			r.stream.Reset()
+			return false
+		}
 		if err := claim_verify(f.From, r.challenge, f.Signature, net_id, protocol_messages); err != nil {
-			// Don't fail the claim explicitly — the next message from
-			// the unclaimed entity will fail naturally with unclaimed
-			// and the sender re-issues. Logging is enough.
+			// A claim that does not verify is not a retry, it is a peer spending
+			// our signature checks on nothing. Matches /mochi/2/stream, which used
+			// to continue here too.
 			info("Messages: claim verify failed peer=%q session=%s entity=%q: %v",
 				r.peer, r.session, f.From, err)
-			return true
+			r.stream.Reset()
+			return false
 		}
 		r.lock.Lock()
 		r.claimed[f.From] = true
@@ -216,11 +249,22 @@ func (r *Receiver) handle(f *Frame) bool {
 
 	case frame_type_prove:
 		// Mirror of the claim above: the sender proves who it speaks for, this host
-		// proves who it answers for before the sender will send.
+		// proves who it answers for before the sender will send. Budgeted, because
+		// each one costs a lookup and a real entity signature.
+		r.proves++
+		if r.proves > messages_proves_maximum {
+			info("Messages: too many proves peer=%q session=%s — over %d", r.peer, r.session, messages_proves_maximum)
+			r.stream.Reset()
+			return false
+		}
 		r.prove(f.To)
 		return true
 
 	case frame_type_message:
+		if !r.ready {
+			r.ready = true
+			r.deadline(time.Time{})
+		}
 		r.dispatch_message(f)
 		return true
 

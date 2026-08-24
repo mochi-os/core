@@ -574,7 +574,7 @@ func TestWorkersDrainWaitsForInflight(t *testing.T) {
 // capture_target captures the *Event passed to a registered internal handler so
 // tests can assert on it.
 //
-// lint:ignore U1000 test scaffolding
+//lint:ignore U1000 test scaffolding
 type capture_target struct {
 	mu      sync.Mutex
 	peer    string

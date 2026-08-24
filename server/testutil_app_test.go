@@ -96,6 +96,8 @@ func test_data_directory(t testing.TB) string {
 
 // setup_settings_test_schema creates the settings table many features read
 // their configuration from.
+//
+//lint:ignore U1000 shared fixture set: a test needing the settings schema takes it from here rather than re-copying the DDL
 func setup_settings_test_schema() *DB {
 	settings := db_open("db/settings.db")
 	settings.exec("create table if not exists settings (name text primary key, value text not null)")
@@ -105,6 +107,8 @@ func setup_settings_test_schema() *DB {
 // setup_domains_test_schema creates domains.db as web.go and domains.go expect
 // to find it: the domains themselves, the routes that hang off them, and the
 // per-path delegations.
+//
+//lint:ignore U1000 shared fixture set: see setup_settings_test_schema
 func setup_domains_test_schema() *DB {
 	domains := db_open("db/domains.db")
 	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
@@ -142,6 +146,8 @@ func setup_queue_test_schema() *DB {
 }
 
 // setup_directory_test_schema creates the learned-directory entries table.
+//
+//lint:ignore U1000 shared fixture set: see setup_settings_test_schema
 func setup_directory_test_schema() *DB {
 	directory := db_open("db/directory.db")
 	directory.exec(`create table if not exists entries (

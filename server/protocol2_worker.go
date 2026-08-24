@@ -99,15 +99,23 @@ var (
 func worker_dispatch(user, app string, wf *worker_frame) {
 	key := user_app_key{user: user, app: app}
 
-	app_workers_lock.RLock()
-	w, ok := app_workers[key]
-	app_workers_lock.RUnlock()
-
-	if !ok {
-		w = worker_create(key)
+	for {
+		app_workers_lock.RLock()
+		if w, ok := app_workers[key]; ok {
+			// last_used is published and the frame handed over while the read lock
+			// is held. The reaper needs the write lock, so it cannot close this
+			// inbox between the lookup and the send - which it could when the
+			// lookup released the lock first, and a send on a closed channel
+			// panics. Blocking here with the read lock held is safe: run() drains
+			// the inbox without taking this lock.
+			w.last_used.Store(now())
+			w.inbox <- wf
+			app_workers_lock.RUnlock()
+			return
+		}
+		app_workers_lock.RUnlock()
+		worker_create(key)
 	}
-	w.last_used.Store(now())
-	w.inbox <- wf
 }
 
 // worker_inbox_offer is a try-once non-blocking enqueue into the (user, app)
@@ -116,24 +124,31 @@ func worker_dispatch(user, app string, wf *worker_frame) {
 // backlog visible as queue depth.
 func worker_inbox_offer(user, app string, wf *worker_frame) bool {
 	key := user_app_key{user: user, app: app}
-	app_workers_lock.RLock()
-	w, ok := app_workers[key]
-	app_workers_lock.RUnlock()
-	if !ok || w == nil {
-		w = worker_create(key)
-	}
-	w.last_used.Store(now())
-	select {
-	case w.inbox <- wf:
-		return true
-	default:
-		return false
+	for {
+		app_workers_lock.RLock()
+		if w, ok := app_workers[key]; ok && w != nil {
+			// Same reason as worker_dispatch: the offer happens under the read
+			// lock, so the reaper cannot close the inbox underneath it.
+			w.last_used.Store(now())
+			select {
+			case w.inbox <- wf:
+				app_workers_lock.RUnlock()
+				return true
+			default:
+				app_workers_lock.RUnlock()
+				return false
+			}
+		}
+		app_workers_lock.RUnlock()
+		worker_create(key)
 	}
 }
 
 // worker_create installs a new app_worker into the registry under
-// app_workers_lock. Safe to race with the reaper — the reaper holds
-// the write lock and re-verifies last_used before reaping.
+// app_workers_lock, returning the existing one if another goroutine won the
+// race. Callers re-look-up under the read lock afterwards rather than sending on
+// what this returns: the reaper's re-verification cannot see a dispatcher that
+// has not published last_used yet, so the pointer alone is not a guarantee.
 func worker_create(key user_app_key) *app_worker {
 	app_workers_lock.Lock()
 	defer app_workers_lock.Unlock()
@@ -251,6 +266,14 @@ func worker_failure_reason(err error) string {
 	// Before the prefix matching: this one is asserted by the receiver, not
 	// guessed from wording, and dropping it loses a broadcast event.
 	if errors.Is(err, ErrBroadcastPendingFull) {
+		return fail_transient
+	}
+	// Also before the prefix matching, and for the same reason. This message
+	// starts with "Starlark app function", which the switch below drops as
+	// unsupported - correct when the app never declared the handler, wrong when a
+	// file in its execute list failed to load. That case is transient: a restart
+	// or a corrected file fixes it, and dropping the event loses it for good.
+	if errors.Is(err, ErrStarlarkLoad) {
 		return fail_transient
 	}
 	message := err.Error()

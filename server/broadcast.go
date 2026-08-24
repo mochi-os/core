@@ -524,6 +524,7 @@ func api_broadcast_subscriber_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, k
 	}
 
 	db := db_app_system(user, app)
+	defer db.close()
 	if db == nil {
 		return sl_error(fn, "no system database")
 	}
@@ -553,6 +554,7 @@ func api_broadcast_subscriber_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 	}
 
 	db := db_app_system(user, app)
+	defer db.close()
 	if db == nil {
 		return sl_error(fn, "no system database")
 	}
@@ -594,6 +596,7 @@ func api_broadcast_next(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	db := db_app_system(user, app)
+	defer db.close()
 	if db == nil {
 		return sl_error(fn, "no system database")
 	}
@@ -614,6 +617,7 @@ func api_broadcast_received(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	}
 
 	db := db_app_system(user, app)
+	defer db.close()
 	if db == nil {
 		return sl.MakeInt(0), nil
 	}
@@ -638,6 +642,7 @@ func api_broadcast_seen(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	db := db_app_system(user, app)
+	defer db.close()
 	if db == nil {
 		return sl.MakeInt(0), nil
 	}
@@ -662,6 +667,7 @@ func api_broadcast_touch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	db := db_app_system(user, app)
+	defer db.close()
 	if db == nil {
 		return sl_error(fn, "no system database")
 	}
@@ -690,6 +696,7 @@ func api_broadcast_advance(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	db := db_app_system(user, app)
+	defer db.close()
 	if db == nil {
 		return sl_error(fn, "no system database")
 	}
@@ -755,6 +762,7 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	db := db_app_system(user, app)
+	defer db.close()
 	if db == nil {
 		return sl_error(fn, "no system database")
 	}
@@ -873,6 +881,7 @@ func api_broadcast_replay(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	db := db_app_system(user, app)
+	defer db.close()
 	if db == nil {
 		return sl_error(fn, "no system database")
 	}

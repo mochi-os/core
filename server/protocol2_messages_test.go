@@ -11,6 +11,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -417,5 +419,147 @@ func TestCoalesceOneShipsClaimFrames(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("claim frame was dropped rather than written")
+	}
+}
+
+// --- budgets on the messages receiver ----------------------------------
+//
+// /mochi/2/stream bounds its pre-open phase on count and time; /mochi/2/messages
+// did neither, and answered a claim that failed to verify by keeping the stream
+// open. Each of these frames costs this host real work before the peer has sent
+// anything: a verify per claim, a lookup and a signature per prove.
+
+// deadline_stream is fake_stream plus the SetReadDeadline a real libp2p stream
+// carries, so the receiver's optional assertion finds it.
+type deadline_stream struct {
+	fake_stream
+	deadline atomic.Int64 // unix nanos, 0 when cleared
+	sets     atomic.Int32
+}
+
+func (d *deadline_stream) SetReadDeadline(t time.Time) error {
+	if t.IsZero() {
+		d.deadline.Store(0)
+	} else {
+		d.deadline.Store(t.UnixNano())
+	}
+	d.sets.Add(1)
+	return nil
+}
+
+// messages_net_id gives claim_signable and claim_verify a receiver to bind to;
+// a bare unit test leaves net_id empty, which fails the verify for the wrong
+// reason and would make a cap test pass without a cap.
+func messages_net_id(t *testing.T) {
+	t.Helper()
+	previous := net_id
+	net_id = "self"
+	t.Cleanup(func() { net_id = previous })
+}
+
+// messages_claim mints a claim frame that really verifies against challenge on
+// the messages protocol, so the handler does the full ed25519 work per frame and
+// only a count cap can stop it.
+func messages_claim(t *testing.T, challenge []byte) *Frame {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	entity := base58_encode(public)
+	signable, err := claim_signable(challenge, entity, net_id, protocol_messages)
+	if err != nil {
+		t.Fatalf("claim_signable: %v", err)
+	}
+	return &Frame{Type: frame_type_claim, From: entity, Signature: ed25519.Sign(private, signable)}
+}
+
+func messages_receiver(reset *atomic.Int32) *Receiver {
+	return &Receiver{
+		stream:    &fake_stream{buf: &bytes.Buffer{}, reset_count: reset},
+		replies:   make(chan *Frame, 1024),
+		claimed:   map[string]bool{},
+		challenge: []byte("0123456789abcdef0123456789abcdef"),
+	}
+}
+
+// A claim that does not verify is not a retry, it is a peer spending our
+// signature checks on nothing. The stream path resets; this one used to log and
+// carry on, so the cost of a bad claim was zero to the sender.
+func TestMessagesFailedClaimResetsStream(t *testing.T) {
+	reset := new(atomic.Int32)
+	r := messages_receiver(reset)
+	r.caps_seen.Store(true)
+
+	// From "" is a valid envelope and an invalid claim: claim_verify rejects an
+	// empty entity, so this reaches the failure branch without needing a key.
+	if r.handle(&Frame{Type: frame_type_claim, From: ""}) {
+		t.Error("handle(bad claim) returned true; the stream stays open and the next bad claim costs another verify")
+	}
+	if reset.Load() != 1 {
+		t.Errorf("expected the stream reset once, got %d", reset.Load())
+	}
+}
+
+func TestMessagesCapsClaims(t *testing.T) {
+	messages_net_id(t)
+	reset := new(atomic.Int32)
+	r := messages_receiver(reset)
+	r.caps_seen.Store(true)
+
+	for i := 0; i < messages_claims_maximum; i++ {
+		if !r.handle(messages_claim(t, r.challenge)) {
+			t.Fatalf("claim %d of %d was refused; the cap is too tight for a legitimate sender", i+1, messages_claims_maximum)
+		}
+	}
+	if reset.Load() != 0 {
+		t.Fatalf("reset before the cap was reached (%d)", reset.Load())
+	}
+	if r.handle(messages_claim(t, r.challenge)) {
+		t.Errorf("claim %d was accepted; verifiable claims are unbounded", messages_claims_maximum+1)
+	}
+	if reset.Load() != 1 {
+		t.Errorf("expected the stream reset once past the cap, got %d", reset.Load())
+	}
+}
+
+func TestMessagesCapsProves(t *testing.T) {
+	reset := new(atomic.Int32)
+	r := messages_receiver(reset)
+	r.caps_seen.Store(true)
+
+	// To "" takes prove's cheap refusal branch, so this measures the budget
+	// rather than the signing path it guards.
+	for i := 0; i < messages_proves_maximum; i++ {
+		if !r.handle(&Frame{Type: frame_type_prove}) {
+			t.Fatalf("prove %d of %d was refused", i+1, messages_proves_maximum)
+		}
+	}
+	if r.handle(&Frame{Type: frame_type_prove}) {
+		t.Errorf("prove %d was accepted; an unauthenticated peer signs without limit", messages_proves_maximum+1)
+	}
+	if reset.Load() != 1 {
+		t.Errorf("expected the stream reset once past the cap, got %d", reset.Load())
+	}
+}
+
+// The read deadline bounds the phase before the first message and is cleared
+// once one arrives, because a messages stream carrying traffic is long-lived.
+func TestMessagesDeadlineClearedOnFirstMessage(t *testing.T) {
+	d := &deadline_stream{fake_stream: fake_stream{buf: &bytes.Buffer{}, reset_count: new(atomic.Int32)}}
+	r := &Receiver{stream: d, replies: make(chan *Frame, 8), claimed: map[string]bool{}}
+	r.caps_seen.Store(true)
+
+	r.deadline(time.Now().Add(messages_ready_timeout))
+	if d.deadline.Load() == 0 {
+		t.Fatal("no read deadline set: a peer can hold the stream open indefinitely before sending anything")
+	}
+
+	r.handle(&Frame{Type: frame_type_message, From: "", Service: "test", Event: "test", ID: "1"})
+	if d.deadline.Load() != 0 {
+		t.Error("the deadline survived the first message; a legitimate long-lived stream would be cut")
+	}
+	if !r.ready {
+		t.Error("receiver did not record that a message arrived")
 	}
 }

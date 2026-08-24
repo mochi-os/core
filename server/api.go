@@ -395,6 +395,11 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	s.set("user", principal_caller(t))
 	s.set("owner", principal_owner(t))
 	s.set("depth", depth+1)
+	// Carried across the call so an app reached from inside a require.function
+	// still knows it is in one, and the app listings refuse rather than recurse.
+	if visibility_checking(t) {
+		s.set("visibility", true)
+	}
 
 	// Build call args based on target app's architecture version
 	var call_args sl.Tuple
@@ -1168,6 +1173,7 @@ func idempotency_setup(sysdb *DB) {
 // purged opportunistically.
 func url_idempotency_lookup(u *User, a *App, key string) map[string]any {
 	sysdb := db_app_system(u, a)
+	defer sysdb.close()
 	if sysdb == nil {
 		return nil
 	}
@@ -1202,6 +1208,7 @@ func url_idempotency_lookup(u *User, a *App, key string) map[string]any {
 // Headers are CBOR-encoded for round-trip fidelity (sqlite blob).
 func url_idempotency_store(u *User, a *App, key string, status int, headers map[string]string, body []byte) {
 	sysdb := db_app_system(u, a)
+	defer sysdb.close()
 	if sysdb == nil {
 		return
 	}

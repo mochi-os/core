@@ -198,6 +198,7 @@ func git_can_write(t *sl.Thread, owner *User, app *App, entity string) bool {
 		return false
 	}
 	app_db := db_app_system(owner, app)
+	defer app_db.close()
 	if app_db == nil {
 		return false
 	}
@@ -225,6 +226,7 @@ func git_can_read(t *sl.Thread, owner *User, app *App, entity string) bool {
 		role = user.Role
 	}
 	app_db := db_app_system(owner, app)
+	defer app_db.close()
 	if app_db == nil {
 		return false
 	}
@@ -2747,6 +2749,7 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo stri
 	// nil when the handle cannot be created at all, and treating that as "no rules
 	// to apply" would hand anonymous callers clone and push.
 	app_db := db_app_system(owner, a)
+	defer app_db.close()
 	if app_db == nil {
 		info("git_http_handler: no app-system database for user %q app %q; refusing", owner.UID, a.id)
 		c.String(http.StatusInternalServerError, "Repository access unavailable") // i18n-ok: git protocol, read by the client not a person
@@ -2824,6 +2827,7 @@ func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e 
 	// Check access control, failing closed on a missing app-system database.
 	// See git_http_handler above for why nil is refused rather than skipped.
 	app_db := db_app_system(owner, a)
+	defer app_db.close()
 	if app_db == nil {
 		info("git_http_handler_entity: no app-system database for user %q app %q; refusing", owner.UID, a.id)
 		c.String(http.StatusInternalServerError, "Repository access unavailable") // i18n-ok: git protocol, read by the client not a person

@@ -617,6 +617,12 @@ func (a *Action) sl_json(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 // a.logout() -> None: Log the current user out
 func (a *Action) sl_logout(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	// Ending the session is the same capability mochi.user.session.revoke gates;
+	// reaching it through the action object skipped the gate entirely.
+	if err := require_permission(t, fn, "user/sessions/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
 	session := web_cookie_get(a.web, "session", "")
 	if session != "" {
 		login_delete(session)
@@ -728,8 +734,8 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	// The thread's user, not a.user: a.user is nil on an anonymous request to a
-	// public action, and every mochi.file.* call reads the thread's user, so the
-	// upload lands where those calls read it back.
+	// public action, and mochi.file.* resolves the same principal_storage account,
+	// so the upload lands where those calls read it back.
 	user, _ := principal_storage(t)
 	if user == nil {
 		return sl_error(fn, "no user")

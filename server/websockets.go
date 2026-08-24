@@ -15,6 +15,7 @@ import (
 	"nhooyr.io/websocket"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -25,6 +26,11 @@ var (
 	websockets_lock   sync.RWMutex
 	websocket_context = context.Background()
 )
+
+// websocket_write_timeout bounds one frame write. A browser that stops reading
+// leaves the socket in TCP zero-window, where an unbounded write never returns.
+// A var so a test can drive the expiry deterministically.
+var websocket_write_timeout = 10 * time.Second
 
 // websocket_client is one live connection and the app that opened it. The
 // registry key is whatever the client passed in the query string and never
@@ -178,17 +184,32 @@ func websockets_send(u *User, app string, key string, content any) {
 	}
 	var failed []dead
 
+	// Snapshot the targets, then write outside the lock. A write to a client that
+	// has stopped reading blocks until its deadline, and holding the read lock
+	// across it stalls every other send: Go's RWMutex refuses new readers once a
+	// writer is waiting, so one silent connection would take the whole subsystem
+	// down behind the next websocket_terminate.
+	var targets []dead
 	websockets_lock.RLock()
 	for id, client := range websocket_targets(u, app, key) {
-		if j == "" {
-			j = json_encode(content)
-		}
-		err := client.ws.Write(websocket_context, websocket.MessageText, []byte(j))
-		if err != nil {
-			failed = append(failed, dead{id: id, ws: client.ws})
-		}
+		targets = append(targets, dead{id: id, ws: client.ws})
 	}
 	websockets_lock.RUnlock()
+	if len(targets) == 0 {
+		return
+	}
+	j = json_encode(content)
+
+	for _, target := range targets {
+		// Bounded per write: a client in TCP zero-window otherwise parks this
+		// goroutine for the life of the process.
+		deadline, cancel := context.WithTimeout(websocket_context, websocket_write_timeout)
+		err := target.ws.Write(deadline, websocket.MessageText, []byte(j))
+		cancel()
+		if err != nil {
+			failed = append(failed, target)
+		}
+	}
 
 	for _, entry := range failed {
 		websocket_terminate(entry.ws, u, key, entry.id)

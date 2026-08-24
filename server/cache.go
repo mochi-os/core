@@ -82,8 +82,8 @@ func cache_configure() {
 }
 
 // cache_base resolves the calling app's cache directory, creating it. User
-// resolution matches mochi.db and mochi.file: the requesting user when there
-// is one, otherwise the entity owner.
+// resolution is principal_storage, matching mochi.db, mochi.file and a.upload:
+// the requesting user when there is one, otherwise the entity owner.
 func cache_base(t *sl.Thread) (string, error) {
 	user, err := principal_storage(t)
 	if err != nil || user == nil {

@@ -12,6 +12,7 @@
 package main
 
 import (
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -429,6 +430,14 @@ func peers_add_from_db(limit int) {
 // Add already known peer to memory, merging any new addresses with the
 // existing entry via peer_address_insert's cap and eviction rules.
 func peer_add_known(id string, addresses []string) {
+	// Both arrive unchecked from a remote host's /_/p2p/info on the
+	// mochi.remote.peer path, and this map is only pruned on a 24-hour tick. An
+	// unparseable address would also be handed straight to the libp2p dialer.
+	if !valid(id, "peer") {
+		info("Peers refusing malformed peer id %q", id)
+		return
+	}
+
 	peers_lock.Lock()
 	defer peers_lock.Unlock()
 
@@ -438,9 +447,42 @@ func peer_add_known(id string, addresses []string) {
 		p = Peer{ID: id}
 	}
 	for _, addr := range addresses {
+		if !peer_address_acceptable(addr) {
+			continue
+		}
 		peer_address_insert(&p, addr, t)
 	}
 	peers[id] = p
+}
+
+// peer_address_acceptable reports whether an address advertised by a remote host
+// is well-formed enough to keep and hand to the dialer.
+//
+// Only the parse and an unspecified address are refused. Loopback and private
+// ranges are NOT: the two local instances talk to each other over 127.0.0.1,
+// and peers on a LAN reach each other on RFC1918 addresses, so filtering those
+// would break ordinary operation to narrow an already-narrow exposure.
+//
+// Deliberately NOT net_address_dialable, which drops loopback. That one filters
+// what this host publishes about itself, where a loopback address is useless to
+// every reader; this one filters what a remote host tells us, where it is how
+// the local pair finds each other.
+func peer_address_acceptable(address string) bool {
+	ma, err := multiaddr.NewMultiaddr(address)
+	if err != nil {
+		return false
+	}
+	for _, protocol := range []int{multiaddr.P_IP4, multiaddr.P_IP6} {
+		value, err := ma.ValueForProtocol(protocol)
+		if err != nil {
+			continue
+		}
+		parsed := net.ParseIP(value)
+		if parsed == nil || parsed.IsUnspecified() {
+			return false
+		}
+	}
+	return true
 }
 
 // New or existing peer discovered or re-discovered at unknown address.

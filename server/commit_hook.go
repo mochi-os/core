@@ -212,6 +212,7 @@ func commits_table_create(db *DB) {
 // app).
 func commits_setup(u *User, a *App) *DB {
 	sys := db_app_system(u, a)
+	defer sys.close()
 	if sys == nil {
 		return nil
 	}

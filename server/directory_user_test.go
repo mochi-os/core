@@ -168,10 +168,12 @@ func TestLocalEntityResolutionIgnoresLearnedGhosts(t *testing.T) {
 	}
 }
 
-// mochi.remote.ping's gate predicate: a private local entity is "foreign" to an
-// unrelated caller (blocked), but not to its owner; public entities and remote
-// entities are never foreign. request/stream and delivery are NOT gated — only
-// the bare liveness probe.
+// The gate predicate shared by mochi.remote.ping and mochi.entity.info: a
+// private local entity is "foreign" to an unrelated caller (blocked), but not
+// to its owner; public entities and remote entities are never foreign.
+// request/stream and delivery are NOT gated — the bare liveness probe and the
+// description are, because both would otherwise confirm the entity to someone
+// with no relationship to it.
 func TestPrivateLocalForeign(t *testing.T) {
 	create_test_users_db(t)
 	db := db_open("db/users.db")

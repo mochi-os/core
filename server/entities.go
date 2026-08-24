@@ -861,6 +861,20 @@ func api_entity_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "invalid id %q", id)
 	}
 
+	// A private local entity is not described to a caller belonging to another
+	// user - the same rule mochi.remote.peer applies to a bare ping. Answering
+	// here would defeat that guard by a different question: this row carries the
+	// name, class, parent and the owner's own identity as creator. Absent and
+	// refused are the same answer on purpose, so this stays no more of an
+	// existence oracle than a missing id.
+	caller := ""
+	if user := principal_caller(t); user != nil && user.Identity != nil {
+		caller = user.Identity.ID
+	}
+	if entity_private_local_foreign(caller, id) {
+		return sl.None, nil
+	}
+
 	// Look up by ID or fingerprint
 	e := entity_by_any(id)
 	if e == nil {

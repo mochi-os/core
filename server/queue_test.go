@@ -283,6 +283,12 @@ func TestQueueResurrectPeerPullsDeferredRowsForward(t *testing.T) {
 // and crucially does NOT panic. A corrupted/wrong-shape content blob
 // must surface as a normal queue_fail, never as a process crash.
 func TestQueueSelfLoopFastDecodeFailureReturnsFalse(t *testing.T) {
+	// queue_send_self_loop_fast dispatches to an app worker, which lives until
+	// the reaper closes its inbox. Without the teardown it outlives this test and
+	// races later ones on the globals a worker reads.
+	reset_workers(t)
+	defer reset_workers(t)
+
 	setup_replication_test(t)
 	q := &QueueEntry{
 		ID:         "decode-fail",
@@ -302,6 +308,12 @@ func TestQueueSelfLoopFastDecodeFailureReturnsFalse(t *testing.T) {
 // wrapper is present and correctly typed - a failed recover would crash the
 // test runner here.
 func TestQueueSelfLoopFastPanicRecovered(t *testing.T) {
+	// queue_send_self_loop_fast dispatches to an app worker, which lives until
+	// the reaper closes its inbox. Without the teardown it outlives this test and
+	// races later ones on the globals a worker reads.
+	reset_workers(t)
+	defer reset_workers(t)
+
 	setup_replication_test(t)
 	// Empty Event - route() returns "unknown user" error, not a panic,
 	// but exercises the full function structure including defer recover.

@@ -297,6 +297,18 @@ func (r *Receiver) handle(f *Frame) bool {
 	return true
 }
 
+// credit returns one claim and one prove budget once a message shows the peer
+// is doing the work those budgets exist to gate. Floored at zero - they are an
+// allowance for frames the peer has not backed, not a running total.
+func (r *Receiver) credit() {
+	if r.claims > 0 {
+		r.claims--
+	}
+	if r.proves > 0 {
+		r.proves--
+	}
+}
+
 // dispatch_message decodes one message frame, checks per-(stream,
 // entity) claim, decompresses content/data, and pushes onto the
 // per-(user, app) worker.
@@ -316,6 +328,12 @@ func (r *Receiver) dispatch_message(f *Frame) {
 	if !claimed && f.From != "" {
 		r.reply(&Frame{Type: frame_type_fail, Replies: []string{f.ID}, Reason: fail_unclaimed})
 		return
+	}
+	if claimed {
+		// The claim did the thing a claim is for, so its budget comes back.
+		// Without this a peer speaking for more entities than the cap loses
+		// delivery part-way through a session.
+		r.credit()
 	}
 
 	// Decompress data/content per Codec. Decoded content is already

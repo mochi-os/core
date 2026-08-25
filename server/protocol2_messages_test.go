@@ -523,6 +523,37 @@ func TestMessagesCapsClaims(t *testing.T) {
 	}
 }
 
+// The cap above bounds claims the peer has not backed with traffic. A sender
+// must claim once per entity it speaks for, so a peer hosting more entities
+// than the cap legitimately sends more than that many claims over a session -
+// counting the lifetime total cuts its delivery off part-way through, which is
+// not a limit this host gets to impose on how many users the far side has.
+func TestMessagesClaimBudgetReturnsOnDeliveredMessages(t *testing.T) {
+	messages_net_id(t)
+	// dispatch_message ends in worker_dispatch, and a worker outlives the test
+	// unless its inbox is closed.
+	reset_workers(t)
+	defer reset_workers(t)
+
+	reset := new(atomic.Int32)
+	r := messages_receiver(reset)
+	r.caps_seen.Store(true)
+
+	// Well past the cap, each claim backed by the message it exists to carry.
+	for i := 0; i < messages_claims_maximum*3; i++ {
+		claim := messages_claim(t, r.challenge)
+		if !r.handle(claim) {
+			t.Fatalf("claim %d was refused after %d delivered messages; a peer speaking for more entities than the cap loses delivery mid-session", i+1, i)
+		}
+		if !r.handle(&Frame{Type: frame_type_message, From: claim.From}) {
+			t.Fatalf("the message backing claim %d closed the stream", i+1)
+		}
+	}
+	if reset.Load() != 0 {
+		t.Errorf("stream reset %d times; a peer backing every claim with a message must never be cut off", reset.Load())
+	}
+}
+
 func TestMessagesCapsProves(t *testing.T) {
 	reset := new(atomic.Int32)
 	r := messages_receiver(reset)
@@ -546,6 +577,12 @@ func TestMessagesCapsProves(t *testing.T) {
 // The read deadline bounds the phase before the first message and is cleared
 // once one arrives, because a messages stream carrying traffic is long-lived.
 func TestMessagesDeadlineClearedOnFirstMessage(t *testing.T) {
+	// handle() dispatches the message to an app worker, and a worker lives until
+	// the reaper closes its inbox 300s later. Without the teardown it outlives
+	// this test and races later tests on the globals a worker reads.
+	reset_workers(t)
+	defer reset_workers(t)
+
 	d := &deadline_stream{fake_stream: fake_stream{buf: &bytes.Buffer{}, reset_count: new(atomic.Int32)}}
 	r := &Receiver{stream: d, replies: make(chan *Frame, 8), claimed: map[string]bool{}}
 	r.caps_seen.Store(true)

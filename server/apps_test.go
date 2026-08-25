@@ -2302,6 +2302,64 @@ func TestAppVisibleUnansweredKeepsPreviousRefusal(t *testing.T) {
 	}
 }
 
+// The same fallback must hold when the check raises rather than being absent.
+// staff's app_allowed calls fail() when the comptroller does not answer,
+// precisely so an outage reaches this path instead of being recorded as a
+// refusal. The three tests above all arrive here by renaming the function
+// away, so without this one the raising route into visibility_unanswered - the
+// one an app actually takes - is never exercised.
+func TestAppVisibleUnansweredKeepsPreviousApprovalWhenTheCheckRaises(t *testing.T) {
+	// dev_reload makes av.starlark() re-read the source on every call. Outside
+	// it the globals are frozen at first load, so the function cannot answer
+	// once and then raise.
+	defer func(reload bool) { dev_reload = reload }(dev_reload)
+	dev_reload = true
+
+	av := visibility_test_app(t, "def app_allowed():\n    return True\n")
+	user := &User{UID: "u1", Role: "user"}
+	if !app_visible(av, user) {
+		t.Fatal("first call should be allowed")
+	}
+
+	// The authority goes away: the same function now raises, as staff's does.
+	source := "def app_allowed():\n    fail(\"comptroller unreachable\")\n"
+	if err := os.WriteFile(av.Execute[0], []byte(source), 0644); err != nil {
+		t.Fatalf("rewrite starlark source: %v", err)
+	}
+	resolution_visibility.put(resolution_key{"u1", av.app.id}, true, -1)
+
+	if !app_visible(av, user) {
+		t.Error("a raising check should keep the previous approval, not lock the user out for the length of the outage")
+	}
+}
+
+// An unanswered check is held only for the short failure window, so a
+// recovered authority is asked again soon. An app that returned False instead
+// of raising would take the decided path below it, where the answer is cached
+// for the full visibility_cache_ttl.
+func TestAppVisibleUnansweredCachesForTheFailureWindow(t *testing.T) {
+	av := visibility_test_app(t, "def app_allowed():\n    return True\n")
+	user := &User{UID: "u1", Role: "user"}
+	if !app_visible(av, user) {
+		t.Fatal("first call should be allowed")
+	}
+
+	key := resolution_key{"u1", av.app.id}
+	resolution_visibility.put(key, true, -1)
+	av.Require.Function = "absent"
+	if !app_visible(av, user) {
+		t.Fatal("an unanswerable check should keep the previous approval")
+	}
+
+	resolution_visibility.lock.Lock()
+	expires := resolution_visibility.entries[key].expires
+	resolution_visibility.lock.Unlock()
+
+	if held := expires - now(); held > visibility_cache_failure {
+		t.Errorf("an unanswered answer is held for %ds, want no more than the %ds failure window; a decided answer would be held for %ds", held, visibility_cache_failure, visibility_cache_ttl)
+	}
+}
+
 // app_listed refuses a gated app when the thread is already inside a
 // require.function, instead of asking again and recursing.
 func TestAppListedRefusesInsideVisibilityCheck(t *testing.T) {

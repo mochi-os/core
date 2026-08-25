@@ -55,11 +55,13 @@ const (
 	stream_open_timeout   = 30 * time.Second // whole pre-open phase, cleared after
 
 	// The same bounds on /mochi/2/messages. Claims cost a verify each and prove
-	// frames cost a signature and a lookup each, so both are counted for the life
-	// of the stream rather than only before the first message: unlike stream's
-	// single open, a messages stream keeps accepting them.
-	messages_claims_maximum = 64               // claim frames accepted per stream
-	messages_proves_maximum = 64               // prove frames accepted per stream
+	// frames cost a signature and a lookup each, so both are budgeted - but a
+	// delivered message hands budget back (Receiver.credit). What is bounded is
+	// frames the peer has not backed with traffic, not the lifetime total: a
+	// sender must claim once per entity it speaks for, so the total is however
+	// many entities the far side hosts, which is not a number this host may cap.
+	messages_claims_maximum = 64               // unbacked claim frames per stream
+	messages_proves_maximum = 64               // unbacked prove frames per stream
 	messages_ready_timeout  = 30 * time.Second // until the first message, cleared after
 
 	// Codec byte values (Frame.Codec).

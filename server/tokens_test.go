@@ -375,3 +375,49 @@ func TestTokenDeleteByTokenStringAndAppScope(t *testing.T) {
 		t.Error("token should be gone after delete-by-string")
 	}
 }
+
+// A bound token names one entity, but the identifier the URL carries for that
+// entity depends on which server is serving it: the creating server resolves
+// the entity and knows both its id and its fingerprint, while a subscriber's
+// server hosts no entity row and has only the identifier in the URL. The
+// binding is on the entity, not on the spelling.
+func TestTokenAllowsMatchesEitherEntityIdentifier(t *testing.T) {
+	const id = "12YjV6g3x8Q5xiuXBRargzCPqUdVgfj51rWNdJSF4DUiPcPyCM2"
+	const fingerprint = "muPqTTtBc"
+
+	cases := []struct {
+		name        string
+		token       *Token
+		route       string
+		entity      string
+		fingerprint string
+		allowed     bool
+	}{
+		{"bound to the id, route resolved the entity",
+			&Token{Action: ":forum/-/rss", Entity: id}, ":forum/-/rss", id, fingerprint, true},
+		{"bound to the fingerprint, route resolved the entity",
+			&Token{Action: ":forum/-/rss", Entity: fingerprint}, ":forum/-/rss", id, fingerprint, true},
+		{"bound to the fingerprint, entity not hosted here",
+			&Token{Action: ":forum/-/rss", Entity: fingerprint}, ":forum/-/rss", fingerprint, fingerprint, true},
+		{"bound to the id, entity not hosted here so only the URL's fingerprint is known",
+			&Token{Action: ":forum/-/rss", Entity: id}, ":forum/-/rss", fingerprint, fingerprint, false},
+		{"bound to a different entity",
+			&Token{Action: ":forum/-/rss", Entity: "1AnotherEntityEntirely"}, ":forum/-/rss", id, fingerprint, false},
+		{"right entity, wrong action",
+			&Token{Action: ":forum/-/delete", Entity: id}, ":forum/-/rss", id, fingerprint, false},
+		{"class-level token on its class-level route",
+			&Token{Action: "-/rss", Entity: ""}, "-/rss", "", "", true},
+		{"class-level token must not reach an entity route",
+			&Token{Action: "-/rss", Entity: ""}, ":forum/-/rss", id, fingerprint, false},
+		{"an unbound token authenticates anywhere in the app",
+			&Token{Action: "", Entity: ""}, ":forum/-/rss", id, fingerprint, true},
+		{"a nil token is never allowed",
+			nil, ":forum/-/rss", id, fingerprint, false},
+	}
+
+	for _, c := range cases {
+		if got := token_allows(c.token, c.route, c.entity, c.fingerprint); got != c.allowed {
+			t.Errorf("%s: allowed=%v, want %v", c.name, got, c.allowed)
+		}
+	}
+}

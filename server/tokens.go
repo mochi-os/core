@@ -173,14 +173,27 @@ func token_validate(token string) *Token {
 	return t
 }
 
-func token_allows(t *Token, action string, entity string) bool {
+func token_allows(t *Token, action string, entity string, fingerprint string) bool {
 	if t == nil {
 		return false
 	}
 	if t.Action == "" {
 		return true
 	}
-	return t.Action == action && t.Entity == entity
+	if t.Action != action {
+		return false
+	}
+	// An entity has two public identifiers and a URL may carry either, so a
+	// token bound to one is bound to the entity, not to the spelling. The
+	// binding is minted on the server that created the entity and used on
+	// every server that subscribes to it, where the entity resolves to
+	// nothing local and the caller passes the identifier from the URL - see
+	// web_action. Without the fingerprint alternative a per-entity RSS token
+	// authenticated only on its own server.
+	if t.Entity == entity {
+		return true
+	}
+	return fingerprint != "" && t.Entity == fingerprint
 }
 
 // token_maximum_lifetime caps an unbound token. Zero means "never expires",

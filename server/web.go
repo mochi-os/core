@@ -430,10 +430,20 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	// Matched on the action pattern (":wiki/-/rss"); unbound tokens stay app-wide.
 	if api_token != nil {
 		entity_id := ""
+		entity_fingerprint := ""
 		if e != nil {
 			entity_id = e.ID
+			entity_fingerprint = e.Fingerprint
+		} else if segment, _, found := strings.Cut(name, "/"); found && is_entity_segment(segment) {
+			// The entity is not hosted here - a subscribed forum, feed or wiki
+			// belongs to another server - so entity_by_any found nothing and
+			// there is no id to compare. The identifier in the URL is what the
+			// caller named, and a token bound to that entity carries the same
+			// one; anything else still fails the comparison below.
+			entity_id = segment
+			entity_fingerprint = segment
 		}
-		if !token_allows(api_token, aa.name, entity_id) {
+		if !token_allows(api_token, aa.name, entity_id, entity_fingerprint) {
 			debug("403 token not valid for action: app=%s action=%s entity=%q token_action=%q token_entity=%q", a.id, aa.name, entity_id, api_token.Action, api_token.Entity)
 			respond_error(c, http.StatusForbidden, "token_not_valid_for_this_action", "errors.app_token_action", nil)
 			return true

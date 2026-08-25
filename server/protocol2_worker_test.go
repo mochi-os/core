@@ -24,11 +24,26 @@ import (
 func reset_workers(t *testing.T) {
 	t.Helper()
 	app_workers_lock.Lock()
+	stopped := make([]*app_worker, 0, len(app_workers))
 	for k, w := range app_workers {
 		close(w.inbox)
+		stopped = append(stopped, w)
 		delete(app_workers, k)
 	}
 	app_workers_lock.Unlock()
+
+	// Closing the inbox is not enough on its own: a worker already inside
+	// handle() carries on, and handle() reaches db_open, which reads data_dir -
+	// the global the enclosing test's cleanup is about to rewrite. Wait for each
+	// goroutine to return so the worker cannot outlive the test that made it.
+	for _, w := range stopped {
+		// Some tests hand-build an app_worker as a fixture and never start
+		// run(), so nothing will ever close done. Only a worker that has a
+		// goroutine behind it is worth waiting for.
+		if w.done != nil {
+			<-w.done
+		}
+	}
 }
 
 // --- worker_inbox_offer (self-loop direct dispatch) ---------------------

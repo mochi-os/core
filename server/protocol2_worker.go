@@ -83,6 +83,7 @@ type app_worker struct {
 	user      string
 	app       string
 	inbox     chan *worker_frame
+	done      chan struct{} // closed when run() returns, so a caller can wait it out
 	last_used atomic.Int64
 	in_flight atomic.Int32 // 1 while a handler is running; 0 otherwise. Used by workers_drain_test only.
 }
@@ -161,6 +162,7 @@ func worker_create(key user_app_key) *app_worker {
 		user:  key.user,
 		app:   key.app,
 		inbox: make(chan *worker_frame, peer_worker_inbox()),
+		done:  make(chan struct{}),
 	}
 	w.last_used.Store(now())
 	app_workers[key] = w
@@ -173,6 +175,10 @@ func worker_create(key user_app_key) *app_worker {
 // reaper). Handler panics are recovered so one buggy app can't take
 // down the whole worker.
 func (w *app_worker) run() {
+	// Closing the inbox ends the loop below, but a frame already being handled
+	// runs on past it. Anyone tearing a worker down needs to know when the
+	// goroutine has actually gone, not merely when it was told to stop.
+	defer close(w.done)
 	for wf := range w.inbox {
 		w.last_used.Store(now())
 		w.in_flight.Store(1)

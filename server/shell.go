@@ -389,7 +389,9 @@ func web_shell_init(c *gin.Context) {
 	// Active i18n language for the user (BCP 47). Logged-in users use their
 	// `language` preference; falls through to Accept-Language for the brief
 	// anonymous-public window before login completes.
-	result["language"] = request_language(c, user)
+	language := request_language(c, user)
+	result["language"] = language
+	language_cookie(c, language)
 
 	// The user's resolved theme, as the same CSS declarations injected into the
 	// shell page at load. The shell re-reads this when an app reports the

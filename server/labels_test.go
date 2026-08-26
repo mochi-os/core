@@ -7,8 +7,13 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestParseAcceptLanguage(t *testing.T) {
@@ -151,5 +156,60 @@ func TestFormatMessage(t *testing.T) {
 					tt.format, tt.locale, tt.args, got, tt.expected)
 			}
 		})
+	}
+}
+
+// The mochi_language cookie is the server's to write. It used to be written by
+// the shell, from a message any app in the frame could send, which put an
+// origin-wide cookie write behind a postMessage.
+func TestLanguageCookieIsWrittenByTheServer(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Written when the request carries no cookie yet.
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/_/shell", nil)
+	language_cookie(c, "fr")
+	set := w.Header().Get("Set-Cookie")
+	if !strings.Contains(set, "mochi_language=fr") {
+		t.Errorf("no language cookie written: %q", set)
+	}
+	if !strings.Contains(set, "; Path=/;") {
+		t.Errorf("cookie is not origin-wide, so a page outside the app would not see it: %q", set)
+	}
+	// The login page's picker has no session and must be able to write this
+	// cookie for itself; an httpOnly cookie of the same name would silently
+	// refuse that write.
+	if strings.Contains(set, "HttpOnly") {
+		t.Errorf("cookie is HttpOnly, which blocks the signed-out picker's own write: %q", set)
+	}
+
+	// Rewritten when the request's cookie disagrees with the resolved language.
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/_/shell", nil)
+	c.Request.AddCookie(&http.Cookie{Name: "mochi_language", Value: "de"})
+	language_cookie(c, "fr")
+	if !strings.Contains(w.Header().Get("Set-Cookie"), "mochi_language=fr") {
+		t.Error("a stale cookie was not brought into step with the resolved language")
+	}
+
+	// Left alone when it already agrees — an unchanged language costs no header.
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/_/shell", nil)
+	c.Request.AddCookie(&http.Cookie{Name: "mochi_language", Value: "fr"})
+	language_cookie(c, "fr")
+	if got := w.Header().Get("Set-Cookie"); got != "" {
+		t.Errorf("rewrote an unchanged cookie: %q", got)
+	}
+
+	// An unresolved language must not clear the user's stored choice.
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/_/shell", nil)
+	language_cookie(c, "")
+	if got := w.Header().Get("Set-Cookie"); got != "" {
+		t.Errorf("wrote a cookie for an empty language: %q", got)
 	}
 }

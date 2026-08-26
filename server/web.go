@@ -908,6 +908,17 @@ func web_cookie_set(c *gin.Context, name string, value string) {
 	c.SetCookie(name, value, 365*86400, "/", "", secure, true)
 }
 
+// Set a cookie scripts may read. Only for values a signed-out page has to be
+// able to write for itself - the language picker on the login page has no
+// session and no preference to save, so its choice can only live in a cookie
+// the page itself sets. An httpOnly cookie of the same name would silently
+// refuse that write.
+func web_cookie_script(c *gin.Context, name string, value string) {
+	secure := web_https && !web_is_localhost(c)
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(name, value, 365*86400, "/", "", secure, false)
+}
+
 // Check if request is from localhost. Reads the socket peer rather than
 // ClientIP, so no header can reach it even if a trusted-proxy list is ever
 // configured: this decides cookie Secure and whether an OAuth callback is

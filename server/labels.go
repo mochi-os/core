@@ -256,6 +256,26 @@ func request_language(c *gin.Context, u *User) string {
 	return resolved
 }
 
+// language_cookie brings mochi_language into step with the language a request
+// resolved to. The cookie is consulted only when there is no user (a public
+// page, or this user after signing out), so its whole job is carrying the
+// choice out of the session — which makes the server the one writer that needs
+// no cooperation from an app.
+//
+// The shell used to write it, from the `language-set` message any app in the
+// frame may send. That put an origin-wide cookie write behind a postMessage,
+// the capability a.cookie.* was removed to close. Writing only on a change
+// keeps an unchanged language free of a Set-Cookie.
+func language_cookie(c *gin.Context, language string) {
+	if c == nil || language == "" {
+		return
+	}
+	if current, err := c.Cookie("mochi_language"); err == nil && current == language {
+		return
+	}
+	web_cookie_script(c, "mochi_language", language)
+}
+
 // user_language resolves a language for an async caller that has no
 // gin.Context — email/push notification composers, queued jobs. Priority:
 //  1. The user's stored `language` preference (skips the "auto" sentinel).

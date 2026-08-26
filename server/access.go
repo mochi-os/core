@@ -15,6 +15,7 @@ Deny has priority over allow */
 package main
 
 import (
+	"fmt"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 	"strings"
@@ -24,13 +25,19 @@ type Access struct {
 	Grant int
 }
 
+// An app may ask about at most this many operations in one
+// mochi.access.check.any call. The access model has four levels plus the
+// wildcard, so this is generous; it exists so a malformed caller cannot turn
+// one call into an unbounded query loop.
+const access_operations_maximum = 32
+
 var api_access = sls.FromStringDict(sl.String("mochi.access"), sl.StringDict{
 	"allow": sl.NewBuiltin("mochi.access.allow", api_access_allow),
 	"clear": sls.FromStringDict(sl.String("mochi.access.clear"), sl.StringDict{
 		"resource": sl.NewBuiltin("mochi.access.clear.resource", api_access_clear_resource),
 		"subject":  sl.NewBuiltin("mochi.access.clear.subject", api_access_clear_subject),
 	}),
-	"check": sl.NewBuiltin("mochi.access.check", api_access_check),
+	"check": &access_check_module{},
 	"deny":  sl.NewBuiltin("mochi.access.deny", api_access_deny),
 	"list": sls.FromStringDict(sl.String("mochi.access.list"), sl.StringDict{
 		"resource": sl.NewBuiltin("mochi.access.list.resource", api_access_list_resource),
@@ -38,6 +45,35 @@ var api_access = sls.FromStringDict(sl.String("mochi.access"), sl.StringDict{
 	}),
 	"revoke": sl.NewBuiltin("mochi.access.revoke", api_access_revoke),
 })
+
+// access_check_module is a callable module that also has an .any method
+// Usage: mochi.access.check(user, resource, operation) or
+// mochi.access.check.any(user, resource, operations)
+type access_check_module struct{}
+
+func (m *access_check_module) String() string        { return "mochi.access.check" }
+func (m *access_check_module) Type() string          { return "module" }
+func (m *access_check_module) Freeze()               {}
+func (m *access_check_module) Truth() sl.Bool        { return sl.True }
+func (m *access_check_module) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable type: module") }
+func (m *access_check_module) AttrNames() []string   { return []string{"any"} }
+func (m *access_check_module) Name() string          { return "mochi.access.check" }
+
+func (m *access_check_module) Attr(name string) (sl.Value, error) {
+	if name == "any" {
+		return sl.NewBuiltin("mochi.access.check.any", api_access_check_any), nil
+	}
+	return nil, nil
+}
+
+// The builtin is passed through rather than nil so sl_error still prefixes its
+// message with "mochi.access.check()", exactly as it did when check was a plain
+// builtin.
+var access_check_builtin = sl.NewBuiltin("mochi.access.check", api_access_check)
+
+func (m *access_check_module) CallInternal(thread *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return api_access_check(thread, access_check_builtin, args, kwargs)
+}
 
 // Create access control table in the system database (app.db).
 func (db *DB) access_setup() {
@@ -54,6 +90,17 @@ func (db *DB) access_upsert(subject string, resource string, operation string, g
 // Check if a user has access to perform an operation on a resource
 // owner is the user whose user.db contains the groups
 func (db *DB) access_check(owner *User, user string, role string, resource string, operation string) bool {
+	return db.access_check_any(owner, user, role, resource, []string{operation})
+}
+
+// access_check_any answers whether the user holds ANY of the operations, taken
+// in the given order. Each operation is decided exactly as a single
+// access_check would decide it, so a caller passing one operation per call and
+// a caller passing them all here get the same answer; only the setup is
+// shared. That setup is the expensive part - the subject list costs a
+// group_memberships walk of up to group_depth_maximum levels, and the old
+// per-operation calling pattern paid for it once per level.
+func (db *DB) access_check_any(owner *User, user string, role string, resource string, operations []string) bool {
 	db.access_setup() // Ensure table exists
 
 	// Get resource hierarchy
@@ -62,8 +109,6 @@ func (db *DB) access_check(owner *User, user string, role string, resource strin
 	for i := len(parts); i > 0; i-- {
 		resources = append(resources, strings.Join(parts[:i], "/"))
 	}
-
-	operations := []string{operation, "*"}
 
 	// Build subject list in priority order
 	var subjects []string
@@ -90,9 +135,20 @@ func (db *DB) access_check(owner *User, user string, role string, resource strin
 
 	subjects = append(subjects, "*")
 
-	// Check from most specific resource to least
+	for _, operation := range operations {
+		if db.access_decide(resources, subjects, user, resource, operation) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// access_decide settles one operation: the first matching row wins, whether it
+// grants or denies. Resource order is most specific to least.
+func (db *DB) access_decide(resources []string, subjects []string, user string, resource string, operation string) bool {
 	for _, res := range resources {
-		for _, act := range operations {
+		for _, act := range []string{operation, "*"} {
 			for _, subj := range subjects {
 				var a Access
 				if db.scan(&a, "select grant from access where subject=? and resource=? and operation=?", subj, res, act) {
@@ -202,6 +258,87 @@ func api_access_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	db := db_app_system(owner, app)
 	defer db.close()
 	if db.access_check(owner, user, role, resource, operation) {
+		return sl.True, nil
+	}
+	return sl.False, nil
+}
+
+// mochi.access.check.any(user, resource, operations) -> bool: True if the user
+// holds ANY of the operations. Equivalent to calling mochi.access.check() once
+// per operation in the same order and stopping at the first True, but the
+// subject list - which costs a group-membership walk - is built once instead of
+// once per operation.
+func api_access_check_any(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission_acting(t, fn, "access/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	if len(args) != 3 {
+		return sl_error(fn, "syntax: <user: string or None>, <resource: string>, <operations: list of string>")
+	}
+
+	user := ""
+	if args[0] != sl.None {
+		var ok bool
+		user, ok = sl.AsString(args[0])
+		if !ok {
+			return sl_error(fn, "invalid user")
+		}
+		// Reject special subject markers - these are not valid user IDs
+		if user == "*" || user == "+" || strings.HasPrefix(user, "#") || strings.HasPrefix(user, "@") {
+			return sl_error(fn, "invalid user: special markers (*, +, #, @) are not valid user IDs")
+		}
+	}
+
+	resource, ok := sl.AsString(args[1])
+	if !ok || resource == "" {
+		return sl_error(fn, "invalid resource")
+	}
+
+	// A tuple is accepted as well as a list: core encodes a JSON array as a
+	// Starlark tuple, so a caller forwarding one straight through has one.
+	sequence, ok := args[2].(sl.Sequence)
+	if !ok {
+		return sl_error(fn, "invalid operations: expected a list of strings")
+	}
+	if sequence.Len() == 0 {
+		return sl_error(fn, "invalid operations: empty")
+	}
+	if sequence.Len() > access_operations_maximum {
+		return sl_error(fn, "invalid operations: at most %d", access_operations_maximum)
+	}
+	var operations []string
+	iterator := sl.Iterate(sequence)
+	defer iterator.Done()
+	var element sl.Value
+	for iterator.Next(&element) {
+		operation, ok := sl.AsString(element)
+		if !ok || operation == "" {
+			return sl_error(fn, "invalid operation")
+		}
+		operations = append(operations, operation)
+	}
+
+	app := principal_app(t)
+	if app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	owner := principal_owner(t)
+	if owner == nil {
+		return sl_error(fn, "no owner")
+	}
+
+	role := ""
+	if user != "" {
+		if u := user_by_identity(user); u != nil {
+			role = u.Role
+		}
+	}
+
+	db := db_app_system(owner, app)
+	defer db.close()
+	if db.access_check_any(owner, user, role, resource, operations) {
 		return sl.True, nil
 	}
 	return sl.False, nil

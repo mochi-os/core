@@ -128,8 +128,8 @@ func TestAccessCheckNeedsAPermission(t *testing.T) {
 	text := string(source)
 	calls := strings.Count(text, "require_permission(t, fn,") +
 		strings.Count(text, "require_permission_acting(t, fn,")
-	if calls != 1 {
-		t.Errorf("access.go has %d permission checks, want exactly 1 - the other seven APIs read only the app's own table and are meant to stay ungated", calls)
+	if calls != 2 {
+		t.Errorf("access.go has %d permission checks, want exactly 2 - check and check.any, the two read APIs. The others write or read only the app's own table and are meant to stay ungated", calls)
 	}
 }
 

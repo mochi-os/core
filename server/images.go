@@ -26,7 +26,11 @@ import (
 )
 
 func is_image(file string) bool {
-	ext := filepath.Ext(file)
+	// Folded, because a name is whatever the user's filesystem allowed and
+	// PHOTO.PNG is a PNG. The attachments library already lowercases, so an
+	// exact-case switch here made it advertise a thumbnail this refused to
+	// render and the route then served the full-size original instead.
+	ext := strings.ToLower(filepath.Ext(file))
 
 	switch ext {
 	case ".gif":

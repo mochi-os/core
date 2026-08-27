@@ -381,8 +381,13 @@ func TestFileNameType(t *testing.T) {
 		{"no extension", "README", "application/octet-stream"},
 		{"empty", "", "application/octet-stream"},
 
-		// Case sensitivity (extensions should be lowercase typically)
-		{"uppercase GIF", "image.GIF", "application/octet-stream"}, // only lowercase matched
+		// Case is folded, for the reason is_image folds it: reporting
+		// application/octet-stream for PHOTO.PNG turned a viewable image into a
+		// download, and disagreed with the library that had already lowercased.
+		{"uppercase GIF", "image.GIF", "image/gif"},
+		{"uppercase PNG", "PHOTO.PNG", "image/png"},
+		{"mixed case Pdf", "document.Pdf", "application/pdf"},
+		{"still unknown", "file.XYZ", "application/octet-stream"},
 	}
 
 	for _, tt := range tests {

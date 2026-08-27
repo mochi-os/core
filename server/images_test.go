@@ -46,10 +46,13 @@ func TestIsImage(t *testing.T) {
 		{"path with png", "/path/to/image.png", true},
 		{"path with jpg", "folder/subfolder/photo.jpg", true},
 
-		// Case sensitivity (extensions are case-sensitive)
-		{"uppercase PNG", "image.PNG", false},
-		{"uppercase JPG", "photo.JPG", false},
-		{"mixed case Png", "image.Png", false},
+		// Case is folded: a name is whatever the user's filesystem allowed, and
+		// the attachments library already lowercases - an exact-case switch here
+		// made it advertise a thumbnail this refused to render.
+		{"uppercase PNG", "image.PNG", true},
+		{"uppercase JPG", "photo.JPG", true},
+		{"mixed case Png", "image.Png", true},
+		{"uppercase non-image", "document.PDF", false},
 	}
 
 	for _, tt := range tests {

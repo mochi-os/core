@@ -15,6 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	sl "go.starlark.net/starlark"
@@ -108,7 +109,10 @@ func file_list(path string) ([]string, error) {
 }
 
 func file_name_type(name string) string {
-	switch path.Ext(name) {
+	// Folded for the same reason is_image folds: an upper-case extension is a
+	// real extension, and reporting application/octet-stream for PHOTO.PNG
+	// turned a viewable image into a download.
+	switch strings.ToLower(path.Ext(name)) {
 	case ".css":
 		return "text/css"
 	case ".gif":

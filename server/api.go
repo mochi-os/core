@@ -60,6 +60,7 @@ func api_table() sl.StringDict {
 			"broadcast": api_broadcast,
 			"archive":   api_archive,
 			"cache":     api_cache,
+			"device":    api_device,
 			"crypto": sls.FromStringDict(sl.String("mochi.crypto"), sl.StringDict{
 				"equal": sl.NewBuiltin("mochi.crypto.equal", api_crypto_equal),
 				"hash": sls.FromStringDict(sl.String("mochi.crypto.hash"), sl.StringDict{

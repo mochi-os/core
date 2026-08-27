@@ -868,9 +868,12 @@ func (a *Action) sl_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 // Keys are canonical, because Header.Get canonicalises and "cookie" therefore
 // reaches the same value as "Cookie".
 var header_readable = map[string]bool{
-	"Accept":           true,
-	"Accept-Language":  true,
-	"Content-Type":     true,
+	"Accept":          true,
+	"Accept-Language": true,
+	"Content-Type":    true,
+	// The client's device id (devices.go): client-asserted, read only to key
+	// what that device shows itself.
+	"Device":           true,
 	"Referer":          true,
 	"Sec-Fetch-Site":   true,
 	"Stripe-Signature": true,

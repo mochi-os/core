@@ -216,6 +216,7 @@ func account_redact(row map[string]any) map[string]any {
 		"verified":   row["verified"],
 		"enabled":    row["enabled"],
 		"default":    row["default"],
+		"device":     row["device"],
 	}
 }
 
@@ -358,7 +359,7 @@ func api_account_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		capability = cap
 	}
 
-	rows, err := db.rows("select id, type, label, identifier, created, verified, enabled, \"default\" from accounts order by created desc")
+	rows, err := db.rows("select id, type, label, identifier, created, verified, enabled, \"default\", device from accounts order by created desc")
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -399,7 +400,7 @@ func api_account_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	db := db_user(user, "user")
-	row, err := db.row("select id, type, label, identifier, created, verified, enabled, \"default\" from accounts where id=?", id)
+	row, err := db.row("select id, type, label, identifier, created, verified, enabled, \"default\", device from accounts where id=?", id)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -456,6 +457,21 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	db := db_user(user, "user")
 	now := time.Now().Unix()
 
+	// A per-device account may name the device it belongs to (devices.go). The
+	// device must already be registered - an unknown id is a caller bug, not a
+	// device to invent - and any other live push account on it is superseded
+	// by this one, so a phone stays one push target whichever transport
+	// carries it.
+	device, _ := fields["device"].(string)
+	if device != "" {
+		if !account_device(ptype) {
+			return sl_error(fn, "device applies to per-device account types only")
+		}
+		if device_get(db, device) == nil {
+			return sl_error(fn, "unknown device %q", device)
+		}
+	}
+
 	// Extract standard fields
 	label, _ := fields["label"].(string)
 	identifier := ""
@@ -501,8 +517,9 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 			data_json, _ := json.Marshal(data)
 
 			db.exec("update accounts set data=?, created=? where id=?", string(data_json), now, existing["id"])
-			row, _ := db.row("select id, type, label, identifier, created, verified from accounts where id=?", existing["id"])
-			return sl_encode(account_redact(row)), nil
+			superseded := account_device_bind(db, row_string(existing, "id"), device)
+			row, _ := db.row("select id, type, label, identifier, created, verified, enabled, \"default\", device from accounts where id=?", existing["id"])
+			return sl_encode(account_superseded(account_redact(row), superseded)), nil
 		}
 
 		identifier = endpoint
@@ -573,8 +590,9 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 				data["p256dh"] = p256dh
 				data_json, _ := json.Marshal(data)
 				db.exec("update accounts set label=?, data=? where id=?", label, string(data_json), existing["id"])
-				row, _ := db.row("select id, type, label, identifier, created, verified from accounts where id=?", existing["id"])
-				return sl_encode(account_redact(row)), nil
+				superseded := account_device_bind(db, row_string(existing, "id"), device)
+				row, _ := db.row("select id, type, label, identifier, created, verified, enabled, \"default\", device from accounts where id=?", existing["id"])
+				return sl_encode(account_superseded(account_redact(row), superseded)), nil
 			}
 		}
 
@@ -599,8 +617,9 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 			data["token"] = token
 			data_json, _ := json.Marshal(data)
 			db.exec("update accounts set label=?, data=? where id=?", label, string(data_json), existing["id"])
-			row, _ := db.row("select id, type, label, identifier, created, verified from accounts where id=?", existing["id"])
-			return sl_encode(account_redact(row)), nil
+			superseded := account_device_bind(db, row_string(existing, "id"), device)
+			row, _ := db.row("select id, type, label, identifier, created, verified, enabled, \"default\", device from accounts where id=?", existing["id"])
+			return sl_encode(account_superseded(account_redact(row), superseded)), nil
 		}
 		identifier = install_id
 		data["token"] = token
@@ -623,12 +642,13 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	// referenced rows get text uids (stable across export/restore).
 	id := uid()
 	_, err := db.internal.Exec(
-		"insert into accounts (id, type, label, identifier, data, created, verified) values (?, ?, ?, ?, ?, ?, ?)",
-		id, ptype, label, identifier, data_json, now, verified,
+		"insert into accounts (id, type, label, identifier, data, created, verified, device) values (?, ?, ?, ?, ?, ?, ?, ?)",
+		id, ptype, label, identifier, data_json, now, verified, device,
 	)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
+	superseded := account_device_bind(db, id, device)
 
 	return sl_encode(map[string]any{
 		"id":         id,
@@ -637,6 +657,9 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		"identifier": identifier,
 		"created":    now,
 		"verified":   verified,
+		"device":     device,
+		"superseded": superseded,
+		"existing":   false,
 	}), nil
 }
 

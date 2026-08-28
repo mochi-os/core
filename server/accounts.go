@@ -40,9 +40,20 @@ type Provider struct {
 
 // ProviderField defines a field in a provider's form
 type ProviderField struct {
-	Name        string `json:"name"`
-	Label       string `json:"label"`
-	Type        string `json:"type"` // "email", "text", "password", "url"
+	Name string `json:"name"`
+	// A core label KEY, not text. api_account_providers resolves it against the
+	// caller's language before returning, the same way an app's theme labels are
+	// resolved at their serialisation boundary. It was English text, which every
+	// consumer then showed verbatim: lib/web's account-add form renders it as the
+	// field's label, and settings/notifications interpolate it into the
+	// translated errors.field_required sentence, so a Japanese user read
+	// "API keyは必須です".
+	Label string `json:"label"`
+	Type  string `json:"type"` // "email", "text", "password", "url"
+	// Placeholder stays literal: the remaining values are example URLs, key
+	// prefixes and a sample address, which should read the same in every
+	// language. "default" on the two model fields is the exception and is not
+	// yet translated.
 	Required    bool   `json:"required"`
 	Placeholder string `json:"placeholder"`
 }
@@ -61,9 +72,9 @@ var providers = []Provider{
 		Capabilities: []string{"ai"},
 		Flow:         "form",
 		Fields: []ProviderField{
-			{Name: "api_key", Label: "API key", Type: "password", Required: true, Placeholder: "sk-ant-..."},
-			{Name: "model", Label: "Model", Type: "text", Required: false, Placeholder: "default"},
-			{Name: "label", Label: "Name", Type: "text", Required: false, Placeholder: ""},
+			{Name: "api_key", Label: "accounts.field.key", Type: "password", Required: true, Placeholder: "sk-ant-..."},
+			{Name: "model", Label: "accounts.field.model", Type: "text", Required: false, Placeholder: "default"},
+			{Name: "label", Label: "accounts.field.name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
 	},
@@ -72,7 +83,7 @@ var providers = []Provider{
 		Capabilities: []string{"notify"},
 		Flow:         "form",
 		Fields: []ProviderField{
-			{Name: "address", Label: "Email address", Type: "email", Required: true, Placeholder: "you@example.com"},
+			{Name: "address", Label: "accounts.field.address", Type: "email", Required: true, Placeholder: "you@example.com"},
 		},
 		Verify: true,
 	},
@@ -81,9 +92,9 @@ var providers = []Provider{
 		Capabilities: []string{"mcp"},
 		Flow:         "form",
 		Fields: []ProviderField{
-			{Name: "url", Label: "Server URL", Type: "url", Required: true, Placeholder: "https://mcp.example.com"},
-			{Name: "token", Label: "Access token", Type: "password", Required: false, Placeholder: ""},
-			{Name: "label", Label: "Name", Type: "text", Required: false, Placeholder: ""},
+			{Name: "url", Label: "accounts.field.server", Type: "url", Required: true, Placeholder: "https://mcp.example.com"},
+			{Name: "token", Label: "accounts.field.token", Type: "password", Required: false, Placeholder: ""},
+			{Name: "label", Label: "accounts.field.name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
 	},
@@ -92,10 +103,10 @@ var providers = []Provider{
 		Capabilities: []string{"notify"},
 		Flow:         "form",
 		Fields: []ProviderField{
-			{Name: "topic", Label: "Topic", Type: "text", Required: true, Placeholder: "my-notifications"},
-			{Name: "server", Label: "Server URL", Type: "url", Required: false, Placeholder: "https://ntfy.sh"},
-			{Name: "token", Label: "Access token", Type: "password", Required: false, Placeholder: ""},
-			{Name: "label", Label: "Name", Type: "text", Required: false, Placeholder: ""},
+			{Name: "topic", Label: "accounts.field.topic", Type: "text", Required: true, Placeholder: "my-notifications"},
+			{Name: "server", Label: "accounts.field.server", Type: "url", Required: false, Placeholder: "https://ntfy.sh"},
+			{Name: "token", Label: "accounts.field.token", Type: "password", Required: false, Placeholder: ""},
+			{Name: "label", Label: "accounts.field.name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
 	},
@@ -104,9 +115,9 @@ var providers = []Provider{
 		Capabilities: []string{"ai"},
 		Flow:         "form",
 		Fields: []ProviderField{
-			{Name: "api_key", Label: "API key", Type: "password", Required: true, Placeholder: "sk-..."},
-			{Name: "model", Label: "Model", Type: "text", Required: false, Placeholder: "default"},
-			{Name: "label", Label: "Name", Type: "text", Required: false, Placeholder: ""},
+			{Name: "api_key", Label: "accounts.field.key", Type: "password", Required: true, Placeholder: "sk-..."},
+			{Name: "model", Label: "accounts.field.model", Type: "text", Required: false, Placeholder: "default"},
+			{Name: "label", Label: "accounts.field.name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
 	},
@@ -115,8 +126,8 @@ var providers = []Provider{
 		Capabilities: []string{"notify"},
 		Flow:         "form",
 		Fields: []ProviderField{
-			{Name: "token", Label: "Access token", Type: "password", Required: true, Placeholder: ""},
-			{Name: "label", Label: "Name", Type: "text", Required: false, Placeholder: ""},
+			{Name: "token", Label: "accounts.field.token", Type: "password", Required: true, Placeholder: ""},
+			{Name: "label", Label: "accounts.field.name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
 	},
@@ -139,9 +150,9 @@ var providers = []Provider{
 		Capabilities: []string{"notify"},
 		Flow:         "form",
 		Fields: []ProviderField{
-			{Name: "url", Label: "URL", Type: "url", Required: true, Placeholder: ""},
-			{Name: "secret", Label: "Signing secret", Type: "password", Required: false, Placeholder: ""},
-			{Name: "label", Label: "Name", Type: "text", Required: false, Placeholder: ""},
+			{Name: "url", Label: "accounts.field.url", Type: "url", Required: true, Placeholder: ""},
+			{Name: "secret", Label: "accounts.field.secret", Type: "password", Required: false, Placeholder: ""},
+			{Name: "label", Label: "accounts.field.name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
 	},
@@ -298,6 +309,19 @@ func api_account_providers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		capability = cap
 	}
 
+	// Field labels are keys; resolve them here so every consumer - lib/web's
+	// account-add form and the settings / notifications required-field errors -
+	// gets text in the caller's language without each having to know the keys.
+	// Language priority mirrors api_app_label: the user's preference (with its
+	// last_language fallback for "auto"), then the request handler's
+	// thread-local for an anonymous caller, then English.
+	language := "en"
+	if user := principal_caller(t); user != nil {
+		language = user_language(user)
+	} else if l, ok := t.Local("language").(string); ok && l != "" {
+		language = l
+	}
+
 	result := []map[string]any{}
 	var list []Provider
 
@@ -320,7 +344,7 @@ func api_account_providers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 			for i, f := range p.Fields {
 				fields[i] = map[string]any{
 					"name":        f.Name,
-					"label":       f.Label,
+					"label":       resolve_core_label(language, f.Label, nil),
 					"type":        f.Type,
 					"required":    f.Required,
 					"placeholder": f.Placeholder,

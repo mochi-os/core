@@ -97,3 +97,59 @@ func Test_account_test_labels_complete(t *testing.T) {
 		}
 	}
 }
+
+// The provider form's field labels reach two consumers: lib/web's account-add
+// dialog renders them as the field labels, and settings / notifications
+// interpolate them into the translated errors.field_required sentence. They
+// were English literals, so a Japanese user read "API keyは必須です" and saw an
+// English form. They are keys now, resolved against the caller's language.
+func Test_account_provider_field_labels_are_keys(t *testing.T) {
+	load_core_labels()
+
+	for _, p := range providers {
+		for _, f := range p.Fields {
+			if !strings.HasPrefix(f.Label, "accounts.field.") {
+				t.Errorf("provider %q field %q label %q is not a label key",
+					p.Type, f.Name, f.Label)
+				continue
+			}
+			// resolve_core_label answers with the key itself when nothing
+			// matches, so a key with no English entry would ship the key to the
+			// user. Catch that here rather than in the form.
+			if got := resolve_core_label("en", f.Label, nil); got == f.Label {
+				t.Errorf("provider %q field %q key %q has no English label",
+					p.Type, f.Name, f.Label)
+			}
+		}
+	}
+}
+
+// The resolution itself, per language. account-add renders whatever this
+// returns, so an unresolved key or an English fallback is what the user sees.
+func Test_account_provider_field_labels_resolve(t *testing.T) {
+	load_core_labels()
+
+	cases := []struct {
+		language string
+		key      string // accounts.field.key
+		address  string // accounts.field.address
+		token    string // accounts.field.token
+	}{
+		{"en", "API key", "Email address", "Access token"},
+		{"de", "API-Schlüssel", "E-Mail-Adresse", "Zugriffstoken"},
+		{"ja", "API キー", "メールアドレス", "アクセストークン"},
+		{"fr", "Clé API", "Adresse e-mail", "Jeton d'accès"},
+	}
+
+	for _, c := range cases {
+		if got := resolve_core_label(c.language, "accounts.field.key", nil); got != c.key {
+			t.Errorf("accounts.field.key(%s) = %q, want %q", c.language, got, c.key)
+		}
+		if got := resolve_core_label(c.language, "accounts.field.address", nil); got != c.address {
+			t.Errorf("accounts.field.address(%s) = %q, want %q", c.language, got, c.address)
+		}
+		if got := resolve_core_label(c.language, "accounts.field.token", nil); got != c.token {
+			t.Errorf("accounts.field.token(%s) = %q, want %q", c.language, got, c.token)
+		}
+	}
+}

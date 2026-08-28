@@ -96,6 +96,40 @@ KEEP_LOCALE = frozenset({
     ("nn", "Region"), ("sv", "Region"),
     ("da", "Type"), ("fr", "Type"), ("nb", "Type"), ("nn", "Type"),
     ("fr", "Description"), ("fr", "Notes"), ("sv", "Information"),
+    # The account-provider field labels. Every cell here came from
+    # clients/android's own settings catalogue, where the same English source is
+    # already translated - so these are the translators' own decisions that the
+    # word is identical, not an unfilled cell. "Model" is the same word across
+    # the Germanic, Slavic, Romance and Malay families listed; "Name" is
+    # identical in German.
+    ('af', 'Model'),
+    ('az', 'Model'),
+    ('bs', 'Model'),
+    ('ca', 'Model'),
+    ('cs', 'Model'),
+    ('cy', 'Model'),
+    ('da', 'Model'),
+    ('ha', 'Model'),
+    ('hr', 'Model'),
+    ('id', 'Model'),
+    ('jv', 'Model'),
+    ('ku', 'Model'),
+    ('ms', 'Model'),
+    ('nl', 'Model'),
+    ('nl-be', 'Model'),
+    ('pl', 'Model'),
+    ('ro', 'Model'),
+    ('si', 'Model'),
+    ('sk', 'Model'),
+    ('sl', 'Model'),
+    ('tk', 'Model'),
+    ('tl', 'Model'),
+    ('tr', 'Model'),
+    ('uz', 'Model'),
+    ('lo', 'API key'),
+    ('my', 'API key'),
+    ('tl', 'API key'),
+    ('de', 'Name'),
 })
 
 

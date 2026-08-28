@@ -77,7 +77,8 @@ func TestNoManagePermissionsRemain(t *testing.T) {
 
 // TestEveryPermissionHasALabelEverywhere. The catalogue is shown to the user by
 // name, so a permission with no label renders as English (or blank) in every
-// other locale. en-us is the deliberate 19-key sparse overlay.
+// other locale. Regional catalogues inheriting from a present parent are
+// skipped - the parent carries the key and the resolver falls through to it.
 func TestEveryPermissionHasALabelEverywhere(t *testing.T) {
 	files, err := os.ReadDir("labels")
 	if err != nil {
@@ -85,7 +86,7 @@ func TestEveryPermissionHasALabelEverywhere(t *testing.T) {
 	}
 	for _, f := range files {
 		locale := strings.TrimSuffix(f.Name(), ".conf")
-		if !strings.HasSuffix(f.Name(), ".conf") || locale == "en-us" {
+		if !strings.HasSuffix(f.Name(), ".conf") || label_inherits(locale) {
 			continue
 		}
 		body, err := os.ReadFile("labels/" + f.Name())

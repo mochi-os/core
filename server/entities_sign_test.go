@@ -76,7 +76,8 @@ func TestEntitySignIsRestricted(t *testing.T) {
 
 // TestEntitySignHasALabelEverywhere. The permission is offered to the user by
 // name in the Apps permissions tab, so an untranslated key shows English there.
-// en-us is the deliberate 19-key sparse overlay and falls back to en.
+// Regional catalogues that inherit from a present parent are skipped: the
+// parent carries the key and language_fallbacks resolves through it.
 func TestEntitySignHasALabelEverywhere(t *testing.T) {
 	files, err := os.ReadDir("labels")
 	if err != nil {
@@ -85,7 +86,7 @@ func TestEntitySignHasALabelEverywhere(t *testing.T) {
 	checked := 0
 	for _, f := range files {
 		locale := strings.TrimSuffix(f.Name(), ".conf")
-		if !strings.HasSuffix(f.Name(), ".conf") || locale == "en-us" {
+		if !strings.HasSuffix(f.Name(), ".conf") || label_inherits(locale) {
 			continue
 		}
 		body, err := os.ReadFile("labels/" + f.Name())

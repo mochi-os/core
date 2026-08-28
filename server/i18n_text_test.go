@@ -89,8 +89,8 @@ func TestTranslatedKeysExistEverywhere(t *testing.T) {
 			continue
 		}
 		locale := strings.TrimSuffix(name, ".conf")
-		// en-us is a regional overlay: sparse by design, inheriting from en.
-		if locale == "en-us" {
+		// A regional catalogue with a present parent is sparse by design.
+		if label_inherits(locale) {
 			continue
 		}
 		body, err := os.ReadFile("labels/" + name)

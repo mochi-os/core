@@ -85,6 +85,12 @@ func Test_account_test_labels_complete(t *testing.T) {
 		for _, k := range keys {
 			value, ok := catalogue[k]
 			if !ok {
+				// A regional catalogue with a present parent inherits the key
+				// rather than repeating it; the cells it DOES carry are still
+				// checked below.
+				if label_inherits(language) {
+					continue
+				}
 				t.Errorf("%s: missing %s", language, k)
 				continue
 			}

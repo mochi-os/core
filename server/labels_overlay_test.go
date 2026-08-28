@@ -7,24 +7,29 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
 
-// The regional catalogues the label gate treats as overlays: they are allowed
-// to be sparse because language_fallbacks resolves them to their parent.
-// Mirrors OVERLAY in .github/scripts/check-labels.py and conf-refresh.py.
-var overlay_catalogues = []string{"en-us", "en-ca", "fr-ca", "es-ar", "zh-hk", "de-ch"}
+// The regional catalogues allowed to be sparse: language_fallbacks resolves
+// each to its parent key by key. Mirrors OVERLAY plus conf_inherits in
+// .github/scripts/check-labels.py and claude/scripts/conf-refresh.py.
+//
+// es-419 is deliberately absent. It falls through to es here exactly as these
+// do, but Lingui makes it the base es-ar leans on for the WEB catalogues
+// (`'es-ar': 'es-419'` in every app's lingui.config.js), so it is kept complete
+// on both layers rather than sparse on one and complete on the other.
+var overlay_catalogues = []string{"en-us", "en-ca", "fr-ca", "es-ar", "zh-hk", "de-ch", "nl-be", "pt-br"}
 
 // A cell copied verbatim from the parent overrides nothing today and pins the
 // child to a stale string the moment the parent is reworded - a present key
 // beats an inherited one. en-us held 28 such copies and nothing else, so the
 // whole file was inert.
 //
-// Scoped to the overlay set on purpose. es-419, nl-be and pt-br carry the same
-// duplication (175, 166 and 107 cells) but are NOT overlays to the gate, which
-// requires a value for every key in them; thinning those needs the OVERLAY set
-// widened first, in the Python gate and its 27 mirrors.
+// nl-be and pt-br joined this list once conf_inherits taught the gate the .conf
+// fallback rule; 166 and 107 copies came out of them. es-419 still holds 175,
+// by the decision recorded above.
 func TestOverlayCatalogueHoldsOnlyDifferences(t *testing.T) {
 	load_core_labels()
 
@@ -48,19 +53,54 @@ func TestOverlayCatalogueHoldsOnlyDifferences(t *testing.T) {
 	}
 }
 
-// The other half: emptying the file must not lose the strings. Every key en
-// carries has to still resolve for en-us, through the fallback chain, with the
-// parent's own wording.
+// The other half: thinning a file must not lose the strings. Every key the
+// parent carries has to still resolve for the child, through the fallback
+// chain, with the parent's own wording.
 func TestOverlayResolvesThroughToItsParent(t *testing.T) {
 	load_core_labels()
 
-	english := core_labels["en"]
-	if len(english) == 0 {
+	if len(core_labels["en"]) == 0 {
 		t.Fatal("en.conf resolved to nothing; the rest of this test would be vacuous")
 	}
-	for key, want := range english {
-		if got := resolve_core_label("en-us", key, nil); got != want {
-			t.Errorf("resolve_core_label(en-us, %q) = %q, want %q", key, got, want)
+	for _, tag := range overlay_catalogues {
+		child, ok := core_labels[tag]
+		if !ok {
+			continue
+		}
+		parent_tag := tag[:strings.LastIndex(tag, "-")]
+		parent, ok := core_labels[parent_tag]
+		if !ok {
+			continue
+		}
+		inherited := 0
+		for key, want := range parent {
+			if _, own := child[key]; own {
+				continue // the child overrides this one, by design
+			}
+			inherited++
+			if got := resolve_core_label(tag, key, nil); got != want {
+				t.Errorf("resolve_core_label(%s, %q) = %q, want %s's %q", tag, key, got, parent_tag, want)
+			}
+		}
+		if inherited == 0 {
+			t.Errorf("%s inherits nothing from %s, so this test proved nothing for it", tag, parent_tag)
 		}
 	}
+}
+
+// label_inherits reports whether a catalogue may omit a key because a parent
+// catalogue supplies it: language_fallbacks strips subtags, so nl-be resolves
+// through nl before en, key by key. Mirrors conf_inherits in
+// claude/scripts/i18n_glossary.py and the same rule in every
+// .github/scripts/check-labels.py.
+//
+// The completeness tests in this package used to hardcode a single "en-us"
+// skip, which is the same rule written for one locale.
+func label_inherits(locale string) bool {
+	cut := strings.LastIndex(locale, "-")
+	if cut < 0 {
+		return false
+	}
+	_, err := os.Stat("labels/" + locale[:cut] + ".conf")
+	return err == nil
 }

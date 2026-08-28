@@ -12,6 +12,7 @@
 package main
 
 import (
+	"sort"
 	"time"
 
 	sl "go.starlark.net/starlark"
@@ -667,6 +668,48 @@ func api_directory_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl_encode(entry_legacy(d)), nil
 }
 
+// directory_sort orders search results by name, oldest first on a tie.
+//
+// The query cannot do this. SQLite collates by byte, so every uppercase ASCII
+// name sorts ahead of every lowercase one and accented names land last - and
+// the search API takes no limit while its callers keep only the first 20 or 50,
+// so that ordering decides which entries a user sees at all, not merely their
+// order. text_sortkey is the same fold mochi.text.sortkey gives Starlark, so
+// the answer matches what a caller sorting for itself would get.
+//
+// Oldest first on equal names: an impersonator registering the same name later
+// cannot sort above the original.
+func directory_sort(ds []map[string]any) {
+	key := make(map[string]string, len(ds))
+	for _, d := range ds {
+		name, _ := d["name"].(string)
+		id, _ := d["id"].(string)
+		key[id] = text_sortkey(name)
+	}
+	sort.SliceStable(ds, func(i, j int) bool {
+		a, _ := ds[i]["id"].(string)
+		b, _ := ds[j]["id"].(string)
+		if key[a] != key[b] {
+			return key[a] < key[b]
+		}
+		return created_of(ds[i]) < created_of(ds[j])
+	})
+}
+
+// created_of reads a directory entry's created stamp, which sl_encode may hand
+// back as any of the numeric shapes the database driver produces.
+func created_of(d map[string]any) int64 {
+	switch v := d["created"].(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	}
+	return 0
+}
+
 // mochi.directory.search(class, search, include_self, fingerprint="") -> list: Search the directory
 func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
@@ -702,9 +745,9 @@ func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	var rows []map[string]any
 	var err error
 	if fp_search != "" {
-		rows, err = db.rows("select * from (select *, row_number() over (partition by entity order by version desc, seen desc) ranked from entries where class=? and fingerprint=?) where ranked=1 order by name, created", class, fp_search)
+		rows, err = db.rows("select * from (select *, row_number() over (partition by entity order by version desc, seen desc) ranked from entries where class=? and fingerprint=?) where ranked=1 order by created", class, fp_search)
 	} else {
-		rows, err = db.rows("select * from (select *, row_number() over (partition by entity order by version desc, seen desc) ranked from entries where class=? and name like ? escape '\\') where ranked=1 order by name, created", class, "%"+like_escape(search)+"%")
+		rows, err = db.rows("select * from (select *, row_number() over (partition by entity order by version desc, seen desc) ranked from entries where class=? and name like ? escape '\\') where ranked=1 order by created", class, "%"+like_escape(search)+"%")
 	}
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
@@ -714,6 +757,7 @@ func api_directory_search(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	for _, row := range rows {
 		ds = append(ds, entry_legacy(row))
 	}
+	directory_sort(ds)
 
 	if u == nil || include_self || class != "person" {
 		return sl_encode(ds), nil

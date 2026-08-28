@@ -916,7 +916,11 @@ func api_entity_owned(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_open("db/users.db")
-	entities, err := db.rows("select id, fingerprint, class, name from entities where user=? order by name", user.UID)
+	// order by id, not name: SQLite collates by byte, so accents and case come
+	// out wrong and the ordering would change again under Postgres. Every
+	// consumer either sorts for itself (apps/settings' route picker, with
+	// naturalCompare) or builds a map keyed by id, where order means nothing.
+	entities, err := db.rows("select id, fingerprint, class, name from entities where user=? order by id", user.UID)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}

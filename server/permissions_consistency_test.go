@@ -223,7 +223,9 @@ func TestEveryAppRegistryAPIIsGated(t *testing.T) {
 // apps_default grant is simply broken, with no way for the user to fix it.
 func TestDefaultAppsHoldWhatTheyCall(t *testing.T) {
 	required := map[string][]string{
-		"Apps":      {"apps/read", "apps/write", "permissions/read", "permissions/write"},
+		"Apps": {"apps/read", "apps/write", "permissions/read", "permissions/write",
+			// The per-user version/track/routing overrides the app exists to set.
+			"user/apps/read", "user/apps/write"},
 		"Publisher": {"apps/write"},
 		"Menu":      {"apps/read", "permissions/read", "permissions/write"},
 		"Settings": {"apps/read", "settings/write", "server/read",

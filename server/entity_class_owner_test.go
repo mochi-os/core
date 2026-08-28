@@ -193,9 +193,9 @@ func TestUserRoutingBindingsAreGated(t *testing.T) {
 	found := 0
 	for _, m := range accessor.FindAllStringSubmatch(source, -1) {
 		found++
-		want := "apps/write"
+		want := "user/apps/write"
 		if m[2] == "get" || m[2] == "list" {
-			want = "apps/read"
+			want = "user/apps/read"
 		}
 		if !strings.Contains(m[3], `require_permission(t, fn, "`+want+`")`) {
 			t.Errorf("a.user.app.%s.%s does not require %s: any installed app could repoint the user's routing",

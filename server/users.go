@@ -1776,7 +1776,7 @@ func (p *UserAppClass) Type() string          { return "UserAppClass" }
 
 // a.user.app.class.get(class) -> string | None: Get user class binding
 func (p *UserAppClass) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "apps/read"); err != nil {
+	if err := require_permission(t, fn, "user/apps/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	var class string
@@ -1792,7 +1792,7 @@ func (p *UserAppClass) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // a.user.app.class.set(class, app) -> None: Set user class binding
 func (p *UserAppClass) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "apps/write"); err != nil {
+	if err := require_permission(t, fn, "user/apps/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	var class, app string
@@ -1805,7 +1805,7 @@ func (p *UserAppClass) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 // a.user.app.class.delete(class) -> None: Delete user class binding
 func (p *UserAppClass) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "apps/write"); err != nil {
+	if err := require_permission(t, fn, "user/apps/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	var class string
@@ -1818,7 +1818,7 @@ func (p *UserAppClass) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 
 // a.user.app.class.list() -> dict: List all user class bindings
 func (p *UserAppClass) list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "apps/read"); err != nil {
+	if err := require_permission(t, fn, "user/apps/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	db := db_user(p.user, "user")
@@ -1862,7 +1862,7 @@ func (p *UserAppService) Type() string          { return "UserAppService" }
 
 // a.user.app.service.get(service) -> string | None: Get user service binding
 func (p *UserAppService) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "apps/read"); err != nil {
+	if err := require_permission(t, fn, "user/apps/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	var service string
@@ -1878,7 +1878,7 @@ func (p *UserAppService) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // a.user.app.service.set(service, app) -> None: Set user service binding
 func (p *UserAppService) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "apps/write"); err != nil {
+	if err := require_permission(t, fn, "user/apps/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	var service, app string
@@ -1891,7 +1891,7 @@ func (p *UserAppService) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // a.user.app.service.delete(service) -> None: Delete user service binding
 func (p *UserAppService) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "apps/write"); err != nil {
+	if err := require_permission(t, fn, "user/apps/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	var service string
@@ -1904,7 +1904,7 @@ func (p *UserAppService) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 
 // a.user.app.service.list() -> dict: List all user service bindings
 func (p *UserAppService) list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "apps/read"); err != nil {
+	if err := require_permission(t, fn, "user/apps/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	db := db_user(p.user, "user")
@@ -1948,7 +1948,7 @@ func (p *UserAppPath) Type() string          { return "UserAppPath" }
 
 // a.user.app.path.get(path) -> string | None: Get user path binding
 func (p *UserAppPath) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "apps/read"); err != nil {
+	if err := require_permission(t, fn, "user/apps/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	var path string
@@ -1964,7 +1964,7 @@ func (p *UserAppPath) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // a.user.app.path.set(path, app) -> None: Set user path binding
 func (p *UserAppPath) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "apps/write"); err != nil {
+	if err := require_permission(t, fn, "user/apps/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	var path, app string
@@ -1977,7 +1977,7 @@ func (p *UserAppPath) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 
 // a.user.app.path.delete(path) -> None: Delete user path binding
 func (p *UserAppPath) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "apps/write"); err != nil {
+	if err := require_permission(t, fn, "user/apps/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	var path string
@@ -1990,7 +1990,7 @@ func (p *UserAppPath) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // a.user.app.path.list() -> dict: List all user path bindings
 func (p *UserAppPath) list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "apps/read"); err != nil {
+	if err := require_permission(t, fn, "user/apps/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	db := db_user(p.user, "user")
@@ -2032,7 +2032,7 @@ func (p *UserAppVersion) Type() string          { return "UserAppVersion" }
 
 // a.user.app.version.get(app) -> dict | None: Get user version binding
 func (p *UserAppVersion) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "apps/read"); err != nil {
+	if err := require_permission(t, fn, "user/apps/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	var app string
@@ -2051,7 +2051,7 @@ func (p *UserAppVersion) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // a.user.app.version.set(app, version?, track?) -> None: Set user version binding
 func (p *UserAppVersion) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "apps/write"); err != nil {
+	if err := require_permission(t, fn, "user/apps/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	var app, version, track string
@@ -2064,7 +2064,7 @@ func (p *UserAppVersion) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 
 // a.user.app.version.delete(app) -> None: Delete user version binding
 func (p *UserAppVersion) delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "apps/write"); err != nil {
+	if err := require_permission(t, fn, "user/apps/write"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	var app string

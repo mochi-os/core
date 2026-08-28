@@ -508,6 +508,8 @@ var (
 			{"apps/write", ""},
 			{"permissions/read", ""},
 			{"permissions/write", ""},
+			{"user/apps/read", ""},
+			{"user/apps/write", ""},
 		}},
 		{"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92", "Chat", []struct{ Permission, Object string }{
 			{"friends/read", ""},

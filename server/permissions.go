@@ -71,7 +71,6 @@ var permissions = []Permission{
 	{"user/identity/write", false, false},
 	{"user/sessions/read", false, false},
 	{"user/sessions/write", false, false},
-
 	// Restricted permissions
 	{"accounts/notify", true, false},
 	// Installing writes executable code to disk under an app's entity id: this is
@@ -84,9 +83,22 @@ var permissions = []Permission{
 	// The app registry: which app answers a URL prefix, a class or a service
 	// name, and which version is active. apps/write can point the login prefix
 	// at another app, and core exempts whatever serves that prefix from its own
-	// authentication gates.
-	{"apps/read", true, true},
+	// authentication gates, so it stays administrator-only. Reading the registry
+	// does not: an ordinary user has to see which apps and versions exist to
+	// choose among them, and the per-user overrides they then set live under
+	// user/apps/* below. Restricted either way - only a default grant supplies
+	// these, not a consent dialog.
+	{"apps/read", true, false},
 	{"apps/write", true, true},
+	// This user's own overrides of the same registry - which version, class,
+	// service or path they have chosen for themselves. Not administrator: the
+	// whole point is that an ordinary user picks their own, and nothing here
+	// reaches another account. Still restricted, because class resolution
+	// consults the user binding first: an app that could write one would make
+	// itself the handler for a class and then update or delete the user's
+	// entities in it, which entity_class_owned otherwise refuses.
+	{"user/apps/read", true, false},
+	{"user/apps/write", true, false},
 	// The operator's own pages - terms, privacy - served to every visitor.
 	{"documents/read", true, true},
 	{"documents/write", true, true},

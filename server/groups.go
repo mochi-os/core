@@ -277,7 +277,10 @@ func api_group_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	db := db_user(owner, "user")
-	rows, err := db.rows("select * from groups order by name")
+	// No ORDER BY name: SQL collation gets accents and locale wrong, and the
+	// consumer sorts with naturalCompare. Order by an intrinsic column so the
+	// result is at least stable.
+	rows, err := db.rows("select * from groups order by id")
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}

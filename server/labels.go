@@ -225,8 +225,13 @@ func request_language(c *gin.Context, u *User) string {
 		// "auto" is the explicit "detect from browser" option in the settings
 		// picker — treated as if no preference were set, falling through to
 		// the cookie / Accept-Language chain below.
+		// Validated on the way out, not just on the way in: the write paths
+		// check the tag, but a preference stored before a validator changed
+		// keeps whatever it was given, and this read is consulted ahead of the
+		// cookie on every request. An unusable stored tag falls through to the
+		// cookie / Accept-Language chain rather than reaching the resolver.
 		pref = strings.ToLower(user_preference_get(u, "language", ""))
-		if pref != "" && pref != "auto" {
+		if pref != "" && pref != "auto" && valid(pref, "locale") {
 			return pref
 		}
 	}

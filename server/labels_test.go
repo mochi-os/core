@@ -213,3 +213,47 @@ func TestLanguageCookieIsWrittenByTheServer(t *testing.T) {
 		t.Errorf("wrote a cookie for an empty language: %q", got)
 	}
 }
+
+// request_language consults the stored preference ahead of the cookie and the
+// Accept-Language header, and returns it directly. The write paths validate a
+// tag before storing it, but that is validation at one moment: a preference
+// written under an older validator keeps whatever it was given, and every
+// later request reads it. Re-validating on the read is what makes the bound
+// on "locale" apply to values already on disk.
+func TestRequestLanguageValidatesTheStoredPreference(t *testing.T) {
+	tests := []struct {
+		name       string
+		preference string
+		want       string
+	}{
+		{"a usable tag is returned", "pt-br", "pt-br"},
+		{"the auto sentinel falls through", "auto", "en"},
+		{"an empty preference falls through", "", "en"},
+		{"a tag past the subtag bound falls through", "en" + strings.Repeat("-aa", 1360), "en"},
+		{"a malformed tag falls through", "en_GB", "en"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			u := &User{Preferences: map[string]string{
+				"language": test.preference,
+				// Pre-seeded so the fall-through cases resolve to the value
+				// already stored and request_language skips its last_language
+				// write, which would need a user database this test has none of.
+				"last_language": "en",
+			}}
+			if got := request_language(nil, u); got != test.want {
+				t.Errorf("request_language with preference %q = %q, want %q",
+					truncate_tag(test.preference), got, test.want)
+			}
+		})
+	}
+}
+
+// truncate_tag keeps a failure message readable when the preference under test
+// is thousands of characters long.
+func truncate_tag(tag string) string {
+	if len(tag) <= 40 {
+		return tag
+	}
+	return tag[:40] + "..."
+}

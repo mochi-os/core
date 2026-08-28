@@ -664,7 +664,12 @@ func valid_with(s string, match string, compile func(string) *regexp.Regexp) boo
 		// Accepts: en, en-gb, zh-hant, zh-hant-hk, pt-br, pt-419, en-x-pseudo, en-x-pseudo-rtl.
 		// Rejects: uppercase variants, underscores, irregular grandfathered tags.
 		// Standard subtags are 2-8 chars; the private-use "-x-" extension allows 1-8 char subtags.
-		match = "^[a-z]{2,3}(-[a-z0-9]{2,8})*(-x(-[a-z0-9]{1,8})+)?$"
+		// The subtag counts are bounded, not open: language_fallbacks builds one
+		// chain entry per subtag and resolve_label rebuilds that chain for every
+		// label it resolves, so an unbounded repetition let a shape-valid tag of
+		// a few thousand subtags cost that many allocations and map lookups per
+		// label. Four is well clear of the deepest tag in use (one subtag).
+		match = "^[a-z]{2,3}(-[a-z0-9]{2,8}){0,4}(-x(-[a-z0-9]{1,8}){1,4})?$"
 	case "name":
 		match = "^[^<>\r\n]{1,1000}$"
 	case "natural":

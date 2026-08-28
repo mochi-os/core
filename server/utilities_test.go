@@ -438,6 +438,16 @@ func TestValid(t *testing.T) {
 		{"locale 1-letter rejected", "e", "locale", false},
 		{"locale empty rejected", "", "locale", false},
 		{"locale subtag too long rejected", "en-toolongsubtag", "locale", false},
+		// The subtag repetition is bounded. language_fallbacks builds one chain
+		// entry per subtag and resolve_label rebuilds that chain per label, so
+		// an open repetition made a shape-valid tag a per-request cost the user
+		// could set on themselves and persist. Four is well clear of the deepest
+		// tag shipped (one subtag, e.g. "de-ch"); "zh-hant-hk" uses two.
+		{"locale four subtags accepted", "en-aa-bb-cc-dd", "locale", true},
+		{"locale five subtags rejected", "en-aa-bb-cc-dd-ee", "locale", false},
+		{"locale private-use four accepted", "en-x-aa-bb-cc-dd", "locale", true},
+		{"locale private-use five rejected", "en-x-aa-bb-cc-dd-ee", "locale", false},
+		{"locale cookie-sized tag rejected", "en" + strings.Repeat("-aa", 1360), "locale", false},
 
 		// version pattern (app version; becomes a path component under
 		// data_dir/apps, so it must reject path traversal)

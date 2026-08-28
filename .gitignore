@@ -45,3 +45,4 @@ pnpm-debug.log*
 
 # OS
 Thumbs.db
+__pycache__/

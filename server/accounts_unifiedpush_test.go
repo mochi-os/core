@@ -88,7 +88,7 @@ func TestUnifiedPushDeliverLocalFastPath(t *testing.T) {
 	user := &User{UID: "u1"}
 	data := map[string]any{
 		// Path-only endpoint — local fast-path should fire
-		"endpoint": "/menu/-/push/inbound/abc123",
+		"endpoint": "/notifications/-/push/inbound/abc123",
 	}
 
 	ok := account_deliver_unifiedpush(user, "42", data, "Title", "Body", "", "tag", "", "")

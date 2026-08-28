@@ -136,7 +136,7 @@ func TestDeviceSupersedesPushAccounts(t *testing.T) {
 	}
 
 	up := device_call(t, thread, "mochi.account.add", api_account_add, sl.Tuple{sl.String("unifiedpush")},
-		device_kwargs("auth", "a", "p256dh", "p", "endpoint", "/menu/-/push/inbound/x", "label", "S24U", "device", "phone-0001"))
+		device_kwargs("auth", "a", "p256dh", "p", "endpoint", "/notifications/-/push/inbound/x", "label", "S24U", "device", "phone-0001"))
 	if got := dict_strings(t, up, "superseded"); len(got) != 1 || got[0] != dict_string(t, fcm, "id") {
 		t.Errorf("unifiedpush registration superseded %v, want the fcm account %q", got, dict_string(t, fcm, "id"))
 	}
@@ -149,7 +149,7 @@ func TestDeviceSupersedesPushAccounts(t *testing.T) {
 	// never heal.
 	db.exec("update accounts set device='' where type='unifiedpush'")
 	again := device_call(t, thread, "mochi.account.add", api_account_add, sl.Tuple{sl.String("unifiedpush")},
-		device_kwargs("auth", "a", "p256dh", "p", "endpoint", "/menu/-/push/inbound/x", "label", "S24U", "device", "phone-0001"))
+		device_kwargs("auth", "a", "p256dh", "p", "endpoint", "/notifications/-/push/inbound/x", "label", "S24U", "device", "phone-0001"))
 	if got := dict_string(t, again, "device"); got != "phone-0001" {
 		t.Errorf("in-place re-registration left device = %q, want phone-0001", got)
 	}

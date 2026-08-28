@@ -287,14 +287,20 @@ func language_cookie(c *gin.Context, language string) {
 //  2. The `last_language` preference, populated by request_language on each
 //     authenticated request that fell through to cookie / Accept-Language.
 //  3. "en".
+//
+// Both preferences are validated on the way out, as request_language does: a
+// value stored before a validator changed keeps whatever it was given, and
+// a.user.preference.set writes any string with no shape check, so an unusable
+// tag would otherwise reach language_fallbacks - which builds one chain entry
+// per subtag, rebuilt for every label resolved.
 func user_language(u *User) string {
 	if u == nil {
 		return "en"
 	}
-	if lang := strings.ToLower(user_preference_get(u, "language", "")); lang != "" && lang != "auto" {
+	if lang := strings.ToLower(user_preference_get(u, "language", "")); lang != "" && lang != "auto" && valid(lang, "locale") {
 		return lang
 	}
-	if last := strings.ToLower(user_preference_get(u, "last_language", "")); last != "" {
+	if last := strings.ToLower(user_preference_get(u, "last_language", "")); last != "" && valid(last, "locale") {
 		return last
 	}
 	return "en"

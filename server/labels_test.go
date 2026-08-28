@@ -257,3 +257,44 @@ func truncate_tag(tag string) string {
 	}
 	return tag[:40] + "..."
 }
+
+// user_language is the no-gin.Context reader - notification and email
+// composers, queued jobs, and the account-provider field labels. It consults
+// the same two preferences request_language does, so it needs the same
+// re-validation: a.user.preference.set writes any string with no shape check
+// and no permission gating it, so an app can leave a tag on disk that
+// language_fallbacks would expand one chain entry per subtag, for every label
+// resolved for that user.
+func TestUserLanguageValidatesBothStoredPreferences(t *testing.T) {
+	tests := []struct {
+		name     string
+		language string
+		last     string
+		want     string
+	}{
+		{"a usable tag is returned", "pt-br", "en", "pt-br"},
+		{"the auto sentinel falls through to last_language", "auto", "de", "de"},
+		{"an empty preference falls through to last_language", "", "de", "de"},
+		{"a language past the subtag bound falls through", "en" + strings.Repeat("-aa", 1360), "de", "de"},
+		{"a malformed language falls through", "en_GB", "de", "de"},
+		{"a last_language past the subtag bound falls through to en", "", "en" + strings.Repeat("-aa", 1360), "en"},
+		{"a malformed last_language falls through to en", "", "en_GB", "en"},
+		{"neither preference set", "", "", "en"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			u := &User{Preferences: map[string]string{
+				"language":      test.language,
+				"last_language": test.last,
+			}}
+			if got := user_language(u); got != test.want {
+				t.Errorf("user_language with language %q, last_language %q = %q, want %q",
+					truncate_tag(test.language), truncate_tag(test.last), got, test.want)
+			}
+		})
+	}
+
+	if got := user_language(nil); got != "en" {
+		t.Errorf("user_language(nil) = %q, want \"en\"", got)
+	}
+}

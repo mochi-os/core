@@ -255,6 +255,45 @@ func git_init(owner *User, app *App, entity string) error {
 	return repo.Storer.SetReference(head)
 }
 
+// git_head_settle points an unresolvable HEAD at a branch that now exists.
+// git_init leaves HEAD symbolic to refs/heads/main so the first push lands as
+// main, which holds only when the client's branch IS main: push master and the
+// refs are there while HEAD still names a branch that never existed. Everything
+// that resolves HEAD then answers "not found" against a repository that plainly
+// has commits - the archive default ref, and the default branch the browser
+// asks for. Only an unborn HEAD moves: once it resolves, a later push must not
+// retarget it, and an owner's explicit default must stick.
+func git_head_settle(path string) {
+	repo, err := git.PlainOpen(path)
+	if err != nil {
+		return
+	}
+	if _, err := repo.Head(); err == nil {
+		return
+	}
+	branches, err := repo.Branches()
+	if err != nil {
+		return
+	}
+	defer branches.Close()
+	var chosen *plumbing.Reference
+	branches.ForEach(func(r *plumbing.Reference) error {
+		// main wins when the push carried it, so a repository that gets both
+		// main and a topic branch at once settles where git_init intended.
+		if chosen == nil || r.Name() == plumbing.NewBranchReferenceName("main") {
+			chosen = r
+		}
+		return nil
+	})
+	if chosen == nil {
+		return
+	}
+	head := plumbing.NewSymbolicReference(plumbing.HEAD, chosen.Name())
+	if err := repo.Storer.SetReference(head); err != nil {
+		info("git_head_settle: %s: %v", path, err)
+	}
+}
+
 // git_placeholder_sweep restores repositories created before git_init stopped
 // manufacturing a placeholder commit, so a first push is not refused as
 // unrelated history. Runs once at startup. The glob spans every app directory
@@ -4929,6 +4968,7 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, bu
 	if err != nil {
 		info("git_receive_pack: %s: %v", repo_path, err)
 	}
+	git_head_settle(repo_path)
 
 	// Always send the report status back to the client if available,
 	// even on error — the git protocol requires it

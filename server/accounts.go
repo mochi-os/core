@@ -48,13 +48,13 @@ type ProviderField struct {
 	// field's label, and settings/notifications interpolate it into the
 	// translated errors.field_required sentence, so a Japanese user read
 	// "API keyは必須です".
-	Label string `json:"label"`
-	Type  string `json:"type"` // "email", "text", "password", "url"
-	// Placeholder stays literal: the remaining values are example URLs, key
-	// prefixes and a sample address, which should read the same in every
-	// language. "default" on the two model fields is the exception and is not
-	// yet translated.
-	Required    bool   `json:"required"`
+	Label    string `json:"label"`
+	Type     string `json:"type"` // "email", "text", "password", "url"
+	Required bool   `json:"required"`
+	// Placeholder is normally a literal example value - a sample URL, key prefix
+	// or address - which reads the same in every language and is returned as
+	// written. Prose is the exception: the model fields' hint is a core label
+	// key, marked by the "accounts." prefix and resolved with the label.
 	Placeholder string `json:"placeholder"`
 }
 
@@ -73,7 +73,7 @@ var providers = []Provider{
 		Flow:         "form",
 		Fields: []ProviderField{
 			{Name: "api_key", Label: "accounts.field.key", Type: "password", Required: true, Placeholder: "sk-ant-..."},
-			{Name: "model", Label: "accounts.field.model", Type: "text", Required: false, Placeholder: "default"},
+			{Name: "model", Label: "accounts.field.model", Type: "text", Required: false, Placeholder: "accounts.placeholder.default"},
 			{Name: "label", Label: "accounts.field.name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
@@ -116,7 +116,7 @@ var providers = []Provider{
 		Flow:         "form",
 		Fields: []ProviderField{
 			{Name: "api_key", Label: "accounts.field.key", Type: "password", Required: true, Placeholder: "sk-..."},
-			{Name: "model", Label: "accounts.field.model", Type: "text", Required: false, Placeholder: "default"},
+			{Name: "model", Label: "accounts.field.model", Type: "text", Required: false, Placeholder: "accounts.placeholder.default"},
 			{Name: "label", Label: "accounts.field.name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
@@ -298,6 +298,17 @@ func (db *DB) account_set(id string, updates map[string]any) {
 	})
 }
 
+// provider_placeholder returns a field's placeholder in the caller's language.
+// Only the "accounts."-prefixed values are label keys; the example URLs, key
+// prefixes and sample address are returned as written, so they are not looked
+// up and do not log a miss on every request.
+func provider_placeholder(language, placeholder string) string {
+	if strings.HasPrefix(placeholder, "accounts.") {
+		return resolve_core_label(language, placeholder, nil)
+	}
+	return placeholder
+}
+
 // mochi.account.providers(capability?) -> list: Get available providers
 func api_account_providers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var capability string
@@ -347,7 +358,7 @@ func api_account_providers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 					"label":       resolve_core_label(language, f.Label, nil),
 					"type":        f.Type,
 					"required":    f.Required,
-					"placeholder": f.Placeholder,
+					"placeholder": provider_placeholder(language, f.Placeholder),
 				}
 			}
 			pm["fields"] = fields

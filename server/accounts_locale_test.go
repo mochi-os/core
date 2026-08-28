@@ -153,3 +153,57 @@ func Test_account_provider_field_labels_resolve(t *testing.T) {
 		}
 	}
 }
+
+// Placeholders are mixed: example values stay literal, prose is a key.
+// provider_placeholder is what tells them apart, and it decides what
+// lib/web's account-add form puts in the empty input.
+func Test_provider_placeholder_resolves_only_keys(t *testing.T) {
+	load_core_labels()
+
+	// An example value is returned as written - looking it up would miss on
+	// every request and log the miss.
+	for _, literal := range []string{"sk-ant-...", "sk-...", "you@example.com",
+		"https://mcp.example.com", "https://ntfy.sh", "my-notifications", ""} {
+		if got := provider_placeholder("de", literal); got != literal {
+			t.Errorf("provider_placeholder(de, %q) = %q, want it unchanged", literal, got)
+		}
+	}
+
+	// The one prose placeholder resolves per language.
+	cases := map[string]string{
+		"en":    "default",
+		"de":    "Standard",
+		"ja":    "デフォルト",
+		"fr":    "par défaut",
+		"pt-br": "padrão",
+	}
+	for language, want := range cases {
+		if got := provider_placeholder(language, "accounts.placeholder.default"); got != want {
+			t.Errorf("provider_placeholder(%s, accounts.placeholder.default) = %q, want %q",
+				language, got, want)
+		}
+	}
+}
+
+// Every provider placeholder is either a literal example or a key with an
+// English entry - a key with no entry would put the raw key in the input.
+func Test_account_provider_placeholders_resolve(t *testing.T) {
+	load_core_labels()
+
+	keys := 0
+	for _, p := range providers {
+		for _, f := range p.Fields {
+			if !strings.HasPrefix(f.Placeholder, "accounts.") {
+				continue
+			}
+			keys++
+			if got := resolve_core_label("en", f.Placeholder, nil); got == f.Placeholder {
+				t.Errorf("provider %q field %q placeholder key %q has no English label",
+					p.Type, f.Name, f.Placeholder)
+			}
+		}
+	}
+	if keys == 0 {
+		t.Error("no provider placeholder is a key; the model fields' prose should be one")
+	}
+}

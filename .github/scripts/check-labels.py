@@ -130,6 +130,11 @@ KEEP_LOCALE = frozenset({
     ('my', 'API key'),
     ('tl', 'API key'),
     ('de', 'Name'),
+    # "default" as an account form's model placeholder. Indonesian, Maltese,
+    # Quechua and Tagalog all keep the loanword: their own web and Android
+    # catalogues already render it "default" in place ("Kont default", "Default
+    # na account", "Akun default"). Javanese does translate it, as "standar".
+    ('id', 'default'), ('mt', 'default'), ('qu', 'default'), ('tl', 'default'),
 })
 
 

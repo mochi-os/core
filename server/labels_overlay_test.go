@@ -16,30 +16,30 @@ import (
 // each to its parent key by key. Mirrors OVERLAY plus conf_inherits in
 // .github/scripts/check-labels.py and claude/scripts/conf-refresh.py.
 //
-// es-419 is deliberately absent. It falls through to es here exactly as these
-// do, but Lingui makes it the base es-ar leans on for the WEB catalogues
-// (`'es-ar': 'es-419'` in every app's lingui.config.js), so it is kept complete
-// on both layers rather than sparse on one and complete on the other.
-var overlay_catalogues = []string{"en-us", "en-ca", "fr-ca", "es-ar", "zh-hk", "de-ch", "nl-be", "pt-br"}
+// es-419 is included. It was held complete for a while because Lingui makes it
+// the base es-ar leans on for the WEB catalogues (`'es-ar': 'es-419'` in every
+// app's lingui.config.js), but that is a fact about the PO layer: the .conf
+// resolver never consults it, since language_fallbacks takes es-ar to es. So a
+// copy of es here was as inert as any other, and is gone.
+var overlay_catalogues = []string{"en-us", "en-ca", "fr-ca", "es-ar", "zh-hk", "de-ch", "nl-be", "pt-br", "es-419"}
 
 // A cell copied verbatim from the parent overrides nothing today and pins the
 // child to a stale string the moment the parent is reworded - a present key
 // beats an inherited one. en-us held 28 such copies and nothing else, so the
 // whole file was inert.
 //
-// nl-be and pt-br joined this list once conf_inherits taught the gate the .conf
-// fallback rule; 166 and 107 copies came out of them. es-419 still holds 175,
-// by the decision recorded above.
+// 448 copies came out of the three regional catalogues once conf_inherits
+// taught the gate the .conf fallback rule: nl-be 166, pt-br 107, es-419 175.
+// The app catalogues shed a further 3,455; NoParentDuplicates in
+// claude/scripts/test_i18n_glossary.py is what holds them to it.
 func TestOverlayCatalogueHoldsOnlyDifferences(t *testing.T) {
-	load_core_labels()
-
 	for _, tag := range overlay_catalogues {
-		child, ok := core_labels[tag]
+		child, ok := catalogue_cells(t, tag)
 		if !ok {
 			continue // not shipped; installed_languages decides that, not this test
 		}
 		parent_tag := tag[:strings.LastIndex(tag, "-")]
-		parent, ok := core_labels[parent_tag]
+		parent, ok := catalogue_cells(t, parent_tag)
 		if !ok {
 			t.Errorf("%s has no parent catalogue %s to fall back to", tag, parent_tag)
 			continue
@@ -103,4 +103,31 @@ func label_inherits(locale string) bool {
 	}
 	_, err := os.Stat("labels/" + locale[:cut] + ".conf")
 	return err == nil
+}
+
+// catalogue_cells reads a labels file the way the gates do, rather than through
+// core_labels. The loaded map is lossy: go-ini treats ";" as an inline comment,
+// so es and es-419 both come back truncated at the first semicolon and compare
+// equal even where the files plainly differ ("ejecute" against "ejecuta"). That
+// truncation is a real defect in its own right - see the task for it - but the
+// duplicate check is about what the files hold, so it reads them.
+func catalogue_cells(t *testing.T, tag string) (map[string]string, bool) {
+	t.Helper()
+	body, err := os.ReadFile("labels/" + tag + ".conf")
+	if err != nil {
+		return nil, false
+	}
+	cells := map[string]string{}
+	for _, line := range strings.Split(string(body), "\n") {
+		text := strings.TrimSpace(line)
+		if text == "" || strings.HasPrefix(text, "#") || strings.HasPrefix(text, "[") {
+			continue
+		}
+		key, value, found := strings.Cut(text, "=")
+		if !found {
+			continue
+		}
+		cells[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+	return cells, true
 }

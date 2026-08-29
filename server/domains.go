@@ -21,7 +21,6 @@ import (
 	sls "go.starlark.net/starlarkstruct"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
-	"gopkg.in/ini.v1"
 )
 
 var (
@@ -283,7 +282,7 @@ func domains_load_certs() error {
 		return fmt.Errorf("domains.conf not found: %s", path)
 	}
 
-	cfg, err := ini.Load(path)
+	cfg, err := ini_parse(path)
 	if err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ package ini
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,13 +16,65 @@ import (
 	goini "gopkg.in/ini.v1"
 )
 
+// load_ini_bytes parses with the same options Load uses, so the rest of this
+// suite reads a value exactly as production does. A bare goini.Load here would
+// silently disagree with Load about inline comments.
 func load_ini_bytes(t *testing.T, body string) {
 	t.Helper()
-	f, err := goini.Load([]byte(body))
+	f, err := goini.LoadSources(goini.LoadOptions{IgnoreInlineComment: true}, []byte(body))
 	if err != nil {
 		t.Fatalf("ini.Load: %v", err)
 	}
 	file = f
+}
+
+// TestLoadKeepsSemicolonAndHashInsideAValue drives the real Load, since that
+// is where the parser options live. go-ini's default treats ";" and "#" as
+// inline comment delimiters, so a value carrying either was truncated at the
+// first one with no error and no log line - the operator's configured value
+// silently became a shorter one they never wrote.
+func TestLoadKeepsSemicolonAndHashInsideAValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mochi.conf")
+	body := "[email]\nsubject = Alert; action required\nbanner = welcome # to Mochi\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+	if err := Load(path); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if got, want := String("email", "subject", ""), "Alert; action required"; got != want {
+		t.Errorf("String(email.subject) = %q, want %q: the value is truncated at the semicolon", got, want)
+	}
+	if got, want := String("email", "banner", ""), "welcome # to Mochi"; got != want {
+		t.Errorf("String(email.banner) = %q, want %q: the value is truncated at the hash", got, want)
+	}
+}
+
+// TestLoadStillIgnoresWholeLineComments is the other half: disabling inline
+// comments must not turn a comment line into a setting. A ";" or "#" that
+// opens a line is still a comment, in both styles.
+func TestLoadStillIgnoresWholeLineComments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mochi.conf")
+	body := "# hash comment = not a setting\n; semicolon comment = also not a setting\n[web]\ndomain = file.example\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+	if err := Load(path); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if got := String("web", "domain", ""); got != "file.example" {
+		t.Errorf("String(web.domain) = %q, want file.example", got)
+	}
+	for section, keys := range Effective() {
+		for key := range keys {
+			if strings.HasPrefix(key, "#") || strings.HasPrefix(key, ";") ||
+				strings.Contains(key, "comment") {
+				t.Errorf("comment line became the setting %s.%s", section, key)
+			}
+		}
+	}
 }
 
 func TestStringEnvOverride(t *testing.T) {

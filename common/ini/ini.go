@@ -23,9 +23,15 @@ var (
 
 // Load reads the INI file at the given path. Subsequent accessor calls return
 // values from this file unless overridden by a MOCHI_<SECTION>_<KEY> env var.
+//
+// Inline comments are disabled, so a ";" or "#" inside a value is text rather
+// than the start of a comment. go-ini's default truncates at the first one and
+// says nothing, which turns a legitimate config value into a shorter one the
+// operator never wrote. Full-line ";" and "#" comments still work; the option
+// governs only what happens after a value has begun.
 func Load(path string) error {
 	var err error
-	file, err = goini.Load(path)
+	file, err = goini.LoadSources(goini.LoadOptions{IgnoreInlineComment: true}, path)
 	return err
 }
 

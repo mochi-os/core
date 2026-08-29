@@ -298,3 +298,73 @@ func TestUserLanguageValidatesBothStoredPreferences(t *testing.T) {
 		t.Errorf("user_language(nil) = %q, want \"en\"", got)
 	}
 }
+
+// TestLoadedLabelsMatchTheFilesByteForByte is the gate on the parser options.
+//
+// go-ini's default treats ";" and "#" as inline comment delimiters, so any
+// label value carrying one was truncated at runtime with no error and no log
+// line: errors.populated_server resolved to "This server has users" and lost
+// the sentence saying what to do instead, in English and in every translation.
+//
+// Comparing the loaded map against the file itself is the assertion that
+// generalises - it fails for any value the loader shortens, not only for the
+// keys that happen to carry a semicolon today.
+func TestLoadedLabelsMatchTheFilesByteForByte(t *testing.T) {
+	load_core_labels()
+
+	if len(core_labels) == 0 {
+		t.Fatal("no catalogues loaded; the rest of this test would be vacuous")
+	}
+	checked := 0
+	for tag, loaded := range core_labels {
+		onfile, ok := catalogue_cells(t, tag)
+		if !ok {
+			t.Errorf("%s is loaded but labels/%s.conf cannot be read", tag, tag)
+			continue
+		}
+		for key, want := range onfile {
+			got, present := loaded[key]
+			if !present {
+				t.Errorf("%s.conf holds %q but the loader dropped it", tag, key)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s.conf %q loads as %q, want %q: the parser is shortening the value",
+					tag, key, got, want)
+			}
+			checked++
+		}
+	}
+	if checked < 1000 {
+		t.Errorf("compared only %d cells across %d catalogues; the catalogues hold thousands, so this run measured almost nothing",
+			checked, len(core_labels))
+	}
+}
+
+// TestLabelParserStillIgnoresWholeLineComments is the other half: disabling
+// inline comments must not turn a comment line into a label. Every catalogue
+// carries "#" headers, and the app-side loader (apps.go) has the opposite
+// defect - it splits every line on "=" with no comment handling at all - so
+// this is worth pinning rather than assuming.
+func TestLabelParserStillIgnoresWholeLineComments(t *testing.T) {
+	body := []byte("[labels]\n# hash comment = not a label\n; semicolon comment = also not a label\n" +
+		"errors.example = has users; and a second half\nerrors.hashed = a value with a # inside\n")
+
+	cfg, err := ini_parse(body)
+	if err != nil {
+		t.Fatalf("ini_parse: %v", err)
+	}
+	section := cfg.Section("labels")
+
+	if got, want := section.Key("errors.example").String(), "has users; and a second half"; got != want {
+		t.Errorf("errors.example = %q, want %q: truncated at the semicolon", got, want)
+	}
+	if got, want := section.Key("errors.hashed").String(), "a value with a # inside"; got != want {
+		t.Errorf("errors.hashed = %q, want %q: truncated at the hash", got, want)
+	}
+
+	want := []string{"errors.example", "errors.hashed"}
+	if got := section.KeyStrings(); !reflect.DeepEqual(got, want) {
+		t.Errorf("keys = %v, want %v: a comment line became a label", got, want)
+	}
+}

@@ -16,7 +16,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gotnospirit/messageformat"
-	"gopkg.in/ini.v1"
 )
 
 // core_labels_fs embeds core server's own translatable strings. Compiled
@@ -455,7 +454,7 @@ func load_core_labels() {
 			info("Core labels: cannot read %q: %v", ent.Name(), err)
 			continue
 		}
-		cfg, err := ini.Load(data)
+		cfg, err := ini_parse(data)
 		if err != nil {
 			info("Core labels: cannot parse %q: %v", ent.Name(), err)
 			continue

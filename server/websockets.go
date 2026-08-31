@@ -59,49 +59,48 @@ func websockets_held(u *User) int {
 	return held
 }
 
+// websocket_authenticate resolves who a handshake belongs to and which app the
+// connection is tagged with. A valid token names the app and outranks the
+// session cookie for tagging: the browser sends the cookie on every same-origin
+// handshake, so reading the cookie first left a top-window page's socket tagged
+// with no app however it presented its token - and app-scoped delivery cannot
+// reach an untagged connection. A token for a different user than the cookie's
+// is ignored rather than adopted.
+func websocket_authenticate(c *gin.Context) (u *User, app string, token_auth bool) {
+	u = web_auth(c)
+
+	// Bearer header first, then the query parameter (for clients, such as
+	// browser WebSockets, that cannot set headers).
+	token := ""
+	if header := c.GetHeader("Authorization"); strings.HasPrefix(header, "Bearer ") {
+		token = strings.TrimPrefix(header, "Bearer ")
+	}
+	if token == "" {
+		token = c.Query("token")
+	}
+	if token == "" {
+		return u, "", false
+	}
+
+	user_id, token_app, err := jwt_verify(token)
+	if err != nil || user_id == "" {
+		return u, "", false
+	}
+	holder := user_by_uid(user_id)
+	if holder == nil || (u != nil && holder.UID != u.UID) {
+		return u, "", false
+	}
+	return holder, token_app, true
+}
+
 func websocket_connection(c *gin.Context) {
-	u := web_auth(c)
-	token_auth := false
-	// The app this socket belongs to, from its JWT. A cookie-authenticated
-	// connection has none and receives core's own sends but no app's; frontends
-	// always hold an app token, so this is the unusual path.
-	app := ""
+	u, app, token_auth := websocket_authenticate(c)
 	if u == nil {
-		// Check Authorization header (Bearer token)
-		auth_header := c.GetHeader("Authorization")
-		if strings.HasPrefix(auth_header, "Bearer ") {
-			token := strings.TrimPrefix(auth_header, "Bearer ")
-			user_id, token_app, err := jwt_verify(token)
-			if err == nil && user_id != "" {
-				if user := user_by_uid(user_id); user != nil {
-					u = user
-					app = token_app
-					token_auth = true
-				}
-			}
-		}
-
-		// Check token query parameter (for WebSocket from iframes that can't set headers)
-		if u == nil {
-			if token := c.Query("token"); token != "" {
-				user_id, token_app, err := jwt_verify(token)
-				if err == nil && user_id != "" {
-					if user := user_by_uid(user_id); user != nil {
-						u = user
-						app = token_app
-						token_auth = true
-					}
-				}
-			}
-		}
-
-		if u == nil {
-			// A bare return here is a 200 with an empty body: the handshake still fails,
-			// but the caller learns nothing and the access log records the auth failure
-			// as a success.
-			c.Status(401)
-			return
-		}
+		// A bare return here is a 200 with an empty body: the handshake still fails,
+		// but the caller learns nothing and the access log records the auth failure
+		// as a success.
+		c.Status(401)
+		return
 	}
 
 	// Validate origin matches request host to prevent cross-origin WebSocket hijacking.

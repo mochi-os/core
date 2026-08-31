@@ -38,6 +38,16 @@ func api_remote_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl.None, nil
 	}
 
+	// Every other outbound fetch - mochi.url.*, mochi.rss.fetch, link preview -
+	// gates on require_permission_url. This one did not, so an app with no grant
+	// could probe any public host and port, and have what came back stored in
+	// `peers` and dialed. The p2p/ form does no HTTP and needs no grant.
+	if !strings.HasPrefix(url, "p2p/") {
+		if err := require_permission_url(t, fn, url); err != nil {
+			return sl_error(fn, "%v", err)
+		}
+	}
+
 	if err := remote_rate_limit(t, url); err != nil {
 		return sl_error(fn, err)
 	}
@@ -61,7 +71,8 @@ func peer_connect_url(url string) (string, error) {
 		return "", fmt.Errorf("failed to connect to peer %s", peer)
 	}
 
-	// Normalize URL: add https:// if no scheme present
+	// Normalize URL: add https:// if no scheme present. Plain http is refused
+	// below - this fetch learns a peer's addresses and they are then dialed.
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		url = "https://" + url
 	}
@@ -73,7 +84,7 @@ func peer_connect_url(url string) (string, error) {
 	if err != nil || parsed.Host == "" {
 		return "", fmt.Errorf("invalid server URL")
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+	if parsed.Scheme != "https" {
 		return "", fmt.Errorf("invalid server URL scheme %q", parsed.Scheme)
 	}
 	info_url := parsed.Scheme + "://" + parsed.Host + "/_/p2p/info"

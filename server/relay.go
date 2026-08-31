@@ -203,6 +203,21 @@ func relay_load_changed() {
 	}
 }
 
+// relay_access admits only peers this host already knows. libp2p installs no
+// ACL by default, so without this every circuit-v2 client on the internet can
+// reserve a slot and tunnel third-party traffic over the operator's bandwidth.
+// The unbounded per-circuit limit above is written for Mochi-to-Mochi file
+// sharing; this is what makes that the only traffic it applies to.
+type relay_access struct{}
+
+func (relay_access) AllowReserve(id p2p_peer.ID, address multiaddr.Multiaddr) bool {
+	return peer_held(id.String())
+}
+
+func (relay_access) AllowConnect(source p2p_peer.ID, address multiaddr.Multiaddr, destination p2p_peer.ID) bool {
+	return peer_held(source.String()) && peer_held(destination.String())
+}
+
 func relay_service_update() {
 	if net_me == nil {
 		return
@@ -215,7 +230,8 @@ func relay_service_update() {
 	case want && relay_service == nil:
 		relay_reservations.Store(0)
 		relay_circuits.Store(0)
-		r, err := relay.New(net_me, relay.WithResources(relay_resources()), relay.WithMetricsTracer(relay_metrics{}))
+		r, err := relay.New(net_me, relay.WithResources(relay_resources()),
+			relay.WithACL(relay_access{}), relay.WithMetricsTracer(relay_metrics{}))
 		if err != nil {
 			warn("Net unable to start relay service: %v", err)
 			return

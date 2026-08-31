@@ -555,6 +555,29 @@ func require_permission_acting(t *sl.Thread, fn *sl.Builtin, permission string) 
 	return &PermissionError{Permission: permission, Restricted: permission_restricted(permission)}
 }
 
+// permission_url_domains returns every url: domain granted to this app, for
+// url_request's redirect check. Without a list, CheckRedirect returns early
+// (utilities.go), so a granted host can bounce the server to an ungranted one.
+func permission_url_domains(t *sl.Thread, app *App) []string {
+	if app == nil || app_is_internal(app) {
+		return nil
+	}
+	user, _ := principal_storage(t)
+	if user == nil {
+		return nil
+	}
+	db := db_user(user, "user")
+	db.permissions_setup()
+	rows, _ := db.rows("select object from permissions where app=? and permission='url' and granted=1", app.id)
+	var domains []string
+	for _, row := range rows {
+		if object, ok := row["object"].(string); ok {
+			domains = append(domains, object)
+		}
+	}
+	return domains
+}
+
 // require_permission_url checks url permission for a specific URL
 func require_permission_url(t *sl.Thread, fn *sl.Builtin, rawurl string) error {
 	domain, err := domain_extract(rawurl)

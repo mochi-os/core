@@ -212,8 +212,12 @@ func TestPeerConnectUrlCannotReachAnArbitraryPath(t *testing.T) {
 	if !strings.Contains(fn, `parsed.Scheme + "://" + parsed.Host + "/_/p2p/info"`) {
 		t.Error("peer_connect_url no longer rebuilds the request from scheme and host alone")
 	}
-	if !strings.Contains(fn, `parsed.Scheme != "http" && parsed.Scheme != "https"`) {
-		t.Error("peer_connect_url does not restrict the scheme, so file:// and friends are reachable")
+	// https only: this fetch learns addresses that libp2p then dials, so a
+	// plain-text hop lets anyone on the path choose which peer we connect to.
+	// TestPeerConnectUrlRequiresHttps in remote_test.go asserts the behaviour;
+	// this pins the rule stays in the source where the path rebuild is.
+	if !strings.Contains(fn, `parsed.Scheme != "https"`) {
+		t.Error("peer_connect_url does not restrict the scheme to https, so plain http and file:// are reachable")
 	}
 }
 

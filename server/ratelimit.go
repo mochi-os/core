@@ -68,6 +68,18 @@ var (
 		window:  1,
 	}
 
+	// Pubsub inbound, host-wide: 200 per second regardless of hop. The two
+	// per-peer limiters below are keyed on the RELAYING neighbour, so a node
+	// whose neighbour is the bootstrap - the normal case for a small or NAT'd
+	// server - meters nothing at all, and even with several neighbours the
+	// ceiling is per-peer times neighbours. This is the only bound on what the
+	// whole mesh can make this host verify and route.
+	rate_limit_pubsub_host = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   200,
+		window:  1,
+	}
+
 	// Pubsub inbound control plane: 10 per second per peer, peers service only.
 	// Separate from rate_limit_pubsub_in so application traffic cannot starve
 	// address learning; legitimate control traffic is a few messages per minute.

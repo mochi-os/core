@@ -112,6 +112,11 @@ func announcement_valid(a *Announcement) bool {
 // peers service is the control plane - a synchronous remote request blocks on
 // it for remote_address_wait - so it gets a budget the unbounded application
 // plane cannot starve.
+// pubsub_host_key is the single key the host-wide limiter counts under. The
+// limiter is keyed by design - every other one meters per peer - so a constant
+// gives it one bucket for the whole process.
+const pubsub_host_key = "host"
+
 func pubsub_limiter(service string) *rate_limiter {
 	if service == "peers" {
 		return rate_limit_pubsub_control
@@ -159,10 +164,21 @@ func pubsub_validate(ctx context.Context, from p2p_peer.ID, m *p2p_pubsub.Messag
 		return p2p_pubsub.ValidationIgnore
 	}
 
-	// Rate limit inbound per peer, against the budget for this message's
-	// plane. Bootstrap and paired peers are trusted and skip the limit.
+	// Host-wide budget first: the per-peer limiter below is keyed on the
+	// relaying neighbour, so it cannot bound what arrives via a single hop.
+	if !rate_limit_pubsub_host.allow(pubsub_host_key) {
+		pubsub_dropped.Add(1)
+		debug("Pubsub rate limited host-wide, dropping from peer %q service %q", peer, f.Service)
+		return p2p_pubsub.ValidationIgnore
+	}
+
+	// Then per peer, against the budget for this message's plane. The bootstrap
+	// exemption survives only for the control plane, which is the address
+	// learning a node needs to function; application traffic relayed by a
+	// bootstrap is metered like anyone else's.
 	limiter := pubsub_limiter(f.Service)
-	if !peer_is_bootstrap(peer) && !limiter.allow(peer) {
+	exempt := f.Service == "peers" && peer_is_bootstrap(peer)
+	if !exempt && !limiter.allow(peer) {
 		pubsub_dropped.Add(1)
 		debug("Pubsub rate limited peer %q service %q", peer, f.Service)
 		return p2p_pubsub.ValidationIgnore

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	pbv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/pb"
 )
 
@@ -320,5 +321,45 @@ func TestRelaySaturationAlert(t *testing.T) {
 			t.Errorf("%s: relay_saturation_alert(%d,%d,%d,%d) = %v, want %v",
 				c.name, c.rejected, c.alerted, c.held, c.maximum, got, c.want)
 		}
+	}
+}
+
+// TestRelayAccessAdmitsOnlyKnownPeers is #591. libp2p installs no ACL by
+// default, so before this every circuit-v2 client on the internet could reserve
+// a slot and tunnel third-party traffic over the operator's bandwidth - with
+// rc.Limit nil, unmetered and for as long as it liked.
+func TestRelayAccessAdmitsOnlyKnownPeers(t *testing.T) {
+	known := p2p_peer.ID("a-peer-this-host-knows")
+	other := p2p_peer.ID("a-second-known-peer")
+	stranger := p2p_peer.ID("some-random-libp2p-node")
+
+	peers_lock.Lock()
+	saved := peers
+	peers = map[string]Peer{
+		known.String(): {ID: known.String()},
+		other.String(): {ID: other.String()},
+	}
+	peers_lock.Unlock()
+	t.Cleanup(func() {
+		peers_lock.Lock()
+		peers = saved
+		peers_lock.Unlock()
+	})
+
+	acl := relay_access{}
+	if !acl.AllowReserve(known, nil) {
+		t.Error("a known peer was refused a reservation: relaying for Mochi peers is the point of the service")
+	}
+	if acl.AllowReserve(stranger, nil) {
+		t.Error("an unknown peer reserved a slot: the server is an open relay for the whole internet")
+	}
+	if !acl.AllowConnect(known, nil, other) {
+		t.Error("a connection between two known peers was refused")
+	}
+	if acl.AllowConnect(known, nil, stranger) {
+		t.Error("a known peer was allowed to tunnel to an unknown destination")
+	}
+	if acl.AllowConnect(stranger, nil, known) {
+		t.Error("an unknown peer was allowed to tunnel to a known destination")
 	}
 }

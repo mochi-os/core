@@ -38,10 +38,13 @@ func pubsub_message(data []byte, received p2p_peer.ID) *p2p_pubsub.Message {
 // limiters so an unrelated test's budget cannot decide the outcome.
 func pubsub_validate_isolated(t *testing.T, m *p2p_pubsub.Message) p2p_pubsub.ValidationResult {
 	t.Helper()
-	in, control := rate_limit_pubsub_in, rate_limit_pubsub_control
-	t.Cleanup(func() { rate_limit_pubsub_in, rate_limit_pubsub_control = in, control })
+	in, control, host := rate_limit_pubsub_in, rate_limit_pubsub_control, rate_limit_pubsub_host
+	t.Cleanup(func() {
+		rate_limit_pubsub_in, rate_limit_pubsub_control, rate_limit_pubsub_host = in, control, host
+	})
 	rate_limit_pubsub_in = &rate_limiter{entries: map[string]*rate_limit_entry{}, limit: 1000, window: 60}
 	rate_limit_pubsub_control = &rate_limiter{entries: map[string]*rate_limit_entry{}, limit: 1000, window: 60}
+	rate_limit_pubsub_host = &rate_limiter{entries: map[string]*rate_limit_entry{}, limit: 1000, window: 60}
 	return pubsub_validate(context.Background(), p2p_peer.ID("origin"), m)
 }
 
@@ -191,5 +194,65 @@ func TestPubsubTopicConstantIsUsedForBothJoinAndValidator(t *testing.T) {
 		if !strings.Contains(string(source), want) {
 			t.Errorf("net.go no longer contains %q", want)
 		}
+	}
+}
+
+// pubsub_budgets installs the three limiters at the caller's ceilings for the
+// rest of the test, so one can be driven to exhaustion without the others
+// deciding the outcome first.
+func pubsub_budgets(t *testing.T, host, per int) {
+	t.Helper()
+	in, control, whole := rate_limit_pubsub_in, rate_limit_pubsub_control, rate_limit_pubsub_host
+	t.Cleanup(func() {
+		rate_limit_pubsub_in, rate_limit_pubsub_control, rate_limit_pubsub_host = in, control, whole
+	})
+	rate_limit_pubsub_in = &rate_limiter{entries: map[string]*rate_limit_entry{}, limit: per, window: 60}
+	rate_limit_pubsub_control = &rate_limiter{entries: map[string]*rate_limit_entry{}, limit: per, window: 60}
+	rate_limit_pubsub_host = &rate_limiter{entries: map[string]*rate_limit_entry{}, limit: host, window: 60}
+}
+
+// TestPubsubBootstrapExemptionIsControlPlaneOnly is #590's first half. The
+// exemption used to cover every plane, so a node whose mesh neighbour is the
+// bootstrap - the normal case for a small or NAT'd server, since
+// bootstrap_manager holds exactly that connection - metered none of the
+// network's application flood.
+func TestPubsubBootstrapExemptionIsControlPlaneOnly(t *testing.T) {
+	relay := p2p_peer.ID("bootstrap-neighbour")
+	saved := peers_bootstrap
+	t.Cleanup(func() { peers_bootstrap = saved })
+	peers_bootstrap = []Peer{{ID: relay.String()}}
+
+	pubsub_budgets(t, 1000, 1)
+	body := pubsub_test_announcement(t)
+
+	first := pubsub_validate(context.Background(), p2p_peer.ID("origin"), pubsub_message(body, relay))
+	second := pubsub_validate(context.Background(), p2p_peer.ID("origin"), pubsub_message(body, relay))
+	if first != p2p_pubsub.ValidationAccept {
+		t.Fatalf("first announcement got %v, want Accept", first)
+	}
+	if second == p2p_pubsub.ValidationAccept {
+		t.Error("application traffic relayed by a bootstrap was not metered: the whole network's flood arrives through that one hop unbounded")
+	}
+}
+
+// TestPubsubHostBudgetBoundsTheMesh is #590's second half. Even with no
+// exemption the per-peer limiter is keyed on the RELAYING neighbour, so it
+// bounds per-peer times neighbours, not a fixed rate. The host budget is the
+// only figure bounding what the mesh can make this node verify and route.
+func TestPubsubHostBudgetBoundsTheMesh(t *testing.T) {
+	pubsub_budgets(t, 2, 1000)
+	body := pubsub_test_announcement(t)
+
+	// Three DIFFERENT neighbours: each draws its own generous per-peer bucket,
+	// so only a host-wide budget can refuse the third.
+	accepted := 0
+	for _, neighbour := range []string{"peer-one", "peer-two", "peer-three"} {
+		m := pubsub_message(body, p2p_peer.ID(neighbour))
+		if pubsub_validate(context.Background(), p2p_peer.ID("origin"), m) == p2p_pubsub.ValidationAccept {
+			accepted++
+		}
+	}
+	if accepted != 2 {
+		t.Errorf("accepted %d of 3 messages from distinct neighbours, want 2: with only per-peer budgets the ceiling scales with neighbour count", accepted)
 	}
 }

@@ -1084,20 +1084,7 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	// Collect all granted url: domains for redirect validation
-	var url_domains []string
-	if app != nil {
-		user, _ := principal_storage(t)
-		if user != nil && !app_is_internal(app) {
-			db := db_user(user, "user")
-			db.permissions_setup()
-			rows, _ := db.rows("select object from permissions where app=? and permission='url' and granted=1", app.id)
-			for _, row := range rows {
-				if obj, ok := row["object"].(string); ok {
-					url_domains = append(url_domains, obj)
-				}
-			}
-		}
-	}
+	url_domains := permission_url_domains(t, app)
 
 	var options map[string]string
 	if len(args) > 1 {
@@ -1253,7 +1240,7 @@ func api_url_preview(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		map[string]string{
 			"User-Agent": "Mozilla/5.0 (compatible; MochiBot/1.0; +https://mochi-os.org)",
 			"Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-		}, nil)
+		}, nil, permission_url_domains(t, app)...)
 	if err != nil {
 		return sl.String(""), nil
 	}

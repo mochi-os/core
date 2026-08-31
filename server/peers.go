@@ -74,7 +74,13 @@ const (
 	peers_minimum          = 1
 	peer_maximum_addresses = 20
 	peer_expiry            = 14 * 86400 // addresses unseen this long prune
-	peer_unproven          = 3 * 86400  // never-successful addresses prune sooner
+	// peer_unproven_maximum bounds how many never-connected peers this host will
+	// take on from relayed records. Records are self-signed and a keypair is
+	// free, so without a ceiling a flood of minted ids grows `peers` and
+	// peers.db at the inbound pubsub rate and the rows survive until the
+	// unproven prune days later. Peers already held are never refused.
+	peer_unproven_maximum = 1000
+	peer_unproven         = 3 * 86400 // never-successful addresses prune sooner
 )
 
 // peer_default_publisher_hardcoded is the fallback publisher peer ID
@@ -98,6 +104,48 @@ var (
 	peers                  map[string]Peer = map[string]Peer{}
 	peers_lock                             = &sync.Mutex{}
 )
+
+// peer_held reports whether this host already knows the peer at all.
+func peer_held(id string) bool {
+	peers_lock.Lock()
+	defer peers_lock.Unlock()
+	_, held := peers[id]
+	return held
+}
+
+// peer_admit reports whether a relayed record naming this peer may be applied.
+// A peer already held always may - those are address updates for something this
+// host has a reason to know. A peer it has never held is admitted only while
+// the unproven population is under its ceiling.
+func peer_admit(id string) bool {
+	peers_lock.Lock()
+	defer peers_lock.Unlock()
+	if _, held := peers[id]; held {
+		return true
+	}
+	return peers_unproven() < peer_unproven_maximum
+}
+
+// peers_unproven counts held peers with no address that has ever connected.
+// Caller holds peers_lock. Walked rather than tracked incrementally because
+// address success is written from several paths; it runs only when a record
+// names a peer this host does not already hold.
+func peers_unproven() int {
+	count := 0
+	for _, p := range peers {
+		proven := false
+		for _, address := range p.addresses {
+			if address.Success > 0 {
+				proven = true
+				break
+			}
+		}
+		if !proven {
+			count++
+		}
+	}
+	return count
+}
 
 // bootstrap_addresses_parse turns a comma-separated list of multiaddrs
 // (each carrying its /p2p/<id> suffix) into a slice of Peer entries,

@@ -10,6 +10,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -184,5 +185,55 @@ func TestPeerIsSilentSelf(t *testing.T) {
 	}
 	if peer_is_silent(net_id) {
 		t.Error("self peer must never be silent")
+	}
+}
+
+// TestPeerAdmitBoundsUnprovenPeers is #600. peer_record_event applies any
+// validly self-signed record, and minting a keypair is free, so without a
+// ceiling a flood of invented ids grows `peers` and peers.db at the inbound
+// pubsub rate - and the rows survive until the unproven prune days later.
+func TestPeerAdmitBoundsUnprovenPeers(t *testing.T) {
+	peers_lock.Lock()
+	saved := peers
+	peers = map[string]Peer{}
+	peers_lock.Unlock()
+	t.Cleanup(func() {
+		peers_lock.Lock()
+		peers = saved
+		peers_lock.Unlock()
+	})
+
+	if !peer_admit("a-brand-new-peer") {
+		t.Fatal("a new peer was refused with the table empty")
+	}
+
+	// Fill to the ceiling with never-connected peers, the shape a record flood
+	// produces: an address, no success.
+	peers_lock.Lock()
+	for i := 0; i < peer_unproven_maximum; i++ {
+		id := fmt.Sprintf("unproven-peer-%d", i)
+		peers[id] = Peer{ID: id, addresses: []PeerAddress{{Address: "/ip4/10.0.0.1/tcp/1"}}}
+	}
+	peers_lock.Unlock()
+
+	if peer_admit("one-peer-too-many") {
+		t.Error("a new unproven peer was admitted at the ceiling: the table grows at the inbound record rate")
+	}
+
+	// A peer already held keeps receiving address updates - those are for
+	// something this host has a reason to know about.
+	if !peer_admit("unproven-peer-0") {
+		t.Error("an already-held peer was refused: address updates for known peers must not be collateral")
+	}
+
+	// And a peer that has actually connected does not count toward the ceiling,
+	// so proving one frees a slot for a new arrival.
+	peers_lock.Lock()
+	proven := peers["unproven-peer-0"]
+	proven.addresses = []PeerAddress{{Address: "/ip4/10.0.0.1/tcp/1", Success: 1}}
+	peers["unproven-peer-0"] = proven
+	peers_lock.Unlock()
+	if !peer_admit("a-different-new-peer") {
+		t.Error("proving a peer did not free a slot: the ceiling counts connected peers, which it must not")
 	}
 }

@@ -430,6 +430,12 @@ func peer_record_event(e *Event) {
 	if !peer_record_store(id, sequence, data) {
 		return
 	}
+	// A record for a peer this host has never held is the growth path: ids are
+	// free to mint, so new ones are admitted only under a ceiling.
+	if !peer_admit(id) {
+		debug("Peer record for %q refused: already holding %d unproven peers", id, peer_unproven_maximum)
+		return
+	}
 	peer_apply_addresses(id, addresses)
 }
 

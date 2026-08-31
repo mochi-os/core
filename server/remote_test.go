@@ -7,15 +7,36 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
 // Test peer_connect_url HTTP request and JSON parsing
 // Note: These tests verify the HTTP/JSON handling but can't test actual Net connection
+// peer_connect_tls stands up an https test server and points url_transport at a
+// transport that trusts its self-signed certificate for the duration of the
+// test. peer_connect_url is https-only (#593) because the addresses it learns
+// are then dialled by libp2p, so its tests need a TLS harness; the production
+// transport keeps full verification and is restored on cleanup.
+func peer_connect_tls(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	server := httptest.NewTLSServer(handler)
+	t.Cleanup(server.Close)
+
+	saved := url_transport
+	t.Cleanup(func() { url_transport = saved })
+	url_transport = &http.Transport{
+		DialContext:     saved.DialContext,
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // test certificate // nolint
+	}
+	return server
+}
+
 func TestPeerConnectUrlHttpHandling(t *testing.T) {
 	// Serves from httptest on 127.0.0.1; url_request blocks non-public
 	// destinations by default.
@@ -86,7 +107,7 @@ func TestPeerConnectUrlHttpHandling(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server := httptest.NewServer(tt.handler)
+			server := peer_connect_tls(t, tt.handler)
 			defer server.Close()
 
 			_, err := peer_connect_url(server.URL)
@@ -109,11 +130,10 @@ func TestPeerConnectUrlPath(t *testing.T) {
 	// destinations by default.
 	allow_private_for_test(t)
 	var requested_path string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := peer_connect_tls(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requested_path = r.URL.Path
 		w.WriteHeader(500) // Return error to stop further processing
 	}))
-	defer server.Close()
 
 	peer_connect_url(server.URL)
 
@@ -130,14 +150,13 @@ func TestPeerConnectUrlNormalizesScheme(t *testing.T) {
 	// We can't easily test the https normalization without a real HTTPS server,
 	// but we can verify the logic by checking that http:// URLs work
 	var received_host string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := peer_connect_tls(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received_host = r.Host
 		w.WriteHeader(500)
 	}))
-	defer server.Close()
 
 	// Extract host:port from server URL
-	host_port := strings.TrimPrefix(server.URL, "http://")
+	host_port := strings.TrimPrefix(server.URL, "https://")
 
 	peer_connect_url(server.URL)
 	if received_host != host_port {
@@ -194,5 +213,42 @@ func BenchmarkPeerConnectUrlJsonParsing(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		peer_connect_url(server.URL)
+	}
+}
+
+// TestPeerConnectUrlRequiresHttps is #593's transport half. This fetch learns a
+// peer's addresses and libp2p then dials them, so it must not be a plain-text
+// hop that anyone on the path can answer. The permission half - that
+// api_remote_peer now calls require_permission_url - is not reachable without a
+// Starlark thread, and is covered by the build: the call is unconditional for
+// any URL that is not the p2p/ form.
+func TestPeerConnectUrlRequiresHttps(t *testing.T) {
+	allow_private_for_test(t)
+
+	// A live server, so "refused" is distinguishable from "could not connect":
+	// an unreachable host errors either way and would prove nothing.
+	var hit atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit.Store(true)
+		w.Write([]byte(`{"peer":"x","addresses":["/ip4/127.0.0.1/tcp/1"]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	if _, err := peer_connect_url(server.URL); err == nil {
+		t.Error("plain http was accepted: the addresses this fetch returns are dialled, so the hop must be authenticated")
+	}
+	if hit.Load() {
+		t.Error("the plain-http fetch was made: the scheme must be refused before anything leaves the host")
+	}
+
+	// The scheme is what is bounded, not the form of the name: a bare host
+	// still normalises to https and gets as far as the request.
+	hit.Store(false)
+	host := strings.TrimPrefix(server.URL, "http://")
+	if _, err := peer_connect_url("ftp://" + host); err == nil {
+		t.Error("a non-http scheme was accepted")
+	}
+	if hit.Load() {
+		t.Error("the ftp:// form still reached the server")
 	}
 }

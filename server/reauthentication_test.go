@@ -30,27 +30,27 @@ func TestReauthentication(t *testing.T) {
 
 	// Single-factor (email-only): one verify yields a usable, single-use token.
 	alice := &User{UID: "u-alice", Username: "alice@example.com", Methods: "email"}
-	token, remaining := reauthentication_advance(alice, "email")
+	token, remaining := reauthentication_advance(alice, "s-1", "email")
 	if token == "" || len(remaining) != 0 {
 		t.Fatalf("email-only advance = (%q, %v), want a token and no remaining", token, remaining)
 	}
-	if !reauthentication_consume(alice, token) {
+	if !reauthentication_consume(alice, "s-1", token) {
 		t.Error("valid proof rejected")
 	}
-	if reauthentication_consume(alice, token) {
+	if reauthentication_consume(alice, "s-1", token) {
 		t.Error("proof reusable after consume")
 	}
 
 	// Multi-factor (email,totp): no token until both factors clear.
 	bob := &User{UID: "u-bob", Username: "bob@example.com", Methods: "email,totp"}
-	if tok, rem := reauthentication_advance(bob, "email"); tok != "" || len(rem) != 1 || rem[0] != "totp" {
+	if tok, rem := reauthentication_advance(bob, "s-1", "email"); tok != "" || len(rem) != 1 || rem[0] != "totp" {
 		t.Fatalf("bob email advance = (%q, %v), want no token and remaining [totp]", tok, rem)
 	}
-	tok, rem := reauthentication_advance(bob, "totp")
+	tok, rem := reauthentication_advance(bob, "s-1", "totp")
 	if tok == "" || len(rem) != 0 {
 		t.Fatalf("bob totp advance = (%q, %v), want a token", tok, rem)
 	}
-	if !reauthentication_consume(bob, tok) {
+	if !reauthentication_consume(bob, "s-1", tok) {
 		t.Error("bob's completed proof rejected")
 	}
 
@@ -59,16 +59,16 @@ func TestReauthentication(t *testing.T) {
 	// clears oauth still owes email (an OAuth sign-in can't substitute for inbox
 	// control).
 	frank := &User{UID: "u-frank", Username: "frank@example.com", Methods: "email"}
-	if tok, rem := reauthentication_advance(frank, "oauth"); tok != "" || len(rem) != 1 || rem[0] != "email" {
+	if tok, rem := reauthentication_advance(frank, "s-1", "oauth"); tok != "" || len(rem) != 1 || rem[0] != "email" {
 		t.Fatalf("frank oauth advance = (%q, %v), want no token and remaining [email]", tok, rem)
 	}
 
 	// An incomplete proof is not consumable even if its id is known.
 	dave := &User{UID: "u-dave", Methods: "email,totp"}
-	reauthentication_advance(dave, "email")
+	reauthentication_advance(dave, "s-1", "email")
 	var row Reauthentication
-	if db.scan(&row, "select id, user, methods, expires from reauthentication where user=?", dave.UID) {
-		if reauthentication_consume(dave, row.Id) {
+	if db.scan(&row, "select id, user, session, methods, expires from reauthentication where user=?", dave.UID) {
+		if reauthentication_consume(dave, "s-1", row.Id) {
 			t.Error("incomplete proof consumed")
 		}
 	} else {
@@ -76,27 +76,27 @@ func TestReauthentication(t *testing.T) {
 	}
 
 	// Rejections: nil user, empty, unknown, expired.
-	if reauthentication_consume(nil, "x") {
+	if reauthentication_consume(nil, "s-1", "x") {
 		t.Error("nil user accepted")
 	}
-	if reauthentication_consume(alice, "") {
+	if reauthentication_consume(alice, "s-1", "") {
 		t.Error("empty token accepted")
 	}
-	if reauthentication_consume(alice, "nope") {
+	if reauthentication_consume(alice, "s-1", "nope") {
 		t.Error("unknown token accepted")
 	}
 	db.exec("insert into reauthentication (id, user, methods, expires) values ('stale', 'u-alice', 'email', ?)", now()-1)
-	if reauthentication_consume(alice, "stale") {
+	if reauthentication_consume(alice, "s-1", "stale") {
 		t.Error("expired token accepted")
 	}
 
 	// User-scoped: one user's token can't be consumed by another.
 	carol := &User{UID: "u-carol", Username: "carol@example.com", Methods: "email"}
-	ctok, _ := reauthentication_advance(carol, "email")
-	if reauthentication_consume(alice, ctok) {
+	ctok, _ := reauthentication_advance(carol, "s-1", "email")
+	if reauthentication_consume(alice, "s-1", ctok) {
 		t.Error("another user's token accepted")
 	}
-	if !reauthentication_consume(carol, ctok) {
+	if !reauthentication_consume(carol, "s-1", ctok) {
 		t.Error("carol's own token rejected after the cross-user attempt")
 	}
 }

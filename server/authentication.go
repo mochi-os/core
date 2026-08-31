@@ -129,34 +129,14 @@ func auth_method_state(method string) string {
 	return state
 }
 
+// totp_period is the code lifetime in seconds, matching totp.Generate below.
+// Also the step size: a code's time step is unix/totp_period.
+const totp_period int64 = 30
+
 // auth_method_allowed reports whether a login method is usable at all — i.e.
 // its state is not "disabled".
 func auth_method_allowed(method string) bool {
 	return auth_method_state(method) != "disabled"
-}
-
-// auth_methods_required_list returns the list of methods every user must have
-// configured. Recovery is excluded even if somehow set to "required" because
-// its setting is allowed|disabled only.
-func auth_methods_required_list() []string {
-	var required []string
-	for _, m := range []string{"email", "passkey", "totp", "oauth"} {
-		if auth_method_state(m) == "required" {
-			required = append(required, m)
-		}
-	}
-	return required
-}
-
-// auth_methods_allowed_list returns the list of methods that are not disabled.
-func auth_methods_allowed_list() []string {
-	var allowed []string
-	for _, m := range []string{"email", "passkey", "totp", "recovery", "oauth"} {
-		if auth_method_allowed(m) {
-			allowed = append(allowed, m)
-		}
-	}
-	return allowed
 }
 
 // auth_remaining_methods returns the factors still required after completing
@@ -377,6 +357,18 @@ func web_auth_totp(c *gin.Context) {
 // Verify a JWT and return the user id and app claim, or -1 if invalid.
 // If the token header contains a "kid" referencing a login code, attempt to verify
 // using that login's secret. Otherwise fall back to the global secret.
+// jwt_session returns the login code a token was signed under - its `kid`
+// header, which names the session. Only meaningful for a token jwt_verify has
+// already accepted: the header alone is unauthenticated.
+func jwt_session(token string) string {
+	parsed, _, err := new(jwt.Parser).ParseUnverified(token, &mochi_claims{})
+	if err != nil {
+		return ""
+	}
+	kid, _ := parsed.Header["kid"].(string)
+	return kid
+}
+
 func jwt_verify(token_string string) (string, string, error) {
 	// First parse the token without verification to read header/kid
 	token, _, err := new(jwt.Parser).ParseUnverified(token_string, &mochi_claims{})
@@ -596,6 +588,34 @@ func user_factor_removal_blocked(user *User, method string) string {
 // at-least-one-factor rule. Returns "", "invalid", "blocked", "credential" or
 // "last".
 func user_methods_configure(user *User, method, state string) string {
+	if refusal := user_method_refusal(user, method, state); refusal != "" {
+		return refusal
+	}
+
+	required := methods_parse(user.Methods)
+	disabled := methods_parse(user.Disabled)
+	delete(required, method)
+	delete(disabled, method)
+	switch state {
+	case "required":
+		required[method] = true
+	case "disabled":
+		disabled[method] = true
+	}
+
+	methods := methods_join(required)
+	off := methods_join(disabled)
+	db := db_open("db/users.db")
+	db.exec("update users set methods=?, disabled=? where uid=?", methods, off, user.UID)
+	audit_authentication_changed(user.Username, "methods_changed")
+	return ""
+}
+
+// user_method_refusal reports why setting one login method to "disabled",
+// "allowed" or "required" must be refused, or "": "invalid", "blocked",
+// "credential" or "last". Writes nothing, so a caller configuring several
+// methods can check them all before committing any.
+func user_method_refusal(user *User, method, state string) string {
 	known := false
 	for _, m := range auth_method_list {
 		if m == method {
@@ -645,12 +665,6 @@ func user_methods_configure(user *User, method, state string) string {
 	if !user_has_login_factor(user, required, disabled) {
 		return "last"
 	}
-
-	methods := methods_join(required)
-	off := methods_join(disabled)
-	db := db_open("db/users.db")
-	db.exec("update users set methods=?, disabled=? where uid=?", methods, off, user.UID)
-	audit_authentication_changed(user.Username, "methods_changed")
 	return ""
 }
 
@@ -929,57 +943,29 @@ func api_user_methods_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "at least one method required")
 	}
 
-	// Validate against allowed methods
-	allowed := auth_methods_allowed_list()
+	// One rule set with mochi.user.methods.configure, which is the setter the
+	// settings app actually uses. Validating against "is this method enabled
+	// server-wide" admitted `recovery` (break-glass, and there is no /_/auth
+	// handler for it, so requiring it locks the account to the MFA-bypassing
+	// recovery login) and an `oauth` with no linked provider (unrecoverable).
+	// user_method_refusal refuses both, and checks the credential for every
+	// factor rather than just passkey and totp. Every method is checked before
+	// any is written: a refusal on the second must not leave the first set.
 	for _, m := range methods {
-		valid := false
-		for _, a := range allowed {
-			if m == a {
-				valid = true
-				break
-			}
-		}
-		if !valid {
+		switch user_method_refusal(user, m, "required") {
+		case "invalid":
 			return sl_error(fn, "method not allowed: %s", m)
+		case "blocked":
+			return sl_error(fn, "method blocked by operator policy: %s", m)
+		case "credential":
+			return sl_error(fn, "method not configured: %s", m)
 		}
 	}
 
-	// Check required methods are included
-	for _, r := range auth_methods_required_list() {
-		found := false
-		for _, m := range methods {
-			if m == r {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return sl_error(fn, "method required: %s", r)
-		}
-	}
-
-	// Validate user has the required auth configured
+	// The list form expresses only the required set and carries no "disabled"
+	// concept, so anything not named becomes allowed again.
 	db := db_open("db/users.db")
-	for _, m := range methods {
-		switch m {
-		case "passkey":
-			row, _ := db.row("select count(*) as count from credentials where user=?", user.UID)
-			if row == nil || row["count"].(int64) == 0 {
-				return sl_error(fn, "no passkey registered")
-			}
-		case "totp":
-			row, _ := db.row("select verified from totp where user=?", user.UID)
-			if row == nil || row["verified"].(int64) != 1 {
-				return sl_error(fn, "totp not configured")
-			}
-		}
-	}
-
-	// The list-based setter expresses only the required set; it carries no
-	// "disabled" concept, so clear the per-user disabled list — everything
-	// not required becomes allowed.
-	csv := strings.Join(methods, ",")
-	db.exec("update users set methods=?, disabled='' where uid=?", csv, user.UID)
+	db.exec("update users set methods=?, disabled='' where uid=?", strings.Join(methods, ","), user.UID)
 	audit_authentication_changed(user.Username, "methods_changed")
 	return sl.True, nil
 }
@@ -1052,7 +1038,46 @@ func totp_verify(user string, code string) bool {
 	if row["verified"].(int64) != 1 {
 		return false
 	}
-	return totp.Validate(code, row["secret"].(string))
+	return totp_claim(db, user, code, row["secret"].(string))
+}
+
+// totp_step returns the time step a code matches, trying the same +/-1 window
+// totp.Validate uses. RFC 6238 section 5.2 requires refusing a code from a step
+// already accepted, which needs the step, not just a yes.
+func totp_step(code string, secret string) (int64, bool) {
+	if secret == "" || code == "" {
+		return 0, false
+	}
+	current := now() / totp_period
+	for _, offset := range []int64{0, -1, 1} {
+		step := current + offset
+		at := time.Unix(step*totp_period, 0)
+		if ok, err := totp.ValidateCustom(code, secret, at, totp.ValidateOpts{
+			Period:    uint(totp_period),
+			Skew:      0,
+			Digits:    otp.DigitsSix,
+			Algorithm: otp.AlgorithmSHA1,
+		}); err == nil && ok {
+			return step, true
+		}
+	}
+	return 0, false
+}
+
+// totp_claim validates a code and consumes its time step, so the same code
+// cannot be replayed for the rest of its window - shoulder-surfed, phished, or
+// read off a logging proxy. The update carries `used<?` so two submissions
+// racing on one step cannot both win.
+func totp_claim(db *DB, user string, code string, secret string) bool {
+	step, ok := totp_step(code, secret)
+	if !ok {
+		return false
+	}
+	// The `used<?` predicate is the whole single-use rule, and `returning` makes
+	// it atomic: only the statement that actually moved `used` gets a row back,
+	// so a replayed code and two submissions racing on one step both lose.
+	claimed, _ := db.row("update totp set used=? where user=? and used<? returning user", step, user, step)
+	return claimed != nil
 }
 
 // mochi.user.totp.setup() -> dict: Generate TOTP secret for user
@@ -1064,6 +1089,13 @@ func api_user_totp_setup(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
+	}
+
+	// Operator policy first, as passkey registration and recovery generation both
+	// do. Without it the user enrols a factor the settings grid then shows as
+	// disabled, and login and step-up will never offer it.
+	if !auth_method_allowed("totp") {
+		return sl_error(fn, "totp disabled")
 	}
 
 	// Generate new TOTP key
@@ -1157,18 +1189,18 @@ func api_user_totp_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		if user_method_disabled(user, "totp") {
 			return sl.None, nil
 		}
-		if !totp.Validate(code, secret) {
+		if !totp_claim(db, user.UID, code, secret) {
 			return sl.None, nil
 		}
 		proven = true
-		return reauthentication_result(user, "totp"), nil
+		return reauthentication_result(user, reauthentication_session(t), "totp"), nil
 	}
 
 	// An unverified secret sitting in `secret` rather than `pending` is an
 	// enrolment that began before the pending column existed. Completing it the
 	// old way keeps a user who was mid-setup across the upgrade from having to
 	// start again.
-	if secret == "" || !totp.Validate(code, secret) {
+	if !totp_claim(db, user.UID, code, secret) {
 		return sl.False, nil
 	}
 	proven = true

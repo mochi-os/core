@@ -116,7 +116,7 @@ func TestSignupCheckPrecedesTheBodyGuards(t *testing.T) {
 	if signup < 0 {
 		t.Fatal("web_auth_restore no longer checks whether signups are enabled")
 	}
-	for _, later := range []string{"ContentLength", "MaxBytesReader", "ParseMultipartForm"} {
+	for _, later := range []string{"ContentLength", "MaxBytesReader", "MultipartReader"} {
 		at := strings.Index(body, later)
 		if at < 0 {
 			t.Errorf("web_auth_restore no longer uses %s; the upload bound is gone", later)

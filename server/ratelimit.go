@@ -618,6 +618,7 @@ func ratelimit_manager() {
 		rate_limit_verification_sender.cleanup()
 		rate_limit_p2p.cleanup()
 		rate_limit_pubsub_in.cleanup()
+		rate_limit_pubsub_host.cleanup()
 		rate_limit_pubsub_control.cleanup()
 		rate_limit_peer_request.cleanup()
 		rate_limit_record_relay.cleanup()

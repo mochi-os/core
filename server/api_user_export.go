@@ -92,6 +92,18 @@ type export_recovery struct {
 type export_secrets struct {
 	Totp     *export_totp      `json:"totp"`
 	Recovery []export_recovery `json:"recovery"`
+	// Connected-account credentials: API keys, bearer tokens, webhook HMAC
+	// secrets, Web Push auth keys. accounts.go says these are never exposed to
+	// apps, and the export must honour that - the bundle's user.db is plain, and
+	// the zip is written into the calling app's own files/ tree.
+	Accounts []export_account_secret `json:"accounts"`
+}
+
+// export_account_secret carries one accounts row's data blob under the
+// passphrase. The row itself still ships in user.db; only `data` moves here.
+type export_account_secret struct {
+	Id   string `json:"id"`
+	Data string `json:"data"`
 }
 
 // export_schedule is one durable scheduled event from core schedule.db.
@@ -196,10 +208,14 @@ func user_export(uid, app, passphrase, host string) (string, error) {
 
 	// Wholesale per-user data: top-level user.db, then every app/entity
 	// subtree. The walk is opaque to what an app stores there.
+	var account_secrets []export_account_secret
 	if file_exists(filepath.Join(root, "user.db")) {
 		if _, err := snapshot_copy_db(filepath.Join(root, "user.db"), filepath.Join(tree, "user.db")); err != nil {
 			return "", fmt.Errorf("copy user.db: %w", err)
 		}
+		// Lift the connected-account credentials out of the staged copy and into
+		// secrets.age. Done on the copy, never the live database.
+		account_secrets = export_accounts_extract(db_open(filepath.Join("users", uid, "export", "staging", bundle, "user.db")))
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil && !os.IsNotExist(err) {
@@ -229,7 +245,7 @@ func user_export(uid, app, passphrase, host string) (string, error) {
 	if err := export_keys_age(udb, uid, passphrase, filepath.Join(tree, "keys.age")); err != nil {
 		return "", err
 	}
-	if err := export_secrets_age(udb, uid, passphrase, filepath.Join(tree, "secrets.age")); err != nil {
+	if err := export_secrets_age(udb, uid, passphrase, filepath.Join(tree, "secrets.age"), account_secrets); err != nil {
 		return "", err
 	}
 
@@ -468,11 +484,31 @@ func export_keys_age(udb *DB, uid, passphrase, path string) error {
 	return out.Close()
 }
 
+// export_accounts_extract reads every accounts row's data blob from the staged
+// user.db and blanks the column there, so the plain copy in the bundle carries
+// no credentials. Returns what was taken, for secrets.age.
+func export_accounts_extract(staged *DB) []export_account_secret {
+	out := []export_account_secret{}
+	if staged == nil {
+		return out
+	}
+	rows, err := staged.rows("select id, data from accounts where data!=''")
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		out = append(out, export_account_secret{Id: as_string(r["id"]), Data: as_string(r["data"])})
+	}
+	staged.exec("update accounts set data=''")
+	return out
+}
+
 // export_secrets_age writes the restorable auth credentials (authenticator
-// secret, recovery-code hashes) to secrets.age, passphrase-encrypted with age.
-// Always written, even when empty, so restore is uniform.
-func export_secrets_age(udb *DB, uid, passphrase, path string) error {
-	secrets := export_secrets{Recovery: []export_recovery{}}
+// secret, recovery-code hashes, connected-account data) to secrets.age,
+// passphrase-encrypted with age. Always written, even when empty, so restore
+// is uniform.
+func export_secrets_age(udb *DB, uid, passphrase, path string, accounts []export_account_secret) error {
+	secrets := export_secrets{Recovery: []export_recovery{}, Accounts: accounts}
 	if row, _ := udb.row("select secret, verified, created from totp where user=?", uid); row != nil {
 		if secret := as_string(row["secret"]); secret != "" {
 			secrets.Totp = &export_totp{

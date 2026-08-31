@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -380,6 +381,15 @@ func api_account_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	user, _ := principal_storage(t)
 	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	// principal_storage answers with the route owner on a context route even when
+	// a different user is signed in, so on a custom domain this would hand the
+	// owner's connected accounts - ntfy topics, webhook URLs, email addresses -
+	// to any logged-in visitor. Every other account API resolves with
+	// principal_caller; this one keeps the acting form for the anonymous case
+	// and refuses the cross-user one outright.
+	if caller := principal_caller(t); caller != nil && caller.UID != user.UID {
 		return sl_error(fn, "no user")
 	}
 
@@ -951,9 +961,18 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	stored_code, _ := data["code"].(string)
 	expires, _ := data["expires"].(float64)
 
-	if stored_code == "" || code != stored_code {
+	// Constant time, and behind the same gate as every other guessable secret on
+	// this surface. The code carries ~58 bits, so neither closes a reachable
+	// hole; the point is that this path stops being the one exception.
+	if !stepup_gate_reserve(user.UID) {
+		return sl_error(fn, "too many attempts")
+	}
+	matched := false
+	defer func() { stepup_gate_done(user.UID, matched) }()
+	if stored_code == "" || subtle.ConstantTimeCompare([]byte(code), []byte(stored_code)) != 1 {
 		return sl.False, nil
 	}
+	matched = true
 
 	if int64(expires) < now {
 		return sl_error(fn, "verification code has expired")

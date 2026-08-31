@@ -26,7 +26,7 @@ func oauth_binding_setup(t *testing.T) {
 	sessions := db_open("db/sessions.db")
 	sessions.exec("create table sessions (user text not null, code text not null primary key, secret text not null, expires integer not null, created integer not null, accessed integer not null, address text not null default '', agent text not null default '')")
 	sessions.exec("create table ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")
-	sessions.exec("create table reauthentication (id text primary key, user text not null, methods text not null default '', expires integer not null)")
+	sessions.exec("create table reauthentication (id text primary key, user text not null, session text not null default '', methods text not null default '', expires integer not null)")
 	sessions.exec("create table verifications (oauth integer not null, user text not null, last integer not null, primary key (oauth, user))")
 	db_open("db/settings.db").exec("create table settings (name text primary key, value text not null default '')")
 
@@ -182,7 +182,7 @@ func TestOauthLinkCeremonyBoundToSession(t *testing.T) {
 	begin := func() (string, *http.Cookie) {
 		t.Helper()
 		proof := uid()
-		sessions.exec("insert into reauthentication (id, user, methods, expires) values (?, 'u-link', 'email', ?)", proof, now()+300)
+		sessions.exec("insert into reauthentication (id, user, session, methods, expires) values (?, 'u-link', ?, 'email', ?)", proof, link_session, now()+300)
 		w := oauth_begin_request(link_session, `{"link":true,"token":"`+proof+`"}`)
 		if w.Code != http.StatusOK {
 			t.Fatalf("begin link: status = %d, want 200", w.Code)
@@ -288,7 +288,7 @@ func oauth_mobile_link_begin(t *testing.T, session string) (string, string) {
 	t.Helper()
 	sessions := db_open("db/sessions.db")
 	proof := uid()
-	sessions.exec("insert into reauthentication (id, user, methods, expires) values (?, 'u-link', 'email', ?)", proof, now()+300)
+	sessions.exec("insert into reauthentication (id, user, session, methods, expires) values (?, 'u-link', ?, 'email', ?)", proof, session, now()+300)
 
 	verifier := random_alphanumeric(64)
 	sum := sha256.Sum256([]byte(verifier))
@@ -508,7 +508,7 @@ func TestOauthReauthenticate(t *testing.T) {
 	users.exec("create table oauth (id integer primary key, user text not null, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
 	sessions := db_open("db/sessions.db")
 	sessions.exec("create table ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")
-	sessions.exec("create table reauthentication (id text primary key, user text not null, methods text not null default '', expires integer not null)")
+	sessions.exec("create table reauthentication (id text primary key, user text not null, session text not null default '', methods text not null default '', expires integer not null)")
 	sessions.exec("create table verifications (oauth integer not null, user text not null, last integer not null, primary key (oauth, user))")
 
 	users.exec("insert into users (uid, username) values ('u-x', 'x@example.com')")
@@ -517,6 +517,10 @@ func TestOauthReauthenticate(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
+	// A real request carrying a session cookie: the accrual is bound to the
+	// browser session, so oauth_reauthenticate reads one off the request.
+	c.Request = httptest.NewRequest("POST", "/", nil)
+	c.Request.AddCookie(&http.Cookie{Name: "session", Value: "s-oauth"})
 
 	challenge := func(verifier string) string {
 		h := sha256.Sum256([]byte(verifier))

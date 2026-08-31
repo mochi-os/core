@@ -21,7 +21,7 @@ func TestUserMethodsConfigure(t *testing.T) {
 	// create_test_users_db now includes the disabled column; add the credential
 	// tables that availability checks read.
 	users.exec("create table credentials (id blob primary key, user text not null, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
-	users.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, created integer not null)")
+	users.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, used integer not null default 0, created integer not null)")
 
 	settings := db_open("db/settings.db")
 	settings.exec("create table settings (name text primary key, value text not null)")
@@ -130,7 +130,7 @@ func TestUserMethodStateOperatorClamp(t *testing.T) {
 
 	users := db_open("db/users.db")
 	users.exec("create table credentials (id blob primary key, user text not null, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
-	users.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, created integer not null)")
+	users.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, used integer not null default 0, created integer not null)")
 	settings := db_open("db/settings.db")
 	settings.exec("create table settings (name text primary key, value text not null)")
 	users.exec("insert into users (uid, username, methods) values ('u1', 'a@example.com', '')")
@@ -330,7 +330,7 @@ func TestAccountRateLimit(t *testing.T) {
 	create_test_users_db(t)
 
 	users := db_open("db/users.db")
-	users.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, created integer not null)")
+	users.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, used integer not null default 0, created integer not null)")
 	users.exec("insert into users (uid, username, methods) values ('u-limit', 'limit@example.com', 'totp')")
 	users.exec("insert into totp (user, secret, verified, created) values ('u-limit', 'JBSWY3DPEHPK3PXP', 1, 1)")
 	defer account_login.reset("u-limit")

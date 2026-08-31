@@ -10,7 +10,10 @@
 	3. User's role, #administrator or #user
 	4. Authenticated (+)
 	5. Anonymous (*), including not logged in
-Deny has priority over allow */
+The first matching row wins, whether it grants or denies - there is no
+deny-over-allow pass. A deny on * and an allow for the user on the same
+resource resolves to the allow, because subjects are tried in the order
+above. */
 
 package main
 

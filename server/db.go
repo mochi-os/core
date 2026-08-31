@@ -80,7 +80,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 10
+	schema_version = 11
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -224,7 +224,7 @@ func db_create() {
 	// TOTP secrets. pending holds a secret from an unproven enrolment, kept
 	// separate from secret so starting an enrolment cannot disturb the
 	// authenticator the user is currently logging in with.
-	users.exec("create table if not exists totp (user text primary key references users(uid) on delete cascade, secret text not null, verified integer not null default 0, pending text not null default '', created integer not null)")
+	users.exec("create table if not exists totp (user text primary key references users(uid) on delete cascade, secret text not null, verified integer not null default 0, pending text not null default '', used integer not null default 0, created integer not null)")
 
 	// OAuth identity definitions (Google, GitHub, Microsoft, Facebook, X).
 	// Last-used timestamp lives in sessions.db.verifications so this cold
@@ -269,7 +269,7 @@ func db_create() {
 	// Step-up re-authentication proofs: short-lived single-use tokens
 	// earned by re-verifying the user's login factor(s) before a
 	// sensitive action. methods is the accrued set of factors verified.
-	sessions.exec("create table if not exists reauthentication (id text primary key, user text not null, methods text not null default '', expires integer not null)")
+	sessions.exec("create table if not exists reauthentication (id text primary key, user text not null, session text not null default '', methods text not null default '', expires integer not null)")
 	sessions.exec("create index if not exists reauthentication_expires on reauthentication(expires)")
 
 	// Last-login timestamps (kept here, not in users.db, so the cold reference
@@ -1267,6 +1267,8 @@ func db_upgrade() {
 			db_upgrade_9()
 		case 10:
 			db_upgrade_10()
+		case 11:
+			db_upgrade_11()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2469,6 +2471,21 @@ func db_upgrade_9() {
 	if len(unparsed) > 0 {
 		warn("Schema 9: %d account(s) have a username that is not a usable email address and cannot be signed in to: %s",
 			len(unparsed), strings.Join(unparsed, ", "))
+	}
+}
+
+// db_upgrade_11 binds a step-up accrual to the browser session that started it,
+// and gives TOTP somewhere to record the last time step it accepted.
+func db_upgrade_11() {
+	sessions := db_open("db/sessions.db")
+	if have, _ := sessions.exists("select 1 from pragma_table_info('reauthentication') where name='session'"); !have {
+		sessions.exec("alter table reauthentication add column session text not null default ''")
+	}
+	// Existing rows carry no session, so they can only ever match a caller with
+	// no session either. They expire within 300 s regardless.
+	users := db_open("db/users.db")
+	if have, _ := users.exists("select 1 from pragma_table_info('totp') where name='used'"); !have {
+		users.exec("alter table totp add column used integer not null default 0")
 	}
 }
 

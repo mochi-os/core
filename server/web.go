@@ -756,10 +756,12 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		// which account's data is read, so binding the owner adds only a false claim.
 		s.set("user", user)
 		s.set("owner", owner)
-		// The caller's own session, so mochi.user.session.list can mark the current
-		// row. Empty for anonymous and app-token callers, which have no browser
-		// session.
-		s.set("session", web_cookie_get(c, "session", ""))
+		// The caller's own session: mochi.user.session.list marks the current row
+		// with it, and a step-up accrual is bound to it. Empty only for anonymous
+		// callers - an app token has no cookie but names its session in the `kid`
+		// it was signed under, and its holder is as entitled to a step-up as a
+		// browser is.
+		s.set("session", web_session(c))
 		s.set("language", request_language(c, user))
 		if e != nil {
 			s.set("route_entity", e.ID)
@@ -1560,6 +1562,15 @@ func web_login_identity(c *gin.Context) {
 		return
 	}
 
+	// One person entity per account. User.identity() picks `order by id limit 1`,
+	// so a second one whose random id sorts lower silently becomes the account's
+	// identity: the name and fingerprint change under everyone who already
+	// references the first, and the admin signup mail is sent again.
+	if u.identity() != nil {
+		respond_error(c, http.StatusConflict, "identity_exists", "errors.identity_exists", nil)
+		return
+	}
+
 	_, err := entity_create(u, "person", input.Name, input.Privacy, "")
 	if err != nil {
 		info("Identity creation error for user %q: %v", u.UID, err)
@@ -1950,28 +1961,28 @@ func web_start() {
 	r.RedirectTrailingSlash = false
 
 	// Auth endpoints (grouped under /_/auth/)
-	r.POST("/_/auth/begin", rate_limit_login_middleware, web_login_begin)
-	r.POST("/_/auth/code", rate_limit_login_middleware, web_login_code)
-	r.POST("/_/auth/verify", rate_limit_login_middleware, web_login_verify)
-	r.POST("/_/auth/totp", rate_limit_login_middleware, web_auth_totp)
-	r.POST("/_/auth/methods", rate_limit_login_middleware, web_auth_mfa)
-	r.POST("/_/auth/passkey/begin", rate_limit_login_middleware, web_passkey_login_begin)
-	r.POST("/_/auth/passkey/finish", rate_limit_login_middleware, web_passkey_login_finish)
-	r.POST("/_/auth/recovery", rate_limit_login_middleware, web_recovery_login)
-	r.POST("/_/auth/restore", rate_limit_login_middleware, web_auth_restore)
+	r.POST("/_/auth/begin", rate_limit_login_middleware, web_samesite_middleware, web_login_begin)
+	r.POST("/_/auth/code", rate_limit_login_middleware, web_samesite_middleware, web_login_code)
+	r.POST("/_/auth/verify", rate_limit_login_middleware, web_samesite_middleware, web_login_verify)
+	r.POST("/_/auth/totp", rate_limit_login_middleware, web_samesite_middleware, web_auth_totp)
+	r.POST("/_/auth/methods", rate_limit_login_middleware, web_samesite_middleware, web_auth_mfa)
+	r.POST("/_/auth/passkey/begin", rate_limit_login_middleware, web_samesite_middleware, web_passkey_login_begin)
+	r.POST("/_/auth/passkey/finish", rate_limit_login_middleware, web_samesite_middleware, web_passkey_login_finish)
+	r.POST("/_/auth/recovery", rate_limit_login_middleware, web_samesite_middleware, web_recovery_login)
+	r.POST("/_/auth/restore", rate_limit_login_middleware, web_samesite_middleware, web_auth_restore)
 	r.GET("/_/auth/restore/progress", web_auth_restore_progress)
-	r.POST("/_/auth/oauth/:provider/begin", rate_limit_login_middleware, web_oauth_begin)
+	r.POST("/_/auth/oauth/:provider/begin", rate_limit_login_middleware, web_samesite_middleware, web_oauth_begin)
 	r.GET("/_/auth/oauth/:provider/callback", rate_limit_login_middleware, web_oauth_callback)
-	r.POST("/_/auth/oauth/exchange", rate_limit_login_middleware, web_oauth_exchange)
+	r.POST("/_/auth/oauth/exchange", rate_limit_login_middleware, web_samesite_middleware, web_oauth_exchange)
 	r.GET("/_/auth/methods", web_auth_methods)
 	r.GET("/_/auth/partial", web_auth_partial)
 	r.POST("/_/auth/close/cancel", web_auth_close_cancel)
 
 	// Other system endpoints
 	r.GET("/_/identity", web_identity_get)
-	r.POST("/_/identity", web_login_identity)
-	r.POST("/_/logout", web_logout)
-	r.POST("/_/abandon", web_abandon)
+	r.POST("/_/identity", web_samesite_middleware, web_login_identity)
+	r.POST("/_/logout", web_samesite_middleware, web_logout)
+	r.POST("/_/abandon", web_samesite_middleware, web_abandon)
 	r.GET("/_/ping", web_ping)
 	r.GET("/_/health", web_health)
 	r.GET("/_/p2p/info", web_p2p_info)
@@ -1979,7 +1990,7 @@ func web_start() {
 	r.GET("/robots.txt", web_robots)
 	r.GET("/sitemap.xml", web_sitemap)
 	r.GET("/_/websocket", websocket_connection)
-	r.POST("/_/token", web_shell_token)
+	r.POST("/_/token", web_samesite_middleware, web_shell_token)
 	r.POST("/_/shell", web_shell_init)
 	r.GET("/_/languages", web_languages)
 
@@ -2032,4 +2043,66 @@ func web_start() {
 			}
 		}
 	}
+}
+
+// web_samesite_middleware refuses the cross-site credential-issuing POST.
+//
+// Every login endpoint binds with c.ShouldBindJSON, and gin's JSON binding does
+// not look at Content-Type: it decodes whatever the body holds. A cross-origin
+// page can therefore submit
+//
+//	<form method=POST enctype="text/plain" action="https://server/_/auth/verify">
+//
+// whose serialised body is valid JSON, which triggers no CORS preflight, and
+// whose response Set-Cookie is stored - SameSite governs whether a cookie is
+// sent, not whether one may be set. The victim's browser is then signed in as
+// whoever supplied the code: login CSRF.
+//
+// Two checks, because neither covers every client alone:
+//
+//   - Sec-Fetch-Site, sent by every current browser, names the relationship
+//     directly. "cross-site" and "cross-origin" are refused.
+//   - For a client that sends no fetch metadata, the Content-Type must not be
+//     one of the CORS-simple types a form can produce. Requiring anything else
+//     forces a preflight, which this server does not answer. multipart is
+//     allowed through: it cannot express a JSON body, and the one route that
+//     reads it (restore) authenticates on an emailed code, not on a cookie.
+//
+// Non-browser callers (curl, the Android client, server-to-server) send neither
+// header and use application/json, so they pass on the second check.
+func web_samesite_middleware(c *gin.Context) {
+	switch c.GetHeader("Sec-Fetch-Site") {
+	case "cross-site", "cross-origin":
+		respond_error(c, http.StatusForbidden, "invalid_request", "errors.invalid_request", nil)
+		c.Abort()
+		return
+	case "":
+		content := strings.ToLower(strings.TrimSpace(strings.Split(c.GetHeader("Content-Type"), ";")[0]))
+		if content == "text/plain" || content == "application/x-www-form-urlencoded" {
+			respond_error(c, http.StatusForbidden, "invalid_request", "errors.invalid_request", nil)
+			c.Abort()
+			return
+		}
+	}
+	c.Next()
+}
+
+// web_session returns the session this request belongs to: the browser cookie,
+// or - for an app-token caller, which has no cookie - the session that signed
+// the bearer token. Empty for an anonymous request.
+func web_session(c *gin.Context) string {
+	if session := web_cookie_get(c, "session", ""); session != "" {
+		return session
+	}
+	header := c.GetHeader("Authorization")
+	if !strings.HasPrefix(header, "Bearer ") {
+		return ""
+	}
+	token := strings.TrimPrefix(header, "Bearer ")
+	// Verified first: the kid is an unauthenticated header until the signature
+	// proves the token was issued under that session's secret.
+	if _, _, err := jwt_verify(token); err != nil {
+		return ""
+	}
+	return jwt_session(token)
 }

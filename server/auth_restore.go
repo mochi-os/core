@@ -14,6 +14,7 @@ package main
 
 import (
 	"archive/zip"
+	"crypto/ed25519"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -54,6 +55,11 @@ func restore_cleanup_orphans() {
 // is exempt from the global body limit. A var only so tests can lower it.
 var restore_upload_maximum int64 = 2 * 1024 * 1024 * 1024 // 2 GiB
 
+// restore_field_maximum bounds each non-bundle multipart field. An address, a
+// passphrase and a ten-character code all fit far inside it; the cap is here so
+// a caller cannot stream an unbounded "email" part instead of a bundle.
+const restore_field_maximum int64 = 64 * 1024
+
 // web_auth_restore is POST /_/auth/restore.
 // multipart/form-data: email, passphrase, bundle (file).
 func web_auth_restore(c *gin.Context) {
@@ -67,9 +73,9 @@ func web_auth_restore(c *gin.Context) {
 
 	udb := db_open("db/users.db")
 
-	// Cap the compressed bundle before the first PostForm call parses - and spools
-	// - the multipart body. The decompressed-content cap is separate (restore_cap,
-	// passed to restore_unzip). Headroom covers zip framing.
+	// Cap the compressed bundle before a byte of it is read. The decompressed
+	// cap is separate (restore_cap, passed to restore_unzip). Headroom covers
+	// zip framing.
 	restore_cap := file_maximum_storage
 	limit := restore_upload_maximum + 64*1024*1024
 	if c.Request.ContentLength > limit {
@@ -77,91 +83,155 @@ func web_auth_restore(c *gin.Context) {
 		return
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
-	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
-		var exceeded *http.MaxBytesError
-		if errors.As(err, &exceeded) {
-			respond_error(c, http.StatusRequestEntityTooLarge, "bundle_too_large", "errors.bundle_too_large", nil)
-		} else {
-			respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
-		}
-		return
-	}
-	// SaveUploadedFile has copied the bundle to zip_path by now, so the spooled
-	// multipart parts should not linger on disk.
-	defer func() {
-		if c.Request.MultipartForm != nil {
-			c.Request.MultipartForm.RemoveAll()
-		}
-	}()
 
-	email := strings.TrimSpace(c.PostForm("email"))
-	passphrase := c.PostForm("passphrase")
-
-	if email == "" {
+	// Streamed, not ParseMultipartForm: that spools the whole body - up to the
+	// cap above - to os.TempDir before any field can be read, so a caller with no
+	// code at all could push 2 GiB of (usually tmpfs) disk per request, 20 times
+	// per 5 minutes per address. Reading the parts in order lets the emailed code
+	// be checked while the bundle is still on the wire.
+	reader, err := c.Request.MultipartReader()
+	if err != nil {
 		respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
 		return
 	}
-	// Canonical, so the username-taken check below sees an existing account
-	// however the address was typed, and the code consumed further down
-	// matches the row code_send wrote.
-	email = email_address(email)
-	if email == "" {
-		respond_error(c, http.StatusBadRequest, "invalid_email", "errors.invalid_email", nil)
-		return
+
+	email, passphrase, code := "", "", ""
+	// Captured before the local shadows it: the destination-side id generator.
+	generate := uid
+	uid, restore_dir, zip_path := "", "", ""
+	stored := false
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			var exceeded *http.MaxBytesError
+			if uid != "" {
+				user_delete(uid)
+			}
+			if errors.As(err, &exceeded) {
+				respond_error(c, http.StatusRequestEntityTooLarge, "bundle_too_large", "errors.bundle_too_large", nil)
+			} else {
+				respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
+			}
+			return
+		}
+
+		switch part.FormName() {
+		case "email", "passphrase", "code":
+			value, err := io.ReadAll(io.LimitReader(part, restore_field_maximum+1))
+			if err != nil || int64(len(value)) > restore_field_maximum {
+				// Not part.Close(): Close drains the rest of the part, which is
+				// exactly the unbounded read the cap exists to prevent.
+				respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
+				return
+			}
+			part.Close()
+			switch part.FormName() {
+			case "email":
+				email = strings.TrimSpace(string(value))
+			case "passphrase":
+				passphrase = string(value)
+			case "code":
+				code = strings.TrimSpace(string(value))
+			}
+
+		case "bundle":
+			if stored {
+				respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
+				return
+			}
+			// Everything that decides whether this caller may restore at all
+			// happens here, with the bundle still unread. The client sends email
+			// and code ahead of the bundle for exactly this reason.
+			if email == "" {
+				respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
+				return
+			}
+			// Canonical, so the taken check below and the code consumed here both
+			// see the address however it was typed.
+			email = email_address(email)
+			if email == "" {
+				respond_error(c, http.StatusBadRequest, "invalid_email", "errors.invalid_email", nil)
+				return
+			}
+			// The taken check first, as it has always been: restore on an empty
+			// server can make the account an administrator, so "this mailbox
+			// already has an account" is the answer that matters most and it is
+			// given without a code.
+			if taken, _ := udb.exists("select 1 from users where username=?", email); taken {
+				respond_error(c, http.StatusConflict, "username_taken", "errors.username_taken", nil)
+				return
+			}
+			if code == "" {
+				respond_error(c, http.StatusBadRequest, "missing_code", "errors.missing_code", nil)
+				return
+			}
+			if !code_consume_email(email, code) {
+				respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
+				return
+			}
+
+			// Fresh destination-side uid; the bundle's uid is informational only.
+			// First-user-becomes-administrator is decided inside the insert as
+			// user_create does - never from the bundle, never from an earlier read.
+			uid = generate()
+			udb.exec(`insert into users (uid, username, role, methods, status)
+				values (?, ?, case when exists (select 1 from users) then 'user' else 'administrator' end, '', 'pending-restore')`,
+				uid, email)
+
+			// Belt-and-braces freshness check before any staging, so the walk
+			// never has to skip the restore/ directory.
+			if !user_is_fresh(uid) {
+				part.Close()
+				user_delete(uid)
+				respond_error(c, http.StatusConflict, "account_not_fresh", "errors.account_not_fresh", nil)
+				return
+			}
+
+			// Unpacked under the user's own data dir, on the same filesystem as
+			// the eventual destination, so the swap is a rename(2).
+			restore_dir = filepath.Join(data_dir, "users", uid, "restore")
+			if err := os.MkdirAll(restore_dir, 0o700); err != nil {
+				part.Close()
+				user_delete(uid)
+				respond_error(c, http.StatusInternalServerError, "restore_failed", "errors.restore_failed", nil)
+				return
+			}
+			zip_path = filepath.Join(restore_dir, "bundle.zip")
+			out, err := os.OpenFile(zip_path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+			if err != nil {
+				part.Close()
+				user_delete(uid)
+				respond_error(c, http.StatusInternalServerError, "restore_failed", "errors.restore_failed", nil)
+				return
+			}
+			_, err = io.Copy(out, part)
+			out.Close()
+			part.Close()
+			if err != nil {
+				user_delete(uid)
+				var exceeded *http.MaxBytesError
+				if errors.As(err, &exceeded) {
+					respond_error(c, http.StatusRequestEntityTooLarge, "bundle_too_large", "errors.bundle_too_large", nil)
+				} else {
+					respond_error(c, http.StatusInternalServerError, "restore_failed", "errors.restore_failed", nil)
+				}
+				return
+			}
+			stored = true
+
+		default:
+			part.Close()
+		}
 	}
-	upload, err := c.FormFile("bundle")
-	if err != nil {
+
+	if !stored {
+		if uid != "" {
+			user_delete(uid)
+		}
 		respond_error(c, http.StatusBadRequest, "bundle_required", "errors.bundle_required", nil)
-		return
-	}
-
-	if taken, _ := udb.exists("select 1 from users where username=?", email); taken {
-		respond_error(c, http.StatusConflict, "username_taken", "errors.username_taken", nil)
-		return
-	}
-
-	// Prove the caller controls the address before an account exists for it: the
-	// passphrase authenticates the bundle, not the person holding it. Consumed
-	// after the cheap checks so a failure does not burn the code.
-	code := strings.TrimSpace(c.PostForm("code"))
-	if code == "" {
-		respond_error(c, http.StatusBadRequest, "missing_code", "errors.missing_code", nil)
-		return
-	}
-	if !code_consume_email(email, code) {
-		respond_error(c, http.StatusUnauthorized, "invalid_code", "errors.invalid_code", nil)
-		return
-	}
-
-	// Fresh destination-side uid; the bundle's uid is informational only.
-	// First-user-becomes-administrator is decided inside the insert as user_create
-	// does - never from the bundle, never from an earlier read.
-	uid := uid()
-	udb.exec(`insert into users (uid, username, role, methods, status)
-		values (?, ?, case when exists (select 1 from users) then 'user' else 'administrator' end, '', 'pending-restore')`,
-		uid, email)
-
-	// Belt-and-braces freshness check before any staging, so the walk
-	// never has to skip the restore/ directory.
-	if !user_is_fresh(uid) {
-		user_delete(uid)
-		respond_error(c, http.StatusConflict, "account_not_fresh", "errors.account_not_fresh", nil)
-		return
-	}
-
-	// Save and unpack the bundle under the user's own data dir (same
-	// filesystem as the eventual destination, so the swap is a real
-	// rename(2), not a cross-filesystem copy).
-	restore_dir := filepath.Join(data_dir, "users", uid, "restore")
-	if err := os.MkdirAll(restore_dir, 0o700); err != nil {
-		user_delete(uid)
-		respond_error(c, http.StatusInternalServerError, "restore_failed", "errors.restore_failed", nil)
-		return
-	}
-	zip_path := filepath.Join(restore_dir, "bundle.zip")
-	if err := c.SaveUploadedFile(upload, zip_path); err != nil {
-		user_delete(uid)
-		respond_error(c, http.StatusInternalServerError, "restore_failed", "errors.restore_failed", nil)
 		return
 	}
 
@@ -230,7 +300,9 @@ func web_auth_restore(c *gin.Context) {
 	// from this server. Importing an identity already hosted here would
 	// fork it.
 	for _, e := range account.Entities {
-		if here, _ := udb.exists("select 1 from entities where id=?", e.ID); here {
+		// Fingerprint as well as id: both are routable (`/<app>/<fingerprint>/-/...`),
+		// so a collision on either would fork an identity this server already hosts.
+		if here, _ := udb.exists("select 1 from entities where id=? or fingerprint=?", e.ID, fingerprint(e.ID)); here {
 			user_delete(uid)
 			respond_error(c, http.StatusConflict, "entity_collision", "errors.entity_collision", nil)
 			return
@@ -298,7 +370,10 @@ func restore_apply(uid, bundle string, manifest export_manifest, account export_
 
 	// Core-DB rows scoped to the user.
 	restore_progress(uid, "linking", 75, "")
-	restore_entities(uid, account, keys)
+	if !restore_entities(uid, account, keys) {
+		fail("bundle_tampered")
+		return
+	}
 	restore_schedule(uid, bundle)
 	restore_auth(uid, account, secrets)
 	restore_finish_account(uid, manifest, bundle)
@@ -355,7 +430,7 @@ func restore_swap(uid, bundle string) error {
 // restore_entities inserts the bundle's entities under the destination uid and
 // republishes public ones. An entity whose key is absent is skipped: a keyless
 // row looks locally owned, so the host would answer streams it cannot prove.
-func restore_entities(uid string, account export_account, keys map[string]string) {
+func restore_entities(uid string, account export_account, keys map[string]string) bool {
 	udb := db_open("db/users.db")
 	for _, e := range account.Entities {
 		private := keys[e.ID]
@@ -363,14 +438,42 @@ func restore_entities(uid string, account export_account, keys map[string]string
 			warn("Restore skipping entity %q for user %q: no private key in bundle", e.ID, uid)
 			continue
 		}
+		// Derive the identity from the key rather than believing the bundle. Only
+		// the primary is covered by the manifest signature, and the signing key is
+		// itself in the bundle, so a user editing their own user.json could
+		// otherwise plant any id or fingerprint here - entity_create is the only
+		// other writer and always derives both from a freshly generated key.
+		// entity_by_any resolves local rows first, so a planted id would make this
+		// server serve the attacker's copy of a remote feed or wiki at that id.
+		if !entity_key_matches(e.ID, private) {
+			warn("Restore refusing entity %q for user %q: the bundle's id is not the public half of its key", e.ID, uid)
+			return false
+		}
+		mark := fingerprint(e.ID)
 		udb.exec("replace into entities (id, private, fingerprint, user, parent, class, name, privacy, data, published) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
-			e.ID, private, e.Fingerprint, uid, e.Parent, e.Class, e.Name, e.Privacy, e.Data)
+			e.ID, private, mark, uid, e.Parent, e.Class, e.Name, e.Privacy, e.Data)
 		if e.Privacy == "public" {
-			ent := Entity{ID: e.ID, Private: private, Fingerprint: e.Fingerprint, User: uid, Parent: e.Parent, Class: e.Class, Name: e.Name, Privacy: e.Privacy, Data: e.Data}
+			ent := Entity{ID: e.ID, Private: private, Fingerprint: mark, User: uid, Parent: e.Parent, Class: e.Class, Name: e.Name, Privacy: e.Privacy, Data: e.Data}
 			directory_create(&ent)
 			directory_publish(&ent, true)
 		}
 	}
+	return true
+}
+
+// entity_key_matches reports whether id is the base58 public half of private.
+// The pairing is what makes an entity id self-authenticating: every signature
+// this server later makes for the entity is verified against the id.
+func entity_key_matches(id string, private string) bool {
+	key := base58_decode(private, "")
+	if len(key) != ed25519.PrivateKeySize {
+		return false
+	}
+	public, ok := ed25519.PrivateKey(key).Public().(ed25519.PublicKey)
+	if !ok {
+		return false
+	}
+	return base58_encode(public) == id
 }
 
 // restore_schedule re-inserts the bundle's durable scheduled events under
@@ -567,6 +670,23 @@ func restore_auth(uid string, account export_account, secrets *export_secrets) {
 			}
 			udb.exec("insert into recovery (user, hash, created) values (?, ?, ?)", uid, r.Hash, r.Created)
 			recovery_restored = true
+		}
+		// Connected-account credentials travel in secrets.age rather than in the
+		// bundle's plain user.db; put them back on the rows the copy restored.
+		// A bundle written before that change carries them in user.db already and
+		// simply has no accounts here.
+		if len(secrets.Accounts) > 0 {
+			user := user_by_uid(uid)
+			if user != nil {
+				if db := db_user(user, "user"); db != nil {
+					for _, a := range secrets.Accounts {
+						if a.Id == "" {
+							continue
+						}
+						db.exec("update accounts set data=? where id=?", a.Data, a.Id)
+					}
+				}
+			}
 		}
 	}
 

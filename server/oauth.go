@@ -287,7 +287,13 @@ func web_oauth_begin(c *gin.Context) {
 		Email     string `json:"email"`     // typed address (email-login flow); binds OAuth to that account
 		Token     string `json:"token"`     // step-up re-authentication proof (link only)
 	}
-	c.ShouldBindJSON(&body)
+	// An empty body is a legitimate "web login, no options" request, so io.EOF
+	// is not an error here; anything else is a malformed body that would
+	// otherwise start a ceremony with every field zeroed.
+	if err := c.ShouldBindJSON(&body); err != nil && err != io.EOF {
+		respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
+		return
+	}
 
 	// Reduce the caller's mode to the two this endpoint offers. The third,
 	// "reauthentication", is minted only by the step-up builtin, which always
@@ -336,7 +342,7 @@ func web_oauth_begin(c *gin.Context) {
 		// Linking ADDS a way to sign in and outlives every later passphrase, passkey
 		// and TOTP change, so a session alone is not enough - the same gate as
 		// passkey register, TOTP setup, recovery codes and unlink.
-		if !reauthentication_consume(user, body.Token) {
+		if !reauthentication_consume(user, web_session(c), body.Token) {
 			respond_error(c, http.StatusForbidden, "reauthentication_required", "errors.reauthentication_required", nil)
 			return
 		}
@@ -832,6 +838,17 @@ func oauth_set_profile_cookie(c *gin.Context, p *oauth_profile) {
 // Provider-specific profile fetchers
 // ============================================================================
 
+// oauth_issuer_unpinned reports whether the configured Microsoft tenant is one
+// of the multi-tenant endpoints, whose tokens carry a per-tenant issuer that
+// cannot match the discovery document.
+func oauth_issuer_unpinned() bool {
+	switch setting_effective("oauth_microsoft_tenant") {
+	case "common", "organizations", "consumers":
+		return true
+	}
+	return false
+}
+
 // oauth_oidc_profile verifies the ID token returned by an OIDC provider and
 // extracts the profile claims we care about.
 func oauth_oidc_profile(ctx context.Context, provider *oidc.Provider, client_id string, token *oauth2.Token, nonce string) (*oauth_profile, error) {
@@ -839,9 +856,13 @@ func oauth_oidc_profile(ctx context.Context, provider *oidc.Provider, client_id 
 	if !ok || raw == "" {
 		return nil, errors.New("missing id_token")
 	}
+	// The issuer check is skipped only where it cannot be satisfied: a Microsoft
+	// multi-tenant endpoint mints tokens whose issuer embeds the real tenant id,
+	// which never equals the /common/ discovery issuer. Every other provider -
+	// Google, and a Microsoft deployment pinned to one tenant - keeps the check.
 	verifier := provider.Verifier(&oidc.Config{
 		ClientID:        client_id,
-		SkipIssuerCheck: true, // Microsoft multi-tenant: issuer embeds real tenant ID
+		SkipIssuerCheck: oauth_issuer_unpinned(),
 	})
 	idt, err := verifier.Verify(ctx, raw)
 	if err != nil {
@@ -1143,7 +1164,7 @@ func oauth_reauthenticate(c *gin.Context, provider string, p *oauth_profile, use
 		oauth_update_profile(users, provider, p)
 		oauth_verification_record(users, provider, p.Subject, user.UID)
 
-		token, remaining := reauthentication_advance(user, "oauth")
+		token, remaining := reauthentication_advance(user, web_session(c), "oauth")
 		result := map[string]any{}
 		if token != "" {
 			result["token"] = token
@@ -1236,9 +1257,18 @@ func api_user_oauth_unlink(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "provider not linked")
 	}
 
-	// Safety: do not let the user remove their only path back in.
-	if !user_has_other_login(user, provider) {
-		return sl_error(fn, "cannot unlink last login method")
+	// Safety: do not let the user remove their only path back in. Unlinking the
+	// last provider goes through the same guard as disabling TOTP or deleting a
+	// passkey, so the per-user disabled and required sets are honoured - the
+	// server-wide "email is allowed" answer alone is not enough.
+	remaining, _ := db.exists("select 1 from oauth where user=? and provider!=?", user.UID, provider)
+	if !remaining {
+		switch user_factor_removal_blocked(user, "oauth") {
+		case "required":
+			return sl_error(fn, "cannot unlink the last provider while OAuth is a required method")
+		case "last":
+			return sl_error(fn, "cannot unlink your only remaining sign-in method")
+		}
 	}
 
 	row, _ := db.row("select id from oauth where user=? and provider=?", user.UID, provider)
@@ -1250,27 +1280,6 @@ func api_user_oauth_unlink(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 	audit_authentication_changed(user.Username, "oauth_unlinked_"+provider)
 	return sl.True, nil
-}
-
-// user_has_other_login reports whether the user retains at least one way to
-// log in if the given OAuth provider were removed.
-func user_has_other_login(user *User, leaving string) bool {
-	if auth_method_allowed("email") {
-		return true
-	}
-	db := db_open("db/users.db")
-	if exists, _ := db.exists("select 1 from credentials where user=?", user.UID); exists {
-		return true
-	}
-	if row, _ := db.row("select verified from totp where user=?", user.UID); row != nil {
-		if v, ok := row["verified"].(int64); ok && v == 1 {
-			return true
-		}
-	}
-	if exists, _ := db.exists("select 1 from oauth where user=? and provider!=?", user.UID, leaving); exists {
-		return true
-	}
-	return false
 }
 
 // ============================================================================

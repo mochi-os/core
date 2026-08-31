@@ -475,7 +475,7 @@ func api_user_passkey_verify_finish(t *sl.Thread, fn *sl.Builtin, args sl.Tuple,
 	}
 	passkey_credential_finalize(user, credential, "")
 
-	return reauthentication_result(user, "passkey"), nil
+	return reauthentication_result(user, reauthentication_session(t), "passkey"), nil
 }
 
 // mochi.user.passkey.list() -> list: List user's passkeys

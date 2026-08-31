@@ -25,7 +25,7 @@ func TestUserRestoreRoundTrip(t *testing.T) {
 	db.exec("create table entities (id text not null primary key, private text not null, fingerprint text not null, user text not null references users(uid) on delete cascade, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
 	db.exec("create table relinks (user text not null, service text not null, identifier text not null default '', linked integer not null default 0, primary key (user, service))")
 	// Tables the auth-restore path reads and writes.
-	db.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, created integer not null)")
+	db.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, used integer not null default 0, created integer not null)")
 	db.exec("create table recovery (id integer primary key, user text not null, hash text not null, created integer not null)")
 	db.exec("create table credentials (id text not null primary key, user text not null, public_key blob, sign_count integer, name text, transports text, backup_eligible integer, backup_state integer, created integer)")
 	sched := db_open("db/schedule.db")

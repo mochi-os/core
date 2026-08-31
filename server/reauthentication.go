@@ -21,8 +21,17 @@ import (
 type Reauthentication struct {
 	Id      string
 	User    string
+	Session string
 	Methods string
 	Expires int64
+}
+
+// reauthentication_session is the browser session a step-up is bound to. Set by
+// the action dispatcher from the session cookie; empty for anonymous and
+// app-token callers, which have no browser session to bind to.
+func reauthentication_session(t *sl.Thread) string {
+	session, _ := t.Local("session").(string)
+	return session
 }
 
 // reauthentication_required returns the factors a step-up must re-verify: the
@@ -70,12 +79,19 @@ func reauthentication_remaining(user *User, completed string) []string {
 // reauthentication_advance records that factor was just verified for the
 // user's in-progress step-up and returns the proof token once every
 // required factor is satisfied, else "" and the still-remaining factors.
-func reauthentication_advance(user *User, factor string) (string, []string) {
+func reauthentication_advance(user *User, session string, factor string) (string, []string) {
 	sessions := db_open("db/sessions.db")
 	expires := now() + 300
 
 	var r Reauthentication
-	have := sessions.scan(&r, "select id, user, methods, expires from reauthentication where user=? and expires>=? order by expires desc limit 1", user.UID, now())
+	// Bound to the session that started the accrual, not just the account. Two
+	// sessions of one account - the owner's browser and someone holding a stolen
+	// cookie - otherwise share the row, so a factor either verifies is enough to
+	// finish the other's proof. Login partials are bound the same way, via the
+	// login_partial cookie; this is the step-up equivalent. A caller with no
+	// browser session (an app token) accrues under the empty string, which is its
+	// own bucket and never merges with a browser's.
+	have := sessions.scan(&r, "select id, user, session, methods, expires from reauthentication where user=? and session=? and expires>=? order by expires desc limit 1", user.UID, session, now())
 	id := ""
 	methods := ""
 	if have {
@@ -94,7 +110,7 @@ func reauthentication_advance(user *User, factor string) (string, []string) {
 		sessions.exec("update reauthentication set methods=?, expires=? where id=?", methods, expires, id)
 	} else {
 		id = uid()
-		sessions.exec("insert into reauthentication ( id, user, methods, expires ) values ( ?, ?, ?, ? )", id, user.UID, methods, expires)
+		sessions.exec("insert into reauthentication ( id, user, session, methods, expires ) values ( ?, ?, ?, ?, ? )", id, user.UID, session, methods, expires)
 	}
 
 	if remaining := reauthentication_remaining(user, methods); len(remaining) > 0 {
@@ -107,13 +123,15 @@ func reauthentication_advance(user *User, factor string) (string, []string) {
 // for the user, returning true if the token was valid, unexpired, matched
 // the user, and covered the user's required factors. Mirrors code_consume,
 // including the peer fan-out so a second host drops the token too.
-func reauthentication_consume(user *User, token string) bool {
+func reauthentication_consume(user *User, session string, token string) bool {
 	if user == nil || token == "" {
 		return false
 	}
 	sessions := db_open("db/sessions.db")
 	var r Reauthentication
-	if !sessions.scan(&r, "delete from reauthentication where id=? and user=? and expires>=? returning id, user, methods, expires", token, user.UID, now()) {
+	// Same session as the accrual, for the same reason: a proof minted in one
+	// browser must not be spendable from another.
+	if !sessions.scan(&r, "delete from reauthentication where id=? and user=? and session=? and expires>=? returning id, user, session, methods, expires", token, user.UID, session, now()) {
 		return false
 	}
 	if len(reauthentication_remaining(user, r.Methods)) != 0 {
@@ -137,8 +155,8 @@ func reauthentication_contains(completed, factor string) bool {
 // and returns the Starlark result a verify builtin hands back: a dict
 // {"token": ...} once the step-up is complete, or {"remaining": [...]}
 // when more factors are still needed.
-func reauthentication_result(user *User, factor string) sl.Value {
-	token, remaining := reauthentication_advance(user, factor)
+func reauthentication_result(user *User, session string, factor string) sl.Value {
+	token, remaining := reauthentication_advance(user, session, factor)
 	if token != "" {
 		return sl_encode(map[string]any{"token": token})
 	}

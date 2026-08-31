@@ -31,7 +31,7 @@ func stepup_env(t *testing.T) {
 
 	sessions := db_open("db/sessions.db")
 	sessions.exec("create table if not exists ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")
-	sessions.exec("create table if not exists reauthentication (id text primary key, user text not null, methods text not null default '', expires integer not null)")
+	sessions.exec("create table if not exists reauthentication (id text primary key, user text not null, session text not null default '', methods text not null default '', expires integer not null)")
 	sessions.exec("create table if not exists verifications (oauth integer primary key, user text not null, last integer not null default 0)")
 
 	for _, account := range []struct{ uid, subject string }{

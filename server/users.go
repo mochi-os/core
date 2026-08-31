@@ -244,7 +244,7 @@ func api_user_code_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl.None, nil
 	}
 	proven = true
-	return reauthentication_result(user, "email"), nil
+	return reauthentication_result(user, reauthentication_session(t), "email"), nil
 }
 
 // api_user_session_reauthenticate is mochi.user.session.reauthenticate(token):
@@ -262,7 +262,7 @@ func api_user_session_reauthenticate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "token", &token); err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	return sl.Bool(reauthentication_consume(user, token)), nil
+	return sl.Bool(reauthentication_consume(user, reauthentication_session(t), token)), nil
 }
 
 func login_create(user string, address string, agent string) string {

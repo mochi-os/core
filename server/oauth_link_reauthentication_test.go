@@ -38,7 +38,7 @@ func TestOauthLinkRequiresReauthentication(t *testing.T) {
 	sessions := db_open("db/sessions.db")
 	sessions.exec("create table sessions (user text not null, code text not null primary key, secret text not null, expires integer not null, created integer not null, accessed integer not null, address text not null default '', agent text not null default '')")
 	sessions.exec("create table ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")
-	sessions.exec("create table reauthentication (id text primary key, user text not null, methods text not null default '', expires integer not null)")
+	sessions.exec("create table reauthentication (id text primary key, user text not null, session text not null default '', methods text not null default '', expires integer not null)")
 	db_open("db/settings.db").exec("create table settings (name text primary key, value text not null default '')")
 
 	users := db_open("db/users.db")
@@ -76,7 +76,7 @@ func TestOauthLinkRequiresReauthentication(t *testing.T) {
 
 	// A genuine proof lets the link through.
 	proof := uid()
-	sessions.exec("insert into reauthentication (id, user, methods, expires) values (?, 'u-link', 'email', ?)", proof, now()+300)
+	sessions.exec("insert into reauthentication (id, user, session, methods, expires) values (?, 'u-link', ?, 'email', ?)", proof, session, now()+300)
 	if code := begin_link(session, `{"link":true,"token":"`+proof+`"}`); code != http.StatusOK {
 		t.Errorf("link with a valid proof: status = %d, want 200", code)
 	}
@@ -99,14 +99,14 @@ func TestOauthLinkRequiresReauthentication(t *testing.T) {
 	// A proof belonging to somebody else is not usable here.
 	users.exec("insert into users (uid, username, methods) values ('u-other', 'other@example.com', 'email')")
 	other := uid()
-	sessions.exec("insert into reauthentication (id, user, methods, expires) values (?, 'u-other', 'email', ?)", other, now()+300)
+	sessions.exec("insert into reauthentication (id, user, session, methods, expires) values (?, 'u-other', ?, 'email', ?)", other, session, now()+300)
 	if code := begin_link(session, `{"link":true,"token":"`+other+`"}`); code != http.StatusForbidden {
 		t.Errorf("another user's proof: status = %d, want 403", code)
 	}
 
 	// An expired proof is refused.
 	stale := uid()
-	sessions.exec("insert into reauthentication (id, user, methods, expires) values (?, 'u-link', 'email', ?)", stale, now()-1)
+	sessions.exec("insert into reauthentication (id, user, session, methods, expires) values (?, 'u-link', ?, 'email', ?)", stale, session, now()-1)
 	if code := begin_link(session, `{"link":true,"token":"`+stale+`"}`); code != http.StatusForbidden {
 		t.Errorf("expired proof: status = %d, want 403", code)
 	}

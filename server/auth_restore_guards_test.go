@@ -70,8 +70,14 @@ func TestRestoreUnzipGuards(t *testing.T) {
 // length is cut off by MaxBytesReader during the parse. Both answer 413.
 func TestRestoreUploadCap(t *testing.T) {
 	create_test_users_db(t)
+	restore_tables_create(t)
 	db := db_open("db/users.db")
 	db.exec("insert into users (uid, username) values ('u1', 'first@example.com')")
+	// A real code for the oversized case: the handler settles the taken and code
+	// checks at the bundle part's header, so a caller without one is answered
+	// before the bundle is read and never meets the cap at all.
+	db_open("db/sessions.db").exec("replace into codes (code, username, expires) values (?, ?, ?)",
+		"123456", "new@example.com", now()+300)
 
 	// Lower the fixed upload cap so the test bodies stay small.
 	saved := restore_upload_maximum
@@ -84,6 +90,7 @@ func TestRestoreUploadCap(t *testing.T) {
 		writer := multipart.NewWriter(body)
 		if email != "" {
 			writer.WriteField("email", email)
+			writer.WriteField("code", "123456")
 		}
 		writer.WriteField("passphrase", "pp")
 		part, err := writer.CreateFormFile("bundle", "bundle.zip")

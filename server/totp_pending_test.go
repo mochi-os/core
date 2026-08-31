@@ -181,7 +181,7 @@ func TestTotpVerifyWithTheOldCodeStillStepsUp(t *testing.T) {
 func TestTotpUpgradeAddsPendingColumn(t *testing.T) {
 	setup_replication_test(t)
 	users := db_open("db/users.db")
-	users.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, created integer not null)")
+	users.exec("create table totp (user text primary key, secret text not null, verified integer not null default 0, used integer not null default 0, created integer not null)")
 
 	db_upgrade_6()
 	if have, _ := users.exists("select 1 from pragma_table_info('totp') where name='pending'"); !have {

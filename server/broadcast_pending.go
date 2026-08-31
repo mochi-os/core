@@ -66,13 +66,20 @@ func broadcast_pending_table_create(db *DB) {
 		target text not null,
 		service text not null,
 		event text not null,
-		msg_id text not null default '',
+		message text not null default '',
 		sender_app text not null default '',
 		sender_services text not null default '',
 		content blob not null,
 		received integer not null,
 		primary key (peer, key, sequence)
 	)`)
+
+	// Installs made before the column was spelled out carry `msg_id`. Renamed
+	// here rather than in a schema migration because the table itself is
+	// created lazily on the write path and has never been in one.
+	if old, _ := db.exists("select 1 from pragma_table_info('pending') where name='msg_id'"); old {
+		db.exec(`alter table pending rename column msg_id to message`)
+	}
 }
 
 // broadcast_pending_count returns the current row count for one
@@ -137,7 +144,7 @@ func broadcast_pending_insert(db *DB, peer, key string, sequence int64, source, 
 	// pending is receiver-side apply-buffer state: it holds what THIS host has
 	// received but cannot yet apply in order.
 	db.exec(`insert or ignore into pending
-		(peer, key, sequence, source, target, service, event, msg_id, sender_app, sender_services, content, received)
+		(peer, key, sequence, source, target, service, event, message, sender_app, sender_services, content, received)
 		values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		peer, key, sequence, source, target, service, event, message, sender_app, sender_services, content, now())
 	return true
@@ -153,7 +160,7 @@ type broadcast_pending_row struct {
 	To             string `db:"target"`
 	Service        string `db:"service"`
 	Event          string `db:"event"`
-	Message        string `db:"msg_id"`
+	Message        string `db:"message"`
 	SenderApp      string `db:"sender_app"`
 	SenderServices string `db:"sender_services"`
 	Content        []byte `db:"content"`

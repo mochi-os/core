@@ -22,6 +22,57 @@ func setup_broadcast_pending_test(t *testing.T) *DB {
 	return db
 }
 
+// TestBroadcastPendingRenamesLegacyColumn covers the one part of the
+// abbreviation cleanup that touches stored data: an install made before the
+// column was spelled out holds `msg_id`, and every later insert names
+// `message`. Without the rename those inserts fail against the old table.
+func TestBroadcastPendingRenamesLegacyColumn(t *testing.T) {
+	db := setup_broadcast_pending_test(t)
+
+	// The pre-rename schema, as an existing install carries it.
+	db.exec(`create table pending (
+		peer text not null,
+		key text not null,
+		sequence integer not null,
+		source text not null,
+		target text not null,
+		service text not null,
+		event text not null,
+		msg_id text not null default '',
+		sender_app text not null default '',
+		sender_services text not null default '',
+		content blob not null,
+		received integer not null,
+		primary key (peer, key, sequence)
+	)`)
+	db.exec(`insert into pending
+		(peer, key, sequence, source, target, service, event, msg_id, content, received)
+		values ('p', 'k', 1, 'src', 'dst', 'svc', 'ev', 'kept', 'x', 0)`)
+
+	broadcast_pending_table_create(db)
+
+	if old, _ := db.exists("select 1 from pragma_table_info('pending') where name='msg_id'"); old {
+		t.Error("msg_id survived: every insert names `message`, so writes to this install fail")
+	}
+	if renamed, _ := db.exists("select 1 from pragma_table_info('pending') where name='message'"); !renamed {
+		t.Fatal("no `message` column after the rename")
+	}
+
+	// A rename, not a drop and recreate - buffered rows must survive.
+	row, err := db.row("select message from pending where peer='p' and key='k' and sequence=1")
+	if err != nil || row == nil {
+		t.Fatalf("the buffered row did not survive the rename: %v", err)
+	}
+	if got, _ := row["message"].(string); got != "kept" {
+		t.Errorf("message after rename: got %q, want %q", got, "kept")
+	}
+
+	// And the table is usable afterwards.
+	if !broadcast_pending_insert(db, "p", "k", 2, "src", "dst", "svc", "ev", "id-2", "", "", []byte{1}) {
+		t.Error("insert after the rename returned false")
+	}
+}
+
 // TestBroadcastPendingInsertAndCount confirms the table is created
 // lazily and rows accumulate per (peer, key).
 func TestBroadcastPendingInsertAndCount(t *testing.T) {

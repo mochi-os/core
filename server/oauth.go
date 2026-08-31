@@ -289,6 +289,16 @@ func web_oauth_begin(c *gin.Context) {
 	}
 	c.ShouldBindJSON(&body)
 
+	// Reduce the caller's mode to the two this endpoint offers. The third,
+	// "reauthentication", is minted only by the step-up builtin, which always
+	// owns the ceremony; accepting it here let a web caller start an unbound
+	// login ceremony, since neither the binding cookie nor the check on it
+	// applies to that mode. An unrecognised mode is a plain web login, not an
+	// error: the field is an opt-in to the native flow, not a required one.
+	if body.Mode != "mobile" {
+		body.Mode = ""
+	}
+
 	// Mobile flow validation: scheme must be either the consolidated
 	// Mochi super-app's "mochi" or one of the legacy per-app schemes
 	// ("mochi-<app>"), and the PKCE challenge is mandatory so we can prove
@@ -567,7 +577,11 @@ func oauth_ceremony_bound(c *gin.Context, st *oauth_state, link_user string) str
 	switch {
 	case st.Mode == "mobile":
 		return ""
-	case st.Mode == "reauthentication":
+	// Step-up carries its binding in the ceremony's own user, so it needs no
+	// cookie - but only when a user is actually on the row. Without that
+	// condition the mode is a way to ask for a login ceremony that nothing
+	// binds; the destination switch above already pairs the two the same way.
+	case st.Mode == "reauthentication" && link_user != "":
 		return ""
 	case link_user != "":
 		user := web_auth(c)

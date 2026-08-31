@@ -299,9 +299,19 @@ func stream_open(peer, from, to, service, event, from_app string,
 		return nil, "", error_sender_unreachable
 	}
 
+	// Bound the handshake, the mirror of the deadline receive_stream puts on its
+	// own pre-open phase. Without it a peer that accepts the stream and then
+	// stays silent holds this goroutine forever. Cleared at the ack, below: an
+	// app stream is long-lived by design.
+	_ = rawstream.SetReadDeadline(time.Now().Add(stream_open_timeout))
+
 	hello, err := hello_read(rawstream, 2)
 	if err != nil {
 		rawstream.Reset()
+		// A silent peer is unreachable, not a hard failure.
+		if deadline_exceeded(err) {
+			return nil, "", error_sender_unreachable
+		}
 		return nil, "", fmt.Errorf("stream: hello read failed peer=%q: %w", peer, err)
 	}
 
@@ -352,8 +362,14 @@ func stream_open(peer, from, to, service, event, from_app string,
 	reply, err := frame_read(rawstream)
 	if err != nil {
 		rawstream.Reset()
+		if deadline_exceeded(err) {
+			return nil, hello.Session, error_sender_unreachable
+		}
 		return nil, "", fmt.Errorf("stream: reply read failed peer=%q: %w", peer, err)
 	}
+	// The handshake is over either way; what follows is the app's own traffic,
+	// which sets its own deadlines.
+	_ = rawstream.SetReadDeadline(time.Time{})
 	switch reply.Type {
 	case frame_type_ack:
 		// Until this passes we know only which HOST answered, not that it may speak

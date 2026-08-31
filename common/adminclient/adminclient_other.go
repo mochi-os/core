@@ -10,15 +10,25 @@ package adminclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"strings"
+	"syscall"
 )
 
 // admin_dial dials the admin Unix domain socket at path.
 func admin_dial(ctx context.Context, path string) (net.Conn, error) {
 	var d net.Dialer
 	return d.DialContext(ctx, "unix", path)
+}
+
+// not_listening reports whether a dial failure means nothing is listening at
+// the path, as opposed to a listener that refused this caller. "Permission
+// denied" is deliberately absent: a server IS running there.
+func not_listening(err error) bool {
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, fs.ErrNotExist)
 }
 
 // connect_hint maps the common Unix dial failures — server not running,

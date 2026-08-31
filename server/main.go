@@ -110,6 +110,9 @@ func main_serve(ready func()) int {
 		warn("directories.ensure failed: %v", err)
 		return 1
 	}
+	if err := directories_secure(data_dir); err != nil {
+		warn("Unable to secure the data directory: %v", err)
+	}
 	if err := run_dir_create(); err != nil {
 		warn("Unable to create runtime state directory %s: %v", run_dir(), err)
 	}

@@ -64,6 +64,9 @@ chown -R mochi:mochi /var/cache/mochi
 chmod -R go-rwx /var/lib/mochi /var/cache/mochi
 
 systemctl daemon-reload
+# enable as well: WantedBy=multi-user.target only takes effect once the .wants
+# symlink exists, so without this the server does not come back after a reboot.
+systemctl enable mochi-server >/dev/null 2>&1 || true
 
 %preun
 if [ $1 -eq 0 ]; then

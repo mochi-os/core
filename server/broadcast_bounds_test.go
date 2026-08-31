@@ -226,3 +226,58 @@ func TestBroadcastPendingStreamCap(t *testing.T) {
 		t.Error("a different peer was refused; the cap must be per peer")
 	}
 }
+
+// TestBroadcastPendingByteCaps. The row caps say nothing about disk: at
+// broadcast_pending_maximum rows across broadcast_pending_streams_maximum
+// streams, a peer sending frame-sized payloads writes terabytes to a subscriber
+// it has no relationship with.
+func TestBroadcastPendingByteCaps(t *testing.T) {
+	setup_replication_test(t)
+
+	db := db_open("db/bytes.db")
+	if db == nil {
+		t.Fatal("no database")
+	}
+	defer db.close()
+
+	insert := func(key string, sequence int64, size int) bool {
+		return broadcast_pending_insert(db, "peer-x", key, sequence,
+			"from", "to", "service", "event", "", "", "", make([]byte, size))
+	}
+
+	// Per row: at the cap it buffers, one byte over it does not.
+	if !insert("sized", 1, broadcast_pending_content_maximum) {
+		t.Error("a row exactly at the content cap was refused")
+	}
+	if insert("sized", 2, broadcast_pending_content_maximum+1) {
+		t.Errorf("a row over the %d-byte content cap was buffered", broadcast_pending_content_maximum)
+	}
+	// Refusing it must not have written anything.
+	if got := broadcast_pending_count(db, "peer-x", "sized"); got != 1 {
+		t.Errorf("after the refusal the stream holds %d rows, want 1", got)
+	}
+
+	// Across the table: fill to the byte cap using a fresh stream per row, so
+	// neither row cap can be what stops it.
+	rows := broadcast_pending_bytes_maximum / broadcast_pending_content_maximum
+	for i := 0; i < rows; i++ {
+		key := fmt.Sprintf("fill-%d", i)
+		if !insert(key, 1, broadcast_pending_content_maximum) && broadcast_pending_bytes(db) < broadcast_pending_bytes_maximum {
+			t.Fatalf("row %d refused below the byte cap (%d bytes held)", i, broadcast_pending_bytes(db))
+		}
+	}
+	if bytes := broadcast_pending_bytes(db); bytes > broadcast_pending_bytes_maximum {
+		t.Errorf("the buffer holds %d bytes, over the %d cap", bytes, broadcast_pending_bytes_maximum)
+	}
+	// A brand-new stream, well inside both row caps, is now refused on bytes.
+	if insert("over-the-cap", 1, broadcast_pending_content_maximum) {
+		t.Error("a row was buffered past the whole-table byte cap")
+	}
+
+	// Draining recovers the budget: the cap is a running total, not a latch
+	// that shuts the buffer for good once it is first reached.
+	broadcast_pending_delete(db, "peer-x", "fill-0", 1)
+	if !insert("after-the-drain", 1, 16) {
+		t.Error("a small row was refused after a drain freed room for it")
+	}
+}

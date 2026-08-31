@@ -63,12 +63,21 @@ func directories_ensure() error {
 // chown_recursive walks dir and chowns every entry. Tolerates EPERM on
 // individual files (e.g. read-only volume mount) with a warning rather than
 // failing the whole startup.
+//
+// This runs as root before the privilege drop, over a tree the unprivileged
+// server can write, so it must never follow a link out of the tree: a planted
+// data/x -> /usr/sbin/mochi-server would otherwise hand the server ownership of
+// its own binary. Symlinks are skipped outright and the chown is Lchown, which
+// acts on the link rather than its target.
 func chown_recursive(dir string, uid, gid int) error {
-	return filepath.Walk(dir, func(path string, _ os.FileInfo, err error) error {
+	return filepath.Walk(dir, func(path string, information os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if err := os.Chown(path, uid, gid); err != nil && !os.IsPermission(err) {
+		if information != nil && !information.Mode().IsRegular() && !information.Mode().IsDir() {
+			return nil
+		}
+		if err := os.Lchown(path, uid, gid); err != nil && !os.IsPermission(err) {
 			return err
 		}
 		return nil

@@ -23,6 +23,13 @@ func admin_dial(ctx context.Context, path string) (net.Conn, error) {
 	return winio.DialPipeContext(ctx, path)
 }
 
+// not_listening reports whether a dial failure means no pipe is there, as
+// opposed to a pipe that refused this caller. ERROR_ACCESS_DENIED is
+// deliberately absent: the service IS running, just not reachable unelevated.
+func not_listening(err error) bool {
+	return errors.Is(err, windows.ERROR_FILE_NOT_FOUND)
+}
+
 // connect_hint maps common Windows dial failures to a one-line error naming the
 // operator's next action; nil for anything unrecognised. Elevation is reported
 // because UAC disables the Administrators group in a non-elevated token.

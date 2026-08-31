@@ -44,6 +44,26 @@ func New(socket string, timeout time.Duration) *Client {
 	}
 }
 
+// Live reports whether a server is listening on the given admin transport.
+//
+// Callers use it to refuse operations that must not run against a live server,
+// so it fails closed: only a definite "nothing is listening there" answers
+// false. A permission error in particular means a server IS running, just not
+// one this caller may talk to.
+func Live(socket string) bool {
+	if socket == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, err := admin_dial(ctx, socket)
+	if err == nil {
+		conn.Close()
+		return true
+	}
+	return !not_listening(err)
+}
+
 // url builds an HTTP URL with a placeholder host (the actual destination is
 // the UDS, set by the custom DialContext).
 func (c *Client) url(path string) string {

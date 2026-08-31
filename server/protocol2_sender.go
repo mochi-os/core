@@ -180,9 +180,21 @@ func sender_open(peer string) (*Sender, error) {
 		return nil, error_sender_unreachable
 	}
 
+	// Bound the handshake, as the receiving side bounds its own pre-open phase.
+	// Without this a peer that accepts the stream and then says nothing holds
+	// this goroutine forever, and because sender_open runs under the outbound
+	// queue that one peer stalls delivery to every other. Cleared once the
+	// handshake completes: a messages stream is long-lived by design.
+	_ = stream.SetReadDeadline(time.Now().Add(stream_open_timeout))
+
 	hello, err := hello_read(stream, 2)
 	if err != nil {
 		stream.Reset()
+		// A silent peer is unreachable, not a hard failure: report it as such so
+		// the queue retries rather than discarding the message.
+		if deadline_exceeded(err) {
+			return nil, error_sender_unreachable
+		}
 		return nil, fmt.Errorf("sender: hello read failed peer=%q: %w", peer, err)
 	}
 
@@ -203,6 +215,7 @@ func sender_open(peer string) (*Sender, error) {
 		stream.Reset()
 		return nil, fmt.Errorf("sender: caps write failed peer=%q: %w", peer, err)
 	}
+	_ = stream.SetReadDeadline(time.Time{})
 
 	s := &Sender{
 		peer:      peer,

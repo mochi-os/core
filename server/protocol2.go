@@ -30,6 +30,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -220,6 +222,18 @@ func protocol2_init() {
 // close before the first byte of a new frame. Any other error means the
 // caller MUST close the stream — frame boundaries are ambiguous after
 // a partial read or decode failure.
+// deadline_exceeded reports whether err is a read deadline firing rather than a
+// real protocol or transport failure. The two muxers disagree on the sentinel -
+// QUIC surfaces os.ErrDeadlineExceeded, yamux its own net.Error - so test both.
+// frame_read and hello_read wrap with %w, so the chain unwraps to here.
+func deadline_exceeded(err error) bool {
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var timeout net.Error
+	return errors.As(err, &timeout) && timeout.Timeout()
+}
+
 func frame_read(r io.Reader) (*Frame, error) {
 	var lenbuf [frame_length_size]byte
 	if _, err := io.ReadFull(r, lenbuf[:]); err != nil {

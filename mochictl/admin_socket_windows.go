@@ -15,3 +15,9 @@ package main
 func admin_socket_default() string {
 	return `\\.\pipe\mochi-admin`
 }
+
+// admin_socket_within returns nothing: the pipe name is fixed, so a data
+// directory has no admin transport of its own to probe beyond the default one.
+func admin_socket_within(_ string) string {
+	return ""
+}

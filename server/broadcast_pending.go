@@ -25,6 +25,26 @@ const broadcast_pending_maximum = 1000
 // peer inventing a key per event draws a fresh budget every time.
 const broadcast_pending_streams_maximum = 1000
 
+// The row caps above bound the buffer in rows, which says nothing about disk: a
+// frame may carry up to frame_maximum (16 MB), so 1000 rows across 1000 streams
+// is 16 TB of somebody else's disk, filled by any identity that can reach the
+// subscriber. These bound the same buffer in bytes.
+//
+// broadcast_pending_content_maximum is the per-row ceiling. Well above any real
+// broadcast payload, and small enough that the row cap and the byte cap are the
+// same order of magnitude. An event over it is dropped exactly like one over the
+// row cap: the resync request re-fetches it, and being unbufferable does not
+// make it undeliverable.
+//
+// broadcast_pending_bytes_maximum is the whole table's ceiling. The database is
+// per (user, app), so this is what one app can cost one user in buffered bytes
+// however many peers, streams and sequences it is spread across - the bound the
+// two row caps do not give, since each is per peer.
+const (
+	broadcast_pending_content_maximum = 256 * 1024
+	broadcast_pending_bytes_maximum   = 64 * 1024 * 1024
+)
+
 // broadcast_pending_gc_default_ttl_days is the age above which a stuck-stream
 // gap is skipped, the backstop for streams with no inbound traffic to trigger a
 // resync floor skip. Overridable via `broadcast.pending.unfillable_ttl_days`.
@@ -66,6 +86,17 @@ func broadcast_pending_count(db *DB, peer, key string) int {
 	return db.integer("select count(*) from pending where peer=? and key=?", peer, key)
 }
 
+// broadcast_pending_bytes returns how many content bytes the whole table holds.
+// Per (user, app), because the database is: this is the figure the row caps
+// leave unbounded, since each of those is per peer.
+func broadcast_pending_bytes(db *DB) int {
+	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='pending'")
+	if !exists {
+		return 0
+	}
+	return db.integer("select coalesce(sum(length(content)), 0) from pending")
+}
+
 // broadcast_pending_streams counts the distinct streams this peer holds
 // buffered. Served by the (peer, key, sequence) primary key.
 func broadcast_pending_streams(db *DB, peer string) int {
@@ -81,6 +112,17 @@ func broadcast_pending_streams(db *DB, peer string) int {
 // request - the buffer is an optimisation, not the gap-fill mechanism.
 func broadcast_pending_insert(db *DB, peer, key string, sequence int64, source, target, service, event, message, sender_app, sender_services string, content []byte) bool {
 	broadcast_pending_table_create(db)
+	// Byte checks first: the per-row one costs nothing, and refusing an
+	// oversized row before counting anything keeps the expensive path for
+	// payloads that could actually be buffered.
+	if len(content) > broadcast_pending_content_maximum {
+		debug("Broadcast pending dropping seq=%d for (peer=%s, key=%s): content %d bytes over the %d cap", sequence, peer, key, len(content), broadcast_pending_content_maximum)
+		return false
+	}
+	if bytes := broadcast_pending_bytes(db); bytes+len(content) > broadcast_pending_bytes_maximum {
+		debug("Broadcast pending dropping seq=%d for (peer=%s, key=%s): buffer holds %d bytes, over the %d cap", sequence, peer, key, bytes, broadcast_pending_bytes_maximum)
+		return false
+	}
 	count := broadcast_pending_count(db, peer, key)
 	if count >= broadcast_pending_maximum {
 		debug("Broadcast pending dropping seq=%d for (peer=%s, key=%s): per-stream buffer full at %d", sequence, peer, key, broadcast_pending_maximum)

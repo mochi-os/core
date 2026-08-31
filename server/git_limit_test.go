@@ -12,9 +12,12 @@ import (
 	"io"
 	"testing"
 
+	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/storage/filesystem"
 )
 
 // TestGitLimitedReaderStopsDecompressionBomb pins the bound on a gzipped git
@@ -245,5 +248,43 @@ func TestGitStorageBudgetBoundary(t *testing.T) {
 	// LESS than the disk cost, or the quota could be overrun.
 	if charged < landed {
 		t.Errorf("meter charged %d for %d bytes on disk - it must never under-count", charged, landed)
+	}
+}
+
+// TestGitPushCeilings. The quota is the account's whole remaining allowance, so
+// on its own it bounds neither a single object nor the request body. Both need a
+// fixed ceiling on top.
+func TestGitPushCeilings(t *testing.T) {
+	// The body cap is the smaller of the quota and the fixed ceiling.
+	if got := git_request_maximum("git-receive-pack", git_push_maximum*4); got != git_push_maximum {
+		t.Errorf("a %d-byte quota produced a %d-byte body cap, want %d", git_push_maximum*4, got, git_push_maximum)
+	}
+	if got := git_request_maximum("git-receive-pack", 1024); got != 1024 {
+		t.Errorf("a small quota produced a %d-byte body cap, want 1024: the fixed ceiling must not raise a low quota", got)
+	}
+	// Upload-pack negotiation stores nothing and keeps its own ceiling.
+	if got := git_request_maximum("git-upload-pack", git_push_maximum*4); got != git_negotiation_maximum {
+		t.Errorf("upload-pack body cap = %d, want %d", got, git_negotiation_maximum)
+	}
+
+	// The per-object ceiling refuses an object no quota would have stopped.
+	storage := &git_storage{
+		Storer:    filesystem.NewStorage(memfs.New(), cache.NewObjectLRUDefault()),
+		remaining: git_object_maximum * 8,
+		metered:   true,
+	}
+	oversized := &plumbing.MemoryObject{}
+	oversized.SetType(plumbing.BlobObject)
+	oversized.SetSize(git_object_maximum + 1)
+	if _, err := storage.SetEncodedObject(oversized); err == nil {
+		t.Errorf("an object of %d bytes was stored, over the %d ceiling", oversized.Size(), git_object_maximum)
+	}
+	// And the quota still applies below the ceiling.
+	storage.remaining = 16
+	sized := &plumbing.MemoryObject{}
+	sized.SetType(plumbing.BlobObject)
+	sized.SetSize(1024)
+	if _, err := storage.SetEncodedObject(sized); err == nil {
+		t.Error("an object over the remaining quota was stored")
 	}
 }

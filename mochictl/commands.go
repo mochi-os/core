@@ -19,6 +19,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"core/common/adminclient"
 )
 
 // http_error formats a non-2xx admin-socket response: the JSON `message`
@@ -344,11 +346,39 @@ func cmd_rsync_filter(args []string) error {
 // legacy *.db.snap) file to its sibling with the suffix stripped, then removes
 // any legacy db/replication.db. Run with the server stopped, after rsync brings
 // a backup to the destination.
+// server_is_live reports whether a server is running against the data directory
+// about to be restored, and which admin transport answered.
+//
+// Restore renames snapshot files over live databases. Doing that under a
+// running server corrupts them: the server holds open handles and a WAL, and
+// SQLite has no idea the file beneath it was swapped. So this checks two
+// transports - the one the loaded mochi.conf (or -s) names, and the one
+// belonging to the named tree, which is a different instance whenever the
+// caller restores a directory the configuration does not describe.
+//
+// It fails closed. adminclient.Live counts a refused-but-present listener as
+// live, so a socket this caller may not open still stops the restore.
+func server_is_live(root string) (bool, string) {
+	configured := socket
+	if configured == "" {
+		configured = admin_socket_default()
+	}
+	for _, path := range []string{configured, admin_socket_within(root)} {
+		if path != "" && adminclient.Live(path) {
+			return true, path
+		}
+	}
+	return false, ""
+}
+
 func cmd_restore(args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("restore <dir>: directory argument required")
 	}
 	root := args[0]
+	if running, where := server_is_live(root); running {
+		return fmt.Errorf("refusing to restore while the server is running (%s answers); stop it with `mochictl stop` first", where)
+	}
 	count := 0
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {

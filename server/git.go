@@ -124,6 +124,16 @@ type git_storage struct {
 
 func (s *git_storage) SetEncodedObject(obj plumbing.EncodedObject) (plumbing.Hash, error) {
 	if s.metered {
+		// A fixed ceiling as well as the quota. The quota is the account's
+		// remaining storage, which for a fresh account is the whole allowance,
+		// so on its own it lets one object be arbitrarily large.
+		//
+		// This bounds what is STORED, not peak memory: go-git has already
+		// inflated the object by the time it calls this. See the header comment
+		// on git_object_maximum for why the memory bound is not available here.
+		if obj.Size() > git_object_maximum {
+			return plumbing.ZeroHash, fmt.Errorf("push contains an object of %d bytes, over the %d limit", obj.Size(), git_object_maximum)
+		}
 		s.remaining -= obj.Size()
 		if s.remaining < 0 {
 			return plumbing.ZeroHash, fmt.Errorf("push exceeds the storage available to this account")
@@ -131,6 +141,26 @@ func (s *git_storage) SetEncodedObject(obj plumbing.EncodedObject) (plumbing.Has
 	}
 	return s.Storer.SetEncodedObject(obj)
 }
+
+// git_object_maximum is the largest single object a push may add.
+//
+// It fires after go-git has inflated the object, so it bounds the repository
+// rather than the memory the parse takes. Metering earlier is not available to
+// this package: go-git's parser streams an object straight to disk only for a
+// storage satisfying its `lazyObjectWriter`, whose header-callback result type
+// (`packfile.objectHeaderWriter`) is unexported, so no type declared outside
+// that package can satisfy it - `filesystem.Storage`, which has the method with
+// the identical underlying signature, does not either. Verified by assertion
+// against go-git v5.19.2, not inferred. Until that interface is exported, the
+// parse costs the sum of the pack's declared object sizes in memory whatever
+// this file does.
+const git_object_maximum int64 = 2 << 30 // 2GB
+
+// git_push_maximum is the largest receive-pack body accepted, whatever the
+// pusher's quota says. Without it the body limit IS the quota - up to
+// file_maximum_storage - so a fresh account may send a 10GB body, and what that
+// costs to parse is a multiple of it.
+const git_push_maximum int64 = 4 << 30 // 4GB
 
 // git_transport is the go-git server transport for handling git protocol.
 // Unmetered: it serves fetches and ref advertisements, which store nothing.
@@ -3476,6 +3506,10 @@ func git_request_maximum(service string, budget int64) int64 {
 	// The decode meter is what refuses content in that state.
 	if budget <= 0 {
 		return git_negotiation_maximum
+	}
+	// The quota alone is not a bound: a fresh account's is the whole allowance.
+	if budget > git_push_maximum {
+		return git_push_maximum
 	}
 	return budget
 }

@@ -9,4 +9,12 @@ chown -R mochi:mochi /var/cache/mochi
 chmod -R go-rwx /var/lib/mochi /var/cache/mochi
 
 systemctl daemon-reload
+
+# enable as well as start: WantedBy=multi-user.target only takes effect once the
+# .wants symlink exists, so without this the server does not come back after a
+# reboot. Skipped on abort-upgrade and friends, where the unit state is already
+# whatever the previous install left.
+if [ "$1" = configure ]; then
+    systemctl enable mochi-server >/dev/null 2>&1 || true
+fi
 systemctl start mochi-server

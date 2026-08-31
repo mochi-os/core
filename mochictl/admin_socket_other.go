@@ -21,3 +21,11 @@ func admin_socket_default() string {
 	data := ini.String("directories", "data", paths.Data())
 	return filepath.Join(data, "run", "admin.sock")
 }
+
+// admin_socket_within returns the admin socket belonging to the given data
+// directory. It differs from admin_socket_default when the caller names a tree
+// other than the configured one, which is exactly the case a restore has to
+// check: the loaded mochi.conf may describe a different instance entirely.
+func admin_socket_within(data string) string {
+	return filepath.Join(data, "run", "admin.sock")
+}

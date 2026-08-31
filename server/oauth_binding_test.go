@@ -568,3 +568,77 @@ func TestOauthReauthenticate(t *testing.T) {
 		t.Error("proof reusable after retrieval")
 	}
 }
+
+// TestOauthBeginRejectsTheStepupMode. "reauthentication" exempts a ceremony
+// from BOTH halves of the browser binding: begin mints no cookie for it and the
+// callback check waves it through. It is meant to be minted only by the step-up
+// builtin, which owns the ceremony - so a web caller naming it got an unbound
+// login ceremony, which is the whole CSRF.
+func TestOauthBeginRejectsTheStepupMode(t *testing.T) {
+	oauth_binding_setup(t)
+
+	w := oauth_begin_request("", `{"link":false,"mode":"reauthentication"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("begin: status = %d, want 200", w.Code)
+	}
+	// It is treated as an ordinary web login, so it is bound like one.
+	if cookie := oauth_binding_from_response(w); cookie == nil || cookie.Value == "" {
+		t.Error("begin with mode=reauthentication set no binding cookie, so the ceremony is unbound")
+	}
+	state, st := oauth_only_ceremony(t)
+	if st.Mode != "" {
+		t.Errorf("ceremony mode = %q, want empty: the endpoint must not mint the step-up mode", st.Mode)
+	}
+	if st.Binding == "" {
+		t.Error("ceremony carries no browser binding")
+	}
+
+	// And the callback enforces it: no cookie, no login.
+	c, w := oauth_callback_context(state)
+	web_oauth_callback(c)
+	if w.Code != http.StatusFound || !strings.Contains(w.Header().Get("Location"), "oauth_error=state_invalid") {
+		t.Errorf("callback without the cookie: status = %d, location = %q; want 302 to state_invalid",
+			w.Code, w.Header().Get("Location"))
+	}
+}
+
+// An unknown mode is not an error - the field opts in to the native flow, and
+// anything else is a plain web login, bound the same way.
+func TestOauthBeginTreatsAnUnknownModeAsWebLogin(t *testing.T) {
+	oauth_binding_setup(t)
+
+	w := oauth_begin_request("", `{"link":false,"mode":"something-else"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("begin: status = %d, want 200", w.Code)
+	}
+	if cookie := oauth_binding_from_response(w); cookie == nil || cookie.Value == "" {
+		t.Error("an unknown mode produced an unbound ceremony")
+	}
+	if _, st := oauth_only_ceremony(t); st.Mode != "" {
+		t.Errorf("ceremony mode = %q, want empty", st.Mode)
+	}
+}
+
+// The step-up mode is still exempt where it belongs: minted by the builtin,
+// with the user on the ceremony row. Guarding the callback on link_user must
+// not break the flow it exists for.
+func TestOauthStepupModeStillNeedsItsUser(t *testing.T) {
+	oauth_binding_setup(t)
+
+	context := func() *gin.Context {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("GET", "/_/auth/oauth/github/callback", nil)
+		return c
+	}
+
+	// A row carrying the mode but no user cannot skip the binding check: it
+	// falls through to the cookie check, which this caller has no cookie for.
+	if reason := oauth_ceremony_bound(context(), &oauth_state{Mode: "reauthentication"}, ""); reason == "" {
+		t.Error("a step-up ceremony with no user passed the binding check")
+	}
+	// With its user, it does, as the step-up flow requires.
+	if reason := oauth_ceremony_bound(context(), &oauth_state{Mode: "reauthentication"}, "u-link"); reason != "" {
+		t.Errorf("a real step-up ceremony was refused: %s", reason)
+	}
+}

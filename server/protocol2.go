@@ -592,6 +592,13 @@ func peer_ping_timeout_seconds() int {
 	return ini_int("peer", "ping_timeout", sender_ping_timeout)
 }
 
+// receiver_idle_timeout bounds how long an established inbound messages
+// stream may sit silent. Three ping intervals: a live sender pings within one,
+// so only a peer that has genuinely stopped talking trips it.
+func receiver_idle_timeout() time.Duration {
+	return time.Duration(3*peer_ping_interval_seconds()) * time.Second
+}
+
 // peer_worker_idle_seconds is the no-activity window after which an
 // idle (user, app) worker is reaped. Active workers stay alive.
 func peer_worker_idle_seconds() int {
@@ -613,6 +620,13 @@ func peer_rate() int { return ini_int("peer", "rate", 0) }
 // Frame.Service and Frame.ID become peer-chosen keys in maps that outlive the
 // stream, so both must be bounded. Empty is allowed; only malformed is
 // rejected.
+// envelope_target_valid bounds the To field, which envelope_valid does not
+// see. Unchecked it reaches user_owning_entity and entity_by_any as an SQL
+// parameter once per frame.
+func envelope_target_valid(to string) bool {
+	return to == "" || valid(to, "entity") || valid(to, "fingerprint")
+}
+
 func envelope_valid(from, service, event, id string) bool {
 	if from != "" && !valid(from, "entity") {
 		return false

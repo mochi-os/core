@@ -83,6 +83,7 @@ type app_worker struct {
 	user      string
 	app       string
 	inbox     chan *worker_frame
+	stop      chan struct{} // closed by the reaper to retire the worker
 	done      chan struct{} // closed when run() returns, so a caller can wait it out
 	last_used atomic.Int64
 	in_flight atomic.Int32 // 1 while a handler is running; 0 otherwise. Used by workers_drain_test only.
@@ -102,20 +103,25 @@ func worker_dispatch(user, app string, wf *worker_frame) {
 
 	for {
 		app_workers_lock.RLock()
-		if w, ok := app_workers[key]; ok {
-			// last_used is published and the frame handed over while the read lock
-			// is held. The reaper needs the write lock, so it cannot close this
-			// inbox between the lookup and the send - which it could when the
-			// lookup released the lock first, and a send on a closed channel
-			// panics. Blocking here with the read lock held is safe: run() drains
-			// the inbox without taking this lock.
-			w.last_used.Store(now())
-			w.inbox <- wf
-			app_workers_lock.RUnlock()
-			return
-		}
+		w, ok := app_workers[key]
 		app_workers_lock.RUnlock()
-		worker_create(key)
+		if !ok {
+			worker_create(key)
+			continue
+		}
+		w.last_used.Store(now())
+		// The send is deliberately OUTSIDE the registry lock. Holding the read
+		// lock across a blocking send wedged the whole host: Go's RWMutex
+		// blocks new readers as soon as a writer waits, so one full inbox plus
+		// one worker_create parked every dispatcher for every user and app.
+		// The reaper closes `stop`, never the inbox, so a send here cannot hit
+		// a closed channel; a worker retired in the gap closes `done` and this
+		// loop looks up again.
+		select {
+		case w.inbox <- wf:
+			return
+		case <-w.done:
+		}
 	}
 }
 
@@ -127,20 +133,23 @@ func worker_inbox_offer(user, app string, wf *worker_frame) bool {
 	key := user_app_key{user: user, app: app}
 	for {
 		app_workers_lock.RLock()
-		if w, ok := app_workers[key]; ok && w != nil {
-			// Same reason as worker_dispatch: the offer happens under the read
-			// lock, so the reaper cannot close the inbox underneath it.
+		w, ok := app_workers[key]
+		app_workers_lock.RUnlock()
+		if ok && w != nil {
 			w.last_used.Store(now())
+			// Offered outside the registry lock, same reason as
+			// worker_dispatch: any wait on this lock blocks every other
+			// dispatcher once a writer is queued behind it.
 			select {
 			case w.inbox <- wf:
-				app_workers_lock.RUnlock()
 				return true
+			case <-w.done:
+				// Retired in the gap; look up again.
+				continue
 			default:
-				app_workers_lock.RUnlock()
 				return false
 			}
 		}
-		app_workers_lock.RUnlock()
 		worker_create(key)
 	}
 }
@@ -162,6 +171,7 @@ func worker_create(key user_app_key) *app_worker {
 		user:  key.user,
 		app:   key.app,
 		inbox: make(chan *worker_frame, peer_worker_inbox()),
+		stop:  make(chan struct{}),
 		done:  make(chan struct{}),
 	}
 	w.last_used.Store(now())
@@ -171,19 +181,44 @@ func worker_create(key user_app_key) *app_worker {
 }
 
 // run is the worker goroutine. Tight loop: pick frame → decompress →
-// run handler → ack or fail. Exits when inbox is closed (by the
-// reaper). Handler panics are recovered so one buggy app can't take
+// run handler → ack or fail. Exits when the reaper closes `stop` and the
+// inbox has drained. Handler panics are recovered so one buggy app can't take
 // down the whole worker.
 func (w *app_worker) run() {
 	// Closing the inbox ends the loop below, but a frame already being handled
 	// runs on past it. Anyone tearing a worker down needs to know when the
 	// goroutine has actually gone, not merely when it was told to stop.
 	defer close(w.done)
-	for wf := range w.inbox {
-		w.last_used.Store(now())
-		w.in_flight.Store(1)
-		w.handle(wf)
-		w.in_flight.Store(0)
+	for {
+		select {
+		case wf, open := <-w.inbox:
+			// A closed inbox is the older teardown signal; the reaper now uses
+			// `stop`, but tests and any future caller may still close it, and a
+			// closed channel yields a nil frame forever.
+			if !open {
+				return
+			}
+			w.last_used.Store(now())
+			w.in_flight.Store(1)
+			w.handle(wf)
+			w.in_flight.Store(0)
+		case <-w.stop:
+			// Retired by the reaper. Drain anything a dispatcher landed
+			// before it observed `done`, then exit. The reaper only retires
+			// a worker whose inbox it saw empty under the write lock, so this
+			// is near-always a no-op.
+			for {
+				select {
+				case wf, open := <-w.inbox:
+					if !open {
+						return
+					}
+					w.handle(wf)
+				default:
+					return
+				}
+			}
+		}
 	}
 }
 
@@ -314,7 +349,7 @@ func worker_failure_reason(err error) string {
 
 // worker_reaper runs once per worker_reaper_tick and removes any
 // worker whose last_used is older than worker_idle AND whose inbox is
-// empty. The closed inbox channel signals the worker goroutine to
+// empty. The closed stop channel signals the worker goroutine to
 // exit.
 func worker_reaper() {
 	for range time.Tick(worker_reaper_tick) {
@@ -345,7 +380,9 @@ func worker_reaper() {
 			if w.last_used.Load() >= cutoff || len(w.inbox) > 0 {
 				continue
 			}
-			close(w.inbox)
+			// `stop`, not the inbox: dispatchers send outside this lock, and
+			// a send on a closed channel panics.
+			close(w.stop)
 			delete(app_workers, key)
 		}
 		app_workers_lock.Unlock()
@@ -468,13 +505,21 @@ func (q queue_reply) fail(reason string) {
 
 // local_reply implements reply_target for self-loop frames that never passed
 // through queue.db: no row to ack, so ack() is a no-op and fail() only logs. A
-// self-loop failure is a code error, so retrying the same input would fail
-// again.
+// self-loop failure is usually a code error, so most reasons only log. A
+// transient one is not: it is exactly what a remote sender would retry, so
+// fail() re-enqueues those through queue.db instead of losing them. The
+// message fields below are what queue_add_direct needs to do that.
 type local_reply struct {
-	message string
-	service string
-	event   string
-	to      string
+	message  string
+	service  string
+	event    string
+	to       string
+	from     string
+	app      string
+	services []string
+	content  []byte
+	data     []byte
+	expires  int64
 }
 
 // ack has no queue row to delete, but an in-process delivery is still a
@@ -498,6 +543,19 @@ func (l local_reply) fail(reason string) {
 		warn("Self-loop direct dispatch: %s/%s id=%q signature_invalid — local bug",
 			l.service, l.event, l.message)
 	default:
+		// `to` and `service` are what queue_add_direct routes on; a reply built
+		// without them (a bare probe) has nothing to re-enqueue.
+		if fail_retryable(reason) && l.to != "" && l.service != "" {
+			// Transient to a LOCAL recipient must not be dropped where the
+			// same reason to a remote one is retried. queue.db is the same
+			// fallback a full inbox already takes.
+			queue_add_direct(l.message, net_id, l.from, l.to, l.service, l.event,
+				l.app, l.services, l.content, l.data, "", l.expires)
+			queue_wake()
+			info("Self-loop direct dispatch: %s/%s id=%q failed: %s - requeued",
+				l.service, l.event, l.message, reason)
+			return
+		}
 		info("Self-loop direct dispatch: %s/%s id=%q failed: %s",
 			l.service, l.event, l.message, reason)
 	}
@@ -561,8 +619,12 @@ func message_self_loop_dispatch(m *Message, content []byte) bool {
 			Content:  body,
 			Data:     m.data,
 		},
-		peer:  net_id,
-		reply: local_reply{message: m.ID, service: m.Service, event: m.Event, to: to},
+		peer: net_id,
+		reply: local_reply{
+			message: m.ID, service: m.Service, event: m.Event, to: to,
+			from: m.From, app: m.FromApp, services: m.Services,
+			content: content, data: m.data, expires: m.expires,
+		},
 	}
 
 	// Non-blocking, creating the worker on first use. A full inbox falls back to

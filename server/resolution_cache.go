@@ -17,6 +17,12 @@ import (
 // query per key per window.
 const resolution_cache_ttl = 30
 
+// resolution_cache_maximum bounds the entry count. get() treats an expired
+// entry as a miss but leaves it behind, and resolution_invalidate only fires
+// on a configuration write, so without a ceiling the map grows for the life of
+// the process.
+const resolution_cache_maximum = 10000
+
 var (
 	// resolution_generation is bumped by resolution_invalidate on any
 	// local write that changes a resolution input. Lock-free so writers
@@ -166,6 +172,18 @@ func (c *app_resolution_cache) put(key resolution_key, a *App) {
 	if gen != c.gen {
 		c.entries = map[resolution_key]resolution_app_entry{}
 		c.gen = gen
+	}
+	if len(c.entries) >= resolution_cache_maximum {
+		for k, e := range c.entries {
+			if now() >= e.expires {
+				delete(c.entries, k)
+			}
+		}
+		// Still at the ceiling with nothing expired: drop the lot rather than
+		// grow. A cleared cache costs one resolve per live service.
+		if len(c.entries) >= resolution_cache_maximum {
+			c.entries = map[resolution_key]resolution_app_entry{}
+		}
 	}
 	c.entries[key] = resolution_app_entry{app: a, expires: now() + resolution_cache_ttl}
 }

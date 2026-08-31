@@ -106,6 +106,7 @@ type Sender struct {
 	proven       map[string]bool
 	proving      map[string]chan error
 	closed       atomic.Bool
+	done         chan struct{} // closed by shutdown(); write_loop and peer_send exit on it
 	last_inbound atomic.Int64  // unix ns of last inbound frame; reset by ping_loop
 	wake         chan struct{} // queue_wake routes per-peer nudges here; pull_loop drains
 	lock         sync.Mutex
@@ -218,6 +219,7 @@ func sender_open(peer string) (*Sender, error) {
 	_ = stream.SetReadDeadline(time.Time{})
 
 	s := &Sender{
+		done:      make(chan struct{}),
 		peer:      peer,
 		stream:    stream,
 		session:   hello.Session,
@@ -261,7 +263,13 @@ func sender_open(peer string) (*Sender, error) {
 // the producer when len(inflight) >= sender_window_default — local
 // memory cap; wire-level back-pressure rides on libp2p flow control.
 func (s *Sender) write_loop() {
-	for ob := range s.outbox {
+	for {
+		var ob *outbound
+		select {
+		case ob = <-s.outbox:
+		case <-s.done:
+			return
+		}
 		if s.closed.Load() {
 			s.fail_outbound(ob, "sender closed")
 			continue
@@ -450,6 +458,7 @@ func (s *Sender) handle_inbound(f *Frame) {
 	case frame_type_ack:
 		s.lock.Lock()
 		acked := false
+		acknowledged := []string{}
 		for _, id := range f.Replies {
 			p := s.inflight[id]
 			if p == nil {
@@ -458,10 +467,16 @@ func (s *Sender) handle_inbound(f *Frame) {
 			delete(s.inflight, id)
 			acked = true
 			if p.queue != "" {
-				queue_ack_async(p.queue)
+				acknowledged = append(acknowledged, p.queue)
 			}
 		}
 		s.lock.Unlock()
+		// Acked outside the lock: queue_ack_async degrades to a synchronous
+		// queue.db write plus a user.db write when its channel is full, and
+		// write_one, pull_loop and the sweeper all contend for s.lock.
+		for _, row := range acknowledged {
+			queue_ack_async(row)
+		}
 		// The peer is applying and acking — clear any send-stall so its
 		// deferred backlog resumes (peer_progress.go).
 		if acked {
@@ -672,6 +687,16 @@ func (s *Sender) shutdown() {
 		return
 	}
 	debug("Sender: shutdown peer=%q session=%s", s.peer, s.session)
+
+	// Nothing ever closes outbox - peer_send may still hold a stale *Sender -
+	// so write_loop needs its own exit signal. Without one it parked on the
+	// channel receive forever, pinning the Sender and its maps: one leak per
+	// disconnect, ping timeout, framing error or entity invalidation.
+	// done is nil only in tests that install a synthetic Sender without going
+	// through sender_open, the same exemption the stream check below makes.
+	if s.done != nil {
+		close(s.done)
+	}
 
 	senders_lock.Lock()
 	if senders[s.peer] == s {

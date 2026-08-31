@@ -250,8 +250,8 @@ func TestBroadcastPendingStalledDBClassifiesGap(t *testing.T) {
 	if s.Last != 1555 {
 		t.Errorf("last: got %d, want 1555", s.Last)
 	}
-	if s.MinPending != 4255 {
-		t.Errorf("min_pending: got %d, want 4255", s.MinPending)
+	if s.Minimum != 4255 {
+		t.Errorf("minimum: got %d, want 4255", s.Minimum)
 	}
 	if s.Count != 50 {
 		t.Errorf("count: got %d, want 50", s.Count)
@@ -341,8 +341,8 @@ func TestBroadcastPendingStalledDBStalePendingHidden(t *testing.T) {
 		t.Fatalf("expected 1 stalled stream (stale orphan must not hide it), got %d", len(got))
 	}
 	s := got[0]
-	if s.MinPending != 1310 {
-		t.Errorf("MinPending: got %d, want 1310 (the relevant min, not the stale orphan at 11)", s.MinPending)
+	if s.Minimum != 1310 {
+		t.Errorf("Minimum: got %d, want 1310 (the relevant minimum, not the stale orphan at 11)", s.Minimum)
 	}
 	if s.Last != 866 {
 		t.Errorf("Last: got %d, want 866", s.Last)

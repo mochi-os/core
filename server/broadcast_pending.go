@@ -224,15 +224,15 @@ func broadcast_pending_drain_chain(db *DB, peer, key string) {
 // pending buffer cannot drain. Streams that would drain on the next
 // contiguous arrival are excluded by the classifier.
 type BroadcastStalledStream struct {
-	User       string
-	App        string
-	DBPath     string
-	Peer       string
-	Key        string
-	Last       int64 // received.last
-	MinPending int64 // min(pending.sequence)
-	Count      int64
-	Oldest     int64 // min(pending.received), unix seconds
+	User    string
+	App     string
+	Path    string
+	Peer    string
+	Key     string
+	Last    int64 // received.last
+	Minimum int64 // lowest buffered sequence for the stream
+	Count   int64
+	Oldest  int64 // min(pending.received), unix seconds
 }
 
 // broadcast_pending_stalled walks users/<uid>/<app>/app.db and returns streams
@@ -295,7 +295,7 @@ func broadcast_pending_stalled_db(user, app, db_path string) []BroadcastStalledS
 	if has_received {
 		rows, err = db.rows(`select p.peer, p.key,
 			count(*) as count,
-			min(p.sequence) as min_seq,
+			min(p.sequence) as minimum,
 			min(p.received) as oldest,
 			coalesce(r.last, 0) as last
 			from pending p
@@ -308,7 +308,7 @@ func broadcast_pending_stalled_db(user, app, db_path string) []BroadcastStalledS
 		// relevant). Same shape so the loop below works uniformly.
 		rows, err = db.rows(`select peer, key,
 			count(*) as count,
-			min(sequence) as min_seq,
+			min(sequence) as minimum,
 			min(received) as oldest,
 			0 as last
 			from pending group by peer, key`)
@@ -320,7 +320,7 @@ func broadcast_pending_stalled_db(user, app, db_path string) []BroadcastStalledS
 		peer, _ := r["peer"].(string)
 		key, _ := r["key"].(string)
 		count, _ := r["count"].(int64)
-		minimum_sequence, _ := r["min_seq"].(int64)
+		minimum_sequence, _ := r["minimum"].(int64)
 		oldest, _ := r["oldest"].(int64)
 		last, _ := r["last"].(int64)
 		// Drains naturally on the next arrival of received.last+1.
@@ -328,15 +328,15 @@ func broadcast_pending_stalled_db(user, app, db_path string) []BroadcastStalledS
 			continue
 		}
 		out = append(out, BroadcastStalledStream{
-			User:       user,
-			App:        app,
-			DBPath:     db_path,
-			Peer:       peer,
-			Key:        key,
-			Last:       last,
-			MinPending: minimum_sequence,
-			Count:      count,
-			Oldest:     oldest,
+			User:    user,
+			App:     app,
+			Path:    db_path,
+			Peer:    peer,
+			Key:     key,
+			Last:    last,
+			Minimum: minimum_sequence,
+			Count:   count,
+			Oldest:  oldest,
 		})
 	}
 	return out

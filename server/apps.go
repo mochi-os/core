@@ -1005,7 +1005,12 @@ func app_for_service(user *User, service string) *App {
 		return a
 	}
 	a := app_for_service_resolve(user, service)
-	resolution_services.put(key, a)
+	// Only a positive resolution is cached. The service is peer-chosen on
+	// every inbound frame, so caching misses lets one stream mint an entry per
+	// frame in a map that only a configuration write clears.
+	if a != nil {
+		resolution_services.put(key, a)
+	}
 	return a
 }
 

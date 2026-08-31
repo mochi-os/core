@@ -123,6 +123,28 @@ func receive_stream_guarded(s p2p_network.Stream) {
 	}
 	_ = s.SetReadDeadline(time.Time{})
 
+	// The messages receiver validates its envelope before anything reads it;
+	// this path did not, so Service, Event, ID, FromApp and Services reached
+	// Event.route, the logs and the resolution cache as arbitrary strings
+	// bounded only by the frame size.
+	if !envelope_valid(open.From, open.Service, open.Event, open.ID) || !envelope_target_valid(open.To) {
+		info("Stream: invalid envelope peer=%q session=%s", peer, session)
+		s.Reset()
+		return
+	}
+	if open.FromApp != "" && !valid(open.FromApp, "constant") {
+		info("Stream: invalid sending app peer=%q session=%s", peer, session)
+		s.Reset()
+		return
+	}
+	for _, offered := range open.Services {
+		if offered != "" && !valid(offered, "constant") {
+			info("Stream: invalid offered service peer=%q session=%s", peer, session)
+			s.Reset()
+			return
+		}
+	}
+
 	if open.From != "" && !claimed[open.From] {
 		_ = frame_write(s, &Frame{Type: frame_type_fail, Replies: []string{open.ID}, Reason: fail_unclaimed})
 		s.Close()

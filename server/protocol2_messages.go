@@ -29,12 +29,6 @@ import (
 )
 
 const (
-	// Capability flags this build advertises in hello.Features /
-	// caps.Features. Empty in v2 baseline — every feature gets added
-	// here and gated by intersection checks.
-	//lint:ignore U1000 the capability-flag baseline: empty in v2, and every future feature is added here and gated by intersection
-	receiver_features_default = ""
-
 	// receiver_replies_buffer — depth of the per-stream replies
 	// channel. Drain-and-batch will coalesce whatever's queued into
 	// one ack frame; smaller depth = smaller batches but less risk of
@@ -81,12 +75,13 @@ type Receiver struct {
 	claimed   map[string]bool
 	lock      sync.Mutex // guards claimed
 	closed    atomic.Bool
+	done      chan struct{} // closed at end-of-stream; write_replies exits on it
 
 	// Budgets for the frames that cost this host work before the sender has
 	// sent anything. Touched only from the reader goroutine, so unguarded.
 	claims int
 	proves int
-	ready  bool // a message frame has arrived; the read deadline is cleared
+	ready  bool // a message frame has arrived; the read deadline rolls per frame
 }
 
 // wire_deadline is the part of a real libp2p stream that bounds a read. The
@@ -95,8 +90,9 @@ type wire_deadline interface {
 	SetReadDeadline(time.Time) error
 }
 
-// deadline bounds reads until the first message frame arrives. A messages
-// stream is long-lived once it is carrying traffic, so it is cleared then.
+// deadline bounds reads: a fixed window until the first message frame, then a
+// rolling idle window refreshed on every frame. A live sender pings well
+// inside that window, so only a genuinely silent stream trips it.
 func (r *Receiver) deadline(t time.Time) {
 	if s, ok := r.stream.(wire_deadline); ok {
 		_ = s.SetReadDeadline(t)
@@ -135,6 +131,7 @@ func receive_messages_guarded(s p2p_network.Stream) {
 		session:   session,
 		challenge: challenge,
 		replies:   make(chan *Frame, receiver_replies_buffer),
+		done:      make(chan struct{}),
 		claimed:   map[string]bool{},
 	}
 
@@ -159,7 +156,11 @@ func receive_messages_guarded(s p2p_network.Stream) {
 	r.read_loop()
 
 	r.closed.Store(true)
-	close(r.replies)
+	// `done`, not `replies`. Workers check closed then select a send on
+	// replies; closing it made that a send on a closed channel, which the
+	// handler recover reported as fail_handler_panic - a warn with a stack,
+	// which mails the admin, blaming an app that did nothing wrong.
+	close(r.done)
 	s.Close()
 	debug("Messages: stream closed peer=%q session=%s", peer, session)
 
@@ -179,6 +180,12 @@ func (r *Receiver) read_loop() {
 			info("Messages: framing error peer=%q session=%s: %v", r.peer, r.session, err)
 			r.stream.Reset()
 			return
+		}
+		// Rolling idle bound once the stream is established. Clearing the
+		// deadline for good meant one message bought a stream - and its two
+		// goroutines and replies channel - for the life of the connection.
+		if r.ready {
+			r.deadline(time.Now().Add(receiver_idle_timeout()))
 		}
 		if !r.caps_seen.Load() {
 			if f.Type != frame_type_caps {
@@ -212,7 +219,7 @@ func (r *Receiver) read_loop() {
 func (r *Receiver) handle(f *Frame) bool {
 	// Checked before anything keys a map on Frame.Service or Frame.ID. A peer
 	// sending a malformed envelope gets the stream closed, not a frame failure.
-	if !envelope_valid(f.From, f.Service, f.Event, f.ID) {
+	if !envelope_valid(f.From, f.Service, f.Event, f.ID) || !envelope_target_valid(f.To) {
 		info("Messages: protocol violation peer=%q session=%s — malformed envelope (service=%d bytes, id=%d bytes)",
 			r.peer, r.session, len(f.Service), len(f.ID))
 		r.stream.Reset()
@@ -263,7 +270,7 @@ func (r *Receiver) handle(f *Frame) bool {
 	case frame_type_message:
 		if !r.ready {
 			r.ready = true
-			r.deadline(time.Time{})
+			r.deadline(time.Now().Add(receiver_idle_timeout()))
 		}
 		r.dispatch_message(f)
 		return true
@@ -391,9 +398,6 @@ func (r *Receiver) dispatch_message(f *Frame) {
 	})
 }
 
-// reply posts a frame onto the per-stream replies channel, dropping it if the
-// channel is full - the sender's sweeper times the inflight out and retries.
-//
 // prove answers a `prove` demand for `entity`. fail_unknown_user means it is
 // not hosted here; fail_unproven means it is but the key is missing, which must
 // not be downgraded into serving the entity unauthenticated.
@@ -415,6 +419,8 @@ func (r *Receiver) prove(entity string) {
 	r.reply(&Frame{Type: frame_type_claim, From: entity, Signature: signature})
 }
 
+// reply posts a frame onto the per-stream replies channel, dropping it if the
+// channel is full - the sender's sweeper times the inflight out and retries.
 func (r *Receiver) reply(f *Frame) {
 	if r.closed.Load() {
 		return
@@ -443,14 +449,29 @@ func (r *Receiver) write_replies() {
 		pending_acks = pending_acks[:0]
 	}
 
-	for first := range r.replies {
+	for {
+		var first *Frame
+		var open bool
+		select {
+		case first, open = <-r.replies:
+			// A closed replies channel is the older teardown signal; the
+			// reader now closes `done` instead, but tests still close this one
+			// and a closed channel yields a nil frame forever.
+			if !open {
+				flush_acks()
+				return
+			}
+		case <-r.done:
+			flush_acks()
+			return
+		}
 		r.coalesce_one(first, &pending_acks)
 		// Drain whatever else is immediately ready.
 	drain:
 		for {
 			select {
-			case extra, ok := <-r.replies:
-				if !ok {
+			case extra, more := <-r.replies:
+				if !more {
 					flush_acks()
 					return
 				}

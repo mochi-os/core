@@ -576,9 +576,9 @@ func TestMessagesCapsProves(t *testing.T) {
 
 // The read deadline bounds the phase before the first message and is cleared
 // once one arrives, because a messages stream carrying traffic is long-lived.
-func TestMessagesDeadlineClearedOnFirstMessage(t *testing.T) {
+func TestMessagesDeadlineRollsOnFirstMessage(t *testing.T) {
 	// handle() dispatches the message to an app worker, and a worker lives until
-	// the reaper closes its inbox 300s later. Without the teardown it outlives
+	// the reaper retires it 300s later. Without the teardown it outlives
 	// this test and races later tests on the globals a worker reads.
 	reset_workers(t)
 	defer reset_workers(t)
@@ -588,13 +588,25 @@ func TestMessagesDeadlineClearedOnFirstMessage(t *testing.T) {
 	r.caps_seen.Store(true)
 
 	r.deadline(time.Now().Add(messages_ready_timeout))
-	if d.deadline.Load() == 0 {
+	before := d.deadline.Load()
+	if before == 0 {
 		t.Fatal("no read deadline set: a peer can hold the stream open indefinitely before sending anything")
 	}
 
 	r.handle(&Frame{Type: frame_type_message, From: "", Service: "test", Event: "test", ID: "1"})
-	if d.deadline.Load() != 0 {
-		t.Error("the deadline survived the first message; a legitimate long-lived stream would be cut")
+
+	// The first message used to clear the deadline outright, which bought the
+	// peer the stream - and its two goroutines and replies channel - for the
+	// life of the connection. It now rolls to an idle window instead.
+	after := d.deadline.Load()
+	if after == 0 {
+		t.Error("the first message cleared the read deadline: an established stream is then unbounded, and a silent peer holds it open indefinitely")
+	}
+	if after == before {
+		t.Error("the deadline did not move on the first message, so it is still the pre-message window rather than an idle bound")
+	}
+	if after <= time.Now().UnixNano() {
+		t.Error("the rolled deadline is already in the past, so a healthy stream would trip it immediately")
 	}
 	if !r.ready {
 		t.Error("receiver did not record that a message arrived")

@@ -436,22 +436,39 @@ func directory_sync_event(e *Event) {
 		return
 	}
 
-	var results []Entry
+	// Paged rather than materialised: with start=0 one scan held the whole
+	// directory in memory per request, and peer ids are free, so concurrent
+	// requests from minted identities multiplied the resident copies.
 	db := db_open("db/directory.db")
-	err := db.scans(&results, "select * from entries where seen>=? order by seen", start)
-	if err != nil {
-		warn("Database error loading directory rows: %v", err)
-		return
-	}
-	for _, en := range results {
-		if err := e.stream.write(en); err != nil {
-			// The requesting peer closed the stream early: a transient, so debug rather
-			// than an admin-emailing warn.
-			debug("Directory sync to %q interrupted (peer closed stream): %v", en.Entity, err)
+	offset := 0
+	for {
+		var results []Entry
+		err := db.scans(&results,
+			"select * from entries where seen>=? order by seen limit ? offset ?",
+			start, directory_sync_page, offset)
+		if err != nil {
+			warn("Database error loading directory rows: %v", err)
 			return
 		}
+		for _, en := range results {
+			if err := e.stream.write(en); err != nil {
+				// The requesting peer closed the stream early: a transient, so debug rather
+				// than an admin-emailing warn.
+				debug("Directory sync to %q interrupted (peer closed stream): %v", en.Entity, err)
+				return
+			}
+		}
+		if len(results) < directory_sync_page {
+			return
+		}
+		offset += len(results)
 	}
 }
+
+// directory_sync_page is how many rows one sync answer reads at a time. The
+// requester verifies every row's signature itself, so a page boundary that
+// repeats or skips a row under a concurrent write costs nothing.
+const directory_sync_page = 1000
 
 // directory_location_age_maximum is how long a directory row may remain
 // un-refreshed before a silenced peer's rows get forgotten. Live peers

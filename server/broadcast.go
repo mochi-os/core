@@ -812,6 +812,18 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 				peer, _ = recipient["peer"].(string)
 			}
 		}
+		// An unvalidated subscriber parks a row for a recipient that cannot
+		// exist; an unvalidated peer becomes a row that can never deliver and
+		// is retried on the backoff ladder for its whole retention.
+		// api_message_send_peer guards its own argument the same way.
+		if sub != "" && !valid(sub, "entity") {
+			info("Broadcast: skipping subscriber with invalid id %q", sub)
+			continue
+		}
+		if peer != "" && !valid(peer, "peer") {
+			info("Broadcast: skipping subscriber %q with invalid peer %q", sub, peer)
+			continue
+		}
 		if sub != "" {
 			recorded = append(recorded, sub)
 		}

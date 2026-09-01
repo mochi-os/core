@@ -816,15 +816,17 @@ func (a *Action) sl_files(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl_encode(results), nil
 }
 
-// a.file(field) -> dict or None: Read uploaded file data
-// Returns dict with: name, content_type, size, data (bytes)
+// a.file(field, maximum=file_inline_maximum) -> dict or None: Read uploaded
+// file data. Returns dict with: name, content_type, size, data (bytes).
+// A part larger than maximum answers None rather than allocating it, matching
+// mochi.file.read - stream those with a.files plus a.upload instead.
 func (a *Action) sl_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <field: string>")
+	var field string
+	maximum := int64(file_inline_maximum)
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "field", &field, "maximum?", &maximum); err != nil {
+		return sl_error(fn, "syntax: <field: string> [maximum: integer]")
 	}
-
-	field, ok := sl.AsString(args[0])
-	if !ok || !valid(field, "constant") {
+	if !valid(field, "constant") {
 		return sl_error(fn, "invalid field %q", field)
 	}
 
@@ -839,6 +841,14 @@ func (a *Action) sl_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	ff := files[0] // Get first file
+
+	// Refuse before allocating. web_multipart_maximum lets a body run to the
+	// caller's remaining storage quota, so without this one request could hand
+	// a multi-gigabyte part to io.ReadAll in a single goroutine.
+	if maximum > 0 && ff.Size > maximum {
+		debug("a.file %q: %d bytes exceeds the %d maximum", field, ff.Size, maximum)
+		return sl.None, nil
+	}
 
 	// Open and read file contents
 	f, err := ff.Open()
@@ -1150,7 +1160,7 @@ func (a *Action) sl_write_asset(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 
 	starlark_serving_set(t, a.web.Writer)
-	a.web.File(file)
+	web_serve_path(a.web, file)
 	return sl.None, nil
 }
 

@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -260,8 +261,14 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 					api_token = nil
 				}
 			}
-		} else {
-			// JWT token (used by sandboxed iframes for resource URLs like images)
+		} else if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead {
+			// JWT token (used by sandboxed iframes for resource URLs like
+			// images). Read-only methods only: this credential travels in the
+			// URL, so it lands in history, bookmarks, "copy image address" and
+			// any pasted link, and it lives a year. The API-token branch above
+			// binds per action through token_allows; this one binds only to the
+			// app, so a POST carrying it would reach every mutating action the
+			// app has.
 			if uid, app, err := jwt_verify(query_token); err == nil && uid != "" {
 				user = user_by_uid(uid)
 				if user != nil {
@@ -594,7 +601,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			if strings.HasSuffix(strings.ToLower(aa.filepath), ".svg") {
 				web_serve_svg_path(c, file)
 			} else {
-				c.File(file)
+				web_serve_path(c, file)
 			}
 		} else {
 			respond_error(c, http.StatusBadRequest, "no_file_specified", "errors.no_file_specified", nil)
@@ -694,10 +701,13 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	}
 
 	// A body key named after the routed entity's class would repoint the app at a
-	// different entity, and token_allows compared the token against the ROUTED
-	// one. Restore the route's value so an entity-bound token cannot be aimed
-	// elsewhere.
-	if api_token != nil && api_token.Entity != "" && e != nil && e.Class != "" {
+	// different entity: a.input(class) would then disagree with a.entity, a.owner
+	// and the owner.db opened for the URL. An app that authorises on the route and
+	// queries on the input (or the reverse) is operating on two entities under one
+	// set of checks. Restore the route's value for EVERY caller - this was gated
+	// on an entity-bound token, but cookie and JWT callers merge a body too, and
+	// query and form values are already written before the route value.
+	if e != nil && e.Class != "" {
 		action.inputs[e.Class] = e.ID
 	}
 
@@ -713,6 +723,14 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		if c.Request.ContentLength > maximum {
 			respond_error(c, http.StatusRequestEntityTooLarge, "body_too_large", "errors.body_too_large", nil)
 			return true
+		}
+		// Count what is actually read so a concurrent upload by the same user
+		// sees a smaller ceiling. Innermost, so it meters the network body
+		// rather than what MaxBytesReader let through.
+		if user != nil {
+			counter := &multipart_counter{reader: c.Request.Body, user: user.UID}
+			defer counter.release()
+			c.Request.Body = counter
 		}
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maximum)
 		if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
@@ -985,6 +1003,69 @@ func web_body_limit(c *gin.Context) {
 	c.Next()
 }
 
+// multipart_inflight counts the multipart bytes each user is currently spooling
+// to disk. web_multipart_maximum derives its ceiling from STORED bytes, which
+// bounds one request and says nothing about several at once: parsing happens
+// before the Starlark semaphore, so N concurrent uploads each got the whole
+// remaining quota and together filled the cache filesystem.
+var multipart_inflight = struct {
+	lock  sync.Mutex
+	bytes map[string]int64
+}{bytes: map[string]int64{}}
+
+// multipart_inflight_add moves a user's in-flight total, dropping the entry when
+// it reaches zero so the map tracks live uploads rather than every user seen.
+func multipart_inflight_add(user string, count int64) {
+	multipart_inflight.lock.Lock()
+	defer multipart_inflight.lock.Unlock()
+	total := multipart_inflight.bytes[user] + count
+	if total <= 0 {
+		delete(multipart_inflight.bytes, user)
+		return
+	}
+	multipart_inflight.bytes[user] = total
+}
+
+// multipart_inflight_total reports the bytes this user is spooling right now.
+func multipart_inflight_total(user string) int64 {
+	multipart_inflight.lock.Lock()
+	defer multipart_inflight.lock.Unlock()
+	return multipart_inflight.bytes[user]
+}
+
+// multipart_counter charges bytes to the user as they are actually read. It
+// counts reads rather than trusting Content-Length because a chunked body
+// declares none, and that is exactly the request the length pre-check cannot
+// refuse.
+type multipart_counter struct {
+	reader io.ReadCloser
+	user   string
+	count  int64
+}
+
+func (m *multipart_counter) Read(p []byte) (int, error) {
+	n, err := m.reader.Read(p)
+	if n > 0 {
+		m.count += int64(n)
+		multipart_inflight_add(m.user, int64(n))
+	}
+	return n, err
+}
+
+func (m *multipart_counter) Close() error {
+	return m.reader.Close()
+}
+
+// release returns this request's bytes to the user's budget. Safe to call more
+// than once - the second call has nothing left to give back.
+func (m *multipart_counter) release() {
+	if m.count == 0 {
+		return
+	}
+	multipart_inflight_add(m.user, -m.count)
+	m.count = 0
+}
+
 // web_multipart_maximum bounds a multipart body, derived from the caller's
 // storage quota: multipart is exempt from web_body_limit and ParseMultipartForm
 // spools the whole body to os.TempDir(), usually a tmpfs. Gated on the
@@ -1004,6 +1085,12 @@ func web_multipart_maximum(user *User) int64 {
 	if err != nil || remaining <= 0 {
 		return web_body_maximum + web_multipart_framing
 	}
+	// Charge uploads this user already has in flight against the same budget.
+	// Without it the quota is per-request and N connections each get all of it.
+	remaining -= multipart_inflight_total(user.UID)
+	if remaining <= 0 {
+		return web_body_maximum + web_multipart_framing
+	}
 	// Administrators are quota-exempt (MaxInt64). Give them a finite ceiling
 	// anyway — unbounded is the thing being fixed — sized at the per-user
 	// quota, which is far beyond any real single upload.
@@ -1011,6 +1098,24 @@ func web_multipart_maximum(user *User) int64 {
 		remaining = file_maximum_storage
 	}
 	return remaining + web_multipart_framing
+}
+
+// web_serve_path answers with the file at path, refusing a directory. gin's
+// Context.File is http.ServeFile, which renders an HTML index for a directory
+// holding no index.html, and path_valid refuses empty components but not a
+// component that happens to name a directory. A missing file still goes through
+// to ServeFile so its own 404 is unchanged; only the listing is intercepted.
+// sl_write_file guards this itself with os.Open/Stat - the bundle routes did not.
+func web_serve_path(c *gin.Context, path string) {
+	if information, err := os.Stat(path); err == nil && information.IsDir() {
+		// AbortWithStatus, not Status: the header has to be committed here.
+		// ServeFile writes its own 404 for a missing file, so a directory must
+		// answer the same way rather than leaving the status for whatever
+		// writes next.
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	c.File(path)
 }
 
 // web_serves_file reports whether an action declaring a file will answer this

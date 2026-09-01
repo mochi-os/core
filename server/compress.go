@@ -9,6 +9,7 @@ package main
 import (
 	"compress/gzip"
 	"io"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -130,6 +131,16 @@ type compress_writer struct {
 	decided  bool
 	compress bool
 	written  bool
+}
+
+// Unwrap hands the ResponseController the writer underneath. Without it the
+// chain stops here - the embedded gin.ResponseWriter is an INTERFACE, which
+// does not declare Unwrap - so http.NewResponseController(...).SetWriteDeadline
+// in starlark_serving_set answered ErrNotSupported and the download had no
+// deadline at all. gin's own responseWriter implements Unwrap, so returning the
+// embedded value completes the chain.
+func (w *compress_writer) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 // Written reports whether any payload reached this writer, including bytes

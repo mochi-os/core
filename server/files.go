@@ -28,6 +28,13 @@ import (
 // raising this means raising both others. TestStorageLimitsAgree pins it.
 const object_maximum = 10 * 1024 * 1024 * 1024 // 10GB
 
+// file_inline_maximum bounds what a.file() will materialise as Starlark bytes.
+// It matches ParseMultipartForm's in-memory spool threshold: below it the part
+// is already in memory, above it a.file would allocate a second copy of a body
+// the caller's storage quota alone allowed to reach 10GB. Larger uploads go
+// through a.files plus a.upload, which stream.
+const file_inline_maximum = 32 * 1024 * 1024 // 32MB
+
 // Maximum file storage per user (10GB). Equal to object_maximum, so a single
 // object may fill a user's whole allowance - a video is one file, not many.
 var file_maximum_storage int64 = 10 * 1024 * 1024 * 1024

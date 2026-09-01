@@ -13,6 +13,7 @@
 package main
 
 import (
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -59,6 +60,13 @@ func web_resource_guard(c *gin.Context) {
 type resource_writer struct {
 	gin.ResponseWriter
 	applied bool
+}
+
+// Unwrap hands the ResponseController the writer underneath - see the same
+// method on compress_writer. Both wrappers embed the gin.ResponseWriter
+// interface, which does not declare Unwrap, so neither exposed one.
+func (w *resource_writer) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 func (w *resource_writer) apply() {

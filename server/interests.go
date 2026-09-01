@@ -11,9 +11,9 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
@@ -57,6 +57,29 @@ func interests_reader(t *sl.Thread) *User {
 		return nil
 	}
 	return storage
+}
+
+// interests_regenerating names the accounts whose summary a background rebuild
+// is already running for. The stale row is only rewritten once a rebuild
+// finishes, so without this every request arriving in the meantime reads the
+// same stale row, decides it is stale, and starts a rebuild of its own - one
+// Wikidata resolution and one paid provider call each. Feeds and forums call
+// mochi.interests.summary() from their ranking paths, so the arrivals are page
+// loads. The forced path carries a 300-second interval for the same reason.
+var interests_regenerating sync.Map
+
+// interests_regenerate rebuilds the account's summary in the background unless
+// a rebuild is already running, and reports whether it started one.
+func interests_regenerate(user *User, db *DB) bool {
+	if _, running := interests_regenerating.LoadOrStore(user.UID, true); running {
+		return false
+	}
+	go func() {
+		defer interests_regenerating.Delete(user.UID)
+		summary := interests_generate_summary(user, db)
+		db.exec("replace into settings (key, text, number) values ('interest_summary', ?, ?)", summary, now())
+	}()
+	return true
 }
 
 // mochi.interests.list() -> list: List all user interests sorted by weight descending
@@ -345,10 +368,7 @@ func api_interests_summary(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 					return sl.String(text), nil
 				}
 				// Stale cache: return stale value, regenerate in background
-				go func() {
-					summary := interests_generate_summary(user, db)
-					db.exec("replace into settings (key, text, number) values ('interest_summary', ?, ?)", summary, now())
-				}()
+				interests_regenerate(user, db)
 				return sl.String(text), nil
 			}
 		}
@@ -453,38 +473,21 @@ func qid_lang_for_fetch(lang string) string {
 	return lang
 }
 
+// interests_summary_tokens bounds the summary request. The prompt asks for two
+// or three sentences, so the 16k default every call used to carry was paid for
+// and never used.
+const interests_summary_tokens = 1024
+
 // interests_ai_summary attempts to generate an AI-powered summary in the
 // user's preferred language.
 func interests_ai_summary(user *User, db *DB, positive_qids []string, negative_qids []string, labels map[string]string, language string) string {
-	// Find first enabled AI account
-	rows, err := db.rows("select id, type, data, enabled from accounts order by id")
-	if err != nil {
-		return ""
-	}
-
-	var api_key, model, ptype string
-	for _, row := range rows {
-		t, _ := row["type"].(string)
-		enabled, _ := row["enabled"].(int64)
-		if enabled == 1 && provider_has_capability(t, "ai") {
-			ptype = t
-			raw, _ := row["data"].(string)
-			var data map[string]any
-			if raw != "" {
-				json.Unmarshal([]byte(raw), &data)
-			}
-			api_key, _ = data["api_key"].(string)
-			model, _ = data["model"].(string)
-			break
-		}
-	}
-
+	// The account the user designated as their default for "ai", resolved the
+	// same way mochi.ai.prompt resolves it. Taking the first enabled AI-capable
+	// account instead billed the summary to whichever account was connected
+	// first rather than the one the user chose.
+	provider, api_key, model := ai_account(db, "")
 	if api_key == "" {
 		return ""
-	}
-
-	if model == "" || model == "default" {
-		model = ai_provider_defaults[ptype]
 	}
 
 	// Build interest list for prompt
@@ -525,11 +528,11 @@ func interests_ai_summary(user *User, db *DB, positive_qids []string, negative_q
 	prompt := fmt.Sprintf("Summarise the following user interests in 2-3 sentences in BCP 47 language %q. Be concise and natural. Do not list them — describe what kind of topics and themes the person is interested in, and what they dislike if applicable. Respond only with the summary text, in language %q.\n\n%s", lang, lang, strings.Join(sections, "\n\n"))
 
 	var result ai_result
-	switch ptype {
+	switch provider {
 	case "claude":
-		result = ai_call_claude(api_key, model, prompt)
+		result = ai_call_claude(api_key, model, prompt, interests_summary_tokens)
 	case "openai":
-		result = ai_call_openai(api_key, model, prompt)
+		result = ai_call_openai(api_key, model, prompt, interests_summary_tokens)
 	default:
 		return ""
 	}

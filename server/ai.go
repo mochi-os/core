@@ -25,6 +25,20 @@ var api_ai = sls.FromStringDict(sl.String("mochi.ai"), sl.StringDict{
 	"prompt": sl.NewBuiltin("mochi.ai.prompt", api_ai_prompt),
 })
 
+// ai_prompt_maximum bounds the prompt a single call may carry. The request body
+// limit is the only other ceiling, and it is orders of magnitude larger than any
+// real prompt; apps fold user-supplied text into prompts (forums scores fifty
+// post bodies at a time), so the bound belongs here rather than on each caller.
+const ai_prompt_maximum = 65536
+
+// ai_tokens_default and ai_tokens_maximum bound the output a call may ask for.
+// The size was fixed at the maximum, so every call paid for a 16k ceiling it
+// almost never used and no caller could ask for less.
+const (
+	ai_tokens_default = 16384
+	ai_tokens_maximum = 16384
+)
+
 // Default models for each AI provider
 var ai_provider_defaults = map[string]string{
 	"claude": "claude-haiku-4-5-20251001",
@@ -35,6 +49,42 @@ var ai_provider_defaults = map[string]string{
 type ai_result struct {
 	status int
 	text   string
+}
+
+// ai_account resolves the account whose key an AI call spends. An id names one
+// account; otherwise it is the one the user designated as their default for
+// "ai". Both callers have to agree on this: interests_ai_summary used to take
+// the first enabled AI-capable account ordered by id, so a user with two
+// accounts had their summary billed to whichever they connected first rather
+// than the one they chose. An empty key means no usable account.
+func ai_account(database *DB, id string) (provider, key, model string) {
+	var row map[string]any
+	if id != "" {
+		row, _ = database.row("select type, data, enabled from accounts where id=?", id)
+	} else {
+		row, _ = database.row("select type, data, enabled from accounts where (',' || \"default\" || ',') like '%,ai,%' and enabled=1")
+	}
+	if row == nil {
+		return "", "", ""
+	}
+	if enabled, _ := row["enabled"].(int64); enabled != 1 {
+		return "", "", ""
+	}
+	provider, _ = row["type"].(string)
+	if !provider_has_capability(provider, "ai") {
+		return "", "", ""
+	}
+	raw, _ := row["data"].(string)
+	var data map[string]any
+	if raw != "" {
+		json.Unmarshal([]byte(raw), &data)
+	}
+	key, _ = data["api_key"].(string)
+	model, _ = data["model"].(string)
+	if model == "" || model == "default" {
+		model = ai_provider_defaults[provider]
+	}
+	return provider, key, model
 }
 
 // mochi.ai.prompt(prompt, account?) -> dict: Send a prompt to an AI provider
@@ -51,17 +101,28 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	if !ok || prompt == "" {
 		return sl_error(fn, "invalid prompt")
 	}
+	if len(prompt) > ai_prompt_maximum {
+		return sl_error(fn, "prompt too long")
+	}
 
-	// Parse optional account kwarg
+	// Parse optional account and tokens kwargs
 	account_id := ""
+	tokens := ai_tokens_default
 	for _, kv := range kwargs {
 		key := string(kv[0].(sl.String))
-		if key == "account" {
+		switch key {
+		case "account":
 			id, ok := account_id_arg(kv[1])
 			if !ok {
 				return sl_error(fn, "invalid account id")
 			}
 			account_id = id
+		case "tokens":
+			n, err := sl.AsInt32(kv[1])
+			if err != nil || n < 1 || int(n) > ai_tokens_maximum {
+				return sl_error(fn, "invalid tokens")
+			}
+			tokens = int(n)
 		}
 	}
 
@@ -72,72 +133,36 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 	db := db_user(user, "user")
 
-	var ptype, api_key, model string
-
-	if account_id != "" {
-		// Look up specific account
-		row, err := db.row("select type, data, enabled from accounts where id=?", account_id)
-		if err != nil || row == nil {
-			return sl_encode(map[string]any{"status": 0, "text": ""}), nil
-		}
-		ptype, _ = row["type"].(string)
-		if !provider_has_capability(ptype, "ai") {
-			return sl_encode(map[string]any{"status": 0, "text": ""}), nil
-		}
-		enabled, _ := row["enabled"].(int64)
-		if enabled != 1 {
-			return sl_encode(map[string]any{"status": 0, "text": ""}), nil
-		}
-		raw, _ := row["data"].(string)
-		var data map[string]any
-		if raw != "" {
-			json.Unmarshal([]byte(raw), &data)
-		}
-		api_key, _ = data["api_key"].(string)
-		model, _ = data["model"].(string)
-	} else {
-		// Use the designated default AI account
-		row, err := db.row("select type, data, enabled from accounts where (',' || \"default\" || ',') like '%,ai,%' and enabled=1")
-		if err != nil || row == nil {
-			return sl_encode(map[string]any{"status": 0, "text": ""}), nil
-		}
-		ptype, _ = row["type"].(string)
-		if !provider_has_capability(ptype, "ai") {
-			return sl_encode(map[string]any{"status": 0, "text": ""}), nil
-		}
-		raw, _ := row["data"].(string)
-		var data map[string]any
-		if raw != "" {
-			json.Unmarshal([]byte(raw), &data)
-		}
-		api_key, _ = data["api_key"].(string)
-		model, _ = data["model"].(string)
+	provider, api_key, model := ai_account(db, account_id)
+	if api_key == "" {
+		return sl_encode(map[string]any{"status": 0, "text": ""}), nil
 	}
 
-	// Determine model
-	if model == "" || model == "default" {
-		model = ai_provider_defaults[ptype]
+	// Charged only once an account is resolved, so a misconfigured app cannot
+	// spend the budget it would never have reached the provider with.
+	if err := ai_rate_limit(t, user); err != nil {
+		return sl_error(fn, "%v", err)
 	}
 
 	// Call the provider
 	var result ai_result
-	switch ptype {
+	switch provider {
 	case "claude":
-		result = ai_call_claude(api_key, model, prompt)
+		result = ai_call_claude(api_key, model, prompt, tokens)
 	case "openai":
-		result = ai_call_openai(api_key, model, prompt)
+		result = ai_call_openai(api_key, model, prompt, tokens)
 	default:
 		return sl_encode(map[string]any{"status": 0, "text": ""}), nil
 	}
 
 	// Model fallback: if model not found and not already using default, retry with default
-	if result.status == 404 && model != ai_provider_defaults[ptype] {
-		debug("ai: model %q not found for %s, falling back to default %q", model, ptype, ai_provider_defaults[ptype])
-		switch ptype {
+	if result.status == 404 && model != ai_provider_defaults[provider] {
+		debug("ai: model %q not found for %s, falling back to default %q", model, provider, ai_provider_defaults[provider])
+		switch provider {
 		case "claude":
-			result = ai_call_claude(api_key, ai_provider_defaults[ptype], prompt)
+			result = ai_call_claude(api_key, ai_provider_defaults[provider], prompt, tokens)
 		case "openai":
-			result = ai_call_openai(api_key, ai_provider_defaults[ptype], prompt)
+			result = ai_call_openai(api_key, ai_provider_defaults[provider], prompt, tokens)
 		}
 	}
 
@@ -145,10 +170,10 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 }
 
 // ai_call_claude sends a prompt to the Claude (Anthropic) API
-func ai_call_claude(api_key, model, prompt string) ai_result {
+func ai_call_claude(api_key, model, prompt string, tokens int) ai_result {
 	payload, _ := json.Marshal(map[string]any{
 		"model":      model,
-		"max_tokens": 16384,
+		"max_tokens": tokens,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
@@ -205,9 +230,10 @@ func ai_call_claude(api_key, model, prompt string) ai_result {
 }
 
 // ai_call_openai sends a prompt to the OpenAI API
-func ai_call_openai(api_key, model, prompt string) ai_result {
+func ai_call_openai(api_key, model, prompt string, tokens int) ai_result {
 	payload, _ := json.Marshal(map[string]any{
-		"model": model,
+		"model":                 model,
+		"max_completion_tokens": tokens,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},

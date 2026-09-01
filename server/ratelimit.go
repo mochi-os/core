@@ -145,6 +145,30 @@ var (
 		window:  3600,
 	}
 
+	// AI calls, keyed on the account whose provider key is spent: 60 per hour.
+	// Every other expensive outbound path is metered and this one was not, though
+	// it is the only one that spends money. The key belongs to the storage
+	// account, which for a public action is the entity owner and for a context
+	// route the route owner, so without a bound the people who can reach an app
+	// action that folds their text into a prompt are not the people who pay.
+	rate_limit_ai = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   60,
+		window:  3600,
+	}
+
+	// AI calls per app per account: 10 per minute. Tighter than the hourly
+	// budget because it is bounding a different thing - a burst. An app cache
+	// that misses for several concurrent requests fires one call per request
+	// (forums re-scores fifty posts whenever one is added), and each call holds
+	// a Starlark slot for up to the provider client's 60-second timeout, so an
+	// unbounded burst costs availability as well as money.
+	rate_limit_ai_app = &rate_limiter{
+		entries: make(map[string]*rate_limit_entry),
+		limit:   10,
+		window:  60,
+	}
+
 	// URL request rate limiter: 100 requests per minute per app
 	rate_limit_url = &rate_limiter{
 		entries: make(map[string]*rate_limit_entry),
@@ -296,6 +320,26 @@ func remote_rate_limit(t *sl.Thread, target string) error {
 	}
 	if !rate_limit_remote.allow(app.id) {
 		return rate_limit_refuse(rate_limit_remote, app.id, "remote calls per minute")
+	}
+	return nil
+}
+
+// ai_rate_limit charges one AI call against the account's hourly budget and the
+// calling app's per-minute burst budget, returning a *RateLimitError so the
+// caller answers 429. user is the account whose provider key is about to be
+// spent, which is the storage account rather than whoever asked.
+func ai_rate_limit(t *sl.Thread, user *User) error {
+	if user == nil {
+		return nil
+	}
+	if app, _ := t.Local("app").(*App); app != nil {
+		key := app.id + "/" + user.UID
+		if !rate_limit_ai_app.allow(key) {
+			return rate_limit_refuse(rate_limit_ai_app, key, "AI calls per minute per app")
+		}
+	}
+	if !rate_limit_ai.allow(user.UID) {
+		return rate_limit_refuse(rate_limit_ai, user.UID, "AI calls per hour")
 	}
 	return nil
 }
@@ -641,6 +685,8 @@ func ratelimit_manager() {
 		rate_limit_refusal_log.cleanup()
 		rate_limit_remote.cleanup()
 		rate_limit_stream_app.cleanup()
+		rate_limit_ai.cleanup()
+		rate_limit_ai_app.cleanup()
 	}
 }
 

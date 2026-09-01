@@ -9,7 +9,6 @@
 package main
 
 import (
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -153,12 +152,17 @@ func admin_migrate(c *gin.Context) {
 			// Only migrate databases that already exist - opening creates
 			// on demand, and we don't want to mint empty DBs for every
 			// (user, app) pair.
-			path := fmt.Sprintf("users/%s/%s/db/%s", u.UID, a.id, av.Database.File)
+			path, key := db_app_locate(u, a, av)
 			if _, err := os.Stat(filepath.Join(data_dir, path)); err != nil {
 				continue
 			}
+			// db_app does not report reuse, so ask before opening: a handle this
+			// scan opened is released, one that was already there is left to its
+			// owner.
+			cached := db_cached(key)
 			if db := db_app(u, a); db != nil {
 				opened++
+				db_release(db, cached)
 			} else {
 				failed++
 			}

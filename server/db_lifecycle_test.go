@@ -265,10 +265,23 @@ def database_upgrade(version):
 		t.Fatalf("gamma exists - the aborted step's DDL was not rolled back")
 	}
 
-	// A second open retries the aborted step, and it aborts again: still 2.
+	// The handle must NOT be marked ready. Ready is what sends the next db_app
+	// down the reused-and-ready fast path, and the schema is still behind the
+	// app's code. Re-reading user_version cannot show this: it is 2 whether the
+	// step retried and aborted again or was never retried at all, so ready is
+	// the only assertion that separates the two.
+	if db_ready(db) {
+		t.Error("the handle is ready after an aborted migration; every later db_app then takes the fast path and runs the app's new-version code against the old schema until the process restarts")
+	}
+
+	// A second open retries the aborted step, and it aborts again: still 2, and
+	// still not ready.
 	db2 := db_app(u, app)
 	if v := db2.integer("pragma user_version"); v != 2 {
 		t.Fatalf("user_version = %d after retry, want 2 (a persistently aborting step never advances)", v)
+	}
+	if db_ready(db2) {
+		t.Error("the retry marked the handle ready even though the step aborted again")
 	}
 }
 

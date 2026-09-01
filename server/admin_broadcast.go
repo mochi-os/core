@@ -120,10 +120,13 @@ func admin_broadcast_pending_gc(c *gin.Context) {
 // of the stream).
 func broadcast_lag_scan_db(user, app, db_path string) []BroadcastLagRow {
 	var out []BroadcastLagRow
-	db := db_open(db_path)
+	// Released if this scan opened it: the scan walks every app.db on the host
+	// on each request, so retaining them would pin the whole set.
+	db, _, reused := db_open_work(db_path)
 	if db == nil {
 		return out
 	}
+	defer db_release(db, reused)
 	exists, _ := db.exists("select 1 from sqlite_master where type='table' and name='received'")
 	if !exists {
 		return out

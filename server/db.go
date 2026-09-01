@@ -469,8 +469,7 @@ func db_app(u *User, app *App) *DB {
 		return nil
 	}
 
-	path := fmt.Sprintf("users/%s/%s/db/%s", u.UID, app.id, av.Database.File)
-	key := fmt.Sprintf("%s|%s", filepath.Join(data_dir, path), av.Version)
+	path, key := db_app_locate(u, app, av)
 	db, _, reused := db_open_work(path, key)
 	if db == nil {
 		return nil
@@ -526,6 +525,9 @@ func db_app(u *User, app *App) *DB {
 		schema = av.Database.Schema
 	}
 
+	// held records that a step called mochi.db.abort(). The schema stayed where
+	// it was, so the handle must not be marked ready below.
+	held := false
 	if schema < av.Database.Schema && av.Database.Upgrade.Function != "" {
 		for version := schema + 1; version <= av.Database.Schema; version++ {
 			debug("Database %q upgrading to schema version %d", path, version)
@@ -537,6 +539,7 @@ func db_app(u *User, app *App) *DB {
 				var abort *MigrationAbort
 				if errors.As(err, &abort) {
 					warn("App %q version %q database upgrade to %d aborted, version held: %s", av.app.id, av.Version, version, abort.Reason)
+					held = true
 					break
 				}
 				warn("App %q version %q database upgrade error: %v", av.app.id, av.Version, err)
@@ -561,9 +564,27 @@ func db_app(u *User, app *App) *DB {
 	// the per-app system DB, and a copy here is app-writable and shadows the real
 	// one. Never set on the error returns above, so a failed create is retried
 	// (#227).
-	db_ready_set(db)
+	//
+	// An aborted step is the same case: the schema is still behind the app's
+	// code, so this handle is NOT ready. Leaving ready false makes the next
+	// db_app retake lock(path) and re-run the step, which is what
+	// mochi.db.abort documents. Marking it ready sends every later call down
+	// the reused-and-ready fast path instead, and the app's new-version code
+	// then runs against the old schema until the process restarts.
+	if !held {
+		db_ready_set(db)
+	}
 
 	return db
+}
+
+// db_app_locate is where an app version's data database lives and the key its
+// handle is cached under. The version is part of the key so two versions of one
+// app never share a handle. Shared with admin_migrate, which needs the same key
+// to tell a handle it opened from one that was already open.
+func db_app_locate(u *User, app *App, av *AppVersion) (string, string) {
+	path := fmt.Sprintf("users/%s/%s/db/%s", u.UID, app.id, av.Database.File)
+	return path, fmt.Sprintf("%s|%s", filepath.Join(data_dir, path), av.Version)
 }
 
 // db_app_system opens the system database (app.db) for an app.
@@ -635,18 +656,27 @@ func db_app_system_sweep() {
 			if !file_exists(filepath.Join(data_dir, path)) {
 				continue
 			}
-			db, _, _ := db_open_work(path)
-			if db == nil || db.system_setup {
-				continue
-			}
-			l := lock(path)
-			l.Lock()
-			if !db.system_setup {
-				db.access_setup()
-				db.system_setup = true
-				count++
-			}
-			l.Unlock()
+			// Scoped so the release runs on every exit: this sweep walks every
+			// app.db on the host at startup, so a handle it opens and never
+			// releases is one that can never be evicted.
+			func() {
+				db, _, reused := db_open_work(path)
+				if db == nil {
+					return
+				}
+				defer db_release(db, reused)
+				if db.system_setup {
+					return
+				}
+				l := lock(path)
+				l.Lock()
+				if !db.system_setup {
+					db.access_setup()
+					db.system_setup = true
+					count++
+				}
+				l.Unlock()
+			}()
 		}
 	}
 	debug("App-system sweep: setups run on %d app.db files", count)
@@ -700,34 +730,38 @@ func attachment_export_user(uid string) (int, int) {
 		if !file_exists(filepath.Join(data_dir, path)) {
 			continue
 		}
-		db, _, _ := db_open_work(path)
-		if db == nil {
-			continue
-		}
-		present, _ := db.exists("select 1 from sqlite_master where type='table' and name='attachments'")
-		if !present {
-			continue
-		}
-		files := filepath.Join(data_dir, "users", uid, a.Name(), "files")
-		rows, err := db.rows("select * from attachments order by rowid")
-		if err != nil {
-			warn("Attachment export: unable to read %s: %v", path, err)
-			continue
-		}
-		if len(rows) > 0 {
-			if err := attachment_export_write(files, rows); err != nil {
-				warn("Attachment export: unable to write %s: %v", filepath.Join(files, attachment_export_file), err)
-				continue
+		// Scoped for the release, as in db_app_system_sweep.
+		func() {
+			db, _, reused := db_open_work(path)
+			if db == nil {
+				return
 			}
-			exported++
-		}
-		if err := db.exec_e("drop table if exists attachments"); err != nil {
-			warn("Attachment export: unable to drop the attachments table in %s: %v", path, err)
-			continue
-		}
-		os.RemoveAll(filepath.Join(files, "thumbnails"))
-		os.RemoveAll(filepath.Join(files, "previews"))
-		dropped++
+			defer db_release(db, reused)
+			present, _ := db.exists("select 1 from sqlite_master where type='table' and name='attachments'")
+			if !present {
+				return
+			}
+			files := filepath.Join(data_dir, "users", uid, a.Name(), "files")
+			rows, err := db.rows("select * from attachments order by rowid")
+			if err != nil {
+				warn("Attachment export: unable to read %s: %v", path, err)
+				return
+			}
+			if len(rows) > 0 {
+				if err := attachment_export_write(files, rows); err != nil {
+					warn("Attachment export: unable to write %s: %v", filepath.Join(files, attachment_export_file), err)
+					return
+				}
+				exported++
+			}
+			if err := db.exec_e("drop table if exists attachments"); err != nil {
+				warn("Attachment export: unable to drop the attachments table in %s: %v", path, err)
+				return
+			}
+			os.RemoveAll(filepath.Join(files, "thumbnails"))
+			os.RemoveAll(filepath.Join(files, "previews"))
+			dropped++
+		}()
 	}
 	return exported, dropped
 }
@@ -804,6 +838,29 @@ const (
 // and written only from the single db_manager goroutine, so no lock.
 var db_vacuum_last int64
 
+// db_busy_timeout reads a connection's busy timeout in milliseconds. The
+// checkpoint and vacuum paths both lower it for their own work, and the value is
+// per connection: the driver sets it once when the connection is created and
+// implements no ResetSession, so a value left behind rides back into the pool
+// and every later caller on that connection inherits it. They read it here and
+// put it back with db_busy_timeout_set before releasing.
+func db_busy_timeout(conn *sql.Conn) int64 {
+	var milliseconds int64
+	if err := conn.QueryRowContext(context.Background(), "pragma busy_timeout").Scan(&milliseconds); err != nil {
+		return 0
+	}
+	return milliseconds
+}
+
+// db_busy_timeout_set restores a value db_busy_timeout read. Zero means the read
+// failed, and leaving the connection as it is beats stamping a guess on it.
+func db_busy_timeout_set(conn *sql.Conn, milliseconds int64) {
+	if milliseconds <= 0 {
+		return
+	}
+	_, _ = conn.ExecContext(context.Background(), fmt.Sprintf("pragma busy_timeout=%d", milliseconds))
+}
+
 // vacuum reclaims free pages from one database past the churn gate. INCREMENTAL
 // databases get PRAGMA incremental_vacuum; an auto_vacuum=NONE one converts
 // once. Best-effort: errors log at debug, never warn (which emails the admin)
@@ -825,6 +882,8 @@ func (db *DB) vacuum() int64 {
 		return 0
 	}
 	defer conn.Close()
+	// LIFO: the restore runs before the Close that returns this connection.
+	defer db_busy_timeout_set(conn, db_busy_timeout(conn))
 
 	run := func(query string) bool {
 		if _, err := conn.ExecContext(context.Background(), query); err != nil {
@@ -909,9 +968,14 @@ func db_wal_watchdog() {
 		if conn, err := db.internal.Conn(context.Background()); err == nil {
 			// Short lock-wait: if a reader is starving the checkpoint, waiting
 			// won't help (the strike + warn handle the persistent case); an
-			// uncontended checkpoint still completes regardless.
+			// uncontended checkpoint still completes regardless. Restored
+			// before release - db.internal is the pool core's own writes use,
+			// and db.exec wraps must(), so a connection left at 1 s turns an
+			// ordinary contended write into a panicked request.
+			restore := db_busy_timeout(conn)
 			_, _ = conn.ExecContext(context.Background(), "PRAGMA busy_timeout=1000")
 			_, _ = conn.ExecContext(context.Background(), "PRAGMA wal_checkpoint(TRUNCATE)")
+			db_busy_timeout_set(conn, restore)
 			_ = conn.Close()
 		}
 		// A transient spike (e.g. a just-finished bootstrap land) drained above
@@ -1091,6 +1155,30 @@ func db_manager() {
 			db_vacuum_last = now
 		}
 	}
+}
+
+// db_release marks a handle idle when this caller is the one that opened it, so
+// db_manager's 60 s eviction can reclaim it - db_open_work creates every handle
+// with closed == 0, which means eviction is opt-in and a sweep that never
+// releases pins every database it touched for the life of the process.
+//
+// A reused handle belongs to whoever opened it first and is left alone:
+// eviction closes both pools, so releasing one still in use would pull the
+// database out from under another request.
+func db_release(db *DB, reused bool) {
+	if db != nil && !reused {
+		db.close()
+	}
+}
+
+// db_cached reports whether a handle is already open under key. Callers that
+// reach a database through db_app, which does not report reuse, use this to
+// tell a handle they opened from one that was already there.
+func db_cached(key string) bool {
+	databases_lock.Lock()
+	defer databases_lock.Unlock()
+	_, found := databases[key]
+	return found
 }
 
 func db_open(file string) *DB {
@@ -1863,7 +1951,10 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		if err != nil {
 			return sl_error(fn, "database error: %v", err)
 		}
+		// LIFO: settle runs before the Close that returns the connection, so an
+		// app-opened transaction cannot ride into the next caller.
 		defer pooled.Close()
+		defer db_starlark_settle(t, pooled)
 		conn = pooled
 	}
 
@@ -1953,6 +2044,35 @@ func api_db_query(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 // which is expected.
 func db_starlark_rollback(conn *sqlx.Conn) {
 	_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+}
+
+// db_starlark_settle rolls back a transaction an app opened and did not close,
+// before the connection returns to the pool.
+//
+// The authoriser cannot refuse BEGIN. mochi.db.transaction() opens one through
+// this same pool and this same authoriser, so denying AUTH_TRANSACTION would
+// disable the documented API along with the undocumented route into it. The
+// connection is checked instead: the driver implements neither ResetSession nor
+// IsValid, so database/sql hands an open transaction straight to the next
+// caller, who then reads - and can commit - uncommitted work belonging to
+// another request, while every other writer to that file blocks on the held
+// write lock.
+func db_starlark_settle(t *sl.Thread, conn *sqlx.Conn) {
+	open := false
+	_ = conn.Raw(func(driver any) error {
+		// The pooled connection embeds the driver's *sqlite3.Conn, which is
+		// what carries the autocommit flag.
+		type autocommit interface{ GetAutocommit() bool }
+		if c, ok := driver.(autocommit); ok {
+			open = !c.GetAutocommit()
+		}
+		return nil
+	})
+	if !open {
+		return
+	}
+	warn("App %q left a transaction open on the Starlark connection; rolling back - use mochi.db.transaction()", starlark_holder_app(t))
+	db_starlark_rollback(conn)
 }
 
 // db_starlark_sql_blocked returns a message when a query starts with a keyword

@@ -8,6 +8,8 @@ package main
 
 import (
 	"testing"
+
+	sl "go.starlark.net/starlark"
 )
 
 // route_list returns all routes for a domain (test helper)
@@ -633,11 +635,23 @@ func TestDomainDeleteCascade(t *testing.T) {
 	domain_register("example.com")
 	route_create("example.com", "/blog", "app", "blog", "", "", 0)
 	route_create("example.com", "/shop", "app", "shop", "", "", 0)
+	delegation_create("example.com", "/blog", "u1")
 
 	// Verify routes exist
 	routes := route_list("example.com")
 	if len(routes) != 2 {
 		t.Fatalf("Expected 2 routes, got %d", len(routes))
+	}
+
+	// Delegations go with the domain too, and by a different mechanism: routes
+	// are deleted explicitly by domain_delete, delegations only by the schema's
+	// "on delete cascade". A delegation left behind is invisible while the
+	// domain is gone - domain_can_manage_route needs a resolved domain - and
+	// comes back the moment an administrator registers the name again, handing
+	// route management to a delegate nobody re-authorised.
+	db := db_open("db/domains.db")
+	if rows := db.integer("select count(*) from delegations where domain='example.com'"); rows != 1 {
+		t.Fatalf("fixture stored %d delegations, want 1 - the assertion below cannot bite without one", rows)
 	}
 
 	// Delete domain
@@ -647,6 +661,9 @@ func TestDomainDeleteCascade(t *testing.T) {
 	routes = route_list("example.com")
 	if len(routes) != 0 {
 		t.Errorf("Routes should be cascade deleted, got %d routes", len(routes))
+	}
+	if rows := db.integer("select count(*) from delegations where domain='example.com'"); rows != 0 {
+		t.Errorf("%d delegation(s) survived the domain, want 0", rows)
 	}
 }
 
@@ -774,5 +791,285 @@ func TestRouteUpdateRejectsInvalidContext(t *testing.T) {
 
 	if r := route_get("update.example.com", ""); r == nil || r.Context != "guides" {
 		t.Errorf("context = %v, want guides", r)
+	}
+}
+
+// route_normalise_domain registers a verified domain. domains_verification
+// defaults to "true" and domain_register writes verified=0, so a fixture that
+// skips this makes every domain_match assertion below pass for the wrong reason.
+func route_normalise_domain(t *testing.T, name string) {
+	t.Helper()
+	domain_register(name)
+	domain_update(name, map[string]any{"verified": 1})
+	if d := domain_get(name); d == nil || d.Verified != 1 {
+		t.Fatalf("fixture domain %s is not verified, so domain_match would answer nil whatever the route says", name)
+	}
+}
+
+// route_normalise_target reports which route answers a request, by target, or ""
+// for no match.
+func route_normalise_target(name, path string) string {
+	match := domain_match(name, path)
+	if match == nil {
+		return ""
+	}
+	return match.route.Target
+}
+
+// TestRouteNormalisesStoredPaths pins the canonical form itself. The end-to-end
+// assertions below would pass for the wrong reason if the shapes ever stopped
+// differing, so this measures the mapping directly.
+func TestRouteNormalisesStoredPaths(t *testing.T) {
+	cases := []struct{ given, want string }{
+		{"/blog", "/blog"},
+		{"/blog/", "/blog"},
+		{"/blog//", "/blog"},
+		{"blog", "/blog"},
+		{"blog/", "/blog"},
+		{"", "/"},
+		{"/", "/"},
+		{"///", "/"},
+		{"/a/b/", "/a/b"},
+	}
+	for _, c := range cases {
+		if got := route_normalise(c.given); got != c.want {
+			t.Errorf("route_normalise(%q) = %q, want %q", c.given, got, c.want)
+		}
+	}
+}
+
+// TestRouteWithTrailingSlashServesItsSubtree is the headline. domain_match
+// requires the remainder to start at a segment boundary, so a route stored as
+// "/blog/" leaves "post" as the remainder and matches nothing beneath itself.
+func TestRouteWithTrailingSlashServesItsSubtree(t *testing.T) {
+	create_domains_test_env(t)
+	route_normalise_domain(t, "example.com")
+
+	if _, err := route_create("example.com", "/blog/", "app", "blog", "", "u1", 0); err != nil {
+		t.Fatalf("route_create refused a trailing-slash path: %v", err)
+	}
+
+	for _, request := range []string{"/blog", "/blog/", "/blog/post", "/blog/post/comments"} {
+		if got := route_normalise_target("example.com", request); got != "blog" {
+			t.Errorf("request %q resolved target %q, want \"blog\" - a route entered with a "+
+				"trailing slash must serve its subtree like any other", request, got)
+		}
+	}
+	// The boundary still holds: a sibling whose name merely starts the same way
+	// is not this route's subtree.
+	if got := route_normalise_target("example.com", "/blogger"); got != "" {
+		t.Errorf("request \"/blogger\" resolved target %q, want no match", got)
+	}
+}
+
+// TestRouteWithoutLeadingSlashServesItsPath. The request path always carries a
+// leading slash, so a route stored without one can never match at all.
+func TestRouteWithoutLeadingSlashServesItsPath(t *testing.T) {
+	create_domains_test_env(t)
+	route_normalise_domain(t, "example.com")
+
+	if _, err := route_create("example.com", "shop", "app", "shop", "", "u1", 0); err != nil {
+		t.Fatalf("route_create refused a path with no leading slash: %v", err)
+	}
+
+	for _, request := range []string{"/shop", "/shop/item"} {
+		if got := route_normalise_target("example.com", request); got != "shop" {
+			t.Errorf("request %q resolved target %q, want \"shop\" - a route entered without a "+
+				"leading slash is otherwise inert", request, got)
+		}
+	}
+}
+
+// TestRouteSpellingsNameOneRoute. Two spellings of one path used to be two rows,
+// because the primary key is (domain, path) and the strings differ. That gave
+// one path two routes, and left whichever row was stored in the unusual spelling
+// unreachable from get, update and delete.
+func TestRouteSpellingsNameOneRoute(t *testing.T) {
+	create_domains_test_env(t)
+	route_normalise_domain(t, "example.com")
+
+	if _, err := route_create("example.com", "/blog", "app", "first", "", "u1", 0); err != nil {
+		t.Fatalf("route_create: %v", err)
+	}
+	if _, err := route_create("example.com", "/blog/", "app", "second", "", "u1", 0); err == nil {
+		t.Error("a second route was created for the same path spelled with a trailing slash")
+	}
+
+	db := db_open("db/domains.db")
+	if rows := db.integer("select count(*) from routes where domain='example.com'"); rows != 1 {
+		t.Errorf("%d rows for one path, want 1", rows)
+	}
+
+	// Every management call reaches the route by either spelling.
+	for _, spelling := range []string{"/blog", "/blog/", "blog"} {
+		if r := route_get("example.com", spelling); r == nil {
+			t.Errorf("route_get(%q) found nothing", spelling)
+		}
+	}
+	if err := route_update("example.com", "/blog/", map[string]any{"target": "renamed"}); err != nil {
+		t.Fatalf("route_update: %v", err)
+	}
+	if r := route_get("example.com", "/blog"); r == nil || r.Target != "renamed" {
+		t.Error("an update addressed with a trailing slash did not reach the route")
+	}
+	if err := route_delete("example.com", "blog"); err != nil {
+		t.Fatalf("route_delete: %v", err)
+	}
+	if rows := db.integer("select count(*) from routes where domain='example.com'"); rows != 0 {
+		t.Errorf("%d rows left after deleting by a different spelling, want 0", rows)
+	}
+}
+
+// TestRootRouteSpellingsNameOneRoute. "" and "/" are both the whole domain. "/"
+// is canonical because that is the spelling already stored, so an existing root
+// route stays reachable rather than being stranded by the normalisation.
+func TestRootRouteSpellingsNameOneRoute(t *testing.T) {
+	create_domains_test_env(t)
+	route_normalise_domain(t, "example.com")
+
+	// A row written before normalisation existed, in the spelling production uses.
+	db := db_open("db/domains.db")
+	n := now()
+	db.exec("insert into routes (domain, path, method, target, context, owner, priority, enabled, created, updated) "+
+		"values ('example.com', '/', 'app', 'whole', '', 'u1', 0, 1, ?, ?)", n, n)
+
+	for _, spelling := range []string{"/", ""} {
+		if r := route_get("example.com", spelling); r == nil || r.Target != "whole" {
+			t.Errorf("route_get(%q) did not reach the existing root route", spelling)
+		}
+	}
+	if _, err := route_create("example.com", "", "app", "duplicate", "", "u1", 0); err == nil {
+		t.Error("an empty path created a second whole-domain route alongside \"/\"")
+	}
+	for _, request := range []string{"/", "/anything", "/deep/path"} {
+		match := domain_match("example.com", request)
+		if match == nil || match.route.Target != "whole" {
+			t.Errorf("request %q did not resolve the whole-domain route", request)
+			continue
+		}
+		// The remainder is the whole request path. Every other route hands on a
+		// remainder that starts at a segment boundary, and the redirect method
+		// concatenates it straight onto its target, so the root route must not be
+		// the one shape that drops the leading slash.
+		if match.remaining != request {
+			t.Errorf("request %q left remaining %q, want %q", request, match.remaining, request)
+		}
+	}
+}
+
+// TestRouteApiGetNormalisesItsArgument. mochi.domain.route.get queries the table
+// directly rather than through route_get, so it needs the same normalisation to
+// answer for a route the caller spells differently from the stored form.
+func TestRouteApiGetNormalisesItsArgument(t *testing.T) {
+	create_domains_test_env(t)
+	route_normalise_domain(t, "example.com")
+	route_create("example.com", "/blog", "app", "blog", "", "u1", 0)
+
+	user := create_permission_test_user(t, "u1")
+	app := create_external_app("testapp")
+	database := db_user(user, "user")
+	database.permissions_setup()
+	database.permissions_upsert(app.id, "domains/read", "", 1)
+	thread := create_test_thread(user, app)
+
+	get := sl.NewBuiltin("mochi.domain.route.get", api_domain_route_get)
+	for _, spelling := range []string{"/blog", "/blog/", "blog"} {
+		value, err := api_domain_route_get(thread, get,
+			sl.Tuple{sl.String("example.com"), sl.String(spelling)}, nil)
+		if err != nil {
+			t.Fatalf("route.get(%q) refused: %v", spelling, err)
+		}
+		if value == sl.None {
+			t.Errorf("route.get(%q) answered None; the route exists under one canonical path", spelling)
+		}
+	}
+}
+
+// TestSiblingRoutesStayDistinct. Normalisation strips a trailing slash and adds
+// a leading one; it never merges path segments. So each pair of spellings names
+// its own route, and the segment-boundary check in domain_match keeps a longer
+// sibling from being served by the shorter one.
+func TestSiblingRoutesStayDistinct(t *testing.T) {
+	create_domains_test_env(t)
+	route_normalise_domain(t, "example.com")
+
+	if _, err := route_create("example.com", "/blog/", "app", "blog", "", "u1", 0); err != nil {
+		t.Fatalf("route_create /blog/: %v", err)
+	}
+	if _, err := route_create("example.com", "/blogger", "app", "blogger", "", "u1", 0); err != nil {
+		t.Fatalf("route_create /blogger: %v", err)
+	}
+	// Each route's other spelling is the same route, so neither can be created twice.
+	if _, err := route_create("example.com", "/blog", "app", "duplicate", "", "u1", 0); err == nil {
+		t.Error("\"/blog\" was accepted as a second route alongside \"/blog/\"")
+	}
+	if _, err := route_create("example.com", "/blogger/", "app", "duplicate", "", "u1", 0); err == nil {
+		t.Error("\"/blogger/\" was accepted as a second route alongside \"/blogger\"")
+	}
+	db := db_open("db/domains.db")
+	if rows := db.integer("select count(*) from routes where domain='example.com'"); rows != 2 {
+		t.Errorf("%d rows for two routes, want 2", rows)
+	}
+
+	for _, c := range []struct{ request, want string }{
+		{"/blog", "blog"},
+		{"/blog/", "blog"},
+		{"/blog/post", "blog"},
+		{"/blogger", "blogger"},
+		{"/blogger/", "blogger"},
+		{"/blogger/list", "blogger"},
+		{"/blogging", ""},
+	} {
+		if got := route_normalise_target("example.com", c.request); got != c.want {
+			t.Errorf("request %q resolved target %q, want %q", c.request, got, c.want)
+		}
+	}
+}
+
+// TestLegacyRoutePathStaysReachable. Rows written before route_normalise existed
+// hold whatever spelling their author used - claude/scripts/p2p-test.py still
+// seeds routes with an empty path, straight into the table. Normalising only the
+// caller's argument would leave those rows serving requests through domain_match
+// while route_get, route_update and route_delete could no longer name them.
+func TestLegacyRoutePathStaysReachable(t *testing.T) {
+	create_domains_test_env(t)
+	route_normalise_domain(t, "example.com")
+
+	db := db_open("db/domains.db")
+	n := now()
+	for _, legacy := range []struct{ path, target string }{
+		{"", "whole"},
+		{"/blog/", "blog"},
+	} {
+		db.exec("insert into routes (domain, path, method, target, context, owner, priority, enabled, created, updated) "+
+			"values ('example.com', ?, 'app', ?, '', 'u1', 0, 1, ?, ?)", legacy.path, legacy.target, n, n)
+	}
+	if rows := db.integer("select count(*) from routes where domain='example.com'"); rows != 2 {
+		t.Fatalf("fixture stored %d rows, want 2 - nothing below proves anything", rows)
+	}
+
+	// Every spelling reaches the legacy row.
+	for _, spelling := range []string{"", "/", "/blog", "/blog/", "blog"} {
+		if r := route_get("example.com", spelling); r == nil {
+			t.Errorf("route_get(%q) found nothing; a legacy row is unreachable", spelling)
+		}
+	}
+	// And a create in the canonical spelling is refused as the duplicate it is,
+	// rather than adding a second row for the same path.
+	if _, err := route_create("example.com", "/blog", "app", "duplicate", "", "u1", 0); err == nil {
+		t.Error("\"/blog\" was created alongside the legacy \"/blog/\" row")
+	}
+
+	if err := route_update("example.com", "/blog", map[string]any{"target": "renamed"}); err != nil {
+		t.Fatalf("route_update: %v", err)
+	}
+	if r := route_get("example.com", "/blog/"); r == nil || r.Target != "renamed" {
+		t.Error("an update in the canonical spelling did not reach the legacy row")
+	}
+	if err := route_delete("example.com", "/"); err != nil {
+		t.Fatalf("route_delete: %v", err)
+	}
+	if rows := db.integer("select count(*) from routes where domain='example.com' and path=''"); rows != 0 {
+		t.Error("deleting the whole-domain route in the canonical spelling missed the legacy empty-path row")
 	}
 }

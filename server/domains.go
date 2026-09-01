@@ -520,9 +520,19 @@ func domain_match(host, path string) *route_match {
 	db.scans(&routes, "select * from routes where domain=? and enabled=1 order by priority desc, length(path) desc", d.Domain)
 
 	for _, r := range routes {
-		if strings.HasPrefix(path, r.Path) {
-			remaining := strings.TrimPrefix(path, r.Path)
-			if r.Path == "" || r.Path == "/" || remaining == "" || strings.HasPrefix(remaining, "/") {
+		// The whole-domain route is a zero-length prefix, so the remainder is the
+		// request path entire, leading slash and all - the same shape every other
+		// route hands on. Stored as "/" since route_normalise, but a legacy row
+		// may still hold "". Reading it as "/" instead would strip that slash and
+		// leave the root route the one shape whose remainder starts mid-segment,
+		// which the redirect method concatenates straight onto its target.
+		prefix := r.Path
+		if prefix == "/" {
+			prefix = ""
+		}
+		if strings.HasPrefix(path, prefix) {
+			remaining := strings.TrimPrefix(path, prefix)
+			if prefix == "" || remaining == "" || strings.HasPrefix(remaining, "/") {
 				return &route_match{route: &r, remaining: remaining}
 			}
 		}
@@ -551,14 +561,57 @@ func route_context_valid(context string) bool {
 	return true
 }
 
-// route_get retrieves a route by domain and path
-func route_get(domain_name, path string) *route {
-	db := db_open("db/domains.db")
-	var r route
-	if !db.scan(&r, "select * from routes where domain=? and path=?", domain_name, path) {
-		return nil
+// route_normalise returns the canonical stored form of a route path: a leading
+// slash, no trailing slash, "/" for the whole domain.
+//
+// domain_match compares the stored string against the request path and requires
+// the remainder to start at a segment boundary, so an unnormalised path is
+// accepted at write time and then fails silently at request time: a route stored
+// as "/blog/" answers "/blog/" and nothing beneath it, and one stored as "blog"
+// never matches at all, because the request path always carries a leading slash.
+// Normalising on the way in and on every lookup means both spellings name the
+// same row, so a route cannot be created in a shape that route_get, route_update
+// and route_delete can no longer reach. delegation_create canonicalises for the
+// same reason; it uses "" for the whole domain, while routes use "/" because
+// that is the spelling already stored.
+func route_normalise(path string) string {
+	path = strings.TrimRight(path, "/")
+	if path == "" {
+		return "/"
 	}
-	return &r
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
+}
+
+// route_get retrieves a route by domain and path. Both are compared in
+// canonical form, so either spelling names the route - including a row stored
+// before route_normalise existed, which may still hold "" or a trailing slash.
+// The scan is over one domain's routes, on the management path only; the request
+// path goes through domain_match, which scans anyway.
+func route_get(domain_name, path string) *route {
+	path = route_normalise(path)
+	db := db_open("db/domains.db")
+	var routes []route
+	db.scans(&routes, "select * from routes where domain=?", domain_name)
+	for _, r := range routes {
+		if route_normalise(r.Path) == path {
+			return &r
+		}
+	}
+	return nil
+}
+
+// route_stored returns the path as it is actually stored, so an update or a
+// delete addressed in any spelling reaches the row route_get found rather than
+// matching nothing. Falls back to the canonical form when there is no such
+// route, which then matches nothing - the same answer as before.
+func route_stored(domain_name, path string) string {
+	if r := route_get(domain_name, path); r != nil {
+		return r.Path
+	}
+	return route_normalise(path)
 }
 
 // route_create creates a new route. Emits the row-level op so pair
@@ -567,6 +620,7 @@ func route_create(domain_name, path, method, target, context string, owner strin
 	if domain_get(domain_name) == nil {
 		return nil, fmt.Errorf("domain not found")
 	}
+	path = route_normalise(path)
 	if route_get(domain_name, path) != nil {
 		return nil, fmt.Errorf("route already exists")
 	}
@@ -626,7 +680,7 @@ func route_update(domain_name, path string, updates map[string]any) error {
 	sets = append(sets, "updated=?")
 	args = append(args, now())
 	args = append(args, domain_name)
-	args = append(args, path)
+	args = append(args, route_stored(domain_name, path))
 
 	db.exec("update routes set "+strings.Join(sets, ", ")+" where domain=? and path=?", args...)
 	return nil
@@ -635,7 +689,7 @@ func route_update(domain_name, path string, updates map[string]any) error {
 // route_delete removes a route
 func route_delete(domain_name, path string) error {
 	db := db_open("db/domains.db")
-	db.exec("delete from routes where domain=? and path=?", domain_name, path)
+	db.exec("delete from routes where domain=? and path=?", domain_name, route_stored(domain_name, path))
 	return nil
 }
 
@@ -1062,7 +1116,7 @@ func api_domain_route_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	db := db_open("db/domains.db")
-	row, _ := db.row("select * from routes where domain=? and path=?", domain_name, path)
+	row, _ := db.row("select * from routes where domain=? and path=?", domain_name, route_stored(domain_name, path))
 	if row == nil {
 		return sl.None, nil
 	}

@@ -18,6 +18,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"net/url"
@@ -26,6 +27,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dsnet/compress/bzip2"
@@ -89,9 +91,11 @@ var api_git = sls.FromStringDict(sl.String("mochi.git"), sl.StringDict{
 
 // git_loader implements server.Loader to load repository storage from filesystem paths.
 // budget, when positive, is the number of decoded object bytes a push may add
-// (see git_storage).
+// (see git_storage). staging, when set, is a directory the push's objects are
+// written to instead of the repository (see git_quarantine).
 type git_loader struct {
-	budget int64
+	budget  int64
+	staging string
 }
 
 // Load loads a storer.Storer for the given endpoint path
@@ -104,11 +108,15 @@ func (l *git_loader) Load(ep *transport.Endpoint) (storer.Storer, error) {
 	// packfile.UpdateObjectStorage takes a raw-copy path that can't resolve
 	// thin pack deltas (base objects not included in the pack). The wrapper
 	// forces the parser path which looks up base objects from the storer.
-	return &git_storage{
+	wrapped := &git_storage{
 		Storer:    filesystem.NewStorage(fs, cache.NewObjectLRUDefault()),
 		remaining: l.budget,
 		metered:   l.budget > 0,
-	}, nil
+	}
+	if l.staging != "" {
+		wrapped.staging = filesystem.NewStorage(osfs.New(l.staging), cache.NewObjectLRUDefault())
+	}
+	return wrapped, nil
 }
 
 // git_storage wraps storer.Storer to hide PackfileWriter, so the packfile
@@ -116,10 +124,45 @@ func (l *git_loader) Load(ep *transport.Endpoint) (storer.Storer, error) {
 // decoded object to SetEncodedObject - the one place that sees what a pack
 // expands to. The meter counts decoded bytes against a quota measured on disk,
 // so it refuses early.
+//
+// With staging set the wrapper is a quarantine: objects are WRITTEN to the
+// staging store and READ from staging first, then the repository. The reads
+// have to fall through or a thin pack could not resolve its deltas, whose base
+// objects are in the repository and not in the pack. git_promote moves the
+// staged objects across once the whole pack has been accepted; until then a
+// refusal leaves the repository untouched.
 type git_storage struct {
 	storer.Storer
-	remaining int64 // decoded bytes still allowed, when metered
+	staging   storer.EncodedObjectStorer // quarantine for this push, when set
+	remaining int64                      // decoded bytes still allowed, when metered
 	metered   bool
+}
+
+func (s *git_storage) EncodedObject(t plumbing.ObjectType, h plumbing.Hash) (plumbing.EncodedObject, error) {
+	if s.staging != nil {
+		if obj, err := s.staging.EncodedObject(t, h); err == nil {
+			return obj, nil
+		}
+	}
+	return s.Storer.EncodedObject(t, h)
+}
+
+func (s *git_storage) HasEncodedObject(h plumbing.Hash) error {
+	if s.staging != nil {
+		if err := s.staging.HasEncodedObject(h); err == nil {
+			return nil
+		}
+	}
+	return s.Storer.HasEncodedObject(h)
+}
+
+func (s *git_storage) EncodedObjectSize(h plumbing.Hash) (int64, error) {
+	if s.staging != nil {
+		if size, err := s.staging.EncodedObjectSize(h); err == nil {
+			return size, nil
+		}
+	}
+	return s.Storer.EncodedObjectSize(h)
 }
 
 func (s *git_storage) SetEncodedObject(obj plumbing.EncodedObject) (plumbing.Hash, error) {
@@ -138,6 +181,9 @@ func (s *git_storage) SetEncodedObject(obj plumbing.EncodedObject) (plumbing.Has
 		if s.remaining < 0 {
 			return plumbing.ZeroHash, fmt.Errorf("push exceeds the storage available to this account")
 		}
+	}
+	if s.staging != nil {
+		return s.staging.SetEncodedObject(obj)
 	}
 	return s.Storer.SetEncodedObject(obj)
 }
@@ -2963,7 +3009,22 @@ func git_authenticate(c *gin.Context, a *App) *User {
 		return nil
 	}
 
-	return user_by_uid(token.User)
+	user := user_by_uid(token.User)
+	if user == nil {
+		return nil
+	}
+
+	// web_action refuses an app request from an account that is closing or
+	// mid-restore, but both gates read the user it resolved from a cookie or a
+	// Bearer token. Basic auth produces neither, so a git client reaches here
+	// with those gates unevaluated, and user_by_uid filters only "suspended".
+	// Without this a closed account keeps cloning and pushing for the whole
+	// 30-day grace window, when every other surface says it is gone.
+	if user.Status != "active" {
+		return nil
+	}
+
+	return user
 }
 
 // git_service_name returns the requested service only when it names one of the
@@ -3492,6 +3553,15 @@ func git_storage_budget(owner *User) int64 {
 	return remaining
 }
 
+// git_budget_needed reports whether a service spends the owner's storage budget.
+// Only receive-pack does, and git_request_maximum below is the reason: it
+// answers the fixed negotiation ceiling for everything else without reading the
+// budget at all. The two are pinned together by a test, so a service that starts
+// spending the budget is not left without one.
+func git_budget_needed(service string) bool {
+	return service == "git-receive-pack"
+}
+
 // git_request_maximum returns the largest request body this service may send. A
 // receive-pack body becomes repository content, so it is bounded by the owner's
 // remaining storage; upload-pack negotiation is never stored and gets the fixed
@@ -3518,9 +3588,17 @@ func git_request_maximum(service string, budget int64) int64 {
 func git_service_rpc(c *gin.Context, repo_path string, service string, owner *User) bool {
 	// Bound the request body. git pack bodies are exempt from web_body_limit, so
 	// without this both the compressed body and its gzip expansion are unbounded
-	// and any client allowed to fetch can send a decompression bomb. Measured
-	// once: the budget walk is a storage-directory traversal.
-	budget := git_storage_budget(owner)
+	// and any client allowed to fetch can send a decompression bomb.
+	//
+	// Only receive-pack spends the budget: git_request_maximum answers the fixed
+	// negotiation ceiling for every other service without reading it. Measuring
+	// it anyway walked the owner's whole storage directory on every fetch,
+	// including the anonymous ones the public git route admits, and threw the
+	// answer away.
+	budget := int64(0)
+	if git_budget_needed(service) {
+		budget = git_storage_budget(owner)
+	}
 	maximum := git_request_maximum(service, budget)
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maximum)
 
@@ -3559,7 +3637,7 @@ func git_service_rpc(c *gin.Context, repo_path string, service string, owner *Us
 		}
 		return git_upload_pack(c, repo_path, reader)
 	}
-	return git_receive_pack(c, repo_path, reader, budget)
+	return git_receive_pack(c, repo_path, reader, owner, budget)
 }
 
 // Protocol version 2 ---------------------------------------------------------
@@ -4968,12 +5046,178 @@ func git_bytes(n int64) string {
 	return fmt.Sprintf("%d bytes", n)
 }
 
+// git_push_locks serialises receive-pack per owner. Striped rather than one
+// lock per owner so the table cannot grow with the account list; a collision
+// only makes two owners take turns, which a push already does.
+var git_push_locks [64]sync.Mutex
+
+// git_push_lock returns the stripe an owner's pushes serialise on.
+func git_push_lock(account string) *sync.Mutex {
+	sum := fnv.New32a()
+	sum.Write([]byte(account))
+	return &git_push_locks[sum.Sum32()%uint32(len(git_push_locks))]
+}
+
+// git_quarantine_maximum is how long a staging directory may outlive its push.
+// Only a killed process leaves one behind - every ordinary exit path removes
+// its own - and sweeping on the way in stops a crash costing the owner storage
+// permanently, which is the thing quarantine exists to prevent.
+const git_quarantine_maximum = time.Hour
+
+// git_quarantine makes a directory for this push's objects. It lives inside the
+// repository so promoting them is a rename on one filesystem rather than a copy
+// through a second one, and so a leftover is visible next to what it belongs to.
+func git_quarantine(repo_path string) (string, error) {
+	matches, err := filepath.Glob(filepath.Join(repo_path, "incoming-*"))
+	if err == nil {
+		for _, match := range matches {
+			if entry, err := os.Stat(match); err == nil && time.Since(entry.ModTime()) > git_quarantine_maximum {
+				os.RemoveAll(match)
+			}
+		}
+	}
+	path := filepath.Join(repo_path, "incoming-"+uid())
+	if err := os.MkdirAll(filepath.Join(path, "objects"), 0755); err != nil {
+		return "", fmt.Errorf("unable to create a staging directory: %v", err)
+	}
+	return path, nil
+}
+
+// git_promote moves the staged objects into the repository, once the whole pack
+// has been accepted. SetEncodedObject writes loose objects, so this is a rename
+// per object within one filesystem; an object the repository already holds is
+// left where it is, since git object names are their content.
+func git_promote(staging, repo_path string) error {
+	source := filepath.Join(staging, "objects")
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // a delete-only push carries no pack and writes nothing
+		}
+		return err
+	}
+	for _, entry := range entries {
+		// Loose objects live in two-character directories. "info" and "pack"
+		// are the other names git puts here; neither is written by this path.
+		if !entry.IsDir() || len(entry.Name()) != 2 {
+			continue
+		}
+		files, err := os.ReadDir(filepath.Join(source, entry.Name()))
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(repo_path, "objects", entry.Name())
+		if err := os.MkdirAll(target, 0755); err != nil {
+			return err
+		}
+		for _, file := range files {
+			to := filepath.Join(target, file.Name())
+			if _, err := os.Stat(to); err == nil {
+				continue
+			}
+			if err := os.Rename(filepath.Join(source, entry.Name(), file.Name()), to); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// git_references_apply performs the reference updates a push asked for.
+//
+// go-git's own updateReferences compares nothing against cmd.Old, so a push
+// computed against a tip that has since moved silently discarded whatever
+// landed meanwhile, and it never checks that cmd.New names an object the
+// repository holds, so a command line with no pack left a dangling reference
+// that failed every later fetch. Both were answered "ok".
+//
+// CheckAndSetReference is a locked compare-and-swap on the reference file, so
+// an update is atomic even against another process sharing the data directory.
+// Create cannot be expressed through it - the API has no "only if absent" mode
+// - so it stays a check-then-set, which the per-owner push lock covers.
+//
+// The status strings are git's own protocol vocabulary, read by the client and
+// not by a person. i18n-ok: git protocol, read by the client not a person.
+func git_references_apply(store storer.Storer, commands []*packp.Command) []*packp.CommandStatus {
+	statuses := make([]*packp.CommandStatus, 0, len(commands))
+	report := func(name plumbing.ReferenceName, status string) {
+		statuses = append(statuses, &packp.CommandStatus{ReferenceName: name, Status: status})
+	}
+	for _, command := range commands {
+		current, err := store.Reference(command.Name)
+		exists := err == nil
+		switch command.Action() {
+		case packp.Create:
+			if exists {
+				report(command.Name, "reference already exists")
+				continue
+			}
+			if store.HasEncodedObject(command.New) != nil {
+				report(command.Name, "missing necessary objects")
+				continue
+			}
+			if err := store.SetReference(plumbing.NewHashReference(command.Name, command.New)); err != nil {
+				report(command.Name, err.Error())
+				continue
+			}
+		case packp.Delete:
+			if !exists {
+				report(command.Name, "reference does not exist")
+				continue
+			}
+			if current.Hash() != command.Old {
+				report(command.Name, "stale info")
+				continue
+			}
+			if err := store.RemoveReference(command.Name); err != nil {
+				report(command.Name, err.Error())
+				continue
+			}
+		case packp.Update:
+			if !exists {
+				report(command.Name, "reference does not exist")
+				continue
+			}
+			if store.HasEncodedObject(command.New) != nil {
+				report(command.Name, "missing necessary objects")
+				continue
+			}
+			err := store.CheckAndSetReference(
+				plumbing.NewHashReference(command.Name, command.New),
+				plumbing.NewHashReference(command.Name, command.Old),
+			)
+			if errors.Is(err, storage.ErrReferenceHasChanged) {
+				report(command.Name, "stale info")
+				continue
+			}
+			if err != nil {
+				report(command.Name, err.Error())
+				continue
+			}
+		}
+		report(command.Name, "ok")
+	}
+	return statuses
+}
+
 // git_receive_pack handles the git-receive-pack service (push). budget is the
 // decoded object bytes the owner may still store; the session gets its own
 // transport so that meter is per-push rather than shared.
-func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, budget int64) bool {
+func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, owner *User, budget int64) bool {
 	ep := &transport.Endpoint{Path: repo_path}
 	ctx := context.Background()
+
+	// One push per owner at a time. budget was measured before this call from
+	// the owner's on-disk total, so pushes running together were each handed the
+	// whole remaining quota and the account could overshoot its allowance once
+	// per concurrent client.
+	account := ""
+	if owner != nil {
+		account = owner.UID
+	}
+	lock := git_push_lock(account)
+	lock.Lock()
+	defer lock.Unlock()
 
 	// A budget of 0 would read as "unmetered", and a push with no room left
 	// must store nothing at all: meter it at one byte, which every real object
@@ -4981,7 +5225,21 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, bu
 	if budget <= 0 {
 		budget = 1
 	}
-	session, err := server.NewServer(&git_loader{budget: budget}).NewReceivePackSession(ep, nil)
+
+	// Objects land here first and move into the repository only once the whole
+	// pack has been accepted. Without it a push refused part-way - over quota,
+	// or a corrupt pack - left everything it had already written on disk,
+	// unreachable and counting against the owner's storage with nothing in the
+	// product able to reclaim it.
+	staging, err := git_quarantine(repo_path)
+	if err != nil {
+		info("git_receive_pack: %s: %v", repo_path, err)
+		c.String(http.StatusInternalServerError, "Failed to stage push") // i18n-ok: git protocol, read by the client not a person
+		return true
+	}
+	defer os.RemoveAll(staging)
+
+	session, err := server.NewServer(&git_loader{budget: budget, staging: staging}).NewReceivePackSession(ep, nil)
 	if err != nil {
 		info("git_receive_pack: failed to create session for %s: %v", repo_path, err)
 		c.String(http.StatusInternalServerError, "Failed to create session") // i18n-ok: git protocol, read by the client not a person
@@ -4997,10 +5255,38 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, bu
 		return true
 	}
 
+	// go-git writes the pack and updates the references inside one ReceivePack
+	// call, with no seam between them, and its reference update is the half this
+	// function replaces - see git_references_apply. Taking the commands off the
+	// request leaves the call doing only the half that is correct.
+	commands := req.Commands
+	req.Commands = nil
+
 	// Process the receive-pack request
 	status, err := session.ReceivePack(ctx, req)
 	if err != nil {
+		// The pack was refused. The deferred removal takes the staged objects
+		// with it, so the repository is exactly as it was, and no reference is
+		// touched.
 		info("git_receive_pack: %s: %v", repo_path, err)
+	} else {
+		if err := git_promote(staging, repo_path); err != nil {
+			warn("git_receive_pack: unable to promote staged objects for %s: %v", repo_path, err)
+			c.String(http.StatusInternalServerError, "Failed to store push") // i18n-ok: git protocol, read by the client not a person
+			return true
+		}
+		// Opened after promotion so the object checks below see what just
+		// landed rather than a view cached before it did.
+		store, err := (&git_loader{}).Load(ep)
+		if err != nil {
+			warn("git_receive_pack: unable to reopen %s after promotion: %v", repo_path, err)
+			c.String(http.StatusInternalServerError, "Failed to store push") // i18n-ok: git protocol, read by the client not a person
+			return true
+		}
+		applied := git_references_apply(store, commands)
+		if status != nil {
+			status.CommandStatuses = append(status.CommandStatuses, applied...)
+		}
 	}
 	git_head_settle(repo_path)
 

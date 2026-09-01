@@ -1313,9 +1313,17 @@ func user_purge_local(id string) (string, error) {
 	// an owner that no longer resolves, and a delegation left here comes back
 	// the moment the uid is reused. The domains table itself is server-wide and
 	// has no owner, so nothing is stranded by leaving it.
+	// db_create builds both tables at startup, so the existence check only
+	// skips on a server whose domains database was never initialised - where
+	// there are no rows to delete either. Without it exec panics on the missing
+	// table and aborts the purge here, leaving the credentials below in place.
 	ddb := db_open("db/domains.db")
-	ddb.exec("delete from routes where owner=?", id)
-	ddb.exec("delete from delegations where owner=?", id)
+	if exists, _ := ddb.exists("select 1 from pragma_table_info('routes')"); exists {
+		ddb.exec("delete from routes where owner=?", id)
+	}
+	if exists, _ := ddb.exists("select 1 from pragma_table_info('delegations')"); exists {
+		ddb.exec("delete from delegations where owner=?", id)
+	}
 
 	db.exec("delete from credentials where user=?", id)
 	db.exec("delete from totp where user=?", id)

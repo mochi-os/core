@@ -707,6 +707,18 @@ func delegation_check(domain_name, path string, owner string) bool {
 func domains_middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		match := domain_match(c.Request.Host, c.Request.URL.Path)
+		// The owner names the account whose data this hostname publishes.
+		// Suspension leaves the route in place and purge deletes only the rows
+		// that user_purge_local reaches, so without this the hostname keeps
+		// serving after its owner is gone: web.go cannot resolve the owner and
+		// falls through to the first administrator. Declining to route is the
+		// reversible answer, which suspension needs it to be, and leaves core's
+		// own endpoints on the host working. A route naming nobody is left
+		// alone: it never resolved an owner in the first place, so it is not
+		// the account-is-gone case this guards.
+		if match != nil && match.route.Owner != "" && !user_active(match.route.Owner) {
+			match = nil
+		}
 		if match != nil {
 			c.Set("domain_route", match.route)
 			c.Set("domain_method", match.route.Method)
@@ -1198,6 +1210,21 @@ func api_domain_route_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "access denied")
 	}
 
+	// A delegation covers a path, not the routes already standing on it. The
+	// owner column names the account whose data this hostname publishes, and
+	// route_update never touches it, so without this a delegate could point an
+	// administrator-created route at an app of their choosing and have
+	// anonymous requests run it as the route's owner (web.go resolves the
+	// action's owner from routes.owner). route_create refuses to name anyone
+	// but the caller for the same reason.
+	existing := route_get(domain, path)
+	if existing == nil {
+		return sl_error(fn, "route not found")
+	}
+	if !user.administrator() && existing.Owner != user.UID {
+		return sl_error(fn, "access denied")
+	}
+
 	updates := make(map[string]any)
 	for _, kw := range kwargs {
 		key, _ := sl.AsString(kw[0])
@@ -1276,6 +1303,21 @@ func api_domain_route_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 
 	if !domain_can_manage_route(user, d, path) {
+		return sl_error(fn, "access denied")
+	}
+
+	// A delegation covers a path, not the routes already standing on it. The
+	// owner column names the account whose data this hostname publishes, and
+	// route_update never touches it, so without this a delegate could point an
+	// administrator-created route at an app of their choosing and have
+	// anonymous requests run it as the route's owner (web.go resolves the
+	// action's owner from routes.owner). route_create refuses to name anyone
+	// but the caller for the same reason.
+	existing := route_get(domain_name, path)
+	if existing == nil {
+		return sl_error(fn, "route not found")
+	}
+	if !user.administrator() && existing.Owner != user.UID {
 		return sl_error(fn, "access denied")
 	}
 

@@ -322,6 +322,19 @@ func user_by_uid(uid string) *User {
 	return &u
 }
 
+// user_active reports whether uid names an account that may still own live
+// work: it exists and is not suspended. user_by_uid answers the same question
+// but also loads preferences and resolves the identity, which is more than a
+// per-request gate needs.
+func user_active(uid string) bool {
+	if uid == "" {
+		return false
+	}
+	db := db_open("db/users.db")
+	row, _ := db.row("select status from users where uid=?", uid)
+	return row != nil && as_string(row["status"]) != "suspended"
+}
+
 // user_suspended reports whether uid names a suspended account. user_by_uid
 // returns nil for suspended, no-such-user and no-identity alike; login paths
 // call this on that nil branch when they must explain the refusal.
@@ -1294,6 +1307,15 @@ func user_purge_local(id string) (string, error) {
 	// does not reach them. A row left here is re-claimed every interval for the
 	// life of the server and nothing retires it.
 	schedule_db().exec("delete from schedule where user=?", id)
+
+	// Routes and delegations live in the shared domains database for the same
+	// reason. A route left here keeps its hostname pointed at this server with
+	// an owner that no longer resolves, and a delegation left here comes back
+	// the moment the uid is reused. The domains table itself is server-wide and
+	// has no owner, so nothing is stranded by leaving it.
+	ddb := db_open("db/domains.db")
+	ddb.exec("delete from routes where owner=?", id)
+	ddb.exec("delete from delegations where owner=?", id)
 
 	db.exec("delete from credentials where user=?", id)
 	db.exec("delete from totp where user=?", id)

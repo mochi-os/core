@@ -33,13 +33,39 @@ var api_interests = sls.FromStringDict(sl.String("mochi.interests"), sl.StringDi
 // (qid → weight); `updated` is informational.
 var reg_interests = upsert_def{"interests", []string{"qid"}, []string{"weight", "updated"}}
 
+// interests_writer resolves the account an interests write belongs to. It is
+// the caller and never the storage account: the gate above each writer is
+// require_permission, checked against the caller's own grant, while
+// principal_storage answers with the route owner for every request to a domain
+// route carrying a context. A signed-in visitor to a hosted site would
+// otherwise spend their own grant adjusting the site owner's profile, and an
+// anonymous one would do it with no account at all.
+func interests_writer(t *sl.Thread) *User {
+	return principal_caller(t)
+}
+
+// interests_reader resolves the account an interests read answers for. An
+// anonymous request keeps the storage account, which is what renders a hosted
+// site; a request by someone other than that account is refused rather than
+// answered with the owner's profile. Same split as mochi.account.list.
+func interests_reader(t *sl.Thread) *User {
+	storage, _ := principal_storage(t)
+	if storage == nil {
+		return nil
+	}
+	if caller := principal_caller(t); caller != nil && caller.UID != storage.UID {
+		return nil
+	}
+	return storage
+}
+
 // mochi.interests.list() -> list: List all user interests sorted by weight descending
 func api_interests_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission_acting(t, fn, "interests/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
-	user, _ := principal_storage(t)
+	user := interests_reader(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -84,7 +110,7 @@ func api_interests_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		weight = 100
 	}
 
-	user, _ := principal_storage(t)
+	user := interests_writer(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -110,7 +136,7 @@ func api_interests_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "invalid QID")
 	}
 
-	user, _ := principal_storage(t)
+	user := interests_writer(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -172,7 +198,7 @@ func api_interests_adjust(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		}
 	}
 
-	user, _ := principal_storage(t)
+	user := interests_writer(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -224,7 +250,7 @@ func api_interests_top(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "invalid count")
 	}
 
-	user, _ := principal_storage(t)
+	user := interests_reader(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -256,7 +282,7 @@ func api_interests_bottom(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "invalid count")
 	}
 
-	user, _ := principal_storage(t)
+	user := interests_reader(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
@@ -284,7 +310,7 @@ func api_interests_summary(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "%v", err)
 	}
 
-	user, _ := principal_storage(t)
+	user := interests_reader(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}

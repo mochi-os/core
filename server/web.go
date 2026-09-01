@@ -464,21 +464,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			owner = o
 		}
 	} else if owner == nil {
-		// Fall back to domain route owner for anonymous requests without entity
-		if route_owner, ok := c.Get("domain_owner"); ok {
-			if uid, ok := route_owner.(string); ok && uid != "" {
-				owner = user_by_uid(uid)
-			}
-		}
-		// Fall back to first administrator for public class-level actions
-		if owner == nil && aa.Public {
-			udb := db_open("db/users.db")
-			if row, _ := udb.row("select uid from users where role='administrator' order by uid limit 1"); row != nil {
-				if admin_uid, _ := row["uid"].(string); admin_uid != "" {
-					owner = user_by_uid(admin_uid)
-				}
-			}
-		}
+		owner = web_anonymous_owner(c.GetString("domain_owner"), aa.Public)
 	}
 
 	// Handle git Smart HTTP protocol for domain-routed repository entities.
@@ -1116,6 +1102,47 @@ func web_serve_path(c *gin.Context, path string) {
 		return
 	}
 	c.File(path)
+}
+
+// web_anonymous_owner resolves the account an anonymous request that named no
+// entity serves. routed is the domain route's owner, empty when the request
+// arrived by no route or by a route naming nobody.
+//
+// A route that named an owner is answered by that owner or not at all. An
+// account that no longer resolves - user_by_uid returns nil for suspended and
+// for purged alike - must not slide onto the administrator, or the hostname
+// starts publishing the administrator's storage under someone else's domain.
+// domains_middleware declines to route such a request at all, so this is the
+// second line.
+//
+// The administrator fallback itself is deliberate and load-bearing, not a
+// default nobody chose. A routeless public class-level action has no principal
+// to resolve, and at least one has to have one: POST /comptroller/-/webhook is
+// how Stripe reaches the marketplace, carries no session by construction, and
+// reads its signing secret and writes its orders through mochi.db - which
+// resolves the storage account from here. uid() is UUIDv7, so "lowest uid" is
+// the earliest-created account, and users.go makes that account the first
+// administrator; the marketplace data therefore sits in the account this
+// picks. Nothing declares that binding, which is the weakness - but removing
+// the fallback without first giving such actions an explicit owner takes
+// Stripe webhooks down.
+func web_anonymous_owner(routed string, public bool) *User {
+	if routed != "" {
+		return user_by_uid(routed)
+	}
+	if !public {
+		return nil
+	}
+	db := db_open("db/users.db")
+	row, _ := db.row("select uid from users where role='administrator' order by uid limit 1")
+	if row == nil {
+		return nil
+	}
+	uid, _ := row["uid"].(string)
+	if uid == "" {
+		return nil
+	}
+	return user_by_uid(uid)
 }
 
 // web_serves_file reports whether an action declaring a file will answer this

@@ -217,7 +217,7 @@ func commits_table_create(db *DB) {
 // slot, so a drain under load outlives the window and the append that follows
 // panics through must() with "database is closed".
 func commits_setup(u *User, a *App) *DB {
-	sys := db_app_system(u, a)
+	sys := db_app_system(u, a) // handle-ok: returned to the caller, which owns the release
 	if sys == nil {
 		return nil
 	}

@@ -186,15 +186,13 @@ func TestScheduleConcurrencyLeavesRoomForRequests(t *testing.T) {
 	if cap(schedule_slots) != schedule_concurrency {
 		t.Errorf("slot channel holds %d, want schedule_concurrency of %d", cap(schedule_slots), schedule_concurrency)
 	}
-	if schedule_concurrency >= 32 {
-		t.Errorf("schedule_concurrency is %d, at or above the default Starlark pool of 32", schedule_concurrency)
-	}
-	source, err := os.ReadFile("starlark.go")
-	if err != nil {
-		t.Fatalf("read starlark.go: %v", err)
-	}
-	if !strings.Contains(string(source), `ini_int("starlark", "concurrency", 32)`) {
-		t.Error("the Starlark concurrency default moved; recheck schedule_concurrency against it")
+	// Compared against the constant rather than against the number, or against
+	// the source text that declares it: the default has already moved once, and
+	// a copy of it here fails for having moved rather than for the bound being
+	// wrong.
+	if schedule_concurrency >= starlark_concurrency_default {
+		t.Errorf("schedule_concurrency is %d, at or above the default Starlark pool of %d",
+			schedule_concurrency, starlark_concurrency_default)
 	}
 }
 

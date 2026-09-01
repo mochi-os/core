@@ -240,12 +240,19 @@ func TestFilesResolveTheStorageAccount(t *testing.T) {
 // db_app_system hands back a shared handle holding two sqlx pools, and
 // db_manager only evicts one whose close() has marked it idle. A site that
 // never closes pins that user's app.db for the life of the process.
+//
+// A function that hands the handle to its caller cannot close it - commits_setup
+// did, and the drain that followed panicked with "database is closed" - so such
+// a site says so with a trailing `// handle-ok: <reason>` on the opening line.
+// The reason is required: a bare marker is one an author can add without saying
+// what makes the site safe.
 func TestEveryAppSystemHandleIsReleased(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read package directory: %v", err)
 	}
 	open := regexp.MustCompile(`(\w+)\s*(?::=|=)\s*db_app_system\(`)
+	allowed := regexp.MustCompile(`// handle-ok: \S`)
 	unreleased := []string{}
 	for _, entry := range entries {
 		name := entry.Name()
@@ -260,6 +267,9 @@ func TestEveryAppSystemHandleIsReleased(t *testing.T) {
 		for i, line := range lines {
 			match := open.FindStringSubmatch(line)
 			if match == nil || strings.Contains(line, "func db_app_system") {
+				continue
+			}
+			if allowed.MatchString(line) {
 				continue
 			}
 			end := len(lines)

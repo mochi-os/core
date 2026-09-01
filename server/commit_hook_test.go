@@ -93,16 +93,11 @@ func TestCommitFireRefusesPastTheDepthCap(t *testing.T) {
 // holds a slot, so a cap at or above it empties the pool before the guard
 // fires.
 func TestCommitDepthCapProtectsTheSlotPool(t *testing.T) {
-	if commit_hook_depth_maximum >= 32 {
-		t.Errorf("commit_hook_depth_maximum is %d, at or above the default slot count of 32 - the guard cannot prevent slot exhaustion",
-			commit_hook_depth_maximum)
-	}
-	source, err := os.ReadFile("starlark.go")
-	if err != nil {
-		t.Fatalf("read starlark.go: %v", err)
-	}
-	if !strings.Contains(string(source), `ini_int("starlark", "concurrency", 32)`) {
-		t.Error("the Starlark concurrency default moved; recheck commit_hook_depth_maximum against it")
+	// Compared against the constant rather than a copy of its value, so moving
+	// the default cannot leave this assertion measuring a stale number.
+	if commit_hook_depth_maximum >= starlark_concurrency_default {
+		t.Errorf("commit_hook_depth_maximum is %d, at or above the default slot count of %d - the guard cannot prevent slot exhaustion",
+			commit_hook_depth_maximum, starlark_concurrency_default)
 	}
 }
 

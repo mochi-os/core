@@ -14,7 +14,9 @@ import (
 	"net/http"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -32,8 +34,150 @@ const starlark_cancel_grace = 5 * time.Second
 // an error instead of an unbounded wait.
 const starlark_queue_timeout = 60 * time.Second
 
+// starlark_concurrency_default is how many Starlark calls may run at once
+// before the rest queue. Sized for what the pool actually holds rather than for
+// core count: a slot is held for the handler's whole wall-clock, and most
+// handlers spend it blocked on SQLite, a P2P stream or an outbound fetch rather
+// than on a CPU. Nesting also means a slot is not a request - every commit-hook
+// level takes one, up to commit_hook_depth_maximum.
+const starlark_concurrency_default = 100
+
 // Default bound for a call that is streaming a response to the client.
 const starlark_file_default = 900 * time.Second
+
+// starlark_holder is one call currently occupying a concurrency slot. started
+// is the acquire time, so a report can rank by age: the oldest holder is the
+// one that needs explaining.
+type starlark_holder struct {
+	app      string
+	function string
+	user     string
+	started  time.Time
+}
+
+// starlark_holders records what occupies the pool right now, so a call that
+// times out waiting can name what it waited for. Saturation is otherwise
+// undiagnosable after the fact: the error names the victim and never the
+// cause, and the holders have finished long before anyone reads the log.
+var starlark_holders = struct {
+	lock     sync.Mutex
+	calls    map[int64]starlark_holder
+	sequence int64
+	reported time.Time
+}{calls: map[int64]starlark_holder{}}
+
+// starlark_holders_listed bounds how many distinct app:function groups one
+// report names. The pool is configurable, so an operator who raised it should
+// still get a line they can read.
+const starlark_holders_listed = 10
+
+// starlark_holder_add registers a call against the slot it just took and
+// answers the key that removes it again.
+func starlark_holder_add(app string, function string, user string) int64 {
+	starlark_holders.lock.Lock()
+	defer starlark_holders.lock.Unlock()
+	starlark_holders.sequence++
+	key := starlark_holders.sequence
+	starlark_holders.calls[key] = starlark_holder{app: app, function: function, user: user, started: time.Now()}
+	return key
+}
+
+// starlark_holder_remove releases a registration. Paired with the same defer
+// that returns the slot, so an abandoned call cannot leave a phantom holder
+// behind after its slot is back in the pool.
+func starlark_holder_remove(key int64) {
+	starlark_holders.lock.Lock()
+	defer starlark_holders.lock.Unlock()
+	delete(starlark_holders.calls, key)
+}
+
+// starlark_holder_app and starlark_holder_user name the call's app and account
+// for the report. Both locals are absent while a file is still loading, so
+// both answer "" rather than assuming a running action set them.
+func starlark_holder_app(t *sl.Thread) string {
+	if app, ok := t.Local("app").(*App); ok && app != nil {
+		return app.id
+	}
+	return "unknown"
+}
+
+func starlark_holder_user(t *sl.Thread) string {
+	if user, ok := t.Local("owner").(*User); ok && user != nil {
+		return user.UID
+	}
+	return ""
+}
+
+// starlark_holders_report describes what holds the pool, grouped by
+// app:function and ordered by how many slots each group holds. Answers "" when
+// a report was already made inside the current timeout window, so one
+// saturation episode does not repeat the same line for every victim.
+func starlark_holders_report() string {
+	starlark_holders.lock.Lock()
+	if time.Since(starlark_holders.reported) < starlark_queue_timeout {
+		starlark_holders.lock.Unlock()
+		return ""
+	}
+	starlark_holders.reported = time.Now()
+	held := make([]starlark_holder, 0, len(starlark_holders.calls))
+	for _, holder := range starlark_holders.calls {
+		held = append(held, holder)
+	}
+	starlark_holders.lock.Unlock()
+
+	if len(held) == 0 {
+		// Reachable: the pool can drain between the failed acquire and this
+		// call. Say so rather than reporting an empty list as if it were the
+		// state during the wait.
+		return "the pool drained before it could be sampled"
+	}
+
+	type group struct {
+		name   string
+		count  int
+		oldest time.Time
+		user   string
+	}
+	groups := map[string]*group{}
+	for _, holder := range held {
+		name := holder.app + ":" + holder.function
+		g, found := groups[name]
+		if !found {
+			groups[name] = &group{name: name, count: 1, oldest: holder.started, user: holder.user}
+			continue
+		}
+		g.count++
+		if holder.started.Before(g.oldest) {
+			g.oldest = holder.started
+			g.user = holder.user
+		}
+	}
+
+	ranked := make([]*group, 0, len(groups))
+	for _, g := range groups {
+		ranked = append(ranked, g)
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].count != ranked[j].count {
+			return ranked[i].count > ranked[j].count
+		}
+		return ranked[i].oldest.Before(ranked[j].oldest)
+	})
+
+	parts := []string{}
+	for i, g := range ranked {
+		if i >= starlark_holders_listed {
+			parts = append(parts, fmt.Sprintf("and %d more", len(ranked)-starlark_holders_listed))
+			break
+		}
+		entry := fmt.Sprintf("%s x%d (oldest %s", g.name, g.count, time.Since(g.oldest).Round(time.Second))
+		if g.user != "" {
+			entry += ", user " + g.user
+		}
+		parts = append(parts, entry+")")
+	}
+	return fmt.Sprintf("%d slots held: %s", len(held), strings.Join(parts, ", "))
+}
 
 var (
 	starlark_semaphore       chan struct{}
@@ -60,7 +204,7 @@ func starlark_configure() {
 		return
 	}
 
-	c := ini_int("starlark", "concurrency", 32)
+	c := ini_int("starlark", "concurrency", starlark_concurrency_default)
 	if c < 1 {
 		c = 4
 	}
@@ -491,9 +635,18 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 	select {
 	case starlark_semaphore <- struct{}{}:
 	case <-time.After(starlark_queue_timeout):
+		// Name what the pool was doing. Without this the failure records only
+		// which call lost the race, which is never the call worth fixing.
+		if report := starlark_holders_report(); report != "" {
+			warn("Starlark concurrency exhausted, %q waited %s: %s", function, starlark_queue_timeout, report)
+		}
 		return nil, fmt.Errorf("starlark: no concurrency slot available after %s", starlark_queue_timeout)
 	}
-	defer func() { <-starlark_semaphore }()
+	holder := starlark_holder_add(starlark_holder_app(s.thread), function, starlark_holder_user(s.thread))
+	defer func() {
+		starlark_holder_remove(holder)
+		<-starlark_semaphore
+	}()
 
 	//debug("Starlark running %q: %+v", function, args)
 	s.thread.SetLocal("function", function)

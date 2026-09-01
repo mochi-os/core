@@ -208,6 +208,40 @@ const git_object_maximum int64 = 2 << 30 // 2GB
 // costs to parse is a multiple of it.
 const git_push_maximum int64 = 4 << 30 // 4GB
 
+// git_read_maximum is the largest blob mochi.git.blob.content returns. The
+// blob becomes one Starlark string, so this is the memory a single call may
+// take; a public repository holding a larger file is otherwise a per-request
+// allocation of that size for anyone allowed to read it. The size comes from
+// the tree entry, so the refusal costs nothing.
+const git_read_maximum int64 = 8 << 20 // 8MB
+
+// git_compare_maximum is the largest file, per side, mochi.git.diff will
+// compare. It bounds time before memory: go-git's line diff is superlinear in
+// the number of differing lines and runs under a one-hour internal deadline,
+// and a builtin already running cannot be stopped by the Starlark call timeout
+// (see starlark_context). Measured against go-git v5.19.2: two 1 MB sides of
+// short distinct lines diffed in 20 s; two 8 MB sides were still running after
+// five minutes. A larger file is reported in the diff, not compared.
+const git_compare_maximum int64 = 1 << 20 // 1MB
+
+// git_changes_maximum is the most changed files one diff reports, and
+// git_patch_maximum the most rendered patch text it returns; both stop the
+// walk with a truncation note rather than failing the call.
+const git_changes_maximum = 1000
+const git_patch_maximum = 8 << 20 // 8MB
+
+// git_list_maximum and git_offset_maximum bound commit listings. limit and
+// offset come from app callers who pass user input through; a negative limit
+// returned nothing and a huge one, or a huge offset, walked the whole history
+// into memory.
+const git_list_maximum = 1000
+const git_offset_maximum = 10000
+
+// git_link_maximum is the longest symlink target the archive writer reads. A
+// symlink-mode blob can hold anything a pusher stores; a real target is under
+// PATH_MAX, so a longer one is skipped rather than read whole.
+const git_link_maximum int64 = 4096
+
 // git_transport is the go-git server transport for handling git protocol.
 // Unmetered: it serves fetches and ref advertisements, which store nothing.
 // Pushes build their own transport carrying the owner's remaining storage.
@@ -1045,6 +1079,39 @@ func api_git_branch_default_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	return sl.True, nil
 }
 
+// git_page validates a commit listing's limit and offset in place. Both come
+// from app callers passing user input through: a negative limit is refused,
+// one over git_list_maximum is clamped to it, and an offset past
+// git_offset_maximum is refused rather than clamped, since a clamped offset
+// would silently answer a different page than the one asked for.
+func git_page(limit, offset *int) error {
+	if *limit < 0 {
+		return fmt.Errorf("invalid limit: %d", *limit)
+	}
+	if *limit > git_list_maximum {
+		*limit = git_list_maximum
+	}
+	if *offset < 0 || *offset > git_offset_maximum {
+		return fmt.Errorf("invalid offset: %d", *offset)
+	}
+	return nil
+}
+
+// git_identity makes a name or email safe to encode into a commit signature.
+// go-git writes "name <email>" with no escaping, so a newline in either injects
+// a header line into the commit object - an injected committer line replaced
+// the real one on decode - and an angle bracket in the email breaks the
+// parse. git's own fmt_ident strips the same characters.
+func git_identity(s string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		switch r {
+		case '<', '>', '\n', '\r', 0:
+			return -1
+		}
+		return r
+	}, s))
+}
+
 // mochi.git.commit.list(entity, ref, limit, offset) -> list: List commits
 func api_git_commit_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 4 {
@@ -1069,6 +1136,9 @@ func api_git_commit_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	offset := 0
 	if len(args) > 3 && args[3] != sl.None {
 		offset, _ = sl.AsInt32(args[3])
+	}
+	if err := git_page(&limit, &offset); err != nil {
+		return sl_error(fn, "%v", err)
 	}
 
 	owner := principal_owner(t)
@@ -1215,6 +1285,10 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if len(args) > 3 && args[3] != sl.None {
 		limit, _ = sl.AsInt32(args[3])
 	}
+	offset := 0
+	if err := git_page(&limit, &offset); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 
 	owner := principal_owner(t)
 	app := principal_app(t)
@@ -1239,10 +1313,14 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl.None, nil // ref not found
 	}
 
+	// A directory matches its own entries only: a bare prefix test made the
+	// log for "src" include every commit touching "src2/" or "src.txt". An
+	// empty path is the whole tree.
+	prefix := strings.TrimSuffix(path, "/") + "/"
 	iter, err := repo.Log(&git.LogOptions{
 		From: *hash,
 		PathFilter: func(p string) bool {
-			return strings.HasPrefix(p, path) || p == path
+			return path == "" || p == path || strings.HasPrefix(p, prefix)
 		},
 	})
 	if err != nil {
@@ -1330,17 +1408,30 @@ func api_git_commit_between(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		return sl.None, nil // base commit not found
 	}
 
-	// Find commits in head not in base
+	// Find commits in head not in base. Both walks are bounded: without a
+	// bound this loaded every ancestor of base into a map and every ancestor
+	// of head into the result, two full-history walks per call on refs the
+	// caller chose. The base walk stops at git_offset_maximum commits, the
+	// head walk at that many visited or git_list_maximum collected; a longer
+	// history is answered with its newest commits.
 	base_ancestors := make(map[plumbing.Hash]bool)
 	base_iter := object.NewCommitIterCTime(base_commit, nil, nil)
 	base_iter.ForEach(func(c *object.Commit) error {
+		if len(base_ancestors) >= git_offset_maximum {
+			return io.EOF
+		}
 		base_ancestors[c.Hash] = true
 		return nil
 	})
 
 	var commits []map[string]any
+	visited := 0
 	head_iter := object.NewCommitIterCTime(head_commit, nil, nil)
 	head_iter.ForEach(func(c *object.Commit) error {
+		visited++
+		if visited > git_offset_maximum || len(commits) >= git_list_maximum {
+			return io.EOF
+		}
 		if !base_ancestors[c.Hash] {
 			commits = append(commits, map[string]any{
 				"sha":     c.Hash.String(),
@@ -1511,6 +1602,13 @@ func api_git_blob_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl.None, nil // file not found
 	}
 
+	// The size is the tree entry's, so this refuses before a byte of the blob
+	// is read. blob.get answers the size, so a caller can learn a file is too
+	// large without asking for it.
+	if file.Size > git_read_maximum {
+		return sl_error(fn, "file is %d bytes, over the %d limit", file.Size, git_read_maximum)
+	}
+
 	content, err := file.Contents()
 	if err != nil {
 		return sl_error(fn, "failed to read file: %v", err)
@@ -1597,6 +1695,66 @@ func api_git_blob_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}), nil
 }
 
+// git_comparable answers both sides of a change and whether each is small
+// enough to diff. An absent side (an add or a delete) has no size to check.
+func git_comparable(change *object.Change) (from, to *object.File, ok bool, err error) {
+	from, to, err = change.Files()
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if from != nil && from.Size > git_compare_maximum {
+		return from, to, false, nil
+	}
+	if to != nil && to.Size > git_compare_maximum {
+		return from, to, false, nil
+	}
+	return from, to, true, nil
+}
+
+// git_name is the path a change is reported under: the new side's, or the old
+// side's for a delete.
+func git_name(from, to *object.File) string {
+	if to != nil {
+		return to.Name
+	}
+	if from != nil {
+		return from.Name
+	}
+	return ""
+}
+
+// git_patch renders a diff one change at a time, under the caps: a file over
+// git_compare_maximum on either side is listed with a note instead of
+// compared, at most git_changes_maximum files are rendered, the text stops at
+// git_patch_maximum, and the call's context is checked between files so a
+// cancelled call stops at the next file rather than running to the end. Each
+// note is a line the unified format has no meaning for, so a parser walks past
+// it and the reader sees why the file has no hunks.
+func git_patch(ctx context.Context, changes object.Changes) (string, error) {
+	var out strings.Builder
+	for i, change := range changes {
+		if i >= git_changes_maximum || out.Len() >= git_patch_maximum || ctx.Err() != nil {
+			fmt.Fprintf(&out, "# diff truncated: %d more files\n", len(changes)-i)
+			break
+		}
+		from, to, ok, err := git_comparable(change)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			name := git_name(from, to)
+			fmt.Fprintf(&out, "diff --git a/%s b/%s\n# not compared: over the %d byte limit\n", name, name, git_compare_maximum)
+			continue
+		}
+		patch, err := object.Changes{change}.Patch()
+		if err != nil {
+			return "", err
+		}
+		out.WriteString(patch.String())
+	}
+	return out.String(), nil
+}
+
 // mochi.git.diff(entity, base, head) -> string: Get unified diff
 func api_git_diff(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 3 {
@@ -1671,12 +1829,12 @@ func api_git_diff(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		return sl_error(fn, "failed to compute diff: %v", err)
 	}
 
-	patch, err := changes.Patch()
+	patch, err := git_patch(starlark_context(t), changes)
 	if err != nil {
 		return sl_error(fn, "failed to generate patch: %v", err)
 	}
 
-	return sl.String(patch.String()), nil
+	return sl.String(patch), nil
 }
 
 // mochi.git.diff.stats(entity, base, head) -> dict: Get diff statistics
@@ -1753,30 +1911,53 @@ func api_git_diff_stats(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "failed to compute diff: %v", err)
 	}
 
-	patch, err := changes.Patch()
-	if err != nil {
-		return sl_error(fn, "failed to generate patch: %v", err)
-	}
-
-	stats := patch.Stats()
+	// One file at a time under the same caps as git_patch: the counts need the
+	// diff computed, which is the expensive part, but not the text rendered.
+	// A file too large to compare is listed as skipped with no counts.
+	ctx := starlark_context(t)
 	var files []map[string]any
 	additions := 0
 	deletions := 0
-
-	for _, stat := range stats {
-		files = append(files, map[string]any{
-			"name":      stat.Name,
-			"additions": stat.Addition,
-			"deletions": stat.Deletion,
-		})
-		additions += stat.Addition
-		deletions += stat.Deletion
+	truncated := false
+	for i, change := range changes {
+		if i >= git_changes_maximum || ctx.Err() != nil {
+			truncated = true
+			break
+		}
+		from, to, ok, err := git_comparable(change)
+		if err != nil {
+			return sl_error(fn, "failed to compute diff: %v", err)
+		}
+		if !ok {
+			files = append(files, map[string]any{
+				"name":      git_name(from, to),
+				"additions": 0,
+				"deletions": 0,
+				"skipped":   true,
+			})
+			continue
+		}
+		patch, err := object.Changes{change}.Patch()
+		if err != nil {
+			return sl_error(fn, "failed to generate patch: %v", err)
+		}
+		for _, stat := range patch.Stats() {
+			files = append(files, map[string]any{
+				"name":      stat.Name,
+				"additions": stat.Addition,
+				"deletions": stat.Deletion,
+				"skipped":   false,
+			})
+			additions += stat.Addition
+			deletions += stat.Deletion
+		}
 	}
 
 	return sl_encode(map[string]any{
 		"files":     files,
 		"additions": additions,
 		"deletions": deletions,
+		"truncated": truncated,
 	}), nil
 }
 
@@ -2022,12 +2203,16 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		message = "Merge branch"
 	}
 
-	author_name, ok := sl.AsString(args[4])
-	if !ok || author_name == "" {
+	// Both reach the commit object verbatim, and the repositories app forwards
+	// them from a remote peer's merge event - see git_identity.
+	author_name, _ := sl.AsString(args[4])
+	author_name = git_identity(author_name)
+	if author_name == "" {
 		author_name = "Mochi"
 	}
 
 	author_email, _ := sl.AsString(args[5])
+	author_email = git_identity(author_email)
 
 	method := "merge"
 	if len(args) == 7 {
@@ -2777,6 +2962,12 @@ func git_archive_write_tar(w io.Writer, tree *object.Tree, prefix string, mtime 
 			hdr.Typeflag = tar.TypeReg
 			hdr.Mode = 0755
 		case filemode.Symlink:
+			// The target is the blob's whole content; a pusher can store
+			// anything under symlink mode, so an implausible one is left out
+			// of the archive rather than read into memory.
+			if f.Size > git_link_maximum {
+				return nil
+			}
 			hdr.Typeflag = tar.TypeSymlink
 			hdr.Mode = 0777
 			target, err := f.Contents()
@@ -2809,106 +3000,14 @@ func git_archive_write_tar(w io.Writer, tree *object.Tree, prefix string, mtime 
 	})
 }
 
-// git_http_handler handles the Smart HTTP protocol for git clone/push/fetch
-// Path format: /info/refs, /git-upload-pack, /git-receive-pack
-
-func git_http_handler(c *gin.Context, a *App, owner *User, user *User, repo string, path string) bool {
-	if owner == nil {
-		c.String(http.StatusNotFound, "Repository not found") // i18n-ok: git protocol, read by the client not a person
-		return true
-	}
-
-	// Find repository entity by fingerprint for this owner
-	// The repo parameter is the entity fingerprint extracted from the URL
-	db := db_open("db/users.db")
-	row, err := db.row("select id from entities where user = ? and fingerprint = ?", owner.UID, repo)
-	if err != nil || row == nil {
-		c.String(http.StatusNotFound, "Repository not found") // i18n-ok: git protocol, read by the client not a person
-		return true
-	}
-	id, ok := row["id"].(string)
-	if !ok || id == "" {
-		c.String(http.StatusNotFound, "Repository not found") // i18n-ok: git protocol, read by the client not a person
-		return true
-	}
-
-	// Build repository path
-	repo_path := git_repo_path(owner, a, id)
-	if _, err := os.Stat(repo_path); os.IsNotExist(err) {
-		c.String(http.StatusNotFound, "Repository not found") // i18n-ok: git protocol, read by the client not a person
-		return true
-	}
-
-	// The operation comes from the path, never from the caller-controlled
-	// ?service= query: honouring that let a receive-pack POST be authorised as a
-	// read and dispatched as a push. Only info/refs may read the query, and only
-	// through git_service_name.
-	service := ""
-	if strings.HasSuffix(path, "git-upload-pack") {
-		service = "git-upload-pack"
-	} else if strings.HasSuffix(path, "git-receive-pack") {
-		service = "git-receive-pack"
-	} else if strings.HasSuffix(path, "info/refs") {
-		service = git_service_name(c.Query("service"))
-	}
-
-	// Determine if this is a read or write operation
-	is_write := service == "git-receive-pack"
-
-	// Try to authenticate if credentials are provided
-	if user == nil {
-		user = git_authenticate(c, a)
-	}
-
-	// A missing app-system database is refused, not skipped: db_app_system returns
-	// nil when the handle cannot be created at all, and treating that as "no rules
-	// to apply" would hand anonymous callers clone and push.
-	app_db := db_app_system(owner, a)
-	defer app_db.close()
-	if app_db == nil {
-		info("git_http_handler: no app-system database for user %q app %q; refusing", owner.UID, a.id)
-		c.String(http.StatusInternalServerError, "Repository access unavailable") // i18n-ok: git protocol, read by the client not a person
-		return true
-	}
-	identity_id := ""
-	role := ""
-	if user != nil {
-		if ident := user.identity(); ident != nil {
-			identity_id = ident.ID
-		}
-		role = user.Role
-	}
-	op := "read"
-	if is_write {
-		op = "write"
-	}
-	if !app_db.access_check(owner, identity_id, role, "repository/"+id, op) {
-		if user == nil {
-			c.Header("WWW-Authenticate", `Basic realm="Mochi Git"`)
-			c.String(http.StatusUnauthorized, "Authentication required") // i18n-ok: git protocol, read by the client not a person
-		} else {
-			c.String(http.StatusNotFound, "Repository not found") // i18n-ok: git protocol, read by the client not a person
-		}
-		return true
-	}
-
-	// Route to appropriate handler
-	if strings.HasSuffix(path, "info/refs") {
-		return git_info_refs(c, repo_path, service)
-	} else if strings.HasSuffix(path, "git-upload-pack") {
-		return git_service_rpc(c, repo_path, "git-upload-pack", owner)
-	} else if strings.HasSuffix(path, "git-receive-pack") {
-		return git_service_rpc(c, repo_path, "git-receive-pack", owner)
-	}
-
-	c.String(http.StatusNotFound, "Not found") // i18n-ok: git protocol, read by the client not a person
-	return true
-}
-
-// git_http_handler_entity handles git Smart HTTP for domain-routed entities.
-// The entity is already resolved, so no fingerprint lookup is needed.
-func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e *Entity, path string) bool {
-	if owner == nil {
+// git_http_handler handles the Smart HTTP protocol for git clone, push and
+// fetch: info/refs, git-upload-pack and git-receive-pack under the entity URL.
+// web_action has already resolved the entity, by id or fingerprint, so the
+// handler takes it rather than looking it up again - it used to re-query
+// users.db by fingerprint on every git request, in a second copy of this
+// function that served the path-routed URL.
+func git_http_handler(c *gin.Context, a *App, owner *User, user *User, e *Entity, path string) bool {
+	if owner == nil || e == nil {
 		c.String(http.StatusNotFound, "Repository not found") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
@@ -2920,8 +3019,10 @@ func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e 
 		return true
 	}
 
-	// Determine operation from the path, never the caller-controlled query.
-	// See git_http_handler above for what honouring the query allowed.
+	// The operation comes from the path, never the caller-controlled ?service=
+	// query: honouring that let a receive-pack POST be authorised as a read
+	// and dispatched as a push. Only info/refs may read the query, and only
+	// through git_service_name.
 	service := ""
 	if path == "git-upload-pack" {
 		service = "git-upload-pack"
@@ -2939,12 +3040,13 @@ func git_http_handler_entity(c *gin.Context, a *App, owner *User, user *User, e 
 		user = git_authenticate(c, a)
 	}
 
-	// Check access control, failing closed on a missing app-system database.
-	// See git_http_handler above for why nil is refused rather than skipped.
+	// A missing app-system database is refused, not skipped: db_app_system
+	// returns nil when the handle cannot be created at all, and treating that
+	// as "no rules to apply" would hand anonymous callers clone and push.
 	app_db := db_app_system(owner, a)
 	defer app_db.close()
 	if app_db == nil {
-		info("git_http_handler_entity: no app-system database for user %q app %q; refusing", owner.UID, a.id)
+		info("git_http_handler: no app-system database for user %q app %q; refusing", owner.UID, a.id)
 		c.String(http.StatusInternalServerError, "Repository access unavailable") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}

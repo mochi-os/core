@@ -1017,7 +1017,7 @@ func TestGitHandlerRefusesWithoutAppDatabase(t *testing.T) {
 	c.Request = httptest.NewRequest("GET", "/x/git/info/refs?service=git-upload-pack", nil)
 
 	entity := &Entity{ID: repo, Class: "repository"}
-	if !git_http_handler_entity(c, test_app, user, nil, entity, "info/refs") {
+	if !git_http_handler(c, test_app, user, nil, entity, "info/refs") {
 		t.Fatal("handler did not handle the request")
 	}
 	if recorder.Code != http.StatusInternalServerError {

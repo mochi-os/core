@@ -472,7 +472,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	// directly under the entity URL, bypassing standard app action routing.
 	if e != nil && e.Class == "repository" {
 		if name == "info/refs" || name == "git-upload-pack" || name == "git-receive-pack" {
-			return git_http_handler_entity(c, a, owner, user, e, name)
+			return git_http_handler(c, a, owner, user, e, name)
 		}
 	}
 
@@ -554,9 +554,18 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			respond_text(c, http.StatusBadRequest, "errors.repository_required", nil)
 			return true
 		}
-		// Strip .git suffix if present (e.g., "my-project.git" -> "my-project")
-		repo = strings.TrimSuffix(repo, ".git")
-		return git_http_handler(c, a, owner, user, repo, aa.parameters["path"])
+		// The routing above resolved the entity by id or fingerprint, except
+		// when the URL carries git's customary ".git" suffix: that segment
+		// resolves to nothing, so the request arrives here with no entity and
+		// the caller's own owner. Resolve it now, owner included.
+		if e == nil {
+			if e = entity_by_any(strings.TrimSuffix(repo, ".git")); e != nil {
+				if o := user_owning_entity(e.ID); o != nil {
+					owner = o
+				}
+			}
+		}
+		return git_http_handler(c, a, owner, user, e, aa.parameters["path"])
 	}
 
 	if web_serves_file(c, aa) {

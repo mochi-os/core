@@ -61,6 +61,12 @@ type DB struct {
 	// handle first cached by a raw db_open still gets its setups. Guarded by
 	// lock(path).
 	system_setup bool
+	// user_setup is the same gate for db_user's per-name table setup. Every
+	// create/alter in that block runs uncached and then flushes this handle's
+	// prepared statements (exec_e's DDL branch), so re-running it per call left
+	// user.db - the most-used per-user database, opened once per access check -
+	// with a permanently empty statement cache. Guarded by lock(path).
+	user_setup bool
 	// ready is set once db_app has finished database_create/upgrade on this
 	// handle; the reused fast-path requires it so a concurrent opener waits rather
 	// than querying a schema that does not exist yet (#227). Guarded by
@@ -396,6 +402,21 @@ func db_user(u *User, name string) *DB {
 	// cached handle, so assigning them directly races any concurrent opener.
 	db_bind(db, u, nil)
 
+	// The setup below belongs to the handle, not the call: db_user is reached
+	// from the access check and from every routing lookup, and running its DDL
+	// each time discarded the handle's prepared statements every time. Gated the
+	// way db_app_system gates system_setup, including the re-check under the
+	// lock so a concurrent opener does not run it twice.
+	if db.user_setup {
+		return db
+	}
+	l := lock(path)
+	l.Lock()
+	defer l.Unlock()
+	if db.user_setup {
+		return db
+	}
+
 	// Create tables for user.db
 	if name == "user" {
 		db.exec("create table if not exists preferences (name text primary key, value text not null)")
@@ -445,6 +466,7 @@ func db_user(u *User, name string) *DB {
 		db.exec("create index if not exists webpush_delivered_ts on webpush_delivered(ts)")
 	}
 
+	db.user_setup = true
 	return db
 }
 
@@ -625,6 +647,12 @@ func db_app_system(u *User, app *App) *DB {
 	broadcast_log_table_create(db)
 	broadcast_acknowledged_table_create(db)
 	broadcast_pending_table_create(db)
+	// The commit-hook pending log lives on this database too. Created here for
+	// the same reason as the broadcast tables, and because commit_hook_fire used
+	// to create it three times per fired commit - once in commits_setup, once in
+	// the drain and once in the append - each one flushing this handle's
+	// prepared statements.
+	commits_table_create(db)
 	db.system_setup = true
 
 	return db

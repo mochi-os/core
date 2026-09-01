@@ -212,3 +212,104 @@ func TestSystemSweepReleasesItsHandles(t *testing.T) {
 		t.Errorf("the sweep left %d of %d handles marked in use, so db_manager can never evict them: %v", len(held), len(paths), held)
 	}
 }
+
+// cache_size reports how many prepared statements a handle currently holds.
+func cache_size(db *DB) int {
+	db.statement_lock.Lock()
+	defer db.statement_lock.Unlock()
+	return len(db.statement_cache)
+}
+
+// TestUserSetupRunsOncePerHandle: db_user's table block is DDL, and every DDL
+// statement flushes the handle's prepared statements. Re-running it on each call
+// left user.db - reached from the access check and every routing lookup - with a
+// permanently empty cache.
+func TestUserSetupRunsOncePerHandle(t *testing.T) {
+	test_data_directory(t)
+	t.Cleanup(func() { db_purge_prefix("") })
+	u := &User{UID: "setupuser"}
+
+	db := db_user(u, "user")
+	if db == nil {
+		t.Fatal("db_user returned nil")
+	}
+	// The setup must still have run: the tables it creates have to exist.
+	for _, table := range []string{"preferences", "accounts", "devices", "interests", "settings"} {
+		if found, _ := db.exists("select 1 from sqlite_master where type='table' and name=?", table); !found {
+			t.Fatalf("table %q missing - the setup block did not run on first open", table)
+		}
+	}
+
+	// Warm the cache the way a request does.
+	for i := 0; i < 5; i++ {
+		_, _ = db.exists("select 1 from preferences where name=?", "x")
+		_ = db.exec_e("insert or replace into preferences (name, value) values (?, ?)", "k", "v")
+		_, _ = db.row("select value from preferences where name=?", "k")
+	}
+	warm := cache_size(db)
+	if warm == 0 {
+		t.Fatal("cache never warmed, so this test cannot measure the flush")
+	}
+
+	if again := db_user(u, "user"); again != db {
+		t.Fatal("db_user returned a different handle; this test assumes the cached one")
+	}
+	if after := cache_size(db); after != warm {
+		t.Errorf("cache went from %d to %d statements across one more db_user call; the setup block is still running per call and flushing it", warm, after)
+	}
+}
+
+// TestCommitsSetupLeavesTheHandleInUse: commits_setup hands the handle to
+// commit_hook_fire, which keeps using it for the drain and the append. Marking
+// it idle here lets db_manager evict it - closing both pools - out from under a
+// drain that outlives the 60 s window.
+func TestCommitsSetupLeavesTheHandleInUse(t *testing.T) {
+	app, _ := lifecycle_test_app(t, `
+def database_create():
+    mochi.db.execute("create table alpha (id integer primary key)")
+`)
+	u := &User{UID: "commitsuser"}
+
+	sys := commits_setup(u, app)
+	if sys == nil {
+		t.Fatal("commits_setup returned nil")
+	}
+	databases_lock.Lock()
+	closed := sys.closed
+	databases_lock.Unlock()
+	if closed != 0 {
+		t.Errorf("commits_setup returned a handle marked idle (closed=%d); db_manager evicts it after 60 s and closes both pools while commit_hook_fire is still draining through it", closed)
+	}
+}
+
+// TestSystemDatabaseOwnsTheCommitsTable: creating it once here is what keeps
+// commit_hook_fire from running the same DDL three times per fired commit.
+func TestSystemDatabaseOwnsTheCommitsTable(t *testing.T) {
+	app, _ := lifecycle_test_app(t, `
+def database_create():
+    mochi.db.execute("create table alpha (id integer primary key)")
+`)
+	u := &User{UID: "commitstable"}
+
+	sys := db_app_system(u, app)
+	if sys == nil {
+		t.Fatal("db_app_system returned nil")
+	}
+	if found, _ := sys.exists("select 1 from sqlite_master where type='table' and name='commits'"); !found {
+		t.Fatal("db_app_system did not create the commits table, so the commit hook has to create it itself")
+	}
+
+	for i := 0; i < 5; i++ {
+		_, _ = sys.exists("select 1 from commits where seq=?", 1)
+		_, _ = sys.row("select count(*) as n from commits")
+	}
+	warm := cache_size(sys)
+	if warm == 0 {
+		t.Fatal("cache never warmed, so this test cannot measure the flush")
+	}
+
+	commits_append(sys, "alpha", "insert", "row1")
+	if after := cache_size(sys); after != warm {
+		t.Errorf("cache went from %d to %d statements across one commits_append; it is still running the table DDL per call", warm, after)
+	}
+}

@@ -107,6 +107,8 @@ func commit_hook_fire(user, app, table, kind, row_uid string, depth int) {
 	if sys == nil {
 		return
 	}
+	// Held for the drain and the append below, released once both are done.
+	defer sys.close()
 	// Retry previously-failed hooks first, so the log stays bounded while the app
 	// is active.
 	commit_hook_drain(sys, av, a, u, function, depth)
@@ -121,7 +123,6 @@ func commit_hook_fire(user, app, table, kind, row_uid string, depth int) {
 // against the registered handler. Successful invocations mark the row
 // fired; failed ones stay pending for the next drain.
 func commit_hook_drain(db *DB, av *AppVersion, a *App, u *User, function string, depth int) {
-	commits_table_create(db)
 	commits_trim(db)
 	rows, err := db.rows("select seq, name, kind, row_uid, attempts from commits where fired=0 order by seq limit 100")
 	if err != nil {
@@ -206,23 +207,28 @@ func commits_table_create(db *DB) {
 	}
 }
 
-// commits_setup opens the app system DB (app.db) and ensures the `commits`
-// table. On first creation it drops the pre-relocation `_commit_log` orphan
-// from the app's data DB, so that touches the data DB at most once per (user,
-// app).
+// commits_setup opens the app system DB (app.db) for the commit hook. The
+// `commits` table itself is created once per handle in db_app_system.
+//
+// The CALLER owns the release. Closing here stamped `closed` on the handle
+// being returned, and db_manager evicts any handle idle for 60 s - closing both
+// its pools. commit_hook_fire then keeps using it for a drain of up to 100
+// Starlark calls, each of which can wait a full queue timeout for a concurrency
+// slot, so a drain under load outlives the window and the append that follows
+// panics through must() with "database is closed".
 func commits_setup(u *User, a *App) *DB {
 	sys := db_app_system(u, a)
-	defer sys.close()
 	if sys == nil {
 		return nil
 	}
-	existed, _ := sys.exists("select name from sqlite_master where type='table' and name='commits'")
-	commits_table_create(sys)
-	if !existed {
-		// FUTURE CLEANUP: drops the pre-relocation `_commit_log` orphan. Removable
-		// once no system in the fleet can carry the old table - delete this `if
-		// !existed` branch and the `existed` lookup above.
-		if data := db_app(u, a); data != nil {
+	// FUTURE CLEANUP: drops the pre-relocation `_commit_log` orphan from the
+	// app's data DB. Probed directly rather than inferred from the `commits`
+	// table being absent, which stopped being a first-run signal once
+	// db_app_system took over creating it; the probe is a cached statement, not
+	// DDL, so it does not flush anything. Removable once no system in the fleet
+	// can carry the old table - delete this block.
+	if data := db_app(u, a); data != nil {
+		if orphan, _ := data.exists("select 1 from sqlite_master where type='table' and name='_commit_log'"); orphan {
 			data.exec("drop table if exists _commit_log")
 		}
 	}
@@ -233,7 +239,6 @@ func commits_setup(u *User, a *App) *DB {
 // column holds the table that committed (renamed from the parameter so
 // it doesn't collide with SQL reserved-word handling).
 func commits_append(db *DB, table, kind, row_uid string) int64 {
-	commits_table_create(db)
 	// LastInsertId, not a re-query: (name, kind, row_uid) does not identify this
 	// row, so two overlapping fires would both mark the same seq and leave the
 	// other pending for good, redrained on every later fire.

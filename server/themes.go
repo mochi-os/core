@@ -338,7 +338,9 @@ func web_user_theme_declarations(user *User) string {
 	} else if t != nil {
 		radius = t.BorderRadius
 	}
-	if radius != "" && !strings.ContainsAny(radius, `;<>"`) {
+	// The preference is any app's to write, so it is held to the rule a theme
+	// manifest's radius is held to, not to a character blocklist.
+	if match_theme_radius.MatchString(radius) {
 		append_radius_variables_from_base(&style_parts, radius)
 	}
 

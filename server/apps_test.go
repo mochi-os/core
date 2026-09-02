@@ -2379,3 +2379,16 @@ def app_allowed():
 		t.Error("a gated app should not be listed from inside a visibility check")
 	}
 }
+
+// Server-built name lists are ordered the way the web layer's naturalCompare
+// orders them: case- and accent-insensitive, numeric-aware.
+func TestTextSortOrdersNamesLikeTheCollator(t *testing.T) {
+	items := []map[string]any{{"name": "zebra"}, {"name": "Étoile"}, {"name": "Sprint 10"}, {"name": "apple"}, {"name": "Sprint 2"}, {"name": "Banana"}}
+	text_sort(items, "name")
+	want := []string{"apple", "Banana", "Étoile", "Sprint 2", "Sprint 10", "zebra"}
+	for i := range want {
+		if got := items[i]["name"]; got != want[i] {
+			t.Fatalf("position %d: got %q, want %q", i, got, want[i])
+		}
+	}
+}

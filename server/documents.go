@@ -126,14 +126,26 @@ func document_setting(name, language string) string {
 	return v
 }
 
+// document_language normalises a document language key to the lowercase BCP
+// 47 form document_lookup reads back, and refuses anything else: an override
+// stored under `EN` or `en_GB` would be reported as saved and never served.
+func document_language(language string) (string, bool) {
+	language = strings.ToLower(strings.TrimSpace(language))
+	if !valid(language, "locale") {
+		return "", false
+	}
+	return language, true
+}
+
 // document_set writes an operator override into the documents table, keyed on
 // (name, language).
 func document_set(name, language, body string) error {
 	if !document_name_valid(name) {
 		return fmt.Errorf("unknown document name %q", name)
 	}
-	if language == "" {
-		return fmt.Errorf("language required")
+	language, ok := document_language(language)
+	if !ok {
+		return fmt.Errorf("invalid language")
 	}
 	updated := now()
 	db := db_open("db/settings.db")
@@ -295,6 +307,9 @@ func api_document_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if !ok {
 		return sl_error(fn, "invalid language")
 	}
+	if language, ok = document_language(language); !ok {
+		return sl_error(fn, "invalid language")
+	}
 	body, ok := sl.AsString(args[2])
 	if !ok {
 		return sl_error(fn, "invalid body")
@@ -344,6 +359,9 @@ func api_document_source(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 	language, ok := sl.AsString(args[1])
 	if !ok {
+		return sl_error(fn, "invalid document language")
+	}
+	if language, ok = document_language(language); !ok {
 		return sl_error(fn, "invalid document language")
 	}
 	user := principal_caller(t)

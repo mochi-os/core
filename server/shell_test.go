@@ -644,3 +644,54 @@ func TestShellInitReturnsTheme(t *testing.T) {
 		t.Errorf("appearance for a user with no preference should default to auto, got %v", wanted)
 	}
 }
+
+// shell_block returns the source between a marker and the next end marker.
+func shell_block(t *testing.T, source, start, end string) string {
+	t.Helper()
+	a := strings.Index(source, start)
+	if a < 0 {
+		t.Fatalf("shell.js has no %q", start)
+	}
+	rest := source[a+len(start):]
+	b := strings.Index(rest, end)
+	if b < 0 {
+		t.Fatalf("shell.js block %q has no end %q", start, end)
+	}
+	return rest[:b]
+}
+
+// locale-set must never store the app's object: the shell re-sources the
+// server's copy, as it does for the theme. The overlay is heartbeat-cleared
+// like immersive and dropped on navigation, so no app can cover the menu for
+// longer than it keeps asking. Pinned at source level: nothing runs shell.js.
+func TestShellJsLocaleAndOverlayHandlers(t *testing.T) {
+	shell_js := load_shell(t, "shell.js")
+
+	locale := shell_block(t, shell_js, "case 'locale-set':", "case '")
+	if strings.Contains(locale, "data.locale") {
+		t.Error("locale-set still uses the app-supplied locale object")
+	}
+	if !strings.Contains(locale, "refreshLocale()") {
+		t.Error("locale-set does not re-source the locale from the server")
+	}
+	refresh := shell_block(t, shell_js, "function refreshLocale()", "\n    }")
+	if !strings.Contains(refresh, "'/_/shell'") || !strings.Contains(refresh, "currentLocale = data.locale") {
+		t.Error("refreshLocale does not store the server's locale")
+	}
+
+	overlay := shell_block(t, shell_js, "case 'overlay':", "case '")
+	if !strings.Contains(overlay, "setOverlay(") {
+		t.Error("the overlay handler bypasses setOverlay")
+	}
+	setter := shell_block(t, shell_js, "function setOverlay(on)", "\n    }")
+	if !strings.Contains(setter, "setTimeout") || !strings.Contains(setter, "setOverlay(false)") {
+		t.Error("setOverlay has no watchdog")
+	}
+	swap := shell_block(t, shell_js, "function swapIframe(", "\n    }")
+	if !strings.Contains(swap, "setOverlay(false)") {
+		t.Error("swapIframe does not clear the overlay")
+	}
+	if !strings.Contains(swap, "setImmersive(false)") {
+		t.Error("swapIframe no longer clears immersive")
+	}
+}

@@ -7,6 +7,7 @@
 package main
 
 import (
+	"encoding/json"
 	"github.com/gin-gonic/gin"
 	"net/http"
 	"net/http/httptest"
@@ -258,6 +259,9 @@ func TestWebPathRemainingPath(t *testing.T) {
 	create_web_test_env(t)
 
 	domain_register("api.example.com")
+	// Verification is on by default, and an unverified domain never matches:
+	// without this the middleware set nothing and the table was never reached.
+	domain_update("api.example.com", map[string]any{"verified": 1})
 	route_create("api.example.com", "/v1", "app", "api", "", "", 0)
 
 	gin.SetMode(gin.TestMode)
@@ -286,6 +290,16 @@ func TestWebPathRemainingPath(t *testing.T) {
 
 		if w.Code != http.StatusOK {
 			t.Errorf("Path %s: expected status 200, got %d", tt.path, w.Code)
+			continue
+		}
+		var body struct {
+			Remaining string `json:"remaining"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("Path %s: %v", tt.path, err)
+		}
+		if body.Remaining != tt.expected {
+			t.Errorf("Path %s: remaining %q, want %q", tt.path, body.Remaining, tt.expected)
 		}
 	}
 }

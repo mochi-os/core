@@ -382,9 +382,6 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		return true
 	}
 
-	// Run first-time setup for this user and app (grants default permissions)
-	app_user_setup(user, a.id)
-
 	// Built-in catalog endpoint: /<app>/-/labels and /<app>/-/labels/<tag>.
 	// Public — used by tooling (Translate Mochi app, dev introspection).
 	// The web SPA bundles its own Lingui catalogs and does not call this.
@@ -547,6 +544,11 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		return true
 	}
 
+	// First-time setup for this user and app (the default permission grants),
+	// now that the request is known to be allowed: a refused request must not
+	// leave the app's grants behind in the user's database.
+	app_user_setup(user, a.id)
+
 	// Handle git Smart HTTP protocol
 	if aa.Feature == "git" {
 		repo := aa.parameters["repository"]
@@ -574,7 +576,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			web_serve_html(c, a, av, aa, e, file)
 			return true
 		}
-		web_cache_static(c, file, aa.Cache)
+		if web_cache_static(c, file, aa.Cache) {
+			return true
+		}
 		if strings.HasSuffix(strings.ToLower(aa.File), ".svg") {
 			web_serve_svg_path(c, file)
 			return true
@@ -592,7 +596,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			}
 			file := av.base + "/" + aa.Files + "/" + aa.filepath
 			//debug("Serving file from directory for app %q: %q", a.id, file)
-			web_cache_static(c, file, aa.Cache)
+			if web_cache_static(c, file, aa.Cache) {
+				return true
+			}
 			if strings.HasSuffix(strings.ToLower(aa.filepath), ".svg") {
 				web_serve_svg_path(c, file)
 			} else {
@@ -858,10 +864,14 @@ func web_serve_svg_path(c *gin.Context, path string) {
 	web_serve_svg(c, file)
 }
 
-func web_cache_static(c *gin.Context, path string, cache string) {
+// web_cache_static sets a static file's cache headers and answers a
+// conditional request itself. It returns true once the 304 is on the wire,
+// and the caller must then stop: reading, sanitising or rendering the body
+// after that is the work the conditional request exists to avoid.
+func web_cache_static(c *gin.Context, path string, cache string) bool {
 	if !web_cache {
 		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
-		return
+		return false
 	}
 	// Use explicit cache policy if set in app.json action
 	if cache != "" {
@@ -877,12 +887,13 @@ func web_cache_static(c *gin.Context, path string, cache string) {
 				c.Header("ETag", etag)
 				if match := c.GetHeader("If-None-Match"); match == etag {
 					c.AbortWithStatus(http.StatusNotModified)
+					return true
 				}
 			}
 		case "none":
 			c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
 		}
-		return
+		return false
 	}
 	// Auto-detect cache policy from file path
 	if strings.HasSuffix(path, ".html") {
@@ -895,7 +906,7 @@ func web_cache_static(c *gin.Context, path string, cache string) {
 			// Check If-None-Match header for conditional request
 			if match := c.GetHeader("If-None-Match"); match == etag {
 				c.AbortWithStatus(http.StatusNotModified)
-				return
+				return true
 			}
 		}
 	} else if match_react.MatchString(path) {
@@ -905,6 +916,7 @@ func web_cache_static(c *gin.Context, path string, cache string) {
 		// debug("Web asking browser to short term cache %q", path)
 		c.Header("Cache-Control", "public, max-age=300")
 	}
+	return false
 }
 
 // Get the value of a cookie
@@ -1188,6 +1200,12 @@ func opengraph_absolute(image, scheme, host, path string) string {
 }
 
 func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *Entity, file string) bool {
+	// A conditional request is answered before the OpenGraph function and the
+	// page build run: the browser already holds this exact file.
+	if web_cache_static(c, file, aa.Cache) {
+		return true
+	}
+
 	// Get owner for database access - use entity owner if available
 	var owner *User
 	if e != nil {
@@ -1307,7 +1325,6 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 
 	// Serve modified content
 	c.Header("Content-Type", "text/html; charset=utf-8")
-	web_cache_static(c, file, aa.Cache)
 	c.String(http.StatusOK, content)
 	return true
 }
@@ -1575,6 +1592,15 @@ func web_auth_partial(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"partial": id, "remaining": remaining})
 }
 
+// identity_email_allowed reports whether a token minted for app may read the
+// account email from /_/identity. Starlark gates the address behind
+// accounts/read; the route mirrors that by answering only the login app, the
+// one frontend that shows it, so an installed app's iframe token gets the
+// identity and status but not the address.
+func identity_email_allowed(app string) bool {
+	return app_is_login(app_by_id(app))
+}
+
 func web_identity_get(c *gin.Context) {
 	user_by_id_allow_no_identity := func(id string) *User {
 		db := db_open("db/users.db")
@@ -1588,6 +1614,7 @@ func web_identity_get(c *gin.Context) {
 	}
 
 	u := web_auth(c)
+	email := true
 
 	// If no cookie auth, try Bearer token authentication
 	if u == nil {
@@ -1602,10 +1629,12 @@ func web_identity_get(c *gin.Context) {
 					u = user_by_id_allow_no_identity(api_token.User)
 				}
 			} else {
-				// JWT authentication
-				if uid, _, err := jwt_verify(bearer); err == nil && uid != "" {
+				// JWT authentication. The token names the app it was minted
+				// for; only the login app's token reads the account email.
+				if uid, app, err := jwt_verify(bearer); err == nil && uid != "" {
 					if user := user_by_id_allow_no_identity(uid); user != nil {
 						u = user
+						email = identity_email_allowed(app)
 					}
 				}
 			}
@@ -1619,10 +1648,12 @@ func web_identity_get(c *gin.Context) {
 
 	response := gin.H{
 		"user": gin.H{
-			"email":  u.Username,
 			"name":   "", // Will be populated below if identity exists
 			"status": u.Status,
 		},
+	}
+	if email {
+		response["user"].(gin.H)["email"] = u.Username
 	}
 
 	// A closing account carries the purge timestamp so the reactivation
@@ -2027,19 +2058,39 @@ func web_ping(c *gin.Context) {
 	c.String(http.StatusOK, "pong")
 }
 
-// Serve robots.txt
-func web_robots(c *gin.Context) {
-	c.String(http.StatusOK, "User-agent: *\nAllow: /\n\nSitemap: https://%s/sitemap.xml\n", c.Request.Host)
+// web_site_host is the name this server advertises for itself: the hosted
+// domain the request matched, else the configured [web] domain. Empty when
+// neither is set, so callers leave absolute URLs out rather than echo whatever
+// Host header the client chose to send.
+func web_site_host(c *gin.Context) string {
+	if value, ok := c.Get("domain_route"); ok {
+		if r, ok := value.(*route); ok && r != nil && r.Domain != "" {
+			return r.Domain
+		}
+	}
+	domain := strings.TrimSpace(ini_string("web", "domain", ""))
+	if domain == "localhost" {
+		return ""
+	}
+	return domain
 }
 
-// Serve sitemap.xml
+func web_robots(c *gin.Context) {
+	body := "User-agent: *\nAllow: /\n"
+	if host := web_site_host(c); host != "" {
+		body += "\nSitemap: https://" + host + "/sitemap.xml\n"
+	}
+	c.String(http.StatusOK, body)
+}
+
 func web_sitemap(c *gin.Context) {
+	urls := ""
+	if host := web_site_host(c); host != "" {
+		urls = "  <url>\n    <loc>https://" + html.EscapeString(host) + "/</loc>\n  </url>\n"
+	}
 	c.Data(http.StatusOK, "application/xml; charset=utf-8", []byte(`<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>https://`+html.EscapeString(c.Request.Host)+`/</loc>
-  </url>
-</urlset>
+`+urls+`</urlset>
 `))
 }
 

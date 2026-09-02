@@ -7,6 +7,7 @@ package main
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -37,6 +38,19 @@ func api_text_compare(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 	c := collate.New(language.Und, collate.IgnoreCase, collate.IgnoreDiacritics, collate.Numeric)
 	return sl.MakeInt(c.CompareString(a, b)), nil
+}
+
+// text_sort orders items by the named string field the way mochi.text.compare
+// orders strings: case- and accent-insensitive, numeric-aware. The server's
+// own name-bearing lists use it, so Étoile sorts among the Es and Sprint 2
+// precedes Sprint 10, the order the web layer's naturalCompare produces.
+func text_sort[T ~map[string]any](items []T, key string) {
+	c := collate.New(language.Und, collate.IgnoreCase, collate.IgnoreDiacritics, collate.Numeric)
+	sort.SliceStable(items, func(i, j int) bool {
+		a, _ := items[i][key].(string)
+		b, _ := items[j][key].(string)
+		return c.CompareString(a, b) < 0
+	})
 }
 
 // mochi.text.markdown(markdown) -> string: Render markdown to HTML

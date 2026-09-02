@@ -450,7 +450,6 @@ func app_user_setup(u *User, app_id string) {
 	}
 
 	db := db_user(u, "user")
-	db.apps_setup()
 
 	defaults := apps_default_get(app_id)
 	expected := len(defaults) + 1

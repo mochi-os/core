@@ -273,7 +273,7 @@ func (a *Action) input(name string) string {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access", "body", "domain", "dump", "entity", "error", "file", "files", "header", "input", "inputs", "json", "logout", "owner", "print", "redirect", "routing", "template", "token", "upload", "user", "write"}
+	return []string{"access", "body", "domain", "dump", "entity", "error", "file", "files", "header", "input", "inputs", "json", "logout", "owner", "print", "redirect", "routing", "token", "upload", "user", "write"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
@@ -324,8 +324,6 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("print", a.sl_print), nil
 	case "redirect":
 		return sl.NewBuiltin("redirect", a.sl_redirect), nil
-	case "template":
-		return sl.NewBuiltin("template", a.sl_template), nil
 	case "token":
 		if a.token == nil {
 			return sl.None, nil
@@ -661,41 +659,6 @@ func (a *Action) sl_redirect(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 		return sl_error(fn, "%v", err)
 	}
 	a.web.Redirect(code, path)
-	return sl.None, nil
-}
-
-// a.template(path, data?) -> None: Render and output a template
-func (a *Action) sl_template(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) < 1 || len(args) > 2 {
-		return sl_error(fn, "syntax: <template path: string>, [data: dictionary]")
-	}
-
-	path, ok := sl.AsString(args[0])
-	if !ok || (path != "" && !valid(path, "path")) {
-		return sl_error(fn, "invalid template file %q", path)
-	}
-
-	av := a.app.active(a.user)
-	file := fmt.Sprintf("%s/templates/en/%s.tmpl", av.base, path)
-	if !file_exists(file) {
-		return sl_error(fn, "template %q not found", path)
-	}
-
-	tmpl, err := template.New("").ParseFiles(file)
-	if err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
-	if len(args) > 1 {
-		err = tmpl.Execute(a.web.Writer, sl_decode(args[1]))
-	} else {
-		err = tmpl.Execute(a.web.Writer, Map{})
-	}
-
-	if err != nil && !is_client_disconnect(err) {
-		return sl_error(fn, "%v", err)
-	}
-
 	return sl.None, nil
 }
 

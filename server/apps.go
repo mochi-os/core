@@ -2688,9 +2688,7 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		icons = append(icons, c.icon)
 	}
 
-	sort.Slice(icons, func(i, j int) bool {
-		return strings.ToLower(icons[i]["name"].(string)) < strings.ToLower(icons[j]["name"].(string))
-	})
+	text_sort(icons, "name")
 
 	result := map[string]any{"icons": icons}
 	if active_theme != nil {
@@ -2925,9 +2923,7 @@ func api_app_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		results = append(results, c.row)
 	}
 
-	sort.Slice(results, func(i, j int) bool {
-		return strings.ToLower(results[i]["name"].(string)) < strings.ToLower(results[j]["name"].(string))
-	})
+	text_sort(results, "name")
 
 	return sl_encode(results), nil
 }
@@ -3076,9 +3072,7 @@ func api_app_themes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 	apps_lock.Unlock()
 
-	sort.Slice(results, func(i, j int) bool {
-		return results[i]["label"].(string) < results[j]["label"].(string)
-	})
+	text_sort(results, "label")
 
 	return sl_encode(results), nil
 }

@@ -293,3 +293,19 @@ func TestThemeValueFamiliesAgreeOnFetchConstructs(t *testing.T) {
 		}
 	}
 }
+
+// The radius preference is any app's to write, so only a value of the shape a
+// theme manifest may declare reaches the root style; anything else is ignored.
+func TestWebUserThemeDeclarationsRejectAnUnshapedRadius(t *testing.T) {
+	user := create_test_user(t)
+	for _, radius := range []string{"url(https://x.example/a)", "1px) url(x", "1rem; --x: 1", "calc(1px)"} {
+		user.Preferences = map[string]string{"theme": "", "radius": radius}
+		if declarations := web_user_theme_declarations(user); strings.Contains(declarations, "--radius") {
+			t.Errorf("radius %q reached the declarations: %s", radius, declarations)
+		}
+	}
+	user.Preferences = map[string]string{"theme": "", "radius": "0.75rem"}
+	if declarations := web_user_theme_declarations(user); !strings.Contains(declarations, "--radius: 0.75rem") {
+		t.Errorf("a well-formed radius was dropped: %s", declarations)
+	}
+}

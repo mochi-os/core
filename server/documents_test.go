@@ -355,3 +355,31 @@ func TestDocumentSourceRefusesUnknown(t *testing.T) {
 		t.Fatal("expected nil for an empty language")
 	}
 }
+
+// An override is keyed by the lowercase tag the request path produces, so the
+// key is normalised on the way in, and anything that cannot be a tag is
+// refused rather than stored where nothing will read it.
+func TestDocumentSetNormalisesTheLanguageKey(t *testing.T) {
+	setup_documents_test(t)
+
+	if err := document_set("rules", "EN", "# Upper"); err != nil {
+		t.Fatalf("EN: %v", err)
+	}
+	if body := document_get("rules", "en"); !strings.Contains(body, "Upper") {
+		t.Errorf("EN was not stored under en: %q", first_line(body))
+	}
+	if err := document_set("rules", " en-GB ", "# British"); err != nil {
+		t.Fatalf("en-GB: %v", err)
+	}
+	if body := document_get("rules", "en-gb"); !strings.Contains(body, "British") {
+		t.Errorf("en-GB was not stored under en-gb: %q", first_line(body))
+	}
+	for _, bad := range []string{"en_GB", "not a tag", "", "EN--"} {
+		if err := document_set("rules", bad, "# nope"); err == nil {
+			t.Errorf("language %q was accepted", bad)
+		}
+	}
+	if normalised, ok := document_language("PT-br"); !ok || normalised != "pt-br" {
+		t.Errorf("document_language(PT-br) = %q, %v", normalised, ok)
+	}
+}

@@ -28,17 +28,22 @@ launchctl bootout "system/${label}" 2>/dev/null || true
 # is instead run directly from a shell; bootout doesn't touch those
 # processes, so stop any server still running from the installed binary. A
 # shell-run server may be suspended (state T, e.g. after Ctrl-Z); a stopped
-# process never acts on SIGTERM, so resume it first.
-pkill -CONT -f /usr/local/sbin/mochi-server 2>/dev/null || true
-pkill -f /usr/local/sbin/mochi-server 2>/dev/null || true
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-	pgrep -f /usr/local/sbin/mochi-server >/dev/null 2>&1 || break
-	sleep 1
-done
-
-# Anything still alive ignored the graceful stop (or was wedged); force it.
-# SIGKILL can't be caught or blocked and reaches even a stopped process.
-pkill -KILL -f /usr/local/sbin/mochi-server 2>/dev/null || true
+# process never acts on SIGTERM, so resume it first. Matched by process name,
+# never by command line: a pattern match also hits an editor or a tail whose
+# arguments mention the path.
+pids=$(pgrep -x mochi-server 2>/dev/null || true)
+if [ -n "$pids" ]; then
+	kill -CONT $pids 2>/dev/null || true
+	kill -TERM $pids 2>/dev/null || true
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		pgrep -x mochi-server >/dev/null 2>&1 || break
+		sleep 1
+	done
+	# Anything still alive ignored the graceful stop (or was wedged); force it.
+	# SIGKILL can't be caught or blocked and reaches even a stopped process.
+	pids=$(pgrep -x mochi-server 2>/dev/null || true)
+	[ -z "$pids" ] || kill -KILL $pids 2>/dev/null || true
+fi
 
 echo "Removing installed files ..."
 rm -f "$plist"
@@ -48,9 +53,9 @@ rm -f /usr/local/sbin/mochictl
 # Regenerable cache; safe to remove.
 rm -rf /var/cache/mochi
 
-# Configuration; regenerated on reinstall.
-rm -f /etc/mochi/mochi.conf
-rmdir /etc/mochi 2>/dev/null || true
+# The packaged default goes; the operator's configuration stays with the data,
+# which is useless without its domain, port and mail settings.
+rm -f /etc/mochi/mochi.conf.default
 
 # Drop the installer receipt so a later reinstall is clean.
 pkgutil --forget "$label" >/dev/null 2>&1 || true
@@ -59,6 +64,9 @@ pkgutil --forget "$label" >/dev/null 2>&1 || true
 if [ -d /var/lib/mochi ]; then
 	echo "Mochi data, including private keys, has been kept at /var/lib/mochi."
 	echo "Run 'sudo rm -rf /var/lib/mochi' to remove it permanently."
+fi
+if [ -f /etc/mochi/mochi.conf ]; then
+	echo "The configuration has been kept at /etc/mochi/mochi.conf."
 fi
 
 echo "Mochi server uninstalled."

@@ -18,32 +18,49 @@ JOBS ?= $(shell nproc)
 # Per-phase timing lines (`>>> ...`) are also appended here and printed as a
 # consolidated summary at the end of `release`, so the breakdown survives the
 # thousands of lines of build/buildx output that otherwise bury and truncate it.
-timing = /tmp/mochi-release-timing.txt
+# Inside the checkout, not /tmp: a fixed name in a world-writable directory
+# can be a symlink someone else planted.
+timing = local/release-timing.txt
+
+# Release staging root. Every package is built under one private directory
+# made for this invocation, never under a fixed name in /tmp, where any local
+# account could pre-create the name and plant files that dpkg-deb would pack
+# and gpg would sign. `release` makes the root once and hands it to its
+# sub-makes as STAGE; a package target run on its own makes its own. The root
+# is made the first time a recipe expands it: the package rules are named
+# deb-amd64, msi, pkg-arm64 and so on rather than by their output path, so no
+# rule header expands it at parse time and a build that stages nothing makes
+# no root.
+ifdef STAGE
+stage := $(STAGE)
+else
+stage = $(eval stage := $(shell mktemp -d /tmp/mochi-release.XXXXXX))$(stage)
+endif
 
 # Linux build paths
-build_linux_amd64 = /tmp/mochi-server_$(version)_linux_amd64
-build_linux_arm64 = /tmp/mochi-server_$(version)_linux_arm64
-build_linux_armhf = /tmp/mochi-server_$(version)_linux_armhf
+build_linux_amd64 = $(stage)/mochi-server_$(version)_linux_amd64
+build_linux_arm64 = $(stage)/mochi-server_$(version)_linux_arm64
+build_linux_armhf = $(stage)/mochi-server_$(version)_linux_armhf
 deb_amd64 = $(build_linux_amd64).deb
 deb_arm64 = $(build_linux_arm64).deb
 deb_armhf = $(build_linux_armhf).deb
-rpm_x86_64 = /tmp/mochi-server-$(version)-1.x86_64.rpm
-rpm_aarch64 = /tmp/mochi-server-$(version)-1.aarch64.rpm
-rpm_armv7hl = /tmp/mochi-server-$(version)-1.armv7hl.rpm
+rpm_x86_64 = $(stage)/mochi-server-$(version)-1.x86_64.rpm
+rpm_aarch64 = $(stage)/mochi-server-$(version)-1.aarch64.rpm
+rpm_armv7hl = $(stage)/mochi-server-$(version)-1.armv7hl.rpm
 # Per-arch rpmbuild trees so the three rpm targets can build concurrently
 # under `make -j` without clobbering a shared _topdir.
-rpmbuild_x86_64  = /tmp/mochi-rpmbuild-x86_64
-rpmbuild_aarch64 = /tmp/mochi-rpmbuild-aarch64
-rpmbuild_armv7hl = /tmp/mochi-rpmbuild-armv7hl
+rpmbuild_x86_64  = $(stage)/rpmbuild-x86_64
+rpmbuild_aarch64 = $(stage)/rpmbuild-aarch64
+rpmbuild_armv7hl = $(stage)/rpmbuild-armv7hl
 
 # macOS build paths
-build_darwin_amd64 = /tmp/mochi-server_$(version)_darwin_amd64
-build_darwin_arm64 = /tmp/mochi-server_$(version)_darwin_arm64
-pkg_amd64 = /tmp/mochi-server_$(version)_darwin_amd64.pkg
-pkg_arm64 = /tmp/mochi-server_$(version)_darwin_arm64.pkg
+build_darwin_amd64 = $(stage)/mochi-server_$(version)_darwin_amd64
+build_darwin_arm64 = $(stage)/mochi-server_$(version)_darwin_arm64
+pkg_amd64 = $(stage)/mochi-server_$(version)_darwin_amd64.pkg
+pkg_arm64 = $(stage)/mochi-server_$(version)_darwin_arm64.pkg
 
 # Windows build paths
-build_windows = /tmp/mochi-server_$(version)_windows_amd64
+build_windows = $(stage)/mochi-server_$(version)_windows_amd64
 msi = $(build_windows).msi
 
 # Build flags. build_platform tags the package binaries so update_manager polls
@@ -125,38 +142,36 @@ mochictl-darwin-arm64: $(bin)/mochictl-darwin-arm64
 # being dropped as an unknown HTML tag.
 $(bin)/mochictl.1: docs/mochictl.1.md | $(bin)
 	pandoc -s -f markdown-raw_html -t man docs/mochictl.1.md -o $(bin)/mochictl.1
-	@mkdir -p $(HOME)/.local/share/man/man1 && \
-	    cp $(bin)/mochictl.1 $(HOME)/.local/share/man/man1/mochictl.1 && \
-	    echo "  installed to $(HOME)/.local/share/man/man1/mochictl.1 (run \`man mochictl\` to view)"
 
 mochictl.1: $(bin)/mochictl.1
 
 # mochi-server(8) man page — same pandoc-to-roff flow, but section 8.
 $(bin)/mochi-server.8: docs/mochi-server.8.md | $(bin)
 	pandoc -s -f markdown-raw_html -t man docs/mochi-server.8.md -o $(bin)/mochi-server.8
-	@mkdir -p $(HOME)/.local/share/man/man8 && \
-	    cp $(bin)/mochi-server.8 $(HOME)/.local/share/man/man8/mochi-server.8 && \
-	    echo "  installed to $(HOME)/.local/share/man/man8/mochi-server.8 (run \`man mochi-server\` to view)"
 
 mochi-server.8: $(bin)/mochi-server.8
 
 # mochi.conf(5) — file-format reference for /etc/mochi/mochi.conf.
 $(bin)/mochi.conf.5: docs/mochi.conf.5.md | $(bin)
 	pandoc -s -f markdown-raw_html -t man docs/mochi.conf.5.md -o $(bin)/mochi.conf.5
-	@mkdir -p $(HOME)/.local/share/man/man5 && \
-	    cp $(bin)/mochi.conf.5 $(HOME)/.local/share/man/man5/mochi.conf.5 && \
-	    echo "  installed to $(HOME)/.local/share/man/man5/mochi.conf.5 (run \`man mochi.conf\` to view)"
 
 mochi.conf.5: $(bin)/mochi.conf.5
 
 # mochi(7) — high-level overview of the project: peers, entities, apps.
 $(bin)/mochi.7: docs/mochi.7.md | $(bin)
 	pandoc -s -f markdown-raw_html -t man docs/mochi.7.md -o $(bin)/mochi.7
-	@mkdir -p $(HOME)/.local/share/man/man7 && \
-	    cp $(bin)/mochi.7 $(HOME)/.local/share/man/man7/mochi.7 && \
-	    echo "  installed to $(HOME)/.local/share/man/man7/mochi.7 (run \`man 7 mochi\` to view)"
 
 mochi.7: $(bin)/mochi.7
+
+# Install the four man pages for the invoking user. Deliberately not a
+# prerequisite of anything: the package rules need only the roff files under
+# $(bin), and a build must not write outside the tree.
+man-install: $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
+	mkdir -p $(HOME)/.local/share/man/man1 $(HOME)/.local/share/man/man5 $(HOME)/.local/share/man/man7 $(HOME)/.local/share/man/man8
+	cp $(bin)/mochictl.1 $(HOME)/.local/share/man/man1/
+	cp $(bin)/mochi-server.8 $(HOME)/.local/share/man/man8/
+	cp $(bin)/mochi.conf.5 $(HOME)/.local/share/man/man5/
+	cp $(bin)/mochi.7 $(HOME)/.local/share/man/man7/
 
 # --------------------------------------------------------------------------
 # Linux ARM cross-compile binaries
@@ -195,7 +210,8 @@ linux-arm-all: $(bin)/mochi-server-linux-arm64 $(bin)/mochi-server-linux-arm
 # --------------------------------------------------------------------------
 
 # AMD64 .deb package
-$(deb_amd64): $(bin)/mochi-server-linux-amd64 $(bin)/mochictl $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
+deb-amd64: $(bin)/mochi-server-linux-amd64 $(bin)/mochictl $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
+	mkdir $(build_linux_amd64)
 	mkdir -p $(build_linux_amd64)/usr/bin $(build_linux_amd64)/usr/sbin $(build_linux_amd64)/var/cache/mochi $(build_linux_amd64)/var/lib/mochi
 	chmod 0755 $(build_linux_amd64) $(build_linux_amd64)/usr $(build_linux_amd64)/usr/bin $(build_linux_amd64)/usr/sbin $(build_linux_amd64)/var
 	chmod 0750 $(build_linux_amd64)/var/cache/mochi $(build_linux_amd64)/var/lib/mochi
@@ -214,10 +230,9 @@ $(deb_amd64): $(bin)/mochi-server-linux-amd64 $(bin)/mochictl $(bin)/mochictl.1 
 	rm -rf $(build_linux_amd64)
 	ls -l $(deb_amd64)
 
-deb-amd64: $(deb_amd64)
-
 # ARM64 .deb package
-$(deb_arm64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
+deb-arm64: $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
+	mkdir $(build_linux_arm64)
 	mkdir -p $(build_linux_arm64)/usr/bin $(build_linux_arm64)/usr/sbin $(build_linux_arm64)/var/cache/mochi $(build_linux_arm64)/var/lib/mochi
 	chmod 0755 $(build_linux_arm64) $(build_linux_arm64)/usr $(build_linux_arm64)/usr/bin $(build_linux_arm64)/usr/sbin $(build_linux_arm64)/var
 	chmod 0750 $(build_linux_arm64)/var/cache/mochi $(build_linux_arm64)/var/lib/mochi
@@ -235,10 +250,9 @@ $(deb_arm64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)
 	rm -rf $(build_linux_arm64)
 	ls -l $(deb_arm64)
 
-deb-arm64: $(deb_arm64)
-
 # ARMHF .deb package
-$(deb_armhf): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
+deb-armhf: $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
+	mkdir $(build_linux_armhf)
 	mkdir -p $(build_linux_armhf)/usr/bin $(build_linux_armhf)/usr/sbin $(build_linux_armhf)/var/cache/mochi $(build_linux_armhf)/var/lib/mochi
 	chmod 0755 $(build_linux_armhf) $(build_linux_armhf)/usr $(build_linux_armhf)/usr/bin $(build_linux_armhf)/usr/sbin $(build_linux_armhf)/var
 	chmod 0750 $(build_linux_armhf)/var/cache/mochi $(build_linux_armhf)/var/lib/mochi
@@ -256,8 +270,6 @@ $(deb_armhf): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/moc
 	rm -rf $(build_linux_armhf)
 	ls -l $(deb_armhf)
 
-deb-armhf: $(deb_armhf)
-
 deb: deb-amd64 deb-arm64 deb-armhf
 
 # --------------------------------------------------------------------------
@@ -266,7 +278,7 @@ deb: deb-amd64 deb-arm64 deb-armhf
 
 # x86_64 .rpm package
 # Requires: apt install rpm
-$(rpm_x86_64): $(bin)/mochi-server-linux-amd64 $(bin)/mochictl $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
+rpm-x86_64: $(bin)/mochi-server-linux-amd64 $(bin)/mochictl $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
 	rm -rf $(rpmbuild_x86_64)
 	mkdir -p $(rpmbuild_x86_64)/SOURCES $(rpmbuild_x86_64)/SPECS $(rpmbuild_x86_64)/BUILD $(rpmbuild_x86_64)/RPMS $(rpmbuild_x86_64)/SRPMS
 	cp $(bin)/mochi-server-linux-amd64 $(rpmbuild_x86_64)/SOURCES/mochi-server
@@ -284,10 +296,8 @@ $(rpm_x86_64): $(bin)/mochi-server-linux-amd64 $(bin)/mochictl $(bin)/mochictl.1
 	rm -rf $(rpmbuild_x86_64)
 	ls -l $(rpm_x86_64)
 
-rpm-x86_64: $(rpm_x86_64)
-
 # aarch64 .rpm package
-$(rpm_aarch64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
+rpm-aarch64: $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
 	rm -rf $(rpmbuild_aarch64)
 	mkdir -p $(rpmbuild_aarch64)/SOURCES $(rpmbuild_aarch64)/SPECS $(rpmbuild_aarch64)/BUILD $(rpmbuild_aarch64)/RPMS $(rpmbuild_aarch64)/SRPMS
 	cp $(bin)/mochi-server-linux-arm64 $(rpmbuild_aarch64)/SOURCES/mochi-server
@@ -305,10 +315,8 @@ $(rpm_aarch64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bi
 	rm -rf $(rpmbuild_aarch64)
 	ls -l $(rpm_aarch64)
 
-rpm-aarch64: $(rpm_aarch64)
-
 # armv7hl .rpm package
-$(rpm_armv7hl): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
+rpm-armv7hl: $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
 	rm -rf $(rpmbuild_armv7hl)
 	mkdir -p $(rpmbuild_armv7hl)/SOURCES $(rpmbuild_armv7hl)/SPECS $(rpmbuild_armv7hl)/BUILD $(rpmbuild_armv7hl)/RPMS $(rpmbuild_armv7hl)/SRPMS
 	cp $(bin)/mochi-server-linux-arm $(rpmbuild_armv7hl)/SOURCES/mochi-server
@@ -326,8 +334,6 @@ $(rpm_armv7hl): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/m
 	rm -rf $(rpmbuild_armv7hl)
 	ls -l $(rpm_armv7hl)
 
-rpm-armv7hl: $(rpm_armv7hl)
-
 rpm: rpm-x86_64 rpm-aarch64 rpm-armv7hl
 
 # --------------------------------------------------------------------------
@@ -341,16 +347,14 @@ $(bin)/mochi-server.exe: $(go_sources_server) | $(bin)
 mochi-server.exe: $(bin)/mochi-server.exe
 
 # Windows MSI installer (requires wixl from msitools package on Linux, or WiX on Windows)
-$(msi): $(bin)/mochi-server.exe $(bin)/mochictl.exe
-	mkdir -p $(build_windows)
+msi: $(bin)/mochi-server.exe $(bin)/mochictl.exe
+	mkdir $(build_windows)
 	cp $(bin)/mochi-server.exe $(build_windows)/
 	cp $(bin)/mochictl.exe $(build_windows)/
 	cp build/msi/mochi.conf $(build_windows)/
 	wixl -v --ext ui -a x64 -D Version=$(version) -D SourceDir=$(build_windows) -o $(msi) build/msi/mochi.wxs
 	rm -rf $(build_windows)
 	ls -l $(msi)
-
-msi: $(msi)
 
 windows: $(bin)/mochi-server.exe
 
@@ -370,15 +374,11 @@ mochi-server-darwin-arm64: $(bin)/mochi-server-darwin-arm64
 
 # macOS .pkg installers
 # Requires: bomutils (/opt/bomutils), xar
-$(pkg_amd64): $(bin)/mochi-server-darwin-amd64 $(bin)/mochictl-darwin-amd64
+pkg-amd64: $(bin)/mochi-server-darwin-amd64 $(bin)/mochictl-darwin-amd64
 	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg $(bin)/mochi-server-darwin-amd64 $(version) amd64 $(pkg_amd64) $(bin)/mochictl-darwin-amd64
 
-$(pkg_arm64): $(bin)/mochi-server-darwin-arm64 $(bin)/mochictl-darwin-arm64
+pkg-arm64: $(bin)/mochi-server-darwin-arm64 $(bin)/mochictl-darwin-arm64
 	PATH="/opt/bomutils/bin:$$PATH" ./build/scripts/build-pkg $(bin)/mochi-server-darwin-arm64 $(version) arm64 $(pkg_arm64) $(bin)/mochictl-darwin-arm64
-
-pkg-amd64: $(pkg_amd64)
-
-pkg-arm64: $(pkg_arm64)
 
 pkg: pkg-amd64 pkg-arm64
 
@@ -497,9 +497,9 @@ release:
 	@: > $(timing)
 	@$(MAKE) --no-print-directory release-tree
 	@trap '$(MAKE) release-clean' EXIT; \
-	t=$$(date +%s); $(MAKE) clean release-clean || exit 1; echo ">>> phase clean: $$(($$(date +%s)-t))s" | tee -a $(timing); \
-	t=$$(date +%s); $(MAKE) -j$(JOBS) release-build || exit 1; echo ">>> phase build (incl docker push): $$(($$(date +%s)-t))s" | tee -a $(timing); \
-	t=$$(date +%s); $(MAKE) release-publish || exit 1; echo ">>> phase publish (reindex + rsync): $$(($$(date +%s)-t))s" | tee -a $(timing); \
+	t=$$(date +%s); $(MAKE) clean release-clean STAGE=$(stage) || exit 1; echo ">>> phase clean: $$(($$(date +%s)-t))s" | tee -a $(timing); \
+	t=$$(date +%s); $(MAKE) -j$(JOBS) release-build STAGE=$(stage) || exit 1; echo ">>> phase build (incl docker push): $$(($$(date +%s)-t))s" | tee -a $(timing); \
+	t=$$(date +%s); $(MAKE) release-publish STAGE=$(stage) || exit 1; echo ">>> phase publish (reindex + rsync): $$(($$(date +%s)-t))s" | tee -a $(timing); \
 	echo; echo "=== release $(version) timing summary ==="; cat $(timing)
 
 # Record what the release is built from: `make release` builds the WORKING TREE,
@@ -524,10 +524,12 @@ release-tree:
 	    echo "$$foreign" | sed 's/^/>>>     /' | tee -a $(timing); \
 	fi
 
-# Remove the release temporaries from /tmp. Every path is versioned, so this
-# scrubs all versions - stranded packages from earlier releases are what filled
-# /tmp. $(timing) is kept: the post-release report reads it after this runs.
+# Remove every release staging root except the one named by STAGE, which the
+# running release is about to use; the exit trap calls this with STAGE unset,
+# so the current root goes too. The fixed names are what earlier releases left
+# behind. $(timing) is kept: the post-release report reads it after this runs.
 release-clean:
+	-for root in /tmp/mochi-release.*; do [ "$$root" = "$(STAGE)" ] || rm -rf "$$root"; done
 	-rm -rf /tmp/mochi-server_* /tmp/mochi-server-*.rpm /tmp/mochi-rpmbuild-*
 
 # Parallel-safe: each rpm target has its own _topdir, each deb its own staging
@@ -544,6 +546,11 @@ release-publish:
 	cp $(deb_amd64) $(deb_arm64) $(deb_armhf) ../packages/apt/pool/main
 	@t=$$(date +%s); ./build/scripts/apt-repository-update ../packages/apt `cat local/gpg.txt | tr -d '\n'` && echo ">>> apt reindex (scan + gpg sign): $$(($$(date +%s)-t))s" | tee -a $(timing)
 	echo '{"tracks": {"production": "$(version)"}}' > ../packages/apt/versions.json
+	# Client-side files and the binary keyring from source, like mochi.repo
+	# below: a tree wipe or a key rotation would otherwise leave the apt channel
+	# stale with nothing to diff.
+	cp build/apt/mochi.list build/apt/mochi.sources ../packages/apt/
+	gpg --export `cat local/gpg.txt | tr -d '\n'` > ../packages/apt/mochi.gpg
 	rm -f ../packages/rpm/Packages/mochi-server-*.rpm
 	cp $(rpm_x86_64) $(rpm_aarch64) $(rpm_armv7hl) ../packages/rpm/Packages
 	# Publish the repo definition from source, not from the untracked packages

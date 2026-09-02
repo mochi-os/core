@@ -1,0 +1,1 @@
+deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/mochi.gpg] https://packages.mochi-os.org/apt stable main

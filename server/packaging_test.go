@@ -19,6 +19,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -243,5 +244,246 @@ func TestComposeExamplePinsATrackTag(t *testing.T) {
 	}
 	if !strings.Contains(compose, "mochi-server:production") {
 		t.Errorf("compose example does not pin the production tag")
+	}
+}
+
+// packaging_stage is the staging root the dry runs are handed, so no make -n
+// here ever creates one.
+const packaging_stage = "/tmp/mochi-stage-probe"
+
+// packaging_dry runs `make -n` on the core Makefile with a fixed staging root
+// and returns what it would run.
+func packaging_dry(t *testing.T, arguments ...string) string {
+	t.Helper()
+	command := exec.Command("make", append(append([]string{"-n", "-C", ".."}, arguments...), "STAGE="+packaging_stage)...)
+	command.Env = append(os.Environ(), "MAKEFLAGS=")
+	out, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n %v: %v\n%s", arguments, err, out)
+	}
+	return string(out)
+}
+
+// TestReleaseStagesUnderAPrivateRoot. Every package was staged under a fixed
+// name in /tmp, where any local account could pre-create the directory and
+// plant files that dpkg-deb would pack and gpg would sign. Staging now happens
+// under one private mktemp root the release hands to its sub-makes, and a
+// staging directory that already exists is an error.
+func TestReleaseStagesUnderAPrivateRoot(t *testing.T) {
+	makefile := packaging_read(t, "Makefile")
+	if fixed := regexp.MustCompile(`(?m)^\w+\s*=\s*/tmp/`).FindString(makefile); fixed != "" {
+		t.Errorf("a release path is still fixed under /tmp: %q", strings.TrimSpace(fixed))
+	}
+	if !strings.Contains(makefile, "mktemp -d /tmp/mochi-release.") {
+		t.Errorf("no private staging root is made")
+	}
+	for _, phase := range []string{"release-build STAGE=$(stage)", "release-publish STAGE=$(stage)", "release-clean STAGE=$(stage)"} {
+		if !strings.Contains(makefile, phase) {
+			t.Errorf("release does not hand its root to the sub-make: %s", phase)
+		}
+	}
+	out := packaging_dry(t, "-B", "deb-amd64")
+	if !strings.Contains(out, "mkdir "+packaging_stage+"/mochi-server_") {
+		t.Errorf("the deb staging directory is not created with a plain mkdir under the root:\n%s", out)
+	}
+	if strings.Contains(out, " /tmp/mochi-server_") {
+		t.Errorf("the deb recipe still names a fixed /tmp path")
+	}
+	// A rule named by its output path expands the root when the Makefile is
+	// read, so a build that stages nothing would make a root on every call.
+	before, _ := filepath.Glob("/tmp/mochi-release.*")
+	command := exec.Command("make", "-n", "-B", "-C", "..", "../bin/mochi-server")
+	command.Env = append(os.Environ(), "MAKEFLAGS=")
+	if out, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("make -n ../bin/mochi-server: %v\n%s", err, out)
+	}
+	after, _ := filepath.Glob("/tmp/mochi-release.*")
+	if len(after) > len(before) {
+		t.Errorf("a build that stages nothing made a staging root: %v", after)
+		for _, root := range after[len(before):] {
+			os.RemoveAll(root)
+		}
+	}
+}
+
+// TestManPagesInstallOnlyOnRequest. Building a man page copied it into the
+// invoking user's home directory, and every package rule depends on the man
+// pages, so a release wrote outside the tree. The copy is its own target.
+func TestManPagesInstallOnlyOnRequest(t *testing.T) {
+	if out := packaging_dry(t, "-B", "../bin/mochictl.1"); strings.Contains(out, ".local/share/man") {
+		t.Errorf("building the man page still installs it:\n%s", out)
+	}
+	out := packaging_dry(t, "-B", "man-install")
+	for _, page := range []string{"man1/", "man5/", "man7/", "man8/"} {
+		if !strings.Contains(out, ".local/share/man/"+page) {
+			t.Errorf("man-install does not copy into %s", page)
+		}
+	}
+}
+
+// TestAptIndexNeverListsItself. The index script hashed every file under the
+// suite, including the previous run's InRelease, and then signed that list into
+// the new InRelease: a signed statement about itself that could never be true.
+func TestAptIndexNeverListsItself(t *testing.T) {
+	script := packaging_read(t, "build", "scripts", "apt-repository-update")
+	if !strings.Contains(script, "rm -f Release InRelease Release.gpg") {
+		t.Errorf("the previous signed outputs are not removed before hashing")
+	}
+	start := strings.Index(script, "do_hash() {")
+	end := strings.Index(script[start:], "\n}\n")
+	if start < 0 || end < 0 {
+		t.Fatalf("do_hash not found in the script")
+	}
+	function := script[start : start+end+3]
+	suite := t.TempDir()
+	for _, name := range []string{"Packages", "InRelease", "Release.gpg", "Release.base"} {
+		if err := os.WriteFile(filepath.Join(suite, name), []byte(name), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command := exec.Command("sh", "-c", function+"\ndo_hash SHA256 sha256sum")
+	command.Dir = suite
+	if out, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("do_hash: %v\n%s", err, out)
+	}
+	release, err := os.ReadFile(filepath.Join(suite, "Release"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(release), " Packages") {
+		t.Errorf("Release does not list Packages:\n%s", release)
+	}
+	for _, signed := range []string{"InRelease", "Release.gpg"} {
+		if strings.Contains(string(release), " "+signed) {
+			t.Errorf("Release lists %s, a signed output of the same run:\n%s", signed, release)
+		}
+	}
+}
+
+// TestReleasePublishesTheAptClientFiles. The apt list, sources and keyring
+// lived only in the untracked packages tree, so a tree wipe or a key rotation
+// left the apt channel stale with nothing to diff.
+func TestReleasePublishesTheAptClientFiles(t *testing.T) {
+	list := packaging_read(t, "build", "apt", "mochi.list")
+	if !strings.Contains(list, "signed-by=/etc/apt/keyrings/mochi.gpg") || !strings.Contains(list, "https://packages.mochi-os.org/apt stable main") {
+		t.Errorf("mochi.list does not name the keyring and the suite:\n%s", list)
+	}
+	sources := packaging_read(t, "build", "apt", "mochi.sources")
+	if !strings.Contains(sources, "Signed-By: /etc/apt/keyrings/mochi.gpg") || !strings.Contains(sources, "Suites: stable") {
+		t.Errorf("mochi.sources does not name the keyring and the suite:\n%s", sources)
+	}
+	out := packaging_dry(t, "release-publish")
+	if !strings.Contains(out, "cp build/apt/mochi.list build/apt/mochi.sources ../packages/apt/") {
+		t.Errorf("release-publish does not copy the client files")
+	}
+	if !strings.Contains(out, "> ../packages/apt/mochi.gpg") {
+		t.Errorf("release-publish does not export the binary keyring")
+	}
+}
+
+// TestPkgBuilderFailsOnArchiveErrors. The cpio pipelines discarded stderr
+// under a set -e with no pipefail, so an unreadable file produced a short
+// payload that was signed and shipped.
+func TestPkgBuilderFailsOnArchiveErrors(t *testing.T) {
+	script := packaging_read(t, "build", "scripts", "build-pkg")
+	if !strings.Contains(script, "set -euo pipefail") {
+		t.Errorf("build-pkg does not fail on a pipeline error")
+	}
+	if strings.Contains(script, "cpio -o --format odc 2>/dev/null") {
+		t.Errorf("build-pkg still silences cpio")
+	}
+}
+
+// TestUninstallerMatchesTheProcessByName. pkill -f matched any command line
+// mentioning the binary's path and killed it as root.
+func TestUninstallerMatchesTheProcessByName(t *testing.T) {
+	script := packaging_read(t, "build", "pkg", "mochi-uninstall")
+	for _, pattern := range []string{"pkill -f", "pkill -CONT -f", "pkill -KILL -f", "pgrep -f"} {
+		if strings.Contains(script, pattern) {
+			t.Errorf("uninstaller still matches by command line: %s", pattern)
+		}
+	}
+	if !strings.Contains(script, "pgrep -x mochi-server") {
+		t.Errorf("uninstaller does not match the process by name")
+	}
+}
+
+// TestPreinstallProbesIdsByAttribute. The free-id loops read a path that is
+// not a record, so they never iterated.
+func TestPreinstallProbesIdsByAttribute(t *testing.T) {
+	script := packaging_read(t, "build", "pkg", "scripts", "preinstall")
+	for _, probe := range []string{"dscl . -search /Groups PrimaryGroupID", "dscl . -search /Users UniqueID"} {
+		if !strings.Contains(script, probe) {
+			t.Errorf("preinstall does not probe with %q", probe)
+		}
+	}
+	for _, path := range []string{"/Groups/gid/", "/Users/uid/"} {
+		if strings.Contains(script, path) {
+			t.Errorf("preinstall still reads the non-record path %s", path)
+		}
+	}
+}
+
+// TestUninstallerKeepsTheConfiguration. The uninstaller preserved the data
+// and deleted the configuration the data is useless without.
+func TestUninstallerKeepsTheConfiguration(t *testing.T) {
+	script := packaging_read(t, "build", "pkg", "mochi-uninstall")
+	if strings.Contains(script, "rm -f /etc/mochi/mochi.conf\n") {
+		t.Errorf("uninstaller still deletes /etc/mochi/mochi.conf")
+	}
+	if !strings.Contains(script, "kept at /etc/mochi/mochi.conf") {
+		t.Errorf("uninstaller does not tell the operator the configuration was kept")
+	}
+}
+
+// TestPkgPreservesTheInstalledConfiguration. The payload carried the live
+// configuration file, so every upgrade replaced the operator's settings with
+// the defaults. The default now ships beside the live file and postinstall
+// copies it in only when nothing is there.
+func TestPkgPreservesTheInstalledConfiguration(t *testing.T) {
+	builder := packaging_read(t, "build", "scripts", "build-pkg")
+	if strings.Contains(builder, "/private/etc/mochi/mochi.conf\"") {
+		t.Errorf("the payload still carries the live configuration file")
+	}
+	if !strings.Contains(builder, "/private/etc/mochi/mochi.conf.default\"") {
+		t.Errorf("the payload does not carry the default beside the live file")
+	}
+	script := packaging_read(t, "build", "pkg", "scripts", "postinstall")
+	start := strings.Index(script, "if [ ! -f /etc/mochi/mochi.conf ]")
+	if start < 0 {
+		t.Fatalf("postinstall does not guard the configuration copy")
+	}
+	block := script[start : start+strings.Index(script[start:], "fi\n")+3]
+	root := t.TempDir()
+	block = strings.ReplaceAll(block, "/etc/mochi", root)
+	if err := os.WriteFile(filepath.Join(root, "mochi.conf.default"), []byte("default"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, round := range []struct{ round, want string }{{"first install", "default"}, {"upgrade", "edited"}} {
+		round, want := round.round, round.want
+		if round == "upgrade" {
+			if err := os.WriteFile(filepath.Join(root, "mochi.conf"), []byte("edited"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if out, err := exec.Command("sh", "-c", block).CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v\n%s", round, err, out)
+		}
+		got, err := os.ReadFile(filepath.Join(root, "mochi.conf"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Errorf("%s: configuration is %q, want %q", round, got, want)
+		}
+	}
+}
+
+// TestDeployScriptNamesNoRetiredHost. The header still described a retired
+// server as a standing backup.
+func TestDeployScriptNamesNoRetiredHost(t *testing.T) {
+	script := packaging_read(t, "build", "scripts", "deploy")
+	if strings.Contains(strings.ToLower(script), "wasabi") {
+		t.Errorf("deploy still names the retired server")
 	}
 }

@@ -13,6 +13,13 @@ chmod -R go-rwx /var/lib/mochi /var/cache/mochi
 # traverse only; the server sets the mode of run/ itself.
 chmod 0710 /var/lib/mochi
 
+# The payload carries the default configuration beside the live file, so an
+# upgrade never overwrites the operator's settings; a first install copies it
+# into place.
+if [ ! -f /etc/mochi/mochi.conf ]; then
+    cp /etc/mochi/mochi.conf.default /etc/mochi/mochi.conf
+fi
+
 # Load the launchd service
 launchctl bootout system/org.mochi-os.server 2>/dev/null
 launchctl bootstrap system /Library/LaunchDaemons/org.mochi-os.server.plist

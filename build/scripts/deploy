@@ -2,7 +2,7 @@
 # Deploy the published mochi-server package to yuzu via its local
 # file:/srv/apt repo (already rsync'd there by `make release`), verified. Each
 # `apt install` runs the package prerm/postinst, which gracefully restarts
-# mochi-server. Wasabi is frozen as a pre-decouple backup and is not deployed.
+# mochi-server.
 #
 # Invoked by `make -C core deploy`, the single allow-listed entry point for the
 # production deploy: the ssh calls run inside the allowed make process rather

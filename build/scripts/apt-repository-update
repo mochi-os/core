@@ -7,7 +7,7 @@ do_hash() {
 	echo "${HASH_NAME}:" >> Release
 	for f in $(find -type f); do
 		f=$(echo $f | cut -c3-) # remove ./ prefix
-		if [ "$f" = "Release" -o "$f" = "Release.base" ]; then
+		if [ "$f" = "Release" -o "$f" = "Release.base" -o "$f" = "InRelease" -o "$f" = "Release.gpg" ]; then
 			continue
 		fi
 		echo " $(${HASH_CMD} ${f}  | cut -d" " -f1) $(wc -c $f)" >> Release
@@ -28,7 +28,9 @@ for arch in amd64 arm64 armhf; do
 done
 
 cd dists/stable
-rm -f Release
+# Both signed outputs go before hashing: a leftover InRelease would otherwise
+# be listed in the new Release with the old file's hash, then signed.
+rm -f Release InRelease Release.gpg
 cp Release.base Release
 echo -n "Date: " >> Release
 date -Ru >> Release

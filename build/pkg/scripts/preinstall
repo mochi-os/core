@@ -1,25 +1,24 @@
 #!/bin/bash
 
-# Create mochi user and group if they don't exist
-if ! dscl . -read /Groups/_mochi &>/dev/null; then
-    # Find an unused GID
-    GID=400
-    while dscl . -read /Groups/gid/$GID &>/dev/null 2>&1; do
-        GID=$((GID + 1))
+# Create the _mochi group and user if they don't exist, on one id that no
+# user or group holds. dscl -search matches an attribute value; -read takes a
+# record path, and gid/<n> under /Groups never named one.
+if ! dscl . -read /Groups/_mochi &>/dev/null || ! dscl . -read /Users/_mochi &>/dev/null; then
+    ID=400
+    while dscl . -search /Groups PrimaryGroupID "$ID" | grep -q PrimaryGroupID || dscl . -search /Users UniqueID "$ID" | grep -q UniqueID; do
+        ID=$((ID + 1))
     done
+fi
+
+if ! dscl . -read /Groups/_mochi &>/dev/null; then
     dscl . -create /Groups/_mochi
-    dscl . -create /Groups/_mochi PrimaryGroupID $GID
+    dscl . -create /Groups/_mochi PrimaryGroupID $ID
 fi
 
 if ! dscl . -read /Users/_mochi &>/dev/null; then
-    # Find an unused UID
-    UID_NUM=400
-    while dscl . -read /Users/uid/$UID_NUM &>/dev/null 2>&1; do
-        UID_NUM=$((UID_NUM + 1))
-    done
     GID=$(dscl . -read /Groups/_mochi PrimaryGroupID | awk '{print $2}')
     dscl . -create /Users/_mochi
-    dscl . -create /Users/_mochi UniqueID $UID_NUM
+    dscl . -create /Users/_mochi UniqueID $ID
     dscl . -create /Users/_mochi PrimaryGroupID $GID
     dscl . -create /Users/_mochi UserShell /usr/bin/false
     dscl . -create /Users/_mochi NFSHomeDirectory /var/lib/mochi

@@ -47,8 +47,14 @@ func directories_ensure() error {
 		warn("directories.ensure: chown %s: %v", data_dir, err)
 	}
 
-	// setgid first, while still root: after setuid the process cannot regain root
-	// and the setgid would fail.
+	// Supplementary groups, then setgid, then setuid, all while still root:
+	// after setuid the process cannot regain root and the earlier two would
+	// fail. Without the setgroups the process keeps whatever groups root
+	// started with (root, disk, a --group-add), and files those groups can
+	// read stay readable after the drop.
+	if err := syscall.Setgroups([]int{gid}); err != nil {
+		return fmt.Errorf("setgroups(%d): %w", gid, err)
+	}
 	if err := syscall.Setgid(gid); err != nil {
 		return fmt.Errorf("setgid(%d): %w", gid, err)
 	}

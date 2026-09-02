@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -1335,9 +1336,34 @@ func user_purge_local(id string) (string, error) {
 
 	db.exec("delete from users where uid=?", id)
 	db_purge_prefix(fmt.Sprintf("users/%s", id))
-	os.RemoveAll(fmt.Sprintf("%s/users/%s", data_dir, id))
+	// The one step that leaves the process: a failure here keeps the account's
+	// databases readable on disk with no row left to say they should not be.
+	if err := os.RemoveAll(fmt.Sprintf("%s/users/%s", data_dir, id)); err != nil {
+		warn("User purge %s: directory not removed: %v", id, err)
+	}
 
 	return target.Username, nil
+}
+
+// users_orphans names user directories with no users row. A purge whose
+// directory removal failed leaves the account's databases on disk with nothing
+// else to notice, and the backup job keeps copying them. Runs once at startup;
+// it reports and never deletes, since a directory is the one thing a wrong
+// guess cannot get back.
+func users_orphans() {
+	entries, err := os.ReadDir(filepath.Join(data_dir, "users"))
+	if err != nil {
+		return
+	}
+	db := db_open("db/users.db")
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if exists, _ := db.exists("select 1 from users where uid=?", entry.Name()); !exists {
+			info("User directory %s has no users row: a purge did not finish, remove it by hand", entry.Name())
+		}
+	}
 }
 
 // user_is_fresh reports whether a local user shows no sign of activity, so

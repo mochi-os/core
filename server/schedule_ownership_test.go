@@ -170,4 +170,94 @@ func TestScheduleGuardsDoNotFailOpenOnNil(t *testing.T) {
 			t.Errorf("%s does not refuse a nil user", name)
 		}
 	}
+	method := text[strings.Index(text, "func (se *SlScheduledEvent) sl_cancel("):]
+	method = method[:strings.Index(method, "\n}")]
+	if !strings.Contains(method, "user == nil || se.user != user.UID") {
+		t.Error("sl_cancel does not refuse a nil user: the object a list returns cancels for anyone")
+	}
+}
+
+// owner_test_list runs mochi.schedule.list on the thread and returns the events.
+func owner_test_list(t *testing.T, thread *sl.Thread) []*SlScheduledEvent {
+	t.Helper()
+	value, err := api_schedule_list(thread, sl.NewBuiltin("schedule.list", nil), nil, nil)
+	if err != nil {
+		t.Fatalf("schedule.list: %v", err)
+	}
+	list, ok := value.(*sl.List)
+	if !ok {
+		t.Fatalf("schedule.list returned %T", value)
+	}
+	var events []*SlScheduledEvent
+	for i := 0; i < list.Len(); i++ {
+		event, ok := list.Index(i).(*SlScheduledEvent)
+		if !ok {
+			t.Fatalf("element %d is %T", i, list.Index(i))
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+// TestScheduleListIsEmptyForAnAnonymousCaller. Rows with an empty user are what
+// anonymous callers create; listing them for the next anonymous caller hands
+// every visitor every other visitor's events, with cancel on each.
+func TestScheduleListIsEmptyForAnAnonymousCaller(t *testing.T) {
+	setup_replication_test(t)
+	db_create()
+
+	owner_test_row(t, "", "reader")
+	owner_test_row(t, "victim", "reader")
+	if events := owner_test_list(t, owner_test_thread("reader", nil, true)); len(events) != 0 {
+		t.Errorf("an anonymous caller listed %d event(s): %v", len(events), events)
+	}
+	var nobody *User
+	if events := owner_test_list(t, owner_test_thread("reader", nobody, false)); len(events) != 0 {
+		t.Errorf("a typed-nil user listed %d event(s)", len(events))
+	}
+	owner := &User{UID: "victim", Username: "victim@example.com"}
+	if events := owner_test_list(t, owner_test_thread("reader", owner, false)); len(events) != 1 {
+		t.Errorf("the owner listed %d event(s), want their one", len(events))
+	}
+}
+
+// TestScheduleEventCancelChecksOwnership. The object a list returns carries
+// cancel(); from any thread but the owner's it must refuse, as
+// mochi.schedule.cancel does, and leave the row alone.
+func TestScheduleEventCancelChecksOwnership(t *testing.T) {
+	setup_replication_test(t)
+	db_create()
+
+	owner := &User{UID: "victim", Username: "victim@example.com"}
+	id := owner_test_row(t, owner.UID, "reader")
+	events := owner_test_list(t, owner_test_thread("reader", owner, false))
+	if len(events) != 1 || events[0].id != id {
+		t.Fatalf("the owner's list is %v, want the one row %d", events, id)
+	}
+	event := events[0]
+	cancel := func(thread *sl.Thread) {
+		t.Helper()
+		if _, err := event.sl_cancel(thread, sl.NewBuiltin("cancel", nil), nil, nil); err != nil {
+			t.Fatalf("cancel: %v", err)
+		}
+	}
+
+	stranger := &User{UID: "stranger", Username: "stranger@example.com"}
+	cancel(owner_test_thread("reader", stranger, false))
+	if schedule_get(id) == nil {
+		t.Fatal("a different user cancelled the event through the object")
+	}
+	cancel(owner_test_thread("reader", nil, true))
+	if schedule_get(id) == nil {
+		t.Fatal("an anonymous caller cancelled the event through the object")
+	}
+	cancel(owner_test_thread("other", owner, false))
+	if schedule_get(id) == nil {
+		t.Fatal("a different app cancelled the event through the object")
+	}
+
+	cancel(owner_test_thread("reader", owner, false))
+	if schedule_get(id) != nil {
+		t.Error("the owner could not cancel their own event through the object")
+	}
 }

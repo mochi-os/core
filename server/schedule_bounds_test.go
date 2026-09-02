@@ -387,3 +387,69 @@ func TestScheduleEveryHasAnIntervalFloor(t *testing.T) {
 		t.Errorf("a daily interval came back as %v, want 86400 untouched", value)
 	}
 }
+
+// TestScheduleClaimSkipsMissedRepeats. A recurring row claimed after an outage
+// longer than its interval lands strictly after now, on its own phase: one
+// firing, not one per missed interval.
+func TestScheduleClaimSkipsMissedRepeats(t *testing.T) {
+	schedule_bounds_setup(t)
+	interval := int64(3600)
+	moment := now()
+	start := moment - 3*interval
+	id, _ := schedule_create("u-schedule", "scheduler", start, "tick", "{}", interval)
+	if !schedule_claim(id, interval) {
+		t.Fatal("an overdue row was not claimed")
+	}
+	if schedule_claim(id, interval) {
+		t.Error("the row was claimed a second time: every missed interval replays")
+	}
+	due := schedule_get(id).Due
+	if due <= now() {
+		t.Errorf("due %d is not after now", due)
+	}
+	if (due-start)%interval != 0 {
+		t.Errorf("due %d left the row's phase", due)
+	}
+	if due > moment+interval {
+		t.Errorf("due %d skipped past the next slot %d", due, moment+interval)
+	}
+
+	// Exactly on the boundary: a row due now is claimed once and moves on.
+	edge, _ := schedule_create("u-schedule", "scheduler", now(), "tick", "{}", interval)
+	if !schedule_claim(edge, interval) {
+		t.Fatal("a row due now was not claimed")
+	}
+	if schedule_claim(edge, interval) {
+		t.Error("a row due now was claimed twice")
+	}
+}
+
+// TestScheduleAtAcceptsADueTimePast2038. The due time is a unix timestamp; an
+// int32 parse refused anything past 2038-01-19 and capped delay and interval
+// at 68 years.
+func TestScheduleAtAcceptsADueTimePast2038(t *testing.T) {
+	thread := schedule_bounds_setup(t)
+	far := now() + 20*365*24*3600
+	at := sl.NewBuiltin("mochi.schedule.at", api_schedule_at)
+	value, err := api_schedule_at(thread, at, sl.Tuple{sl.String("tick"), sl.NewDict(0), sl.MakeInt64(far)}, nil)
+	if err != nil {
+		t.Fatalf("schedule.at twenty years out: %v", err)
+	}
+	event, ok := value.(*SlScheduledEvent)
+	if !ok {
+		t.Fatalf("schedule.at returned %T", value)
+	}
+	if event.due != far {
+		t.Errorf("due %d, want %d", event.due, far)
+	}
+	got, err := api_schedule_get(thread, sl.NewBuiltin("mochi.schedule.get", api_schedule_get), sl.Tuple{sl.MakeInt64(event.id)}, nil)
+	if err != nil {
+		t.Fatalf("schedule.get: %v", err)
+	}
+	if stored, ok := got.(*SlScheduledEvent); !ok || stored.due != far {
+		t.Errorf("get returned %v, want due %d", got, far)
+	}
+	if _, err := api_schedule_at(thread, at, sl.Tuple{sl.String("tick"), sl.NewDict(0), sl.String("soon")}, nil); err == nil {
+		t.Error("a non-integer due time was accepted")
+	}
+}

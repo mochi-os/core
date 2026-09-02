@@ -282,12 +282,17 @@ func time_local(u *User, t int64) string {
 	}
 
 	l, err := time.LoadLocation(timezone)
-	if err == nil {
-		return time.Unix(t, 0).In(l).Format(time.DateTime)
-	} else {
-		warn("Invalid time zone %q:", err)
-		return time.Unix(t, 0).Format(time.DateTime)
+	if err != nil {
+		// The zone is the user's own preference, so a bad one is their input,
+		// not a server fault: no warn, and no administrator email for it.
+		uid := ""
+		if u != nil {
+			uid = u.UID
+		}
+		debug("Invalid time zone %q for user %q: %v", timezone, uid, err)
+		return time.Unix(t, 0).UTC().Format(time.DateTime)
 	}
+	return time.Unix(t, 0).In(l).Format(time.DateTime)
 }
 
 func uid() string {
@@ -380,8 +385,11 @@ func unzip(file string, destination string, maximum int64) error {
 			}
 		}
 
-		// Create file within root (os.Root automatically prevents traversal)
-		d, err := root.OpenFile(f.Name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		// Create file within root (os.Root automatically prevents traversal),
+		// at a fixed mode rather than the archive's: the header's permission
+		// bits would carry through minus the umask, and os.Root refuses setuid,
+		// setgid and sticky outright, so one such entry aborted the install.
+		d, err := root.OpenFile(f.Name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 		if err != nil {
 			return err
 		}

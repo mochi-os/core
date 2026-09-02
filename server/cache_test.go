@@ -271,3 +271,100 @@ func path_has(path, element string) bool {
 	}
 	return false
 }
+
+// cache_read_thread builds the Starlark context mochi.cache.read runs under,
+// over a fresh data and cache directory.
+func cache_read_thread(t *testing.T) *sl.Thread {
+	t.Helper()
+	tmp := t.TempDir()
+	original_data, original_cache := data_dir, cache_dir
+	data_dir, cache_dir = tmp, filepath.Join(tmp, "cache")
+	t.Cleanup(func() { data_dir, cache_dir = original_data, original_cache })
+	user := &User{UID: "reader", Username: "reader@example.com"}
+	if err := os.MkdirAll(filepath.Join(data_dir, "users", user.UID), 0755); err != nil {
+		t.Fatal(err)
+	}
+	thread := &sl.Thread{Name: "test"}
+	thread.SetLocal("user", user)
+	thread.SetLocal("app", create_external_app("reader"))
+	return thread
+}
+
+// TestCacheReadIsBoundedByDefault. An entry can be as large as object_maximum
+// and the read lands whole on the heap, so a call with no maximum gets the
+// default ceiling; an explicit larger one is honoured, since the caller asked.
+func TestCacheReadIsBoundedByDefault(t *testing.T) {
+	thread := cache_read_thread(t)
+	saved := cache_read_maximum
+	cache_read_maximum = 1024
+	defer func() { cache_read_maximum = saved }()
+
+	write := func(name string, size int) {
+		t.Helper()
+		path, err := cache_file(thread, name)
+		if err != nil {
+			t.Fatalf("cache_file: %v", err)
+		}
+		os.MkdirAll(filepath.Dir(path), 0755)
+		if err := os.WriteFile(path, make([]byte, size), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func(name string, maximum int64) sl.Value {
+		t.Helper()
+		var kwargs []sl.Tuple
+		if maximum > 0 {
+			kwargs = append(kwargs, sl.Tuple{sl.String("maximum"), sl.MakeInt64(maximum)})
+		}
+		value, err := api_cache_read(thread, sl.NewBuiltin("mochi.cache.read", api_cache_read), sl.Tuple{sl.String(name)}, kwargs)
+		if err != nil {
+			t.Fatalf("cache.read %s: %v", name, err)
+		}
+		return value
+	}
+	write("large", int(cache_read_maximum)+1)
+	write("small", 16)
+	if value := read("large", 0); value != sl.None {
+		t.Errorf("an entry over the default ceiling was read with no maximum: %T", value)
+	}
+	if value := read("large", cache_read_maximum*2); value == sl.None {
+		t.Error("an explicit larger maximum was not honoured")
+	}
+	if value := read("small", 0); value == sl.None {
+		t.Error("a small entry was refused with no maximum")
+	}
+}
+
+// TestCacheEvictSparesLiveTransfers. A .partial or .lock inside cache_grace is
+// a transfer in flight: not counted and not a candidate, however old the
+// entries around it. Past the grace it is abandoned and reclaimed, since
+// nothing else ever removes one.
+func TestCacheEvictSparesLiveTransfers(t *testing.T) {
+	orig_dir, orig_budget := cache_dir, cache_budget
+	cache_dir = t.TempDir()
+	defer func() { cache_dir, cache_budget = orig_dir, orig_budget }()
+
+	moment := time.Now()
+	live := cache_test_write(t, "u", "app", "big.abc.partial", 100, moment.Add(-10*time.Minute))
+	lock := cache_test_write(t, "u", "app", "log.lock", 1, moment.Add(-10*time.Minute))
+	stale := cache_test_write(t, "u", "app", "old.def.partial", 100, moment.Add(-2*time.Hour))
+	entry := cache_test_write(t, "u", "app", "entry", 100, moment.Add(-time.Minute))
+	cache_budget = 0
+
+	if measured := cache_measure(); measured != 200 {
+		t.Errorf("cache_measure counted %d bytes, want 200: the entry and the abandoned partial", measured)
+	}
+	cache_evict()
+	if !file_exists(live) {
+		t.Error("a partial ten minutes old was evicted from under its transfer")
+	}
+	if !file_exists(lock) {
+		t.Error("a live append lock was evicted, letting a second appender past it")
+	}
+	if file_exists(stale) {
+		t.Error("a partial two hours old was not reclaimed")
+	}
+	if file_exists(entry) {
+		t.Error("the finished entry survived a zero budget")
+	}
+}

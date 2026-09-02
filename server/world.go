@@ -34,6 +34,7 @@ const (
 	world_seen_expiry     = 2700 // seconds before an unrefreshed row leaves the table: three missed 15-minute floors
 	world_services_most   = 16   // services one world may announce: a bound, not a target
 	world_name_most       = 64   // runes in a display name: it renders on every server's join page
+	world_address_most    = 255  // bytes in an address: a host, host:port or URL; the url validator alone allows 10000
 
 	// world_ids_most bounds distinct worlds one peer may hold rows for: the
 	// per-world debounce is keyed on the id, so a caller whose id varies writes a
@@ -41,6 +42,11 @@ const (
 	// never the push refused.
 	world_ids_most = 100
 )
+
+// world_rows_most bounds the table as a whole. The per-peer cap is no bound
+// when every fresh peer key is a new peer, so past this the least recently
+// seen rows go, whichever peer holds them. A var only so tests can lower it.
+var world_rows_most int64 = 10000
 
 // world_service is one hosted game's slice of an announcement.
 type world_service struct {
@@ -111,7 +117,7 @@ var match_world_address_scheme = regexp.MustCompile(`(?i)^([a-z][a-z0-9+.-]*):`)
 // passes it, and the listing is gossiped on and rendered on other hosts' join
 // pages.
 func world_address_valid(address string) bool {
-	if address == "" || !valid(address, "url") {
+	if address == "" || len(address) > world_address_most || !valid(address, "url") {
 		return false
 	}
 	found := match_world_address_scheme.FindStringSubmatch(address)
@@ -175,6 +181,11 @@ func world_store(peer, id, name, address string, version int64, services string)
 		if db.integer("select count(*) from worlds where peer=?", peer) >= world_ids_most {
 			db.exec(`delete from worlds where peer=? and world in (
 				select world from worlds where peer=? order by seen limit 1)`, peer, peer)
+		}
+		// The table as a whole: a set of fresh peer ids passes the per-peer cap
+		// every time, so the oldest rows across all peers make room.
+		if excess := int64(db.integer("select count(*) from worlds")) - world_rows_most + 1; excess > 0 {
+			db.exec("delete from worlds where rowid in (select rowid from worlds order by seen limit ?)", excess)
 		}
 	}
 
@@ -285,6 +296,16 @@ var rate_limit_world_gossip = &rate_limiter{
 	window:  60,
 }
 
+// rate_limit_world_inbound bounds inbound gossip across all peers, since the
+// per-peer limiter is no bound on a set of fresh peer keys. One shared key,
+// sized well above an honest population: every world republishes at most once
+// a minute, so this admits ten refreshes a second.
+var rate_limit_world_inbound = &rate_limiter{
+	entries: make(map[string]*rate_limit_entry),
+	limit:   600,
+	window:  60,
+}
+
 // world_publish_event stores a listing announced by another peer, keyed on
 // e.origin - the StrictSign-verified originator - never on e.peer, the last-hop
 // forwarder, which filed one world under every relaying neighbour. Rate
@@ -295,6 +316,10 @@ func world_publish_event(e *Event) {
 	}
 	if !rate_limit_world_publish.allow(e.peer) {
 		debug("World dropping publish forwarded by %q: over the rate limit", e.peer)
+		return
+	}
+	if !rate_limit_world_inbound.allow("world") {
+		debug("World dropping publish forwarded by %q: over the inbound rate limit", e.peer)
 		return
 	}
 	id := e.get("world", "")

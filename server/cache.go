@@ -37,6 +37,19 @@ import (
 // cache_dir.
 var cache_budget int64 = -1
 
+// cache_read_maximum bounds mochi.cache.read when the caller sets no maximum:
+// an entry can be as large as object_maximum, and the read lands whole on the
+// heap. Larger entries are mochi.cache.copy's job. A var only so tests can
+// lower it.
+var cache_read_maximum int64 = 64 << 20
+
+// cache_grace is how long a .partial temporary or .lock sidecar counts as a
+// transfer in flight: eviction and measurement leave it alone, so a write is
+// not deleted from under its rename and an appender is not let past the lock.
+// Past it the file is abandoned - no Starlark call runs that long - and is
+// reclaimed like any entry, since nothing else ever removes one.
+const cache_grace = time.Hour
+
 // cache_total is the running byte total of the apps namespace, so admission
 // does not walk the tree on every write. Negative means not yet measured; every
 // walk replaces it with an exact figure, so drift cannot outlive an hour.
@@ -361,15 +374,16 @@ func api_cache_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 	defer f.Close()
 
-	if maximum > 0 {
-		information, err := f.Stat()
-		if err != nil {
-			return sl.None, nil
-		}
-		if information.Size() > maximum {
-			debug("mochi.cache.read refusing %q: %d bytes exceeds the caller's limit of %d", name, information.Size(), maximum)
-			return sl.None, nil
-		}
+	if maximum <= 0 {
+		maximum = cache_read_maximum
+	}
+	information, err := f.Stat()
+	if err != nil {
+		return sl.None, nil
+	}
+	if information.Size() > maximum {
+		debug("mochi.cache.read refusing %q: %d bytes exceeds the limit of %d", name, information.Size(), maximum)
+		return sl.None, nil
 	}
 	data, err := io.ReadAll(f)
 	if err != nil {
@@ -569,9 +583,20 @@ func cache_evict() {
 	cache_total_set(cache_evict_to(cache_budget))
 }
 
+// cache_transient reports whether path is a .partial or .lock still inside
+// cache_grace: a transfer in flight, which neither eviction nor measurement may
+// touch.
+func cache_transient(path string, modified time.Time) bool {
+	if !strings.HasSuffix(path, ".partial") && !strings.HasSuffix(path, ".lock") {
+		return false
+	}
+	return time.Since(modified) < cache_grace
+}
+
 // cache_evict_to enforces a byte target over the apps namespace, least recently
 // used first, and returns the total that remains. Separate from cache_evict so
 // admission can clear headroom below the budget rather than exactly to it.
+// Transfers in flight are neither counted nor candidates.
 func cache_evict_to(target int64) int64 {
 	type entry struct {
 		path     string
@@ -584,7 +609,7 @@ func cache_evict_to(target int64) int64 {
 	var total int64
 	users := map[string]int64{}
 	filepath.Walk(root, func(path string, information os.FileInfo, err error) error {
-		if err != nil || information.IsDir() {
+		if err != nil || information.IsDir() || cache_transient(path, information.ModTime()) {
 			return nil
 		}
 		relative, err := filepath.Rel(root, path)
@@ -637,7 +662,7 @@ func cache_total_set(total int64) {
 func cache_measure() int64 {
 	var total int64
 	filepath.Walk(filepath.Join(cache_dir, "apps"), func(path string, information os.FileInfo, err error) error {
-		if err == nil && !information.IsDir() {
+		if err == nil && !information.IsDir() && !cache_transient(path, information.ModTime()) {
 			total += information.Size()
 		}
 		return nil

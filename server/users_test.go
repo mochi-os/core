@@ -836,3 +836,75 @@ func TestUserFactorRemovalBlocked(t *testing.T) {
 		}
 	}
 }
+
+// purge_test_env builds the tables user_purge_local touches and one user with
+// a directory on disk, and returns that directory.
+func purge_test_env(t *testing.T, uid string) string {
+	t.Helper()
+	setup_replication_test(t)
+	setup_users_test_schema()
+	for _, table := range []string{"sessions", "ceremonies", "partial", "logins", "accesses", "passkeys", "verifications"} {
+		db_open("db/sessions.db").exec("create table if not exists " + table + " (user text not null)")
+	}
+	db_open("db/schedule.db").exec(`create table if not exists schedule (id integer primary key,
+		user text not null, app text not null, due int not null, event text not null,
+		data text not null, interval int not null, created int not null)`)
+	db_open("db/users.db").exec("insert into users (uid, username) values (?, ?)", uid, uid+"@example.com")
+	directory := filepath.Join(data_dir, "users", uid)
+	if err := os.MkdirAll(filepath.Join(directory, "keep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return directory
+}
+
+// TestPurgeReportsADirectoryItCouldNotRemove. The directory removal is the one
+// purge step outside the process; discarding its error left the account's
+// databases on disk with nothing to say so.
+func TestPurgeReportsADirectoryItCouldNotRemove(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes anything; a read-only parent cannot block it")
+	}
+	directory := purge_test_env(t, "u-stuck")
+	parent := filepath.Dir(directory)
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(parent, 0o700) })
+	capture := log_captured(t)
+
+	if _, err := user_purge_local("u-stuck"); err != nil {
+		t.Fatalf("user_purge_local: %v", err)
+	}
+	if _, err := os.Stat(directory); err != nil {
+		t.Fatal("the directory was removed despite the read-only parent: the test proves nothing")
+	}
+	if !strings.Contains(strings.Join(capture.lines, "\n"), "User purge u-stuck: directory not removed") {
+		t.Errorf("no warning about the surviving directory: %v", capture.lines)
+	}
+}
+
+// TestUsersOrphansNamesDirectoriesWithoutARow, and leaves them in place.
+func TestUsersOrphansNamesDirectoriesWithoutARow(t *testing.T) {
+	purge_test_env(t, "u-live")
+	orphan := filepath.Join(data_dir, "users", "u-orphan")
+	if err := os.MkdirAll(orphan, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(data_dir, "users", "note.txt"), []byte("x"), 0o644)
+	capture := log_captured(t)
+
+	users_orphans()
+	text := strings.Join(capture.lines, "\n")
+	if !strings.Contains(text, "User directory u-orphan has no users row") {
+		t.Errorf("the orphan was not reported: %v", capture.lines)
+	}
+	if strings.Contains(text, "u-live") {
+		t.Error("a live user's directory was reported")
+	}
+	if strings.Contains(text, "note.txt") {
+		t.Error("a plain file was reported as a user directory")
+	}
+	if _, err := os.Stat(orphan); err != nil {
+		t.Error("the sweep deleted the orphan; it must only report")
+	}
+}

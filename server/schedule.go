@@ -318,9 +318,12 @@ func schedule_claim(id int64, interval int64) bool {
 	var err error
 
 	if interval > 0 {
-		// Recurring: update due time to next interval
-		// Use the current due time + interval to avoid drift
-		res, e := db.internal.Exec("update schedule set due = due + ? where id = ? and due <= ?", interval, id, now())
+		// Recurring: advance to the first due + k*interval after now. Stepping
+		// by one interval keeps the phase but leaves an overdue row still due,
+		// and every missed firing of a long outage would then replay
+		// back-to-back, one full Starlark run per pass.
+		moment := now()
+		res, e := db.internal.Exec("update schedule set due=due+((?-due)/?+1)*? where id=? and due<=?", moment, interval, interval, id, moment)
 		if e == nil {
 			result, err = res.RowsAffected()
 		}
@@ -542,6 +545,8 @@ func (e *ScheduledEventWrapper) sl_header(t *sl.Thread, fn *sl.Builtin, args sl.
 // SlScheduledEvent is the Starlark representation of a scheduled event object
 type SlScheduledEvent struct {
 	id       int64
+	user     string
+	app      string
 	event    string
 	data     map[string]any
 	due      int64
@@ -580,8 +585,19 @@ func (se *SlScheduledEvent) String() string        { return fmt.Sprintf("Schedul
 func (se *SlScheduledEvent) Truth() sl.Bool        { return sl.True }
 func (se *SlScheduledEvent) Type() string          { return "ScheduledEvent" }
 
-// se.cancel() -> None: Cancel this scheduled event (no-op if already executed/cancelled)
+// se.cancel() -> None: Cancel this scheduled event. A no-op if already
+// executed or cancelled, and if the caller is not the owning app and user: the
+// same test as mochi.schedule.cancel, since the object is reachable through
+// list.
 func (se *SlScheduledEvent) sl_cancel(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := principal_caller(t)
+	app := principal_app(t)
+	if app == nil || se.app != app.id {
+		return sl.None, nil
+	}
+	if user == nil || se.user != user.UID {
+		return sl.None, nil
+	}
 	schedule_delete(se.id)
 	return sl.None, nil
 }
@@ -598,12 +614,25 @@ func new_starlark_scheduled_event(se *ScheduledEvent) *SlScheduledEvent {
 
 	return &SlScheduledEvent{
 		id:       se.ID,
+		user:     se.User,
+		app:      se.App,
 		event:    se.Event,
 		data:     data,
 		due:      se.Due,
 		interval: se.Interval,
 		created:  se.Created,
 	}
+}
+
+// schedule_integer reads one integer argument as int64. The due time is a unix
+// timestamp, and an int32 parse refused dates past 2038 - eleven years out -
+// while capping delay and interval at 68 years.
+func schedule_integer(value sl.Value) (int64, error) {
+	var n int64
+	if err := sl.AsInt(value, &n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // mochi.schedule.at(event, data, time) -> ScheduledEvent: Schedule an event at a specific time
@@ -623,7 +652,7 @@ func api_schedule_at(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "data must be a dictionary")
 	}
 
-	due, err := sl.AsInt32(args[2])
+	due, err := schedule_integer(args[2])
 	if err != nil {
 		return sl_error(fn, "invalid time")
 	}
@@ -647,7 +676,7 @@ func api_schedule_at(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	// If time is in the past, run immediately (but still schedule for audit trail)
-	due_time := int64(due)
+	due_time := due
 
 	id, err := schedule_create(uid, app.id, due_time, event, string(data_json), 0)
 	if err != nil {
@@ -677,7 +706,7 @@ func api_schedule_after(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "data must be a dictionary")
 	}
 
-	delay, err := sl.AsInt32(args[2])
+	delay, err := schedule_integer(args[2])
 	if err != nil {
 		return sl_error(fn, "invalid delay")
 	}
@@ -701,7 +730,7 @@ func api_schedule_after(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	// If delay is zero or negative, run immediately
-	due_time := now() + int64(delay)
+	due_time := now() + delay
 	if delay <= 0 {
 		due_time = now()
 	}
@@ -734,7 +763,7 @@ func api_schedule_every(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "data must be a dictionary")
 	}
 
-	interval, err := sl.AsInt32(args[2])
+	interval, err := schedule_integer(args[2])
 	if err != nil {
 		return sl_error(fn, "invalid interval")
 	}
@@ -765,16 +794,16 @@ func api_schedule_every(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	// First run is after the interval
-	due_time := now() + int64(interval)
+	due_time := now() + interval
 
-	id, err := schedule_create(uid, app.id, due_time, event, string(data_json), int64(interval))
+	id, err := schedule_create(uid, app.id, due_time, event, string(data_json), interval)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 
 	se := &ScheduledEvent{
 		ID: id, User: uid, App: app.id, Due: due_time,
-		Event: event, Data: string(data_json), Interval: int64(interval), Created: now(),
+		Event: event, Data: string(data_json), Interval: interval, Created: now(),
 	}
 
 	return new_starlark_scheduled_event(se), nil
@@ -786,7 +815,7 @@ func api_schedule_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "syntax: <id: int>")
 	}
 
-	id, err := sl.AsInt32(args[0])
+	id, err := schedule_integer(args[0])
 	if err != nil {
 		return sl_error(fn, "invalid id")
 	}
@@ -798,7 +827,7 @@ func api_schedule_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "no app context")
 	}
 
-	se := schedule_get(int64(id))
+	se := schedule_get(id)
 	if se == nil {
 		return sl.None, nil
 	}
@@ -823,7 +852,7 @@ func api_schedule_cancel(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "syntax: <id: int>")
 	}
 
-	id, err := sl.AsInt32(args[0])
+	id, err := schedule_integer(args[0])
 	if err != nil {
 		return sl_error(fn, "invalid id")
 	}
@@ -834,7 +863,7 @@ func api_schedule_cancel(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no app context")
 	}
 
-	se := schedule_get(int64(id))
+	se := schedule_get(id)
 	if se == nil {
 		return sl.False, nil
 	}
@@ -845,7 +874,7 @@ func api_schedule_cancel(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl.False, nil
 	}
 
-	schedule_delete(int64(id))
+	schedule_delete(id)
 	return sl.True, nil
 }
 
@@ -858,12 +887,14 @@ func api_schedule_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "no app context")
 	}
 
-	var uid string
-	if user != nil {
-		uid = user.UID
+	// A nil user owns nothing. Rows with user '' are what anonymous callers
+	// create, and listing them for an anonymous caller would hand every
+	// visitor every other visitor's events, with cancel on each.
+	if user == nil {
+		return sl.NewList(nil), nil
 	}
 
-	events := schedule_list(app.id, uid)
+	events := schedule_list(app.id, user.UID)
 	result := make([]sl.Value, len(events))
 	for i, se := range events {
 		result[i] = new_starlark_scheduled_event(&se)

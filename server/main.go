@@ -217,6 +217,7 @@ func main_serve(ready func()) int {
 	go ratelimit_manager()
 	go broadcast_manager()
 	go restore_cleanup_orphans()
+	go users_orphans()
 	go db_app_system_sweep()
 	go sessions_manager()
 	go update_manager()

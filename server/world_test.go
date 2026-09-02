@@ -159,3 +159,73 @@ func TestWorldUnknownServiceIgnored(t *testing.T) {
 		t.Fatal("routing to an unknown service should error (and be dropped by the caller)")
 	}
 }
+
+// The address is the one listing field the generic url validator left at
+// 10000 characters; it is stored per (peer, world) and gossiped on.
+func TestWorldAddressIsBounded(t *testing.T) {
+	setup_world_test(t)
+	long := "https://" + strings.Repeat("a", world_address_most-8+1)
+	if _, ok := world_validate(world_test_id, "ok", long, "3", world_test_services(1)); ok {
+		t.Errorf("a %d-byte address was accepted", len(long))
+	}
+	fits := "https://" + strings.Repeat("a", world_address_most-8)
+	if _, ok := world_validate(world_test_id, "ok", fits, "3", world_test_services(1)); !ok {
+		t.Errorf("a %d-byte address was refused", len(fits))
+	}
+}
+
+// world_test_row inserts one listing row directly, with a chosen seen time.
+func world_test_row(peer string, seen int64) {
+	db_open("db/world.db").exec("replace into worlds (peer, world, name, address, version, services, seen) values (?, ?, 'W', 'https://x:1', 3, ?, ?)",
+		peer, world_test_id, world_test_services(0), seen)
+}
+
+// TestWorldTableIsBoundedAcrossPeers. The per-peer cap is no bound on a set
+// of fresh peer keys: past the aggregate cap the least recently seen rows go,
+// whichever peer holds them, and a refresh of an existing row evicts nothing.
+func TestWorldTableIsBoundedAcrossPeers(t *testing.T) {
+	setup_world_test(t)
+	saved := world_rows_most
+	world_rows_most = 3
+	defer func() { world_rows_most = saved }()
+	base := now() - 100
+	world_test_row("peer1", base+1)
+	world_test_row("peer2", base+2)
+	world_test_row("peer3", base+3)
+
+	world_store("peer4", world_test_id, "W", "https://x:1", 3, world_test_services(0))
+	db := db_open("db/world.db")
+	if n := db.integer("select count(*) from worlds"); n != 3 {
+		t.Fatalf("%d rows after a fourth peer, want the cap of 3", n)
+	}
+	if exists, _ := db.exists("select 1 from worlds where peer='peer1'"); exists {
+		t.Error("the least recently seen row survived")
+	}
+	if exists, _ := db.exists("select 1 from worlds where peer='peer4'"); !exists {
+		t.Error("the new row was refused instead of making room")
+	}
+
+	world_store("peer2", world_test_id, "W", "https://x:1", 3, world_test_services(0))
+	if n := db.integer("select count(*) from worlds"); n != 3 {
+		t.Errorf("%d rows after a refresh, want 3", n)
+	}
+	if exists, _ := db.exists("select 1 from worlds where peer='peer3'"); !exists {
+		t.Error("a refresh of an existing row evicted a neighbour")
+	}
+}
+
+// TestWorldInboundFloodIsLimited. The per-peer limiter passes every fresh
+// peer id; one shared limiter bounds the flood as a whole.
+func TestWorldInboundFloodIsLimited(t *testing.T) {
+	setup_world_test(t)
+	saved := rate_limit_world_inbound
+	rate_limit_world_inbound = &rate_limiter{entries: make(map[string]*rate_limit_entry), limit: 2, window: 60}
+	defer func() { rate_limit_world_inbound = saved }()
+	for _, peer := range []string{"flood1", "flood2", "flood3"} {
+		world_publish_event(&Event{peer: peer, origin: peer, service: "world", event: "publish", content: map[string]any{
+			"world": world_test_id, "name": "W", "address": "https://x:1", "version": "3", "services": world_test_services(1)}})
+	}
+	if n := db_open("db/world.db").integer("select count(*) from worlds"); n != 2 {
+		t.Errorf("%d rows stored from three fresh peers, want the limiter's 2", n)
+	}
+}

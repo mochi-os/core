@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -828,5 +829,82 @@ func TestPathScrub(t *testing.T) {
 				t.Errorf("path_scrub(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestUnzipIgnoresArchiveModes. Entries land at one fixed mode whatever the
+// header says: permission bits would otherwise carry through minus the umask,
+// and os.Root refuses setuid, setgid and sticky, which aborted the install.
+func TestUnzipIgnoresArchiveModes(t *testing.T) {
+	dir := t.TempDir()
+	archive := dir + "/modes.zip"
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := zip.NewWriter(f)
+	modes := map[string]os.FileMode{
+		"world.txt":  0o666,
+		"exec.sh":    0o777,
+		"setuid.sh":  0o755 | os.ModeSetuid,
+		"sticky.txt": 0o644 | os.ModeSticky,
+	}
+	for name, mode := range modes {
+		header := &zip.FileHeader{Name: name, Method: zip.Deflate}
+		header.SetMode(mode)
+		entry, err := w.CreateHeader(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entry.Write([]byte("x"))
+	}
+	w.Close()
+	f.Close()
+
+	destination := dir + "/out"
+	if err := unzip(archive, destination, unzip_maximum_bytes); err != nil {
+		t.Fatalf("unzip refused the archive: %v", err)
+	}
+	for name := range modes {
+		information, err := os.Stat(destination + "/" + name)
+		if err != nil {
+			t.Errorf("%s was not extracted: %v", name, err)
+			continue
+		}
+		if information.Mode() != 0o644 {
+			t.Errorf("%s extracted at %v, want -rw-r--r--", name, information.Mode())
+		}
+	}
+}
+
+// TestTimeLocalFallsBackToUTC. A bad timezone preference is the user's input:
+// the result is UTC, the log names the zone, and nothing warns.
+func TestTimeLocalFallsBackToUTC(t *testing.T) {
+	user := create_test_user(t)
+	capture := log_captured(t)
+	moment := int64(1_700_000_000)
+	utc := time.Unix(moment, 0).UTC().Format(time.DateTime)
+
+	user.Preferences["timezone"] = "Nowhere/Invalid"
+	if got := time_local(user, moment); got != utc {
+		t.Errorf("time_local with an invalid zone = %q, want UTC %q", got, utc)
+	}
+	if !strings.Contains(strings.Join(capture.lines, "\n"), "Nowhere/Invalid") {
+		t.Errorf("the log does not name the rejected zone: %v", capture.lines)
+	}
+	user.Preferences["timezone"] = "Asia/Tokyo"
+	if got, want := time_local(user, moment), "2023-11-15 07:13:20"; got != want {
+		t.Errorf("time_local in Asia/Tokyo = %q, want %q", got, want)
+	}
+	if got := time_local(nil, moment); got != utc {
+		t.Errorf("time_local with no user = %q, want UTC", got)
+	}
+
+	source, err := os.ReadFile("utilities.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(static_function_source(t, string(source), "func time_local("), "warn(") {
+		t.Error("time_local still warns, and so emails the administrator, for a user preference")
 	}
 }

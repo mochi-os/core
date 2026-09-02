@@ -13,6 +13,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -75,5 +76,25 @@ func TestChownRecursiveStillWalksRegularEntries(t *testing.T) {
 	}
 	if err := chown_recursive(dir, os.Getuid(), os.Getgid()); err != nil {
 		t.Fatalf("chown_recursive failed on a plain tree: %v", err)
+	}
+}
+
+// The drop cannot run without root, so the sequence is pinned at source
+// level: supplementary groups are cleared, and before the gid changes, or the
+// process keeps whatever groups root started with.
+func TestPrivilegeDropClearsSupplementaryGroups(t *testing.T) {
+	source, err := os.ReadFile("directories_linux.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := static_function_source(t, string(source), "func directories_ensure(")
+	groups := strings.Index(body, "syscall.Setgroups([]int{gid})")
+	gid := strings.Index(body, "syscall.Setgid(gid)")
+	uid := strings.Index(body, "syscall.Setuid(uid)")
+	if groups < 0 {
+		t.Fatal("directories_ensure never calls Setgroups: root's supplementary groups survive the drop")
+	}
+	if !(groups < gid && gid < uid) {
+		t.Errorf("drop order is Setgroups@%d Setgid@%d Setuid@%d; want groups, gid, uid", groups, gid, uid)
 	}
 }

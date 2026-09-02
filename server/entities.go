@@ -971,40 +971,42 @@ func api_entity_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	old_privacy := e.Privacy
 	changed_to_private := false
 
-	// Process kwargs - validate and apply database updates
+	// Validate every kwarg before writing any: a bad value after a good one
+	// would otherwise leave the good one applied, skip the republish below, and
+	// report that nothing changed.
+	fields := map[string]string{}
 	for _, kv := range kwargs {
 		key := string(kv[0].(sl.String))
+		value, ok := sl.AsString(kv[1])
 		switch key {
 		case "name":
-			name, ok := sl.AsString(kv[1])
-			if !ok || !valid(name, "name") {
-				return sl_error(fn, "invalid name %q", name)
+			if !ok || !valid(value, "name") {
+				return sl_error(fn, "invalid name %q", value)
 			}
-			if name != e.Name {
-				db.exec("update entities set name=? where id=?", name, id)
-			}
-
 		case "data":
-			data, ok := sl.AsString(kv[1])
-			if !ok || !valid(data, "text") {
-				return sl_error(fn, "invalid data %q", data)
+			if !ok || !valid(value, "text") {
+				return sl_error(fn, "invalid data %q", value)
 			}
-			db.exec("update entities set data=? where id=?", data, id)
-
 		case "privacy":
-			privacy, ok := sl.AsString(kv[1])
-			if !ok || !valid(privacy, "privacy") {
+			if !ok || !valid(value, "privacy") {
 				return sl_error(fn, "privacy must be 'public' or 'private'")
 			}
-			if privacy != old_privacy {
-				db.exec("update entities set privacy=? where id=?", privacy, id)
-				if privacy == "private" {
-					changed_to_private = true
-				}
-			}
-
 		default:
 			return sl_error(fn, "unknown parameter %q", key)
+		}
+		fields[key] = value
+	}
+
+	if name, ok := fields["name"]; ok && name != e.Name {
+		db.exec("update entities set name=? where id=?", name, id)
+	}
+	if data, ok := fields["data"]; ok {
+		db.exec("update entities set data=? where id=?", data, id)
+	}
+	if privacy, ok := fields["privacy"]; ok && privacy != old_privacy {
+		db.exec("update entities set privacy=? where id=?", privacy, id)
+		if privacy == "private" {
+			changed_to_private = true
 		}
 	}
 

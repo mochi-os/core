@@ -148,12 +148,15 @@ func TestThemesValidate(t *testing.T) {
 // TestWebUserThemeStyleEscapes covers the boundary, not the value: the style
 // attribute is HTML, and a character reference (u&#114l() becomes url( only
 // after the parser decodes it, which is after every string check has run.
+// The radius preference is now held to the manifest shape before it gets
+// anywhere near the attribute, so the hostile value must not reach the style
+// at all; the escaping check stays for whatever else does.
 func TestWebUserThemeStyleEscapes(t *testing.T) {
 	user := create_test_user(t)
 
 	// theme is empty so the active-theme lookup is skipped. The references are
-	// unterminated on purpose: a literal semicolon would be caught by the existing
-	// check, whereas `&#59` reaches the attribute and decodes to ";".
+	// unterminated on purpose: a literal semicolon would be caught by a
+	// character check, whereas `&#59` would reach the attribute and decode to ";".
 	user.Preferences = map[string]string{
 		"theme":  "",
 		"radius": "1rem&#59background-&#105mage:u&#114l(https://evil.example/x)",
@@ -166,8 +169,8 @@ func TestWebUserThemeStyleEscapes(t *testing.T) {
 	if strings.Contains(style, "&#") {
 		t.Errorf("style attribute carries an undecoded character reference, which the HTML parser will turn back into CSS: %s", style)
 	}
-	if !strings.Contains(style, "&amp;#") {
-		t.Errorf("expected the ampersands to be escaped, got: %s", style)
+	if strings.Contains(style, "--radius") {
+		t.Errorf("a radius outside the manifest shape reached the style: %s", style)
 	}
 	// The quote in a font stack must survive as a quote once the parser
 	// decodes the attribute, so escaping may not be lossy.

@@ -9,6 +9,7 @@ package main
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -508,9 +509,28 @@ type account_gate_entry struct {
 type account_gate struct {
 	lock    sync.Mutex
 	entries map[string]*account_gate_entry
+	// shared marks a gate whose queue is never refused: an attempt past the
+	// window waits the maximum without taking a slot. It is for a key that
+	// strangers share with the account's owner, where a refusal would let
+	// anyone who knows the username lock the owner out.
+	shared bool
 }
 
+// account_login is the refusing gate, keyed on account and source address
+// (account_key): one address guessing at one account is serialised, then
+// refused, without touching the owner's own address.
 var account_login = &account_gate{entries: make(map[string]*account_gate_entry)}
+
+// account_shared spaces attempts on one account across every source address,
+// so rotating addresses does not multiply the guess rate. It delays and never
+// refuses: a stranger's guesses cost the owner a wait of at most
+// account_wait_maximum per attempt, never a 429.
+var account_shared = &account_gate{entries: make(map[string]*account_gate_entry), shared: true}
+
+// account_key is account_login's key: the account and the address guessing at it.
+func account_key(uid string, address string) string {
+	return uid + "\n" + address
+}
 
 // Tunables (vars, not consts, so tests can adjust them). The first few
 // failures reserve at the floor spacing; beyond that the spacing doubles up to
@@ -567,7 +587,13 @@ func (g *account_gate) reserve(uid string) (int64, bool) {
 	// under sustained load. A front-of-queue attempt always fits.
 	gap := account_gate_spacing(entry.failures)
 	if wait+gap > account_wait_maximum {
-		return wait, false
+		if !g.shared {
+			return wait, false
+		}
+		// Past the window on a shared key: wait the maximum without taking a
+		// slot, so the queue cannot be pushed out of the owner's reach.
+		entry.pending++
+		return account_wait_maximum, true
 	}
 	entry.next = start + gap
 	entry.pending++
@@ -606,6 +632,11 @@ func (g *account_gate) reset(uid string) {
 	g.lock.Lock()
 	defer g.lock.Unlock()
 	delete(g.entries, uid)
+	for key := range g.entries {
+		if strings.HasPrefix(key, uid+"\n") {
+			delete(g.entries, key)
+		}
+	}
 }
 
 func (g *account_gate) cleanup() {
@@ -619,21 +650,31 @@ func (g *account_gate) cleanup() {
 	}
 }
 
-// account_gate_guard reserves a slot and waits out the bounded delay. False
-// means it already answered 429 and the caller should return. Otherwise the
-// caller MUST settle exactly once with account_login.done(uid, verified).
+// account_gate_guard reserves a slot on both gates and waits out the longer
+// delay. False means it already answered 429 and the caller should return.
+// Otherwise the caller MUST settle exactly once with account_gate_settle.
 func account_gate_guard(c *gin.Context, uid string) bool {
-	wait, ok := account_login.reserve(uid)
+	address := rate_limit_client_ip(c)
+	wait, ok := account_login.reserve(account_key(uid, address))
 	if !ok {
-		audit_rate_limit(rate_limit_client_ip(c), "account")
+		audit_rate_limit(address, "account")
 		c.Header("Retry-After", strconv.FormatInt(wait, 10))
 		respond_error(c, http.StatusTooManyRequests, "too_many_login_attempts_please_try_again_later", "errors.too_many_logins", nil)
 		return false
+	}
+	if shared, _ := account_shared.reserve(uid); shared > wait {
+		wait = shared
 	}
 	if wait > 0 {
 		time.Sleep(time.Duration(wait) * time.Second)
 	}
 	return true
+}
+
+// account_gate_settle reports the outcome of a guarded attempt to both gates.
+func account_gate_settle(c *gin.Context, uid string, verified bool) {
+	account_login.done(account_key(uid, rate_limit_client_ip(c)), verified)
+	account_shared.done(uid, verified)
 }
 
 // Middleware for login rate limiting (stricter)
@@ -656,6 +697,7 @@ func ratelimit_manager() {
 	for range time.Tick(time.Minute) {
 		rate_limit_api.cleanup()
 		account_login.cleanup()
+		account_shared.cleanup()
 		rate_limit_login.cleanup()
 		rate_limit_code.cleanup()
 		rate_limit_verification.cleanup()

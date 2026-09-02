@@ -334,6 +334,7 @@ func TestAccountRateLimit(t *testing.T) {
 	users.exec("insert into users (uid, username, methods) values ('u-limit', 'limit@example.com', 'totp')")
 	users.exec("insert into totp (user, secret, verified, created) values ('u-limit', 'JBSWY3DPEHPK3PXP', 1, 1)")
 	defer account_login.reset("u-limit")
+	defer account_shared.reset("u-limit")
 
 	// Neutralise spacing (floor 0 AND a free tier past the attempt count) so
 	// serial attempts reserve immediate slots and never sleep; the spacing and
@@ -356,7 +357,71 @@ func TestAccountRateLimit(t *testing.T) {
 			t.Fatalf("wrong attempt %d: got %d, want 401 (never a hard 429 lockout)", i, code)
 		}
 	}
-	if account_login.entries["u-limit"] == nil || account_login.entries["u-limit"].failures == 0 {
+	if account_shared.entries["u-limit"] == nil || account_shared.entries["u-limit"].failures == 0 {
 		t.Error("failures should accumulate")
 	}
+}
+
+// The refusing gate is keyed on account and source address: one address that
+// has exhausted its slots is refused, the owner arriving from another is not.
+func TestAccountGateIsScopedToTheSourceAddress(t *testing.T) {
+	defer account_login.reset("victim")
+	attacker := account_key("victim", "203.0.113.5")
+	owner := account_key("victim", "198.51.100.7")
+	account_login.entries[attacker] = &account_gate_entry{failures: 7, next: now()}
+	if _, ok := account_login.reserve(attacker); !ok {
+		t.Fatal("the attacker's own front-of-queue probe was refused")
+	}
+	if _, ok := account_login.reserve(attacker); ok {
+		t.Error("the same address was not refused behind its own probe")
+	}
+	if wait, ok := account_login.reserve(owner); !ok || wait != 0 {
+		t.Errorf("the owner from another address: wait=%d accepted=%v, want an immediate slot", wait, ok)
+	}
+}
+
+// The shared gate never refuses: past the window an attempt waits the maximum
+// without taking a slot, so strangers cannot queue the owner out.
+func TestSharedGateDelaysAndNeverRefuses(t *testing.T) {
+	defer account_shared.reset("victim")
+	account_shared.entries["victim"] = &account_gate_entry{failures: 7, next: now() + account_wait_maximum}
+	wait, ok := account_shared.reserve("victim")
+	if !ok {
+		t.Fatal("the shared gate refused: a stranger's guesses lock the owner out again")
+	}
+	if wait > account_wait_maximum {
+		t.Errorf("wait %d exceeds the maximum %d", wait, account_wait_maximum)
+	}
+	if next := account_shared.entries["victim"].next - now(); next > account_wait_maximum {
+		t.Errorf("an overflow attempt pushed the queue to %ds", next)
+	}
+}
+
+// Through the guard: the guessing address gets the 429, the owner's does not.
+func TestAccountGateGuardRefusesOnlyTheGuessingAddress(t *testing.T) {
+	defer account_login.reset("victim")
+	defer account_shared.reset("victim")
+	saved_floor, saved_wait := account_gate_floor, account_wait_maximum
+	account_gate_floor, account_wait_maximum = 0, 0
+	defer func() { account_gate_floor, account_wait_maximum = saved_floor, saved_wait }()
+	gin.SetMode(gin.TestMode)
+	request := func(address string) (*gin.Context, *httptest.ResponseRecorder) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("POST", "/_/auth/totp", nil)
+		c.Request.RemoteAddr = address + ":4000"
+		return c, w
+	}
+
+	account_login.entries[account_key("victim", "203.0.113.5")] = &account_gate_entry{failures: 7, next: now() + 8}
+	account_shared.entries["victim"] = &account_gate_entry{failures: 7, next: now() + 8}
+	c, w := request("203.0.113.5")
+	if account_gate_guard(c, "victim") || w.Code != http.StatusTooManyRequests {
+		t.Errorf("the guessing address was not refused: code %d", w.Code)
+	}
+	c, w = request("198.51.100.7")
+	if !account_gate_guard(c, "victim") {
+		t.Errorf("the owner's address was refused: code %d", w.Code)
+	}
+	account_gate_settle(c, "victim", true)
 }

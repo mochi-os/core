@@ -1744,6 +1744,19 @@ func (p *UserPreference) set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	if !ok {
 		return sl_error(fn, "invalid value")
 	}
+	if !valid(name, "constant") {
+		return sl_error(fn, "invalid name")
+	}
+	// The keys core reads are the settings app's to write; every app may keep
+	// its own keys here, and a value core reads is checked whoever writes it.
+	if preference_gated(name) {
+		if err := require_permission(t, fn, "preferences/write"); err != nil {
+			return sl_error(fn, "%v", err)
+		}
+	}
+	if err := preference_validate(p.user, name, value); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	user_preference_set(p.user, name, value)
 	return sl.String(value), nil
 }

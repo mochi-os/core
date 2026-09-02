@@ -106,77 +106,77 @@ func email_deliverable(address string) bool {
 	return true
 }
 
-// email_send sends a plain text email.
-func email_send(to string, subject string, body string) {
+// email_message builds a message to one recipient, or returns false when it
+// cannot be sent: a reserved or undeliverable address, or a from address the
+// server cannot set. body adds the content once the envelope is in place.
+func email_message(to string, subject string, body func(*gm.Msg)) (*gm.Msg, bool) {
 	// Never attempt delivery to a reserved domain (RFC 2606 / 6761): example.com
 	// and the .test/.example/.invalid/.localhost TLDs can never receive mail, so a
 	// send only produces a bounce to the admin. Test harnesses sign up such users.
 	if !email_deliverable(to) {
 		debug("Email suppressed to reserved/undeliverable address %q", to)
-		return
+		return nil, false
 	}
 	m := gm.NewMsg()
 
 	from := setting_effective("email_from")
-	err := m.From(from)
-	if err != nil {
+	if err := m.From(from); err != nil {
 		info("Email failed to set from address %q: %v", from, err)
-		return
+		return nil, false
 	}
 	m.SetMessageIDWithValue(email_identifier(from))
-	err = m.To(to)
-	if err != nil {
+	if err := m.To(to); err != nil {
 		info("Email failed to set to address %q: %v", to, err)
-		return
+		return nil, false
 	}
 	m.Subject(subject)
-	m.SetBodyString(gm.TypeTextPlain, body)
+	body(m)
+	return m, true
+}
 
+// email_deliver builds and sends one message. Every failure is logged and
+// swallowed: the callers have nothing to do with a mail error.
+func email_deliver(to string, subject string, body func(*gm.Msg)) {
+	m, ok := email_message(to, subject, body)
+	if !ok {
+		return
+	}
 	c, err := gm.NewClient(email_host, gm.WithPort(email_port), gm.WithTLSPolicy(email_tls_policy()))
 	if err != nil {
 		info("Email failed to create mail client: %v", err)
 		return
 	}
-	err = c.DialAndSend(m)
-	if err != nil {
+	if err := c.DialAndSend(m); err != nil {
 		info("Email failed to send message: %v", err)
-		return
 	}
+}
+
+// email_body_plain, email_body_html and email_body_multipart are the three
+// shapes a message takes; each returns the body function email_deliver
+// applies once the envelope is built.
+func email_body_plain(body string) func(*gm.Msg) {
+	return func(m *gm.Msg) { m.SetBodyString(gm.TypeTextPlain, body) }
+}
+
+func email_body_html(html string) func(*gm.Msg) {
+	return func(m *gm.Msg) { m.SetBodyString(gm.TypeTextHTML, html) }
+}
+
+func email_body_multipart(text string, html string) func(*gm.Msg) {
+	return func(m *gm.Msg) {
+		m.SetBodyString(gm.TypeTextPlain, text)
+		m.AddAlternativeString(gm.TypeTextHTML, html)
+	}
+}
+
+// email_send sends a plain text email.
+func email_send(to string, subject string, body string) {
+	email_deliver(to, subject, email_body_plain(body))
 }
 
 // email_send_html sends an HTML email.
 func email_send_html(to string, subject string, html string) {
-	if !email_deliverable(to) {
-		debug("Email suppressed to reserved/undeliverable address %q", to)
-		return
-	}
-	m := gm.NewMsg()
-
-	from := setting_effective("email_from")
-	err := m.From(from)
-	if err != nil {
-		info("Email failed to set from address %q: %v", from, err)
-		return
-	}
-	m.SetMessageIDWithValue(email_identifier(from))
-	err = m.To(to)
-	if err != nil {
-		info("Email failed to set to address %q: %v", to, err)
-		return
-	}
-	m.Subject(subject)
-	m.SetBodyString(gm.TypeTextHTML, html)
-
-	c, err := gm.NewClient(email_host, gm.WithPort(email_port), gm.WithTLSPolicy(email_tls_policy()))
-	if err != nil {
-		info("Email failed to create mail client: %v", err)
-		return
-	}
-	err = c.DialAndSend(m)
-	if err != nil {
-		info("Email failed to send message: %v", err)
-		return
-	}
+	email_deliver(to, subject, email_body_html(html))
 }
 
 // email_login_code sends a styled HTML login code, localised via the core label
@@ -241,38 +241,7 @@ func email_login_code(user *User, to string, code string, language string) {
 
 // email_send_multipart sends an email with both plain text and HTML parts.
 func email_send_multipart(to string, subject string, text string, html string) {
-	if !email_deliverable(to) {
-		debug("Email suppressed to reserved/undeliverable address %q", to)
-		return
-	}
-	m := gm.NewMsg()
-
-	from := setting_effective("email_from")
-	err := m.From(from)
-	if err != nil {
-		info("Email failed to set from address %q: %v", from, err)
-		return
-	}
-	m.SetMessageIDWithValue(email_identifier(from))
-	err = m.To(to)
-	if err != nil {
-		info("Email failed to set to address %q: %v", to, err)
-		return
-	}
-	m.Subject(subject)
-	m.SetBodyString(gm.TypeTextPlain, text)
-	m.AddAlternativeString(gm.TypeTextHTML, html)
-
-	c, err := gm.NewClient(email_host, gm.WithPort(email_port), gm.WithTLSPolicy(email_tls_policy()))
-	if err != nil {
-		info("Email failed to create mail client: %v", err)
-		return
-	}
-	err = c.DialAndSend(m)
-	if err != nil {
-		info("Email failed to send message: %v", err)
-		return
-	}
+	email_deliver(to, subject, email_body_multipart(text, html))
 }
 
 func email_valid(address string) bool {

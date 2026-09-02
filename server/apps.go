@@ -591,6 +591,7 @@ var (
 			{"domains/read", ""},
 			{"domains/write", ""},
 			{"entity/read", ""},
+			{"preferences/write", ""},
 			{"interests/read", ""},
 			{"interests/write", ""},
 			{"notifications/read", ""},
@@ -3620,11 +3621,12 @@ func apps_cleanup_unused_versions() int {
 		// Collect versions in use for this app
 		in_use := make(map[string]bool)
 
-		// Highest version is always kept as fallback
+		// Highest version is always kept as fallback. Numerically: as strings
+		// "0.9" sorts above "0.10", and the one that lost was a.latest.
 		apps_lock.Lock()
 		var highest string
 		for v := range a.versions {
-			if highest == "" || v > highest {
+			if highest == "" || version_greater(v, highest) {
 				highest = v
 			}
 		}
@@ -3679,7 +3681,20 @@ func apps_cleanup_unused_versions() int {
 				removed++
 			}
 		}
+		if len(to_delete) > 0 {
+			// a.latest may name a version just removed, and resolve_active_locked
+			// falls back to it: recompute from the survivors.
+			a.latest = nil
+			for v, av := range a.versions {
+				if a.latest == nil || version_greater(v, a.latest.Version) {
+					a.latest = av
+				}
+			}
+		}
 		apps_lock.Unlock()
+		if len(to_delete) > 0 {
+			resolution_invalidate()
+		}
 
 		// Delete version directories from disk (only for published apps)
 		if valid(app_id, "entity") {

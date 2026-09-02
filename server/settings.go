@@ -7,6 +7,11 @@
 package main
 
 import (
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 )
@@ -518,6 +523,77 @@ func user_preference_get(u *User, name, def string) string {
 		return v
 	}
 	return def
+}
+
+// preference_options lists the values core reads for each select-style
+// preference; "theme" as a value defers to the theme's own declaration.
+var preference_options = map[string][]string{
+	"appearance":        {"light", "dark", "auto"},
+	"density":           {"theme", "compact", "comfortable", "spacious"},
+	"card":              {"theme", "flat", "raised"},
+	"background":        {"theme", "off"},
+	"font":              {"theme", "system", "serif", "dyslexia"},
+	"font_size":         {"theme", "small", "normal", "large", "extra-large"},
+	"date_format":       {"auto", "YYYY-MM-DD", "DD/MM/YYYY", "DD.MM.YYYY", "MM/DD/YYYY", "D MMM YYYY"},
+	"time_format":       {"auto", "24h", "12h"},
+	"timestamp_display": {"auto", "relative", "absolute"},
+	"week_start":        {"auto", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"},
+	"number_format":     {"auto", "1,000.00", "1.000,00", "1 000,00", "1'000.00", "1,00,000.00"},
+	"units":             {"auto", "metric", "imperial", "usa"},
+	"restore.show":      {"true", "false"},
+}
+
+// preference_gated reports whether a key is one core reads and renders -
+// language, zone, theme and display - which only an app holding
+// preferences/write may write. restore.show is read by core but is the home
+// app's own flag, so it stays open and is only shape-checked.
+func preference_gated(name string) bool {
+	switch name {
+	case "language", "last_language", "locale", "timezone", "theme", "radius":
+		return true
+	case "restore.show":
+		return false
+	}
+	_, ok := preference_options[name]
+	return ok
+}
+
+// preference_validate checks a value for a key core reads. Any other key is
+// the writing app's own and passes unchecked.
+func preference_validate(u *User, name, value string) error {
+	if options, ok := preference_options[name]; ok {
+		if slices.Contains(options, value) {
+			return nil
+		}
+		return fmt.Errorf("invalid value %q for preference %q", value, name)
+	}
+	switch name {
+	case "language", "last_language", "locale":
+		if value == "" || value == "auto" || valid(strings.ToLower(value), "locale") {
+			return nil
+		}
+	case "timezone":
+		if value == "" || value == "auto" {
+			return nil
+		}
+		if _, err := time.LoadLocation(value); err == nil && value != "Local" {
+			return nil
+		}
+	case "theme":
+		if value == "" {
+			return nil
+		}
+		if app, theme, ok := strings.Cut(value, ":"); ok && app_theme_get(u, app, theme) != nil {
+			return nil
+		}
+	case "radius":
+		if value == "theme" || match_theme_radius.MatchString(value) {
+			return nil
+		}
+	default:
+		return nil
+	}
+	return fmt.Errorf("invalid value %q for preference %q", value, name)
 }
 
 // user_preference_set sets a user preference.

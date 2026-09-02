@@ -69,6 +69,9 @@ var permissions = []Permission{
 	{"interests/write", false, false},
 	{"user/authentication/read", false, false},
 	{"user/identity/write", false, false},
+	// The preferences core itself reads - language, zone, theme, display -
+	// are the settings app's to write; any other key is the writing app's own.
+	{"preferences/write", false, false},
 	{"user/sessions/read", false, false},
 	{"user/sessions/write", false, false},
 	// Restricted permissions

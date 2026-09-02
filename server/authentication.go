@@ -178,7 +178,7 @@ func auth_establish_session(c *gin.Context, user *User) {
 		user.Identity = user.identity()
 	}
 	// A full login clears the per-IP counter. The per-account throttle is
-	// settled by each guessable factor's own handler (account_login.done), so
+	// settled by each guessable factor's own handler (account_gate_settle), so
 	// there is nothing to clear here — and clearing would delete the entry out
 	// from under any concurrent in-flight reservations.
 	rate_limit_login.reset(rate_limit_client_ip(c))
@@ -319,7 +319,7 @@ func web_auth_totp(c *gin.Context) {
 		return
 	}
 	verified := false
-	defer func() { account_login.done(user.UID, verified) }()
+	defer func() { account_gate_settle(c, user.UID, verified) }()
 
 	// Verify TOTP code
 	if !totp_verify(user.UID, input.Code) {
@@ -765,7 +765,7 @@ func web_auth_mfa(c *gin.Context) {
 		return
 	}
 	verified := false
-	defer func() { account_login.done(user.UID, verified) }()
+	defer func() { account_gate_settle(c, user.UID, verified) }()
 
 	// Validate all methods WITHOUT consuming codes first
 	// For email, we need to check without deleting; for TOTP, it's stateless
@@ -1296,7 +1296,7 @@ func web_recovery_login(c *gin.Context) {
 		return
 	}
 	verified := false
-	defer func() { account_login.done(user_id, verified) }()
+	defer func() { account_gate_settle(c, user_id, verified) }()
 
 	// Check recovery codes
 	rows, _ := db.rows("select id, hash from recovery where user=?", user_id)

@@ -9,6 +9,7 @@ package main
 import (
 	"bytes"
 	gm "github.com/wneessen/go-mail"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -84,5 +85,39 @@ func TestEmailDeliverable(t *testing.T) {
 		if !email_deliverable(a) {
 			t.Errorf("email_deliverable(%q) = false, want true (real address)", a)
 		}
+	}
+}
+
+// email_message is the one place the envelope is built; the three senders
+// differ only in the body they add.
+func TestEmailMessageBuildsEachShape(t *testing.T) {
+	test_data_directory(t)
+	setup_settings_test_schema()
+	setting_set("email_from", "noreply@mochi-os.org")
+
+	types := func(m *gm.Msg) []string {
+		var out []string
+		for _, part := range m.GetParts() {
+			out = append(out, string(part.GetContentType()))
+		}
+		return out
+	}
+	plain, ok := email_message("user@mochi-os.org", "Subject", email_body_plain("hello"))
+	if !ok || !slices.Equal(types(plain), []string{string(gm.TypeTextPlain)}) {
+		t.Errorf("plain message: ok=%v parts=%v", ok, types(plain))
+	}
+	if from := plain.GetFrom(); len(from) != 1 || from[0].Address != "noreply@mochi-os.org" {
+		t.Errorf("from = %v", from)
+	}
+	html, ok := email_message("user@mochi-os.org", "Subject", email_body_html("<b>hi</b>"))
+	if !ok || !slices.Equal(types(html), []string{string(gm.TypeTextHTML)}) {
+		t.Errorf("html message: ok=%v parts=%v", ok, types(html))
+	}
+	both, ok := email_message("user@mochi-os.org", "Subject", email_body_multipart("hi", "<b>hi</b>"))
+	if !ok || !slices.Equal(types(both), []string{string(gm.TypeTextPlain), string(gm.TypeTextHTML)}) {
+		t.Errorf("multipart message: ok=%v parts=%v", ok, types(both))
+	}
+	if _, ok := email_message("user@example.com", "Subject", func(m *gm.Msg) {}); ok {
+		t.Error("a reserved-domain address was built into a message")
 	}
 }

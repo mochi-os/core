@@ -8,6 +8,8 @@ package main
 
 import (
 	"testing"
+
+	sl "go.starlark.net/starlark"
 )
 
 // Helper to create a test user with preferences
@@ -486,6 +488,99 @@ func TestSystemSettingsValidation(t *testing.T) {
 			if valid(v, def.Pattern) {
 				t.Errorf("system_settings[%q] pattern should reject %q", tc.name, v)
 			}
+		}
+	}
+}
+
+// preference_thread builds the Starlark context an app's a.user.preference.set
+// runs under, granting preferences/write when asked.
+func preference_thread(t *testing.T, user *User, app string, granted bool) *sl.Thread {
+	t.Helper()
+	thread := &sl.Thread{Name: "test"}
+	thread.SetLocal("user", user)
+	application := create_external_app(app)
+	thread.SetLocal("app", application)
+	db := db_user(user, "user")
+	db.permissions_setup()
+	if granted {
+		db.permissions_upsert(application.id, "preferences/write", "", 1)
+	}
+	return thread
+}
+
+func preference_set(t *testing.T, thread *sl.Thread, user *User, name, value string) error {
+	t.Helper()
+	fn := sl.NewBuiltin("a.user.preference.set", nil)
+	_, err := (&UserPreference{user: user}).set(thread, fn, sl.Tuple{sl.String(name), sl.String(value)}, nil)
+	return err
+}
+
+// The keys core reads and renders are the settings app's to write; any other
+// key stays every app's own.
+func TestPreferenceSetGatesTheKeysCoreReads(t *testing.T) {
+	user := create_test_user(t)
+	stranger := preference_thread(t, user, "stranger", false)
+	if err := preference_set(t, stranger, user, "language", "de"); err == nil {
+		t.Error("an app without preferences/write changed the user's language")
+	}
+	if err := preference_set(t, stranger, user, "theme", ""); err == nil {
+		t.Error("an app without preferences/write wrote the theme")
+	}
+	if err := preference_set(t, stranger, user, "diff_view", "split"); err != nil {
+		t.Errorf("an app could not write its own key: %v", err)
+	}
+	if user.Preferences["diff_view"] != "split" {
+		t.Errorf("own key not stored: %q", user.Preferences["diff_view"])
+	}
+	if err := preference_set(t, stranger, user, "restore.show", "false"); err != nil {
+		t.Errorf("restore.show is the home app's flag and must stay open: %v", err)
+	}
+	if err := preference_set(t, stranger, user, "bad key!", "x"); err == nil {
+		t.Error("a key outside the constant shape was accepted")
+	}
+
+	settings := preference_thread(t, user, "settings", true)
+	if err := preference_set(t, settings, user, "language", "de"); err != nil {
+		t.Errorf("the settings app could not set the language: %v", err)
+	}
+	if user.Preferences["language"] != "de" {
+		t.Errorf("language not stored: %q", user.Preferences["language"])
+	}
+}
+
+// A value core reads is checked whoever writes it: a zone the runtime cannot
+// load, a select outside its options, or a radius outside the theme shape is
+// refused even with the permission.
+func TestPreferenceSetValidatesTheKeysCoreReads(t *testing.T) {
+	user := create_test_user(t)
+	settings := preference_thread(t, user, "settings", true)
+	refused := map[string]string{
+		"timezone":     "Nowhere/Invalid",
+		"appearance":   "neon",
+		"radius":       "url(https://x.example)",
+		"language":     "not a tag",
+		"restore.show": "maybe",
+		"week_start":   "someday",
+	}
+	for name, value := range refused {
+		if err := preference_set(t, settings, user, name, value); err == nil {
+			t.Errorf("%s=%q was accepted", name, value)
+		}
+		if _, stored := user.Preferences[name]; stored {
+			t.Errorf("%s=%q was stored despite the refusal", name, value)
+		}
+	}
+	accepted := map[string]string{
+		"timezone":   "Europe/Tallinn",
+		"appearance": "dark",
+		"radius":     "0.75rem",
+		"language":   "pt-br",
+		"week_start": "monday",
+		"theme":      "",
+	}
+	for name, value := range accepted {
+		if err := preference_set(t, settings, user, name, value); err != nil {
+			t.Errorf("%s=%q was refused: %v", name, value, err)
 		}
 	}
 }

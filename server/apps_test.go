@@ -2392,3 +2392,50 @@ func TestTextSortOrdersNamesLikeTheCollator(t *testing.T) {
 		}
 	}
 }
+
+// The keep-guard compares versions numerically, as everything else does: as
+// strings "1.9" sorts above "1.10", and the one that lost was a.latest, so the
+// app served from a version whose directory had just been deleted.
+func TestCleanupKeepsNumericallyHighestVersion(t *testing.T) {
+	create_test_cleanup_env(t)
+	a := &App{id: "test-app", versions: map[string]*AppVersion{
+		"1.9":  {Version: "1.9"},
+		"1.10": {Version: "1.10"},
+	}}
+	a.latest = a.versions["1.10"]
+	apps["test-app"] = a
+	generation := resolution_generation.Load()
+
+	if removed := apps_cleanup_unused_versions(); removed != 1 {
+		t.Errorf("removed = %d, want 1", removed)
+	}
+	if _, exists := a.versions["1.10"]; !exists {
+		t.Fatal("1.10 was removed: the keep-guard compared versions as strings")
+	}
+	if _, exists := a.versions["1.9"]; exists {
+		t.Error("1.9 survived")
+	}
+	if a.latest == nil || a.versions[a.latest.Version] != a.latest {
+		t.Errorf("a.latest is not a surviving version: %v", a.latest)
+	}
+	if resolution_generation.Load() == generation {
+		t.Error("cached resolutions were not invalidated after versions were removed")
+	}
+}
+
+// After a removal a.latest is recomputed from the survivors even when the
+// version it named was a dead one the guard did not protect.
+func TestCleanupRecomputesLatestFromTheSurvivors(t *testing.T) {
+	create_test_cleanup_env(t)
+	a := &App{id: "test-app", versions: map[string]*AppVersion{
+		"1.0": {Version: "1.0"},
+		"2.0": {Version: "2.0"},
+	}}
+	// A stale latest, as a load that raced a removal could leave.
+	a.latest = &AppVersion{Version: "0.5"}
+	apps["test-app"] = a
+	apps_cleanup_unused_versions()
+	if a.latest == nil || a.latest.Version != "2.0" {
+		t.Errorf("a.latest = %v, want the surviving 2.0", a.latest)
+	}
+}

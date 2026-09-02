@@ -56,21 +56,26 @@ func supervisor_start() error {
 // detect reports the supervisor environment mochictl is running in.
 // Returns "systemd", "docker", or "" (none / unknown).
 func detect() string {
-	// Docker check first: if PID 1's cgroup mentions docker / containerd /
-	// kubepods, we're in a container even if systemctl happens to exist.
-	if data, err := os.ReadFile("/proc/1/cgroup"); err == nil {
-		s := string(data)
-		if strings.Contains(s, "docker") || strings.Contains(s, "containerd") || strings.Contains(s, "kubepods") {
-			return "docker"
-		}
-	}
+	cgroup, _ := os.ReadFile("/proc/1/cgroup")
+	comm, _ := os.ReadFile("/proc/1/comm")
+	_, err := os.Stat("/.dockerenv")
+	return supervisor(string(cgroup), err == nil, strings.TrimSpace(string(comm)), systemctl_path() != "")
+}
 
-	// systemd check: systemctl present AND PID 1 is "systemd". Looked up by
-	// absolute path for the reason systemctl_path gives.
-	if systemctl_path() != "" {
-		if comm, err := os.ReadFile("/proc/1/comm"); err == nil && strings.TrimSpace(string(comm)) == "systemd" {
-			return "systemd"
-		}
+// supervisor decides from what PID 1 looks like. A container is recognised
+// by the marker file Docker plants at the root, by a cgroup v1 path naming
+// the runtime, or by the bare `0::/` a cgroup v2 container shows with a PID 1
+// that is not systemd; that last form is what every current host presents,
+// and it matched nothing. A systemd host shows `0::/init.scope`.
+func supervisor(cgroup string, dockerenv bool, comm string, systemctl bool) string {
+	if dockerenv || strings.Contains(cgroup, "docker") || strings.Contains(cgroup, "containerd") || strings.Contains(cgroup, "kubepods") {
+		return "docker"
+	}
+	if strings.TrimSpace(cgroup) == "0::/" && comm != "systemd" {
+		return "docker"
+	}
+	if systemctl && comm == "systemd" {
+		return "systemd"
 	}
 	return ""
 }

@@ -43,8 +43,10 @@ func http_error(status int, body []byte) error {
 	return fmt.Errorf("%s", trimmed)
 }
 
-func init() {
-	commands = map[string]command{
+// commands_build returns the dispatch table. Built once at the top of main,
+// and by the test that holds the shipped shell completions to it.
+func commands_build() map[string]command {
+	return map[string]command{
 		"health": {
 			help: "Check server health (UDS probe to /_/admin/health)",
 			run:  cmd_health,
@@ -293,23 +295,10 @@ func cmd_backup(args []string) error {
 	}
 
 	if out == nil {
-		// 0600: the archive holds every account's entity private keys, the live
-		// session secrets and the libp2p host identity.
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-		if err != nil {
+		if err := backup_write(path, resp.Body); err != nil {
 			return err
 		}
-		defer f.Close()
-		// The mode above applies only if the open created the file; a rerun
-		// truncating an existing one keeps its mode. Refuse rather than stream keys
-		// into a file we cannot protect.
-		if err := f.Chmod(0o600); err != nil {
-			return fmt.Errorf("unable to make %s private: %w", path, err)
-		}
-		out = f
-	}
-
-	if _, err := io.Copy(out, resp.Body); err != nil {
+	} else if _, err := io.Copy(out, resp.Body); err != nil {
 		return err
 	}
 	// Auto-named path: print so the user knows where the file landed.
@@ -339,6 +328,50 @@ func cmd_rsync_filter(args []string) error {
 	for _, line := range rsync_filter_rules {
 		fmt.Println(line)
 	}
+	return nil
+}
+
+// backup_write streams the archive to path through a private partial that is
+// renamed into place only once every byte has arrived and been synced, so a
+// stream that fails part way leaves no plausible-looking archive behind. The
+// destination is never a symbolic link: run as root from cron, following one
+// would truncate whatever file another account had pointed it at.
+func backup_write(path string, body io.Reader) error {
+	if information, err := os.Lstat(path); err == nil && information.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symbolic link; refusing to write through it", path)
+	}
+	partial := path + ".part"
+	// A partial left by a killed run is unlinked, never reused, and the
+	// exclusive create refuses anything planted at the name in between. 0600
+	// from the first byte: the archive holds every account's entity private
+	// keys, the live session secrets and the libp2p host identity.
+	if err := os.Remove(partial); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	f, err := os.OpenFile(partial, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	complete := false
+	defer func() {
+		if !complete {
+			f.Close()
+			os.Remove(partial)
+		}
+	}()
+	if _, err := io.Copy(f, body); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(partial, path); err != nil {
+		return err
+	}
+	complete = true
 	return nil
 }
 
@@ -380,6 +413,7 @@ func cmd_restore(args []string) error {
 		return fmt.Errorf("refusing to restore while the server is running (%s answers); stop it with `mochictl stop` first", where)
 	}
 	count := 0
+	sidecars := 0
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -401,6 +435,18 @@ func cmd_restore(args []string) error {
 			return fmt.Errorf("rename %s -> %s: %w", p, live, err)
 		}
 		count++
+		// A crashed server leaves the live database's WAL and shared-memory
+		// files behind, and SQLite replays that WAL onto whatever file now
+		// carries the database's name: frames written against the old pages
+		// corrupt the restored copy. A clean stop removes them; a crash does
+		// not, and a crash is when a restore happens.
+		for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+			if err := os.Remove(live + suffix); err == nil {
+				sidecars++
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("remove %s: %w", live+suffix, err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -420,6 +466,9 @@ func cmd_restore(args []string) error {
 	}
 
 	fmt.Printf("Renamed %d snapshot file(s) under %s\n", count, root)
+	if sidecars > 0 {
+		fmt.Printf("Removed %d stale WAL/SHM file(s) beside them\n", sidecars)
+	}
 	return nil
 }
 

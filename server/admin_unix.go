@@ -23,7 +23,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
-	"syscall"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/sys/unix"
@@ -137,11 +136,12 @@ func admin_start() error {
 		return fmt.Errorf("remove stale admin socket %s: %w", path, err)
 	}
 
-	// Bind with a restrictive umask so the socket is created without world
-	// access, then explicitly set the desired mode below.
-	old := syscall.Umask(0177)
+	// The socket is world-connectable between this bind and the chmod below,
+	// and that is harmless: every connection passes the peer-credential gate
+	// whatever the file mode says. Narrowing the process umask around the
+	// bind instead masked whatever the goroutines already running created at
+	// that moment.
 	ln, err := net.Listen("unix", path)
-	syscall.Umask(old)
 	if err != nil {
 		return fmt.Errorf("listen on admin socket %s: %w", path, err)
 	}

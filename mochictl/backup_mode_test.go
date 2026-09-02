@@ -218,3 +218,79 @@ func backup_readers(mode os.FileMode) string {
 	}
 	return "nobody beyond the owner"
 }
+
+// backup_test_socket stands in for the admin socket with the given handler on
+// /_/admin/backup. Returns the socket path.
+func backup_test_socket(t *testing.T, handler http.HandlerFunc) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "mochictl")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	path := filepath.Join(dir, "admin.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen on %s: %v", path, err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/_/admin/backup", handler)
+	server := &http.Server{Handler: mux}
+	go server.Serve(listener)
+	t.Cleanup(func() { server.Close() })
+	return path
+}
+
+// TestBackupRefusesASymlinkedDestination. The destination was opened with
+// O_TRUNC through whatever it pointed at, so a link another local account
+// planted at a cron job's fixed path had root truncate that file and stream
+// the archive into it.
+func TestBackupRefusesASymlinkedDestination(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic links")
+	}
+	socket_path := backup_test_server(t, "tarball")
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("precious"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "backup.tar.gz")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	err := backup_run(t, socket_path, link)
+	if err == nil {
+		t.Fatalf("backup through a symbolic link succeeded")
+	}
+	content, read_error := os.ReadFile(target)
+	if read_error != nil || string(content) != "precious" {
+		t.Errorf("the link's target was written: %q, %v", content, read_error)
+	}
+	if _, stat_error := os.Stat(link + ".part"); !os.IsNotExist(stat_error) {
+		t.Errorf("a partial was left beside the refused destination")
+	}
+}
+
+// TestBackupLeavesNoPartialOnAStreamFailure. A stream that died part way left
+// a plausibly named, private, truncated archive that the next rsync picked up
+// as a backup; the truncation surfaced only at restore time.
+func TestBackupLeavesNoPartialOnAStreamFailure(t *testing.T) {
+	socket_path := backup_test_socket(t, func(w http.ResponseWriter, r *http.Request) {
+		// Promise more than is sent: the client sees the body end early.
+		w.Header().Set("Content-Length", "1000")
+		fmt.Fprint(w, "partial")
+	})
+
+	path := filepath.Join(t.TempDir(), "backup.tar.gz")
+	if err := backup_run(t, socket_path, path); err == nil {
+		t.Fatalf("a truncated stream was reported as a successful backup")
+	}
+	for _, name := range []string{path, path + ".part"} {
+		if _, err := os.Stat(name); !os.IsNotExist(err) {
+			t.Errorf("%s was left behind after the stream failed", name)
+		}
+	}
+}

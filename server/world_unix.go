@@ -23,7 +23,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
-	"syscall"
 
 	"github.com/gin-gonic/gin"
 )
@@ -109,9 +108,11 @@ func world_start() error {
 		return fmt.Errorf("remove stale world socket %s: %w", path, err)
 	}
 
-	old := syscall.Umask(0177)
+	// World-connectable between the bind and the chmod below, harmlessly:
+	// every connection passes the peer-credential gate at accept whatever the
+	// file mode says, and narrowing the process umask here masked whatever
+	// other goroutines were creating at the same moment.
 	ln, err := net.Listen("unix", path)
-	syscall.Umask(old)
 	if err != nil {
 		return fmt.Errorf("listen on world socket %s: %w", path, err)
 	}

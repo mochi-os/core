@@ -190,17 +190,27 @@ func TestSnapshotSkipsRunAndCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A *.db file in run/ shouldn't be snapshotted.
-	make_test_db(t, filepath.Join(tmp, "run", "should_be_ignored.db"))
-	make_test_db(t, filepath.Join(tmp, "cache", "should_be_ignored.db"))
+	// A *.db file in an ephemeral top-level directory is not snapshotted: run
+	// and cache, and tmp and logs, which hold self-install downloads and the
+	// Windows service log and used to end up in every backup.
+	for _, ephemeral := range []string{"run", "cache", "tmp", "logs"} {
+		make_test_db(t, filepath.Join(tmp, ephemeral, "should_be_ignored.db"))
+	}
 	make_test_db(t, filepath.Join(tmp, "db", "users.db"))
+	// The same names deeper in the tree are ordinary directories.
+	make_test_db(t, filepath.Join(tmp, "users", "u1", "tmp", "kept.db"))
 
 	out := snapshot_in_place()
 
-	if out.Dbs != 1 {
-		t.Errorf("expected only 1 DB to be snapshotted (excluding run/, cache/), got %d", out.Dbs)
+	if out.Dbs != 2 {
+		t.Errorf("expected 2 DBs to be snapshotted (excluding run/, cache/, tmp/, logs/), got %d", out.Dbs)
 	}
-	if _, err := os.Stat(filepath.Join(tmp, "run", "should_be_ignored.db.backup")); err == nil {
-		t.Errorf("run/ DB should not have been snapshotted")
+	for _, ephemeral := range []string{"run", "cache", "tmp", "logs"} {
+		if _, err := os.Stat(filepath.Join(tmp, ephemeral, "should_be_ignored.db.backup")); err == nil {
+			t.Errorf("%s/ DB should not have been snapshotted", ephemeral)
+		}
+	}
+	if !snapshot_skip(tmp, filepath.Join(tmp, "logs")) || snapshot_skip(tmp, filepath.Join(tmp, "users", "u1", "tmp")) {
+		t.Errorf("snapshot_skip does not match the top-level ephemeral directories exactly")
 	}
 }

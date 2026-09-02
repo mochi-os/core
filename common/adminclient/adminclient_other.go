@@ -26,9 +26,12 @@ func admin_dial(ctx context.Context, path string) (net.Conn, error) {
 
 // not_listening reports whether a dial failure means nothing is listening at
 // the path, as opposed to a listener that refused this caller. "Permission
-// denied" is deliberately absent: a server IS running there.
+// denied" is deliberately absent: a server IS running there. A path the
+// kernel refuses as a socket address - longer than the limit - cannot hold a
+// listener either, and the restore guard fails closed on anything else.
 func not_listening(err error) bool {
-	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, fs.ErrNotExist)
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, fs.ErrNotExist) ||
+		errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENAMETOOLONG)
 }
 
 // connect_hint maps the common Unix dial failures — server not running,
@@ -41,6 +44,8 @@ func connect_hint(socket string, err error) error {
 		return fmt.Errorf("server is not running (no listener at %s)", socket)
 	case strings.Contains(message, "no such file or directory"):
 		return fmt.Errorf("admin socket not found at %s (server not started?)", socket)
+	case strings.Contains(message, "invalid argument") || strings.Contains(message, "name too long"):
+		return fmt.Errorf("admin socket path %s is not a valid socket address (over the length limit?)", socket)
 	case strings.Contains(message, "permission denied"):
 		return fmt.Errorf("permission denied on %s (run as the mochi user, or join the mochi group)", socket)
 	}

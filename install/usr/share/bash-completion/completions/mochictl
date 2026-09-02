@@ -1,14 +1,14 @@
 # bash completion for mochictl
 #
-# Stub — Phase 8 will expand to handle subcommand-specific flags and
-# context-aware completions. For now we tab-complete the subcommand name
-# and the global flags. Flags can appear anywhere on the command line, so
-# we offer them at every position rather than only the first.
+# Completes the subcommand name, the second word of the two-word subcommands
+# and the global flags. The dispatch table in mochictl/commands.go is the
+# source, and a Go test keeps this file in step with it. Flags can appear
+# anywhere on the command line, so they are offered at every position.
 
 _mochictl() {
 	local cur="${COMP_WORDS[COMP_CWORD]}"
 	local prev="${COMP_WORDS[COMP_CWORD-1]}"
-	local subcommands="backup config health identity restart restore rsync-filter snapshot start status stop version"
+	local subcommands="backup broadcast check config health identity pipelining pubsub restart restore rsync-filter snapshot start status stop vacuum version worlds"
 	local flags="-f -s -j -t -v -h --help"
 
 	# Global flags expecting a path argument.
@@ -49,11 +49,25 @@ _mochictl() {
 		return 0
 	fi
 
-	# `config show` second token.
-	if [ "$subcommand" = "config" ]; then
-		COMPREPLY=( $(compgen -W "show" -- "$cur") )
-		return 0
-	fi
+	# Second word of the two-word subcommands.
+	case "$subcommand" in
+		config)
+			COMPREPLY=( $(compgen -W "show" -- "$cur") )
+			return 0
+			;;
+		broadcast)
+			COMPREPLY=( $(compgen -W "lag" -- "$cur") )
+			return 0
+			;;
+		pipelining|pubsub)
+			COMPREPLY=( $(compgen -W "status" -- "$cur") )
+			return 0
+			;;
+		check)
+			COMPREPLY=( $(compgen -W "starlark" -- "$cur") )
+			return 0
+			;;
+	esac
 
 	# `restore <dir>` and `backup [path]` complete file paths.
 	if [ "$subcommand" = "restore" ] || [ "$subcommand" = "backup" ]; then

@@ -43,6 +43,8 @@ var removed = []struct {
 		"replication audit events. Multi-host replication was removed in July 2026; these outlived it only in the Windows-only audit file, which the Linux build never compiles."},
 	{".", "func exists(path string) bool",
 		"a second copy of file_exists, named to collide with the database exists methods."},
+	{".", "syscall.Umask(",
+		"a process-wide umask change after goroutines have started masks whatever they create at that moment; the admin socket bind relied on the peer-credential gate all along."},
 }
 
 func TestRemovedSymbolsStayRemoved(t *testing.T) {

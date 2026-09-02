@@ -1,16 +1,21 @@
 #compdef mochictl
 # zsh completion for mochictl
 #
-# Stub — Phase 8 will expand to handle subcommand-specific flags and
-# context-aware completions.
+# Completes the subcommand, the second word of the two-word subcommands and
+# the global flags. The dispatch table in mochictl/commands.go is the source,
+# and a Go test keeps this file in step with it.
 
 _mochictl() {
 	local -a subcommands
 	subcommands=(
 		'backup:Stream a tar.gz backup to stdout or a file path'
+		'broadcast:Broadcast subscriber lag (use: broadcast lag)'
+		'check:Parse Starlark files before a deploy (use: check starlark)'
 		'config:Show effective config (use: config show)'
-		'health:Check server health (HTTP probe to /_/health)'
+		'health:Check server health (UDS probe to /_/admin/health)'
 		'identity:Show server peer ID and data dir'
+		'pipelining:/mochi/2 transport state (use: pipelining status)'
+		'pubsub:GossipSub mesh state (use: pubsub status)'
 		'restart:Graceful shutdown with restart-hint exit code'
 		'restore:Walk a directory and rename *.db.backup (or legacy *.db.snap) to *.db'
 		'rsync-filter:Print rsync filter rules for backing up the data dir'
@@ -18,7 +23,9 @@ _mochictl() {
 		'start:Start the server via systemctl (native installs only)'
 		'status:Show uptime, version, peer count, app count'
 		'stop:Graceful shutdown; supervisor decides whether to restart'
+		'vacuum:Reclaim free pages from every open DB now'
 		'version:Show server and CLI versions'
+		'worlds:World servers known to this host'
 	)
 
 	_arguments -C \
@@ -38,6 +45,15 @@ _mochictl() {
 			case "$words[1]" in
 				config)
 					_values 'config subcommand' 'show[show effective config]'
+					;;
+				broadcast)
+					_values 'broadcast subcommand' 'lag[subscriber lag over a threshold]'
+					;;
+				pipelining|pubsub)
+					_values 'status subcommand' 'status[current state]'
+					;;
+				check)
+					_values 'check subcommand' 'starlark[parse every .star file under a path]'
 					;;
 				restore|backup)
 					_files

@@ -169,6 +169,24 @@ func parse_args(args []string) ([]string, error) {
 }
 
 // usage writes a short help block listing global flags and subcommands.
+// dispatch resolves the positional arguments against the table: a one-word
+// subcommand first, then a two-word one such as `broadcast lag`, whose second
+// word is consumed from the arguments. One lookup for every pair, so the next
+// two-word subcommand needs a table entry and nothing else.
+func dispatch(table map[string]command, positional []string) (command, []string, bool) {
+	name := positional[0]
+	args := positional[1:]
+	if c, ok := table[name]; ok {
+		return c, args, true
+	}
+	if len(args) > 0 {
+		if c, ok := table[name+" "+args[0]]; ok {
+			return c, args[1:], true
+		}
+	}
+	return command{}, args, false
+}
+
 func usage() {
 	fmt.Fprintf(os.Stderr, `mochictl %s — Mochi server admin/ops CLI
 

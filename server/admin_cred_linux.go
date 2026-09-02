@@ -60,15 +60,27 @@ func admin_pid_in_group(pid int, gid uint32) bool {
 	if err != nil {
 		return false
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	for _, group := range admin_groups(string(data)) {
+		if group == gid {
+			return true
+		}
+	}
+	return false
+}
+
+// admin_groups returns the groups a /proc/<pid>/status lists on its Groups
+// line: the supplementary groups, with the primary among them.
+func admin_groups(status string) []uint32 {
+	var groups []uint32
+	for _, line := range strings.Split(status, "\n") {
 		if !strings.HasPrefix(line, "Groups:") {
 			continue
 		}
 		for _, s := range strings.Fields(strings.TrimPrefix(line, "Groups:")) {
-			if g, err := strconv.ParseUint(s, 10, 32); err == nil && uint32(g) == gid {
-				return true
+			if g, err := strconv.ParseUint(s, 10, 32); err == nil {
+				groups = append(groups, uint32(g))
 			}
 		}
 	}
-	return false
+	return groups
 }

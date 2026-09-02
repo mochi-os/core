@@ -131,3 +131,33 @@ func TestRestoreIgnoresAStaleSocketFile(t *testing.T) {
 		t.Fatalf("restore refused on a stale socket file: %v", err)
 	}
 }
+
+// TestRestoreRemovesStaleSidecars. A crashed server leaves the live database's
+// WAL and shared-memory files behind, and SQLite replays that WAL onto the
+// restored snapshot at the next open, corrupting it (reproduced: "database disk
+// image is malformed"). Only the snapshot may remain beside the live name.
+func TestRestoreRemovesStaleSidecars(t *testing.T) {
+	restore_isolate(t)
+	root := restore_tree(t)
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		if err := os.WriteFile(filepath.Join(root, "db", "users.db"+suffix), []byte("stale"), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", suffix, err)
+		}
+	}
+
+	if err := cmd_restore([]string{root}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+
+	entries, err := os.ReadDir(filepath.Join(root, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	if strings.Join(names, " ") != "users.db" {
+		t.Errorf("db/ holds %v after the restore, want only users.db", names)
+	}
+}

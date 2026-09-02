@@ -39,6 +39,21 @@ type snapshot_summary struct {
 // run/ and cache/ top-level directories. Backup siblings (*.db.backup, the
 // legacy *.db.snap, and their *.tmp partials) do not end in .db so the
 // `.db` suffix match excludes them automatically.
+// snapshot_skip reports whether a directory is one of the ephemeral top-level
+// ones left out of snapshots and backups: run (sockets and pid state), cache,
+// tmp (self-install downloads) and logs (the Windows service log). A restore
+// of any of them would only put stale state back.
+func snapshot_skip(root, path string) bool {
+	if filepath.Dir(path) != root {
+		return false
+	}
+	switch filepath.Base(path) {
+	case "run", "cache", "tmp", "logs":
+		return true
+	}
+	return false
+}
+
 func snapshot_walk_dbs(root string) ([]string, error) {
 	var paths []string
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
@@ -49,8 +64,7 @@ func snapshot_walk_dbs(root string) ([]string, error) {
 			if p == root {
 				return nil
 			}
-			base := filepath.Base(p)
-			if filepath.Dir(p) == root && (base == "run" || base == "cache") {
+			if snapshot_skip(root, p) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -77,8 +91,7 @@ func snapshot_walk_backups(root string) ([]string, error) {
 			if p == root {
 				return nil
 			}
-			base := filepath.Base(p)
-			if filepath.Dir(p) == root && (base == "run" || base == "cache") {
+			if snapshot_skip(root, p) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -238,8 +251,7 @@ func admin_backup(c *gin.Context) {
 			if p == data_dir {
 				return nil
 			}
-			base := filepath.Base(p)
-			if filepath.Dir(p) == data_dir && (base == "run" || base == "cache") {
+			if snapshot_skip(data_dir, p) {
 				return filepath.SkipDir
 			}
 			return nil

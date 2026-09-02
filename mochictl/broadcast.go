@@ -17,16 +17,29 @@ import (
 	"strconv"
 )
 
+// broadcast_threshold parses the optional threshold. A value that did not
+// parse used to be dropped silently, which printed every row under a filter
+// the operator believed was applied.
+func broadcast_threshold(value string) (int, error) {
+	threshold, err := strconv.Atoi(value)
+	if err != nil || threshold < 0 {
+		return 0, fmt.Errorf("threshold must be a non-negative integer, got %q", value)
+	}
+	return threshold, nil
+}
+
 // cmd_broadcast_lag handles `mochictl broadcast lag [threshold]`.
 // Optional positional threshold (default 0) maps to the ?threshold=
 // query param - only rows with lag > threshold are reported. With
 // -j / -t the response is dumped raw for scripted consumption.
 func cmd_broadcast_lag(args []string) error {
 	path := "/_/admin/broadcast/lag"
-	if len(args) > 0 && args[0] != "" {
-		if _, err := strconv.Atoi(args[0]); err == nil {
-			path = path + "?threshold=" + args[0]
+	if len(args) > 0 {
+		threshold, err := broadcast_threshold(args[0])
+		if err != nil {
+			return err
 		}
+		path = path + "?threshold=" + strconv.Itoa(threshold)
 	}
 	if flag_json || flag_tabs {
 		return get_dump(path, "rows")

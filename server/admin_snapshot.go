@@ -35,10 +35,6 @@ type snapshot_summary struct {
 	Errors []string `json:"errors,omitempty"`
 }
 
-// snapshot_walk_dbs returns all live *.db file paths under root, skipping the
-// run/ and cache/ top-level directories. Backup siblings (*.db.backup, the
-// legacy *.db.snap, and their *.tmp partials) do not end in .db so the
-// `.db` suffix match excludes them automatically.
 // snapshot_skip reports whether a directory is one of the ephemeral top-level
 // ones left out of snapshots and backups: run (sockets and pid state), cache,
 // tmp (self-install downloads) and logs (the Windows service log). A restore
@@ -54,6 +50,10 @@ func snapshot_skip(root, path string) bool {
 	return false
 }
 
+// snapshot_walk_dbs returns all live *.db file paths under root, skipping the
+// directories snapshot_skip names. Backup siblings (*.db.backup, the legacy
+// *.db.snap, and their *.tmp partials) do not end in .db so the `.db` suffix
+// match excludes them automatically.
 func snapshot_walk_dbs(root string) ([]string, error) {
 	var paths []string
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {

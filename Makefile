@@ -46,26 +46,29 @@ pkg_arm64 = /tmp/mochi-server_$(version)_darwin_arm64.pkg
 build_windows = /tmp/mochi-server_$(version)_windows_amd64
 msi = $(build_windows).msi
 
-# Build flags. build_platform tags release builds so update_manager polls the
-# right packages.mochi-os.org/<path>/versions.json; empty for `make` from
-# source, which does not poll. -s -w drops the symbol table and DWARF instead of
-# strip.
+# Build flags. build_platform tags the package binaries so update_manager polls
+# the right packages.mochi-os.org/<path>/versions.json. $(bin)/mochi-server is
+# the source build the dev instances run: it carries no platform, so it never
+# polls and never announces a package it is not. -s -w drops the symbol table
+# and DWARF instead of strip.
+ldflags_local   = -s -w -X main.build_version=$(version)
 ldflags_linux   = -s -w -X main.build_version=$(version) -X main.build_platform=linux
 ldflags_windows = -s -w -X main.build_version=$(version) -X main.build_platform=windows
 ldflags_macos   = -s -w -X main.build_version=$(version) -X main.build_platform=macos
 ldflags_docker  = -s -w -X main.build_version=$(version) -X main.build_platform=docker
 ldflags_mochictl = -s -w -X main.build_version=$(version)
 
-# Source prerequisites for the Go build targets. go.mod / go.sum are listed so a
-# dependency or toolchain bump rebuilds on an incremental `make`.
+# Source prerequisites for the Go build targets. go.mod / go.sum and this
+# Makefile are listed so a dependency, toolchain or build-flag change rebuilds
+# on an incremental `make`.
 # Simply-expanded (:=) so the find runs once at parse time.
-go_sources_server   := $(shell find server -name '*.go') $(shell find common -name '*.go') go.mod go.sum
-go_sources_mochictl := $(shell find mochictl -name '*.go') $(shell find common -name '*.go') go.mod go.sum
+go_sources_server   := $(shell find server -name '*.go') $(shell find common -name '*.go') go.mod go.sum Makefile
+go_sources_mochictl := $(shell find mochictl -name '*.go') $(shell find common -name '*.go') go.mod go.sum Makefile
 
 all: $(bin)/mochi-server $(bin)/mochictl
 
 clean:
-	rm -f $(bin)/mochi-server $(bin)/mochi-server.exe $(bin)/mochi-server-linux-arm64 $(bin)/mochi-server-linux-arm $(bin)/mochi-server-darwin-amd64 $(bin)/mochi-server-darwin-arm64 $(bin)/mochi-server-docker-amd64 $(bin)/mochi-server-docker-arm64
+	rm -f $(bin)/mochi-server $(bin)/mochi-server.exe $(bin)/mochi-server-linux-amd64 $(bin)/mochi-server-linux-arm64 $(bin)/mochi-server-linux-arm $(bin)/mochi-server-darwin-amd64 $(bin)/mochi-server-darwin-arm64 $(bin)/mochi-server-docker-amd64 $(bin)/mochi-server-docker-arm64
 	rm -f $(bin)/mochictl $(bin)/mochictl.exe $(bin)/mochictl-linux-arm64 $(bin)/mochictl-linux-arm $(bin)/mochictl-darwin-amd64 $(bin)/mochictl-darwin-arm64 $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
 	rm -rf build/docker/bin
 
@@ -80,10 +83,17 @@ $(bin):
 # --------------------------------------------------------------------------
 
 $(bin)/mochi-server: $(go_sources_server) | $(bin)
-	CGO_ENABLED=0 go build -v -ldflags "$(ldflags_linux)" -o $(bin)/mochi-server ./server
+	CGO_ENABLED=0 go build -v -ldflags "$(ldflags_local)" -o $(bin)/mochi-server ./server
 
 # Phony alias for the historical name.
 mochi-server: $(bin)/mochi-server
+
+# The amd64 package binary: the same build carrying the platform tag the deb
+# and rpm need for update polling.
+$(bin)/mochi-server-linux-amd64: $(go_sources_server) | $(bin)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -v -ldflags "$(ldflags_linux)" -o $(bin)/mochi-server-linux-amd64 ./server
+
+mochi-server-linux-amd64: $(bin)/mochi-server-linux-amd64
 
 $(bin)/mochictl: $(go_sources_mochictl) | $(bin)
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -v -ldflags "$(ldflags_mochictl)" -o $(bin)/mochictl ./mochictl
@@ -172,6 +182,8 @@ $(bin)/mochictl-linux-arm: $(go_sources_mochictl) | $(bin)
 
 mochictl-linux-arm: $(bin)/mochictl-linux-arm
 
+linux-amd64: $(bin)/mochi-server-linux-amd64
+
 linux-arm64: $(bin)/mochi-server-linux-arm64
 
 linux-arm: $(bin)/mochi-server-linux-arm
@@ -183,12 +195,12 @@ linux-arm-all: $(bin)/mochi-server-linux-arm64 $(bin)/mochi-server-linux-arm
 # --------------------------------------------------------------------------
 
 # AMD64 .deb package
-$(deb_amd64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
+$(deb_amd64): $(bin)/mochi-server-linux-amd64 $(bin)/mochictl $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
 	mkdir -p -m 0775 $(build_linux_amd64) $(build_linux_amd64)/usr/bin $(build_linux_amd64)/usr/sbin $(build_linux_amd64)/var/cache/mochi $(build_linux_amd64)/var/lib/mochi
 	cp -av build/deb/* $(build_linux_amd64)
 	sed 's/_VERSION_/$(version)/' build/deb/DEBIAN/control > $(build_linux_amd64)/DEBIAN/control
 	cp -av install/* $(build_linux_amd64)
-	cp -av $(bin)/mochi-server $(build_linux_amd64)/usr/sbin
+	cp -av $(bin)/mochi-server-linux-amd64 $(build_linux_amd64)/usr/sbin/mochi-server
 	cp -av $(bin)/mochictl $(build_linux_amd64)/usr/bin
 	upx -1 -qq $(build_linux_amd64)/usr/sbin/mochi-server
 	mkdir -p $(build_linux_amd64)/usr/share/man/man1 $(build_linux_amd64)/usr/share/man/man5 $(build_linux_amd64)/usr/share/man/man7 $(build_linux_amd64)/usr/share/man/man8
@@ -248,10 +260,10 @@ deb: deb-amd64 deb-arm64 deb-armhf
 
 # x86_64 .rpm package
 # Requires: apt install rpm
-$(rpm_x86_64): $(bin)/mochi-server $(bin)/mochictl $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
+$(rpm_x86_64): $(bin)/mochi-server-linux-amd64 $(bin)/mochictl $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
 	rm -rf $(rpmbuild_x86_64)
 	mkdir -p $(rpmbuild_x86_64)/SOURCES $(rpmbuild_x86_64)/SPECS $(rpmbuild_x86_64)/BUILD $(rpmbuild_x86_64)/RPMS $(rpmbuild_x86_64)/SRPMS
-	cp $(bin)/mochi-server $(rpmbuild_x86_64)/SOURCES/
+	cp $(bin)/mochi-server-linux-amd64 $(rpmbuild_x86_64)/SOURCES/mochi-server
 	cp $(bin)/mochictl $(rpmbuild_x86_64)/SOURCES/
 	cp $(bin)/mochictl.1 $(rpmbuild_x86_64)/SOURCES/
 	cp $(bin)/mochi-server.8 $(rpmbuild_x86_64)/SOURCES/

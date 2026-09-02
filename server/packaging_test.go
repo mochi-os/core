@@ -487,3 +487,31 @@ func TestDeployScriptNamesNoRetiredHost(t *testing.T) {
 		t.Errorf("deploy still names the retired server")
 	}
 }
+
+// TestManifestsCarryGenerationTimeAndPlatform. The signature bound the bytes
+// to the release key and nothing bound them to a date, so a replayed old
+// manifest froze every server on the release before it. Every manifest now
+// says when it was generated and for which subtree, with one time per publish.
+func TestManifestsCarryGenerationTimeAndPlatform(t *testing.T) {
+	out := packaging_dry(t, "release-publish")
+	for _, platform := range []string{"apt", "rpm", "macos", "docker"} {
+		if !regexp.MustCompile(`"generated": \d+, "platform": "` + platform + `", "tracks"`).MatchString(out) {
+			t.Errorf("the %s manifest carries no generation time or platform", platform)
+		}
+	}
+	if !strings.Contains(out, `"generated": %s, "platform": "windows", "tracks"`) {
+		t.Errorf("the windows manifest carries no generation time or platform")
+	}
+	times := map[string]bool{}
+	for _, match := range regexp.MustCompile(`"generated": (\d+)`).FindAllStringSubmatch(out, -1) {
+		times[match[1]] = true
+	}
+	if len(times) != 1 {
+		t.Errorf("the manifests of one publish disagree on the generation time: %v", times)
+	}
+	for value := range times {
+		if !strings.Contains(out, "'"+value+"' '") {
+			t.Errorf("the windows manifest is not stamped with the same generation time %s", value)
+		}
+	}
+}

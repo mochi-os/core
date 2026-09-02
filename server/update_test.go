@@ -13,8 +13,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestUpdateInstallDownloadVerifies: the artifact goes straight to msiexec as
@@ -139,5 +142,108 @@ func TestRPMRepoRequiresVerification(t *testing.T) {
 	// regardless of the line above.
 	if strings.Contains(text, "gpgcheck=0") {
 		t.Error("mochi.repo contains gpgcheck=0, which disables signature verification")
+	}
+}
+
+// TestUpdateManifestFreshness. The signature binds the manifest to the release
+// key; these checks bind it to now, so a host that can only replay old signed
+// manifests cannot hold a server on a release it has already moved past. Age
+// alone is reported, not refused: nothing re-signs a manifest between releases.
+func TestUpdateManifestFreshness(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	day := 24 * time.Hour
+	manifest := func(generated time.Time, platform string) *update_versions {
+		return &update_versions{Generated: generated.Unix(), Platform: platform, Tracks: map[string]string{"production": "0.4.250"}}
+	}
+	cases := []struct {
+		name     string
+		manifest *update_versions
+		accepted int64
+		stale    bool
+		refused  string
+	}{
+		{"fresh", manifest(now.Add(-day), "apt"), 0, false, ""},
+		{"newer than the last accepted", manifest(now.Add(-day), "apt"), now.Add(-2 * day).Unix(), false, ""},
+		{"same as the last accepted", manifest(now.Add(-day), "apt"), now.Add(-day).Unix(), false, ""},
+		{"within clock skew", manifest(now.Add(time.Hour), "apt"), 0, false, ""},
+		{"old is reported, not refused", manifest(now.Add(-61*day), "apt"), 0, true, ""},
+		{"no generation time", &update_versions{Platform: "apt"}, 0, false, "no generation time"},
+		{"another platform", manifest(now.Add(-day), "rpm"), 0, false, "platform"},
+		{"older than the last accepted", manifest(now.Add(-3*day), "apt"), now.Add(-day).Unix(), false, "older than the last accepted"},
+		{"from the future", manifest(now.Add(2*day), "apt"), 0, false, "in the future"},
+	}
+	for _, c := range cases {
+		stale, err := update_manifest_fresh(c.manifest, "apt", now, c.accepted)
+		if c.refused == "" {
+			if err != nil {
+				t.Errorf("%s: refused: %v", c.name, err)
+				continue
+			}
+			if stale != c.stale {
+				t.Errorf("%s: stale = %v, want %v", c.name, stale, c.stale)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), c.refused) {
+			t.Errorf("%s: err = %v, want %q", c.name, err, c.refused)
+		}
+	}
+}
+
+// TestUpdateInstallCommandRestartsTheService. The MSI declares no failure
+// actions, so nothing but this command line brings the server back when an
+// upgrade rolls back; it must start the service after msiexec, unconditionally.
+func TestUpdateInstallCommandRestartsTheService(t *testing.T) {
+	msi := `C:\ProgramData\Mochi\data\tmp\mochi-server-0.4.250.msi`
+	command := update_install_command(msi, msi+".log")
+	wait := "ping -n " + strconv.Itoa(update_install_pre_wait+1) + " 127.0.0.1"
+	install := `msiexec /i "` + msi + `" /quiet /norestart /l*v "` + msi + `.log"`
+	restart := " & sc start mochi-server"
+	for _, part := range []string{wait, install, restart} {
+		if !strings.Contains(command, part) {
+			t.Errorf("command lacks %q:\n%s", part, command)
+		}
+	}
+	if !strings.HasSuffix(command, restart) {
+		t.Errorf("the service start is not the last step:\n%s", command)
+	}
+	if strings.Contains(command, "&&") {
+		t.Errorf("the service start is conditional on msiexec succeeding, so a rolled-back install leaves the server stopped:\n%s", command)
+	}
+}
+
+// TestUpdateInstallLaunchRefusesATamperedArtifact. msiexec reads the file
+// seconds after this service has exited, so the launch re-hashes it against
+// the manifest and refuses anything else before the spawn. Off Windows the
+// spawn stub refuses, which is how the test sees that every check passed.
+func TestUpdateInstallLaunchRefusesATamperedArtifact(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the spawn would run msiexec")
+	}
+	path := filepath.Join(t.TempDir(), "mochi-server-0.4.250.msi")
+	body := []byte("pretend this is an MSI")
+	sum := sha256.Sum256(body)
+	release := update_release{File: "mochi-server-0.4.250.msi", Size: int64(len(body)), Sha256: hex.EncodeToString(sum[:])}
+	launch := func(content []byte) error {
+		if content == nil {
+			os.Remove(path)
+		} else if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return update_install_launch(path, path+".log", release)
+	}
+	if err := launch(body); err == nil || !strings.Contains(err.Error(), "self-install not supported") {
+		t.Fatalf("intact artifact: err = %v, want the platform stub's refusal after the checks", err)
+	}
+	tampered := append([]byte{}, body...)
+	tampered[0] ^= 1
+	if err := launch(tampered); err == nil || !strings.Contains(err.Error(), "sha256") {
+		t.Errorf("same-length tamper: err = %v, want a digest refusal", err)
+	}
+	if err := launch(append(append([]byte{}, body...), '!')); err == nil || !strings.Contains(err.Error(), "size") {
+		t.Errorf("longer file: err = %v, want a size refusal", err)
+	}
+	if err := launch(nil); err == nil || strings.Contains(err.Error(), "self-install not supported") {
+		t.Errorf("missing file: err = %v, want a refusal before the spawn", err)
 	}
 }

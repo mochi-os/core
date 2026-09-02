@@ -6,6 +6,10 @@
 
 version = 0.4.249
 
+# Generation time stamped into every published manifest, read once so the
+# manifests of one publish step agree.
+generated := $(shell date +%s)
+
 # Build outputs land in ~/mochi/bin/ (one level up from core/), so source
 # directories never collide with binary names.
 bin = ../bin
@@ -545,7 +549,7 @@ release-publish:
 	rm -f ../packages/apt/pool/main/mochi-server_*.deb
 	cp $(deb_amd64) $(deb_arm64) $(deb_armhf) ../packages/apt/pool/main
 	@t=$$(date +%s); ./build/scripts/apt-repository-update ../packages/apt `cat local/gpg.txt | tr -d '\n'` && echo ">>> apt reindex (scan + gpg sign): $$(($$(date +%s)-t))s" | tee -a $(timing)
-	echo '{"tracks": {"production": "$(version)"}}' > ../packages/apt/versions.json
+	echo '{"generated": $(generated), "platform": "apt", "tracks": {"production": "$(version)"}}' > ../packages/apt/versions.json
 	# Client-side files and the binary keyring from source, like mochi.repo
 	# below: a tree wipe or a key rotation would otherwise leave the apt channel
 	# stale with nothing to diff.
@@ -558,7 +562,7 @@ release-publish:
 	# reverting those turns verification off with no error and no diff.
 	cp build/rpm/mochi.repo ../packages/rpm/mochi.repo
 	@t=$$(date +%s); ./build/scripts/rpm-repository-update ../packages/rpm `cat local/gpg.txt | tr -d '\n'` && echo ">>> rpm reindex (createrepo): $$(($$(date +%s)-t))s" | tee -a $(timing)
-	echo '{"tracks": {"production": "$(version)"}}' > ../packages/rpm/versions.json
+	echo '{"generated": $(generated), "platform": "rpm", "tracks": {"production": "$(version)"}}' > ../packages/rpm/versions.json
 	# Two names: a stable one for humans and a version-stamped one the self-updater
 	# fetches, since this rsync is not atomic and the stable path is overwritten in
 	# place. The stable name is a relative symlink to the stamped file in the same
@@ -569,13 +573,13 @@ release-publish:
 	cp $(msi) ../packages/windows/mochi-server-$(version).msi
 	ln -sfn mochi-server-$(version).msi ../packages/windows/mochi-server.msi
 	@sha=`sha256sum $(msi) | cut -d' ' -f1`; size=`wc -c < $(msi) | tr -d ' '`; \
-	  printf '{"tracks": {"production": "%s"}, "releases": {"%s": {"file": "mochi-server-%s.msi", "size": %s, "sha256": "%s"}}}\n' \
-	  '$(version)' '$(version)' '$(version)' "$$size" "$$sha" > ../packages/windows/versions.json
+	  printf '{"generated": %s, "platform": "windows", "tracks": {"production": "%s"}, "releases": {"%s": {"file": "mochi-server-%s.msi", "size": %s, "sha256": "%s"}}}\n' \
+	  '$(generated)' '$(version)' '$(version)' '$(version)' "$$size" "$$sha" > ../packages/windows/versions.json
 	cp $(pkg_amd64) ../packages/macos/mochi-server-amd64.pkg
 	cp $(pkg_arm64) ../packages/macos/mochi-server-arm64.pkg
-	echo '{"tracks": {"production": "$(version)"}}' > ../packages/macos/versions.json
+	echo '{"generated": $(generated), "platform": "macos", "tracks": {"production": "$(version)"}}' > ../packages/macos/versions.json
 	mkdir -p ../packages/docker
-	echo '{"tracks": {"production": "$(version)"}}' > ../packages/docker/versions.json
+	echo '{"generated": $(generated), "platform": "docker", "tracks": {"production": "$(version)"}}' > ../packages/docker/versions.json
 	# Sign every versions.json with the release key: the server verifies this
 	# detached ed25519 signature against a pinned public key before trusting the
 	# manifest. Done after every manifest is written and before the single rsync,

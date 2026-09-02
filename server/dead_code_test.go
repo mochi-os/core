@@ -39,6 +39,10 @@ var removed = []struct {
 		"#84: test-only duplicate reader. peer_record_relay reads peer_records[id].Envelope directly."},
 	{".", "type UserPurge struct",
 		"#85: payload of a user/purge replication op. Multi-host replication was removed in July 2026."},
+	{".", "func audit_replication_",
+		"replication audit events. Multi-host replication was removed in July 2026; these outlived it only in the Windows-only audit file, which the Linux build never compiles."},
+	{".", "func exists(path string) bool",
+		"a second copy of file_exists, named to collide with the database exists methods."},
 }
 
 func TestRemovedSymbolsStayRemoved(t *testing.T) {

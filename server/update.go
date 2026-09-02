@@ -42,6 +42,14 @@ const (
 	// that fills the data volume takes the server down with it.
 	update_manifest_maximum = 1 << 20   // 1 MiB
 	update_artifact_maximum = 256 << 20 // 256 MiB
+
+	// A manifest older than this is reported to the administrator: nothing
+	// re-signs a manifest between releases, so age alone does not prove a
+	// replay, but past this the server cannot tell whether it is current. One
+	// generated further ahead than the skew allowance is refused, since it
+	// would raise the replay watermark past every real manifest to come.
+	update_manifest_stale = 60 * 24 * time.Hour
+	update_manifest_skew  = 24 * time.Hour
 )
 
 // update_install_lock guards against concurrent install attempts (e.g. an
@@ -54,12 +62,16 @@ var update_install_lock sync.Mutex
 // digests come from the same host as the artifacts they describe.
 const update_manifest_public_key = "e8W9tRQLNhmcqDAxIYSuKyXGPSThMC90FWSQMCktMAA="
 
-// update_versions is the per-platform versions.json. Releases is keyed by
-// version string and carries the integrity data the self-installer verifies
-// before it hands an artifact to the system installer.
+// update_versions is the per-platform versions.json. Generated is when the
+// release wrote it and Platform the subtree it was written for; both are
+// checked by update_manifest_fresh before anything else is read. Releases is
+// keyed by version string and carries the integrity data the self-installer
+// verifies before it hands an artifact to the system installer.
 type update_versions struct {
-	Tracks   map[string]string         `json:"tracks"`
-	Releases map[string]update_release `json:"releases"`
+	Generated int64                     `json:"generated"`
+	Platform  string                    `json:"platform"`
+	Tracks    map[string]string         `json:"tracks"`
+	Releases  map[string]update_release `json:"releases"`
 }
 
 // update_release describes one downloadable artifact. File is relative to the
@@ -149,7 +161,43 @@ func update_manifest() (*update_versions, error) {
 	if err := json.Unmarshal(body, &v); err != nil {
 		return nil, fmt.Errorf("parse manifest: %v", err)
 	}
+	accepted, _ := strconv.ParseInt(setting_get("update_generated", "0"), 10, 64)
+	stale, err := update_manifest_fresh(&v, update_url_path(), time.Now(), accepted)
+	if err != nil {
+		return nil, err
+	}
+	if v.Generated > accepted {
+		setting_set("update_generated", strconv.FormatInt(v.Generated, 10))
+	}
+	if stale {
+		warn("Server update: the %s manifest was generated on %s and nothing newer has been published since; this server cannot tell whether %s is current", update_url_path(), time.Unix(v.Generated, 0).UTC().Format("2006-01-02"), build_version)
+	}
 	return &v, nil
+}
+
+// update_manifest_fresh decides whether a verified manifest may be trusted for
+// what it says. The signature binds the bytes to the release key; this binds
+// them to now. A manifest with no generation time, for another platform,
+// generated after tomorrow, or older than the last one this server accepted
+// is refused, so a host that can only replay old signed manifests cannot hold
+// the server on a release it has already moved past. Age beyond
+// update_manifest_stale is returned rather than refused: nothing re-signs a
+// manifest between releases, so an old one is reported, not rejected.
+func update_manifest_fresh(v *update_versions, platform string, now time.Time, accepted int64) (bool, error) {
+	if v.Generated <= 0 {
+		return false, fmt.Errorf("manifest carries no generation time")
+	}
+	if v.Platform != platform {
+		return false, fmt.Errorf("manifest is for platform %q, not %q", v.Platform, platform)
+	}
+	generated := time.Unix(v.Generated, 0)
+	if generated.After(now.Add(update_manifest_skew)) {
+		return false, fmt.Errorf("manifest generated %s is in the future", generated.UTC().Format(time.RFC3339))
+	}
+	if v.Generated < accepted {
+		return false, fmt.Errorf("manifest generated %s is older than the last accepted, %s", generated.UTC().Format(time.RFC3339), time.Unix(accepted, 0).UTC().Format(time.RFC3339))
+	}
+	return now.Sub(generated) > update_manifest_stale, nil
 }
 
 // update_manager polls packages.mochi-os.org once a day and notifies admins
@@ -265,18 +313,13 @@ func update_platform_full() string {
 // owns this host. Falls back to "deb" if neither marker is found — most
 // development hosts are Debian-family.
 func update_linux_format() string {
-	if exists("/etc/debian_version") {
+	if file_exists("/etc/debian_version") {
 		return "deb"
 	}
-	if exists("/etc/redhat-release") || exists("/etc/fedora-release") || exists("/etc/centos-release") {
+	if file_exists("/etc/redhat-release") || file_exists("/etc/fedora-release") || file_exists("/etc/centos-release") {
 		return "rpm"
 	}
 	return "deb"
-}
-
-func exists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }
 
 // update_install_start begins an unattended self-install of the named version
@@ -352,8 +395,8 @@ func update_install_run(version string) error {
 	msi_log := path + ".log"
 
 	info("Server update: launching msiexec for %s (log: %s)", path, msi_log)
-	if err := update_install_spawn(path, msi_log); err != nil {
-		return fmt.Errorf("spawn msiexec: %v", err)
+	if err := update_install_launch(path, msi_log, release); err != nil {
+		return err
 	}
 
 	info("Server update: shutting down for self-install")
@@ -362,6 +405,59 @@ func update_install_run(version string) error {
 	default:
 	}
 	return nil
+}
+
+// update_install_launch is the hand-over to msiexec. Nothing can hold the
+// artifact open across it - this service must exit before msiexec runs - so
+// the directory it sits in is locked down again and the file re-hashed
+// immediately before the spawn, and what msiexec reads a few seconds later is
+// what was verified.
+func update_install_launch(path, msi_log string, release update_release) error {
+	if err := directories_secure(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("secure %s: %v", filepath.Dir(path), err)
+	}
+	if err := update_install_verify(path, release); err != nil {
+		return fmt.Errorf("verify %s: %v", path, err)
+	}
+	if err := update_install_spawn(path, msi_log); err != nil {
+		return fmt.Errorf("spawn msiexec: %v", err)
+	}
+	return nil
+}
+
+// update_install_verify checks that the file at path is exactly the artifact
+// the manifest describes: same length, same digest.
+func update_install_verify(path string, release update_release) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	digest := sha256.New()
+	size, err := io.Copy(digest, f)
+	if err != nil {
+		return err
+	}
+	if size != release.Size {
+		return fmt.Errorf("size %d does not match manifest size %d", size, release.Size)
+	}
+	if sum := hex.EncodeToString(digest.Sum(nil)); !strings.EqualFold(sum, release.Sha256) {
+		return fmt.Errorf("sha256 %s does not match manifest sha256 %s", sum, release.Sha256)
+	}
+	return nil
+}
+
+// update_install_command is the detached command line that installs the
+// downloaded MSI once this service has exited: a settle wait, msiexec, then
+// an unconditional start of the service. After a successful upgrade the new
+// service is already running and the start is refused harmlessly; after a
+// rolled-back one it brings the old binary back instead of leaving the
+// server stopped. The service control manager never restarts it on its own:
+// the MSI declares no failure actions, which wixl cannot express.
+func update_install_command(msi, log string) string {
+	return `cmd /c ping -n ` + strconv.Itoa(update_install_pre_wait+1) +
+		` 127.0.0.1 > NUL & msiexec /i "` + msi +
+		`" /quiet /norestart /l*v "` + log + `" & sc start mochi-server`
 }
 
 // update_install_download streams a URL to disk and publishes it only if it is

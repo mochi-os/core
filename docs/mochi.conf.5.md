@@ -200,6 +200,12 @@ the sending host, or the mail will be filed as spam.
     is published on the production track. Set to **false** to disable
     the daily poll entirely.
 
+    The manifest is signed with the release key and carries its
+    generation time. One older than the last manifest this server
+    accepted is refused; one more than 60 days old is reported to the
+    administrator, since the server can no longer tell whether it is
+    current.
+
     Released builds (`make release` from the Mochi source tree) include
     a build-time `build_platform` tag for *linux*, *windows*, *macos*
     or *docker*; the daily check only runs when both that tag and a

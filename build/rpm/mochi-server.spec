@@ -2,7 +2,7 @@ Name:           mochi-server
 Version:        %{_version}
 Release:        1%{?dist}
 Summary:        The distributed app platform
-License:        Proprietary
+License:        AGPL-3.0-only WITH Mochi-Application-Interface-Exception
 URL:            https://mochi-os.org
 
 %description
@@ -63,10 +63,24 @@ chown -R mochi:mochi /var/cache/mochi
 # read-only loose objects readable, and is idempotent.
 chmod -R go-rwx /var/lib/mochi /var/cache/mochi
 
+# The recursive chmod leaves the data directory 0700, which would stop a member
+# of the mochi group from reaching the sockets under run/. Group members need
+# traverse only; the server sets the mode of run/ itself.
+chmod 0710 /var/lib/mochi
+
+# Earlier units granted the bind capability by writing it onto the binary; the
+# unit now grants it to the process, so clear the file capability.
+setcap -r /usr/sbin/mochi-server 2>/dev/null || true
+
 systemctl daemon-reload
 # enable as well: WantedBy=multi-user.target only takes effect once the .wants
 # symlink exists, so without this the server does not come back after a reboot.
 systemctl enable mochi-server >/dev/null 2>&1 || true
+# A fresh install ($1 = 1) starts the server; an upgrade restarts it from
+# %postun, once the new binary is in place.
+if [ $1 -eq 1 ]; then
+    systemctl start mochi-server >/dev/null 2>&1 || true
+fi
 
 %preun
 if [ $1 -eq 0 ]; then
@@ -76,3 +90,6 @@ fi
 
 %postun
 systemctl daemon-reload
+if [ $1 -ge 1 ]; then
+    systemctl try-restart mochi-server >/dev/null 2>&1 || true
+fi

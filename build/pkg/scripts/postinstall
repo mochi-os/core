@@ -8,6 +8,11 @@ chown -R _mochi:_mochi /var/cache/mochi
 # read-only loose objects readable, and is idempotent.
 chmod -R go-rwx /var/lib/mochi /var/cache/mochi
 
+# The recursive chmod leaves the data directory 0700, which would stop a member
+# of the _mochi group from reaching the sockets under run/. Group members need
+# traverse only; the server sets the mode of run/ itself.
+chmod 0710 /var/lib/mochi
+
 # Load the launchd service
 launchctl bootout system/org.mochi-os.server 2>/dev/null
 launchctl bootstrap system /Library/LaunchDaemons/org.mochi-os.server.plist

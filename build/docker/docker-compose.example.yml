@@ -9,8 +9,10 @@
 
 services:
   mochi:
-    image: ghcr.io/mochi-os/mochi-server:latest
-    restart: unless-stopped
+    image: ghcr.io/mochi-os/mochi-server:production
+    # on-failure honours mochictl: stop exits 0 and stays down, restart exits
+    # 75 and comes back.
+    restart: on-failure
     ports:
       - "80:8080"
       - "1443:1443/tcp"

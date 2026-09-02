@@ -196,7 +196,9 @@ linux-arm-all: $(bin)/mochi-server-linux-arm64 $(bin)/mochi-server-linux-arm
 
 # AMD64 .deb package
 $(deb_amd64): $(bin)/mochi-server-linux-amd64 $(bin)/mochictl $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
-	mkdir -p -m 0775 $(build_linux_amd64) $(build_linux_amd64)/usr/bin $(build_linux_amd64)/usr/sbin $(build_linux_amd64)/var/cache/mochi $(build_linux_amd64)/var/lib/mochi
+	mkdir -p $(build_linux_amd64)/usr/bin $(build_linux_amd64)/usr/sbin $(build_linux_amd64)/var/cache/mochi $(build_linux_amd64)/var/lib/mochi
+	chmod 0755 $(build_linux_amd64) $(build_linux_amd64)/usr $(build_linux_amd64)/usr/bin $(build_linux_amd64)/usr/sbin $(build_linux_amd64)/var
+	chmod 0750 $(build_linux_amd64)/var/cache/mochi $(build_linux_amd64)/var/lib/mochi
 	cp -av build/deb/* $(build_linux_amd64)
 	sed 's/_VERSION_/$(version)/' build/deb/DEBIAN/control > $(build_linux_amd64)/DEBIAN/control
 	cp -av install/* $(build_linux_amd64)
@@ -216,7 +218,9 @@ deb-amd64: $(deb_amd64)
 
 # ARM64 .deb package
 $(deb_arm64): $(bin)/mochi-server-linux-arm64 $(bin)/mochictl-linux-arm64 $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
-	mkdir -p -m 0775 $(build_linux_arm64) $(build_linux_arm64)/usr/bin $(build_linux_arm64)/usr/sbin $(build_linux_arm64)/var/cache/mochi $(build_linux_arm64)/var/lib/mochi
+	mkdir -p $(build_linux_arm64)/usr/bin $(build_linux_arm64)/usr/sbin $(build_linux_arm64)/var/cache/mochi $(build_linux_arm64)/var/lib/mochi
+	chmod 0755 $(build_linux_arm64) $(build_linux_arm64)/usr $(build_linux_arm64)/usr/bin $(build_linux_arm64)/usr/sbin $(build_linux_arm64)/var
+	chmod 0750 $(build_linux_arm64)/var/cache/mochi $(build_linux_arm64)/var/lib/mochi
 	cp -av build/deb/* $(build_linux_arm64)
 	sed -e 's/_VERSION_/$(version)/' -e 's/Architecture: amd64/Architecture: arm64/' build/deb/DEBIAN/control > $(build_linux_arm64)/DEBIAN/control
 	cp -av install/* $(build_linux_arm64)
@@ -235,7 +239,9 @@ deb-arm64: $(deb_arm64)
 
 # ARMHF .deb package
 $(deb_armhf): $(bin)/mochi-server-linux-arm $(bin)/mochictl-linux-arm $(bin)/mochictl.1 $(bin)/mochi-server.8 $(bin)/mochi.conf.5 $(bin)/mochi.7
-	mkdir -p -m 0775 $(build_linux_armhf) $(build_linux_armhf)/usr/bin $(build_linux_armhf)/usr/sbin $(build_linux_armhf)/var/cache/mochi $(build_linux_armhf)/var/lib/mochi
+	mkdir -p $(build_linux_armhf)/usr/bin $(build_linux_armhf)/usr/sbin $(build_linux_armhf)/var/cache/mochi $(build_linux_armhf)/var/lib/mochi
+	chmod 0755 $(build_linux_armhf) $(build_linux_armhf)/usr $(build_linux_armhf)/usr/bin $(build_linux_armhf)/usr/sbin $(build_linux_armhf)/var
+	chmod 0750 $(build_linux_armhf)/var/cache/mochi $(build_linux_armhf)/var/lib/mochi
 	cp -av build/deb/* $(build_linux_armhf)
 	sed -e 's/_VERSION_/$(version)/' -e 's/Architecture: amd64/Architecture: armhf/' build/deb/DEBIAN/control > $(build_linux_armhf)/DEBIAN/control
 	cp -av install/* $(build_linux_armhf)

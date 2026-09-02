@@ -21,12 +21,32 @@ func run_dir() string {
 
 // run_dir_create ensures <data_dir>/run/ exists, before the UDS admin listener
 // binds. Mode 0751: the traverse bit is load-bearing - each socket is gated by
-// its own 0660 and group, and a mochi-world process is not in the mochi group.
+// its own 0660 and group, and a peer that is not the mochi user reaches it
+// through this directory and its parent. The package post-install closes the
+// data directory to everyone else, so the parent's group traverse bit is
+// restored here as well.
 func run_dir_create() error {
 	if err := os.MkdirAll(run_dir(), 0751); err != nil {
 		return err
 	}
+	if err := directory_traverse(data_dir); err != nil {
+		return err
+	}
 	return os.Chmod(run_dir(), 0751) // an existing directory keeps its old mode through MkdirAll
+}
+
+// directory_traverse adds the group traverse bit to an existing directory and
+// changes nothing else about its mode.
+func directory_traverse(path string) error {
+	information, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	mode := information.Mode().Perm()
+	if mode&0010 != 0 {
+		return nil
+	}
+	return os.Chmod(path, mode|0010)
 }
 
 // socket_path_maximum is the longest path net.Listen("unix", ...) can bind.

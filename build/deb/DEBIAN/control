@@ -2,5 +2,9 @@ Package: mochi-server
 Version: _VERSION_
 Architecture: amd64
 Maintainer: Mochi developers <developers@mochi-os.org>
+Depends: adduser, libcap2-bin, systemd
+Section: net
+Priority: optional
+Homepage: https://mochi-os.org
 Description: The distributed app platform
  This package contains the server.

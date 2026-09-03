@@ -638,29 +638,33 @@ func db_app_system(u *User, app *App) *DB {
 		return db
 	}
 
-	db.access_setup()
-	// Broadcast state lives on the system DB; create its tables eagerly
-	// here (#424) rather than only via the send/receive paths' defensive
-	// creates.
-	broadcast_sequence_table_create(db)
-	broadcast_received_table_create(db)
-	broadcast_log_table_create(db)
-	broadcast_acknowledged_table_create(db)
-	broadcast_pending_table_create(db)
-	// The commit-hook pending log lives on this database too. Created here for
-	// the same reason as the broadcast tables, and because commit_hook_fire used
-	// to create it three times per fired commit - once in commits_setup, once in
-	// the drain and once in the append - each one flushing this handle's
-	// prepared statements.
-	commits_table_create(db)
+	db_app_system_setup(db)
 	db.system_setup = true
 
 	return db
 }
 
-// db_app_system_sweep runs the idempotent app-system setups (access / journal)
-// over every existing app.db at startup, so one nothing touches is still
-// brought up to date.
+// db_app_system_setup brings one app.db up to date: the access tables, the
+// broadcast state tables and the commit-hook log, each an idempotent create
+// carrying its own column migrations. One list for both the open path and the
+// startup sweep: the sweep marks a handle set up and the open path trusts that
+// mark, so anything the sweep skipped would stay skipped for as long as the
+// handle stayed cached. The broadcast tables are created here rather than only
+// by the send/receive paths' defensive creates, and the commit-hook log here
+// rather than once per fired commit, which flushed the handle's prepared
+// statements each time.
+func db_app_system_setup(db *DB) {
+	db.access_setup()
+	broadcast_sequence_table_create(db)
+	broadcast_received_table_create(db)
+	broadcast_log_table_create(db)
+	broadcast_acknowledged_table_create(db)
+	broadcast_pending_table_create(db)
+	commits_table_create(db)
+}
+
+// db_app_system_sweep runs the app-system setup over every existing app.db at
+// startup, so one nothing touches is still brought up to date.
 func db_app_system_sweep() {
 	users_root := filepath.Join(data_dir, "users")
 	users, err := os.ReadDir(users_root)
@@ -699,7 +703,7 @@ func db_app_system_sweep() {
 				l := lock(path)
 				l.Lock()
 				if !db.system_setup {
-					db.access_setup()
+					db_app_system_setup(db)
 					db.system_setup = true
 					count++
 				}

@@ -313,3 +313,60 @@ def database_create():
 		t.Errorf("cache went from %d to %d statements across one commits_append; it is still running the table DDL per call", warm, after)
 	}
 }
+
+// TestSystemSweepRunsTheWholeAppSystemSetup: the sweep marks each handle set
+// up and db_app_system trusts that mark, so the sweep has to run the same
+// setup the open path would. The pending table's column rename is the part
+// that shows: a database the sweep opened first otherwise keeps the old column,
+// and every drain of its buffered rows then fails on the scan.
+func TestSystemSweepRunsTheWholeAppSystemSetup(t *testing.T) {
+	directory := test_data_directory(t)
+	t.Cleanup(func() { db_purge_prefix("") })
+
+	path := "users/sweepuser/legacy/app.db"
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(directory, path)), 0755); err != nil {
+		t.Fatalf("directory: %v", err)
+	}
+	db, _, _ := db_open_work(path)
+	if db == nil {
+		t.Fatalf("creating %q", path)
+	}
+	db.exec(`create table pending (
+		peer text not null,
+		key text not null,
+		sequence integer not null,
+		source text not null,
+		target text not null,
+		service text not null,
+		event text not null,
+		msg_id text not null default '',
+		sender_app text not null default '',
+		sender_services text not null default '',
+		content blob not null,
+		received integer not null,
+		primary key (peer, key, sequence)
+	)`)
+	db.exec(`insert into pending
+		(peer, key, sequence, source, target, service, event, msg_id, content, received)
+		values ('p', 'k', 1, 'src', 'dst', 'svc', 'ev', 'kept', 'x', 0)`)
+	db.close()
+
+	// Drop it from the cache so the sweep is the opener, as it is at startup.
+	databases_lock.Lock()
+	delete(databases, filepath.Join(directory, path))
+	databases_lock.Unlock()
+
+	db_app_system_sweep()
+
+	db = db_open(path)
+	if db == nil {
+		t.Fatalf("reopening %q", path)
+	}
+	if old, _ := db.exists("select 1 from pragma_table_info('pending') where name='msg_id'"); old {
+		t.Fatal("the sweep left msg_id in place, and the open path trusts the sweep's mark, so nothing renames it")
+	}
+	row := broadcast_pending_next(db, "p", "k", 1)
+	if row == nil || row.Message != "kept" {
+		t.Fatalf("buffered row after the sweep: %+v, want message %q", row, "kept")
+	}
+}

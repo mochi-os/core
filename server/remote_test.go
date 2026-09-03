@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	sl "go.starlark.net/starlark"
 )
 
 // Test peer_connect_url HTTP request and JSON parsing
@@ -250,5 +252,44 @@ func TestPeerConnectUrlRequiresHttps(t *testing.T) {
 	}
 	if hit.Load() {
 		t.Error("the ftp:// form still reached the server")
+	}
+}
+
+// remote_thread is the Starlark context an external app calls
+// mochi.remote.peer under: a user, an app, and no url: grant.
+func remote_thread(t *testing.T) *sl.Thread {
+	t.Helper()
+	user := create_test_user(t)
+	thread := &sl.Thread{Name: "test"}
+	thread.SetLocal("user", user)
+	thread.SetLocal("app", create_external_app("stranger"))
+	db_user(user, "user").permissions_setup()
+	return thread
+}
+
+// TestRemotePeerAnswersNoneForWhatItCannotFetch is the permission half of
+// #593, pinned after it broke the repositories app (#1238). The url: gate
+// applies to a value that would cause an HTTP fetch and to nothing else: a
+// bare peer id is the p2p/ form and is connected directly, a value that is no
+// URL answers None as it always did, and only an https host the app has no
+// grant for is refused with an error.
+func TestRemotePeerAnswersNoneForWhatItCannotFetch(t *testing.T) {
+	thread := remote_thread(t)
+	fn := sl.NewBuiltin("mochi.remote.peer", nil)
+	peer := func(value string) (sl.Value, error) {
+		return api_remote_peer(thread, fn, sl.Tuple{sl.String(value)}, nil)
+	}
+
+	// The repositories app stores the directory location with its p2p/ prefix
+	// stripped and hands the bare id back here. Unknown to the peer table it
+	// cannot connect, but it must never reach the gate.
+	if v, err := peer("12D3KooWLYEsrR6rziEnpLYJXseH3W1DBQGdKn5qnmQcvgsKcwCH"); err != nil || v != sl.None {
+		t.Errorf("bare peer id: value %v, error %v; want None with no error", v, err)
+	}
+	if v, err := peer("not a url"); err != nil || v != sl.None {
+		t.Errorf("non-URL value: value %v, error %v; want None with no error", v, err)
+	}
+	if _, err := peer("https://127.0.0.1:9/"); err == nil || !strings.Contains(err.Error(), "permission") {
+		t.Errorf("an ungranted https host was not refused by the url: gate: %v", err)
 	}
 }

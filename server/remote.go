@@ -38,12 +38,24 @@ func api_remote_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl.None, nil
 	}
 
+	// A bare peer id is the p2p/ form without its prefix: apps store the
+	// directory's "p2p/<id>" location stripped, and a peer id names nothing an
+	// HTTP fetch could reach, so it is connected directly and never gated.
+	if valid(url, "peer") {
+		url = "p2p/" + url
+	}
+
 	// Every other outbound fetch - mochi.url.*, mochi.rss.fetch, link preview -
 	// gates on require_permission_url. This one did not, so an app with no grant
 	// could probe any public host and port, and have what came back stored in
-	// `peers` and dialed. The p2p/ form does no HTTP and needs no grant.
+	// `peers` and dialed. The p2p/ form does no HTTP and needs no grant, and a
+	// value that is no URL at all fetches nothing either: it answers None, as
+	// it always did, rather than raising into the caller's action.
 	if !strings.HasPrefix(url, "p2p/") {
-		if err := require_permission_url(t, fn, url); err != nil {
+		if _, err := domain_extract(remote_https(url)); err != nil {
+			return sl.None, nil
+		}
+		if err := require_permission_url(t, fn, remote_https(url)); err != nil {
 			return sl_error(fn, "%v", err)
 		}
 	}
@@ -60,6 +72,14 @@ func api_remote_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.String(peer), nil
 }
 
+// remote_https is the scheme a server name gets when it carries none.
+func remote_https(url string) string {
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return "https://" + url
+	}
+	return url
+}
+
 // Connect to a peer by server URL or peer ID, returning the peer ID
 func peer_connect_url(url string) (string, error) {
 	// Handle p2p/ prefixed peer IDs (e.g. from directory location field)
@@ -71,11 +91,9 @@ func peer_connect_url(url string) (string, error) {
 		return "", fmt.Errorf("failed to connect to peer %s", peer)
 	}
 
-	// Normalize URL: add https:// if no scheme present. Plain http is refused
-	// below - this fetch learns a peer's addresses and they are then dialed.
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		url = "https://" + url
-	}
+	// Plain http is refused below - this fetch learns a peer's addresses and
+	// they are then dialed.
+	url = remote_https(url)
 
 	// Rebuild from scheme and host alone: an app-supplied string concatenated onto
 	// the path would carry an arbitrary path, query or fragment - and userinfo -

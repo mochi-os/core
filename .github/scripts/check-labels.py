@@ -96,6 +96,9 @@ KEEP_LOCALE = frozenset({
     ("nn", "Region"), ("sv", "Region"),
     ("da", "Type"), ("fr", "Type"), ("nb", "Type"), ("nn", "Type"),
     ("fr", "Description"), ("fr", "Notes"), ("sv", "Information"),
+    # "Error" is the Catalan and Spanish word, and the loanword Filipino UI
+    # uses; Javanese has "Kesalahan".
+    ("ca", "Error"), ("es", "Error"), ("es-419", "Error"), ("tl", "Error"),
     # The account-provider field labels. Every cell here came from
     # clients/android's own settings catalogue, where the same English source is
     # already translated - so these are the translators' own decisions that the

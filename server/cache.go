@@ -135,7 +135,12 @@ func cache_value(t *sl.Thread, v sl.Value) (string, error) {
 	return cache_file(t, name)
 }
 
-// mochi.cache.write(name, source, maximum=0) -> int: Store bytes or a stream as a cache entry, returns size
+// mochi.cache.write(name, source, maximum=0) -> int or None: Store bytes or a
+// stream as a cache entry, returns size. None when the entry could not be
+// written - the copy or the commit failed - which is an outcome for the caller
+// to degrade on, not a mistake: Starlark cannot catch a raised error, so
+// raising aborted the handler that was serving a request. A bad name or source
+// still raises.
 func api_cache_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var name, source sl.Value
 	maximum := 0
@@ -171,14 +176,18 @@ func api_cache_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 	n, err := cache_write_file(path, io.LimitReader(reader, limit))
 	if err != nil {
-		return sl_error(fn, "unable to write cache entry: %v", err)
+		debug("cache write %s failed: %v", path, err)
+		return sl.None, nil
 	}
 	return sl.MakeInt64(n), nil
 }
 
-// mochi.cache.append(name, source, offset, maximum=0) -> int: Append a
+// mochi.cache.append(name, source, offset, maximum=0) -> int or None: Append a
 // stream's bytes to a cache entry at offset, returning the entry's new total
-// size. Built for resumable transfers: unlike write, which commits whole or
+// size, or None when the append could not run - the entry is held by another
+// transfer, its size is not offset, or the write failed. Those are outcomes
+// for the caller to degrade on, as for write; a bad name, source or offset
+// still raises. Built for resumable transfers: unlike write, which commits whole or
 // not at all, append writes straight into the entry, so bytes that arrived
 // before a broken or abandoned transfer SURVIVE for the next attempt to
 // continue from. The entry must therefore never be a name anything serves -
@@ -219,7 +228,8 @@ func api_cache_append(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	starlark_transfer_set(t)
 	total, err := cache_append_file(path, stream.raw_reader(), offset, limit)
 	if err != nil {
-		return sl_error(fn, "unable to append cache entry: %v", err)
+		debug("cache append %s failed: %v", path, err)
+		return sl.None, nil
 	}
 	return sl.MakeInt64(total), nil
 }

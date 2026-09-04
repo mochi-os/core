@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	sl "go.starlark.net/starlark"
 )
 
 // broken yields its bytes and then fails, like a transfer cut mid-copy.
@@ -116,5 +118,74 @@ func TestAppendHoldsItsLock(t *testing.T) {
 	}
 	if _, err := os.Stat(lock); !os.IsNotExist(err) {
 		t.Error("the lock outlived its append")
+	}
+}
+
+// TestCacheAppendAnswersNoneForATransferItCouldNotRun. An offset the entry
+// disagrees with, a lock another transfer holds, a write that failed: outcomes
+// the Starlark caller degrades on, answered as None. Raising them aborted the
+// handler that was serving, since Starlark cannot catch. A caller mistake - a
+// source that is not a stream - still raises.
+func TestCacheAppendAnswersNoneForATransferItCouldNotRun(t *testing.T) {
+	thread := cache_read_thread(t)
+	builtin := sl.NewBuiltin("mochi.cache.append", api_cache_append)
+	path, err := cache_file(thread, "partial/entry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Dir(path), 0755)
+	if err := os.WriteFile(path, []byte("abcd"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	append := func(source sl.Value, offset int64) (sl.Value, error) {
+		return api_cache_append(thread, builtin, sl.Tuple{sl.String("partial/entry"), source, sl.MakeInt64(offset)}, nil)
+	}
+	stream := func() *Stream { return &Stream{reader: io.NopCloser(strings.NewReader("x"))} }
+
+	value, err := append(stream(), 2)
+	if err != nil || value != sl.None {
+		t.Errorf("a disagreeing offset = (%v, %v), want (None, nil)", value, err)
+	}
+	if err := os.WriteFile(path+".lock", nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	value, err = append(stream(), 4)
+	if err != nil || value != sl.None {
+		t.Errorf("a held entry = (%v, %v), want (None, nil)", value, err)
+	}
+	os.Remove(path + ".lock")
+	if _, err := append(sl.String("x"), 4); err == nil {
+		t.Error("a source that is not a stream is the caller's mistake and must raise")
+	}
+	value, err = append(stream(), 4)
+	if err != nil || value != sl.MakeInt64(5) {
+		t.Errorf("an honest append = (%v, %v), want (5, nil)", value, err)
+	}
+}
+
+// TestCacheWriteAnswersNoneForAWriteItCouldNotCommit. The same contract for
+// write: an entry the cache cannot create - here its parent is a file - is
+// None, while a source of the wrong type still raises.
+func TestCacheWriteAnswersNoneForAWriteItCouldNotCommit(t *testing.T) {
+	thread := cache_read_thread(t)
+	builtin := sl.NewBuiltin("mochi.cache.write", api_cache_write)
+	path, err := cache_file(thread, "blocked/entry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Dir(filepath.Dir(path)), 0755)
+	if err := os.WriteFile(filepath.Dir(path), []byte("in the way"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	value, err := api_cache_write(thread, builtin, sl.Tuple{sl.String("blocked/entry"), sl.String("bytes")}, nil)
+	if err != nil || value != sl.None {
+		t.Errorf("an entry that cannot be created = (%v, %v), want (None, nil)", value, err)
+	}
+	if _, err := api_cache_write(thread, builtin, sl.Tuple{sl.String("plain/entry"), sl.MakeInt(1)}, nil); err == nil {
+		t.Error("a source of the wrong type is the caller's mistake and must raise")
+	}
+	value, err = api_cache_write(thread, builtin, sl.Tuple{sl.String("plain/entry"), sl.String("bytes")}, nil)
+	if err != nil || value != sl.MakeInt64(5) {
+		t.Errorf("an honest write = (%v, %v), want (5, nil)", value, err)
 	}
 }

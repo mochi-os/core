@@ -695,3 +695,15 @@ func TestShellJsLocaleAndOverlayHandlers(t *testing.T) {
 		t.Error("swapIframe no longer clears immersive")
 	}
 }
+
+// The post-restore banner state names the e-mail address at each linked
+// provider; it must not ride in init to every app frame. The app that renders
+// the banner asks a.user.restore() under its own grant instead.
+func TestShellJsInitCarriesNoRestoreState(t *testing.T) {
+	shell_js := load_shell(t, "shell.js")
+	for _, field := range []string{"restoreSource", "relinks", "restorePasskeys"} {
+		if strings.Contains(shell_js, field) {
+			t.Errorf("shell.js still references %s", field)
+		}
+	}
+}

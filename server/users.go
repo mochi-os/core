@@ -1639,7 +1639,7 @@ func (u *User) identity() *Entity {
 
 // Starlark methods
 func (u *User) AttrNames() []string {
-	return []string{"app", "id", "identity", "methods", "preference", "role", "status", "uid", "username"}
+	return []string{"app", "id", "identity", "methods", "preference", "restore", "role", "status", "uid", "username"}
 }
 
 func (u *User) Attr(name string) (sl.Value, error) {
@@ -1656,6 +1656,8 @@ func (u *User) Attr(name string) (sl.Value, error) {
 		return sl.String(u.Methods), nil
 	case "preference":
 		return &UserPreference{user: u}, nil
+	case "restore":
+		return sl.NewBuiltin("a.user.restore", u.restore), nil
 	case "role":
 		return sl.String(u.Role), nil
 	case "status":
@@ -1668,6 +1670,43 @@ func (u *User) Attr(name string) (sl.Value, error) {
 }
 
 func (u *User) Freeze() {}
+
+// a.user.restore() -> dict | None: The state of a server-move restore this
+// account arrived by, until the banner is dismissed (restore.show): the source
+// server, the third-party sign-ins to re-link with the identifier used at each,
+// and whether passkeys need re-registering. None for a normally created
+// account. The re-link list names e-mail addresses, so it is gated like the
+// rest of the sign-in settings.
+func (u *User) restore(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl_encode(user_restore(u)), nil
+}
+
+// user_restore returns the post-restore banner state for a user, or nil once
+// dismissed or when the account did not arrive by restore.
+func user_restore(u *User) map[string]any {
+	if u.Preferences["restore.show"] == "false" {
+		return nil
+	}
+	udb := db_open("db/users.db")
+	row, _ := udb.row("select restore_source, restore_passkeys from users where uid=?", u.UID)
+	if row == nil {
+		return nil
+	}
+	source := as_string(row["restore_source"])
+	if source == "" {
+		return nil
+	}
+	relinks := []any{}
+	if links, _ := udb.rows("select service, identifier from relinks where user=? order by service", u.UID); links != nil {
+		for _, l := range links {
+			relinks = append(relinks, map[string]any{"service": as_string(l["service"]), "identifier": as_string(l["identifier"])})
+		}
+	}
+	return map[string]any{"source": source, "relinks": relinks, "passkeys": as_int64(row["restore_passkeys"]) == 1}
+}
 
 func (u *User) Hash() (uint32, error) {
 	return sl.String(u.UID).Hash()

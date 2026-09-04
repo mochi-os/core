@@ -498,7 +498,11 @@ var (
 			{"permissions/read", ""},
 			{"permissions/write", ""},
 		}},
-		{"12YGtmNxgihPn2cmNSpKfpViFWtWH25xYT7o6xKnTXCA2deNvjH", "Home", nil},
+		{"12YGtmNxgihPn2cmNSpKfpViFWtWH25xYT7o6xKnTXCA2deNvjH", "Home", []struct{ Permission, Object string }{
+			// The post-restore banner: a.user.restore() names the sign-ins to
+			// re-link, so it sits behind the sign-in settings' read grant.
+			{"user/authentication/read", ""},
+		}},
 		{"16MQ3jNWhdy2TaVv55kwxCn6QC8CM1y5W6tmFNkwkkEUtitukV", "Air", []struct{ Permission, Object string }{
 			{"camera", ""},
 		}},

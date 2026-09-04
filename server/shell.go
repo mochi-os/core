@@ -405,29 +405,10 @@ func web_shell_init(c *gin.Context) {
 	// re-resolving.
 	result["appearance"] = user_preference_get(user, "appearance", "auto")
 
-	// Source-server cleanup banner, set when the account arrived via a server-move
-	// restore. Carried here so home/settings render it without a separate fetch;
-	// the restore.show preference records a permanent dismissal.
-	if user.Preferences["restore.show"] != "false" {
-		udb := db_open("db/users.db")
-		if row, _ := udb.row("select restore_source, restore_passkeys from users where uid=?", user.UID); row != nil {
-			if source := as_string(row["restore_source"]); source != "" {
-				result["restoreSource"] = source
-				relinks := []gin.H{}
-				if links, _ := udb.rows("select service, identifier from relinks where user=? order by service", user.UID); links != nil {
-					for _, l := range links {
-						relinks = append(relinks, gin.H{"service": as_string(l["service"]), "identifier": as_string(l["identifier"])})
-					}
-				}
-				result["relinks"] = relinks
-				// The source had passkeys, which can't be restored — prompt
-				// the user to re-register them here.
-				if as_int64(row["restore_passkeys"]) == 1 {
-					result["restorePasskeys"] = true
-				}
-			}
-		}
-	}
+	// The post-restore banner state is deliberately NOT here: the shell used
+	// to copy it into every app frame's init, and the re-link list names the
+	// e-mail address at each linked provider. The app that renders the banner
+	// asks a.user.restore() under its own grant.
 
 	c.JSON(http.StatusOK, result)
 }

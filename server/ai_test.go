@@ -1,9 +1,8 @@
-// Mochi server: the AI call's account resolution, its budgets and its bounds.
+// Mochi server: the AI call's account resolution and its input bounds.
 //
-// mochi.ai.prompt is the one Starlark builtin that spends money, and it reaches
-// a provider whose client waits 60 seconds, holding a Starlark slot the whole
-// time. It had neither a limiter nor a size bound, and it disagreed with
-// interests_ai_summary about which of the user's accounts to bill.
+// mochi.ai.prompt is the one Starlark builtin that spends money. Core bounds
+// what a caller can put into a call, never how many calls an account makes:
+// a spending cap belongs at the provider, where the account owner sets it.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
@@ -36,13 +35,6 @@ func ai_test_user(t *testing.T, id string) (*User, *DB) {
 func ai_test_account(database *DB, id, provider, key, designated string, enabled int) {
 	database.exec("insert into accounts (id, type, data, created, enabled, \"default\") values (?, ?, ?, ?, ?, ?)",
 		id, provider, `{"api_key":"`+key+`"}`, now(), enabled, designated)
-}
-
-// ai_test_budgets clears both AI budgets for this user and app. The limiters are
-// package-level, so without this a test inherits whatever an earlier test spent.
-func ai_test_budgets(user *User, app string) {
-	rate_limit_ai.reset(user.UID)
-	rate_limit_ai_app.reset(app + "/" + user.UID)
 }
 
 // TestAiAccountPicksTheDesignatedDefault. interests_ai_summary took the first
@@ -105,65 +97,6 @@ func TestAiAccountAppliesTheDefaultModel(t *testing.T) {
 	}
 }
 
-// TestAiRateLimitChargesTheAppBurst. An app fires one AI call per cache miss, so
-// a stampede is bounded per app per minute rather than only per hour.
-func TestAiRateLimitChargesTheAppBurst(t *testing.T) {
-	setup_test_data_dir(t)
-	defer cleanup_test_data_dir(t)
-
-	user := create_permission_test_user(t, "aiburst")
-	app := create_external_app("burstapp")
-	ai_test_budgets(user, app.id)
-	thread := create_test_thread(user, app)
-
-	for i := 0; i < rate_limit_ai_app.limit; i++ {
-		if err := ai_rate_limit(thread, user); err != nil {
-			t.Fatalf("refused after %d calls, below the burst limit of %d: %v", i, rate_limit_ai_app.limit, err)
-		}
-	}
-	err := ai_rate_limit(thread, user)
-	if err == nil {
-		t.Fatal("the burst budget never refused; an app can fire AI calls at request rate")
-	}
-	if _, ok := err.(*RateLimitError); !ok {
-		t.Errorf("refusal is %T, want *RateLimitError so the caller answers 429 rather than 500", err)
-	}
-
-	// A second app has a budget of its own - the burst limit bounds one app's
-	// stampede, it is not a shared allowance.
-	other := create_external_app("otherapp")
-	ai_test_budgets(user, other.id)
-	if err := ai_rate_limit(create_test_thread(user, other), user); err != nil {
-		t.Errorf("a second app was refused on the first app's spending: %v", err)
-	}
-}
-
-// TestAiRateLimitChargesTheAccountHour. The hourly budget bounds what the
-// account's provider key can be made to spend, across every app.
-func TestAiRateLimitChargesTheAccountHour(t *testing.T) {
-	setup_test_data_dir(t)
-	defer cleanup_test_data_dir(t)
-
-	user := create_permission_test_user(t, "aihour")
-	ai_test_budgets(user, "")
-	// No app on the thread, so only the hourly budget is charged and the burst
-	// limit cannot refuse first.
-	thread := &sl.Thread{Name: "test"}
-
-	for i := 0; i < rate_limit_ai.limit; i++ {
-		if err := ai_rate_limit(thread, user); err != nil {
-			t.Fatalf("refused after %d calls, below the hourly limit of %d: %v", i, rate_limit_ai.limit, err)
-		}
-	}
-	err := ai_rate_limit(thread, user)
-	if err == nil {
-		t.Fatal("the hourly budget never refused; one account's provider key is unbounded")
-	}
-	if _, ok := err.(*RateLimitError); !ok {
-		t.Errorf("refusal is %T, want *RateLimitError so the caller answers 429 rather than 500", err)
-	}
-}
-
 // ai_test_caller grants accounts/ai to an app and returns a thread acting for
 // the user through it.
 func ai_test_caller(t *testing.T, user *User, app *App) *sl.Thread {
@@ -174,6 +107,45 @@ func ai_test_caller(t *testing.T, user *User, app *App) *sl.Thread {
 	return create_test_thread(user, app)
 }
 
+// TestAiPromptIsNotBudgeted. Core once refused the eleventh call in a minute
+// and the sixty-first in an hour. The refusal raised inside the caller, so a
+// feed poll that ingested more posts than the budget lost every post past it:
+// untagged, and never broadcast to subscribers. A user who wants to cap what
+// an account spends does that at the provider; core sends every call.
+func TestAiPromptIsNotBudgeted(t *testing.T) {
+	setup_test_data_dir(t)
+	defer cleanup_test_data_dir(t)
+
+	user, database := ai_test_user(t, "aiunbudgeted")
+	ai_test_account(database, "a", "claude", "key", "ai", 1)
+	app := create_external_app("unbudgetedapp")
+	thread := ai_test_caller(t, user, app)
+
+	calls := 0
+	previous := ai_call
+	ai_call = func(provider, api_key, model, prompt string, tokens int) ai_result {
+		calls++
+		return ai_result{status: 200, text: "ok"}
+	}
+	defer func() { ai_call = previous }()
+
+	fn := sl.NewBuiltin("mochi.ai.prompt", api_ai_prompt)
+	// Well past both of the old budgets, from one app against one account.
+	for i := 1; i <= 100; i++ {
+		value, err := api_ai_prompt(thread, fn, sl.Tuple{sl.String("hello")}, nil)
+		if err != nil {
+			t.Fatalf("call %d was refused: %v", i, err)
+		}
+		status, _, _ := value.(*sl.Dict).Get(sl.String("status"))
+		if n, _ := sl.AsInt32(status); n != 200 {
+			t.Fatalf("call %d answered status %v, want 200 from the provider", i, status)
+		}
+	}
+	if calls != 100 {
+		t.Errorf("provider reached %d times, want 100: a call was answered without being sent", calls)
+	}
+}
+
 // TestAiPromptRefusesAnOverlongPrompt. Apps fold user-supplied text into
 // prompts, so the ceiling belongs on the builtin rather than on each caller.
 func TestAiPromptRefusesAnOverlongPrompt(t *testing.T) {
@@ -182,7 +154,6 @@ func TestAiPromptRefusesAnOverlongPrompt(t *testing.T) {
 
 	user, _ := ai_test_user(t, "aiprompt")
 	app := create_external_app("promptapp")
-	ai_test_budgets(user, app.id)
 	thread := ai_test_caller(t, user, app)
 
 	fn := sl.NewBuiltin("mochi.ai.prompt", api_ai_prompt)
@@ -211,7 +182,6 @@ func TestAiPromptBoundsTheTokenRequest(t *testing.T) {
 
 	user, _ := ai_test_user(t, "aitokens")
 	app := create_external_app("tokensapp")
-	ai_test_budgets(user, app.id)
 	thread := ai_test_caller(t, user, app)
 
 	fn := sl.NewBuiltin("mochi.ai.prompt", api_ai_prompt)
@@ -228,28 +198,5 @@ func TestAiPromptBoundsTheTokenRequest(t *testing.T) {
 	kwargs := []sl.Tuple{{sl.String("tokens"), sl.MakeInt(ai_tokens_maximum)}}
 	if _, err := api_ai_prompt(thread, fn, sl.Tuple{sl.String("hello")}, kwargs); err != nil {
 		t.Errorf("tokens at exactly the maximum was refused: %v", err)
-	}
-}
-
-// TestAiPromptChargesOnlyOnceAnAccountResolves. An app with no AI account behind
-// it would otherwise spend the user's whole hourly budget on calls that never
-// reach a provider.
-func TestAiPromptChargesOnlyOnceAnAccountResolves(t *testing.T) {
-	setup_test_data_dir(t)
-	defer cleanup_test_data_dir(t)
-
-	user, _ := ai_test_user(t, "aiunconfigured")
-	app := create_external_app("unconfiguredapp")
-	ai_test_budgets(user, app.id)
-	thread := ai_test_caller(t, user, app)
-
-	fn := sl.NewBuiltin("mochi.ai.prompt", api_ai_prompt)
-	for i := 0; i <= rate_limit_ai_app.limit; i++ {
-		if _, err := api_ai_prompt(thread, fn, sl.Tuple{sl.String("hello")}, nil); err != nil {
-			t.Fatalf("call %d with no account configured was refused: %v", i, err)
-		}
-	}
-	if rate_limit_ai.exhausted(user.UID) {
-		t.Error("calls that resolved no account still spent the hourly budget")
 	}
 }

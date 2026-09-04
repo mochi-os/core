@@ -138,35 +138,28 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		return sl_encode(map[string]any{"status": 0, "text": ""}), nil
 	}
 
-	// Charged only once an account is resolved, so a misconfigured app cannot
-	// spend the budget it would never have reached the provider with.
-	if err := ai_rate_limit(t, user); err != nil {
-		return sl_error(fn, "%v", err)
-	}
-
-	// Call the provider
-	var result ai_result
-	switch provider {
-	case "claude":
-		result = ai_call_claude(api_key, model, prompt, tokens)
-	case "openai":
-		result = ai_call_openai(api_key, model, prompt, tokens)
-	default:
-		return sl_encode(map[string]any{"status": 0, "text": ""}), nil
-	}
+	result := ai_call(provider, api_key, model, prompt, tokens)
 
 	// Model fallback: if model not found and not already using default, retry with default
 	if result.status == 404 && model != ai_provider_defaults[provider] {
 		debug("ai: model %q not found for %s, falling back to default %q", model, provider, ai_provider_defaults[provider])
-		switch provider {
-		case "claude":
-			result = ai_call_claude(api_key, ai_provider_defaults[provider], prompt, tokens)
-		case "openai":
-			result = ai_call_openai(api_key, ai_provider_defaults[provider], prompt, tokens)
-		}
+		result = ai_call(provider, api_key, ai_provider_defaults[provider], prompt, tokens)
 	}
 
 	return sl_encode(map[string]any{"status": result.status, "text": result.text}), nil
+}
+
+// ai_call sends the prompt to the account's provider. An unknown provider
+// answers status 0, the same as a missing account. A variable so a test can
+// stand in for the provider without reaching the network.
+var ai_call = func(provider, api_key, model, prompt string, tokens int) ai_result {
+	switch provider {
+	case "claude":
+		return ai_call_claude(api_key, model, prompt, tokens)
+	case "openai":
+		return ai_call_openai(api_key, model, prompt, tokens)
+	}
+	return ai_result{}
 }
 
 // ai_call_claude sends a prompt to the Claude (Anthropic) API

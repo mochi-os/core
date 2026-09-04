@@ -43,7 +43,7 @@ func http_error(status int, body []byte) error {
 	return fmt.Errorf("%s", trimmed)
 }
 
-// commands_build returns the dispatch table. Built once at the top of main,
+// commands_build returns the dispatch table. Built once at the top of execute,
 // and by the test that holds the shipped shell completions to it.
 func commands_build() map[string]command {
 	return map[string]command{

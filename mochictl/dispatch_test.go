@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -48,6 +49,33 @@ func TestDispatchResolvesTwoWordSubcommands(t *testing.T) {
 		if found && !reflect.DeepEqual(append([]string{}, remaining...), c.remaining) {
 			t.Errorf("%v: remaining = %v, want %v", c.positional, remaining, c.remaining)
 		}
+	}
+}
+
+// TestExecuteResolvesFromColdState. The table moved from an init() into a
+// constructor and main kept indexing the package-level map, which nothing
+// filled any more: every subcommand was unknown, the usage listed none, and
+// both nightly production backups stopped at `mochictl snapshot`. The
+// constructor and the lookup each had a test; the path the binary runs had
+// none. The socket does not exist, so a resolved subcommand fails at the
+// connection (status 1), never at the lookup (status 2).
+func TestExecuteResolvesFromColdState(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "none.sock")
+	for _, words := range [][]string{{"snapshot"}, {"version"}, {"broadcast", "lag"}} {
+		commands = nil
+		var stderr bytes.Buffer
+		args := append([]string{"-f", filepath.Join(t.TempDir(), "none.conf"), "-s", socket}, words...)
+		status := execute(args, &stderr)
+		if status == 2 || strings.Contains(stderr.String(), "unknown subcommand") {
+			t.Errorf("%v: status %d, stderr %q: not resolved from a cold table", words, status, stderr.String())
+		} else if status != 1 {
+			t.Errorf("%v: status %d, want 1 from the unreachable socket", words, status)
+		}
+	}
+	commands = nil
+	var stderr bytes.Buffer
+	if status := execute(nil, &stderr); status != 2 || !strings.Contains(stderr.String(), "  snapshot ") {
+		t.Errorf("no arguments: status %d, stderr %q: usage should list the subcommands", status, stderr.String())
 	}
 }
 

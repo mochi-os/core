@@ -119,6 +119,11 @@ func broadcast_pending_dispatch_run(row *broadcast_pending_row, sysdb *DB) bool 
 		app:             a,
 		db:              datadb,
 	}
+	// A buffered row this receiver must not apply is applied as a no-op: the
+	// drain advances past it, which is all the live path does for one.
+	if broadcast_skip_for(sysdb.user, row.From, row.To, content) {
+		return true
+	}
 	if err := e.run_handler(a, av, ae); err != nil {
 		debug("Broadcast pending drain: handler failed for seq=%d (peer=%s, key=%s): %v", row.Sequence, row.Peer, row.Key, err)
 		return false
@@ -326,14 +331,16 @@ func (e *Event) route() error {
 		defer bdb.close()
 		last := broadcast_received_get(bdb, e.peer, bkey)
 		class := broadcast_inbound_class(last, bseq)
-		if class == "duplicate" {
+		// Receive-side, since existing logs hold events a replay would re-emit;
+		// the drain applies the same rule to a buffered row - see
+		// broadcast_pending_dispatch_run.
+		skip := broadcast_skip_for(e.user, e.from, e.to, e.content)
+		action := broadcast_inbound_action(class, skip)
+		if action == "drop" {
 			//debug("Broadcast duplicate seq=%d <= last=%d for (peer=%s, key=%s)", bseq, last, e.peer, bkey)
 			return nil
 		}
-		// Advance and ack WITHOUT running the app handler when this receiver must not
-		// apply the event - see broadcast_skip_for. Before the gap branch, and
-		// receive-side, since existing logs hold events a replay would re-emit.
-		if broadcast_skip_for(e.user, e.from, e.to, e.content) {
+		if action == "skip" {
 			broadcast_advance_local(bdb, e.peer, bkey, bseq)
 			broadcast_send_ack(e.user, a, e.to, e.from, bkey, e.peer, bseq)
 			return nil
@@ -341,7 +348,7 @@ func (e *Event) route() error {
 		// "apply" falls through: the in-order next event, a fresh stream at
 		// seq 1, or anchor adoption of an unknown stream — see
 		// broadcast_inbound_class for the anchor rationale.
-		if class == "gap" {
+		if action == "buffer" {
 			debug("Broadcast gap seq=%d > last+1=%d for (peer=%s, key=%s); buffering + requesting resync", bseq, last+1, e.peer, bkey)
 			broadcast_stall_note(e.user.UID, a.id, e.peer, bkey, last, bseq)
 			go broadcast_request_resync(e.user, a, e.to, e.from, bkey, e.peer, last)

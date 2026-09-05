@@ -49,6 +49,24 @@ func broadcast_skip_for(user *User, from, to string, content map[string]any) boo
 // broadcast_inbound_class classifies an inbound sequenced event against the
 // receiver's watermark. last == 0 adopts the first event as anchor at any
 // sequence - resync cannot reach past the sender's log trim, so a gap wedges.
+// broadcast_inbound_action is what the receiver does with a sequenced event:
+// "drop" a duplicate; "buffer" anything past a hole, an event this receiver
+// must not apply included, since advancing over the hole hides it from resync
+// and classes its replay a duplicate; "skip" (advance and ack, no handler) an
+// in-order event this receiver must not apply; else "apply".
+func broadcast_inbound_action(class string, skip bool) string {
+	switch class {
+	case "duplicate":
+		return "drop"
+	case "gap":
+		return "buffer"
+	}
+	if skip {
+		return "skip"
+	}
+	return "apply"
+}
+
 func broadcast_inbound_class(last, bseq int64) string {
 	if bseq <= last {
 		return "duplicate"

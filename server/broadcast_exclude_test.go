@@ -133,3 +133,28 @@ func TestBroadcastSendExcludeRidesPayloadAndSkipsSelf(t *testing.T) {
 		t.Errorf("self-owned subscriber must not be sent to; got %d rows", n)
 	}
 }
+
+// TestBroadcastInboundActionBuffersAcrossAGapBeforeSkipping is the finding: an
+// event this receiver must not apply (its own echo, or one it is excluded
+// from) that arrives past a hole must be buffered like any other, not advanced
+// over. Advancing hid the hole from resync and made the replay of the missing
+// sequence a "duplicate" - a subscriber whose own comment was fanned back out
+// to it never back-filled a post skipped while it was suspended.
+func TestBroadcastInboundActionBuffersAcrossAGapBeforeSkipping(t *testing.T) {
+	for _, test := range []struct {
+		class string
+		skip  bool
+		want  string
+	}{
+		{"duplicate", false, "drop"},
+		{"duplicate", true, "drop"},
+		{"gap", false, "buffer"},
+		{"gap", true, "buffer"},
+		{"apply", false, "apply"},
+		{"apply", true, "skip"},
+	} {
+		if got := broadcast_inbound_action(test.class, test.skip); got != test.want {
+			t.Errorf("broadcast_inbound_action(%q, skip=%v) = %q, want %q", test.class, test.skip, got, test.want)
+		}
+	}
+}

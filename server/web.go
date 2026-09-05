@@ -1200,12 +1200,6 @@ func opengraph_absolute(image, scheme, host, path string) string {
 }
 
 func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *Entity, file string) bool {
-	// A conditional request is answered before the OpenGraph function and the
-	// page build run: the browser already holds this exact file.
-	if web_cache_static(c, file, aa.Cache) {
-		return true
-	}
-
 	// Get owner for database access - use entity owner if available
 	var owner *User
 	if e != nil {
@@ -1322,9 +1316,17 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 
 	// Inject routing meta tags
 	content = web_inject_meta_tags(c, e, content)
+	content = web_apply_user_document_theme(content, user)
 
-	// Serve modified content
 	c.Header("Content-Type", "text/html; charset=utf-8")
+	// The requester's theme is baked in, as on every other HTML path: no shared
+	// cache, and no file-level validator, may hand it to anyone else.
+	if web_cache {
+		c.Header("Cache-Control", "private, max-age=60")
+	} else {
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	}
+	c.Header("Vary", "Cookie")
 	c.String(http.StatusOK, content)
 	return true
 }

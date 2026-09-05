@@ -90,10 +90,10 @@ func static_function_source(t *testing.T, text, signature string) string {
 	return text[a : a+b]
 }
 
-// Every caller stops once the helper has answered, and the OpenGraph page
-// path asks before it runs the app's function and builds the page. Pinned at
-// source level: the callers sit inside web_action and the page builder runs
-// Starlark, neither of which a unit test drives.
+// Every caller stops once the helper has answered. Pinned at source level:
+// the callers sit inside web_action, which a unit test does not drive. The
+// Open Graph page path is not a caller: it bakes the requester's theme into
+// the page, so no file validator may answer for it (web_opengraph_theme_test).
 func TestStaticCallersStopAfterAConditionalAnswer(t *testing.T) {
 	source, err := os.ReadFile("web.go")
 	if err != nil {
@@ -102,14 +102,11 @@ func TestStaticCallersStopAfterAConditionalAnswer(t *testing.T) {
 	text := string(source)
 	calls := strings.Count(text, "web_cache_static(c, file, aa.Cache)")
 	guarded := strings.Count(text, "if web_cache_static(c, file, aa.Cache) {")
-	if calls != 3 || guarded != calls {
-		t.Errorf("web.go: %d web_cache_static callers, %d guarded; want 3 and 3", calls, guarded)
+	if calls != 2 || guarded != calls {
+		t.Errorf("web.go: %d web_cache_static callers, %d guarded; want 2 and 2", calls, guarded)
 	}
-	opengraph := static_function_source(t, text, "func web_serve_file_with_opengraph(")
-	check := strings.Index(opengraph, "web_cache_static(")
-	call := strings.Index(opengraph, "s.call(aa.OpenGraph")
-	if check < 0 || call < 0 || check > call {
-		t.Error("web_serve_file_with_opengraph runs the OpenGraph function before answering the conditional request")
+	if strings.Contains(static_function_source(t, text, "func web_serve_file_with_opengraph("), "web_cache_static(") {
+		t.Error("web_serve_file_with_opengraph answers a file validator for a page that varies by requester")
 	}
 }
 

@@ -134,6 +134,9 @@ func TestResourceGuardTracksTheShellExemption(t *testing.T) {
 		"/repositories/abc/git/info/refs",
 		"/feeds/abcdef123",
 		"/feeds/abcdef123/-/posts",
+		"/market/-/redirect",
+		"/market/-/redirector",
+		"/market/-/redirect/extra",
 		"/",
 	}
 	for _, path := range paths {

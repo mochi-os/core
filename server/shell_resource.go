@@ -5,10 +5,11 @@
 // Mochi Application Interface Exception - see license.txt and license-exception.md.
 
 // The shell exempts attachment and git URLs so they reach the browser as
-// top-level responses, but apps author their own paths and can name an action
-// to match. The guard fixes the consequence: a resource-route response arriving
-// as an executable document (HTML or SVG) gets a sandbox CSP, whatever the
-// headers say.
+// top-level responses, and an app's one-shot redirector (/-/redirect), whose
+// 302 to a server-vetted off-origin URL the sandboxed iframe cannot follow.
+// Apps author their own paths and can name an action to match. The guard fixes
+// the consequence: a resource-route response arriving as an executable
+// document (HTML or SVG) gets a sandbox CSP, whatever the headers say.
 
 package main
 
@@ -28,7 +29,7 @@ const shell_resource_policy = "sandbox"
 // by both shell_wrap_candidate and the guard below, so the exemption and its
 // mitigation cannot drift apart.
 func shell_resource_path(path string) bool {
-	return strings.Contains(path, "/-/attachments/") || strings.Contains(path, "/git/")
+	return strings.Contains(path, "/-/attachments/") || strings.Contains(path, "/git/") || strings.HasSuffix(path, "/-/redirect")
 }
 
 // shell_resource_executable reports whether a content type creates a document

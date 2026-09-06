@@ -166,11 +166,27 @@ func TestShellRejectsResourceRoutes(t *testing.T) {
 		"/feeds/abc/-/attachments/def/thumbnail",
 		"/comptroller/-/attachments/abc",
 		"/repositories/myrepo/git/info/refs",
+		// An app's one-shot redirector: the action only ever answers a 302 to a
+		// server-vetted off-origin URL, which the sandboxed iframe cannot follow
+		// (Stripe refuses to be framed), so the hop has to stay top-level.
+		"/market/-/redirect?id=019d9bf047e67774965b11777b67aba5",
 	}
+	// Assert on shell_wrap_candidate, which holds the path rule: the
+	// web_should_serve_shell wrapper also refuses every request without a
+	// session, so it returns false for any path in this unauthenticated context.
 	for _, p := range paths {
 		c := new_context(p)
-		if web_should_serve_shell(c) {
-			t.Errorf("web_should_serve_shell should return false for resource route %q", p)
+		if shell_wrap_candidate(c) {
+			t.Errorf("shell_wrap_candidate should return false for resource route %q", p)
+		}
+	}
+
+	// The redirect exemption is the exact action, not a prefix: a sibling
+	// action that merely starts with the word still takes the shell.
+	for _, p := range []string{"/market/-/redirector", "/market/-/redirect/extra", "/market/-/redirected?id=1"} {
+		c := new_context(p)
+		if !shell_wrap_candidate(c) {
+			t.Errorf("shell_wrap_candidate should return true for %q; the redirect exemption must match only /-/redirect itself", p)
 		}
 	}
 }

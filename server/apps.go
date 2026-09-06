@@ -2775,7 +2775,7 @@ func api_app_package_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 // mochi.app.package.install(id, file, check_only?, peer?, version?) -> string: Install an app from a .zip file, returns version
 // Pass version to require the package to declare that exact version.
-// Requires administrator role, or apps_install_user setting to be "true"
+// Requires administrator role, or apps_install_user setting to be "true"; a check-only call installs nothing and needs neither
 func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Which APP may install, as distinct from which USER may - the check
 	// below answers the second and cannot answer the first. Without this any
@@ -2831,7 +2831,12 @@ func api_app_package_install(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
-	if !user.administrator() && setting_effective("apps_install_user") != "true" {
+	// The user gate is about installing. A check-only call extracts to a
+	// temporary directory, validates the manifest and installs nothing, and it
+	// is the only manifest validation an app can ask for: gating it on the
+	// install setting stopped a non-administrator publishing at all once the
+	// administrator switched apps_install_user off.
+	if !check_only && !user.administrator() && setting_effective("apps_install_user") != "true" {
 		return sl_error(fn, "not administrator")
 	}
 

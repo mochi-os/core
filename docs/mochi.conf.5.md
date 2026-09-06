@@ -165,11 +165,11 @@ the sending host, or the mail will be filed as spam.
 
 **concurrency** = *integer*
 :   Maximum number of Starlark interpreters that may run concurrently.
-    Defaults to **32**.
+    Defaults to **1000**.
 
 **timeout** = *integer*
 :   Maximum wall-clock seconds any single Starlark invocation may run
-    before being aborted. Defaults to **90**.
+    before being aborted. Defaults to **300**.
 
 **file_timeout** = *integer*
 :   Maximum wall-clock seconds an invocation that is streaming a file to

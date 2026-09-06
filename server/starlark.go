@@ -40,7 +40,7 @@ const starlark_queue_timeout = 60 * time.Second
 // handlers spend it blocked on SQLite, a P2P stream or an outbound fetch rather
 // than on a CPU. Nesting also means a slot is not a request - every commit-hook
 // level takes one, up to commit_hook_depth_maximum.
-const starlark_concurrency_default = 100
+const starlark_concurrency_default = 1000
 
 // Default bound for a call that is streaming a response to the client.
 const starlark_file_default = 900 * time.Second
@@ -210,7 +210,7 @@ func starlark_configure() {
 	}
 	starlark_semaphore = make(chan struct{}, c)
 
-	secs := ini_int("starlark", "timeout", 90)
+	secs := ini_int("starlark", "timeout", 300)
 	if secs < 1 {
 		secs = 60
 	}

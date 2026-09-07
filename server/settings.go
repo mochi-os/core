@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
@@ -591,10 +590,7 @@ func preference_validate(u *User, name, value string) error {
 			return nil
 		}
 	case "timezone":
-		if value == "" || value == "auto" {
-			return nil
-		}
-		if _, err := time.LoadLocation(value); err == nil && value != "Local" {
+		if value == "" || value == "auto" || valid(value, "timezone") {
 			return nil
 		}
 	case "theme":

@@ -174,3 +174,20 @@ func TestValidStillUsesTheGlobalCache(t *testing.T) {
 		t.Error("valid() no longer populates the global cache; core's validators would recompile per call")
 	}
 }
+
+// The timezone validator admits IANA zone names the runtime can load and
+// nothing else: the two names LoadLocation answers for without a zone file
+// ("" and "Local"), the preference's own "auto" sentinel, and invented or
+// path-shaped names are all refused.
+func TestValidTimezone(t *testing.T) {
+	for _, s := range []string{"UTC", "Europe/London", "America/Argentina/Buenos_Aires"} {
+		if !valid(s, "timezone") {
+			t.Errorf("valid(%q, timezone) = false, want true", s)
+		}
+	}
+	for _, s := range []string{"", "auto", "Local", "Mars/Olympus", "../zoneinfo/UTC", "Europe/London\n"} {
+		if valid(s, "timezone") {
+			t.Errorf("valid(%q, timezone) = true, want false", s)
+		}
+	}
+}

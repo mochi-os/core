@@ -903,7 +903,7 @@ func users_attach_last(rows []map[string]any) {
 	}
 }
 
-// mochi.user.count(query) -> int: Count users, all or matching a search (admin only)
+// mochi.user.count([query: string], [role=string], [status=string]) -> int: Count users, all or matching a search (admin only)
 func api_user_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Check users/read permission
 	if err := require_permission(t, fn, "users/read"); err != nil {
@@ -919,12 +919,28 @@ func api_user_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	if len(args) > 1 {
-		return sl_error(fn, "syntax: [query: string]")
+		return sl_error(fn, "syntax: [query: string], [role=string], [status=string]")
 	}
 
-	db := db_open("db/users.db")
-	var row map[string]any
-	var err error
+	// role= and status= narrow the count to one role or account state, so a
+	// caller can ask how many active administrators there are without
+	// listing every user.
+	var conditions []string
+	var values []any
+	for _, pair := range kwargs {
+		key, _ := sl.AsString(pair[0])
+		value, ok := sl.AsString(pair[1])
+		if !ok || value == "" {
+			return sl_error(fn, "invalid %s", key)
+		}
+		switch key {
+		case "role", "status":
+			conditions = append(conditions, key+"=?")
+			values = append(values, value)
+		default:
+			return sl_error(fn, "unexpected keyword argument %s", key)
+		}
+	}
 	if len(args) == 1 {
 		// Total for a search, so a paged result can report how many rows
 		// it is a page of. Matches mochi.user.search's own condition.
@@ -932,10 +948,16 @@ func api_user_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		if !ok || query == "" {
 			return sl_error(fn, "invalid query")
 		}
-		row, err = db.row("select count(*) as count from users where username like ?", user_search_pattern(query))
-	} else {
-		row, err = db.row("select count(*) as count from users")
+		conditions = append(conditions, "username like ?")
+		values = append(values, user_search_pattern(query))
 	}
+	where := ""
+	if len(conditions) > 0 {
+		where = " where " + strings.Join(conditions, " and ")
+	}
+
+	db := db_open("db/users.db")
+	row, err := db.row("select count(*) as count from users"+where, values...)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}

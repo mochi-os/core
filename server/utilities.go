@@ -693,6 +693,15 @@ func valid_with(s string, match string, compile func(string) *regexp.Regexp) boo
 		match = "^[1-9][0-9]{0,8}$"
 	case "privacy":
 		match = "^(public|private)$"
+	case "timezone":
+		// An IANA zone name the runtime can load. LoadLocation answers UTC
+		// for "" and the process zone for "Local", so both are refused: a
+		// stored zone must name a real one.
+		if s == "" || s == "Local" || len(s) > 100 {
+			return false
+		}
+		_, err := time.LoadLocation(s)
+		return err == nil
 	case "text":
 		if len(s) > 1000000 {
 			return false

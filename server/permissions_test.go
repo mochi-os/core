@@ -2396,3 +2396,55 @@ func TestTokensCreateGateRefusesUngrantedApp(t *testing.T) {
 		t.Errorf("stored expires = %d; want capped to at most %d", expires, now()+token_maximum_lifetime)
 	}
 }
+
+// mochi.user.count narrows by role= and status=, alone or with the search
+// query, so an app can size one role without listing every user.
+func TestAPIUserCountFilters(t *testing.T) {
+	create_test_users_db(t)
+	db := db_open("db/users.db")
+	for _, row := range [][]string{
+		{"a1", "a1@example.com", "administrator", "active"},
+		{"a2", "a2@example.com", "administrator", "suspended"},
+		{"u1", "u1@example.com", "user", "active"},
+		{"u2", "u2@example.org", "user", "active"},
+	} {
+		db.exec("insert into users (uid, username, role, status) values (?, ?, ?, ?)", row[0], row[1], row[2], row[3])
+	}
+	user := create_test_admin(t, "a1")
+	app := create_external_app("test-app")
+	permission_grant(user, app.id, "users/read")
+	thread := create_test_thread(user, app)
+	fn := sl.NewBuiltin("mochi.user.count", nil)
+
+	count := func(args sl.Tuple, kwargs []sl.Tuple) int64 {
+		t.Helper()
+		v, err := api_user_count(thread, fn, args, kwargs)
+		if err != nil {
+			t.Fatalf("api_user_count: %v", err)
+		}
+		n, _ := v.(sl.Int).Int64()
+		return n
+	}
+	kw := func(pairs ...string) []sl.Tuple {
+		var out []sl.Tuple
+		for i := 0; i+1 < len(pairs); i += 2 {
+			out = append(out, sl.Tuple{sl.String(pairs[i]), sl.String(pairs[i+1])})
+		}
+		return out
+	}
+	if n := count(nil, nil); n != 4 {
+		t.Errorf("all: %d, want 4", n)
+	}
+	if n := count(nil, kw("role", "administrator")); n != 2 {
+		t.Errorf("role: %d, want 2", n)
+	}
+	if n := count(nil, kw("role", "administrator", "status", "active")); n != 1 {
+		t.Errorf("role+status: %d, want 1", n)
+	}
+	if n := count(sl.Tuple{sl.String("example.com")}, kw("role", "user")); n != 1 {
+		t.Errorf("query+role: %d, want 1", n)
+	}
+	if _, err := api_user_count(thread, fn, nil, kw("uid", "a1")); err == nil {
+		t.Error("an unknown keyword should be refused")
+	}
+}

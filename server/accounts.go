@@ -168,6 +168,7 @@ var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"providers": sl.NewBuiltin("mochi.account.providers", api_account_providers),
 	"remove":    sl.NewBuiltin("mochi.account.remove", api_account_remove),
 	"test":      sl.NewBuiltin("mochi.account.test", api_account_test),
+	"throttled": sl.NewBuiltin("mochi.account.throttled", api_account_throttled),
 	"update":    sl.NewBuiltin("mochi.account.update", api_account_update),
 	"verify":    sl.NewBuiltin("mochi.account.verify", api_account_verify),
 })
@@ -861,6 +862,25 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl.True, nil
 }
 
+// mochi.account.throttled() -> bool: Report whether the caller's next
+// verification attempt would be refused by the guessing gate. An app checks
+// this first and answers 429 itself: mochi.account.verify cannot report the
+// refusal in its return, because its answer is a bare boolean that deployed
+// clients parse by shape.
+func api_account_throttled(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 0 {
+		return sl_error(fn, "syntax: no arguments")
+	}
+	if err := require_permission(t, fn, "accounts/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	user := principal_caller(t)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	return sl.Bool(stepup_gate_refused(user.UID)), nil
+}
+
 // mochi.account.verify(id, code?) -> bool: Verify an account or resend code
 func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
@@ -975,7 +995,10 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	matched = true
 
 	if int64(expires) < now {
-		return sl_error(fn, "verification code has expired")
+		// Expired is a failed verification, not a fault here. Raising aborted
+		// the calling handler, which core reports as a 500 and mails to the
+		// operator for what is ordinary user behaviour.
+		return sl.False, nil
 	}
 
 	// Code matches - mark as verified and clear code data

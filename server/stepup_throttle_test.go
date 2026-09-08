@@ -142,3 +142,75 @@ func TestTotpVerifyReachesTheGate(t *testing.T) {
 		t.Errorf("the gate recorded %d failures for one wrong code; a guess that is not settled never widens the spacing", entry.failures)
 	}
 }
+
+// TestStepupGateRefusedAgreesWithReserve: the peek exists so a Starlark caller
+// can refuse for itself instead of raising - Starlark has no try/except, and a
+// raised refusal aborts the handler, which core reports as a 500 and mails to
+// the operator. A peek that disagreed with reserve would answer 429 while the
+// attempt was allowed, or vice versa.
+//
+// The state is installed directly rather than driven through wrong guesses:
+// reserve sleeps out the spacing it grants, so walking an account into refusal
+// would make this test wait real seconds.
+func TestStepupGateRefusedAgreesWithReserve(t *testing.T) {
+	stepup_gate_reset(t)
+	// reset zeroes both tunables, which makes every spacing zero and the gate
+	// unable to refuse at all. A non-zero ceiling is what gives it a refusal.
+	account_wait_maximum = 4
+
+	if stepup_gate_refused("u-allow") {
+		t.Error("a fresh account was reported as refused; the first attempt is always free")
+	}
+	if !stepup_gate_reserve("u-allow") {
+		t.Error("reserve refused a fresh account, so the peek above agreed for the wrong reason")
+	}
+
+	// A queue already at the ceiling: wait plus the spacing it would reserve is
+	// past account_wait_maximum, which is exactly what reserve refuses on.
+	account_stepup.lock.Lock()
+	account_stepup.entries["u-refuse"] = &account_gate_entry{failures: 7, next: now() + 4}
+	account_stepup.lock.Unlock()
+
+	if !stepup_gate_refused("u-refuse") {
+		t.Error("the peek allowed an account whose queue is past the ceiling")
+	}
+	if stepup_gate_reserve("u-refuse") {
+		t.Error("reserve allowed it too, so this fixture does not reach the refusal the peek must match")
+	}
+}
+
+// TestStepupGateRefusedTakesNoSlot: the peek must not consume the attempt it is
+// asking about, or pre-checking would itself widen the spacing and halve the
+// attempts a user really gets.
+func TestStepupGateRefusedTakesNoSlot(t *testing.T) {
+	stepup_gate_reset(t)
+
+	stepup_gate_reserve("u-free")
+	stepup_gate_done("u-free", false)
+
+	account_stepup.lock.Lock()
+	before := *account_stepup.entries["u-free"]
+	account_stepup.lock.Unlock()
+
+	for i := 0; i < 5; i++ {
+		stepup_gate_refused("u-free")
+	}
+
+	account_stepup.lock.Lock()
+	after := *account_stepup.entries["u-free"]
+	account_stepup.lock.Unlock()
+
+	if after.next != before.next || after.failures != before.failures || after.pending != before.pending {
+		t.Errorf("five peeks moved the entry: next %d->%d, failures %d->%d, pending %d->%d",
+			before.next, after.next, before.failures, after.failures, before.pending, after.pending)
+	}
+}
+
+// TestStepupGateRefusesAnUnknownAccount pins the empty-uid case the Starlark
+// builtin can reach: no user means no attempt, not a free one.
+func TestStepupGateRefusedOnEmptyAccount(t *testing.T) {
+	stepup_gate_reset(t)
+	if !stepup_gate_refused("") {
+		t.Error("an empty account was reported as allowed; stepup_gate_reserve refuses it")
+	}
+}

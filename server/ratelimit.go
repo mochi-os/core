@@ -557,6 +557,29 @@ func (g *account_gate) reserve(uid string) (int64, bool) {
 	return wait, true
 }
 
+// refused reports whether reserve would turn this account away, without
+// mutating the entry. It mirrors reserve's window test exactly; a shared key
+// never refuses there, so it never refuses here.
+func (g *account_gate) refused(uid string) bool {
+	if uid == "" {
+		return true
+	}
+	g.lock.Lock()
+	defer g.lock.Unlock()
+	entry := g.entries[uid]
+	if entry == nil {
+		return false
+	}
+	if g.shared {
+		return false
+	}
+	start := entry.next
+	if start < now() {
+		start = now()
+	}
+	return (start-now())+account_gate_spacing(entry.failures) > account_wait_maximum
+}
+
 // done settles a reservation from reserve. A wrong guess widens the spacing; a
 // correct one clears the penalty but drops the entry only when no other
 // reservation is still sleeping, so a mid-flight success cannot rewind their
@@ -708,6 +731,15 @@ func stepup_gate_reserve(uid string) bool {
 		time.Sleep(time.Duration(wait) * time.Second)
 	}
 	return true
+}
+
+// stepup_gate_refused reports whether stepup_gate_reserve would turn this
+// account away right now, taking no slot and sleeping for nothing. A caller
+// that cannot catch an error - Starlark has no try/except - pre-checks with
+// this so a throttled attempt becomes its own refusal rather than an aborted
+// handler, which core reports as a 500 and mails to the operator.
+func stepup_gate_refused(uid string) bool {
+	return account_stepup.refused(uid)
 }
 
 // stepup_gate_done settles a reservation from stepup_gate_reserve.

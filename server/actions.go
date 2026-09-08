@@ -273,7 +273,7 @@ func (a *Action) input(name string) string {
 
 // Starlark methods
 func (a *Action) AttrNames() []string {
-	return []string{"access", "body", "domain", "dump", "entity", "error", "file", "files", "header", "input", "inputs", "json", "logout", "owner", "print", "redirect", "routing", "token", "upload", "user", "write"}
+	return []string{"access", "body", "domain", "dump", "entity", "error", "file", "files", "header", "input", "inputs", "json", "logout", "origin", "owner", "print", "redirect", "routing", "token", "upload", "user", "write"}
 }
 
 func (a *Action) Attr(name string) (sl.Value, error) {
@@ -320,6 +320,12 @@ func (a *Action) Attr(name string) (sl.Value, error) {
 		return sl.NewBuiltin("json", a.sl_json), nil
 	case "logout":
 		return sl.NewBuiltin("logout", a.sl_logout), nil
+	case "origin":
+		// "scheme://host[:port]" for this request. An app that must emit an
+		// absolute URL - RSS <link>, an e-mail body - cannot derive the scheme
+		// itself: X-Forwarded-Proto is caller input, and only the connection
+		// knows whether TLS terminated here.
+		return sl.String(request_origin(a.web)), nil
 	case "print":
 		return sl.NewBuiltin("print", a.sl_print), nil
 	case "redirect":

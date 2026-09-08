@@ -491,6 +491,12 @@ var (
 			{"user/authentication/write", ""},
 		}},
 		{"121eB4VBoaHhBQuBpwoNN7BVtACiEBHzvRLx1FtoHkKgyLBZQdN", "Menu", []struct{ Permission, Object string }{
+			// The bell's push setup reads and writes the user's connected
+			// accounts (VAPID key, list, add, remove). Those notifications
+			// service functions are gated on accounts/* rather than
+			// notifications/send, which does not describe what they touch.
+			{"accounts/read", ""},
+			{"accounts/write", ""},
 			{"apps/read", ""},
 			{"notifications/read", ""},
 			{"notifications/send", ""},

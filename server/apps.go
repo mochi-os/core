@@ -1736,9 +1736,6 @@ func apps_seed_default_permissions() {
 	}
 }
 
-// manifest_validate checks every field of a parsed app.json that the server
-// later trusts as a name, a path or a function. Extracted so app_read and
-// AppVersion.reload run the same checks.
 // execute_present refuses an execute list naming a file that is not on disk.
 // starlark() would otherwise warn and load the rest: an app whose own files
 // load but whose shared library did not then fails much later, inside
@@ -1753,6 +1750,9 @@ func execute_present(base string, files []string) error {
 	return nil
 }
 
+// manifest_validate checks every field of a parsed app.json that the server
+// later trusts as a name, a path or a function. Extracted so app_read and
+// AppVersion.reload run the same checks.
 func manifest_validate(av *AppVersion) error {
 	if !valid(av.Version, "version") {
 		return fmt.Errorf("App bad version %q", av.Version)

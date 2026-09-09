@@ -1739,6 +1739,20 @@ func apps_seed_default_permissions() {
 // manifest_validate checks every field of a parsed app.json that the server
 // later trusts as a name, a path or a function. Extracted so app_read and
 // AppVersion.reload run the same checks.
+// execute_present refuses an execute list naming a file that is not on disk.
+// starlark() would otherwise warn and load the rest: an app whose own files
+// load but whose shared library did not then fails much later, inside
+// database_create, as a database error that never names the file. A
+// development checkout links the shared library into lib/ with make vendor.
+func execute_present(base string, files []string) error {
+	for _, file := range files {
+		if !file_exists(filepath.Join(base, file)) {
+			return fmt.Errorf("App executable file %q missing in %q; a development checkout links the shared Starlark library with make vendor", file, base)
+		}
+	}
+	return nil
+}
+
 func manifest_validate(av *AppVersion) error {
 	if !valid(av.Version, "version") {
 		return fmt.Errorf("App bad version %q", av.Version)
@@ -1916,6 +1930,9 @@ func app_read(id string, base string) (*AppVersion, error) {
 	error_catalogue_validate(&av, id)
 
 	if err := manifest_validate(&av); err != nil {
+		return nil, err
+	}
+	if err := execute_present(base, av.Execute); err != nil {
 		return nil, err
 	}
 
@@ -2437,6 +2454,10 @@ func (av *AppVersion) reload() {
 	// paths being made absolute below, because manifest_validate checks them as
 	// relative filepaths, exactly as app_read does before its own conversion.
 	if err := manifest_validate(&fresh); err != nil {
+		info("App reload rejected %q: %v", path, err)
+		return
+	}
+	if err := execute_present(av.base, fresh.Execute); err != nil {
 		info("App reload rejected %q: %v", path, err)
 		return
 	}

@@ -103,6 +103,9 @@ func TestReloadStillAppliesAValidManifest(t *testing.T) {
 func TestReloadValidatesBeforeMakingExecuteAbsolute(t *testing.T) {
 	av := reload_app(t, `{"version":"1.1","label":"reloaded","architecture":{"engine":"starlark","version":`+
 		itoa(app_version_maximum)+`},"execute":["app.star"]}`)
+	if err := os.WriteFile(filepath.Join(av.base, "app.star"), []byte(""), 0o600); err != nil {
+		t.Fatalf("writing app.star: %v", err)
+	}
 
 	reload_now(av)
 

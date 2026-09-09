@@ -437,6 +437,17 @@ func rate_limit_client_ip(c *gin.Context) string {
 	return c.RemoteIP()
 }
 
+// limits_configure reads [web] requests, the number of requests one address
+// may make per minute before the server answers 429. The default suits
+// production; a development instance driven by test suites, which mint tokens
+// and drive hundreds of actions a minute from one address, raises it. Zero or
+// a negative number is not a budget and leaves the default in place.
+func limits_configure() {
+	if n := ini_int("web", "requests", 0); n > 0 {
+		rate_limit_api.limit = n
+	}
+}
+
 // Middleware for general API rate limiting
 func rate_limit_api_middleware(c *gin.Context) {
 	ip := rate_limit_client_ip(c)

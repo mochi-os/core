@@ -106,6 +106,8 @@ func main_serve(ready func()) int {
 
 	cache_dir = ini_string("directories", "cache", default_cache)
 	data_dir = ini_string("directories", "data", default_data)
+	url_configure()
+	limits_configure()
 	if err := directories_ensure(); err != nil {
 		warn("directories.ensure failed: %v", err)
 		return 1

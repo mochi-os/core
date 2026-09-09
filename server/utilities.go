@@ -429,8 +429,16 @@ func url_is_cloud_metadata(url string) bool {
 
 // url_allow_private permits outbound requests to loopback, private and
 // link-local addresses. Off by default: mochi.url.*, RSS and link previews all
-// take an app-supplied URL. Tests serving from httptest set it.
+// take an app-supplied URL. Tests serving from httptest set it; a development
+// instance sets [development] private so a test harness can serve fixtures
+// from the same machine.
 var url_allow_private = false
+
+// url_configure reads the development override for the outbound address
+// guard. Called once at startup, after the configuration file is loaded.
+func url_configure() {
+	url_allow_private = ini_bool("development", "private", false)
+}
 
 // url_address_allowed reports whether a resolved dial address may be reached.
 // Called from the dialer after DNS, so it also covers inward-resolving

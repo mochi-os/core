@@ -83,6 +83,12 @@ output, so the effective configuration is safe to copy into bug reports.
     much beyond the default needs *LimitNOFILE* raised to match, and
     enough memory for the buffers each connection holds.
 
+**requests** = *integer*
+:   Requests one address may make per minute before the server answers
+    429. Defaults to 1000, which suits production; a development
+    instance driven by automated test suites from one address needs
+    more.
+
 **compress** = **auto** | **gzip** | **br** | **none**
 :   Response compression. **auto** picks per-request based on the
     client's `Accept-Encoding` header. Defaults to **auto**.
@@ -190,6 +196,14 @@ the sending host, or the mail will be filed as spam.
 **reload** = **true** | **false**
 :   When **true**, dev apps reload on file change without a server
     restart. Defaults to **false**.
+
+**private** = **true** | **false**
+:   When **true**, outbound requests made on behalf of apps (URL
+    fetches, RSS feeds, link previews) may reach loopback, private and
+    link-local addresses, so a development instance can fetch fixtures
+    served on the same machine. Never set this on a production server:
+    it lets any app-supplied URL reach the server's own network. Defaults
+    to **false**.
 
 ## [update]
 

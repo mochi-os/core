@@ -33,7 +33,7 @@ jobs:
         # building the call graph rather than comparing module versions, so a
         # failure here is a real exposure and not advisory noise.
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
           govulncheck ./...
 
   dependencies:
@@ -48,7 +48,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/src:ro \
             -v "$PWD/.trivyignore":/.trivyignore:ro \
-            aquasec/trivy:latest fs \
+            aquasec/trivy:0.70.0 fs \
             --scanners vuln --severity HIGH,CRITICAL \
             --exit-code 1 --no-progress --timeout 10m \
             --ignorefile /.trivyignore /src
@@ -78,7 +78,7 @@ jobs:
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$PWD/.trivyignore":/.trivyignore:ro \
-            aquasec/trivy:latest image \
+            aquasec/trivy:0.70.0 image \
             --severity HIGH,CRITICAL --exit-code 1 --no-progress \
             --timeout 15m --ignorefile /.trivyignore \
             mochi-server:scan

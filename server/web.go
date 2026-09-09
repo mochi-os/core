@@ -203,8 +203,8 @@ func web_action_error(c *gin.Context, app string, err error) {
 	if errors.As(err, &permission) {
 		// A machine-readable code plus the fields the permission dialog needs,
 		// which respond_error cannot carry. The client renders the text.
-		c.JSON(http.StatusForbidden, gin.H{ // i18n-ok
-			"error":      "permission_required",
+		c.JSON(http.StatusForbidden, gin.H{
+			"error":      "permission_required", // i18n-ok: machine-readable code, rendered by the client
 			"app":        app,
 			"permission": permission.Permission,
 			"restricted": permission.Restricted,

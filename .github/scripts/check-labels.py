@@ -163,8 +163,53 @@ def parse(path):
     return out
 
 
+
+# The smallest legitimate catalogue set, for a repo with no web/src/locales to
+# measure against. Deliberately loose: it only has to catch a set that has
+# COLLAPSED, not police a locale or two.
+FLOOR = 90
+
+
+def expected():
+    """The locales this repo is supposed to carry, or None if nothing to
+    measure against.
+
+    The reference is this repo's OWN web/src/locales — the same locale set one
+    layer up, and present in this checkout, which matters because CI checks out
+    only this app. Overlay variants are dropped: they are Lingui fallbacks that
+    legitimately have no .conf.
+    """
+    web = LABELS.parent / "web" / "src" / "locales"
+    if not web.is_dir():
+        return None
+    return {d.name for d in web.iterdir() if d.is_dir() and d.name not in OVERLAY} or None
+
+
+def missing_catalogues():
+    """Locales that ought to exist here and do not.
+
+    The key check below only inspects the .conf files it FINDS, so a repo that
+    has lost its catalogues passes trivially and one carrying only en.conf
+    passes vacuously — then prints "All server labels translated in every
+    locale", which is not silence but a false statement. Air shipped with 2 of
+    99 that way and neither gate objected.
+    """
+    have = {c.stem for c in LABELS.glob("*.conf")}
+    want = expected()
+    if want is None:
+        return [f"only {len(have)} catalogues, below the {FLOOR} floor"] if len(have) < FLOOR else []
+    return sorted(want - have)
+
+
 def main():
     en = parse(LABELS / "en.conf")
+    # Presence BEFORE keys: an absent catalogue is the larger failure, and the
+    # key check cannot see it.
+    gone = missing_catalogues()
+    if gone:
+        shown = ", ".join(gone[:8]) + (" ..." if len(gone) > 8 else "")
+        print(f"Missing label catalogues: {len(gone)} — {shown}")
+        return 1
     # A regional catalogue whose parent is present falls through to it key by
     # key (core's language_fallbacks strips subtags), so it is allowed to carry
     # only what differs - a verbatim copy of the parent overrides nothing and

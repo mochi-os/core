@@ -496,12 +496,16 @@ docker-clean:
 # own sub-make so -j applies only to the parallel-safe build. Each phase prints
 # its wall-clock as `>>> phase ...: Ns`. An EXIT trap fires release-clean
 # whether the run finishes or fails, and it also runs up front to clear earlier
-# strays.
+# strays. It does not run `clean`: the version lives in this Makefile, which
+# every binary depends on, so a bump rebuilds them anyway - and `clean` deleted
+# the development mochi-server and mochictl the dev instances and deploy.sh
+# run from $(bin), leaving `systemctl --user restart mochi1` with nothing to
+# start.
 release:
 	@: > $(timing)
 	@$(MAKE) --no-print-directory release-tree
 	@trap '$(MAKE) release-clean' EXIT; \
-	t=$$(date +%s); $(MAKE) clean release-clean STAGE=$(stage) || exit 1; echo ">>> phase clean: $$(($$(date +%s)-t))s" | tee -a $(timing); \
+	t=$$(date +%s); $(MAKE) release-clean STAGE=$(stage) || exit 1; echo ">>> phase clean: $$(($$(date +%s)-t))s" | tee -a $(timing); \
 	t=$$(date +%s); $(MAKE) -j$(JOBS) release-build STAGE=$(stage) || exit 1; echo ">>> phase build (incl docker push): $$(($$(date +%s)-t))s" | tee -a $(timing); \
 	t=$$(date +%s); $(MAKE) release-publish STAGE=$(stage) || exit 1; echo ">>> phase publish (reindex + rsync): $$(($$(date +%s)-t))s" | tee -a $(timing); \
 	echo; echo "=== release $(version) timing summary ==="; cat $(timing)
@@ -584,7 +588,7 @@ release-publish:
 	# detached ed25519 signature against a pinned public key before trusting the
 	# manifest. Done after every manifest is written and before the single rsync,
 	# so none is ever published unsigned. -rawin needs openssl 3.0+.
-	@for platform in apt rpm windows macos docker; do \
+	@for platform in apt rpm windows macos docker android; do \
 	    openssl pkeyutl -sign -rawin -inkey local/update-signing.key \
 	        -in ../packages/$$platform/versions.json \
 	        | base64 -w0 > ../packages/$$platform/versions.json.sig \

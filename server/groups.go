@@ -155,15 +155,19 @@ func (db *DB) group_members(group string, recursive bool) []map[string]any {
 	return results
 }
 
-// Check for cycles when adding a group to another group
+// group_would_cycle reports whether making member_group a member of group
+// would let a group contain itself: group is member_group, or already sits
+// inside member_group directly or through other groups. It climbs from group
+// through the groups that contain it, looking for member_group. A group that
+// already reaches member_group through a subgroup is not a loop; that
+// shortcut edge is a legal part of a directed acyclic graph.
 func (db *DB) group_would_cycle(group string, member_group string) bool {
 	if group == member_group {
 		return true
 	}
 
-	// Check if group is a member (direct or indirect) of member_group
 	seen := make(map[string]bool)
-	current := []string{member_group}
+	current := []string{group}
 
 	for depth := 0; depth < group_depth_maximum; depth++ {
 		if len(current) == 0 {
@@ -184,7 +188,7 @@ func (db *DB) group_would_cycle(group string, member_group string) bool {
 				return false
 			}
 			for _, gm := range gms {
-				if gm.Parent == group {
+				if gm.Parent == member_group {
 					return true
 				}
 				next = append(next, gm.Parent)

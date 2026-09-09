@@ -153,8 +153,8 @@ func code_send(email string, c *gin.Context) string {
 		return "signup_disabled"
 	}
 
-	// Generate 10 character unambiguous mixed-case code
-	code := random_unambiguous(10)
+	// Generate 8 character unambiguous mixed-case code
+	code := random_unambiguous(8)
 	sessions := db_open("db/sessions.db")
 	expires := now() + 3600
 	sessions.exec("replace into codes ( code, username, expires ) values ( ?, ?, ? )", code, address, expires)

@@ -56,7 +56,7 @@ func restore_cleanup_orphans() {
 var restore_upload_maximum int64 = 2 * 1024 * 1024 * 1024 // 2 GiB
 
 // restore_field_maximum bounds each non-bundle multipart field. An address, a
-// passphrase and a ten-character code all fit far inside it; the cap is here so
+// passphrase and an eight-character code all fit far inside it; the cap is here so
 // a caller cannot stream an unbounded "email" part instead of a bundle.
 const restore_field_maximum int64 = 64 * 1024
 

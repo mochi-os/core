@@ -75,6 +75,31 @@ func TestFcmRetire(t *testing.T) {
 	}
 }
 
+// TestFcmTransient: the split that decides whether a failed send emails the
+// operator. A 5xx is Google's and the push queue clears it; a 4xx we do not
+// retire on is ours, and no retry will fix it.
+func TestFcmTransient(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    int
+		transient bool
+	}{
+		{"500 internal is transient", 500, true},
+		{"502 bad gateway is transient", 502, true},
+		{"503 unavailable is transient", 503, true},
+		{"401 rejected credentials is not", 401, false},
+		{"403 forbidden is not", 403, false},
+		{"400 malformed envelope is not", 400, false},
+		{"429 exhausted quota is not", 429, false},
+		{"404 is not", 404, false},
+	}
+	for _, c := range cases {
+		if got := fcm_transient(c.status); got != c.transient {
+			t.Errorf("%s: fcm_transient(%d) = %v, want %v", c.name, c.status, got, c.transient)
+		}
+	}
+}
+
 func TestFcmErrorCode(t *testing.T) {
 	cases := []struct {
 		name string

@@ -53,6 +53,11 @@ var fcm_retry_backoff = 2 * time.Second
 // and only the send is worth retrying.
 var fcm_request_error = errors.New("request build failed")
 
+// fcm_transport_error marks a failure to reach Google at all, as opposed to a
+// service account Google rejects. The first is a blip the push queue rides
+// out, the second is the operator's to fix, and only the second is emailed.
+var fcm_transport_error = errors.New("transport failed")
+
 // fcm_service_account is the parsed shape of the service-account JSON. Only
 // the fields we need; the JSON file has more.
 type fcm_service_account struct {
@@ -103,7 +108,11 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app, id st
 
 	access_token, err := fcm_access_token(sa)
 	if err != nil {
-		warn("FCM: mint access token: %v", err)
+		if errors.Is(err, fcm_transport_error) {
+			debug("FCM: mint access token: %v", err)
+		} else {
+			warn("FCM: mint access token: %v", err)
+		}
 		return false, false, fmt.Sprintf("OAuth2 token mint failed: %v", err)
 	}
 
@@ -138,7 +147,7 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app, id st
 			warn("FCM: build request: %v", err)
 			return false, false, fmt.Sprintf("Request build failed: %v", err)
 		}
-		warn("FCM: send: %v", err)
+		debug("FCM: send: %v", err)
 		return false, false, fmt.Sprintf("Network error: %v", err)
 	}
 	defer resp.Body.Close()
@@ -147,11 +156,20 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app, id st
 	}
 	body_bytes, _ := io.ReadAll(resp.Body)
 	retire = fcm_retire(resp.StatusCode, body_bytes)
-	if retire {
+	switch {
+	case retire:
 		// Expected end-of-life for a device token: the retire plus the
 		// phone's next register is the renewal cycle, so no warn email.
 		debug("FCM: send returned %d %s, retiring token", resp.StatusCode, fcm_error_code(body_bytes))
-	} else {
+	case fcm_transient(resp.StatusCode):
+		// Google's own fault, and the class fcm_post has already retried
+		// once. The push queue retries it again over the next quarter hour,
+		// so a blip that heals itself is nothing for the operator to think
+		// about; push_queue_process warns if delivery is genuinely lost.
+		debug("FCM: send returned %d: %s", resp.StatusCode, string(body_bytes))
+	default:
+		// A 4xx we do not retire on is ours to fix: rejected credentials, a
+		// malformed envelope, an exhausted quota. Retrying will not help.
 		warn("FCM: send returned %d: %s", resp.StatusCode, string(body_bytes))
 	}
 	return false, retire, fcm_summarise_error(resp.StatusCode, body_bytes)
@@ -185,6 +203,15 @@ func fcm_post(client *http.Client, url, access_token string, payload []byte) (*h
 		debug("FCM: send returned %d, retrying once", resp.StatusCode)
 		time.Sleep(fcm_retry_backoff)
 	}
+}
+
+// fcm_transient reports whether a non-200 response is Google's problem rather
+// than ours, and so one the push queue's own retries will clear. It draws the
+// same line fcm_post retries on: a 4xx names a fault at this end - rejected
+// credentials, a malformed envelope, an exhausted quota - that no amount of
+// retrying clears, and that the operator therefore has to hear about.
+func fcm_transient(status int) bool {
+	return status >= 500
 }
 
 // fcm_retire reports whether a non-200 response names the token itself as dead:
@@ -310,13 +337,13 @@ func fcm_mint_access_token(sa *fcm_service_account) (string, time.Time, error) {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", sa.TokenURI, form)
 	if err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, fmt.Errorf("%w: %v", fcm_transport_error, err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, fmt.Errorf("%w: %v", fcm_transport_error, err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)

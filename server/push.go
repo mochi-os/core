@@ -219,7 +219,13 @@ func push_queue_process() int {
 				db_user(a.user, "user").exec("delete from accounts where id=?", a.push.Account)
 			}
 		case a.attempts+1 >= push_attempts_maximum:
-			debug("Push giving up on %q after %d attempts", a.push.Account, a.attempts+1)
+			// The notification is lost, and this is the one moment in the
+			// path worth an operator's attention: every failure that reaches
+			// here was transient by construction, and this is where that
+			// stops being true. The email throttle keys on the format, so a
+			// provider outage costs one mail rather than one per push.
+			warn("Push giving up on %s destination %q after %d attempts",
+				a.push.Type, a.push.Account, a.attempts+1)
 			db.exec("delete from pushes where id=?", a.id)
 		default:
 			db.exec("update pushes set attempts=?, next_retry=? where id=?",

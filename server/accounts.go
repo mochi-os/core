@@ -1666,10 +1666,12 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	// Get verified accounts with notify capability (optionally filtered by account ID)
 	var rows []map[string]any
 	var err error
+	// enabled is the account's "Notify by default" switch, and the settings app
+	// also holds it off while it wires a new account into the categories.
 	if account != "" {
-		rows, err = db.rows("select id, type, identifier, data from accounts where verified > 0 and id = ?", account)
+		rows, err = db.rows("select id, type, identifier, data from accounts where verified>0 and enabled>0 and id=?", account)
 	} else {
-		rows, err = db.rows("select id, type, identifier, data from accounts where verified > 0")
+		rows, err = db.rows("select id, type, identifier, data from accounts where verified>0 and enabled>0")
 	}
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)

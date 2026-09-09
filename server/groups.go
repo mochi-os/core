@@ -366,7 +366,7 @@ func api_group_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.None, nil
 }
 
-// mochi.group.add(group, member, type) -> None: Add a member to a group
+// mochi.group.add(group, member, type) -> bool: Add a member to a group; False when a group member would put a group inside itself
 func api_group_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Check groups/write permission
 	if err := require_permission(t, fn, "groups/write"); err != nil {
@@ -399,16 +399,15 @@ func api_group_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 	db := db_user(owner, "user")
 
-	// Check for cycles if adding a group
-	if member_type == "group" {
-		if db.group_would_cycle(group, member) {
-			return sl_error(fn, "adding this group would create a cycle")
-		}
+	// A group inside itself is the caller's mistake, not a fault: answer False
+	// so the app can refuse it in its own words, rather than abort the action.
+	if member_type == "group" && db.group_would_cycle(group, member) {
+		return sl.False, nil
 	}
 
 	db.row_write(reg_members, map[string]any{"parent": group, "member": member, "type": member_type, "created": now()})
 
-	return sl.None, nil
+	return sl.True, nil
 }
 
 // mochi.group.remove(group, member) -> None: Remove a member from a group

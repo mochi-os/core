@@ -448,3 +448,36 @@ func TestPushQueueSendsConcurrently(t *testing.T) {
 		t.Fatal("push_queue_process did not return after every send completed")
 	}
 }
+
+// TestNotifySkipsADisabledAccount: enabled is the account's "Notify by default"
+// switch. The settings app stored it and showed it, and nothing read it, so a
+// switched-off account was delivered to exactly like a switched-on one.
+// TestNotifyQueuesAFailedSend is the positive control: the same fixture with
+// the default enabled=1 reaches the destination once.
+func TestNotifySkipsADisabledAccount(t *testing.T) {
+	server, hits := push_test_server(http.StatusOK)
+	defer server.Close()
+	user := push_test_setup(t, server.URL)
+	db_user(user, "user").exec("update accounts set enabled=0 where id='acct'")
+	permission_grant(user, "notifier", "accounts/notify")
+
+	thread := &sl.Thread{Name: "test"}
+	thread.SetLocal("user", user)
+	thread.SetLocal("app", &App{id: "notifier"})
+	if _, err := api_account_notify(thread,
+		sl.NewBuiltin("mochi.account.notify", api_account_notify), nil, []sl.Tuple{
+			{sl.String("app"), sl.String("test")},
+			{sl.String("category"), sl.String("message")},
+			{sl.String("object"), sl.String("o1")},
+			{sl.String("title"), sl.String("Title")},
+			{sl.String("body"), sl.String("Body")},
+		}); err != nil {
+		t.Fatalf("mochi.account.notify: %v", err)
+	}
+	if got := atomic.LoadInt32(hits); got != 0 {
+		t.Fatalf("the destination saw %d requests, want 0: a disabled account was delivered to", got)
+	}
+	if rows, _ := db_open("db/queue.db").rows("select * from pushes"); len(rows) != 0 {
+		t.Fatalf("notify queued %d rows for a disabled account, want 0", len(rows))
+	}
+}

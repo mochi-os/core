@@ -481,3 +481,62 @@ func TestNotifySkipsADisabledAccount(t *testing.T) {
 		t.Fatalf("notify queued %d rows for a disabled account, want 0", len(rows))
 	}
 }
+
+// TestPushQueueDropsRowsForAnUnconfiguredProvider: an FCM destination on a
+// server with no service account cannot be delivered to until the operator
+// supplies one, so a queued push to it is not walked through five attempts and
+// a give-up mail; it is dropped on the first pass, and the account row stays
+// for when the setting is filled.
+func TestPushQueueDropsRowsForAnUnconfiguredProvider(t *testing.T) {
+	server, _ := push_test_server(http.StatusOK)
+	defer server.Close()
+	user := push_test_setup(t, server.URL)
+	db_user(user, "user").exec(
+		"insert into accounts (id, type, identifier, data, created, verified) values ('fcm', 'fcm', 'probe', '{\"token\":\"t\"}', ?, 1)", now())
+	db_open("db/queue.db").exec(`insert into pushes
+		(id, user, account, type, identifier, data, next_retry, created)
+		values ('unconfigured', 'push-user', 'fcm', 'fcm', 'probe', '{"token":"t"}', ?, ?)`,
+		now()-1, now())
+	push_queue_process()
+
+	if push_test_row(t, "unconfigured") != nil {
+		t.Error("a push to a provider this server has not configured was kept for retry: five doomed attempts and a give-up mail follow")
+	}
+	if have, _ := db_user(user, "user").exists("select 1 from accounts where id='fcm'"); !have {
+		t.Error("the account row was removed: it must stay, and deliver once the operator configures FCM")
+	}
+}
+
+// TestNotifySkipsAnUnconfiguredProvider: the first attempt, from
+// mochi.account.notify, queues nothing for such a destination either, and the
+// other destinations of the same call are unaffected.
+func TestNotifySkipsAnUnconfiguredProvider(t *testing.T) {
+	server, hits := push_test_server(http.StatusOK)
+	defer server.Close()
+	user := push_test_setup(t, server.URL)
+	db_user(user, "user").exec(
+		"insert into accounts (id, type, identifier, data, created, verified) values ('fcm', 'fcm', 'probe', '{\"token\":\"t\"}', ?, 1)", now())
+	permission_grant(user, "notifier", "accounts/notify")
+
+	thread := &sl.Thread{Name: "test"}
+	thread.SetLocal("user", user)
+	thread.SetLocal("app", &App{id: "notifier"})
+	_, err := api_account_notify(thread,
+		sl.NewBuiltin("mochi.account.notify", api_account_notify), nil, []sl.Tuple{
+			{sl.String("app"), sl.String("test")},
+			{sl.String("category"), sl.String("message")},
+			{sl.String("object"), sl.String("o1")},
+			{sl.String("title"), sl.String("Title")},
+			{sl.String("body"), sl.String("Body")},
+		})
+	if err != nil {
+		t.Fatalf("mochi.account.notify: %v", err)
+	}
+	if atomic.LoadInt32(hits) != 1 {
+		t.Fatalf("the url destination saw %d requests, want 1: the configured destination must still be delivered to", *hits)
+	}
+	rows, _ := db_open("db/queue.db").rows("select * from pushes")
+	if len(rows) != 0 {
+		t.Errorf("notify queued %d row(s) for the unconfigured FCM destination, want 0", len(rows))
+	}
+}

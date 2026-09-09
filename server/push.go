@@ -81,13 +81,30 @@ var push_deliverers = map[string]func(*Push) (success, retire bool){
 	},
 }
 
+// push_configured reports whether this server can deliver to a provider at
+// all. FCM needs a service account only the operator can supply, so a push to
+// an FCM destination on a server without one is not a transient failure:
+// retrying it five times over a quarter of an hour and then mailing the
+// administrator reports nothing the operator did not already decide. The
+// account row stays, and delivers as soon as the setting is filled.
+func push_configured(kind string) bool {
+	if kind == "fcm" {
+		return setting_effective("fcm.service_account") != ""
+	}
+	return true
+}
+
 // account_deliver sends one push to one account. handled is false for a
-// provider the table does not know, which the caller treats as no attempt
-// rather than a failure to retry; retire is true only when the destination is
-// permanently dead.
+// provider the table does not know, or one this server has not configured;
+// the caller treats either as no attempt rather than a failure to retry.
+// retire is true only when the destination is permanently dead.
 func account_deliver(p *Push) (success, retire, handled bool) {
 	deliver := push_deliverers[p.Type]
 	if deliver == nil {
+		return false, false, false
+	}
+	if !push_configured(p.Type) {
+		debug("Push to %s destination %q skipped: provider not configured on this server", p.Type, p.Account)
 		return false, false, false
 	}
 	success, retire = deliver(p)
@@ -212,8 +229,9 @@ func push_queue_process() int {
 			db.exec("delete from pushes where id=?", a.id)
 			db_user(a.user, "user").exec("update accounts set last_delivered=? where id=?", now(), a.push.Account)
 		case a.retire || !a.handled:
-			// Permanently dead, or a provider this build no longer knows.
-			// Retrying either forever is how a queue becomes a leak.
+			// Permanently dead, or a provider this build does not know or
+			// this server has not configured. Retrying any of them forever is
+			// how a queue becomes a leak.
 			db.exec("delete from pushes where id=?", a.id)
 			if a.retire {
 				db_user(a.user, "user").exec("delete from accounts where id=?", a.push.Account)

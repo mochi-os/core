@@ -646,6 +646,7 @@ var (
 	internal_services = map[string]*App{}
 
 	api_app_package = sls.FromStringDict(sl.String("mochi.app.package"), sl.StringDict{
+		"check":   sl.NewBuiltin("mochi.app.package.check", api_app_package_check),
 		"get":     sl.NewBuiltin("mochi.app.package.get", api_app_package_get),
 		"install": sl.NewBuiltin("mochi.app.package.install", api_app_package_install),
 	})
@@ -2804,6 +2805,47 @@ func api_app_package_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		"name":    name,
 		"paths":   av.Paths,
 	}), nil
+}
+
+// app_check reports why a package cannot be installed, or "" when it can: the
+// unpack, read and manifest validation an install runs, with the unpacked tree
+// discarded. A refusal is the package's fault, so it is answered as text for
+// the calling app to turn into a bad request, where the install's error aborts
+// the action as a server fault.
+func app_check(file string) string {
+	if _, err := app_install("", "", file, true); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// mochi.app.package.check(file) -> string: Why a .zip file cannot be installed as an app, or "" when it can
+// Runs the checks an install runs and installs nothing. Requires the apps/install permission, as the archive is unpacked to disk for the check.
+func api_app_package_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "apps/install"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <file: string>")
+	}
+
+	file, ok := sl.AsString(args[0])
+	if !ok || !valid(file, "filepath") {
+		return sl_error(fn, "invalid file %q", file)
+	}
+
+	user := principal_caller(t)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	a := principal_app(t)
+	if a == nil {
+		return sl_error(fn, "no app")
+	}
+
+	return sl.String(app_check(api_file_path(user, a, file))), nil
 }
 
 // mochi.app.package.install(id, file, check_only?, peer?, version?) -> string: Install an app from a .zip file, returns version

@@ -1119,8 +1119,10 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	// Response cache for APIs that ignore the Idempotency-Key header: a hit
-	// returns the earlier response without issuing another request.
-	user := principal_caller(t)
+	// returns the earlier response without issuing another request. It lives
+	// in the storage account's app database, the account the grant above was
+	// resolved against, so a public action's replay is answered from it too.
+	user, _ := principal_storage(t)
 	if idempotency_key != "" && app != nil && user != nil {
 		if cached := url_idempotency_lookup(user, app, idempotency_key); cached != nil {
 			return sl_encode(cached), nil

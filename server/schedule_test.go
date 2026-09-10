@@ -296,7 +296,7 @@ func TestScheduleEventWrapper(t *testing.T) {
 	})
 }
 
-func TestScheduleValid(t *testing.T) {
+func TestScheduleCheck(t *testing.T) {
 	// Setup test environment
 	data_dir = t.TempDir()
 	os.MkdirAll(data_dir+"/db", 0755)
@@ -309,9 +309,8 @@ func TestScheduleValid(t *testing.T) {
 			User: "u99999", // Non-existent user
 			App:  "test-app",
 		}
-		// User doesn't exist, so should be invalid
-		if schedule_valid(se) {
-			t.Error("expected invalid for non-existent user")
+		if got := schedule_check(se); got != schedule_user_absent {
+			t.Errorf("non-existent user: got %s, want %s", got, schedule_user_absent)
 		}
 	})
 
@@ -321,26 +320,18 @@ func TestScheduleValid(t *testing.T) {
 			App:  "non-existent-app-12345",
 		}
 		// System user is valid, but app doesn't exist
-		if schedule_valid(se) {
-			t.Error("expected invalid for non-existent app")
-		}
-	})
-
-	t.Run("invalid app", func(t *testing.T) {
-		se := &ScheduledEvent{
-			User: "",
-			App:  "non-existent-app-12345",
-		}
-		if schedule_valid(se) {
-			t.Error("expected invalid for non-existent app")
+		if got := schedule_check(se); got != schedule_app_absent {
+			t.Errorf("non-existent app: got %s, want %s", got, schedule_app_absent)
 		}
 	})
 }
 
-// TestScheduleHandleUnrunnable: a pending user's due event is deferred (its app
-// and data may still be landing); anything else stale has its recurring row
-// dropped so it stops re-firing. One-shots were already removed by
-// schedule_claim.
+// TestScheduleHandleUnrunnable: a recurring row is retired only for a final
+// reason - the account, the app or the handler is gone. A pending user's event
+// is deferred (its app and data may still be landing), and so is any passing
+// state: no active version, a handler behind a load failure, a users row that
+// did not resolve. A one-shot is judged the same way: the claim only held its
+// row, so a final reason removes it and a passing one leaves it for the retry.
 func TestScheduleHandleUnrunnable(t *testing.T) {
 	data_dir = t.TempDir()
 	os.MkdirAll(data_dir+"/db", 0755)
@@ -362,25 +353,32 @@ func TestScheduleHandleUnrunnable(t *testing.T) {
 		ok, _ := sdb.exists("select 1 from schedule where id=?", id)
 		return ok
 	}
-	run := func(user string, id, interval int64) {
-		schedule_handle_unrunnable(&ScheduledEvent{ID: id, User: user, App: "gone-app", Event: "tick", Interval: interval})
+	run := func(user string, reason schedule_reason, id, interval int64) {
+		schedule_handle_unrunnable(&ScheduledEvent{ID: id, User: user, App: "gone-app", Event: "tick", Interval: interval}, reason)
 	}
 
 	cases := []struct {
 		name      string
 		user      string
+		reason    schedule_reason
 		interval  int64
 		want_kept bool
 	}{
-		{"absent user recurring -> dropped, nothing can ever run it", "ghost-u", 300, false},
-		{"pending user recurring -> deferred", "pending-u", 300, true},
-		{"active user gone-app recurring -> dropped locally", "active-u", 300, false},
-		{"system event gone-app recurring -> dropped locally", "", 300, false},
-		{"active user one-shot -> claim's job, no-op here", "active-u", 0, true},
+		{"absent user recurring -> dropped, nothing can ever run it", "ghost-u", schedule_user_absent, 300, false},
+		{"pending user recurring -> deferred", "pending-u", schedule_user_absent, 300, true},
+		{"active user whose identity did not resolve -> deferred", "active-u", schedule_user_absent, 300, true},
+		{"active user gone-app recurring -> dropped locally", "active-u", schedule_app_absent, 300, false},
+		{"system event gone-app recurring -> dropped locally", "", schedule_app_absent, 300, false},
+		{"active user, no active version -> deferred through the upgrade window", "active-u", schedule_version_absent, 300, true},
+		{"system event, no active version -> deferred", "", schedule_version_absent, 300, true},
+		{"active user, handler behind a load failure -> deferred", "active-u", schedule_handler_failed, 300, true},
+		{"active user, handler absent from a clean load -> dropped", "active-u", schedule_handler_absent, 300, false},
+		{"active user one-shot, app gone -> dropped, nothing will ever run it", "active-u", schedule_app_absent, 0, false},
+		{"active user one-shot, no active version -> held for the retry", "active-u", schedule_version_absent, 0, true},
 	}
 	for _, c := range cases {
 		id := insert(c.user, c.interval)
-		run(c.user, id, c.interval)
+		run(c.user, c.reason, id, c.interval)
 		if got := exists(id); got != c.want_kept {
 			t.Errorf("%s: row kept=%v, want kept=%v", c.name, got, c.want_kept)
 		}
@@ -396,25 +394,26 @@ func TestScheduleClaimBeforeExecute(t *testing.T) {
 	db.exec("create table schedule (id integer primary key, user int not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
 	db.exec("create index schedule_due on schedule(due)")
 
-	t.Run("one-shot event deleted on claim", func(t *testing.T) {
+	t.Run("one-shot event held on claim", func(t *testing.T) {
 		data, _ := json.Marshal(map[string]any{})
 		id, _ := schedule_create("u0", "test-app", now(), "one_shot", string(data), 0)
 
-		se := schedule_get(id)
-		if se == nil {
+		if schedule_get(id) == nil {
 			t.Fatal("expected event to exist before claim")
 		}
-
-		// Simulate claim (what schedule_run does)
-		if se.Interval > 0 {
-			schedule_update_due(se.ID, se.Due+se.Interval)
-		} else {
-			schedule_delete(se.ID)
+		if !schedule_claim(id, 0) {
+			t.Fatal("a due one-shot was not claimed")
 		}
 
-		se = schedule_get(id)
-		if se != nil {
-			t.Error("expected one-shot event to be deleted after claim")
+		se := schedule_get(id)
+		if se == nil {
+			t.Fatal("the claim deleted the one-shot; schedule_run deletes it, after the check")
+		}
+		if se.Due < now()+schedule_retry_seconds-1 {
+			t.Errorf("held due = %d, want at least now+%d", se.Due, schedule_retry_seconds)
+		}
+		if schedule_claim(id, 0) {
+			t.Error("a held one-shot was claimed again")
 		}
 	})
 
@@ -423,24 +422,22 @@ func TestScheduleClaimBeforeExecute(t *testing.T) {
 		original_due := now()
 		id, _ := schedule_create("u0", "test-app", original_due, "recurring", string(data), 300)
 
-		se := schedule_get(id)
-		if se == nil {
+		if schedule_get(id) == nil {
 			t.Fatal("expected event to exist before claim")
 		}
-
-		// Simulate claim (what schedule_run does)
-		if se.Interval > 0 {
-			schedule_update_due(se.ID, se.Due+se.Interval)
-		} else {
-			schedule_delete(se.ID)
+		if !schedule_claim(id, 300) {
+			t.Fatal("a due recurring event was not claimed")
 		}
 
-		se = schedule_get(id)
+		se := schedule_get(id)
 		if se == nil {
 			t.Fatal("expected recurring event to still exist after claim")
 		}
-		if se.Due != original_due+300 {
-			t.Errorf("expected due to be updated to %d, got %d", original_due+300, se.Due)
+		if se.Due <= now() || (se.Due-original_due)%300 != 0 {
+			t.Errorf("due = %d after claim, want a whole number of intervals past %d and in the future", se.Due, original_due)
+		}
+		if schedule_claim(id, 300) {
+			t.Error("an advanced recurring event was claimed again")
 		}
 	})
 }

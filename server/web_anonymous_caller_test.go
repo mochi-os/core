@@ -33,6 +33,10 @@ var anonymous_reachable = []string{
 	"api_interests_list",
 	"api_interests_summary",
 	"api_interests_top",
+	// The one gate behind mochi.url.*, mochi.url.preview, mochi.rss.fetch and
+	// mochi.remote.peer. The comptroller's Stripe webhook is a public action
+	// and reaches all of them.
+	"require_permission_url",
 }
 
 // TestAnonymousCallerIsNotTheOwner is the finding. Neither dispatcher may
@@ -59,7 +63,7 @@ func TestAnonymousCallerIsNotTheOwner(t *testing.T) {
 // grant, so any of these left strict turns its public route into a 500.
 func TestReachableGatesTolerateAnAnonymousCaller(t *testing.T) {
 	sources := map[string]string{}
-	for _, name := range []string{"access.go", "accounts.go", "ai.go", "entities.go", "interests.go"} {
+	for _, name := range []string{"access.go", "accounts.go", "ai.go", "entities.go", "interests.go", "permissions.go"} {
 		body, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
@@ -180,4 +184,104 @@ func function_source(t *testing.T, text, name string) string {
 		t.Fatalf("could not find the end of %s", name)
 	}
 	return rest[:end[1]]
+}
+
+// TestURLGateResolvesAgainstStorage. An outbound request from a public action
+// is made on the owner's behalf: refused by name when the owner holds no grant
+// for the domain, never with "no user context", and admitted on the owner's
+// grant with nobody bound as the caller. The comptroller webhook is the live
+// case - Stripe's delivery carries no session, and every Stripe call it made
+// answered {403, ""} from this gate.
+func TestURLGateResolvesAgainstStorage(t *testing.T) {
+	create_test_routing_env(t)
+
+	owner := &User{UID: "u-owner", Username: "owner@example.com"}
+	app := create_external_app("public-app")
+	apps[app.id] = app
+	t.Cleanup(func() { delete(apps, app.id) })
+
+	thread := &sl.Thread{Name: "test"}
+	thread.SetLocal("app", app)
+	thread.SetLocal("owner", owner)
+	fn := sl.NewBuiltin("mochi.url.post", nil)
+	target := "https://api.stripe.com/v1/payment_intents/pi_1"
+
+	err := require_permission_url(thread, fn, target)
+	if err == nil {
+		t.Fatal("an ungranted domain was allowed")
+	}
+	if strings.Contains(err.Error(), "no user context") {
+		t.Errorf("refused with %v - the gate never reached the grant lookup, so a public action's outbound call is dead whatever the owner granted", err)
+	}
+	result, err := api_url_request(thread, fn, sl.Tuple{sl.String(target)}, nil)
+	if err != nil {
+		t.Fatalf("api_url_request: %v", err)
+	}
+	expect_url_status(t, result, 403)
+
+	db := db_user(owner, "user")
+	db.permissions_setup()
+	db.permissions_upsert(app.id, "url", "api.stripe.com", 1)
+	if err := require_permission_url(thread, fn, target); err != nil {
+		t.Errorf("the owner's url grant did not admit the anonymous call: %v", err)
+	}
+}
+
+// TestURLIdempotencyCacheResolvesAgainstStorage. The replay cache lives with
+// the account the grant was resolved against, so a public action's retried
+// call is answered from it rather than sent again. Keyed on the caller, an
+// anonymous replay had no cache at all. The host does not resolve, so a call
+// that reaches the network answers 0, and only a cache hit answers 200.
+func TestURLIdempotencyCacheResolvesAgainstStorage(t *testing.T) {
+	create_test_routing_env(t)
+
+	owner := &User{UID: "u-owner", Username: "owner@example.com"}
+	app := create_external_app("public-app")
+	apps[app.id] = app
+	t.Cleanup(func() { delete(apps, app.id) })
+
+	db := db_user(owner, "user")
+	db.permissions_setup()
+	db.permissions_upsert(app.id, "url", "cache.invalid", 1)
+	url_idempotency_store(owner, app, "replay-1", 200, map[string]string{}, []byte(`{"cached":true}`))
+
+	thread := &sl.Thread{Name: "test"}
+	thread.SetLocal("app", app)
+	thread.SetLocal("owner", owner)
+	fn := sl.NewBuiltin("mochi.url.post", nil)
+	result, err := api_url_request(thread, fn, sl.Tuple{sl.String("https://cache.invalid/v1/x")},
+		[]sl.Tuple{{sl.String("idempotency_key"), sl.String("replay-1")}})
+	if err != nil {
+		t.Fatalf("api_url_request: %v", err)
+	}
+	expect_url_status(t, result, 200)
+}
+
+// TestScheduleBindsToStorage. A scheduled event created by a public action
+// belongs to the storage account, whose database its handler reads when it
+// fires. Bound to the caller, a webhook's follow-up check was written with no
+// user, and the runner could bind it to no account.
+func TestScheduleBindsToStorage(t *testing.T) {
+	create_test_routing_env(t)
+	db_open("db/schedule.db").exec("create table if not exists schedule ( id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null )")
+
+	owner := &User{UID: "u-owner", Username: "owner@example.com"}
+	app := create_external_app("public-app")
+	apps[app.id] = app
+	t.Cleanup(func() { delete(apps, app.id) })
+
+	thread := &sl.Thread{Name: "test"}
+	thread.SetLocal("app", app)
+	thread.SetLocal("owner", owner)
+	fn := sl.NewBuiltin("mochi.schedule.at", nil)
+	if _, err := api_schedule_at(thread, fn, sl.Tuple{sl.String("schedule_probe"), sl.NewDict(0), sl.MakeInt64(now() + 60)}, nil); err != nil {
+		t.Fatalf("api_schedule_at: %v", err)
+	}
+	row, _ := schedule_db().row("select user from schedule where event='schedule_probe'")
+	if row == nil {
+		t.Fatal("no scheduled event was written")
+	}
+	if user, _ := row["user"].(string); user != owner.UID {
+		t.Errorf("scheduled event bound to %q, want the owner %q - the runner has no account to run it as", user, owner.UID)
+	}
 }

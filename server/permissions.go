@@ -580,13 +580,17 @@ func permission_url_domains(t *sl.Thread, app *App) []string {
 	return domains
 }
 
-// require_permission_url checks url permission for a specific URL
+// require_permission_url checks url permission for a specific URL. The grant
+// consulted is the storage account's, not the caller's: an outbound request is
+// made on behalf of the account whose data the call reads, and a public action
+// reached by a webhook or a crawler has no caller at all. permission_url_domains,
+// which allowlists the redirects of the same request, already resolves there.
 func require_permission_url(t *sl.Thread, fn *sl.Builtin, rawurl string) error {
 	domain, err := domain_extract(rawurl)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %v", err)
 	}
-	return require_permission(t, fn, "url:"+domain)
+	return require_permission_acting(t, fn, "url:"+domain)
 }
 
 // mochi.permission.check(permission) -> bool: Check if current app has a permission

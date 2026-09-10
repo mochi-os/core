@@ -49,7 +49,7 @@ func TestUnrunnableRetiresARowForAnAbsentUser(t *testing.T) {
 		t.Fatal("could not create the scheduled event")
 	}
 
-	schedule_handle_unrunnable(schedule_get(id))
+	schedule_handle_unrunnable(schedule_get(id), schedule_user_absent)
 
 	if absent_rows("ghost") != 0 {
 		t.Error("a recurring row whose owner has no users row survived; it will be re-claimed and re-rejected every interval forever")
@@ -66,7 +66,7 @@ func TestUnrunnableStillDefersForAPendingUser(t *testing.T) {
 	absent_user(t, "booting", "pending-restore")
 
 	id, _ := schedule_create("booting", "feeds", now()-1, "watchdog", "{}", 86400)
-	schedule_handle_unrunnable(schedule_get(id))
+	schedule_handle_unrunnable(schedule_get(id), schedule_user_absent)
 
 	if absent_rows("booting") != 1 {
 		t.Error("a pending user's row was retired; its app and data may not have finished landing yet")
@@ -74,13 +74,13 @@ func TestUnrunnableStillDefersForAPendingUser(t *testing.T) {
 }
 
 // TestUnrunnableRetiresARowForAnActiveUser pins the behaviour that was already
-// correct: an active user whose app, version or handler is gone loses the row.
+// correct: an active user whose app is gone loses the row.
 func TestUnrunnableRetiresARowForAnActiveUser(t *testing.T) {
 	absent_setup(t)
 	absent_user(t, "live", "active")
 
 	id, _ := schedule_create("live", "feeds", now()-1, "watchdog", "{}", 86400)
-	schedule_handle_unrunnable(schedule_get(id))
+	schedule_handle_unrunnable(schedule_get(id), schedule_app_absent)
 
 	if absent_rows("live") != 0 {
 		t.Error("an active user's unrunnable recurring row survived")
@@ -99,7 +99,8 @@ func TestUnrunnableDefersWhenTheLookupFails(t *testing.T) {
 
 	db_open("db/users.db").exec("drop table users")
 
-	schedule_handle_unrunnable(se)
+	// app absent would retire the row; the failed lookup must win.
+	schedule_handle_unrunnable(se, schedule_app_absent)
 
 	if absent_rows("live") != 1 {
 		t.Error("the row was retired on a failed users lookup; a transient database error must never be what destroys a live user's schedule")
@@ -115,7 +116,7 @@ func TestUnrunnableLeavesAnotherUsersRowsAlone(t *testing.T) {
 	ghost, _ := schedule_create("ghost", "feeds", now()-1, "watchdog", "{}", 86400)
 	schedule_create("live", "feeds", now()+3600, "watchdog", "{}", 86400)
 
-	schedule_handle_unrunnable(schedule_get(ghost))
+	schedule_handle_unrunnable(schedule_get(ghost), schedule_user_absent)
 
 	if absent_rows("live") != 1 {
 		t.Error("retiring one user's row removed another user's")

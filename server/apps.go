@@ -167,6 +167,7 @@ type AppVersion struct {
 	labels           map[string]map[string]string `json:"-"`
 	starlark_once    sync.Once                    `json:"-"`
 	starlark_globals sl.StringDict                `json:"-"`
+	starlark_failed  []string                     `json:"-"`
 	app_json_mtime   time.Time                    `json:"-"`
 }
 
@@ -2406,11 +2407,16 @@ func (av *AppVersion) starlark() *Starlark {
 		return starlark(av.Execute)
 	}
 	av.starlark_once.Do(func() {
-		av.starlark_globals = starlark(av.Execute).globals
+		s := starlark(av.Execute)
+		av.starlark_globals = s.globals
+		// Kept with the globals: a caller asking for a definition that is
+		// absent needs to know whether the file holding it loaded at all.
+		av.starlark_failed = s.failed
 	})
 	return &Starlark{
 		thread:  &sl.Thread{Name: "main"},
 		globals: av.starlark_globals,
+		failed:  av.starlark_failed,
 	}
 }
 

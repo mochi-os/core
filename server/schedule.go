@@ -61,6 +61,14 @@ const schedule_rows_warning = schedule_rows_maximum / 2
 // watchdog.
 const schedule_interval_floor = 60
 
+// schedule_retry_seconds is how far a one-shot's due time is moved when it is
+// claimed. Holding the row instead of deleting it is what lets a due event that
+// cannot run yet be seen again: when the check that follows passes, the row is
+// deleted and the handler runs; when it defers, the row comes due again after
+// this long. Must be positive, or an unclaimed overdue row makes the scheduler
+// loop spin.
+const schedule_retry_seconds = 60
+
 // schedule_due_maximum bounds one pass, so the due query cannot materialise an
 // arbitrary number of rows and the loop cannot dispatch them all at once.
 // Leftovers are not delayed: schedule_next then reports a due time already
@@ -170,41 +178,99 @@ func schedule_next() *ScheduledEvent {
 	return &se
 }
 
-// schedule_valid reports whether a due event can run on this host now: user,
+// schedule_reason says why a due event cannot run on this host now, so that
+// schedule_handle_unrunnable can tell a row nothing will ever run again from
+// one caught in a passing state.
+type schedule_reason int
+
+const (
+	schedule_runnable schedule_reason = iota
+	schedule_user_absent
+	schedule_app_absent
+	schedule_version_absent
+	schedule_handler_failed
+	schedule_handler_absent
+)
+
+// retires reports whether the reason is final: nothing on this host can run the
+// event again, so a recurring row is dropped rather than re-claimed every
+// interval. No active version is an upgrade or cleanup window, and a handler
+// missing while an execute file failed to load may be defined in that file, so
+// both defer.
+func (r schedule_reason) retires() bool {
+	switch r {
+	case schedule_user_absent, schedule_app_absent, schedule_handler_absent:
+		return true
+	}
+	return false
+}
+
+func (r schedule_reason) String() string {
+	switch r {
+	case schedule_runnable:
+		return "runnable"
+	case schedule_user_absent:
+		return "user absent"
+	case schedule_app_absent:
+		return "app absent"
+	case schedule_version_absent:
+		return "no active version"
+	case schedule_handler_failed:
+		return "handler absent after a load failure"
+	case schedule_handler_absent:
+		return "handler absent"
+	}
+	return "unknown"
+}
+
+// schedule_check reports whether a due event can run on this host now: user,
 // app, an active version for that user, and a handler for the event must all be
 // present. schedule_run routes anything it rejects to
-// schedule_handle_unrunnable.
-func schedule_valid(se *ScheduledEvent) bool {
+// schedule_handle_unrunnable with the reason.
+func schedule_check(se *ScheduledEvent) schedule_reason {
 	// Resolve the user ("" = system, always valid).
 	var user *User
 	if se.User != "" {
 		user = user_by_uid(se.User)
 		if user == nil {
-			return false
+			return schedule_user_absent
 		}
 	}
 
 	// App must exist, with an active version for this user...
 	app := app_by_id(se.App)
 	if app == nil {
-		return false
+		return schedule_app_absent
 	}
 	av := app.active(user)
 	if av == nil {
-		return false
+		return schedule_version_absent
 	}
 
 	// ...that defines a Starlark function of that name. Same lookup
-	// schedule_run_event uses, so a typo is rejected when the task is
-	// scheduled rather than silently doing nothing when it comes due.
-	return av.starlark().has(se.Event)
+	// schedule_run_event uses. A definition can be missing because the file
+	// holding it did not load, which is not the app never declaring it.
+	s := av.starlark()
+	if s.has(se.Event) {
+		return schedule_runnable
+	}
+	if len(s.failed) > 0 {
+		return schedule_handler_failed
+	}
+	return schedule_handler_absent
 }
 
-// schedule_handle_unrunnable deals with a due event schedule_valid rejected,
-// quietly either way: a pending user's row is left alone (its app may still be
-// landing), anything else is dropped so a recurring row stops re-firing for
-// ever.
-func schedule_handle_unrunnable(se *ScheduledEvent) {
+// schedule_handle_unrunnable deals with a due event schedule_check rejected.
+// The row is retired only when nothing will ever run it again: the account is
+// gone, the app is gone, or the app loaded cleanly and defines no such handler.
+// Anything passing - a pending user whose app may still be landing, a user
+// whose row exists but did not resolve, no active version during an upgrade or
+// cleanup window, a handler behind a load failure, a users.db fault - is
+// deferred: a recurring row comes due again next interval, a one-shot after
+// schedule_retry_seconds, both set by the claim. Logged at info, never
+// warn-email.
+func schedule_handle_unrunnable(se *ScheduledEvent, reason schedule_reason) {
+	retire := reason.retires()
 	if se.User != "" {
 		// Read the users row directly — NOT user_by_uid, which also returns nil
 		// for a user whose identity hasn't loaded and would wrongly look
@@ -214,20 +280,33 @@ func schedule_handle_unrunnable(se *ScheduledEvent) {
 			// Could not tell whether the account exists. Defer rather than
 			// retire: a transient users.db error must never be what destroys
 			// a live user's schedule.
+			info("schedule: deferring %s/%s for user %q: users lookup failed: %v", se.App, se.Event, se.User, err)
 			return
 		}
 		if row != nil {
 			status, _ := row["status"].(string)
 			if user_pending(&User{Status: status}) {
+				info("schedule: deferring %s/%s for user %q: account pending", se.App, se.Event, se.User)
 				return
 			}
+			if reason == schedule_user_absent {
+				// The row exists but user_by_uid answered nil: suspended,
+				// or the identity did not load. Neither is final.
+				info("schedule: deferring %s/%s for user %q: account (status %q) did not resolve", se.App, se.Event, se.User, status)
+				return
+			}
+		} else {
+			// No row and no error: the account is gone, whatever the check
+			// said.
+			retire = true
 		}
-		// No row and no error: the account is gone. Fall through to the
-		// delete below.
 	}
-	if se.Interval > 0 {
-		schedule_db().exec("delete from schedule where id=?", se.ID)
+	if !retire {
+		info("schedule: deferring %s/%s for user %q: %s", se.App, se.Event, se.User, reason)
+		return
 	}
+	info("schedule: retiring %s/%s for user %q: %s", se.App, se.Event, se.User, reason)
+	schedule_db().exec("delete from schedule where id=?", se.ID)
 }
 
 // schedule_start initializes and starts the scheduler
@@ -310,25 +389,28 @@ func schedule_run_due(t time.Time) {
 }
 
 // schedule_claim atomically claims a due event: recurring rows advance by one
-// interval, one-shots are deleted. Both are conditional on due <= now, so the
-// rows-affected count is what decides the claim.
+// interval, one-shots are held for schedule_retry_seconds. Both are conditional
+// on due <= now, so the rows-affected count is what decides the claim.
 func schedule_claim(id int64, interval int64) bool {
 	db := schedule_db()
 	var result int64
 	var err error
+	moment := now()
 
 	if interval > 0 {
 		// Recurring: advance to the first due + k*interval after now. Stepping
 		// by one interval keeps the phase but leaves an overdue row still due,
 		// and every missed firing of a long outage would then replay
 		// back-to-back, one full Starlark run per pass.
-		moment := now()
 		res, e := db.internal.Exec("update schedule set due=due+((?-due)/?+1)*? where id=? and due<=?", moment, interval, interval, id, moment)
 		if e == nil {
 			result, err = res.RowsAffected()
 		}
 	} else {
-		res, e := db.internal.Exec("delete from schedule where id = ? and due <= ?", id, now())
+		// One-shot: hold the row past now rather than delete it. schedule_run
+		// deletes it once schedule_check passes or gives a final reason; a
+		// passing reason leaves it to come due again after the retry delay.
+		res, e := db.internal.Exec("update schedule set due=? where id=? and due<=?", moment+schedule_retry_seconds, id, moment)
 		if e == nil {
 			result, err = res.RowsAffected()
 		}
@@ -338,7 +420,7 @@ func schedule_claim(id int64, interval int64) bool {
 }
 
 // schedule_run executes a single scheduled event
-// The event has already been claimed (deleted or due updated) before this is called
+// The event has already been claimed (due moved forward) before this is called
 func schedule_run(se ScheduledEvent) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -349,9 +431,15 @@ func schedule_run(se ScheduledEvent) {
 	// Can it run on this host (user + app + active version + handler all
 	// present)? If not, handle it quietly — never warn-email; see
 	// schedule_handle_unrunnable.
-	if !schedule_valid(&se) {
-		schedule_handle_unrunnable(&se)
+	if reason := schedule_check(&se); reason != schedule_runnable {
+		schedule_handle_unrunnable(&se, reason)
 		return
+	}
+	if se.Interval == 0 {
+		// A one-shot fires once: the claim only held the row, so it is
+		// removed here, before the handler runs, and a handler that crashes
+		// does not fire again.
+		schedule_delete(se.ID)
 	}
 
 	// Run the handler. Normal runs are not logged - the watchdog covers the one
@@ -381,7 +469,7 @@ const schedule_stuck_seconds = 5 * 60
 
 // schedule_run_event dispatches the scheduled event to the app's event handler
 func schedule_run_event(se *ScheduledEvent) {
-	// These four checks duplicate schedule_valid, which schedule_run already ran.
+	// These four checks duplicate schedule_check, which schedule_run already ran.
 	// They survive only as a TOCTOU backstop, so they log at debug, never
 	// warn-email.
 	var user *User
@@ -590,7 +678,7 @@ func (se *SlScheduledEvent) Type() string          { return "ScheduledEvent" }
 // same test as mochi.schedule.cancel, since the object is reachable through
 // list.
 func (se *SlScheduledEvent) sl_cancel(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	app := principal_app(t)
 	if app == nil || se.app != app.id {
 		return sl.None, nil
@@ -657,8 +745,10 @@ func api_schedule_at(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, "invalid time")
 	}
 
-	// Get user and app from context
-	user := principal_caller(t)
+	// The row belongs to the storage account, whose database the handler
+	// reads when it fires. A public action has no caller to bind it to; its
+	// side effects run on the owner's behalf like its reads do.
+	user, _ := principal_storage(t)
 	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app context")
@@ -712,7 +802,7 @@ func api_schedule_after(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	// Get user and app from context
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app context")
@@ -776,7 +866,7 @@ func api_schedule_every(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	// Get user and app from context
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app context")
@@ -821,7 +911,7 @@ func api_schedule_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	// Get user and app from context
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app context")
@@ -857,7 +947,7 @@ func api_schedule_cancel(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "invalid id")
 	}
 
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app context")
@@ -881,7 +971,7 @@ func api_schedule_cancel(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 // mochi.schedule.list() -> list: List scheduled events for current app and user
 func api_schedule_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// Get user and app from context
-	user := principal_caller(t)
+	user, _ := principal_storage(t)
 	app := principal_app(t)
 	if app == nil {
 		return sl_error(fn, "no app context")

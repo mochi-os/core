@@ -224,6 +224,12 @@ func resolution_version_get(key resolution_key) (*AppVersion, bool) {
 // resolution_version_put stores a resolved active version. Must be called
 // with apps_lock held.
 func resolution_version_put(key resolution_key, av *AppVersion) {
+	if av == nil {
+		// No active version is an upgrade or cleanup window, not an answer
+		// worth holding for the TTL: the next lookup must see the version
+		// that lands, and until then the resolution is cheap to repeat.
+		return
+	}
 	if resolution_generation.Load() != resolution_version_cache_gen {
 		resolution_version_cache = map[resolution_key]resolution_version_entry{}
 		resolution_version_cache_gen = resolution_generation.Load()

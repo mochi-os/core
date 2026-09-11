@@ -624,9 +624,9 @@ run: $(bin)/mochi-server
 # race detector, needs cgo, and is roughly 8x slower. Run test-race before
 # committing a change to shared mutable state.
 test:
-	CGO_ENABLED=0 go test -count=1 -timeout 180s ./server
+	CGO_ENABLED=0 go test -count=1 -timeout 180s ./...
 
 test-race:
-	CGO_ENABLED=1 go test -race -count=1 -timeout 600s ./server
+	CGO_ENABLED=1 go test -race -count=1 -timeout 600s ./...
 
 -include local/Makefile

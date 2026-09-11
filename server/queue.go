@@ -310,6 +310,13 @@ func health_denial(recipient string) {
 	db.exec_bg("health suspend on denial", "update health set suspended=? where recipient=? and suspended=0 and denials >= ?", moment, recipient, queue_denial_limit)
 }
 
+// health_suspended reports whether the recipient is suspended as unreachable.
+func health_suspended(recipient string) bool {
+	db := db_open("db/queue.db")
+	suspended, _ := db.exists("select 1 from health where recipient=? and suspended!=0", recipient)
+	return suspended
+}
+
 // health_gate is consulted by broadcast fan-out per subscriber. Suspended
 // recipients are skipped except one probe per queue_probe_interval, which goes
 // as a normal send: its ack unsuspends, its park re-confirms.

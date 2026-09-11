@@ -193,6 +193,66 @@ func TestBroadcastLogAgeTrimRespectsAckFloor(t *testing.T) {
 	}
 }
 
+// TestBroadcastLogAgeTrimWarnsOnlyForReachable — a hard-cap eviction warns,
+// naming them, when subscribers losing rows are reachable; when every one is
+// suspended as unreachable it is an info line. A floor at or past the newest
+// evicted row loses nothing and does not count.
+func TestBroadcastLogAgeTrimWarnsOnlyForReachable(t *testing.T) {
+	db := setup_broadcast_log_test(t)
+	queue := db_open("db/queue.db")
+	queue.exec(health_schema)
+	capture := log_captured(t)
+
+	broadcast_log_table_create(db)
+	broadcast_acknowledged_table_create(db)
+	// Six rows past the hard cap and one fresh row, so the log survives.
+	stage := func(key string) {
+		for i := int64(1); i <= 6; i++ {
+			db.exec("insert into log (key, peer, sequence, event, data, created) values (?, 'p', ?, 'e', '', ?)", key, i, now()-broadcast_log_age_maximum-100)
+		}
+		db.exec("insert into log (key, peer, sequence, event, data, created) values (?, 'p', 7, 'e', '', ?)", key, now())
+	}
+	logged := func(key string) (warning string, information bool) {
+		for _, line := range capture.lines {
+			if !strings.Contains(line, key) {
+				continue
+			}
+			if strings.Contains(line, "reachable subscribers still need") {
+				warning = line
+			}
+			if strings.Contains(line, "is suspended as unreachable") {
+				information = true
+			}
+		}
+		return warning, information
+	}
+	queue.exec("insert into health (recipient, suspended, since) values ('dead', ?, ?)", now()-86400, now()-86400)
+
+	// Only the suspended subscriber needs the evicted rows; the reachable one
+	// has acknowledged the newest of them.
+	stage("k-dead")
+	db.exec("insert into acknowledged (key, peer, subscriber, last) values ('k-dead', 'p', 'dead', 3)")
+	db.exec("insert into acknowledged (key, peer, subscriber, last) values ('k-dead', 'p', 'current', 6)")
+	broadcast_log_age_trim(db, "k-dead", "p")
+	if warning, information := logged("k-dead"); warning != "" || !information {
+		t.Errorf("eviction needed only by a suspended subscriber: warning=%q information=%v, want an info line", warning, information)
+	}
+
+	// A reachable subscriber losing rows is warned about by name; the
+	// suspended one beside it is not named.
+	stage("k-live")
+	db.exec("insert into acknowledged (key, peer, subscriber, last) values ('k-live', 'p', 'dead', 3)")
+	db.exec("insert into acknowledged (key, peer, subscriber, last) values ('k-live', 'p', 'stuck', 4)")
+	broadcast_log_age_trim(db, "k-live", "p")
+	warning, information := logged("k-live")
+	if warning == "" || information {
+		t.Fatalf("eviction a reachable subscriber needs: warning=%q information=%v, want a warning", warning, information)
+	}
+	if !strings.Contains(warning, "stuck") || strings.Contains(warning, "dead") {
+		t.Errorf("the warning must name the reachable subscriber only: %q", warning)
+	}
+}
+
 // TestBroadcastFloorSkips — a broadcast/floor event from the stream's own
 // peer advances the watermark to floor-1; one from any other peer is
 // refused (only the origin is authoritative about its own log).

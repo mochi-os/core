@@ -263,6 +263,74 @@ func TestBroadcastSendHealthGate(t *testing.T) {
 	}
 }
 
+// TestBroadcastSendEvictionRevokes drives the real api_broadcast_send: an app
+// that drops an evicted subscriber revokes its replay record from inside the
+// send, and the send's own record must not restore it. A subscriber merely
+// suspended stays recorded - it is still entitled to replay.
+func TestBroadcastSendEvictionRevokes(t *testing.T) {
+	setup_replication_test(t)
+	setup_users_test_schema()
+
+	feed, identity, healthy, down := exclude_test_entities(t)
+	gone := withdraw_test_entity(t)
+	users := db_open("db/users.db")
+	users.exec("insert into users (uid, username) values ('u-owner', 'owner@x')")
+	users.exec("insert into entities (id, private, fingerprint, user, class, name) values (?, '', ?, 'u-owner', 'feed', 'Feed')", feed, fingerprint(feed))
+	users.exec("insert into entities (id, private, fingerprint, user, class, name) values (?, '', ?, 'u-owner', 'person', 'Owner')", identity, fingerprint(identity))
+
+	user := user_by_uid("u-owner")
+	app := &App{id: "testapp-evict"}
+	thread := &sl.Thread{}
+	thread.SetLocal("user", user)
+	thread.SetLocal("app", app)
+
+	queue := db_open("db/queue.db")
+	queue.exec("insert into health (recipient, suspended, probed, since) values (?, ?, ?, ?)", down, now(), now(), now())
+	queue.exec("insert into health (recipient, suspended, probed, since) values (?, ?, ?, ?)", gone, now()-queue_evict_age-10, now(), now()-queue_evict_age-10)
+
+	// The owning app's handler, as forums' error_subscriber_unreachable does
+	// it: revoke the dropped member's replay record, synchronously.
+	var dispatched []string
+	original := subscriber_dispatch
+	subscriber_dispatch = func(u *User, a *App, code, reason, service, entity string, orig map[string]any, detail func() map[string]any) {
+		dispatched = append(dispatched, entity)
+		db := db_app_system(u, a)
+		defer db.close()
+		broadcast_subscribed_remove(db, feed, net_id, entity)
+	}
+	defer func() { subscriber_dispatch = original }()
+
+	subscribers := sl.NewList([]sl.Value{sl.String(healthy), sl.String(down), sl.String(gone)})
+	data := sl.NewDict(1)
+	_ = data.SetKey(sl.String("body"), sl.String("x"))
+	if _, err := api_broadcast_send(thread, sl.NewBuiltin("mochi.broadcast.send", api_broadcast_send), sl.Tuple{
+		sl.String(feed), sl.String(feed), subscribers,
+		sl.String("feeds"), sl.String("post/create"), data, sl.String(""),
+	}, nil); err != nil {
+		t.Fatalf("api_broadcast_send: %v", err)
+	}
+	// The healthy subscriber's row is queued asynchronously; wait for it so the
+	// send goroutine is done before the test's data directory goes away.
+	deadline := time.Now().Add(5 * time.Second)
+	for queue.integer("select count(*) from queue where to_entity=?", healthy) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("healthy subscriber's fan-out row never arrived")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(dispatched) != 1 || dispatched[0] != gone {
+		t.Fatalf("evict dispatch: %v, want the evicted subscriber only", dispatched)
+	}
+
+	db := db_app_system(user, app)
+	defer db.close()
+	for subscriber, want := range map[string]bool{healthy: true, down: true, gone: false} {
+		if allowed := broadcast_subscribed_allowed(db, feed, net_id, subscriber); allowed != want {
+			t.Errorf("subscriber %s: replay allowed=%v, want %v", subscriber[:8], allowed, want)
+		}
+	}
+}
+
 // TestHealthEvictOverdue — an (app, recipient) pair still receiving daily
 // eviction dispatches health_evict_overdue after the first one means the
 // app is ignoring them (missing subscriber/unreachable handler) and its

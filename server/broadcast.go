@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -466,8 +467,9 @@ func broadcast_log_append(db *DB, key, peer, event string, data []byte) int64 {
 
 // broadcast_log_age_maximum is the hard retention cap: an ack floor protects
 // rows past broadcast_log_age, but only this long, else one dead subscriber
-// grows the log forever. Evicting past a live floor warns and forces a
-// re-fetch.
+// grows the log forever. Evicting past a floor forces a re-fetch, and warns
+// only when a subscriber losing rows is still reachable - one suspended as
+// unreachable is already known dead, and this is the expected end of it.
 const broadcast_log_age_maximum = 4 * broadcast_log_age
 
 // broadcast_log_age_trim deletes log rows older than the age cap for the given
@@ -488,7 +490,21 @@ func broadcast_log_age_trim(db *DB, key, peer string) {
 	}
 	db.exec("delete from log where key=? and peer=? and created < ? and sequence <= ?", key, peer, now()-broadcast_log_age, floor)
 	if pinned, _ := db.exists("select 1 from log where key=? and peer=? and created < ? limit 1", key, peer, now()-broadcast_log_age_maximum); pinned {
-		warn("Broadcast log for (key=%q, peer=%q) evicting rows past the hard retention cap that a subscriber at ack floor %d still needs; that subscriber will skip the lost span and re-fetch on its next resync.", key, peer, floor)
+		// The subscribers losing rows are those acknowledged below the newest
+		// evicted sequence.
+		top := db.integer64("select max(sequence) from log where key=? and peer=? and created<?", key, peer, now()-broadcast_log_age_maximum)
+		reachable := []string{}
+		rows, _ := db.rows("select subscriber from acknowledged where key=? and peer=? and last<?", key, peer, top)
+		for _, row := range rows {
+			if subscriber, _ := row["subscriber"].(string); subscriber != "" && !health_suspended(subscriber) {
+				reachable = append(reachable, subscriber)
+			}
+		}
+		if len(reachable) > 0 {
+			warn("Broadcast log for (key=%q, peer=%q) evicting rows past the hard retention cap that reachable subscribers still need (lowest ack floor %d): %s. They will skip the lost span and re-fetch on their next resync.", key, peer, floor, strings.Join(reachable, ", "))
+		} else {
+			info("Broadcast log for (key=%q, peer=%q) evicting rows past the hard retention cap; every subscriber that still needs them (lowest ack floor %d) is suspended as unreachable", key, peer, floor)
+		}
 		db.exec("delete from log where key=? and peer=? and created < ?", key, peer, now()-broadcast_log_age_maximum)
 		// Drop ack floors the surviving log can no longer replay to. A live
 		// subscriber re-inserts its row on the next ack; a floor left by one that is
@@ -813,7 +829,8 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	content[broadcast_content_key] = key
 	content[broadcast_content_sequence] = sequence
 
-	services := app_services(app, user)
+	type target struct{ id, peer string }
+	targets := []target{}
 	// Who this stream fans out to, for the resync gate. Taken from the whole list,
 	// not the delivery loop, which skips self-owned and health-suspended
 	// recipients - both are still entitled to replay.
@@ -842,42 +859,48 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			info("Broadcast: skipping subscriber %q with invalid peer %q", sub, peer)
 			continue
 		}
-		if sub != "" {
-			recorded = append(recorded, sub)
-		}
 		if sub == "" {
 			continue
 		}
+		recorded = append(recorded, sub)
+		targets = append(targets, target{sub, peer})
+	}
+
+	// Recorded before delivery, not after: the health gate below can dispatch an
+	// eviction whose app handler revokes the subscriber synchronously, and a
+	// record written afterwards would restore what the app just removed.
+	broadcast_subscribed_record(db, key, net_id, recorded)
+
+	services := app_services(app, user)
+	for _, recipient := range targets {
 		// Never enqueue to a recipient owned by the sending user: their DB is the
 		// canonical copy, so delivery is at best a no-op and at worst destructive.
 		// The excluded actor IS still sent to when remote - the delivery advances
 		// their watermark and the receive wrapper skips their handler.
-		if owner := user_owning_entity(sub); owner != nil && owner.UID == user.UID {
+		if owner := user_owning_entity(recipient.id); owner != nil && owner.UID == user.UID {
 			continue
 		}
 		// Recipient health gate: a suspended subscriber gets no fan-out rows beyond
 		// one probe per interval and catches up by resync; past the evict age the
 		// owning app is told to drop it. Broadcast fan-out only.
-		skip, evict := health_gate(sub)
+		skip, evict := health_gate(recipient.id)
 		if evict {
-			health_evict_dispatch(user, app, service, sub)
+			health_evict_dispatch(user, app, service, recipient.id)
 			continue
 		}
 		if skip {
 			continue
 		}
-		m := message(from, sub, service, event)
+		m := message(from, recipient.id, service, event)
 		m.FromApp = app.id
 		m.Services = services
 		m.content = content
-		if peer != "" {
-			m.send_peer(peer)
+		if recipient.peer != "" {
+			m.send_peer(recipient.peer)
 		} else {
 			m.send()
 		}
 	}
-
-	broadcast_subscribed_record(db, key, net_id, recorded)
 
 	return sl.MakeInt64(sequence), nil
 }

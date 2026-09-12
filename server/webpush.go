@@ -196,6 +196,46 @@ func webpush_service_worker(c *gin.Context) {
 
 const service_worker = `// Mochi Push Notification Service Worker
 
+// Whether an open tab is already showing what a notification is about. The
+// shell's socket delivers the same event to that tab and its bell updates in
+// place, so a tray notification would only repeat what the reader is looking
+// at. Matched on the path, segment by segment, so a feed covers its posts.
+//
+// Only a visible tab covers anything: dropping the notification promises the
+// content arrives another way, and nothing arrives to a tab nobody is reading.
+// The tab must also name an entity, not just an app, so sitting on a list
+// screen goes on notifying.
+function coveredByOpenTab(link) {
+  if (!link || link === '/') return Promise.resolve(false);
+  return clients.matchAll({ type: 'window', includeUncontrolled: true })
+    .then(function(clientList) {
+      return clientList.some(function(client) {
+        if (client.visibilityState !== 'visible') return false;
+        let shown;
+        try {
+          shown = new URL(client.url).pathname;
+        } catch (error) {
+          return false;
+        }
+        return covers(shown, link);
+      });
+    })
+    .catch(function() {
+      return false;
+    });
+}
+
+// Whether the path a tab shows contains what the link names.
+function covers(shown, link) {
+  const showing = shown.split('/').filter(Boolean);
+  const target = link.split('/').filter(Boolean);
+  if (showing.length < 2) return false;
+  if (target.length < showing.length) return false;
+  return showing.every(function(segment, index) {
+    return segment === target[index];
+  });
+}
+
 self.addEventListener('push', function(event) {
   if (!event.data) return;
 
@@ -208,7 +248,10 @@ self.addEventListener('push', function(event) {
   };
 
   event.waitUntil(
-    self.registration.showNotification(data.title || 'Mochi', options)
+    coveredByOpenTab(data.link).then(function(covered) {
+      if (covered) return undefined;
+      return self.registration.showNotification(data.title || 'Mochi', options);
+    })
   );
 });
 

@@ -609,6 +609,12 @@ func broadcast_subscribed_remove(db *DB, key, peer, subscriber string) bool {
 	}
 	removed, _ := db.exists("select 1 from subscribed where key=? and peer=? and subscriber=?", key, peer, subscriber)
 	db.exec("delete from subscribed where key=? and peer=? and subscriber=?", key, peer, subscriber)
+	// A revoked subscriber may no longer resync, so its ack floor would only
+	// protect rows nobody can be served; left behind, a lagging one pins the log
+	// until the hard cap evicts past it.
+	broadcast_acknowledged_table_create(db)
+	db.exec("delete from acknowledged where key=? and peer=? and subscriber=?", key, peer, subscriber)
+	broadcast_log_ack_trim(db, key, peer)
 	return removed
 }
 

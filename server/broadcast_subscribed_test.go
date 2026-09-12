@@ -241,6 +241,38 @@ func TestSubscribedRemoveRevokes(t *testing.T) {
 	}
 }
 
+// TestSubscribedRemoveDropsAckFloor — a revoked subscriber may no longer
+// resync, so its ack floor would only protect rows nobody can be served. Left
+// behind, a lagging one pins the log until the hard cap evicts past it.
+func TestSubscribedRemoveDropsAckFloor(t *testing.T) {
+	db := setup_subscribed_test(t)
+
+	for i := 0; i < 6; i++ {
+		broadcast_log_append(db, "k1", "peerA", "event/a", []byte(`{}`))
+	}
+	broadcast_subscribed_record(db, "k1", "peerA", []string{"stays", "leaves"})
+	broadcast_acknowledged_table_create(db)
+	db.exec("insert into acknowledged (key, peer, subscriber, last) values ('k1', 'peerA', 'leaves', 2)")
+	db.exec("insert into acknowledged (key, peer, subscriber, last) values ('k1', 'peerA', 'stays', 5)")
+	db.exec("insert into acknowledged (key, peer, subscriber, last) values ('k1', 'peerB', 'leaves', 2)")
+
+	broadcast_subscribed_remove(db, "k1", "peerA", "leaves")
+
+	if got := acknowledged_last(t, db, "k1", "peerA", "leaves"); got != -1 {
+		t.Errorf("the removed subscriber's ack floor survived at %d", got)
+	}
+	if got := acknowledged_last(t, db, "k1", "peerA", "stays"); got != 5 {
+		t.Errorf("removing one subscriber disturbed another's floor: got %d, want 5", got)
+	}
+	if got := acknowledged_last(t, db, "k1", "peerB", "leaves"); got != 2 {
+		t.Errorf("removal dropped the floor on another host's stream: got %d, want 2", got)
+	}
+	// The log trims to the remaining floor at once, not at the next ack.
+	if low := db.integer("select min(sequence) from log where key='k1' and peer='peerA'"); low != 5 {
+		t.Errorf("log after removal: min sequence %d, want 5", low)
+	}
+}
+
 // TestSubscribedRemoveScopedToStream — an app may revoke access to what it
 // broadcasts, never to another host's stream.
 func TestSubscribedRemoveScopedToStream(t *testing.T) {

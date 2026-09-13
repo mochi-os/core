@@ -58,7 +58,7 @@ const broadcast_pending_gc_period_seconds = 60 * 60
 // broadcast_pending_table_create lazily creates the table; the call
 // is idempotent and the schema matches the comment block above.
 func broadcast_pending_table_create(db *DB) {
-	db.exec(`create table if not exists pending (
+	db.create("pending", `create table if not exists pending (
 		peer text not null,
 		key text not null,
 		sequence integer not null,

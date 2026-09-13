@@ -1618,6 +1618,44 @@ func (db *DB) exec(query string, values ...any) {
 	must(db.exec_e(query, values...))
 }
 
+// create runs a table or index DDL only when sqlite_master does not already
+// carry that object, which is what the defensive creates on the send and
+// receive paths need. Two measured reasons, neither of them the write lock - a
+// no-op "create ... if not exists" takes none, verified against a held one:
+//
+// Cost: exec_e sends anything beginning CREATE down its schema branch, which
+// closes every prepared statement this handle has cached. The broadcast paths
+// call these creates per event, so the cache was being thrown away on each one.
+//
+// Safety: when the table really IS missing - a fresh app database taking its
+// first concurrent writes - the callers race, and SQLite answers all but one
+// "database is locked" at once rather than waiting out its busy timeout,
+// because a read that has to become a write cannot safely block. The lock
+// leaves exactly one caller to do the real create.
+//
+// Re-checked rather than remembered, so a table something else drops is created
+// again. Its own lock rather than lock(db.path): the schema setups hold that one
+// while they call these creates, and a mutex is not reentrant.
+func (db *DB) create(name string, ddl string) {
+	if db.holds(name) {
+		return
+	}
+	l := lock("create " + db.path)
+	l.Lock()
+	defer l.Unlock()
+	if db.holds(name) {
+		return
+	}
+	db.exec(ddl)
+}
+
+// holds reports whether this database already carries a table or index of that
+// name.
+func (db *DB) holds(name string) bool {
+	held, _ := db.exists("select 1 from sqlite_master where name=?", name)
+	return held
+}
+
 // exec_e is exec that RETURNS the sqlite error instead of panicking. Same
 // prepared-cache + DDL-flush behaviour; the caller decides how to handle the
 // error. Used by exec_bg (and any other path that needs to recover rather than

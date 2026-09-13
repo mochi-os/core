@@ -42,6 +42,10 @@ func recovery_dummy() []byte {
 
 var (
 	jwt_expiry = int64(365 * 86400) // 1 year, matching session cookie lifetime
+	// Long enough to outlast the shell's ten-minute token refresh several times
+	// over, so an asset URL built from it stays good between refreshes, and
+	// short enough that a copied one is worth little.
+	jwt_expiry_asset = int64(30 * 60)
 )
 
 var api_user_recovery = sls.FromStringDict(sl.String("mochi.user.recovery"), sl.StringDict{
@@ -59,8 +63,18 @@ var api_user_totp = sls.FromStringDict(sl.String("mochi.user.totp"), sl.StringDi
 type mochi_claims struct {
 	User string `json:"user"`
 	App  string `json:"app,omitempty"`
+	// Purpose narrows what the token may be used for. Empty is the ordinary
+	// app token, carried in an Authorization header and good for every action
+	// the app has. token_purpose_asset is the one that travels in a URL.
+	Purpose string `json:"purpose,omitempty"`
 	jwt.RegisteredClaims
 }
+
+// token_purpose_asset marks a token minted for URL-borne use - an image or
+// attachment source, which a browser fetches with no header of ours on it. It
+// reads and nothing more, and it lives jwt_expiry_asset rather than a year,
+// because a URL is copied, pasted and logged in ways a header is not.
+const token_purpose_asset = "asset"
 
 // Exchange a login code for a JWT token and login cookie
 func web_login_verify(c *gin.Context) {
@@ -231,6 +245,17 @@ func auth_redirect_login(c *gin.Context, user *User, target string) {
 
 // auth_create_app_token creates an app-scoped JWT for a session
 func auth_create_app_token(user_uid string, login string, app string) string {
+	return auth_create_token(user_uid, login, app, "", jwt_expiry)
+}
+
+// auth_create_asset_token creates the short-lived, read-only token a page puts
+// in an image or attachment URL, where the app token would otherwise sit for a
+// year in anything that keeps a URL.
+func auth_create_asset_token(user_uid string, login string, app string) string {
+	return auth_create_token(user_uid, login, app, token_purpose_asset, jwt_expiry_asset)
+}
+
+func auth_create_token(user_uid string, login string, app string, purpose string, expiry int64) string {
 	var s Session
 	db := db_open("db/sessions.db")
 	if !db.scan(&s, "select * from sessions where code=? and expires>=?", login, now()) {
@@ -249,10 +274,11 @@ func auth_create_app_token(user_uid string, login string, app string) string {
 	}
 
 	claims := mochi_claims{
-		User: user_uid,
-		App:  app,
+		User:    user_uid,
+		App:     app,
+		Purpose: purpose,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Unix(now()+jwt_expiry, 0)),
+			ExpiresAt: jwt.NewNumericDate(time.Unix(now()+expiry, 0)),
 			IssuedAt:  jwt.NewNumericDate(time.Unix(now(), 0)),
 		},
 	}
@@ -370,24 +396,35 @@ func jwt_session(token string) string {
 }
 
 func jwt_verify(token_string string) (string, string, error) {
+	claims, err := jwt_verify_claims(token_string)
+	if err != nil {
+		return "", "", err
+	}
+	return claims.User, claims.App, nil
+}
+
+// jwt_verify_claims is jwt_verify with the whole claim set, for the callers
+// that need more than the user and the app - the purpose, which decides what
+// the token may be used for.
+func jwt_verify_claims(token_string string) (*mochi_claims, error) {
 	// First parse the token without verification to read header/kid
 	token, _, err := new(jwt.Parser).ParseUnverified(token_string, &mochi_claims{})
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 
 	// Require kid header (login code) to look up per-login secret
 	kid, ok := token.Header["kid"].(string)
 	if !ok || kid == "" {
-		return "", "", errors.New("token missing kid header referencing login code")
+		return nil, errors.New("token missing kid header referencing login code")
 	}
 	var s Session
 	db := db_open("db/sessions.db")
 	if !db.scan(&s, "select * from sessions where code=? and expires>=?", kid, now()) {
-		return "", "", errors.New("session not found for kid")
+		return nil, errors.New("session not found for kid")
 	}
 	if s.Secret == "" {
-		return "", "", errors.New("session has no secret")
+		return nil, errors.New("session has no secret")
 	}
 	secret := []byte(s.Secret)
 	var claims mochi_claims
@@ -398,19 +435,19 @@ func jwt_verify(token_string string) (string, string, error) {
 		return secret, nil
 	})
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	if !tkn.Valid {
-		return "", "", errors.New("invalid token")
+		return nil, errors.New("invalid token")
 	}
 
 	// A valid signature proves the token was signed with THIS session's secret,
 	// not that it names this session's user - without this one per-device secret
 	// authenticates as any account named in a token it signed.
 	if claims.User != s.User {
-		return "", "", errors.New("token user does not match the session that signed it")
+		return nil, errors.New("token user does not match the session that signed it")
 	}
-	return claims.User, claims.App, nil
+	return &claims, nil
 }
 
 // ============================================================================

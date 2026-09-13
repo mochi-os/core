@@ -335,7 +335,14 @@ func web_shell_token(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"token": token, "app": a.id})
+	// The asset token rides along rather than costing a second round trip: the
+	// page needs it for the first image it renders, and the shell refreshes both
+	// on one timer.
+	c.JSON(http.StatusOK, gin.H{
+		"token": token,
+		"app":   a.id,
+		"asset": auth_create_asset_token(user.UID, session, a.id),
+	})
 }
 
 // web_shell_init handles POST /_/shell — returns shell bootstrap config.

@@ -59,6 +59,27 @@ func websockets_held(u *User) int {
 	return held
 }
 
+// websocket_protocol_token prefixes the subprotocol a browser presents its app
+// token in. A browser sets no headers on a handshake, so the token used to have
+// to travel in the query string, where it lands in every access log and in any
+// copied URL; the subprotocol is the one header it will send.
+const websocket_protocol_token = "mochi.token."
+
+// websocket_protocol_offered returns the token subprotocol the client offered,
+// whole, so the accept can echo the exact string back - a browser fails the
+// connection unless the server names a protocol it asked for.
+func websocket_protocol_offered(c *gin.Context) string {
+	for _, header := range c.Request.Header.Values("Sec-WebSocket-Protocol") {
+		for _, offered := range strings.Split(header, ",") {
+			offered = strings.TrimSpace(offered)
+			if strings.HasPrefix(offered, websocket_protocol_token) && offered != websocket_protocol_token {
+				return offered
+			}
+		}
+	}
+	return ""
+}
+
 // websocket_authenticate resolves who a handshake belongs to and which app the
 // connection is tagged with. A valid token names the app and outranks the
 // session cookie for tagging: the browser sends the cookie on every same-origin
@@ -69,11 +90,16 @@ func websockets_held(u *User) int {
 func websocket_authenticate(c *gin.Context) (u *User, app string, token_auth bool) {
 	u = web_auth(c)
 
-	// Bearer header first, then the query parameter (for clients, such as
-	// browser WebSockets, that cannot set headers).
+	// Bearer header first, then the subprotocol a browser can set, then the
+	// query parameter older clients still send.
 	token := ""
 	if header := c.GetHeader("Authorization"); strings.HasPrefix(header, "Bearer ") {
 		token = strings.TrimPrefix(header, "Bearer ")
+	}
+	if token == "" {
+		if offered := websocket_protocol_offered(c); offered != "" {
+			token = strings.TrimPrefix(offered, websocket_protocol_token)
+		}
 	}
 	if token == "" {
 		token = c.Query("token")
@@ -82,10 +108,16 @@ func websocket_authenticate(c *gin.Context) (u *User, app string, token_auth boo
 		return u, "", false
 	}
 
-	user_id, token_app, err := jwt_verify(token)
-	if err != nil || user_id == "" {
+	claims, err := jwt_verify_claims(token)
+	if err != nil || claims.User == "" {
 		return u, "", false
 	}
+	// An asset token reads a URL's worth of bytes; a socket is a subscription to
+	// everything an app sends this user, so it is not what that credential buys.
+	if claims.Purpose != "" {
+		return u, "", false
+	}
+	user_id, token_app := claims.User, claims.App
 	holder := user_by_uid(user_id)
 	if holder == nil || (u != nil && holder.UID != u.UID) {
 		return u, "", false
@@ -130,7 +162,13 @@ func websocket_connection(c *gin.Context) {
 		return
 	}
 
-	ws, err := websocket.Accept(c.Writer, c.Request, &websocket.AcceptOptions{InsecureSkipVerify: true})
+	accept := &websocket.AcceptOptions{InsecureSkipVerify: true}
+	// Echo the token subprotocol back: the browser closes the connection at once
+	// if the server selects none of the protocols it offered.
+	if offered := websocket_protocol_offered(c); offered != "" {
+		accept.Subprotocols = []string{offered}
+	}
+	ws, err := websocket.Accept(c.Writer, c.Request, accept)
 	if err != nil {
 		return
 	}

@@ -221,11 +221,11 @@ var api_broadcast = sls.FromStringDict(sl.String("mochi.broadcast"), sl.StringDi
 const broadcast_log_age = 7 * 86400
 
 func broadcast_sequence_table_create(db *DB) {
-	db.exec("create table if not exists sequence (key text not null, peer text not null, last integer not null default 0, primary key (key, peer))")
+	db.create("sequence", "create table if not exists sequence (key text not null, peer text not null, last integer not null default 0, primary key (key, peer))")
 }
 
 func broadcast_received_table_create(db *DB) {
-	db.exec("create table if not exists received (sender text not null, key text not null, last integer not null default 0, seen integer not null default 0, primary key (sender, key))")
+	db.create("received", "create table if not exists received (sender text not null, key text not null, last integer not null default 0, seen integer not null default 0, primary key (sender, key))")
 	// Idle-resync (#165): seen = host-local time of the last applied broadcast
 	// for (sender, key). Added here so the migration rides every advance/touch
 	// path on existing received tables.
@@ -238,16 +238,16 @@ func broadcast_received_table_create(db *DB) {
 // db_app open and defensively from the append/replay paths. No backfill: an app
 // adopting broadcast late leaves subscribers to the per-app request_resync.
 func broadcast_log_table_create(db *DB) {
-	db.exec("create table if not exists log (key text not null, peer text not null, sequence integer not null, event text not null, data text not null, created integer not null, primary key (key, peer, sequence))")
-	db.exec("create index if not exists log_created on log(created)")
+	db.create("log", "create table if not exists log (key text not null, peer text not null, sequence integer not null, event text not null, data text not null, created integer not null, primary key (key, peer, sequence))")
+	db.create("log_created", "create index if not exists log_created on log(created)")
 }
 
 func broadcast_acknowledged_table_create(db *DB) {
-	db.exec("create table if not exists acknowledged (key text not null, peer text not null, subscriber text not null, last integer not null default 0, primary key (key, peer, subscriber))")
+	db.create("acknowledged", "create table if not exists acknowledged (key text not null, peer text not null, subscriber text not null, last integer not null default 0, primary key (key, peer, subscriber))")
 }
 
 func broadcast_subscribed_table_create(db *DB) {
-	db.exec("create table if not exists subscribed (key text not null, peer text not null, subscriber text not null, updated integer not null default 0, primary key (key, peer, subscriber))")
+	db.create("subscribed", "create table if not exists subscribed (key text not null, peer text not null, subscriber text not null, updated integer not null default 0, primary key (key, peer, subscriber))")
 }
 
 // A subscription record expires on the same clock as the hard log cap: the gate

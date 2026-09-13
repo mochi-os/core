@@ -246,6 +246,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	var user *User
 	var api_token *Token
 	var jwt_app string
+	var jwt_purpose string
 	var has_bearer bool
 
 	// Check query parameter token first (for RSS feeds, attachments in sandboxed iframes, etc.)
@@ -269,10 +270,11 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			// binds per action through token_allows; this one binds only to the
 			// app, so a POST carrying it would reach every mutating action the
 			// app has.
-			if uid, app, err := jwt_verify(query_token); err == nil && uid != "" {
-				user = user_by_uid(uid)
+			if claims, err := jwt_verify_claims(query_token); err == nil && claims.User != "" {
+				user = user_by_uid(claims.User)
 				if user != nil {
-					jwt_app = app
+					jwt_app = claims.App
+					jwt_purpose = claims.Purpose
 					has_bearer = true // treat as bearer-authenticated
 				}
 			}
@@ -309,8 +311,10 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			}
 		} else {
 			// JWT authentication — extract app claim for authorization
-			if uid, app, err := jwt_verify(bearer); err == nil && uid != "" {
-				jwt_app = app
+			if claims, err := jwt_verify_claims(bearer); err == nil && claims.User != "" {
+				uid := claims.User
+				jwt_app = claims.App
+				jwt_purpose = claims.Purpose
 				has_bearer = true
 				if user == nil {
 					if u := user_by_uid(uid); u != nil {
@@ -512,6 +516,16 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			respond_error(c, http.StatusForbidden, "identity_required", "errors.identity_required", nil)
 			return true
 		}
+	}
+
+	// An asset token is what a page puts in an image or attachment URL, so a
+	// copied link hands it over. It reads and nothing else, and that holds
+	// outside the app-token block below: a public action skips every check in
+	// there, yet still acts AS the user a credential names.
+	if jwt_purpose == token_purpose_asset && c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
+		debug("403 asset token on a mutating method: app=%s action=%s method=%s", a.id, name, c.Request.Method)
+		respond_error(c, http.StatusForbidden, "app_token_read_only", "errors.access_denied", nil)
+		return true
 	}
 
 	// App token authorization: enforce that Bearer JWT matches the target app.

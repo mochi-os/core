@@ -58,6 +58,9 @@ func web_bearer_env(t *testing.T) (*App, *User, string) {
 			// Non-public and function-backed: neither aa.Public nor
 			// shell_static can excuse it from the token requirement.
 			"-/private": {Function: "action_private"},
+			// A public action skips the app-token block entirely, and still
+			// runs AS the user any credential names.
+			"-/open": {Function: "action_open", Public: true},
 		},
 	}
 	app := &App{id: "bearertest", latest: version, versions: map[string]*AppVersion{"1.0": version}}
@@ -72,10 +75,24 @@ func web_bearer_env(t *testing.T) (*App, *User, string) {
 // a 500 from this fixture's function-less action, which "not 200" would pass.
 func web_bearer_status(t *testing.T, app *App, session string, authorization string) (int, string) {
 	t.Helper()
+	return web_bearer_method(t, app, session, authorization, "GET")
+}
+
+// web_bearer_method is the same for a chosen method, which is what separates a
+// read-only token from an ordinary one.
+func web_bearer_method(t *testing.T, app *App, session string, authorization string, method string) (int, string) {
+	t.Helper()
+	return web_bearer_action(t, app, session, authorization, method, "-/private")
+}
+
+// web_bearer_action is the same for a chosen action, so the public one can be
+// driven too.
+func web_bearer_action(t *testing.T, app *App, session string, authorization string, method string, action string) (int, string) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("GET", "/bearertest/-/private", nil)
+	c.Request = httptest.NewRequest(method, "/bearertest/"+action, nil)
 	c.Request.Header.Set("Accept", "application/json")
 	if session != "" {
 		c.Request.AddCookie(&http.Cookie{Name: "session", Value: session})
@@ -83,7 +100,7 @@ func web_bearer_status(t *testing.T, app *App, session string, authorization str
 	if authorization != "" {
 		c.Request.Header.Set("Authorization", authorization)
 	}
-	web_action(c, app, "-/private", nil, routing_class)
+	web_action(c, app, action, nil, routing_class)
 	return w.Code, w.Body.String()
 }
 
@@ -118,5 +135,51 @@ func TestBearerGateRejectsCookieAlone(t *testing.T) {
 	status, body := web_bearer_status(t, app, session, "")
 	if status != 403 || !strings.Contains(body, "app_token_required") {
 		t.Errorf("session cookie alone got %d %s; want 403 app_token_required - the cookie is ambient over every installed app", status, body)
+	}
+}
+
+// The asset token is the one that travels in an image or attachment URL, so a
+// copied link hands it over. It must read and nothing else, whether it arrives
+// in the query string or, as an app's own fetch would send it, in the header.
+func TestBearerGateHoldsAnAssetTokenToReads(t *testing.T) {
+	app, _, session := web_bearer_env(t)
+
+	asset := auth_create_asset_token("bearer-user", session, app.id)
+	ordinary := auth_create_app_token("bearer-user", session, app.id)
+	if asset == "" || ordinary == "" {
+		t.Fatal("could not mint the tokens")
+	}
+
+	// A refusal here is the gate's own. The fixture's action names a function
+	// that does not exist, so a request that PASSES the gate ends in a 500 -
+	// which is what distinguishes "allowed through" from "refused".
+	status, body := web_bearer_method(t, app, session, "Bearer "+asset, "GET")
+	if status == 403 {
+		t.Errorf("asset token on a read got 403 %s; a read is the whole point of it", body)
+	}
+
+	status, body = web_bearer_method(t, app, session, "Bearer "+asset, "POST")
+	if status != 403 || !strings.Contains(body, "app_token_read_only") {
+		t.Errorf("asset token on a write got %d %s; want 403 app_token_read_only", status, body)
+	}
+
+	// Control: the same write with the ordinary app token is not refused, so
+	// the refusal above measures the purpose and not the method.
+	status, body = web_bearer_method(t, app, session, "Bearer "+ordinary, "POST")
+	if status == 403 {
+		t.Errorf("app token on a write got 403 %s; only the asset token is read-only", body)
+	}
+
+	// And on a PUBLIC action, which skips the whole app-token block: it still
+	// runs as whoever the credential names, so a leaked asset token would post
+	// as them. Found live - the check sat inside that block at first, and a
+	// POST carrying an asset token answered 200.
+	status, body = web_bearer_action(t, app, session, "Bearer "+asset, "POST", "-/open")
+	if status != 403 || !strings.Contains(body, "app_token_read_only") {
+		t.Errorf("asset token writing to a public action got %d %s; want 403 app_token_read_only", status, body)
+	}
+	status, body = web_bearer_action(t, app, session, "Bearer "+ordinary, "POST", "-/open")
+	if status == 403 {
+		t.Errorf("app token on the public action got 403 %s; the refusal must be about the purpose", body)
 	}
 }

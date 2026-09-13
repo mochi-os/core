@@ -4,7 +4,7 @@
 # This file is part of Mochi, licensed under the GNU AGPL v3 with the
 # Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-version = 1.0
+version = 1.1
 
 # Generation time stamped into every published manifest, read once so the
 # manifests of one publish step agree.

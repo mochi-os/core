@@ -5166,6 +5166,127 @@ func git_push_lock(account string) *sync.Mutex {
 // permanently, which is the thing quarantine exists to prevent.
 const git_quarantine_maximum = time.Hour
 
+// Repacking. go-git writes every object loose and never packs, so a repository
+// grows one small file per object for ever: on the production server 34
+// repositories held 7.7 GiB in 691,566 files, and packing a sample of them cut
+// it by 89%. The cost is not really the bytes, it is that every backup, sweep
+// and directory walk crosses all those files.
+//
+// A push is what creates loose objects, so a push is what considers packing
+// them - no timer, no sweep over repositories nobody touches. An idle
+// repository costs nothing.
+var (
+	// git_repack_minimum is how many loose objects a repository must hold
+	// before a push repacks it. git's own gc --auto uses the same number.
+	git_repack_minimum = 6700
+
+	// git_repack_interval bounds how often one repository repacks, so a busy
+	// repository that stays over the threshold does not repack per push, and a
+	// repository that fails (a corrupt object) retries slowly rather than on
+	// every push.
+	git_repack_interval = int64(6 * 3600)
+
+	// git_prune_age is how long an unreachable object survives. git's own
+	// default, and not to be shortened: a bare repository keeps no reflog, so
+	// this expiry is the only thing standing between a force-pushed commit and
+	// oblivion - and the only thing that stops a prune racing a push, whose
+	// objects are unreachable between promotion and the reference update.
+	git_prune_age = 14 * 24 * time.Hour
+
+	// The repositories a repack has been attempted on, by path, against the
+	// unix time it last ran. In memory: a restart costs one extra attempt.
+	git_repack_attempted sync.Map
+	git_repack_running   sync.Map
+)
+
+// git_repack_consider counts a repository's loose objects and repacks it in the
+// background when there are enough of them. Called after a push has promoted
+// its objects and moved its references, so what it counts is settled.
+func git_repack_consider(repo_path string) {
+	if last, seen := git_repack_attempted.Load(repo_path); seen {
+		if moment, ok := last.(int64); ok && now()-moment < git_repack_interval {
+			return
+		}
+	}
+	if git_loose_count(repo_path) < git_repack_minimum {
+		return
+	}
+	// One repack per repository at a time. Nothing else serialises against it:
+	// a concurrent push writes objects a repack cannot touch, because repack
+	// only packs what the references reach.
+	if _, running := git_repack_running.LoadOrStore(repo_path, true); running {
+		return
+	}
+	git_repack_attempted.Store(repo_path, now())
+	go func() {
+		// Under guard: this is a bare goroutine, so a panic in the git library
+		// would take the whole server down rather than one repository's
+		// housekeeping. go-git panics rather than erroring on at least one
+		// misuse (a Prune with no handler), which is exactly the shape of fault
+		// that should cost a warning and nothing else.
+		guard("repository repack", nil, func() {
+			defer git_repack_running.Delete(repo_path)
+			if err := git_repack_dispatch(repo_path); err != nil {
+				warn("Repository repack failed for %q: %v", repo_path, err)
+			}
+		})
+	}()
+}
+
+// git_repack_dispatch is git_repack behind a var, so tests can watch the
+// decision without doing the work.
+var git_repack_dispatch = git_repack
+
+// git_repack prunes unreachable objects past git_prune_age, then writes one
+// packfile for everything the references reach and drops the loose copies.
+//
+// Prune first, and not only for tidiness: RepackObjects replaces the packfile
+// and deletes the old one, which leaves the open handle's view of the packs
+// stale - a Prune after it fails with "packfile not found" the moment a
+// repository has been repacked once before. Pruning first reads a pack that is
+// still there.
+func git_repack(repo_path string) error {
+	repo, err := git.PlainOpen(repo_path)
+	if err != nil {
+		return err
+	}
+	// Handler is not optional: go-git calls it for every object it decides to
+	// prune, and a nil one segfaults rather than erroring - so a repository
+	// holding one aged unreachable object would crash the process.
+	prune := git.PruneOptions{
+		OnlyObjectsOlderThan: time.Now().Add(-git_prune_age),
+		Handler:              repo.DeleteObject,
+	}
+	if err := repo.Prune(prune); err != nil {
+		return err
+	}
+	// RepackObjects needs the plain filesystem storer: the push path wraps it
+	// to hide PackfileWriter, and a wrapped storer cannot repack.
+	return repo.RepackObjects(&git.RepackConfig{})
+}
+
+// git_loose_count counts the loose objects a repository holds, reading only the
+// two-character fan-out directories - no stat per object, and nothing outside
+// objects/ (a push's quarantine lives beside it and is not part of this).
+func git_loose_count(repo_path string) int {
+	entries, err := os.ReadDir(filepath.Join(repo_path, "objects"))
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() || len(entry.Name()) != 2 {
+			continue
+		}
+		objects, err := os.ReadDir(filepath.Join(repo_path, "objects", entry.Name()))
+		if err != nil {
+			continue
+		}
+		count += len(objects)
+	}
+	return count
+}
+
 // git_quarantine makes a directory for this push's objects. It lives inside the
 // repository so promoting them is a rename on one filesystem rather than a copy
 // through a second one, and so a leftover is visible next to what it belongs to.
@@ -5389,6 +5510,9 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, ow
 		if status != nil {
 			status.CommandStatuses = append(status.CommandStatuses, applied...)
 		}
+		// The references are settled, so what a repack would pack is settled
+		// too. It runs in the background: the pusher waits for nothing.
+		git_repack_consider(repo_path)
 	}
 	git_head_settle(repo_path)
 

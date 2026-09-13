@@ -5366,6 +5366,13 @@ func git_references_apply(store storer.Storer, commands []*packp.Command) []*pac
 	report := func(name plumbing.ReferenceName, status string) {
 		statuses = append(statuses, &packp.CommandStatus{ReferenceName: name, Status: status})
 	}
+	// The branch HEAD names is the repository's default branch: it is what
+	// mochi.git.branch.default.get answers, and the repositories app already
+	// refuses to remove it. Read once, before any command moves anything.
+	head := plumbing.ReferenceName("")
+	if reference, err := store.Reference(plumbing.HEAD); err == nil && reference.Type() == plumbing.SymbolicReference {
+		head = reference.Target()
+	}
 	for _, command := range commands {
 		current, err := store.Reference(command.Name)
 		exists := err == nil
@@ -5386,6 +5393,14 @@ func git_references_apply(store storer.Storer, commands []*packp.Command) []*pac
 		case packp.Delete:
 			if !exists {
 				report(command.Name, "reference does not exist")
+				continue
+			}
+			// Removing the branch HEAD names leaves a repository that clones to
+			// nothing, and nothing in the product puts it back except another
+			// push. git refuses this and so does the repositories app, so the
+			// two ways of deleting a branch answer the same.
+			if command.Name == head {
+				report(command.Name, "deletion of the current branch prohibited")
 				continue
 			}
 			if current.Hash() != command.Old {
@@ -5421,6 +5436,23 @@ func git_references_apply(store storer.Storer, commands []*packp.Command) []*pac
 		report(command.Name, "ok")
 	}
 	return statuses
+}
+
+// git_deletes_only reports whether every command a push carries removes a
+// reference, which is exactly when git sends no packfile. Reading it from the
+// commands rather than by looking at the body is git's own rule: send-pack asks
+// for pack data the moment one command is not a deletion, so a delete alongside
+// anything else still arrives with a pack.
+func git_deletes_only(commands []*packp.Command) bool {
+	if len(commands) == 0 {
+		return false
+	}
+	for _, command := range commands {
+		if command.Action() != packp.Delete {
+			return false
+		}
+	}
+	return true
 }
 
 // git_receive_pack handles the git-receive-pack service (push). budget is the
@@ -5484,6 +5516,16 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, ow
 	// request leaves the call doing only the half that is correct.
 	commands := req.Commands
 	req.Commands = nil
+
+	// A push whose every command is a delete carries no packfile at all - git
+	// sends the command list, its flush packet, and stops. go-git sets Packfile
+	// to the rest of the body whatever is left in it, so it is non-nil at end of
+	// input, and the scanner it hands that to answers "empty packfile" and takes
+	// the whole push down with it. Nothing here needs the pack, so drop it: a
+	// delete moves a reference and stores nothing.
+	if git_deletes_only(commands) {
+		req.Packfile = nil
+	}
 
 	// Process the receive-pack request
 	status, err := session.ReceivePack(ctx, req)

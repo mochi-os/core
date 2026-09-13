@@ -44,10 +44,11 @@ func push_hash(label byte) plumbing.Hash {
 }
 
 // push_pack is the canonical empty packfile: the signature, version 2, a zero
-// object count and the trailing checksum over those twelve bytes. Decode hands
-// the server a non-nil packfile reader whatever the client sent, and go-git
-// fails the whole request on an empty one, so a push carrying no new objects
-// still has to send this.
+// object count and the trailing checksum over those twelve bytes. A real client
+// sends one of these whenever a push has anything but deletions in it, however
+// few objects the remote turns out to need. It sends nothing whatsoever when
+// every command is a delete - see TestPushDeleteCarriesNoPack, which is the
+// shape this helper cannot express.
 func push_pack(t *testing.T) []byte {
 	t.Helper()
 	header := []byte{'P', 'A', 'C', 'K', 0, 0, 0, 2, 0, 0, 0, 0}
@@ -113,6 +114,17 @@ func push_send_pack(t *testing.T, user *User, repo string, pack []byte, commands
 		statuses[status.ReferenceName.String()] = status.Status
 	}
 	return statuses
+}
+
+// push_default seeds the branch HEAD names, so a test working on some other
+// branch is not working on the repository's default one - which a push may not
+// delete. Without it git_head_settle points HEAD at whatever branch arrived
+// first, and every delete in this file would be a delete of the default branch.
+func push_default(t *testing.T, user *User, repo string) {
+	t.Helper()
+	main := plumbing.NewBranchReferenceName("main")
+	hash := push_object(t, user, repo, []byte("default branch"))
+	push_send(t, user, repo, &packp.Command{Name: main, Old: plumbing.ZeroHash, New: hash})
 }
 
 // push_store opens the repository fresh, so a read sees what is on disk rather
@@ -216,6 +228,7 @@ func TestPushDeleteIsBoundToTheTipItSaw(t *testing.T) {
 	if err := git_init(user, test_app, "delete"); err != nil {
 		t.Fatalf("git_init: %v", err)
 	}
+	push_default(t, user, "delete")
 	topic := plumbing.NewBranchReferenceName("topic")
 	first := push_object(t, user, "delete", []byte("first"))
 	second := push_object(t, user, "delete", []byte("second"))
@@ -229,6 +242,137 @@ func TestPushDeleteIsBoundToTheTipItSaw(t *testing.T) {
 	}
 	if _, err := push_store(t, user, "delete").Reference(topic); err != nil {
 		t.Error("the branch was deleted by a command computed against a tip it no longer had")
+	}
+}
+
+// TestPushDeleteCarriesNoPack. A delete-only push sends the command list, its
+// flush packet, and stops - measured against git 2.53.0, which puts 192 bytes
+// of packfile after the flush for every other shape of push and zero for this
+// one. go-git points Packfile at the rest of the body whatever is left in it,
+// so it was non-nil at end of input and the scanner answered "empty packfile",
+// failing the push before any reference moved. No branch or tag could be
+// deleted over git, on a server whose own advertisement offers delete-refs.
+//
+// Every other push test here goes through push_send, which always attaches an
+// empty-but-well-formed pack, and the scanner accepts that - which is why this
+// stayed hidden.
+func TestPushDeleteCarriesNoPack(t *testing.T) {
+	user, _ := create_git_test_env(t)
+	if err := git_init(user, test_app, "nopack"); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	push_default(t, user, "nopack")
+	topic := plumbing.NewBranchReferenceName("topic")
+	tip := push_object(t, user, "nopack", []byte("tip"))
+	push_send(t, user, "nopack", &packp.Command{Name: topic, Old: plumbing.ZeroHash, New: tip})
+
+	status := push_send_pack(t, user, "nopack", nil, &packp.Command{Name: topic, Old: tip, New: plumbing.ZeroHash})
+	if status[topic.String()] != "ok" {
+		t.Errorf("a delete sent the way a real client sends it was answered %q, want ok", status[topic.String()])
+	}
+	if _, err := push_store(t, user, "nopack").Reference(topic); err == nil {
+		t.Error("the branch is still there after a delete the client was told succeeded")
+	}
+}
+
+// TestPushDeleteBesideAnUpdateStillReadsThePack. git asks for pack data the
+// moment one command is not a deletion, so a delete travelling with an update
+// arrives with a pack and must still be read. Skipping it on the wrong signal -
+// any delete present, rather than nothing but deletes - would drop the objects
+// the update needs and leave a dangling reference.
+func TestPushDeleteBesideAnUpdateStillReadsThePack(t *testing.T) {
+	user, _ := create_git_test_env(t)
+	if err := git_init(user, test_app, "mixed"); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	push_default(t, user, "mixed")
+	doomed := plumbing.NewBranchReferenceName("doomed")
+	kept := plumbing.NewBranchReferenceName("kept")
+	tip := push_object(t, user, "mixed", []byte("tip"))
+	push_send(t, user, "mixed", &packp.Command{Name: doomed, Old: plumbing.ZeroHash, New: tip})
+
+	// The blob exists only in the pack, so the update can only be answered "ok"
+	// if the pack was read.
+	hash, pack := push_blob(t, []byte("carried by the pack"))
+	status := push_send_pack(t, user, "mixed", pack,
+		&packp.Command{Name: doomed, Old: tip, New: plumbing.ZeroHash},
+		&packp.Command{Name: kept, Old: plumbing.ZeroHash, New: hash})
+	if status[doomed.String()] != "ok" {
+		t.Errorf("the delete half was answered %q, want ok", status[doomed.String()])
+	}
+	if status[kept.String()] != "ok" {
+		t.Errorf("the update half was answered %q, want ok - the pack was not read", status[kept.String()])
+	}
+	store := push_store(t, user, "mixed")
+	if _, err := store.Reference(doomed); err == nil {
+		t.Error("the deleted branch is still there")
+	}
+	if store.HasEncodedObject(hash) != nil {
+		t.Error("the object the pack carried was not stored")
+	}
+}
+
+// TestPushMayNotDeleteTheDefaultBranch. Removing the branch HEAD names leaves a
+// repository that clones to nothing, and only another push puts it back. The
+// repositories app already refuses it; once a delete-only push worked at all,
+// git was the way around that rule.
+func TestPushMayNotDeleteTheDefaultBranch(t *testing.T) {
+	user, _ := create_git_test_env(t)
+	if err := git_init(user, test_app, "default"); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	main := plumbing.NewBranchReferenceName("main")
+	tip := push_object(t, user, "default", []byte("tip"))
+	push_send(t, user, "default", &packp.Command{Name: main, Old: plumbing.ZeroHash, New: tip})
+
+	status := push_send_pack(t, user, "default", nil, &packp.Command{Name: main, Old: tip, New: plumbing.ZeroHash})
+	if status[main.String()] != "deletion of the current branch prohibited" {
+		t.Errorf("deleting the default branch was answered %q, want a refusal", status[main.String()])
+	}
+	if _, err := push_store(t, user, "default").Reference(main); err != nil {
+		t.Error("the default branch was deleted")
+	}
+}
+
+// TestPushMayDeleteABranchTheOwnerMovedHeadOffOf. The refusal follows HEAD, not
+// the name "main": an owner who makes another branch the default must be able to
+// delete the one they moved away from.
+func TestPushMayDeleteABranchTheOwnerMovedHeadOffOf(t *testing.T) {
+	user, _ := create_git_test_env(t)
+	if err := git_init(user, test_app, "moved"); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	main := plumbing.NewBranchReferenceName("main")
+	release := plumbing.NewBranchReferenceName("release")
+	tip := push_object(t, user, "moved", []byte("tip"))
+	push_send(t, user, "moved", &packp.Command{Name: main, Old: plumbing.ZeroHash, New: tip})
+	push_send(t, user, "moved", &packp.Command{Name: release, Old: plumbing.ZeroHash, New: tip})
+
+	// What mochi.git.branch.default.set does: point HEAD at the other branch.
+	store := push_store(t, user, "moved")
+	if err := store.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, release)); err != nil {
+		t.Fatalf("move HEAD: %v", err)
+	}
+
+	status := push_send_pack(t, user, "moved", nil, &packp.Command{Name: main, Old: tip, New: plumbing.ZeroHash})
+	if status[main.String()] != "ok" {
+		t.Errorf("deleting a branch that is no longer the default was answered %q, want ok", status[main.String()])
+	}
+	if _, err := push_store(t, user, "moved").Reference(main); err == nil {
+		t.Error("the branch is still there after a delete the client was told succeeded")
+	}
+	status = push_send_pack(t, user, "moved", nil, &packp.Command{Name: release, Old: tip, New: plumbing.ZeroHash})
+	if status[release.String()] != "deletion of the current branch prohibited" {
+		t.Errorf("deleting the new default branch was answered %q, want a refusal", status[release.String()])
+	}
+}
+
+// TestPushWithNoCommandsIsNotReadAsADelete. An empty command list must not look
+// like a delete-only push: there is nothing to delete, the client sent a pack
+// like any other push, and treating it as deletes would discard it unread.
+func TestPushWithNoCommandsIsNotReadAsADelete(t *testing.T) {
+	if git_deletes_only(nil) {
+		t.Error("a push carrying no commands was read as a delete-only push")
 	}
 }
 

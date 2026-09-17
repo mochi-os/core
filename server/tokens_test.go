@@ -343,7 +343,7 @@ func TestTokenDeleteByTokenStringAndAppScope(t *testing.T) {
 	db_open("db/sessions.db").exec(`create table accesses (hash text primary key, user text not null, used integer not null default 0)`)
 
 	// token_create returns the token STRING (not the hash), stamped app="feeds".
-	token := token_create("u1", "feeds", "rss", []string{"rss"}, 0, ":feed/-/rss", "e1")
+	token := token_create("u1", "feeds", "rss", []string{"rss"}, 0, ":feed/rss", "e1")
 	if token == "" || token_lookup(token) == nil {
 		t.Fatal("token_create/lookup failed")
 	}
@@ -394,25 +394,25 @@ func TestTokenAllowsMatchesEitherEntityIdentifier(t *testing.T) {
 		allowed     bool
 	}{
 		{"bound to the id, route resolved the entity",
-			&Token{Action: ":forum/-/rss", Entity: id}, ":forum/-/rss", id, fingerprint, true},
+			&Token{Action: ":forum/rss", Entity: id}, ":forum/rss", id, fingerprint, true},
 		{"bound to the fingerprint, route resolved the entity",
-			&Token{Action: ":forum/-/rss", Entity: fingerprint}, ":forum/-/rss", id, fingerprint, true},
+			&Token{Action: ":forum/rss", Entity: fingerprint}, ":forum/rss", id, fingerprint, true},
 		{"bound to the fingerprint, entity not hosted here",
-			&Token{Action: ":forum/-/rss", Entity: fingerprint}, ":forum/-/rss", fingerprint, fingerprint, true},
+			&Token{Action: ":forum/rss", Entity: fingerprint}, ":forum/rss", fingerprint, fingerprint, true},
 		{"bound to the id, entity not hosted here so only the URL's fingerprint is known",
-			&Token{Action: ":forum/-/rss", Entity: id}, ":forum/-/rss", fingerprint, fingerprint, false},
+			&Token{Action: ":forum/rss", Entity: id}, ":forum/rss", fingerprint, fingerprint, false},
 		{"bound to a different entity",
-			&Token{Action: ":forum/-/rss", Entity: "1AnotherEntityEntirely"}, ":forum/-/rss", id, fingerprint, false},
+			&Token{Action: ":forum/rss", Entity: "1AnotherEntityEntirely"}, ":forum/rss", id, fingerprint, false},
 		{"right entity, wrong action",
-			&Token{Action: ":forum/-/delete", Entity: id}, ":forum/-/rss", id, fingerprint, false},
+			&Token{Action: ":forum/-/delete", Entity: id}, ":forum/rss", id, fingerprint, false},
 		{"class-level token on its class-level route",
-			&Token{Action: "-/rss", Entity: ""}, "-/rss", "", "", true},
+			&Token{Action: "rss", Entity: ""}, "rss", "", "", true},
 		{"class-level token must not reach an entity route",
-			&Token{Action: "-/rss", Entity: ""}, ":forum/-/rss", id, fingerprint, false},
+			&Token{Action: "rss", Entity: ""}, ":forum/rss", id, fingerprint, false},
 		{"an unbound token authenticates anywhere in the app",
-			&Token{Action: "", Entity: ""}, ":forum/-/rss", id, fingerprint, true},
+			&Token{Action: "", Entity: ""}, ":forum/rss", id, fingerprint, true},
 		{"a nil token is never allowed",
-			nil, ":forum/-/rss", id, fingerprint, false},
+			nil, ":forum/rss", id, fingerprint, false},
 	}
 
 	for _, c := range cases {

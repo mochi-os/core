@@ -2320,8 +2320,8 @@ func TestTokenExpiryCapped(t *testing.T) {
 		action  string
 		want    func(int64) bool
 	}{
-		{"bound, never expires", 0, ":feed/-/rss", func(got int64) bool { return got == 0 }},
-		{"bound, far future", horizon * 10, "-/rss", func(got int64) bool { return got == horizon*10 }},
+		{"bound, never expires", 0, ":feed/rss", func(got int64) bool { return got == 0 }},
+		{"bound, far future", horizon * 10, "rss", func(got int64) bool { return got == horizon*10 }},
 		{"unbound, never expires", 0, "", func(got int64) bool { return got > now() && got <= horizon }},
 		{"unbound, beyond the cap", horizon * 10, "", func(got int64) bool { return got <= horizon }},
 		{"unbound, negative", -1, "", func(got int64) bool { return got > now() && got <= horizon }},

@@ -55,7 +55,7 @@ func TestIdentityRefusesBoundToken(t *testing.T) {
 	mint := identity_token_setup(t)
 
 	// The exact shape apps/feeds mints for a feed's RSS URL.
-	rss := mint(":feed/-/rss", "feed-123", `["rss"]`)
+	rss := mint(":feed/rss", "feed-123", `["rss"]`)
 	w := identity_with_token(rss)
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("bound RSS token: status = %d, want 401 (body %s)", w.Code, w.Body.String())
@@ -66,7 +66,7 @@ func TestIdentityRefusesBoundToken(t *testing.T) {
 
 	// The class-level variant, bound to an action but no entity - the shape
 	// feeds, forums, wikis and notifications mint for a whole-app feed.
-	class := mint("-/rss", "", `["rss"]`)
+	class := mint("rss", "", `["rss"]`)
 	if w := identity_with_token(class); w.Code != http.StatusUnauthorized {
 		t.Errorf("action-bound token with no entity: status = %d, want 401", w.Code)
 	}
@@ -121,13 +121,13 @@ func TestTokenUnbound(t *testing.T) {
 	if !token_unbound(&Token{}) {
 		t.Error("a token with no action binding is unbound")
 	}
-	if token_unbound(&Token{Action: "-/rss"}) {
+	if token_unbound(&Token{Action: "rss"}) {
 		t.Error("a token naming an action is bound")
 	}
 	// The entity alone does not decide it: the action is what a binding is,
 	// and every app that binds sets the action whether or not it sets an
 	// entity (feeds sets both, repositories sets only the action).
-	if token_unbound(&Token{Action: ":feed/-/rss", Entity: "feed-1"}) {
+	if token_unbound(&Token{Action: ":feed/rss", Entity: "feed-1"}) {
 		t.Error("a token naming an action and an entity is bound")
 	}
 }

@@ -393,49 +393,16 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		return web_serve_labels(c, av, strings.TrimPrefix(name, "-/labels"))
 	}
 
-	// When entity is provided via domain routing, try entity-prefixed actions.
-	// Skip this for main site routing where action already includes fingerprint (e.g., "abc123/-/info").
-	// Also skip when action is the entity's fingerprint itself (viewing entity root).
-	// For browser requests (Accept: text/html), try the non-API action first to serve HTML.
-	var aa *AppAction
 	accept := c.GetHeader("Accept")
 	prefer_html := strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
-	if e != nil && e.Class != "" && name != e.Fingerprint {
-		if name == "" {
-			// Entity root (e.g., /) - use :feed action
-			entity_action := ":" + e.Class
-			aa = av.find_action(entity_action)
-		} else if strings.HasPrefix(name, "-/") {
-			// API path (e.g., -/info) - convert to :wiki/-/info
-			entity_action := ":" + e.Class + "/" + name
-			aa = av.find_action(entity_action)
-		} else if !strings.Contains(name, "/") {
-			// Simple name (e.g., concepts) - try with entity prefix
-			if prefer_html {
-				// Try HTML action first (e.g., :wiki/:page), then API action
-				html_action := ":" + e.Class + "/" + name
-				aa = av.find_action(html_action)
-				if aa == nil {
-					entity_action := ":" + e.Class + "/-/" + name
-					aa = av.find_action(entity_action)
-				}
-			} else {
-				// Try API action first for non-browser requests
-				entity_action := ":" + e.Class + "/-/" + name
-				aa = av.find_action(entity_action)
-			}
-		}
-	}
-	if aa == nil {
-		aa = av.find_action(name)
-	}
+	aa := web_action_find(av, name, e, prefer_html)
 	if aa == nil {
 		return false
 	}
 
 	// A token may be bound to one action and entity: routing ignores the method,
 	// so without this an RSS token is equally good on the app's delete action.
-	// Matched on the action pattern (":wiki/-/rss"); unbound tokens stay app-wide.
+	// Matched on the action pattern (":wiki/rss"); unbound tokens stay app-wide.
 	if api_token != nil {
 		entity_id := ""
 		entity_fingerprint := ""
@@ -1343,6 +1310,64 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 	c.Header("Vary", "Cookie")
 	c.String(http.StatusOK, content)
 	return true
+}
+
+// web_action_find resolves a request path to one of the app's actions.
+//
+// An entity reached through domain routing is absent from the path, so its
+// class-scoped patterns are tried first: the root (":feed"), an API path
+// ("-/information" as ":feed/-/information") and a bare name, which
+// web_action_find_bare weighs as a page or an API action. Main-site paths
+// already carry the fingerprint ("abc123/-/information"), and a path that is
+// the entity's own fingerprint is its root, so both resolve as given. A miss
+// on an entity pattern comes back as the app's catch-all page when it has
+// one, and only an app without one falls through to the path as given.
+func web_action_find(av *AppVersion, name string, e *Entity, prefer_html bool) *AppAction {
+	if e != nil && e.Class != "" && name != e.Fingerprint {
+		var aa *AppAction
+		switch {
+		case name == "":
+			aa = av.find_action(":" + e.Class)
+		case strings.HasPrefix(name, "-/"):
+			aa = av.find_action(":" + e.Class + "/" + name)
+		case !strings.Contains(name, "/"):
+			aa = web_action_find_bare(av, e.Class, name, prefer_html)
+		}
+		if aa != nil {
+			return aa
+		}
+	}
+	return av.find_action(name)
+}
+
+// web_action_find_bare resolves a bare name on an entity's own domain, where
+// it may be a page (":wiki/:page", ":feed/rss") or an API action
+// (":wiki/-/search"). A browser gets the page whenever there is one, so a
+// wiki page called "search" still opens. Another client gets the API action,
+// unless the app declared the name itself as a page route: a feed reader
+// fetching /rss reaches ":feed/rss", which the API pattern ":feed/-/:post"
+// would otherwise claim by parameter. A miss on either side comes back as
+// the app's catch-all page, which stands only when nothing else matches.
+func web_action_find_bare(av *AppVersion, class string, name string, prefer_html bool) *AppAction {
+	page_pattern := ":" + class + "/" + name
+	api_pattern := ":" + class + "/-/" + name
+	page := av.find_action(page_pattern)
+	api := av.find_action(api_pattern)
+	page_found := page != nil && page.name != ""
+	api_found := api != nil && api.name != ""
+	switch {
+	case prefer_html && page_found:
+		return page
+	case page_found && page.name == page_pattern && (!api_found || api.name != api_pattern):
+		return page
+	case api_found:
+		return api
+	case page_found:
+		return page
+	case api != nil:
+		return api
+	}
+	return page
 }
 
 // Check if a URL segment looks like an entity identifier (fingerprint or full ID)

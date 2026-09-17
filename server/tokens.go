@@ -17,7 +17,7 @@ import (
 )
 
 // Token represents an API token. An empty Action means the token is valid
-// across the whole app; a bound token names one action pattern (":wiki/-/rss")
+// across the whole app; a bound token names one action pattern (":wiki/rss")
 // and one entity, with an empty Entity for a class-level route.
 type Token struct {
 	Hash     string   `db:"hash"`

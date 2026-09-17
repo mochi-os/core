@@ -138,6 +138,9 @@ KEEP_LOCALE = frozenset({
     # catalogues already render it "default" in place ("Kont default", "Default
     # na account", "Akun default"). Javanese does translate it, as "standar".
     ('id', 'default'), ('mt', 'default'), ('qu', 'default'), ('tl', 'default'),
+    # Yoruba keeps "feed" as a loanword throughout its catalogues, so the bare
+    # label is the same word; "Ìjì" (storm) was the mistranslation it replaced.
+    ('yo', 'Feed'),
 })
 
 

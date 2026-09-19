@@ -252,6 +252,9 @@ func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if user == nil {
 		return sl_error(fn, "not authenticated")
 	}
+	if token_carried(t) {
+		return sl_error(fn, "a credential carried in a URL cannot create tokens")
+	}
 
 	current_app := principal_app(t)
 	if current_app == nil {
@@ -321,6 +324,16 @@ func api_token_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.String(token), nil
 }
 
+// token_carried reports whether the request calling in authenticated with a
+// credential that travelled in a URL or was minted for one: a query token, or
+// an asset JWT. Such a credential is read-only and short-lived by design, and
+// minting a permanent token from it would turn a copied image address into a
+// lasting credential. Set by web_action.
+func token_carried(t *sl.Thread) bool {
+	carried, _ := t.Local("carried").(bool)
+	return carried
+}
+
 // mochi.token.delete(token) -> bool: Delete a token by its hash or the token
 // itself. An app that only kept the token string (not the hash) can still
 // revoke it; a raw token carries the "mochi-" prefix, a hash never does.
@@ -328,6 +341,9 @@ func api_token_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "not authenticated")
+	}
+	if token_carried(t) {
+		return sl_error(fn, "a credential carried in a URL cannot delete tokens")
 	}
 
 	app := principal_app(t)

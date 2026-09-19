@@ -297,7 +297,10 @@ func TestCorsPreflightHandling(t *testing.T) {
 		c.String(200, "should not reach here")
 	})
 
+	// A preflight names its origin; an OPTIONS without one is a DAV probe
+	// and reaches its route (TestWebOptionsProbeReachesTheRoute).
 	req := httptest.NewRequest("OPTIONS", "/test", nil)
+	req.Header.Set("Origin", "null")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 

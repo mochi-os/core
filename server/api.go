@@ -127,7 +127,9 @@ func api_table() sl.StringDict {
 				"now":   sl.NewBuiltin("mochi.time.now", api_time_now),
 				"parse": sl.NewBuiltin("mochi.time.parse", api_time_parse),
 			}),
-			"uid": sl.NewBuiltin("mochi.uid", api_uid),
+			"ical":  api_ical,
+			"vcard": api_vcard,
+			"uid":   sl.NewBuiltin("mochi.uid", api_uid),
 			"url": sls.FromStringDict(sl.String("mochi.url"), sl.StringDict{
 				"delete":  sl.NewBuiltin("mochi.url.delete", api_url_request),
 				"get":     sl.NewBuiltin("mochi.url.get", api_url_request),
@@ -451,16 +453,25 @@ func service_call_as_server(target_user_uid string, service string, function str
 	if a == nil {
 		return fmt.Errorf("no app for service %q", service)
 	}
+	_, err := app_call_as_server(user, a, function, args)
+	return err
+}
+
+// app_call_as_server invokes one of an app's functions as the server, in the
+// user's own app context, and returns the decoded result. No permission is
+// checked: the server is not an app asking for the user's data, it is the
+// user's own request arriving by another protocol, as the DAV routes are.
+func app_call_as_server(user *User, a *App, function string, args Map) (any, error) {
 	av := a.active(user)
 	if av == nil {
-		return fmt.Errorf("app %q has no active version", a.id)
+		return nil, fmt.Errorf("app %q has no active version", a.id)
 	}
 	f, found := av.Functions[function]
 	if !found {
 		f, found = av.Functions[""]
 	}
 	if !found {
-		return fmt.Errorf("unknown function %q for service %q", function, service)
+		return nil, fmt.Errorf("unknown function %q for app %q", function, a.id)
 	}
 
 	app_user_setup(user, a.id)
@@ -484,8 +495,11 @@ func service_call_as_server(target_user_uid string, service string, function str
 		kwargs = append(kwargs, sl.Tuple{sl.String(k), sl_encode(v)})
 	}
 
-	_, err := s.call(f.Function, call_args, kwargs)
-	return err
+	result, err := s.call(f.Function, call_args, kwargs)
+	if err != nil {
+		return nil, err
+	}
+	return sl_decode(result), nil
 }
 
 // mochi.server.id() -> string: Get the local libp2p peer ID for this server
@@ -942,8 +956,10 @@ func api_time_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 			format = gotime.RFC1123Z
 		case "rfc3339":
 			format = gotime.RFC3339
+		case "ical":
+			format = ical_time_format
 		default:
-			return sl_error(fn, "unknown format %q (valid: datetime, date, time, rfc822, rfc3339)", f)
+			return sl_error(fn, "unknown format %q (valid: datetime, date, time, rfc822, rfc3339, ical)", f)
 		}
 	}
 
@@ -953,7 +969,8 @@ func api_time_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	if user != nil {
 		timezone = user_preference_get(user, "timezone", "UTC")
 	}
-	if timezone == "auto" {
+	if timezone == "auto" || format == ical_time_format {
+		// The iCalendar form carries its own Z: it is always UTC.
 		timezone = "UTC"
 	}
 
@@ -1011,8 +1028,15 @@ func api_time_parse(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		case "rfc3339":
 			format = gotime.RFC3339
 			carries_tz = true
+		case "ical":
+			// A UTC timestamp (20260918T090000Z) or a date (20260918).
+			parsed, err := ical_time(s)
+			if err != nil {
+				return sl.None, nil
+			}
+			return sl.MakeInt64(parsed.Unix()), nil
 		default:
-			return sl_error(fn, "unknown format %q (valid: datetime, date, time, rfc822, rfc3339)", f)
+			return sl_error(fn, "unknown format %q (valid: datetime, date, time, rfc822, rfc3339, ical)", f)
 		}
 	}
 

@@ -571,6 +571,8 @@ var (
 			{"entity/read", ""},
 			{"groups/read", ""},
 			{"groups/write", ""},
+			// The CardDAV credential a device holds is a token the app mints.
+			{"tokens/create", ""},
 			{"user/identity/write", ""},
 			{"users/read", ""},
 		}},
@@ -2336,8 +2338,15 @@ func (av *AppVersion) find_action(name string) *AppAction {
 
 		// Check segment count compatibility
 		if greedy_position >= 0 {
-			// Greedy: value must have at least (prefix + 1 + suffix) segments
-			if len(value_segments) < greedy_position+1+suffix_len {
+			// Greedy: value must have at least (prefix + 1 + suffix) segments.
+			// A DAV route's wildcard may also match nothing, so the route
+			// answers at its own root: carddav/*path serves /carddav, which is
+			// the URL a DAV client is given. Git's route keeps needing a segment.
+			least := greedy_position + 1 + suffix_len
+			if dav_served(aa.Feature) {
+				least = greedy_position + suffix_len
+			}
+			if len(value_segments) < least {
 				continue
 			}
 		} else if len(key_segments) != len(value_segments) {

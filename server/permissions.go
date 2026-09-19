@@ -54,6 +54,10 @@ var permissions = []Permission{
 	// Standard, not restricted: a restricted permission has no Allow button in the
 	// request dialog, and asking to invite a friend is an ordinary request.
 	{"friends/read", false, false},
+	// The whole address book, friends and plain contacts alike, which is more
+	// than friends/read hands out. There is no write counterpart: the people
+	// app's DAV functions answer the server alone.
+	{"contacts/read", false, false},
 	// entity.owned enumerates every object the user owns across every app, so it
 	// is gated - but standard, since picking one's own object is routine.
 	{"entity/read", false, false},

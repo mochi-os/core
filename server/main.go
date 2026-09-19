@@ -15,6 +15,11 @@ import (
 	"runtime"
 	"time"
 
+	// The zone database travels with the binary: a calendar object names its
+	// zone by IANA name, and a host with no tzdata package could otherwise
+	// expand no recurrence.
+	_ "time/tzdata"
+
 	"core/common/paths"
 )
 

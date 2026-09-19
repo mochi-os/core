@@ -360,8 +360,11 @@ func TestPasskeyVerifyIsGatedByTheSigningPermission(t *testing.T) {
 // browser's own prompt rather than by core.
 func TestEveryDeclaredPermissionIsEnforcedSomewhere(t *testing.T) {
 	elsewhere := map[string]bool{
-		"camera":              true,
-		"microphone":          true,
+		"camera":     true,
+		"microphone": true,
+		// The people app's manifest gates its contacts functions on this;
+		// mochi.service.call enforces whatever a function declares.
+		"contacts/read":       true,
 		"friends/read":        true,
 		"notifications/read":  true,
 		"notifications/send":  true,

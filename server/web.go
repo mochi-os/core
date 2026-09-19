@@ -248,6 +248,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	var jwt_app string
 	var jwt_purpose string
 	var has_bearer bool
+	// A credential read from the URL: an RSS token, or the JWT a page puts in
+	// an image address. Either travels in copied links and logs.
+	var carried bool
 
 	// Check query parameter token first (for RSS feeds, attachments in sandboxed iframes, etc.)
 	// This takes priority over cookies so RSS tokens work in logged-in browsers
@@ -260,6 +263,8 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 				if user == nil {
 					debug("Query token valid but user %q not found", api_token.User)
 					api_token = nil
+				} else {
+					carried = true
 				}
 			}
 		} else if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead {
@@ -276,6 +281,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 					jwt_app = claims.App
 					jwt_purpose = claims.Purpose
 					has_bearer = true // treat as bearer-authenticated
+					carried = true
 				}
 			}
 		}
@@ -398,6 +404,14 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	aa := web_action_find(av, name, e, prefer_html)
 	if aa == nil {
 		return false
+	}
+
+	// web_security_headers lets an OPTIONS probe through so a DAV route can
+	// answer it with its capabilities; every other action gets the preflight
+	// answer it always got.
+	if c.Request.Method == http.MethodOptions && !dav_served(aa.Feature) {
+		web_options_preflight(c)
+		return true
 	}
 
 	// A token may be bound to one action and entity: routing ignores the method,
@@ -549,6 +563,13 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			}
 		}
 		return git_http_handler(c, a, owner, user, e, aa.parameters["path"])
+	}
+
+	// CardDAV and CalDAV: the class-level route resolved no entity, so the
+	// owner computed above is the first administrator. The handler takes the
+	// owner from the credential and ignores it.
+	if dav_served(aa.Feature) {
+		return dav_http_handler(c, a, aa)
 	}
 
 	if web_serves_file(c, aa) {
@@ -756,6 +777,12 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		// which account's data is read, so binding the owner adds only a false claim.
 		s.set("user", user)
 		s.set("owner", owner)
+		// A credential that travelled in a URL or was minted for one - an asset
+		// token reads and nothing else, and a link is copied - must not mint or
+		// revoke the credentials that outlive it (mochi.token.create, delete).
+		if carried || jwt_purpose == token_purpose_asset {
+			s.set("carried", true)
+		}
 		// The caller's own session: mochi.user.session.list marks the current row
 		// with it, and a step-up accrual is bound to it. Empty only for anonymous
 		// callers - an app token has no cookie but names its session in the `kid`
@@ -959,16 +986,25 @@ func web_security_headers(c *gin.Context) {
 	c.Header("Access-Control-Expose-Headers", "Content-Disposition")
 	// Handle CORS preflight requests from sandboxed iframes.
 	// When the iframe sends requests with Authorization header,
-	// browsers send an OPTIONS preflight first.
-	if c.Request.Method == "OPTIONS" {
-		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
-		c.Header("Access-Control-Max-Age", "86400")
-		c.AbortWithStatus(204)
+	// browsers send an OPTIONS preflight first. A preflight names its origin
+	// and the method it asks about; a DAV client's OPTIONS probe carries
+	// neither, and the feature route it reaches answers it (web_action sends
+	// every other OPTIONS the preflight answer).
+	if c.Request.Method == http.MethodOptions && (c.GetHeader("Origin") != "" || c.GetHeader("Access-Control-Request-Method") != "") {
+		web_options_preflight(c)
 		return
 	}
 	c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 	c.Next()
+}
+
+// web_options_preflight answers an OPTIONS request the way the sandboxed
+// iframes need: the methods and headers an app request may carry.
+func web_options_preflight(c *gin.Context) {
+	c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+	c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
+	c.Header("Access-Control-Max-Age", "86400")
+	c.AbortWithStatus(http.StatusNoContent)
 }
 
 // The ceiling on a request body that carries no file upload. Multipart and git
@@ -982,10 +1018,16 @@ const web_body_maximum = 1 << 20 // 1MB
 const web_multipart_framing = 64 << 10 // 64KB
 
 // Request body size limit middleware (skip multipart/form-data for file uploads
-// and git pack data for push operations)
+// and git pack data for push operations). A vCard or iCalendar body gets the
+// DAV ceiling: a card carries its photo inline. The XML bodies of PROPFIND and
+// REPORT are small and keep the general cap.
 func web_body_limit(c *gin.Context) {
 	ct := c.GetHeader("Content-Type")
-	if !strings.HasPrefix(ct, "multipart/form-data") && !strings.HasPrefix(ct, "application/x-git-") {
+	switch {
+	case strings.HasPrefix(ct, "multipart/form-data"), strings.HasPrefix(ct, "application/x-git-"):
+	case strings.HasPrefix(ct, "text/vcard"), strings.HasPrefix(ct, "text/calendar"):
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, dav_body_maximum)
+	default:
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, web_body_maximum)
 	}
 	c.Next()
@@ -1874,6 +1916,15 @@ func web_logout(c *gin.Context) {
 // Handle app paths
 func web_path(c *gin.Context) {
 	//debug("Web path %q", c.Request.URL.Path)
+
+	// DAV discovery: a client given only the host name asks here, by GET or
+	// PROPFIND, and is sent to the root of the app serving the protocol. Here
+	// rather than a registered route because the router knows only the
+	// standard methods, and PROPFIND is not one.
+	if feature, ok := strings.CutPrefix(c.Request.URL.Path, "/.well-known/"); ok && dav_served(feature) {
+		web_well_known_dav(c)
+		return
+	}
 
 	// A "closing" account may load only the /login reactivation interstitial.
 	// Redirect top-level navigations before the shell renders, or the shell loads

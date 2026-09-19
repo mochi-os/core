@@ -421,3 +421,43 @@ func TestTokenAllowsMatchesEitherEntityIdentifier(t *testing.T) {
 		}
 	}
 }
+
+// A credential that travelled in a URL - an RSS token, or the asset JWT a page
+// puts in an image address - reads and nothing else, and must not mint or
+// revoke the tokens that outlive it: a copied image address would otherwise
+// become a permanent credential.
+func TestTokenCreateAndDeleteRefuseACarriedCredential(t *testing.T) {
+	test_data_directory(t)
+	db := db_open("db/users.db")
+	db.exec(`create table tokens (hash text primary key, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null default 0, expires integer not null default 0)`)
+	db_open("db/sessions.db").exec(`create table accesses (hash text primary key, user text not null, used integer not null default 0)`)
+	app := &App{id: "people"}
+	app.internal = &AppVersion{app: app}
+	user := &User{UID: "u1"}
+	existing := token_create("u1", "people", "iPad", []string{"dav"}, 0, "carddav/*path", "")
+
+	thread := func(carried bool) *sl.Thread {
+		th := &sl.Thread{Name: "test"}
+		th.SetLocal("user", user)
+		th.SetLocal("app", app)
+		if carried {
+			th.SetLocal("carried", true)
+		}
+		return th
+	}
+	create := sl.NewBuiltin("mochi.token.create", api_token_create)
+	del := sl.NewBuiltin("mochi.token.delete", api_token_delete)
+
+	if _, err := api_token_create(thread(true), create, sl.Tuple{sl.String("x"), sl.NewList([]sl.Value{sl.String("dav")})}, nil); err == nil {
+		t.Fatal("a carried credential minted a token")
+	}
+	if _, err := api_token_delete(thread(true), del, sl.Tuple{sl.String(existing)}, nil); err == nil {
+		t.Fatal("a carried credential deleted a token")
+	}
+	if token_lookup(existing) == nil {
+		t.Fatal("the token is gone")
+	}
+	if value, err := api_token_create(thread(false), create, sl.Tuple{sl.String("y"), sl.NewList([]sl.Value{sl.String("dav")})}, nil); err != nil || !strings.HasPrefix(string(value.(sl.String)), "mochi-") {
+		t.Fatalf("an ordinary request could not mint a token: %v %v", value, err)
+	}
+}

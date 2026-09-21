@@ -58,6 +58,9 @@ var permissions = []Permission{
 	// than friends/read hands out. There is no write counterpart: the people
 	// app's DAV functions answer the server alone.
 	{"contacts/read", false, false},
+	// The user's calendars and events, which the calendars app's CalDAV
+	// functions answer the server with; another app needs this to call them.
+	{"calendars/read", false, false},
 	// entity.owned enumerates every object the user owns across every app, so it
 	// is gated - but standard, since picking one's own object is routine.
 	{"entity/read", false, false},
@@ -159,6 +162,7 @@ var permissions = []Permission{
 var api_permission = sls.FromStringDict(sl.String("mochi.permission"), sl.StringDict{
 	"catalog": sl.NewBuiltin("mochi.permission.catalog", api_permission_catalog),
 	"check":   sl.NewBuiltin("mochi.permission.check", api_permission_check),
+	"require": sl.NewBuiltin("mochi.permission.require", api_permission_require),
 	"grant":   sl.NewBuiltin("mochi.permission.grant", api_permission_grant),
 	"level":   sl.NewBuiltin("mochi.permission.level", api_permission_level),
 	"list":    sl.NewBuiltin("mochi.permission.list", api_permission_list),
@@ -595,6 +599,28 @@ func require_permission_url(t *sl.Thread, fn *sl.Builtin, rawurl string) error {
 		return fmt.Errorf("invalid URL: %v", err)
 	}
 	return require_permission_acting(t, fn, "url:"+domain)
+}
+
+// mochi.permission.require(permission) -> None: Fail unless the current app
+// holds a permission, the way a gated API would. An app calls it before work
+// whose gate answers quietly - mochi.url.get returns 403 - so the caller's
+// client sees the permission error and can ask the user for the grant first.
+// A url:<domain> permission may be passed as the URL itself.
+func api_permission_require(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var permission string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "permission", &permission); err != nil {
+		return nil, err
+	}
+	if strings.Contains(permission, "://") {
+		if err := require_permission_url(t, fn, permission); err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return sl.None, nil
+	}
+	if err := require_permission_acting(t, fn, permission); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl.None, nil
 }
 
 // mochi.permission.check(permission) -> bool: Check if current app has a permission

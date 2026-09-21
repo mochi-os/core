@@ -194,3 +194,27 @@ func TestIcalInstancesStopOnARunawayRule(t *testing.T) {
 		t.Fatal("a weekly rule was reported heavy")
 	}
 }
+
+func TestIcalSummaryApi(t *testing.T) {
+	summary := sl.NewBuiltin("mochi.ical.summary", api_ical_summary)
+	value, err := api_ical_summary(ical_test_thread(), summary, sl.Tuple{sl.String(ical_test_weekly)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := sl_decode(value).(map[string]any)
+	if m["uid"] != "w1" || m["recurring"] != true || m["component"] != "VEVENT" {
+		t.Fatalf("summary = %+v", m)
+	}
+	if value, _ := api_ical_summary(ical_test_thread(), summary, sl.Tuple{sl.String("nope")}, nil); value != sl.None {
+		t.Fatalf("unparsable text should give None, got %v", value)
+	}
+	// A start the format cannot read is refused rather than stored as zero,
+	// where the event would never appear in a listing.
+	broken := strings.Replace(ical_test_weekly, "DTSTART;TZID=Europe/London:20260901T090000", "DTSTART:{start_ical}", 1)
+	if broken == ical_test_weekly {
+		t.Fatal("the fixture no longer carries the start the test breaks")
+	}
+	if value, _ := api_ical_summary(ical_test_thread(), summary, sl.Tuple{sl.String(broken)}, nil); value != sl.None {
+		t.Fatalf("an unreadable start should give None, got %v", value)
+	}
+}

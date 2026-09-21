@@ -365,6 +365,7 @@ func TestEveryDeclaredPermissionIsEnforcedSomewhere(t *testing.T) {
 		// The people app's manifest gates its contacts functions on this;
 		// mochi.service.call enforces whatever a function declares.
 		"contacts/read":       true,
+		"calendars/read":      true,
 		"friends/read":        true,
 		"notifications/read":  true,
 		"notifications/send":  true,

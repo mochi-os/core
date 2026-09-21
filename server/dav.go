@@ -245,6 +245,7 @@ func dav_http_handler(c *gin.Context, a *App, aa *AppAction) bool {
 		c.String(status, http.StatusText(status))
 		return true
 	}
+	dav_mkcalendar(aa.Feature, c.Request)
 	handler.ServeHTTP(c.Writer, c.Request)
 	debug("DAV %s %s %s -> %d user=%s agent=%q", aa.Feature, c.Request.Method, c.Request.URL.Path, c.Writer.Status(), user.UID, c.GetHeader("User-Agent"))
 	return true
@@ -374,13 +375,58 @@ func dav_content_size(v any) int {
 // library would report for a collection, without a backend call.
 func dav_options_anonymous(c *gin.Context, feature string) {
 	capability := "addressbook"
+	allow := "OPTIONS, PROPFIND, REPORT, DELETE, MKCOL"
 	if feature == "caldav" {
 		capability = "calendar-access"
+		allow += ", MKCALENDAR"
 	}
 	c.Header("DAV", "1, 3, "+capability)
-	c.Header("Allow", "OPTIONS, PROPFIND, REPORT, DELETE, MKCOL")
+	c.Header("Allow", allow)
 	c.Status(http.StatusOK)
 }
+
+// dav_mkcalendar turns a MKCALENDAR request into the MKCOL the library
+// serves. Every calendar client creates a calendar with MKCALENDAR (RFC
+// 4791), which the library does not know; its MKCOL reads the same display
+// name and answers with the same statuses (201, 405 when the collection
+// exists, 403 away from the home set). The description a client sends is
+// dropped, as the library's MKCOL drops it. A body over dav_mkcalendar_maximum
+// is treated as empty: a display name needs a few hundred bytes.
+func dav_mkcalendar(feature string, r *http.Request) {
+	if feature != "caldav" || r.Method != "MKCALENDAR" {
+		return
+	}
+	name := ""
+	if r.Body != nil {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, dav_mkcalendar_maximum+1))
+		r.Body.Close()
+		if len(body) <= dav_mkcalendar_maximum {
+			decoder := xml.NewDecoder(bytes.NewReader(body))
+			for {
+				token, err := decoder.Token()
+				if err != nil {
+					break
+				}
+				if start, ok := token.(xml.StartElement); ok && start.Name.Local == "displayname" {
+					var text string
+					if decoder.DecodeElement(&text, &start) == nil {
+						name = text
+					}
+					break
+				}
+			}
+		}
+	}
+	var escaped bytes.Buffer
+	xml.EscapeText(&escaped, []byte(name))
+	mkcol := `<?xml version="1.0" encoding="utf-8"?><D:mkcol xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:set><D:prop><D:resourcetype><D:collection/><C:calendar/></D:resourcetype><D:displayname>` + escaped.String() + `</D:displayname></D:prop></D:set></D:mkcol>`
+	r.Method = "MKCOL"
+	r.Body = io.NopCloser(strings.NewReader(mkcol))
+	r.ContentLength = int64(len(mkcol))
+	r.Header.Set("Content-Type", "application/xml; charset=utf-8")
+}
+
+const dav_mkcalendar_maximum = 65536
 
 // dav_authenticate resolves the caller from the Authorization header alone: a
 // Basic password or a Bearer value that is a mochi- token minted by this app
@@ -579,6 +625,8 @@ func dav_error(code string) error {
 		return webdav.NewHTTPError(http.StatusForbidden, errors.New("forbidden"))
 	case "exists":
 		return webdav.NewHTTPError(http.StatusMethodNotAllowed, errors.New("already exists"))
+	case "duplicate":
+		return webdav.NewHTTPError(http.StatusConflict, errors.New("another object in the collection has this uid"))
 	case "too_large":
 		return webdav.NewHTTPError(http.StatusRequestEntityTooLarge, errors.New("too large"))
 	case "full":
@@ -1304,7 +1352,11 @@ func (b *dav_backend) PutCalendarObject(ctx context.Context, p string, cal *ical
 		"match":      match,
 		"absent":     absent,
 	}
-	for k, v := range ical_summary(cal) {
+	summary := ical_summary(cal)
+	if summary == nil {
+		return nil, webdav.NewHTTPError(http.StatusBadRequest, errors.New("the object's start cannot be read"))
+	}
+	for k, v := range summary {
 		args[k] = v
 	}
 	etag, updated, err := b.put(args)
@@ -1314,7 +1366,12 @@ func (b *dav_backend) PutCalendarObject(ctx context.Context, p string, cal *ical
 	return &caldav.CalendarObject{Path: b.object_path(collection, name), ETag: etag, ModTime: updated, Data: cal}, nil
 }
 
+// DeleteCalendarObject also removes a calendar: the library routes every
+// DELETE here, where the address book side has its own DeleteAddressBook.
 func (b *dav_backend) DeleteCalendarObject(ctx context.Context, p string) error {
+	if kind, _, _, err := b.parse(p); err == nil && kind == dav_kind_collection {
+		return b.delete_collection(p)
+	}
 	return b.delete_object(p)
 }
 

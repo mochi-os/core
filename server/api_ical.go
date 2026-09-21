@@ -33,6 +33,7 @@ var api_ical = sls.FromStringDict(sl.String("mochi.ical"), sl.StringDict{
 	"format":    sl.NewBuiltin("mochi.ical.format", api_ical_format),
 	"instances": sl.NewBuiltin("mochi.ical.instances", api_ical_instances),
 	"parse":     sl.NewBuiltin("mochi.ical.parse", api_ical_parse),
+	"summary":   sl.NewBuiltin("mochi.ical.summary", api_ical_summary),
 })
 
 var api_vcard = sls.FromStringDict(sl.String("mochi.vcard"), sl.StringDict{
@@ -436,11 +437,14 @@ func ical_summary(cal *ical.Calendar) Map {
 		out["component"] = child.Name
 		out["summary"] = ical_text(child, ical.PropSummary)
 		start, finish, allday, err := ical_span(child, time.UTC)
-		if err == nil {
-			out["start"] = start.Unix()
-			out["finish"] = finish.Unix()
-			out["allday"] = allday
+		if err != nil {
+			// An object whose start cannot be read would never expand into a
+			// listing; refusing it here keeps such an object out of storage.
+			return nil
 		}
+		out["start"] = start.Unix()
+		out["finish"] = finish.Unix()
+		out["allday"] = allday
 		recurring := child.Props.Get(ical.PropRecurrenceRule) != nil || child.Props.Get(ical.PropRecurrenceDates) != nil
 		out["recurring"] = recurring
 		if recurring {
@@ -518,6 +522,28 @@ func api_ical_instances(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		until = time.Unix(finish, 0)
 	}
 	return sl_encode(ical_instances(cal, from, until, loc)), nil
+}
+
+// mochi.ical.summary(text) -> dict | None: What an app keeps beside the text
+// of a calendar object: {uid, component, summary, start, finish, allday,
+// recurring}, from its first event, task or journal entry. start and finish
+// are Unix seconds; a recurring entry's finish is 0, meaning open-ended. The
+// same values the CalDAV engine passes to dav/put. None when the text does not
+// parse or its first entry has no readable start.
+func api_ical_summary(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var text string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "text", &text); err != nil {
+		return nil, err
+	}
+	cal, err := ical_decode(text)
+	if err != nil {
+		return sl.None, nil
+	}
+	summary := ical_summary(cal)
+	if summary == nil {
+		return sl.None, nil
+	}
+	return sl_encode(map[string]any(summary)), nil
 }
 
 // mochi.vcard.format(properties) -> string: Write a card's property list as

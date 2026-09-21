@@ -190,6 +190,7 @@ func dav_test_server(t *testing.T, feature string, fake *dav_fake_app) *httptest
 			http.Error(w, http.StatusText(status), status)
 			return
 		}
+		dav_mkcalendar(feature, r)
 		if feature == "carddav" {
 			(&carddav.Handler{Backend: b, Prefix: prefix}).ServeHTTP(w, r)
 		} else {
@@ -406,6 +407,52 @@ func TestDavCollectionsCreateAndDelete(t *testing.T) {
 	r := dav_raw(t, server, "OPTIONS", "/people/carddav/fp1/books/default/", "", nil)
 	if !strings.Contains(r.Header.Get("DAV"), "addressbook") {
 		t.Fatalf("OPTIONS DAV header = %q", r.Header.Get("DAV"))
+	}
+}
+
+// A calendar is made with MKCALENDAR, which the engine serves as the
+// library's MKCOL, and removed with DELETE on the collection, which the
+// library routes through the object delete.
+func TestDavCalDavCollectionsCreateAndDelete(t *testing.T) {
+	fake := new_dav_fake_app("default")
+	server := dav_test_server(t, "caldav", fake)
+	mkcalendar := `<?xml version="1.0" encoding="utf-8" ?><C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:set><D:prop><D:displayname>Work &amp; play</D:displayname><C:calendar-description>Team</C:calendar-description></D:prop></D:set></C:mkcalendar>`
+	if r := dav_raw(t, server, "MKCALENDAR", "/people/caldav/fp1/calendars/work/", mkcalendar, map[string]string{"Content-Type": "application/xml"}); r.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(r.Body)
+		t.Fatalf("mkcalendar: %d %s", r.StatusCode, body)
+	}
+	if len(fake.collections) != 2 || fake.collections[1]["slug"] != "work" || fake.collections[1]["name"] != "Work & play" {
+		t.Fatalf("collections after mkcalendar = %+v", fake.collections)
+	}
+	if r := dav_raw(t, server, "MKCALENDAR", "/people/caldav/fp1/calendars/work/", mkcalendar, map[string]string{"Content-Type": "application/xml"}); r.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("mkcalendar twice: %d", r.StatusCode)
+	}
+	// Without a body the calendar takes the client's path segment as its name.
+	if r := dav_raw(t, server, "MKCALENDAR", "/people/caldav/fp1/calendars/plain/", "", nil); r.StatusCode != http.StatusCreated {
+		t.Fatalf("mkcalendar without a body: %d", r.StatusCode)
+	}
+	if len(fake.collections) != 3 || fake.collections[2]["slug"] != "plain" || fake.collections[2]["name"] != "" {
+		t.Fatalf("collections after a bare mkcalendar = %+v", fake.collections)
+	}
+	if r := dav_raw(t, server, "MKCALENDAR", "/people/caldav/fp1/work/", "", nil); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("mkcalendar outside the home set: %d", r.StatusCode)
+	}
+	if r := dav_raw(t, server, "DELETE", "/people/caldav/fp1/calendars/work/", "", nil); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete calendar: %d", r.StatusCode)
+	}
+	if len(fake.collections) != 2 || fake.collections[1]["slug"] != "plain" {
+		t.Fatalf("collections after delete = %+v", fake.collections)
+	}
+	if r := dav_raw(t, server, "DELETE", "/people/caldav/fp1/calendars/default/", "", nil); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("delete the fixed calendar: %d", r.StatusCode)
+	}
+	if r := dav_raw(t, server, "DELETE", "/people/caldav/fp1/calendars/missing/", "", nil); r.StatusCode != http.StatusNotFound {
+		t.Fatalf("delete a missing calendar: %d", r.StatusCode)
+	}
+	// The address book route knows no MKCALENDAR.
+	books := dav_test_server(t, "carddav", new_dav_fake_app("default"))
+	if r := dav_raw(t, books, "MKCALENDAR", "/people/carddav/fp1/books/work/", "", nil); r.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("mkcalendar on carddav: %d", r.StatusCode)
 	}
 }
 

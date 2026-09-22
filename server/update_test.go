@@ -247,3 +247,26 @@ func TestUpdateInstallLaunchRefusesATamperedArtifact(t *testing.T) {
 		t.Errorf("missing file: err = %v, want a refusal before the spawn", err)
 	}
 }
+
+// The track a server follows is [update] track, which the MOCHI_UPDATE_TRACK
+// environment variable overrides like every setting. Unset means production,
+// and a name that is not a track falls back to production rather than
+// silencing the daily check.
+func TestUpdateTrackFromConfig(t *testing.T) {
+	t.Setenv("MOCHI_UPDATE_TRACK", "development")
+	if got := update_track(); got != "development" {
+		t.Errorf("track = %q, want development", got)
+	}
+	t.Setenv("MOCHI_UPDATE_TRACK", "production")
+	if got := update_track(); got != "production" {
+		t.Errorf("track = %q, want production", got)
+	}
+	t.Setenv("MOCHI_UPDATE_TRACK", "nightly")
+	if got := update_track(); got != "production" {
+		t.Errorf("unknown track gave %q, want production", got)
+	}
+	t.Setenv("MOCHI_UPDATE_TRACK", "")
+	if got := update_track(); got != "production" {
+		t.Errorf("empty track gave %q, want production", got)
+	}
+}

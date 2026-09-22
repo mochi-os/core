@@ -739,7 +739,7 @@ func api_server_update_info(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		"current":   build_version,
 		"latest":    latest,
 		"platform":  platform,
-		"track":     update_track,
+		"track":     update_track(),
 		"checked":   checked,
 		"pending":   pending,
 	}), nil

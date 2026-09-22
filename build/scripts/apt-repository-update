@@ -1,4 +1,8 @@
 #!/bin/sh
+# Index and sign one suite of the apt repository. The suite scans only its own
+# pool: stable holds the production releases in pool/main and development the
+# .deb-only development builds in pool/development, and a Packages file that
+# listed both would offer every server the development builds.
 set -e
 
 do_hash() {
@@ -15,19 +19,22 @@ do_hash() {
 }
 
 if [ $# -lt 2 ]; then
-    echo "Syntax: $0 <root directory of repository> <GPG key>"
+    echo "Syntax: $0 <root directory of repository> <GPG key> [suite] [pool]"
     exit 1
 fi
+
+suite=${3:-stable}
+pool=${4:-main}
 
 cd $1
 
 # Generate Packages files for each architecture
 for arch in amd64 arm64 armhf; do
-    dpkg-scanpackages --arch $arch pool > dists/stable/main/binary-$arch/Packages
-    gzip -9 -k -f dists/stable/main/binary-$arch/Packages
+    dpkg-scanpackages --arch $arch pool/$pool > dists/$suite/main/binary-$arch/Packages
+    gzip -9 -k -f dists/$suite/main/binary-$arch/Packages
 done
 
-cd dists/stable
+cd dists/$suite
 # Both signed outputs go before hashing: a leftover InRelease would otherwise
 # be listed in the new Release with the old file's hash, then signed.
 rm -f Release InRelease Release.gpg

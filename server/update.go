@@ -29,7 +29,6 @@ import (
 )
 
 const (
-	update_track            = "production"
 	update_initial_lag      = 5 * time.Minute
 	update_interval         = 24 * time.Hour
 	update_timeout          = 30 * time.Second
@@ -51,6 +50,28 @@ const (
 	update_manifest_stale = 60 * 24 * time.Hour
 	update_manifest_skew  = 24 * time.Hour
 )
+
+// update_tracks are the release tracks a server can follow: production, the
+// two-part public releases built for every platform, and development, the
+// three-part builds between them, published as .deb packages only.
+var update_tracks = []string{"production", "development"}
+
+// update_track is the track this server follows, [update] track in
+// mochi.conf. Unset means production; a name that is not a track is reported
+// and treated as production, so a typo never silences the daily check.
+func update_track() string {
+	track := ini_string("update", "track", "")
+	if track == "" {
+		return "production"
+	}
+	for _, known := range update_tracks {
+		if track == known {
+			return track
+		}
+	}
+	warn("Server update: %q is not a release track, following production", track)
+	return "production"
+}
 
 // update_install_lock guards against concurrent install attempts (e.g. an
 // admin clicking the button twice).
@@ -215,6 +236,7 @@ func update_manager() {
 		info("Server update: daily check disabled by config")
 		return
 	}
+	info("Server update: following the %s track", update_track())
 
 	time.Sleep(update_initial_lag)
 	update_check()
@@ -246,9 +268,10 @@ func update_check() {
 		return
 	}
 
-	latest, ok := v.Tracks[update_track]
+	track := update_track()
+	latest, ok := v.Tracks[track]
 	if !ok || latest == "" {
-		info("Server update: no %q track in the %s manifest", update_track, build_platform)
+		info("Server update: no %q track in the %s manifest", track, build_platform)
 		return
 	}
 

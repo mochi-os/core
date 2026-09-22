@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Write the apt versions.json for a publish on one track, keeping the other
+track's version.
+
+    apt-manifest <path> <generated> <track> <version>
+
+The production key is what every server follows by default and the
+development key what servers on the development track follow. A production
+publish sets both, since its packages go to both suites and development is
+never behind production; a development publish moves only its own key.
+"""
+import json
+import sys
+
+
+def main(arguments):
+    if len(arguments) != 4:
+        sys.stderr.write("Syntax: apt-manifest <path> <generated> <track> <version>\n")
+        return 1
+    path, generated, track, version = arguments
+    if track not in ("production", "development"):
+        sys.stderr.write("apt-manifest: %r is not a release track\n" % track)
+        return 1
+    try:
+        with open(path) as handle:
+            tracks = json.load(handle).get("tracks", {})
+    except (OSError, ValueError):
+        tracks = {}
+    tracks[track] = version
+    if track == "production":
+        tracks["development"] = version
+    manifest = {"generated": int(generated), "platform": "apt", "tracks": tracks}
+    with open(path, "w") as handle:
+        json.dump(manifest, handle)
+        handle.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

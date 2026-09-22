@@ -492,9 +492,11 @@ func TestDeployScriptNamesNoRetiredHost(t *testing.T) {
 // to the release key and nothing bound them to a date, so a replayed old
 // manifest froze every server on the release before it. Every manifest now
 // says when it was generated and for which subtree, with one time per publish.
+// The apt manifest goes through apt-manifest, which keeps the other track's
+// version; the generation time is its second argument.
 func TestManifestsCarryGenerationTimeAndPlatform(t *testing.T) {
 	out := packaging_dry(t, "release-publish")
-	for _, platform := range []string{"apt", "rpm", "macos", "docker"} {
+	for _, platform := range []string{"rpm", "macos", "docker"} {
 		if !regexp.MustCompile(`"generated": \d+, "platform": "` + platform + `", "tracks"`).MatchString(out) {
 			t.Errorf("the %s manifest carries no generation time or platform", platform)
 		}
@@ -505,6 +507,15 @@ func TestManifestsCarryGenerationTimeAndPlatform(t *testing.T) {
 	times := map[string]bool{}
 	for _, match := range regexp.MustCompile(`"generated": (\d+)`).FindAllStringSubmatch(out, -1) {
 		times[match[1]] = true
+	}
+	apt := regexp.MustCompile(`apt-manifest \S+/apt/versions\.json (\d+) (\w+) [\d.]+`).FindStringSubmatch(out)
+	if apt == nil {
+		t.Errorf("the apt manifest carries no generation time")
+	} else {
+		times[apt[1]] = true
+		if apt[2] != "production" {
+			t.Errorf("a plain publish writes the %s track, not production", apt[2])
+		}
 	}
 	if len(times) != 1 {
 		t.Errorf("the manifests of one publish disagree on the generation time: %v", times)

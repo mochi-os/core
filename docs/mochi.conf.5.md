@@ -211,8 +211,17 @@ the sending host, or the mail will be filed as spam.
 :   When **true** (default), the server polls
     *https://packages.mochi-os.org/<platform>/versions.json* once every
     24 hours and notifies all administrator users when a newer release
-    is published on the production track. Set to **false** to disable
-    the daily poll entirely.
+    is published on the track this server follows. Set to **false** to
+    disable the daily poll entirely.
+
+**track** = **production** | **development**
+:   The release track this server follows. **production** (default) is
+    the public releases, two-part versions such as 2.1, built for every
+    platform. **development** is the three-part builds between them,
+    such as 2.0.1, published as .deb packages only in the *development*
+    suite of the apt repository; a server following it also carries that
+    suite in its apt sources, beside *stable*. Any other value is
+    reported at startup and treated as **production**.
 
     The manifest is signed with the release key and carries its
     generation time. One older than the last manifest this server

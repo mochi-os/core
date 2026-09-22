@@ -6,6 +6,27 @@
 
 version = 1.4
 
+# Release track. production is the public release: a two-part version such as
+# 2.1, built for every platform, published to both apt suites so a server on
+# the development track is never behind. development is a build between two
+# releases: a three-part version such as 2.0.1, built as .deb packages only
+# and published to the development apt suite, which only servers that opt in
+# carry. `make release track=development`; `make deploy track=development`.
+track ?= production
+ifeq ($(track),production)
+suite = stable
+pool = main
+release_build = deb rpm msi pkg docker
+publish =
+else ifeq ($(track),development)
+suite = development
+pool = development
+release_build = deb
+publish = apt/
+else
+$(error track must be production or development, not "$(track)")
+endif
+
 # Generation time stamped into every published manifest, read once so the
 # manifests of one publish step agree.
 generated := $(shell date +%s)
@@ -502,6 +523,7 @@ docker-clean:
 # run from $(bin), leaving `systemctl --user restart mochi1` with nothing to
 # start.
 release:
+	@$(MAKE) --no-print-directory release-check
 	@: > $(timing)
 	@$(MAKE) --no-print-directory release-tree
 	@trap '$(MAKE) release-clean' EXIT; \
@@ -540,25 +562,49 @@ release-clean:
 	-for root in /tmp/mochi-release.*; do [ "$$root" = "$(STAGE)" ] || rm -rf "$$root"; done
 	-rm -rf /tmp/mochi-server_* /tmp/mochi-server-*.rpm /tmp/mochi-rpmbuild-*
 
+# A production release is two-part (2.1) and a development build three-part
+# (2.0.1), so a build cannot be published to the wrong track by its number.
+release-check:
+	@case "$(track)" in \
+	production) echo "$(version)" | grep -qE '^[0-9]+\.[0-9]+$$' || { echo ">>> a production release is two-part, such as 2.1; $(version) is a development build" >&2; exit 1; };; \
+	development) echo "$(version)" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$$' || { echo ">>> a development build is three-part, such as 2.0.1; $(version) is a production release" >&2; exit 1; };; \
+	esac
+
 # Parallel-safe: each rpm target has its own _topdir, each deb its own staging
 # dir, pkg uses mktemp, and docker stages pre-built binaries, so -j has no
-# shared-state races.
-release-build: deb rpm msi pkg docker
+# shared-state races. A development build packages .deb only.
+release-build: $(release_build)
 
-release-publish:
+# Publish on the release track: the apt suites first, then, for production,
+# every other platform, then the signatures and the upload.
+release-publish: release-publish-apt $(if $(filter production,$(track)),release-publish-platforms) release-publish-sign release-publish-rsync
+
+release-publish-apt:
 	# Not tagged here. This runs before the version bump is committed, so the
 	# tag landed on whatever HEAD happened to be - the commit declaring the
 	# PREVIOUS version - and -f meant a rebuild silently moved an existing tag.
 	# claude/scripts/commit.sh tags the commit that records the version.
-	rm -f ../packages/apt/pool/main/mochi-server_*.deb
-	cp $(deb_amd64) $(deb_arm64) $(deb_armhf) ../packages/apt/pool/main
-	@t=$$(date +%s); ./build/scripts/apt-repository-update ../packages/apt `cat local/gpg.txt | tr -d '\n'` && echo ">>> apt reindex (scan + gpg sign): $$(($$(date +%s)-t))s" | tee -a $(timing)
-	echo '{"generated": $(generated), "platform": "apt", "tracks": {"production": "$(version)"}}' > ../packages/apt/versions.json
+	$(MAKE) --no-print-directory release-publish-suite suite=$(suite) pool=$(pool)
+ifeq ($(track),production)
+	$(MAKE) --no-print-directory release-publish-suite suite=development pool=development
+endif
+	./build/scripts/apt-manifest ../packages/apt/versions.json $(generated) $(track) $(version)
 	# Client-side files and the binary keyring from source, like mochi.repo
 	# below: a tree wipe or a key rotation would otherwise leave the apt channel
 	# stale with nothing to diff.
 	cp build/apt/mochi.list build/apt/mochi.sources ../packages/apt/
 	gpg --export `cat local/gpg.txt | tr -d '\n'` > ../packages/apt/mochi.gpg
+
+# One apt suite: its pool holds this release's packages, and its Release base
+# is written from source so a tree wipe cannot leave a suite without one.
+release-publish-suite:
+	mkdir -p ../packages/apt/pool/$(pool) ../packages/apt/dists/$(suite)/main/binary-amd64 ../packages/apt/dists/$(suite)/main/binary-arm64 ../packages/apt/dists/$(suite)/main/binary-armhf
+	rm -f ../packages/apt/pool/$(pool)/mochi-server_*.deb
+	cp $(deb_amd64) $(deb_arm64) $(deb_armhf) ../packages/apt/pool/$(pool)
+	printf 'Origin: Mochi repository\nLabel: Mochi\nSuite: %s\nCodename: %s\nVersion: 1.0\nArchitectures: amd64 arm64 armhf\nComponents: main\nDescription: Mochi software repository\n' '$(suite)' '$(suite)' > ../packages/apt/dists/$(suite)/Release.base
+	@t=$$(date +%s); ./build/scripts/apt-repository-update ../packages/apt `cat local/gpg.txt | tr -d '\n'` $(suite) $(pool) && echo ">>> apt reindex $(suite) (scan + gpg sign): $$(($$(date +%s)-t))s" | tee -a $(timing)
+
+release-publish-platforms:
 	rm -f ../packages/rpm/Packages/mochi-server-*.rpm
 	cp $(rpm_x86_64) $(rpm_aarch64) $(rpm_armv7hl) ../packages/rpm/Packages
 	# Publish the repo definition from source, not from the untracked packages
@@ -584,6 +630,8 @@ release-publish:
 	echo '{"generated": $(generated), "platform": "macos", "tracks": {"production": "$(version)"}}' > ../packages/macos/versions.json
 	mkdir -p ../packages/docker
 	echo '{"generated": $(generated), "platform": "docker", "tracks": {"production": "$(version)"}}' > ../packages/docker/versions.json
+
+release-publish-sign:
 	# Sign every versions.json with the release key: the server verifies this
 	# detached ed25519 signature against a pinned public key before trusting the
 	# manifest. Done after every manifest is written and before the single rsync,
@@ -595,24 +643,27 @@ release-publish:
 	        && echo "signed $$platform/versions.json" \
 	        || exit 1; \
 	done
-	# Publish to yuzu by name, not the packages.mochi-os.org alias, so the target
-	# is deterministic. Two passes: rsync creates the stable-name symlinks in its
-	# generator pass, before the version-stamped files they point at arrive, so a
-	# single pass leaves every download URL broken for the whole upload. Pass one
-	# deletes nothing, so the previous build keeps the links resolving; pass two
-	# repoints them and prunes with --delete-after.
+
+# Publish to yuzu by name, not the packages.mochi-os.org alias, so the target
+# is deterministic. Two passes: rsync creates the stable-name symlinks in its
+# generator pass, before the version-stamped files they point at arrive, so a
+# single pass leaves every download URL broken for the whole upload. Pass one
+# deletes nothing, so the previous build keeps the links resolving; pass two
+# repoints them and prunes with --delete-after. A development publish uploads
+# the apt tree alone, the only part it changed.
+release-publish-rsync:
 	@t0=$$(date +%s); \
 	rsync -av --exclude=/windows/mochi-server.msi --exclude=/android/mochi.apk \
-	    ../packages/ root@yuzu.mochi-os.org:/srv/packages/ || exit 1; \
-	rsync -av --delete-after ../packages/ root@yuzu.mochi-os.org:/srv/packages/ || exit 1; \
+	    ../packages/$(publish) root@yuzu.mochi-os.org:/srv/packages/$(publish) || exit 1; \
+	rsync -av --delete-after ../packages/$(publish) root@yuzu.mochi-os.org:/srv/packages/$(publish) || exit 1; \
 	echo ">>> rsync local->yuzu: $$(($$(date +%s)-t0))s" | tee -a $(timing)
 
 # Install the published version on yuzu (verified). Separate from `release`
-# (which only publishes packages) so deploying stays an explicit step. Pass apt
-# flags via `make deploy DEPLOY_FLAGS=--reinstall` to redeploy an identical
-# version.
+# (which only publishes packages) so deploying stays an explicit step. The
+# track names the apt suite installed from. Pass apt flags via
+# `make deploy DEPLOY_FLAGS=--reinstall` to redeploy an identical version.
 deploy:
-	./build/scripts/deploy $(DEPLOY_FLAGS)
+	./build/scripts/deploy -t $(suite) $(DEPLOY_FLAGS)
 
 format:
 	go fmt server/*.go

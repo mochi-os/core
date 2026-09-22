@@ -522,10 +522,9 @@ var (
 			{"user/apps/read", ""},
 			{"user/apps/write", ""},
 		}},
-		// The id is filled in after the app's first publish; until then the
-		// name matches the development checkout. The url grant for an ICS
-		// subscription is the user's, asked for per address.
-		{"", "Calendars", []struct{ Permission, Object string }{
+		// The url grant for an ICS subscription is the user's, asked for per
+		// address.
+		{"129RSyiQd49veEysf7x3EjB94yGfUU14TvyB2Cw1tSaH81pFYGm", "Calendars", []struct{ Permission, Object string }{
 			// The birthdays calendar reads contacts through the people service.
 			{"contacts/read", ""},
 			{"entity/read", ""},

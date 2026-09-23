@@ -557,7 +557,21 @@ var preference_options = map[string][]string{
 	"week_start":        {"auto", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"},
 	"number_format":     {"auto", "1,000.00", "1.000,00", "1 000,00", "1'000.00", "1,00,000.00"},
 	"units":             {"auto", "metric", "imperial", "usa"},
-	"restore.show":      {"true", "false"},
+	// Where a location or a flight number links to; the first is the default.
+	"maps":         {"openstreetmap", "google"},
+	"flights":      {"flightradar24", "flightaware"},
+	"restore.show": {"true", "false"},
+}
+
+// preference_default is what an unset select-style preference means: "auto"
+// for the locale keys, which detect from the browser, and the first listed
+// service for the link keys, which have nothing to detect from.
+func preference_default(name string) string {
+	switch name {
+	case "maps", "flights":
+		return preference_options[name][0]
+	}
+	return "auto"
 }
 
 // preference_gated reports whether a key is one core reads and renders -

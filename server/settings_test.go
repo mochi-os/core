@@ -551,6 +551,24 @@ func TestPreferenceSetGatesTheKeysCoreReads(t *testing.T) {
 // A value core reads is checked whoever writes it: a zone the runtime cannot
 // load, a select outside its options, or a radius outside the theme shape is
 // refused even with the permission.
+// An unset locale preference means "auto"; an unset link preference means the
+// first listed service, since there is nothing to detect one from.
+func TestPreferenceDefaultIsAutoOrTheFirstService(t *testing.T) {
+	expected := map[string]string{
+		"units":        "auto",
+		"week_start":   "auto",
+		"timezone":     "auto",
+		"maps":         "openstreetmap",
+		"flights":      "flightradar24",
+		"restore.show": "auto",
+	}
+	for name, want := range expected {
+		if got := preference_default(name); got != want {
+			t.Errorf("preference_default(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
 func TestPreferenceSetValidatesTheKeysCoreReads(t *testing.T) {
 	user := create_test_user(t)
 	settings := preference_thread(t, user, "settings", true)
@@ -561,6 +579,8 @@ func TestPreferenceSetValidatesTheKeysCoreReads(t *testing.T) {
 		"language":     "not a tag",
 		"restore.show": "maybe",
 		"week_start":   "someday",
+		"maps":         "apple",
+		"flights":      "auto",
 	}
 	for name, value := range refused {
 		if err := preference_set(t, settings, user, name, value); err == nil {
@@ -577,6 +597,8 @@ func TestPreferenceSetValidatesTheKeysCoreReads(t *testing.T) {
 		"language":   "pt-br",
 		"week_start": "monday",
 		"theme":      "",
+		"maps":       "google",
+		"flights":    "flightaware",
 	}
 	for name, value := range accepted {
 		if err := preference_set(t, settings, user, name, value); err != nil {

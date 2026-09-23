@@ -382,13 +382,15 @@ func web_shell_init(c *gin.Context) {
 		}
 	}
 
-	// Locale preferences for formatting
+	// Locale preferences for formatting, and the link preferences beside them:
+	// where a location or a flight number opens, whose defaults are a service
+	// rather than "auto".
 	locale := gin.H{}
-	for _, key := range []string{"date_format", "time_format", "timestamp_display", "week_start", "number_format", "units", "timezone"} {
+	for _, key := range []string{"date_format", "time_format", "timestamp_display", "week_start", "number_format", "units", "timezone", "maps", "flights"} {
 		if v, ok := user.Preferences[key]; ok {
 			locale[key] = v
 		} else {
-			locale[key] = "auto"
+			locale[key] = preference_default(key)
 		}
 	}
 	result["locale"] = locale

@@ -907,10 +907,13 @@ func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return s, nil
 }
 
-// mochi.time.local(timestamp, format?) -> string: Convert Unix timestamp to local time in user's timezone
+// mochi.time.local(timestamp, format?, timezone?) -> string: Convert Unix
+// timestamp to local time in the user's zone, or in timezone (an IANA name)
+// when given: the zone an event was written in, say. The user's zone is the
+// timezone preference, else the zone the user's device last reported.
 func api_time_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
-		return sl_error(fn, "syntax: <timestamp: int64>, [format: string]")
+		return sl_error(fn, "syntax: <timestamp: int64>, [format: string], [timezone=string]")
 	}
 
 	var timestamp int64
@@ -963,19 +966,23 @@ func api_time_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		}
 	}
 
-	// Get user's timezone
-	user := principal_caller(t)
-	timezone := "UTC"
-	if user != nil {
-		timezone = user_preference_get(user, "timezone", "UTC")
+	loc := user_timezone(principal_caller(t))
+	for _, pair := range kwargs {
+		name, _ := sl.AsString(pair[0])
+		if name != "timezone" {
+			return sl_error(fn, "unknown keyword %q", name)
+		}
+		zone, ok := sl.AsString(pair[1])
+		if !ok {
+			return sl_error(fn, "timezone must be a string")
+		}
+		// A zone the runtime cannot load, or none, leaves the user's own.
+		if l, err := gotime.LoadLocation(zone); err == nil && zone != "" && zone != "Local" {
+			loc = l
+		}
 	}
-	if timezone == "auto" || format == ical_time_format {
+	if format == ical_time_format {
 		// The iCalendar form carries its own Z: it is always UTC.
-		timezone = "UTC"
-	}
-
-	loc, err := gotime.LoadLocation(timezone)
-	if err != nil {
 		loc = gotime.UTC
 	}
 

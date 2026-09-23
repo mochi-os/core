@@ -34,6 +34,7 @@ var api_ical = sls.FromStringDict(sl.String("mochi.ical"), sl.StringDict{
 	"instances": sl.NewBuiltin("mochi.ical.instances", api_ical_instances),
 	"parse":     sl.NewBuiltin("mochi.ical.parse", api_ical_parse),
 	"summary":   sl.NewBuiltin("mochi.ical.summary", api_ical_summary),
+	"timezone":  sl.NewBuiltin("mochi.ical.timezone", api_ical_timezone),
 })
 
 var api_vcard = sls.FromStringDict(sl.String("mochi.vcard"), sl.StringDict{
@@ -281,11 +282,30 @@ func ical_instance(comp *ical.Component, start, finish time.Time, allday bool, r
 	}
 	if allday {
 		out["date"] = start.Format(time.DateOnly)
+	} else {
+		out["zone"] = map[string]any{
+			"start":  ical_zone(comp, ical.PropDateTimeStart),
+			"finish": ical_zone(comp, ical.PropDateTimeEnd),
+		}
 	}
 	if rid := comp.Props.Get(ical.PropRecurrenceID); rid != nil {
 		out["exception"] = true
 	}
 	return out
+}
+
+// ical_zone is the TZID a date-time property names, "" for a UTC or floating
+// value. An event with no DTEND, one with a DURATION or none, ends in the zone
+// it starts in.
+func ical_zone(comp *ical.Component, name string) string {
+	prop := comp.Props.Get(name)
+	if prop == nil && name == ical.PropDateTimeEnd {
+		prop = comp.Props.Get(ical.PropDateTimeStart)
+	}
+	if prop == nil {
+		return ""
+	}
+	return prop.Params.Get(ical.ParamTimezoneID)
 }
 
 // ical_instances expands the events of a calendar into the occurrences that
@@ -493,8 +513,11 @@ func api_ical_format(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // mochi.ical.instances(text, start?, finish?, timezone?) -> list: Expand the
 // events in iCalendar text into the occurrences overlapping [start, finish),
 // Unix seconds, sorted by start. Each is {uid, component, summary, location,
-// description, status, start, finish, allday, date?, recurring, exception?}.
-// Floating times are read in timezone (IANA name), else the user's zone.
+// description, status, start, finish, allday, date?, zone?, recurring,
+// exception?}; zone is {start, finish}, the TZID each end of a timed
+// occurrence was written in, "" for UTC and floating values. Floating times
+// are read in timezone (IANA name), else the user's zone: the timezone
+// preference, or the zone the user's device last reported.
 func api_ical_instances(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var text, timezone string
 	var start, finish int64
@@ -505,14 +528,13 @@ func api_ical_instances(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	if timezone == "" {
-		if user := principal_caller(t); user != nil {
-			timezone = user_preference_get(user, "timezone", "UTC")
+	loc := user_timezone(principal_caller(t))
+	if timezone != "" {
+		l, err := time.LoadLocation(timezone)
+		if err != nil || timezone == "Local" {
+			l = time.UTC
 		}
-	}
-	loc, err := time.LoadLocation(timezone)
-	if err != nil || timezone == "" || timezone == "auto" {
-		loc = time.UTC
+		loc = l
 	}
 	var from, until time.Time
 	if start > 0 {

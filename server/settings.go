@@ -580,7 +580,7 @@ func preference_default(name string) string {
 // app's own flag, so it stays open and is only shape-checked.
 func preference_gated(name string) bool {
 	switch name {
-	case "language", "last_language", "locale", "timezone", "theme", "radius":
+	case "language", "last_language", "locale", "timezone", "last_timezone", "theme", "radius":
 		return true
 	case "restore.show":
 		return false
@@ -603,7 +603,7 @@ func preference_validate(u *User, name, value string) error {
 		if value == "" || value == "auto" || valid(strings.ToLower(value), "locale") {
 			return nil
 		}
-	case "timezone":
+	case "timezone", "last_timezone":
 		if value == "" || value == "auto" || valid(value, "timezone") {
 			return nil
 		}

@@ -270,29 +270,32 @@ func root_mkdir_all(root *os.Root, path string) error {
 	return nil
 }
 
-func time_local(u *User, t int64) string {
-	timezone := "UTC"
-	if u != nil {
-		timezone = user_preference_get(u, "timezone", "UTC")
+// user_timezone is the zone the user's clocks read in: the timezone
+// preference, or, when that is "auto" or unset, the zone the user's device
+// last reported through the shell (last_timezone), else UTC. A zone the
+// runtime cannot load is the user's own input, not a server fault: it falls
+// back to UTC with a debug line, no warn and no administrator email.
+func user_timezone(u *User) *time.Location {
+	if u == nil {
+		return time.UTC
 	}
-
-	// Handle "auto" timezone by falling back to UTC
-	if timezone == "auto" {
-		timezone = "UTC"
+	timezone := user_preference_get(u, "timezone", "")
+	if timezone == "" || timezone == "auto" {
+		timezone = user_preference_get(u, "last_timezone", "")
 	}
-
+	if timezone == "" {
+		return time.UTC
+	}
 	l, err := time.LoadLocation(timezone)
 	if err != nil {
-		// The zone is the user's own preference, so a bad one is their input,
-		// not a server fault: no warn, and no administrator email for it.
-		uid := ""
-		if u != nil {
-			uid = u.UID
-		}
-		debug("Invalid time zone %q for user %q: %v", timezone, uid, err)
-		return time.Unix(t, 0).UTC().Format(time.DateTime)
+		debug("Invalid time zone %q for user %q: %v", timezone, u.UID, err)
+		return time.UTC
 	}
-	return time.Unix(t, 0).In(l).Format(time.DateTime)
+	return l
+}
+
+func time_local(u *User, t int64) string {
+	return time.Unix(t, 0).In(user_timezone(u)).Format(time.DateTime)
 }
 
 func uid() string {

@@ -9,6 +9,8 @@ package main
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -345,6 +347,25 @@ func web_shell_token(c *gin.Context) {
 	})
 }
 
+// shell_timezone is the zone a shell reports in its boot request's body,
+// {"timezone": "Europe/London"}, or "" when there is no body or the zone is
+// not one the runtime can load. A shell that predates the field sends no body.
+func shell_timezone(body io.Reader) string {
+	if body == nil {
+		return ""
+	}
+	var input struct {
+		Timezone string `json:"timezone"`
+	}
+	if err := json.NewDecoder(io.LimitReader(body, 4096)).Decode(&input); err != nil {
+		return ""
+	}
+	if !valid(input.Timezone, "timezone") {
+		return ""
+	}
+	return input.Timezone
+}
+
 // web_shell_init handles POST /_/shell — returns shell bootstrap config.
 // Called once by the shell page on load. Protected by session cookie
 // (sandboxed iframe apps cannot call this).
@@ -356,6 +377,12 @@ func web_shell_init(c *gin.Context) {
 	}
 
 	session := web_cookie_get(c, "session", "")
+
+	// The device's zone gives "auto" a meaning on the server: recurrences,
+	// reminders and the ICS link then follow the device the user last used.
+	if zone := shell_timezone(c.Request.Body); zone != "" && user_preference_get(user, "last_timezone", "") != zone {
+		user_preference_set(user, "last_timezone", zone)
+	}
 
 	// Menu app token
 	menu_token := ""

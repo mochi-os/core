@@ -45,6 +45,12 @@ type AppAction struct {
 	Feature  string `json:"feature"`
 	Cache    string `json:"cache"`
 	Public   bool   `json:"public"`
+	// Asset marks an action that serves bytes a page embeds - an attachment,
+	// an avatar, a thumbnail - and so may be reached with the asset token a
+	// page puts in such URLs. That token authenticates nothing else: it
+	// travels in copied links, and an app's every action would otherwise be
+	// one GET away for its half hour of life.
+	Asset bool `json:"asset"`
 	// Site marks an action that publishes a website, exempting it from the
 	// safe-serve policy (SVG sanitized, unsafe types forced to download).
 	// Declared, never inferred from the request arriving on a domain route.

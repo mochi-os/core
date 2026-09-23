@@ -13,6 +13,7 @@
 package main
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -87,5 +88,39 @@ func TestAssetTokenCannotOpenASocket(t *testing.T) {
 		websocket_test_handshake(t, "", "?key=notifications", "", websocket_protocol_token+asset))
 	if ok || tagged != "" {
 		t.Errorf("an asset token opened a socket through the subprotocol: app %q token_auth %v", tagged, ok)
+	}
+}
+
+// The token reaches the actions declared to serve assets and the static files,
+// and nothing else: every other action sees the request as the cookie says,
+// which inside the shell's sandboxed iframe is anonymous.
+func TestAssetTokenReachesOnlyDeclaredAssetActions(t *testing.T) {
+	marked := &AppAction{Function: "action_attachment", Asset: true}
+	plain := &AppAction{Function: "action_contact_delete"}
+	if asset_token_ignored(token_purpose_asset, marked, false) {
+		t.Error("an asset token is set aside on an action declared to serve assets")
+	}
+	if !asset_token_ignored(token_purpose_asset, plain, false) {
+		t.Error("an asset token reaches an action not declared to serve assets")
+	}
+	if asset_token_ignored(token_purpose_asset, plain, true) {
+		t.Error("an asset token is set aside on a static file, which needs no credential")
+	}
+	if asset_token_ignored("", plain, false) {
+		t.Error("an app token is set aside; only the asset purpose is confined")
+	}
+	if asset_token_ignored(token_purpose_asset, nil, false) {
+		t.Error("no action resolved: nothing to set aside yet")
+	}
+}
+
+// The manifest field that declares an asset-serving action decodes.
+func TestManifestActionDeclaresAsset(t *testing.T) {
+	var actions map[string]*AppAction
+	if err := json.Unmarshal([]byte(`{":feed/-/attachments/:id": {"function": "action_attachment", "public": true, "asset": true}, "-/contacts/delete": {"function": "action_contact_delete"}}`), &actions); err != nil {
+		t.Fatal(err)
+	}
+	if !actions[":feed/-/attachments/:id"].Asset || actions["-/contacts/delete"].Asset {
+		t.Errorf("asset flags: %+v", actions)
 	}
 }

@@ -464,6 +464,20 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	// no Bearer.
 	shell_static := web_serves_file(c, aa) || (aa.Files != "" && aa.filepath != "")
 
+	// An asset token is what a page puts in an image or attachment URL, so a
+	// copied link hands it over. It authenticates only the actions declared to
+	// serve such bytes; anywhere else it is set aside here, before the gates
+	// below, and the request goes on as the cookie, if any, says: an action
+	// that needs a credential refuses it as it would any anonymous call, and a
+	// public one answers anonymously rather than as the user the token names.
+	// Actions declare no method, so without this a GET with the token in its
+	// query ran any of them.
+	if asset_token_ignored(jwt_purpose, aa, shell_static) {
+		debug("asset token ignored: app=%s action=%s method=%s", a.id, name, c.Request.Method)
+		user = web_auth(c)
+		jwt_app, jwt_purpose, has_bearer = "", "", false
+	}
+
 	// Require authentication for non-public actions
 	if user == nil && !aa.Public {
 		// Top-level browser navigations: redirect to login page at /
@@ -499,10 +513,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		}
 	}
 
-	// An asset token is what a page puts in an image or attachment URL, so a
-	// copied link hands it over. It reads and nothing else, and that holds
-	// outside the app-token block below: a public action skips every check in
-	// there, yet still acts AS the user a credential names.
+	// On an action it reaches, an asset token reads and nothing else, and that
+	// holds outside the app-token block below: a public action skips every
+	// check in there, yet still acts AS the user a credential names.
 	if jwt_purpose == token_purpose_asset && c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
 		debug("403 asset token on a mutating method: app=%s action=%s method=%s", a.id, name, c.Request.Method)
 		respond_error(c, http.StatusForbidden, "app_token_read_only", "errors.access_denied", nil)
@@ -1192,6 +1205,13 @@ func web_anonymous_owner(routed string, public bool) *User {
 // web_serves_file reports whether an action declaring a file will answer this
 // request with the file rather than with its function. Both the shell_static
 // bypass and the branch that writes the file ask it, so they cannot disagree.
+// asset_token_ignored reports whether a credential minted for URL-borne use is
+// set aside for an action: everywhere but the actions declared to serve assets
+// and the static files, which need no credential at all.
+func asset_token_ignored(purpose string, aa *AppAction, static bool) bool {
+	return purpose == token_purpose_asset && aa != nil && !aa.Asset && !static
+}
+
 func web_serves_file(c *gin.Context, aa *AppAction) bool {
 	if aa.File == "" {
 		return false

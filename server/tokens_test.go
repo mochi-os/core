@@ -12,6 +12,8 @@ import (
 	"time"
 
 	sl "go.starlark.net/starlark"
+	"slices"
+	"sort"
 )
 
 // Test token generation format
@@ -459,5 +461,71 @@ func TestTokenCreateAndDeleteRefuseACarriedCredential(t *testing.T) {
 	}
 	if value, err := api_token_create(thread(false), create, sl.Tuple{sl.String("y"), sl.NewList([]sl.Value{sl.String("dav")})}, nil); err != nil || !strings.HasPrefix(string(value.(sl.String)), "mochi-") {
 		t.Fatalf("an ordinary request could not mint a token: %v %v", value, err)
+	}
+}
+
+// TestTokenListAndDeleteShareDeviceCredentials: a device credential (the dav
+// scope) is shared by the apps that serve DAV, so mochi.token.list("dav")
+// lists the user's from every app and either app may delete one; an app's
+// plain listing, and a token of another scope, stay the app's own.
+func TestTokenListAndDeleteShareDeviceCredentials(t *testing.T) {
+	dav_auth_env(t)
+	user := user_by_uid("u-dav")
+	if user == nil {
+		t.Fatal("no test user")
+	}
+	phone := token_create("u-dav", "people", "phone", []string{"dav"}, 0, "carddav/*path", "")
+	tablet := token_create("u-dav", "calendars", "tablet", []string{"dav"}, 0, "caldav/*path", "")
+	ics := token_create("u-dav", "calendars", "ics", []string{"ics"}, 0, ":calendar/calendar.ics", "c1")
+	thread := func(app string) *sl.Thread {
+		thread := &sl.Thread{}
+		thread.SetLocal("user", user)
+		thread.SetLocal("app", &App{id: app, internal: &AppVersion{}})
+		return thread
+	}
+	list := sl.NewBuiltin("mochi.token.list", api_token_list)
+	names := func(out sl.Value) []string {
+		var names []string
+		for _, row := range sl_decode(out).([]any) {
+			names = append(names, row.(map[string]any)["name"].(string))
+		}
+		sort.Strings(names)
+		return names
+	}
+
+	out, err := api_token_list(thread("people"), list, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := names(out); !slices.Equal(got, []string{"phone"}) {
+		t.Errorf("people's own tokens = %v", got)
+	}
+	out, err = api_token_list(thread("people"), list, sl.Tuple{sl.String("dav")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := names(out); !slices.Equal(got, []string{"phone", "tablet"}) {
+		t.Errorf("the device credentials from people = %v, want phone and tablet", got)
+	}
+	out, err = api_token_list(thread("calendars"), list, sl.Tuple{sl.String("dav")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := names(out); !slices.Equal(got, []string{"phone", "tablet"}) {
+		t.Errorf("the device credentials from calendars = %v, want phone and tablet", got)
+	}
+
+	del := sl.NewBuiltin("mochi.token.delete", api_token_delete)
+	if _, err := api_token_delete(thread("people"), del, sl.Tuple{sl.String(ics)}, nil); err == nil {
+		t.Error("people deleted calendars' ICS token")
+	}
+	if out, err := api_token_delete(thread("people"), del, sl.Tuple{sl.String(tablet)}, nil); err != nil || out != sl.True {
+		t.Errorf("people revoking the tablet's credential: %v, %v", out, err)
+	}
+	if token_lookup(tablet) != nil {
+		t.Error("the tablet's credential survived")
+	}
+	if token_lookup(phone) == nil || token_lookup(ics) == nil {
+		t.Error("the other tokens did not survive")
 	}
 }

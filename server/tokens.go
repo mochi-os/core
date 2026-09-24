@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"slices"
 
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
@@ -85,10 +86,16 @@ func token_delete(hash string) bool {
 	return true
 }
 
-// Return all tokens for a user and app (without the actual token values)
-func token_list(user string, app string) []map[string]any {
+// Return all tokens for a user and app (without the actual token values). An
+// empty app names every app, and a scope keeps only the tokens naming it.
+func token_list(user string, app string, scope string) []map[string]any {
 	db := db_open("db/users.db")
-	rows, _ := db.rows("select hash, name, scopes, action, entity, created, expires from tokens where user = ? and app = ?", user, app)
+	var rows []map[string]any
+	if app != "" {
+		rows, _ = db.rows("select hash, name, scopes, action, entity, created, expires from tokens where user = ? and app = ?", user, app)
+	} else {
+		rows, _ = db.rows("select hash, name, scopes, action, entity, created, expires from tokens where user = ?", user)
+	}
 
 	useds := token_useds(user)
 
@@ -97,6 +104,9 @@ func token_list(user string, app string) []map[string]any {
 		scopes_json := row["scopes"].(string)
 		var scopes []string
 		json.Unmarshal([]byte(scopes_json), &scopes)
+		if scope != "" && !slices.Contains(scopes, scope) {
+			continue
+		}
 
 		hash, _ := row["hash"].(string)
 		results = append(results, map[string]any{
@@ -366,7 +376,7 @@ func api_token_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	// Verify the token belongs to this user and app
 	db := db_open("db/users.db")
-	row, _ := db.row("select user, app from tokens where hash = ?", hash)
+	row, _ := db.row("select user, app, scopes from tokens where hash = ?", hash)
 	if row == nil {
 		return sl.False, nil
 	}
@@ -374,14 +384,24 @@ func api_token_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "token does not belong to user")
 	}
 	if row["app"].(string) != app.id {
-		return sl_error(fn, "token does not belong to app")
+		// A device credential (the dav scope) is shared by the apps that
+		// serve DAV, so either may revoke it from its own list; reaching
+		// beyond the app takes the permission minting takes.
+		var scopes []string
+		json.Unmarshal([]byte(row_string(row, "scopes")), &scopes)
+		if !slices.Contains(scopes, "dav") {
+			return sl_error(fn, "token does not belong to app")
+		}
+		if err := require_permission(t, fn, "tokens/create"); err != nil {
+			return sl_error(fn, "%v", err)
+		}
 	}
 
 	token_delete(hash)
 	return sl.True, nil
 }
 
-// mochi.token.list() -> list: List all tokens for the current user and app
+// mochi.token.list(scope="") -> list: List all tokens for the current user and app; with a scope, the user's tokens naming that scope from every app, which takes the tokens/create permission
 func api_token_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := principal_caller(t)
 	if user == nil {
@@ -393,8 +413,20 @@ func api_token_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "no app")
 	}
 
-	tokens := token_list(user.UID, app.id)
-	return sl_encode(tokens), nil
+	var scope string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "scope?", &scope); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if scope == "" {
+		return sl_encode(token_list(user.UID, app.id, "")), nil
+	}
+	// Every app's tokens of the scope: the device credentials the apps that
+	// serve DAV share, listed alike by each. Reaching beyond the app takes
+	// the permission minting takes.
+	if err := require_permission(t, fn, "tokens/create"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl_encode(token_list(user.UID, "", scope)), nil
 }
 
 // mochi.token.scope(token, scope) -> bool: Check if a token has a specific scope

@@ -37,7 +37,7 @@ KEEP_WORDS = {
     "teal", "terracotta", "url", "version", "violet", "wiki", "wikis",
     "caldav", "carddav", "webdav", "vcard", "icalendar", "ics", "thunderbird",
     "contacts",
-    "apple", "microsoft", "facebook", "x",
+    "apple", "microsoft", "facebook", "x", "android", "mac",
 
 }
 
@@ -57,7 +57,7 @@ KEEP_ENGLISH = frozenset({
     "ntfy",
     "CalDAV", "CardDAV", "WebDAV", "vCard", "iCalendar", "ICS", "DAVx5", "Thunderbird",
     "Contacts",
-    "Apple", "Microsoft", "Facebook", "X",
+    "Apple", "Microsoft", "Facebook", "X", "Android", "Mac",
 
 })
 

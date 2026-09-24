@@ -650,6 +650,20 @@ func dav_auth_env(t *testing.T) (*App, *AppAction) {
 	return a, &AppAction{Feature: "carddav", Public: true, name: "carddav/*path"}
 }
 
+// dav_test_register_app puts an app with the given actions in the registry
+// for the test's lifetime, as the DAV engine looks another app up by id.
+func dav_test_register_app(t *testing.T, id string, actions map[string]AppAction) {
+	t.Helper()
+	apps_lock.Lock()
+	apps[id] = &App{id: id, internal: &AppVersion{Actions: actions}}
+	apps_lock.Unlock()
+	t.Cleanup(func() {
+		apps_lock.Lock()
+		delete(apps, id)
+		apps_lock.Unlock()
+	})
+}
+
 func dav_test_context(method string, target string, headers map[string]string) (*gin.Context, *httptest.ResponseRecorder) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -667,6 +681,15 @@ func TestDavAuthenticate(t *testing.T) {
 	git := token_create("u-dav", "people", "git", []string{"git"}, 0, "", "")
 	other := token_create("u-dav", "feeds", "dav", []string{"dav"}, 0, "", "")
 	elsewhere := token_create("u-dav", "people", "bound", []string{"dav"}, 0, ":repository/git/*path", "")
+	// The calendars app serves CalDAV: its device credentials open this
+	// route too, so a phone holds one password for contacts and calendars.
+	dav_test_register_app(t, "calendars", map[string]AppAction{
+		"caldav/*path":     {Feature: "caldav", Public: true, name: "caldav/*path"},
+		"-/calendars/list": {name: "-/calendars/list"},
+	})
+	shared := token_create("u-dav", "calendars", "phone", []string{"dav"}, 0, "caldav/*path", "")
+	json_bound := token_create("u-dav", "calendars", "api", []string{"dav"}, 0, "-/calendars/list", "")
+	every_scope := token_create("u-dav", "calendars", "all", nil, 0, "caldav/*path", "")
 	basic := func(secret string) map[string]string {
 		return map[string]string{"Authorization": "Basic " + basic_auth_encode("dav@example.com", secret)}
 	}
@@ -683,6 +706,9 @@ func TestDavAuthenticate(t *testing.T) {
 		{"git-scoped token", basic(git), "", false},
 		{"another app's token", basic(other), "", false},
 		{"token bound to another route", basic(elsewhere), "", false},
+		{"another app's device credential", basic(shared), "", true},
+		{"another app's dav token bound to a plain action", basic(json_bound), "", false},
+		{"another app's token with every scope", basic(every_scope), "", false},
 		{"garbage password", basic("mochi-nope"), "", false},
 		{"dav token as Bearer", map[string]string{"Authorization": "Bearer " + dav}, "", true},
 		// A credential in the URL is logged and copied, and no client needs one.

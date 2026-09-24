@@ -449,16 +449,22 @@ func dav_authenticate(c *gin.Context, a *App, aa *AppAction) *User {
 	return nil
 }
 
-// dav_token_user validates a token the way git_authenticate does: this app,
-// the dav scope, bound to this route if bound at all, and an active account.
+// dav_token_user validates a token the way git_authenticate does: this app's
+// token with the dav scope, bound to this route if bound at all, or another
+// app's device credential (dav_token_shared), and an active account. A phone
+// holds one password for contacts and calendars, whichever app minted it.
 // user_by_uid filters only suspended accounts, and a closing account is gone
 // on every other surface.
 func dav_token_user(secret string, a *App, aa *AppAction) *User {
 	token := token_validate(secret)
-	if token == nil || token.App != a.id {
+	if token == nil {
 		return nil
 	}
-	if !token_has_scope(token, "dav") || !token_allows(token, aa.name, "", "") {
+	if token.App == a.id {
+		if !token_has_scope(token, "dav") || !token_allows(token, aa.name, "", "") {
+			return nil
+		}
+	} else if !dav_token_shared(token) {
 		return nil
 	}
 	user := user_by_uid(token.User)
@@ -466,6 +472,29 @@ func dav_token_user(secret string, a *App, aa *AppAction) *User {
 		return nil
 	}
 	return user
+}
+
+// dav_token_shared reports whether a token another app minted is a device
+// credential, which opens every DAV route of its user: it names the dav scope
+// itself, rather than holding every scope, and is bound to a DAV route of its
+// own app, which keeps it off that app's other actions.
+func dav_token_shared(token *Token) bool {
+	if !slices.Contains(token.Scopes, "dav") || token.Action == "" {
+		return false
+	}
+	app := app_by_id(token.App)
+	if app == nil {
+		return false
+	}
+	version := app.internal
+	if version == nil {
+		version = app.latest
+	}
+	if version == nil {
+		return false
+	}
+	action, ok := version.Actions[token.Action]
+	return ok && (action.Feature == "carddav" || action.Feature == "caldav")
 }
 
 // dav_route_literal returns the literal segments of a feature route before its

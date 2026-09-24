@@ -10,10 +10,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -1067,5 +1069,77 @@ func TestDavGitRouteStillNeedsASegment(t *testing.T) {
 	}
 	if aa := av.find_action("abcdefghi/git/info/refs"); aa == nil || aa.name != ":repository/git/*path" {
 		t.Fatalf("git/info/refs did not match the git route: %+v", aa)
+	}
+}
+
+// dav_test_privileges reads the privilege set each collection answered in a
+// multistatus: the set of privilege names per href.
+func dav_test_privileges(t *testing.T, body []byte) map[string][]string {
+	t.Helper()
+	var status struct {
+		Responses []struct {
+			Href     string `xml:"DAV: href"`
+			Propstat []struct {
+				Status string `xml:"DAV: status"`
+				Prop   struct {
+					Privileges *struct {
+						Privilege []struct {
+							Read  *struct{} `xml:"DAV: read"`
+							Write *struct{} `xml:"DAV: write"`
+						} `xml:"DAV: privilege"`
+					} `xml:"DAV: current-user-privilege-set"`
+				} `xml:"DAV: prop"`
+			} `xml:"DAV: propstat"`
+		} `xml:"DAV: response"`
+	}
+	if err := xml.Unmarshal(body, &status); err != nil {
+		t.Fatalf("multistatus: %v\n%s", err, body)
+	}
+	out := map[string][]string{}
+	for _, response := range status.Responses {
+		for _, propstat := range response.Propstat {
+			if !strings.Contains(propstat.Status, "200") || propstat.Prop.Privileges == nil {
+				continue
+			}
+			names := []string{}
+			for _, privilege := range propstat.Prop.Privileges.Privilege {
+				if privilege.Read != nil {
+					names = append(names, "read")
+				}
+				if privilege.Write != nil {
+					names = append(names, "write")
+				}
+			}
+			out[response.Href] = names
+		}
+	}
+	return out
+}
+
+// TestDavReadOnlyCollectionsAdvertiseThePrivilegeSet: a collection the app
+// marks read-only answers a privilege set holding read alone, and every other
+// collection read and write, on both routes, so a client knows before its
+// first write, which the engine would refuse anyway.
+func TestDavReadOnlyCollectionsAdvertiseThePrivilegeSet(t *testing.T) {
+	propfind := `<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:prop><D:current-user-privilege-set/></D:prop></D:propfind>`
+	for _, route := range []struct{ feature, home string }{
+		{"caldav", "/people/caldav/fp1/calendars/"},
+		{"carddav", "/people/carddav/fp1/books/"},
+	} {
+		fake := new_dav_fake_app("default", "birthdays")
+		fake.collections[1]["readonly"] = true
+		server := dav_test_server(t, route.feature, fake)
+		r := dav_raw(t, server, "PROPFIND", route.home, propfind, map[string]string{"Depth": "1", "Content-Type": "application/xml"})
+		body, _ := io.ReadAll(r.Body)
+		if r.StatusCode != http.StatusMultiStatus {
+			t.Fatalf("%s propfind: %d %s", route.feature, r.StatusCode, body)
+		}
+		granted := dav_test_privileges(t, body)
+		if got := granted[route.home+"default/"]; !slices.Equal(got, []string{"read", "write"}) {
+			t.Errorf("%s: the writable collection answered %v, want read and write", route.feature, got)
+		}
+		if got := granted[route.home+"birthdays/"]; !slices.Equal(got, []string{"read"}) {
+			t.Errorf("%s: the read-only collection answered %v, want read alone", route.feature, got)
+		}
 	}
 }

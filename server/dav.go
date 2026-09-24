@@ -942,6 +942,9 @@ func (b *dav_backend) address_book(c *dav_collection) carddav.AddressBook {
 			{ContentType: vcard.MIMEType, Version: "3.0"},
 			{ContentType: vcard.MIMEType, Version: "4.0"},
 		},
+		// Answered as the privilege set, so a client knows before its
+		// first write, which the engine would refuse anyway.
+		ReadOnly: c.readonly,
 	}
 }
 
@@ -1169,6 +1172,7 @@ func (b *dav_backend) calendar(c *dav_collection) caldav.Calendar {
 		Description:           c.description,
 		MaxResourceSize:       dav_body_maximum,
 		SupportedComponentSet: c.components,
+		ReadOnly:              c.readonly,
 	}
 }
 

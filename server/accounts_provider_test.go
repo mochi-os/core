@@ -351,3 +351,60 @@ func TestAccountAddCalendarProviders(t *testing.T) {
 		t.Error("an Apple ID that is not an address was accepted")
 	}
 }
+
+// TestOauthSignInKeepsItsAccountRow: an identity linked before accounts held
+// sign-ins has no account row, and signing in with it makes the row, so the
+// accounts page and the calendars wizard see the sign-in from then on; a
+// later sign-in, web or mobile, leaves the row and its label alone.
+func TestOauthSignInKeepsItsAccountRow(t *testing.T) {
+	oauth_binding_setup(t)
+	users := db_open("db/users.db")
+	users.exec("update users set methods='oauth' where uid='u-link'")
+	db_open("db/sessions.db").exec("create table logins (user text primary key, last integer not null)")
+	users.exec("insert into oauth (user, provider, subject, email, name, created) values ('u-link', 'github', 'sub-1', 'link@example.com', 'Link', 1)")
+	user := user_by_uid("u-link")
+	db := db_user(user, "user")
+	profile := &oauth_profile{Subject: "sub-1", Email: "link@example.com", Name: "Link"}
+
+	web := func() {
+		t.Helper()
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("GET", "/_/auth/oauth/github/callback", nil)
+		oauth_login(c, "github", profile, "/", "")
+		if w.Code != http.StatusFound || strings.Contains(w.Header().Get("Location"), "oauth_error") {
+			t.Fatalf("web sign-in: %d %q", w.Code, w.Header().Get("Location"))
+		}
+	}
+	mobile := func() {
+		t.Helper()
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("GET", "/_/auth/oauth/github/callback", nil)
+		oauth_mobile_login(c, "github", profile, &oauth_state{Provider: "github", Mode: "mobile", Scheme: "mochi", Challenge: strings.Repeat("c", 43)})
+		if w.Code != http.StatusFound || strings.Contains(w.Header().Get("Location"), "error=") {
+			t.Fatalf("mobile sign-in: %d %q", w.Code, w.Header().Get("Location"))
+		}
+	}
+	account := func(want string) {
+		t.Helper()
+		rows, _ := db.rows("select id, label, identifier from accounts where type='github'")
+		if len(rows) != 1 || row_string(rows[0], "identifier") != "sub-1" || row_string(rows[0], "label") != want {
+			t.Fatalf("github accounts = %v, want one for sub-1 labelled %q", rows, want)
+		}
+	}
+
+	web()
+	account("link@example.com")
+	// A label the user gave survives, and no second row appears.
+	row, _ := db.row("select id from accounts where type='github'")
+	db.account_set(row_string(row, "id"), map[string]any{"label": "Work"})
+	web()
+	account("Work")
+
+	db.exec("delete from accounts where type='github'")
+	mobile()
+	account("link@example.com")
+	mobile()
+	account("link@example.com")
+}

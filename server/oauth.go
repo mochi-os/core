@@ -938,6 +938,9 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target, expe
 		}
 
 		oauth_update_profile(db, provider, p)
+		// The identity's account row: made at the link, and here for a link
+		// made before accounts held sign-ins.
+		account_oauth_linked(user.UID, provider, p)
 		oauth_verification_record(db, provider, p.Subject, user.UID)
 
 		// OAuth proves a linked account, not the email factor, so any methods
@@ -1628,6 +1631,7 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 		}
 
 		oauth_update_profile(db, provider, p)
+		account_oauth_linked(user.UID, provider, p)
 		oauth_verification_record(db, provider, p.Subject, user.UID)
 
 		remaining := auth_remaining_oauth(user)

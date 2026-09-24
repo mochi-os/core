@@ -462,7 +462,7 @@ func oauth_consent_url(provider *oauth_provider, name, state string, st *oauth_s
 	if err != nil {
 		return "", fmt.Errorf("provider config error (%s): %w", name, err)
 	}
-	if st.Mode == "grant" {
+	if st.Capability != "" {
 		cfg.Scopes = append(append([]string{}, cfg.Scopes...), oauth_grants[name][st.Capability]...)
 	}
 
@@ -473,7 +473,7 @@ func oauth_consent_url(provider *oauth_provider, name, state string, st *oauth_s
 	if provider.oidc {
 		opts = append(opts, oidc.Nonce(st.Nonce))
 	}
-	if st.Mode == "grant" {
+	if st.Capability != "" {
 		// A grant needs a refresh token, which the provider hands out only
 		// for offline access and only on a consent it shows; every scope
 		// granted before stays on the one token. The hint steers the consent
@@ -593,6 +593,8 @@ func web_oauth_callback(c *gin.Context) {
 	switch oauth_callback_destination(st, link_user) {
 	case oauth_destination_grant:
 		oauth_grant_apply(c, name, profile, token, st, link_user)
+	case oauth_destination_mobile_grant:
+		oauth_mobile_grant(c, name, profile, token, st, link_user)
 	case oauth_destination_reauthentication:
 		if user := user_by_uid(link_user); user != nil {
 			oauth_reauthenticate(c, name, profile, user, st.Challenge)
@@ -621,6 +623,7 @@ const (
 	oauth_destination_mobile_link      = "mobile_link"
 	oauth_destination_reauthentication = "reauthentication"
 	oauth_destination_grant            = "grant"
+	oauth_destination_mobile_grant     = "mobile_grant"
 )
 
 // oauth_callback_destination decides which completion a resolved ceremony
@@ -632,6 +635,8 @@ func oauth_callback_destination(st *oauth_state, link_user string) string {
 		return oauth_destination_reauthentication
 	case st.Mode == "grant" && link_user != "":
 		return oauth_destination_grant
+	case link_user != "" && st.Mode == "mobile" && st.Capability != "":
+		return oauth_destination_mobile_grant
 	case link_user != "" && st.Mode == "mobile":
 		return oauth_destination_mobile_link
 	case link_user != "":
@@ -771,31 +776,47 @@ func oauth_grant_apply(c *gin.Context, provider string, p *oauth_profile, token 
 	if strings.Contains(target, "?") {
 		sep = "&"
 	}
-	user := user_by_uid(user_id)
-	if user == nil {
-		c.Redirect(http.StatusFound, target+sep+"grant_error=provider_error")
-		return
+	scopes, code := oauth_grant_scopes(provider, st.Capability, token)
+	if code == "" {
+		var id string
+		id, code = oauth_grant_store(user_id, provider, p, token.RefreshToken, scopes)
+		if code == "" {
+			c.Redirect(http.StatusFound, target+sep+"granted="+url.QueryEscape(st.Capability)+"&account="+url.QueryEscape(id))
+			return
+		}
 	}
+	c.Redirect(http.StatusFound, target+sep+"grant_error="+code)
+}
+
+// oauth_grant_scopes reads what the provider granted, or why the grant
+// failed: "provider_error" for an answer without a refresh token, "denied"
+// when the user withheld a scope the capability needs.
+func oauth_grant_scopes(provider, capability string, token *oauth2.Token) ([]string, string) {
 	if token.RefreshToken == "" {
 		warn("OAuth grant: %s answered without a refresh token", provider)
-		c.Redirect(http.StatusFound, target+sep+"grant_error=provider_error")
-		return
+		return nil, "provider_error"
 	}
 	scopes := oauth_token_scopes(token)
 	if len(scopes) == 0 {
 		// A provider that does not name the scopes granted is taken at its
 		// word for the ones asked for.
-		scopes = append([]string{}, oauth_grants[provider][st.Capability]...)
+		scopes = append([]string{}, oauth_grants[provider][capability]...)
 	}
-	granted := true
-	for _, needed := range oauth_grants[provider][st.Capability] {
+	for _, needed := range oauth_grants[provider][capability] {
 		if !slices.Contains(scopes, needed) {
-			granted = false
+			return nil, "denied"
 		}
 	}
-	if !granted {
-		c.Redirect(http.StatusFound, target+sep+"grant_error=denied")
-		return
+	return scopes, ""
+}
+
+// oauth_grant_store lands a grant on the identity's account, made when new:
+// the refresh token replaces the last, and the scopes join those held. Answers
+// the account's id, or "provider_error" for a user that is gone.
+func oauth_grant_store(user_id, provider string, p *oauth_profile, refresh string, scopes []string) (string, string) {
+	user := user_by_uid(user_id)
+	if user == nil {
+		return "", "provider_error"
 	}
 	db := db_user(user, "user")
 	row, _ := db.row("select id, data from accounts where type=? and identifier=?", provider, p.Subject)
@@ -810,7 +831,7 @@ func oauth_grant_apply(c *gin.Context, provider string, p *oauth_profile, token 
 			held = append(held, scope)
 		}
 	}
-	data := json_encode(map[string]any{"refresh": token.RefreshToken, "scopes": held})
+	data := json_encode(map[string]any{"refresh": refresh, "scopes": held})
 	label := p.Email
 	if label == "" {
 		label = p.Name
@@ -823,7 +844,40 @@ func oauth_grant_apply(c *gin.Context, provider string, p *oauth_profile, token 
 		db.account_set(id, map[string]any{"data": data, "verified": now()})
 		oauth_sources_forget(id)
 	}
-	c.Redirect(http.StatusFound, target+sep+"granted="+url.QueryEscape(st.Capability)+"&account="+url.QueryEscape(id))
+	return id, ""
+}
+
+// oauth_mobile_grant completes a grant ceremony a native app began. As with
+// a mobile link, nothing is written here: the callback's browser proves
+// neither the app nor the user, so the grant is stashed under the PKCE
+// challenge and landed at /exchange. A consent that withheld a scope, or a
+// provider that gave no refresh token, ends the ceremony here with the error
+// the web path answers.
+func oauth_mobile_grant(c *gin.Context, provider string, p *oauth_profile, token *oauth2.Token, st *oauth_state, link_user string) {
+	scopes, code := oauth_grant_scopes(provider, st.Capability, token)
+	if code != "" {
+		oauth_mobile_error_named(c, st, oauth_grant_return, code, nil)
+		return
+	}
+	exchange, err := oauth_mobile_store(st.Challenge, map[string]any{
+		"grant":      true,
+		"user":       link_user,
+		"provider":   provider,
+		"capability": st.Capability,
+		"refresh":    token.RefreshToken,
+		"scopes":     scopes,
+		"profile": map[string]any{
+			"subject":  p.Subject,
+			"email":    p.Email,
+			"verified": p.Verified,
+			"name":     p.Name,
+		},
+	})
+	if err != nil {
+		oauth_mobile_error_named(c, st, oauth_grant_return, "server_error", nil)
+		return
+	}
+	oauth_mobile_redirect_named(c, st, oauth_grant_return, exchange, "", nil)
 }
 
 // oauth_token_scopes reads the scopes a token answer names, space-separated
@@ -1542,6 +1596,7 @@ func oauth_mobile_redirect(c *gin.Context, st *oauth_state, exchange_code, error
 const (
 	oauth_login_return = "oauth-return"
 	oauth_link_return  = "oauth-link-return"
+	oauth_grant_return = "oauth-grant-return"
 )
 
 // oauth_mobile_redirect_named is oauth_mobile_redirect with the deep-link name
@@ -1784,6 +1839,10 @@ func web_oauth_exchange(c *gin.Context) {
 		oauth_exchange_link(c, data)
 		return
 	}
+	if grant, _ := data["grant"].(bool); grant {
+		oauth_exchange_grant(c, data)
+		return
+	}
 
 	// MFA branch: just relay the partial info; no session exists yet.
 	if mfa, _ := data["mfa"].(bool); mfa {
@@ -1851,6 +1910,53 @@ func oauth_exchange_link(c *gin.Context, data map[string]any) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"linked": provider})
+}
+
+// oauth_exchange_grant lands the grant a native app began, once the PKCE
+// verifier (checked by the caller) has proved the app instance and the Bearer
+// token here proves the user, as oauth_exchange_link does for a link. Answers
+// {granted, account}, what the web path returns the browser with.
+func oauth_exchange_grant(c *gin.Context, data map[string]any) {
+	link_user, _ := data["user"].(string)
+	provider, _ := data["provider"].(string)
+	capability, _ := data["capability"].(string)
+	refresh, _ := data["refresh"].(string)
+	stored, _ := data["profile"].(map[string]any)
+	scopes := []string{}
+	if raw, ok := data["scopes"].([]any); ok {
+		for _, scope := range raw {
+			if s, ok := scope.(string); ok {
+				scopes = append(scopes, s)
+			}
+		}
+	}
+	subject, _ := stored["subject"].(string)
+	if link_user == "" || provider == "" || capability == "" || refresh == "" || subject == "" {
+		respond_error(c, http.StatusInternalServerError, "server_error", "errors.server_error", nil)
+		return
+	}
+
+	token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+	if token == "" {
+		respond_error(c, http.StatusUnauthorized, "not_authenticated", "errors.not_authenticated", nil)
+		return
+	}
+	uid, _, err := jwt_verify(token)
+	if err != nil || uid == "" || uid != link_user {
+		audit_login_failed(link_user, rate_limit_client_ip(c), "oauth_grant_user_mismatch")
+		respond_error(c, http.StatusForbidden, "link_user_mismatch", "errors.link_user_mismatch", nil)
+		return
+	}
+
+	email, _ := stored["email"].(string)
+	verified, _ := stored["verified"].(bool)
+	profile_name, _ := stored["name"].(string)
+	id, code := oauth_grant_store(link_user, provider, &oauth_profile{Subject: subject, Email: email, Verified: verified, Name: profile_name}, refresh, scopes)
+	if code != "" {
+		respond_error(c, http.StatusInternalServerError, "server_error", "errors.server_error", nil)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"granted": capability, "account": id})
 }
 
 // boolint converts a Go bool to the 0/1 integer we use in SQLite.

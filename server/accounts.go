@@ -1038,7 +1038,7 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl.True, nil
 }
 
-// mochi.account.grant(provider, capability, target, account="") -> dict: Start the OAuth consent that grants a capability to an account of the provider, answering {url} for the browser to visit; it returns to target with granted=<capability> and the account's id
+// mochi.account.grant(provider, capability, target, account="", scheme="", challenge="") -> dict: Start the OAuth consent that grants a capability to an account of the provider, answering {url} for the browser to visit; it returns to target with granted=<capability> and the account's id. With a native app's scheme and PKCE challenge the consent runs in the system browser, answers {url, nonce}, returns on the app's deep link, and the grant lands at the exchange
 func api_account_grant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "accounts/write"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -1051,9 +1051,22 @@ func api_account_grant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if action == nil || action.web == nil {
 		return sl_error(fn, "no request context")
 	}
-	var name, capability, target, account string
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "provider", &name, "capability", &capability, "target", &target, "account?", &account); err != nil {
+	var name, capability, target, account, scheme, challenge string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "provider", &name, "capability", &capability, "target", &target, "account?", &account, "scheme?", &scheme, "challenge?", &challenge); err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	// A native app's consent runs in the system browser, which holds no
+	// session: the ceremony is bound by the app's PKCE verifier at the
+	// exchange instead, as a mobile sign-in link is.
+	mode := "grant"
+	if scheme != "" || challenge != "" {
+		if !oauth_valid_mobile_scheme(scheme) {
+			return sl_error(fn, "invalid scheme")
+		}
+		if len(challenge) < 32 || len(challenge) > 128 {
+			return sl_error(fn, "invalid challenge")
+		}
+		mode = "mobile"
 	}
 	provider, ok := oauth_providers()[name]
 	if !ok || !oauth_enabled(name) {
@@ -1073,9 +1086,12 @@ func api_account_grant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		}
 		hint = row_string(row, "identifier")
 	}
-	url, _, err := oauth_begin_ceremony(action.web, provider, name, user.UID, target, "grant", "", "", "", &oauth_grant{capability: capability, hint: hint})
+	url, returned, err := oauth_begin_ceremony(action.web, provider, name, user.UID, target, mode, scheme, challenge, "", &oauth_grant{capability: capability, hint: hint})
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	if mode == "mobile" {
+		return sl_encode(map[string]any{"url": url, "nonce": returned}), nil
 	}
 	return sl_encode(map[string]any{"url": url}), nil
 }

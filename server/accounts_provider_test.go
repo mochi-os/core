@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -407,4 +409,131 @@ func TestOauthSignInKeepsItsAccountRow(t *testing.T) {
 	account("link@example.com")
 	mobile()
 	account("link@example.com")
+}
+
+// TestOauthMobileGrantCompletesInTheApp: a grant a native app begins runs in
+// the system browser, which holds no session, so the callback stashes the
+// grant under the app's PKCE challenge and deep-links the app, and the grant
+// lands at /exchange where the verifier proves the app and the Bearer the
+// user; a consent that withheld the scopes ends at the callback.
+func TestOauthMobileGrantCompletesInTheApp(t *testing.T) {
+	oauth_binding_setup(t)
+	previous := oauth_grants["github"]
+	oauth_grants["github"] = map[string][]string{"calendar": {"repo"}}
+	t.Cleanup(func() { oauth_grants["github"] = previous })
+	sessions := db_open("db/sessions.db")
+	link_session := login_create("u-link", "", "")
+	other_session := login_create("u-other", "", "")
+	link_token := auth_create_app_token("u-link", link_session, "calendars")
+	other_token := auth_create_app_token("u-other", other_session, "calendars")
+	verifier, challenge := oauth_pkce()
+	profile := &oauth_profile{Subject: "sub-m", Email: "link@example.com", Name: "Link"}
+
+	// The builtin's mobile shape answers the provider's URL and the return
+	// nonce, and refuses a scheme it does not know.
+	thread := &sl.Thread{}
+	thread.SetLocal("app", &App{id: "internal", internal: &AppVersion{}})
+	thread.SetLocal("user", user_by_uid("u-link"))
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/calendars/-/calendars/grant", nil)
+	thread.SetLocal("action", &Action{web: c})
+	fn := sl.NewBuiltin("mochi.account.grant", api_account_grant)
+	if _, err := api_account_grant(thread, fn, sl.Tuple{sl.String("github"), sl.String("calendar"), sl.String("/calendars/")}, []sl.Tuple{{sl.String("scheme"), sl.String("https")}, {sl.String("challenge"), sl.String(challenge)}}); err == nil {
+		t.Error("a grant with a scheme that is not the app's was accepted")
+	}
+	out, err := api_account_grant(thread, fn, sl.Tuple{sl.String("github"), sl.String("calendar"), sl.String("/calendars/")}, []sl.Tuple{{sl.String("scheme"), sl.String("mochi")}, {sl.String("challenge"), sl.String(challenge)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := sl_decode(out).(map[string]any)
+	begun, _ := url.Parse(answer["url"].(string))
+	if begun.Host != "github.com" || !strings.Contains(begun.Query().Get("scope"), "repo") || begun.Query().Get("access_type") != "offline" {
+		t.Errorf("mobile grant begin answered %v, want the provider's consent with the capability's scopes", answer["url"])
+	}
+	state, st := oauth_only_ceremony(t)
+	if st.Mode != "mobile" || st.Capability != "calendar" || st.Scheme != "mochi" || st.Challenge != challenge || answer["nonce"] != st.Return.Nonce {
+		t.Fatalf("ceremony = %+v, answer = %v", st, answer)
+	}
+	if got := oauth_callback_destination(&st, "u-link"); got != oauth_destination_mobile_grant {
+		t.Errorf("destination = %q, want mobile_grant", got)
+	}
+	// The callback needs no session: the app, not a browser, is bound.
+	cb, _ := oauth_callback_context(state)
+	if _, _, ok := oauth_callback_ceremony(cb, "github", state); !ok {
+		t.Fatal("mobile grant callback without a session was refused")
+	}
+
+	// A consent that withheld the scope ends the ceremony at the callback.
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/_/auth/oauth/github/callback", nil)
+	oauth_mobile_grant(c, "github", profile, (&oauth2.Token{RefreshToken: "r1"}).WithExtra(map[string]any{"scope": "read:user"}), &st, "u-link")
+	if location := w.Header().Get("Location"); !strings.HasPrefix(location, "mochi:oauth-grant-return?") || !strings.Contains(location, "error=denied") || !strings.Contains(location, "nonce="+st.Return.Nonce) {
+		t.Errorf("withheld scope: location = %q, want the app's grant return carrying denied and the nonce", location)
+	}
+	if n, _ := sessions.rows("select 1 from ceremonies where type='oauth_exchange'"); len(n) != 0 {
+		t.Errorf("a denied grant left %d exchange rows", len(n))
+	}
+
+	// The callback stashes the grant and deep-links the app; nothing is
+	// written until the exchange.
+	stash := func() string {
+		t.Helper()
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("GET", "/_/auth/oauth/github/callback", nil)
+		oauth_mobile_grant(c, "github", profile, (&oauth2.Token{RefreshToken: "r1"}).WithExtra(map[string]any{"scope": "read:user repo"}), &st, "u-link")
+		location, _ := url.Parse(w.Header().Get("Location"))
+		if location.Scheme != "mochi" || location.Opaque != "oauth-grant-return" {
+			t.Fatalf("callback location = %q", w.Header().Get("Location"))
+		}
+		query := location.Query()
+		if query.Get("nonce") != st.Return.Nonce || query.Get("code") == "" {
+			t.Fatalf("callback query = %v", query)
+		}
+		return query.Get("code")
+	}
+	db := db_user(user_by_uid("u-link"), "user")
+	granted := func() map[string]any {
+		row, _ := db.row("select id, data from accounts where type='github' and identifier='sub-m'")
+		return row
+	}
+	code := stash()
+	if granted() != nil {
+		t.Fatal("the callback landed the grant; it must wait for the app's exchange")
+	}
+	if w := oauth_exchange_request(code, verifier, other_token); w.Code != http.StatusForbidden || granted() != nil {
+		t.Errorf("exchange with another user's token: %d, granted %v", w.Code, granted())
+	}
+	if w := oauth_exchange_request(stash(), verifier, ""); w.Code != http.StatusUnauthorized || granted() != nil {
+		t.Errorf("exchange with no token: %d", w.Code)
+	}
+	if w := oauth_exchange_request(stash(), random_alphanumeric(64), link_token); w.Code != http.StatusUnauthorized || granted() != nil {
+		t.Errorf("exchange with a wrong verifier: %d", w.Code)
+	}
+	w = oauth_exchange_request(stash(), verifier, link_token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("exchange: %d %s", w.Code, w.Body.String())
+	}
+	row := granted()
+	if row == nil {
+		t.Fatal("the exchange landed no grant")
+	}
+	var landed struct{ Granted, Account string }
+	json.Unmarshal(w.Body.Bytes(), &landed)
+	if landed.Granted != "calendar" || landed.Account != row_string(row, "id") {
+		t.Errorf("exchange answered %+v, want the capability and the account %q", landed, row_string(row, "id"))
+	}
+	var data struct {
+		Refresh string   `json:"refresh"`
+		Scopes  []string `json:"scopes"`
+	}
+	json.Unmarshal([]byte(row_string(row, "data")), &data)
+	if data.Refresh != "r1" || !slices.Contains(data.Scopes, "repo") {
+		t.Errorf("landed data = %+v", data)
+	}
+	if n, _ := sessions.rows("select 1 from ceremonies where type='oauth_exchange'"); len(n) != 0 {
+		t.Errorf("%d exchange rows left, want 0 (single-use)", len(n))
+	}
 }

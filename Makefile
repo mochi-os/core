@@ -4,7 +4,7 @@
 # This file is part of Mochi, licensed under the GNU AGPL v3 with the
 # Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-version = 2.0.4
+version = 2.0.5
 
 # Release track. production is the public release: a two-part version such as
 # 2.1, built for every platform, published to both apt suites so a server on

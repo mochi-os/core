@@ -633,6 +633,10 @@ func dav_error(code string) error {
 		return webdav.NewHTTPError(http.StatusInsufficientStorage, errors.New("collection full"))
 	case "invalid":
 		return webdav.NewHTTPError(http.StatusBadRequest, errors.New("invalid"))
+	case "unreachable":
+		// A write to a linked collection reaches another server first; when
+		// that server cannot be reached the client is told to try later.
+		return webdav.NewHTTPError(http.StatusBadGateway, errors.New("the calendar's server could not be reached"))
 	}
 	return webdav.NewHTTPError(http.StatusInternalServerError, errors.New("server error"))
 }

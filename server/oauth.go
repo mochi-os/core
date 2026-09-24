@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +66,18 @@ type oauth_state struct {
 	Email     string       `json:"email,omitempty"`     // address the email-login flow is verifying
 	Binding   string       `json:"binding,omitempty"`   // browser cookie a web login ceremony must present at the callback
 	Return    oauth_return `json:"return"`
+	// A grant ceremony asks the provider for the scopes a capability needs
+	// beside the identity, and lands the refresh token on the connected
+	// account; the hint steers the provider to the account being re-consented.
+	Capability string `json:"capability,omitempty"`
+	Hint       string `json:"hint,omitempty"`
+}
+
+// oauth_grant is what a grant ceremony asks for: a capability's scopes on
+// the account the hint names, or on whichever account the user picks.
+type oauth_grant struct {
+	capability string
+	hint       string
 }
 
 // oauth_binding_cookie ties a web LOGIN ceremony to the browser that began it -
@@ -244,9 +257,13 @@ func oauth_redirect(c *gin.Context, provider string) string {
 // oauth_pkce generates a 64-character code verifier and its S256 challenge.
 func oauth_pkce() (verifier, challenge string) {
 	verifier = random_alphanumeric(64)
+	return verifier, oauth_challenge(verifier)
+}
+
+// oauth_challenge is the S256 challenge of a PKCE verifier.
+func oauth_challenge(verifier string) string {
 	h := sha256.Sum256([]byte(verifier))
-	challenge = base64.RawURLEncoding.EncodeToString(h[:])
-	return
+	return base64.RawURLEncoding.EncodeToString(h[:])
 }
 
 // oauth_login_target redirects the browser to the login page carrying an
@@ -349,7 +366,7 @@ func web_oauth_begin(c *gin.Context) {
 		link_user = user.UID
 	}
 
-	auth_url, returned, err := oauth_begin_ceremony(c, provider, name, link_user, body.Target, body.Mode, body.Scheme, body.Challenge, body.Email)
+	auth_url, returned, err := oauth_begin_ceremony(c, provider, name, link_user, body.Target, body.Mode, body.Scheme, body.Challenge, body.Email, nil)
 	if err != nil {
 		warn("OAuth begin: %v", err)
 		respond_error(c, http.StatusServiceUnavailable, "provider_unavailable", "errors.provider_unavailable", nil)
@@ -367,22 +384,17 @@ func web_oauth_begin(c *gin.Context) {
 }
 
 // oauth_begin_ceremony generates the PKCE verifier/state, stores the oauth
-// ceremony - carrying user_id for the link and step-up flows, and the caller's
-// result challenge for the app/popup exchange - and returns the provider auth
-// URL. Shared by the web begin handler and the step-up verify.begin builtin.
-func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_id, target, mode, scheme, challenge, email string) (string, string, error) {
-	verifier, oauth_challenge := oauth_pkce()
+// ceremony - carrying user_id for the link, grant and step-up flows, and the
+// caller's result challenge for the app/popup exchange - and returns the URL
+// the browser visits to reach the provider's consent. Shared by the web begin
+// handler, the account grant builtin and the step-up verify.begin builtin.
+func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_id, target, mode, scheme, challenge, email string, grant *oauth_grant) (string, string, error) {
+	verifier, _ := oauth_pkce()
 	state := random_alphanumeric(32)
 	nonce := random_alphanumeric(32)
 	// Minted for every ceremony, not just mobile ones, so the value is never
 	// absent when a mode is added later; only the deep-link redirect echoes it.
 	returned := random_alphanumeric(32)
-	redirect := oauth_redirect(c, name)
-
-	cfg, _, err := oauth_client_config(provider, redirect)
-	if err != nil {
-		return "", "", fmt.Errorf("provider config error (%s): %w", name, err)
-	}
 
 	// A web login ceremony is bound to the browser that began it; the other
 	// kinds carry their own binding (see oauth_binding_cookie).
@@ -391,19 +403,28 @@ func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_i
 		binding = random_alphanumeric(32)
 	}
 
-	data, err := json.Marshal(oauth_state{
+	st := oauth_state{
 		Provider:  name,
 		Verifier:  verifier,
 		Nonce:     nonce,
 		Target:    target,
-		Redirect:  redirect,
+		Redirect:  oauth_redirect(c, name),
 		Mode:      mode,
 		Scheme:    scheme,
 		Challenge: challenge,
 		Email:     email,
 		Binding:   binding,
 		Return:    oauth_return{Nonce: returned},
-	})
+	}
+	if grant != nil {
+		st.Capability = grant.capability
+		st.Hint = grant.hint
+	}
+	consent, err := oauth_consent_url(provider, name, state, &st)
+	if err != nil {
+		return "", "", err
+	}
+	data, err := json.Marshal(st)
 	if err != nil {
 		return "", "", err
 	}
@@ -415,16 +436,95 @@ func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_i
 		"insert into ceremonies (id, type, user, challenge, data, expires) values (?, 'oauth', ?, ?, ?, ?)",
 		state, user_id, []byte(state), string(data), now()+600)
 
+	// A link or grant ceremony begins inside the shell's sandboxed iframe,
+	// which may hand the top window only a same-origin URL: it starts at
+	// /start, where the session that owns the row is sent on to the consent.
+	if oauth_session_bound(mode, user_id) {
+		return "/_/auth/oauth/" + name + "/start?state=" + state, returned, nil
+	}
+	return consent, returned, nil
+}
+
+// oauth_session_bound reports whether a ceremony is bound to the session that
+// began it, as a web link or grant is: /start sends only that session on to
+// the consent, and oauth_ceremony_bound admits only it at the callback. A
+// mobile ceremony is bound by its PKCE verifier and a step-up by its own user,
+// neither of which the system browser's session could vouch for.
+func oauth_session_bound(mode, user string) bool {
+	return user != "" && mode != "mobile" && mode != "reauthentication"
+}
+
+// oauth_consent_url builds the provider's authorisation URL for a ceremony.
+// It is built from the stored state, so the URL /start answers is the one
+// /begin would have answered a top-window caller.
+func oauth_consent_url(provider *oauth_provider, name, state string, st *oauth_state) (string, error) {
+	cfg, _, err := oauth_client_config(provider, st.Redirect)
+	if err != nil {
+		return "", fmt.Errorf("provider config error (%s): %w", name, err)
+	}
+	if st.Mode == "grant" {
+		cfg.Scopes = append(append([]string{}, cfg.Scopes...), oauth_grants[name][st.Capability]...)
+	}
+
 	opts := []oauth2.AuthCodeOption{
-		oauth2.SetAuthURLParam("code_challenge", oauth_challenge),
+		oauth2.SetAuthURLParam("code_challenge", oauth_challenge(st.Verifier)),
 		oauth2.SetAuthURLParam("code_challenge_method", "S256"),
 	}
 	if provider.oidc {
-		opts = append(opts, oidc.Nonce(nonce))
+		opts = append(opts, oidc.Nonce(st.Nonce))
 	}
-	opts = append(opts, provider.extra_auth...)
+	if st.Mode == "grant" {
+		// A grant needs a refresh token, which the provider hands out only
+		// for offline access and only on a consent it shows; every scope
+		// granted before stays on the one token. The hint steers the consent
+		// to the account being re-consented, else the user picks one.
+		opts = append(opts, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("include_granted_scopes", "true"))
+		if st.Hint != "" {
+			opts = append(opts, oauth2.SetAuthURLParam("prompt", "consent"), oauth2.SetAuthURLParam("login_hint", st.Hint))
+		} else {
+			opts = append(opts, oauth2.SetAuthURLParam("prompt", "consent select_account"))
+		}
+	} else {
+		opts = append(opts, provider.extra_auth...)
+	}
+	return cfg.AuthCodeURL(state, opts...), nil
+}
 
-	return cfg.AuthCodeURL(state, opts...), returned, nil
+// GET /_/auth/oauth/:provider/start?state=
+// Sends the session that began a link or grant ceremony on to the provider's
+// consent. Such a ceremony begins inside the shell's sandboxed iframe, which
+// may hand the top window only a same-origin URL, so /begin answers this path
+// for it and the browser leaves the site from here. The row is read, not
+// consumed: the callback does that, and a hop presented by the wrong browser
+// must not end the ceremony for the right one.
+func web_oauth_start(c *gin.Context) {
+	name := c.Param("provider")
+	provider, ok := oauth_providers()[name]
+	if !ok || !oauth_enabled(name) {
+		respond_error(c, http.StatusNotFound, "unknown_provider", "errors.unknown_provider", nil)
+		return
+	}
+	state := c.Query("state")
+	row, _ := db_open("db/sessions.db").row("select user, data from ceremonies where id=? and type='oauth' and expires>?", state, now())
+	var st oauth_state
+	if row == nil || json.Unmarshal([]byte(as_string(row["data"])), &st) != nil || st.Provider != name {
+		oauth_error_redirect(c, "state_invalid", nil)
+		return
+	}
+	owner := as_string(row["user"])
+	user := web_auth(c)
+	if !oauth_session_bound(st.Mode, owner) || user == nil || user.UID != owner {
+		audit_login_failed(owner, rate_limit_client_ip(c), "oauth_session_mismatch")
+		oauth_error_redirect(c, "state_invalid", nil)
+		return
+	}
+	consent, err := oauth_consent_url(provider, name, state, &st)
+	if err != nil {
+		warn("OAuth start: %v", err)
+		oauth_error_redirect(c, "provider_error", nil)
+		return
+	}
+	c.Redirect(http.StatusFound, consent)
 }
 
 // GET /_/auth/oauth/:provider/callback
@@ -491,6 +591,8 @@ func web_oauth_callback(c *gin.Context) {
 	}
 
 	switch oauth_callback_destination(st, link_user) {
+	case oauth_destination_grant:
+		oauth_grant_apply(c, name, profile, token, st, link_user)
 	case oauth_destination_reauthentication:
 		if user := user_by_uid(link_user); user != nil {
 			oauth_reauthenticate(c, name, profile, user, st.Challenge)
@@ -518,6 +620,7 @@ const (
 	oauth_destination_mobile_login     = "mobile_login"
 	oauth_destination_mobile_link      = "mobile_link"
 	oauth_destination_reauthentication = "reauthentication"
+	oauth_destination_grant            = "grant"
 )
 
 // oauth_callback_destination decides which completion a resolved ceremony
@@ -527,6 +630,8 @@ func oauth_callback_destination(st *oauth_state, link_user string) string {
 	switch {
 	case st.Mode == "reauthentication" && link_user != "":
 		return oauth_destination_reauthentication
+	case st.Mode == "grant" && link_user != "":
+		return oauth_destination_grant
 	case link_user != "" && st.Mode == "mobile":
 		return oauth_destination_mobile_link
 	case link_user != "":
@@ -648,7 +753,112 @@ func oauth_link_apply(provider string, p *oauth_profile, user_id string) bool {
 	default:
 		return false
 	}
+	account_oauth_linked(user_id, provider, p)
 	return true
+}
+
+// oauth_grant_apply completes a grant ceremony: the provider's refresh token
+// and the scopes it granted land on the connected account the identity is,
+// created when the identity is new to the user. The browser goes back to the
+// app's target with granted=<capability> and the account's id, or with
+// grant_error naming why not.
+func oauth_grant_apply(c *gin.Context, provider string, p *oauth_profile, token *oauth2.Token, st *oauth_state, user_id string) {
+	target := redirect_local(st.Target)
+	if target == "" {
+		target = "/"
+	}
+	sep := "?"
+	if strings.Contains(target, "?") {
+		sep = "&"
+	}
+	user := user_by_uid(user_id)
+	if user == nil {
+		c.Redirect(http.StatusFound, target+sep+"grant_error=provider_error")
+		return
+	}
+	if token.RefreshToken == "" {
+		warn("OAuth grant: %s answered without a refresh token", provider)
+		c.Redirect(http.StatusFound, target+sep+"grant_error=provider_error")
+		return
+	}
+	scopes := oauth_token_scopes(token)
+	if len(scopes) == 0 {
+		// A provider that does not name the scopes granted is taken at its
+		// word for the ones asked for.
+		scopes = append([]string{}, oauth_grants[provider][st.Capability]...)
+	}
+	granted := true
+	for _, needed := range oauth_grants[provider][st.Capability] {
+		if !slices.Contains(scopes, needed) {
+			granted = false
+		}
+	}
+	if !granted {
+		c.Redirect(http.StatusFound, target+sep+"grant_error=denied")
+		return
+	}
+	db := db_user(user, "user")
+	row, _ := db.row("select id, data from accounts where type=? and identifier=?", provider, p.Subject)
+	held := []string{}
+	id := ""
+	if row != nil {
+		id = row_string(row, "id")
+		held = oauth_account_scopes(row)
+	}
+	for _, scope := range scopes {
+		if !slices.Contains(held, scope) {
+			held = append(held, scope)
+		}
+	}
+	data := json_encode(map[string]any{"refresh": token.RefreshToken, "scopes": held})
+	label := p.Email
+	if label == "" {
+		label = p.Name
+	}
+	if row == nil {
+		id = uid()
+		db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values (?, ?, ?, ?, ?, ?, ?)",
+			id, provider, label, p.Subject, data, now(), now())
+	} else {
+		db.account_set(id, map[string]any{"data": data, "verified": now()})
+		oauth_sources_forget(id)
+	}
+	c.Redirect(http.StatusFound, target+sep+"granted="+url.QueryEscape(st.Capability)+"&account="+url.QueryEscape(id))
+}
+
+// oauth_token_scopes reads the scopes a token answer names, space-separated
+// as OAuth writes them.
+func oauth_token_scopes(token *oauth2.Token) []string {
+	raw, _ := token.Extra("scope").(string)
+	return strings.Fields(raw)
+}
+
+// oauth_account_revoke tells the provider the account's grant is over, so a
+// removed account's refresh token stops working at the provider too. Best
+// effort: the row goes whether or not the provider answers.
+func oauth_account_revoke(row map[string]any) {
+	ptype, _ := row["type"].(string)
+	if ptype != "google" {
+		return
+	}
+	raw, _ := row["data"].(string)
+	var data struct {
+		Refresh string `json:"refresh"`
+	}
+	if raw != "" {
+		json.Unmarshal([]byte(raw), &data)
+	}
+	if data.Refresh == "" {
+		return
+	}
+	go func() {
+		response, err := oauth_http_client.PostForm("https://oauth2.googleapis.com/revoke", url.Values{"token": {data.Refresh}})
+		if err != nil {
+			info("OAuth revoke: google: %v", err)
+			return
+		}
+		response.Body.Close()
+	}()
 }
 
 // oauth_mobile_link completes a link ceremony a native app began. The link is
@@ -792,6 +1002,7 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target, expe
 	db.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, ?, ?, ?)",
 		user.UID, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now())
 	oauth_verification_record(db, provider, p.Subject, user.UID)
+	account_oauth_linked(user.UID, provider, p)
 
 	// Seed the mochi_me cookie with the provider's name and email so the
 	// /login/identity form can prefill the name input. The cookie is read by
@@ -1104,7 +1315,7 @@ func api_user_oauth_verify_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 
 	// Step-up reauthentication completes in the browser, not through a deep
 	// link, so the return nonce has nothing to authenticate here.
-	url, _, err := oauth_begin_ceremony(action.web, provider, name, user.UID, "", "reauthentication", "", challenge, "")
+	url, _, err := oauth_begin_ceremony(action.web, provider, name, user.UID, "", "reauthentication", "", challenge, "", nil)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -1278,6 +1489,7 @@ func api_user_oauth_unlink(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 			db_open("db/sessions.db").exec("delete from verifications where oauth=?", oauth_id)
 		}
 	}
+	account_oauth_unlinked(user, provider)
 	audit_authentication_changed(user.Username, "oauth_unlinked_"+provider)
 	return sl.True, nil
 }
@@ -1492,6 +1704,7 @@ func oauth_mobile_login(c *gin.Context, provider string, p *oauth_profile, st *o
 	db.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, ?, ?, ?)",
 		user.UID, provider, p.Subject, p.Email, boolint(p.Verified), p.Name, now())
 	oauth_verification_record(db, provider, p.Subject, user.UID)
+	account_oauth_linked(user.UID, provider, p)
 	rate_limit_login.reset(rate_limit_client_ip(c))
 
 	session := login_create(user.UID, c.ClientIP(), c.GetHeader("User-Agent"))

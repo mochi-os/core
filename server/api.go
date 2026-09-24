@@ -127,9 +127,10 @@ func api_table() sl.StringDict {
 				"now":   sl.NewBuiltin("mochi.time.now", api_time_now),
 				"parse": sl.NewBuiltin("mochi.time.parse", api_time_parse),
 			}),
-			"ical":  api_ical,
-			"vcard": api_vcard,
-			"uid":   sl.NewBuiltin("mochi.uid", api_uid),
+			"caldav": api_caldav,
+			"ical":   api_ical,
+			"vcard":  api_vcard,
+			"uid":    sl.NewBuiltin("mochi.uid", api_uid),
 			"url": sls.FromStringDict(sl.String("mochi.url"), sl.StringDict{
 				"delete":  sl.NewBuiltin("mochi.url.delete", api_url_request),
 				"get":     sl.NewBuiltin("mochi.url.get", api_url_request),

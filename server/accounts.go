@@ -59,14 +59,43 @@ type ProviderField struct {
 	Placeholder string `json:"placeholder"`
 }
 
-// providers defines all available account providers (sorted alphabetically by type)
+// providers defines all available account providers (sorted alphabetically by type).
+//
+// An OAuth provider's account is the identity a sign-in link names, and it
+// holds the grants that link gathers beyond signing in: a Google account
+// linked for sign-in and granted calendar access is one entry. Its flow is
+// oauth, so it is connected by the OAuth link ceremony rather than a form,
+// and mochi.account.grant asks for a further capability on it.
 var providers = []Provider{
+	{
+		Type:         "apple",
+		Capabilities: []string{"calendar"},
+		Flow:         "form",
+		Fields: []ProviderField{
+			{Name: "username", Label: "accounts.field.apple", Type: "email", Required: true, Placeholder: "you@icloud.com"},
+			{Name: "password", Label: "accounts.field.password", Type: "password", Required: true, Placeholder: ""},
+			{Name: "label", Label: "accounts.field.name", Type: "text", Required: false, Placeholder: ""},
+		},
+		Verify: false,
+	},
 	{
 		Type:         "browser",
 		Capabilities: []string{"notify"},
 		Flow:         "browser",
 		Fields:       nil, // handled by JavaScript
 		Verify:       false,
+	},
+	{
+		Type:         "caldav",
+		Capabilities: []string{"calendar"},
+		Flow:         "form",
+		Fields: []ProviderField{
+			{Name: "url", Label: "accounts.field.server", Type: "url", Required: true, Placeholder: "https://calendar.example.com"},
+			{Name: "username", Label: "accounts.field.username", Type: "text", Required: true, Placeholder: ""},
+			{Name: "password", Label: "accounts.field.password", Type: "password", Required: true, Placeholder: ""},
+			{Name: "label", Label: "accounts.field.name", Type: "text", Required: false, Placeholder: ""},
+		},
+		Verify: false,
 	},
 	{
 		Type:         "claude",
@@ -89,6 +118,21 @@ var providers = []Provider{
 		Verify: true,
 	},
 	{
+		Type:         "facebook",
+		Capabilities: []string{"login"},
+		Flow:         "oauth",
+	},
+	{
+		Type:         "github",
+		Capabilities: []string{"login"},
+		Flow:         "oauth",
+	},
+	{
+		Type:         "google",
+		Capabilities: []string{"login", "calendar"},
+		Flow:         "oauth",
+	},
+	{
 		Type:         "mcp",
 		Capabilities: []string{"mcp"},
 		Flow:         "form",
@@ -98,6 +142,11 @@ var providers = []Provider{
 			{Name: "label", Label: "accounts.field.name", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
+	},
+	{
+		Type:         "microsoft",
+		Capabilities: []string{"login"},
+		Flow:         "oauth",
 	},
 	{
 		Type:         "ntfy",
@@ -157,12 +206,18 @@ var providers = []Provider{
 		},
 		Verify: false,
 	},
+	{
+		Type:         "x",
+		Capabilities: []string{"login"},
+		Flow:         "oauth",
+	},
 }
 
 // Starlark API module
 var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"add":       sl.NewBuiltin("mochi.account.add", api_account_add),
 	"get":       sl.NewBuiltin("mochi.account.get", api_account_get),
+	"grant":     sl.NewBuiltin("mochi.account.grant", api_account_grant),
 	"list":      sl.NewBuiltin("mochi.account.list", api_account_list),
 	"notify":    sl.NewBuiltin("mochi.account.notify", api_account_notify),
 	"providers": sl.NewBuiltin("mochi.account.providers", api_account_providers),
@@ -230,6 +285,82 @@ func account_redact(row map[string]any) map[string]any {
 		"enabled":    row["enabled"],
 		"default":    row["default"],
 		"device":     row["device"],
+	}
+}
+
+// account_granted names the capabilities the account holds now. A form or
+// browser account holds all its provider offers; an OAuth account holds the
+// sign-in when its identity is linked to the user, and each further
+// capability whose scopes its grants cover. The row carries its data column.
+func account_granted(user *User, row map[string]any) []string {
+	ptype, _ := row["type"].(string)
+	provider := provider_get(ptype)
+	if provider == nil {
+		return []string{}
+	}
+	if provider.Flow != "oauth" {
+		return append([]string{}, provider.Capabilities...)
+	}
+	out := []string{}
+	subject, _ := row["identifier"].(string)
+	for _, capability := range provider.Capabilities {
+		if capability == "login" {
+			if linked, _ := db_open("db/users.db").exists("select 1 from oauth where user=? and provider=? and subject=?", user.UID, ptype, subject); linked {
+				out = append(out, capability)
+			}
+		} else if oauth_account_granted(user, row, capability) {
+			out = append(out, capability)
+		}
+	}
+	return out
+}
+
+// account_present returns the redacted row with the capabilities it holds.
+func account_present(user *User, row map[string]any) map[string]any {
+	out := account_redact(row)
+	out["granted"] = account_granted(user, row)
+	return out
+}
+
+// account_oauth_linked keeps the account an OAuth identity is, once the
+// identity is linked to the user for sign-in: the row the grants land on,
+// created here so the connected accounts list shows the link at once.
+func account_oauth_linked(user_id string, provider string, p *oauth_profile) {
+	user := user_by_uid(user_id)
+	if user == nil || provider_get(provider) == nil {
+		return
+	}
+	db := db_user(user, "user")
+	label := p.Email
+	if label == "" {
+		label = p.Name
+	}
+	if existing, _ := db.row("select id, label from accounts where type=? and identifier=?", provider, p.Subject); existing != nil {
+		if current, _ := existing["label"].(string); current == "" && label != "" {
+			db.account_set(row_string(existing, "id"), map[string]any{"label": label})
+		}
+		return
+	}
+	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values (?, ?, ?, ?, '{}', ?, ?)",
+		uid(), provider, label, p.Subject, now(), now())
+}
+
+// account_oauth_unlinked drops the account an unlinked identity was, unless
+// a grant still lives on it: the calendar access stays until it is revoked
+// on the connected accounts page.
+func account_oauth_unlinked(user *User, provider string) {
+	db := db_user(user, "user")
+	rows, _ := db.rows("select id, data from accounts where type=?", provider)
+	for _, row := range rows {
+		var data struct {
+			Refresh string `json:"refresh"`
+		}
+		if raw, _ := row["data"].(string); raw != "" {
+			json.Unmarshal([]byte(raw), &data)
+		}
+		if data.Refresh == "" {
+			db.row_remove(reg_accounts, map[string]any{"id": row["id"]})
+		}
 	}
 }
 
@@ -345,6 +476,9 @@ func api_account_providers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	for _, p := range list {
+		if p.Flow == "oauth" && !oauth_enabled(p.Type) {
+			continue
+		}
 		pm := map[string]any{
 			"type":         p.Type,
 			"capabilities": p.Capabilities,
@@ -405,7 +539,7 @@ func api_account_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		capability = cap
 	}
 
-	rows, err := db.rows("select id, type, label, identifier, created, verified, enabled, \"default\", device from accounts order by created desc")
+	rows, err := db.rows("select id, type, label, identifier, data, created, verified, enabled, \"default\", device from accounts order by created desc")
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -419,7 +553,7 @@ func api_account_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 				continue
 			}
 		}
-		result = append(result, account_redact(row))
+		result = append(result, account_present(user, row))
 	}
 
 	return sl_encode(result), nil
@@ -446,7 +580,7 @@ func api_account_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	db := db_user(user, "user")
-	row, err := db.row("select id, type, label, identifier, created, verified, enabled, \"default\", device from accounts where id=?", id)
+	row, err := db.row("select id, type, label, identifier, data, created, verified, enabled, \"default\", device from accounts where id=?", id)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -454,7 +588,7 @@ func api_account_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl.None, nil
 	}
 
-	return sl_encode(account_redact(row)), nil
+	return sl_encode(account_present(user, row)), nil
 }
 
 // mochi.account.add(type, label=..., address=..., token=..., api_key=..., url=..., endpoint=..., auth=..., p256dh=..., secret=..., topic=..., server=...) -> dict: Add an account
@@ -480,6 +614,9 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	provider := provider_get(ptype)
 	if provider == nil {
 		return sl_error(fn, "unknown provider type %q", ptype)
+	}
+	if provider.Flow == "oauth" {
+		return sl_error(fn, "an OAuth account is connected by linking it for sign-in or by mochi.account.grant")
 	}
 
 	// Extract fields from kwargs
@@ -543,6 +680,32 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 		// Send verification email
 		account_send_verification_email(address, code, user_language(user))
+
+	case "apple", "caldav":
+		// A calendar server the account signs in to with a password: iCloud
+		// at Apple's fixed address, or any CalDAV server by its own.
+		username, _ := fields["username"].(string)
+		password, _ := fields["password"].(string)
+		address := dav_client_apple_root
+		if ptype == "caldav" {
+			address, _ = fields["url"].(string)
+			address = strings.TrimSpace(address)
+			if (!strings.HasPrefix(address, "https://") && !strings.HasPrefix(address, "http://")) || !valid(address, "url") {
+				return sl_error(fn, "invalid server URL")
+			}
+			identifier = address
+		} else {
+			if !email_valid(username) {
+				return sl_error(fn, "invalid Apple ID")
+			}
+			identifier = username
+		}
+		if username == "" || password == "" {
+			return sl_error(fn, "username and password are required")
+		}
+		data["url"] = address
+		data["username"] = username
+		data["password"] = password
 
 	case "browser":
 		// Browser push - extract endpoint for uniqueness check
@@ -854,12 +1017,67 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	// Check the account exists; the caller distinguishes "no such account" from
 	// "removed" by the return value.
-	row, _ := db.row("select 1 from accounts where id=?", id)
+	row, _ := db.row("select id, type, identifier, data from accounts where id=?", id)
 	if row == nil {
 		return sl.False, nil
 	}
+	// An OAuth account is also the identity the user signs in with. Removing
+	// it here revokes the grants it holds; the sign-in link is unlinked on
+	// the login page, with the last-method guard that has, and the row goes
+	// with whichever of the two is removed last.
+	if ptype, _ := row["type"].(string); provider_get(ptype) != nil && provider_get(ptype).Flow == "oauth" {
+		oauth_account_revoke(row)
+		oauth_sources_forget(id)
+		subject, _ := row["identifier"].(string)
+		if linked, _ := db_open("db/users.db").exists("select 1 from oauth where user=? and provider=? and subject=?", user.UID, ptype, subject); linked {
+			db.account_set(id, map[string]any{"data": "{}"})
+			return sl.True, nil
+		}
+	}
 	db.row_remove(reg_accounts, map[string]any{"id": id})
 	return sl.True, nil
+}
+
+// mochi.account.grant(provider, capability, target, account="") -> dict: Start the OAuth consent that grants a capability to an account of the provider, answering {url} for the browser to visit; it returns to target with granted=<capability> and the account's id
+func api_account_grant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "accounts/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	user := principal_caller(t)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	action, _ := t.Local("action").(*Action)
+	if action == nil || action.web == nil {
+		return sl_error(fn, "no request context")
+	}
+	var name, capability, target, account string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "provider", &name, "capability", &capability, "target", &target, "account?", &account); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	provider, ok := oauth_providers()[name]
+	if !ok || !oauth_enabled(name) {
+		return sl_error(fn, "unknown provider")
+	}
+	if len(oauth_grants[name][capability]) == 0 {
+		return sl_error(fn, "unknown capability")
+	}
+	if redirect_local(target) == "" {
+		return sl_error(fn, "invalid target")
+	}
+	hint := ""
+	if account != "" {
+		row, _ := db_user(user, "user").row("select id, type, identifier from accounts where id=?", account)
+		if row == nil || row_string(row, "type") != name {
+			return sl_error(fn, "unknown account")
+		}
+		hint = row_string(row, "identifier")
+	}
+	url, _, err := oauth_begin_ceremony(action.web, provider, name, user.UID, target, "grant", "", "", "", &oauth_grant{capability: capability, hint: hint})
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl_encode(map[string]any{"url": url}), nil
 }
 
 // mochi.account.throttled() -> bool: Report whether the caller's next
@@ -1210,6 +1428,9 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		url := identifier
 		secret, _ := data["secret"].(string)
 		result = account_test_url(url, secret, language)
+
+	case "apple", "caldav", "google":
+		result = caldav_test(user, row, language)
 
 	default:
 		result = AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.unknown_type", nil)}

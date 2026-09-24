@@ -51,6 +51,9 @@ var permissions = []Permission{
 	{"accounts/read", false, false},
 	{"accounts/write", false, false},
 	{"accounts/ai", false, false},
+	// Using the user's calendar-capable accounts: the CalDAV client sends the
+	// account's own credential to its server on the app's behalf.
+	{"accounts/calendar", false, false},
 	// Standard, not restricted: a restricted permission has no Allow button in the
 	// request dialog, and asking to invite a friend is an ordinary request.
 	{"friends/read", false, false},

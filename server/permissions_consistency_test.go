@@ -19,7 +19,9 @@ import (
 // than mutations, so calling any of them "write" would describe the wrong
 // thing.
 var permission_verbs_exempt = map[string]bool{
-	"accounts/ai": true, "accounts/notify": true,
+	// accounts/calendar, like accounts/ai: using the user's accounts of a
+	// capability rather than reading or changing the accounts themselves.
+	"accounts/ai": true, "accounts/calendar": true, "accounts/notify": true,
 	"apps/install": true, "camera": true, "entity/sign": true, "microphone": true,
 	"notifications/send": true, "server/update": true, "tokens/create": true,
 	"user/authentication/sign": true, "user/close": true, "user/export": true,

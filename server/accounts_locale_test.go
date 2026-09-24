@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -61,6 +62,8 @@ func Test_account_test_localised_arguments(t *testing.T) {
 
 // Every locale catalogue carries every accounts.test.* key, so no user falls
 // back to English on a path this change was meant to translate.
+var label_arguments = regexp.MustCompile(`\{[a-z_]+\s*[,}]`)
+
 func Test_account_test_labels_complete(t *testing.T) {
 	load_core_labels()
 
@@ -74,8 +77,8 @@ func Test_account_test_labels_complete(t *testing.T) {
 			keys = append(keys, k)
 		}
 	}
-	if len(keys) != 27 {
-		t.Fatalf("expected 27 accounts.test.* keys in en, got %d", len(keys))
+	if len(keys) != 29 {
+		t.Fatalf("expected 29 accounts.test.* keys in en, got %d", len(keys))
 	}
 
 	for language, catalogue := range core_labels {
@@ -97,7 +100,10 @@ func Test_account_test_labels_complete(t *testing.T) {
 			if value == english[k] {
 				t.Errorf("%s: %s still English (%q)", language, k, value)
 			}
-			if strings.Count(value, "{") != strings.Count(english[k], "{") {
+			// Named arguments must survive; the braces of an ICU plural's
+			// categories may not, since each locale carries as many as its
+			// plural rules need.
+			if len(label_arguments.FindAllString(value, -1)) != len(label_arguments.FindAllString(english[k], -1)) {
 				t.Errorf("%s: %s placeholder count differs (%q)", language, k, value)
 			}
 		}

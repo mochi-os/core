@@ -540,6 +540,11 @@ var (
 			{"entity/read", ""},
 			// The CalDAV credential a device holds is a token the app mints.
 			{"tokens/create", ""},
+			// A linked calendar syncs through a connected account: listing
+			// them, starting a grant on one, and using it.
+			{"accounts/read", ""},
+			{"accounts/write", ""},
+			{"accounts/calendar", ""},
 		}},
 		{"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92", "Chat", []struct{ Permission, Object string }{
 			{"friends/read", ""},

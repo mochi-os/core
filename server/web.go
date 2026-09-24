@@ -2276,6 +2276,7 @@ func web_start() {
 	r.POST("/_/auth/restore", rate_limit_login_middleware, web_samesite_middleware, web_auth_restore)
 	r.GET("/_/auth/restore/progress", web_auth_restore_progress)
 	r.POST("/_/auth/oauth/:provider/begin", rate_limit_login_middleware, web_samesite_middleware, web_oauth_begin)
+	r.GET("/_/auth/oauth/:provider/start", rate_limit_login_middleware, web_oauth_start)
 	r.GET("/_/auth/oauth/:provider/callback", rate_limit_login_middleware, web_oauth_callback)
 	r.POST("/_/auth/oauth/exchange", rate_limit_login_middleware, web_samesite_middleware, web_oauth_exchange)
 	r.GET("/_/auth/methods", web_auth_methods)

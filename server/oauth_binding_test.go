@@ -265,7 +265,7 @@ func TestOauthStepupCeremonyNotSessionBound(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/settings/-/user/account/oauth/verify/begin", nil)
 	provider := oauth_providers()["github"]
-	if _, _, err := oauth_begin_ceremony(c, provider, "github", "u-link", "", "reauthentication", "", "stepup-challenge", ""); err != nil {
+	if _, _, err := oauth_begin_ceremony(c, provider, "github", "u-link", "", "reauthentication", "", "stepup-challenge", "", nil); err != nil {
 		t.Fatalf("begin step-up: %v", err)
 	}
 	if cookie := oauth_binding_from_response(w); cookie != nil {

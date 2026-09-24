@@ -112,8 +112,12 @@ type AppVersion struct {
 	// Shared names classes this app invites other apps to create in. A subset of
 	// Classes, honoured only by entity_class_shared's handler check, so it can
 	// never open somebody else's class.
-	Shared   []string `json:"shared"`
-	Paths    []string `json:"paths"`
+	Shared []string `json:"shared"`
+	Paths  []string `json:"paths"`
+	// declared keeps the paths the manifest asked for when app_resolve_paths
+	// demotes the app to its fingerprint, so the icon list can still pair it
+	// with the app now serving them.
+	declared []string
 	Services []string `json:"services"`
 	Require  struct {
 		Role string `json:"role"`
@@ -2020,6 +2024,7 @@ func app_resolve_paths(av *AppVersion, id string) {
 		if app_path_taken(path, id) {
 			fp := fingerprint(id)
 			// debug("Published app %s path %q conflicts, using fingerprint %s", id, path, fp)
+			av.declared = av.Paths
 			av.Paths = []string{fp}
 			return
 		}
@@ -2671,6 +2676,8 @@ func starlark_kwargs_to_map(kwargs []sl.Tuple) (map[string]any, error) {
 
 // mochi.app.icons() -> dict: Get available icons for home screen
 // Returns {"icons": [...], "icon_mask": "...", "icon_background": "..."}
+// A development app and the published app declaring the same path are one
+// app; only the one that path opens is listed (see app_twinned).
 func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := principal_caller(t)
 
@@ -2678,6 +2685,7 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	// gate can be applied after apps_lock is released - app_listed calls into
 	// Starlark, which resolves services and paths under that same lock.
 	type candidate struct {
+		app  *App
 		av   *AppVersion
 		icon map[string]any
 	}
@@ -2738,14 +2746,25 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 				}
 			}
 
-			candidates = append(candidates, candidate{av: av, icon: map[string]any{"id": a.id, "path": icon_path, "name": a.label(user, av, i.Label), "file": icon_file, "link": path, "development": a.development}})
+			candidates = append(candidates, candidate{app: a, av: av, icon: map[string]any{"id": a.id, "path": icon_path, "name": a.label(user, av, i.Label), "file": icon_file, "link": path, "development": a.development}})
 		}
 	}
 	apps_lock.Unlock()
 
-	icons := make([]map[string]any, 0, len(candidates))
+	var listed []candidate
+	shown := map[*App]bool{}
 	for _, c := range candidates {
 		if !app_listed(t, c.av, user) {
+			continue
+		}
+		listed = append(listed, c)
+		shown[c.app] = true
+	}
+
+	// app_for_path takes apps_lock, so twins are settled after it is released.
+	icons := make([]map[string]any, 0, len(listed))
+	for _, c := range listed {
+		if app_twinned(c.app, c.av, user, shown) {
 			continue
 		}
 		icons = append(icons, c.icon)
@@ -2763,6 +2782,26 @@ func api_app_icons(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		}
 	}
 	return sl_encode(result), nil
+}
+
+// app_twinned reports whether an app's icon gives way to its twin: another
+// listed app serving the path this one declares, where one of the pair is a
+// development app. That pair is a development checkout and the app it was
+// published as, and only the one the path opens is shown. Two published apps
+// contesting a path are different apps, and both stay.
+func app_twinned(a *App, av *AppVersion, user *User, shown map[*App]bool) bool {
+	paths := av.declared
+	if len(paths) == 0 {
+		paths = av.Paths
+	}
+	if len(paths) == 0 {
+		return false
+	}
+	serving := app_for_path(user, paths[0])
+	if serving == nil || serving == a || !shown[serving] {
+		return false
+	}
+	return serving.development || a.development
 }
 
 // mochi.app.package.get(file) -> dict: Read app info from a .zip file without installing

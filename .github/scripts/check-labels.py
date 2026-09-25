@@ -102,6 +102,8 @@ KEEP_LOCALE = frozenset({
     ("sl", "Interval"), ("su", "Interval"),
     ("da", "Region"), ("de", "Region"), ("nb", "Region"),
     ("nn", "Region"), ("sv", "Region"),
+    # Polish "region" and the Welsh loanword "tag" are the languages' own words.
+    ("pl", "Region"), ("cy", "Tag"),
     ("da", "Type"), ("fr", "Type"), ("nb", "Type"), ("nn", "Type"),
     ("fr", "Description"), ("fr", "Notes"), ("sv", "Information"),
     # "Error" is the Catalan and Spanish word, and the loanword Filipino UI

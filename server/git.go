@@ -5423,7 +5423,51 @@ func git_pack(storage storage.Storer, reachable map[plumbing.Hash]struct{}) erro
 			return err
 		}
 	}
+	return git_pack_sweep(storage)
+}
+
+// git_pack_sweep removes whatever is named after a pack that is gone - the
+// bitmap and reverse index git writes beside each pack, and any other file of
+// that name. go-git deletes only a pack and its index, and the packs on the
+// production server were written by git itself, so every repack that replaced
+// one left both behind. Sweeping for any orphan rather than naming the packs
+// just replaced also clears what an earlier repack stranded.
+func git_pack_sweep(storage storage.Storer) error {
+	directory, err := git_filesystem(storage)
+	if err != nil {
+		return err
+	}
+	folder := directory.Join("objects", "pack")
+	entries, err := directory.ReadDir(folder)
+	if err != nil {
+		return err
+	}
+	present := map[string]bool{}
+	for _, entry := range entries {
+		if base, found := strings.CutSuffix(entry.Name(), ".pack"); found {
+			present[base] = true
+		}
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		base := strings.TrimSuffix(name, filepath.Ext(name))
+		if !strings.HasPrefix(base, "pack-") || present[base] {
+			continue
+		}
+		if err := directory.Remove(directory.Join(folder, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
 	return nil
+}
+
+// git_filesystem answers the directory a repository's storage lives in.
+func git_filesystem(storage storage.Storer) (billy.Filesystem, error) {
+	holder, ok := storage.(interface{ Filesystem() billy.Filesystem })
+	if !ok {
+		return nil, fmt.Errorf("the repository's storage is not a directory")
+	}
+	return holder.Filesystem(), nil
 }
 
 // git_unpack writes out loose whatever a pack about to be deleted holds that
@@ -5433,11 +5477,10 @@ func git_pack(storage storage.Storer, reachable map[plumbing.Hash]struct{}) erro
 // unreachable, and a bare repository keeps no reflog to recover it from.
 // Loose, it is dated from now and git_prune keeps it for git_prune_age.
 func git_unpack(storage storage.Storer, pack plumbing.Hash, reachable map[plumbing.Hash]struct{}) error {
-	holder, ok := storage.(interface{ Filesystem() billy.Filesystem })
-	if !ok {
-		return fmt.Errorf("the repository's storage has no filesystem to read a pack index from")
+	directory, err := git_filesystem(storage)
+	if err != nil {
+		return err
 	}
-	directory := holder.Filesystem()
 	file, err := directory.Open(directory.Join("objects", "pack", fmt.Sprintf("pack-%s.idx", pack)))
 	if err != nil {
 		return err

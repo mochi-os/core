@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -251,6 +252,105 @@ func TestRepackKeepsAnOrphanedPackedCommit(t *testing.T) {
 	for _, hash := range orphans {
 		if _, err := after.Storer.EncodedObject(plumbing.AnyObject, hash); err == nil {
 			t.Errorf("orphaned object %s outlived git_prune_age", hash)
+		}
+	}
+}
+
+// repack_test_packs answers the base names - pack-<hash> - of a repository's packs.
+func repack_test_packs(t *testing.T, path string) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(path, "objects", "pack", "pack-*.pack"))
+	if err != nil {
+		t.Fatalf("globbing packs: %v", err)
+	}
+	var names []string
+	for _, match := range matches {
+		names = append(names, strings.TrimSuffix(filepath.Base(match), ".pack"))
+	}
+	return names
+}
+
+// repack_test_siblings writes the files git keeps beside a pack.
+func repack_test_siblings(t *testing.T, path, base string) []string {
+	t.Helper()
+	var files []string
+	for _, extension := range []string{".bitmap", ".rev"} {
+		file := filepath.Join(path, "objects", "pack", base+extension)
+		if err := os.WriteFile(file, []byte("written by git"), 0644); err != nil {
+			t.Fatalf("writing %s: %v", file, err)
+		}
+		files = append(files, file)
+	}
+	return files
+}
+
+// TestRepackSweepsOrphanedPackFiles - the packs on the production server were
+// written by git, with a bitmap and a reverse index beside each. go-git deletes
+// only a replaced pack and its index, so both were left behind for ever - and
+// one repository there already carries a stranded pair.
+func TestRepackSweepsOrphanedPackFiles(t *testing.T) {
+	path, _ := repack_test_repository(t, 3)
+	if err := git_repack(path); err != nil {
+		t.Fatalf("first git_repack: %v", err)
+	}
+	before := repack_test_packs(t, path)
+	if len(before) != 1 {
+		t.Fatalf("setup: %d packs, want 1", len(before))
+	}
+	orphans := repack_test_siblings(t, path, before[0])
+	orphans = append(orphans, repack_test_siblings(t, path, "pack-8585dad0e179053f14ffd5aca38eb6280d15d61b")...)
+
+	// Something new to pack, so the repack replaces the pack rather than
+	// writing the same one again.
+	repo, err := git.PlainOpen(path)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	blob := repack_test_blob(t, repo, "tagged after the first repack\n")
+	if err := repo.Storer.SetReference(plumbing.NewHashReference("refs/tags/new", blob)); err != nil {
+		t.Fatalf("SetReference: %v", err)
+	}
+	if err := git_repack(path); err != nil {
+		t.Fatalf("second git_repack: %v", err)
+	}
+	if after := repack_test_packs(t, path); len(after) != 1 || after[0] == before[0] {
+		t.Fatalf("setup: packs %v after the second repack, want one replacing %s", after, before[0])
+	}
+	for _, orphan := range orphans {
+		if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+			t.Errorf("%s outlived its pack", filepath.Base(orphan))
+		}
+	}
+}
+
+// TestPackSweepKeepsTheLivePack - a pack still in use keeps whatever git wrote
+// beside it, and nothing in the directory that is not a pack's is touched.
+func TestPackSweepKeepsTheLivePack(t *testing.T) {
+	path, _ := repack_test_repository(t, 3)
+	if err := git_repack(path); err != nil {
+		t.Fatalf("git_repack: %v", err)
+	}
+	live := repack_test_packs(t, path)
+	if len(live) != 1 {
+		t.Fatalf("setup: %d packs, want 1", len(live))
+	}
+	kept := repack_test_siblings(t, path, live[0])
+	stray := filepath.Join(path, "objects", "pack", "tmp_pack_123.rev")
+	if err := os.WriteFile(stray, nil, 0644); err != nil {
+		t.Fatalf("writing %s: %v", stray, err)
+	}
+	kept = append(kept, stray)
+
+	repo, err := git.PlainOpen(path)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	if err := git_pack_sweep(repo.Storer); err != nil {
+		t.Fatalf("git_pack_sweep: %v", err)
+	}
+	for _, file := range kept {
+		if _, err := os.Stat(file); err != nil {
+			t.Errorf("the sweep removed %s: %v", filepath.Base(file), err)
 		}
 	}
 }

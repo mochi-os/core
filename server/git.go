@@ -5199,6 +5199,13 @@ var (
 	// unix time it last ran. In memory: a restart costs one extra attempt.
 	git_repack_attempted sync.Map
 	git_repack_running   sync.Map
+
+	// The loose objects each repository's last repack left behind, by path:
+	// unreachable objects too young to prune, which no repack can reduce.
+	// Counted against the threshold, enough of them - a large branch deleted
+	// or force-pushed away - would repack the repository on every push until
+	// they aged out. In memory: a restart costs one repack that finds them.
+	git_repack_remaining sync.Map
 )
 
 // git_repack_consider counts a repository's loose objects and repacks it in the
@@ -5210,7 +5217,11 @@ func git_repack_consider(repo_path string) {
 			return
 		}
 	}
-	if git_loose_count(repo_path) < git_repack_minimum {
+	remaining := 0
+	if left, seen := git_repack_remaining.Load(repo_path); seen {
+		remaining, _ = left.(int)
+	}
+	if git_loose_count(repo_path)-remaining < git_repack_minimum {
 		return
 	}
 	// One repack per repository at a time. Nothing else serialises against it:
@@ -5229,8 +5240,12 @@ func git_repack_consider(repo_path string) {
 		guard("repository repack", nil, func() {
 			defer git_repack_running.Delete(repo_path)
 			if err := git_repack_dispatch(repo_path); err != nil {
+				// What a failed repack left says nothing about what the
+				// next one can do, so it retries after the interval.
 				warn("Repository repack failed for %q: %v", repo_path, err)
+				return
 			}
+			git_repack_remaining.Store(repo_path, git_loose_count(repo_path))
 		})
 	}()
 }

@@ -12,6 +12,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -590,9 +591,10 @@ func TestRepackConsiderGates(t *testing.T) {
 	// The dispatch runs in a goroutine, so "nothing happened" has to be waited
 	// for rather than read straight after the call - which passes by luck.
 	done := make(chan struct{}, 8)
+	var failure error
 	git_repack_dispatch = func(string) error {
 		done <- struct{}{}
-		return nil
+		return failure
 	}
 	repacked := func(reason string) {
 		t.Helper()
@@ -613,6 +615,34 @@ func TestRepackConsiderGates(t *testing.T) {
 
 	path, _ := repack_test_repository(t, 5)
 	git_repack_attempted.Delete(path)
+	defer git_repack_remaining.Delete(path)
+
+	// A repack records what it left once the dispatch returns, in the same
+	// goroutine, so the next push has to wait for it to finish - or "quiet"
+	// would only mean the repack was still running.
+	settled := func() {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, running := git_repack_running.Load(path); !running {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the repack never finished")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	push := func(label string) {
+		t.Helper()
+		repo, err := git.PlainOpen(path)
+		if err != nil {
+			t.Fatalf("PlainOpen: %v", err)
+		}
+		for i := 0; i < 3; i++ {
+			repack_test_blob(t, repo, fmt.Sprintf("%s %d\n", label, i))
+		}
+	}
 
 	// Under the threshold: nothing happens, however many pushes arrive.
 	git_repack_minimum = 1000
@@ -631,10 +661,32 @@ func TestRepackConsiderGates(t *testing.T) {
 	git_repack_consider(path)
 	quiet("the interval since the last repack has not passed")
 
-	// Once the interval has passed it may run again.
+	// Once the interval has passed, a push that brought nothing new still
+	// leaves it alone: what the last repack left loose - unreachable objects
+	// too young to prune - another repack cannot reduce.
+	settled()
 	git_repack_attempted.Store(path, now()-git_repack_interval-1)
 	git_repack_consider(path)
-	repacked("the interval has passed")
+	quiet("nothing has arrived since the last repack")
+
+	// Enough new objects on top of what it left bring it back.
+	push("pushed after the repack")
+	git_repack_consider(path)
+	repacked("new objects arrived on top of what the last repack left")
+
+	// A repack that fails says nothing about what the next one can do, so it
+	// retries once the interval has passed, with nothing new arrived.
+	settled()
+	failure = errors.New("a corrupt object")
+	push("pushed before a failing repack")
+	git_repack_attempted.Store(path, now()-git_repack_interval-1)
+	git_repack_consider(path)
+	repacked("new objects arrived again")
+	settled()
+	failure = nil
+	git_repack_attempted.Store(path, now()-git_repack_interval-1)
+	git_repack_consider(path)
+	repacked("the last repack failed, so only the interval holds it back")
 	git_repack_attempted.Delete(path)
 }
 
@@ -650,6 +702,7 @@ func TestRepackConsiderRunsOneAtATime(t *testing.T) {
 
 	path, _ := repack_test_repository(t, 5)
 	git_repack_attempted.Delete(path)
+	defer git_repack_remaining.Delete(path)
 	git_repack_minimum = 3
 
 	release := make(chan struct{})

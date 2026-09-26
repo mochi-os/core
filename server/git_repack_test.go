@@ -203,6 +203,57 @@ func TestRepackKeepsUnreachableUntilItAges(t *testing.T) {
 	}
 }
 
+// TestRepackKeepsAnOrphanedPackedCommit - a commit packed by one repack and
+// then force-pushed away lives only in that pack, and the next repack deletes
+// the pack. It must come out loose and keep git_prune_age like any other
+// unreachable object, rather than go with the pack however recently it was
+// orphaned; once it has aged, it goes.
+func TestRepackKeepsAnOrphanedPackedCommit(t *testing.T) {
+	path, head := repack_test_repository(t, 3)
+	if err := git_repack(path); err != nil {
+		t.Fatalf("first git_repack: %v", err)
+	}
+
+	repo, err := git.PlainOpen(path)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	commit, err := repo.CommitObject(head)
+	if err != nil {
+		t.Fatalf("reading the head: %v", err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		t.Fatalf("reading the head's tree: %v", err)
+	}
+	orphans := []plumbing.Hash{head, commit.TreeHash, tree.Entries[0].Hash}
+	if err := repo.Storer.SetReference(plumbing.NewHashReference("refs/heads/main", commit.ParentHashes[0])); err != nil {
+		t.Fatalf("force-pushing main back a commit: %v", err)
+	}
+
+	if err := git_repack(path); err != nil {
+		t.Fatalf("second git_repack: %v", err)
+	}
+	repack_test_readable(t, path, orphans...)
+	if loose := git_loose_count(path); loose != len(orphans) {
+		t.Errorf("loose objects after repacking around the orphan: %d, want %d", loose, len(orphans))
+	}
+
+	repack_test_age(t, path)
+	if err := git_repack(path); err != nil {
+		t.Fatalf("third git_repack: %v", err)
+	}
+	after, err := git.PlainOpen(path)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	for _, hash := range orphans {
+		if _, err := after.Storer.EncodedObject(plumbing.AnyObject, hash); err == nil {
+			t.Errorf("orphaned object %s outlived git_prune_age", hash)
+		}
+	}
+}
+
 // TestRepackRepeats - a long-lived server repacks the same repository again and
 // again. The second time is the one that broke: RepackObjects replaces the
 // packfile, and a Prune afterwards on the same handle reads a pack that is no

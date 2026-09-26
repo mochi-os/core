@@ -32,11 +32,13 @@ import (
 
 	"github.com/dsnet/compress/bzip2"
 	"github.com/gin-gonic/gin"
+	"github.com/go-git/go-billy/v5"
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/format/idxfile"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/format/pktline"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -5317,7 +5319,8 @@ func git_reachable(storage storage.Storer) (map[plumbing.Hash]struct{}, error) {
 }
 
 // git_prune deletes the loose objects the references do not reach and that are
-// older than cutoff. Packed objects are left to git_pack.
+// older than cutoff. An unreachable object in a pack is written out loose by
+// git_unpack when its pack is replaced, and ages from then.
 func git_prune(storage storage.Storer, reachable map[plumbing.Hash]struct{}, cutoff time.Time) error {
 	loose, ok := storage.(storer.LooseObjectStorer)
 	if !ok {
@@ -5338,10 +5341,11 @@ func git_prune(storage storage.Storer, reachable map[plumbing.Hash]struct{}, cut
 }
 
 // git_pack writes the reachable objects into one packfile, then deletes their
-// loose copies and the packs it replaces. The pack is closed - checked,
-// indexed and moved into place - before anything is deleted, so a pack that
-// fails to write costs nothing; go-git's own repack deletes the loose copies
-// first, and a failed close then loses them.
+// loose copies and the packs it replaces, unpacking whatever those hold that
+// is no longer reachable. The pack is closed - checked, indexed and moved into
+// place - before anything is deleted, so a pack that fails to write costs
+// nothing; go-git's own repack deletes the loose copies first, and a failed
+// close then loses them.
 //
 // It needs the plain filesystem storer: the push path wraps it to hide
 // PackfileWriter, and a wrapped storer cannot pack.
@@ -5397,11 +5401,62 @@ func git_pack(storage storage.Storer, reachable map[plumbing.Hash]struct{}) erro
 		if old == pack {
 			continue
 		}
+		if err := git_unpack(storage, old, reachable); err != nil {
+			return err
+		}
 		if err := packed.DeleteOldObjectPackAndIndex(old, time.Time{}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// git_unpack writes out loose whatever a pack about to be deleted holds that
+// the references no longer reach - a commit force-pushed away, a deleted
+// branch - as git's own repack does with --unpack-unreachable. Deleted with its
+// pack, such an object went at the next repack however recently it became
+// unreachable, and a bare repository keeps no reflog to recover it from.
+// Loose, it is dated from now and git_prune keeps it for git_prune_age.
+func git_unpack(storage storage.Storer, pack plumbing.Hash, reachable map[plumbing.Hash]struct{}) error {
+	holder, ok := storage.(interface{ Filesystem() billy.Filesystem })
+	if !ok {
+		return fmt.Errorf("the repository's storage has no filesystem to read a pack index from")
+	}
+	directory := holder.Filesystem()
+	file, err := directory.Open(directory.Join("objects", "pack", fmt.Sprintf("pack-%s.idx", pack)))
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	index := idxfile.NewMemoryIndex()
+	if err := idxfile.NewDecoder(file).Decode(index); err != nil {
+		return err
+	}
+	entries, err := index.Entries()
+	if err != nil {
+		return err
+	}
+	defer entries.Close()
+
+	for {
+		entry, err := entries.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if _, kept := reachable[entry.Hash]; kept {
+			continue
+		}
+		found, err := storage.EncodedObject(plumbing.AnyObject, entry.Hash)
+		if err != nil {
+			return err
+		}
+		if _, err := storage.SetEncodedObject(found); err != nil {
+			return err
+		}
+	}
 }
 
 // git_loose_count counts the loose objects a repository holds, reading only the

@@ -5240,29 +5240,168 @@ var git_repack_dispatch = git_repack
 // git_repack prunes unreachable objects past git_prune_age, then writes one
 // packfile for everything the references reach and drops the loose copies.
 //
-// Prune first, and not only for tidiness: RepackObjects replaces the packfile
-// and deletes the old one, which leaves the open handle's view of the packs
-// stale - a Prune after it fails with "packfile not found" the moment a
-// repository has been repacked once before. Pruning first reads a pack that is
-// still there.
+// Not go-git's Prune and RepackObjects: both walk the references with a walker
+// that fails on the first blob it meets other than as a regular or executable
+// file - a symlink, or a tag naming a blob - and every Mochi app repository
+// holds a symlink, so none of them could ever be packed. It also follows a
+// submodule entry into a commit this repository does not hold. One walk
+// serves both steps.
 func git_repack(repo_path string) error {
 	repo, err := git.PlainOpen(repo_path)
 	if err != nil {
 		return err
 	}
-	// Handler is not optional: go-git calls it for every object it decides to
-	// prune, and a nil one segfaults rather than erroring - so a repository
-	// holding one aged unreachable object would crash the process.
-	prune := git.PruneOptions{
-		OnlyObjectsOlderThan: time.Now().Add(-git_prune_age),
-		Handler:              repo.DeleteObject,
-	}
-	if err := repo.Prune(prune); err != nil {
+	reachable, err := git_reachable(repo.Storer)
+	if err != nil {
 		return err
 	}
-	// RepackObjects needs the plain filesystem storer: the push path wraps it
-	// to hide PackfileWriter, and a wrapped storer cannot repack.
-	return repo.RepackObjects(&git.RepackConfig{})
+	if err := git_prune(repo.Storer, reachable, time.Now().Add(-git_prune_age)); err != nil {
+		return err
+	}
+	return git_pack(repo.Storer, reachable)
+}
+
+// git_reachable answers every object the references reach. A blob has nothing
+// beneath it, so one named by a file entry is counted without being read - a
+// walk that read them would decompress every file in the history. A
+// submodule entry names a commit in another repository, so it is not followed.
+func git_reachable(storage storage.Storer) (map[plumbing.Hash]struct{}, error) {
+	references, err := storage.IterReferences()
+	if err != nil {
+		return nil, err
+	}
+	var pending []plumbing.Hash
+	err = references.ForEach(func(reference *plumbing.Reference) error {
+		if reference.Type() == plumbing.HashReference {
+			pending = append(pending, reference.Hash())
+		}
+		return nil
+	})
+	references.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	// A stack rather than recursion, since a history is as deep as it is long.
+	reachable := map[plumbing.Hash]struct{}{}
+	for len(pending) > 0 {
+		hash := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if _, seen := reachable[hash]; seen {
+			continue
+		}
+		reachable[hash] = struct{}{}
+		found, err := object.GetObject(storage, hash)
+		if err != nil {
+			return nil, fmt.Errorf("reading object %s: %v", hash, err)
+		}
+		switch found := found.(type) {
+		case *object.Commit:
+			pending = append(pending, found.TreeHash)
+			pending = append(pending, found.ParentHashes...)
+		case *object.Tree:
+			for _, entry := range found.Entries {
+				switch {
+				case entry.Mode == filemode.Submodule:
+				case entry.Mode.IsFile():
+					reachable[entry.Hash] = struct{}{}
+				default:
+					pending = append(pending, entry.Hash)
+				}
+			}
+		case *object.Tag:
+			pending = append(pending, found.Target)
+		}
+	}
+	return reachable, nil
+}
+
+// git_prune deletes the loose objects the references do not reach and that are
+// older than cutoff. Packed objects are left to git_pack.
+func git_prune(storage storage.Storer, reachable map[plumbing.Hash]struct{}, cutoff time.Time) error {
+	loose, ok := storage.(storer.LooseObjectStorer)
+	if !ok {
+		return git.ErrLooseObjectsNotSupported
+	}
+	return loose.ForEachObjectHash(func(hash plumbing.Hash) error {
+		if _, kept := reachable[hash]; kept {
+			return nil
+		}
+		// An object that cannot be dated - packed meanwhile, or deleted - is
+		// not this prune's to remove.
+		written, err := loose.LooseObjectTime(hash)
+		if err != nil || !written.Before(cutoff) {
+			return nil
+		}
+		return loose.DeleteLooseObject(hash)
+	})
+}
+
+// git_pack writes the reachable objects into one packfile, then deletes their
+// loose copies and the packs it replaces. The pack is closed - checked,
+// indexed and moved into place - before anything is deleted, so a pack that
+// fails to write costs nothing; go-git's own repack deletes the loose copies
+// first, and a failed close then loses them.
+//
+// It needs the plain filesystem storer: the push path wraps it to hide
+// PackfileWriter, and a wrapped storer cannot pack.
+func git_pack(storage storage.Storer, reachable map[plumbing.Hash]struct{}) error {
+	packed, ok := storage.(storer.PackedObjectStorer)
+	if !ok {
+		return git.ErrPackedObjectsNotSupported
+	}
+	loose, ok := storage.(storer.LooseObjectStorer)
+	if !ok {
+		return git.ErrLooseObjectsNotSupported
+	}
+	packer, ok := storage.(storer.PackfileWriter)
+	if !ok {
+		return fmt.Errorf("the repository's storage cannot write a packfile")
+	}
+	previous, err := packed.ObjectPacks()
+	if err != nil {
+		return err
+	}
+	settings, err := storage.Config()
+	if err != nil {
+		return err
+	}
+
+	hashes := make([]plumbing.Hash, 0, len(reachable))
+	for hash := range reachable {
+		hashes = append(hashes, hash)
+	}
+	writer, err := packer.PackfileWriter()
+	if err != nil {
+		return err
+	}
+	pack, err := packfile.NewEncoder(writer, storage, false).Encode(hashes, settings.Pack.Window)
+	if err != nil {
+		writer.Close()
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+
+	err = loose.ForEachObjectHash(func(hash plumbing.Hash) error {
+		if _, kept := reachable[hash]; kept {
+			return loose.DeleteLooseObject(hash)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, old := range previous {
+		if old == pack {
+			continue
+		}
+		if err := packed.DeleteOldObjectPackAndIndex(old, time.Time{}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // git_loose_count counts the loose objects a repository holds, reading only the

@@ -13,6 +13,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -21,7 +22,10 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/storage"
+	"github.com/go-git/go-git/v5/storage/filesystem"
 )
 
 // repack_test_repository builds a bare repository holding `commits` commits,
@@ -276,6 +280,251 @@ func TestRepackSurvivesACorruptObject(t *testing.T) {
 	if _, err := repo.CommitObject(head); err != nil {
 		t.Errorf("the repository is unreadable after repacking around a corrupt object: %v", err)
 	}
+}
+
+// repack_test_empty makes an empty bare repository.
+func repack_test_empty(t *testing.T) (string, *git.Repository) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "repository")
+	repo, err := git.PlainInit(path, true)
+	if err != nil {
+		t.Fatalf("PlainInit: %v", err)
+	}
+	return path, repo
+}
+
+// repack_test_store encodes one object into the repository and answers its hash.
+func repack_test_store(t *testing.T, repo *git.Repository, value interface {
+	Encode(plumbing.EncodedObject) error
+}) plumbing.Hash {
+	t.Helper()
+	encoded := repo.Storer.NewEncodedObject()
+	if err := value.Encode(encoded); err != nil {
+		t.Fatalf("encoding an object: %v", err)
+	}
+	hash, err := repo.Storer.SetEncodedObject(encoded)
+	if err != nil {
+		t.Fatalf("storing an object: %v", err)
+	}
+	return hash
+}
+
+// repack_test_commit stores a tree of these entries, sorted by name as git
+// requires, under one commit on refs/heads/main.
+func repack_test_commit(t *testing.T, repo *git.Repository, entries []object.TreeEntry) plumbing.Hash {
+	t.Helper()
+	tree := repack_test_store(t, repo, &object.Tree{Entries: entries})
+	signature := object.Signature{Name: "Test", Email: "test@example.com", When: time.Now()}
+	commit := repack_test_store(t, repo, &object.Commit{Author: signature, Committer: signature, Message: "commit\n", TreeHash: tree})
+	if err := repo.Storer.SetReference(plumbing.NewHashReference("refs/heads/main", commit)); err != nil {
+		t.Fatalf("SetReference: %v", err)
+	}
+	return commit
+}
+
+// repack_test_age backdates every loose object past git_prune_age, so an
+// object the walk failed to count would be pruned rather than quietly kept.
+func repack_test_age(t *testing.T, path string) {
+	t.Helper()
+	objects, err := filepath.Glob(filepath.Join(path, "objects", "??", "*"))
+	if err != nil {
+		t.Fatalf("globbing loose objects: %v", err)
+	}
+	old := time.Now().Add(-git_prune_age - time.Hour)
+	for _, object := range objects {
+		if err := os.Chtimes(object, old, old); err != nil {
+			t.Fatalf("ageing %s: %v", object, err)
+		}
+	}
+}
+
+// repack_test_readable fails the test for any of these objects a fresh handle
+// on the repository cannot read.
+func repack_test_readable(t *testing.T, path string, hashes ...plumbing.Hash) {
+	t.Helper()
+	repo, err := git.PlainOpen(path)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	for _, hash := range hashes {
+		if _, err := repo.Storer.EncodedObject(plumbing.AnyObject, hash); err != nil {
+			t.Errorf("object %s is gone: %v", hash, err)
+		}
+	}
+}
+
+// TestRepackEveryFileMode - a tree names a file as regular, executable or a
+// symlink, and go-git's own walk handled only the first two: one symlink
+// failed the repack of the whole repository with "unknown object". Every
+// Mochi app repository holds a symlink.
+func TestRepackEveryFileMode(t *testing.T) {
+	path, repo := repack_test_empty(t)
+	var entries []object.TreeEntry
+	var blobs []plumbing.Hash
+	for i, mode := range []filemode.FileMode{filemode.Regular, filemode.Executable, filemode.Symlink} {
+		blob := repack_test_blob(t, repo, fmt.Sprintf("contents of file %d\n", i))
+		entries = append(entries, object.TreeEntry{Name: fmt.Sprintf("file-%d", i), Mode: mode, Hash: blob})
+		blobs = append(blobs, blob)
+	}
+	repack_test_commit(t, repo, entries)
+	repack_test_age(t, path)
+
+	if err := git_repack(path); err != nil {
+		t.Fatalf("git_repack: %v", err)
+	}
+	if loose := git_loose_count(path); loose != 0 {
+		t.Errorf("loose objects after repack: %d, want 0", loose)
+	}
+	repack_test_readable(t, path, blobs...)
+}
+
+// TestRepackSubmodule - a submodule entry names a commit in another repository,
+// which this one does not hold. Following it fails the walk.
+func TestRepackSubmodule(t *testing.T) {
+	path, repo := repack_test_empty(t)
+	blob := repack_test_blob(t, repo, "[submodule \"library\"]\n")
+	absent := plumbing.NewHash("0123456789abcdef0123456789abcdef01234567")
+	repack_test_commit(t, repo, []object.TreeEntry{
+		{Name: ".gitmodules", Mode: filemode.Regular, Hash: blob},
+		{Name: "library", Mode: filemode.Submodule, Hash: absent},
+	})
+
+	if err := git_repack(path); err != nil {
+		t.Fatalf("git_repack: %v", err)
+	}
+	if loose := git_loose_count(path); loose != 0 {
+		t.Errorf("loose objects after repack: %d, want 0", loose)
+	}
+}
+
+// TestRepackTaggedBlob - a tag may name a blob directly, as git's own
+// repository tags its maintainer's public key. Walking to a blob by any route
+// other than a file entry failed go-git's walk.
+func TestRepackTaggedBlob(t *testing.T) {
+	path, repo := repack_test_empty(t)
+	file := repack_test_blob(t, repo, "contents\n")
+	repack_test_commit(t, repo, []object.TreeEntry{{Name: "file", Mode: filemode.Regular, Hash: file}})
+
+	key := repack_test_blob(t, repo, "a public key\n")
+	tagger := object.Signature{Name: "Test", Email: "test@example.com", When: time.Now()}
+	tag := repack_test_store(t, repo, &object.Tag{Name: "key", Tagger: tagger, Message: "key\n", TargetType: plumbing.BlobObject, Target: key})
+	if err := repo.Storer.SetReference(plumbing.NewHashReference("refs/tags/key", tag)); err != nil {
+		t.Fatalf("SetReference: %v", err)
+	}
+	light := repack_test_blob(t, repo, "named by a reference alone\n")
+	if err := repo.Storer.SetReference(plumbing.NewHashReference("refs/tags/light", light)); err != nil {
+		t.Fatalf("SetReference: %v", err)
+	}
+	repack_test_age(t, path)
+
+	if err := git_repack(path); err != nil {
+		t.Fatalf("git_repack: %v", err)
+	}
+	if loose := git_loose_count(path); loose != 0 {
+		t.Errorf("loose objects after repack: %d, want 0", loose)
+	}
+	repack_test_readable(t, path, key, tag, light)
+}
+
+// repack_test_counter counts the blobs read through it.
+type repack_test_counter struct {
+	storage.Storer
+	blobs int
+}
+
+func (c *repack_test_counter) EncodedObject(kind plumbing.ObjectType, hash plumbing.Hash) (plumbing.EncodedObject, error) {
+	found, err := c.Storer.EncodedObject(kind, hash)
+	if err == nil && found.Type() == plumbing.BlobObject {
+		c.blobs++
+	}
+	return found, err
+}
+
+// TestReachableReadsNoFiles - the walk counts a file's blob from its tree
+// entry. Reading it instead would decompress every file in the history of
+// every repository a push repacks.
+func TestReachableReadsNoFiles(t *testing.T) {
+	_, repo := repack_test_empty(t)
+	var entries []object.TreeEntry
+	for i, mode := range []filemode.FileMode{filemode.Regular, filemode.Executable, filemode.Symlink} {
+		blob := repack_test_blob(t, repo, fmt.Sprintf("contents of file %d\n", i))
+		entries = append(entries, object.TreeEntry{Name: fmt.Sprintf("file-%d", i), Mode: mode, Hash: blob})
+	}
+	repack_test_commit(t, repo, entries)
+
+	counter := &repack_test_counter{Storer: repo.Storer}
+	reachable, err := git_reachable(counter)
+	if err != nil {
+		t.Fatalf("git_reachable: %v", err)
+	}
+	if len(reachable) != 5 {
+		t.Errorf("reachable objects: %d, want 5 - three blobs, a tree and a commit", len(reachable))
+	}
+	if counter.blobs != 0 {
+		t.Errorf("the walk read %d file contents, want none", counter.blobs)
+	}
+}
+
+// repack_test_spoiled is a repository whose packs fail to write: the first
+// byte of each is corrupted, so closing one finds no valid pack to index.
+type repack_test_spoiled struct {
+	*filesystem.Storage
+}
+
+func (s repack_test_spoiled) PackfileWriter() (io.WriteCloser, error) {
+	writer, err := s.Storage.PackfileWriter()
+	if err != nil {
+		return nil, err
+	}
+	return &repack_test_spoiler{WriteCloser: writer}, nil
+}
+
+type repack_test_spoiler struct {
+	io.WriteCloser
+	started bool
+}
+
+func (s *repack_test_spoiler) Write(data []byte) (int, error) {
+	if !s.started && len(data) > 0 {
+		s.started = true
+		spoiled := append([]byte{}, data...)
+		spoiled[0] ^= 0xff
+		return s.WriteCloser.Write(spoiled)
+	}
+	return s.WriteCloser.Write(data)
+}
+
+// TestPackFailureLosesNothing - a pack is checked and indexed when it closes,
+// and one that fails there never reaches objects/pack. Deleting the loose
+// copies before that point, as go-git's own repack does, loses every object.
+func TestPackFailureLosesNothing(t *testing.T) {
+	path, _ := repack_test_repository(t, 5)
+	repo, err := git.PlainOpen(path)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	plain, ok := repo.Storer.(*filesystem.Storage)
+	if !ok {
+		t.Fatalf("setup: storage is %T, not the filesystem storer", repo.Storer)
+	}
+	reachable, err := git_reachable(plain)
+	if err != nil {
+		t.Fatalf("git_reachable: %v", err)
+	}
+	loose := git_loose_count(path)
+
+	err = git_pack(repack_test_spoiled{Storage: plain}, reachable)
+	if err == nil {
+		t.Fatal("git_pack reported success for a pack that could not be written")
+	}
+	if after := git_loose_count(path); after != loose {
+		t.Errorf("loose objects after a failed pack: %d, want %d", after, loose)
+	}
+	var hashes []plumbing.Hash
+	for hash := range reachable {
+		hashes = append(hashes, hash)
+	}
+	repack_test_readable(t, path, hashes...)
 }
 
 // TestRepackConsiderGates - when a push repacks and when it leaves well alone.

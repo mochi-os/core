@@ -151,6 +151,17 @@ KEEP_LOCALE = frozenset({
     # Yoruba keeps "feed" as a loanword throughout its catalogues, so the bare
     # label is the same word; "Ìjì" (storm) was the mistranslation it replaced.
     ('yo', 'Feed'),
+    # Every catalogue of these locales writes "feed" as a loanword (Feedovi,
+    # Feednaka, Alle Feeds), so the bare label is the same word.
+    ('ay', 'Feed'), ('bs', 'Feed'), ('da', 'Feed'), ('de', 'Feed'), ('es', 'Feed'),
+    ('hr', 'Feed'), ('it', 'Feed'), ('jv', 'Feed'), ('ku', 'Feed'), ('mt', 'Feed'),
+    ('nl', 'Feed'), ('om', 'Feed'), ('pt', 'Feed'), ('qu', 'Feed'), ('sq', 'Feed'),
+    ('su', 'Feed'), ('tl', 'Feed'),
+    # The locale's own word, spelt as the English, in every catalogue of it.
+    ('ro', 'Calendar'), ('ca', 'Notes'), ('nl', 'Type'), ('nl-be', 'Type'),
+    # Loanwords Javanese and Filipino interfaces use; the "Dhaptar" and
+    # "Listahan" they replaced mean a list.
+    ('jv', 'Listing'), ('tl', 'Listing'), ('tl', 'Verification code'),
     ("it", "Password"), ("mt", "Password"), ("tl", "Password"), ("tl", "Username"),
 
 })

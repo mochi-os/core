@@ -513,8 +513,8 @@ func TestManifestsCarryGenerationTimeAndPlatform(t *testing.T) {
 		t.Errorf("the apt manifest carries no generation time")
 	} else {
 		times[apt[1]] = true
-		if apt[2] != "production" {
-			t.Errorf("a plain publish writes the %s track, not production", apt[2])
+		if apt[2] != "both" {
+			t.Errorf("a plain publish writes the %s track, not both", apt[2])
 		}
 	}
 	if len(times) != 1 {

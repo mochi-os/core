@@ -7,13 +7,20 @@
 version = 2.0.6
 
 # Release track. production is the public release: a two-part version such as
-# 2.1, built for every platform, published to both apt suites so a server on
-# the development track is never behind. development is a build between two
-# releases: a three-part version such as 2.0.1, built as .deb packages only
-# and published to the development apt suite, which only servers that opt in
-# carry. `make release track=development`; `make deploy track=development`.
-track ?= production
+# 2.1, built for every platform and published to the stable apt suite.
+# development is a build between two releases: a three-part version such as
+# 2.0.1, built as .deb packages only and published to the development apt
+# suite, which only servers that opt in carry. both is a production release
+# also published to the development suite, so a server on the development
+# track is not left behind; it is the default.
+# `make release track=development`; `make deploy track=development`.
+track ?= both
 ifeq ($(track),production)
+suite = stable
+pool = main
+release_build = deb rpm msi pkg docker
+publish =
+else ifeq ($(track),both)
 suite = stable
 pool = main
 release_build = deb rpm msi pkg docker
@@ -24,7 +31,7 @@ pool = development
 release_build = deb
 publish = apt/
 else
-$(error track must be production or development, not "$(track)")
+$(error track must be production, development or both, not "$(track)")
 endif
 
 # Generation time stamped into every published manifest, read once so the
@@ -566,7 +573,7 @@ release-clean:
 # (2.0.1), so a build cannot be published to the wrong track by its number.
 release-check:
 	@case "$(track)" in \
-	production) echo "$(version)" | grep -qE '^[0-9]+\.[0-9]+$$' || { echo ">>> a production release is two-part, such as 2.1; $(version) is a development build" >&2; exit 1; };; \
+	production|both) echo "$(version)" | grep -qE '^[0-9]+\.[0-9]+$$' || { echo ">>> a production release is two-part, such as 2.1; $(version) is a development build" >&2; exit 1; };; \
 	development) echo "$(version)" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$$' || { echo ">>> a development build is three-part, such as 2.0.1; $(version) is a production release" >&2; exit 1; };; \
 	esac
 
@@ -575,9 +582,9 @@ release-check:
 # shared-state races. A development build packages .deb only.
 release-build: $(release_build)
 
-# Publish on the release track: the apt suites first, then, for production,
-# every other platform, then the signatures and the upload.
-release-publish: release-publish-apt $(if $(filter production,$(track)),release-publish-platforms) release-publish-sign release-publish-rsync
+# Publish on the release track: the apt suites first, then, for a production
+# release, every other platform, then the signatures and the upload.
+release-publish: release-publish-apt $(if $(filter production both,$(track)),release-publish-platforms) release-publish-sign release-publish-rsync
 
 release-publish-apt:
 	# Not tagged here. This runs before the version bump is committed, so the
@@ -585,7 +592,7 @@ release-publish-apt:
 	# PREVIOUS version - and -f meant a rebuild silently moved an existing tag.
 	# claude/scripts/commit.sh tags the commit that records the version.
 	$(MAKE) --no-print-directory release-publish-suite suite=$(suite) pool=$(pool)
-ifeq ($(track),production)
+ifeq ($(track),both)
 	$(MAKE) --no-print-directory release-publish-suite suite=development pool=development
 endif
 	./build/scripts/apt-manifest ../packages/apt/versions.json $(generated) $(track) $(version)

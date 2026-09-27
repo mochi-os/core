@@ -18,6 +18,7 @@ import (
 	"github.com/teambition/rrule-go"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
+	"golang.org/x/image/colornames"
 )
 
 // Apps store calendar objects as iCalendar text and never parse it themselves:
@@ -291,7 +292,48 @@ func ical_instance(comp *ical.Component, start, finish time.Time, allday bool, r
 	if rid := comp.Props.Get(ical.PropRecurrenceID); rid != nil {
 		out["exception"] = true
 	}
+	if ical_alarmed(comp) {
+		out["alarm"] = true
+	}
+	if colour := ical_colour(comp); colour != "" {
+		out["colour"] = colour
+	}
 	return out
+}
+
+// ical_colour is the occurrence's own colour as "#rrggbb", or "" for none.
+// RFC 7986 names a CSS colour; a hex value, which some clients write, is
+// accepted too.
+func ical_colour(comp *ical.Component) string {
+	value := strings.ToLower(strings.TrimSpace(ical_text(comp, ical.PropColor)))
+	if value == "" {
+		return ""
+	}
+	if hex, ok := strings.CutPrefix(value, "#"); ok {
+		if len(hex) == 3 {
+			hex = string([]byte{hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]})
+		}
+		if len(hex) != 6 || strings.Trim(hex, "0123456789abcdef") != "" {
+			return ""
+		}
+		return "#" + hex
+	}
+	named, ok := colornames.Map[value]
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("#%02x%02x%02x", named.R, named.G, named.B)
+}
+
+// ical_alarmed says the event carries a reminder of its own: a changed
+// occurrence answers for itself, not for its series.
+func ical_alarmed(comp *ical.Component) bool {
+	for _, child := range comp.Children {
+		if child.Name == ical.CompAlarm {
+			return true
+		}
+	}
+	return false
 }
 
 // ical_zone is the TZID a date-time property names, "" for a UTC or floating

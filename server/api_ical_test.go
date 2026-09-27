@@ -218,3 +218,76 @@ func TestIcalSummaryApi(t *testing.T) {
 		t.Fatalf("an unreadable start should give None, got %v", value)
 	}
 }
+
+// An occurrence says it has a reminder when its own event carries one, so a
+// changed occurrence without the series' reminder answers for itself.
+func TestIcalInstancesCarryTheirOwnAlarm(t *testing.T) {
+	text := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n" +
+		"BEGIN:VEVENT\r\nUID:a1\r\nDTSTAMP:20260901T000000Z\r\nDTSTART:20260901T090000Z\r\nDTEND:20260901T100000Z\r\nSUMMARY:Standup\r\nRRULE:FREQ=WEEKLY;COUNT=3\r\n" +
+		"BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:Standup\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT\r\n" +
+		"BEGIN:VEVENT\r\nUID:a1\r\nRECURRENCE-ID:20260908T090000Z\r\nDTSTAMP:20260901T000000Z\r\nDTSTART:20260908T100000Z\r\nDTEND:20260908T110000Z\r\nSUMMARY:Standup (late)\r\nEND:VEVENT\r\n" +
+		"BEGIN:VEVENT\r\nUID:b1\r\nDTSTAMP:20260901T000000Z\r\nDTSTART:20260902T090000Z\r\nDTEND:20260902T100000Z\r\nSUMMARY:Lunch\r\nEND:VEVENT\r\n" +
+		"END:VCALENDAR\r\n"
+	cal, err := ical_decode(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instances := ical_instances(cal, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), time.UTC)
+	got := map[string]bool{}
+	for _, item := range instances {
+		m := item.(map[string]any)
+		got[m["summary"].(string)+"@"+time.Unix(m["start"].(int64), 0).UTC().Format("01-02")] = m["alarm"] == true
+	}
+	want := map[string]bool{
+		"Standup@09-01":        true,
+		"Standup (late)@09-08": false,
+		"Standup@09-15":        true,
+		"Lunch@09-02":          false,
+	}
+	for key, alarm := range want {
+		if value, ok := got[key]; !ok || value != alarm {
+			t.Errorf("%s: alarm %v, want %v (instances %v)", key, value, alarm, got)
+		}
+	}
+}
+
+func TestIcalInstancesCarryTheirOwnColour(t *testing.T) {
+	event := func(uid, colour string) string {
+		line := ""
+		if colour != "" {
+			line = "COLOR:" + colour + "\r\n"
+		}
+		return "BEGIN:VEVENT\r\nUID:" + uid + "\r\nDTSTAMP:20260901T000000Z\r\nDTSTART:20260901T090000Z\r\nDTEND:20260901T100000Z\r\nSUMMARY:" + uid + "\r\n" + line + "END:VEVENT\r\n"
+	}
+	text := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n" +
+		event("named", "Turquoise") +
+		event("hex", "#FF8800") +
+		event("short", "#0af") +
+		event("unknown", "not-a-colour") +
+		event("broken", "#12345g") +
+		event("plain", "") +
+		"END:VCALENDAR\r\n"
+	cal, err := ical_decode(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instances := ical_instances(cal, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), time.UTC)
+	got := map[string]any{}
+	for _, item := range instances {
+		m := item.(map[string]any)
+		got[m["summary"].(string)] = m["colour"]
+	}
+	want := map[string]any{
+		"named":   "#40e0d0",
+		"hex":     "#ff8800",
+		"short":   "#00aaff",
+		"unknown": nil,
+		"broken":  nil,
+		"plain":   nil,
+	}
+	for key, colour := range want {
+		if value, ok := got[key]; !ok || value != colour {
+			t.Errorf("%s: colour %v, want %v (instances %v)", key, value, colour, got)
+		}
+	}
+}

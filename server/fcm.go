@@ -94,10 +94,22 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app, id st
 	if token == "" {
 		return false, true, "Account has no token"
 	}
+	return fcm_send(token, map[string]string{
+		"title": title,
+		"body":  body,
+		"link":  link,
+		"tag":   tag,
+		"app":   app,
+		"id":    id,
+	})
+}
 
+// fcm_send posts one data-only message to a device token: a notification's
+// fields, or a sync signal. retire=true means the token is permanently dead.
+func fcm_send(token string, fields map[string]string) (success bool, retire bool, detail string) {
 	sa_raw := setting_effective("fcm.service_account")
 	if sa_raw == "" {
-		debug("FCM: account_deliver_fcm called but fcm.service_account is empty")
+		debug("FCM: fcm_send called but fcm.service_account is empty")
 		return false, false, "FCM service account not configured"
 	}
 	sa, err := fcm_parse_service_account(sa_raw)
@@ -122,14 +134,7 @@ func account_deliver_fcm(data map[string]any, title, body, link, tag, app, id st
 			// Data-only: no "notification" field, so Android does not post a
 			// default-styled notification and the app keeps channel routing and
 			// pending-intent shape.
-			"data": map[string]string{
-				"title": title,
-				"body":  body,
-				"link":  link,
-				"tag":   tag,
-				"app":   app,
-				"id":    id,
-			},
+			"data": fields,
 		},
 	}
 

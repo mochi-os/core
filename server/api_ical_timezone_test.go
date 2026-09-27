@@ -45,11 +45,34 @@ func ical_timezone_text(t *testing.T, zone *ical.Component) string {
 
 func ical_timezone_value(t *testing.T, block *ical.Component, name string) string {
 	t.Helper()
-	value, err := block.Props.Text(name)
+	prop := block.Props.Get(name)
+	if prop == nil {
+		t.Fatalf("no %s", name)
+	}
+	return prop.Value
+}
+
+func TestIcalTimezoneWritesItsValuesInTheirOwnTypes(t *testing.T) {
+	zone, err := ical_timezone("America/Denver", ical_timezone_test_now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return value
+	cal := ical.NewCalendar()
+	cal.Props.SetText(ical.PropVersion, "2.0")
+	cal.Props.SetText(ical.PropProductID, "-//Test//EN")
+	cal.Children = append(cal.Children, zone)
+	text, err := ical_encode(cal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(text, "VALUE=TEXT") {
+		t.Errorf("a date-time, offset or rule is marked as text:\n%s", text)
+	}
+	for _, line := range []string{"RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU\r\n", "TZOFFSETFROM:-0600\r\n", "TZOFFSETTO:-0700\r\n"} {
+		if !strings.Contains(text, line) {
+			t.Errorf("zone lacks %q:\n%s", line, text)
+		}
+	}
 }
 
 func TestIcalTimezoneWritesYearlyRulesForLondonAndNewYork(t *testing.T) {

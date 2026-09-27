@@ -15,6 +15,8 @@ import (
 	"encoding/json"
 	"sync"
 	"time"
+
+	sl "go.starlark.net/starlark"
 )
 
 const (
@@ -259,6 +261,109 @@ func push_queue_process() int {
 func push_manager() {
 	for range time.Tick(30 * time.Second) {
 		for push_queue_process() > 0 {
+		}
+	}
+}
+
+// Sync signals: a push with no content, telling the user's own devices that
+// an app's data changed so the Mochi app runs that sync now rather than at its
+// next scheduled one. A burst - a calendar poll writing fifty events - is one
+// signal at once and at most one more when the window closes, so the last
+// change always reaches the device.
+
+// account_sync_kinds are the syncs the Mochi app runs on a signal.
+var account_sync_kinds = map[string]bool{"calendars": true, "contacts": true}
+
+// account_sync_window is the shortest gap between two signals of one kind to
+// one user.
+var account_sync_window = 10 * time.Second
+
+// account_sync_deliver sends one signal; tests replace it.
+var account_sync_deliver = account_sync_send
+
+type account_sync_state struct {
+	last  time.Time
+	timer *time.Timer
+}
+
+var (
+	account_sync_lock   sync.Mutex
+	account_sync_states = map[string]*account_sync_state{}
+)
+
+// mochi.account.sync(kind) -> None: Tell the user's devices that their data
+// of this kind changed, so the Mochi app syncs it now: "calendars" or
+// "contacts". The push carries nothing but the kind, reaches only the Mochi
+// app's own push accounts, and a burst of calls is merged into at most one
+// push when it starts and one when it ends.
+func api_account_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var kind string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "kind", &kind); err != nil {
+		return nil, err
+	}
+	if !account_sync_kinds[kind] {
+		return sl_error(fn, "unknown kind %q", kind)
+	}
+	if user := principal_caller(t); user != nil {
+		account_sync_signal(user, kind)
+	}
+	return sl.None, nil
+}
+
+// account_sync_signal sends a signal now, or, inside the window of the last
+// one, once when the window closes.
+func account_sync_signal(user *User, kind string) {
+	key := user.UID + ":" + kind
+	account_sync_lock.Lock()
+	defer account_sync_lock.Unlock()
+	state := account_sync_states[key]
+	if state == nil {
+		state = &account_sync_state{}
+		account_sync_states[key] = state
+	}
+	if state.timer != nil {
+		return
+	}
+	wait := account_sync_window - time.Since(state.last)
+	if wait <= 0 {
+		state.last = time.Now()
+		go account_sync_deliver(user, kind)
+		return
+	}
+	state.timer = time.AfterFunc(wait, func() {
+		account_sync_lock.Lock()
+		state.timer = nil
+		state.last = time.Now()
+		account_sync_lock.Unlock()
+		account_sync_deliver(user, kind)
+	})
+}
+
+// account_sync_send pushes {"sync": kind} to each of the user's verified FCM
+// and UnifiedPush accounts: the Mochi app's own. A signal that fails is not
+// retried; the device's scheduled sync catches up.
+func account_sync_send(user *User, kind string) {
+	rows, err := db_user(user, "user").rows("select id, type, data from accounts where verified>0 and type in ('fcm', 'unifiedpush')")
+	if err != nil {
+		return
+	}
+	fields := map[string]string{"sync": kind}
+	debug("sync: %s signal to %d device account(s) of user %s", kind, len(rows), user.UID)
+	for _, row := range rows {
+		account, _ := row["id"].(string)
+		provider, _ := row["type"].(string)
+		raw, _ := row["data"].(string)
+		var data map[string]any
+		if raw != "" {
+			json.Unmarshal([]byte(raw), &data)
+		}
+		switch provider {
+		case "fcm":
+			if token, _ := data["token"].(string); token != "" {
+				fcm_send(token, fields)
+			}
+		case "unifiedpush":
+			unifiedpush_send(user, account, data, fields)
 		}
 	}
 }

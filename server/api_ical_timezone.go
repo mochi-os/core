@@ -129,6 +129,15 @@ func ical_rule(transitions []ical_transition) string {
 // for each kind of transition the zone makes in the window, described by a
 // yearly rule where its transitions follow one and by explicit dates
 // otherwise, or a single STANDARD block for a zone that keeps one offset.
+// ical_raw sets a property to a value already in its own form: a date-time,
+// an offset or a rule. SetText would mark it as text and escape the rule's
+// semicolons, which strict clients refuse.
+func ical_raw(component *ical.Component, name, value string) {
+	prop := ical.NewProp(name)
+	prop.Value = value
+	component.Props.Set(prop)
+}
+
 func ical_timezone(name string, now time.Time) (*ical.Component, error) {
 	if name == "" || name == "Local" {
 		return nil, fmt.Errorf("no such zone %q", name)
@@ -146,9 +155,9 @@ func ical_timezone(name string, now time.Time) (*ical.Component, error) {
 	if len(transitions) == 0 {
 		abbreviation, offset := now.In(loc).Zone()
 		block := ical.NewComponent(ical.CompTimezoneStandard)
-		block.Props.SetText(ical.PropDateTimeStart, "19700101T000000")
-		block.Props.SetText(ical.PropTimezoneOffsetFrom, ical_offset(offset))
-		block.Props.SetText(ical.PropTimezoneOffsetTo, ical_offset(offset))
+		ical_raw(block, ical.PropDateTimeStart, "19700101T000000")
+		ical_raw(block, ical.PropTimezoneOffsetFrom, ical_offset(offset))
+		ical_raw(block, ical.PropTimezoneOffsetTo, ical_offset(offset))
 		block.Props.SetText(ical.PropTimezoneName, abbreviation)
 		zone.Children = append(zone.Children, block)
 		return zone, nil
@@ -178,18 +187,18 @@ func ical_timezone(name string, now time.Time) (*ical.Component, error) {
 			component = ical.CompTimezoneDaylight
 		}
 		block := ical.NewComponent(component)
-		block.Props.SetText(ical.PropDateTimeStart, ical_local(run[0].at, run[0].from))
-		block.Props.SetText(ical.PropTimezoneOffsetFrom, ical_offset(k.from))
-		block.Props.SetText(ical.PropTimezoneOffsetTo, ical_offset(k.to))
+		ical_raw(block, ical.PropDateTimeStart, ical_local(run[0].at, run[0].from))
+		ical_raw(block, ical.PropTimezoneOffsetFrom, ical_offset(k.from))
+		ical_raw(block, ical.PropTimezoneOffsetTo, ical_offset(k.to))
 		block.Props.SetText(ical.PropTimezoneName, k.name)
 		if rule := ical_rule(run); rule != "" {
-			block.Props.SetText(ical.PropRecurrenceRule, rule)
+			ical_raw(block, ical.PropRecurrenceRule, rule)
 		} else if len(run) > 1 {
 			var dates []string
 			for _, t := range run[1:] {
 				dates = append(dates, ical_local(t.at, t.from))
 			}
-			block.Props.SetText(ical.PropRecurrenceDates, strings.Join(dates, ","))
+			ical_raw(block, ical.PropRecurrenceDates, strings.Join(dates, ","))
 		}
 		zone.Children = append(zone.Children, block)
 	}

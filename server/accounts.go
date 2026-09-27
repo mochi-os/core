@@ -222,6 +222,7 @@ var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"notify":    sl.NewBuiltin("mochi.account.notify", api_account_notify),
 	"providers": sl.NewBuiltin("mochi.account.providers", api_account_providers),
 	"remove":    sl.NewBuiltin("mochi.account.remove", api_account_remove),
+	"sync":      sl.NewBuiltin("mochi.account.sync", api_account_sync),
 	"test":      sl.NewBuiltin("mochi.account.test", api_account_test),
 	"throttled": sl.NewBuiltin("mochi.account.throttled", api_account_throttled),
 	"update":    sl.NewBuiltin("mochi.account.update", api_account_update),
@@ -2035,12 +2036,7 @@ func account_deliver_browser(data map[string]any, title, body, link, tag string)
 // path-only endpoint is our own: forward the cleartext payload over the user's
 // WebSocket. An absolute URL is a third-party distributor: RFC 8030 Web Push.
 func account_deliver_unifiedpush(user *User, account string, data map[string]any, title, body, link, tag, app, id string) bool {
-	endpoint, _ := data["endpoint"].(string)
-	if endpoint == "" {
-		return false
-	}
-
-	payload, _ := json.Marshal(map[string]string{
+	return unifiedpush_send(user, account, data, map[string]string{
 		"title": title,
 		"body":  body,
 		"link":  link,
@@ -2048,6 +2044,17 @@ func account_deliver_unifiedpush(user *User, account string, data map[string]any
 		"app":   app,
 		"id":    id,
 	})
+}
+
+// unifiedpush_send delivers one payload, a notification's fields or a sync
+// signal, to a UnifiedPush account.
+func unifiedpush_send(user *User, account string, data map[string]any, fields map[string]string) bool {
+	endpoint, _ := data["endpoint"].(string)
+	if endpoint == "" {
+		return false
+	}
+
+	payload, _ := json.Marshal(fields)
 
 	// Local fast-path. The envelope carries `account` so the on-device distributor
 	// can ack the matching push_pending row; without it rows stick until the TTL

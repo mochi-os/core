@@ -80,6 +80,64 @@ func ical_params(params ical.Params) map[string]any {
 	return out
 }
 
+// Free text a person reads and writes: the tree carries these as the text
+// itself, and ical_component escapes them again, so an app never sees or
+// writes iCalendar's backslashes. Lists (CATEGORIES, RESOURCES) and tokens
+// keep their written form.
+var ical_prose = map[string]bool{
+	ical.PropSummary:     true,
+	ical.PropDescription: true,
+	ical.PropLocation:    true,
+	ical.PropComment:     true,
+	ical.PropContact:     true,
+	ical.PropName:        true,
+	"X-WR-CALNAME":       true,
+	"X-WR-CALDESC":       true,
+}
+
+// ical_prosaic says a property is free text, and not written as another type.
+func ical_prosaic(prop *ical.Prop) bool {
+	if !ical_prose[strings.ToUpper(prop.Name)] {
+		return false
+	}
+	kind := prop.ValueType()
+	return kind == ical.ValueText || kind == ical.ValueDefault
+}
+
+// ical_unescape reads a text value. A comma or semicolon written without its
+// backslash is kept, so a value another client wrote loosely still reads
+// whole, and a backslash before anything else is kept as it is.
+func ical_unescape(value string) string {
+	if !strings.Contains(value, "\\") {
+		return value
+	}
+	var out strings.Builder
+	for i := 0; i < len(value); i++ {
+		if value[i] == '\\' && i+1 < len(value) {
+			switch next := value[i+1]; next {
+			case '\\', ';', ',':
+				out.WriteByte(next)
+				i++
+				continue
+			case 'n', 'N':
+				out.WriteByte('\n')
+				i++
+				continue
+			}
+		}
+		out.WriteByte(value[i])
+	}
+	return out.String()
+}
+
+var ical_escaper = strings.NewReplacer("\\", "\\\\", ";", "\\;", ",", "\\,", "\r\n", "\\n", "\n", "\\n", "\r", "\\n")
+
+// ical_escape writes text as a text value: backslash, semicolon and comma
+// escaped, and each line break as \n.
+func ical_escape(text string) string {
+	return ical_escaper.Replace(text)
+}
+
 // ical_tree turns a component into the dict apps see.
 func ical_tree(comp *ical.Component) map[string]any {
 	names := make([]string, 0, len(comp.Props))
@@ -90,7 +148,11 @@ func ical_tree(comp *ical.Component) map[string]any {
 	properties := make([]any, 0, len(names))
 	for _, name := range names {
 		for _, prop := range comp.Props[name] {
-			properties = append(properties, map[string]any{"name": prop.Name, "params": ical_params(prop.Params), "value": prop.Value})
+			value := prop.Value
+			if ical_prosaic(&prop) {
+				value = ical_unescape(value)
+			}
+			properties = append(properties, map[string]any{"name": prop.Name, "params": ical_params(prop.Params), "value": value})
 		}
 	}
 	children := make([]any, 0, len(comp.Children))
@@ -135,6 +197,9 @@ func ical_component(v any) (*ical.Component, error) {
 						prop.Params[key] = append(prop.Params[key], x)
 					}
 				}
+			}
+			if ical_prosaic(prop) {
+				prop.Value = ical_escape(prop.Value)
 			}
 			comp.Props.Add(prop)
 		}
@@ -263,8 +328,11 @@ func ical_overlaps(start, finish, from, until time.Time) bool {
 }
 
 func ical_text(comp *ical.Component, name string) string {
-	value, _ := comp.Props.Text(name)
-	return value
+	prop := comp.Props.Get(name)
+	if prop == nil {
+		return ""
+	}
+	return ical_unescape(prop.Value)
 }
 
 // ical_instance is one occurrence as apps see it.

@@ -291,3 +291,102 @@ func TestIcalInstancesCarryTheirOwnColour(t *testing.T) {
 		}
 	}
 }
+
+func TestIcalTreeCarriesTextUnescaped(t *testing.T) {
+	text := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n" +
+		"BEGIN:VEVENT\r\nUID:a1\r\nDTSTAMP:20260901T000000Z\r\nDTSTART:20261001T090000Z\r\n" +
+		"SUMMARY:Trailhead Lodge\\, Estes Park\r\n" +
+		"LOCATION:Trailhead Lodge\\, 130 Stanley Ave\\; rear\r\n" +
+		"DESCRIPTION:Payment taken\\nKing bed room\\\\suite\r\n" +
+		"COMMENT:Lunch, Bob\r\n" +
+		"CATEGORIES:Travel,Hotel\\, lodge\r\n" +
+		"END:VEVENT\r\nEND:VCALENDAR\r\n"
+	parse := sl.NewBuiltin("mochi.ical.parse", api_ical_parse)
+	tree, err := api_ical_parse(ical_test_thread(), parse, sl.Tuple{sl.String(text)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := sl_decode(tree).(map[string]any)["components"].([]any)[0].(map[string]any)
+	got := map[string]any{}
+	for _, p := range event["properties"].([]any) {
+		m := p.(map[string]any)
+		got[m["name"].(string)] = m["value"]
+	}
+	want := map[string]string{
+		"SUMMARY":     "Trailhead Lodge, Estes Park",
+		"LOCATION":    "Trailhead Lodge, 130 Stanley Ave; rear",
+		"DESCRIPTION": "Payment taken\nKing bed room\\suite",
+		// Written loosely, without the backslash, and still read whole.
+		"COMMENT": "Lunch, Bob",
+		// A list keeps its written form: the comma separates its values.
+		"CATEGORIES": "Travel,Hotel\\, lodge",
+	}
+	for name, value := range want {
+		if got[name] != value {
+			t.Errorf("%s = %q, want %q", name, got[name], value)
+		}
+	}
+
+	format := sl.NewBuiltin("mochi.ical.format", api_ical_format)
+	out, err := api_ical_format(ical_test_thread(), format, sl.Tuple{tree}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	written := string(out.(sl.String))
+	for _, line := range []string{
+		"SUMMARY:Trailhead Lodge\\, Estes Park\r\n",
+		"LOCATION:Trailhead Lodge\\, 130 Stanley Ave\\; rear\r\n",
+		"DESCRIPTION:Payment taken\\nKing bed room\\\\suite\r\n",
+		"COMMENT:Lunch\\, Bob\r\n",
+		"CATEGORIES:Travel,Hotel\\, lodge\r\n",
+	} {
+		if !strings.Contains(written, line) {
+			t.Errorf("formatted text lacks %q:\n%s", line, written)
+		}
+	}
+
+	cal, err := ical_decode(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instances := ical_instances(cal, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC), time.UTC)
+	if len(instances) != 1 {
+		t.Fatalf("instances = %v", instances)
+	}
+	instance := instances[0].(map[string]any)
+	if instance["summary"] != "Trailhead Lodge, Estes Park" || instance["description"] != "Payment taken\nKing bed room\\suite" {
+		t.Errorf("instance = %v", instance)
+	}
+
+	// A summary another client wrote without escaping its comma reads whole.
+	loose, err := ical_decode(strings.Replace(text, "SUMMARY:Trailhead Lodge\\, Estes Park", "SUMMARY:Lunch, Bob", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	instances = ical_instances(loose, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC), time.UTC)
+	if len(instances) != 1 || instances[0].(map[string]any)["summary"] != "Lunch, Bob" {
+		t.Errorf("loose instances = %v", instances)
+	}
+}
+
+func TestIcalFormatWritesALineBreakAsEscapedText(t *testing.T) {
+	tree := map[string]any{"name": "VCALENDAR", "properties": []any{
+		map[string]any{"name": "VERSION", "params": map[string]any{}, "value": "2.0"},
+		map[string]any{"name": "PRODID", "params": map[string]any{}, "value": "-//Test//EN"},
+	}, "components": []any{map[string]any{"name": "VEVENT", "properties": []any{
+		map[string]any{"name": "UID", "params": map[string]any{}, "value": "a1"},
+		map[string]any{"name": "DTSTAMP", "params": map[string]any{}, "value": "20260901T000000Z"},
+		map[string]any{"name": "DTSTART", "params": map[string]any{}, "value": "20261001T090000Z"},
+		map[string]any{"name": "SUMMARY", "params": map[string]any{}, "value": "Dinner, then drinks"},
+		map[string]any{"name": "DESCRIPTION", "params": map[string]any{}, "value": "Line one\nLine two"},
+	}, "components": []any{}}}}
+	format := sl.NewBuiltin("mochi.ical.format", api_ical_format)
+	out, err := api_ical_format(ical_test_thread(), format, sl.Tuple{sl_encode(tree)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	written := string(out.(sl.String))
+	if !strings.Contains(written, "SUMMARY:Dinner\\, then drinks\r\n") || !strings.Contains(written, "DESCRIPTION:Line one\\nLine two\r\n") {
+		t.Fatalf("formatted:\n%s", written)
+	}
+}

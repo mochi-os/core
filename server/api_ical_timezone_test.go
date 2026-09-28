@@ -210,7 +210,7 @@ func TestIcalTimezoneEncodesAndExpandsWithAnEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	instances := ical_instances(cal, time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC), time.UTC)
+	instances := ical_instances(cal, time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC), time.UTC, false)
 	if len(instances) != 1 {
 		t.Fatalf("instances: %d", len(instances))
 	}

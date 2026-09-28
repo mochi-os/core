@@ -117,7 +117,7 @@ func TestIcalInstancesCarryEachEndsZone(t *testing.T) {
 	until := time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
 	zones := map[string][2]string{}
 	var day map[string]any
-	for _, item := range ical_instances(cal, from, until, london) {
+	for _, item := range ical_instances(cal, from, until, london, false) {
 		m := item.(map[string]any)
 		uid := m["uid"].(string)
 		if uid == "day" {
@@ -149,7 +149,7 @@ func TestIcalInstancesCarryEachEndsZone(t *testing.T) {
 	}
 	// The flight's instants are what its two zones say: 10:00 London is
 	// 09:00 UTC, 13:00 New York is 17:00 UTC.
-	for _, item := range ical_instances(cal, from, until, london) {
+	for _, item := range ical_instances(cal, from, until, london, false) {
 		m := item.(map[string]any)
 		if m["uid"] == "flight" {
 			if got := time.Unix(m["start"].(int64), 0).UTC().Format("15:04"); got != "09:00" {

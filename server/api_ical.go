@@ -395,6 +395,45 @@ func ical_colour(comp *ical.Component) string {
 
 // ical_alarmed says the event carries a reminder of its own: a changed
 // occurrence answers for itself, not for its series.
+// ical_alarms is a component's alarms, each {"related": "start" or "end",
+// "offset": seconds} for a trigger relative to an occurrence, or {"at":
+// seconds} for one at a fixed time, once each.
+func ical_alarms(comp *ical.Component, loc *time.Location) []any {
+	out := []any{}
+	seen := map[string]bool{}
+	add := func(alarm map[string]any) {
+		key := fmt.Sprint(alarm)
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, alarm)
+		}
+	}
+	for _, child := range comp.Children {
+		if child.Name != ical.CompAlarm {
+			continue
+		}
+		trigger := child.Props.Get(ical.PropTrigger)
+		if trigger == nil {
+			continue
+		}
+		if !strings.EqualFold(trigger.Params.Get(ical.ParamValue), "DATE-TIME") {
+			if offset, err := trigger.Duration(); err == nil {
+				related := "start"
+				if strings.EqualFold(trigger.Params.Get(ical.ParamRelated), "END") {
+					related = "end"
+				}
+				add(map[string]any{"related": related, "offset": int64(offset / time.Second)})
+				continue
+			}
+		}
+		// A fixed time, whether its VALUE parameter says so or not.
+		if at, err := trigger.DateTime(loc); err == nil {
+			add(map[string]any{"at": at.Unix()})
+		}
+	}
+	return out
+}
+
 func ical_alarmed(comp *ical.Component) bool {
 	for _, child := range comp.Children {
 		if child.Name == ical.CompAlarm {
@@ -421,7 +460,7 @@ func ical_zone(comp *ical.Component, name string) string {
 // ical_instances expands the events of a calendar into the occurrences that
 // overlap [from, until). A recurring event's overrides (RECURRENCE-ID) replace
 // the occurrences they name. Floating times are read in loc.
-func ical_instances(cal *ical.Calendar, from, until time.Time, loc *time.Location) []any {
+func ical_instances(cal *ical.Calendar, from, until time.Time, loc *time.Location, alarms bool) []any {
 	type group struct {
 		master    *ical.Component
 		overrides []*ical.Component
@@ -448,6 +487,15 @@ func ical_instances(cal *ical.Calendar, from, until time.Time, loc *time.Locatio
 
 	out := []any{}
 	budget := ical_budget_instances
+	// An occurrence, with its own component's alarms when asked for: an
+	// override's for the occurrence it changes, the event's for the rest.
+	emit := func(comp *ical.Component, start, finish time.Time, allday, recurring bool) {
+		instance := ical_instance(comp, start, finish, allday, recurring)
+		if alarms {
+			instance["alarms"] = ical_alarms(comp, loc)
+		}
+		out = append(out, instance)
+	}
 	for _, uid := range order {
 		g := groups[uid]
 		overridden := map[int64]bool{}
@@ -460,7 +508,7 @@ func ical_instances(cal *ical.Calendar, from, until time.Time, loc *time.Locatio
 				continue
 			}
 			if ical_overlaps(start, finish, from, until) {
-				out = append(out, ical_instance(o, start, finish, allday, true))
+				emit(o, start, finish, allday, true)
 			}
 		}
 		if g.master == nil {
@@ -473,7 +521,7 @@ func ical_instances(cal *ical.Calendar, from, until time.Time, loc *time.Locatio
 		set, err := ical_recurrence(g.master, start, loc)
 		if err != nil || set == nil {
 			if ical_overlaps(start, finish, from, until) {
-				out = append(out, ical_instance(g.master, start, finish, allday, false))
+				emit(g.master, start, finish, allday, false)
 			}
 			continue
 		}
@@ -499,7 +547,7 @@ func ical_instances(cal *ical.Calendar, from, until time.Time, loc *time.Locatio
 				continue
 			}
 			if ical_overlaps(occurrence, occurrence.Add(duration), from, until) {
-				out = append(out, ical_instance(g.master, occurrence, occurrence.Add(duration), allday, true))
+				emit(g.master, occurrence, occurrence.Add(duration), allday, true)
 			}
 		}
 		if len(out) >= ical_instances_maximum {
@@ -620,18 +668,22 @@ func api_ical_format(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl.String(text), nil
 }
 
-// mochi.ical.instances(text, start?, finish?, timezone?) -> list: Expand the
-// events in iCalendar text into the occurrences overlapping [start, finish),
-// Unix seconds, sorted by start. Each is {uid, component, summary, location,
-// description, status, start, finish, allday, date?, zone?, recurring,
-// exception?}; zone is {start, finish}, the TZID each end of a timed
-// occurrence was written in, "" for UTC and floating values. Floating times
-// are read in timezone (IANA name), else the user's zone: the timezone
+// mochi.ical.instances(text, start?, finish?, timezone?, alarms?) -> list:
+// Expand the events in iCalendar text into the occurrences overlapping
+// [start, finish), Unix seconds, sorted by start. Each is {uid, component,
+// summary, location, description, status, start, finish, allday, date?,
+// zone?, recurring, exception?, alarms?}; zone is {start, finish}, the TZID
+// each end of a timed occurrence was written in, "" for UTC and floating
+// values. With alarms=True, alarms is the occurrence's own: its override's
+// when it has one, else the event's, each {related, offset} for a trigger
+// relative to the start or end in seconds, or {at} for a fixed time. Floating
+// times are read in timezone (IANA name), else the user's zone: the timezone
 // preference, or the zone the user's device last reported.
 func api_ical_instances(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var text, timezone string
 	var start, finish int64
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "text", &text, "start?", &start, "finish?", &finish, "timezone?", &timezone); err != nil {
+	var alarms bool
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "text", &text, "start?", &start, "finish?", &finish, "timezone?", &timezone, "alarms?", &alarms); err != nil {
 		return nil, err
 	}
 	cal, err := ical_decode(text)
@@ -653,7 +705,7 @@ func api_ical_instances(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if finish > 0 {
 		until = time.Unix(finish, 0)
 	}
-	return sl_encode(ical_instances(cal, from, until, loc)), nil
+	return sl_encode(ical_instances(cal, from, until, loc, alarms)), nil
 }
 
 // mochi.ical.summary(text) -> dict | None: What an app keeps beside the text

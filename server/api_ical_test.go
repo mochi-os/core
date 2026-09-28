@@ -7,6 +7,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +33,7 @@ func TestIcalInstancesExpandWithExceptionsAndOverrides(t *testing.T) {
 	london, _ := time.LoadLocation("Europe/London")
 	from := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	instances := ical_instances(cal, from, until, london)
+	instances := ical_instances(cal, from, until, london, false)
 
 	var got []string
 	for _, item := range instances {
@@ -59,7 +60,7 @@ func TestIcalInstancesExpandWithExceptionsAndOverrides(t *testing.T) {
 	}
 
 	// A range that starts inside an occurrence still sees it.
-	partial := ical_instances(cal, time.Date(2026, 9, 1, 8, 30, 0, 0, time.UTC), time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), london)
+	partial := ical_instances(cal, time.Date(2026, 9, 1, 8, 30, 0, 0, time.UTC), time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), london, false)
 	if len(partial) != 1 {
 		t.Fatalf("overlapping range: %d instances", len(partial))
 	}
@@ -179,8 +180,8 @@ func TestIcalInstancesStopOnARunawayRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	began := time.Now()
-	ical_instances(cal, time.Time{}, time.Time{}, time.UTC)
-	ical_instances(cal, time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), time.UTC)
+	ical_instances(cal, time.Time{}, time.Time{}, time.UTC, false)
+	ical_instances(cal, time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), time.UTC, false)
 	if elapsed := time.Since(began); elapsed > 5*time.Second {
 		t.Fatalf("expansion took %s", elapsed)
 	}
@@ -232,7 +233,7 @@ func TestIcalInstancesCarryTheirOwnAlarm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	instances := ical_instances(cal, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), time.UTC)
+	instances := ical_instances(cal, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), time.UTC, false)
 	got := map[string]bool{}
 	for _, item := range instances {
 		m := item.(map[string]any)
@@ -271,7 +272,7 @@ func TestIcalInstancesCarryTheirOwnColour(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	instances := ical_instances(cal, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), time.UTC)
+	instances := ical_instances(cal, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), time.UTC, false)
 	got := map[string]any{}
 	for _, item := range instances {
 		m := item.(map[string]any)
@@ -349,7 +350,7 @@ func TestIcalTreeCarriesTextUnescaped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	instances := ical_instances(cal, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC), time.UTC)
+	instances := ical_instances(cal, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC), time.UTC, false)
 	if len(instances) != 1 {
 		t.Fatalf("instances = %v", instances)
 	}
@@ -363,7 +364,7 @@ func TestIcalTreeCarriesTextUnescaped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	instances = ical_instances(loose, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC), time.UTC)
+	instances = ical_instances(loose, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC), time.UTC, false)
 	if len(instances) != 1 || instances[0].(map[string]any)["summary"] != "Lunch, Bob" {
 		t.Errorf("loose instances = %v", instances)
 	}
@@ -388,5 +389,61 @@ func TestIcalFormatWritesALineBreakAsEscapedText(t *testing.T) {
 	written := string(out.(sl.String))
 	if !strings.Contains(written, "SUMMARY:Dinner\\, then drinks\r\n") || !strings.Contains(written, "DESCRIPTION:Line one\\nLine two\r\n") {
 		t.Fatalf("formatted:\n%s", written)
+	}
+}
+
+// Each occurrence carries its own component's alarms: the series' for its
+// own occurrences, an override's for the one it changes, none for an override
+// that has none, which replaces the occurrence whole.
+func TestIcalInstancesCarryEachOccurrencesOwnAlarms(t *testing.T) {
+	text := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n" +
+		"BEGIN:VEVENT\r\nUID:alarms@test\r\nDTSTART;TZID=Europe/London:20260901T090000\r\nDTEND;TZID=Europe/London:20260901T100000\r\n" +
+		"RRULE:FREQ=DAILY;COUNT=4\r\nSUMMARY:Daily\r\n" +
+		"BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\n" +
+		"BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER;RELATED=END:-PT5M\r\nEND:VALARM\r\n" +
+		"BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER;VALUE=DATE-TIME:20260901T070000Z\r\nEND:VALARM\r\n" +
+		"BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\n" +
+		"END:VEVENT\r\n" +
+		"BEGIN:VEVENT\r\nUID:alarms@test\r\nRECURRENCE-ID;TZID=Europe/London:20260902T090000\r\n" +
+		"DTSTART;TZID=Europe/London:20260902T110000\r\nDTEND;TZID=Europe/London:20260902T120000\r\nSUMMARY:Own reminder\r\n" +
+		"BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT1H\r\nEND:VALARM\r\nEND:VEVENT\r\n" +
+		"BEGIN:VEVENT\r\nUID:alarms@test\r\nRECURRENCE-ID;TZID=Europe/London:20260903T090000\r\n" +
+		"DTSTART;TZID=Europe/London:20260903T090000\r\nDTEND;TZID=Europe/London:20260903T100000\r\nSUMMARY:No reminder\r\nEND:VEVENT\r\n" +
+		"END:VCALENDAR\r\n"
+	cal, err := ical_decode(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	london, _ := time.LoadLocation("Europe/London")
+	series := []any{
+		map[string]any{"related": "start", "offset": int64(-900)},
+		map[string]any{"related": "end", "offset": int64(-300)},
+		map[string]any{"at": time.Date(2026, 9, 1, 7, 0, 0, 0, time.UTC).Unix()},
+	}
+	want := map[string][]any{
+		"09-01 Daily":        series,
+		"09-02 Own reminder": {map[string]any{"related": "start", "offset": int64(-3600)}},
+		"09-03 No reminder":  {},
+		"09-04 Daily":        series,
+	}
+	instances := ical_instances(cal, time.Time{}, time.Time{}, london, true)
+	if len(instances) != len(want) {
+		t.Fatalf("%d occurrences, want %d", len(instances), len(want))
+	}
+	for _, item := range instances {
+		m := item.(map[string]any)
+		key := time.Unix(m["start"].(int64), 0).In(london).Format("01-02") + " " + m["summary"].(string)
+		expected, ok := want[key]
+		if !ok {
+			t.Fatalf("unexpected occurrence %s", key)
+		}
+		if got := fmt.Sprint(m["alarms"]); got != fmt.Sprint(expected) {
+			t.Errorf("%s alarms = %s, want %s", key, got, fmt.Sprint(expected))
+		}
+	}
+	for _, item := range ical_instances(cal, time.Time{}, time.Time{}, london, false) {
+		if _, ok := item.(map[string]any)["alarms"]; ok {
+			t.Fatal("alarms listed without being asked for")
+		}
 	}
 }

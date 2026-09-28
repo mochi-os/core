@@ -911,7 +911,10 @@ func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // mochi.time.local(timestamp, format?, timezone?) -> string: Convert Unix
 // timestamp to local time in the user's zone, or in timezone (an IANA name)
 // when given: the zone an event was written in, say. The user's zone is the
-// timezone preference, else the zone the user's device last reported.
+// timezone preference, else the zone the user's device last reported. The
+// formats "clock" and "day" are the time of day and the date as the user reads
+// them, in their language and by their time_format and date_format
+// preferences, for text shown to them.
 func api_time_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 2 {
 		return sl_error(fn, "syntax: <timestamp: int64>, [format: string], [timezone=string]")
@@ -962,8 +965,10 @@ func api_time_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 			format = gotime.RFC3339
 		case "ical":
 			format = ical_time_format
+		case "clock", "day":
+			format = f
 		default:
-			return sl_error(fn, "unknown format %q (valid: datetime, date, time, rfc822, rfc3339, ical)", f)
+			return sl_error(fn, "unknown format %q (valid: datetime, date, time, clock, day, rfc822, rfc3339, ical)", f)
 		}
 	}
 
@@ -987,7 +992,16 @@ func api_time_local(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		loc = gotime.UTC
 	}
 
-	return sl.String(gotime.Unix(timestamp, 0).In(loc).Format(format)), nil
+	moment := gotime.Unix(timestamp, 0).In(loc)
+	switch format {
+	case "clock":
+		user := principal_caller(t)
+		return sl.String(time_clock(moment, user_language(user), user_preference_get(user, "time_format", "auto"))), nil
+	case "day":
+		user := principal_caller(t)
+		return sl.String(time_day(moment, user_language(user), user_preference_get(user, "date_format", "auto"))), nil
+	}
+	return sl.String(moment.Format(format)), nil
 }
 
 // mochi.time.now() -> int: Get the current Unix timestamp
@@ -996,8 +1010,9 @@ func api_time_now(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 }
 
 // mochi.time.parse(s, format?) -> int | None: Parse a string into a Unix
-// timestamp; the inverse of mochi.time.local. Default format is "rfc3339", same
-// five named formats as local. Returns None on any parse error. For
+// timestamp; the inverse of mochi.time.local. Default format is "rfc3339", and
+// the named formats are local's but for clock and day, which are for reading
+// rather than parsing. Returns None on any parse error. For
 // datetime/date/time the user's timezone is assumed, so parse(local(ts))
 // round-trips.
 func api_time_parse(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {

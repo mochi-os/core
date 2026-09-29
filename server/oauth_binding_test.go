@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	sl "go.starlark.net/starlark"
 )
 
 // oauth_binding_setup creates the tables the OAuth begin and callback handlers
@@ -227,6 +229,70 @@ func TestOauthLinkCeremonyBoundToSession(t *testing.T) {
 	}
 	if link_user != "u-link" {
 		t.Errorf("link_user = %q, want u-link", link_user)
+	}
+}
+
+// TestOauthLinkBuiltin: mochi.user.oauth.link is how the sandboxed settings
+// app links a provider, since its requests reach /begin as cross-site. It
+// starts the ceremony a link through /begin does - the user's, bound at the
+// callback to their session, with no browser binding - and answers None for
+// a provider that is not set up.
+func TestOauthLinkBuiltin(t *testing.T) {
+	oauth_binding_setup(t)
+	sessions := db_open("db/sessions.db")
+	link_session := login_create("u-link", "", "")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/settings/-/user/account/oauth/link", nil)
+	c.Request.Header.Set("Sec-Fetch-Site", "cross-site")
+	thread := create_test_thread(&User{UID: "u-link", Username: "link@example.com"}, create_internal_app("settings"))
+	thread.SetLocal("action", &Action{web: c})
+	link := sl.NewBuiltin("mochi.user.oauth.link", api_user_oauth_link)
+
+	got, err := api_user_oauth_link(thread, link, sl.Tuple{sl.String("google")}, nil)
+	if err != nil {
+		t.Fatalf("unconfigured provider: %v", err)
+	}
+	if got != sl.None {
+		t.Errorf("unconfigured provider answered %v, want None", got)
+	}
+	if n, _ := sessions.rows("select 1 from ceremonies"); len(n) != 0 {
+		t.Errorf("unconfigured provider started %d ceremonies, want 0", len(n))
+	}
+
+	got, err = api_user_oauth_link(thread, link, sl.Tuple{sl.String("github")}, []sl.Tuple{{sl.String("target"), sl.String("/settings/user/login")}})
+	if err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	answer, ok := got.(*sl.Dict)
+	if !ok {
+		t.Fatalf("link answered %v, want a dict", got)
+	}
+	state, st := oauth_only_ceremony(t)
+	address, _, _ := answer.Get(sl.String("url"))
+	if url, _ := sl.AsString(address); url != "/_/auth/oauth/github/start?state="+state {
+		t.Errorf("url = %q, want the start page for this ceremony", url)
+	}
+	if st.Target != "/settings/user/login" {
+		t.Errorf("target = %q, want /settings/user/login", st.Target)
+	}
+	if st.Binding != "" || st.Mode != "" {
+		t.Errorf("binding %q, mode %q: a web link carries neither", st.Binding, st.Mode)
+	}
+	if row, _ := sessions.row("select user from ceremonies where id=?", state); row == nil || row["user"] != "u-link" {
+		t.Errorf("ceremony user = %v, want u-link", row)
+	}
+	if oauth_binding_from_response(w) != nil {
+		t.Error("link set a binding cookie; it cannot reach the sandboxed caller")
+	}
+
+	// The provider's callback, in the top window, completes it in the
+	// linking user's own session.
+	callback, _ := oauth_callback_context(state, &http.Cookie{Name: "session", Value: link_session})
+	_, user, ok := oauth_callback_ceremony(callback, "github", state)
+	if !ok || user != "u-link" {
+		t.Errorf("callback accepted %v for %q, want the link for u-link", ok, user)
 	}
 }
 

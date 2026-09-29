@@ -113,6 +113,7 @@ type oauth_return struct {
 }
 
 var api_user_oauth = sls.FromStringDict(sl.String("mochi.user.oauth"), sl.StringDict{
+	"link":   sl.NewBuiltin("mochi.user.oauth.link", api_user_oauth_link),
 	"list":   sl.NewBuiltin("mochi.user.oauth.list", api_user_oauth_list),
 	"unlink": sl.NewBuiltin("mochi.user.oauth.unlink", api_user_oauth_unlink),
 	"verify": sls.FromStringDict(sl.String("mochi.user.oauth.verify"), sl.StringDict{
@@ -1334,6 +1335,42 @@ func api_user_oauth_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		delete(r, "id")
 	}
 	return sl_encode(rows), nil
+}
+
+// mochi.user.oauth.link(provider, target?) -> dict | None: Begin linking a
+// provider's sign-in to the current user, answering {url} for the browser to
+// visit, or None when the provider is unknown or not enabled. The provider's
+// callback writes the link and returns the browser to target, a local path.
+// Linking adds a way to sign in, so the caller gates it on a step-up, as it
+// does unlink. This is how the sandboxed settings app links: its requests
+// reach the begin route as cross-site, which that route refuses.
+func api_user_oauth_link(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "user/authentication/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	user := principal_caller(t)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	action, _ := t.Local("action").(*Action)
+	if action == nil || action.web == nil {
+		return sl_error(fn, "no request context")
+	}
+
+	var name, target string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "provider", &name, "target?", &target); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	provider, ok := oauth_providers()[name]
+	if !ok || !oauth_enabled(name) {
+		return sl.None, nil
+	}
+
+	url, _, err := oauth_begin_ceremony(action.web, provider, name, user.UID, target, "", "", "", "", nil)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl_encode(map[string]any{"url": url}), nil
 }
 
 // api_user_oauth_verify_begin is mochi.user.oauth.verify.begin(provider,

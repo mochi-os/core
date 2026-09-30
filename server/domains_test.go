@@ -7,6 +7,7 @@
 package main
 
 import (
+	"net"
 	"testing"
 
 	sl "go.starlark.net/starlark"
@@ -1071,5 +1072,42 @@ func TestLegacyRoutePathStaysReachable(t *testing.T) {
 	}
 	if rows := db.integer("select count(*) from routes where domain='example.com' and path=''"); rows != 0 {
 		t.Error("deleting the whole-domain route in the canonical spelling missed the legacy empty-path row")
+	}
+}
+
+// TestDomainVerifyMissingRecord: before the operator publishes the TXT record
+// the resolver answers "no such host", which is an unverified domain, not a
+// failure. It used to be returned as an error, so the first Verify an
+// administrator pressed aborted the action with the resolver's raw text.
+func TestDomainVerifyMissingRecord(t *testing.T) {
+	create_domains_test_env(t)
+	original := domain_records
+	t.Cleanup(func() { domain_records = original })
+	domain_register("unpublished.example.com")
+
+	domain_records = func(name string) ([]string, error) {
+		return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+	}
+	verified, err := domain_verify("unpublished.example.com")
+	if err != nil || verified {
+		t.Fatalf("a missing record answered (%v, %v), want (false, nil)", verified, err)
+	}
+
+	// Any other resolver failure is still reported: a timeout says nothing
+	// about whether the record exists.
+	domain_records = func(name string) ([]string, error) {
+		return nil, &net.DNSError{Err: "i/o timeout", Name: name, IsTimeout: true}
+	}
+	if _, err := domain_verify("unpublished.example.com"); err == nil {
+		t.Fatal("a resolver timeout was reported as unverified rather than as a failure")
+	}
+
+	// And the record, once published, still verifies.
+	token := domain_get("unpublished.example.com").Token
+	domain_records = func(name string) ([]string, error) {
+		return []string{"mochi-verify=" + token}, nil
+	}
+	if verified, err := domain_verify("unpublished.example.com"); err != nil || !verified {
+		t.Fatalf("the published record answered (%v, %v), want (true, nil)", verified, err)
 	}
 }

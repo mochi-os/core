@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -477,6 +478,10 @@ func domain_delete(name string) error {
 	return nil
 }
 
+// domain_records looks up a name's TXT records. A variable so tests can stand
+// in for the resolver.
+var domain_records = net.LookupTXT
+
 // domain_verify checks DNS TXT record for domain verification
 func domain_verify(name string) (bool, error) {
 	d := domain_get(name)
@@ -486,8 +491,15 @@ func domain_verify(name string) (bool, error) {
 
 	lookup_name := strings.TrimPrefix(name, "*.")
 
-	records, err := net.LookupTXT("_mochi-verify." + lookup_name)
+	records, err := domain_records("_mochi-verify." + lookup_name)
 	if err != nil {
+		// No record yet is the usual state before the operator has published
+		// it, and answers "not verified"; returning it as an error aborted the
+		// action with the resolver's raw text.
+		var missing *net.DNSError
+		if errors.As(err, &missing) && missing.IsNotFound {
+			return false, nil
+		}
 		return false, err
 	}
 

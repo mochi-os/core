@@ -323,8 +323,15 @@ func web_shell_token(c *gin.Context) {
 		return
 	}
 
-	// Resolve the app path to an app
+	// Resolve the app path to an app, or, for a direct entity URL
+	// (/<fingerprint>), the entity to the app for its class: the shell names
+	// the URL's first segment, and that page is served by the class's app.
 	a := app_for_path(user, input.App)
+	if a == nil {
+		if e := entity_by_any(input.App); e != nil {
+			a = class_app_for(user_owning_entity(e.ID), e.Class)
+		}
+	}
 	if a == nil {
 		respond_error(c, http.StatusNotFound, "app_not_found", "errors.app_not_found", nil)
 		return

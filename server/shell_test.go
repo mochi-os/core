@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -530,8 +531,11 @@ func TestJwtAppClaimDifferentApps(t *testing.T) {
 	}
 }
 
-// Test /_/token endpoint JSON response format
-func TestShellTokenResponseFormat(t *testing.T) {
+// shell_token_test_env sets up a signed-in user u1 with session
+// "token-test-session", an app "feeds" bound to the path "feeds", and an app
+// "wikis" bound to the class "wiki" with one wiki entity, "wiki1", whose
+// fingerprint is "wkfp12345".
+func shell_token_test_env(t *testing.T) {
 	create_web_test_env(t)
 
 	// Fix table schemas to match production (create_web_test_env uses simplified schemas)
@@ -541,38 +545,51 @@ func TestShellTokenResponseFormat(t *testing.T) {
 	db_users.exec("alter table users add column status text not null default 'active'")
 	// Recreate entities table without created/updated (Entity struct doesn't have those fields)
 	db_users.exec("drop table entities")
-	db_users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null, user text not null default '', user_uid text not null default '', parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+	db_users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null, user text not null default '', parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
 	n := now()
 	db_users.exec("insert into users (uid, username, role, created, updated) values (?, ?, ?, ?, ?)", "u1", "test@example.com", "user", n, n)
 	db_users.exec("insert into entities (id, fingerprint, user, class, name, privacy) values (?, ?, ?, ?, ?, ?)", "identity1", "abcde1234", "u1", "person", "Test User", "private")
+	db_users.exec("insert into entities (id, fingerprint, user, class, name, privacy) values (?, ?, ?, ?, ?, ?)", "wiki1", "wkfp12345", "u1", "wiki", "Notes", "private")
 
 	db_sessions := db_open("db/sessions.db")
 	db_sessions.exec("create table if not exists sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
 	db_sessions.exec("create unique index if not exists sessions_code on sessions(code)")
 	db_sessions.exec("insert into sessions (user, code, secret, expires, created, address, agent) values (?, ?, 'secret-for-token-test-12345678', ?, ?, '127.0.0.1', 'test')", "u1", "token-test-session", n+86400, n)
 
-	// Set up the app with path binding
 	apps_lock.Lock()
 	apps["feeds"] = &App{id: "feeds"}
+	apps["wikis"] = &App{id: "wikis"}
 	apps_lock.Unlock()
 	apps_path_set("feeds", "feeds")
-	defer func() {
+	apps_class_set("wiki", "wikis")
+	t.Cleanup(func() {
 		apps_lock.Lock()
 		delete(apps, "feeds")
+		delete(apps, "wikis")
 		apps_lock.Unlock()
-	}()
+		resolution_invalidate()
+	})
+}
 
+// shell_token_request posts {"app": app} to /_/token as u1.
+func shell_token_request(app string) *httptest.ResponseRecorder {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.POST("/_/token", web_shell_token)
 
-	body := `{"app":"feeds"}`
-	req := httptest.NewRequest("POST", "/_/token", strings.NewReader(body))
+	body, _ := json.Marshal(map[string]string{"app": app})
+	req := httptest.NewRequest("POST", "/_/token", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(&http.Cookie{Name: "session", Value: "token-test-session"})
 	w := httptest.NewRecorder()
-
 	r.ServeHTTP(w, req)
+	return w
+}
+
+// Test /_/token endpoint JSON response format
+func TestShellTokenResponseFormat(t *testing.T) {
+	shell_token_test_env(t)
+	w := shell_token_request("feeds")
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
@@ -598,6 +615,35 @@ func TestShellTokenResponseFormat(t *testing.T) {
 	}
 	if app != "feeds" {
 		t.Errorf("Token app = %q, want 'feeds'", app)
+	}
+}
+
+// A direct entity URL, /<fingerprint>, names no app in its path: the shell
+// asks for the token by the fingerprint, and the page there is served by the
+// app for the entity's class. Without this the page runs signed out.
+func TestShellTokenResolvesAnEntityToItsClassApp(t *testing.T) {
+	shell_token_test_env(t)
+
+	for _, segment := range []string{"wkfp12345", "wiki1"} {
+		w := shell_token_request(segment)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", segment, w.Code, w.Body.String())
+		}
+		var resp map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("%s: failed to parse response JSON: %v", segment, err)
+		}
+		if resp["app"] != "wikis" {
+			t.Errorf("%s: app = %v, want wikis", segment, resp["app"])
+		}
+		_, app, err := jwt_verify(resp["token"].(string))
+		if err != nil || app != "wikis" {
+			t.Errorf("%s: token app = %q (%v), want wikis", segment, app, err)
+		}
+	}
+
+	if w := shell_token_request("zzzzz9999"); w.Code != http.StatusNotFound {
+		t.Errorf("unknown segment: expected 404, got %d", w.Code)
 	}
 }
 

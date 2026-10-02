@@ -1084,6 +1084,46 @@ func TestDavCalendarQuerySkipsRunawayRecurrences(t *testing.T) {
 	}
 }
 
+// A time-range query over a calendar holding an event in a Windows zone
+// answers it, as written: the library cannot load the zone, and one such
+// object used to fail the whole query.
+func TestDavCalendarQueryReadsAWindowsZone(t *testing.T) {
+	fake := new_dav_fake_app("main")
+	server := dav_test_server(t, "caldav", fake)
+	ctx := context.Background()
+	client, err := caldav.NewClient(nil, server.URL+"/people/caldav/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, text := range map[string]string{"outlook": ical_test_windows, "weekly": dav_test_event} {
+		cal, err := ical.NewDecoder(strings.NewReader(text)).Decode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.PutCalendarObject(ctx, "/people/caldav/fp1/calendars/main/"+name+".ics", cal); err != nil {
+			t.Fatalf("put %s: %v", name, err)
+		}
+	}
+	query := &caldav.CalendarQuery{
+		CompRequest: caldav.CalendarCompRequest{Name: ical.CompCalendar, AllProps: true, AllComps: true},
+		CompFilter: caldav.CompFilter{Name: ical.CompCalendar, Comps: []caldav.CompFilter{{
+			Name:  ical.CompEvent,
+			Start: time.Date(2026, 1, 15, 7, 30, 0, 0, time.UTC),
+			End:   time.Date(2026, 1, 15, 8, 30, 0, 0, time.UTC),
+		}}},
+	}
+	hits, err := client.QueryCalendar(ctx, "/people/caldav/fp1/calendars/main/", query)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(hits) != 1 || !strings.HasSuffix(hits[0].Path, "/outlook.ics") {
+		t.Fatalf("hits = %+v, want the Outlook event alone", hits)
+	}
+	if got := hits[0].Data.Children[1].Props.Get("DTSTART").Params.Get("TZID"); got != "W. Europe Standard Time" {
+		t.Fatalf("answered TZID %q, want the name the event was written with", got)
+	}
+}
+
 func TestDavGitRouteStillNeedsASegment(t *testing.T) {
 	av := &AppVersion{Actions: map[string]AppAction{
 		"":                      {File: "web/dist/index.html"},

@@ -1350,13 +1350,31 @@ func (b *dav_backend) QueryCalendarObjects(ctx context.Context, p string, query 
 		budget := ical_budget_query
 		bounded := list[:0]
 		for _, co := range list {
-			if !ical_expansion_heavy(co.Data, finish, &budget) {
+			if !ical_expansion_heavy(ical_resolve(co.Data), finish, &budget) {
 				bounded = append(bounded, co)
 			}
 		}
 		list = bounded
 	}
-	return caldav.Filter(query, list)
+	// Matched on copies whose unknown zone names are resolved, since the
+	// library cannot read a time in a zone it cannot load and one such object
+	// would fail the whole query; answered with the objects as stored.
+	resolved := make([]caldav.CalendarObject, len(list))
+	stored := map[string]caldav.CalendarObject{}
+	for i, co := range list {
+		resolved[i] = co
+		resolved[i].Data = ical_resolve(co.Data)
+		stored[co.Path] = co
+	}
+	matched, err := caldav.Filter(query, resolved)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]caldav.CalendarObject, 0, len(matched))
+	for _, co := range matched {
+		out = append(out, stored[co.Path])
+	}
+	return out, nil
 }
 
 func (b *dav_backend) PutCalendarObject(ctx context.Context, p string, cal *ical.Calendar, opts *caldav.PutCalendarObjectOptions) (*caldav.CalendarObject, error) {

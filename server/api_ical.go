@@ -461,6 +461,7 @@ func ical_zone(comp *ical.Component, name string) string {
 // overlap [from, until). A recurring event's overrides (RECURRENCE-ID) replace
 // the occurrences they name. Floating times are read in loc.
 func ical_instances(cal *ical.Calendar, from, until time.Time, loc *time.Location, alarms bool) []any {
+	cal = ical_resolve(cal)
 	type group struct {
 		master    *ical.Component
 		overrides []*ical.Component
@@ -603,6 +604,7 @@ func ical_expansion_heavy(cal *ical.Calendar, until time.Time, budget *int) bool
 // the columns it lists and prefilters by. A recurring object's finish is 0,
 // meaning open-ended, since its last occurrence is a matter of expansion.
 func ical_summary(cal *ical.Calendar) Map {
+	cal = ical_resolve(cal)
 	out := Map{"uid": "", "component": "", "summary": "", "start": int64(0), "finish": int64(0), "allday": false, "recurring": false}
 	for _, child := range cal.Children {
 		if child.Name != ical.CompEvent && child.Name != ical.CompToDo && child.Name != "VJOURNAL" {

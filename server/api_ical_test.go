@@ -447,3 +447,69 @@ func TestIcalInstancesCarryEachOccurrencesOwnAlarms(t *testing.T) {
 		}
 	}
 }
+
+// An event Outlook or Exchange writes names its zone the Windows way, with
+// the VTIMEZONE inline; the zone database knows only IANA names.
+const ical_test_windows = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Microsoft Corporation//Outlook 16.0 MIMEDIR//EN\r\n" +
+	"BEGIN:VTIMEZONE\r\nTZID:W. Europe Standard Time\r\nBEGIN:STANDARD\r\nDTSTART:16011028T030000\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10\r\nTZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\nEND:STANDARD\r\n" +
+	"BEGIN:DAYLIGHT\r\nDTSTART:16010325T020000\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0200\r\nEND:DAYLIGHT\r\nEND:VTIMEZONE\r\n" +
+	"BEGIN:VEVENT\r\nUID:o1\r\nDTSTAMP:20260101T000000Z\r\nDTSTART;TZID=W. Europe Standard Time:20260115T090000\r\nDTEND;TZID=W. Europe Standard Time:20260115T100000\r\nSUMMARY:Winter\r\nEND:VEVENT\r\n" +
+	"END:VCALENDAR\r\n"
+
+func ical_test_summary_start(t *testing.T, text string) Map {
+	t.Helper()
+	cal, err := ical_decode(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ical_summary(cal)
+}
+
+func TestIcalSummaryReadsAWindowsZoneAsItsIanaZone(t *testing.T) {
+	winter := ical_test_summary_start(t, ical_test_windows)
+	if winter == nil || winter["start"] != time.Date(2026, 1, 15, 8, 0, 0, 0, time.UTC).Unix() {
+		t.Fatalf("winter start = %v, want 08:00 UTC (Europe/Berlin at +01:00)", winter)
+	}
+	summer := ical_test_summary_start(t, strings.ReplaceAll(ical_test_windows, "20260115T", "20260715T"))
+	if summer == nil || summer["start"] != time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC).Unix() {
+		t.Fatalf("summer start = %v, want 07:00 UTC (Europe/Berlin keeps daylight time)", summer)
+	}
+}
+
+func TestIcalSummaryFallsBackToTheZonesOwnStandardOffset(t *testing.T) {
+	text := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n" +
+		"BEGIN:VTIMEZONE\r\nTZID:(UTC+05:30) Chennai\\, Kolkata\r\nBEGIN:STANDARD\r\nDTSTART:16010101T000000\r\nTZOFFSETFROM:+0530\r\nTZOFFSETTO:+0530\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n" +
+		"BEGIN:VEVENT\r\nUID:c1\r\nDTSTAMP:20260101T000000Z\r\nDTSTART;TZID=\"(UTC+05:30) Chennai, Kolkata\":20260115T090000\r\nDTEND;TZID=\"(UTC+05:30) Chennai, Kolkata\":20260115T100000\r\nSUMMARY:Chennai\r\nEND:VEVENT\r\n" +
+		"END:VCALENDAR\r\n"
+	summary := ical_test_summary_start(t, text)
+	if summary == nil || summary["start"] != time.Date(2026, 1, 15, 3, 30, 0, 0, time.UTC).Unix() {
+		t.Fatalf("start = %v, want 03:30 UTC from the zone's +05:30", summary)
+	}
+}
+
+func TestIcalSummaryStillRefusesAZoneNothingDefines(t *testing.T) {
+	text := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n" +
+		"BEGIN:VEVENT\r\nUID:n1\r\nDTSTAMP:20260101T000000Z\r\nDTSTART;TZID=Nowhere/Special:20260115T090000\r\nSUMMARY:Nowhere\r\nEND:VEVENT\r\n" +
+		"END:VCALENDAR\r\n"
+	if summary := ical_test_summary_start(t, text); summary != nil {
+		t.Fatalf("summary = %v, want nil for a zone neither the database nor the text defines", summary)
+	}
+}
+
+func TestIcalInstancesReportTheResolvedZoneAndLeaveTheTextAlone(t *testing.T) {
+	cal, err := ical_decode(ical_test_windows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instances := ical_instances(cal, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), time.UTC, false)
+	if len(instances) != 1 {
+		t.Fatalf("instances = %d, want 1", len(instances))
+	}
+	zone := instances[0].(map[string]any)["zone"].(map[string]any)
+	if zone["start"] != "Europe/Berlin" || zone["finish"] != "Europe/Berlin" {
+		t.Fatalf("zone = %v, want Europe/Berlin, a name clients can format in", zone)
+	}
+	if got := cal.Children[1].Props.Get("DTSTART").Params.Get("TZID"); got != "W. Europe Standard Time" {
+		t.Fatalf("the calendar passed in now names %q; reading its times must not rewrite it", got)
+	}
+}

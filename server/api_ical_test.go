@@ -513,3 +513,24 @@ func TestIcalInstancesReportTheResolvedZoneAndLeaveTheTextAlone(t *testing.T) {
 		t.Fatalf("the calendar passed in now names %q; reading its times must not rewrite it", got)
 	}
 }
+
+func TestIcalResolveApi(t *testing.T) {
+	resolve := sl.NewBuiltin("mochi.ical.resolve", api_ical_resolve)
+	call := func(text string) sl.Value {
+		value, err := api_ical_resolve(ical_test_thread(), resolve, sl.Tuple{sl.String(text)}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	resolved, ok := call(ical_test_windows).(sl.String)
+	if !ok || !strings.Contains(string(resolved), "DTSTART;TZID=Europe/Berlin:20260115T090000") || strings.Contains(string(resolved), "DTSTART;TZID=W. Europe") {
+		t.Fatalf("resolved text = %v, want the start in Europe/Berlin at the same wall-clock time", resolved)
+	}
+	if got := call(ical_test_weekly); got != sl.String(ical_test_weekly) {
+		t.Fatalf("a text whose zones all load came back changed: %v", got)
+	}
+	if got := call("nope"); got != sl.None {
+		t.Fatalf("unparsable text should give None, got %v", got)
+	}
+}

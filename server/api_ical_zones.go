@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/emersion/go-ical"
+	sl "go.starlark.net/starlark"
 )
 
 // ical_windows maps the zone names Windows writes (Outlook, Exchange) to the
@@ -222,6 +223,32 @@ func ical_loadable(name string) bool {
 	}
 	_, err := time.LoadLocation(name)
 	return err == nil
+}
+
+// mochi.ical.resolve(text) -> string | None: The text with every zone name the
+// zone database cannot load replaced as the times are read: a Windows zone name
+// by its IANA zone, any other name the text defines by its times in UTC at that
+// zone's standard offset. The text as given when every zone loads; None when it
+// does not parse. For handing a client times it can read: the stored text keeps
+// the names it was written with.
+func api_ical_resolve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var text string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "text", &text); err != nil {
+		return nil, err
+	}
+	cal, err := ical_decode(text)
+	if err != nil {
+		return sl.None, nil
+	}
+	resolved := ical_resolve(cal)
+	if resolved == cal {
+		return sl.String(text), nil
+	}
+	out, err := ical_encode(resolved)
+	if err != nil {
+		return sl.String(text), nil
+	}
+	return sl.String(out), nil
 }
 
 // ical_resolve returns the calendar with every TZID the zone database cannot

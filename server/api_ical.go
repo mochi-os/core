@@ -34,6 +34,7 @@ var api_ical = sls.FromStringDict(sl.String("mochi.ical"), sl.StringDict{
 	"format":    sl.NewBuiltin("mochi.ical.format", api_ical_format),
 	"instances": sl.NewBuiltin("mochi.ical.instances", api_ical_instances),
 	"parse":     sl.NewBuiltin("mochi.ical.parse", api_ical_parse),
+	"plain":     sl.NewBuiltin("mochi.ical.plain", api_ical_plain),
 	"resolve":   sl.NewBuiltin("mochi.ical.resolve", api_ical_resolve),
 	"summary":   sl.NewBuiltin("mochi.ical.summary", api_ical_summary),
 	"timezone":  sl.NewBuiltin("mochi.ical.timezone", api_ical_timezone),

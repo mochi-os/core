@@ -1238,7 +1238,9 @@ func (b *dav_backend) CreateCalendar(ctx context.Context, cal *caldav.Calendar) 
 }
 
 // calendar_object converts an object for the library; without content the
-// calendar stays empty, as for cards.
+// calendar stays empty, as for cards. A description stored as HTML, as a
+// Google calendar writes it, is served as its text with the HTML beside it,
+// since clients read DESCRIPTION as the plain text the format defines.
 func (b *dav_backend) calendar_object(collection string, o *dav_object) (*caldav.CalendarObject, error) {
 	var cal *ical.Calendar
 	if o.ics != "" {
@@ -1248,6 +1250,7 @@ func (b *dav_backend) calendar_object(collection string, o *dav_object) (*caldav
 			info("DAV %s/%s: stored calendar object unreadable: %v", collection, o.name, err)
 			return nil, dav_error("")
 		}
+		cal = ical_plain(cal)
 	}
 	return &caldav.CalendarObject{
 		Path:    b.object_path(collection, o.name),

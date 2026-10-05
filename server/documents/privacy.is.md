@@ -8,6 +8,7 @@
 
 - **Reikningsgögnum**: notandanafni, þeim auðkenningaraðferðum sem þú velur (tölvupóstfangi, aðgangslyklum, auðkenningarforriti, endurheimtarkóðum eða reikningi frá þriðja aðila innskráningarþjónustu) og hvers konar prófílupplýsingum sem þú bætir við (birtu nafni, prófílmynd, æviágripi).
 - **Efni sem þú býrð til**: færslum, skilaboðum, athugasemdum, skrám og hvers konar öðrum gögnum sem þú velur að birta gegnum forritin sem eru sett upp á þessum þjóni.
+- **Efni frá öðru fólki**: færslum, skilaboðum og prófílupplýsingum fólks á öðrum Mochi-þjónum og á öðrum netum, sem berast þessum þjóni af því að þú eða aðrir notendur fylgið því, eruð áskrifendur að því eða eigið í bréfaskiptum við það.
 - **Tæknilegum gögnum**: IP-tölu, vafra-/tækjaupplýsingum og tímamerkjum fyrir beiðnir sem þú gerir. Þetta er notað til að halda þjónustunni öruggri og virkri og til að greina misnotkun.
 - **Vefkökum**: setuvefkaka er sett þegar þú skráir þig inn. Hún geymir aðeins ógagnsætt setu-auðkenni; við notum ekki vefkökur fyrir auglýsingar eða þverskurðsrakningu.
 
@@ -20,20 +21,22 @@ Mochi er **jafningi-til-jafningja (P2P) net**, ekki vettvangur á einum þjóni.
 - Efni sem þú birtir til fylgjenda, áskrifenda eða sameiginlegra rýma er **afritað á aðra Mochi-þjóna** sem hýsa þá fylgjendur eða áskrifendur. {{operator.name}} getur ekki eytt afritum af efninu þínu af þjónum sem hann rekur ekki. Ef þú eyðir færslu mun þessi þjónn senda eyðingartilkynningu til þeirra jafningja sem hann hefur áður sent færsluna til, en eyðingin er besta tilraun og fer eftir samvinnu þeirra jafningja.
 - **Auðkenni þitt (notandanafn, prófíll, opinberir lyklar)** er birt í Mochi-skránni ef þú velur opinberan prófíl, svo aðrir Mochi-notendur geti fundið þig og haft samband.
 - Beint, einkafært efni (drög, einkanótur, einkaskilaboð milli tiltekinna viðtakenda) er aðeins á þessum þjóni og á þjónum viðtakendanna; það er ekki hluti af opinberu P2P-netinu.
+- Þar sem þessi þjónn gerir þér kleift að **tengjast öðrum netum** — með því að tengja reikning sem þú átt hjá annarri þjónustu, eða með því að hýsa hér reikning sem fólk á öðrum netum getur fylgt eða sent skilaboð til — fer það sem þú birtir eða sendir gegnum þann reikning á þjóna á þeim netum. Þeir eru ekki Mochi-þjónar og {{operator.name}} rekur þá ekki. Slíkur reikningur er opinber á sínu neti, og á sumum netum eru reikningarnir sem þú fylgir og færslurnar sem þér líkar við einnig opinber. Ef þú breytir eða eyðir einhverju síðar er send beiðni sem þeir þjónar geta hunsað.
 
-Í stuttu máli: allt sem þú velur að deila með öðru fólki á Mochi mun ferðast út fyrir stjórn {{operator.name}}, samkvæmt hönnun. Meðhöndlaðu efni sem þú birtir eins og tölvupóst eða önnur sambönd milli netþjóna.
+Í stuttu máli: allt sem þú velur að deila með öðru fólki, á Mochi eða á öðrum netum, mun ferðast út fyrir stjórn {{operator.name}}, samkvæmt hönnun. Meðhöndlaðu efni sem þú birtir eins og tölvupóst eða önnur sambönd milli netþjóna.
 
 ## Þriðju aðilar
 
 Við deilum lágmarki persónuupplýsinga sem nauðsynlegt er með eftirfarandi þriðju aðilum þegar þú notar tilheyrandi eiginleika:
 
-- **Tölvupóstþjónusta**: útgangandi tölvupóstur (skráningarkóðar, tilkynningar, endurstillingar lykilorða) er sendur gegnum SMTP-þjónustuveitanda sem {{operator.name}} hefur stillt.
+- **Tölvupóstþjónusta**: útgangandi tölvupóstur (innskráningarkóðar, staðfesting netfangs, tilkynningar) er sendur gegnum SMTP-þjónustuveitanda sem {{operator.name}} hefur stillt.
 - **Innskráningarþjónustur þriðja aðila**: ef þú skráir þig inn með Google, GitHub, Microsoft, Facebook eða öðrum OAuth-þjónustuveitanda, þá fær sá þjónustuveitandi vitneskju um að þú hafir skráð þig inn á þennan þjón og deilir tölvupóstfangi þínu og grunn-prófílupplýsingum með okkur.
 - **Greiðsluþjónustur**: ef þú gerir innkaup gegnum markaðstorg-forrit, er greiðslan unnin af Stripe (eða þeim greiðsluþjónustuveitanda sem {{operator.name}} hefur stillt). Við geymum ekki fullar kortaupplýsingar.
+- **Önnur net**: ef þú tengir reikning sem þú átt hjá annarri þjónustu fær sú þjónusta það sem þú birtir gegnum hann, og þessi þjónn geymir skilríkin sem gera honum kleift að koma fram fyrir þína hönd þar. Ef þú hýsir hér reikning fyrir annað net fá þjónar og þjónustur þess nets það sem þú birtir á því, ásamt opinberu vistfangi reikningsins.
 
 ## Réttindi þín
 
-Eftir því hvar þú býrð kanntu að hafa rétt til að nálgast, leiðrétta, flytja út, takmarka eða eyða persónuupplýsingum þínum. Til að nýta einhver þessara réttinda — þar á meðal að loka reikningi þínum og láta fjarlægja gögnin þín af þessum þjóni — sendu tölvupóst á **{{operator.email}}**. Lokun reiknings er nú meðhöndluð af rekstraraðila þjónsins eftir beiðni; þegar við fáum tölvupóstinn munum við loka reikningnum og fjarlægja tengd gögn af þessum þjóni (að teknu tilliti til varðveislu öryggisafrita og lagalegra skylda til að halda tilteknum gögnum).
+Eftir því hvar þú býrð kanntu að hafa rétt til að nálgast, leiðrétta, flytja út, takmarka eða eyða persónuupplýsingum þínum. Þú getur sjálfur flutt út gögnin þín og lokað reikningi þínum í Stillingum. Lokun reiknings læsir honum í tiltekinn frest og á þeim tíma getur þú skráð þig inn og hætt við; eftir það eru reikningurinn og gögn hans fjarlægð af þessum þjóni (að teknu tilliti til varðveislu öryggisafrita og lagalegra skylda til að halda tilteknum gögnum). Til að nýta einhver önnur réttindi, eða ef þú getur ekki skráð þig inn, sendu tölvupóst á **{{operator.email}}**.
 
 ## Varðveisla gagna
 

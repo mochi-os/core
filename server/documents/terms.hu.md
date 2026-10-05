@@ -19,13 +19,13 @@ Ennek a szervernek a használatára a **Szerverszabályzat** vonatkozik. Tilos m
 
 ## A te tartalmad
 
-Megőrzöd a közzétett tartalmaid feletti tulajdonjogot. A szerveren keresztül történő közzététellel a {{operator.name}} és a szélesebb Mochi hálózat számára nem kizárólagos, világméretű, jogdíjmentes engedélyt adsz a tartalom tárolására, replikálására, továbbítására, megjelenítésére és gyorsítótárazására **a szolgáltatás működtetéséhez szükséges mértékben** – beleértve az **Adatvédelmi tájékoztatóban** ismertetett P2P replikációt. Ez az engedély a tartalom törlésekor megszűnik, kivéve, hogy a társgépekre már replikált példányok az ellenőrzésünkön kívül fennmaradnak addig, amíg azok a társgépek fel nem dolgozzák a törlést.
+Megőrzöd a közzétett tartalmaid feletti tulajdonjogot. A szerveren keresztül történő közzététellel a {{operator.name}}, a szélesebb Mochi hálózat és, ahol úgy döntesz, hogy egy másik hálózatra teszel közzé, az adott hálózat szerverei számára nem kizárólagos, világméretű, jogdíjmentes engedélyt adsz a tartalom tárolására, replikálására, továbbítására, megjelenítésére és gyorsítótárazására **a szolgáltatás működtetéséhez szükséges mértékben** – beleértve az **Adatvédelmi tájékoztatóban** ismertetett P2P replikációt és a más hálózatokra történő kézbesítést. Ez az engedély a tartalom törlésekor megszűnik, kivéve, hogy a társgépekre már replikált vagy más hálózatokra már elküldött példányok az ellenőrzésünkön kívül fennmaradnak addig, amíg azok a társgépek és szerverek fel nem dolgozzák a törlést.
 
 A közzétett tartalomért te vagy felelős. Ne tegyél közzé olyan tartalmat, amelynek közzétételére nem vagy jogosult.
 
 ## Harmadik féltől származó tartalom
 
-Ez a szolgáltatás olyan tartalmat is megjelenít, amely a {{operator.name}} közvetlen ellenőrzésén kívül keletkezik – peer-to-peer hálózaton keresztül más Mochi szerverekről replikált bejegyzéseket és egyéb anyagokat, RSS- és más külső hírforrásokat, a szerver más felhasználói által közzétett tartalmat, valamint külső weboldalakra mutató hivatkozásokat. A {{operator.name}} nem állítja elő, nem támogatja, nem ellenőrzi és nem felel az ilyen, harmadik féltől származó tartalom pontosságáért, jogszerűségéért vagy biztonságáért. Ha ilyen tartalmat ezen a szerveren keresztül elérsz, arra támaszkodsz vagy megosztasz, azt saját felelősségedre teszed.
+Ez a szolgáltatás olyan tartalmat is megjelenít, amely a {{operator.name}} közvetlen ellenőrzésén kívül keletkezik – peer-to-peer hálózaton keresztül más Mochi szerverekről replikált bejegyzéseket és egyéb anyagokat, olyan más hálózatokról származó tartalmat, amelyekhez ez a szerver kapcsolódik, RSS- és más külső hírforrásokat, a szerver más felhasználói által közzétett tartalmat, valamint külső weboldalakra mutató hivatkozásokat. A {{operator.name}} nem állítja elő, nem támogatja, nem ellenőrzi és nem felel az ilyen, harmadik féltől származó tartalom pontosságáért, jogszerűségéért vagy biztonságáért. Ha ilyen tartalmat ezen a szerveren keresztül elérsz, arra támaszkodsz vagy megosztasz, azt saját felelősségedre teszed.
 
 A szerverre érkező jogellenes tartalomról szóló hiteles bejelentések alapján intézkedünk (a bejelentés módját lásd a **Szerverszabályzatban**), de nem tudjuk garantálni az általunk nem üzemeltetett szervereken tárolt tartalom elérhetőségét, pontosságát vagy eltávolítását. A külső hivatkozásokat csak kényelmi célból biztosítjuk, és nem állnak az ellenőrzésünk alatt.
 
@@ -33,7 +33,7 @@ A szerverre érkező jogellenes tartalomról szóló hiteles bejelentések alapj
 
 A {{operator.name}} felfüggesztheti vagy megszüntetheti a fiókodat, illetve eltávolíthat konkrét tartalmat, ha megsérted ezeket a feltételeket vagy a Szerverszabályzatot, vagy ha erre szükség van a jogszabályoknak való megfelelés, illetve a szolgáltatás és más felhasználók védelme érdekében. Ahol gyakorlatilag lehetséges, értesítést és válaszadási lehetőséget biztosítunk, de egyértelmű esetekben (például jogellenes tartalom, a szolgáltatás elleni aktív támadás) azonnal is intézkedhetünk.
 
-Bármikor megszüntetheted a fiókodat a **{{operator.email}}** címre küldött e-mailben, és mi le fogjuk zárni a fiókot, valamint eltávolítjuk a hozzá tartozó adatokat erről a szerverről. A fiók megszüntetése nem vonja vissza a már társgépekre replikált tartalmat, ahogyan az az Adatvédelmi tájékoztatóban szerepel.
+Bármikor megszüntetheted a fiókodat a Beállításokban. A fiók egy türelmi időre zárolásra kerül, amely alatt bejelentkezhetsz és visszavonhatod a megszüntetést, majd az adataival együtt eltávolításra kerül erről a szerverről. A fiók megszüntetése nem vonja vissza a már társgépekre replikált vagy más hálózatokra elküldött tartalmat, ahogyan az az Adatvédelmi tájékoztatóban szerepel.
 
 ## Garancia kizárása
 

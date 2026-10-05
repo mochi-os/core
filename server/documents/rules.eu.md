@@ -1,6 +1,6 @@
 # Mochi zerbitzariaren arauak
 
-Arau hauek **{{operator.name}}**(e)k operatutako Mochi zerbitzari hau erabiltzen duten guztiei aplikatzen zaizkie, harengana iristeko erabiltzen den domeinua edo URLa edozein dela ere. Argitaratzen duzun eduki guztiari eta zerbitzari honetako beste erabiltzaileekin dituzun elkarrekintza guztiei aplikatzen zaizkie, zerbitzari honetatik Mochi sareko beste kideetara errepikatzen den edukia barne.
+Arau hauek **{{operator.name}}**(e)k operatutako Mochi zerbitzari hau erabiltzen duten guztiei aplikatzen zaizkie, harengana iristeko erabiltzen den domeinua edo URLa edozein dela ere. Argitaratzen duzun eduki guztiari eta zerbitzari honetako beste erabiltzaileekin dituzun elkarrekintza guztiei aplikatzen zaizkie, zerbitzari honetatik Mochi sareko beste kideetara errepikatzen den edukia barne, baita zerbitzari honek zuretzat ostatatzen duen edo zuk zerbitzari honi lotu diozun beste sare bateko kontu baten bidez argitaratzen edo bidaltzen duzun edozeri ere.
 
 Zerbitzari hau erabiliz arau hauek betetzea onartzen duzu. Arau-hausteek eduki kentzea, kontuaren etenaldia edo kontuaren itxiera ekar dezakete, **Termino eta baldintzen** arabera.
 

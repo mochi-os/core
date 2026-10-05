@@ -1,6 +1,6 @@
 # Mochi-Serverregeln
 
-Diese Regeln gelten für alle, die diesen von **{{operator.name}}** betriebenen Mochi-Server nutzen, unabhängig davon, über welche Domain oder URL er erreicht wird. Sie gelten für alle Inhalte, die Sie veröffentlichen, und für alle Interaktionen mit anderen Nutzern auf diesem Server, einschließlich Inhalten, die von diesem Server zu anderen Peers im Mochi-Netzwerk repliziert werden.
+Diese Regeln gelten für alle, die diesen von **{{operator.name}}** betriebenen Mochi-Server nutzen, unabhängig davon, über welche Domain oder URL er erreicht wird. Sie gelten für alle Inhalte, die Sie veröffentlichen, und für alle Interaktionen mit anderen Nutzern auf diesem Server, einschließlich Inhalten, die von diesem Server zu anderen Peers im Mochi-Netzwerk repliziert werden, sowie für alles, was Sie über ein Konto in einem anderen Netzwerk veröffentlichen oder senden, das dieser Server für Sie hostet oder das Sie mit ihm verknüpft haben.
 
 Mit der Nutzung dieses Servers erklären Sie sich damit einverstanden, diese Regeln zu befolgen. Verstöße können zur Entfernung von Inhalten, zur Sperrung des Kontos oder zur Schließung des Kontos gemäß den **Allgemeinen Geschäftsbedingungen** führen.
 

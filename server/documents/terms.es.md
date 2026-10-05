@@ -19,13 +19,13 @@ El uso de este servidor está sujeto a las **Normas del servidor**. Está prohib
 
 ## Tu contenido
 
-Conservas la titularidad del contenido que publicas. Al publicar contenido a través de este servidor concedes a {{operator.name}} y a la red Mochi en su conjunto una licencia no exclusiva, mundial y libre de regalías para alojar, almacenar, replicar, transmitir, mostrar y guardar en caché ese contenido **en la medida necesaria para operar el servicio**, incluida la replicación P2P descrita en nuestro aviso de **Privacidad**. Esta licencia finaliza cuando eliminas el contenido, salvo que las copias ya replicadas a otros pares persistirán fuera de nuestro control hasta que dichos pares procesen la eliminación.
+Conservas la titularidad del contenido que publicas. Al publicar contenido a través de este servidor concedes a {{operator.name}}, a la red Mochi en su conjunto y, cuando decidas publicar en otra red, a los servidores de esa red una licencia no exclusiva, mundial y libre de regalías para alojar, almacenar, replicar, transmitir, mostrar y guardar en caché ese contenido **en la medida necesaria para operar el servicio**, incluidas la replicación P2P y la entrega a otras redes descritas en nuestro aviso de **Privacidad**. Esta licencia finaliza cuando eliminas el contenido, salvo que las copias ya replicadas a otros pares o enviadas a otras redes persistirán fuera de nuestro control hasta que dichos pares y servidores procesen la eliminación.
 
 Eres responsable del contenido que publicas. No publiques contenido que no tengas derecho a publicar.
 
 ## Contenido de terceros
 
-Este servicio expone contenido que se origina fuera del control directo de {{operator.name}}: publicaciones y otros materiales replicados desde otros servidores Mochi a través de la red entre pares, RSS y otras fuentes externas, contenido publicado por otros usuarios en este servidor y enlaces a sitios web externos. {{operator.name}} no produce, respalda, examina ni garantiza la exactitud, legalidad o seguridad de ese contenido de terceros, y no es responsable de él. Si accedes, te apoyas o compartes contenido de terceros a través de este servidor, lo haces bajo tu propia responsabilidad.
+Este servicio expone contenido que se origina fuera del control directo de {{operator.name}}: publicaciones y otros materiales replicados desde otros servidores Mochi a través de la red entre pares, contenido de otras redes a las que se conecta este servidor, RSS y otras fuentes externas, contenido publicado por otros usuarios en este servidor y enlaces a sitios web externos. {{operator.name}} no produce, respalda, examina ni garantiza la exactitud, legalidad o seguridad de ese contenido de terceros, y no es responsable de él. Si accedes, te apoyas o compartes contenido de terceros a través de este servidor, lo haces bajo tu propia responsabilidad.
 
 Actuamos ante denuncias creíbles de contenido ilegal que llegue a este servidor (consulta las **Normas del servidor** para saber cómo denunciar), pero no podemos garantizar la disponibilidad, exactitud ni eliminación de contenido alojado en servidores que no gestionamos. Los enlaces externos se ofrecen únicamente por comodidad y no están bajo nuestro control.
 
@@ -33,7 +33,7 @@ Actuamos ante denuncias creíbles de contenido ilegal que llegue a este servidor
 
 {{operator.name}} puede suspender o cerrar tu cuenta, o retirar contenido concreto, si infringes estos términos o las Normas del servidor, o si hacerlo es necesario para cumplir la ley o para proteger el servicio y al resto de usuarios. Cuando sea factible, te avisaremos y te daremos la oportunidad de responder, pero en casos claros (por ejemplo, contenido ilegal o un ataque activo contra el servicio) podemos actuar de inmediato.
 
-Puedes cerrar tu cuenta en cualquier momento escribiendo a **{{operator.email}}**, y cerraremos la cuenta y eliminaremos los datos asociados de este servidor. El cierre de tu cuenta no retira el contenido ya replicado a otros pares, tal como se describe en el aviso de Privacidad.
+Puedes cerrar tu cuenta en cualquier momento en Ajustes. La cuenta se bloquea durante un periodo de gracia, en el que puedes iniciar sesión y cancelar el cierre, y después se elimina de este servidor junto con sus datos. El cierre de tu cuenta no retira el contenido ya replicado a otros pares o enviado a otras redes, tal como se describe en el aviso de Privacidad.
 
 ## Sin garantías
 

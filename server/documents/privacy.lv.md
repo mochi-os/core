@@ -8,6 +8,7 @@ Kad jūs reģistrējaties un izmantojat šo serveri, mēs vācam:
 
 - **Konta dati**: lietotājvārds, autentifikācijas metodes, kuras izvēlaties (e-pasta adrese, piekļuves atslēgas, autentifikatora lietotne, atkopšanas kodi vai konts no trešās puses pieteikšanās pakalpojuma sniedzēja), un jebkura profila informācija, kuru pievienojat (parādāmais vārds, profila attēls, biogrāfija).
 - **Saturs, ko jūs izveidojat**: ieraksti, ziņojumi, komentāri, faili un jebkuri citi dati, kurus izvēlaties publicēt caur šajā serverī instalētajām lietotnēm.
+- **Saturs no citiem cilvēkiem**: citu Mochi serveru un citu tīklu cilvēku ieraksti, ziņojumi un profila informācija, kas nonāk šajā serverī, jo jūs vai citi lietotāji viņiem seko, viņus abonē vai ar viņiem sarakstās.
 - **Tehniskie dati**: IP adrese, pārlūka/ierīces informācija un laikspiedoli pieprasījumiem, kurus jūs veicat. Tas tiek izmantots, lai uzturētu pakalpojumu drošu un darbojošos un lai atklātu ļaunprātīgu izmantošanu.
 - **Sīkdatnes**: pierakstoties tiek iestatīta sesijas sīkdatne. Tā glabā tikai necaurredzamu sesijas identifikatoru; mēs neizmantojam sīkdatnes reklāmai vai sekošanai starp vietnēm.
 
@@ -20,20 +21,22 @@ Mochi ir **vienranga (P2P) tīkls**, nevis vienas servera platforma. Tas maina v
 - Saturs, ko jūs publicējat sekotājiem, abonentiem vai koplietotām telpām, tiek **replicēts uz citiem Mochi serveriem**, kuri uzņem šos sekotājus vai abonentus. {{operator.name}} nevar dzēst jūsu satura kopijas no serveriem, kurus tas neuztur. Ja jūs dzēšat ierakstu, šis serveris nosūtīs dzēšanas paziņojumu vienranga serveriem, uz kuriem ierakstu iepriekš nosūtīja, taču dzēšana ir labākā piepūle un atkarīga no šo vienranga serveru sadarbības.
 - Jūsu **identitāte (lietotājvārds, profils, publiskās atslēgas)** tiek publicēta Mochi direktorijā, ja izvēlaties publisku profilu, lai citi Mochi lietotāji jūs varētu atrast un sazināties ar jums.
 - Tiešais, privātais saturs (uzmetumi, privātās piezīmes, privāti ziņojumi starp konkrētiem saņēmējiem) paliek tikai šajā serverī un saņēmēju serveros; tas nav daļa no publiskā P2P tīkla.
+- Ja šis serveris ļauj jums **savienoties ar citiem tīkliem** - piesaistot kontu, kas jums ir citā pakalpojumā, vai uzņemot šeit kontu, kuram citu tīklu cilvēki var sekot vai rakstīt ziņojumus - tas, ko jūs publicējat vai sūtāt caur šo kontu, nonāk šo tīklu serveros. Tie nav Mochi serveri, un {{operator.name}} tos neuztur. Šāds konts ir publisks savā tīklā, un dažos tīklos publiski ir arī konti, kuriem jūs sekojat, un ieraksti, kas jums patīk. Ja vēlāk kaut ko rediģējat vai dzēšat, tiek nosūtīts pieprasījums, kuru šie serveri var ignorēt.
 
-Īsumā: viss, ko jūs izvēlaties kopīgot ar citiem cilvēkiem Mochi tīklā, pēc dizaina pārvietosies ārpus {{operator.name}} kontroles. Pret saturu, ko publicējat, izturieties tāpat kā pret e-pastu vai jebkuru citu federētu saziņu.
+Īsumā: viss, ko jūs izvēlaties kopīgot ar citiem cilvēkiem, Mochi tīklā vai citos tīklos, pēc dizaina pārvietosies ārpus {{operator.name}} kontroles. Pret saturu, ko publicējat, izturieties tāpat kā pret e-pastu vai jebkuru citu federētu saziņu.
 
 ## Trešās puses
 
 Mēs kopīgojam minimālo nepieciešamo personas datu apjomu ar šādām trešajām pusēm, kad izmantojat saistītās funkcijas:
 
-- **E-pasta pakalpojums**: izejošos e-pastus (reģistrēšanās kodus, paziņojumus, paroles atiestatīšanu) sūta caur SMTP pakalpojumu sniedzēju, kuru konfigurējis {{operator.name}}.
+- **E-pasta pakalpojums**: izejošos e-pastus (pierakstīšanās kodus, adreses apstiprināšanu, paziņojumus) sūta caur SMTP pakalpojumu sniedzēju, kuru konfigurējis {{operator.name}}.
 - **Trešās puses pieteikšanās pakalpojumu sniedzēji**: ja jūs pierakstāties ar Google, GitHub, Microsoft, Facebook vai citu OAuth pakalpojumu sniedzēju, šis pakalpojumu sniedzējs uzzina, ka esat pierakstījies šajā serverī, un kopīgo jūsu e-pasta adresi un pamata profila datus ar mums.
 - **Maksājumu pakalpojumu sniedzēji**: ja jūs veicat pirkumu caur tirgus lietotni, maksājumu apstrādā Stripe (vai citu maksājumu pakalpojumu sniedzēju, kuru konfigurējis {{operator.name}}). Mēs neuzglabājam pilnu kartes informāciju.
+- **Citi tīkli**: ja jūs piesaistāt kontu, kas jums ir citā pakalpojumā, tas pakalpojums saņem to, ko jūs caur to publicējat, un šis serveris glabā akreditācijas datus, kas ļauj tam tur rīkoties jūsu vārdā. Ja jūs šeit uzņemat kontu citam tīklam, šī tīkla serveri un pakalpojumi saņem to, ko jūs tajā publicējat, kopā ar konta publisko adresi.
 
 ## Jūsu tiesības
 
-Atkarībā no tā, kur jūs dzīvojat, jums var būt tiesības piekļūt, labot, eksportēt, ierobežot vai dzēst savus personas datus. Lai izmantotu kādas no šīm tiesībām - tostarp slēgtu savu kontu un dzēstu savus datus no šī servera - rakstiet uz **{{operator.email}}**. Konta slēgšanu pašlaik pēc pieprasījuma veic servera operators; pēc jūsu e-pasta saņemšanas mēs slēgsim kontu un dzēsīsim saistītos datus no šī servera (atbilstoši dublējumkopiju saglabāšanai un jebkuram juridiskam pienākumam saglabāt konkrētus ierakstus).
+Atkarībā no tā, kur jūs dzīvojat, jums var būt tiesības piekļūt, labot, eksportēt, ierobežot vai dzēst savus personas datus. Jūs varat paši eksportēt savus datus un slēgt savu kontu Iestatījumos. Konta slēgšana bloķē kontu uz labvēlības periodu, kura laikā jūs varat pierakstīties un atcelt slēgšanu; pēc tam konts un tā dati tiek dzēsti no šī servera (atbilstoši dublējumkopiju saglabāšanai un jebkuram juridiskam pienākumam saglabāt konkrētus ierakstus). Lai izmantotu jebkuras citas tiesības vai ja jūs nevarat pierakstīties, rakstiet uz **{{operator.email}}**.
 
 ## Datu saglabāšana
 

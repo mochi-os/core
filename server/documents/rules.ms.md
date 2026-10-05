@@ -1,6 +1,6 @@
 # Peraturan pelayan Mochi
 
-Peraturan ini terpakai kepada semua orang yang menggunakan pelayan Mochi ini, yang dikendalikan oleh **{{operator.name}}**, tanpa mengira domain atau URL yang digunakan untuk mencapainya. Peraturan ini terpakai kepada semua kandungan yang anda siarkan dan semua interaksi dengan pengguna lain di pelayan ini, termasuk kandungan yang direplikasi daripada pelayan ini ke peer lain di rangkaian Mochi.
+Peraturan ini terpakai kepada semua orang yang menggunakan pelayan Mochi ini, yang dikendalikan oleh **{{operator.name}}**, tanpa mengira domain atau URL yang digunakan untuk mencapainya. Peraturan ini terpakai kepada semua kandungan yang anda siarkan dan semua interaksi dengan pengguna lain di pelayan ini, termasuk kandungan yang direplikasi daripada pelayan ini ke peer lain di rangkaian Mochi, dan kepada apa-apa yang anda siarkan atau hantar melalui akaun di rangkaian lain yang dihoskan oleh pelayan ini untuk anda atau yang telah anda pautkan kepadanya.
 
 Dengan menggunakan pelayan ini anda bersetuju untuk mematuhi peraturan ini. Pelanggaran boleh menyebabkan kandungan dialih keluar, akaun digantung, atau akaun ditutup di bawah **Terma dan syarat**.
 

@@ -19,13 +19,13 @@ Korištenje ovog poslužitelja podliježe **Pravilima poslužitelja**. Sve što 
 
 ## Vaš sadržaj
 
-Zadržavate vlasništvo nad sadržajem koji objavite. Objavljivanjem sadržaja putem ovog poslužitelja dodjeljujete {{operator.name}} i široj Mochi mreži neisključivu, svjetsku licencu bez naknade za ugošćivanje, pohranu, repliciranje, prijenos, prikazivanje i predmemoriranje tog sadržaja **u mjeri potrebnoj za rad usluge** — uključujući P2P repliciranje opisano u našoj **Obavijesti o privatnosti**. Ova licenca prestaje kada izbrišete sadržaj, osim što će kopije već replicirane na peerove postojati izvan naše kontrole sve dok ti peerovi ne obrade brisanje.
+Zadržavate vlasništvo nad sadržajem koji objavite. Objavljivanjem sadržaja putem ovog poslužitelja dodjeljujete {{operator.name}}, široj Mochi mreži i, ondje gdje odlučite objavljivati na drugoj mreži, poslužiteljima te mreže neisključivu, svjetsku licencu bez naknade za ugošćivanje, pohranu, repliciranje, prijenos, prikazivanje i predmemoriranje tog sadržaja **u mjeri potrebnoj za rad usluge** — uključujući P2P repliciranje i isporuku na druge mreže opisane u našoj **Obavijesti o privatnosti**. Ova licenca prestaje kada izbrišete sadržaj, osim što će kopije već replicirane na peerove ili poslane na druge mreže postojati izvan naše kontrole sve dok ti peerovi i poslužitelji ne obrade brisanje.
 
 Odgovorni ste za sadržaj koji objavite. Nemojte objavljivati sadržaj na čije objavljivanje nemate pravo.
 
 ## Sadržaj trećih strana
 
-Ova usluga izlaže sadržaj koji nastaje izvan izravne kontrole {{operator.name}} — objave i drugi materijal repliciran s drugih Mochi poslužitelja putem peer-to-peer mreže, RSS i drugi vanjski feedovi, sadržaj koji su objavili drugi korisnici na ovom poslužitelju te poveznice na vanjske web-stranice. {{operator.name}} ne stvara, ne podupire, ne provjerava niti jamči za točnost, zakonitost ili sigurnost takvog sadržaja trećih strana i nije za njega odgovoran. Ako pristupate, oslanjate se ili dijelite sadržaj trećih strana putem ovog poslužitelja, to činite na vlastiti rizik.
+Ova usluga izlaže sadržaj koji nastaje izvan izravne kontrole {{operator.name}} — objave i drugi materijal repliciran s drugih Mochi poslužitelja putem peer-to-peer mreže, sadržaj s drugih mreža s kojima je ovaj poslužitelj povezan, RSS i drugi vanjski feedovi, sadržaj koji su objavili drugi korisnici na ovom poslužitelju te poveznice na vanjske web-stranice. {{operator.name}} ne stvara, ne podupire, ne provjerava niti jamči za točnost, zakonitost ili sigurnost takvog sadržaja trećih strana i nije za njega odgovoran. Ako pristupate, oslanjate se ili dijelite sadržaj trećih strana putem ovog poslužitelja, to činite na vlastiti rizik.
 
 Postupamo po vjerodostojnim prijavama nezakonitog sadržaja koji dospije na ovaj poslužitelj (vidi **Pravila poslužitelja** za način prijave), ali ne možemo jamčiti dostupnost, točnost ili uklanjanje sadržaja pohranjenog na poslužiteljima kojima ne upravljamo. Vanjske poveznice navedene su isključivo radi praktičnosti i nisu pod našom kontrolom.
 
@@ -33,7 +33,7 @@ Postupamo po vjerodostojnim prijavama nezakonitog sadržaja koji dospije na ovaj
 
 {{operator.name}} može suspendirati ili zatvoriti vaš račun ili ukloniti određeni sadržaj ako prekršite ove uvjete ili Pravila poslužitelja, ili ako je to potrebno radi usklađivanja sa zakonom ili zaštite usluge i drugih korisnika. Gdje je to moguće, dat ćemo vam obavijest i priliku za odgovor, ali u jasnim slučajevima (na primjer, nezakonit sadržaj, aktivni napad na uslugu) možemo postupiti odmah.
 
-Račun možete zatvoriti u bilo kojem trenutku slanjem e-pošte na **{{operator.email}}**, a mi ćemo zatvoriti račun i ukloniti pripadajuće podatke s ovog poslužitelja. Zatvaranje računa ne povlači sadržaj koji je već repliciran na peerove, kako je opisano u Obavijesti o privatnosti.
+Račun možete zatvoriti u bilo kojem trenutku u Postavkama. Račun se zaključava na razdoblje odgode, tijekom kojeg se možete prijaviti i odustati, a zatim se uklanja s ovog poslužitelja zajedno sa svojim podacima. Zatvaranje računa ne povlači sadržaj koji je već repliciran na peerove ili poslan na druge mreže, kako je opisano u Obavijesti o privatnosti.
 
 ## Bez jamstva
 

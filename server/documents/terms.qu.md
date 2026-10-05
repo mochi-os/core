@@ -19,13 +19,13 @@ Kay servidor llamk'achiyqa **Servidor kamachikuykuna**man hunt'achikun. Kamachik
 
 ## Willaykiq
 
-Publicasqaykiq kamachiqninqa qampi qaqaq saqirin. Kay servidorpi willayta publicaspa, {{operator.name}}man, hatun Mochi redmanpas, mana sapaq, pacha tukuyninpaq, mana qullqi mañakuq licenciata qunki, willayta apaykachay, waqaychay, kutichiy, apachiy, rikuchiy, cachear ruwanapaq, **servicio apaykachanapaq munasqaman hina** - **Pakaymanta** willaykuypi rimasqa P2P kutichiyta hap'in. Kay licenciaqa willayta pichaqtiyki tukukun, ichaqa peerkunaman ñawpaq kutichisqa copiakunaqa ñuqaykuq kamachiyninmanta hawanchapi qhipakunqa, chay peerkuna pichayta procesankama.
+Publicasqaykiq kamachiqninqa qampi qaqaq saqirin. Kay servidorpi willayta publicaspa, {{operator.name}}man, hatun Mochi redman, huk redman publicayta akllaqtiykiqa chay redpa servidorninkunamanpas, mana sapaq, pacha tukuyninpaq, mana qullqi mañakuq licenciata qunki, willayta apaykachay, waqaychay, kutichiy, apachiy, rikuchiy, cachear ruwanapaq, **servicio apaykachanapaq munasqaman hina** - **Pakaymanta** willaykuypi rimasqa P2P kutichiyta, huk redkunaman apachiytapas hap'in. Kay licenciaqa willayta pichaqtiyki tukukun, ichaqa peerkunaman ñawpaq kutichisqa utaq huk redkunaman apachisqa copiakunaqa ñuqaykuq kamachiyninmanta hawanchapi qhipakunqa, chay peerkuna servidorkunapas pichayta procesanankukama.
 
 Publicasqaykiq saqiyninqa qampam. Ama publicanaykipaq derechoyki mana kasqa willayta publicaychu.
 
 ## Kinsa kaq runakunaq willaynin
 
-Kay servicioqa {{operator.name}}pa direktolla kamachiyninmanta hawanchamanta hamuq willaykunata rikuchin — peer-to-peer redninwan huk Mochi servidorkunamanta kutichisqa publicasqakunata, hukpas willayta, RSS hukpas hawa feed nisqakunata, kay servidorpi huk llamk'achiqkunaq publicasqankunata, hawa websitekunaman tinkichiqkunatapas. {{operator.name}}qa mana ruwanchu, mana wallichinchu, mana qhawanchu, mana hukpa willayniq cheqaqninmanta, kamachiyman hinanmanta, allin kayninmantapas willachinchu, mana paypa saqiyninchu. Kinsa kaq runakunaq willaynintaqa kay servidorwan chayasqaykipi, hap'isqaykipi, rakirisqaykipi, qampa riesgoykiwanmi ruwanki.
+Kay servicioqa {{operator.name}}pa direktolla kamachiyninmanta hawanchamanta hamuq willaykunata rikuchin — peer-to-peer redninwan huk Mochi servidorkunamanta kutichisqa publicasqakunata, hukpas willayta, kay servidor tinkikusqan huk redkunamanta hamuq willayta, RSS hukpas hawa feed nisqakunata, kay servidorpi huk llamk'achiqkunaq publicasqankunata, hawa websitekunaman tinkichiqkunatapas. {{operator.name}}qa mana ruwanchu, mana wallichinchu, mana qhawanchu, mana hukpa willayniq cheqaqninmanta, kamachiyman hinanmanta, allin kayninmantapas willachinchu, mana paypa saqiyninchu. Kinsa kaq runakunaq willaynintaqa kay servidorwan chayasqaykipi, hap'isqaykipi, rakirisqaykipi, qampa riesgoykiwanmi ruwanki.
 
 Kay servidorman chayaq mana atisqa willaymanta cheqaq willaykunaman ruwaykunata ruwanikum (imayna willanapaq, **Servidor kamachikuykuna**ta qhawamuy), ichaqa mana paypaq mana llamk'achiq servidorkunapi waqaychasqa willay tariy, cheqaq, hurquy ima qarantakuyta atinikuchu. Hawa tinkichiykunaqa allin llamk'achikuypaqlla quwasqa, manam ñuqaykuq kamachiykupichu.
 
@@ -33,7 +33,7 @@ Kay servidorman chayaq mana atisqa willaymanta cheqaq willaykunaman ruwaykunata 
 
 {{operator.name}}qa cuentaykita sayachinmanmi utaq wisq'anmanmi, sapaq willaytapas hurqunmanmi, kay términokunata utaq Servidor kamachikuykunata p'akiqtiykiqa, utaq kamachiyman hunt'akuypaq, servicio waqaychanapaq, huk llamk'achiqkunata hark'anapaq munasqa kasqanqa. Atikuqtinqa willachisaqyu, kutichiy atiyniykitapas qusaqyu, ichaqa sut'i kaqkunapi (qhawakunchik, mana atisqa willay, servicioman atinakuq) utqayllata ruwasunmanmi.
 
-Cuentaykita ima horatapas wisq'awaqmi **{{operator.email}}**man emailta apachispa, cuentata wisq'asunchik, kay servidormanta paywan tinkisqa willaykunata hurqusunchik. Cuentayki wisq'ayqa peerkunaman ñawpaq kutichisqa willayta mana hurqunchu, Pakaymanta willaykuypi rimasqaman hina.
+Cuentaykita ima horatapas Wakichiykunapi wisq'awaqmi. Cuentaqa huk suyana pachapaq hark'asqa kanqa, chay pachapi yaykuspa cuenta wisq'ayta anulayta atinki, chay qhipataq willayninwan kuska kay servidormanta hurqusqa kanqa. Cuentayki wisq'ayqa peerkunaman ñawpaq kutichisqa utaq huk redkunaman apachisqa willayta mana hurqunchu, Pakaymanta willaykuypi rimasqaman hina.
 
 ## Mana garantía
 

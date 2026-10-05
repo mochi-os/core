@@ -8,6 +8,7 @@ Quan us registreu i utilitzeu aquest servidor, recollim:
 
 - **Dades del compte**: un nom d'usuari, els mètodes d'autenticació que escolliu (adreça electrònica, claus d'accés, aplicació autenticadora, codis de recuperació o un compte d'un proveïdor d'inici de sessió de tercers) i qualsevol informació de perfil que afegiu (nom visible, avatar, biografia).
 - **Contingut que creeu**: publicacions, missatges, comentaris, fitxers i qualsevol altra dada que decidiu publicar a través de les aplicacions instal·lades en aquest servidor.
+- **Contingut d'altres persones**: publicacions, missatges i dades de perfil de persones d'altres servidors Mochi i d'altres xarxes, que arriben a aquest servidor perquè vosaltres o altres usuaris les seguiu, us hi subscriviu o hi manteniu correspondència.
 - **Dades tècniques**: adreça IP, informació del navegador o dispositiu i marques de temps de les sol·licituds que feu. Això s'utilitza per mantenir el servei segur i en funcionament, i per detectar abusos.
 - **Galetes**: en iniciar la sessió s'estableix una galeta de sessió. Només emmagatzema un identificador de sessió opac; no utilitzem galetes per a publicitat ni per al seguiment entre llocs.
 
@@ -20,20 +21,22 @@ Mochi és una **xarxa entre iguals (P2P)**, no una plataforma d'un sol servidor.
 - El contingut que publiqueu a seguidors, subscriptors o espais compartits es **replica a altres servidors Mochi** que allotgen aquests seguidors o subscriptors. {{operator.name}} no pot eliminar còpies del vostre contingut de servidors que no gestiona. Si elimineu una publicació, aquest servidor enviarà un avís d'eliminació als iguals als quals havia enviat prèviament la publicació, però l'eliminació es fa amb el millor esforç i depèn de la cooperació d'aquests iguals.
 - La vostra **identitat (nom d'usuari, perfil, claus públiques)** es publica al directori de Mochi si trieu un perfil públic, perquè altres usuaris de Mochi us puguin trobar i contactar.
 - El contingut directe i privat (esborranys, notes privades, missatges privats entre destinataris específics) només roman en aquest servidor i en els servidors dels destinataris; no forma part de la xarxa P2P pública.
+- Quan aquest servidor us permet **connectar-vos a altres xarxes** - enllaçant un compte que teniu en un altre servei, o allotjant aquí un compte que les persones d'altres xarxes poden seguir o al qual poden enviar missatges - el que publiqueu o envieu a través d'aquest compte va a servidors d'aquestes xarxes. No són servidors Mochi i {{operator.name}} no els gestiona. Un compte com aquest és públic a la seva xarxa, i en algunes xarxes també ho són els comptes que seguiu i les publicacions que us agraden. Editar o eliminar alguna cosa més endavant envia una sol·licitud que aquests servidors poden ignorar.
 
-En resum: qualsevol cosa que decidiu compartir amb altres persones a Mochi viatjarà més enllà del control de {{operator.name}}, per disseny. Tracteu el contingut que publiqueu com tractaríeu el correu electrònic o qualsevol altra comunicació federada.
+En resum: qualsevol cosa que decidiu compartir amb altres persones, a Mochi o en altres xarxes, viatjarà més enllà del control de {{operator.name}}, per disseny. Tracteu el contingut que publiqueu com tractaríeu el correu electrònic o qualsevol altra comunicació federada.
 
 ## Tercers
 
 Compartim les dades personals mínimes necessàries amb els tercers següents quan utilitzeu les funcions relacionades:
 
-- **Servei de correu electrònic**: els correus sortints (codis de registre, notificacions, restabliments de contrasenya) s'envien a través d'un proveïdor SMTP configurat per {{operator.name}}.
+- **Servei de correu electrònic**: els correus sortints (codis d'inici de sessió, verificació d'adreça, notificacions) s'envien a través d'un proveïdor SMTP configurat per {{operator.name}}.
 - **Proveïdors d'inici de sessió de tercers**: si inicieu sessió amb Google, GitHub, Microsoft, Facebook o un altre proveïdor OAuth, aquest proveïdor sap que heu iniciat sessió en aquest servidor i comparteix amb nosaltres la vostra adreça electrònica i les dades bàsiques de perfil.
 - **Proveïdors de pagament**: si feu una compra a través d'una aplicació de mercat, el pagament el processa Stripe (o el proveïdor de pagament que {{operator.name}} hagi configurat). No emmagatzemem els detalls complets de la targeta.
+- **Altres xarxes**: si enllaceu un compte que teniu en un altre servei, aquest servei rep el que publiqueu a través d'aquest compte, i aquest servidor emmagatzema la credencial que li permet actuar-hi en nom vostre. Si allotgeu aquí un compte per a una altra xarxa, els servidors i serveis d'aquesta xarxa reben el que hi publiqueu, juntament amb l'adreça pública del compte.
 
 ## Els vostres drets
 
-Segons on visqueu, podeu tenir drets d'accés, rectificació, exportació, restricció o supressió de les vostres dades personals. Per exercir qualsevol d'aquests drets - inclòs el tancament del vostre compte i la supressió de les vostres dades d'aquest servidor - envieu un correu a **{{operator.email}}**. Actualment, el tancament del compte el gestiona l'operador del servidor sota petició; un cop rebem el vostre correu tancarem el compte i eliminarem les dades associades d'aquest servidor (subjecte a la retenció de còpies de seguretat i a qualsevol obligació legal de conservar registres específics).
+Segons on visqueu, podeu tenir drets d'accés, rectificació, exportació, restricció o supressió de les vostres dades personals. Podeu exportar les vostres dades i tancar el vostre compte vosaltres mateixos a Configuració. Tancar el compte el bloqueja durant un període de gràcia, durant el qual podeu iniciar sessió i cancel·lar-ho; després, el compte i les seves dades s'eliminen d'aquest servidor (subjecte a la retenció de còpies de seguretat i a qualsevol obligació legal de conservar registres específics). Per exercir qualsevol altre dret, o si no podeu iniciar sessió, envieu un correu a **{{operator.email}}**.
 
 ## Conservació de dades
 

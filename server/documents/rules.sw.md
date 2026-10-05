@@ -1,6 +1,6 @@
 # Sheria za seva ya Mochi
 
-Sheria hizi zinawahusu kila mtu anayetumia seva hii ya Mochi, inayoendeshwa na **{{operator.name}}**, bila kujali kikoa au URL inayotumika kuifikia. Zinatumika kwa maudhui yote unayochapisha na mwingiliano wote na watumiaji wengine kwenye seva hii, ikijumuisha maudhui yanayonakiliwa kutoka seva hii kwenda kwa peers wengine kwenye mtandao wa Mochi.
+Sheria hizi zinawahusu kila mtu anayetumia seva hii ya Mochi, inayoendeshwa na **{{operator.name}}**, bila kujali kikoa au URL inayotumika kuifikia. Zinatumika kwa maudhui yote unayochapisha na mwingiliano wote na watumiaji wengine kwenye seva hii, ikijumuisha maudhui yanayonakiliwa kutoka seva hii kwenda kwa peers wengine kwenye mtandao wa Mochi, na kwa chochote unachochapisha au kutuma kupitia akaunti kwenye mtandao mwingine ambayo seva hii inakupangishia au ambayo umeiunganisha nayo.
 
 Kwa kutumia seva hii unakubali kufuata sheria hizi. Ukiukaji unaweza kusababisha kuondolewa kwa maudhui, kusimamishwa kwa akaunti, au kufungwa kwa akaunti chini ya **Masharti na vigezo**.
 

@@ -19,13 +19,13 @@ Användningen av denna server omfattas av **Serverreglerna**. Allt som bryter mo
 
 ## Ditt innehåll
 
-Du behåller äganderätten till det innehåll du publicerar. Genom att publicera innehåll via denna server beviljar du {{operator.name}} och det vidare Mochi-nätverket en icke-exklusiv, världsomspännande, royaltyfri licens att lagra, replikera, överföra, visa och cachelagra detta innehåll **så som krävs för att driva tjänsten** - inklusive den P2P-replikering som beskrivs i vår **Integritetsinformation**. Denna licens upphör när du tar bort innehållet, förutom att kopior som redan har replikerats till peers kommer att kvarstå utanför vår kontroll tills dessa peers behandlar borttagningen.
+Du behåller äganderätten till det innehåll du publicerar. Genom att publicera innehåll via denna server beviljar du {{operator.name}}, det vidare Mochi-nätverket och, när du väljer att publicera till ett annat nätverk, det nätverkets servrar en icke-exklusiv, världsomspännande, royaltyfri licens att lagra, replikera, överföra, visa och cachelagra detta innehåll **så som krävs för att driva tjänsten** - inklusive den P2P-replikering och den leverans till andra nätverk som beskrivs i vår **Integritetsinformation**. Denna licens upphör när du tar bort innehållet, förutom att kopior som redan har replikerats till peers eller skickats till andra nätverk kommer att kvarstå utanför vår kontroll tills dessa peers och servrar behandlar borttagningen.
 
 Du ansvarar för det innehåll du publicerar. Publicera inte innehåll som du inte har rätt att publicera.
 
 ## Innehåll från tredje part
 
-Denna tjänst exponerar innehåll som har sitt ursprung utanför {{operator.name}}s direkta kontroll — inlägg och annat material som replikerats från andra Mochi-servrar via peer-to-peer-nätverket, RSS och andra externa flöden, innehåll som publicerats av andra användare på denna server samt länkar till externa webbplatser. {{operator.name}} producerar, stöder, granskar eller går inte i god för riktigheten, lagligheten eller säkerheten hos sådant innehåll från tredje part och ansvarar inte för det. Om du får tillgång till, förlitar dig på eller delar innehåll från tredje part via denna server gör du det på egen risk.
+Denna tjänst exponerar innehåll som har sitt ursprung utanför {{operator.name}}s direkta kontroll — inlägg och annat material som replikerats från andra Mochi-servrar via peer-to-peer-nätverket, innehåll från andra nätverk som denna server ansluter till, RSS och andra externa flöden, innehåll som publicerats av andra användare på denna server samt länkar till externa webbplatser. {{operator.name}} producerar, stöder, granskar eller går inte i god för riktigheten, lagligheten eller säkerheten hos sådant innehåll från tredje part och ansvarar inte för det. Om du får tillgång till, förlitar dig på eller delar innehåll från tredje part via denna server gör du det på egen risk.
 
 Vi agerar på trovärdiga rapporter om olagligt innehåll som når denna server (se **Serverreglerna** för hur du anmäler), men vi kan inte garantera tillgängligheten, riktigheten eller borttagningen av innehåll som lagras på servrar vi inte driver. Externa länkar tillhandahålls endast för bekvämlighets skull och ligger inte under vår kontroll.
 
@@ -33,7 +33,7 @@ Vi agerar på trovärdiga rapporter om olagligt innehåll som når denna server 
 
 {{operator.name}} kan stänga av eller stänga ditt konto, eller ta bort specifikt innehåll, om du bryter mot dessa villkor eller Serverreglerna, eller om det är nödvändigt för att följa lagen eller för att skydda tjänsten och andra användare. Där det är praktiskt möjligt kommer vi att meddela dig och ge dig möjlighet att svara, men i tydliga fall (till exempel olagligt innehåll, en pågående attack mot tjänsten) kan vi agera omedelbart.
 
-Du kan när som helst stänga ditt konto genom att skicka e-post till **{{operator.email}}**, så stänger vi kontot och tar bort de tillhörande uppgifterna från denna server. Att stänga ditt konto återkallar inte innehåll som redan har replikerats till peers, så som beskrivs i Integritetsinformationen.
+Du kan när som helst stänga ditt konto i Inställningar. Kontot låses under en frist, då du kan logga in och avbryta stängningen, och tas sedan bort från denna server tillsammans med sina uppgifter. Att stänga ditt konto återkallar inte innehåll som redan har replikerats till peers eller skickats till andra nätverk, så som beskrivs i Integritetsinformationen.
 
 ## Ingen garanti
 

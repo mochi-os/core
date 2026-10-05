@@ -19,13 +19,13 @@ Amfani da wannan sabar yana ƙarƙashin **Ƙa'idojin sabar**. Duk abin da ya ket
 
 ## Abun cikinka
 
-Kana riƙe da mallakar abun cikin da ka aika. Ta hanyar buga abun ciki ta wannan sabar kana ba {{operator.name}} da fadi cibiyar Mochi lasisi mai banda-keɓancewa, na duniya, ba tare da kuɗi ba don host, adana, replicate, watsa, nunawa, da cache abun cikin **kamar yadda ake buƙata don gudanar da sabis ɗin** - gami da P2P replication da aka bayyana a sanarwarmu ta **Privacy**. Wannan lasisi yana ƙarewa lokacin da ka share abun cikin, sai dai kwafi da aka riga aka replicate zuwa peers za su ci gaba a wajen ikonmu har sai waɗannan peers sun aiwatar da sharewa.
+Kana riƙe da mallakar abun cikin da ka aika. Ta hanyar buga abun ciki ta wannan sabar kana ba {{operator.name}}, fadi cibiyar Mochi da, inda ka zaɓi ka buga zuwa wata cibiya, sabar wannan cibiyar lasisi mai banda-keɓancewa, na duniya, ba tare da kuɗi ba don host, adana, replicate, watsa, nunawa, da cache abun cikin **kamar yadda ake buƙata don gudanar da sabis ɗin** - gami da P2P replication da isarwa zuwa wasu cibiyoyi da aka bayyana a sanarwarmu ta **Privacy**. Wannan lasisi yana ƙarewa lokacin da ka share abun cikin, sai dai kwafi da aka riga aka replicate zuwa peers ko aka aika zuwa wasu cibiyoyi za su ci gaba a wajen ikonmu har sai waɗannan peers da sabar sun aiwatar da sharewa.
 
 Kana da alhakin abun cikin da ka aika. Kada ka aika abun ciki da ba ka da haƙƙin bugawa.
 
 ## Abun ciki na ɓangare na uku
 
-Wannan sabis ɗin yana fallasa abun ciki da ya samo asali a wajen ikon kai tsaye na {{operator.name}} — posts da sauran kayan da aka replicate daga sauran sabar Mochi ta hanyar cibiyar peer-to-peer, RSS da sauran feeds na waje, abun ciki da sauran masu amfani suka aika a kan wannan sabar, da hanyoyin haɗi zuwa shafukan yanar gizo na waje. {{operator.name}} ba ya samar da, amincewa, bincika, ko ba da garantin daidaito, doka, ko amincin kowane irin abun ciki na ɓangare na uku, kuma ba ya da alhakinsa. Idan ka shiga, ka dogara da, ko ka raba abun ciki na ɓangare na uku ta wannan sabar, kana yin shi a kan haɗarin kanka.
+Wannan sabis ɗin yana fallasa abun ciki da ya samo asali a wajen ikon kai tsaye na {{operator.name}} — posts da sauran kayan da aka replicate daga sauran sabar Mochi ta hanyar cibiyar peer-to-peer, abun ciki daga wasu cibiyoyi da wannan sabar ke haɗawa da su, RSS da sauran feeds na waje, abun ciki da sauran masu amfani suka aika a kan wannan sabar, da hanyoyin haɗi zuwa shafukan yanar gizo na waje. {{operator.name}} ba ya samar da, amincewa, bincika, ko ba da garantin daidaito, doka, ko amincin kowane irin abun ciki na ɓangare na uku, kuma ba ya da alhakinsa. Idan ka shiga, ka dogara da, ko ka raba abun ciki na ɓangare na uku ta wannan sabar, kana yin shi a kan haɗarin kanka.
 
 Muna aiki akan rahotannin da za a iya amincewa da su game da abun ciki ba bisa doka ba da ke isa wannan sabar (duba **Ƙa'idojin sabar** don yadda ake bayar da rahoto), amma ba za mu iya tabbatar da samuwa, daidaito, ko cire abun ciki da aka adana a kan sabar da ba mu gudanar ba. Ana ba da hanyoyin haɗi na waje don sauƙi kawai kuma ba su a ƙarƙashin ikonmu.
 
@@ -33,7 +33,7 @@ Muna aiki akan rahotannin da za a iya amincewa da su game da abun ciki ba bisa d
 
 {{operator.name}} na iya dakatarwa ko rufe account ɗinka, ko cire takamaiman abun ciki, idan ka keta waɗannan sharuɗɗa ko Ƙa'idojin sabar, ko idan yin haka ya zama dole don bin doka ko don kare sabis da sauran masu amfani. Inda ya yiwu za mu ba ka sanarwa da damar amsawa, amma a cikin lokuta masu bayyana (alal misali, abun ciki ba bisa doka ba, hari mai aiki a kan sabis) za mu iya ɗaukar mataki nan da nan.
 
-Kana iya rufe account ɗinka a kowane lokaci ta hanyar aika imel zuwa **{{operator.email}}**, kuma za mu rufe account kuma mu cire bayanan da ke da alaƙa daga wannan sabar. Rufe account ɗinka ba ya ja da baya abun cikin da aka riga aka replicate zuwa peers, kamar yadda aka bayyana a sanarwar Privacy.
+Kana iya rufe account ɗinka a kowane lokaci a cikin Saitunan. Ana kulle account ɗin na wani lokacin jinkiri, a lokacin da za ka iya shiga ka soke rufewar, sannan a cire shi daga wannan sabar tare da bayanansa. Rufe account ɗinka ba ya ja da baya abun cikin da aka riga aka replicate zuwa peers ko aka aika zuwa wasu cibiyoyi, kamar yadda aka bayyana a sanarwar Privacy.
 
 ## Babu garanti
 

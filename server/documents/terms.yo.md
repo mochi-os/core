@@ -19,13 +19,13 @@ Lílò sáfà yìí wà lábẹ́ **Àwọn òfin sáfà**. Ohunkóhun tí ó ta
 
 ## Àkóónú rẹ
 
-O dúró pẹ̀lú ìní àkóónú tí o fi sí ìta. Nípa títẹ àkóónú jáde nípasẹ̀ sáfà yìí o fi fún {{operator.name}} àti nẹ́tíwọ́kì Mochi tí ó gbòòrò ìwé-àṣẹ tí kì í ṣe àdánikan, tí ó gbòòrò ní àgbáyé, tí kò sì ní owó-orí láti gbàlejò, tọ́jú, tún ṣe, fi ránṣẹ́, fi hàn, àti pamọ́ àkóónú náà **gẹ́gẹ́ bí ó ṣe yẹ láti ṣiṣẹ́ iṣẹ́ náà** - pẹ̀lú àdàkọ P2P tí a ṣàpèjúwe nínú àkíyèsí **Ìpamọ́** wa. Ìwé-àṣẹ yìí dópin nígbà tí o bá pa àkóónú náà rẹ́, ayàfi pé àwọn àdàkọ tí a ti tún ṣe sí àwọn peer yóò dúró ní ìta ìṣàkóso wa títí àwọn peer wọ̀nyẹn yóò fi ṣiṣẹ́ ìparẹ́ náà.
+O dúró pẹ̀lú ìní àkóónú tí o fi sí ìta. Nípa títẹ àkóónú jáde nípasẹ̀ sáfà yìí o fi fún {{operator.name}}, nẹ́tíwọ́kì Mochi tí ó gbòòrò àti, níbi tí o bá yàn láti tẹ̀ jáde sí nẹ́tíwọ́kì mìíràn, àwọn sáfà nẹ́tíwọ́kì náà ìwé-àṣẹ tí kì í ṣe àdánikan, tí ó gbòòrò ní àgbáyé, tí kò sì ní owó-orí láti gbàlejò, tọ́jú, tún ṣe, fi ránṣẹ́, fi hàn, àti pamọ́ àkóónú náà **gẹ́gẹ́ bí ó ṣe yẹ láti ṣiṣẹ́ iṣẹ́ náà** - pẹ̀lú àdàkọ P2P àti ìfijíṣẹ́ sí àwọn nẹ́tíwọ́kì mìíràn tí a ṣàpèjúwe nínú àkíyèsí **Ìpamọ́** wa. Ìwé-àṣẹ yìí dópin nígbà tí o bá pa àkóónú náà rẹ́, ayàfi pé àwọn àdàkọ tí a ti tún ṣe sí àwọn peer tàbí tí a ti fi ránṣẹ́ sí àwọn nẹ́tíwọ́kì mìíràn yóò dúró ní ìta ìṣàkóso wa títí àwọn peer àti sáfà wọ̀nyẹn yóò fi ṣiṣẹ́ ìparẹ́ náà.
 
 O ni ojúṣe fún àkóónú tí o bá fi sí ìta. Má ṣe fi àkóónú tí o kò ní ẹ̀tọ́ láti tẹ̀ jáde sí ìta.
 
 ## Àkóónú àwọn ẹnìkẹta
 
-Iṣẹ́ yìí ń ṣàfihàn àkóónú tí ó wá láti ìta ìṣàkóso tààrà ti {{operator.name}} — àwọn ìfiwéránṣẹ́ àti ohun mìíràn tí a tún ṣe láti àwọn sáfà Mochi mìíràn nípasẹ̀ nẹ́tíwọ́kì peer-to-peer, RSS àti àwọn feed ìta mìíràn, àkóónú tí àwọn olùmúlò mìíràn fi sí ìta lórí sáfà yìí, àti àwọn ọ̀nà sí àwọn wẹ́ẹ́bù-sátì ìta. {{operator.name}} kì í ṣẹ̀dá, fi ìmọ̀ràn, fọwọ́sí, tàbí gbáralé fún ìfàkànpa, ìbófin, tàbí àìléwu ti irú àkóónú ẹnìkẹta yòówù bẹ́ẹ̀, kò sì jẹ̀bí fún. Bí o bá wọlé sí, gbáralé, tàbí pín àkóónú ẹnìkẹta nípasẹ̀ sáfà yìí, o ṣe é ní ewu rẹ.
+Iṣẹ́ yìí ń ṣàfihàn àkóónú tí ó wá láti ìta ìṣàkóso tààrà ti {{operator.name}} — àwọn ìfiwéránṣẹ́ àti ohun mìíràn tí a tún ṣe láti àwọn sáfà Mochi mìíràn nípasẹ̀ nẹ́tíwọ́kì peer-to-peer, àkóónú láti àwọn nẹ́tíwọ́kì mìíràn tí sáfà yìí ń sopọ̀ mọ́, RSS àti àwọn feed ìta mìíràn, àkóónú tí àwọn olùmúlò mìíràn fi sí ìta lórí sáfà yìí, àti àwọn ọ̀nà sí àwọn wẹ́ẹ́bù-sátì ìta. {{operator.name}} kì í ṣẹ̀dá, fi ìmọ̀ràn, fọwọ́sí, tàbí gbáralé fún ìfàkànpa, ìbófin, tàbí àìléwu ti irú àkóónú ẹnìkẹta yòówù bẹ́ẹ̀, kò sì jẹ̀bí fún. Bí o bá wọlé sí, gbáralé, tàbí pín àkóónú ẹnìkẹta nípasẹ̀ sáfà yìí, o ṣe é ní ewu rẹ.
 
 A ń gbé ìgbésẹ̀ lórí àwọn ìròyìn tí ó ṣe gbígbàgbọ́ nípa àkóónú aláìbófin tí ó dé sáfà yìí (wo **Àwọn òfin sáfà** fún bí a ṣe ń ròyìn), ṣùgbọ́n a kò lè dáàbò bo wíwà, ìfàkànpa, tàbí yíyọ àkóónú tí a tọ́jú lórí àwọn sáfà tí a kò ṣe. Àwọn ọ̀nà ìta ni a pèsè fún ìrọ̀rùn nìkan kò sì wà lábẹ́ ìṣàkóso wa.
 
@@ -33,7 +33,7 @@ A ń gbé ìgbésẹ̀ lórí àwọn ìròyìn tí ó ṣe gbígbàgbọ́ níp
 
 {{operator.name}} lè dádúró tàbí pa àkántì rẹ rẹ́, tàbí yọ àkóónú pàtó kúrò, bí o bá ru àwọn ọ̀rọ̀ wọ̀nyí tàbí Àwọn òfin sáfà, tàbí bí ṣiṣe bẹ́ẹ̀ ṣe pàtàkì láti tẹ̀lé òfin tàbí láti dáàbò bo iṣẹ́ náà àti àwọn olùmúlò mìíràn. Níbi tí ó ṣeé ṣe a yóò fún ọ ní ìkìlọ̀ àti àǹfààní láti dáhùn, ṣùgbọ́n nínú àwọn ọ̀ràn tí ó ṣe kedere (fún àpẹẹrẹ, àkóónú aláìbófin, ìkọlu títí lọ́wọ́ sí iṣẹ́ náà) a lè ṣe lẹ́sẹ̀kẹsẹ̀.
 
-O lè pa àkántì rẹ rẹ́ nígbà yòówù nípa fífi ímeèlì ránṣẹ́ sí **{{operator.email}}**, a yóò sì pa àkántì náà rẹ́ kí a sì yọ data tí ó ní ìbátan kúrò ní sáfà yìí. Pípa àkántì rẹ rẹ́ kò gba àkóónú tí a ti tún ṣe sí àwọn peer padà, gẹ́gẹ́ bí a ti ṣàpèjúwe nínú àkíyèsí Ìpamọ́.
+O lè pa àkántì rẹ dé nígbà yòówù nínú Àwọn ìṣètò. A ó tì àkántì náà pa fún àkókò oore-ọ̀fẹ́ kan, nígbà tí o lè wọlé kí o sì fagilé pípa rẹ̀ dé, lẹ́yìn náà a ó yọ ọ́ kúrò ní sáfà yìí pẹ̀lú data rẹ̀. Pípa àkántì rẹ dé kò gba àkóónú tí a ti tún ṣe sí àwọn peer tàbí tí a ti fi ránṣẹ́ sí àwọn nẹ́tíwọ́kì mìíràn padà, gẹ́gẹ́ bí a ti ṣàpèjúwe nínú àkíyèsí Ìpamọ́.
 
 ## Kò sí ìṣèdúró
 

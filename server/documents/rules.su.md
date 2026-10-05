@@ -1,6 +1,6 @@
 # Aturan server Mochi
 
-Aturan ieu lumaku pikeun sadayana anu nganggo server Mochi ieu, anu diopérasikeun ku **{{operator.name}}**, henteu paduli domain atanapi URL mana anu dianggo pikeun ngahontalna. Aturan ieu lumaku pikeun sadaya eusi anu Anjeun pos sareng sadaya interaksi sareng pamaké sanés dina server ieu, kalebet eusi anu diréplikasi ti server ieu ka peer sanés dina jaringan Mochi.
+Aturan ieu lumaku pikeun sadayana anu nganggo server Mochi ieu, anu diopérasikeun ku **{{operator.name}}**, henteu paduli domain atanapi URL mana anu dianggo pikeun ngahontalna. Aturan ieu lumaku pikeun sadaya eusi anu Anjeun pos sareng sadaya interaksi sareng pamaké sanés dina server ieu, kalebet eusi anu diréplikasi ti server ieu ka peer sanés dina jaringan Mochi, sareng pikeun naon waé anu Anjeun pos atanapi kintunkeun ngalangkungan akun dina jaringan sanés anu di-host ku server ieu pikeun Anjeun atanapi anu ku Anjeun parantos disambungkeun ka server ieu.
 
 Ku nganggo server ieu, Anjeun satuju pikeun nuturkeun aturan ieu. Palanggaran tiasa nyababkeun panghapusan eusi, panundaan akun, atanapi panutupan akun dumasar kana **Katangtosan sareng sarat**.
 

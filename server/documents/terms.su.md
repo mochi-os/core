@@ -19,13 +19,13 @@ Pamakean server ieu tunduk kana **Aturan server**. Naon waé anu nglanggar atura
 
 ## Eusi Anjeun
 
-Anjeun nahan kapamilikan kana eusi anu Anjeun pos. Ku nerbitkeun eusi ngalangkungan server ieu, Anjeun masihan {{operator.name}} sareng jaringan Mochi anu langkung lega lisénsi anu henteu eksklusif, sadunya, bébas royalti pikeun ngahost, nyimpen, ngaréplikasi, ngirim, mintonkeun, sareng nyimpen sementara eusi éta **sakumaha anu diperyogikeun pikeun ngoperasikeun layanan** - kalebet réplikasi P2P anu didadarkeun dina wawaran **Privasi** kami. Lisénsi ieu réngsé nalika Anjeun ngahapus eusi, sanaos salinan anu parantos diréplikasi ka peer bakal tetep aya di luar kendali kami dugi ka peer-peer éta ngolah panghapusan.
+Anjeun nahan kapamilikan kana eusi anu Anjeun pos. Ku nerbitkeun eusi ngalangkungan server ieu, Anjeun masihan {{operator.name}}, jaringan Mochi anu langkung lega, sareng, upami Anjeun milih pikeun nerbitkeun ka jaringan sanés, server-server jaringan éta lisénsi anu henteu eksklusif, sadunya, bébas royalti pikeun ngahost, nyimpen, ngaréplikasi, ngirim, mintonkeun, sareng nyimpen sementara eusi éta **sakumaha anu diperyogikeun pikeun ngoperasikeun layanan** - kalebet réplikasi P2P sareng pangiriman ka jaringan sanés anu didadarkeun dina wawaran **Privasi** kami. Lisénsi ieu réngsé nalika Anjeun ngahapus eusi, sanaos salinan anu parantos diréplikasi ka peer atanapi dikintunkeun ka jaringan sanés bakal tetep aya di luar kendali kami dugi ka peer-peer sareng server-server éta ngolah panghapusan.
 
 Anjeun tanggel jawab kana eusi anu Anjeun pos. Tong ngapos eusi anu Anjeun henteu gaduh hak pikeun nerbitkeunna.
 
 ## Eusi pihak katilu
 
-Layanan ieu némbongkeun eusi anu asalna ti luar kendali langsung {{operator.name}} — pos sareng bahan sanés anu diréplikasi ti server Mochi sanés ngalangkungan jaringan peer-to-peer, RSS sareng feed éksternal sanés, eusi anu dipos ku pamaké sanés dina server ieu, sareng tautan ka situs wéb éksternal. {{operator.name}} henteu ngahasilkeun, ngadukung, mariksa, atanapi ngajamin akurasi, legalitas, atanapi kaamanan tina eusi pihak katilu sapertos kitu, sareng henteu tanggel jawab kana éta. Upami Anjeun ngaksés, ngandelkeun, atanapi ngabagi eusi pihak katilu ngalangkungan server ieu, Anjeun ngalakukeunna dina résiko Anjeun nyalira.
+Layanan ieu némbongkeun eusi anu asalna ti luar kendali langsung {{operator.name}} — pos sareng bahan sanés anu diréplikasi ti server Mochi sanés ngalangkungan jaringan peer-to-peer, eusi ti jaringan sanés anu disambungkeun sareng server ieu, RSS sareng feed éksternal sanés, eusi anu dipos ku pamaké sanés dina server ieu, sareng tautan ka situs wéb éksternal. {{operator.name}} henteu ngahasilkeun, ngadukung, mariksa, atanapi ngajamin akurasi, legalitas, atanapi kaamanan tina eusi pihak katilu sapertos kitu, sareng henteu tanggel jawab kana éta. Upami Anjeun ngaksés, ngandelkeun, atanapi ngabagi eusi pihak katilu ngalangkungan server ieu, Anjeun ngalakukeunna dina résiko Anjeun nyalira.
 
 Kami nindakan dumasar kana laporan kredibel ngeunaan eusi ilegal anu dugi ka server ieu (tingali **Aturan server** pikeun cara ngalaporkeun), tapi kami teu tiasa ngajamin kasadiaan, akurasi, atanapi panghapusan eusi anu disimpen dina server anu sanés diopérasikeun ku kami. Tautan éksternal disayogikeun pikeun kanyamanan wungkul sareng henteu aya dina kendali kami.
 
@@ -33,7 +33,7 @@ Kami nindakan dumasar kana laporan kredibel ngeunaan eusi ilegal anu dugi ka ser
 
 {{operator.name}} tiasa ngandeg atanapi nutup akun Anjeun, atanapi ngahapus eusi anu tangtu, upami Anjeun nglanggar katangtosan ieu atanapi Aturan server, atanapi upami ngalakukeun éta diperyogikeun pikeun nyumponan hukum atanapi pikeun ngajaga layanan sareng pamaké sanés. Dimana praktis, kami bakal masihan Anjeun bewara sareng kasempetan pikeun ngarespon, tapi dina kasus anu jelas (contona, eusi ilegal, serangan aktif kana layanan) kami tiasa nindak langsung.
 
-Anjeun tiasa nutup akun Anjeun iraha waé ku ngintunkeun email ka **{{operator.email}}**, sareng kami bakal nutup akun sareng ngahapus data anu aya patalina ti server ieu. Nutup akun Anjeun henteu narik deui eusi anu parantos diréplikasi ka peer, sakumaha anu didadarkeun dina wawaran Privasi.
+Anjeun tiasa nutup akun Anjeun iraha waé dina Setélan. Akun bakal dikonci salami mangsa tenggang, dina waktos éta Anjeun tiasa lebet sareng ngabatalkeun panutupan akun, teras akun dihapus ti server ieu babarengan sareng datana. Nutup akun Anjeun henteu narik deui eusi anu parantos diréplikasi ka peer atanapi dikintunkeun ka jaringan sanés, sakumaha anu didadarkeun dina wawaran Privasi.
 
 ## Henteu aya jaminan
 

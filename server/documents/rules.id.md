@@ -1,6 +1,6 @@
 # Aturan server Mochi
 
-Aturan ini berlaku untuk semua orang yang menggunakan server Mochi ini, yang dioperasikan oleh **{{operator.name}}**, terlepas dari domain atau URL yang digunakan untuk mengaksesnya. Aturan ini berlaku untuk semua konten yang Anda kirim dan semua interaksi dengan pengguna lain di server ini, termasuk konten yang direplikasi dari server ini ke peer lain di jaringan Mochi.
+Aturan ini berlaku untuk semua orang yang menggunakan server Mochi ini, yang dioperasikan oleh **{{operator.name}}**, terlepas dari domain atau URL yang digunakan untuk mengaksesnya. Aturan ini berlaku untuk semua konten yang Anda kirim dan semua interaksi dengan pengguna lain di server ini, termasuk konten yang direplikasi dari server ini ke peer lain di jaringan Mochi, serta untuk apa pun yang Anda publikasikan atau kirim melalui akun di jaringan lain yang di-host server ini untuk Anda atau yang telah Anda tautkan ke server ini.
 
 Dengan menggunakan server ini, Anda setuju untuk mematuhi aturan ini. Pelanggaran dapat mengakibatkan penghapusan konten, penangguhan akun, atau penutupan akun berdasarkan **Syarat dan ketentuan**.
 

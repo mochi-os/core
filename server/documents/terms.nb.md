@@ -19,13 +19,13 @@ Bruk av denne serveren er underlagt **Serverreglene**. Alt som bryter reglene �
 
 ## Innholdet ditt
 
-Du beholder eierskapet til innholdet du publiserer. Ved å publisere innhold gjennom denne serveren gir du {{operator.name}} og det videre Mochi-nettverket en ikke-eksklusiv, verdensomspennende, royaltyfri lisens til å være vert for, lagre, replikere, overføre, vise og mellomlagre innholdet **i den grad det er nødvendig for å drive tjenesten** – inkludert P2P-replikeringen som er beskrevet i **Personvern**-erklæringen vår. Denne lisensen opphører når du sletter innholdet, bortsett fra at kopier som allerede er replikert til andre noder, vil bestå utenfor vår kontroll inntil disse nodene behandler slettingen.
+Du beholder eierskapet til innholdet du publiserer. Ved å publisere innhold gjennom denne serveren gir du {{operator.name}}, det videre Mochi-nettverket og, der du velger å publisere til et annet nettverk, serverne i det nettverket en ikke-eksklusiv, verdensomspennende, royaltyfri lisens til å være vert for, lagre, replikere, overføre, vise og mellomlagre innholdet **i den grad det er nødvendig for å drive tjenesten** – inkludert P2P-replikeringen og leveringen til andre nettverk som er beskrevet i **Personvern**-erklæringen vår. Denne lisensen opphører når du sletter innholdet, bortsett fra at kopier som allerede er replikert til andre noder eller sendt til andre nettverk, vil bestå utenfor vår kontroll inntil disse nodene og serverne behandler slettingen.
 
 Du er ansvarlig for innholdet du publiserer. Ikke publiser innhold du ikke har rett til å publisere.
 
 ## Tredjepartsinnhold
 
-Denne tjenesten viser innhold som har sin opprinnelse utenfor {{operator.name}}s direkte kontroll – innlegg og annet materiale replikert fra andre Mochi-servere via peer-to-peer-nettverket, RSS- og andre eksterne strømmer, innhold publisert av andre brukere på denne serveren, og lenker til eksterne nettsteder. {{operator.name}} produserer, anbefaler, vurderer eller står ikke inne for nøyaktigheten, lovligheten eller sikkerheten til slikt tredjepartsinnhold, og er ikke ansvarlig for det. Hvis du tilgår, stoler på eller deler tredjepartsinnhold via denne serveren, gjør du det på egen risiko.
+Denne tjenesten viser innhold som har sin opprinnelse utenfor {{operator.name}}s direkte kontroll – innlegg og annet materiale replikert fra andre Mochi-servere via peer-to-peer-nettverket, innhold fra andre nettverk denne serveren er koblet til, RSS- og andre eksterne strømmer, innhold publisert av andre brukere på denne serveren, og lenker til eksterne nettsteder. {{operator.name}} produserer, anbefaler, vurderer eller står ikke inne for nøyaktigheten, lovligheten eller sikkerheten til slikt tredjepartsinnhold, og er ikke ansvarlig for det. Hvis du tilgår, stoler på eller deler tredjepartsinnhold via denne serveren, gjør du det på egen risiko.
 
 Vi handler på troverdige rapporter om ulovlig innhold som når denne serveren (se **Serverreglene** for hvordan du rapporterer), men vi kan ikke garantere tilgjengelighet, nøyaktighet eller fjerning av innhold som er lagret på servere vi ikke driver. Eksterne lenker tilbys kun for enkelhets skyld og er ikke under vår kontroll.
 
@@ -33,7 +33,7 @@ Vi handler på troverdige rapporter om ulovlig innhold som når denne serveren (
 
 {{operator.name}} kan suspendere eller stenge kontoen din, eller fjerne bestemt innhold, hvis du bryter disse vilkårene eller Serverreglene, eller hvis det er nødvendig for å overholde loven eller for å beskytte tjenesten og andre brukere. Der det er praktisk mulig, gir vi deg varsel og anledning til å svare, men i klare tilfeller (for eksempel ulovlig innhold eller et pågående angrep mot tjenesten) kan vi handle umiddelbart.
 
-Du kan stenge kontoen din når som helst ved å sende e-post til **{{operator.email}}**, og vi vil stenge kontoen og fjerne tilhørende data fra denne serveren. Stenging av kontoen din trekker ikke tilbake innhold som allerede er replikert til andre noder, slik det er beskrevet i Personvern-erklæringen.
+Du kan stenge kontoen din når som helst i Innstillinger. Kontoen låses i en angreperiode, der du kan logge inn og avbryte stengingen, og fjernes deretter fra denne serveren sammen med dataene sine. Stenging av kontoen din trekker ikke tilbake innhold som allerede er replikert til andre noder eller sendt til andre nettverk, slik det er beskrevet i Personvern-erklæringen.
 
 ## Ingen garanti
 

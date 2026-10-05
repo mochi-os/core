@@ -1,6 +1,6 @@
 # Rheolau gweinydd Mochi
 
-Mae'r rheolau hyn yn berthnasol i bawb sy'n defnyddio'r gweinydd Mochi hwn, a weithredir gan **{{operator.name}}**, beth bynnag fo'r parth neu'r URL a ddefnyddir i'w gyrraedd. Maent yn berthnasol i'r holl gynnwys rydych yn ei bostio a'r holl ryngweithiadau â defnyddwyr eraill ar y gweinydd hwn, gan gynnwys cynnwys sy'n cael ei ddyblygu o'r gweinydd hwn i gyfoedion eraill ar y rhwydwaith Mochi.
+Mae'r rheolau hyn yn berthnasol i bawb sy'n defnyddio'r gweinydd Mochi hwn, a weithredir gan **{{operator.name}}**, beth bynnag fo'r parth neu'r URL a ddefnyddir i'w gyrraedd. Maent yn berthnasol i'r holl gynnwys rydych yn ei bostio a'r holl ryngweithiadau â defnyddwyr eraill ar y gweinydd hwn, gan gynnwys cynnwys sy'n cael ei ddyblygu o'r gweinydd hwn i gyfoedion eraill ar y rhwydwaith Mochi, ac i unrhyw beth rydych yn ei bostio neu'n ei anfon drwy gyfrif ar rwydwaith arall y mae'r gweinydd hwn yn ei gynnal i chi neu rydych wedi'i gysylltu ag ef.
 
 Drwy ddefnyddio'r gweinydd hwn rydych yn cytuno i ddilyn y rheolau hyn. Gall toriadau arwain at gael gwared ar gynnwys, atal cyfrif, neu gau cyfrif o dan y **Telerau ac amodau**.
 

@@ -19,13 +19,13 @@ A utilização deste servidor está sujeita às **Regras do servidor**. Tudo o q
 
 ## O seu conteúdo
 
-Mantém a propriedade do conteúdo que publica. Ao publicar conteúdo através deste servidor, concede a {{operator.name}} e à rede Mochi mais ampla uma licença não exclusiva, mundial e isenta de royalties para alojar, armazenar, replicar, transmitir, exibir e colocar em cache esse conteúdo **conforme necessário para operar o serviço** — incluindo a replicação P2P descrita no nosso aviso de **Privacidade**. Esta licença termina quando elimina o conteúdo, exceto que as cópias já replicadas para os pares persistirão fora do nosso controlo até que esses pares processem a eliminação.
+Mantém a propriedade do conteúdo que publica. Ao publicar conteúdo através deste servidor, concede a {{operator.name}}, à rede Mochi mais ampla e, quando optar por publicar noutra rede, aos servidores dessa rede uma licença não exclusiva, mundial e isenta de royalties para alojar, armazenar, replicar, transmitir, exibir e colocar em cache esse conteúdo **conforme necessário para operar o serviço** — incluindo a replicação P2P e a entrega a outras redes descritas no nosso aviso de **Privacidade**. Esta licença termina quando elimina o conteúdo, exceto que as cópias já replicadas para os pares ou enviadas para outras redes persistirão fora do nosso controlo até que esses pares e servidores processem a eliminação.
 
 É responsável pelo conteúdo que publica. Não publique conteúdo que não tenha o direito de divulgar.
 
 ## Conteúdo de terceiros
 
-Este serviço expõe conteúdo originário fora do controlo direto de {{operator.name}} — publicações e outro material replicado de outros servidores Mochi através da rede peer-to-peer, RSS e outros feeds externos, conteúdo publicado por outros utilizadores neste servidor, e ligações para sites externos. {{operator.name}} não produz, subscreve, verifica nem garante a exatidão, legalidade ou segurança de qualquer conteúdo de terceiros, e não é responsável pelo mesmo. Se aceder, confiar ou partilhar conteúdo de terceiros através deste servidor, fá-lo por sua conta e risco.
+Este serviço expõe conteúdo originário fora do controlo direto de {{operator.name}} — publicações e outro material replicado de outros servidores Mochi através da rede peer-to-peer, conteúdo de outras redes às quais este servidor se liga, RSS e outros feeds externos, conteúdo publicado por outros utilizadores neste servidor, e ligações para sites externos. {{operator.name}} não produz, subscreve, verifica nem garante a exatidão, legalidade ou segurança de qualquer conteúdo de terceiros, e não é responsável pelo mesmo. Se aceder, confiar ou partilhar conteúdo de terceiros através deste servidor, fá-lo por sua conta e risco.
 
 Atuamos com base em denúncias credíveis de conteúdo ilegal que chegue a este servidor (consulte as **Regras do servidor** para saber como denunciar), mas não podemos garantir a disponibilidade, exatidão ou remoção de conteúdo armazenado em servidores que não operamos. As ligações externas são fornecidas apenas por conveniência e não estão sob o nosso controlo.
 
@@ -33,7 +33,7 @@ Atuamos com base em denúncias credíveis de conteúdo ilegal que chegue a este 
 
 {{operator.name}} pode suspender ou encerrar a sua conta, ou remover conteúdo específico, se infringir estes termos ou as Regras do servidor, ou se tal for necessário para cumprir a lei ou proteger o serviço e outros utilizadores. Sempre que possível, daremos aviso prévio e oportunidade de resposta, mas em casos claros (por exemplo, conteúdo ilegal, um ataque ativo ao serviço) podemos agir de imediato.
 
-Pode encerrar a sua conta a qualquer momento, enviando um email para **{{operator.email}}**, e encerraremos a conta e removeremos os dados associados deste servidor. O encerramento da conta não retira o conteúdo já replicado para os pares, conforme descrito no aviso de Privacidade.
+Pode encerrar a sua conta a qualquer momento nas Definições. A conta fica bloqueada por um período de carência, durante o qual pode iniciar sessão e cancelar o encerramento, e é depois removida deste servidor juntamente com os respetivos dados. O encerramento da conta não retira o conteúdo já replicado para os pares ou enviado para outras redes, conforme descrito no aviso de Privacidade.
 
 ## Sem garantia
 

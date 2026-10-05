@@ -19,13 +19,13 @@ O uso deste servidor está suxeito ás **Normas do servidor**. Calquera cousa qu
 
 ## O seu contido
 
-Vostede conserva a titularidade do contido que publica. Ao publicar contido a través deste servidor concédelle a {{operator.name}} e á rede Mochi máis ampla unha licenza non exclusiva, mundial e libre de regalías para aloxar, almacenar, replicar, transmitir, mostrar e gardar en caché ese contido **na medida necesaria para operar o servizo** —incluída a replicación P2P descrita no noso aviso de **Privacidade**. Esta licenza remata cando elimine o contido, salvo que as copias xa replicadas a pares persistirán fóra do noso control ata que eses pares procesen a eliminación.
+Vostede conserva a titularidade do contido que publica. Ao publicar contido a través deste servidor concédelle a {{operator.name}}, á rede Mochi máis ampla e, cando escolla publicar noutra rede, aos servidores desa rede unha licenza non exclusiva, mundial e libre de regalías para aloxar, almacenar, replicar, transmitir, mostrar e gardar en caché ese contido **na medida necesaria para operar o servizo** —incluídas a replicación P2P e a entrega a outras redes descritas no noso aviso de **Privacidade**. Esta licenza remata cando elimine o contido, salvo que as copias xa replicadas a pares ou enviadas a outras redes persistirán fóra do noso control ata que eses pares e servidores procesen a eliminación.
 
 Vostede é responsable do contido que publica. Non publique contido que non teña dereito a publicar.
 
 ## Contido de terceiros
 
-Este servizo expón contido que se orixina fóra do control directo de {{operator.name}} — publicacións e outros materiais replicados desde outros servidores Mochi a través da rede peer-to-peer, RSS e outras canles externas, contido publicado por outros usuarios neste servidor e ligazóns a sitios web externos. {{operator.name}} non produce, avala, examina nin garante a exactitude, legalidade ou seguranza dese contido de terceiros, e non é responsable del. Se accede, confía ou comparte contido de terceiros a través deste servidor, faino baixo o seu propio risco.
+Este servizo expón contido que se orixina fóra do control directo de {{operator.name}} — publicacións e outros materiais replicados desde outros servidores Mochi a través da rede peer-to-peer, contido doutras redes ás que se conecta este servidor, RSS e outras canles externas, contido publicado por outros usuarios neste servidor e ligazóns a sitios web externos. {{operator.name}} non produce, avala, examina nin garante a exactitude, legalidade ou seguranza dese contido de terceiros, e non é responsable del. Se accede, confía ou comparte contido de terceiros a través deste servidor, faino baixo o seu propio risco.
 
 Actuamos ante denuncias cribles de contido ilegal que chegue a este servidor (consulte as **Normas do servidor** para saber como denunciar), pero non podemos garantir a dispoñibilidade, exactitude ou retirada do contido almacenado en servidores que non operamos. As ligazóns externas proporciónanse só por comodidade e non están baixo o noso control.
 
@@ -33,7 +33,7 @@ Actuamos ante denuncias cribles de contido ilegal que chegue a este servidor (co
 
 {{operator.name}} pode suspender ou pechar a súa conta, ou retirar contido concreto, se infrinxe estes termos ou as Normas do servidor, ou se facelo é necesario para cumprir a lei ou para protexer o servizo e outros usuarios. Cando sexa práctico, daremos aviso e oportunidade de resposta, pero en casos claros (por exemplo, contido ilegal ou un ataque activo ao servizo) podemos actuar inmediatamente.
 
-Pode pechar a súa conta en calquera momento escribindo a **{{operator.email}}**, e pecharemos a conta e eliminaremos os datos asociados deste servidor. Pechar a súa conta non retira o contido xa replicado a pares, como se describe no aviso de Privacidade.
+Pode pechar a súa conta en calquera momento en Configuración. A conta bloquéase durante un período de graza, no que pode iniciar sesión e cancelar o peche, e despois elimínase deste servidor xunto cos seus datos. Pechar a súa conta non retira o contido xa replicado a pares ou enviado a outras redes, como se describe no aviso de Privacidade.
 
 ## Sen garantía
 

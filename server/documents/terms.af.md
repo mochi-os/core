@@ -19,13 +19,13 @@ Gebruik van hierdie bediener is onderhewig aan die **Bediener-reëls**. Enigiets
 
 ## Jou inhoud
 
-Jy behou eienaarskap van die inhoud wat jy plaas. Deur inhoud deur hierdie bediener te publiseer, verleen jy {{operator.name}} en die wyer Mochi-netwerk 'n nie-eksklusiewe, wêreldwye, tantième-vrye lisensie om daardie inhoud te huisves, stoor, repliseer, oordra, vertoon en kas **soos vereis om die diens te bedryf** - insluitend die P2P-replikasie wat in ons **Privaatheid**-kennisgewing beskryf word. Hierdie lisensie eindig wanneer jy die inhoud verwyder, behalwe dat kopieë wat reeds na eweknieë gerepliseer is, buite ons beheer sal voortbestaan totdat daardie eweknieë die verwydering verwerk.
+Jy behou eienaarskap van die inhoud wat jy plaas. Deur inhoud deur hierdie bediener te publiseer, verleen jy {{operator.name}}, die wyer Mochi-netwerk en, waar jy kies om na 'n ander netwerk te publiseer, die bedieners van daardie netwerk 'n nie-eksklusiewe, wêreldwye, tantième-vrye lisensie om daardie inhoud te huisves, stoor, repliseer, oordra, vertoon en kas **soos vereis om die diens te bedryf** - insluitend die P2P-replikasie en die aflewering aan ander netwerke wat in ons **Privaatheid**-kennisgewing beskryf word. Hierdie lisensie eindig wanneer jy die inhoud verwyder, behalwe dat kopieë wat reeds na eweknieë gerepliseer is of na ander netwerke gestuur is, buite ons beheer sal voortbestaan totdat daardie eweknieë en bedieners die verwydering verwerk.
 
 Jy is verantwoordelik vir die inhoud wat jy plaas. Moenie inhoud plaas wat jy nie die reg het om te publiseer nie.
 
 ## Derdeparty-inhoud
 
-Hierdie diens stel inhoud bloot wat buite {{operator.name}} se direkte beheer ontstaan — plasings en ander materiaal wat vanaf ander Mochi-bedieners via die peer-to-peer-netwerk gerepliseer word, RSS en ander eksterne feeds, inhoud wat deur ander gebruikers op hierdie bediener geplaas is, en skakels na eksterne webwerwe. {{operator.name}} produseer, ondersteun, ondersoek of waarborg nie die akkuraatheid, wettigheid of veiligheid van enige sodanige derdeparty-inhoud nie, en is nie daarvoor verantwoordelik nie. Indien jy derdeparty-inhoud via hierdie bediener oopmaak, daarop staatmaak of dit deel, doen jy dit op eie risiko.
+Hierdie diens stel inhoud bloot wat buite {{operator.name}} se direkte beheer ontstaan — plasings en ander materiaal wat vanaf ander Mochi-bedieners via die peer-to-peer-netwerk gerepliseer word, inhoud van ander netwerke waaraan hierdie bediener koppel, RSS en ander eksterne feeds, inhoud wat deur ander gebruikers op hierdie bediener geplaas is, en skakels na eksterne webwerwe. {{operator.name}} produseer, ondersteun, ondersoek of waarborg nie die akkuraatheid, wettigheid of veiligheid van enige sodanige derdeparty-inhoud nie, en is nie daarvoor verantwoordelik nie. Indien jy derdeparty-inhoud via hierdie bediener oopmaak, daarop staatmaak of dit deel, doen jy dit op eie risiko.
 
 Ons reageer op geloofwaardige verslae van onwettige inhoud wat hierdie bediener bereik (sien die **Bediener-reëls** vir hoe om aan te meld), maar ons kan nie die beskikbaarheid, akkuraatheid of verwydering van inhoud gestoor op bedieners wat ons nie bedryf nie waarborg nie. Eksterne skakels word slegs vir gerief verskaf en is nie onder ons beheer nie.
 
@@ -33,7 +33,7 @@ Ons reageer op geloofwaardige verslae van onwettige inhoud wat hierdie bediener 
 
 {{operator.name}} mag jou rekening opskort of sluit, of spesifieke inhoud verwyder, indien jy hierdie bepalings of die Bediener-reëls oortree, of indien dit nodig is om aan die wet te voldoen of om die diens en ander gebruikers te beskerm. Waar prakties, sal ons jou kennisgewing en 'n geleentheid gee om te reageer, maar in duidelike gevalle (byvoorbeeld onwettige inhoud, 'n aktiewe aanval op die diens) mag ons onmiddellik optree.
 
-Jy mag jou rekening enige tyd sluit deur 'n e-pos te stuur na **{{operator.email}}**, en ons sal die rekening sluit en die geassosieerde data van hierdie bediener verwyder. Die sluiting van jou rekening trek nie inhoud terug wat reeds na eweknieë gerepliseer is nie, soos in die Privaatheid-kennisgewing beskryf.
+Jy mag jou rekening enige tyd in Instellings sluit. Die rekening word vir 'n grasietydperk vergrendel, waartydens jy kan aanmeld en kanselleer, en word dan saam met sy data van hierdie bediener verwyder. Die sluiting van jou rekening trek nie inhoud terug wat reeds na eweknieë gerepliseer is of na ander netwerke gestuur is nie, soos in die Privaatheid-kennisgewing beskryf.
 
 ## Geen waarborg
 

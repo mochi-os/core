@@ -19,13 +19,13 @@ Utilizarea acestui server este supusă **Regulilor serverului**. Orice încalcă
 
 ## Conținutul dumneavoastră
 
-Păstrați dreptul de proprietate asupra conținutului pe care îl postați. Prin publicarea de conținut prin acest server acordați {{operator.name}} și rețelei Mochi mai largi o licență neexclusivă, mondială, fără redevențe, pentru a găzdui, stoca, replica, transmite, afișa și pune în cache acel conținut **conform necesităților de operare a serviciului** - inclusiv replicarea P2P descrisă în notificarea noastră de **Confidențialitate**. Această licență încetează atunci când ștergeți conținutul, cu excepția copiilor deja replicate către peer-i, care vor persista în afara controlului nostru până când acei peer-i procesează ștergerea.
+Păstrați dreptul de proprietate asupra conținutului pe care îl postați. Prin publicarea de conținut prin acest server acordați {{operator.name}}, rețelei Mochi mai largi și, atunci când alegeți să publicați într-o altă rețea, serverelor acelei rețele o licență neexclusivă, mondială, fără redevențe, pentru a găzdui, stoca, replica, transmite, afișa și pune în cache acel conținut **conform necesităților de operare a serviciului** - inclusiv replicarea P2P și livrarea către alte rețele descrise în notificarea noastră de **Confidențialitate**. Această licență încetează atunci când ștergeți conținutul, cu excepția copiilor deja replicate către peer-i sau trimise către alte rețele, care vor persista în afara controlului nostru până când acei peer-i și servere procesează ștergerea.
 
 Sunteți responsabil pentru conținutul pe care îl postați. Nu postați conținut pe care nu aveți dreptul să îl publicați.
 
 ## Conținut de la terți
 
-Acest serviciu expune conținut care provine din afara controlului direct al {{operator.name}} — postări și alte materiale replicate de pe alte servere Mochi prin rețeaua peer-to-peer, fluxuri RSS și alte fluxuri externe, conținut postat de alți utilizatori pe acest server și linkuri către site-uri externe. {{operator.name}} nu produce, nu susține, nu verifică și nu garantează acuratețea, legalitatea sau siguranța vreunui astfel de conținut de la terți și nu este responsabil pentru acesta. Dacă accesați, vă bazați pe sau partajați conținut de la terți prin acest server, faceți acest lucru pe propriul risc.
+Acest serviciu expune conținut care provine din afara controlului direct al {{operator.name}} — postări și alte materiale replicate de pe alte servere Mochi prin rețeaua peer-to-peer, conținut din alte rețele la care se conectează acest server, fluxuri RSS și alte fluxuri externe, conținut postat de alți utilizatori pe acest server și linkuri către site-uri externe. {{operator.name}} nu produce, nu susține, nu verifică și nu garantează acuratețea, legalitatea sau siguranța vreunui astfel de conținut de la terți și nu este responsabil pentru acesta. Dacă accesați, vă bazați pe sau partajați conținut de la terți prin acest server, faceți acest lucru pe propriul risc.
 
 Acționăm în baza unor rapoarte credibile privind conținutul ilegal care ajunge pe acest server (vezi **Regulile serverului** pentru modul de raportare), însă nu putem garanta disponibilitatea, acuratețea sau eliminarea conținutului stocat pe servere pe care nu le operăm. Linkurile externe sunt furnizate doar pentru comoditate și nu se află sub controlul nostru.
 
@@ -33,7 +33,7 @@ Acționăm în baza unor rapoarte credibile privind conținutul ilegal care ajun
 
 {{operator.name}} poate suspenda sau închide contul dumneavoastră sau elimina conținut specific dacă încălcați acești termeni sau Regulile serverului ori dacă acest lucru este necesar pentru a respecta legea sau pentru a proteja serviciul și pe ceilalți utilizatori. Acolo unde este practic, vă vom acorda o notificare și o oportunitate de a răspunde, dar în cazuri clare (de exemplu, conținut ilegal, un atac activ asupra serviciului) putem acționa imediat.
 
-Vă puteți închide contul în orice moment trimițând un e-mail la **{{operator.email}}**, iar noi vom închide contul și vom elimina datele asociate de pe acest server. Închiderea contului dumneavoastră nu retrage conținutul deja replicat către peer-i, conform descrierii din notificarea de Confidențialitate.
+Vă puteți închide contul în orice moment din Setări. Contul este blocat pentru o perioadă de grație, în care vă puteți autentifica și puteți anula închiderea, iar apoi este eliminat de pe acest server împreună cu datele sale. Închiderea contului dumneavoastră nu retrage conținutul deja replicat către peer-i sau trimis către alte rețele, conform descrierii din notificarea de Confidențialitate.
 
 ## Fără garanție
 

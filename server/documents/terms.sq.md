@@ -19,13 +19,13 @@ Përdorimi i këtij serveri i nënshtrohet **Rregullave të serverit**. Çdo gj�
 
 ## Përmbajtja juaj
 
-Ju ruani pronësinë e përmbajtjes që postoni. Duke publikuar përmbajtje përmes këtij serveri, ju i jepni {{operator.name}} dhe rrjetit më të gjerë Mochi një licencë jo-ekskluzive, mbarëbotërore, pa pagesë për ta pritur, ruajtur, përsëritur, transmetuar, shfaqur dhe ruajtur në cache atë përmbajtje **siç kërkohet për të operuar shërbimin** - përfshirë përsëritjen P2P të përshkruar në njoftimin tonë të **Privatësisë**. Kjo licencë mbaron kur ju e fshini përmbajtjen, përveçse kopjet që janë përsëritur tashmë te peer-at do të vazhdojnë të ekzistojnë jashtë kontrollit tonë derisa ata peer-a të përpunojnë fshirjen.
+Ju ruani pronësinë e përmbajtjes që postoni. Duke publikuar përmbajtje përmes këtij serveri, ju i jepni {{operator.name}}, rrjetit më të gjerë Mochi dhe, kur zgjidhni të publikoni në një rrjet tjetër, serverëve të atij rrjeti një licencë jo-ekskluzive, mbarëbotërore, pa pagesë për ta pritur, ruajtur, përsëritur, transmetuar, shfaqur dhe ruajtur në cache atë përmbajtje **siç kërkohet për të operuar shërbimin** - përfshirë përsëritjen P2P dhe dorëzimin në rrjete të tjera të përshkruara në njoftimin tonë të **Privatësisë**. Kjo licencë mbaron kur ju e fshini përmbajtjen, përveçse kopjet që janë përsëritur tashmë te peer-at ose janë dërguar në rrjete të tjera do të vazhdojnë të ekzistojnë jashtë kontrollit tonë derisa ata peer-a dhe serverë të përpunojnë fshirjen.
 
 Ju jeni përgjegjës për përmbajtjen që postoni. Mos postoni përmbajtje që nuk keni të drejtë ta publikoni.
 
 ## Përmbajtja e palës së tretë
 
-Ky shërbim ekspozon përmbajtje që e ka origjinën jashtë kontrollit të drejtpërdrejtë të {{operator.name}} — postime dhe materiale të tjera të përsëritura nga serverë të tjerë Mochi përmes rrjetit peer-to-peer, RSS dhe burime të tjera të jashtme, përmbajtje e postuar nga përdorues të tjerë në këtë server, dhe lidhje me faqe të jashtme. {{operator.name}} nuk prodhon, miraton, verifikon ose garanton saktësinë, ligjshmërinë ose sigurinë e ndonjë përmbajtjeje të tillë të palës së tretë, dhe nuk është përgjegjës për të. Nëse aksesoni, mbështeteni ose ndani përmbajtje të palës së tretë përmes këtij serveri, ju e bëni këtë me rrezikun tuaj.
+Ky shërbim ekspozon përmbajtje që e ka origjinën jashtë kontrollit të drejtpërdrejtë të {{operator.name}} — postime dhe materiale të tjera të përsëritura nga serverë të tjerë Mochi përmes rrjetit peer-to-peer, përmbajtje nga rrjete të tjera me të cilat lidhet ky server, RSS dhe burime të tjera të jashtme, përmbajtje e postuar nga përdorues të tjerë në këtë server, dhe lidhje me faqe të jashtme. {{operator.name}} nuk prodhon, miraton, verifikon ose garanton saktësinë, ligjshmërinë ose sigurinë e ndonjë përmbajtjeje të tillë të palës së tretë, dhe nuk është përgjegjës për të. Nëse aksesoni, mbështeteni ose ndani përmbajtje të palës së tretë përmes këtij serveri, ju e bëni këtë me rrezikun tuaj.
 
 Ne veprojmë në bazë të raporteve të besueshme për përmbajtje të paligjshme që arrijnë në këtë server (shihni **Rregullat e serverit** se si të raportoni), por nuk mund të garantojmë disponueshmërinë, saktësinë ose heqjen e përmbajtjes së ruajtur në serverë që ne nuk i operojmë. Lidhjet e jashtme jepen vetëm për lehtësi dhe nuk janë nën kontrollin tonë.
 
@@ -33,7 +33,7 @@ Ne veprojmë në bazë të raporteve të besueshme për përmbajtje të paligjsh
 
 {{operator.name}} mund të pezullojë ose mbyllë llogarinë tuaj, ose të heqë përmbajtje specifike, nëse shkelni këto kushte ose Rregullat e serverit, ose nëse kjo është e nevojshme për të përmbushur ligjin ose për të mbrojtur shërbimin dhe përdoruesit e tjerë. Aty ku është praktike, ne do t'ju japim njoftim dhe një mundësi për t'u përgjigjur, por në raste të qarta (për shembull, përmbajtje e paligjshme, një sulm aktiv ndaj shërbimit) ne mund të veprojmë menjëherë.
 
-Ju mund ta mbyllni llogarinë tuaj në çdo kohë duke dërguar email në **{{operator.email}}**, dhe ne do ta mbyllim llogarinë dhe do të heqim të dhënat e lidhura nga ky server. Mbyllja e llogarisë suaj nuk e tërheq mbrapsht përmbajtjen e përsëritur tashmë te peer-at, siç përshkruhet në njoftimin e Privatësisë.
+Ju mund ta mbyllni llogarinë tuaj në çdo kohë te Cilësimet. Llogaria bllokohet për një periudhë hiri, gjatë së cilës mund të hyni dhe të anuloni mbylljen, dhe më pas hiqet nga ky server së bashku me të dhënat e saj. Mbyllja e llogarisë suaj nuk e tërheq mbrapsht përmbajtjen e përsëritur tashmë te peer-at ose të dërguar në rrjete të tjera, siç përshkruhet në njoftimin e Privatësisë.
 
 ## Pa garanci
 

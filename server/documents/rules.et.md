@@ -1,6 +1,6 @@
 # Mochi serveri reeglid
 
-Need reeglid kehtivad kõigile, kes kasutavad seda Mochi serverit, mida opereerib **{{operator.name}}**, olenemata sellest, millist domeeni või URL-i selleni jõudmiseks kasutatakse. Need kehtivad kogu sisule, mille te postitate, ja kõigile suhtlustele teiste kasutajatega selles serveris, sealhulgas sisule, mis sellest serverist Mochi võrgu teistesse partneritesse paljundatakse.
+Need reeglid kehtivad kõigile, kes kasutavad seda Mochi serverit, mida opereerib **{{operator.name}}**, olenemata sellest, millist domeeni või URL-i selleni jõudmiseks kasutatakse. Need kehtivad kogu sisule, mille te postitate, ja kõigile suhtlustele teiste kasutajatega selles serveris, sealhulgas sisule, mis sellest serverist Mochi võrgu teistesse partneritesse paljundatakse, ning kõigele, mida te postitate või saadate teises võrgus asuva konto kaudu, mida see server teie jaoks majutab või mille olete sellega sidunud.
 
 Selle serveri kasutamisega nõustute neid reegleid järgima. Rikkumised võivad **Tingimuste** alusel kaasa tuua sisu eemaldamise, konto peatamise või konto sulgemise.
 

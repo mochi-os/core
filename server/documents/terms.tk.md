@@ -19,13 +19,13 @@ Bu serweri ulanmak **Serweriň düzgünlerine** boýun bolýar. Düzgünleri boz
 
 ## Mazmunyňyz
 
-Çap edýän mazmunyňyzyň eýeçiligi sizde galýar. Bu serwer arkaly mazmun çap etmek bilen siz {{operator.name}}-e we has giň Mochi toruna mazmuny **hyzmaty işletmek üçin zerur bolşy ýaly** ýerleşdirmek, saklamak, göçürmek, geçirmek, görkezmek we keş etmek üçin aýratyn däl, dünýä boýunça, gonorarsyz ygtyýarnama berýärsiňiz – bu **Gizlinlik** bildirişimizde beýan edilen P2P göçürmäni hem öz içine alýar. Bu ygtyýarnama mazmuny pozanyňyzdan soň gutarýar, ýöne deňmelere eýýäm göçürilen göçürmeler şol deňmeler pozumy işlemegine çenli biziň gözegçiligimizden daşary saklanýar.
+Çap edýän mazmunyňyzyň eýeçiligi sizde galýar. Bu serwer arkaly mazmun çap etmek bilen siz {{operator.name}}-e, has giň Mochi toruna we, başga bir tora çap etmegi saýlan ýagdaýyňyzda, şol toruň serwerlerine mazmuny **hyzmaty işletmek üçin zerur bolşy ýaly** ýerleşdirmek, saklamak, göçürmek, geçirmek, görkezmek we keş etmek üçin aýratyn däl, dünýä boýunça, gonorarsyz ygtyýarnama berýärsiňiz – bu **Gizlinlik** bildirişimizde beýan edilen P2P göçürmäni we beýleki torlara ibermegi hem öz içine alýar. Bu ygtyýarnama mazmuny pozanyňyzdan soň gutarýar, ýöne deňmelere eýýäm göçürilen ýa-da beýleki torlara iberilen göçürmeler şol deňmeler we serwerler pozumy işlemegine çenli biziň gözegçiligimizden daşary saklanýar.
 
 Çap edýän mazmunyňyz üçin siz jogapkärsiňiz. Çap etmek hukugyňyz bolmadyk mazmuny çap etmäň.
 
 ## Üçünji tarap mazmuny
 
-Bu hyzmat {{operator.name}}-iň göni gözegçiliginden daşary gelip çykýan mazmuny açýar — beýleki Mochi serwerlerinden deňme-deň tor arkaly göçürilen ýazgylar we beýleki materiallar, RSS we başga daşarky lentalar, bu serwerde beýleki ulanyjylar tarapyndan çap edilen mazmun, we daşarky web saýtlara baglanyşyklar. {{operator.name}} şeýle üçünji tarap mazmunynyň takyklygy, kanunylygy ýa-da howpsuzlygy üçin önümçilik etmeýär, tassyklamaýar, barlamaýar ýa-da kepillendirmeýär we onuň üçin jogapkär däldir. Bu serwer arkaly üçünji tarap mazmunyna girseňiz, oňa daýansaňyz ýa-da ony paýlaşsaňyz, muny öz töwekgelçiligiňize edýärsiňiz.
+Bu hyzmat {{operator.name}}-iň göni gözegçiliginden daşary gelip çykýan mazmuny açýar — beýleki Mochi serwerlerinden deňme-deň tor arkaly göçürilen ýazgylar we beýleki materiallar, bu serweriň birikýän beýleki torlaryndan gelýän mazmun, RSS we başga daşarky lentalar, bu serwerde beýleki ulanyjylar tarapyndan çap edilen mazmun, we daşarky web saýtlara baglanyşyklar. {{operator.name}} şeýle üçünji tarap mazmunynyň takyklygy, kanunylygy ýa-da howpsuzlygy üçin önümçilik etmeýär, tassyklamaýar, barlamaýar ýa-da kepillendirmeýär we onuň üçin jogapkär däldir. Bu serwer arkaly üçünji tarap mazmunyna girseňiz, oňa daýansaňyz ýa-da ony paýlaşsaňyz, muny öz töwekgelçiligiňize edýärsiňiz.
 
 Bu serwere ýetýän bikanun mazmun barada ynamdar habarlara çäre görýäris (habar bermek üçin **Serweriň düzgünlerine** serediň), ýöne öz işletmeýän serwerlerimizde saklanýan mazmunyň elýeterliligine, takyklygyna ýa-da aýrylmagyna kepil bermeýäris. Daşarky baglanyşyklar diňe amatlylyk üçin berilýär we biziň gözegçiligimizde däldir.
 
@@ -33,7 +33,7 @@ Bu serwere ýetýän bikanun mazmun barada ynamdar habarlara çäre görýäris 
 
 Eger bu şertleri ýa-da Serweriň düzgünlerini bozsaňyz, ýa-da kanuna boýun bolmak ýa-da hyzmaty we beýleki ulanyjylary goramak üçin zerur bolsa, {{operator.name}} hasabyňyzy togtadyp ýa-da ýapyp bilýär, ýa-da belli mazmuny aýyryp bilýär. Mümkin bolan ýerinde size habar bererdik we jogap bermäge mümkinçilik berýärdik, emma açyk ýagdaýlarda (mysal üçin, bikanun mazmun, hyzmata işjeň hüjüm) derrew hereket edip bileris.
 
-**{{operator.email}}** salgysyna e-poçta ibermek bilen islendik wagt hasabyňyzy ýapyp bilersiňiz, biz hasaby ýapyp, degişli maglumatlary bu serwerden aýyrarys. Hasabyňyzy ýapmak deňmelere eýýäm göçürilen mazmuny yzyna almaýar, Gizlinlik bildirişinde beýan edilişi ýaly.
+Islendik wagt hasabyňyzy Sazlamalarda ýapyp bilersiňiz. Hasap ýeňillik möhletine gulplanýar, şol möhletde girip, ýapmagy ýatyryp bilersiňiz, soňra bolsa ol maglumatlary bilen bilelikde bu serwerden aýrylýar. Hasabyňyzy ýapmak deňmelere eýýäm göçürilen ýa-da beýleki torlara iberilen mazmuny yzyna almaýar, Gizlinlik bildirişinde beýan edilişi ýaly.
 
 ## Kepillik ýok
 

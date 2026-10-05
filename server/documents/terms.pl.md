@@ -19,13 +19,13 @@ Korzystanie z tego serwera podlega **Zasadom serwera**. Wszelkie działania naru
 
 ## Twoje treści
 
-Zachowujesz prawo własności do publikowanych treści. Publikując treści za pośrednictwem tego serwera, udzielasz {{operator.name}} oraz szerszej sieci Mochi niewyłącznej, ogólnoświatowej, nieodpłatnej licencji na hostowanie, przechowywanie, replikowanie, przesyłanie, wyświetlanie i buforowanie tych treści **w zakresie wymaganym do działania usługi** — w tym replikacji P2P opisanej w naszej **Polityce prywatności**. Licencja ta wygasa po usunięciu treści, z wyjątkiem kopii już zreplikowanych do innych węzłów, które będą istnieć poza naszą kontrolą do czasu, aż te węzły przetworzą usunięcie.
+Zachowujesz prawo własności do publikowanych treści. Publikując treści za pośrednictwem tego serwera, udzielasz {{operator.name}}, szerszej sieci Mochi oraz, jeśli zdecydujesz się publikować w innej sieci, serwerom tej sieci niewyłącznej, ogólnoświatowej, nieodpłatnej licencji na hostowanie, przechowywanie, replikowanie, przesyłanie, wyświetlanie i buforowanie tych treści **w zakresie wymaganym do działania usługi** — w tym replikacji P2P oraz dostarczania do innych sieci opisanych w naszej **Polityce prywatności**. Licencja ta wygasa po usunięciu treści, z wyjątkiem kopii już zreplikowanych do innych węzłów lub wysłanych do innych sieci, które będą istnieć poza naszą kontrolą do czasu, aż te węzły i serwery przetworzą usunięcie.
 
 Jesteś odpowiedzialny za publikowane treści. Nie publikuj treści, do których publikowania nie masz prawa.
 
 ## Treści osób trzecich
 
-Usługa udostępnia treści pochodzące spoza bezpośredniej kontroli {{operator.name}} — posty i inne materiały replikowane z innych serwerów Mochi za pośrednictwem sieci peer-to-peer, kanały RSS i inne kanały zewnętrzne, treści publikowane przez innych użytkowników na tym serwerze oraz linki do zewnętrznych stron. {{operator.name}} nie tworzy, nie poleca, nie weryfikuje ani nie ręczy za poprawność, legalność lub bezpieczeństwo takich treści osób trzecich i nie ponosi za nie odpowiedzialności. Jeśli korzystasz, polegasz lub udostępniasz treści osób trzecich za pośrednictwem tego serwera, robisz to na własne ryzyko.
+Usługa udostępnia treści pochodzące spoza bezpośredniej kontroli {{operator.name}} — posty i inne materiały replikowane z innych serwerów Mochi za pośrednictwem sieci peer-to-peer, treści z innych sieci, z którymi łączy się ten serwer, kanały RSS i inne kanały zewnętrzne, treści publikowane przez innych użytkowników na tym serwerze oraz linki do zewnętrznych stron. {{operator.name}} nie tworzy, nie poleca, nie weryfikuje ani nie ręczy za poprawność, legalność lub bezpieczeństwo takich treści osób trzecich i nie ponosi za nie odpowiedzialności. Jeśli korzystasz, polegasz lub udostępniasz treści osób trzecich za pośrednictwem tego serwera, robisz to na własne ryzyko.
 
 Reagujemy na wiarygodne zgłoszenia treści niezgodnych z prawem trafiających na ten serwer (zob. **Zasady serwera** w celu zgłoszenia), ale nie możemy zagwarantować dostępności, dokładności ani usunięcia treści przechowywanych na serwerach, których nie prowadzimy. Linki zewnętrzne są podawane wyłącznie dla wygody i nie są pod naszą kontrolą.
 
@@ -33,7 +33,7 @@ Reagujemy na wiarygodne zgłoszenia treści niezgodnych z prawem trafiających n
 
 {{operator.name}} może zawiesić lub zamknąć Twoje konto albo usunąć konkretne treści, jeśli naruszysz niniejszy regulamin lub Zasady serwera, lub jeśli jest to konieczne do przestrzegania prawa albo ochrony usługi i innych użytkowników. Tam, gdzie to praktyczne, powiadomimy Cię i damy możliwość odpowiedzi, ale w przypadkach oczywistych (na przykład treści niezgodne z prawem, aktywny atak na usługę) możemy działać natychmiast.
 
-Możesz zamknąć swoje konto w dowolnej chwili, wysyłając wiadomość na **{{operator.email}}**, a my zamkniemy konto i usuniemy powiązane dane z tego serwera. Zamknięcie konta nie cofa treści już zreplikowanych do innych węzłów, jak opisano w Polityce prywatności.
+Możesz zamknąć swoje konto w dowolnej chwili w Ustawieniach. Konto zostaje zablokowane na okres karencji, w trakcie którego możesz się zalogować i anulować zamknięcie, a następnie jest usuwane z tego serwera wraz z jego danymi. Zamknięcie konta nie cofa treści już zreplikowanych do innych węzłów lub wysłanych do innych sieci, jak opisano w Polityce prywatności.
 
 ## Brak gwarancji
 

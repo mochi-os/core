@@ -1,6 +1,6 @@
 # Pravila strežnika Mochi
 
-Ta pravila veljajo za vse, ki uporabljajo ta strežnik Mochi, ki ga upravlja **{{operator.name}}**, ne glede na to, katera domena ali URL se uporablja za dostop. Veljajo za vso vsebino, ki jo objavite, in za vse interakcije z drugimi uporabniki na tem strežniku, vključno z vsebino, ki se s tega strežnika podvaja na druge enakovredne strežnike v omrežju Mochi.
+Ta pravila veljajo za vse, ki uporabljajo ta strežnik Mochi, ki ga upravlja **{{operator.name}}**, ne glede na to, katera domena ali URL se uporablja za dostop. Veljajo za vso vsebino, ki jo objavite, in za vse interakcije z drugimi uporabniki na tem strežniku, vključno z vsebino, ki se s tega strežnika podvaja na druge enakovredne strežnike v omrežju Mochi, in za vse, kar objavite ali pošljete prek računa v drugem omrežju, ki ga ta strežnik gosti za vas ali ki ste ga povezali z njim.
 
 Z uporabo tega strežnika se strinjate, da boste upoštevali ta pravila. Kršitve lahko povzročijo odstranitev vsebine, začasno izključitev računa ali zaprtje računa po **Splošnih pogojih**.
 

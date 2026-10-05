@@ -1,6 +1,6 @@
 # Reglur Mochi-þjóns
 
-Þessar reglur gilda um alla sem nota þennan Mochi-þjón, rekinn af **{{operator.name}}**, óháð því hvaða lén eða slóð er notuð til að ná í hann. Þær gilda um allt efni sem þú birtir og öll samskipti við aðra notendur á þessum þjóni, þar á meðal efni sem er afritað frá þessum þjóni til annarra jafningja á Mochi-netinu.
+Þessar reglur gilda um alla sem nota þennan Mochi-þjón, rekinn af **{{operator.name}}**, óháð því hvaða lén eða slóð er notuð til að ná í hann. Þær gilda um allt efni sem þú birtir og öll samskipti við aðra notendur á þessum þjóni, þar á meðal efni sem er afritað frá þessum þjóni til annarra jafningja á Mochi-netinu, og um allt sem þú birtir eða sendir gegnum reikning á öðru neti sem þessi þjónn hýsir fyrir þig eða sem þú hefur tengt við hann.
 
 Með því að nota þennan þjón samþykkir þú að fara eftir þessum reglum. Brot kunna að leiða til þess að efni sé fjarlægt, reikningi sé frestað eða honum lokað samkvæmt **Skilmálum og skilyrðum**.
 

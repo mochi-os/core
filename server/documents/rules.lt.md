@@ -1,6 +1,6 @@
 # Mochi serverio taisyklės
 
-Šios taisyklės taikomos visiems, naudojantiems šį Mochi serverį, kurį valdo **{{operator.name}}**, neatsižvelgiant į tai, koks domenas ar URL adresas naudojamas jam pasiekti. Jos taikomos visam jūsų skelbiamam turiniui ir visai sąveikai su kitais šio serverio naudotojais, įskaitant turinį, kuris iš šio serverio replikuojamas į kitus Mochi tinklo lygiarangius.
+Šios taisyklės taikomos visiems, naudojantiems šį Mochi serverį, kurį valdo **{{operator.name}}**, neatsižvelgiant į tai, koks domenas ar URL adresas naudojamas jam pasiekti. Jos taikomos visam jūsų skelbiamam turiniui ir visai sąveikai su kitais šio serverio naudotojais, įskaitant turinį, kuris iš šio serverio replikuojamas į kitus Mochi tinklo lygiarangius, ir viskam, ką skelbiate ar siunčiate per paskyrą kitame tinkle, kurią šis serveris jums talpina arba kurią su juo susiejote.
 
 Naudodamiesi šiuo serveriu sutinkate laikytis šių taisyklių. Pažeidimai gali lemti turinio pašalinimą, paskyros laikiną sustabdymą arba paskyros uždarymą pagal **Sąlygas ir nuostatas**.
 

@@ -19,13 +19,13 @@ L'ús d'aquest servidor està subjecte a les **Normes del servidor**. Tot allò 
 
 ## El vostre contingut
 
-Conserveu la propietat del contingut que publiqueu. En publicar contingut a través d'aquest servidor, atorgueu a {{operator.name}} i a la xarxa Mochi més àmplia una llicència no exclusiva, mundial i lliure de drets per allotjar, emmagatzemar, replicar, transmetre, mostrar i posar en memòria cau aquest contingut **segons sigui necessari per operar el servei** - inclosa la replicació P2P descrita al nostre avís de **Privacitat**. Aquesta llicència finalitza quan elimineu el contingut, excepte que les còpies ja replicades als iguals persistiran fora del nostre control fins que aquests iguals processin l'eliminació.
+Conserveu la propietat del contingut que publiqueu. En publicar contingut a través d'aquest servidor, atorgueu a {{operator.name}}, a la xarxa Mochi més àmplia i, quan decidiu publicar en una altra xarxa, als servidors d'aquesta xarxa una llicència no exclusiva, mundial i lliure de drets per allotjar, emmagatzemar, replicar, transmetre, mostrar i posar en memòria cau aquest contingut **segons sigui necessari per operar el servei** - inclosos la replicació P2P i el lliurament a altres xarxes descrits al nostre avís de **Privacitat**. Aquesta llicència finalitza quan elimineu el contingut, excepte que les còpies ja replicades als iguals o enviades a altres xarxes persistiran fora del nostre control fins que aquests iguals i servidors processin l'eliminació.
 
 Sou responsables del contingut que publiqueu. No publiqueu contingut que no tingueu dret a publicar.
 
 ## Contingut de tercers
 
-Aquest servei exposa contingut que s'origina fora del control directe de {{operator.name}} — publicacions i altres materials replicats des d'altres servidors Mochi a través de la xarxa entre iguals, fonts RSS i altres fonts externes, contingut publicat per altres usuaris en aquest servidor i enllaços a llocs web externs. {{operator.name}} no produeix, avala, examina ni garanteix l'exactitud, la legalitat o la seguretat de cap d'aquest contingut de tercers, i no n'és responsable. Si accediu, confieu o compartiu contingut de tercers a través d'aquest servidor, ho feu pel vostre propi compte i risc.
+Aquest servei exposa contingut que s'origina fora del control directe de {{operator.name}} — publicacions i altres materials replicats des d'altres servidors Mochi a través de la xarxa entre iguals, contingut d'altres xarxes a les quals es connecta aquest servidor, fonts RSS i altres fonts externes, contingut publicat per altres usuaris en aquest servidor i enllaços a llocs web externs. {{operator.name}} no produeix, avala, examina ni garanteix l'exactitud, la legalitat o la seguretat de cap d'aquest contingut de tercers, i no n'és responsable. Si accediu, confieu o compartiu contingut de tercers a través d'aquest servidor, ho feu pel vostre propi compte i risc.
 
 Actuem davant denúncies creïbles de contingut il·legal que arribi a aquest servidor (vegeu les **Normes del servidor** per saber com denunciar-ho), però no podem garantir la disponibilitat, l'exactitud o la retirada de contingut emmagatzemat en servidors que no gestionem. Els enllaços externs es proporcionen només per comoditat i no estan sota el nostre control.
 
@@ -33,7 +33,7 @@ Actuem davant denúncies creïbles de contingut il·legal que arribi a aquest se
 
 {{operator.name}} pot suspendre o tancar el vostre compte, o retirar contingut específic, si infringiu aquests termes o les Normes del servidor, o si fer-ho és necessari per complir amb la llei o per protegir el servei i els altres usuaris. Quan sigui pràctic us donarem un avís i una oportunitat de respondre, però en casos clars (per exemple, contingut il·legal, un atac actiu contra el servei) podem actuar immediatament.
 
-Podeu tancar el vostre compte en qualsevol moment enviant un correu a **{{operator.email}}**, i tancarem el compte i eliminarem les dades associades d'aquest servidor. El tancament del compte no retira el contingut ja replicat als iguals, com es descriu a l'avís de Privacitat.
+Podeu tancar el vostre compte en qualsevol moment a Configuració. El compte es bloqueja durant un període de gràcia, durant el qual podeu iniciar sessió i cancel·lar-ho, i després s'elimina d'aquest servidor juntament amb les seves dades. El tancament del compte no retira el contingut ja replicat als iguals o enviat a altres xarxes, com es descriu a l'avís de Privacitat.
 
 ## Sense garantia
 

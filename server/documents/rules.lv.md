@@ -1,6 +1,6 @@
 # Mochi servera noteikumi
 
-Šie noteikumi attiecas uz visiem, kas izmanto šo Mochi serveri, kuru darbina **{{operator.name}}**, neatkarīgi no tā, kāds domēns vai URL tiek izmantots, lai tam piekļūtu. Tie attiecas uz visu saturu, ko jūs publicējat, un visu mijiedarbību ar citiem lietotājiem šajā serverī, tostarp uz saturu, kas tiek replicēts no šī servera uz citiem vienranga serveriem Mochi tīklā.
+Šie noteikumi attiecas uz visiem, kas izmanto šo Mochi serveri, kuru darbina **{{operator.name}}**, neatkarīgi no tā, kāds domēns vai URL tiek izmantots, lai tam piekļūtu. Tie attiecas uz visu saturu, ko jūs publicējat, un visu mijiedarbību ar citiem lietotājiem šajā serverī, tostarp uz saturu, kas tiek replicēts no šī servera uz citiem vienranga serveriem Mochi tīklā, un uz visu, ko jūs publicējat vai sūtāt caur kontu citā tīklā, kuru šis serveris jums uzņem vai kuru esat tam piesaistījis.
 
 Izmantojot šo serveri, jūs piekrītat ievērot šos noteikumus. Pārkāpumu rezultātā saturs var tikt noņemts, konts apturēts vai konts slēgts saskaņā ar **Noteikumiem un nosacījumiem**.
 

@@ -19,13 +19,13 @@ Use of this server is subject to the **Server rules**. Anything that violates th
 
 ## Your content
 
-You retain ownership of the content you post. By publishing content through this server you grant {{operator.name}} and the wider Mochi network a non-exclusive, worldwide, royalty-free licence to host, store, replicate, transmit, display, and cache that content **as required to operate the service** - including the P2P replication described in our **Privacy** notice. This licence ends when you delete the content, except that copies already replicated to peers will persist outside our control until those peers process the deletion.
+You retain ownership of the content you post. By publishing content through this server you grant {{operator.name}}, the wider Mochi network and, where you choose to publish to another network, the servers of that network a non-exclusive, worldwide, royalty-free licence to host, store, replicate, transmit, display, and cache that content **as required to operate the service** - including the P2P replication and the delivery to other networks described in our **Privacy** notice. This licence ends when you delete the content, except that copies already replicated to peers or sent to other networks will persist outside our control until those peers and servers process the deletion.
 
 You are responsible for the content you post. Do not post content you do not have the right to publish.
 
 ## Third-party content
 
-This service exposes content that originates outside {{operator.name}}'s direct control — posts and other material replicated from other Mochi servers via the peer-to-peer network, RSS and other external feeds, content posted by other users on this server, and links to external websites. {{operator.name}} does not produce, endorse, vet, or vouch for the accuracy, legality, or safety of any such third-party content, and is not responsible for it. If you access, rely on, or share third-party content via this server, you do so at your own risk.
+This service exposes content that originates outside {{operator.name}}'s direct control — posts and other material replicated from other Mochi servers via the peer-to-peer network, content from other networks this server connects to, RSS and other external feeds, content posted by other users on this server, and links to external websites. {{operator.name}} does not produce, endorse, vet, or vouch for the accuracy, legality, or safety of any such third-party content, and is not responsible for it. If you access, rely on, or share third-party content via this server, you do so at your own risk.
 
 We act on credible reports of illegal content reaching this server (see the **Server rules** for how to report), but we cannot guarantee the availability, accuracy, or removal of content stored on servers we do not run. External links are provided for convenience only and are not under our control.
 
@@ -33,7 +33,7 @@ We act on credible reports of illegal content reaching this server (see the **Se
 
 {{operator.name}} may suspend or close your account, or remove specific content, if you breach these terms or the Server rules, or if doing so is necessary to comply with the law or to protect the service and other users. Where practical we will give you notice and an opportunity to respond, but in clear cases (for example, illegal content, an active attack on the service) we may act immediately.
 
-You may close your account at any time by emailing **{{operator.email}}**, and we will close the account and remove the associated data from this server. Closing your account does not retract content already replicated to peers, as described in the Privacy notice.
+You may close your account at any time in Settings. The account is locked for a grace period, during which you can sign in and cancel, and is then removed from this server together with its data. Closing your account does not retract content already replicated to peers or sent to other networks, as described in the Privacy notice.
 
 ## No warranty
 

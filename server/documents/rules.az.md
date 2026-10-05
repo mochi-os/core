@@ -1,6 +1,6 @@
 # Mochi server qaydaları
 
-Bu qaydalar **{{operator.name}}** tərəfindən idarə olunan bu Mochi serverindən istifadə edən hər kəsə, ona daxil olmaq üçün hansı domen və ya URL-dən istifadə olunduğundan asılı olmayaraq, tətbiq olunur. Bunlar dərc etdiyiniz bütün məzmuna və bu serverdə digər istifadəçilərlə bütün qarşılıqlı əlaqələrə, o cümlədən bu serverdən Mochi şəbəkəsindəki digər peer-lərə təkrarlanan məzmuna şamil edilir.
+Bu qaydalar **{{operator.name}}** tərəfindən idarə olunan bu Mochi serverindən istifadə edən hər kəsə, ona daxil olmaq üçün hansı domen və ya URL-dən istifadə olunduğundan asılı olmayaraq, tətbiq olunur. Bunlar dərc etdiyiniz bütün məzmuna və bu serverdə digər istifadəçilərlə bütün qarşılıqlı əlaqələrə, o cümlədən bu serverdən Mochi şəbəkəsindəki digər peer-lərə təkrarlanan məzmuna, həmçinin bu serverin sizin üçün yerləşdirdiyi və ya ona əlaqələndirdiyiniz başqa şəbəkədəki hesab vasitəsilə dərc etdiyiniz və ya göndərdiyiniz hər şeyə şamil edilir.
 
 Bu serverdən istifadə etməklə siz bu qaydalara əməl etməyə razılıq verirsiniz. Pozuntular **Şərtlər və qaydalar** çərçivəsində məzmunun silinməsi, hesabın dayandırılması və ya hesabın bağlanması ilə nəticələnə bilər.
 

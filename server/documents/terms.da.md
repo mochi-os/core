@@ -19,13 +19,13 @@ Brug af denne server er underlagt **Serverreglerne**. Alt, der overtræder regle
 
 ## Dit indhold
 
-Du beholder ejerskabet af det indhold, du udgiver. Ved at offentliggøre indhold via denne server giver du {{operator.name}} og det bredere Mochi-netværk en ikke-eksklusiv, verdensomspændende, royaltyfri licens til at hoste, lagre, replikere, transmittere, vise og cache det indhold **i det omfang, det er nødvendigt for at drive tjenesten** — herunder den P2P-replikation, der er beskrevet i vores **Privatlivsmeddelelse**. Denne licens ophører, når du sletter indholdet, dog således at kopier, der allerede er replikeret til peers, vil bestå uden for vores kontrol, indtil disse peers behandler sletningen.
+Du beholder ejerskabet af det indhold, du udgiver. Ved at offentliggøre indhold via denne server giver du {{operator.name}}, det bredere Mochi-netværk og, hvor du vælger at udgive til et andet netværk, dette netværks servere en ikke-eksklusiv, verdensomspændende, royaltyfri licens til at hoste, lagre, replikere, transmittere, vise og cache det indhold **i det omfang, det er nødvendigt for at drive tjenesten** — herunder den P2P-replikation og den levering til andre netværk, der er beskrevet i vores **Privatlivsmeddelelse**. Denne licens ophører, når du sletter indholdet, dog således at kopier, der allerede er replikeret til peers eller sendt til andre netværk, vil bestå uden for vores kontrol, indtil disse peers og servere behandler sletningen.
 
 Du er ansvarlig for det indhold, du udgiver. Udgiv ikke indhold, som du ikke har ret til at offentliggøre.
 
 ## Tredjepartsindhold
 
-Denne tjeneste viser indhold, der stammer uden for {{operator.name}}s direkte kontrol — opslag og andet materiale replikeret fra andre Mochi-servere via peer-to-peer-netværket, RSS og andre eksterne feeds, indhold udgivet af andre brugere på denne server samt links til eksterne websteder. {{operator.name}} producerer, godkender, kontrollerer eller indestår ikke for nøjagtigheden, lovligheden eller sikkerheden af sådant tredjepartsindhold og er ikke ansvarlig for det. Hvis du tilgår, forlader dig på eller deler tredjepartsindhold via denne server, sker det på egen risiko.
+Denne tjeneste viser indhold, der stammer uden for {{operator.name}}s direkte kontrol — opslag og andet materiale replikeret fra andre Mochi-servere via peer-to-peer-netværket, indhold fra andre netværk, som denne server forbinder til, RSS og andre eksterne feeds, indhold udgivet af andre brugere på denne server samt links til eksterne websteder. {{operator.name}} producerer, godkender, kontrollerer eller indestår ikke for nøjagtigheden, lovligheden eller sikkerheden af sådant tredjepartsindhold og er ikke ansvarlig for det. Hvis du tilgår, forlader dig på eller deler tredjepartsindhold via denne server, sker det på egen risiko.
 
 Vi handler på troværdige rapporter om ulovligt indhold, der når denne server (se **Serverreglerne** for hvordan man anmelder), men vi kan ikke garantere tilgængeligheden, nøjagtigheden eller fjernelsen af indhold, der er gemt på servere, vi ikke driver. Eksterne links er kun stillet til rådighed for nemheds skyld og er ikke under vores kontrol.
 
@@ -33,7 +33,7 @@ Vi handler på troværdige rapporter om ulovligt indhold, der når denne server 
 
 {{operator.name}} kan suspendere eller lukke din konto eller fjerne specifikt indhold, hvis du overtræder disse vilkår eller Serverreglerne, eller hvis det er nødvendigt for at overholde loven eller for at beskytte tjenesten og andre brugere. Hvor det er praktisk muligt, vil vi give dig varsel og mulighed for at svare, men i klare tilfælde (for eksempel ulovligt indhold eller et aktivt angreb på tjenesten) kan vi handle øjeblikkeligt.
 
-Du kan lukke din konto til enhver tid ved at sende en e-mail til **{{operator.email}}**, hvorefter vi vil lukke kontoen og fjerne de tilknyttede data fra denne server. Lukning af din konto trækker ikke indhold tilbage, der allerede er replikeret til peers, som beskrevet i privatlivsmeddelelsen.
+Du kan lukke din konto til enhver tid i Indstillinger. Kontoen låses i en henstandsperiode, hvor du kan logge ind og annullere, og fjernes derefter fra denne server sammen med sine data. Lukning af din konto trækker ikke indhold tilbage, der allerede er replikeret til peers eller sendt til andre netværk, som beskrevet i privatlivsmeddelelsen.
 
 ## Ingen garanti
 

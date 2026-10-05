@@ -1,6 +1,6 @@
 # Àwọn òfin sáfà Mochi
 
-Àwọn òfin wọ̀nyí kàn fún gbogbo ènìyàn tí ó ń lo sáfà Mochi yìí, tí **{{operator.name}}** ń ṣiṣẹ́, láìka domain tàbí URL tí a fi dé ọ̀dọ̀ rẹ̀ sí. Wọ́n kàn fún gbogbo àkóónú tí o bá fi sí ìta àti gbogbo ìbáṣepọ̀ pẹ̀lú àwọn olùmúlò mìíràn lórí sáfà yìí, pẹ̀lú àkóónú tí a tún ṣe láti inú sáfà yìí sí àwọn peer mìíràn lórí nẹ́tíwọ́kì Mochi.
+Àwọn òfin wọ̀nyí kàn fún gbogbo ènìyàn tí ó ń lo sáfà Mochi yìí, tí **{{operator.name}}** ń ṣiṣẹ́, láìka domain tàbí URL tí a fi dé ọ̀dọ̀ rẹ̀ sí. Wọ́n kàn fún gbogbo àkóónú tí o bá fi sí ìta àti gbogbo ìbáṣepọ̀ pẹ̀lú àwọn olùmúlò mìíràn lórí sáfà yìí, pẹ̀lú àkóónú tí a tún ṣe láti inú sáfà yìí sí àwọn peer mìíràn lórí nẹ́tíwọ́kì Mochi, àti fún ohunkóhun tí o bá fi sí ìta tàbí fi ránṣẹ́ nípasẹ̀ àkántì kan lórí nẹ́tíwọ́kì mìíràn tí sáfà yìí ń gbàlejò fún ọ tàbí tí o ti so mọ́ ọn.
 
 Nípa lílò sáfà yìí o gbà láti tẹ̀lé àwọn òfin wọ̀nyí. Ìrú dídá òfin lè yọrí sí yíyọ àkóónú kúrò, ìdádúró àkántì, tàbí pípa àkántì rẹ́ lábẹ́ **Àwọn ọ̀rọ̀ àti àwọn ipò**.
 

@@ -1,6 +1,6 @@
 # Imithetho yeseva ye-Mochi
 
-Le mithetho isebenza kubo bonke abasebenzisa le seva ye-Mochi, ephethwe ngu-**{{operator.name}}**, kungakhathaliseki ukuthi yisiphi isizinda noma i-URL esetshenziselwa ukufinyelela kuyo. Isebenza kukho konke okuqukethwe okuthumelayo nakho konke ukusebenzisana nabanye abasebenzisi kule seva, kufaka phakathi okuqukethwe okukhushulwayo kusukela kule seva kuyiswa kwabanye ontanga abakuyona inethiwekhi ye-Mochi.
+Le mithetho isebenza kubo bonke abasebenzisa le seva ye-Mochi, ephethwe ngu-**{{operator.name}}**, kungakhathaliseki ukuthi yisiphi isizinda noma i-URL esetshenziselwa ukufinyelela kuyo. Isebenza kukho konke okuqukethwe okuthumelayo nakho konke ukusebenzisana nabanye abasebenzisi kule seva, kufaka phakathi okuqukethwe okukhushulwayo kusukela kule seva kuyiswa kwabanye ontanga abakuyona inethiwekhi ye-Mochi, nakunoma yini oyishicilelayo noma oyithumelayo nge-akhawunti ekwenye inethiwekhi le seva ekusingathela yona noma oyixhumanise nayo.
 
 Ngokusebenzisa le seva uvuma ukulandela le mithetho. Ukwephula kungaholela ekususweni kokuqukethwe, ekumisweni kwe-akhawunti, noma ekuvalweni kwe-akhawunti ngokwemibandela ye-**Imibandela nemigomo**.
 

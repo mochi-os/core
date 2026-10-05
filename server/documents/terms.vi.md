@@ -19,13 +19,13 @@ Việc sử dụng máy chủ này tuân theo **Quy tắc máy chủ**. Mọi h�
 
 ## Nội dung của bạn
 
-Bạn vẫn giữ quyền sở hữu đối với nội dung mình đăng. Bằng việc xuất bản nội dung qua máy chủ này, bạn cấp cho {{operator.name}} và mạng Mochi rộng hơn một giấy phép không độc quyền, toàn cầu, miễn phí bản quyền để lưu trữ, lưu giữ, nhân bản, truyền tải, hiển thị và lưu cache nội dung đó **theo mức cần thiết để vận hành dịch vụ** - bao gồm cả việc nhân bản P2P được mô tả trong thông báo **Quyền riêng tư** của chúng tôi. Giấy phép này kết thúc khi bạn xoá nội dung, ngoại trừ những bản sao đã được nhân bản đến các peer sẽ vẫn tồn tại ngoài tầm kiểm soát của chúng tôi cho đến khi các peer đó xử lý việc xoá.
+Bạn vẫn giữ quyền sở hữu đối với nội dung mình đăng. Bằng việc xuất bản nội dung qua máy chủ này, bạn cấp cho {{operator.name}}, mạng Mochi rộng hơn và, khi bạn chọn xuất bản lên một mạng khác, các máy chủ của mạng đó một giấy phép không độc quyền, toàn cầu, miễn phí bản quyền để lưu trữ, lưu giữ, nhân bản, truyền tải, hiển thị và lưu cache nội dung đó **theo mức cần thiết để vận hành dịch vụ** - bao gồm cả việc nhân bản P2P và việc phân phối đến các mạng khác được mô tả trong thông báo **Quyền riêng tư** của chúng tôi. Giấy phép này kết thúc khi bạn xoá nội dung, ngoại trừ những bản sao đã được nhân bản đến các peer hoặc đã được gửi đến các mạng khác sẽ vẫn tồn tại ngoài tầm kiểm soát của chúng tôi cho đến khi các peer và máy chủ đó xử lý việc xoá.
 
 Bạn chịu trách nhiệm về nội dung mình đăng. Đừng đăng nội dung mà bạn không có quyền xuất bản.
 
 ## Nội dung của bên thứ ba
 
-Dịch vụ này hiển thị nội dung có nguồn gốc bên ngoài tầm kiểm soát trực tiếp của {{operator.name}} — các bài đăng và tài liệu khác được nhân bản từ những máy chủ Mochi khác qua mạng ngang hàng, các nguồn cấp RSS và nguồn cấp ngoài khác, nội dung do người dùng khác đăng trên máy chủ này, và các liên kết đến trang web bên ngoài. {{operator.name}} không sản xuất, tán thành, kiểm duyệt hay bảo đảm cho tính chính xác, hợp pháp hoặc an toàn của bất kỳ nội dung bên thứ ba nào, và không chịu trách nhiệm về chúng. Nếu bạn truy cập, dựa vào hoặc chia sẻ nội dung của bên thứ ba qua máy chủ này, bạn tự chịu rủi ro.
+Dịch vụ này hiển thị nội dung có nguồn gốc bên ngoài tầm kiểm soát trực tiếp của {{operator.name}} — các bài đăng và tài liệu khác được nhân bản từ những máy chủ Mochi khác qua mạng ngang hàng, nội dung từ các mạng khác mà máy chủ này kết nối tới, các nguồn cấp RSS và nguồn cấp ngoài khác, nội dung do người dùng khác đăng trên máy chủ này, và các liên kết đến trang web bên ngoài. {{operator.name}} không sản xuất, tán thành, kiểm duyệt hay bảo đảm cho tính chính xác, hợp pháp hoặc an toàn của bất kỳ nội dung bên thứ ba nào, và không chịu trách nhiệm về chúng. Nếu bạn truy cập, dựa vào hoặc chia sẻ nội dung của bên thứ ba qua máy chủ này, bạn tự chịu rủi ro.
 
 Chúng tôi sẽ hành động dựa trên các báo cáo đáng tin cậy về nội dung trái pháp luật xuất hiện trên máy chủ này (xem **Quy tắc máy chủ** để biết cách báo cáo), nhưng chúng tôi không thể bảo đảm tính sẵn có, độ chính xác hay việc gỡ bỏ nội dung được lưu trên các máy chủ mà chúng tôi không vận hành. Các liên kết bên ngoài chỉ được cung cấp cho mục đích thuận tiện và không nằm trong tầm kiểm soát của chúng tôi.
 
@@ -33,7 +33,7 @@ Chúng tôi sẽ hành động dựa trên các báo cáo đáng tin cậy về 
 
 {{operator.name}} có thể tạm khoá hoặc đóng tài khoản của bạn, hoặc xoá nội dung cụ thể, nếu bạn vi phạm các điều khoản này hoặc Quy tắc máy chủ, hoặc nếu việc đó là cần thiết để tuân thủ pháp luật, hoặc để bảo vệ dịch vụ và người dùng khác. Khi có thể, chúng tôi sẽ thông báo trước cho bạn và cho bạn cơ hội phản hồi, nhưng trong các trường hợp rõ ràng (ví dụ: nội dung trái pháp luật, một cuộc tấn công đang diễn ra nhằm vào dịch vụ), chúng tôi có thể hành động ngay lập tức.
 
-Bạn có thể đóng tài khoản của mình bất cứ lúc nào bằng cách gửi email đến **{{operator.email}}**, và chúng tôi sẽ đóng tài khoản và xoá dữ liệu liên quan khỏi máy chủ này. Việc đóng tài khoản không thu hồi nội dung đã được nhân bản đến các peer, như được mô tả trong thông báo Quyền riêng tư.
+Bạn có thể đóng tài khoản của mình bất cứ lúc nào trong Cài đặt. Tài khoản sẽ bị khoá trong một thời gian ân hạn, trong thời gian đó bạn có thể đăng nhập và huỷ việc đóng tài khoản, rồi sau đó tài khoản sẽ bị xoá khỏi máy chủ này cùng với dữ liệu của nó. Việc đóng tài khoản không thu hồi nội dung đã được nhân bản đến các peer hoặc đã được gửi đến các mạng khác, như được mô tả trong thông báo Quyền riêng tư.
 
 ## Không bảo hành
 

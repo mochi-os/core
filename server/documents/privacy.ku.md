@@ -8,6 +8,7 @@ Gava hûn tomar dibin û vê serverê bi kar tînin, em ev tiştan berhev dikin:
 
 - **Daneyên hesab**: navekî bikarhêner, rêbazên rastandinê yên ku we hilbijartine (navnîşana e-nameyê, passkey, sepana rastanderê, kodên vegerandinê, an hesabek ji peydekerek têketinê ya partiya sêyemîn), û her agahiya profîlê ya ku we lê zêde dike (navê xuyabar, avatar, biyografî).
 - **Naveroka ku hûn diafirînin**: posten, peyam, şîrove, dosye û her daneya din a ku hûn bi sepanên li ser vê serverê hatine sazkirin diweşînin.
+- **Naveroka kesên din**: post, peyam û hûrgiliyên profîlê yên kesên li ser serverên din ên Mochi û li ser torên din, ku digihîjin vê serverê ji ber ku hûn an bikarhênerên din wan dişopînin, abone wan dibin an bi wan re nameyan diguherînin.
 - **Daneyên teknîkî**: navnîşana IP, agahiyên geroker/cîhazê, û dem-mohrên daxwazên we. Ev ji bo ewlekarî û xebitandina karûbarî û dîtina sûîstîfadeyê tê bikaranîn.
 - **Çerez**: gava hûn têketinê dikin çerezek danişînê tê danîn. Ew tenê nasnameyek danişînê ya nehişvekirî hilîne; em çerezan ji bo reklam an şopandina di navbera malperan de bi kar naynin.
 
@@ -20,20 +21,22 @@ Mochi **toreyek hev-bi-hev (P2P)** ye, ne platformek tek-server. Ev rewş herik�
 - Naveroka ku hûn ji şopînerên xwe, abonan an deverên parvekirî re diweşînin, **li ser serverên din ên Mochi** ku van şopîner an abonan dihewînin **tê dubarekirin**. {{operator.name}} nikare kopiyên naveroka we ji serverên ku ew bi rê ve nabe jê bibe. Heke hûn postekê jê bibin, ev server dê ji eşên ku berê post jê re hatiye şandin re danezanek jêbirinê bişîne, lê jêbirin li gorî hewldana herî baş e û bi hevkariya wan eşan ve girêdayî ye.
 - **Nasnameya we (navê bikarhêner, profîl, kilîlên gelemperî)** heke hûn profîlek gelemperî hilbijêrin di pêrista Mochiyê de tê weşandin, da ku bikarhênerên din ên Mochi we bibînin û pê re têkilî daynin.
 - Naveroka rasterast û taybet (reşnivîs, notên taybet, peyamên taybet di navbera wergiran de) tenê li ser vê serverê û serverên wergiran dimîne; ew ne beşek ji tora P2P ya gelemperî ye.
+- Li cihê ku ev server rê dide we ku hûn **bi torên din ve girê bibin** - bi girêdana hesabekî ku we li ser karûbarekî din heye, an bi hewandina hesabekî li vir ku kesên li ser torên din dikarin bişopînin an peyaman jê re bişînin - tiştê ku hûn bi rêya wî hesabî diweşînin an dişînin diçe serverên li ser wan toran. Ew ne serverên Mochi ne û {{operator.name}} wan bi rê ve nabe. Hesabekî bi vî rengî li ser tora xwe gelemperî ye, û li ser hin toran hesabên ku hûn dişopînin û postên ku hûn diecibînin jî gelemperî ne. Paşê guhertin an jêbirina tiştekî daxwazekê dişîne ku dibe ku ew server guh nedinê.
 
-Bi kurtî: her tiştê ku hûn hilbijêrin bi kesên din re li ser Mochiyê parve bikin, bi sêwirana xwe, ji kontrola {{operator.name}} dûr dikeve. Bi naveroka ku hûn diweşînin re, mîna e-nameyê an her ragihandinek federatîf a din muamele bikin.
+Bi kurtî: her tiştê ku hûn hilbijêrin bi kesên din re, li ser Mochiyê an li ser torên din, parve bikin, bi sêwirana xwe, ji kontrola {{operator.name}} dûr dikeve. Bi naveroka ku hûn diweşînin re, mîna e-nameyê an her ragihandinek federatîf a din muamele bikin.
 
 ## Partiyên sêyemîn
 
 Em hindiktirîn daneyên kesane yên pêwîst bi partiyên sêyemîn ên jêrîn re parve dikin gava hûn taybetmendiyên têkildar bi kar tînin:
 
-- **Karûbarê e-nameyê**: e-nameyên derketinê (kodên tomarbûnê, agahdarî, vegerandina şîfreyê) bi rêya peydekerek SMTP ya ku ji aliyê {{operator.name}} ve hatiye veavakirin tên şandin.
+- **Karûbarê e-nameyê**: e-nameyên derketinê (kodên têketinê, piştrastkirina navnîşanê, agahdarî) bi rêya peydekerek SMTP ya ku ji aliyê {{operator.name}} ve hatiye veavakirin tên şandin.
 - **Peydekerên têketinê yên partiya sêyemîn**: heke hûn bi Google, GitHub, Microsoft, Facebook an peydekerek OAuth ya din têketinê bikin, ew peyder dizane ku we têkete vê serverê û navnîşana e-nameya we û daneyên profîlê yên bingehîn bi me re parve dike.
 - **Peydekerên dravdanê**: heke hûn bi sepaneke bazarê tiştek bikirin, dravdan ji aliyê Stripe (an her peydekerê dravdanê yê ku {{operator.name}} veava kiriye) ve tê pêvajokirin. Em hûrgiliyên qarta tewaw tomar nakin.
+- **Torên din**: heke hûn hesabekî ku we li ser karûbarekî din heye girê bidin, ew karûbar tiştê ku hûn bi rêya wî diweşînin werdigire, û ev server pelnasiya ku rê dide wê li wir li şûna we tevbigere hilîne. Heke hûn li vir hesabekî ji bo torek din bihewînin, server û karûbarên wê torê tiştê ku hûn li ser wê diweşînin, digel navnîşana gelemperî ya hesab, werdigirin.
 
 ## Mafên we
 
-Li gorî welatê ku hûn lê dijîn, dibe ku mafên we yên gihîştinê, sererastkirinê, hinardekirinê, sînordarkirinê an jêbirina daneyên we yên kesane hebin. Ji bo bikaranîna ev mafan - tev de girtina hesabê we û rakirina daneyên we ji vê serverê - ji **{{operator.email}}** re e-nameyek bişînin. Girtina hesab niha li ser daxwazê ji aliyê rêvebirê serverê ve tê kirin; gava em e-nameya we werbigirin, em ê hesab bigrin û daneyên peywendîdar ji vê serverê rakin (li gorî ragirtina paşvekişînê û her erkek qanûnî ya ragirtina tomarên taybet).
+Li gorî welatê ku hûn lê dijîn, dibe ku mafên we yên gihîştinê, sererastkirinê, hinardekirinê, sînordarkirinê an jêbirina daneyên we yên kesane hebin. Hûn dikarin bi xwe di Mîheng de daneyên xwe hinarde bikin û hesabê xwe bigirin. Girtina hesabê we wî ji bo demeke mohletê kilît dike, ku di wê demê de hûn dikarin têkevin û betal bikin; piştî wê, hesab û daneyên wî ji vê serverê tên rakirin (li gorî ragirtina paşvekişînê û her erkek qanûnî ya ragirtina tomarên taybet). Ji bo bikaranîna her mafekî din, an heke hûn nikarin têkevin, ji **{{operator.email}}** re e-nameyek bişînin.
 
 ## Ragirtina daneyan
 

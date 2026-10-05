@@ -1,6 +1,6 @@
 # Ƙa'idojin sabar Mochi
 
-Waɗannan ƙa'idoji sun shafi duk wanda yake amfani da wannan sabar Mochi, wanda **{{operator.name}}** ke gudanarwa, ba tare da la'akari da wane domain ko URL aka yi amfani da shi don kaiwa gareta ba. Sun shafi duk abubuwan da kake aikawa da duk hulɗa da sauran masu amfani a kan wannan sabar, gami da abubuwan da ake yin replication daga wannan sabar zuwa wasu peers a kan cibiyar Mochi.
+Waɗannan ƙa'idoji sun shafi duk wanda yake amfani da wannan sabar Mochi, wanda **{{operator.name}}** ke gudanarwa, ba tare da la'akari da wane domain ko URL aka yi amfani da shi don kaiwa gareta ba. Sun shafi duk abubuwan da kake aikawa da duk hulɗa da sauran masu amfani a kan wannan sabar, gami da abubuwan da ake yin replication daga wannan sabar zuwa wasu peers a kan cibiyar Mochi, da kuma duk abin da kake aikawa ko turawa ta account a kan wata cibiya wanda wannan sabar ke host maka ko wanda ka haɗa da ita.
 
 Ta hanyar amfani da wannan sabar kana yarda ka bi waɗannan ƙa'idoji. Karya ƙa'ida na iya haifar da cire abun ciki, dakatar da account, ko rufe account a ƙarƙashin **Sharuɗɗa da yanayi**.
 

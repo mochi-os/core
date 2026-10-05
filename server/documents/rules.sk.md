@@ -1,6 +1,6 @@
 # Pravidlá Mochi servera
 
-Tieto pravidlá platia pre každého, kto používa tento Mochi server prevádzkovaný **{{operator.name}}**, bez ohľadu na to, cez ktorú doménu alebo URL je dostupný. Vzťahujú sa na všetok obsah, ktorý uverejníte, a na všetky interakcie s ostatnými používateľmi tohto servera, vrátane obsahu, ktorý je z tohto servera replikovaný na ďalších peerov v sieti Mochi.
+Tieto pravidlá platia pre každého, kto používa tento Mochi server prevádzkovaný **{{operator.name}}**, bez ohľadu na to, cez ktorú doménu alebo URL je dostupný. Vzťahujú sa na všetok obsah, ktorý uverejníte, a na všetky interakcie s ostatnými používateľmi tohto servera, vrátane obsahu, ktorý je z tohto servera replikovaný na ďalších peerov v sieti Mochi, a na všetko, čo uverejníte alebo odošlete prostredníctvom účtu v inej sieti, ktorý vám tento server hosťuje alebo ktorý ste s ním prepojili.
 
 Používaním tohto servera súhlasíte s dodržiavaním týchto pravidiel. Porušenia môžu mať za následok odstránenie obsahu, pozastavenie účtu alebo zrušenie účtu podľa **Obchodných podmienok**.
 

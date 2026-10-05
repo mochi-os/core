@@ -1,6 +1,6 @@
 # Regler for Mochi-serveren
 
-Disse reglene gjelder for alle som bruker denne Mochi-serveren, som drives av **{{operator.name}}**, uavhengig av hvilket domene eller hvilken URL som brukes for å nå den. De gjelder for alt innhold du publiserer og all samhandling med andre brukere på denne serveren, inkludert innhold som replikeres fra denne serveren til andre noder i Mochi-nettverket.
+Disse reglene gjelder for alle som bruker denne Mochi-serveren, som drives av **{{operator.name}}**, uavhengig av hvilket domene eller hvilken URL som brukes for å nå den. De gjelder for alt innhold du publiserer og all samhandling med andre brukere på denne serveren, inkludert innhold som replikeres fra denne serveren til andre noder i Mochi-nettverket, og for alt du publiserer eller sender gjennom en konto i et annet nettverk som denne serveren er vert for på dine vegne, eller som du har koblet til den.
 
 Ved å bruke denne serveren samtykker du til å følge disse reglene. Brudd kan føre til fjerning av innhold, midlertidig eller permanent stenging av kontoen i henhold til **Vilkår og betingelser**.
 

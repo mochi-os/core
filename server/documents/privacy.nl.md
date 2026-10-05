@@ -8,6 +8,7 @@ Wanneer u zich aanmeldt en deze server gebruikt, verzamelen we:
 
 - **Accountgegevens**: een gebruikersnaam, de authenticatiemethoden die u kiest (e-mailadres, passkeys, authenticator-app, herstelcodes of een account bij een externe inlogprovider), en alle profielinformatie die u toevoegt (weergavenaam, avatar, biografie).
 - **Inhoud die u maakt**: berichten, mededelingen, reacties, bestanden en alle andere gegevens die u via de op deze server geïnstalleerde apps publiceert.
+- **Inhoud van anderen**: berichten, mededelingen en profielgegevens van mensen op andere Mochi-servers en op andere netwerken, die deze server bereiken omdat u of andere gebruikers hen volgen, op hen geabonneerd zijn of met hen corresponderen.
 - **Technische gegevens**: IP-adres, browser- en apparaatinformatie en tijdstempels van uw verzoeken. Deze worden gebruikt om de dienst veilig en operationeel te houden en om misbruik op te sporen.
 - **Cookies**: er wordt een sessiecookie geplaatst wanneer u zich aanmeldt. Deze bevat alleen een ondoorzichtige sessie-identificator; we gebruiken cookies niet voor reclame of cross-site tracking.
 
@@ -20,20 +21,22 @@ Mochi is een **peer-to-peer (P2P) netwerk**, geen platform met één enkele serv
 - Inhoud die u publiceert voor volgers, abonnees of gedeelde ruimtes wordt **gerepliceerd naar andere Mochi-servers** die deze volgers of abonnees hosten. {{operator.name}} kan kopieën van uw inhoud niet verwijderen van servers die het niet beheert. Wanneer u een bericht verwijdert, stuurt deze server een verwijderingsbericht naar de peers waarnaar het bericht eerder is gestuurd, maar de verwijdering is naar beste vermogen en hangt af van de medewerking van die peers.
 - Uw **identiteit (gebruikersnaam, profiel, publieke sleutels)** wordt gepubliceerd in de Mochi-directory als u kiest voor een openbaar profiel, zodat andere Mochi-gebruikers u kunnen vinden en contact met u kunnen opnemen.
 - Directe, privé-inhoud (kladversies, privé-notities, privéberichten tussen specifieke ontvangers) blijft alleen op deze server en op de servers van de ontvangers; deze maakt geen deel uit van het publieke P2P-netwerk.
+- Waar deze server u in staat stelt **verbinding te maken met andere netwerken** - door een account dat u bij een andere dienst hebt te koppelen, of door hier een account te hosten dat mensen op andere netwerken kunnen volgen of berichten kunnen sturen - gaat wat u via dat account publiceert of verstuurt naar servers op die netwerken. Dat zijn geen Mochi-servers en {{operator.name}} beheert ze niet. Zo'n account is openbaar op zijn netwerk, en op sommige netwerken geldt dat ook voor de accounts die u volgt en de berichten die u leuk vindt. Als u later iets bewerkt of verwijdert, wordt een verzoek verstuurd dat die servers kunnen negeren.
 
-Kort gezegd: alles wat u kiest te delen met anderen op Mochi, reist buiten de controle van {{operator.name}} - dat is bewust zo ontworpen. Behandel inhoud die u publiceert zoals u dat zou doen met e-mail of andere gefedereerde communicatie.
+Kort gezegd: alles wat u kiest te delen met anderen, op Mochi of op andere netwerken, reist buiten de controle van {{operator.name}} - dat is bewust zo ontworpen. Behandel inhoud die u publiceert zoals u dat zou doen met e-mail of andere gefedereerde communicatie.
 
 ## Derden
 
 We delen het minimum aan persoonsgegevens dat nodig is met de volgende derden wanneer u de bijbehorende functies gebruikt:
 
-- **E-maildienst**: uitgaande e-mails (aanmeldcodes, meldingen, wachtwoordherstel) worden verzonden via een door {{operator.name}} ingestelde SMTP-provider.
+- **E-maildienst**: uitgaande e-mails (inlogcodes, adresverificatie, meldingen) worden verzonden via een door {{operator.name}} ingestelde SMTP-provider.
 - **Externe inlogproviders**: als u inlogt met Google, GitHub, Microsoft, Facebook of een andere OAuth-provider, weet die provider dat u op deze server hebt ingelogd en deelt hij uw e-mailadres en basisprofielgegevens met ons.
 - **Betalingsproviders**: als u een aankoop doet via een marktplaats-app, wordt de betaling verwerkt door Stripe (of welke betalingsprovider {{operator.name}} ook heeft ingesteld). We slaan geen volledige kaartgegevens op.
+- **Andere netwerken**: als u een account koppelt dat u bij een andere dienst hebt, ontvangt die dienst wat u via dat account plaatst, en slaat deze server de inloggegevens op waarmee hij daar namens u kan handelen. Als u hier een account host voor een ander netwerk, ontvangen de servers en diensten van dat netwerk wat u erop publiceert, samen met het openbare adres van het account.
 
 ## Uw rechten
 
-Afhankelijk van waar u woont, heeft u mogelijk het recht om uw persoonsgegevens in te zien, te corrigeren, te exporteren, te beperken of te verwijderen. Om een van deze rechten uit te oefenen - waaronder het sluiten van uw account en het verwijderen van uw gegevens van deze server - mailt u naar **{{operator.email}}**. Het sluiten van een account wordt momenteel op verzoek door de serverbeheerder afgehandeld; zodra we uw e-mail ontvangen, zullen we het account sluiten en de bijbehorende gegevens van deze server verwijderen (onder voorbehoud van back-upbewaring en eventuele wettelijke verplichtingen om bepaalde gegevens te bewaren).
+Afhankelijk van waar u woont, heeft u mogelijk het recht om uw persoonsgegevens in te zien, te corrigeren, te exporteren, te beperken of te verwijderen. U kunt uw gegevens zelf exporteren en uw account zelf sluiten in Instellingen. Als u uw account sluit, wordt het gedurende een respijtperiode vergrendeld, waarin u kunt inloggen en de sluiting kunt annuleren; daarna worden het account en de bijbehorende gegevens van deze server verwijderd (onder voorbehoud van back-upbewaring en eventuele wettelijke verplichtingen om bepaalde gegevens te bewaren). Om een ander recht uit te oefenen, of als u niet kunt inloggen, mailt u naar **{{operator.email}}**.
 
 ## Bewaartermijn van gegevens
 

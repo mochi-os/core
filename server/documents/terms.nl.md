@@ -19,13 +19,13 @@ Het gebruik van deze server is onderworpen aan de **Serverregels**. Alles wat in
 
 ## Uw inhoud
 
-U behoudt het eigendom van de inhoud die u plaatst. Door inhoud via deze server te publiceren verleent u {{operator.name}} en het bredere Mochi-netwerk een niet-exclusieve, wereldwijde, royaltyvrije licentie om die inhoud te hosten, op te slaan, te repliceren, te verzenden, weer te geven en te cachen **voor zover dat nodig is om de dienst te laten functioneren** - met inbegrip van de P2P-replicatie zoals beschreven in onze **Privacy**-verklaring. Deze licentie eindigt wanneer u de inhoud verwijdert, behalve dat kopieën die al naar peers zijn gerepliceerd buiten onze controle blijven bestaan totdat die peers de verwijdering verwerken.
+U behoudt het eigendom van de inhoud die u plaatst. Door inhoud via deze server te publiceren verleent u {{operator.name}}, het bredere Mochi-netwerk en, waar u ervoor kiest naar een ander netwerk te publiceren, de servers van dat netwerk een niet-exclusieve, wereldwijde, royaltyvrije licentie om die inhoud te hosten, op te slaan, te repliceren, te verzenden, weer te geven en te cachen **voor zover dat nodig is om de dienst te laten functioneren** - met inbegrip van de P2P-replicatie en de bezorging bij andere netwerken zoals beschreven in onze **Privacy**-verklaring. Deze licentie eindigt wanneer u de inhoud verwijdert, behalve dat kopieën die al naar peers zijn gerepliceerd of naar andere netwerken zijn verzonden buiten onze controle blijven bestaan totdat die peers en servers de verwijdering verwerken.
 
 U bent verantwoordelijk voor de inhoud die u plaatst. Plaats geen inhoud die u niet het recht hebt te publiceren.
 
 ## Inhoud van derden
 
-Deze dienst toont inhoud die buiten de directe controle van {{operator.name}} ontstaat — berichten en ander materiaal dat via het peer-to-peer netwerk vanaf andere Mochi-servers is gerepliceerd, RSS- en andere externe feeds, inhoud die door andere gebruikers op deze server is geplaatst, en links naar externe websites. {{operator.name}} produceert deze inhoud van derden niet, onderschrijft die niet, controleert die niet en staat niet in voor de juistheid, wettigheid of veiligheid ervan, en is er niet voor verantwoordelijk. Als u inhoud van derden via deze server raadpleegt, vertrouwt of deelt, doet u dit op eigen risico.
+Deze dienst toont inhoud die buiten de directe controle van {{operator.name}} ontstaat — berichten en ander materiaal dat via het peer-to-peer netwerk vanaf andere Mochi-servers is gerepliceerd, inhoud van andere netwerken waarmee deze server verbinding maakt, RSS- en andere externe feeds, inhoud die door andere gebruikers op deze server is geplaatst, en links naar externe websites. {{operator.name}} produceert deze inhoud van derden niet, onderschrijft die niet, controleert die niet en staat niet in voor de juistheid, wettigheid of veiligheid ervan, en is er niet voor verantwoordelijk. Als u inhoud van derden via deze server raadpleegt, vertrouwt of deelt, doet u dit op eigen risico.
 
 We treden op bij geloofwaardige meldingen van illegale inhoud die deze server bereikt (zie de **Serverregels** voor de meldprocedure), maar we kunnen niet de beschikbaarheid, juistheid of verwijdering garanderen van inhoud die op servers staat die wij niet beheren. Externe links worden enkel voor het gemak aangeboden en staan niet onder onze controle.
 
@@ -33,7 +33,7 @@ We treden op bij geloofwaardige meldingen van illegale inhoud die deze server be
 
 {{operator.name}} kan uw account schorsen of sluiten, of specifieke inhoud verwijderen, als u deze voorwaarden of de Serverregels schendt, of als dit noodzakelijk is om aan de wet te voldoen of om de dienst en andere gebruikers te beschermen. Waar dit praktisch haalbaar is, geven we u kennisgeving en de gelegenheid om te reageren, maar in duidelijke gevallen (bijvoorbeeld illegale inhoud of een actieve aanval op de dienst) kunnen we onmiddellijk handelen.
 
-U kunt uw account op elk moment sluiten door een e-mail te sturen naar **{{operator.email}}**, en dan zullen we het account sluiten en de bijbehorende gegevens van deze server verwijderen. Het sluiten van uw account herroept geen inhoud die al naar peers is gerepliceerd, zoals beschreven in de Privacy-verklaring.
+U kunt uw account op elk moment sluiten in Instellingen. Het account wordt gedurende een respijtperiode vergrendeld, waarin u kunt inloggen en de sluiting kunt annuleren, en wordt daarna samen met de bijbehorende gegevens van deze server verwijderd. Het sluiten van uw account herroept geen inhoud die al naar peers is gerepliceerd of naar andere netwerken is verzonden, zoals beschreven in de Privacy-verklaring.
 
 ## Geen garantie
 

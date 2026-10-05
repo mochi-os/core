@@ -1,6 +1,6 @@
 # Mochi-palvelimen säännöt
 
-Nämä säännöt koskevat kaikkia tämän Mochi-palvelimen käyttäjiä, ja palvelinta operoi **{{operator.name}}**, riippumatta siitä, mitä verkkotunnusta tai URL-osoitetta sen tavoittamiseen käytetään. Säännöt koskevat kaikkea julkaisemaasi sisältöä ja kaikkea vuorovaikutusta muiden käyttäjien kanssa tällä palvelimella, mukaan lukien sisältö, joka replikoituu tältä palvelimelta muille Mochi-verkon vertaisille.
+Nämä säännöt koskevat kaikkia tämän Mochi-palvelimen käyttäjiä, ja palvelinta operoi **{{operator.name}}**, riippumatta siitä, mitä verkkotunnusta tai URL-osoitetta sen tavoittamiseen käytetään. Säännöt koskevat kaikkea julkaisemaasi sisältöä ja kaikkea vuorovaikutusta muiden käyttäjien kanssa tällä palvelimella, mukaan lukien sisältö, joka replikoituu tältä palvelimelta muille Mochi-verkon vertaisille, sekä kaikkea, mitä julkaiset tai lähetät toisessa verkossa olevan tilin kautta, jota tämä palvelin isännöi sinua varten tai jonka olet linkittänyt tähän palvelimeen.
 
 Käyttämällä tätä palvelinta sitoudut noudattamaan näitä sääntöjä. Sääntörikkomukset voivat johtaa sisällön poistamiseen, tilin jäädyttämiseen tai tilin sulkemiseen **Käyttöehtojen** mukaisesti.
 

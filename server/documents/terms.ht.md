@@ -19,13 +19,13 @@ Itilizasyon sèvè sa a sijè a **Règ sèvè** yo. Tout sa ki vyole règ yo - t
 
 ## Kontni ou
 
-Ou rete pwopriyetè kontni ou pibliye. Lè ou pibliye kontni atravè sèvè sa a, ou bay {{operator.name}} ak rezo Mochi pi laj la yon lisans non-eksklizif, mondyal, san redevans pou ebèje, estoke, replike, transmèt, montre, ak metr nan kach kontni sa a **selon nesesite pou egzekite sèvis la** - tankou replikasyon P2P ki dekri nan avi **Konfidansyalite** nou. Lisans sa a fini lè ou efase kontni an, eksepte ke kopi yo ki deja replike sou pè ap pèsiste deyò kontwòl nou jiskaske pè sa yo trete efasman an.
+Ou rete pwopriyetè kontni ou pibliye. Lè ou pibliye kontni atravè sèvè sa a, ou bay {{operator.name}}, rezo Mochi pi laj la epi, kote ou chwazi pibliye sou yon lòt rezo, sèvè rezo sa a yon lisans non-eksklizif, mondyal, san redevans pou ebèje, estoke, replike, transmèt, montre, ak metr nan kach kontni sa a **selon nesesite pou egzekite sèvis la** - tankou replikasyon P2P ak livrezon bay lòt rezo ki dekri nan avi **Konfidansyalite** nou. Lisans sa a fini lè ou efase kontni an, eksepte ke kopi yo ki deja replike sou pè oswa voye bay lòt rezo ap pèsiste deyò kontwòl nou jiskaske pè ak sèvè sa yo trete efasman an.
 
 Ou responsab pou kontni ou pibliye. Pa pibliye kontni ou pa gen dwa pibliye.
 
 ## Kontni tyès pati
 
-Sèvis sa a ekspoze kontni ki soti deyò kontwòl dirèk {{operator.name}} — piblikasyon ak lòt materyèl ki replike depi lòt sèvè Mochi atravè rezo peer-to-peer la, RSS ak lòt flux ekstèn, kontni ki pibliye pa lòt itilizatè sou sèvè sa a, ak lyen sou sit wèb ekstèn. {{operator.name}} pa pwodwi, andose, verifye, oswa garanti egzaktitid, legalite, oswa sekirite okenn nan kontni tyès pati sa yo, epi li pa responsab pou yo. Si ou jwenn aksè, konte sou, oswa pataje kontni tyès pati atravè sèvè sa a, w ap fè li sou pwòp risk ou.
+Sèvis sa a ekspoze kontni ki soti deyò kontwòl dirèk {{operator.name}} — piblikasyon ak lòt materyèl ki replike depi lòt sèvè Mochi atravè rezo peer-to-peer la, kontni ki soti nan lòt rezo sèvè sa a konekte avè yo, RSS ak lòt flux ekstèn, kontni ki pibliye pa lòt itilizatè sou sèvè sa a, ak lyen sou sit wèb ekstèn. {{operator.name}} pa pwodwi, andose, verifye, oswa garanti egzaktitid, legalite, oswa sekirite okenn nan kontni tyès pati sa yo, epi li pa responsab pou yo. Si ou jwenn aksè, konte sou, oswa pataje kontni tyès pati atravè sèvè sa a, w ap fè li sou pwòp risk ou.
 
 Nou aji sou rapò kredib kontni ilegal ki rive sou sèvè sa a (gade **Règ sèvè** yo pou kijan pou rapòte), men nou pa kapab garanti disponibilite, egzaktitid, oswa retrè kontni ki estoke sou sèvè nou pa egzekite. Lyen ekstèn yo bay pou konvenyans sèlman epi yo pa anba kontwòl nou.
 
@@ -33,7 +33,7 @@ Nou aji sou rapò kredib kontni ilegal ki rive sou sèvè sa a (gade **Règ sèv
 
 {{operator.name}} ka sispann oswa fèmen kont ou, oswa retire kontni espesifik, si ou vyole tèm sa yo oswa Règ sèvè yo, oswa si fè sa nesesè pou konfòme ak lwa oswa pou pwoteje sèvis la ak lòt itilizatè. Kote sa pratik, nou pral ba ou avi ak yon opòtinite pou reponn, men nan ka klè (pa egzanp, kontni ilegal, yon atak aktif sou sèvis la) nou ka aji imedyatman.
 
-Ou ka fèmen kont ou nenpòt lè lè ou voye imèl bay **{{operator.email}}**, epi nou pral fèmen kont la epi retire done ki asosye yo sou sèvè sa a. Fèmti kont ou pa retire kontni ki deja replike sou pè, jan li dekri nan avi Konfidansyalite a.
+Ou ka fèmen kont ou nenpòt lè nan Paramèt. Kont la bloke pou yon peryòd gras, pandan ki ou ka konekte epi anile, epi apre sa li retire sou sèvè sa a ansanm ak done li yo. Fèmti kont ou pa retire kontni ki deja replike sou pè oswa voye bay lòt rezo, jan li dekri nan avi Konfidansyalite a.
 
 ## Pa gen garanti
 

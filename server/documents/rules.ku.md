@@ -1,6 +1,6 @@
 # Qaîdeyên servera Mochi
 
-Ev qaîde li ser her kesê ku vê servera Mochi bi kar tîne, ku ji aliyê **{{operator.name}}** ve tê rêvebirin, sepandî ne, bê ferqa ka kîjan domên an URL ji bo gihîştina wê tê bikaranîn. Ew li ser hemû naveroka ku hûn diweşînin û hemû têkiliyên we bi bikarhênerên din re yên li ser vê serverê tên sepandin, tev de naveroka ku ji vê serverê li ser eşên din ên tora Mochi tê dubarekirin.
+Ev qaîde li ser her kesê ku vê servera Mochi bi kar tîne, ku ji aliyê **{{operator.name}}** ve tê rêvebirin, sepandî ne, bê ferqa ka kîjan domên an URL ji bo gihîştina wê tê bikaranîn. Ew li ser hemû naveroka ku hûn diweşînin û hemû têkiliyên we bi bikarhênerên din re yên li ser vê serverê tên sepandin, tev de naveroka ku ji vê serverê li ser eşên din ên tora Mochi tê dubarekirin, û li ser her tiştê ku hûn bi rêya hesabekî li ser torek din, ku ev server ji bo we dihewîne an we ew pê ve girê daye, diweşînin an dişînin.
 
 Bi bikaranîna vê serverê hûn qebûl dikin ku hûn van qaîdeyan bişopînin. Binpêkirin dikarin bibin sedema rakirina naverokê, sekinandina hesab, an girtina hesab li gorî **Şert û mercan**.
 

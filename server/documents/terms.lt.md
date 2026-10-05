@@ -19,13 +19,13 @@ Naudojimuisi šiuo serveriu taikomos **Serverio taisyklės**. Bet kas, kas paže
 
 ## Jūsų turinys
 
-Skelbiamo turinio nuosavybė lieka jums. Skelbdami turinį per šį serverį suteikiate {{operator.name}} ir platesniam Mochi tinklui neišimtinę, pasaulinę, nemokamą licenciją talpinti, saugoti, replikuoti, perduoti, rodyti ir kaupti talpykloje tą turinį **tiek, kiek to reikia paslaugai veikti** – įskaitant P2P replikaciją, aprašytą mūsų **Privatumo** pranešime. Ši licencija baigiasi, kai ištrinate turinį, išskyrus tai, kad lygiarangiams jau replikuotos kopijos liks už mūsų kontrolės ribų, kol tie lygiarangiai apdoros ištrynimą.
+Skelbiamo turinio nuosavybė lieka jums. Skelbdami turinį per šį serverį suteikiate {{operator.name}}, platesniam Mochi tinklui ir, kai pasirenkate skelbti kitame tinkle, to tinklo serveriams neišimtinę, pasaulinę, nemokamą licenciją talpinti, saugoti, replikuoti, perduoti, rodyti ir kaupti talpykloje tą turinį **tiek, kiek to reikia paslaugai veikti** – įskaitant P2P replikaciją ir pristatymą į kitus tinklus, aprašytus mūsų **Privatumo** pranešime. Ši licencija baigiasi, kai ištrinate turinį, išskyrus tai, kad lygiarangiams jau replikuotos arba į kitus tinklus išsiųstos kopijos liks už mūsų kontrolės ribų, kol tie lygiarangiai ir serveriai apdoros ištrynimą.
 
 Jūs esate atsakingi už savo skelbiamą turinį. Neskelbkite turinio, kurį skelbti neturite teisės.
 
 ## Trečiųjų šalių turinys
 
-Ši paslauga rodo turinį, kuris atsiranda už tiesioginės {{operator.name}} kontrolės ribų — įrašus ir kitą medžiagą, replikuotą iš kitų Mochi serverių per lygiarangių tinklą, RSS ir kitus išorinius srautus, kitų šio serverio naudotojų skelbiamą turinį ir nuorodas į išorines svetaines. {{operator.name}} negamina, nepritaria, netikrina ir negarantuoja jokio tokio trečiųjų šalių turinio tikslumo, teisėtumo ar saugumo, ir už jį neatsako. Jei per šį serverį pasiekiate, pasitikite ar dalijatės trečiųjų šalių turiniu, tai darote savo rizika.
+Ši paslauga rodo turinį, kuris atsiranda už tiesioginės {{operator.name}} kontrolės ribų — įrašus ir kitą medžiagą, replikuotą iš kitų Mochi serverių per lygiarangių tinklą, turinį iš kitų tinklų, prie kurių jungiasi šis serveris, RSS ir kitus išorinius srautus, kitų šio serverio naudotojų skelbiamą turinį ir nuorodas į išorines svetaines. {{operator.name}} negamina, nepritaria, netikrina ir negarantuoja jokio tokio trečiųjų šalių turinio tikslumo, teisėtumo ar saugumo, ir už jį neatsako. Jei per šį serverį pasiekiate, pasitikite ar dalijatės trečiųjų šalių turiniu, tai darote savo rizika.
 
 Reaguojame į patikimus pranešimus apie neteisėtą turinį, pasiekiantį šį serverį (žr. **Serverio taisykles**, kaip pranešti), tačiau negalime garantuoti turinio, saugomo serveriuose, kurių nevaldome, prieinamumo, tikslumo ar pašalinimo. Išorinės nuorodos pateikiamos tik patogumui ir nėra mūsų kontroliuojamos.
 
@@ -33,7 +33,7 @@ Reaguojame į patikimus pranešimus apie neteisėtą turinį, pasiekiantį šį 
 
 {{operator.name}} gali sustabdyti ar uždaryti jūsų paskyrą arba pašalinti konkretų turinį, jei pažeidžiate šias sąlygas ar Serverio taisykles, arba jei tai būtina norint laikytis įstatymų ar apsaugoti paslaugą ir kitus naudotojus. Kai įmanoma, įspėsime jus ir suteiksime galimybę atsakyti, tačiau aiškiais atvejais (pavyzdžiui, neteisėto turinio ar aktyvios atakos prieš paslaugą atveju) galime imtis veiksmų nedelsdami.
 
-Bet kuriuo metu galite uždaryti savo paskyrą rašydami el. paštu **{{operator.email}}**, ir mes uždarysime paskyrą bei pašalinsime susijusius duomenis iš šio serverio. Paskyros uždarymas nepanaikina turinio, jau replikuoto lygiarangiams, kaip aprašyta Privatumo pranešime.
+Bet kuriuo metu galite uždaryti savo paskyrą Nustatymuose. Paskyra užrakinama lengvatiniam laikotarpiui, per kurį galite prisijungti ir atšaukti uždarymą, o po to ji kartu su savo duomenimis pašalinama iš šio serverio. Paskyros uždarymas nepanaikina turinio, jau replikuoto lygiarangiams arba išsiųsto į kitus tinklus, kaip aprašyta Privatumo pranešime.
 
 ## Jokios garantijos
 

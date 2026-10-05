@@ -1,6 +1,6 @@
 # Mochi sunucu kuralları
 
-Bu kurallar, **{{operator.name}}** tarafından işletilen bu Mochi sunucusunu kullanan herkes için, sunucuya erişmek üzere kullanılan etki alanı veya URL'den bağımsız olarak geçerlidir. Yayımladığınız tüm içerik ve bu sunucudaki diğer kullanıcılarla olan tüm etkileşimler için geçerlidir; bu sunucudan Mochi ağındaki diğer eşlere çoğaltılan içerik dahildir.
+Bu kurallar, **{{operator.name}}** tarafından işletilen bu Mochi sunucusunu kullanan herkes için, sunucuya erişmek üzere kullanılan etki alanı veya URL'den bağımsız olarak geçerlidir. Yayımladığınız tüm içerik ve bu sunucudaki diğer kullanıcılarla olan tüm etkileşimler için geçerlidir; bu sunucudan Mochi ağındaki diğer eşlere çoğaltılan içerik dahildir; ayrıca bu sunucunun sizin için barındırdığı veya sizin bu sunucuya bağladığınız, başka bir ağdaki bir hesap aracılığıyla yayımladığınız veya gönderdiğiniz her şey için de geçerlidir.
 
 Bu sunucuyu kullanarak bu kurallara uymayı kabul edersiniz. İhlaller, **Şartlar ve koşullar** kapsamında içeriğin kaldırılması, hesabın askıya alınması veya hesabın kapatılması ile sonuçlanabilir.
 

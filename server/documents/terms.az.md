@@ -19,13 +19,13 @@ Bu serverdən istifadə **Server qaydaları**-na tabedir. Qaydaları pozan hər 
 
 ## Sizin məzmununuz
 
-Dərc etdiyiniz məzmunun mülkiyyəti sizdə qalır. Bu server vasitəsilə məzmun dərc etməklə siz {{operator.name}}-ə və daha geniş Mochi şəbəkəsinə həmin məzmunu **xidməti idarə etmək üçün lazım olduğu kimi** yerləşdirmək, saxlamaq, təkrarlamaq, ötürmək, göstərmək və keş etmək üçün qeyri-eksklüziv, dünya səviyyəsində, qonorarsız lisenziya verirsiniz - **Məxfilik** bildirişimizdə təsvir edilən P2P təkrarlanması daxil olmaqla. Məzmunu sildiyiniz zaman bu lisenziya bitir, lakin peer-lərə artıq təkrarlanmış nüsxələr həmin peer-lər silmə əməliyyatını emal edənə qədər bizim nəzarətimizdən kənarda qalacaq.
+Dərc etdiyiniz məzmunun mülkiyyəti sizdə qalır. Bu server vasitəsilə məzmun dərc etməklə siz {{operator.name}}-ə, daha geniş Mochi şəbəkəsinə və başqa şəbəkədə dərc etməyi seçdiyiniz hallarda həmin şəbəkənin serverlərinə həmin məzmunu **xidməti idarə etmək üçün lazım olduğu kimi** yerləşdirmək, saxlamaq, təkrarlamaq, ötürmək, göstərmək və keş etmək üçün qeyri-eksklüziv, dünya səviyyəsində, qonorarsız lisenziya verirsiniz - **Məxfilik** bildirişimizdə təsvir edilən P2P təkrarlanması və digər şəbəkələrə çatdırılma daxil olmaqla. Məzmunu sildiyiniz zaman bu lisenziya bitir, lakin peer-lərə artıq təkrarlanmış və ya digər şəbəkələrə göndərilmiş nüsxələr həmin peer-lər və serverlər silmə əməliyyatını emal edənə qədər bizim nəzarətimizdən kənarda qalacaq.
 
 Dərc etdiyiniz məzmuna görə siz məsulsunuz. Dərc etmək hüququnuz olmayan məzmunu dərc etməyin.
 
 ## Üçüncü tərəf məzmunu
 
-Bu xidmət {{operator.name}}-in birbaşa nəzarətindən kənarda yaranan məzmunu - peer-to-peer şəbəkəsi vasitəsilə digər Mochi serverlərindən təkrarlanan yazılar və digər materiallar, RSS və digər xarici lentlər, bu serverdə digər istifadəçilərin dərc etdiyi məzmun və xarici veb saytlara linklər - göstərir. {{operator.name}} belə üçüncü tərəf məzmununun dəqiqliyinə, qanuniliyinə və ya təhlükəsizliyinə zəmanət vermir, onu hazırlamır, dəstəkləmir, yoxlamır və ona görə məsuliyyət daşımır. Bu server vasitəsilə üçüncü tərəf məzmununa daxil olur, ona güvənir və ya onu paylaşırsınızsa, bunu öz risqinizlə edirsiniz.
+Bu xidmət {{operator.name}}-in birbaşa nəzarətindən kənarda yaranan məzmunu - peer-to-peer şəbəkəsi vasitəsilə digər Mochi serverlərindən təkrarlanan yazılar və digər materiallar, bu serverin qoşulduğu digər şəbəkələrdən gələn məzmun, RSS və digər xarici lentlər, bu serverdə digər istifadəçilərin dərc etdiyi məzmun və xarici veb saytlara linklər - göstərir. {{operator.name}} belə üçüncü tərəf məzmununun dəqiqliyinə, qanuniliyinə və ya təhlükəsizliyinə zəmanət vermir, onu hazırlamır, dəstəkləmir, yoxlamır və ona görə məsuliyyət daşımır. Bu server vasitəsilə üçüncü tərəf məzmununa daxil olur, ona güvənir və ya onu paylaşırsınızsa, bunu öz risqinizlə edirsiniz.
 
 Bu serverə çatan qanunsuz məzmun haqqında etibarlı şikayətlərə əsasən fəaliyyət göstəririk (necə şikayət etmək barədə **Server qaydaları**-na baxın), lakin biz idarə etmədiyimiz serverlərdə saxlanılan məzmunun mövcudluğuna, dəqiqliyinə və ya silinməsinə zəmanət verə bilmərik. Xarici linklər yalnız rahatlıq üçün təqdim olunur və bizim nəzarətimiz altında deyil.
 
@@ -33,7 +33,7 @@ Bu serverə çatan qanunsuz məzmun haqqında etibarlı şikayətlərə əsasən
 
 {{operator.name}} bu şərtləri və ya Server qaydalarını pozsanız, yaxud xidməti və digər istifadəçiləri qorumaq və ya qanuna riayət etmək üçün lazım olduqda hesabınızı dayandıra və ya bağlaya, müəyyən məzmunu silə bilər. Mümkün olduğu hallarda sizə xəbərdarlıq və cavab vermək imkanı verəcəyik, lakin aydın hallarda (məsələn, qanunsuz məzmun, xidmətə aktiv hücum) dərhal hərəkət edə bilərik.
 
-İstədiyiniz vaxt **{{operator.email}}** ünvanına e-poçt göndərməklə hesabınızı bağlaya bilərsiniz və biz hesabı bağlayıb əlaqəli məlumatları bu serverdən siləcəyik. Hesabınızı bağlamaq Məxfilik bildirişində təsvir edildiyi kimi peer-lərə artıq təkrarlanmış məzmunu geri qaytarmır.
+İstədiyiniz vaxt Parametrlərdə hesabınızı bağlaya bilərsiniz. Hesab güzəşt müddətinə kilidlənir, bu müddət ərzində daxil olub ləğv edə bilərsiniz, sonra isə məlumatları ilə birlikdə bu serverdən silinir. Hesabınızı bağlamaq Məxfilik bildirişində təsvir edildiyi kimi peer-lərə artıq təkrarlanmış və ya digər şəbəkələrə göndərilmiş məzmunu geri qaytarmır.
 
 ## Zəmanət yoxdur
 

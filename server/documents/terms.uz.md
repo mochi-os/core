@@ -19,13 +19,13 @@ Ushbu serverdan foydalanish **Server qoidalari**ga boʻysunadi. Qoidalarni buzuv
 
 ## Sizning kontentingiz
 
-Siz joylashtirgan kontentning egaligi sizda qoladi. Ushbu server orqali kontent eʼlon qilish bilan siz {{operator.name}}ga va kengroq Mochi tarmogʻiga ushbu kontentni **xizmatni boshqarish uchun zarur boʻlgan tarzda** – jumladan **Maxfiylik** bildirishnomamizda tasvirlangan P2P koʻchirilishi orqali – joylashtirish, saqlash, koʻchirish, uzatish, koʻrsatish va keshlash uchun eksklyuziv boʻlmagan, jahon miqyosida amal qiluvchi, royaltisiz litsenziya berasiz. Ushbu litsenziya kontentni oʻchirganingizda tugaydi, biroq peerlarga allaqachon koʻchirilgan nusxalar oʻsha peerlar oʻchirishni qayta ishlaguncha bizning nazoratimizdan tashqarida saqlanib qoladi.
+Siz joylashtirgan kontentning egaligi sizda qoladi. Ushbu server orqali kontent eʼlon qilish bilan siz {{operator.name}}ga, kengroq Mochi tarmogʻiga va, boshqa tarmoqqa eʼlon qilishni tanlagan hollarda, oʻsha tarmoqning serverlariga ushbu kontentni **xizmatni boshqarish uchun zarur boʻlgan tarzda** – jumladan **Maxfiylik** bildirishnomamizda tasvirlangan P2P koʻchirilishi va boshqa tarmoqlarga yetkazib berish orqali – joylashtirish, saqlash, koʻchirish, uzatish, koʻrsatish va keshlash uchun eksklyuziv boʻlmagan, jahon miqyosida amal qiluvchi, royaltisiz litsenziya berasiz. Ushbu litsenziya kontentni oʻchirganingizda tugaydi, biroq peerlarga allaqachon koʻchirilgan yoki boshqa tarmoqlarga yuborilgan nusxalar oʻsha peerlar va serverlar oʻchirishni qayta ishlaguncha bizning nazoratimizdan tashqarida saqlanib qoladi.
 
 Joylashtirayotgan kontentingiz uchun siz masʼulsiz. Eʼlon qilish huquqiga ega boʻlmagan kontentni joylashtirmang.
 
 ## Uchinchi tomon kontenti
 
-Ushbu xizmat {{operator.name}}ning bevosita nazoratidan tashqarida vujudga kelgan kontentni – peer-to-peer tarmogʻi orqali boshqa Mochi serverlaridan koʻchirilgan postlar va boshqa materiallar, RSS va boshqa tashqi tasmalar, ushbu serverdagi boshqa foydalanuvchilar joylashtirgan kontent va tashqi veb-saytlarga havolalarni – ochib beradi. {{operator.name}} har qanday bunday uchinchi tomon kontentini ishlab chiqarmaydi, qoʻllab-quvvatlamaydi, tekshirmaydi yoki uning aniqligi, qonuniyligi yoki xavfsizligini kafolatlamaydi va u uchun masʼul emas. Agar ushbu server orqali uchinchi tomon kontentidan foydalansangiz, unga ishonsangiz yoki uni ulashsangiz, buni oʻz xavf-xataringizga qilasiz.
+Ushbu xizmat {{operator.name}}ning bevosita nazoratidan tashqarida vujudga kelgan kontentni – peer-to-peer tarmogʻi orqali boshqa Mochi serverlaridan koʻchirilgan postlar va boshqa materiallar, ushbu server ulanadigan boshqa tarmoqlardan kelgan kontent, RSS va boshqa tashqi tasmalar, ushbu serverdagi boshqa foydalanuvchilar joylashtirgan kontent va tashqi veb-saytlarga havolalarni – ochib beradi. {{operator.name}} har qanday bunday uchinchi tomon kontentini ishlab chiqarmaydi, qoʻllab-quvvatlamaydi, tekshirmaydi yoki uning aniqligi, qonuniyligi yoki xavfsizligini kafolatlamaydi va u uchun masʼul emas. Agar ushbu server orqali uchinchi tomon kontentidan foydalansangiz, unga ishonsangiz yoki uni ulashsangiz, buni oʻz xavf-xataringizga qilasiz.
 
 Biz ushbu serverga yetib kelgan noqonuniy kontent haqidagi ishonchli xabarlarga qarab harakat qilamiz (xabar berish tartibini **Server qoidalari**dan koʻring), ammo biz boshqarmaydigan serverlarda saqlanadigan kontentning mavjudligi, aniqligi yoki olib tashlanishini kafolatlay olmaymiz. Tashqi havolalar faqat qulaylik uchun taqdim etiladi va bizning nazoratimizda emas.
 
@@ -33,7 +33,7 @@ Biz ushbu serverga yetib kelgan noqonuniy kontent haqidagi ishonchli xabarlarga 
 
 {{operator.name}} ushbu shartlarni yoki Server qoidalarini buzsangiz, yoki bunday harakat qonunga rioya qilish yoki xizmat hamda boshqa foydalanuvchilarni himoya qilish uchun zarur boʻlsa, hisobingizni vaqtincha toʻxtatishi yoki yopishi yoxud muayyan kontentni olib tashlashi mumkin. Imkon qadar biz sizga ogohlantirish va javob berish imkoniyatini beramiz, ammo aniq holatlarda (masalan, noqonuniy kontent, xizmatga faol hujum) zudlik bilan ish koʻrishimiz mumkin.
 
-Hisobingizni istalgan vaqtda **{{operator.email}}** manziliga elektron xat yuborish orqali yopishingiz mumkin va biz hisobni yopib, tegishli maʼlumotlarni ushbu serverdan olib tashlaymiz. Hisobingizni yopish, Maxfiylik bildirishnomasida tasvirlanganidek, peerlarga allaqachon koʻchirilgan kontentni qaytarib olmaydi.
+Hisobingizni istalgan vaqtda Sozlamalarda yopishingiz mumkin. Hisob imtiyozli muddatga bloklanadi, bu muddat davomida tizimga kirib, yopishni bekor qilishingiz mumkin, soʻngra u maʼlumotlari bilan birga ushbu serverdan olib tashlanadi. Hisobingizni yopish, Maxfiylik bildirishnomasida tasvirlanganidek, peerlarga allaqachon koʻchirilgan yoki boshqa tarmoqlarga yuborilgan kontentni qaytarib olmaydi.
 
 ## Kafolat yoʻq
 

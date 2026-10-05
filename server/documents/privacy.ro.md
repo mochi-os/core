@@ -8,6 +8,7 @@ Atunci când vă înregistrați și utilizați acest server, colectăm:
 
 - **Date de cont**: un nume de utilizator, metodele de autentificare pe care le alegeți (adresă de e-mail, passkeys, aplicație de autentificare, coduri de recuperare sau un cont de la un furnizor terț de autentificare) și orice informații de profil pe care le adăugați (nume afișat, avatar, biografie).
 - **Conținutul pe care îl creați**: postări, mesaje, comentarii, fișiere și orice alte date pe care alegeți să le publicați prin aplicațiile instalate pe acest server.
+- **Conținut de la alte persoane**: postări, mesaje și detalii de profil ale persoanelor de pe alte servere Mochi și din alte rețele, care ajung pe acest server deoarece dumneavoastră sau alți utilizatori le urmăriți, vă abonați la ele sau corespondați cu ele.
 - **Date tehnice**: adresa IP, informații despre browser/dispozitiv și marcaje temporale pentru cererile pe care le faceți. Acestea sunt utilizate pentru a menține serviciul sigur și funcțional și pentru a detecta abuzurile.
 - **Cookie-uri**: un cookie de sesiune este setat la autentificare. Acesta stochează doar un identificator de sesiune opac; nu folosim cookie-uri pentru publicitate sau pentru urmărire între site-uri.
 
@@ -20,20 +21,22 @@ Mochi este o **rețea peer-to-peer (P2P)**, nu o platformă cu un singur server.
 - Conținutul pe care îl publicați urmăritorilor, abonaților sau spațiilor partajate este **replicat pe alte servere Mochi** care găzduiesc acei urmăritori sau abonați. {{operator.name}} nu poate șterge copii ale conținutului dumneavoastră de pe servere pe care nu le operează. Dacă ștergeți o postare, acest server va trimite o notificare de ștergere către peer-ii cărora le-a trimis anterior postarea, însă ștergerea se face în limita posibilităților și depinde de cooperarea acelor peer-i.
 - **Identitatea dumneavoastră (nume de utilizator, profil, chei publice)** este publicată în directorul Mochi dacă alegeți un profil public, astfel încât alți utilizatori Mochi să vă poată găsi și contacta.
 - Conținutul direct și privat (ciorne, note private, mesaje private între destinatari specifici) rămâne doar pe acest server și pe serverele destinatarilor; nu face parte din rețeaua P2P publică.
+- Acolo unde acest server vă permite să vă **conectați la alte rețele** - prin asocierea unui cont pe care îl dețineți la un alt serviciu sau prin găzduirea aici a unui cont pe care persoanele din alte rețele îl pot urmări sau căruia îi pot trimite mesaje - ceea ce publicați sau trimiteți prin acel cont ajunge la servere din acele rețele. Acestea nu sunt servere Mochi și {{operator.name}} nu le operează. Un astfel de cont este public în rețeaua sa și, în unele rețele, la fel sunt și conturile pe care le urmăriți și postările pe care le marcați cu „Îmi place”. Dacă editați sau ștergeți ulterior ceva, se trimite o cerere pe care acele servere o pot ignora.
 
-Pe scurt: orice alegeți să partajați cu alte persoane pe Mochi va circula dincolo de controlul {{operator.name}}, prin design. Tratați conținutul pe care îl publicați așa cum ați trata e-mailul sau orice altă comunicare federată.
+Pe scurt: orice alegeți să partajați cu alte persoane, pe Mochi sau în alte rețele, va circula dincolo de controlul {{operator.name}}, prin design. Tratați conținutul pe care îl publicați așa cum ați trata e-mailul sau orice altă comunicare federată.
 
 ## Terți
 
 Partajăm minimul de date personale necesare cu următorii terți atunci când utilizați funcțiile aferente:
 
-- **Serviciu de e-mail**: e-mailurile trimise (coduri de înregistrare, notificări, resetări de parolă) sunt expediate printr-un furnizor SMTP configurat de {{operator.name}}.
+- **Serviciu de e-mail**: e-mailurile trimise (coduri de autentificare, verificarea adresei, notificări) sunt expediate printr-un furnizor SMTP configurat de {{operator.name}}.
 - **Furnizori terți de autentificare**: dacă vă autentificați cu Google, GitHub, Microsoft, Facebook sau alt furnizor OAuth, acel furnizor află că v-ați autentificat pe acest server și ne partajează adresa de e-mail și datele de bază ale profilului.
 - **Furnizori de plăți**: dacă efectuați o achiziție printr-o aplicație de marketplace, plata este procesată de Stripe (sau de furnizorul de plăți pe care l-a configurat {{operator.name}}). Nu stocăm detalii complete ale cardului.
+- **Alte rețele**: dacă asociați un cont pe care îl dețineți la un alt serviciu, acel serviciu primește ceea ce postați prin intermediul contului respectiv, iar acest server stochează credențialele care îi permit să acționeze acolo în numele dumneavoastră. Dacă găzduiți aici un cont pentru o altă rețea, serverele și serviciile acelei rețele primesc ceea ce publicați în ea, împreună cu adresa publică a contului.
 
 ## Drepturile dumneavoastră
 
-În funcție de locul în care locuiți, este posibil să aveți dreptul de a accesa, corecta, exporta, restricționa sau șterge datele dumneavoastră personale. Pentru a exercita oricare dintre aceste drepturi - inclusiv închiderea contului și eliminarea datelor dumneavoastră de pe acest server - trimiteți un e-mail la **{{operator.email}}**. Închiderea contului este gestionată în prezent de operatorul serverului la cerere; odată ce primim e-mailul dumneavoastră, vom închide contul și vom elimina datele asociate de pe acest server (sub rezerva păstrării copiilor de rezervă și a oricărei obligații legale de a păstra anumite înregistrări).
+În funcție de locul în care locuiți, este posibil să aveți dreptul de a accesa, corecta, exporta, restricționa sau șterge datele dumneavoastră personale. Vă puteți exporta datele și vă puteți închide contul chiar dumneavoastră, din Setări. Închiderea contului îl blochează pentru o perioadă de grație, în care vă puteți autentifica și puteți anula închiderea; după aceea, contul și datele sale sunt eliminate de pe acest server (sub rezerva păstrării copiilor de rezervă și a oricărei obligații legale de a păstra anumite înregistrări). Pentru a exercita orice alt drept sau dacă nu vă puteți autentifica, trimiteți un e-mail la **{{operator.email}}**.
 
 ## Păstrarea datelor
 

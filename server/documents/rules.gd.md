@@ -1,6 +1,6 @@
 # Riaghailtean an fhrithealaiche Mochi
 
-Tha na riaghailtean seo a' buntainn ri gach neach a tha a' cleachdadh an fhrithealaiche Mochi seo, air a ruith le **{{operator.name}}**, ge bè dè an àrainn no an URL a thathar a' cleachdadh airson a ruigsinn. Tha iad a' buntainn ris a h-uile susbaint a phostaicheas tu agus ris a h-uile eadar-obrachadh le cleachdaichean eile air an fhrithealaiche seo, a' gabhail a-steach susbaint a tha air a mac-shamhlachadh bhon fhrithealaiche seo gu co-aoisean eile air an lìonra Mochi.
+Tha na riaghailtean seo a' buntainn ri gach neach a tha a' cleachdadh an fhrithealaiche Mochi seo, air a ruith le **{{operator.name}}**, ge bè dè an àrainn no an URL a thathar a' cleachdadh airson a ruigsinn. Tha iad a' buntainn ris a h-uile susbaint a phostaicheas tu agus ris a h-uile eadar-obrachadh le cleachdaichean eile air an fhrithealaiche seo, a' gabhail a-steach susbaint a tha air a mac-shamhlachadh bhon fhrithealaiche seo gu co-aoisean eile air an lìonra Mochi, agus ri rud sam bith a phostaicheas no a chuireas tu tro chunntas air lìonra eile a tha am frithealaiche seo a' giùlan dhut no a cheangail thu ris.
 
 Le bhith a' cleachdadh an fhrithealaiche seo, tha thu ag aontachadh na riaghailtean seo a leantainn. Faodaidh briseadh leantainn gu toirt air falbh susbaint, dùnadh sealach a' chunntais, no dùnadh a' chunntais fo na **Cumhachan agus cùmhnantan**.
 

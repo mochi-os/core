@@ -1,6 +1,6 @@
 # Mochi mohendaha mboheko
 
-Ko'ã mboheko ojepuru opavavépe oiporúvape ko Mochi mohendaha, omotenondéva **{{operator.name}}**, taha'e jepe oimeraẽ dominio térã URL ojeporúva oguahẽ hag̃ua chupe. Ojepuru opa tembiapokue remoĩvape ha opa ñemongeta ambue puruhára ndive ko mohendahápe, ojuajuhápe tembiapokue ojehekopyahúva ko mohendahágui ambue peer-kuérape Mochi ñanduti rupi.
+Ko'ã mboheko ojepuru opavavépe oiporúvape ko Mochi mohendaha, omotenondéva **{{operator.name}}**, taha'e jepe oimeraẽ dominio térã URL ojeporúva oguahẽ hag̃ua chupe. Ojepuru opa tembiapokue remoĩvape ha opa ñemongeta ambue puruhára ndive ko mohendahápe, ojuajuhápe tembiapokue ojehekopyahúva ko mohendahágui ambue peer-kuérape Mochi ñanduti rupi, ha opa mba'e remoherakuã térã remondóvape peteĩ cuenta rupive ambue ñanduti-pe ko mohendaha ohospedáva ndéve g̃uarã térã rembojoajúva hese.
 
 Reiporúvo ko mohendaha remoneĩ rejapotaha ko'ã mboheko. Ñembyaiha ikatu omoñepyrũ tembiapokue ñembogue, cuenta ñembokóivo, térã cuenta ñembotývo umi **Mboheko ha condición** rapykuéri.
 

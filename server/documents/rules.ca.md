@@ -1,6 +1,6 @@
 # Normes del servidor Mochi
 
-Aquestes normes s'apliquen a tothom que utilitza aquest servidor Mochi, operat per **{{operator.name}}**, independentment del domini o URL que s'utilitzi per accedir-hi. S'apliquen a tot el contingut que publiqueu i a totes les interaccions amb altres usuaris d'aquest servidor, inclòs el contingut que es replica d'aquest servidor a altres iguals de la xarxa Mochi.
+Aquestes normes s'apliquen a tothom que utilitza aquest servidor Mochi, operat per **{{operator.name}}**, independentment del domini o URL que s'utilitzi per accedir-hi. S'apliquen a tot el contingut que publiqueu i a totes les interaccions amb altres usuaris d'aquest servidor, inclòs el contingut que es replica d'aquest servidor a altres iguals de la xarxa Mochi, i a qualsevol cosa que publiqueu o envieu a través d'un compte en una altra xarxa que aquest servidor allotgi per a vosaltres o que hi hàgiu enllaçat.
 
 En utilitzar aquest servidor accepteu seguir aquestes normes. Els incompliments poden comportar la retirada de contingut, la suspensió del compte o el tancament del compte d'acord amb les **Condicions del servei**.
 

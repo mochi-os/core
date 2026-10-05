@@ -19,13 +19,13 @@ L'uso di questo server è soggetto alle **Regole del server**. Qualsiasi cosa vi
 
 ## I tuoi contenuti
 
-Mantieni la titolarità dei contenuti che pubblichi. Pubblicando contenuti tramite questo server concedi a {{operator.name}} e alla rete Mochi più ampia una licenza non esclusiva, mondiale e gratuita per ospitare, archiviare, replicare, trasmettere, mostrare e memorizzare nella cache tali contenuti **secondo necessità per gestire il servizio** - compresa la replica P2P descritta nella nostra **Informativa sulla privacy**. Questa licenza termina quando elimini i contenuti, fermo restando che le copie già replicate ai peer rimarranno al di fuori del nostro controllo finché tali peer non elaboreranno l'eliminazione.
+Mantieni la titolarità dei contenuti che pubblichi. Pubblicando contenuti tramite questo server concedi a {{operator.name}}, alla rete Mochi più ampia e, ove tu scelga di pubblicare su un'altra rete, ai server di tale rete una licenza non esclusiva, mondiale e gratuita per ospitare, archiviare, replicare, trasmettere, mostrare e memorizzare nella cache tali contenuti **secondo necessità per gestire il servizio** - compresa la replica P2P e la consegna ad altre reti descritte nella nostra **Informativa sulla privacy**. Questa licenza termina quando elimini i contenuti, fermo restando che le copie già replicate ai peer o inviate ad altre reti rimarranno al di fuori del nostro controllo finché tali peer e server non elaboreranno l'eliminazione.
 
 Sei responsabile dei contenuti che pubblichi. Non pubblicare contenuti che non hai il diritto di pubblicare.
 
 ## Contenuti di terze parti
 
-Questo servizio espone contenuti che hanno origine al di fuori del controllo diretto di {{operator.name}} — post e altri materiali replicati da altri server Mochi attraverso la rete peer-to-peer, feed RSS e altri feed esterni, contenuti pubblicati da altri utenti su questo server e link a siti web esterni. {{operator.name}} non produce, approva, verifica né garantisce l'accuratezza, la legalità o la sicurezza di tali contenuti di terze parti, e non ne è responsabile. Se accedi, fai affidamento o condividi contenuti di terze parti tramite questo server, lo fai a tuo rischio.
+Questo servizio espone contenuti che hanno origine al di fuori del controllo diretto di {{operator.name}} — post e altri materiali replicati da altri server Mochi attraverso la rete peer-to-peer, contenuti provenienti da altre reti a cui questo server si connette, feed RSS e altri feed esterni, contenuti pubblicati da altri utenti su questo server e link a siti web esterni. {{operator.name}} non produce, approva, verifica né garantisce l'accuratezza, la legalità o la sicurezza di tali contenuti di terze parti, e non ne è responsabile. Se accedi, fai affidamento o condividi contenuti di terze parti tramite questo server, lo fai a tuo rischio.
 
 Interveniamo in seguito a segnalazioni credibili di contenuti illegali che giungono a questo server (vedi le **Regole del server** per le modalità di segnalazione), ma non possiamo garantire la disponibilità, l'accuratezza o la rimozione dei contenuti archiviati su server che non gestiamo. I link esterni sono forniti solo per comodità e non sono sotto il nostro controllo.
 
@@ -33,7 +33,7 @@ Interveniamo in seguito a segnalazioni credibili di contenuti illegali che giung
 
 {{operator.name}} può sospendere o chiudere il tuo account, o rimuovere contenuti specifici, se violi questi termini o le Regole del server, o se ciò è necessario per conformarsi alla legge o per proteggere il servizio e gli altri utenti. Ove possibile ti daremo preavviso e l'opportunità di rispondere, ma in casi evidenti (ad esempio, contenuti illegali, un attacco attivo al servizio) potremmo intervenire immediatamente.
 
-Puoi chiudere il tuo account in qualsiasi momento scrivendo a **{{operator.email}}**, e chiuderemo l'account e rimuoveremo i dati associati da questo server. La chiusura del tuo account non ritira i contenuti già replicati ai peer, come descritto nell'Informativa sulla privacy.
+Puoi chiudere il tuo account in qualsiasi momento nelle Impostazioni. L'account viene bloccato per un periodo di grazia, durante il quale puoi accedere e annullare la chiusura, e viene poi rimosso da questo server insieme ai suoi dati. La chiusura del tuo account non ritira i contenuti già replicati ai peer o inviati ad altre reti, come descritto nell'Informativa sulla privacy.
 
 ## Nessuna garanzia
 

@@ -19,13 +19,13 @@ Penggunaan server ini tunduk pada **Aturan server**. Apa pun yang melanggar atur
 
 ## Konten Anda
 
-Anda mempertahankan kepemilikan atas konten yang Anda kirim. Dengan mempublikasikan konten melalui server ini, Anda memberikan {{operator.name}} dan jaringan Mochi yang lebih luas lisensi non-eksklusif, di seluruh dunia, dan bebas royalti untuk meng-host, menyimpan, mereplikasi, mentransmisikan, menampilkan, dan menyimpan cache konten tersebut **sebagaimana diperlukan untuk mengoperasikan layanan** - termasuk replikasi P2P yang dijelaskan dalam pemberitahuan **Privasi** kami. Lisensi ini berakhir ketika Anda menghapus konten, kecuali bahwa salinan yang sudah direplikasi ke peer akan tetap ada di luar kendali kami sampai peer-peer tersebut memproses penghapusan.
+Anda mempertahankan kepemilikan atas konten yang Anda kirim. Dengan mempublikasikan konten melalui server ini, Anda memberikan {{operator.name}}, jaringan Mochi yang lebih luas, dan, jika Anda memilih untuk mempublikasikan ke jaringan lain, server-server jaringan tersebut lisensi non-eksklusif, di seluruh dunia, dan bebas royalti untuk meng-host, menyimpan, mereplikasi, mentransmisikan, menampilkan, dan menyimpan cache konten tersebut **sebagaimana diperlukan untuk mengoperasikan layanan** - termasuk replikasi P2P dan pengiriman ke jaringan lain yang dijelaskan dalam pemberitahuan **Privasi** kami. Lisensi ini berakhir ketika Anda menghapus konten, kecuali bahwa salinan yang sudah direplikasi ke peer atau dikirim ke jaringan lain akan tetap ada di luar kendali kami sampai peer dan server tersebut memproses penghapusan.
 
 Anda bertanggung jawab atas konten yang Anda kirim. Jangan mengirim konten yang tidak Anda miliki haknya untuk dipublikasikan.
 
 ## Konten pihak ketiga
 
-Layanan ini menampilkan konten yang berasal dari luar kendali langsung {{operator.name}} — pos dan materi lain yang direplikasi dari server Mochi lain melalui jaringan peer-to-peer, RSS dan feed eksternal lainnya, konten yang dikirim oleh pengguna lain di server ini, dan tautan ke situs web eksternal. {{operator.name}} tidak memproduksi, mengesahkan, memverifikasi, atau menjamin keakuratan, legalitas, atau keamanan konten pihak ketiga semacam itu, dan tidak bertanggung jawab atasnya. Jika Anda mengakses, mengandalkan, atau membagikan konten pihak ketiga melalui server ini, Anda melakukannya atas risiko Anda sendiri.
+Layanan ini menampilkan konten yang berasal dari luar kendali langsung {{operator.name}} — pos dan materi lain yang direplikasi dari server Mochi lain melalui jaringan peer-to-peer, konten dari jaringan lain yang terhubung dengan server ini, RSS dan feed eksternal lainnya, konten yang dikirim oleh pengguna lain di server ini, dan tautan ke situs web eksternal. {{operator.name}} tidak memproduksi, mengesahkan, memverifikasi, atau menjamin keakuratan, legalitas, atau keamanan konten pihak ketiga semacam itu, dan tidak bertanggung jawab atasnya. Jika Anda mengakses, mengandalkan, atau membagikan konten pihak ketiga melalui server ini, Anda melakukannya atas risiko Anda sendiri.
 
 Kami bertindak atas laporan kredibel mengenai konten ilegal yang mencapai server ini (lihat **Aturan server** untuk cara melapor), tetapi kami tidak dapat menjamin ketersediaan, keakuratan, atau penghapusan konten yang disimpan di server yang tidak kami jalankan. Tautan eksternal disediakan hanya untuk kenyamanan dan tidak berada di bawah kendali kami.
 
@@ -33,7 +33,7 @@ Kami bertindak atas laporan kredibel mengenai konten ilegal yang mencapai server
 
 {{operator.name}} dapat menangguhkan atau menutup akun Anda, atau menghapus konten tertentu, jika Anda melanggar ketentuan ini atau Aturan server, atau jika hal itu diperlukan untuk mematuhi hukum atau melindungi layanan dan pengguna lain. Jika memungkinkan, kami akan memberi Anda pemberitahuan dan kesempatan untuk merespons, tetapi dalam kasus yang jelas (misalnya, konten ilegal, serangan aktif terhadap layanan) kami dapat bertindak segera.
 
-Anda dapat menutup akun Anda kapan saja dengan mengirim email ke **{{operator.email}}**, dan kami akan menutup akun serta menghapus data terkait dari server ini. Menutup akun Anda tidak menarik kembali konten yang sudah direplikasi ke peer, sebagaimana dijelaskan dalam pemberitahuan Privasi.
+Anda dapat menutup akun Anda kapan saja di Pengaturan. Akun dikunci selama masa tenggang, di mana Anda dapat masuk dan membatalkannya, lalu dihapus dari server ini beserta datanya. Menutup akun Anda tidak menarik kembali konten yang sudah direplikasi ke peer atau dikirim ke jaringan lain, sebagaimana dijelaskan dalam pemberitahuan Privasi.
 
 ## Tanpa garansi
 

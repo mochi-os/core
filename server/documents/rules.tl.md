@@ -1,6 +1,6 @@
 # Mga patakaran ng Mochi server
 
-Ang mga patakarang ito ay nalalapat sa lahat ng gumagamit ng Mochi server na ito, na pinapatakbo ng **{{operator.name}}**, anuman ang domain o URL na ginamit para makarating dito. Nalalapat ito sa lahat ng nilalaman na iyong i-post at sa lahat ng interaksyon sa ibang user sa server na ito, kabilang na ang nilalamang nirereplicate mula sa server na ito patungo sa ibang peer sa Mochi network.
+Ang mga patakarang ito ay nalalapat sa lahat ng gumagamit ng Mochi server na ito, na pinapatakbo ng **{{operator.name}}**, anuman ang domain o URL na ginamit para makarating dito. Nalalapat ito sa lahat ng nilalaman na iyong i-post at sa lahat ng interaksyon sa ibang user sa server na ito, kabilang na ang nilalamang nirereplicate mula sa server na ito patungo sa ibang peer sa Mochi network, at sa anumang ipino-post o ipinapadala mo sa pamamagitan ng account sa ibang network na hino-host ng server na ito para sa iyo o na-link mo rito.
 
 Sa paggamit ng server na ito, sumasang-ayon kang sumunod sa mga patakarang ito. Ang mga paglabag ay maaaring magresulta sa pagtanggal ng nilalaman, pag-suspend ng account, o pagsasara ng account sa ilalim ng **Mga tuntunin at kundisyon**.
 

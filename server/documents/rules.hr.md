@@ -1,6 +1,6 @@
 # Pravila Mochi poslužitelja
 
-Ova pravila vrijede za sve koji koriste ovaj Mochi poslužitelj kojim upravlja **{{operator.name}}**, neovisno o tome kojom se domenom ili URL-om do njega pristupa. Primjenjuju se na sav sadržaj koji objavite i sve interakcije s drugim korisnicima na ovom poslužitelju, uključujući sadržaj koji se s ovog poslužitelja replicira na druge peerove u Mochi mreži.
+Ova pravila vrijede za sve koji koriste ovaj Mochi poslužitelj kojim upravlja **{{operator.name}}**, neovisno o tome kojom se domenom ili URL-om do njega pristupa. Primjenjuju se na sav sadržaj koji objavite i sve interakcije s drugim korisnicima na ovom poslužitelju, uključujući sadržaj koji se s ovog poslužitelja replicira na druge peerove u Mochi mreži, te na sve što objavite ili pošaljete putem računa na drugoj mreži koji vam ovaj poslužitelj ugošćuje ili koji ste s njim povezali.
 
 Korištenjem ovog poslužitelja pristajete poštivati ova pravila. Kršenja mogu rezultirati uklanjanjem sadržaja, suspenzijom računa ili zatvaranjem računa prema **Uvjetima i odredbama**.
 

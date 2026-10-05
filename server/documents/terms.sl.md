@@ -19,13 +19,13 @@ Uporaba tega strežnika je predmet **Pravil strežnika**. Vse, kar krši pravila
 
 ## Vaša vsebina
 
-Lastništvo nad vsebino, ki jo objavite, ostane vaše. Z objavljanjem vsebine prek tega strežnika {{operator.name}} in širšemu omrežju Mochi podelite neizključno, svetovno, brezplačno licenco za gostovanje, hrambo, podvajanje, prenos, prikazovanje in predpomnjenje te vsebine **kot je potrebno za delovanje storitve** - vključno s podvajanjem P2P, opisanim v našem obvestilu o **Zasebnosti**. Ta licenca preneha, ko vsebino izbrišete, razen da bodo kopije, ki so že podvojene na enakovredna vozlišča, obstajale izven našega nadzora, dokler ta vozlišča ne obdelajo izbrisa.
+Lastništvo nad vsebino, ki jo objavite, ostane vaše. Z objavljanjem vsebine prek tega strežnika {{operator.name}}, širšemu omrežju Mochi in, kadar se odločite objavljati v drugem omrežju, strežnikom tega omrežja podelite neizključno, svetovno, brezplačno licenco za gostovanje, hrambo, podvajanje, prenos, prikazovanje in predpomnjenje te vsebine **kot je potrebno za delovanje storitve** - vključno s podvajanjem P2P in dostavo v druga omrežja, opisanima v našem obvestilu o **Zasebnosti**. Ta licenca preneha, ko vsebino izbrišete, razen da bodo kopije, ki so že podvojene na enakovredna vozlišča ali poslane v druga omrežja, obstajale izven našega nadzora, dokler ta vozlišča in strežniki ne obdelajo izbrisa.
 
 Odgovorni ste za vsebino, ki jo objavite. Ne objavljajte vsebine, za katero nimate pravice do objave.
 
 ## Vsebina tretjih oseb
 
-Ta storitev izpostavlja vsebino, ki nastane izven neposrednega nadzora {{operator.name}} — objave in drugo gradivo, podvojeno z drugih strežnikov Mochi prek omrežja med enakovrednimi, vire RSS in druge zunanje vire, vsebino, ki so jo objavili drugi uporabniki na tem strežniku, in povezave do zunanjih spletnih mest. {{operator.name}} ne ustvarja, ne odobrava, ne preverja in ne jamči za točnost, zakonitost ali varnost katere koli takšne vsebine tretjih oseb in zanjo ni odgovoren. Če dostopate, se zanašate ali delite vsebino tretjih oseb prek tega strežnika, to počnete na lastno odgovornost.
+Ta storitev izpostavlja vsebino, ki nastane izven neposrednega nadzora {{operator.name}} — objave in drugo gradivo, podvojeno z drugih strežnikov Mochi prek omrežja med enakovrednimi, vsebino iz drugih omrežij, s katerimi se ta strežnik povezuje, vire RSS in druge zunanje vire, vsebino, ki so jo objavili drugi uporabniki na tem strežniku, in povezave do zunanjih spletnih mest. {{operator.name}} ne ustvarja, ne odobrava, ne preverja in ne jamči za točnost, zakonitost ali varnost katere koli takšne vsebine tretjih oseb in zanjo ni odgovoren. Če dostopate, se zanašate ali delite vsebino tretjih oseb prek tega strežnika, to počnete na lastno odgovornost.
 
 Ukrepamo na verodostojne prijave nezakonite vsebine, ki dosežejo ta strežnik (glejte **Pravila strežnika** za navodila, kako prijaviti), vendar ne moremo zagotoviti razpoložljivosti, točnosti ali odstranitve vsebine, shranjene na strežnikih, ki jih ne upravljamo. Zunanje povezave so na voljo zgolj zaradi priročnosti in niso pod našim nadzorom.
 
@@ -33,7 +33,7 @@ Ukrepamo na verodostojne prijave nezakonite vsebine, ki dosežejo ta strežnik (
 
 {{operator.name}} lahko začasno izključi ali zapre vaš račun ali odstrani določeno vsebino, če kršite te pogoje ali Pravila strežnika ali če je to potrebno za skladnost z zakonom ali za zaščito storitve in drugih uporabnikov. Kjer je izvedljivo, vam bomo o tem poslali obvestilo in priložnost za odgovor, vendar lahko v jasnih primerih (na primer pri nezakoniti vsebini, aktivnem napadu na storitev) ukrepamo takoj.
 
-Račun lahko kadar koli zaprete tako, da pišete na **{{operator.email}}**, in zaprli bomo račun ter odstranili povezane podatke s tega strežnika. Z zaprtjem računa ne umaknete vsebine, ki je že bila podvojena na enakovredna vozlišča, kot je opisano v obvestilu o Zasebnosti.
+Račun lahko kadar koli zaprete v Nastavitvah. Račun se zaklene za obdobje odloga, med katerim se lahko prijavite in zaprtje prekličete, nato pa se skupaj s svojimi podatki odstrani s tega strežnika. Z zaprtjem računa ne umaknete vsebine, ki je že bila podvojena na enakovredna vozlišča ali poslana v druga omrežja, kot je opisano v obvestilu o Zasebnosti.
 
 ## Brez jamstva
 

@@ -1,6 +1,6 @@
 # Mochi-serverregler
 
-Disse regler gælder for alle, der bruger denne Mochi-server, der drives af **{{operator.name}}**, uanset hvilket domæne eller hvilken URL der bruges til at nå den. De gælder for alt indhold, du udgiver, og alle interaktioner med andre brugere på denne server, herunder indhold, der replikeres fra denne server til andre peers på Mochi-netværket.
+Disse regler gælder for alle, der bruger denne Mochi-server, der drives af **{{operator.name}}**, uanset hvilket domæne eller hvilken URL der bruges til at nå den. De gælder for alt indhold, du udgiver, og alle interaktioner med andre brugere på denne server, herunder indhold, der replikeres fra denne server til andre peers på Mochi-netværket, og for alt, hvad du udgiver eller sender via en konto på et andet netværk, som denne server hoster for dig, eller som du har tilknyttet den.
 
 Ved at bruge denne server accepterer du at følge disse regler. Overtrædelser kan medføre fjernelse af indhold, suspendering af konto eller lukning af konto i henhold til **Vilkår og betingelser**.
 

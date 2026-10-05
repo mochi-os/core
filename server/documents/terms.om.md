@@ -19,13 +19,13 @@ Fayyadamni sarvera kanaa **Seerota sarvera** jalatti raawwatama. Wanti seerota c
 
 ## Qabiyyee kee
 
-Abbummaa qabiyyee ati maxxansituu eegda. Qabiyyee sarvera kana keessa maxxansuun, {{operator.name}} fi netiwoorkii Mochi bal'aaf, hayyama dhuunfaa hin taane, addunyaa irratti, kaffaltii malee, qabachuu, kuusuu, dabarsuu, ergaa, agarsiisuu, fi cache godhuu **akkaataa tajaajila hojjechiisuun barbaadamuun** ni kennita - dabarsa P2P kan beeksisa **Iccitii** keenya keessatti ibsame dabalatee. Hayyamni kun yeroo qabiyyee balleessitu xumurama, garuu qabiyyee duraan peers'tti dabarfame to'annaa keenyaan ala turuun, hanga peers sun balleessuu adeemsisanitti turuu danda'a.
+Abbummaa qabiyyee ati maxxansituu eegda. Qabiyyee sarvera kana keessa maxxansuun, {{operator.name}}, netiwoorkii Mochi bal'aa fi, bakka ati netiwoorkii biraatti maxxansuu filattetti, sarverota netiwoorkii sanaatiif, hayyama dhuunfaa hin taane, addunyaa irratti, kaffaltii malee, qabachuu, kuusuu, dabarsuu, ergaa, agarsiisuu, fi cache godhuu **akkaataa tajaajila hojjechiisuun barbaadamuun** ni kennita - dabarsa P2P fi geessuu netiwoorkiiwwan birootti kan beeksisa **Iccitii** keenya keessatti ibsaman dabalatee. Hayyamni kun yeroo qabiyyee balleessitu xumurama, garuu qabiyyee duraan peers'tti dabarfame yookaan netiwoorkiiwwan birootti ergame to'annaa keenyaan ala turuun, hanga peers fi sarveronni sun balleessuu adeemsisanitti turuu danda'a.
 
 Qabiyyee maxxansituuf itti gaafatamtuu dha. Qabiyyee mirga maxxansuu hin qabne hin maxxansin.
 
 ## Qabiyyee qaama sadaffaa
 
-Tajaajilli kun qabiyyee to'annaa kallattii {{operator.name}}n alaa ka'u ni agarsiisa — maxxansa fi qabiyyee biroo netiwoorkii peer-to-peer keessaan sarverota Mochi biroo irraa dabarfaman, RSS fi feeds alaa biroo, qabiyyee fayyadamtoota biroon sarvera kana irra maxxansaman, fi link saayitiwwan alaa. {{operator.name}} qabiyyee qaama sadaffaa akkasii kamiyyuu hin oomishu, hin deggeru, hin qulqulleessu, sirrummaa, seeraan ta'uu, ykn nageenya isaa hin mirkaneessu, fi itti hin gaafatamu. Yoo qabiyyee qaama sadaffaa sarvera kana irraan argattee, irratti hundooftee, ykn qoodde, balaa kee mataa keetiin raawwatta.
+Tajaajilli kun qabiyyee to'annaa kallattii {{operator.name}}n alaa ka'u ni agarsiisa — maxxansa fi qabiyyee biroo netiwoorkii peer-to-peer keessaan sarverota Mochi biroo irraa dabarfaman, qabiyyee netiwoorkiiwwan biroo kan sarverri kun itti walqabatu irraa dhufu, RSS fi feeds alaa biroo, qabiyyee fayyadamtoota biroon sarvera kana irra maxxansaman, fi link saayitiwwan alaa. {{operator.name}} qabiyyee qaama sadaffaa akkasii kamiyyuu hin oomishu, hin deggeru, hin qulqulleessu, sirrummaa, seeraan ta'uu, ykn nageenya isaa hin mirkaneessu, fi itti hin gaafatamu. Yoo qabiyyee qaama sadaffaa sarvera kana irraan argattee, irratti hundooftee, ykn qoodde, balaa kee mataa keetiin raawwatta.
 
 Gabaasa amanamoo qabiyyee seeraan ala sarvera kana ga'u irratti tarkaanfii ni fudhanna (akkaataa gabaasaaf **Seerota sarvera** ilaali), garuu qabiyyee sarverota nuti hin hojjechiifne irra kuufame argamuu, sirrii ta'uu, ykn balleessuu hin mirkaneessinu. Linkiwwan alaa salphinaaf qofa kennaman, to'annaa keenya jala miti.
 
@@ -33,7 +33,7 @@ Gabaasa amanamoo qabiyyee seeraan ala sarvera kana ga'u irratti tarkaanfii ni fu
 
 {{operator.name}} yoo waadaa kana yookaan Seerota sarvera cabsite, yookaan kana gochuun seera hordofuuf yookaan tajaajila fi fayyadamtoota biroo eeguuf barbaachisaa ta'e, akkaawuntii kee dhaabuu yookaan cufuu, yookaan qabiyyee addaa balleessuu danda'a. Yeroo danda'amu beeksisa fi carraa deebii kennuu siif kennina, garuu haala ifa ta'e (fakkeenyaaf, qabiyyee seeraan ala, weerara hojjeta tajaajila irratti) yeroo argametti tarkaanfii fudhachuu dandeenya.
 
-Yeroo barbaadde **{{operator.email}}** ergudhaan akkaawuntii kee cufuu dandeessa, nutis akkaawuntii cufnee daataa walqabatu sarvera kana irraa balleessina. Akkaawuntii cufuun qabiyyee duraan peers'tti dabarfame deebisanii hin fudhatu, akkaataa beeksisa Iccitii keessatti ibsametti.
+Yeroo barbaadde Qindaa'inoota keessatti akkaawuntii kee cufuu dandeessa. Akkaawuntiin yeroo dabalataa tokkoof ni qulfeeffama, yeroo kana keessatti seentee cufiinsa haquu dandeessa, sana booda daataa isaa waliin sarvera kana irraa ni balleeffama. Akkaawuntii cufuun qabiyyee duraan peers'tti dabarfame yookaan netiwoorkiiwwan birootti ergame deebisanii hin fudhatu, akkaataa beeksisa Iccitii keessatti ibsametti.
 
 ## Wabii hin qabu
 

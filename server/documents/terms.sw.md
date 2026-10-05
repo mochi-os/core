@@ -19,13 +19,13 @@ Matumizi ya seva hii yako chini ya **Sheria za seva**. Lolote linalokiuka sheria
 
 ## Maudhui yako
 
-Unabaki na umiliki wa maudhui unayochapisha. Kwa kuchapisha maudhui kupitia seva hii unaipa {{operator.name}} na mtandao mpana wa Mochi leseni isiyo ya kipekee, ya kimataifa, isiyo na malipo ya kuhifadhi, kunakili, kupeleka, kuonyesha, na ku-cache maudhui hayo **kama inavyohitajika kuendesha huduma** - ikijumuisha unukuzi wa P2P ulioelezwa katika notisi yetu ya **Faragha**. Leseni hii inaisha unapofuta maudhui, isipokuwa nakala ambazo tayari zimenakiliwa kwa peers zitabaki nje ya udhibiti wetu hadi peers hao watakaposhughulikia ufutaji.
+Unabaki na umiliki wa maudhui unayochapisha. Kwa kuchapisha maudhui kupitia seva hii unaipa {{operator.name}}, mtandao mpana wa Mochi na, pale unapochagua kuchapisha kwenye mtandao mwingine, seva za mtandao huo leseni isiyo ya kipekee, ya kimataifa, isiyo na malipo ya kuhifadhi, kunakili, kupeleka, kuonyesha, na ku-cache maudhui hayo **kama inavyohitajika kuendesha huduma** - ikijumuisha unukuzi wa P2P na uwasilishaji kwa mitandao mingine ulioelezwa katika notisi yetu ya **Faragha**. Leseni hii inaisha unapofuta maudhui, isipokuwa nakala ambazo tayari zimenakiliwa kwa peers au kutumwa kwa mitandao mingine zitabaki nje ya udhibiti wetu hadi peers hao na seva hizo watakaposhughulikia ufutaji.
 
 Una jukumu kwa maudhui unayochapisha. Usichapishe maudhui ambayo huna haki ya kuyachapisha.
 
 ## Maudhui ya watu wengine
 
-Huduma hii inaonyesha maudhui yanayotoka nje ya udhibiti wa moja kwa moja wa {{operator.name}} — machapisho na vifaa vingine vilivyonakiliwa kutoka seva nyingine za Mochi kupitia mtandao wa peer-to-peer, RSS na milisho mingine ya nje, maudhui yaliyochapishwa na watumiaji wengine kwenye seva hii, na viungo vya tovuti za nje. {{operator.name}} hatengenezi, kuidhinisha, kuhakiki, au kuhakikisha usahihi, uhalali, au usalama wa maudhui yoyote ya watu wengine, na hawajibiki kwayo. Ukifikia, kutegemea, au kushiriki maudhui ya watu wengine kupitia seva hii, unafanya hivyo kwa hatari yako mwenyewe.
+Huduma hii inaonyesha maudhui yanayotoka nje ya udhibiti wa moja kwa moja wa {{operator.name}} — machapisho na vifaa vingine vilivyonakiliwa kutoka seva nyingine za Mochi kupitia mtandao wa peer-to-peer, maudhui kutoka mitandao mingine ambayo seva hii inaunganishwa nayo, RSS na milisho mingine ya nje, maudhui yaliyochapishwa na watumiaji wengine kwenye seva hii, na viungo vya tovuti za nje. {{operator.name}} hatengenezi, kuidhinisha, kuhakiki, au kuhakikisha usahihi, uhalali, au usalama wa maudhui yoyote ya watu wengine, na hawajibiki kwayo. Ukifikia, kutegemea, au kushiriki maudhui ya watu wengine kupitia seva hii, unafanya hivyo kwa hatari yako mwenyewe.
 
 Tunachukua hatua juu ya ripoti za kuaminika za maudhui haramu yanayofika kwenye seva hii (ona **Sheria za seva** kwa jinsi ya kuripoti), lakini hatuwezi kuhakikisha upatikanaji, usahihi, au kuondolewa kwa maudhui yaliyohifadhiwa kwenye seva tusizoendesha. Viungo vya nje vimetolewa kwa urahisi tu na haviko chini ya udhibiti wetu.
 
@@ -33,7 +33,7 @@ Tunachukua hatua juu ya ripoti za kuaminika za maudhui haramu yanayofika kwenye 
 
 {{operator.name}} anaweza kusimamisha au kufunga akaunti yako, au kuondoa maudhui mahususi, ukiukiuka masharti haya au Sheria za seva, au ikiwa ni lazima ili kuzingatia sheria au kulinda huduma na watumiaji wengine. Ikiwezekana tutakupa taarifa na fursa ya kujibu, lakini katika kesi za wazi (kwa mfano, maudhui haramu, shambulio la moja kwa moja kwenye huduma) tunaweza kuchukua hatua mara moja.
 
-Unaweza kufunga akaunti yako wakati wowote kwa kutuma barua pepe **{{operator.email}}**, na tutafunga akaunti na kuondoa data inayohusiana kutoka kwenye seva hii. Kufunga akaunti yako hakuondoi maudhui ambayo tayari yamenakiliwa kwa peers, kama ilivyoelezwa katika notisi ya Faragha.
+Unaweza kufunga akaunti yako wakati wowote katika Mipangilio. Akaunti inazuiwa kwa kipindi cha neema, ambapo unaweza kuingia na kughairi kufungwa kwa akaunti, na kisha inaondolewa kutoka kwenye seva hii pamoja na data zake. Kufunga akaunti yako hakuondoi maudhui ambayo tayari yamenakiliwa kwa peers au kutumwa kwa mitandao mingine, kama ilivyoelezwa katika notisi ya Faragha.
 
 ## Hakuna dhamana
 

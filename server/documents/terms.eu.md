@@ -19,13 +19,13 @@ Zerbitzari honen erabilera **Zerbitzariaren arauen** mende dago. Arauak urratzen
 
 ## Zure edukia
 
-Argitaratzen duzun edukiaren jabetza zurea da. Zerbitzari honen bidez edukia argitaratuz, lizentzia ez-esklusibo, mundu mailako eta erregalrik gabeko bat ematen diezu {{operator.name}}-i eta Mochi sare zabalagoari, eduki hori ostatatzeko, gordetzeko, errepikatzeko, transmititzeko, bistaratzeko eta cachean gordetzeko **zerbitzua operatzeko beharrezkoa den heinean** —gure **Pribatutasun**-oharrean deskribatutako P2P errepikatzea barne. Lizentzia hau edukia ezabatzen duzunean amaitzen da, kideei dagoeneko errepikatutako kopiak gure kontroletik kanpo iraungo dute kide horiek ezabaketa prozesatu arte.
+Argitaratzen duzun edukiaren jabetza zurea da. Zerbitzari honen bidez edukia argitaratuz, lizentzia ez-esklusibo, mundu mailako eta erregalrik gabeko bat ematen diezu {{operator.name}}-i, Mochi sare zabalagoari eta, beste sare batean argitaratzea aukeratzen duzunean, sare horretako zerbitzariei, eduki hori ostatatzeko, gordetzeko, errepikatzeko, transmititzeko, bistaratzeko eta cachean gordetzeko **zerbitzua operatzeko beharrezkoa den heinean** —gure **Pribatutasun**-oharrean deskribatutako P2P errepikatzea eta beste sareetarako entrega barne. Lizentzia hau edukia ezabatzen duzunean amaitzen da, kideei dagoeneko errepikatutako edo beste sareetara bidalitako kopiak gure kontroletik kanpo iraungo dute kide eta zerbitzari horiek ezabaketa prozesatu arte.
 
 Argitaratzen duzun edukiaren ardura zurea da. Ez argitaratu argitaratzeko eskubiderik ez duzun edukirik.
 
 ## Hirugarrenen edukia
 
-Zerbitzu honek {{operator.name}}-(r)en kontrol zuzenetik kanpora sortzen den edukia agerian uzten du —kide-arteko sarearen bidez beste Mochi zerbitzarietatik errepikatutako argitalpenak eta bestelako materiala, RSS eta beste kanpoko jarioak, zerbitzari honetan beste erabiltzaileek argitaratutako edukia, eta kanpoko webguneetarako estekak. {{operator.name}}(e)k ez du hirugarrenen edukirik sortzen, onesten, egiaztatzen edo bermatzen, ez bere zehaztasuna, ez legezkotasuna, ez segurtasuna, eta ez da haren erantzulea. Zerbitzari honen bidez hirugarrenen edukira sartzen bazara, hari fidatzen bazaizkio edo partekatzen baduzu, zure arriskuan egiten duzu.
+Zerbitzu honek {{operator.name}}-(r)en kontrol zuzenetik kanpora sortzen den edukia agerian uzten du —kide-arteko sarearen bidez beste Mochi zerbitzarietatik errepikatutako argitalpenak eta bestelako materiala, zerbitzari hau konektatzen den beste sareetako edukia, RSS eta beste kanpoko jarioak, zerbitzari honetan beste erabiltzaileek argitaratutako edukia, eta kanpoko webguneetarako estekak. {{operator.name}}(e)k ez du hirugarrenen edukirik sortzen, onesten, egiaztatzen edo bermatzen, ez bere zehaztasuna, ez legezkotasuna, ez segurtasuna, eta ez da haren erantzulea. Zerbitzari honen bidez hirugarrenen edukira sartzen bazara, hari fidatzen bazaizkio edo partekatzen baduzu, zure arriskuan egiten duzu.
 
 Zerbitzari honetara iristen den legez kanpoko edukiaren salaketa sinesgarriak jasotzen ditugunean jokatzen dugu (ikus **Zerbitzariaren arauak** salatzeko nola), baina ezin dugu bermatu gure kontrolik gabeko zerbitzarietan gordetako edukiaren erabilgarritasuna, zehaztasuna edo kentzea. Kanpoko estekak erosotasunerako bakarrik eskaintzen dira eta ez daude gure kontrolean.
 
@@ -33,7 +33,7 @@ Zerbitzari honetara iristen den legez kanpoko edukiaren salaketa sinesgarriak ja
 
 {{operator.name}}(e)k zure kontua eten edo itxi dezake, edo eduki zehatzak kendu, termino hauek edo Zerbitzariaren arauak hausten badituzu, edo legea betetzeko edo zerbitzua eta beste erabiltzaileak babesteko beharrezkoa bada. Praktikoa denean abisua eta erantzuteko aukera emango dizugu, baina kasu argietan (adibidez, legez kanpoko edukia, zerbitzuaren aurkako eraso aktiboa) berehala jokatu dezakegu.
 
-Zure kontua noiznahi itxi dezakezu **{{operator.email}}**-era mezu elektroniko bat bidaliz, eta kontua itxiko dugu eta zerbitzari honetatik lotutako datuak kenduko ditugu. Zure kontua ixteak ez du atzera botatzen kideei dagoeneko errepikatutako edukia, Pribatutasun-oharrean deskribatzen den bezala.
+Zure kontua noiznahi itxi dezakezu Ezarpenetan. Kontua grazia-epe batez blokeatzen da, eta epe horretan saioa hasi eta itxiera bertan behera utz dezakezu, eta ondoren zerbitzari honetatik kentzen da bere datuekin batera. Zure kontua ixteak ez du atzera botatzen kideei dagoeneko errepikatutako edo beste sareetara bidalitako edukia, Pribatutasun-oharrean deskribatzen den bezala.
 
 ## Bermerik gabe
 

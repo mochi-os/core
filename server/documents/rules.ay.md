@@ -1,6 +1,6 @@
 # Mochi servidoran reglanakapa
 
-Aka reglanakaxa **{{operator.name}}** ukan apnaqat aka Mochi servidor apnaqirin taqpachapatakiwa, kawkïr dominio jan ukax URL tuqi puriñax ukax janiw wakiskkiti. Aka reglanakax aka servidoran taqi qillqantat contenidonakaru ukat yaqha apnaqirinakampi taqi aruskipt'awinakaruw apnaqasi, aka servidorat Mochi redan yaqha peernakar replicat contenidoru phuqhasi.
+Aka reglanakaxa **{{operator.name}}** ukan apnaqat aka Mochi servidor apnaqirin taqpachapatakiwa, kawkïr dominio jan ukax URL tuqi puriñax ukax janiw wakiskkiti. Aka reglanakax aka servidoran taqi qillqantat contenidonakaru ukat yaqha apnaqirinakampi taqi aruskipt'awinakaruw apnaqasi, aka servidorat Mochi redan yaqha peernakar replicat contenidoru phuqhasi, ukat kuntï yaqha redan mä cuenta tuqi qillqantta jan ukax apayta ukaruw phuqhasi, kawkïr cuentatï aka servidorax jumatak katuqi jan ukax jumax ukar chikt'ayta.
 
 Aka servidor apnaqasaxa aka reglanakar phuqhañ yatiyma. Mayjt'ayañanakax contenido jaqsuyaña, cuenta jark'asiyaña, jan ukax cuentan jist'antasiña lurchi **Condicionanaka ukat términonaka** ukamarjama.
 

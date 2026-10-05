@@ -1,6 +1,6 @@
 # Regole del server Mochi
 
-Queste regole si applicano a chiunque utilizzi questo server Mochi, gestito da **{{operator.name}}**, indipendentemente dal dominio o dall'URL utilizzato per raggiungerlo. Si applicano a tutti i contenuti pubblicati e a tutte le interazioni con altri utenti su questo server, compresi i contenuti replicati da questo server ad altri peer della rete Mochi.
+Queste regole si applicano a chiunque utilizzi questo server Mochi, gestito da **{{operator.name}}**, indipendentemente dal dominio o dall'URL utilizzato per raggiungerlo. Si applicano a tutti i contenuti pubblicati e a tutte le interazioni con altri utenti su questo server, compresi i contenuti replicati da questo server ad altri peer della rete Mochi, e a tutto ciò che pubblichi o invii tramite un account su un'altra rete che questo server ospita per te o che hai collegato a esso.
 
 Utilizzando questo server accetti di rispettare queste regole. Le violazioni possono comportare la rimozione dei contenuti, la sospensione dell'account o la chiusura dell'account ai sensi dei **Termini e condizioni**.
 

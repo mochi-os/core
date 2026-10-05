@@ -19,13 +19,13 @@ Ukusebenzisa le seva kuxhomekeke ku **Mithetho yeseva**. Nantoni na eyaphula imi
 
 ## Umxholo wakho
 
-Ugcina ubunini bomxholo owuposayo. Ngokupapasha umxholo kule seva unika u {{operator.name}} kunye nenethiwekhi yeMochi ebanzi ilayisensi engenakukhethwa, yehlabathi, engahlawulwayo yokugcina, ukukhutshela, ukudlulisa, ukubonisa, kunye nokugcina kwi-cache loo mxholo **njengoko kufuneka ukuze kuqhutywe inkonzo** - kuquka ukukhutshelwa kwe-P2P okuchazwa kwisaziso sethu se **Bumfihlo**. Le layisensi iphela xa ucima umxholo, ngaphandle kokuba iikopi sele zikhutshelwe koontanga ziya kuhlala phandle kolawulo lwethu de oontanga abo bawuqhubekise umyalelo wokucima.
+Ugcina ubunini bomxholo owuposayo. Ngokupapasha umxholo kule seva unika u {{operator.name}}, inethiwekhi yeMochi ebanzi kwaye, apho ukhetha ukupapasha kwenye inethiwekhi, iiseva zaloo nethiwekhi ilayisensi engenakukhethwa, yehlabathi, engahlawulwayo yokugcina, ukukhutshela, ukudlulisa, ukubonisa, kunye nokugcina kwi-cache loo mxholo **njengoko kufuneka ukuze kuqhutywe inkonzo** - kuquka ukukhutshelwa kwe-P2P nokuhanjiswa kwezinye iinethiwekhi okuchazwa kwisaziso sethu se **Bumfihlo**. Le layisensi iphela xa ucima umxholo, ngaphandle kokuba iikopi sele zikhutshelwe koontanga okanye zithunyelwe kwezinye iinethiwekhi ziya kuhlala phandle kolawulo lwethu de oontanga abo neeseva bawuqhubekise umyalelo wokucima.
 
 Unoxanduva lomxholo owuposayo. Musa ukuposa umxholo ongenalo ilungelo lokuwupapasha.
 
 ## Umxholo weqela lesithathu
 
-Le nkonzo idiza umxholo ovela ngaphandle kolawulo olungqalileyo lwe {{operator.name}} — iiposti nezinye izinto ezikhutshelwe kwezinye iiseva zeMochi ngenethiwekhi yontanga-kuntanga, ii-RSS nezinye iifidi zangaphandle, umxholo opostwe ngabanye abasebenzisi kule seva, kunye nemikhomba kwiiwebhusayithi zangaphandle. {{operator.name}} akawuvelisi, akawuxhasi, akawuhloli, kwaye akaqinisekisi ngokuchaneka, ubumthetho, okanye ukhuseleko nawuphi na umxholo wenjalo weqela lesithathu, kwaye akanaxanduva ngawo. Ukuba ufikelela, uthembele, okanye wabelane ngomxholo weqela lesithathu kule seva, ukwenza oko ngokuhambelana nomngcipheko wakho.
+Le nkonzo idiza umxholo ovela ngaphandle kolawulo olungqalileyo lwe {{operator.name}} — iiposti nezinye izinto ezikhutshelwe kwezinye iiseva zeMochi ngenethiwekhi yontanga-kuntanga, umxholo ovela kwezinye iinethiwekhi le seva eqhagamshela kuzo, ii-RSS nezinye iifidi zangaphandle, umxholo opostwe ngabanye abasebenzisi kule seva, kunye nemikhomba kwiiwebhusayithi zangaphandle. {{operator.name}} akawuvelisi, akawuxhasi, akawuhloli, kwaye akaqinisekisi ngokuchaneka, ubumthetho, okanye ukhuseleko nawuphi na umxholo wenjalo weqela lesithathu, kwaye akanaxanduva ngawo. Ukuba ufikelela, uthembele, okanye wabelane ngomxholo weqela lesithathu kule seva, ukwenza oko ngokuhambelana nomngcipheko wakho.
 
 Sithatha amanyathelo kwiingxelo ezithembekileyo zomxholo ongekho mthethweni ofikayo kule seva (jonga **Imithetho yeseva** ngendlela yokuxela), kodwa asinakuqinisekisa ukufumaneka, ukuchaneka, okanye ukususwa komxholo ogcinwe kwiiseva esingaziqhubi. Iikhonkco zangaphandle zinikezelwa ukulungiselela kuphela kwaye azikho phantsi kolawulo lwethu.
 
@@ -33,7 +33,7 @@ Sithatha amanyathelo kwiingxelo ezithembekileyo zomxholo ongekho mthethweni ofik
 
 {{operator.name}} unokunqunyamisa okanye avale iakhawunti yakho, okanye asuse umxholo othile, ukuba uyaphula le migaqo okanye Imithetho yeseva, okanye ukuba oko kuyimfuneko ukuze kuthotyelwe umthetho okanye ukukhusela inkonzo nabanye abasebenzisi. Apho kunokwenzeka, siya kukunika isaziso nethuba lokuphendula, kodwa kwiimeko ezicacileyo (umzekelo, umxholo ongekho mthethweni, uhlaselo oluqhubekayo enkonzweni) singathatha amanyathelo ngokukhawuleza.
 
-Ungavala iakhawunti yakho nangaliphi na ixesha ngokuthumela i-imeyile ku **{{operator.email}}**, kwaye siya kuvala iakhawunti size sisuse idata edibanisa nayo kule seva. Ukuvala iakhawunti yakho akubuyiseli umxholo osele ukhutshelwe koontanga, njengoko kuchazwe kwisaziso seBumfihlo.
+Ungavala iakhawunti yakho nangaliphi na ixesha kwi-Iisetingi. Iakhawunti iyatshixwa ixesha lesisa, apho unokungena khona urhoxise ukuvalwa kwayo, kwaye emva koko isuswe kule seva kunye nedata yayo. Ukuvala iakhawunti yakho akubuyiseli umxholo osele ukhutshelwe koontanga okanye uthunyelwe kwezinye iinethiwekhi, njengoko kuchazwe kwisaziso seBumfihlo.
 
 ## Akukho siqinisekiso
 

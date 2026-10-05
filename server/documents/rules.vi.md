@@ -1,6 +1,6 @@
 # Quy tắc máy chủ Mochi
 
-Các quy tắc này áp dụng cho mọi người sử dụng máy chủ Mochi này, do **{{operator.name}}** vận hành, bất kể bạn truy cập qua tên miền hay URL nào. Chúng áp dụng cho mọi nội dung bạn đăng và mọi tương tác với người dùng khác trên máy chủ này, bao gồm cả nội dung được nhân bản từ máy chủ này tới các peer khác trên mạng Mochi.
+Các quy tắc này áp dụng cho mọi người sử dụng máy chủ Mochi này, do **{{operator.name}}** vận hành, bất kể bạn truy cập qua tên miền hay URL nào. Chúng áp dụng cho mọi nội dung bạn đăng và mọi tương tác với người dùng khác trên máy chủ này, bao gồm cả nội dung được nhân bản từ máy chủ này tới các peer khác trên mạng Mochi, và cho mọi thứ bạn đăng hoặc gửi qua một tài khoản trên mạng khác mà máy chủ này lưu trữ cho bạn hoặc mà bạn đã liên kết với máy chủ này.
 
 Bằng việc sử dụng máy chủ này, bạn đồng ý tuân thủ các quy tắc này. Việc vi phạm có thể dẫn đến việc xoá nội dung, tạm khoá tài khoản hoặc đóng tài khoản theo **Điều khoản và điều kiện**.
 

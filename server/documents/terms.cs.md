@@ -19,13 +19,13 @@ Používání tohoto serveru se řídí **Pravidly serveru**. Cokoli, co tato pr
 
 ## Váš obsah
 
-Vlastnictví obsahu, který zveřejňujete, zůstává vám. Zveřejněním obsahu prostřednictvím tohoto serveru udělujete {{operator.name}} a širší síti Mochi nevýhradní, celosvětovou, bezúplatnou licenci k hostování, ukládání, replikaci, přenosu, zobrazování a ukládání tohoto obsahu do mezipaměti **v rozsahu nezbytném pro provoz služby** – včetně P2P replikace popsané v naší **Zásadě ochrany soukromí**. Tato licence končí, když obsah smažete, s tou výjimkou, že kopie již replikované na partnerské uzly budou existovat mimo naši kontrolu, dokud tyto uzly smazání nezpracují.
+Vlastnictví obsahu, který zveřejňujete, zůstává vám. Zveřejněním obsahu prostřednictvím tohoto serveru udělujete {{operator.name}}, širší síti Mochi a, pokud se rozhodnete zveřejňovat v jiné síti, serverům této sítě nevýhradní, celosvětovou, bezúplatnou licenci k hostování, ukládání, replikaci, přenosu, zobrazování a ukládání tohoto obsahu do mezipaměti **v rozsahu nezbytném pro provoz služby** – včetně P2P replikace a doručování do jiných sítí popsaných v naší **Zásadě ochrany soukromí**. Tato licence končí, když obsah smažete, s tou výjimkou, že kopie již replikované na partnerské uzly nebo odeslané do jiných sítí budou existovat mimo naši kontrolu, dokud tyto uzly a servery smazání nezpracují.
 
 Za obsah, který zveřejňujete, jste odpovědní vy. Nezveřejňujte obsah, k jehož publikování nemáte právo.
 
 ## Obsah třetích stran
 
-Tato služba zpřístupňuje obsah, který pochází mimo přímou kontrolu {{operator.name}} — příspěvky a další materiály replikované z jiných serverů Mochi prostřednictvím peer-to-peer sítě, RSS a další externí kanály, obsah zveřejněný jinými uživateli na tomto serveru a odkazy na externí webové stránky. {{operator.name}} žádný takový obsah třetích stran neprodukuje, nepodporuje, neprověřuje ani neručí za jeho přesnost, zákonnost nebo bezpečnost a neodpovídá za něj. Pokud k obsahu třetích stran prostřednictvím tohoto serveru přistupujete, spoléháte na něj nebo jej sdílíte, činíte tak na vlastní riziko.
+Tato služba zpřístupňuje obsah, který pochází mimo přímou kontrolu {{operator.name}} — příspěvky a další materiály replikované z jiných serverů Mochi prostřednictvím peer-to-peer sítě, obsah z jiných sítí, ke kterým se tento server připojuje, RSS a další externí kanály, obsah zveřejněný jinými uživateli na tomto serveru a odkazy na externí webové stránky. {{operator.name}} žádný takový obsah třetích stran neprodukuje, nepodporuje, neprověřuje ani neručí za jeho přesnost, zákonnost nebo bezpečnost a neodpovídá za něj. Pokud k obsahu třetích stran prostřednictvím tohoto serveru přistupujete, spoléháte na něj nebo jej sdílíte, činíte tak na vlastní riziko.
 
 Reagujeme na věrohodná oznámení o nezákonném obsahu, který se dostane na tento server (postup hlášení viz **Pravidla serveru**), nemůžeme však zaručit dostupnost, přesnost ani odstranění obsahu uloženého na serverech, které neprovozujeme. Externí odkazy jsou poskytovány pouze pro pohodlí a nejsou pod naší kontrolou.
 
@@ -33,7 +33,7 @@ Reagujeme na věrohodná oznámení o nezákonném obsahu, který se dostane na 
 
 {{operator.name}} může pozastavit nebo zrušit váš účet nebo odstranit konkrétní obsah, pokud porušíte tyto podmínky nebo Pravidla serveru, případně pokud je to nutné pro dodržení zákona nebo pro ochranu služby a ostatních uživatelů. Tam, kde je to prakticky možné, vám dáme předem upozornění a možnost reagovat, ale v jasných případech (například nezákonný obsah, aktivní útok na službu) můžeme zasáhnout okamžitě.
 
-Svůj účet můžete kdykoli zrušit zasláním e-mailu na **{{operator.email}}** a my účet zrušíme a související data z tohoto serveru odstraníme. Zrušení účtu neodvolá obsah již replikovaný na partnerské uzly, jak je popsáno v Zásadě ochrany soukromí.
+Svůj účet můžete kdykoli zrušit v Nastavení. Účet se na ochrannou lhůtu uzamkne, během níž se můžete přihlásit a zrušení odvolat, a poté je z tohoto serveru odstraněn spolu se svými daty. Zrušení účtu neodvolá obsah již replikovaný na partnerské uzly nebo odeslaný do jiných sítí, jak je popsáno v Zásadě ochrany soukromí.
 
 ## Žádná záruka
 

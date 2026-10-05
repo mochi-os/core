@@ -1,6 +1,6 @@
 # Rregullat e serverit Mochi
 
-Këto rregulla zbatohen për të gjithë ata që përdorin këtë server Mochi, të operuar nga **{{operator.name}}**, pavarësisht se cili domain ose URL përdoret për ta arritur. Ato zbatohen për të gjithë përmbajtjen që postoni dhe të gjitha ndërveprimet me përdoruesit e tjerë në këtë server, përfshirë përmbajtjen që përsëritet nga ky server te peer-a të tjerë në rrjetin Mochi.
+Këto rregulla zbatohen për të gjithë ata që përdorin këtë server Mochi, të operuar nga **{{operator.name}}**, pavarësisht se cili domain ose URL përdoret për ta arritur. Ato zbatohen për të gjithë përmbajtjen që postoni dhe të gjitha ndërveprimet me përdoruesit e tjerë në këtë server, përfshirë përmbajtjen që përsëritet nga ky server te peer-a të tjerë në rrjetin Mochi, si dhe për çdo gjë që postoni ose dërgoni përmes një llogarie në një rrjet tjetër që ky server e pret për ju ose që ju e keni lidhur me të.
 
 Duke përdorur këtë server, ju pajtoheni të ndiqni këto rregulla. Shkeljet mund të rezultojnë në heqjen e përmbajtjes, pezullimin e llogarisë, ose mbylljen e llogarisë sipas **Kushteve dhe afateve**.
 

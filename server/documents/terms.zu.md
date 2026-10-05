@@ -19,13 +19,13 @@ Ukusebenzisa le seva kungaphansi kwe-**Imithetho yeseva**. Noma yini ephula imit
 
 ## Okuqukethwe kwakho
 
-Ugcina ubunikazi bokuqukethwe okuthumelayo. Ngokushicilela okuqukethwe ngale seva unika u-{{operator.name}} kanye nenethiwekhi ebanzi ye-Mochi ilayisensi engakhethekile, ehlanganisa umhlaba, engakhokhelwa, yokugcina, ukulondoloza, ukukhuphela, ukudlulisa, ukubonisa, nokulondoloza okuqukethwe **njengoba kudingeka ukuze kusebenze insiza** - kufaka phakathi ukukhushulwa kwe-P2P okuchazwe esaziswweni sethu se-**Ubumfihlo**. Le layisensi iphela uma ususa okuqukethwe, ngaphandle kokuthi amakhophi asekhushulelwe kontanga azoqhubeka esebenza ngaphandle kokulawula kwethu kuze kube ontanga laba bacubungula ukususwa.
+Ugcina ubunikazi bokuqukethwe okuthumelayo. Ngokushicilela okuqukethwe ngale seva unika u-{{operator.name}}, inethiwekhi ebanzi ye-Mochi futhi, lapho ukhetha ukushicilela kwenye inethiwekhi, amaseva aleyo nethiwekhi ilayisensi engakhethekile, ehlanganisa umhlaba, engakhokhelwa, yokugcina, ukulondoloza, ukukhuphela, ukudlulisa, ukubonisa, nokulondoloza okuqukethwe **njengoba kudingeka ukuze kusebenze insiza** - kufaka phakathi ukukhushulwa kwe-P2P nokulethwa kwamanye amanethiwekhi okuchazwe esaziswweni sethu se-**Ubumfihlo**. Le layisensi iphela uma ususa okuqukethwe, ngaphandle kokuthi amakhophi asekhushulelwe kontanga noma asethunyelwe kwamanye amanethiwekhi azoqhubeka esebenza ngaphandle kokulawula kwethu kuze kube ontanga laba namaseva bacubungula ukususwa.
 
 Unesibopho sokuqukethwe okuthumelayo. Ungathumeli okuqukethwe ongenalo ilungelo lokukushicilela.
 
 ## Okuqukethwe kweqembu lesithathu
 
-Le nsiza ibonisa okuqukethwe okuqala ngaphandle kokulawula okuqondile kuka-{{operator.name}} — okuthunyelwe nokunye okukhushulwa kusukela kwamanye amaseva e-Mochi nge-inethiwekhi yontanga, i-RSS namanye amafidi angaphandle, okuqukethwe okuthunyelwe ngabanye abasebenzisi kule seva, nezixhumanisi zama-website angaphandle. {{operator.name}} ayikhiqizi, ayivumelani, ayihloli, futhi ayinikezi isiqinisekiso sokunemba, ubumthetho, noma ukuphepha kwanoma yikuphi okuqukethwe kweqembu lesithathu, futhi ayinasibopho ngakho. Uma ufinyelela, uthembele, noma uxhaphaze okuqukethwe kweqembu lesithathu ngale seva, ukwenza ngengozi yakho.
+Le nsiza ibonisa okuqukethwe okuqala ngaphandle kokulawula okuqondile kuka-{{operator.name}} — okuthunyelwe nokunye okukhushulwa kusukela kwamanye amaseva e-Mochi nge-inethiwekhi yontanga, okuqukethwe okuvela kwamanye amanethiwekhi le seva exhuma kuwo, i-RSS namanye amafidi angaphandle, okuqukethwe okuthunyelwe ngabanye abasebenzisi kule seva, nezixhumanisi zama-website angaphandle. {{operator.name}} ayikhiqizi, ayivumelani, ayihloli, futhi ayinikezi isiqinisekiso sokunemba, ubumthetho, noma ukuphepha kwanoma yikuphi okuqukethwe kweqembu lesithathu, futhi ayinasibopho ngakho. Uma ufinyelela, uthembele, noma uxhaphaze okuqukethwe kweqembu lesithathu ngale seva, ukwenza ngengozi yakho.
 
 Sisebenza ngokwemibiko enokwethenjelwa yokuqukethwe okungekho emthethweni okufika kule seva (bheka **Imithetho yeseva** ngendlela yokubika), kodwa asikwazi ukuqinisekisa ukutholakala, ukunemba, noma ukususwa kokuqukethwe okugcinwa kumaseva esingawasebenzisi. Izixhumanisi zangaphandle zinikezwa ukulungiselelana kuphela futhi azilawulwa yithi.
 
@@ -33,7 +33,7 @@ Sisebenza ngokwemibiko enokwethenjelwa yokuqukethwe okungekho emthethweni okufik
 
 {{operator.name}} angamisa noma avale i-akhawunti yakho, noma asuse okuqukethwe okuqondile, uma wephula le mibandela noma Imithetho yeseva, noma uma ukwenza lokho kudingeka ukuze kuhanjiswane nomthetho noma ukuze kuvikelwe insiza nabanye abasebenzisi. Lapho kungenzeka, sizokunika isaziso nethuba lokuphendula, kodwa ezimweni ezisobala (isibonelo, okuqukethwe okungekho emthethweni, ukuhlasela okusebenzayo ensizeni) singenza ngokushesha.
 
-Ungavala i-akhawunti yakho noma yinini ngokuthumela i-imeyili ku-**{{operator.email}}**, futhi sizovala i-akhawunti futhi sisuse idatha ehambisana nayo kule seva. Ukuvala i-akhawunti yakho akubuyiseli okuqukethwe osekukhushulelwe kontanga, njengoba kuchaziwe esaziswweni sobumfihlo.
+Ungavala i-akhawunti yakho noma yinini ku-Izilungiselelo. I-akhawunti ikhiywa isikhathi somusa, phakathi nalokho ungangena futhi ukhansele ukuvalwa kwayo, bese isuswa kule seva kanye nedatha yayo. Ukuvala i-akhawunti yakho akubuyiseli okuqukethwe osekukhushulelwe kontanga noma osekuthunyelwe kwamanye amanethiwekhi, njengoba kuchaziwe esaziswweni sobumfihlo.
 
 ## Akukho siqinisekiso
 

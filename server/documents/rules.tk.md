@@ -1,6 +1,6 @@
 # Mochi serweriniň düzgünleri
 
-Bu düzgünler **{{operator.name}}** tarapyndan dolandyrylýan şu Mochi serwerini ulanýan her bir adama, oňa ýetmek üçin haýsy domen ýa-da URL ulanylsa-da, degişlidir. Olar bu serwerde çap edýän ähli mazmunyňyza we beýleki ulanyjylar bilen ähli aragatnaşyklaryňyza, şol sanda bu serwerden Mochi torunyň beýleki deňmelerine göçürilen mazmuna degişlidir.
+Bu düzgünler **{{operator.name}}** tarapyndan dolandyrylýan şu Mochi serwerini ulanýan her bir adama, oňa ýetmek üçin haýsy domen ýa-da URL ulanylsa-da, degişlidir. Olar bu serwerde çap edýän ähli mazmunyňyza we beýleki ulanyjylar bilen ähli aragatnaşyklaryňyza, şol sanda bu serwerden Mochi torunyň beýleki deňmelerine göçürilen mazmuna, şeýle hem bu serweriň siziň üçin ýerleşdirýän ýa-da siziň oňa baglanyşdyran beýleki tordaky hasabyňyz arkaly çap edýän ýa-da iberýän islendik zadyňyza degişlidir.
 
 Bu serweri ulanmak bilen şu düzgünleri berjaý etmäge razy bolýarsyňyz. Bozulmalar **Şertler we düzgünleriň** çäginde mazmunyň aýrylmagyna, hasabyň togtadylmagyna ýa-da hasabyň ýapylmagyna sebäp bolup biler.
 

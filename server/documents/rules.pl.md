@@ -1,6 +1,6 @@
 # Zasady serwera Mochi
 
-Niniejsze zasady obowiązują wszystkich użytkowników tego serwera Mochi, prowadzonego przez **{{operator.name}}**, niezależnie od tego, z której domeny lub adresu URL korzystają, aby się z nim połączyć. Dotyczą one wszystkich treści, które publikujesz, oraz wszystkich interakcji z innymi użytkownikami na tym serwerze, w tym treści replikowanych z tego serwera do innych węzłów w sieci Mochi.
+Niniejsze zasady obowiązują wszystkich użytkowników tego serwera Mochi, prowadzonego przez **{{operator.name}}**, niezależnie od tego, z której domeny lub adresu URL korzystają, aby się z nim połączyć. Dotyczą one wszystkich treści, które publikujesz, oraz wszystkich interakcji z innymi użytkownikami na tym serwerze, w tym treści replikowanych z tego serwera do innych węzłów w sieci Mochi, a także wszystkiego, co publikujesz lub wysyłasz za pośrednictwem konta w innej sieci, które ten serwer hostuje dla Ciebie lub które z nim powiązałeś.
 
 Korzystając z tego serwera, zgadzasz się przestrzegać niniejszych zasad. Naruszenia mogą skutkować usunięciem treści, zawieszeniem konta lub zamknięciem konta zgodnie z **Regulaminem**.
 

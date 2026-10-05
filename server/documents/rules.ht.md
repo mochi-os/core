@@ -1,6 +1,6 @@
 # Règ sèvè Mochi
 
-Règ sa yo aplike pou tout moun k ap itilize sèvè Mochi sa a, ki opere pa **{{operator.name}}**, kèlkeswa domèn oswa URL ki itilize pou rive sou li. Yo aplike pou tout kontni ou pibliye ak tout entèraksyon ak lòt itilizatè sou sèvè sa a, tankou kontni ki replike depi sèvè sa a sou lòt pè nan rezo Mochi a.
+Règ sa yo aplike pou tout moun k ap itilize sèvè Mochi sa a, ki opere pa **{{operator.name}}**, kèlkeswa domèn oswa URL ki itilize pou rive sou li. Yo aplike pou tout kontni ou pibliye ak tout entèraksyon ak lòt itilizatè sou sèvè sa a, tankou kontni ki replike depi sèvè sa a sou lòt pè nan rezo Mochi a, ak pou nenpòt bagay ou pibliye oswa voye atravè yon kont sou yon lòt rezo ke sèvè sa a ebèje pou ou oswa ke ou lye ak li.
 
 Lè w itilize sèvè sa a, ou dakò pou swiv règ sa yo. Vyolasyon yo ka mennen nan retire kontni, sispansyon kont, oswa fèmti kont selon **Tèm ak kondisyon** yo.
 

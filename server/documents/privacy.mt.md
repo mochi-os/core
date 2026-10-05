@@ -8,6 +8,7 @@ Meta tirreġistra u tuża dan is-server niġbru:
 
 - **Dejta tal-kont**: isem tal-utent, il-metodi ta' awtentikazzjoni li tagħżel (indirizz email, passkeys, app awtentikatur, kodiċijiet ta' rkupru, jew kont mingħand fornitur ta' login terz), u kwalunkwe informazzjoni tal-profil li żżid (isem li jidher, avatar, bijografija).
 - **Kontenut li toħloq**: posts, messaġġi, kummenti, fajls, u kwalunkwe dejta oħra li tagħżel li tippubblika permezz tal-apps installati fuq dan is-server.
+- **Kontenut minn nies oħra**: posts, messaġġi, u dettalji tal-profil ta' nies fuq servers Mochi oħra u fuq netwerks oħra, li jaslu f'dan is-server għax int jew utenti oħra jsegwuhom, jabbonaw magħhom, jew jikkorrispondu magħhom.
 - **Dejta teknika**: indirizz IP, informazzjoni dwar il-browser/apparat, u timestamps għat-talbiet li tagħmel. Din tintuża biex is-servizz jibqa' sigur u jaħdem, u biex jiġi identifikat l-abbuż.
 - **Cookies**: tiġi stabbilita session cookie meta tidħol. Hija taħżen biss identifikatur opak tas-sessjoni; ma nużawx cookies għar-reklamar jew għat-traċċar bejn siti.
 
@@ -20,20 +21,22 @@ Mochi huwa **netwerk peer-to-peer (P2P)**, mhux pjattaforma ta' server wieħed. 
 - Il-kontenut li tippubblika lis-segwaċi, abbonati, jew spazji kondiviżi jiġi **replikat fuq servers Mochi oħra** li jospitaw dawk is-segwaċi jew abbonati. {{operator.name}} ma jistax iħassar il-kopji tal-kontenut tiegħek minn servers li ma jħaddimx hu. Jekk tħassar post, dan is-server jibgħat avviż ta' tħassir lill-peers li bagħat il-post lilhom qabel, iżda t-tħassir huwa best-effort u jiddependi mill-kooperazzjoni ta' dawk il-peers.
 - L-**identità tiegħek (isem tal-utent, profil, ċwievet pubbliċi)** tiġi ppubblikata fid-direttorju ta' Mochi jekk tagħżel profil pubbliku, biex utenti oħra ta' Mochi jistgħu jsibuk u jikkuntattjawk.
 - Il-kontenut dirett u privat (drafts, noti privati, messaġġi privati bejn riċevituri speċifiċi) jibqa' fuq dan is-server u fuq is-servers tar-riċevituri biss; mhuwiex parti mill-network P2P pubbliku.
+- Fejn dan is-server jippermettilek **tikkonnettja ma' netwerks oħra** - billi torbot kont li għandek fuq servizz ieħor, jew billi tospita kont hawn li nies fuq netwerks oħra jistgħu jsegwu jew jibagħtulu messaġġi - dak li tippubblika jew tibgħat permezz ta' dak il-kont imur fuq servers ta' dawk in-netwerks. Dawn mhumiex servers Mochi u {{operator.name}} ma jħaddimhomx. Kont bħal dan huwa pubbliku fuq in-netwerk tiegħu, u fuq xi netwerks hekk ukoll huma l-kontijiet li ssegwi u l-posts li jogħġbuk. L-editjar jew it-tħassir ta' xi ħaġa aktar tard jibgħat talba li dawk is-servers jistgħu jinjoraw.
 
-Fil-qosor: kwalunkwe ħaġa li tagħżel li taqsam ma' nies oħra fuq Mochi se ssiefer lil hinn mill-kontroll ta' {{operator.name}}, b'mod intenzjonat. Ittratta l-kontenut li tippubblika bħallikieku kien email jew kwalunkwe komunikazzjoni federata oħra.
+Fil-qosor: kwalunkwe ħaġa li tagħżel li taqsam ma' nies oħra, fuq Mochi jew fuq netwerks oħra, se ssiefer lil hinn mill-kontroll ta' {{operator.name}}, b'mod intenzjonat. Ittratta l-kontenut li tippubblika bħallikieku kien email jew kwalunkwe komunikazzjoni federata oħra.
 
 ## Partijiet terzi
 
 Aħna naqsmu d-dejta personali minima meħtieġa mal-partijiet terzi li ġejjin meta tuża l-funzjonijiet relatati:
 
-- **Servizz tal-email**: l-emails li joħorġu (kodiċijiet tar-reġistrazzjoni, notifiki, reset tal-password) jintbagħtu permezz ta' fornitur SMTP konfigurat minn {{operator.name}}.
+- **Servizz tal-email**: l-emails li joħorġu (kodiċijiet tad-dħul, verifika tal-indirizz, notifiki) jintbagħtu permezz ta' fornitur SMTP konfigurat minn {{operator.name}}.
 - **Fornituri ta' login terzi**: jekk tidħol b'Google, GitHub, Microsoft, Facebook, jew fornitur OAuth ieħor, dak il-fornitur isir jaf li dħalt f'dan is-server u jaqsam magħna l-indirizz email u dejta bażika tal-profil tiegħek.
 - **Fornituri ta' ħlas**: jekk tagħmel xirja permezz ta' app ta' marketplace, il-ħlas jiġi pproċessat minn Stripe (jew kwalunkwe fornitur ta' ħlas li {{operator.name}} ikun ikkonfigura). Aħna ma naħżnux id-dettalji sħaħ tal-karta.
+- **Netwerks oħra**: jekk torbot kont li għandek fuq servizz ieħor, dak is-servizz jirċievi dak li tippubblika permezz tiegħu, u dan is-server jaħżen il-kredenzjali li tippermettilu jaġixxi f'ismek hemmhekk. Jekk tospita kont hawn għal netwerk ieħor, is-servers u s-servizzi ta' dak in-netwerk jirċievu dak li tippubblika fih, flimkien mal-indirizz pubbliku tal-kont.
 
 ## Id-drittijiet tiegħek
 
-Skont fejn tgħix, jista' jkollok id-dritt li taċċessa, tikkoreġi, tesporta, tirrestrinġi, jew tħassar id-dejta personali tiegħek. Biex teżerċita kwalunkwe minn dawn id-drittijiet - inkluż li tagħlaq il-kont tiegħek u tneħħi d-dejta tiegħek minn dan is-server - ibgħat email lil **{{operator.email}}**. L-għeluq tal-kont bħalissa jiġi ttrattat mill-operatur tas-server fuq talba; ladarba nirċievu l-email tiegħek se nagħlqu l-kont u nneħħu d-dejta assoċjata minn dan is-server (suġġett għaż-żamma tal-backups u kwalunkwe obbligu legali li nżommu rekords speċifiċi).
+Skont fejn tgħix, jista' jkollok id-dritt li taċċessa, tikkoreġi, tesporta, tirrestrinġi, jew tħassar id-dejta personali tiegħek. Tista' tesporta d-dejta tiegħek u tagħlaq il-kont tiegħek int stess fl-Issettjar. Meta tagħlaq il-kont tiegħek, dan jissakkar għal perjodu ta' grazzja, li matulu tista' tidħol u tikkanċella l-għeluq; wara dan il-kont u d-dejta tiegħu jitneħħew minn dan is-server (suġġett għaż-żamma tal-backups u kwalunkwe obbligu legali li nżommu rekords speċifiċi). Biex teżerċita kwalunkwe dritt ieħor, jew jekk ma tistax tidħol, ibgħat email lil **{{operator.email}}**.
 
 ## Żamma tad-dejta
 

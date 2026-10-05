@@ -19,13 +19,13 @@ Korištenje ovog servera podliježe **Pravilima servera**. Sve što krši pravil
 
 ## Vaš sadržaj
 
-Zadržavate vlasništvo nad sadržajem koji objavljujete. Objavljivanjem sadržaja putem ovog servera dajete {{operator.name}}-u i široj Mochi mreži neisključivu, svjetsku licencu bez naknade za hosting, pohranu, repliciranje, prenos, prikazivanje i keširanje tog sadržaja **u mjeri potrebnoj za rad usluge** - uključujući P2P repliciranje opisano u našem obavještenju o **Privatnosti**. Ova licenca prestaje kada obrišete sadržaj, izuzev što će kopije već replicirane na peer-ove i dalje postojati izvan naše kontrole sve dok ti peer-ovi ne obrade brisanje.
+Zadržavate vlasništvo nad sadržajem koji objavljujete. Objavljivanjem sadržaja putem ovog servera dajete {{operator.name}}-u, široj Mochi mreži i, tamo gdje odlučite objavljivati na drugoj mreži, serverima te mreže neisključivu, svjetsku licencu bez naknade za hosting, pohranu, repliciranje, prenos, prikazivanje i keširanje tog sadržaja **u mjeri potrebnoj za rad usluge** - uključujući P2P repliciranje i isporuku na druge mreže, opisane u našem obavještenju o **Privatnosti**. Ova licenca prestaje kada obrišete sadržaj, izuzev što će kopije već replicirane na peer-ove ili poslane na druge mreže i dalje postojati izvan naše kontrole sve dok ti peer-ovi i serveri ne obrade brisanje.
 
 Vi ste odgovorni za sadržaj koji objavljujete. Ne objavljujte sadržaj na čije objavljivanje nemate pravo.
 
 ## Sadržaj trećih strana
 
-Ova usluga prikazuje sadržaj koji potiče izvan direktne kontrole {{operator.name}}-a — objave i druge materijale replicirane s drugih Mochi servera putem peer-to-peer mreže, RSS i druge vanjske feedove, sadržaj koji su objavili drugi korisnici na ovom serveru, te linkove na vanjske web stranice. {{operator.name}} ne proizvodi, ne odobrava, ne provjerava niti jamči tačnost, zakonitost ili sigurnost takvog sadržaja trećih strana, niti je za njega odgovoran. Ako pristupate, oslanjate se na, ili dijelite sadržaj trećih strana putem ovog servera, to činite na vlastitu odgovornost.
+Ova usluga prikazuje sadržaj koji potiče izvan direktne kontrole {{operator.name}}-a — objave i druge materijale replicirane s drugih Mochi servera putem peer-to-peer mreže, sadržaj s drugih mreža s kojima se ovaj server povezuje, RSS i druge vanjske feedove, sadržaj koji su objavili drugi korisnici na ovom serveru, te linkove na vanjske web stranice. {{operator.name}} ne proizvodi, ne odobrava, ne provjerava niti jamči tačnost, zakonitost ili sigurnost takvog sadržaja trećih strana, niti je za njega odgovoran. Ako pristupate, oslanjate se na, ili dijelite sadržaj trećih strana putem ovog servera, to činite na vlastitu odgovornost.
 
 Postupamo po vjerodostojnim prijavama nezakonitog sadržaja koji dospije do ovog servera (vidi **Pravila servera** za način prijave), ali ne možemo garantovati dostupnost, tačnost ili uklanjanje sadržaja pohranjenog na serverima kojima ne upravljamo. Vanjski linkovi su pruženi samo radi udobnosti i nisu pod našom kontrolom.
 
@@ -33,7 +33,7 @@ Postupamo po vjerodostojnim prijavama nezakonitog sadržaja koji dospije do ovog
 
 {{operator.name}} može suspendovati ili zatvoriti vaš račun, ili ukloniti određeni sadržaj, ako prekršite ove uslove ili Pravila servera, ili ako je to potrebno radi usklađenosti sa zakonom ili zaštite usluge i drugih korisnika. Tamo gdje je to izvodljivo, dat ćemo vam obavijest i priliku za odgovor, ali u jasnim slučajevima (na primjer, nezakonit sadržaj, aktivan napad na uslugu) možemo postupiti odmah.
 
-Račun možete zatvoriti u bilo kojem trenutku slanjem e-maila na **{{operator.email}}**, a mi ćemo zatvoriti račun i ukloniti povezane podatke s ovog servera. Zatvaranjem računa ne povlači se sadržaj koji je već repliciran na peer-ove, kako je opisano u obavještenju o Privatnosti.
+Račun možete zatvoriti u bilo kojem trenutku u Postavkama. Račun se zaključava na period odgode, tokom kojeg se možete prijaviti i otkazati zatvaranje, a zatim se uklanja s ovog servera zajedno sa svojim podacima. Zatvaranjem računa ne povlači se sadržaj koji je već repliciran na peer-ove ili poslan na druge mreže, kako je opisano u obavještenju o Privatnosti.
 
 ## Bez garancije
 

@@ -1,6 +1,6 @@
 # Pranatan server Mochi
 
-Pranatan punika ditrapaken dhateng sedaya tiyang ingkang ngginakaken server Mochi punika, ingkang dipun operasekaken dening **{{operator.name}}**, boten preduli domain utawi URL pundi ingkang dipun ginakaken kangge nggayuh. Pranatan punika ditrapaken dhateng sedaya konten ingkang panjenengan postingaken sarta sedaya interaksi kaliyan pangguna sanes ing server punika, kalebet konten ingkang dipun replikasi saking server punika dhateng peer sanes ing jaringan Mochi.
+Pranatan punika ditrapaken dhateng sedaya tiyang ingkang ngginakaken server Mochi punika, ingkang dipun operasekaken dening **{{operator.name}}**, boten preduli domain utawi URL pundi ingkang dipun ginakaken kangge nggayuh. Pranatan punika ditrapaken dhateng sedaya konten ingkang panjenengan postingaken sarta sedaya interaksi kaliyan pangguna sanes ing server punika, kalebet konten ingkang dipun replikasi saking server punika dhateng peer sanes ing jaringan Mochi, saha dhateng punapa kemawon ingkang panjenengan postingaken utawi kintunaken lumantar akun ing jaringan sanes ingkang dipun tampung server punika kangge panjenengan utawi ingkang sampun panjenengan sambungaken dhateng server punika.
 
 Kanthi ngginakaken server punika panjenengan sarujuk netepi pranatan punika. Pelanggaran saged ngakibataken paninggalan konten, panyuspendan akun, utawi panutupan akun miturut **Pranatan saha syarat-syarat**.
 

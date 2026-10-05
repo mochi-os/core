@@ -1,6 +1,6 @@
 # Reguli ale serverului Mochi
 
-Aceste reguli se aplică tuturor celor care utilizează acest server Mochi, operat de **{{operator.name}}**, indiferent de domeniul sau URL-ul folosit pentru a-l accesa. Ele se aplică tuturor conținuturilor pe care le postați și tuturor interacțiunilor cu alți utilizatori de pe acest server, inclusiv conținutului care este replicat de pe acest server către alți peer-i din rețeaua Mochi.
+Aceste reguli se aplică tuturor celor care utilizează acest server Mochi, operat de **{{operator.name}}**, indiferent de domeniul sau URL-ul folosit pentru a-l accesa. Ele se aplică tuturor conținuturilor pe care le postați și tuturor interacțiunilor cu alți utilizatori de pe acest server, inclusiv conținutului care este replicat de pe acest server către alți peer-i din rețeaua Mochi, precum și oricărui lucru pe care îl postați sau îl trimiteți printr-un cont dintr-o altă rețea pe care acest server îl găzduiește pentru dumneavoastră sau pe care l-ați asociat cu acesta.
 
 Prin utilizarea acestui server sunteți de acord să respectați aceste reguli. Încălcările pot avea ca rezultat eliminarea conținutului, suspendarea contului sau închiderea contului în conformitate cu **Termenii și condițiile**.
 

@@ -19,13 +19,13 @@ Ko mohendaha jeporu omoñe'ẽ **mohendaha mboheko** rapykuéri. Oimeraẽva ñe
 
 ## Nde tembiapokue
 
-Reguereko gueteri propiedad nde tembiapokue remoĩva rehegua. Remoherakuávo tembiapokue ko mohendaha rupive reme'ẽ {{operator.name}}-pe ha Mochi ñanduti tuichavévape peteĩ licencia ndaha'éiva exclusivo, opa yvy ári, jehepyme'ẽ'ỹre, ohospeda, oñongatu, ohekopyahu, ombohasa, ohechauka, ha ombyaty cache-pe upe tembiapokue **tekotevẽháicha mba'epytyvõ omongu'e hag̃ua** - ojuajuhápe P2P jehekopyahu omyesakãva ore **Ñemiguáva** marandu ñemoherakuãme. Ko licencia opaita remboguévo tembiapokue, jepiveramo umi jehekopyahu ojejapomava'ekue umi peer-pe opytátagui orépe ndoroñangarekóiva ko'ãva oñembogue peve.
+Reguereko gueteri propiedad nde tembiapokue remoĩva rehegua. Remoherakuávo tembiapokue ko mohendaha rupive reme'ẽ {{operator.name}}-pe, Mochi ñanduti tuichavévape ha, reiporavóramo remoherakuã ambue ñanduti-pe, upe ñanduti mohendaha-kuérape peteĩ licencia ndaha'éiva exclusivo, opa yvy ári, jehepyme'ẽ'ỹre, ohospeda, oñongatu, ohekopyahu, ombohasa, ohechauka, ha ombyaty cache-pe upe tembiapokue **tekotevẽháicha mba'epytyvõ omongu'e hag̃ua** - ojuajuhápe P2P jehekopyahu ha ambue ñanduti-kuérape ñemboguahẽ omyesakãva ore **Ñemiguáva** marandu ñemoherakuãme. Ko licencia opaita remboguévo tembiapokue, jepiveramo umi jehekopyahu ojejapomava'ekue umi peer-pe térã oñemondomava'ekue ambue ñanduti-kuérape opytátagui orépe ndoroñangarekóiva ko'ã peer ha mohendaha-kuéra ombogue peve.
 
 Nde resãsóva tembiapokue remoĩva rehe. Ani remoĩ tembiapokue nereguerekóiva derécho remoherakuã hag̃ua.
 
 ## Mbohapyha apyka rembiapokue
 
-Ko mba'epytyvõ ohechauka tembiapokue {{operator.name}} ñangareko directo'ỹgua — tembiapokue ha ambue mba'e ojehekopyahúva ambue Mochi mohendaha-kuéragui peer-to-peer ñanduti rupi, RSS ha ambue feed-kuéra okapegua, tembiapokue ambue puruhára omoĩva ko mohendahápe, ha link-kuéra okapegua sitio-kuérape. {{operator.name}} ndoguenohẽi, ndomoneĩri, ndomboavakua térã ndoñemboapýi mbohapyha apyka tembiapokue añetegua, léi rupi térã tekoroysã rehe, ha ndahesegui responsable. Reike ramo, rejerovia, térã remoherakuã mbohapyha apyka tembiapokue ko mohendaha rupive, ejapo hína nde mba'evairã reñongatu hag̃ua.
+Ko mba'epytyvõ ohechauka tembiapokue {{operator.name}} ñangareko directo'ỹgua — tembiapokue ha ambue mba'e ojehekopyahúva ambue Mochi mohendaha-kuéragui peer-to-peer ñanduti rupi, tembiapokue ambue ñanduti-kuéragui ko mohendaha ojoajúva hendive, RSS ha ambue feed-kuéra okapegua, tembiapokue ambue puruhára omoĩva ko mohendahápe, ha link-kuéra okapegua sitio-kuérape. {{operator.name}} ndoguenohẽi, ndomoneĩri, ndomboavakua térã ndoñemboapýi mbohapyha apyka tembiapokue añetegua, léi rupi térã tekoroysã rehe, ha ndahesegui responsable. Reike ramo, rejerovia, térã remoherakuã mbohapyha apyka tembiapokue ko mohendaha rupive, ejapo hína nde mba'evairã reñongatu hag̃ua.
 
 Roñeha'ã marandu hekopegua léi rupi ndoikói tembiapokue ñemomarandu rehe oguahẽva ko mohendahápe (ehecha **mohendaha mboheko** mba'éichapa eñemomarandu hag̃ua), ha katu ndaikatúi roprometé tembiapokue oĩha, hekopegua, térã ñembogue umi mohendaha-pe ndoromotenondéiva. Link-kuéra okapegua oĩ ndaipórive ñepytyvõme añoite ha ndaha'éi ore ñangareko poguýpe.
 
@@ -33,7 +33,7 @@ Roñeha'ã marandu hekopegua léi rupi ndoikói tembiapokue ñemomarandu rehe og
 
 {{operator.name}} ikatu ombokói térã omboty nde cuenta, térã omboguete tembiapokue, rembyai ramo ko'ã mboheko térã mohendaha mboheko, térã upéicha rejapo tekotevẽ léi rupi térã omoĩ porã hag̃ua mba'epytyvõ ha ambue puruhárape. Ikatuhápe roñe'ẽta ndéve mboyve ha ndéve oñeme'ẽta ára rembohovái hag̃ua, ha katu mba'e hesakã porãvape (techapyrã, tembiapokue ndoikói léi rupi, ñorairõ ojejapóva mba'epytyvõ rehe) ikatu rojapo voi voíke.
 
-Ikatu remboty nde cuenta oimeraẽ ára emondóvo correo **{{operator.email}}** rupive, ha rorombotýta cuenta ha romboguete marandu hesegua ko mohendahágui. Cuenta ñemboty nombojevýi tembiapokue jehekopyahupyre umi peer-pe, omoñe'ẽháicha Ñemiguáva marandu.
+Ikatu remboty nde cuenta oimeraẽ ára Ñembohekópe. Cuenta ojejoko peteĩ ára ñeha'arõ aja, ikatuhápe reñemoinge ha rembotove ñemboty, ha upe rire oñembogue ko mohendahágui imarandu ndive. Cuenta ñemboty nombojevýi tembiapokue jehekopyahupyre umi peer-pe térã oñemondo va'ekue ambue ñanduti-kuérape, omoñe'ẽháicha Ñemiguáva marandu.
 
 ## Ndaipóri ñemoneĩ
 

@@ -1,6 +1,6 @@
 # Seerota sarvera Mochi
 
-Seeronni kun nama sarvera Mochi kana, kan **{{operator.name}}**'n hojjetamu fayyadamu hundatti, dhomeenii ykn URL fayyadamuun isaan ga'aman utuu hin ilaalin, raawwatamu. Qabiyyee ati maxxansitu hunda fi walqunnamtii fayyadamtoota biroo waliin sarvera kana irra qabdu hundatti, qabiyyee sarvera kana irraa peers Mochi netiwoorkii birootti dabarfamu dabalatee, raawwatamu.
+Seeronni kun nama sarvera Mochi kana, kan **{{operator.name}}**'n hojjetamu fayyadamu hundatti, dhomeenii ykn URL fayyadamuun isaan ga'aman utuu hin ilaalin, raawwatamu. Qabiyyee ati maxxansitu hunda fi walqunnamtii fayyadamtoota biroo waliin sarvera kana irra qabdu hundatti, qabiyyee sarvera kana irraa peers Mochi netiwoorkii birootti dabarfamu dabalatee, akkasumas waan ati akkaawuntii netiwoorkii biraa kan sarverri kun siif qabachiisu yookaan kan ati isatti walqabsiifte keessaan maxxansitu yookaan ergitu kamiyyuutti, raawwatamu.
 
 Sarvera kana fayyadamuun seerota kana hordofuuf walii galta. Cabsuun qabiyyee balleessuu, akkaawuntii dhaabuu, yookaan akkaawuntii cufuu **Waadaa fi haalota** jala fiduu danda'a.
 

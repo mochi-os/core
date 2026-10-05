@@ -19,13 +19,13 @@ Ang paggamit ng server na ito ay napapailalim sa **Mga patakaran ng server**. An
 
 ## Iyong nilalaman
 
-Pinapanatili mo ang pagmamay-ari sa nilalamang i-post mo. Sa pag-publish ng nilalaman sa pamamagitan ng server na ito, binibigyan mo ang {{operator.name}} at ang mas malawak na Mochi network ng non-exclusive, worldwide, royalty-free na lisensya upang i-host, i-store, i-replicate, i-transmit, ipakita, at i-cache ang nilalamang iyon **kung kinakailangan upang patakbuhin ang serbisyo** - kabilang na ang P2P replication na inilalarawan sa aming **Privacy** notice. Magtatapos ang lisensyang ito kapag binura mo ang nilalaman, maliban sa mga kopyang naireplicate na sa mga peer ay magpapatuloy sa labas ng aming kontrol hanggang sa maproseso ng mga peer na iyon ang pagbura.
+Pinapanatili mo ang pagmamay-ari sa nilalamang i-post mo. Sa pag-publish ng nilalaman sa pamamagitan ng server na ito, binibigyan mo ang {{operator.name}}, ang mas malawak na Mochi network at, kung pipiliin mong mag-publish sa ibang network, ang mga server ng network na iyon ng non-exclusive, worldwide, royalty-free na lisensya upang i-host, i-store, i-replicate, i-transmit, ipakita, at i-cache ang nilalamang iyon **kung kinakailangan upang patakbuhin ang serbisyo** - kabilang na ang P2P replication at ang delivery sa ibang network na inilalarawan sa aming **Privacy** notice. Magtatapos ang lisensyang ito kapag binura mo ang nilalaman, maliban sa mga kopyang naireplicate na sa mga peer o naipadala na sa ibang network ay magpapatuloy sa labas ng aming kontrol hanggang sa maproseso ng mga peer at server na iyon ang pagbura.
 
 Responsable ka sa nilalamang i-post mo. Huwag mag-post ng nilalaman na wala kang karapatang i-publish.
 
 ## Nilalaman ng third party
 
-Inilalantad ng serbisyong ito ang nilalaman na nagmumula sa labas ng direktang kontrol ng {{operator.name}} — mga post at iba pang materyal na nirereplicate mula sa ibang Mochi server sa pamamagitan ng peer-to-peer network, RSS at iba pang external feed, nilalamang ipino-post ng ibang user sa server na ito, at mga link sa external website. Ang {{operator.name}} ay hindi nagpoprodyus, hindi nag-eendorso, hindi nag-vet, o hindi nagpapatotoo sa kawastuhan, legalidad, o kaligtasan ng anumang ganitong third-party na nilalaman, at hindi responsable dito. Kung ikaw ay mag-access, umasa, o mag-share ng third-party na nilalaman sa pamamagitan ng server na ito, ginagawa mo ito sa sarili mong panganib.
+Inilalantad ng serbisyong ito ang nilalaman na nagmumula sa labas ng direktang kontrol ng {{operator.name}} — mga post at iba pang materyal na nirereplicate mula sa ibang Mochi server sa pamamagitan ng peer-to-peer network, nilalaman mula sa ibang network na kinokonektahan ng server na ito, RSS at iba pang external feed, nilalamang ipino-post ng ibang user sa server na ito, at mga link sa external website. Ang {{operator.name}} ay hindi nagpoprodyus, hindi nag-eendorso, hindi nag-vet, o hindi nagpapatotoo sa kawastuhan, legalidad, o kaligtasan ng anumang ganitong third-party na nilalaman, at hindi responsable dito. Kung ikaw ay mag-access, umasa, o mag-share ng third-party na nilalaman sa pamamagitan ng server na ito, ginagawa mo ito sa sarili mong panganib.
 
 Kumikilos kami sa kapani-paniwalang ulat ng ilegal na nilalaman na umaabot sa server na ito (tingnan ang **Mga patakaran ng server** para sa kung paano mag-ulat), ngunit hindi namin magagarantiya ang pagkakaroon, kawastuhan, o pagtanggal ng nilalamang naka-store sa mga server na hindi namin pinapatakbo. Ang mga external link ay ibinibigay para lamang sa kaginhawaan at hindi nasa ilalim ng aming kontrol.
 
@@ -33,7 +33,7 @@ Kumikilos kami sa kapani-paniwalang ulat ng ilegal na nilalaman na umaabot sa se
 
 Maaaring i-suspend o isara ng {{operator.name}} ang iyong account, o tanggalin ang partikular na nilalaman, kung lalabag ka sa mga tuntuning ito o sa Mga patakaran ng server, o kung kinakailangan ito upang sumunod sa batas o protektahan ang serbisyo at iba pang user. Kung praktikal, magbibigay kami ng paunawa at pagkakataon para sumagot, ngunit sa malinaw na mga kaso (halimbawa, ilegal na nilalaman, isang aktibong pag-atake sa serbisyo) maaari kaming kumilos kaagad.
 
-Maaari mong isara ang iyong account anumang oras sa pamamagitan ng pag-email sa **{{operator.email}}**, at isasara namin ang account at aalisin ang nauugnay na data mula sa server na ito. Ang pagsasara ng iyong account ay hindi inaalis ang nilalamang naireplicate na sa mga peer, gaya ng inilalarawan sa Privacy notice.
+Maaari mong isara ang iyong account anumang oras sa Mga setting. Mala-lock ang account sa loob ng isang grace period, kung kailan maaari kang mag-sign in at kanselahin ang pagsasara, at pagkatapos ay aalisin ito mula sa server na ito kasama ang data nito. Ang pagsasara ng iyong account ay hindi inaalis ang nilalamang naireplicate na sa mga peer o naipadala na sa ibang network, gaya ng inilalarawan sa Privacy notice.
 
 ## Walang warranty
 

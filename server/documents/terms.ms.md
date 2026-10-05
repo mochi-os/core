@@ -19,13 +19,13 @@ Penggunaan pelayan ini tertakluk kepada **Peraturan pelayan**. Apa-apa yang mela
 
 ## Kandungan anda
 
-Anda mengekalkan pemilikan kandungan yang anda siarkan. Dengan menerbitkan kandungan melalui pelayan ini anda memberikan {{operator.name}} dan rangkaian Mochi yang lebih luas lesen tidak eksklusif, di seluruh dunia, bebas royalti untuk menjadi tuan rumah, menyimpan, mereplikasi, menghantar, memaparkan, dan menyimpan cache kandungan tersebut **seperti yang diperlukan untuk mengendalikan perkhidmatan** - termasuk replikasi P2P yang diterangkan dalam notis **Privasi** kami. Lesen ini tamat apabila anda memadamkan kandungan, kecuali bahawa salinan yang sudah direplikasi kepada peer akan kekal di luar kawalan kami sehingga peer tersebut memproses pemadaman itu.
+Anda mengekalkan pemilikan kandungan yang anda siarkan. Dengan menerbitkan kandungan melalui pelayan ini anda memberikan {{operator.name}}, rangkaian Mochi yang lebih luas dan, jika anda memilih untuk menerbitkan ke rangkaian lain, pelayan rangkaian tersebut lesen tidak eksklusif, di seluruh dunia, bebas royalti untuk menjadi tuan rumah, menyimpan, mereplikasi, menghantar, memaparkan, dan menyimpan cache kandungan tersebut **seperti yang diperlukan untuk mengendalikan perkhidmatan** - termasuk replikasi P2P dan penghantaran ke rangkaian lain yang diterangkan dalam notis **Privasi** kami. Lesen ini tamat apabila anda memadamkan kandungan, kecuali bahawa salinan yang sudah direplikasi kepada peer atau dihantar ke rangkaian lain akan kekal di luar kawalan kami sehingga peer dan pelayan tersebut memproses pemadaman itu.
 
 Anda bertanggungjawab atas kandungan yang anda siarkan. Jangan siarkan kandungan yang anda tidak mempunyai hak untuk menerbitkannya.
 
 ## Kandungan pihak ketiga
 
-Perkhidmatan ini mendedahkan kandungan yang berasal di luar kawalan langsung {{operator.name}} — siaran dan bahan lain yang direplikasi daripada pelayan Mochi lain melalui rangkaian peer-to-peer, RSS dan suapan luar lain, kandungan yang disiarkan oleh pengguna lain di pelayan ini, dan pautan ke laman web luar. {{operator.name}} tidak menghasilkan, menyokong, menyaring, atau menjamin ketepatan, kesahan, atau keselamatan mana-mana kandungan pihak ketiga sedemikian, dan tidak bertanggungjawab atasnya. Jika anda mengakses, bergantung kepada, atau berkongsi kandungan pihak ketiga melalui pelayan ini, anda berbuat demikian atas risiko anda sendiri.
+Perkhidmatan ini mendedahkan kandungan yang berasal di luar kawalan langsung {{operator.name}} — siaran dan bahan lain yang direplikasi daripada pelayan Mochi lain melalui rangkaian peer-to-peer, kandungan daripada rangkaian lain yang disambungkan dengan pelayan ini, RSS dan suapan luar lain, kandungan yang disiarkan oleh pengguna lain di pelayan ini, dan pautan ke laman web luar. {{operator.name}} tidak menghasilkan, menyokong, menyaring, atau menjamin ketepatan, kesahan, atau keselamatan mana-mana kandungan pihak ketiga sedemikian, dan tidak bertanggungjawab atasnya. Jika anda mengakses, bergantung kepada, atau berkongsi kandungan pihak ketiga melalui pelayan ini, anda berbuat demikian atas risiko anda sendiri.
 
 Kami bertindak ke atas laporan yang boleh dipercayai mengenai kandungan tidak sah yang sampai ke pelayan ini (lihat **Peraturan pelayan** untuk cara melaporkan), tetapi kami tidak dapat menjamin ketersediaan, ketepatan, atau pembuangan kandungan yang disimpan di pelayan yang kami tidak kendalikan. Pautan luar disediakan untuk kemudahan sahaja dan tidak berada di bawah kawalan kami.
 
@@ -33,7 +33,7 @@ Kami bertindak ke atas laporan yang boleh dipercayai mengenai kandungan tidak sa
 
 {{operator.name}} boleh menggantung atau menutup akaun anda, atau mengalih keluar kandungan tertentu, jika anda melanggar terma ini atau Peraturan pelayan, atau jika berbuat demikian adalah perlu untuk mematuhi undang-undang atau untuk melindungi perkhidmatan dan pengguna lain. Apabila praktikal kami akan memberikan anda notis dan peluang untuk membalas, tetapi dalam kes yang jelas (sebagai contoh, kandungan tidak sah, serangan aktif terhadap perkhidmatan) kami boleh bertindak serta-merta.
 
-Anda boleh menutup akaun anda pada bila-bila masa dengan menghantar e-mel ke **{{operator.email}}**, dan kami akan menutup akaun dan mengalih keluar data yang berkaitan dari pelayan ini. Menutup akaun anda tidak menarik balik kandungan yang sudah direplikasi kepada peer, seperti yang diterangkan dalam notis Privasi.
+Anda boleh menutup akaun anda pada bila-bila masa dalam Tetapan. Akaun itu dikunci untuk satu tempoh tangguh, dan dalam tempoh itu anda boleh log masuk dan membatalkan penutupan, kemudian ia dialih keluar dari pelayan ini bersama datanya. Menutup akaun anda tidak menarik balik kandungan yang sudah direplikasi kepada peer atau dihantar ke rangkaian lain, seperti yang diterangkan dalam notis Privasi.
 
 ## Tiada waranti
 

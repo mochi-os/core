@@ -19,13 +19,13 @@ Aka servidoran apnaqañax **Servidoran reglanakapar** phuqhañapawa. Kawkïrtï 
 
 ## Contenidomax
 
-Qillqantat contenidomax jumankakiwa. Aka servidor tuqi contenidox publicasta ukhaxa, {{operator.name}} ukar ukat jach'a Mochi redar mä jan exclusivo, uraqpachan, royalty-free licencia churta, contenido apnaqañ, imantañ, replicar, apayañ, uñacht'ayañ, ukat caché lurañ, **kunatï servicio apnaqañatakix wakiski** ukamarjam - **Privacidad** yatiyawin qhanstayat P2P replicación uka phuqhata. Aka licenciax contenido jaqsuyäta ukhaxa tukusiniwa, ukampirus peerinakar replicat copianakax nanakan controlapat anchhitsa saraskakiniwa, kunkamatï uka peernakax jaytayañ phuqhantasipxani ukhakama.
+Qillqantat contenidomax jumankakiwa. Aka servidor tuqi contenidox publicasta ukhaxa, {{operator.name}} ukar, jach'a Mochi redar ukat, kawkintï yaqha redar publicañ ajllta ukanxa, uka redan servidoranakaparu mä jan exclusivo, uraqpachan, royalty-free licencia churta, contenido apnaqañ, imantañ, replicar, apayañ, uñacht'ayañ, ukat caché lurañ, **kunatï servicio apnaqañatakix wakiski** ukamarjam - **Privacidad** yatiyawin qhanstayat P2P replicación ukat yaqha redanakar apayaña uka phuqhata. Aka licenciax contenido jaqsuyäta ukhaxa tukusiniwa, ukampirus peerinakar replicat jan ukax yaqha redanakar apayat copianakax nanakan controlapat anchhitsa saraskakiniwa, kunkamatï uka peernakasa servidoranakasa jaytayañ phuqhantasipxani ukhakama.
 
 Qillqantat contenidotakix jumawa responsablexta. Janiw publicar derecho jan utji ukhajj contenido qillqantkätati.
 
 ## Kimsïr partenakan contenidopa
 
-Aka serviciox {{operator.name}} ukan directo controlapat anchhit kawkïrurusa contenido uñacht'ayi — qillqanaka ukat yaqha materiales par-a-par red tuqi yaqha Mochi servidoranakat replicata, RSS ukat yaqha externo feedanaka, aka servidoran yaqha apnaqirinakat qillqantat contenido, ukat externo sitionakar enlacenaka. {{operator.name}} ukax aka kimsïr partenakan contenidonakapax janiwa luratapakiti, ch'amañchatapakiti, uñakipatapakiti, jan ukax precisión, legalidad, jan ukax seguridadapatakix arsutapakiti, ukat janiwa responsablekiti. Aka servidoran tuqi kimsïr partenakan contenidopar mantasta, atxapasta, jan ukax compartista ukhaxa, jumat riesgomarjamawa.
+Aka serviciox {{operator.name}} ukan directo controlapat anchhit kawkïrurusa contenido uñacht'ayi — qillqanaka ukat yaqha materiales par-a-par red tuqi yaqha Mochi servidoranakat replicata, aka servidorax chikt'atäki uka yaqha redanakat contenido, RSS ukat yaqha externo feedanaka, aka servidoran yaqha apnaqirinakat qillqantat contenido, ukat externo sitionakar enlacenaka. {{operator.name}} ukax aka kimsïr partenakan contenidonakapax janiwa luratapakiti, ch'amañchatapakiti, uñakipatapakiti, jan ukax precisión, legalidad, jan ukax seguridadapatakix arsutapakiti, ukat janiwa responsablekiti. Aka servidoran tuqi kimsïr partenakan contenidopar mantasta, atxapasta, jan ukax compartista ukhaxa, jumat riesgomarjamawa.
 
 Aka servidorar puriñ illegal contenidoy chiqaki yatiyañanakaruw nanakax phuqhañ amtapxta (kunjamatï qillqsuñ wakisi ukax **Servidoran reglanakapan** uñjasiwa), ukampirus janiw nanakaw apnaqkañ servidoranakan imantat contenidon disponibilidad, precisión, jan ukax jaqsuwapax garantizañ atkti. Externo enlacenakax jakhuna sumankañatakikiw churata ukat janiw nanakana controlpani.
 
@@ -33,7 +33,7 @@ Aka servidorar puriñ illegal contenidoy chiqaki yatiyañanakaruw nanakax phuqha
 
 {{operator.name}} ukax cuentamx jark'asiyañax jan ukax jist'antañ atispa, jan ukax wakichat contenido jaqsuwañ atispa, kuntï aka términonakar jan ukax Servidoran reglanakapar mayjt'ayta ukhaxa, jan ukax leyimpi phuqhañ ukat servicio jan ukax yaqha apnaqirinakar jark'añ wakiski ukhaxa. Atisaxa, mä yatiyawi nanakaw churañ ukat arsuñamatak pacha churañ, ukampirus qhana casoña (sañataki, illegal contenido, servicio chiqa nuwasi) janiw arumakix luratäniti.
 
-Cuentamx pachan kawkïrurusa **{{operator.email}}** uka chimpur correo apaykasin jist'antañ atta, ukatx nanakax cuentam jist'antañani ukat aka servidoranakat asociado yatiyawinakam jaqsuyañani. Cuentam jist'antañax peerinakar replicat contenidox janiw apaqkiti, kunjamatï Privacidad yatiyawin qhanstayata.
+Cuentamx pachan kawkïrurusa Wakichawinakan jist'antañ atta. Cuentax mä periodo de gracia pachatakiw llavt'ata, uka pachanx ingresasma ukat cancelasma, ukat qhipatx yatiyawinakapamp chika aka servidorat jaqsuyatäni. Cuentam jist'antañax peerinakar replicat jan ukax yaqha redanakar apayat contenidox janiw apaqkiti, kunjamatï Privacidad yatiyawin qhanstayata.
 
 ## Garantía janiwa
 

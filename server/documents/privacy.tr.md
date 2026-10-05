@@ -8,6 +8,7 @@ Bu sunucuya kaydolduğunuzda ve onu kullandığınızda şunları topluyoruz:
 
 - **Hesap verileri**: bir kullanıcı adı, seçtiğiniz kimlik doğrulama yöntemleri (e-posta adresi, geçiş anahtarları, kimlik doğrulama uygulaması, kurtarma kodları veya üçüncü taraf bir oturum açma sağlayıcısının hesabı) ve eklediğiniz profil bilgileri (görünen ad, avatar, biyografi).
 - **Oluşturduğunuz içerik**: bu sunucuya kurulu uygulamalar aracılığıyla yayımlamayı seçtiğiniz gönderiler, mesajlar, yorumlar, dosyalar ve diğer veriler.
+- **Başkalarından gelen içerik**: diğer Mochi sunucularındaki ve diğer ağlardaki kişilerin gönderileri, mesajları ve profil ayrıntıları; bunlar, sizin veya diğer kullanıcıların bu kişileri takip etmesi, onlara abone olması ya da onlarla yazışması nedeniyle bu sunucuya ulaşır.
 - **Teknik veriler**: yaptığınız isteklere ait IP adresi, tarayıcı/cihaz bilgileri ve zaman damgaları. Bunlar, hizmetin güvenli ve çalışır durumda kalmasını sağlamak ve kötüye kullanımı tespit etmek için kullanılır.
 - **Çerezler**: oturum açtığınızda bir oturum çerezi ayarlanır. Yalnızca opak bir oturum kimliği saklar; çerezleri reklam veya siteler arası takip için kullanmıyoruz.
 
@@ -20,20 +21,22 @@ Mochi, tek sunuculu bir platform değil, **eşler arası (P2P) bir ağdır**. Bu
 - Takipçilerinize, abonelerinize veya paylaşılan alanlara yayımladığınız içerik, bu takipçileri veya aboneleri barındıran **diğer Mochi sunucularına çoğaltılır**. {{operator.name}}, işletmediği sunuculardaki içerik kopyalarını silemez. Bir gönderiyi sildiğinizde bu sunucu, gönderiyi daha önce ilettiği eşlere bir silme bildirimi gönderir; ancak silme işlemi en iyi gayret esasına dayalıdır ve söz konusu eşlerin işbirliğine bağlıdır.
 - Genel bir profil seçerseniz **kimliğiniz (kullanıcı adı, profil, açık anahtarlar)** Mochi dizininde yayımlanır; böylece diğer Mochi kullanıcıları sizi bulup sizinle iletişime geçebilir.
 - Doğrudan, özel içerik (taslaklar, özel notlar, belirli alıcılar arasındaki özel mesajlar) yalnızca bu sunucuda ve alıcıların sunucularında kalır; genel P2P ağının parçası değildir.
+- Bu sunucunun **diğer ağlara bağlanmanıza** izin verdiği durumlarda - başka bir hizmette sahip olduğunuz bir hesabı bağlayarak ya da diğer ağlardaki kişilerin takip edebileceği veya mesaj gönderebileceği bir hesabı burada barındırarak - o hesap aracılığıyla yayımladığınız veya gönderdiğiniz şeyler o ağlardaki sunuculara gider. Bunlar Mochi sunucuları değildir ve {{operator.name}} bunları işletmez. Bu tür bir hesap kendi ağında herkese açıktır; bazı ağlarda takip ettiğiniz hesaplar ve beğendiğiniz gönderiler de herkese açıktır. Bir şeyi sonradan düzenlemek veya silmek, o sunucuların yok sayabileceği bir istek gönderir.
 
-Kısacası: Mochi'de başkalarıyla paylaşmayı seçtiğiniz her şey, tasarım gereği {{operator.name}}'in denetiminin dışına çıkar. Yayımladığınız içeriğe, e-posta veya diğer federe iletişim biçimlerine yaklaştığınız gibi yaklaşın.
+Kısacası: Mochi'de veya diğer ağlarda başkalarıyla paylaşmayı seçtiğiniz her şey, tasarım gereği {{operator.name}}'in denetiminin dışına çıkar. Yayımladığınız içeriğe, e-posta veya diğer federe iletişim biçimlerine yaklaştığınız gibi yaklaşın.
 
 ## Üçüncü taraflar
 
 İlgili özellikleri kullandığınızda aşağıdaki üçüncü taraflarla gerekli olan asgari kişisel veriyi paylaşırız:
 
-- **E-posta hizmeti**: giden e-postalar (kayıt kodları, bildirimler, parola sıfırlamaları), {{operator.name}} tarafından yapılandırılmış bir SMTP sağlayıcısı üzerinden gönderilir.
+- **E-posta hizmeti**: giden e-postalar (oturum açma kodları, adres doğrulama, bildirimler), {{operator.name}} tarafından yapılandırılmış bir SMTP sağlayıcısı üzerinden gönderilir.
 - **Üçüncü taraf oturum açma sağlayıcıları**: Google, GitHub, Microsoft, Facebook veya başka bir OAuth sağlayıcısıyla oturum açarsanız, bu sağlayıcı bu sunucuya oturum açtığınızı öğrenir ve e-posta adresinizi ile temel profil verilerinizi bizimle paylaşır.
 - **Ödeme sağlayıcıları**: bir pazar yeri uygulaması üzerinden satın alma yaparsanız, ödeme Stripe (veya {{operator.name}}'in yapılandırdığı ödeme sağlayıcısı) tarafından işlenir. Tam kart ayrıntılarını saklamıyoruz.
+- **Diğer ağlar**: başka bir hizmette sahip olduğunuz bir hesabı bağlarsanız, o hizmet bu hesap aracılığıyla yayımladığınız şeyleri alır ve bu sunucu, orada sizin adınıza işlem yapmasını sağlayan kimlik bilgisini saklar. Burada başka bir ağ için bir hesap barındırırsanız, o ağın sunucuları ve hizmetleri, o ağa yayımladığınız şeyleri hesabın herkese açık adresiyle birlikte alır.
 
 ## Haklarınız
 
-Yaşadığınız yere bağlı olarak; kişisel verilerinize erişme, düzeltme, dışa aktarma, kısıtlama veya silme haklarına sahip olabilirsiniz. Bu haklardan herhangi birini kullanmak için - hesabınızı kapatmak ve verilerinizin bu sunucudan kaldırılmasını sağlamak dahil - **{{operator.email}}** adresine e-posta gönderin. Hesap kapatma şu anda istek üzerine sunucu işletmecisi tarafından yapılmaktadır; e-postanızı aldığımızda hesabı kapatır ve ilgili verileri bu sunucudan kaldırırız (yedekleme saklama süreleri ve belirli kayıtların tutulmasını gerektiren yasal yükümlülüklere tabidir).
+Yaşadığınız yere bağlı olarak; kişisel verilerinize erişme, düzeltme, dışa aktarma, kısıtlama veya silme haklarına sahip olabilirsiniz. Verilerinizi dışa aktarmayı ve hesabınızı kapatmayı Ayarlar'da kendiniz yapabilirsiniz. Hesabınızı kapatmak, hesabı bir ek süre boyunca kilitler; bu süre içinde oturum açıp kapatma işlemini iptal edebilirsiniz; ardından hesap ve verileri bu sunucudan kaldırılır (yedekleme saklama süreleri ve belirli kayıtların tutulmasını gerektiren yasal yükümlülüklere tabidir). Diğer herhangi bir hakkı kullanmak için veya oturum açamıyorsanız **{{operator.email}}** adresine e-posta gönderin.
 
 ## Veri saklama
 

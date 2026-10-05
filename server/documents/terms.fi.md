@@ -19,13 +19,13 @@ Tämän palvelimen käyttöön sovelletaan **Palvelimen sääntöjä**. Kaikki, 
 
 ## Sisältösi
 
-Säilytät julkaisemasi sisällön omistusoikeuden. Julkaisemalla sisältöä tämän palvelimen kautta annat {{operator.name}}lle ja laajemmalle Mochi-verkolle ei-yksinomaisen, maailmanlaajuisen ja rojaltivapaan käyttöoikeuden isännöidä, tallentaa, replikoida, lähettää, näyttää ja välimuistittaa sitä sisältöä **siinä määrin kuin palvelun käyttäminen edellyttää** – mukaan lukien **Tietosuojailmoituksessamme** kuvattu P2P-replikointi. Tämä lisenssi päättyy, kun poistat sisällön, paitsi että vertaisille jo replikoidut kopiot säilyvät hallintamme ulkopuolella, kunnes nuo vertaiset käsittelevät poiston.
+Säilytät julkaisemasi sisällön omistusoikeuden. Julkaisemalla sisältöä tämän palvelimen kautta annat {{operator.name}}lle, laajemmalle Mochi-verkolle ja, jos päätät julkaista toiseen verkkoon, kyseisen verkon palvelimille ei-yksinomaisen, maailmanlaajuisen ja rojaltivapaan käyttöoikeuden isännöidä, tallentaa, replikoida, lähettää, näyttää ja välimuistittaa sitä sisältöä **siinä määrin kuin palvelun käyttäminen edellyttää** – mukaan lukien **Tietosuojailmoituksessamme** kuvattu P2P-replikointi ja toimitus muihin verkkoihin. Tämä lisenssi päättyy, kun poistat sisällön, paitsi että vertaisille jo replikoidut tai muihin verkkoihin lähetetyt kopiot säilyvät hallintamme ulkopuolella, kunnes nuo vertaiset ja palvelimet käsittelevät poiston.
 
 Olet vastuussa julkaisemastasi sisällöstä. Älä julkaise sisältöä, jota sinulla ei ole oikeutta julkaista.
 
 ## Kolmansien osapuolten sisältö
 
-Tämä palvelu tuo esiin sisältöä, joka on peräisin {{operator.name}}n suoran hallinnan ulkopuolelta — vertaisverkon kautta muilta Mochi-palvelimilta replikoituja julkaisuja ja muuta materiaalia, RSS- ja muita ulkoisia syötteitä, muiden tämän palvelimen käyttäjien julkaisemaa sisältöä sekä linkkejä ulkoisille verkkosivustoille. {{operator.name}} ei tuota, suosittele, tarkasta tai vastaa minkään tällaisen kolmansien osapuolten sisällön paikkansapitävyydestä, laillisuudesta tai turvallisuudesta, eikä ole siitä vastuussa. Jos käytät, luotat tai jaat kolmansien osapuolten sisältöä tämän palvelun kautta, teet sen omalla vastuullasi.
+Tämä palvelu tuo esiin sisältöä, joka on peräisin {{operator.name}}n suoran hallinnan ulkopuolelta — vertaisverkon kautta muilta Mochi-palvelimilta replikoituja julkaisuja ja muuta materiaalia, sisältöä muista verkoista, joihin tämä palvelin on yhteydessä, RSS- ja muita ulkoisia syötteitä, muiden tämän palvelimen käyttäjien julkaisemaa sisältöä sekä linkkejä ulkoisille verkkosivustoille. {{operator.name}} ei tuota, suosittele, tarkasta tai vastaa minkään tällaisen kolmansien osapuolten sisällön paikkansapitävyydestä, laillisuudesta tai turvallisuudesta, eikä ole siitä vastuussa. Jos käytät, luotat tai jaat kolmansien osapuolten sisältöä tämän palvelun kautta, teet sen omalla vastuullasi.
 
 Toimimme uskottavien ilmoitusten perusteella laittomasta sisällöstä, joka on saavuttanut tämän palvelimen (ks. **Palvelimen säännöt** ilmoitustavoista), mutta emme voi taata sellaisen sisällön saatavuutta, paikkansapitävyyttä tai poistamista, joka on tallennettu palvelimille, joita emme ylläpidä. Ulkoiset linkit on tarjottu vain kätevyyden vuoksi eivätkä ole hallinnassamme.
 
@@ -33,7 +33,7 @@ Toimimme uskottavien ilmoitusten perusteella laittomasta sisällöstä, joka on 
 
 {{operator.name}} voi jäädyttää tai sulkea tilisi tai poistaa tiettyä sisältöä, jos rikot näitä ehtoja tai Palvelimen sääntöjä, tai jos se on tarpeen lain noudattamiseksi tai palvelun ja muiden käyttäjien suojaamiseksi. Käytännön mukaan annamme sinulle ennakkoilmoituksen ja mahdollisuuden vastata, mutta selvissä tapauksissa (esimerkiksi laiton sisältö, aktiivinen hyökkäys palvelua kohtaan) voimme toimia välittömästi.
 
-Voit sulkea tilisi milloin tahansa lähettämällä sähköpostia osoitteeseen **{{operator.email}}**, ja suljemme tilin sekä poistamme siihen liittyvät tiedot tältä palvelimelta. Tilin sulkeminen ei peruuta jo vertaisille replikoitua sisältöä, kuten Tietosuojailmoituksessa kuvataan.
+Voit sulkea tilisi milloin tahansa Asetuksissa. Tili lukitaan armonajaksi, jonka aikana voit kirjautua sisään ja perua sulkemisen, ja sen jälkeen se poistetaan tältä palvelimelta tietoineen. Tilin sulkeminen ei peruuta jo vertaisille replikoitua tai muihin verkkoihin lähetettyä sisältöä, kuten Tietosuojailmoituksessa kuvataan.
 
 ## Ei takuuta
 

@@ -1,6 +1,6 @@
 # Mochi server qoidalari
 
-Ushbu qoidalar **{{operator.name}}** tomonidan boshqariladigan ushbu Mochi serveridan foydalanayotgan har bir kishiga, unga qaysi domen yoki URL orqali kirilishidan qatʼi nazar, qoʻllaniladi. Ular siz joylashtirgan barcha kontentga va ushbu serverdagi boshqa foydalanuvchilar bilan boʻlgan barcha oʻzaro aloqalarga, jumladan ushbu serverdan Mochi tarmogʻidagi boshqa peerlarga koʻchirilgan kontentga ham qoʻllaniladi.
+Ushbu qoidalar **{{operator.name}}** tomonidan boshqariladigan ushbu Mochi serveridan foydalanayotgan har bir kishiga, unga qaysi domen yoki URL orqali kirilishidan qatʼi nazar, qoʻllaniladi. Ular siz joylashtirgan barcha kontentga va ushbu serverdagi boshqa foydalanuvchilar bilan boʻlgan barcha oʻzaro aloqalarga, jumladan ushbu serverdan Mochi tarmogʻidagi boshqa peerlarga koʻchirilgan kontentga, shuningdek ushbu server siz uchun joylashtiradigan yoki siz unga bogʻlagan boshqa tarmoqdagi hisob orqali joylashtirgan yoki yuborgan har qanday narsangizga ham qoʻllaniladi.
 
 Ushbu serverdan foydalanish bilan siz ushbu qoidalarga rioya qilishga rozilik bildirasiz. Buzilishlar **Shartlar va shartnoma** boʻyicha kontentni olib tashlash, hisobni vaqtincha toʻxtatish yoki hisobni yopishga olib kelishi mumkin.
 

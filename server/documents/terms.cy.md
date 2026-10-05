@@ -19,13 +19,13 @@ Mae defnydd o'r gweinydd hwn yn ddarostyngedig i'r **Rheolau gweinydd**. Gwaherd
 
 ## Eich cynnwys
 
-Rydych yn cadw perchnogaeth o'r cynnwys rydych yn ei bostio. Drwy gyhoeddi cynnwys drwy'r gweinydd hwn rydych yn rhoi i {{operator.name}} a'r rhwydwaith Mochi ehangach drwydded anghyfyngol, fyd-eang, di-freindal i gynnal, storio, dyblygu, trosglwyddo, arddangos, a chuddstorio'r cynnwys hwnnw **fel sy'n ofynnol i weithredu'r gwasanaeth** - gan gynnwys y dyblygu P2P a ddisgrifir yn ein hysbysiad **Preifatrwydd**. Daw'r drwydded hon i ben pan fyddwch yn dileu'r cynnwys, ac eithrio bod copïau sydd eisoes wedi'u dyblygu i gyfoedion yn parhau y tu allan i'n rheolaeth nes bydd y cyfoedion hynny'n prosesu'r dileu.
+Rydych yn cadw perchnogaeth o'r cynnwys rydych yn ei bostio. Drwy gyhoeddi cynnwys drwy'r gweinydd hwn rydych yn rhoi i {{operator.name}}, y rhwydwaith Mochi ehangach ac, lle byddwch yn dewis cyhoeddi i rwydwaith arall, gweinyddion y rhwydwaith hwnnw drwydded anghyfyngol, fyd-eang, di-freindal i gynnal, storio, dyblygu, trosglwyddo, arddangos, a chuddstorio'r cynnwys hwnnw **fel sy'n ofynnol i weithredu'r gwasanaeth** - gan gynnwys y dyblygu P2P a'r danfon i rwydweithiau eraill a ddisgrifir yn ein hysbysiad **Preifatrwydd**. Daw'r drwydded hon i ben pan fyddwch yn dileu'r cynnwys, ac eithrio bod copïau sydd eisoes wedi'u dyblygu i gyfoedion neu wedi'u hanfon i rwydweithiau eraill yn parhau y tu allan i'n rheolaeth nes bydd y cyfoedion a'r gweinyddion hynny'n prosesu'r dileu.
 
 Rydych yn gyfrifol am y cynnwys rydych yn ei bostio. Peidiwch â phostio cynnwys nad oes gennych yr hawl i'w gyhoeddi.
 
 ## Cynnwys trydydd parti
 
-Mae'r gwasanaeth hwn yn datgelu cynnwys sy'n tarddu y tu allan i reolaeth uniongyrchol {{operator.name}} — postiadau a deunydd arall sydd wedi'u dyblygu o weinyddion Mochi eraill drwy'r rhwydwaith cyfoed-i-gyfoed, RSS a phorthiannau allanol eraill, cynnwys a bostiwyd gan ddefnyddwyr eraill ar y gweinydd hwn, a dolenni i wefannau allanol. Nid yw {{operator.name}} yn cynhyrchu, cymeradwyo, gwirio, na chefnogi cywirdeb, cyfreithlondeb, na diogelwch unrhyw gynnwys trydydd parti o'r fath, ac nid yw'n gyfrifol amdano. Os byddwch yn cyrchu, dibynnu ar, neu rannu cynnwys trydydd parti drwy'r gweinydd hwn, byddwch yn gwneud hynny ar eich risg eich hun.
+Mae'r gwasanaeth hwn yn datgelu cynnwys sy'n tarddu y tu allan i reolaeth uniongyrchol {{operator.name}} — postiadau a deunydd arall sydd wedi'u dyblygu o weinyddion Mochi eraill drwy'r rhwydwaith cyfoed-i-gyfoed, cynnwys o rwydweithiau eraill y mae'r gweinydd hwn yn cysylltu â nhw, RSS a phorthiannau allanol eraill, cynnwys a bostiwyd gan ddefnyddwyr eraill ar y gweinydd hwn, a dolenni i wefannau allanol. Nid yw {{operator.name}} yn cynhyrchu, cymeradwyo, gwirio, na chefnogi cywirdeb, cyfreithlondeb, na diogelwch unrhyw gynnwys trydydd parti o'r fath, ac nid yw'n gyfrifol amdano. Os byddwch yn cyrchu, dibynnu ar, neu rannu cynnwys trydydd parti drwy'r gweinydd hwn, byddwch yn gwneud hynny ar eich risg eich hun.
 
 Rydym yn gweithredu ar adroddiadau credadwy o gynnwys anghyfreithlon yn cyrraedd y gweinydd hwn (gweler y **Rheolau gweinydd** ar sut i adrodd), ond ni allwn warantu argaeledd, cywirdeb, na thynnu cynnwys sy'n cael ei storio ar weinyddion nad ydym yn eu rhedeg. Darperir dolenni allanol er hwylustod yn unig ac nid ydynt o dan ein rheolaeth.
 
@@ -33,7 +33,7 @@ Rydym yn gweithredu ar adroddiadau credadwy o gynnwys anghyfreithlon yn cyrraedd
 
 Gall {{operator.name}} atal neu gau eich cyfrif, neu gael gwared ar gynnwys penodol, os byddwch yn torri'r telerau hyn neu'r Rheolau gweinydd, neu os yw gwneud hynny'n angenrheidiol i gydymffurfio â'r gyfraith neu i ddiogelu'r gwasanaeth a defnyddwyr eraill. Lle mae'n ymarferol byddwn yn rhoi rhybudd i chi a chyfle i ymateb, ond mewn achosion clir (er enghraifft, cynnwys anghyfreithlon, ymosodiad gweithredol ar y gwasanaeth) gallwn weithredu ar unwaith.
 
-Gallwch gau eich cyfrif unrhyw bryd drwy anfon e-bost at **{{operator.email}}**, a byddwn yn cau'r cyfrif ac yn dileu'r data cysylltiedig o'r gweinydd hwn. Nid yw cau eich cyfrif yn tynnu yn ôl gynnwys sydd eisoes wedi'i ddyblygu i gyfoedion, fel y disgrifir yn yr hysbysiad Preifatrwydd.
+Gallwch gau eich cyfrif unrhyw bryd yng Ngosodiadau. Caiff y cyfrif ei gloi am gyfnod gras, pan allwch fewngofnodi a chanslo, ac yna caiff ei ddileu o'r gweinydd hwn ynghyd â'i ddata. Nid yw cau eich cyfrif yn tynnu yn ôl gynnwys sydd eisoes wedi'i ddyblygu i gyfoedion neu wedi'i anfon i rwydweithiau eraill, fel y disgrifir yn yr hysbysiad Preifatrwydd.
 
 ## Dim gwarant
 

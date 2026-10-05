@@ -1,6 +1,6 @@
 # Normas do servidor Mochi
 
-Estas normas aplícanse a todas as persoas que utilizan este servidor Mochi, operado por **{{operator.name}}**, independentemente do dominio ou URL que se empregue para acceder a el. Aplícanse a todo o contido que publique e a todas as interaccións con outros usuarios neste servidor, incluído o contido que se replica desde este servidor a outros pares na rede Mochi.
+Estas normas aplícanse a todas as persoas que utilizan este servidor Mochi, operado por **{{operator.name}}**, independentemente do dominio ou URL que se empregue para acceder a el. Aplícanse a todo o contido que publique e a todas as interaccións con outros usuarios neste servidor, incluído o contido que se replica desde este servidor a outros pares na rede Mochi, e a todo o que publique ou envíe a través dunha conta noutra rede que este servidor aloxe para vostede ou que vostede vinculase a el.
 
 Ao utilizar este servidor acepta cumprir estas normas. As infraccións poden derivar na eliminación de contido, na suspensión da conta ou no peche da conta, conforme aos **Termos e condicións**.
 

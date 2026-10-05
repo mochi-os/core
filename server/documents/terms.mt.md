@@ -19,13 +19,13 @@ L-użu ta' dan is-server huwa suġġett għar-**Regoli tas-server**. Kwalunkwe �
 
 ## Il-kontenut tiegħek
 
-Inti żżomm il-pussess tal-kontenut li tippubblika. Bil-pubblikazzjoni tal-kontenut permezz ta' dan is-server tagħti lil {{operator.name}} u lin-netwerk Mochi usa' liċenzja mhux esklussiva, mad-dinja kollha, mingħajr royalties, biex tospita, taħżen, tirreplika, tittrasmetti, turi, u tikkaxja dak il-kontenut **kif meħtieġ biex topera s-servizz** - inkluża r-replikazzjoni P2P deskritta fl-avviż tal-**Privatezza** tagħna. Din il-liċenzja tintemm meta tħassar il-kontenut, ħlief li l-kopji li diġà ġew replikati lil peers se jippersistu barra mill-kontroll tagħna sakemm dawk il-peers jipproċessaw it-tħassir.
+Inti żżomm il-pussess tal-kontenut li tippubblika. Bil-pubblikazzjoni tal-kontenut permezz ta' dan is-server tagħti lil {{operator.name}}, lin-netwerk Mochi usa' u, fejn tagħżel li tippubblika fuq netwerk ieħor, lis-servers ta' dak in-netwerk liċenzja mhux esklussiva, mad-dinja kollha, mingħajr royalties, biex tospita, taħżen, tirreplika, tittrasmetti, turi, u tikkaxja dak il-kontenut **kif meħtieġ biex topera s-servizz** - inklużi r-replikazzjoni P2P u l-konsenja lil netwerks oħra deskritti fl-avviż tal-**Privatezza** tagħna. Din il-liċenzja tintemm meta tħassar il-kontenut, ħlief li l-kopji li diġà ġew replikati lil peers jew mibgħuta lil netwerks oħra se jippersistu barra mill-kontroll tagħna sakemm dawk il-peers u s-servers jipproċessaw it-tħassir.
 
 Inti responsabbli għall-kontenut li tippubblika. Tippubblikax kontenut li m'għandekx id-dritt li tippubblika.
 
 ## Kontenut ta' partijiet terzi
 
-Dan is-servizz jesponi kontenut li joriġina barra mill-kontroll dirett ta' {{operator.name}} — posts u materjal ieħor replikat minn servers Mochi oħra permezz tan-netwerk peer-to-peer, RSS u feeds esterni oħra, kontenut ippubblikat minn utenti oħra fuq dan is-server, u links għal websites esterni. {{operator.name}} ma jipproduċix, ma jendorsjax, ma jivverifikax, u ma jiggarantixxix l-eżattezza, il-legalità, jew is-sigurtà ta' kwalunkwe kontenut bħal dan ta' partijiet terzi, u mhuwiex responsabbli għalih. Jekk taċċessa, tiddependi fuq, jew taqsam kontenut ta' partijiet terzi permezz ta' dan is-server, tagħmel hekk għar-riskju tiegħek.
+Dan is-servizz jesponi kontenut li joriġina barra mill-kontroll dirett ta' {{operator.name}} — posts u materjal ieħor replikat minn servers Mochi oħra permezz tan-netwerk peer-to-peer, kontenut minn netwerks oħra li dan is-server jikkonnettja magħhom, RSS u feeds esterni oħra, kontenut ippubblikat minn utenti oħra fuq dan is-server, u links għal websites esterni. {{operator.name}} ma jipproduċix, ma jendorsjax, ma jivverifikax, u ma jiggarantixxix l-eżattezza, il-legalità, jew is-sigurtà ta' kwalunkwe kontenut bħal dan ta' partijiet terzi, u mhuwiex responsabbli għalih. Jekk taċċessa, tiddependi fuq, jew taqsam kontenut ta' partijiet terzi permezz ta' dan is-server, tagħmel hekk għar-riskju tiegħek.
 
 Aħna naġixxu fuq rapporti kredibbli ta' kontenut illegali li jasal f'dan is-server (ara r-**Regoli tas-server** dwar kif tirrapporta), iżda ma nistgħux niggarantixxu d-disponibbiltà, l-eżattezza, jew it-tneħħija ta' kontenut maħżun fuq servers li ma nħaddmux. Il-links esterni huma pprovduti għall-konvenjenza biss u mhumiex taħt il-kontroll tagħna.
 
@@ -33,7 +33,7 @@ Aħna naġixxu fuq rapporti kredibbli ta' kontenut illegali li jasal f'dan is-se
 
 {{operator.name}} jista' jissospendi jew jagħlaq il-kont tiegħek, jew ineħħi kontenut speċifiku, jekk tikser dawn it-termini jew ir-Regoli tas-server, jew jekk dan ikun meħtieġ biex jikkonforma mal-liġi jew biex jipproteġi s-servizz u utenti oħra. Fejn ikun prattiku se nagħtuk avviż u opportunità biex tirrispondi, iżda f'każijiet ċari (pereżempju, kontenut illegali, attakk attiv fuq is-servizz) nistgħu naġixxu immedjatament.
 
-Tista' tagħlaq il-kont tiegħek f'kull ħin billi tibgħat email lil **{{operator.email}}**, u aħna nagħlqu l-kont u nneħħu d-dejta assoċjata minn dan is-server. L-għeluq tal-kont tiegħek ma jirritirax kontenut li diġà ġie replikat lil peers, kif deskritt fl-avviż tal-Privatezza.
+Tista' tagħlaq il-kont tiegħek f'kull ħin fl-Issettjar. Il-kont jissakkar għal perjodu ta' grazzja, li matulu tista' tidħol u tikkanċella l-għeluq, u mbagħad jitneħħa minn dan is-server flimkien mad-dejta tiegħu. L-għeluq tal-kont tiegħek ma jirritirax kontenut li diġà ġie replikat lil peers jew mibgħut lil netwerks oħra, kif deskritt fl-avviż tal-Privatezza.
 
 ## L-ebda garanzija
 

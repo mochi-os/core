@@ -1,6 +1,6 @@
 # A Mochi szerver szabályai
 
-Ezek a szabályok mindenkire vonatkoznak, aki ezt a **{{operator.name}}** által üzemeltetett Mochi szervert használja, függetlenül attól, hogy melyik domain vagy URL címen keresztül éri el. Vonatkoznak minden közzétett tartalomra, valamint a szerveren lévő többi felhasználóval folytatott valamennyi interakcióra, beleértve a Mochi hálózat más társgépeire továbbított tartalmakat is.
+Ezek a szabályok mindenkire vonatkoznak, aki ezt a **{{operator.name}}** által üzemeltetett Mochi szervert használja, függetlenül attól, hogy melyik domain vagy URL címen keresztül éri el. Vonatkoznak minden közzétett tartalomra, valamint a szerveren lévő többi felhasználóval folytatott valamennyi interakcióra, beleértve a Mochi hálózat más társgépeire továbbított tartalmakat is, valamint mindarra, amit egy olyan, más hálózaton lévő fiókon keresztül teszel közzé vagy küldesz el, amelyet ez a szerver üzemeltet számodra, vagy amelyet hozzá kapcsoltál.
 
 A szerver használatával elfogadod, hogy betartod ezeket a szabályokat. A szabályszegés tartalom eltávolítását, fiókfelfüggesztést vagy a fiók megszüntetését vonhatja maga után az **Általános szerződési feltételek** alapján.
 

@@ -19,13 +19,13 @@ Používanie tohto servera podlieha **Pravidlám servera**. Čokoľvek, čo poru
 
 ## Váš obsah
 
-Vlastníctvo obsahu, ktorý uverejníte, zostáva vám. Publikovaním obsahu prostredníctvom tohto servera udeľujete {{operator.name}} a širšej sieti Mochi nevýhradnú, celosvetovú, bezodplatnú licenciu na hosťovanie, ukladanie, replikáciu, prenos, zobrazovanie a ukladanie tohto obsahu do vyrovnávacej pamäte **podľa potreby na prevádzku služby** – vrátane P2P replikácie opísanej v našom oznámení o **Ochrane súkromia**. Táto licencia končí, keď obsah odstránite, s výnimkou kópií, ktoré už boli replikované na peerov a zostávajú mimo našej kontroly, kým títo peerovia vymazanie nespracujú.
+Vlastníctvo obsahu, ktorý uverejníte, zostáva vám. Publikovaním obsahu prostredníctvom tohto servera udeľujete {{operator.name}}, širšej sieti Mochi a, ak sa rozhodnete publikovať do inej siete, serverom tejto siete nevýhradnú, celosvetovú, bezodplatnú licenciu na hosťovanie, ukladanie, replikáciu, prenos, zobrazovanie a ukladanie tohto obsahu do vyrovnávacej pamäte **podľa potreby na prevádzku služby** – vrátane P2P replikácie a doručovania do iných sietí opísaných v našom oznámení o **Ochrane súkromia**. Táto licencia končí, keď obsah odstránite, s výnimkou kópií, ktoré už boli replikované na peerov alebo odoslané do iných sietí a zostávajú mimo našej kontroly, kým títo peerovia a servery vymazanie nespracujú.
 
 Za obsah, ktorý uverejníte, zodpovedáte vy. Neuverejňujte obsah, ktorý nemáte právo publikovať.
 
 ## Obsah tretích strán
 
-Táto služba sprístupňuje obsah, ktorý vzniká mimo priamej kontroly {{operator.name}} – príspevky a iný materiál replikovaný z iných Mochi serverov prostredníctvom peer-to-peer siete, RSS a ďalšie externé kanály, obsah uverejnený inými používateľmi tohto servera a odkazy na externé webové stránky. {{operator.name}} takýto obsah tretích strán nevytvára, neschvaľuje, nepreveruje ani nezaručuje jeho presnosť, zákonnosť ani bezpečnosť, a nezodpovedá zaň. Ak prostredníctvom tohto servera pristupujete k obsahu tretích strán, spoliehate sa naň alebo ho zdieľate, robíte tak na vlastné riziko.
+Táto služba sprístupňuje obsah, ktorý vzniká mimo priamej kontroly {{operator.name}} – príspevky a iný materiál replikovaný z iných Mochi serverov prostredníctvom peer-to-peer siete, obsah z iných sietí, ku ktorým sa tento server pripája, RSS a ďalšie externé kanály, obsah uverejnený inými používateľmi tohto servera a odkazy na externé webové stránky. {{operator.name}} takýto obsah tretích strán nevytvára, neschvaľuje, nepreveruje ani nezaručuje jeho presnosť, zákonnosť ani bezpečnosť, a nezodpovedá zaň. Ak prostredníctvom tohto servera pristupujete k obsahu tretích strán, spoliehate sa naň alebo ho zdieľate, robíte tak na vlastné riziko.
 
 Konáme na základe dôveryhodných hlásení o nezákonnom obsahu, ktorý sa dostane na tento server (spôsob nahlasovania nájdete v **Pravidlách servera**), no nemôžeme zaručiť dostupnosť, presnosť ani odstránenie obsahu uloženého na serveroch, ktoré neprevádzkujeme. Externé odkazy sú poskytované iba pre pohodlie a nie sú pod našou kontrolou.
 
@@ -33,7 +33,7 @@ Konáme na základe dôveryhodných hlásení o nezákonnom obsahu, ktorý sa do
 
 {{operator.name}} môže pozastaviť alebo zrušiť váš účet, prípadne odstrániť konkrétny obsah, ak porušíte tieto podmienky alebo Pravidlá servera, alebo ak je to potrebné na splnenie zákona alebo ochranu služby a ostatných používateľov. Ak je to praktické, dáme vám oznámenie a možnosť reagovať, no v jasných prípadoch (napríklad pri nezákonnom obsahu, aktívnom útoku na službu) môžeme konať okamžite.
 
-Svoj účet môžete kedykoľvek zrušiť napísaním e-mailu na **{{operator.email}}** a my účet zrušíme a odstránime súvisiace údaje z tohto servera. Zrušenie účtu nestiahne obsah, ktorý už bol replikovaný na peerov, ako je opísané v oznámení o ochrane súkromia.
+Svoj účet môžete kedykoľvek zrušiť v Nastaveniach. Účet sa zablokuje na ochrannú lehotu, počas ktorej sa môžete prihlásiť a zrušenie účtu odvolať, a potom sa z tohto servera odstráni spolu so svojimi údajmi. Zrušenie účtu nestiahne obsah, ktorý už bol replikovaný na peerov alebo odoslaný do iných sietí, ako je opísané v oznámení o ochrane súkromia.
 
 ## Bez záruky
 

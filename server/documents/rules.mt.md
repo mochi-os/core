@@ -1,6 +1,6 @@
 # Regoli tas-server Mochi
 
-Dawn ir-regoli japplikaw għal kulħadd li juża dan is-server Mochi, operat minn **{{operator.name}}**, irrispettivament minn liema dominju jew URL jintuża biex jintlaħaq. Japplikaw għall-kontenut kollu li tippubblika u għall-interazzjonijiet kollha ma' utenti oħra fuq dan is-server, inkluż il-kontenut li jiġi replikat minn dan is-server għal peers oħra fuq in-netwerk Mochi.
+Dawn ir-regoli japplikaw għal kulħadd li juża dan is-server Mochi, operat minn **{{operator.name}}**, irrispettivament minn liema dominju jew URL jintuża biex jintlaħaq. Japplikaw għall-kontenut kollu li tippubblika u għall-interazzjonijiet kollha ma' utenti oħra fuq dan is-server, inkluż il-kontenut li jiġi replikat minn dan is-server għal peers oħra fuq in-netwerk Mochi, u għal kwalunkwe ħaġa li tippubblika jew tibgħat permezz ta' kont fuq netwerk ieħor li dan is-server jospita għalik jew li int rabatt miegħu.
 
 Bl-użu ta' dan is-server taqbel li ssegwi dawn ir-regoli. Ksur jista' jirriżulta fit-tneħħija tal-kontenut, sospensjoni tal-kont, jew għeluq tal-kont skont it-**Termini u kundizzjonijiet**.
 

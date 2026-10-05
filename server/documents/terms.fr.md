@@ -19,13 +19,13 @@ L'utilisation de ce serveur est soumise aux **Règles du serveur**. Tout ce qui 
 
 ## Votre contenu
 
-Vous conservez la propriété du contenu que vous publiez. En publiant du contenu via ce serveur, vous accordez à {{operator.name}} et au réseau Mochi au sens large une licence non exclusive, mondiale et libre de redevances pour héberger, stocker, répliquer, transmettre, afficher et mettre en cache ce contenu **dans la mesure nécessaire au fonctionnement du service** - y compris la réplication P2P décrite dans notre avis de **Confidentialité**. Cette licence prend fin lorsque vous supprimez le contenu, sauf que les copies déjà répliquées vers des pairs persisteront en dehors de notre contrôle jusqu'à ce que ces pairs traitent la suppression.
+Vous conservez la propriété du contenu que vous publiez. En publiant du contenu via ce serveur, vous accordez à {{operator.name}}, au réseau Mochi au sens large et, lorsque vous choisissez de publier sur un autre réseau, aux serveurs de ce réseau une licence non exclusive, mondiale et libre de redevances pour héberger, stocker, répliquer, transmettre, afficher et mettre en cache ce contenu **dans la mesure nécessaire au fonctionnement du service** - y compris la réplication P2P et la distribution vers d'autres réseaux décrites dans notre avis de **Confidentialité**. Cette licence prend fin lorsque vous supprimez le contenu, sauf que les copies déjà répliquées vers des pairs ou envoyées à d'autres réseaux persisteront en dehors de notre contrôle jusqu'à ce que ces pairs et serveurs traitent la suppression.
 
 Vous êtes responsable du contenu que vous publiez. Ne publiez pas de contenu que vous n'avez pas le droit de publier.
 
 ## Contenu de tiers
 
-Ce service expose du contenu provenant de l'extérieur du contrôle direct de {{operator.name}} — publications et autres contenus répliqués depuis d'autres serveurs Mochi via le réseau pair à pair, flux RSS et autres flux externes, contenus publiés par d'autres utilisateurs sur ce serveur, et liens vers des sites web externes. {{operator.name}} ne produit, n'approuve, ne vérifie ni ne garantit l'exactitude, la légalité ou la sécurité d'aucun de ces contenus tiers, et n'en est pas responsable. Si vous accédez à un contenu tiers via ce serveur, vous y fiez ou le partagez, vous le faites à vos propres risques.
+Ce service expose du contenu provenant de l'extérieur du contrôle direct de {{operator.name}} — publications et autres contenus répliqués depuis d'autres serveurs Mochi via le réseau pair à pair, contenus provenant d'autres réseaux auxquels ce serveur se connecte, flux RSS et autres flux externes, contenus publiés par d'autres utilisateurs sur ce serveur, et liens vers des sites web externes. {{operator.name}} ne produit, n'approuve, ne vérifie ni ne garantit l'exactitude, la légalité ou la sécurité d'aucun de ces contenus tiers, et n'en est pas responsable. Si vous accédez à un contenu tiers via ce serveur, vous y fiez ou le partagez, vous le faites à vos propres risques.
 
 Nous donnons suite aux signalements crédibles de contenus illégaux atteignant ce serveur (voir les **Règles du serveur** pour savoir comment signaler), mais nous ne pouvons garantir la disponibilité, l'exactitude ou la suppression de contenus stockés sur des serveurs que nous n'exploitons pas. Les liens externes sont fournis par commodité uniquement et ne sont pas sous notre contrôle.
 
@@ -33,7 +33,7 @@ Nous donnons suite aux signalements crédibles de contenus illégaux atteignant 
 
 {{operator.name}} peut suspendre ou fermer votre compte, ou supprimer un contenu spécifique, si vous enfreignez ces conditions ou les Règles du serveur, ou si cela est nécessaire pour respecter la loi ou pour protéger le service et les autres utilisateurs. Lorsque cela est possible, nous vous donnerons un préavis et la possibilité de répondre, mais dans les cas évidents (par exemple, contenu illégal, attaque active contre le service), nous pouvons agir immédiatement.
 
-Vous pouvez fermer votre compte à tout moment en écrivant à **{{operator.email}}**, et nous fermerons le compte et supprimerons les données associées de ce serveur. La fermeture de votre compte ne retire pas le contenu déjà répliqué vers les pairs, comme décrit dans l'avis de Confidentialité.
+Vous pouvez fermer votre compte à tout moment dans Paramètres. Le compte est verrouillé pendant un délai de grâce, durant lequel vous pouvez vous connecter et annuler la fermeture, puis il est supprimé de ce serveur avec ses données. La fermeture de votre compte ne retire pas le contenu déjà répliqué vers les pairs ou envoyé à d'autres réseaux, comme décrit dans l'avis de Confidentialité.
 
 ## Aucune garantie
 

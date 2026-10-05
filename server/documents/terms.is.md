@@ -19,13 +19,13 @@ Notkun þessa þjóns lýtur **Reglum þjónsins**. Allt sem brýtur gegn reglun
 
 ## Efni þitt
 
-Þú heldur eignarrétti á því efni sem þú birtir. Með því að birta efni gegnum þennan þjón veitir þú {{operator.name}} og víðara Mochi-netinu óeinkarétt, alheimsbundin, þóknunarlaus leyfi til að hýsa, geyma, afrita, senda, sýna og varðveita það efni **eins og þörf krefur til reksturs þjónustunnar** — þar á meðal P2P-afritunina sem lýst er í **Persónuverndar**tilkynningunni okkar. Þetta leyfi rennur út þegar þú eyðir efninu, nema að afrit sem þegar hafa verið afrituð til jafningja munu vera til utan okkar stjórnar þar til þeir jafningjar afgreiða eyðinguna.
+Þú heldur eignarrétti á því efni sem þú birtir. Með því að birta efni gegnum þennan þjón veitir þú {{operator.name}}, víðara Mochi-netinu og, þar sem þú velur að birta á öðru neti, þjónum þess nets óeinkarétt, alheimsbundin, þóknunarlaus leyfi til að hýsa, geyma, afrita, senda, sýna og varðveita það efni **eins og þörf krefur til reksturs þjónustunnar** — þar á meðal P2P-afritunina og afhendinguna til annarra neta sem lýst er í **Persónuverndar**tilkynningunni okkar. Þetta leyfi rennur út þegar þú eyðir efninu, nema að afrit sem þegar hafa verið afrituð til jafningja eða send til annarra neta munu vera til utan okkar stjórnar þar til þeir jafningjar og þjónar afgreiða eyðinguna.
 
 Þú berð ábyrgð á efninu sem þú birtir. Ekki birta efni sem þú hefur ekki rétt til að gefa út.
 
 ## Efni þriðja aðila
 
-Þessi þjónusta birtir efni sem á uppruna sinn utan beinnar stjórnar {{operator.name}} — færslur og annað efni afritað frá öðrum Mochi-þjónum gegnum jafningjanetið, RSS og aðrar ytri straumar, efni sem aðrir notendur birta á þessum þjóni og tenglar á ytri vefsíður. {{operator.name}} framleiðir, samþykkir, yfirfer eða ábyrgist ekki nákvæmni, lögmæti eða öryggi slíks efnis þriðja aðila og ber ekki ábyrgð á því. Ef þú nálgast, treystir á eða deilir efni þriðja aðila gegnum þennan þjón, gerirðu það á eigin ábyrgð.
+Þessi þjónusta birtir efni sem á uppruna sinn utan beinnar stjórnar {{operator.name}} — færslur og annað efni afritað frá öðrum Mochi-þjónum gegnum jafningjanetið, efni frá öðrum netum sem þessi þjónn tengist, RSS og aðrar ytri straumar, efni sem aðrir notendur birta á þessum þjóni og tenglar á ytri vefsíður. {{operator.name}} framleiðir, samþykkir, yfirfer eða ábyrgist ekki nákvæmni, lögmæti eða öryggi slíks efnis þriðja aðila og ber ekki ábyrgð á því. Ef þú nálgast, treystir á eða deilir efni þriðja aðila gegnum þennan þjón, gerirðu það á eigin ábyrgð.
 
 Við bregðumst við trúverðugum tilkynningum um ólöglegt efni sem berst þessum þjóni (sjá **Reglur þjónsins** um hvernig á að tilkynna), en við getum ekki ábyrgst aðgengi, nákvæmni eða fjarlægingu efnis sem geymt er á þjónum sem við rekum ekki. Ytri tenglar eru aðeins veittir til hægðarauka og eru ekki undir okkar stjórn.
 
@@ -33,7 +33,7 @@ Við bregðumst við trúverðugum tilkynningum um ólöglegt efni sem berst þe
 
 {{operator.name}} kann að fresta eða loka reikningi þínum, eða fjarlægja tiltekið efni, ef þú brýtur þessa skilmála eða Reglur þjónsins, eða ef það er nauðsynlegt til að uppfylla lög eða vernda þjónustuna og aðra notendur. Þar sem það er framkvæmanlegt munum við gefa þér tilkynningu og tækifæri til að bregðast við, en í augljósum tilvikum (til dæmis ólöglegu efni eða virkri árás á þjónustuna) kann að bregðast strax við.
 
-Þú getur lokað reikningi þínum hvenær sem er með því að senda tölvupóst á **{{operator.email}}**, og við munum loka reikningnum og fjarlægja tengd gögn af þessum þjóni. Lokun reiknings dregur ekki til baka efni sem þegar hefur verið afritað til jafningja, eins og lýst er í Persónuverndartilkynningunni.
+Þú getur lokað reikningi þínum hvenær sem er í Stillingum. Reikningnum er læst í tiltekinn frest, og á þeim tíma getur þú skráð þig inn og hætt við, og síðan er hann fjarlægður af þessum þjóni ásamt gögnum hans. Lokun reiknings dregur ekki til baka efni sem þegar hefur verið afritað til jafningja eða sent til annarra neta, eins og lýst er í Persónuverndartilkynningunni.
 
 ## Engin ábyrgð
 

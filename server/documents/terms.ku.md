@@ -19,13 +19,13 @@ Bikaranîna vê serverê bi **Rêzikên serverê** ve girêdayî ye. Her tiştê
 
 ## Naveroka we
 
-Xwediyê naveroka ku hûn diweşînin hûn dimînin. Bi weşandina naveroka bi rêya vê serverê hûn destûrekê ne-taybet, cîhanî, bê heqdar didin {{operator.name}} û tora Mochi ya berfirehtir ku wê naverokê **wek ku ji bo xebitandina xizmetê pêwîst e** mêvandar bike, hilîne, dubare bike, veguhêze, nîşan bide, û cache bike - di nav de dubarekirina P2P ya ku di danezana **Veşartî** ya me de tê diyarkirin. Ev destûr bi jêbirina naverokê diqede, ji bilî ku kopiyên ku berê ji peeran re hatine dubarekirin dê ji kontrola me derveyî bimînin heya ku ew peer jêbirinê biproses bikin.
+Xwediyê naveroka ku hûn diweşînin hûn dimînin. Bi weşandina naveroka bi rêya vê serverê hûn destûrekê ne-taybet, cîhanî, bê heqdar didin {{operator.name}}, tora Mochi ya berfirehtir û, cihê ku hûn hilbijêrin li ser torek din biweşînin, serverên wê torê ku wê naverokê **wek ku ji bo xebitandina xizmetê pêwîst e** mêvandar bike, hilîne, dubare bike, veguhêze, nîşan bide, û cache bike - di nav de dubarekirina P2P û gihandina ji torên din re ku di danezana **Veşartî** ya me de tên diyarkirin. Ev destûr bi jêbirina naverokê diqede, ji bilî ku kopiyên ku berê ji peeran re hatine dubarekirin an ji torên din re hatine şandin dê ji kontrola me derveyî bimînin heya ku ew peer û server jêbirinê biproses bikin.
 
 Hûn ji naveroka ku hûn diweşînin berpirsiyar in. Naveroka ku mafê we ya weşandinê tune ye neweşînin.
 
 ## Naveroka aliyê sêyemîn
 
-Ev xizmet naverokek ku ji derveyî kontrola rasterast a {{operator.name}} dest pê dike pêşkêş dike — şandinên û materyalên din ên ji serverên din ên Mochi bi rêya tora peer-to-peer dubarekirî, RSS û pêjnên derveyî yên din, naveroka ku ji aliyê bikarhênerên din ên li ser vê serverê ve hatiye weşandin, û girêdanên malperên derveyî. {{operator.name}} naveroka aliyê sêyemîn naxe, qebûl nake, kontrol nake, an piştrast nake û ji wê berpirsiyar nîn e ku rastî, qanûnîbûn, an ewlehiya wê garantî bike. Eger hûn bi rêya vê serverê bigihîjin, xwe biser de mîna heqîqetekê bigirin, an naveroka aliyê sêyemîn parve bikin, hûn bi rîska xwe ya kesane wisa dikin.
+Ev xizmet naverokek ku ji derveyî kontrola rasterast a {{operator.name}} dest pê dike pêşkêş dike — şandinên û materyalên din ên ji serverên din ên Mochi bi rêya tora peer-to-peer dubarekirî, naveroka ji torên din ên ku ev server pê ve girê dibe, RSS û pêjnên derveyî yên din, naveroka ku ji aliyê bikarhênerên din ên li ser vê serverê ve hatiye weşandin, û girêdanên malperên derveyî. {{operator.name}} naveroka aliyê sêyemîn naxe, qebûl nake, kontrol nake, an piştrast nake û ji wê berpirsiyar nîn e ku rastî, qanûnîbûn, an ewlehiya wê garantî bike. Eger hûn bi rêya vê serverê bigihîjin, xwe biser de mîna heqîqetekê bigirin, an naveroka aliyê sêyemîn parve bikin, hûn bi rîska xwe ya kesane wisa dikin.
 
 Em li ser raporên bawerbar ên naveroka neqanûnî ya ku digihîje vê serverê tedbîr digirin (binêre **Rêzikên serverê** bo awayê raporkirinê), lê em nikarin destûra hebûn, rastî, an jêbirina naveroka ku li ser serverên ku em birêve nabin tê hilanîn garantî bikin. Girêdanên derveyî tenê ji bo hêsanîyê têne pêşkêşkirin û di bin kontrola me de ne.
 
@@ -33,7 +33,7 @@ Em li ser raporên bawerbar ên naveroka neqanûnî ya ku digihîje vê serverê
 
 {{operator.name}} dikare hesabê we rawestîne an bigire, an naveroka diyar rake, eger hûn van şertan an Rêzikên serverê binpê bikin, an eger ev tişt ji bo lihevkirina bi qanûnê re an parastina xizmetê û bikarhênerên din pêwîst be. Cihê ku pratîkî be em ê agahdariyê bidin we û derfetekê bidin we ku bersivê bidin, lê di rewşên zelal de (mînak, naveroka neqanûnî, êrîşeke çalak li ser xizmetê) em dikarin tavilê tedbîr bigirin.
 
-Hûn dikarin her dem bi şandina e-nameyekê ji **{{operator.email}}** re hesabê xwe bigirin, û em ê hesabê bigirin û daneyên bi wê re girêdayî ji vê serverê rakin. Girtina hesabê we naveroka ku berê ji peeran re hatiye dubarekirin venagerîne, wek ku di danezana Veşartî de tê diyarkirin.
+Hûn dikarin her dem di Mîheng de hesabê xwe bigirin. Hesab ji bo demeke mohletê tê kilîtkirin, ku di wê demê de hûn dikarin têkevin û betal bikin, û paşê bi daneyên xwe re ji vê serverê tê rakirin. Girtina hesabê we naveroka ku berê ji peeran re hatiye dubarekirin an ji torên din re hatiye şandin venagerîne, wek ku di danezana Veşartî de tê diyarkirin.
 
 ## Bê garantî
 

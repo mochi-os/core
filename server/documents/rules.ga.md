@@ -1,6 +1,6 @@
 # Rialacha freastalaí Mochi
 
-Baineann na rialacha seo le gach duine a úsáideann an freastalaí Mochi seo, atá á oibriú ag **{{operator.name}}**, beag beann ar an bhfearann nó URL a úsáidtear chun teacht air. Baineann siad le gach ábhar a phostálann tú agus gach idirghníomhaíocht le húsáideoirí eile ar an bhfreastalaí seo, lena n-áirítear ábhar a mhacasamhlaítear ón bhfreastalaí seo chuig piaraí eile ar líonra Mochi.
+Baineann na rialacha seo le gach duine a úsáideann an freastalaí Mochi seo, atá á oibriú ag **{{operator.name}}**, beag beann ar an bhfearann nó URL a úsáidtear chun teacht air. Baineann siad le gach ábhar a phostálann tú agus gach idirghníomhaíocht le húsáideoirí eile ar an bhfreastalaí seo, lena n-áirítear ábhar a mhacasamhlaítear ón bhfreastalaí seo chuig piaraí eile ar líonra Mochi, agus le haon rud a phostálann tú nó a sheolann tú trí chuntas ar líonra eile a óstálann an freastalaí seo duit nó a nasc tú leis.
 
 Trí úsáid a bhaint as an bhfreastalaí seo aontaíonn tú leis na rialacha seo a leanúint. D'fhéadfadh sárú a bheith mar thoradh ar bhaint ábhair, fionraí cuntais, nó dúnadh cuntais faoi na **Téarmaí agus coinníollacha**.
 

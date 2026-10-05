@@ -19,13 +19,13 @@ Bu sunucunun kullanımı **Sunucu kurallarına** tabidir. Kuralları ihlal eden 
 
 ## İçeriğiniz
 
-Yayımladığınız içeriğin sahipliği sizde kalır. Bu sunucu aracılığıyla içerik yayımlayarak, {{operator.name}}'e ve daha geniş Mochi ağına; hizmetin işletilmesi için **gerekli olduğu ölçüde** - **Gizlilik** bildirimimizde anlatılan P2P çoğaltma dahil - bu içeriği barındırmak, depolamak, çoğaltmak, iletmek, görüntülemek ve önbelleğe almak üzere münhasır olmayan, dünya çapında, telifsiz bir lisans verirsiniz. Bu lisans, içeriği sildiğinizde sona erer; ancak halihazırda eşlere çoğaltılmış olan kopyalar, söz konusu eşler silme işlemini işleyene kadar denetimimiz dışında varlığını sürdürecektir.
+Yayımladığınız içeriğin sahipliği sizde kalır. Bu sunucu aracılığıyla içerik yayımlayarak, {{operator.name}}'e, daha geniş Mochi ağına ve başka bir ağda yayımlamayı seçtiğiniz durumlarda o ağın sunucularına; hizmetin işletilmesi için **gerekli olduğu ölçüde** - **Gizlilik** bildirimimizde anlatılan P2P çoğaltma ve diğer ağlara teslimat dahil - bu içeriği barındırmak, depolamak, çoğaltmak, iletmek, görüntülemek ve önbelleğe almak üzere münhasır olmayan, dünya çapında, telifsiz bir lisans verirsiniz. Bu lisans, içeriği sildiğinizde sona erer; ancak halihazırda eşlere çoğaltılmış veya diğer ağlara gönderilmiş olan kopyalar, söz konusu eşler ve sunucular silme işlemini işleyene kadar denetimimiz dışında varlığını sürdürecektir.
 
 Yayımladığınız içerikten siz sorumlusunuz. Yayımlama hakkına sahip olmadığınız içeriği yayımlamayın.
 
 ## Üçüncü taraf içeriği
 
-Bu hizmet, {{operator.name}}'in doğrudan denetimi dışından kaynaklanan içeriği gösterir — eşler arası ağ üzerinden diğer Mochi sunucularından çoğaltılan gönderiler ve diğer materyaller, RSS ve diğer harici akışlar, bu sunucudaki diğer kullanıcılar tarafından yayımlanan içerik ve harici web sitelerine bağlantılar. {{operator.name}} bu tür üçüncü taraf içeriğini üretmez, onaylamaz, denetlemez veya doğruluğu, yasallığı ya da güvenliği için kefil olmaz ve bundan sorumlu değildir. Üçüncü taraf içeriğine bu sunucu aracılığıyla erişir, ona güvenir veya onu paylaşırsanız, bunu kendi sorumluluğunuzda yaparsınız.
+Bu hizmet, {{operator.name}}'in doğrudan denetimi dışından kaynaklanan içeriği gösterir — eşler arası ağ üzerinden diğer Mochi sunucularından çoğaltılan gönderiler ve diğer materyaller, bu sunucunun bağlandığı diğer ağlardan gelen içerik, RSS ve diğer harici akışlar, bu sunucudaki diğer kullanıcılar tarafından yayımlanan içerik ve harici web sitelerine bağlantılar. {{operator.name}} bu tür üçüncü taraf içeriğini üretmez, onaylamaz, denetlemez veya doğruluğu, yasallığı ya da güvenliği için kefil olmaz ve bundan sorumlu değildir. Üçüncü taraf içeriğine bu sunucu aracılığıyla erişir, ona güvenir veya onu paylaşırsanız, bunu kendi sorumluluğunuzda yaparsınız.
 
 Bu sunucuya ulaşan yasa dışı içeriğe ilişkin güvenilir bildirimler üzerine harekete geçeriz (nasıl bildirileceği için **Sunucu kurallarına** bakın), ancak işletmediğimiz sunucularda saklanan içeriğin erişilebilirliğini, doğruluğunu veya kaldırılmasını garanti edemeyiz. Harici bağlantılar yalnızca kolaylık olması için sağlanmıştır ve denetimimiz altında değildir.
 
@@ -33,7 +33,7 @@ Bu sunucuya ulaşan yasa dışı içeriğe ilişkin güvenilir bildirimler üzer
 
 {{operator.name}}; bu şartları ya da Sunucu kurallarını ihlal etmeniz halinde veya hukuka uymak ya da hizmeti ve diğer kullanıcıları korumak için gerekli olduğunda hesabınızı askıya alabilir veya kapatabilir, ya da belirli içeriği kaldırabilir. Mümkün olduğunda size bildirimde bulunur ve yanıt verme fırsatı tanırız, ancak açık durumlarda (örneğin yasa dışı içerik, hizmete yönelik etkin bir saldırı) derhal harekete geçebiliriz.
 
-Hesabınızı dilediğiniz zaman **{{operator.email}}** adresine e-posta göndererek kapatabilirsiniz; hesabı kapatır ve ilgili verileri bu sunucudan kaldırırız. Hesabınızı kapatmak, Gizlilik bildiriminde anlatıldığı gibi halihazırda eşlere çoğaltılmış olan içeriği geri çekmez.
+Hesabınızı dilediğiniz zaman Ayarlar'dan kapatabilirsiniz. Hesap bir ek süre boyunca kilitlenir; bu süre içinde oturum açıp kapatma işlemini iptal edebilirsiniz; ardından hesap, verileriyle birlikte bu sunucudan kaldırılır. Hesabınızı kapatmak, Gizlilik bildiriminde anlatıldığı gibi halihazırda eşlere çoğaltılmış veya diğer ağlara gönderilmiş olan içeriği geri çekmez.
 
 ## Garanti yokluğu
 

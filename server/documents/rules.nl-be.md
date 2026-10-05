@@ -1,6 +1,6 @@
 # Regels van de Mochi-server
 
-Deze regels gelden voor iedereen die deze Mochi-server gebruikt, beheerd door **{{operator.name}}**, ongeacht via welk domein of welke URL de server bereikt wordt. Ze gelden voor alle inhoud die u plaatst en voor al uw interacties met andere gebruikers op deze server, met inbegrip van inhoud die van deze server naar andere peers in het Mochi-netwerk wordt gerepliceerd.
+Deze regels gelden voor iedereen die deze Mochi-server gebruikt, beheerd door **{{operator.name}}**, ongeacht via welk domein of welke URL de server bereikt wordt. Ze gelden voor alle inhoud die u plaatst en voor al uw interacties met andere gebruikers op deze server, met inbegrip van inhoud die van deze server naar andere peers in het Mochi-netwerk wordt gerepliceerd, en voor alles wat u plaatst of verstuurt via een account op een ander netwerk dat deze server voor u host of dat u eraan hebt gekoppeld.
 
 Door deze server te gebruiken stemt u ermee in deze regels na te leven. Bij een inbreuk kan inhoud verwijderd worden, kan een account geschorst worden of kan een account afgesloten worden onder de **Algemene voorwaarden**.
 

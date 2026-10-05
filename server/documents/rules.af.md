@@ -1,6 +1,6 @@
 # Mochi-bediener-reëls
 
-Hierdie reëls geld vir almal wat hierdie Mochi-bediener gebruik, wat bedryf word deur **{{operator.name}}**, ongeag van watter domein of URL gebruik word om dit te bereik. Dit geld vir alle inhoud wat jy plaas en alle interaksies met ander gebruikers op hierdie bediener, insluitend inhoud wat vanaf hierdie bediener na ander eweknieë op die Mochi-netwerk gerepliseer word.
+Hierdie reëls geld vir almal wat hierdie Mochi-bediener gebruik, wat bedryf word deur **{{operator.name}}**, ongeag van watter domein of URL gebruik word om dit te bereik. Dit geld vir alle inhoud wat jy plaas en alle interaksies met ander gebruikers op hierdie bediener, insluitend inhoud wat vanaf hierdie bediener na ander eweknieë op die Mochi-netwerk gerepliseer word, en vir enigiets wat jy plaas of stuur deur 'n rekening op 'n ander netwerk wat hierdie bediener vir jou huisves of wat jy daaraan gekoppel het.
 
 Deur hierdie bediener te gebruik, stem jy in om hierdie reëls te volg. Oortredings kan tot inhoudverwydering, rekeningopskorting of rekeningsluiting onder die **Bepalings en voorwaardes** lei.
 

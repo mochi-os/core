@@ -19,13 +19,13 @@ Tá úsáid an fhreastalaí seo faoi réir na **Rialacha freastalaí**. Tá cosc
 
 ## D'ábhar
 
-Coinníonn tú úinéireacht an ábhair a phostálann tú. Trí ábhar a fhoilsiú tríd an bhfreastalaí seo deonann tú do {{operator.name}} agus don líonra Mochi níos leithne ceadúnas neamheisiach, domhanda, saor ó dhleacht chun an t-ábhar sin a óstáil, a stóráil, a mhacasamhlú, a tharchur, a thaispeáint, agus a thaisceadh **mar is gá chun an tseirbhís a oibriú** - lena n-áirítear an mhacasamhlú P2P atá tuairiscithe inár bhfógra **Príobháideachais**. Críochnaíonn an ceadúnas seo nuair a scriosann tú an t-ábhar, ach amháin go mairfidh cóipeanna atá macasamhlaithe cheana chuig piaraí lasmuigh dár smacht go dtí go bpróiseálann na piaraí sin an scriosadh.
+Coinníonn tú úinéireacht an ábhair a phostálann tú. Trí ábhar a fhoilsiú tríd an bhfreastalaí seo deonann tú do {{operator.name}}, don líonra Mochi níos leithne agus, sa chás go roghnaíonn tú foilsiú ar líonra eile, d'fhreastalaithe an líonra sin ceadúnas neamheisiach, domhanda, saor ó dhleacht chun an t-ábhar sin a óstáil, a stóráil, a mhacasamhlú, a tharchur, a thaispeáint, agus a thaisceadh **mar is gá chun an tseirbhís a oibriú** - lena n-áirítear an mhacasamhlú P2P agus an seachadadh chuig líonraí eile atá tuairiscithe inár bhfógra **Príobháideachais**. Críochnaíonn an ceadúnas seo nuair a scriosann tú an t-ábhar, ach amháin go mairfidh cóipeanna atá macasamhlaithe cheana chuig piaraí nó seolta chuig líonraí eile lasmuigh dár smacht go dtí go bpróiseálann na piaraí agus na freastalaithe sin an scriosadh.
 
 Tá tú freagrach as an ábhar a phostálann tú. Ná postáil ábhar nach bhfuil sé de cheart agat a fhoilsiú.
 
 ## Ábhar tríú páirtí
 
-Nochtann an tseirbhís seo ábhar a thagann ó lasmuigh de smacht díreach {{operator.name}} — postálacha agus ábhar eile atá macasamhlaithe ó fhreastalaithe Mochi eile tríd an líonra ríomhaire-go-ríomhaire, fothaí RSS agus fothaí seachtracha eile, ábhar a phostálann úsáideoirí eile ar an bhfreastalaí seo, agus naisc le suíomhanna gréasáin sheachtracha. Ní tháirgeann, ní fhormhuiníonn, ní fhíoraíonn, ná ní rathaíonn {{operator.name}} cruinneas, dlíthiúlacht, ná sábháilteacht aon ábhair tríú páirtí dá leithéid, agus níl sé freagrach as. Má dhéanann tú rochtain ar, nó má bhraitheann tú ar, nó má roinneann tú ábhar tríú páirtí tríd an bhfreastalaí seo, déanann tú é sin ar do phriacal féin.
+Nochtann an tseirbhís seo ábhar a thagann ó lasmuigh de smacht díreach {{operator.name}} — postálacha agus ábhar eile atá macasamhlaithe ó fhreastalaithe Mochi eile tríd an líonra ríomhaire-go-ríomhaire, ábhar ó líonraí eile a gceanglaíonn an freastalaí seo leo, fothaí RSS agus fothaí seachtracha eile, ábhar a phostálann úsáideoirí eile ar an bhfreastalaí seo, agus naisc le suíomhanna gréasáin sheachtracha. Ní tháirgeann, ní fhormhuiníonn, ní fhíoraíonn, ná ní rathaíonn {{operator.name}} cruinneas, dlíthiúlacht, ná sábháilteacht aon ábhair tríú páirtí dá leithéid, agus níl sé freagrach as. Má dhéanann tú rochtain ar, nó má bhraitheann tú ar, nó má roinneann tú ábhar tríú páirtí tríd an bhfreastalaí seo, déanann tú é sin ar do phriacal féin.
 
 Gníomhaímid ar thuairiscí inchreidte ábhair mhídhleathaigh a shroicheann an freastalaí seo (féach na **Rialacha freastalaí** chun conas tuairisc a dhéanamh), ach ní féidir linn infhaighteacht, cruinneas, ná baint ábhair atá stóráilte ar fhreastalaithe nach bhfuil á rith againn a ráthú. Cuirtear naisc sheachtracha ar fáil ar mhaithe le caoithiúlacht amháin agus níl siad faoinár smacht.
 
@@ -33,7 +33,7 @@ Gníomhaímid ar thuairiscí inchreidte ábhair mhídhleathaigh a shroicheann an
 
 Féadfaidh {{operator.name}} do chuntas a chur ar fionraí nó a dhúnadh, nó ábhar sonrach a bhaint, má sháraíonn tú na téarmaí seo nó na Rialacha freastalaí, nó má tá sé sin riachtanach chun an dlí a chomhlíonadh nó chun an tseirbhís agus úsáideoirí eile a chosaint. Nuair is féidir, tabharfaimid fógra duit agus deis chun freagra a thabhairt, ach i gcásanna soiléire (mar shampla, ábhar mídhleathach, ionsaí gníomhach ar an tseirbhís) féadfaimid gníomhú láithreach.
 
-Féadfaidh tú do chuntas a dhúnadh am ar bith trí ríomhphost a sheoladh chuig **{{operator.email}}**, agus dúnfaimid an cuntas agus bainfimid na sonraí gaolmhara den fhreastalaí seo. Ní tharraingíonn dúnadh do chuntais ábhar atá macasamhlaithe cheana chuig piaraí ar ais, mar atá tuairiscithe san fhógra Príobháideachais.
+Féadfaidh tú do chuntas a dhúnadh am ar bith i Socruithe. Cuirtear an cuntas faoi ghlas ar feadh tréimhse cairde, ar féidir leat síniú isteach agus an dúnadh a chealú lena linn, agus ansin baintear den fhreastalaí seo é in éineacht lena chuid sonraí. Ní tharraingíonn dúnadh do chuntais ábhar atá macasamhlaithe cheana chuig piaraí nó seolta chuig líonraí eile ar ais, mar atá tuairiscithe san fhógra Príobháideachais.
 
 ## Gan baránta
 

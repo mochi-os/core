@@ -19,13 +19,13 @@ Selle serveri kasutamine allub **Serveri reeglitele**. Kõik, mis reegleid rikub
 
 ## Teie sisu
 
-Te säilitate omandiõiguse postitatud sisu üle. Avaldades sisu selle serveri kaudu annate {{operator.name}}-le ja laiemale Mochi võrgule mitteainuõigusliku, ülemaailmse, tasuta litsentsi seda sisu majutada, säilitada, paljundada, edastada, kuvada ja vahemälustada **niivõrd, kui see on teenuse opereerimiseks vajalik** - sealhulgas meie **Privaatsus**-teatises kirjeldatud P2P-paljundamise jaoks. See litsents lõpeb sisu kustutamisel, välja arvatud, et juba partneritesse paljundatud koopiad jäävad meie kontrolli alt välja kuni need partnerid kustutamise töötlevad.
+Te säilitate omandiõiguse postitatud sisu üle. Avaldades sisu selle serveri kaudu annate {{operator.name}}-le, laiemale Mochi võrgule ja, kui valite avaldada mõnes teises võrgus, selle võrgu serveritele mitteainuõigusliku, ülemaailmse, tasuta litsentsi seda sisu majutada, säilitada, paljundada, edastada, kuvada ja vahemälustada **niivõrd, kui see on teenuse opereerimiseks vajalik** - sealhulgas meie **Privaatsus**-teatises kirjeldatud P2P-paljundamise ja teistesse võrkudesse edastamise jaoks. See litsents lõpeb sisu kustutamisel, välja arvatud, et juba partneritesse paljundatud või teistesse võrkudesse saadetud koopiad jäävad meie kontrolli alt välja kuni need partnerid ja serverid kustutamise töötlevad.
 
 Te vastutate postitatud sisu eest. Ärge postitage sisu, mille avaldamiseks teil õigust ei ole.
 
 ## Kolmandate osapoolte sisu
 
-See teenus kuvab sisu, mis pärineb väljaspool {{operator.name}} otsest kontrolli — postitused ja muud materjalid, mis on partnervõrgu kaudu paljundatud teistest Mochi serveritest, RSS- ja muud välised vood, teiste kasutajate poolt selles serveris postitatud sisu ning lingid välistele veebisaitidele. {{operator.name}} ei tooda, ei toeta, ei kontrolli ega tagatu sellise kolmanda osapoole sisu täpsust, seaduslikkust ega ohutust ega vastuta selle eest. Kui te selle serveri kaudu kolmanda osapoole sisule ligi pääsete, sellele tuginete või seda jagate, teete seda omal vastutusel.
+See teenus kuvab sisu, mis pärineb väljaspool {{operator.name}} otsest kontrolli — postitused ja muud materjalid, mis on partnervõrgu kaudu paljundatud teistest Mochi serveritest, sisu teistest võrkudest, millega see server ühendub, RSS- ja muud välised vood, teiste kasutajate poolt selles serveris postitatud sisu ning lingid välistele veebisaitidele. {{operator.name}} ei tooda, ei toeta, ei kontrolli ega tagatu sellise kolmanda osapoole sisu täpsust, seaduslikkust ega ohutust ega vastuta selle eest. Kui te selle serveri kaudu kolmanda osapoole sisule ligi pääsete, sellele tuginete või seda jagate, teete seda omal vastutusel.
 
 Me reageerime usaldusväärsetele teadetele selle serverini jõudnud ebaseadusliku sisu kohta (vt teatamise kohta **Serveri reegleid**), kuid me ei saa tagada selliste serverite, mida me ei halda, salvestatud sisu kättesaadavust, täpsust ega eemaldamist. Välised lingid on esitatud üksnes mugavuse huvides ega ole meie kontrolli all.
 
@@ -33,7 +33,7 @@ Me reageerime usaldusväärsetele teadetele selle serverini jõudnud ebaseadusli
 
 {{operator.name}} võib peatada või sulgeda teie konto või eemaldada konkreetset sisu, kui te neid tingimusi või Serveri reegleid rikute või kui see on vajalik seaduse järgimiseks või teenuse ja teiste kasutajate kaitsmiseks. Kus see on praktiliselt võimalik, anname teile teada ja võimaluse vastata, kuid selgetel juhtudel (näiteks ebaseaduslik sisu, aktiivne rünnak teenuse vastu) võime tegutseda kohe.
 
-Te võite oma konto igal ajal sulgeda, saates e-kirja aadressile **{{operator.email}}**, ning me sulgeme konto ja eemaldame sellega seotud andmed sellest serverist. Konto sulgemine ei tühista sisu, mis on juba partneritesse paljundatud, nagu on kirjeldatud Privaatsuse teatises.
+Te võite oma konto igal ajal Seadetes sulgeda. Konto lukustatakse armuajaks, mille jooksul saate sisse logida ja sulgemise tühistada, ning seejärel eemaldatakse see koos selle andmetega sellest serverist. Konto sulgemine ei tühista sisu, mis on juba partneritesse paljundatud või teistesse võrkudesse saadetud, nagu on kirjeldatud Privaatsuse teatises.
 
 ## Garantii puudumine
 

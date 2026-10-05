@@ -8,6 +8,7 @@ Wenn Sie sich registrieren und diesen Server nutzen, erfassen wir:
 
 - **Kontodaten**: einen Benutzernamen, die von Ihnen gewählten Authentifizierungsmethoden (E-Mail-Adresse, Passkeys, Authentifizierungs-App, Wiederherstellungscodes oder ein Konto eines Drittanbieter-Anmeldedienstes) sowie alle Profilinformationen, die Sie hinzufügen (Anzeigename, Avatar, Biografie).
 - **Inhalte, die Sie erstellen**: Beiträge, Nachrichten, Kommentare, Dateien und alle anderen Daten, die Sie über die auf diesem Server installierten Apps veröffentlichen.
+- **Inhalte anderer Personen**: Beiträge, Nachrichten und Profilangaben von Personen auf anderen Mochi-Servern und in anderen Netzwerken, die diesen Server erreichen, weil Sie oder andere Nutzer ihnen folgen, sie abonnieren oder mit ihnen korrespondieren.
 - **Technische Daten**: IP-Adresse, Browser-/Geräteinformationen und Zeitstempel der von Ihnen gestellten Anfragen. Diese werden verwendet, um den Dienst sicher und betriebsbereit zu halten und Missbrauch zu erkennen.
 - **Cookies**: Beim Anmelden wird ein Sitzungs-Cookie gesetzt. Es speichert nur eine undurchsichtige Sitzungskennung; wir verwenden Cookies weder für Werbung noch für seitenübergreifendes Tracking.
 
@@ -20,20 +21,22 @@ Mochi ist ein **Peer-to-Peer-Netzwerk (P2P)**, keine Plattform mit nur einem Ser
 - Inhalte, die Sie für Follower, Abonnenten oder gemeinsam genutzte Bereiche veröffentlichen, werden zu **anderen Mochi-Servern repliziert**, die diese Follower oder Abonnenten hosten. {{operator.name}} kann Kopien Ihrer Inhalte nicht von Servern löschen, die nicht von ihm betrieben werden. Wenn Sie einen Beitrag löschen, sendet dieser Server eine Löschmitteilung an die Peers, an die er den Beitrag zuvor gesendet hat. Die Löschung erfolgt jedoch nach bestem Bemühen und ist von der Mitwirkung dieser Peers abhängig.
 - Ihre **Identität (Benutzername, Profil, öffentliche Schlüssel)** wird im Mochi-Verzeichnis veröffentlicht, wenn Sie ein öffentliches Profil wählen, damit andere Mochi-Nutzer Sie finden und kontaktieren können.
 - Direkte, private Inhalte (Entwürfe, private Notizen, private Nachrichten zwischen bestimmten Empfängern) verbleiben nur auf diesem Server und auf den Servern der Empfänger; sie sind nicht Teil des öffentlichen P2P-Netzwerks.
+- Wo dieser Server es Ihnen ermöglicht, **sich mit anderen Netzwerken zu verbinden** – indem Sie ein Konto verknüpfen, das Sie bei einem anderen Dienst haben, oder indem Sie hier ein Konto hosten, dem Personen in anderen Netzwerken folgen oder Nachrichten senden können –, geht das, was Sie über dieses Konto veröffentlichen oder senden, an Server in diesen Netzwerken. Es handelt sich nicht um Mochi-Server, und {{operator.name}} betreibt sie nicht. Ein solches Konto ist in seinem Netzwerk öffentlich, und in manchen Netzwerken gilt das auch für die Konten, denen Sie folgen, und die Beiträge, die Ihnen gefallen. Wenn Sie später etwas bearbeiten oder löschen, wird eine Anfrage gesendet, die diese Server ignorieren können.
 
-Kurz gesagt: Alles, was Sie sich entscheiden, mit anderen Personen auf Mochi zu teilen, wird über die Kontrolle von {{operator.name}} hinausgehen, und das ist Teil des Designs. Behandeln Sie veröffentlichte Inhalte so, wie Sie E-Mails oder jede andere föderierte Kommunikation behandeln würden.
+Kurz gesagt: Alles, was Sie sich entscheiden, mit anderen Personen, auf Mochi oder in anderen Netzwerken, zu teilen, wird über die Kontrolle von {{operator.name}} hinausgehen, und das ist Teil des Designs. Behandeln Sie veröffentlichte Inhalte so, wie Sie E-Mails oder jede andere föderierte Kommunikation behandeln würden.
 
 ## Dritte
 
 Wir geben die mindestens erforderlichen personenbezogenen Daten an die folgenden Dritten weiter, wenn Sie die zugehörigen Funktionen nutzen:
 
-- **E-Mail-Dienst**: ausgehende E-Mails (Anmeldecodes, Benachrichtigungen, Passwort-Zurücksetzungen) werden über einen von {{operator.name}} konfigurierten SMTP-Anbieter versendet.
+- **E-Mail-Dienst**: ausgehende E-Mails (Anmeldecodes, Adressbestätigung, Benachrichtigungen) werden über einen von {{operator.name}} konfigurierten SMTP-Anbieter versendet.
 - **Drittanbieter-Anmeldedienste**: Wenn Sie sich mit Google, GitHub, Microsoft, Facebook oder einem anderen OAuth-Anbieter anmelden, erfährt dieser Anbieter, dass Sie sich auf diesem Server angemeldet haben, und teilt Ihre E-Mail-Adresse sowie grundlegende Profildaten mit uns.
 - **Zahlungsanbieter**: Wenn Sie einen Kauf über eine Marktplatz-App tätigen, wird die Zahlung von Stripe (oder einem anderen von {{operator.name}} konfigurierten Zahlungsanbieter) abgewickelt. Wir speichern keine vollständigen Kartendaten.
+- **Andere Netzwerke**: Wenn Sie ein Konto verknüpfen, das Sie bei einem anderen Dienst haben, erhält dieser Dienst, was Sie darüber veröffentlichen, und dieser Server speichert die Anmeldedaten, mit denen er dort in Ihrem Namen handeln kann. Wenn Sie hier ein Konto für ein anderes Netzwerk hosten, erhalten die Server und Dienste dieses Netzwerks, was Sie dort veröffentlichen, zusammen mit der öffentlichen Adresse des Kontos.
 
 ## Ihre Rechte
 
-Je nach Ihrem Wohnort haben Sie möglicherweise das Recht, Ihre personenbezogenen Daten einzusehen, zu korrigieren, zu exportieren, deren Verarbeitung einzuschränken oder zu löschen. Um eines dieser Rechte auszuüben — einschließlich der Schließung Ihres Kontos und der Entfernung Ihrer Daten von diesem Server — senden Sie eine E-Mail an **{{operator.email}}**. Die Kontoschließung wird derzeit auf Anfrage vom Serverbetreiber vorgenommen; sobald wir Ihre E-Mail erhalten, schließen wir das Konto und entfernen die zugehörigen Daten von diesem Server (vorbehaltlich der Aufbewahrung in Sicherungskopien und etwaiger gesetzlicher Aufbewahrungspflichten für bestimmte Aufzeichnungen).
+Je nach Ihrem Wohnort haben Sie möglicherweise das Recht, Ihre personenbezogenen Daten einzusehen, zu korrigieren, zu exportieren, deren Verarbeitung einzuschränken oder zu löschen. In den Einstellungen können Sie Ihre Daten selbst exportieren und Ihr Konto selbst schließen. Die Schließung Ihres Kontos sperrt es für eine Karenzzeit, während der Sie sich anmelden und die Schließung abbrechen können; danach werden das Konto und seine Daten von diesem Server entfernt (vorbehaltlich der Aufbewahrung in Sicherungskopien und etwaiger gesetzlicher Aufbewahrungspflichten für bestimmte Aufzeichnungen). Um ein anderes Recht auszuüben oder wenn Sie sich nicht anmelden können, senden Sie eine E-Mail an **{{operator.email}}**.
 
 ## Aufbewahrung von Daten
 

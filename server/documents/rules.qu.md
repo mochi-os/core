@@ -1,6 +1,6 @@
 # Mochi servidor kamachikuykuna
 
-Kay kamachikuykunaqa **{{operator.name}}**pa apaykachasqan kay Mochi servidorta llamk'achiq tukuy runakunamanmi rikch'akun, ima dominio utaq URL nisqawanpas chayachkaspaqa. Kay servidorpi tukuy publicasqaykiman, hukkunawan rimanakuyniykimanpas rikch'akun, kay servidormanta Mochi reta huk peerkunaman kutichisqa willaykunatapas hap'in.
+Kay kamachikuykunaqa **{{operator.name}}**pa apaykachasqan kay Mochi servidorta llamk'achiq tukuy runakunamanmi rikch'akun, ima dominio utaq URL nisqawanpas chayachkaspaqa. Kay servidorpi tukuy publicasqaykiman, hukkunawan rimanakuyniykimanpas rikch'akun, kay servidormanta Mochi reta huk peerkunaman kutichisqa willaykunatapas hap'in, hinallataq kay servidor qampaq waqaychasqan utaq qam kay servidorwan tinkichisqayki huk redpi cuentawan publicasqaykiman utaq apachisqaykimanpas rikch'akun.
 
 Kay servidorta llamk'achiqtiyki, kay kamachikuykunata qatipayta arí ninkim. Mana hunt'aqtiykiqa, willay hurquy, cuenta sayachiy, utaq cuenta wisq'aypas **Términos y condiciones** ukhupi kanmanmi.
 

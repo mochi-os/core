@@ -1,6 +1,6 @@
 # Regras do servidor Mochi
 
-Estas regras aplicam-se a todas as pessoas que utilizem este servidor Mochi, operado por **{{operator.name}}**, independentemente do domínio ou URL utilizado para lhe aceder. Aplicam-se a todo o conteúdo que publica e a todas as interações com outros utilizadores neste servidor, incluindo o conteúdo que é replicado deste servidor para outros pares na rede Mochi.
+Estas regras aplicam-se a todas as pessoas que utilizem este servidor Mochi, operado por **{{operator.name}}**, independentemente do domínio ou URL utilizado para lhe aceder. Aplicam-se a todo o conteúdo que publica e a todas as interações com outros utilizadores neste servidor, incluindo o conteúdo que é replicado deste servidor para outros pares na rede Mochi, e a tudo o que publica ou envia através de uma conta noutra rede que este servidor aloja para si ou que tenha associado ao mesmo.
 
 Ao utilizar este servidor, concorda em cumprir estas regras. As infrações podem resultar na remoção de conteúdo, suspensão da conta ou encerramento da conta ao abrigo dos **Termos e condições**.
 

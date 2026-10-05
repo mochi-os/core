@@ -1,6 +1,6 @@
 # Mochi server rules
 
-These rules apply to everyone using this Mochi server, operated by **{{operator.name}}**, regardless of which domain or URL is used to reach it. They apply to all content you post and all interactions with other users on this server, including content that is replicated from this server to other peers on the Mochi network.
+These rules apply to everyone using this Mochi server, operated by **{{operator.name}}**, regardless of which domain or URL is used to reach it. They apply to all content you post and all interactions with other users on this server, including content that is replicated from this server to other peers on the Mochi network, and to anything you post or send through an account on another network that this server hosts for you or that you have linked to it.
 
 By using this server you agree to follow these rules. Breaches may result in content removal, account suspension, or account closure under the **Terms and conditions**.
 

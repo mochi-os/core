@@ -1661,19 +1661,12 @@ func account_test_claude(api_key, language string) AccountTestResult {
 		return AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.no_key", nil)}
 	}
 
-	// Use a minimal request to verify the key works
-	payload, _ := json.Marshal(map[string]any{
-		"model":      "claude-3-haiku-20240307",
-		"max_tokens": 1,
-		"messages": []map[string]string{
-			{"role": "user", "content": "Hi"},
-		},
-	})
-
-	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(payload))
+	// Listing models proves the key without naming a model: a message to a
+	// fixed model fails once that model retires, whatever the key, and costs
+	// tokens while it lasts.
+	req, _ := http.NewRequest("GET", "https://api.anthropic.com/v1/models", nil)
 	req.Header.Set("x-api-key", api_key)
 	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)

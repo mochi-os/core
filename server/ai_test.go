@@ -200,3 +200,43 @@ func TestAiPromptBoundsTheTokenRequest(t *testing.T) {
 		t.Errorf("tokens at exactly the maximum was refused: %v", err)
 	}
 }
+
+// TestAiClaudeAnswerSkipsThinking. A model that thinks returns its thinking
+// blocks before the answer, and they carry no text. Reading the first block as
+// the answer gave every call an empty 200, which feeds and forums treat as a
+// failed call, so nothing was tagged or scored.
+func TestAiClaudeAnswerSkipsThinking(t *testing.T) {
+	body := `{"stop_reason":"end_turn","content":[` +
+		`{"type":"thinking","thinking":"","signature":"abc"},` +
+		`{"type":"text","text":"first "},` +
+		`{"type":"text","text":"second"}]}`
+	result := ai_claude_answer([]byte(body))
+	if result.status != 200 || result.text != "first second" {
+		t.Errorf("answer = %d %q, want 200 and every text block joined", result.status, result.text)
+	}
+}
+
+// TestAiClaudeAnswerReportsRefusal. A declined prompt arrives as a 200 with no
+// text; a caller that checks only the status would read it as an empty answer.
+func TestAiClaudeAnswerReportsRefusal(t *testing.T) {
+	body := `{"stop_reason":"refusal","content":[{"type":"text","text":"partial"}]}`
+	result := ai_claude_answer([]byte(body))
+	if result.status != ai_status_refused || result.text != "" {
+		t.Errorf("refusal = %d %q, want %d and no text", result.status, result.text, ai_status_refused)
+	}
+}
+
+// TestAiClaudeRequestSetsEffortOnlyForTheDefault. Core knows its default model
+// accepts an effort level; a model the account names may be one that refuses
+// the parameter, and every call to it would fail.
+func TestAiClaudeRequestSetsEffortOnlyForTheDefault(t *testing.T) {
+	request := ai_claude_request(ai_provider_defaults["claude"], "hello", 100)
+	config, _ := request["output_config"].(map[string]any)
+	if config["effort"] != ai_claude_effort {
+		t.Errorf("default model request carries output_config %v, want effort %q", request["output_config"], ai_claude_effort)
+	}
+	named := ai_claude_request("claude-sonnet-4-5-20250929", "hello", 100)
+	if _, ok := named["output_config"]; ok {
+		t.Errorf("a named model's request carries output_config %v, want none", named["output_config"])
+	}
+}

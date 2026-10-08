@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	sl "go.starlark.net/starlark"
@@ -39,11 +40,27 @@ const (
 	ai_tokens_maximum = 16384
 )
 
-// Default models for each AI provider
+// Default models for each AI provider. An account with no model of its own
+// follows these, so moving a default here moves every such account at the next
+// release. No provider ID tracks "the latest" model: each one names a fixed
+// model, and a new generation can change what a response looks like.
 var ai_provider_defaults = map[string]string{
-	"claude": "claude-haiku-4-5-20251001",
+	"claude": "claude-haiku-5-5",
 	"openai": "gpt-4o-mini",
 }
+
+// ai_claude_effort is the thinking effort core asks of its default Claude
+// model. Callers send short tagging, scoring and summary prompts, which Haiku
+// 4.5 answered without thinking; low is the nearest setting, and it also
+// leaves a small token request room for the answer after any thinking. A
+// model the account names runs at that model's own default, since older
+// models refuse the parameter.
+const ai_claude_effort = "low"
+
+// ai_status_refused is the status a call answers when the provider's safety
+// checks decline the prompt. The provider itself answers 200 with no text, which
+// a caller checking only the status would read as an empty success.
+const ai_status_refused = 422
 
 // ai_result holds the response from an AI provider call
 type ai_result struct {
@@ -164,13 +181,7 @@ var ai_call = func(provider, api_key, model, prompt string, tokens int) ai_resul
 
 // ai_call_claude sends a prompt to the Claude (Anthropic) API
 func ai_call_claude(api_key, model, prompt string, tokens int) ai_result {
-	payload, _ := json.Marshal(map[string]any{
-		"model":      model,
-		"max_tokens": tokens,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-	})
+	payload, _ := json.Marshal(ai_claude_request(model, prompt, tokens))
 
 	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(payload))
 	if err != nil {
@@ -190,16 +201,7 @@ func ai_call_claude(api_key, model, prompt string, tokens int) ai_result {
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode == 200 {
-		var data map[string]any
-		if json.Unmarshal(body, &data) == nil {
-			if content, ok := data["content"].([]any); ok && len(content) > 0 {
-				if block, ok := content[0].(map[string]any); ok {
-					text, _ := block["text"].(string)
-					return ai_result{status: 200, text: text}
-				}
-			}
-		}
-		return ai_result{status: 200, text: ""}
+		return ai_claude_answer(body)
 	}
 
 	if resp.StatusCode == 401 {
@@ -220,6 +222,48 @@ func ai_call_claude(api_key, model, prompt string, tokens int) ai_result {
 	}
 
 	return ai_result{status: resp.StatusCode, text: ""}
+}
+
+// ai_claude_request builds the body of a Claude call. Only core's default
+// model is asked for an effort level; see ai_claude_effort.
+func ai_claude_request(model, prompt string, tokens int) map[string]any {
+	request := map[string]any{
+		"model":      model,
+		"max_tokens": tokens,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+	}
+	if model == ai_provider_defaults["claude"] {
+		request["output_config"] = map[string]any{"effort": ai_claude_effort}
+	}
+	return request
+}
+
+// ai_claude_answer reads the text of a successful Claude response. The answer
+// is every text block joined, chosen by type rather than position: a model
+// that thinks returns its thinking blocks first, and those carry no text.
+func ai_claude_answer(body []byte) ai_result {
+	var data map[string]any
+	if json.Unmarshal(body, &data) != nil {
+		return ai_result{status: 200, text: ""}
+	}
+	if reason, _ := data["stop_reason"].(string); reason == "refusal" {
+		return ai_result{status: ai_status_refused, text: ""}
+	}
+	var text strings.Builder
+	content, _ := data["content"].([]any)
+	for _, item := range content {
+		block, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if kind, _ := block["type"].(string); kind == "text" {
+			part, _ := block["text"].(string)
+			text.WriteString(part)
+		}
+	}
+	return ai_result{status: 200, text: text.String()}
 }
 
 // ai_call_openai sends a prompt to the OpenAI API

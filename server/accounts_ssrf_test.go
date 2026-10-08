@@ -163,7 +163,7 @@ func TestAccountProvidersUseGuardedTransport(t *testing.T) {
 		"account_test_unifiedpush",
 		"account_deliver_ntfy",
 		"account_deliver_url",
-		"account_deliver_unifiedpush",
+		"unifiedpush_send",
 	} {
 		t.Run(name, func(t *testing.T) {
 			start := strings.Index(text, "func "+name+"(")

@@ -1205,13 +1205,6 @@ func web_anonymous_owner(routed string, public bool) *User {
 // web_serves_file reports whether an action declaring a file will answer this
 // request with the file rather than with its function. Both the shell_static
 // bypass and the branch that writes the file ask it, so they cannot disagree.
-// asset_token_ignored reports whether a credential minted for URL-borne use is
-// set aside for an action: everywhere but the actions declared to serve assets
-// and the static files, which need no credential at all.
-func asset_token_ignored(purpose string, aa *AppAction, static bool) bool {
-	return purpose == token_purpose_asset && aa != nil && !aa.Asset && !static
-}
-
 func web_serves_file(c *gin.Context, aa *AppAction) bool {
 	if aa.File == "" {
 		return false
@@ -1223,6 +1216,13 @@ func web_serves_file(c *gin.Context, aa *AppAction) bool {
 	}
 	accept := c.GetHeader("Accept")
 	return strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
+}
+
+// asset_token_ignored reports whether a credential minted for URL-borne use is
+// set aside for an action: everywhere but the actions declared to serve assets
+// and the static files, which need no credential at all.
+func asset_token_ignored(purpose string, aa *AppAction, static bool) bool {
+	return purpose == token_purpose_asset && aa != nil && !aa.Asset && !static
 }
 
 // opengraph_absolute makes an app's og:image absolute: a crawler fetching from

@@ -129,15 +129,6 @@ func ical_rule(transitions []ical_transition) string {
 // for each kind of transition the zone makes in the window, described by a
 // yearly rule where its transitions follow one and by explicit dates
 // otherwise, or a single STANDARD block for a zone that keeps one offset.
-// ical_raw sets a property to a value already in its own form: a date-time,
-// an offset or a rule. SetText would mark it as text and escape the rule's
-// semicolons, which strict clients refuse.
-func ical_raw(component *ical.Component, name, value string) {
-	prop := ical.NewProp(name)
-	prop.Value = value
-	component.Props.Set(prop)
-}
-
 func ical_timezone(name string, now time.Time) (*ical.Component, error) {
 	if name == "" || name == "Local" {
 		return nil, fmt.Errorf("no such zone %q", name)
@@ -203,6 +194,15 @@ func ical_timezone(name string, now time.Time) (*ical.Component, error) {
 		zone.Children = append(zone.Children, block)
 	}
 	return zone, nil
+}
+
+// ical_raw sets a property to a value already in its own form: a date-time,
+// an offset or a rule. SetText would mark it as text and escape the rule's
+// semicolons, which strict clients refuse.
+func ical_raw(component *ical.Component, name, value string) {
+	prop := ical.NewProp(name)
+	prop.Value = value
+	component.Props.Set(prop)
 }
 
 // mochi.ical.timezone(name) -> dict | None: The VTIMEZONE component for an

@@ -114,14 +114,14 @@ func TestIcalTimezoneWritesYearlyRulesForLondonAndNewYork(t *testing.T) {
 		t.Errorf("standard time is not written first")
 	}
 
-	newYork, err := ical_timezone("America/New_York", ical_timezone_test_now)
+	new_york, err := ical_timezone("America/New_York", ical_timezone_test_now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := ical_timezone_value(t, ical_timezone_block(t, newYork, ical.CompTimezoneDaylight), ical.PropRecurrenceRule); got != "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU" {
+	if got := ical_timezone_value(t, ical_timezone_block(t, new_york, ical.CompTimezoneDaylight), ical.PropRecurrenceRule); got != "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU" {
 		t.Errorf("New York DAYLIGHT rule = %q", got)
 	}
-	if got := ical_timezone_value(t, ical_timezone_block(t, newYork, ical.CompTimezoneStandard), ical.PropRecurrenceRule); got != "FREQ=YEARLY;BYMONTH=11;BYDAY=1SU" {
+	if got := ical_timezone_value(t, ical_timezone_block(t, new_york, ical.CompTimezoneStandard), ical.PropRecurrenceRule); got != "FREQ=YEARLY;BYMONTH=11;BYDAY=1SU" {
 		t.Errorf("New York STANDARD rule = %q", got)
 	}
 }

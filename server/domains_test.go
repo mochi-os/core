@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"net"
 	"testing"
 
@@ -226,6 +227,22 @@ func TestDomainLookupWildcard(t *testing.T) {
 	d = domain_lookup("other.com")
 	if d != nil {
 		t.Error("domain_lookup should not match different domain")
+	}
+}
+
+// TestDomainHostPolicyWildcard: a name that only a wildcard row matches gets no
+// certificate on demand, while an exactly registered domain still does.
+func TestDomainHostPolicyWildcard(t *testing.T) {
+	create_domains_test_env(t)
+
+	route_normalise_domain(t, "*.example.com")
+	route_normalise_domain(t, "example.org")
+
+	if err := domains_host_policy(context.Background(), "blog.example.com"); err == nil {
+		t.Error("domains_host_policy should refuse a name matched only by a wildcard row")
+	}
+	if err := domains_host_policy(context.Background(), "example.org"); err != nil {
+		t.Errorf("domains_host_policy should allow an exactly registered domain: %v", err)
 	}
 }
 

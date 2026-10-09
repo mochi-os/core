@@ -269,6 +269,16 @@ func domains_host_policy(ctx context.Context, host string) error {
 		return fmt.Errorf("tls disabled for domain: %s", host)
 	}
 
+	// A wildcard row is a pattern, not a host: nothing on this server answers
+	// for an arbitrary name under it, so no certificate is requested on demand.
+	// Any TLS handshake naming an invented subdomain would otherwise spend the
+	// domain's weekly allowance at the certificate authority. A wildcard is
+	// served from a hand-supplied certificate in domains.conf, which
+	// domains_get_certificate consults before reaching this policy.
+	if strings.HasPrefix(d.Domain, "*.") {
+		return fmt.Errorf("no certificate on demand under wildcard domain: %s", host)
+	}
+
 	return nil
 }
 

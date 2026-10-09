@@ -26,7 +26,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       - name: Vulnerability scan (govulncheck)
         # Reports only vulnerabilities this code can actually reach, by
@@ -63,7 +63,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       - name: Build image
         # docker-stage cross-compiles the binaries the Dockerfile COPYs in.

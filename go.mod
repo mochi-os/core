@@ -9,7 +9,7 @@ go 1.25.7
 // treats it as a floor: a newer host Go is used as-is, an older one
 // auto-downloads this exact version. Reaches production only via /release,
 // since every package format is host-built with the same toolchain.
-toolchain go1.25.13
+toolchain go1.26.9
 
 require (
 	filippo.io/age v1.3.1

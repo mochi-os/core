@@ -61,6 +61,11 @@ func web_bearer_env(t *testing.T) (*App, *User, string) {
 			// A public action skips the app-token block entirely, and still
 			// runs AS the user any credential names.
 			"-/open": {Function: "action_open", Public: true},
+			// Marked asset: the only actions an asset token reaches. One
+			// private and function-backed, one public, so the read-only rule
+			// is measured on both sides of the app-token block.
+			"-/asset":  {Function: "action_asset", Asset: true},
+			"-/avatar": {Function: "action_avatar", Public: true, Asset: true},
 		},
 	}
 	app := &App{id: "bearertest", latest: version, versions: map[string]*AppVersion{"1.0": version}}
@@ -138,9 +143,12 @@ func TestBearerGateRejectsCookieAlone(t *testing.T) {
 	}
 }
 
-// The asset token is the one that travels in an image or attachment URL, so a
-// copied link hands it over. It must read and nothing else, whether it arrives
-// in the query string or, as an app's own fetch would send it, in the header.
+// The asset token is the one a page puts in an image or attachment URL, so a
+// copied link hands it over. It reaches only the actions a manifest marks
+// asset, and on those it reads and nothing else, whether it arrives in the
+// query string or, as an app's own fetch would send it, in the header.
+// Anywhere else it is set aside before the gates, and the request goes on as
+// the cookie alone.
 func TestBearerGateHoldsAnAssetTokenToReads(t *testing.T) {
 	app, _, session := web_bearer_env(t)
 
@@ -150,36 +158,43 @@ func TestBearerGateHoldsAnAssetTokenToReads(t *testing.T) {
 		t.Fatal("could not mint the tokens")
 	}
 
-	// A refusal here is the gate's own. The fixture's action names a function
-	// that does not exist, so a request that PASSES the gate ends in a 500 -
+	// A refusal here is the gate's own. The fixture's actions name functions
+	// that do not exist, so a request that PASSES the gate ends in a 500 -
 	// which is what distinguishes "allowed through" from "refused".
-	status, body := web_bearer_method(t, app, session, "Bearer "+asset, "GET")
+	status, body := web_bearer_action(t, app, session, "Bearer "+asset, "GET", "-/asset")
 	if status == 403 {
-		t.Errorf("asset token on a read got 403 %s; a read is the whole point of it", body)
+		t.Errorf("asset token on a read of an asset action got 403 %s; a read is the whole point of it", body)
 	}
 
-	status, body = web_bearer_method(t, app, session, "Bearer "+asset, "POST")
+	status, body = web_bearer_action(t, app, session, "Bearer "+asset, "POST", "-/asset")
 	if status != 403 || !strings.Contains(body, "app_token_read_only") {
 		t.Errorf("asset token on a write got %d %s; want 403 app_token_read_only", status, body)
 	}
 
 	// Control: the same write with the ordinary app token is not refused, so
 	// the refusal above measures the purpose and not the method.
-	status, body = web_bearer_method(t, app, session, "Bearer "+ordinary, "POST")
+	status, body = web_bearer_action(t, app, session, "Bearer "+ordinary, "POST", "-/asset")
 	if status == 403 {
 		t.Errorf("app token on a write got 403 %s; only the asset token is read-only", body)
 	}
 
-	// And on a PUBLIC action, which skips the whole app-token block: it still
-	// runs as whoever the credential names, so a leaked asset token would post
-	// as them. Found live - the check sat inside that block at first, and a
-	// POST carrying an asset token answered 200.
-	status, body = web_bearer_action(t, app, session, "Bearer "+asset, "POST", "-/open")
+	// And on a PUBLIC asset action, which skips the whole app-token block: it
+	// still runs as whoever the credential names, so a leaked asset token
+	// would post as them.
+	status, body = web_bearer_action(t, app, session, "Bearer "+asset, "POST", "-/avatar")
 	if status != 403 || !strings.Contains(body, "app_token_read_only") {
-		t.Errorf("asset token writing to a public action got %d %s; want 403 app_token_read_only", status, body)
+		t.Errorf("asset token writing to a public asset action got %d %s; want 403 app_token_read_only", status, body)
 	}
-	status, body = web_bearer_action(t, app, session, "Bearer "+ordinary, "POST", "-/open")
+	status, body = web_bearer_action(t, app, session, "Bearer "+ordinary, "POST", "-/avatar")
 	if status == 403 {
-		t.Errorf("app token on the public action got 403 %s; the refusal must be about the purpose", body)
+		t.Errorf("app token on the public asset action got 403 %s; the refusal must be about the purpose", body)
+	}
+
+	// On an action without the mark the token is set aside, so the request is
+	// the cookie alone and the app-token gate refuses it as such: a copied
+	// image link reads nothing a page does not embed.
+	status, body = web_bearer_method(t, app, session, "Bearer "+asset, "GET")
+	if status != 403 || !strings.Contains(body, "app_token_required") {
+		t.Errorf("asset token on an unmarked action got %d %s; want 403 app_token_required, the token set aside", status, body)
 	}
 }

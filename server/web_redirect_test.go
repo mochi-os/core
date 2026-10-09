@@ -126,16 +126,16 @@ func TestRedirectHTTPSHost(t *testing.T) {
 		want   string // the Location, empty when none should be sent
 	}{
 		{"mochi-os.org", http.StatusMovedPermanently, "https://mochi-os.org/some/path"},
-		// A wildcard row covers the subdomain, and the Location carries the
-		// REQUESTED name: the row's own domain is the pattern itself, which
-		// would be no use as a destination.
-		{"foo.example.com", http.StatusMovedPermanently, "https://foo.example.com/some/path"},
+		// A wildcard row alone serves nothing: no certificate is issued on
+		// demand under it, and the hand-supplied certificate that does serve
+		// a subdomain is the manual map's business, pinned below.
+		{"foo.example.com", http.StatusNotFound, ""},
 		// The port is dropped, so a configured domain cannot be borrowed to
 		// bounce a caller onto an arbitrary port.
 		{"mochi-os.org:8080", http.StatusMovedPermanently, "https://mochi-os.org/some/path"},
 		// An unconfigured host is refused outright rather than reflected.
 		{"attacker.example", http.StatusNotFound, ""},
-		// The wildcard covers subdomains, not the apex.
+		// Nor the apex, which a wildcard never covered.
 		{"example.com", http.StatusNotFound, ""},
 	}
 	for _, test := range tests {

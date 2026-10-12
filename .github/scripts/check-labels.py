@@ -163,6 +163,7 @@ KEEP_LOCALE = frozenset({
     # "Listahan" they replaced mean a list.
     ('jv', 'Listing'), ('tl', 'Listing'), ('tl', 'Verification code'),
     ("it", "Password"), ("mt", "Password"), ("tl", "Password"), ("tl", "Username"),
+    ("de", "Handle"), ("it", "Handle"), ("nl", "Handle"), ("de", "Domain"), ("tl", "Domain"),
 
 })
 

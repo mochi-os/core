@@ -113,6 +113,50 @@ func TestEngineRoute(t *testing.T) {
 	}
 }
 
+// TestEngineSetting: an engine behind a network setting answers only while the
+// development switch is on and the owner has not switched the network off.
+func TestEngineSetting(t *testing.T) {
+	create_domains_test_env(t)
+	engines_test_reset(t)
+	gin.SetMode(gin.TestMode)
+	saved := networks_development
+	t.Cleanup(func() { networks_development = saved })
+
+	called := 0
+	engine_register(&engine{
+		name:     "test",
+		prefixes: []string{"/xrpc/"},
+		setting:  "bluesky",
+		handler: func(c *gin.Context) bool {
+			called++
+			c.String(http.StatusOK, "engine")
+			return true
+		},
+	})
+	probe := func() int {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("GET", "/xrpc/com.atproto.server.describeServer", nil)
+		if !engine_route(c) {
+			t.Fatal("a registered prefix is always answered, by the engine or by not found")
+		}
+		return w.Code
+	}
+
+	networks_development = false
+	if code := probe(); code != http.StatusNotFound || called != 0 {
+		t.Errorf("with the development switch off: status %d, handler calls %d", code, called)
+	}
+	networks_development = true
+	if code := probe(); code != http.StatusOK || called != 1 {
+		t.Errorf("with the switch on and the setting at its default: status %d, handler calls %d", code, called)
+	}
+	setting_set("bluesky", "false")
+	if code := probe(); code != http.StatusNotFound || called != 1 {
+		t.Errorf("with the network switched off: status %d, handler calls %d", code, called)
+	}
+}
+
 // TestEngineWellKnownDav: the DAV engine core ships answers its two discovery
 // paths through the registry and nothing else under /.well-known/.
 func TestEngineWellKnownDav(t *testing.T) {

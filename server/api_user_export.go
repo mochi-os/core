@@ -124,6 +124,16 @@ type export_link struct {
 	Linked     int64  `json:"linked_at"`
 }
 
+// export_handle is one handle the user holds (handles.go), so a restore onto a
+// server that serves the same domain can reserve it again.
+type export_handle struct {
+	Domain  string `json:"domain"`
+	Name    string `json:"name"`
+	Parent  string `json:"parent"`
+	Kind    string `json:"kind"`
+	Created int64  `json:"created"`
+}
+
 // export_manifest is the top-level bundle descriptor. Signature is the
 // last field and omitempty so the signing payload is the manifest with
 // the signature absent; restore recomputes the identical bytes.
@@ -239,6 +249,9 @@ func user_export(uid, app, passphrase, host string) (string, error) {
 		return "", err
 	}
 	if err := export_linked_json(udb, uid, filepath.Join(tree, "linked.json")); err != nil {
+		return "", err
+	}
+	if err := export_handles_json(uid, filepath.Join(tree, "handles.json")); err != nil {
 		return "", err
 	}
 
@@ -440,6 +453,16 @@ func export_linked_json(udb *DB, uid, path string) error {
 			Identifier: identifier,
 			Linked:     as_int64(r["created"]),
 		})
+	}
+	return export_write_json(path, out)
+}
+
+// export_handles_json writes the handles the user holds, so a restore onto a
+// server serving the same domain reserves them again (restore_handles).
+func export_handles_json(uid, path string) error {
+	out := []export_handle{}
+	for _, h := range handles_user(uid) {
+		out = append(out, export_handle{Domain: h.Domain, Name: h.Name, Parent: h.Parent, Kind: h.Kind, Created: h.Created})
 	}
 	return export_write_json(path, out)
 }

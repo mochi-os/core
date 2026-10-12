@@ -414,7 +414,7 @@ func restore_swap(uid, bundle string) error {
 	}
 	for _, e := range entries {
 		switch e.Name() {
-		case "manifest.json", "user.json", "schedule.json", "linked.json", "keys.age", "secrets.age":
+		case "manifest.json", "user.json", "schedule.json", "linked.json", "handles.json", "keys.age", "secrets.age":
 			continue
 		}
 		dst := filepath.Join(dest, e.Name())
@@ -517,6 +517,47 @@ func restore_finish_account(uid string, manifest export_manifest, bundle string)
 	for _, l := range links {
 		udb.exec("replace into relinks (user, service, identifier, linked) values (?, ?, ?, ?)",
 			uid, l.Service, l.Identifier, l.Linked)
+	}
+	restore_handles(uid, bundle)
+}
+
+// restore_handles reserves the bundle's handles again where this server serves
+// the domain and the name is free, parents before the names under them. A
+// handle on a domain this server does not serve, or one already taken here,
+// is skipped: the user picks a new one on the Networks page, as "Export,
+// restore and deletion" in the federation plan describes.
+func restore_handles(uid string, bundle string) {
+	var handles []export_handle
+	if err := restore_read_json(filepath.Join(bundle, "handles.json"), &handles); err != nil {
+		return
+	}
+	served := map[string]bool{}
+	if d := server_domain(); d != "" {
+		served[d] = true
+	}
+	for _, d := range domain_list() {
+		served[strings.ToLower(d.Domain)] = true
+	}
+	db := db_open("db/users.db")
+	for _, pass := range []bool{true, false} {
+		for _, h := range handles {
+			if (h.Parent == "") != pass || !served[h.Domain] || !handle_name_valid(h.Name) {
+				continue
+			}
+			if h.Parent != "" {
+				if parent := handle_get(h.Domain, h.Parent); parent == nil || parent.User != uid {
+					continue
+				}
+			}
+			if handle_get(h.Domain, h.Name) != nil {
+				continue
+			}
+			kind := h.Kind
+			if kind != "community" {
+				kind = "handle"
+			}
+			db.exec("insert into handles (domain, name, user, parent, kind, created) values (?, ?, ?, ?, ?, ?)", h.Domain, h.Name, uid, h.Parent, kind, h.Created)
+		}
 	}
 }
 

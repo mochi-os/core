@@ -61,6 +61,7 @@ func api_table() sl.StringDict {
 			"archive":   api_archive,
 			"cache":     api_cache,
 			"device":    api_device,
+			"handle":    api_handle,
 			"crypto": sls.FromStringDict(sl.String("mochi.crypto"), sl.StringDict{
 				"equal": sl.NewBuiltin("mochi.crypto.equal", api_crypto_equal),
 				"hash": sls.FromStringDict(sl.String("mochi.crypto.hash"), sl.StringDict{
@@ -104,6 +105,7 @@ func api_table() sl.StringDict {
 				"fingerprint": sl.NewBuiltin("mochi.server.fingerprint", api_server_fingerprint),
 				"counts":      sl.NewBuiltin("mochi.server.counts", api_server_counts),
 				"network":     sl.NewBuiltin("mochi.server.network", api_server_network),
+				"networks":    sl.NewBuiltin("mochi.server.networks", api_server_networks),
 				"peers":       sl.NewBuiltin("mochi.server.peers", api_server_peers),
 				"started":     sl.NewBuiltin("mochi.server.started", api_server_started),
 				"uptime":      sl.NewBuiltin("mochi.server.uptime", api_server_uptime),

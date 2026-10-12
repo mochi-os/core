@@ -254,6 +254,11 @@ func audit_settings_changed(admin string, setting string, value string) {
 	audit_write("OPS", fmt.Sprintf("settings_changed admin=%s setting=%s value=%s", admin, setting, value))
 }
 
+// audit_handle logs a handle reserved or released
+func audit_handle(user string, action string, domain string, name string) {
+	audit_write("OPS", fmt.Sprintf("handle user=%s action=%s domain=%s name=%s", user, action, domain, name))
+}
+
 // audit_user_version_changed logs user app version changes
 func audit_user_version_changed(user string, app string, version string, track string) {
 	audit_write("OPS", fmt.Sprintf("user_version_changed user=%s app=%s version=%s track=%s", user, app, version, track))

@@ -169,6 +169,8 @@ func main_serve(ready func()) int {
 
 	dev_apps_dir = ini_string("development", "apps", "")
 	dev_reload = ini_bool("development", "reload", false)
+	networks_development = ini_bool("development", "networks", false)
+	server_domain_name = ini_string("web", "domain", "")
 	web_cache = ini_bool("web", "cache", true)
 	web_compress = ini_string("web", "compress", "auto")
 	web_gzip_level = ini_int("web", "gzip", 6)

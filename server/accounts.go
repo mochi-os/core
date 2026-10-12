@@ -78,6 +78,21 @@ var providers = []Provider{
 		},
 		Verify: false,
 	},
+	// A network provider is a hosted account on that network, created from a
+	// handle the user holds (handles.go): the Networks page does it, so the
+	// flow is "handle" and the generic account form offers none of them. The
+	// same types will carry linked accounts on those networks, told apart by
+	// data.hosted.
+	{
+		Type:         "bluesky",
+		Capabilities: []string{"network"},
+		Flow:         "handle",
+		Fields: []ProviderField{
+			{Name: "handle", Label: "accounts.field.handle", Type: "text", Required: true, Placeholder: "alice"},
+			{Name: "domain", Label: "accounts.field.domain", Type: "text", Required: false, Placeholder: ""},
+		},
+		Verify: false,
+	},
 	{
 		Type:         "browser",
 		Capabilities: []string{"notify"},
@@ -123,6 +138,16 @@ var providers = []Provider{
 		Flow:         "oauth",
 	},
 	{
+		Type:         "fediverse",
+		Capabilities: []string{"network"},
+		Flow:         "handle",
+		Fields: []ProviderField{
+			{Name: "handle", Label: "accounts.field.handle", Type: "text", Required: true, Placeholder: "alice"},
+			{Name: "domain", Label: "accounts.field.domain", Type: "text", Required: false, Placeholder: ""},
+		},
+		Verify: false,
+	},
+	{
 		Type:         "github",
 		Capabilities: []string{"login"},
 		Flow:         "oauth",
@@ -131,6 +156,16 @@ var providers = []Provider{
 		Type:         "google",
 		Capabilities: []string{"login", "calendar"},
 		Flow:         "oauth",
+	},
+	{
+		Type:         "matrix",
+		Capabilities: []string{"network"},
+		Flow:         "handle",
+		Fields: []ProviderField{
+			{Name: "handle", Label: "accounts.field.handle", Type: "text", Required: true, Placeholder: "alice"},
+			{Name: "domain", Label: "accounts.field.domain", Type: "text", Required: false, Placeholder: ""},
+		},
+		Verify: false,
 	},
 	{
 		Type:         "mcp",
@@ -211,6 +246,16 @@ var providers = []Provider{
 		Capabilities: []string{"login"},
 		Flow:         "oauth",
 	},
+	{
+		Type:         "xmpp",
+		Capabilities: []string{"network"},
+		Flow:         "handle",
+		Fields: []ProviderField{
+			{Name: "handle", Label: "accounts.field.handle", Type: "text", Required: true, Placeholder: "alice"},
+			{Name: "domain", Label: "accounts.field.domain", Type: "text", Required: false, Placeholder: ""},
+		},
+		Verify: false,
+	},
 }
 
 // Starlark API module
@@ -219,9 +264,11 @@ var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"get":       sl.NewBuiltin("mochi.account.get", api_account_get),
 	"grant":     sl.NewBuiltin("mochi.account.grant", api_account_grant),
 	"list":      sl.NewBuiltin("mochi.account.list", api_account_list),
+	"networks":  sl.NewBuiltin("mochi.account.networks", api_account_networks),
 	"notify":    sl.NewBuiltin("mochi.account.notify", api_account_notify),
 	"providers": sl.NewBuiltin("mochi.account.providers", api_account_providers),
 	"remove":    sl.NewBuiltin("mochi.account.remove", api_account_remove),
+	"resolve":   sl.NewBuiltin("mochi.account.resolve", api_account_resolve),
 	"sync":      sl.NewBuiltin("mochi.account.sync", api_account_sync),
 	"test":      sl.NewBuiltin("mochi.account.test", api_account_test),
 	"throttled": sl.NewBuiltin("mochi.account.throttled", api_account_throttled),
@@ -833,6 +880,31 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		}
 		identifier = install_id
 		data["token"] = token
+
+	case "fediverse", "bluesky", "xmpp", "matrix":
+		// A hosted account on another network, on a handle the user holds. The
+		// id generated below is the account's permanent identifier on the
+		// fediverse (/~<id>), so it never carries the handle.
+		if !network_enabled(ptype) {
+			return sl_error(fn, "%s is not available on this server", ptype)
+		}
+		name, _ := fields["handle"].(string)
+		domain, _ := fields["domain"].(string)
+		domain = strings.ToLower(strings.TrimSpace(domain))
+		if domain == "" {
+			domain = server_domain()
+		}
+		h := handle_lookup(domain, name)
+		if h == nil || h.User != user.UID || h.Kind != "handle" {
+			return sl_error(fn, "handle %q is not held by this user on %s", name, domain)
+		}
+		if account_hosted(user, ptype, h.Domain, h.Name) != nil {
+			return sl_error(fn, "an account on %s already exists for this handle", ptype)
+		}
+		identifier = network_address(ptype, h.Name, h.Domain)
+		data["hosted"] = true
+		data["handle"] = h.Name
+		data["domain"] = h.Domain
 	}
 
 	// Serialize data to JSON

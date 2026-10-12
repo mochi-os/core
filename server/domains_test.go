@@ -244,6 +244,18 @@ func TestDomainHostPolicyWildcard(t *testing.T) {
 	if err := domains_host_policy(context.Background(), "example.org"); err != nil {
 		t.Errorf("domains_host_policy should allow an exactly registered domain: %v", err)
 	}
+
+	// An answerer - the handle registry, an engine, the routed app - claims a
+	// name under the wildcard, and that name alone gets a certificate.
+	saved := certificate_answerers
+	t.Cleanup(func() { certificate_answerers = saved })
+	certificate_answer(func(host string) bool { return host == "rooms.example.com" })
+	if err := domains_host_policy(context.Background(), "rooms.example.com"); err != nil {
+		t.Errorf("an answered name under a wildcard should be allowed: %v", err)
+	}
+	if err := domains_host_policy(context.Background(), "blog.example.com"); err == nil {
+		t.Error("an unanswered name under a wildcard is still refused")
+	}
 }
 
 // Test domain_lookup prefers exact match over wildcard

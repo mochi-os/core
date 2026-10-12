@@ -275,11 +275,65 @@ func domains_host_policy(ctx context.Context, host string) error {
 	// domain's weekly allowance at the certificate authority. A wildcard is
 	// served from a hand-supplied certificate in domains.conf, which
 	// domains_get_certificate consults before reaching this policy.
-	if strings.HasPrefix(d.Domain, "*.") {
+	if strings.HasPrefix(d.Domain, "*.") && !certificate_answered(host) {
 		return fmt.Errorf("no certificate on demand under wildcard domain: %s", host)
 	}
 
 	return nil
+}
+
+// certificate_answerers say which names under a wildcard domain something on
+// this server answers for, so a certificate may be requested for them: the
+// handle registry for a handle's host on Bluesky, an engine for a host it
+// serves (XMPP's rooms), and the app a domain routes to through a manifest
+// function it declares. Engines register theirs at startup.
+var certificate_answerers = []func(host string) bool{handle_host_answers, certificate_app_answers}
+
+// certificate_answer adds an answerer.
+func certificate_answer(f func(host string) bool) {
+	certificate_answerers = append(certificate_answerers, f)
+}
+
+// certificate_answered reports whether any answerer claims a host.
+func certificate_answered(host string) bool {
+	for _, f := range certificate_answerers {
+		if f(host) {
+			return true
+		}
+	}
+	return false
+}
+
+// certificate_app_answers asks the app a wildcard domain's root routes to,
+// through the manifest function "domain/certificate" if it declares one, run
+// as the server in the route owner's context with the host as its argument. A
+// truthy answer claims the host.
+func certificate_app_answers(host string) bool {
+	match := domain_match(host, "/")
+	if match == nil || match.route == nil || match.route.Method != "app" || match.route.Owner == "" {
+		return false
+	}
+	owner := user_by_uid(match.route.Owner)
+	if owner == nil {
+		return false
+	}
+	a := app_by_any(owner, match.route.Target)
+	if a == nil {
+		return false
+	}
+	av := a.active(owner)
+	if av == nil {
+		return false
+	}
+	if _, declared := av.Functions["domain/certificate"]; !declared {
+		return false
+	}
+	answer, err := app_call_as_server(owner, a, "domain/certificate", Map{"host": host})
+	if err != nil {
+		return false
+	}
+	claimed, _ := answer.(bool)
+	return claimed
 }
 
 // domains_load_certs loads manual certificates from domains.conf if configured

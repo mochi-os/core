@@ -86,7 +86,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 11
+	schema_version = 12
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -244,6 +244,12 @@ func db_create() {
 	users.exec("create table if not exists tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0)")
 	users.exec("create index if not exists tokens_user on tokens(user)")
 	users.exec("create index if not exists tokens_app on tokens(app)")
+
+	// Handles: the names behind hosted accounts on other networks, one
+	// namespace per domain (handles.go). Here beside users and entities because
+	// discovery requests resolve them with no user signed in.
+	users.exec("create table if not exists handles (domain text not null, name text not null, user text not null references users(uid) on delete cascade, parent text not null default '', kind text not null default 'handle', created integer not null, primary key (domain, name))")
+	users.exec("create index if not exists handles_user on handles(user)")
 
 	// Entities
 	users.exec("create table if not exists entities (id text not null primary key, private text not null, fingerprint text not null, user text not null references users(uid) on delete cascade, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
@@ -1389,6 +1395,8 @@ func db_upgrade() {
 			db_upgrade_10()
 		case 11:
 			db_upgrade_11()
+		case 12:
+			db_upgrade_12()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2677,6 +2685,14 @@ func db_upgrade_11() {
 	if have, _ := users.exists("select 1 from pragma_table_info('totp') where name='used'"); !have {
 		users.exec("alter table totp add column used integer not null default 0")
 	}
+}
+
+// db_upgrade_12 adds the handle registry to users.db; db_create carries the
+// same table for fresh installs.
+func db_upgrade_12() {
+	users := db_open("db/users.db")
+	users.exec("create table if not exists handles (domain text not null, name text not null, user text not null references users(uid) on delete cascade, parent text not null default '', kind text not null default 'handle', created integer not null, primary key (domain, name))")
+	users.exec("create index if not exists handles_user on handles(user)")
 }
 
 // db_upgrade_10 adds health.evicted, the timestamp of the first drop-subscriber

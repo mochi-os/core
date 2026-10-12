@@ -1195,6 +1195,9 @@ func api_user_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 				audit_admin_escalation(user.Username, id, "promote")
 			} else if old == "administrator" {
 				audit_admin_escalation(user.Username, id, "demote")
+				// Protected role handles are not passed on: they are freed, with
+				// their accounts, for another administrator to reserve afresh.
+				handles_demoted(id)
 			}
 		}
 	}
@@ -1330,6 +1333,10 @@ func user_purge_local(id string) (string, error) {
 	// does not reach them. A row left here is re-claimed every interval for the
 	// life of the server and nothing retires it.
 	schedule_db().exec("delete from schedule where user=?", id)
+
+	// Handles live in the shared registry and are freed for anyone to reserve
+	// again; the hosted accounts on them went with the user's own database.
+	handles_purge(id)
 
 	// Routes and delegations live in the shared domains database for the same
 	// reason. A route left here keeps its hostname pointed at this server with

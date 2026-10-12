@@ -172,6 +172,46 @@ var system_settings = map[string]SystemSetting{
 		UserReadable: false,
 		ReadOnly:     false,
 	},
+	"handles": {
+		Name:         "handles",
+		Pattern:      "natural",
+		Default:      "1",
+		Description:  "How many handles each user may reserve for accounts on other networks; zero leaves them to administrators",
+		UserReadable: true,
+		ReadOnly:     false,
+	},
+	"fediverse": {
+		Name:         "fediverse",
+		Pattern:      "^(true|false)$",
+		Default:      "true",
+		Description:  "Whether this server hosts accounts on the fediverse (Mastodon, Lemmy and other ActivityPub servers)",
+		UserReadable: true,
+		ReadOnly:     false,
+	},
+	"bluesky": {
+		Name:         "bluesky",
+		Pattern:      "^(true|false)$",
+		Default:      "true",
+		Description:  "Whether this server hosts accounts on Bluesky",
+		UserReadable: true,
+		ReadOnly:     false,
+	},
+	"xmpp": {
+		Name:         "xmpp",
+		Pattern:      "^(true|false)$",
+		Default:      "true",
+		Description:  "Whether this server hosts accounts on XMPP",
+		UserReadable: true,
+		ReadOnly:     false,
+	},
+	"matrix": {
+		Name:         "matrix",
+		Pattern:      "^(true|false)$",
+		Default:      "true",
+		Description:  "Whether this server hosts accounts on Matrix",
+		UserReadable: true,
+		ReadOnly:     false,
+	},
 	"operator_name": {
 		Name:         "operator_name",
 		Pattern:      "line",
@@ -472,6 +512,11 @@ func api_setting_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	var settings []map[string]any
 	for _, def := range system_settings {
+		// The networks' settings exist only once the development switch is on;
+		// until then the owner's page shows nothing of them.
+		if !networks_development && (def.Name == "handles" || network_known(def.Name)) {
+			continue
+		}
 		value := setting_get(def.Name, def.Default)
 		// Credentials are write-only: report only whether a value is set, never
 		// the value itself, so it can't be read back through the admin UI.

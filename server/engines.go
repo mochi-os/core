@@ -16,6 +16,7 @@
 package main
 
 import (
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -28,6 +29,9 @@ import (
 type engine struct {
 	name     string
 	prefixes []string
+	// setting names the network whose system setting switches the engine off
+	// (network_enabled); empty for an engine that is always on, as DAV is.
+	setting string
 	// body caps a request body on the engine's paths, in bytes. Zero keeps
 	// the general cap (web_body_maximum); an engine whose clients upload
 	// media or large documents on some route raises it for its paths.
@@ -105,6 +109,13 @@ func engine_route(c *gin.Context) bool {
 	e := engine_for(c.Request.URL.Path)
 	if e == nil {
 		return false
+	}
+	// A network the owner has switched off, or one still behind the development
+	// switch, answers nothing: its paths are not found, as they were before the
+	// engine existed.
+	if e.setting != "" && !network_enabled(e.setting) {
+		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
+		return true
 	}
 	return e.handler(c)
 }

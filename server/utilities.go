@@ -638,6 +638,10 @@ func valid_with(s string, match string, compile func(string) *regexp.Regexp) boo
 		match = "^[0-9a-zA-Z/\\-:_*.]{1,100}$"
 	case "apppath":
 		match = "^[0-9a-zA-Z-]{0,100}$"
+	case "author":
+		// A Mochi identity, or a person's own identifier on another network
+		// (resolve.go), stored as it is.
+		return author_valid(s)
 	case "constant":
 		match = "^[0-9a-zA-Z/\\-\\._]{1,100}$"
 	case "email":

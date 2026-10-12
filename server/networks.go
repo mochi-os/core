@@ -16,13 +16,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	sl "go.starlark.net/starlark"
@@ -147,25 +147,26 @@ func account_hosted(user *User, network string, domain string, name string) map[
 // accounts_hosted lists a user's hosted accounts, on one network or on every
 // network when network is empty, each with its data decoded.
 func accounts_hosted(user *User, network string) []map[string]any {
-	db := db_user(user, "user")
-	rows, _ := db.rows("select id, type, label, identifier, data, created, verified, enabled from accounts order by created")
 	var hosted []map[string]any
-	for _, row := range rows {
+	for _, row := range accounts_network(user) {
 		ptype, _ := row["type"].(string)
-		if !network_known(ptype) || (network != "" && ptype != network) {
+		if !account_hosted_flag(row) || (network != "" && ptype != network) {
 			continue
 		}
-		var data map[string]any
-		if text, _ := row["data"].(string); text != "" {
-			json.Unmarshal([]byte(text), &data)
-		}
-		if is_hosted, _ := data["hosted"].(bool); !is_hosted {
-			continue
-		}
-		row["data"] = data
 		hosted = append(hosted, row)
 	}
 	return hosted
+}
+
+// account_network_get returns a user's account on a network by its id, hosted
+// or linked, with its data decoded, or nil.
+func account_network_get(user *User, id string) map[string]any {
+	for _, row := range accounts_network(user) {
+		if row["id"] == id {
+			return row
+		}
+	}
+	return nil
 }
 
 // accounts_hosted_remove deletes a user's hosted accounts on a handle, on
@@ -235,7 +236,9 @@ const network_timeout = 30 * time.Second
 var block_domain_re = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 // networks_database makes the server-wide networks database: the delivery
-// queue, the hosts it has learned about and the owner's domain blocks.
+// queue, the hosts it has learned about, the owner's domain blocks, Mochi's
+// registrations as a client on other servers and the server's own keys as a
+// client.
 func networks_database() *DB {
 	db := db_open("db/networks.db")
 	db.exec("create table if not exists deliveries (id text not null primary key, user text not null, account text not null, network text not null, inbox text not null, host text not null, body text not null, attempts integer not null default 0, next integer not null, claimed integer not null default 0, created integer not null)")
@@ -243,7 +246,29 @@ func networks_database() *DB {
 	db.exec("create index if not exists deliveries_host on deliveries(host)")
 	db.exec("create table if not exists hosts (host text not null primary key, failures integer not null default 0, success integer not null default 0, failure integer not null default 0, next integer not null default 0, error text not null default '')")
 	db.exec("create table if not exists blocks (domain text not null primary key, created integer not null)")
+	db.exec("create table if not exists clients (host text not null, network text not null, id text not null, secret text not null, redirect text not null default '', created integer not null, primary key (host, network))")
+	db.exec("create table if not exists keys (name text not null primary key, algorithm text not null, public text not null, private text not null, created integer not null)")
 	return db
+}
+
+var networks_keys_lock sync.Mutex
+
+// networks_key is one of the server's own keys by name, made on first use with
+// the algorithm given and kept in networks.db: the private half, PEM.
+func networks_key(name string, algorithm string) string {
+	networks_keys_lock.Lock()
+	defer networks_keys_lock.Unlock()
+	db := db_open("db/networks.db")
+	if row, _ := db.row("select private from keys where name=?", name); row != nil {
+		return row_string(row, "private")
+	}
+	public, private, err := key_generate(algorithm)
+	if err != nil {
+		warn("Cannot make the %s key: %v", name, err)
+		return ""
+	}
+	db.exec("insert into keys (name, algorithm, public, private, created) values (?, ?, ?, ?, ?)", name, algorithm, public, private, now())
+	return private
 }
 
 // A host_refusal is why the host policy refused a host: the network is off, or
@@ -312,17 +337,28 @@ func network_target(user *User, network string, u *url.URL) error {
 // every hop. The user may be nil; a *host_refusal or a *RateLimitError says why
 // a request was not made.
 func network_request(ctx context.Context, user *User, network string, r *http.Request, redirects int) (*http.Response, error) {
+	return network_send(ctx, user, network, strings.ToLower(r.URL.Hostname()), r, redirects)
+}
+
+// network_send is network_request with the limiter's key given: a linked
+// account's requests count against a budget of their own on its server, which
+// is how that server limits them, rather than the host's. A context with a
+// deadline bounds the request instead of network_timeout.
+func network_send(ctx context.Context, user *User, network string, key string, r *http.Request, redirects int) (*http.Response, error) {
 	if err := network_target(user, network, r.URL); err != nil {
 		return nil, err
 	}
 	host := strings.ToLower(r.URL.Hostname())
-	if !rate_limit_host.allow(host) {
-		return nil, rate_limit_refuse(rate_limit_host, host, "requests per minute to "+host)
+	if !rate_limit_host.allow(key) {
+		return nil, rate_limit_refuse(rate_limit_host, key, "requests per minute to "+host)
 	}
 	if r.Header.Get("User-Agent") == "" {
 		r.Header.Set("User-Agent", "Mochi/"+build_version)
 	}
 	client := &http.Client{Timeout: network_timeout, Transport: url_transport}
+	if _, bounded := ctx.Deadline(); bounded {
+		client.Timeout = 0
+	}
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
 		if len(via) >= redirects {
 			return fmt.Errorf("too many redirects")

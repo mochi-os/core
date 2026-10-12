@@ -43,6 +43,12 @@ type oauth_provider struct {
 	scopes     []string
 	fetch      func(ctx context.Context, token string) (*oauth_profile, error)
 	extra_auth []oauth2.AuthCodeOption
+	// network is set on a provider that links accounts on another network
+	// (linked.go). It has no client of its own: Mastodon registers one per
+	// server and Bluesky publishes a client document, and each keeps its
+	// tokens on the account, so the ceremony carries its consent URL and the
+	// protocol completes the callback.
+	network string
 }
 
 // oauth_profile is the minimal identity we extract from any provider.
@@ -71,6 +77,20 @@ type oauth_state struct {
 	// account; the hint steers the provider to the account being re-consented.
 	Capability string `json:"capability,omitempty"`
 	Hint       string `json:"hint,omitempty"`
+	// A network link carries the remote server and what its protocol needs
+	// across the round trip: Mochi's client id on a Mastodon server; for
+	// Bluesky the account's identifier, its authorization server and the
+	// DPoP key the session is bound to; and for both the consent URL already
+	// built, which the hop answers.
+	Server     string `json:"server,omitempty"`
+	Client     string `json:"client,omitempty"`
+	Identifier string `json:"identifier,omitempty"`
+	Issuer     string `json:"issuer,omitempty"`
+	Key        string `json:"key,omitempty"`
+	Consent    string `json:"consent,omitempty"`
+	// State is the ceremony's id, the state parameter, for a protocol that
+	// needs it before the ceremony is stored; it is the row's key, not data.
+	State string `json:"-"`
 }
 
 // oauth_grant is what a grant ceremony asks for: a capability's scopes on
@@ -178,13 +198,20 @@ func oauth_providers() map[string]*oauth_provider {
 			scopes:    []string{"users.read", "users.email", "tweet.read"},
 			fetch:     oauth_x,
 		},
+		"mastodon": {name: "mastodon", display: "Mastodon", network: "mastodon"},
+		"bluesky":  {name: "bluesky", display: "Bluesky", network: "bluesky"},
 	}
 }
 
 // oauth_enabled reports whether a provider is configured and allowed. A
 // provider is considered enabled iff auth_oauth is not "disabled" (the
-// server-wide kill switch) and both a client ID and client secret are set.
+// server-wide kill switch) and both a client ID and client secret are set. A
+// network provider needs no client of its own and is offered while the
+// development switch is on.
 func oauth_enabled(name string) bool {
+	if p := oauth_providers()[name]; p != nil && p.network != "" {
+		return networks_development
+	}
 	if !auth_method_allowed("oauth") {
 		return false
 	}
@@ -248,6 +275,11 @@ func oauth_redirect(c *gin.Context, provider string) string {
 	if base != "" {
 		return strings.TrimRight(base, "/") + "/_/auth/oauth/" + provider + "/callback"
 	}
+	// A Bluesky link's redirect must be the one the client document names,
+	// which is on the configured domain whatever host the request came by.
+	if provider == "bluesky" && server_domain() != "" {
+		return bluesky_client_redirect()
+	}
 	scheme := "http"
 	if web_https && !web_is_localhost(c) {
 		scheme = "https"
@@ -291,7 +323,9 @@ func web_oauth_begin(c *gin.Context) {
 	name := c.Param("provider")
 	reg := oauth_providers()
 	provider, ok := reg[name]
-	if !ok || !oauth_enabled(name) {
+	// A network provider links an account through mochi.account.link, not a
+	// sign-in, until the login app offers it as one.
+	if !ok || !oauth_enabled(name) || provider.network != "" {
 		respond_error(c, http.StatusNotFound, "unknown_provider", "errors.unknown_provider", nil)
 		return
 	}
@@ -390,6 +424,17 @@ func web_oauth_begin(c *gin.Context) {
 // the browser visits to reach the provider's consent. Shared by the web begin
 // handler, the account grant builtin and the step-up verify.begin builtin.
 func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_id, target, mode, scheme, challenge, email string, grant *oauth_grant) (string, string, error) {
+	state, st := oauth_ceremony_prepare(c, name, user_id, target, mode, scheme, challenge, email)
+	if grant != nil {
+		st.Capability = grant.capability
+		st.Hint = grant.hint
+	}
+	return oauth_ceremony_begin(c, provider, name, user_id, state, st)
+}
+
+// oauth_ceremony_prepare makes a ceremony's state and id, for a caller to add
+// to before oauth_ceremony_begin stores it.
+func oauth_ceremony_prepare(c *gin.Context, name, user_id, target, mode, scheme, challenge, email string) (string, *oauth_state) {
 	verifier, _ := oauth_pkce()
 	state := random_alphanumeric(32)
 	nonce := random_alphanumeric(32)
@@ -404,7 +449,7 @@ func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_i
 		binding = random_alphanumeric(32)
 	}
 
-	st := oauth_state{
+	return state, &oauth_state{
 		Provider:  name,
 		Verifier:  verifier,
 		Nonce:     nonce,
@@ -416,12 +461,14 @@ func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_i
 		Email:     email,
 		Binding:   binding,
 		Return:    oauth_return{Nonce: returned},
+		State:     state,
 	}
-	if grant != nil {
-		st.Capability = grant.capability
-		st.Hint = grant.hint
-	}
-	consent, err := oauth_consent_url(provider, name, state, &st)
+}
+
+// oauth_ceremony_begin stores a prepared ceremony, bound to the user when one
+// began it, and returns the URL the browser visits and the return nonce.
+func oauth_ceremony_begin(c *gin.Context, provider *oauth_provider, name string, user_id string, state string, st *oauth_state) (string, string, error) {
+	consent, err := oauth_consent_url(provider, name, state, st)
 	if err != nil {
 		return "", "", err
 	}
@@ -429,8 +476,8 @@ func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_i
 	if err != nil {
 		return "", "", err
 	}
-	if binding != "" {
-		oauth_binding_set(c, binding)
+	if st.Binding != "" {
+		oauth_binding_set(c, st.Binding)
 	}
 
 	db_open("db/sessions.db").exec(
@@ -440,10 +487,10 @@ func oauth_begin_ceremony(c *gin.Context, provider *oauth_provider, name, user_i
 	// A link or grant ceremony begins inside the shell's sandboxed iframe,
 	// which may hand the top window only a same-origin URL: it starts at
 	// /start, where the session that owns the row is sent on to the consent.
-	if oauth_session_bound(mode, user_id) {
-		return "/_/auth/oauth/" + name + "/start?state=" + state, returned, nil
+	if oauth_session_bound(st.Mode, user_id) {
+		return "/_/auth/oauth/" + name + "/start?state=" + state, st.Return.Nonce, nil
 	}
-	return consent, returned, nil
+	return consent, st.Return.Nonce, nil
 }
 
 // oauth_session_bound reports whether a ceremony is bound to the session that
@@ -459,6 +506,14 @@ func oauth_session_bound(mode, user string) bool {
 // It is built from the stored state, so the URL /start answers is the one
 // /begin would have answered a top-window caller.
 func oauth_consent_url(provider *oauth_provider, name, state string, st *oauth_state) (string, error) {
+	// A network link's consent was built when the ceremony was prepared, by
+	// the protocol that pushed or registered what it names.
+	if provider.network != "" {
+		if st.Consent == "" {
+			return "", fmt.Errorf("the %s link has no consent", name)
+		}
+		return st.Consent, nil
+	}
 	cfg, _, err := oauth_client_config(provider, st.Redirect)
 	if err != nil {
 		return "", fmt.Errorf("provider config error (%s): %w", name, err)
@@ -540,20 +595,35 @@ func web_oauth_callback(c *gin.Context) {
 		return
 	}
 
-	if perr := c.Query("error"); perr != "" {
+	perr := c.Query("error")
+	state := c.Query("state")
+	code := c.Query("code")
+	if perr != "" && (provider.network == "" || state == "") {
 		oauth_error_redirect(c, "access_denied", nil)
 		return
 	}
-
-	state := c.Query("state")
-	code := c.Query("code")
-	if state == "" || code == "" {
+	if state == "" || (code == "" && perr == "") {
 		oauth_error_redirect(c, "state_invalid", nil)
 		return
 	}
 
 	st, link_user, ok := oauth_callback_ceremony(c, name, state)
 	if !ok {
+		return
+	}
+
+	// A network link completes in its protocol, bound to the user's session
+	// as a grant is; a refused consent goes back to the app's target.
+	if provider.network != "" {
+		if link_user == "" || (st.Mode != "account" && st.Mode != "mobile") {
+			oauth_error_redirect(c, "state_invalid", nil)
+			return
+		}
+		if perr != "" {
+			linked_link_failed(c, st, "access_denied")
+			return
+		}
+		linked_callback(c, provider.network, st, link_user, code)
 		return
 	}
 
@@ -1362,7 +1432,7 @@ func api_user_oauth_link(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "%v", err)
 	}
 	provider, ok := oauth_providers()[name]
-	if !ok || !oauth_enabled(name) {
+	if !ok || !oauth_enabled(name) || provider.network != "" {
 		return sl.None, nil
 	}
 
@@ -1399,7 +1469,7 @@ func api_user_oauth_verify_begin(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	}
 
 	provider, ok := oauth_providers()[name]
-	if !ok || !oauth_enabled(name) {
+	if !ok || !oauth_enabled(name) || provider.network != "" {
 		return sl_error(fn, "unknown provider")
 	}
 	// Only a provider the user has actually linked can re-authenticate them.
@@ -1878,6 +1948,10 @@ func web_oauth_exchange(c *gin.Context) {
 	}
 	if grant, _ := data["grant"].(bool); grant {
 		oauth_exchange_grant(c, data)
+		return
+	}
+	if linked, _ := data["linked"].(bool); linked {
+		linked_exchange(c, data)
 		return
 	}
 

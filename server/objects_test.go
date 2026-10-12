@@ -36,6 +36,17 @@ func object_dict(pairs ...string) *sl.Dict {
 	return d
 }
 
+// result_id reads the id a publish answered with.
+func result_id(value sl.Value) string {
+	d, _ := value.(*sl.Dict)
+	if d == nil {
+		return ""
+	}
+	v, _, _ := d.Get(sl.String("id"))
+	s, _ := sl.AsString(v)
+	return s
+}
+
 // delivery_body decodes the body of the newest queued delivery.
 func delivery_body(t *testing.T) (string, map[string]any) {
 	t.Helper()
@@ -67,7 +78,7 @@ func TestObjectCreateUpdateDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	remote := string(value.(sl.String))
+	remote := result_id(value)
 	if !strings.HasPrefix(remote, "https://example.com/~f1/") {
 		t.Fatalf("object id %q", remote)
 	}
@@ -103,7 +114,7 @@ func TestObjectCreateUpdateDelete(t *testing.T) {
 	}
 
 	value, err = api_account_object_update(thread, fn, sl.Tuple{sl.String("f1"), sl.String(remote), object_dict("type", "Note", "content", "<p>Edited</p>")}, nil)
-	if err != nil || string(value.(sl.String)) != remote {
+	if err != nil || result_id(value) != remote {
 		t.Fatalf("update = %v, %v", value, err)
 	}
 	_, activity = delivery_body(t)

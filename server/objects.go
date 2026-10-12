@@ -53,11 +53,16 @@ func networks_tables(db *DB) {
 	db.exec("create table if not exists followers (account text not null, actor text not null, inbox text not null, shared text not null default '', created integer not null, primary key (account, actor))")
 	db.exec("create table if not exists following (account text not null, actor text not null, inbox text not null default '', activity text not null, accepted integer not null default 0, created integer not null, primary key (account, actor))")
 	db.exec("create table if not exists blocks (domain text not null primary key, created integer not null)")
+	// What a linked account was asked to post, by the app's key (linked.go).
+	db.exec("create table if not exists requests (account text not null, key text not null, result text not null, created integer not null, primary key (account, key))")
 }
 
-// account_acting resolves the hosted account an app acts through: the account
-// permission, the user whose account it is, the account row and its actor id.
-// Only a fediverse account can act yet, and only while the network is on.
+// account_acting resolves the account an app acts through: the account
+// permission, the user whose account it is, the account row with its data
+// decoded, and for a hosted account its actor id. A hosted account acts only
+// while its network is on, and only a fediverse one can publish yet; a linked
+// account acts while the development switch is on, since it only makes
+// requests as the user.
 func account_acting(t *sl.Thread, fn *sl.Builtin, id string) (*User, map[string]any, string, error) {
 	if err := require_permission_account(t, fn, id); err != nil {
 		return nil, nil, "", err
@@ -66,9 +71,15 @@ func account_acting(t *sl.Thread, fn *sl.Builtin, id string) (*User, map[string]
 	if err != nil || user == nil {
 		return nil, nil, "", fmt.Errorf("no user")
 	}
-	row := account_hosted_get(user, id)
+	row := account_network_get(user, id)
 	if row == nil {
 		return nil, nil, "", fmt.Errorf("no such account")
+	}
+	if !account_hosted_flag(row) {
+		if !networks_development {
+			return nil, nil, "", fmt.Errorf("linked accounts are not available on this server")
+		}
+		return user, row, "", nil
 	}
 	network, _ := row["type"].(string)
 	if network != "fediverse" {
@@ -78,6 +89,12 @@ func account_acting(t *sl.Thread, fn *sl.Builtin, id string) (*User, map[string]
 		return nil, nil, "", fmt.Errorf("%s is off", network)
 	}
 	return user, row, account_actor(user, id), nil
+}
+
+// object_result shapes what a publish answers: the object's id, its page and
+// the object as published.
+func object_result(id string, page string, data any) sl.Value {
+	return sl_encode(map[string]any{"id": id, "url": page, "data": data})
 }
 
 // thread_context is the request's context, for an outbound request made on a
@@ -189,23 +206,25 @@ func object_stored_addressing(row map[string]any) (to []string, cc []string) {
 	return stored.To, stored.Cc
 }
 
-// mochi.account.object.create(account, object) -> string: Publish an object as
-// a hosted account and return its id. The object is an ActivityStreams object
-// the app has already put in the network's form (its type, HTML content,
-// attachments, tags); core gives it its id under the account, attributedTo and
-// published, and sends Create to everyone it addresses, which is the public and
-// the account's followers unless the object says otherwise.
+// mochi.account.object.create(account, object, key="") -> dict: Publish an object as an account and return {id, url, data}: its id on the network, its page where the network has one, and the object as published. As a hosted account, the object is an ActivityStreams object the app has already put in the network's form (its type, HTML content, attachments, tags); core gives it its id under the account, attributedTo and published, and sends Create to everyone it addresses, which is the public and the account's followers unless the object says otherwise. As a linked account, the object is in the network's own form - a Mastodon status, a Bluesky record, a Lemmy post or comment - and key makes the post once however often it is asked
 func api_account_object_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	var account string
+	var account, key string
 	var value sl.Value
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "object", &value); err != nil {
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "object", &value, "key?", &key); err != nil {
 		return nil, err
 	}
-	user, _, actor, err := account_acting(t, fn, account)
+	user, row, actor, err := account_acting(t, fn, account)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	object := sl_decode_map(value)
+	if l := linked_from(user, row); l != nil {
+		result, err := linked_create(thread_context(t), l, object, key)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return sl_encode(result), nil
+	}
 	kind, _ := object["type"].(string)
 	if kind == "" {
 		return sl_error(fn, "object needs a type")
@@ -239,29 +258,33 @@ func api_account_object_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		"object":    object,
 	}
 	object_deliver(thread_context(t), user, account, actor, activity, to, cc)
-	return sl.String(remote), nil
+	return object_result(remote, remote, object), nil
 }
 
-// mochi.account.object.update(account, id, object) -> string: Publish a new
-// version of an object the account published, and return its id. The object is
-// the whole new form, as for create; core keeps the id and published, sets
-// updated, and sends Update to everyone the object addresses.
+// mochi.account.object.update(account, id, object) -> dict: Publish a new version of an object the account published, and return {id, url, data} as create does. The object is the whole new form, as for create; as a hosted account core keeps the id and published, sets updated, and sends Update to everyone the object addresses
 func api_account_object_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, remote string
 	var value sl.Value
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "id", &remote, "object", &value); err != nil {
 		return nil, err
 	}
-	user, _, actor, err := account_acting(t, fn, account)
+	user, found, actor, err := account_acting(t, fn, account)
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	object := sl_decode_map(value)
+	if l := linked_from(user, found); l != nil {
+		result, err := linked_update(thread_context(t), l, remote, object)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return sl_encode(result), nil
 	}
 	db := db_user(user, "user")
 	id, row := object_get(db, actor, account, remote)
 	if row == nil || row["deleted"].(int64) != 0 {
 		return sl_error(fn, "no such object")
 	}
-	object := sl_decode_map(value)
 	kind, _ := object["type"].(string)
 	if kind == "" {
 		return sl_error(fn, "object needs a type")
@@ -291,20 +314,24 @@ func api_account_object_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		"object":   object,
 	}
 	object_deliver(thread_context(t), user, account, actor, activity, to, cc)
-	return sl.String(remote), nil
+	return object_result(remote, remote, object), nil
 }
 
-// mochi.account.object.delete(account, id) -> None: Withdraw an object the
-// account published: a Delete goes to everyone it addressed, and its id is kept
-// so the engine answers for it with a tombstone.
+// mochi.account.object.delete(account, id) -> None: Withdraw an object the account published. As a hosted account a Delete goes to everyone it addressed, and its id is kept so the engine answers for it with a tombstone; as a linked account the server is asked to delete it
 func api_account_object_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, remote string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "id", &remote); err != nil {
 		return nil, err
 	}
-	user, _, actor, err := account_acting(t, fn, account)
+	user, found, actor, err := account_acting(t, fn, account)
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	if l := linked_from(user, found); l != nil {
+		if err := linked_delete(thread_context(t), l, remote); err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return sl.None, nil
 	}
 	db := db_user(user, "user")
 	id, row := object_get(db, actor, account, remote)
@@ -342,6 +369,9 @@ func api_account_follow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
+	if actor == "" {
+		return sl_error(fn, "a linked account follows through mochi.account.request")
+	}
 	ctx := thread_context(t)
 	r, err := author_resolve(ctx, address)
 	if err != nil || r.Network != "fediverse" || r.ID == "" || r.Inbox == "" {
@@ -372,6 +402,9 @@ func api_account_unfollow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	user, _, actor, err := account_acting(t, fn, account)
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	if actor == "" {
+		return sl_error(fn, "a linked account unfollows through mochi.account.request")
 	}
 	db := db_user(user, "user")
 	row, _ := db.row("select actor, inbox, activity from following where account=? and actor=?", account, address)
@@ -408,12 +441,24 @@ func api_account_media(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "url", &address); err != nil {
 		return nil, err
 	}
-	user, _, actor, err := account_acting(t, fn, account)
+	user, row, actor, err := account_acting(t, fn, account)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	if u, err := url.Parse(address); err != nil || u.Hostname() == "" {
 		return sl_error(fn, "invalid url")
+	}
+	if l := linked_from(user, row); l != nil {
+		status, kind, data, err := linked_media(thread_context(t), l, address)
+		if err != nil {
+			debug("Media %s not fetched: %v", address, err)
+			return sl.None, nil
+		}
+		result := sl.NewDict(3)
+		result.SetKey(sl.String("status"), sl.MakeInt(status))
+		result.SetKey(sl.String("type"), sl.String(kind))
+		result.SetKey(sl.String("data"), sl.Bytes(data))
+		return result, nil
 	}
 	key := keypair_get(user, account, key_signing)
 	if key == nil {

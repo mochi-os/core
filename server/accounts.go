@@ -13,15 +13,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -37,6 +40,10 @@ type Provider struct {
 	Flow         string          `json:"flow"` // "form", "browser", "oauth"
 	Fields       []ProviderField `json:"fields"`
 	Verify       bool            `json:"verify"`
+	// Link is set on a network provider whose existing accounts can be
+	// linked (linked.go); provider_link reads it, since Bluesky's depends on
+	// the system having a configured domain.
+	Link *ProviderLink `json:"link,omitempty"`
 }
 
 // ProviderField defines a field in a provider's form
@@ -57,6 +64,15 @@ type ProviderField struct {
 	// written. Prose is the exception: the model fields' hint is a core label
 	// key, marked by the "accounts." prefix and resolved with the label.
 	Placeholder string `json:"placeholder"`
+}
+
+// A ProviderLink is how an existing account on a network provider is linked,
+// beside the hosted account its handle flow creates: by a form of the fields
+// given, or by the remote server's OAuth consent after the fields name the
+// server or the handle (mochi.account.link).
+type ProviderLink struct {
+	Flow   string          `json:"flow"` // "form", "oauth"
+	Fields []ProviderField `json:"fields"`
 }
 
 // providers defines all available account providers (sorted alphabetically by type).
@@ -81,17 +97,22 @@ var providers = []Provider{
 	// A network provider is a hosted account on that network, created from a
 	// handle the user holds (handles.go): the Networks page does it, so the
 	// flow is "handle" and the generic account form offers none of them. The
-	// same types will carry linked accounts on those networks, told apart by
-	// data.hosted.
+	// same types carry linked accounts on those networks, told apart by
+	// data.hosted, connected as Link says (linked.go); mastodon and lemmy are
+	// linked only, since a hosted account on the fediverse is one account for
+	// both, and their flow is "link".
 	{
 		Type:         "bluesky",
-		Capabilities: []string{"network"},
+		Capabilities: []string{"network", "social"},
 		Flow:         "handle",
 		Fields: []ProviderField{
 			{Name: "handle", Label: "accounts.field.handle", Type: "text", Required: true, Placeholder: "alice"},
 			{Name: "domain", Label: "accounts.field.domain", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
+		Link: &ProviderLink{Flow: "oauth", Fields: []ProviderField{
+			{Name: "handle", Label: "accounts.field.handle", Type: "text", Required: true, Placeholder: "alice.bsky.social"},
+		}},
 	},
 	{
 		Type:         "browser",
@@ -158,14 +179,38 @@ var providers = []Provider{
 		Flow:         "oauth",
 	},
 	{
+		Type:         "lemmy",
+		Capabilities: []string{"social"},
+		Flow:         "link",
+		Link: &ProviderLink{Flow: "form", Fields: []ProviderField{
+			{Name: "server", Label: "accounts.field.server", Type: "text", Required: true, Placeholder: "lemmy.world"},
+			{Name: "username", Label: "accounts.field.username", Type: "text", Required: true, Placeholder: ""},
+			{Name: "password", Label: "accounts.field.password", Type: "password", Required: true, Placeholder: ""},
+			{Name: "code", Label: "accounts.field.code", Type: "text", Required: false, Placeholder: ""},
+		}},
+	},
+	{
+		Type:         "mastodon",
+		Capabilities: []string{"social"},
+		Flow:         "link",
+		Link: &ProviderLink{Flow: "oauth", Fields: []ProviderField{
+			{Name: "server", Label: "accounts.field.server", Type: "text", Required: true, Placeholder: "mastodon.social"},
+		}},
+	},
+	{
 		Type:         "matrix",
-		Capabilities: []string{"network"},
+		Capabilities: []string{"network", "chat"},
 		Flow:         "handle",
 		Fields: []ProviderField{
 			{Name: "handle", Label: "accounts.field.handle", Type: "text", Required: true, Placeholder: "alice"},
 			{Name: "domain", Label: "accounts.field.domain", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
+		Link: &ProviderLink{Flow: "form", Fields: []ProviderField{
+			{Name: "username", Label: "accounts.field.username", Type: "text", Required: true, Placeholder: "@alice:matrix.org"},
+			{Name: "password", Label: "accounts.field.password", Type: "password", Required: true, Placeholder: ""},
+			{Name: "server", Label: "accounts.field.server", Type: "text", Required: false, Placeholder: ""},
+		}},
 	},
 	{
 		Type:         "mcp",
@@ -248,38 +293,48 @@ var providers = []Provider{
 	},
 	{
 		Type:         "xmpp",
-		Capabilities: []string{"network"},
+		Capabilities: []string{"network", "chat"},
 		Flow:         "handle",
 		Fields: []ProviderField{
 			{Name: "handle", Label: "accounts.field.handle", Type: "text", Required: true, Placeholder: "alice"},
 			{Name: "domain", Label: "accounts.field.domain", Type: "text", Required: false, Placeholder: ""},
 		},
 		Verify: false,
+		Link: &ProviderLink{Flow: "form", Fields: []ProviderField{
+			{Name: "address", Label: "accounts.field.identifier", Type: "text", Required: true, Placeholder: "alice@example.org"},
+			{Name: "password", Label: "accounts.field.password", Type: "password", Required: true, Placeholder: ""},
+		}},
 	},
 }
 
 // Starlark API module
 var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
-	"add":       sl.NewBuiltin("mochi.account.add", api_account_add),
-	"block":     api_account_block,
-	"follow":    sl.NewBuiltin("mochi.account.follow", api_account_follow),
-	"get":       sl.NewBuiltin("mochi.account.get", api_account_get),
-	"grant":     sl.NewBuiltin("mochi.account.grant", api_account_grant),
-	"key":       api_account_key,
-	"list":      sl.NewBuiltin("mochi.account.list", api_account_list),
-	"media":     sl.NewBuiltin("mochi.account.media", api_account_media),
-	"networks":  sl.NewBuiltin("mochi.account.networks", api_account_networks),
-	"notify":    sl.NewBuiltin("mochi.account.notify", api_account_notify),
-	"object":    api_account_object,
-	"providers": sl.NewBuiltin("mochi.account.providers", api_account_providers),
-	"remove":    sl.NewBuiltin("mochi.account.remove", api_account_remove),
-	"resolve":   sl.NewBuiltin("mochi.account.resolve", api_account_resolve),
-	"sync":      sl.NewBuiltin("mochi.account.sync", api_account_sync),
-	"test":      sl.NewBuiltin("mochi.account.test", api_account_test),
-	"throttled": sl.NewBuiltin("mochi.account.throttled", api_account_throttled),
-	"unfollow":  sl.NewBuiltin("mochi.account.unfollow", api_account_unfollow),
-	"update":    sl.NewBuiltin("mochi.account.update", api_account_update),
-	"verify":    sl.NewBuiltin("mochi.account.verify", api_account_verify),
+	"add":           sl.NewBuiltin("mochi.account.add", api_account_add),
+	"block":         api_account_block,
+	"follow":        sl.NewBuiltin("mochi.account.follow", api_account_follow),
+	"get":           sl.NewBuiltin("mochi.account.get", api_account_get),
+	"grant":         sl.NewBuiltin("mochi.account.grant", api_account_grant),
+	"key":           api_account_key,
+	"link":          sl.NewBuiltin("mochi.account.link", api_account_link),
+	"list":          sl.NewBuiltin("mochi.account.list", api_account_list),
+	"media":         sl.NewBuiltin("mochi.account.media", api_account_media),
+	"networks":      sl.NewBuiltin("mochi.account.networks", api_account_networks),
+	"notifications": sl.NewBuiltin("mochi.account.notifications", api_account_notifications),
+	"notify":        sl.NewBuiltin("mochi.account.notify", api_account_notify),
+	"object":        api_account_object,
+	"posts":         sl.NewBuiltin("mochi.account.posts", api_account_posts),
+	"providers":     sl.NewBuiltin("mochi.account.providers", api_account_providers),
+	"remove":        sl.NewBuiltin("mochi.account.remove", api_account_remove),
+	"request":       sl.NewBuiltin("mochi.account.request", api_account_request),
+	"resolve":       sl.NewBuiltin("mochi.account.resolve", api_account_resolve),
+	"sync":          sl.NewBuiltin("mochi.account.sync", api_account_sync),
+	"test":          sl.NewBuiltin("mochi.account.test", api_account_test),
+	"throttled":     sl.NewBuiltin("mochi.account.throttled", api_account_throttled),
+	"timeline":      sl.NewBuiltin("mochi.account.timeline", api_account_timeline),
+	"unfollow":      sl.NewBuiltin("mochi.account.unfollow", api_account_unfollow),
+	"update":        sl.NewBuiltin("mochi.account.update", api_account_update),
+	"upload":        sl.NewBuiltin("mochi.account.upload", api_account_upload),
+	"verify":        sl.NewBuiltin("mochi.account.verify", api_account_verify),
 })
 
 // provider_get returns a provider by type, or nil if not found
@@ -342,6 +397,28 @@ func account_redact(row map[string]any) map[string]any {
 	}
 }
 
+// account_capabilities names the capabilities an account may be listed under:
+// its provider's, except that on a network provider a hosted account is the
+// network's and a linked account holds the rest (social, chat).
+func account_capabilities(row map[string]any) []string {
+	ptype, _ := row["type"].(string)
+	provider := provider_get(ptype)
+	if provider == nil {
+		return []string{}
+	}
+	if !provider_network(ptype) {
+		return append([]string{}, provider.Capabilities...)
+	}
+	hosted := account_hosted_flag(row)
+	out := []string{}
+	for _, capability := range provider.Capabilities {
+		if (capability == "network") == hosted {
+			out = append(out, capability)
+		}
+	}
+	return out
+}
+
 // account_granted names the capabilities the account holds now. A form or
 // browser account holds all its provider offers; an OAuth account holds the
 // sign-in when its identity is linked to the user, and each further
@@ -353,7 +430,7 @@ func account_granted(user *User, row map[string]any) []string {
 		return []string{}
 	}
 	if provider.Flow != "oauth" {
-		return append([]string{}, provider.Capabilities...)
+		return account_capabilities(row)
 	}
 	out := []string{}
 	subject, _ := row["identifier"].(string)
@@ -369,10 +446,33 @@ func account_granted(user *User, row map[string]any) []string {
 	return out
 }
 
-// account_present returns the redacted row with the capabilities it holds.
+// account_present returns the redacted row with the capabilities it holds,
+// and for an account on a network whether it is hosted or linked, its
+// server, page, name and avatar, a Mastodon server's limits, and for a chat
+// account whether its session is connected and why not.
 func account_present(user *User, row map[string]any) map[string]any {
 	out := account_redact(row)
 	out["granted"] = account_granted(user, row)
+	ptype, _ := row["type"].(string)
+	if !provider_network(ptype) {
+		return out
+	}
+	data := account_data(row)
+	hosted := account_hosted_flag(row)
+	out["hosted"] = hosted
+	for _, key := range []string{"server", "url", "name", "avatar", "limits", "error"} {
+		if value, set := data[key]; set {
+			out[key] = value
+		}
+	}
+	if !hosted && linked_chat(ptype) {
+		id, _ := row["id"].(string)
+		connected, reason := linked_connected(user.UID, id)
+		out["connected"] = connected
+		if reason != "" {
+			out["error"] = reason
+		}
+	}
 	return out
 }
 
@@ -530,7 +630,12 @@ func api_account_providers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	for _, p := range list {
+		// A sign-in provider needs its client configured; a network provider
+		// is offered only while the development switch is on.
 		if p.Flow == "oauth" && !oauth_enabled(p.Type) {
+			continue
+		}
+		if provider_network(p.Type) && !networks_development {
 			continue
 		}
 		pm := map[string]any{
@@ -538,6 +643,19 @@ func api_account_providers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 			"capabilities": p.Capabilities,
 			"flow":         p.Flow,
 			"verify":       p.Verify,
+		}
+		if link := provider_link(&p); link != nil {
+			fields := make([]map[string]any, len(link.Fields))
+			for i, f := range link.Fields {
+				fields[i] = map[string]any{
+					"name":        f.Name,
+					"label":       resolve_core_label(language, f.Label, nil),
+					"type":        f.Type,
+					"required":    f.Required,
+					"placeholder": provider_placeholder(language, f.Placeholder),
+				}
+			}
+			pm["link"] = map[string]any{"flow": link.Flow, "fields": fields}
 		}
 
 		if len(p.Fields) > 0 {
@@ -601,11 +719,8 @@ func api_account_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	result := []map[string]any{}
 	for _, row := range rows {
 		// Filter by capability if specified
-		if capability != "" {
-			ptype, _ := row["type"].(string)
-			if !provider_has_capability(ptype, capability) {
-				continue
-			}
+		if capability != "" && !slices.Contains(account_capabilities(row), capability) {
+			continue
 		}
 		result = append(result, account_present(user, row))
 	}
@@ -1007,6 +1122,8 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 				val = int(i)
 			}
 			db.account_set(id, map[string]any{"enabled": val})
+			// A linked chat account's session follows the switch.
+			linked_refresh(user, id)
 
 		case "default":
 			val, _ := sl.AsString(kv[1])
@@ -1120,6 +1237,12 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			db.account_set(id, map[string]any{"data": "{}"})
 			return sl.True, nil
 		}
+	}
+	// A linked account's session ends and its server is told, best effort.
+	if l := linked_from(user, row); l != nil {
+		ctx, cancel := context.WithTimeout(thread_context(t), 10*time.Second)
+		defer cancel()
+		linked_forget(ctx, l)
 	}
 	keypairs_delete(db, id)
 	db.row_remove(reg_accounts, map[string]any{"id": id})
@@ -1535,6 +1658,26 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	case "apple", "caldav", "google":
 		result = caldav_test(user, row, language)
+
+	case "fediverse", "bluesky", "xmpp", "matrix", "mastodon", "lemmy":
+		// A hosted account has nothing to test; a linked one is checked with
+		// its server.
+		l := linked_from(user, row)
+		if l == nil {
+			result = AccountTestResult{Success: true, Message: resolve_core_label(language, "accounts.test.server_connected", nil)}
+			break
+		}
+		ctx, cancel := context.WithTimeout(thread_context(t), linked_timeout)
+		err = linked_verify(ctx, l)
+		cancel()
+		switch {
+		case err == nil:
+			result = AccountTestResult{Success: true, Message: resolve_core_label(language, "accounts.test.server_connected", nil)}
+		case errors.Is(err, linked_signed_out):
+			result = account_failure(language, "accounts.test.authentication_failed", ptype, err)
+		default:
+			result = account_failure(language, "accounts.test.connection_failed", ptype, err)
+		}
 
 	default:
 		result = AccountTestResult{Success: false, Message: resolve_core_label(language, "accounts.test.unknown_type", nil)}

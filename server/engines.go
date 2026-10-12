@@ -133,4 +133,5 @@ func engine_body_maximum(path string) int64 {
 // before the listener accepts requests.
 func engines_start() {
 	engine_register(dav_engine())
+	engine_register(bluesky_client_engine())
 }

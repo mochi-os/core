@@ -86,7 +86,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 13
+	schema_version = 14
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -1407,6 +1407,8 @@ func db_upgrade() {
 			db_upgrade_12()
 		case 13:
 			db_upgrade_13()
+		case 14:
+			db_upgrade_14()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2695,6 +2697,12 @@ func db_upgrade_11() {
 	if have, _ := users.exists("select 1 from pragma_table_info('totp') where name='used'"); !have {
 		users.exec("alter table totp add column used integer not null default 0")
 	}
+}
+
+// db_upgrade_14 adds Mochi's registrations as a client on other servers and
+// the server's own client keys to the networks database.
+func db_upgrade_14() {
+	networks_database()
 }
 
 // db_upgrade_13 adds the networks database: the delivery queue, the hosts it

@@ -167,6 +167,7 @@ func accounts_hosted_remove(user *User, domain string, name string) {
 	for _, row := range accounts_hosted(user, "") {
 		data, _ := row["data"].(map[string]any)
 		if data["domain"] == domain && data["handle"] == name {
+			keypairs_delete(db, row["id"].(string))
 			db.row_remove(reg_accounts, map[string]any{"id": row["id"]})
 		}
 	}

@@ -716,7 +716,7 @@ func restore_auth(uid string, account export_account, secrets *export_secrets) {
 		// bundle's plain user.db; put them back on the rows the copy restored.
 		// A bundle written before that change carries them in user.db already and
 		// simply has no accounts here.
-		if len(secrets.Accounts) > 0 {
+		if len(secrets.Accounts) > 0 || len(secrets.Keys) > 0 {
 			user := user_by_uid(uid)
 			if user != nil {
 				if db := db_user(user, "user"); db != nil {
@@ -725,6 +725,13 @@ func restore_auth(uid string, account export_account, secrets *export_secrets) {
 							continue
 						}
 						db.exec("update accounts set data=? where id=?", a.Data, a.Id)
+					}
+					// Hosted account keys travel the same way (keys.go).
+					for _, k := range secrets.Keys {
+						if k.Account == "" || k.Kind == "" {
+							continue
+						}
+						db.exec("update keys set private=? where account=? and kind=?", k.Private, k.Account, k.Kind)
 					}
 				}
 			}

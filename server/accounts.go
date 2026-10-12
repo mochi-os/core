@@ -263,6 +263,7 @@ var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"add":       sl.NewBuiltin("mochi.account.add", api_account_add),
 	"get":       sl.NewBuiltin("mochi.account.get", api_account_get),
 	"grant":     sl.NewBuiltin("mochi.account.grant", api_account_grant),
+	"key":       api_account_key,
 	"list":      sl.NewBuiltin("mochi.account.list", api_account_list),
 	"networks":  sl.NewBuiltin("mochi.account.networks", api_account_networks),
 	"notify":    sl.NewBuiltin("mochi.account.notify", api_account_notify),
@@ -932,6 +933,14 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 	superseded := account_device_bind(db, id, device)
 
+	// A hosted account signs as itself from the start (keys.go).
+	if data["hosted"] == true {
+		if err := keypairs_create(user, id, ptype); err != nil {
+			db.row_remove(reg_accounts, map[string]any{"id": id})
+			return sl_error(fn, "cannot make the account's keys: %v", err)
+		}
+	}
+
 	return sl_encode(map[string]any{
 		"id":         id,
 		"type":       ptype,
@@ -1107,6 +1116,7 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			return sl.True, nil
 		}
 	}
+	keypairs_delete(db, id)
 	db.row_remove(reg_accounts, map[string]any{"id": id})
 	return sl.True, nil
 }

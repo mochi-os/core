@@ -451,6 +451,9 @@ func db_user(u *User, name string) *DB {
 		// Devices the user runs Mochi on; push accounts hang off them.
 		db.exec("create table if not exists devices (id text not null primary key, label text not null default '', created integer not null, seen integer not null default 0)")
 
+		// Keys of hosted accounts on other networks (keys.go).
+		keys_table(db)
+
 		// User interest profiles for personalised ranking
 		db.exec("create table if not exists interests (qid text not null primary key, weight integer not null default 100, updated integer not null default 0)")
 

@@ -26,6 +26,9 @@ var permission_verbs_exempt = map[string]bool{
 	"notifications/send": true, "server/update": true, "tokens/create": true,
 	"user/authentication/sign": true, "user/close": true, "user/export": true,
 	"webpush/send": true,
+	// oauth/consent: consenting is the act - the login app answers another
+	// client's sign-in for the user; it neither reads nor writes a record.
+	"oauth/consent": true,
 }
 
 // TestPermissionsAreReadWriteOrDeliberateVerbs. The registry had twelve

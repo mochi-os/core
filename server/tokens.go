@@ -32,6 +32,19 @@ type Token struct {
 	Created  int64    `db:"created"`
 	Used     int64    `db:"used"`
 	Expires  int64    `db:"expires"`
+	// A token of another kind (signin.go): a sign-in by another client,
+	// bound to the client and the hosted account it signed in to, with a
+	// refresh token's hash, the DPoP key it is bound to and the device it
+	// is for; or a minted password for a hosted account, with its SCRAM
+	// forms. An app's own token has an empty kind.
+	Kind    string `db:"kind"`
+	Client  string `db:"client"`
+	Account string `db:"account"`
+	Network string `db:"network"`
+	JKT     string `db:"jkt"`
+	Refresh string `db:"refresh"`
+	Device  string `db:"device"`
+	Scram   string `db:"scram"`
 }
 
 var api_token = sls.FromStringDict(sl.String("mochi.token"), sl.StringDict{
@@ -87,14 +100,16 @@ func token_delete(hash string) bool {
 }
 
 // Return all tokens for a user and app (without the actual token values). An
-// empty app names every app, and a scope keeps only the tokens naming it.
+// empty app names every app, and a scope keeps only the tokens naming it. A
+// token of another kind (signin.go) carries its kind, the client that signed
+// in with it, the account it is for and the device.
 func token_list(user string, app string, scope string) []map[string]any {
 	db := db_open("db/users.db")
 	var rows []map[string]any
 	if app != "" {
-		rows, _ = db.rows("select hash, name, scopes, action, entity, created, expires from tokens where user = ? and app = ?", user, app)
+		rows, _ = db.rows("select hash, name, scopes, action, entity, created, expires, kind, client, account, network, device from tokens where user = ? and app = ?", user, app)
 	} else {
-		rows, _ = db.rows("select hash, name, scopes, action, entity, created, expires from tokens where user = ?", user)
+		rows, _ = db.rows("select hash, name, scopes, action, entity, created, expires, kind, client, account, network, device from tokens where user = ?", user)
 	}
 
 	useds := token_useds(user)
@@ -118,6 +133,11 @@ func token_list(user string, app string, scope string) []map[string]any {
 			"created": row["created"],
 			"used":    useds[hash],
 			"expires": row["expires"],
+			"kind":    row["kind"],
+			"client":  row["client"],
+			"account": row["account"],
+			"network": row["network"],
+			"device":  row["device"],
 		})
 	}
 	return results
@@ -151,7 +171,7 @@ func token_lookup(token string) *Token {
 	db := db_open("db/users.db")
 
 	var t Token
-	if !db.scan(&t, "select hash, user, app, name, scopes, action, entity, created, expires from tokens where hash = ?", hash) {
+	if !db.scan(&t, "select hash, user, app, name, scopes, action, entity, created, expires, kind, client, account, network, jkt, refresh, device, scram from tokens where hash = ?", hash) {
 		return nil
 	}
 
@@ -228,9 +248,10 @@ func token_expiry_capped(expires int64, action string) int64 {
 // token_unbound reports whether a token may be used on a core route, which
 // has no action pattern to compare a binding against. A bound token is minted
 // to be handed out - an RSS feed URL, a git credential - so it must not also
-// prove identity.
+// prove identity; nor may a token of another kind, which another network's
+// client signed in with or types as a password.
 func token_unbound(t *Token) bool {
-	return t != nil && t.Action == ""
+	return t != nil && t.Action == "" && t.Kind == ""
 }
 
 // Check if a token has a specific scope

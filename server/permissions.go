@@ -123,6 +123,9 @@ var permissions = []Permission{
 	{"domains/write", true, false},
 	{"notifications/write", true, false},
 	{"notifications/read", true, false},
+	// Answering another client's sign-in for the user: the consent page's
+	// alone, which lives in the login app (signin.go).
+	{"oauth/consent", true, false},
 	{"notifications/send", true, false},
 	// Reading which permissions an app holds is a display concern; granting
 	// and revoking them is not. They were one permission, so an app that only

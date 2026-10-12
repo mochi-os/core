@@ -132,8 +132,7 @@ func create_token_test_db(t *testing.T) *DB {
 		scopes TEXT NOT NULL DEFAULT '',
 		expires TEXT NOT NULL DEFAULT '',
 		created TEXT NOT NULL DEFAULT '',
-		last_used TEXT NOT NULL DEFAULT ''
-	)`)
+		last_used TEXT NOT NULL DEFAULT '', kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '')`)
 
 	// Create a test user
 	db.exec("INSERT INTO users (id, username) VALUES (1, 'testuser')")
@@ -309,7 +308,7 @@ func TestTokenCascadeDelete(t *testing.T) {
 		scopes TEXT NOT NULL DEFAULT '',
 		expires TEXT NOT NULL DEFAULT '',
 		created TEXT NOT NULL DEFAULT '',
-		last_used TEXT NOT NULL DEFAULT ''
+		last_used TEXT NOT NULL DEFAULT '', kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default ''
 	)`)
 	db.exec("PRAGMA foreign_keys = ON")
 
@@ -341,7 +340,7 @@ func TestTokenDeleteByTokenStringAndAppScope(t *testing.T) {
 	test_data_directory(t)
 
 	db := db_open("db/users.db")
-	db.exec(`create table tokens (hash text primary key, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null default 0, expires integer not null default 0)`)
+	db.exec(`create table tokens (hash text primary key, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null default 0, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '')`)
 	db_open("db/sessions.db").exec(`create table accesses (hash text primary key, user text not null, used integer not null default 0)`)
 
 	// token_create returns the token STRING (not the hash), stamped app="feeds".
@@ -431,7 +430,7 @@ func TestTokenAllowsMatchesEitherEntityIdentifier(t *testing.T) {
 func TestTokenCreateAndDeleteRefuseACarriedCredential(t *testing.T) {
 	test_data_directory(t)
 	db := db_open("db/users.db")
-	db.exec(`create table tokens (hash text primary key, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null default 0, expires integer not null default 0)`)
+	db.exec(`create table tokens (hash text primary key, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null default 0, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '')`)
 	db_open("db/sessions.db").exec(`create table accesses (hash text primary key, user text not null, used integer not null default 0)`)
 	app := &App{id: "people"}
 	app.internal = &AppVersion{app: app}

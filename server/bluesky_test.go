@@ -7,13 +7,10 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -40,19 +37,6 @@ type bluesky_fake struct {
 	refused    bool // a refresh is refused, so the app password is used again
 	revokes    int
 	records    []map[string]any
-}
-
-// jwk_public reads a P-256 public key from a JWK.
-func jwk_public(jwk map[string]any) (*ecdsa.PublicKey, error) {
-	x, err := base64.RawURLEncoding.DecodeString(fmt.Sprint(jwk["x"]))
-	if err != nil {
-		return nil, err
-	}
-	y, err := base64.RawURLEncoding.DecodeString(fmt.Sprint(jwk["y"]))
-	if err != nil {
-		return nil, err
-	}
-	return &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(x), Y: new(big.Int).SetBytes(y)}, nil
 }
 
 // dpop_check verifies a DPoP proof against the request and returns its claims

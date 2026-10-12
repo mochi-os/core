@@ -86,7 +86,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 14
+	schema_version = 15
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -241,7 +241,8 @@ func db_create() {
 	// API token definitions. Hot per-request "used" timestamp lives in
 	// sessions.db.accesses; here we keep just the definition so token loss
 	// doesn't follow sessions.db corruption.
-	users.exec("create table if not exists tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0)")
+	users.exec("create table if not exists tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '')")
+	users.exec("create index if not exists tokens_refresh on tokens(refresh)")
 	users.exec("create index if not exists tokens_user on tokens(user)")
 	users.exec("create index if not exists tokens_app on tokens(app)")
 
@@ -458,6 +459,7 @@ func db_user(u *User, name string) *DB {
 		// Keys of hosted accounts on other networks (keys.go).
 		keys_table(db)
 		networks_tables(db)
+		numbers_table(db)
 
 		// User interest profiles for personalised ranking
 		db.exec("create table if not exists interests (qid text not null primary key, weight integer not null default 100, updated integer not null default 0)")
@@ -1409,6 +1411,8 @@ func db_upgrade() {
 			db_upgrade_13()
 		case 14:
 			db_upgrade_14()
+		case 15:
+			db_upgrade_15()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2697,6 +2701,20 @@ func db_upgrade_11() {
 	if have, _ := users.exists("select 1 from pragma_table_info('totp') where name='used'"); !have {
 		users.exec("alter table totp add column used integer not null default 0")
 	}
+}
+
+// db_upgrade_15 adds the other token kinds to users.db tokens - a sign-in by
+// another network's client, a minted password - and the clients registered to
+// sign users in to the networks database.
+func db_upgrade_15() {
+	users := db_open("db/users.db")
+	for _, column := range []string{"kind", "client", "account", "network", "jkt", "refresh", "device", "scram"} {
+		if have, _ := users.exists("select 1 from pragma_table_info('tokens') where name=?", column); !have {
+			users.exec("alter table tokens add column " + column + " text not null default ''")
+		}
+	}
+	users.exec("create index if not exists tokens_refresh on tokens(refresh)")
+	networks_database()
 }
 
 // db_upgrade_14 adds Mochi's registrations as a client on other servers and

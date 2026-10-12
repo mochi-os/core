@@ -124,6 +124,7 @@ func api_table() sl.StringDict {
 			"stream":  &stream_module{},
 			"text":    api_text,
 			"token":   api_token,
+			"oauth":   api_oauth,
 			"user":    api_user,
 			"time": sls.FromStringDict(sl.String("mochi.time"), sl.StringDict{
 				"local": sl.NewBuiltin("mochi.time.local", api_time_local),

@@ -322,6 +322,7 @@ var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"notifications": sl.NewBuiltin("mochi.account.notifications", api_account_notifications),
 	"notify":        sl.NewBuiltin("mochi.account.notify", api_account_notify),
 	"object":        api_account_object,
+	"password":      sl.NewBuiltin("mochi.account.password", api_account_password),
 	"posts":         sl.NewBuiltin("mochi.account.posts", api_account_posts),
 	"providers":     sl.NewBuiltin("mochi.account.providers", api_account_providers),
 	"remove":        sl.NewBuiltin("mochi.account.remove", api_account_remove),

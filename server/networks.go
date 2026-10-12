@@ -237,8 +237,8 @@ var block_domain_re = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.
 
 // networks_database makes the server-wide networks database: the delivery
 // queue, the hosts it has learned about, the owner's domain blocks, Mochi's
-// registrations as a client on other servers and the server's own keys as a
-// client.
+// registrations as a client on other servers, the server's own keys as a
+// client, and the clients registered to sign users in with their own tokens.
 func networks_database() *DB {
 	db := db_open("db/networks.db")
 	db.exec("create table if not exists deliveries (id text not null primary key, user text not null, account text not null, network text not null, inbox text not null, host text not null, body text not null, attempts integer not null default 0, next integer not null, claimed integer not null default 0, created integer not null)")
@@ -248,6 +248,10 @@ func networks_database() *DB {
 	db.exec("create table if not exists blocks (domain text not null primary key, created integer not null)")
 	db.exec("create table if not exists clients (host text not null, network text not null, id text not null, secret text not null, redirect text not null default '', created integer not null, primary key (host, network))")
 	db.exec("create table if not exists keys (name text not null primary key, algorithm text not null, public text not null, private text not null, created integer not null)")
+	// The clients registered to sign users in, and the tokens of their own
+	// (signin.go).
+	db.exec("create table if not exists applications (id text not null primary key, secret text not null default '', name text not null default '', website text not null default '', redirects text not null default '[]', scopes text not null default '', network text not null, created integer not null)")
+	db.exec("create table if not exists tokens (hash text not null primary key, client text not null, scopes text not null default '', created integer not null)")
 	return db
 }
 

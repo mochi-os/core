@@ -22,7 +22,7 @@ func identity_token_setup(t *testing.T) func(action, entity, scopes string) stri
 
 	users := db_open("db/users.db")
 	users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'public', data text not null default '', published integer not null default 0)")
-	users.exec("create table tokens (hash text primary key not null, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0)")
+	users.exec("create table tokens (hash text primary key not null, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '')")
 	users.exec("insert into users (uid, username, methods) values ('u-token', 'owner@example.com', 'email')")
 	users.exec("insert into entities (id, private, fingerprint, user, class, name) values ('e-token', '', 'fp-token', 'u-token', 'person', 'Owner')")
 

@@ -498,6 +498,7 @@ var (
 	// Default apps to install. Login, Menu, and Home must be first three (bootstrap depends on it), then alphabetical.
 	apps_default = []DefaultApp{
 		{"1FLjnMyW4ozYZhNMqkXTWYgjcoHA7Wif3B3UeAe45chxWnuP1F", "Login", []struct{ Permission, Object string }{
+			{"oauth/consent", ""},
 			{"user/authentication/read", ""},
 			{"user/authentication/write", ""},
 		}},

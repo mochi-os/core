@@ -547,6 +547,7 @@ var (
 			{"accounts/calendar", ""},
 		}},
 		{"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92", "Chat", []struct{ Permission, Object string }{
+			{"account", "*"},
 			{"friends/read", ""},
 			{"microphone", ""},
 		}},
@@ -560,6 +561,7 @@ var (
 		}},
 		{"12254aHfG39LqrizhydT6iYRCTAZqph1EtAkVTR7DcgXZKWqRrj", "Feeds", []struct{ Permission, Object string }{
 			{"access/read", ""},
+			{"account", "*"},
 			{"accounts/ai", ""},
 			{"accounts/read", ""},
 			{"entity/read", ""},
@@ -570,6 +572,7 @@ var (
 		}},
 		{"12PGVUZUrLqgfqp1ovH8ejfKpAQq6uXbrcCqtoxWHjcuxWDxZbt", "Forums", []struct{ Permission, Object string }{
 			{"access/read", ""},
+			{"account", "*"},
 			{"accounts/ai", ""},
 			{"accounts/read", ""},
 			{"entity/read", ""},

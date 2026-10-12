@@ -31,6 +31,10 @@ func create_domains_test_env(t *testing.T) {
 	settings_db := db_open("db/settings.db")
 	settings_db.exec("create table if not exists settings (name text primary key, value text not null)")
 
+	// The handle registry answers for names under a wildcard domain.
+	users := db_open("db/users.db")
+	users.exec("create table if not exists handles (domain text not null, name text not null, user text not null, parent text not null default '', kind text not null default 'handle', created integer not null, primary key (domain, name))")
+
 	// Create domains database
 	domains := db_open("db/domains.db")
 	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")

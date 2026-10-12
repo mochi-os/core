@@ -13,6 +13,7 @@ package main
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 
 	sl "go.starlark.net/starlark"
@@ -173,12 +174,27 @@ var api_permission = sls.FromStringDict(sl.String("mochi.permission"), sl.String
 	"revoke":  sl.NewBuiltin("mochi.permission.revoke", api_permission_revoke),
 })
 
+// permissions_named lists the permissions that name an object after a colon:
+// url:<domain> and account:<id>. The wildcard object "*" makes each restricted,
+// a specific object is standard, and none needs the administrator role.
+var permissions_named = []string{"url", "account"}
+
+// permission_named returns the name and object of a permission that names an
+// object, and whether it is one: "url:github.com" -> ("url", "github.com", true).
+func permission_named(permission string) (name, object string, ok bool) {
+	for _, named := range permissions_named {
+		if strings.HasPrefix(permission, named+":") {
+			return named, permission[len(named)+1:], true
+		}
+	}
+	return "", "", false
+}
+
 // permission_restricted returns whether a permission is restricted.
-// Dynamic permissions: url:* is restricted, url:<domain> is standard.
+// Dynamic permissions: url:* and account:* are restricted, url:<domain> and
+// account:<id> are standard.
 func permission_restricted(name string) bool {
-	// Handle dynamic url permission
-	if strings.HasPrefix(name, "url:") {
-		object := name[4:]
+	if _, object, ok := permission_named(name); ok {
 		return object == "*"
 	}
 
@@ -195,8 +211,8 @@ func permission_restricted(name string) bool {
 
 // permission_administrator returns whether a permission requires admin role
 func permission_administrator(name string) bool {
-	// Dynamic url permissions don't require admin
-	if strings.HasPrefix(name, "url:") {
+	// Dynamic url and account permissions don't require admin
+	if _, _, ok := permission_named(name); ok {
 		return false
 	}
 
@@ -210,20 +226,46 @@ func permission_administrator(name string) bool {
 }
 
 // permission_name resolves the human-readable, translated name for a permission
-// code in the given language. Dynamic url:/service: permissions are templated;
+// code in the given language. Dynamic url:/account:/service: permissions are
+// templated, an account permission by the address of the user's account it names;
 // everything else resolves a "permissions.<code>" core label, with "/" in the
-// code mapped to "." to match the dotted core-label key convention.
-func permission_name(language, permission string) string {
+// code mapped to "." to match the dotted core-label key convention. The user is
+// needed only to name an account, and may be nil otherwise.
+func permission_name(u *User, language, permission string) string {
 	if permission == "url:*" {
 		return resolve_core_label(language, "permissions.url.all", nil)
 	}
 	if strings.HasPrefix(permission, "url:") {
 		return resolve_core_label(language, "permissions.url", map[string]any{"domain": permission[4:]})
 	}
+	if permission == "account:*" {
+		return resolve_core_label(language, "permissions.account.all", nil)
+	}
+	if strings.HasPrefix(permission, "account:") {
+		return resolve_core_label(language, "permissions.account", map[string]any{"address": account_address(u, permission[8:])})
+	}
 	if strings.HasPrefix(permission, "service/") {
 		return resolve_core_label(language, "permissions.service", map[string]any{"service": permission[8:]})
 	}
 	return resolve_core_label(language, "permissions."+strings.ReplaceAll(permission, "/", "."), nil)
+}
+
+// account_address returns the address of one of a user's accounts, for naming
+// an account:<id> permission: the account's identifier, else its label, else the
+// id itself when the account is not one of the user's.
+func account_address(u *User, id string) string {
+	if u != nil && id != "" {
+		db := db_user(u, "user")
+		if row, _ := db.row("select identifier, label from accounts where id=?", id); row != nil {
+			if identifier, _ := row["identifier"].(string); identifier != "" {
+				return identifier
+			}
+			if label, _ := row["label"].(string); label != "" {
+				return label
+			}
+		}
+	}
+	return id
 }
 
 // thread_language resolves the request's language from a Starlark thread, using
@@ -241,17 +283,18 @@ func thread_language(t *sl.Thread) string {
 
 // permission_split splits a permission into name and object parts
 // "url:github.com" -> "url", "github.com"
+// "account:f1" -> "account", "f1"
 // "group/modify" -> "group/modify", ""
 func permission_split(permission string) (name, object string) {
-	if strings.HasPrefix(permission, "url:") {
-		return "url", permission[4:]
+	if name, object, ok := permission_named(permission); ok {
+		return name, object
 	}
 	return permission, ""
 }
 
 // permission_join joins a name and object back into a permission string
 func permission_join(name, object string) string {
-	if name == "url" {
+	if slices.Contains(permissions_named, name) {
 		return name + ":" + object
 	}
 	if object != "" {
@@ -316,26 +359,26 @@ func permission_granted(u *User, app_id string, permission string) bool {
 	db := db_user(u, "user")
 	db.permissions_setup()
 
-	// For url permissions, check if any granted domain matches
-	if name == "url" {
-		// First check for exact match or wildcard
-		granted, _ := db.exists("select 1 from permissions where app=? and permission='url' and (object=? or object='*') and granted=1", app_id, object)
+	// A permission naming an object is granted by a row for that object or for
+	// the wildcard; a url permission also by a row for a parent domain.
+	if slices.Contains(permissions_named, name) {
+		granted, _ := db.exists("select 1 from permissions where app=? and permission=? and (object=? or object='*') and granted=1", app_id, name, object)
 		if granted {
 			return true
 		}
-
-		// Check all granted domains for subdomain match
-		rows, err := db.rows("select object from permissions where app=? and permission='url' and granted=1", app_id)
-		if err == nil {
-			for _, row := range rows {
-				if obj, ok := row["object"].(string); ok {
-					if domain_matches(obj, object) {
-						return true
+		if name == "url" {
+			rows, err := db.rows("select object from permissions where app=? and permission='url' and granted=1", app_id)
+			if err == nil {
+				for _, row := range rows {
+					if obj, ok := row["object"].(string); ok {
+						if domain_matches(obj, object) {
+							return true
+						}
 					}
 				}
 			}
 		}
-		return false
+		return permission_seeded(u, db, app_id, name, "*")
 	}
 
 	// For other permissions, check exact match
@@ -344,20 +387,26 @@ func permission_granted(u *User, app_id string, permission string) bool {
 		return true
 	}
 
-	// Default grants are seeded lazily only while the user is still bootstrapping
-	// from another host, the window app_user_setup skips. A revoked permission has
-	// an explicit granted=0 row, so it is never re-granted here.
-	if user_pending(u) {
-		if seeded, _ := db.exists("select 1 from permissions where app=? and permission=? and object=?", app_id, name, object); !seeded {
-			for _, p := range apps_default_get(app_id) {
-				if p.Permission == name && p.Object == object {
-					db.exec("insert or ignore into permissions (app, permission, object, granted) values (?, ?, ?, 1)", app_id, name, object) // exec-ok: transient bootstrap-window seed of a re-derivable default grant; app_user_setup writes the authoritative row once the user is active
-					return true
-				}
-			}
+	return permission_seeded(u, db, app_id, name, object)
+}
+
+// permission_seeded seeds a default grant lazily, and reports whether it did.
+// Only while the user is still bootstrapping from another host, the window
+// app_user_setup skips. A revoked permission has an explicit granted=0 row, so
+// it is never re-granted here.
+func permission_seeded(u *User, db *DB, app_id string, name string, object string) bool {
+	if !user_pending(u) {
+		return false
+	}
+	if seeded, _ := db.exists("select 1 from permissions where app=? and permission=? and object=?", app_id, name, object); seeded {
+		return false
+	}
+	for _, p := range apps_default_get(app_id) {
+		if p.Permission == name && p.Object == object {
+			db.exec("insert or ignore into permissions (app, permission, object, granted) values (?, ?, ?, 1)", app_id, name, object) // exec-ok: transient bootstrap-window seed of a re-derivable default grant; app_user_setup writes the authoritative row once the user is active
+			return true
 		}
 	}
-
 	return false
 }
 
@@ -414,7 +463,7 @@ func permissions_list(u *User, app_id, language string) []map[string]any {
 
 		result = append(result, map[string]any{
 			"permission": full,
-			"name":       permission_name(language, full),
+			"name":       permission_name(u, language, full),
 			"granted":    granted,
 			"restricted": permission_restricted(full),
 			"admin":      permission_administrator(full),
@@ -604,6 +653,17 @@ func require_permission_url(t *sl.Thread, fn *sl.Builtin, rawurl string) error {
 	return require_permission_acting(t, fn, "url:"+domain)
 }
 
+// require_permission_account checks the account permission for one of the
+// user's accounts, by its id. As for url, the grant consulted is the storage
+// account's: the account acted through belongs to the user whose data the call
+// reads, and a public action reached from outside has no caller.
+func require_permission_account(t *sl.Thread, fn *sl.Builtin, id string) error {
+	if id == "" || id == "*" {
+		return fmt.Errorf("invalid account")
+	}
+	return require_permission_acting(t, fn, "account:"+id)
+}
+
 // mochi.permission.require(permission) -> None: Fail unless the current app
 // holds a permission, the way a gated API would. An app calls it before work
 // whose gate answers quietly - mochi.url.get returns 403 - so the caller's
@@ -755,7 +815,7 @@ func api_permission_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 }
 
 // mochi.permission.catalog() -> list: List all defined permissions, each with
-// its code, translated name, and security flags. Dynamic url:/service:
+// its code, translated name, and security flags. Dynamic url:/account:/service:
 // permissions are not listed (they are named on demand via mochi.permission.name).
 func api_permission_catalog(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 0 {
@@ -767,7 +827,7 @@ func api_permission_catalog(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	for _, p := range permissions {
 		result = append(result, map[string]any{
 			"permission": p.Name,
-			"name":       permission_name(language, p.Name),
+			"name":       permission_name(nil, language, p.Name),
 			"restricted": p.Restricted,
 			"admin":      p.AdminOnly,
 		})
@@ -777,7 +837,8 @@ func api_permission_catalog(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 
 // mochi.permission.name(permission) -> string: The human-readable, translated
 // name for a permission code, resolved in the request's language. Handles
-// dynamic url:/service: codes as well as the static catalog.
+// dynamic url:/account:/service: codes as well as the static catalog; an
+// account: code is named by the address of the caller's account it names.
 func api_permission_name(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <permission: string>")
@@ -788,7 +849,7 @@ func api_permission_name(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "invalid permission")
 	}
 
-	return sl.String(permission_name(thread_language(t), permission)), nil
+	return sl.String(permission_name(principal_caller(t), thread_language(t), permission)), nil
 }
 
 // mochi.permission.level(permission) -> string: Returns the permission's security

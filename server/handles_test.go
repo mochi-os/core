@@ -18,7 +18,7 @@ func create_handles_test_env(t *testing.T) (*User, *User) {
 	create_domains_test_env(t)
 	users := db_open("db/users.db")
 	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', disabled text not null default '', status text not null default 'active')")
-	users.exec("create table handles (domain text not null, name text not null, user text not null, parent text not null default '', kind text not null default 'handle', created integer not null, primary key (domain, name))")
+	// create_domains_test_env has made the handles table already.
 	// user_by_uid reads the user's entities as well.
 	users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'public', data text not null default '', published integer not null default 0)")
 	users.exec("insert into users (uid, username, role) values ('u-alice', 'alice@example.com', 'user')")

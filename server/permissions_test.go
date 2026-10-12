@@ -83,6 +83,7 @@ func TestPermissionRestrictedStandard(t *testing.T) {
 	standard_perms := []string{
 		"groups/write",
 		"url:example.com",
+		"account:f1",
 	}
 
 	for _, perm := range standard_perms {
@@ -102,7 +103,8 @@ func TestPermissionRestrictedRestricted(t *testing.T) {
 		// authenticator, so it must be granted from settings rather than by a
 		// consent dialog the app raises at a moment of its choosing.
 		"user/authentication/write",
-		"url:*", // Wildcard URL is restricted
+		"url:*",     // Wildcard URL is restricted
+		"account:*", // Posting as any account is restricted
 	}
 
 	for _, perm := range restricted_perms {
@@ -164,6 +166,8 @@ func TestPermissionAdministrator(t *testing.T) {
 	non_admin_perms := []string{
 		"groups/write",
 		"url:example.com",
+		"account:f1",
+		"account:*",
 	}
 
 	for _, perm := range non_admin_perms {
@@ -185,6 +189,8 @@ func TestPermissionSplit(t *testing.T) {
 	}{
 		{"url:github.com", "url", "github.com"},
 		{"url:*", "url", "*"},
+		{"account:f1", "account", "f1"},
+		{"account:*", "account", "*"},
 		{"groups/write", "groups/write", ""},
 		{"users/read", "users/read", ""},
 	}
@@ -206,6 +212,8 @@ func TestPermissionJoin(t *testing.T) {
 	}{
 		{"url", "github.com", "url:github.com"},
 		{"url", "*", "url:*"},
+		{"account", "f1", "account:f1"},
+		{"account", "*", "account:*"},
 		{"groups/write", "", "groups/write"},
 	}
 
@@ -514,6 +522,201 @@ func TestPermissionsList(t *testing.T) {
 		if !found[exp] {
 			t.Errorf("permissions_list missing %q", exp)
 		}
+	}
+}
+
+// =============================================================================
+// Account Permission Tests
+// =============================================================================
+
+// permission_test_account inserts a connected account into a user's user.db.
+func permission_test_account(t *testing.T, u *User, id string, identifier string, label string) {
+	t.Helper()
+	db := db_user(u, "user")
+	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values (?, 'fediverse', ?, ?, '{\"hosted\":true}', 1, 1)", id, label, identifier)
+	if exists, _ := db.exists("select 1 from accounts where id=?", id); !exists {
+		t.Fatalf("account %s not inserted", id)
+	}
+}
+
+// TestPermissionAccountGrant: account:<id> is granted by a row for that account
+// or by account:*, and neither reaches another account, a url, or another app.
+func TestPermissionAccountGrant(t *testing.T) {
+	setup_test_data_dir(t)
+	defer cleanup_test_data_dir(t)
+
+	user := create_permission_test_user(t, "u1")
+	app := "test-app-123"
+
+	if permission_granted(user, app, "account:f1") {
+		t.Error("account:f1 granted before any grant")
+	}
+
+	permission_grant(user, app, "account:f1")
+	if !permission_granted(user, app, "account:f1") {
+		t.Error("account:f1 not granted after its grant")
+	}
+	if permission_granted(user, app, "account:f2") {
+		t.Error("account:f1 grants account:f2")
+	}
+	if permission_granted(user, app, "account:*") {
+		t.Error("account:f1 grants account:*")
+	}
+	if permission_granted(user, "other-app", "account:f1") {
+		t.Error("account:f1 reaches another app")
+	}
+
+	permission_revoke(user, app, "account:f1")
+	if permission_granted(user, app, "account:f1") {
+		t.Error("account:f1 granted after revoke")
+	}
+
+	permission_grant(user, app, "account:*")
+	for _, id := range []string{"f1", "f2", "*"} {
+		if !permission_granted(user, app, "account:"+id) {
+			t.Errorf("account:* does not grant account:%s", id)
+		}
+	}
+	if permission_granted(user, app, "url:example.com") {
+		t.Error("account:* grants url:example.com")
+	}
+	if permission_granted(user, app, "accounts/write") {
+		t.Error("account:* grants accounts/write")
+	}
+
+	perms := permissions_list(user, app, "en")
+	found := map[string]bool{}
+	for _, p := range perms {
+		found[p["permission"].(string)] = p["granted"].(bool)
+		if p["permission"] == "account:*" && (p["restricted"] != true || p["admin"] != false) {
+			t.Errorf("account:* listed as restricted=%v admin=%v", p["restricted"], p["admin"])
+		}
+	}
+	if !found["account:*"] || found["account:f1"] {
+		t.Errorf("permissions_list = %v, want account:* granted and account:f1 revoked", found)
+	}
+}
+
+// TestPermissionAccountName: an account permission is named by the address of
+// the user's account, falling back to its label, then to the id; the wildcard
+// has its own name; the list names each row the same way.
+func TestPermissionAccountName(t *testing.T) {
+	setup_test_data_dir(t)
+	defer cleanup_test_data_dir(t)
+	load_core_labels()
+
+	user := create_permission_test_user(t, "u1")
+	permission_test_account(t, user, "f1", "alice@example.com", "")
+	permission_test_account(t, user, "f2", "", "Work")
+
+	cases := []struct{ permission, want string }{
+		{"account:f1", "Read and post as alice@example.com"},
+		{"account:f2", "Read and post as Work"},
+		{"account:f3", "Read and post as f3"},
+		{"account:*", "Read and post as any of your accounts"},
+	}
+	for _, c := range cases {
+		if got := permission_name(user, "en", c.permission); got != c.want {
+			t.Errorf("permission_name(user, en, %q) = %q, want %q", c.permission, got, c.want)
+		}
+	}
+	if got := permission_name(nil, "en", "account:f1"); got != "Read and post as f1" {
+		t.Errorf("permission_name(nil, en, account:f1) = %q, want the id", got)
+	}
+
+	app := "test-app-123"
+	permission_grant(user, app, "account:f1")
+	names := map[string]string{}
+	for _, p := range permissions_list(user, app, "en") {
+		names[p["permission"].(string)] = p["name"].(string)
+	}
+	if names["account:f1"] != "Read and post as alice@example.com" {
+		t.Errorf("permissions_list names account:f1 %q", names["account:f1"])
+	}
+}
+
+// TestPermissionAccountRequire: require_permission_account refuses with a
+// standard PermissionError until the account, or every account, is granted;
+// an empty or wildcard id is not an account; internal apps pass.
+func TestPermissionAccountRequire(t *testing.T) {
+	setup_test_data_dir(t)
+	defer cleanup_test_data_dir(t)
+
+	user := create_permission_test_user(t, "u1")
+	app := create_external_app("test-app-123")
+	thread := create_test_thread(user, app)
+	fn := sl.NewBuiltin("test", nil)
+
+	err := require_permission_account(thread, fn, "f1")
+	var perr *PermissionError
+	if !errors.As(err, &perr) {
+		t.Fatalf("require_permission_account before grant = %v, want PermissionError", err)
+	}
+	if perr.Permission != "account:f1" || perr.Restricted {
+		t.Errorf("PermissionError = %+v, want account:f1, standard", perr)
+	}
+
+	for _, id := range []string{"", "*"} {
+		if err := require_permission_account(thread, fn, id); err == nil || errors.As(err, &perr) {
+			t.Errorf("require_permission_account(%q) = %v, want a plain error", id, err)
+		}
+	}
+
+	permission_grant(user, app.id, "account:f1")
+	if err := require_permission_account(thread, fn, "f1"); err != nil {
+		t.Errorf("require_permission_account after grant = %v", err)
+	}
+	if err := require_permission_account(thread, fn, "f2"); err == nil {
+		t.Error("account:f1 grant satisfies f2")
+	}
+
+	permission_grant(user, app.id, "account:*")
+	if err := require_permission_account(thread, fn, "f2"); err != nil {
+		t.Errorf("require_permission_account under account:* = %v", err)
+	}
+
+	internal := &App{id: "internal", internal: &AppVersion{}}
+	if err := require_permission_account(create_test_thread(user, internal), fn, "f9"); err != nil {
+		t.Errorf("internal app refused: %v", err)
+	}
+}
+
+// TestPermissionAccountDefaults: feeds, forums and chat hold account:* by
+// default, through setup and through the lazy seed while a user is pending;
+// an app without the default holds nothing.
+func TestPermissionAccountDefaults(t *testing.T) {
+	setup_test_data_dir(t)
+	defer cleanup_test_data_dir(t)
+
+	for _, name := range []string{"Feeds", "Forums", "Chat"} {
+		held := false
+		for _, p := range apps_default_get(name) {
+			if p.Permission == "account" && p.Object == "*" {
+				held = true
+			}
+		}
+		if !held {
+			t.Errorf("%s has no default account:* grant", name)
+		}
+	}
+
+	user := create_permission_test_user(t, "u1")
+	app_user_setup(user, "Feeds")
+	if !permission_granted(user, "Feeds", "account:f1") {
+		t.Error("feeds does not hold account:f1 after setup")
+	}
+	app_user_setup(user, "Notifications")
+	if permission_granted(user, "Notifications", "account:f1") {
+		t.Error("notifications holds account:f1")
+	}
+
+	pending := create_permission_test_user(t, "u2")
+	pending.Status = "pending-restore"
+	if !permission_granted(pending, "Forums", "account:f1") {
+		t.Error("forums does not hold account:f1 through the lazy seed")
+	}
+	if permission_granted(pending, "Notifications", "account:f1") {
+		t.Error("notifications holds account:f1 through the lazy seed")
 	}
 }
 
@@ -1987,10 +2190,11 @@ func TestPermissionCatalogAndName(t *testing.T) {
 		{"fr", "accounts/read", "Lire les comptes connectés"},
 		{"en", "url:github.com", "Access github.com"},
 		{"en", "url:*", "Access any website"},
+		{"en", "account:*", "Read and post as any of your accounts"},
 		{"en", "service/chat", "Handle chat service"},
 	}
 	for _, c := range cases {
-		got := permission_name(c.lang, c.code)
+		got := permission_name(nil, c.lang, c.code)
 		if got != c.want {
 			t.Errorf("permission_name(%q, %q) = %q, want %q", c.lang, c.code, got, c.want)
 		}
@@ -2042,10 +2246,13 @@ func TestPermissionProjectsHoldsRepositoriesDefaults(t *testing.T) {
 }
 
 // A default grant naming a permission that does not exist is invisible until an
-// integration fails at runtime. url is excluded: it is dynamic, its object
-// carries the domain.
+// integration fails at runtime. url and account are excluded: they are dynamic,
+// their object carries the domain or the account.
 func TestPermissionDefaultsAreRegistered(t *testing.T) {
-	registered := map[string]bool{"url": true}
+	registered := map[string]bool{}
+	for _, name := range permissions_named {
+		registered[name] = true
+	}
 	for _, p := range permissions {
 		registered[p.Name] = true
 	}
@@ -2062,7 +2269,7 @@ func TestPermissionDefaultsAreRegistered(t *testing.T) {
 // minimum: an unresolved label surfaces the raw key in the permissions UI.
 func TestPermissionCatalogueHasNames(t *testing.T) {
 	for _, p := range permissions {
-		name := permission_name("en", p.Name)
+		name := permission_name(nil, "en", p.Name)
 		if name == "" || strings.Contains(name, "permissions.") {
 			t.Errorf("permission %q has no English name (got %q)", p.Name, name)
 		}

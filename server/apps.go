@@ -1250,6 +1250,44 @@ func app_for_path_fallback(user *User, path string) *App {
 	return app_select_best(candidates)
 }
 
+// apps_for_function returns the apps whose active version declares a manifest
+// function of the given name, for a protocol engine that calls apps rather than
+// the reverse. The DAV engine finds its app through the route it was reached
+// by; an engine answering a fixed core path has no route to follow and asks
+// here which apps answer, say, "activitypub/receive". Ordered as
+// app_select_best orders a single choice: development apps first, then by
+// install time, ties on the id.
+func apps_for_function(user *User, name string) []*App {
+	apps_lock.Lock()
+	defer apps_lock.Unlock()
+
+	var found []*App
+	for _, a := range apps {
+		av := a.active_locked(user)
+		if av == nil {
+			continue
+		}
+		if _, declared := av.Functions[name]; declared {
+			found = append(found, a)
+		}
+	}
+	sort.SliceStable(found, func(i, j int) bool {
+		a, b := found[i], found[j]
+		if a.development != b.development {
+			return a.development
+		}
+		at, bt := apps_installed(a.id), apps_installed(b.id)
+		if at != bt {
+			if at == 0 || bt == 0 {
+				return at > 0
+			}
+			return at < bt
+		}
+		return a.id < b.id
+	})
+	return found
+}
+
 // app_declares_class returns true if the app's active version declares the given class.
 func app_declares_class(app *App, user *User, class string) bool {
 	av := app.active(user)
@@ -1807,6 +1845,9 @@ func manifest_validate(av *AppVersion) error {
 	for _, path := range av.Paths {
 		if !valid(path, "apppath") {
 			return fmt.Errorf("App bad path %q", path)
+		}
+		if engine_path_reserved(path) {
+			return fmt.Errorf("App path %q is reserved for a protocol engine", path)
 		}
 	}
 
@@ -3489,6 +3530,9 @@ func api_app_path_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	app_id, ok := sl.AsString(args[1])
 	if !ok {
 		return sl_error(fn, "invalid app_id")
+	}
+	if engine_path_reserved(path) {
+		return sl_error(fn, "path %q is reserved for a protocol engine", path)
 	}
 	apps_path_set(path, app_id)
 	audit_default_routing_changed(user.Username, "path", path, app_id)

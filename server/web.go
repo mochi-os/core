@@ -1033,7 +1033,8 @@ const web_multipart_framing = 64 << 10 // 64KB
 // Request body size limit middleware (skip multipart/form-data for file uploads
 // and git pack data for push operations). A vCard or iCalendar body gets the
 // DAV ceiling: a card carries its photo inline. The XML bodies of PROPFIND and
-// REPORT are small and keep the general cap.
+// REPORT are small and keep the general cap. A protocol engine's paths take
+// the cap the engine declares, where it declares one.
 func web_body_limit(c *gin.Context) {
 	ct := c.GetHeader("Content-Type")
 	switch {
@@ -1041,7 +1042,11 @@ func web_body_limit(c *gin.Context) {
 	case strings.HasPrefix(ct, "text/vcard"), strings.HasPrefix(ct, "text/calendar"):
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, dav_body_maximum)
 	default:
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, web_body_maximum)
+		maximum := int64(web_body_maximum)
+		if m := engine_body_maximum(c.Request.URL.Path); m > 0 {
+			maximum = m
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maximum)
 	}
 	c.Next()
 }
@@ -1937,12 +1942,12 @@ func web_logout(c *gin.Context) {
 func web_path(c *gin.Context) {
 	//debug("Web path %q", c.Request.URL.Path)
 
-	// DAV discovery: a client given only the host name asks here, by GET or
-	// PROPFIND, and is sent to the root of the app serving the protocol. Here
-	// rather than a registered route because the router knows only the
-	// standard methods, and PROPFIND is not one.
-	if feature, ok := strings.CutPrefix(c.Request.URL.Path, "/.well-known/"); ok && dav_served(feature) {
-		web_well_known_dav(c)
+	// Protocol engines first: the fixed paths other protocols' clients and
+	// servers expect (DAV discovery under /.well-known/ today) are answered
+	// before any app, entity or domain route is consulted. Here rather than as
+	// registered routes because the router knows only the standard methods,
+	// and PROPFIND is not one.
+	if engine_route(c) {
 		return
 	}
 
@@ -2222,6 +2227,7 @@ func web_start() {
 	if !ini_bool("web", "debug", false) {
 		gin.SetMode(gin.ReleaseMode)
 	}
+	engines_start()
 	gin.DefaultWriter = log.Writer()
 	r := gin.New()
 	// Mochi terminates TLS itself and trusts no proxy. Gin's default trusts every

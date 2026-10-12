@@ -580,6 +580,20 @@ func web_well_known_dav(c *gin.Context) {
 	c.Redirect(http.StatusPermanentRedirect, root)
 }
 
+// dav_engine is the DAV engine's registration: the two discovery paths. The
+// protocol routes themselves (carddav/*path, caldav/*path) are app routes with
+// a feature, dispatched by web_action, and need no prefix here.
+func dav_engine() *engine {
+	return &engine{
+		name:     "dav",
+		prefixes: []string{"/.well-known/carddav", "/.well-known/caldav"},
+		handler: func(c *gin.Context) bool {
+			web_well_known_dav(c)
+			return true
+		},
+	}
+}
+
 // === Paths ===
 
 func (b *dav_backend) principal_path() string {

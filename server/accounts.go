@@ -261,18 +261,23 @@ var providers = []Provider{
 // Starlark API module
 var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"add":       sl.NewBuiltin("mochi.account.add", api_account_add),
+	"block":     api_account_block,
+	"follow":    sl.NewBuiltin("mochi.account.follow", api_account_follow),
 	"get":       sl.NewBuiltin("mochi.account.get", api_account_get),
 	"grant":     sl.NewBuiltin("mochi.account.grant", api_account_grant),
 	"key":       api_account_key,
 	"list":      sl.NewBuiltin("mochi.account.list", api_account_list),
+	"media":     sl.NewBuiltin("mochi.account.media", api_account_media),
 	"networks":  sl.NewBuiltin("mochi.account.networks", api_account_networks),
 	"notify":    sl.NewBuiltin("mochi.account.notify", api_account_notify),
+	"object":    api_account_object,
 	"providers": sl.NewBuiltin("mochi.account.providers", api_account_providers),
 	"remove":    sl.NewBuiltin("mochi.account.remove", api_account_remove),
 	"resolve":   sl.NewBuiltin("mochi.account.resolve", api_account_resolve),
 	"sync":      sl.NewBuiltin("mochi.account.sync", api_account_sync),
 	"test":      sl.NewBuiltin("mochi.account.test", api_account_test),
 	"throttled": sl.NewBuiltin("mochi.account.throttled", api_account_throttled),
+	"unfollow":  sl.NewBuiltin("mochi.account.unfollow", api_account_unfollow),
 	"update":    sl.NewBuiltin("mochi.account.update", api_account_update),
 	"verify":    sl.NewBuiltin("mochi.account.verify", api_account_verify),
 })

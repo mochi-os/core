@@ -687,6 +687,7 @@ func rate_limit_login_middleware(c *gin.Context) {
 func ratelimit_manager() {
 	for range time.Tick(time.Minute) {
 		rate_limit_api.cleanup()
+		rate_limit_host.cleanup()
 		account_login.cleanup()
 		account_shared.cleanup()
 		rate_limit_login.cleanup()

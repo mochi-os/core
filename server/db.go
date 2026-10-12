@@ -86,7 +86,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 12
+	schema_version = 13
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -327,6 +327,10 @@ func db_create() {
 	// Latest signed peer record per peer: self-certifying addresses
 	peers.exec("create table if not exists records ( id text not null primary key, record blob not null, sequence integer not null, updated integer not null )")
 
+	// Delivery to other servers' inboxes, the hosts reached and the owner's
+	// domain blocks
+	networks_database()
+
 	// Message queue with reliability tracking
 	queue := db_open("db/queue.db")
 	// Outgoing message queue
@@ -453,6 +457,7 @@ func db_user(u *User, name string) *DB {
 
 		// Keys of hosted accounts on other networks (keys.go).
 		keys_table(db)
+		networks_tables(db)
 
 		// User interest profiles for personalised ranking
 		db.exec("create table if not exists interests (qid text not null primary key, weight integer not null default 100, updated integer not null default 0)")
@@ -1400,6 +1405,8 @@ func db_upgrade() {
 			db_upgrade_11()
 		case 12:
 			db_upgrade_12()
+		case 13:
+			db_upgrade_13()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2688,6 +2695,12 @@ func db_upgrade_11() {
 	if have, _ := users.exists("select 1 from pragma_table_info('totp') where name='used'"); !have {
 		users.exec("alter table totp add column used integer not null default 0")
 	}
+}
+
+// db_upgrade_13 adds the networks database: the delivery queue, the hosts it
+// has learned about and the owner's domain blocks.
+func db_upgrade_13() {
+	networks_database()
 }
 
 // db_upgrade_12 adds the handle registry to users.db; db_create carries the

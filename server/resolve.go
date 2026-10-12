@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -61,13 +63,48 @@ func author_valid(s string) bool {
 	return valid(s, "entity") || author_network(s) != ""
 }
 
-// resolved is what the UI shows for a person on another network.
+// resolved is what the UI shows for a person on another network, and what
+// sending to them needs.
 type resolved struct {
 	Network string `json:"network"`
 	Address string `json:"address"` // readable, such as @bob@lemmy.world
 	Name    string `json:"name"`
 	Avatar  string `json:"avatar"`
-	URL     string `json:"url"` // the person's page, where the network has one
+	URL     string `json:"url"`    // the person's page, where the network has one
+	ID      string `json:"id"`     // the person's permanent identifier
+	Inbox   string `json:"inbox"`  // where to deliver to the person, on the fediverse
+	Shared  string `json:"shared"` // their server's shared inbox, where it has one
+}
+
+// identifier_host is the host an identifier names, for the host policy: empty
+// where the identifier names none, as a did:plc does.
+func identifier_host(identifier string) string {
+	host := ""
+	switch {
+	case strings.HasPrefix(identifier, "https://"):
+		if u, err := url.Parse(identifier); err == nil {
+			host = u.Hostname()
+		}
+	case strings.HasPrefix(identifier, "xmpp:"):
+		if i := strings.LastIndexByte(identifier, '@'); i >= 0 {
+			host = identifier[i+1:]
+		}
+	case strings.HasPrefix(identifier, "did:web:"):
+		host = strings.ReplaceAll(strings.SplitN(strings.TrimPrefix(identifier, "did:web:"), ":", 2)[0], "%3A", ":")
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+	case resolve_matrix_re.MatchString(identifier):
+		host = identifier[strings.IndexByte(identifier, ':')+1:]
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+	default:
+		if m := resolve_acct_re.FindStringSubmatch(identifier); m != nil {
+			host = m[2]
+		}
+	}
+	return strings.ToLower(host)
 }
 
 // The cache: a lookup fetched from the network is kept for a day, a failed one
@@ -86,11 +123,19 @@ type resolve_entry struct {
 var resolve_cache = map[string]resolve_entry{}
 var resolve_lock sync.Mutex
 
-// resolve_fetch does the network request. A variable so tests substitute
-// documents without a server, since the real client refuses non-public
-// addresses.
+// resolve_fetch does the network request, under the host policy: the owner's
+// domain blocks, the limiter per host and the private-address check. A variable
+// so tests substitute documents without a server.
 var resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
-	response, err := url_request(ctx, "GET", address, map[string]string{"timeout": "15"}, map[string]string{"Accept": accept, "User-Agent": "Mochi/" + build_version}, nil)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request, err := http.NewRequestWithContext(ctx, "GET", address, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", accept)
+	response, err := network_request(ctx, nil, "", request, 5)
 	if err != nil {
 		return nil, err
 	}
@@ -198,6 +243,10 @@ func resolve_activitypub(ctx context.Context, actor string) (*resolved, error) {
 		Name              string `json:"name"`
 		URL               any    `json:"url"`
 		Icon              any    `json:"icon"`
+		Inbox             string `json:"inbox"`
+		Endpoints         struct {
+			SharedInbox string `json:"sharedInbox"`
+		} `json:"endpoints"`
 	}
 	if err := resolve_json(ctx, actor, "application/activity+json, application/ld+json", &document); err != nil {
 		return nil, err
@@ -206,7 +255,12 @@ func resolve_activitypub(ctx context.Context, actor string) (*resolved, error) {
 	if u, err := url.Parse(actor); err == nil {
 		host = strings.ToLower(u.Host)
 	}
-	r := &resolved{Network: "fediverse", Name: document.Name, URL: actor}
+	// An actor's document must be served by the host its id names, so no
+	// server can claim an id on another domain.
+	if document.ID != "" && identifier_host(document.ID) != strings.ToLower(host) {
+		return nil, fmt.Errorf("actor id %s served by %s", document.ID, host)
+	}
+	r := &resolved{Network: "fediverse", Name: document.Name, URL: actor, ID: actor, Inbox: document.Inbox, Shared: document.Endpoints.SharedInbox}
 	if document.PreferredUsername != "" {
 		r.Address = "@" + document.PreferredUsername + "@" + host
 	} else {
@@ -366,15 +420,29 @@ func api_account_resolve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <identifier: string>")
 	}
-	if principal_caller(t) == nil {
+	user := principal_caller(t)
+	if user == nil {
 		return sl_error(fn, "no user")
 	}
 	identifier, ok := sl.AsString(args[0])
 	if !ok {
 		return sl_error(fn, "invalid identifier")
 	}
-	ctx, _ := t.Local("context").(context.Context)
-	r, err := author_resolve(ctx, identifier)
+	// The user's own blocks and the protocol setting are the caller's; the
+	// owner's blocks and the limiter apply inside the fetch, to every host it
+	// reaches.
+	network := author_network(identifier)
+	if network == "" && resolve_acct_re.MatchString(identifier) && !strings.HasPrefix(identifier, "xmpp:") {
+		network = "fediverse"
+	}
+	if host := identifier_host(identifier); host != "" {
+		if err := host_allowed(user, network, host); err != nil {
+			return sl.None, nil
+		}
+	} else if network != "" && !network_enabled(network) {
+		return sl.None, nil
+	}
+	r, err := author_resolve(thread_context(t), identifier)
 	if err != nil {
 		return sl.None, nil
 	}

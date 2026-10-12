@@ -15,10 +15,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"regexp"
 	"sort"
+	"strings"
+	"time"
 
 	sl "go.starlark.net/starlark"
+	sls "go.starlark.net/starlarkstruct"
 )
 
 // network_names are the networks, in the order the settings and the Networks
@@ -171,4 +179,285 @@ func accounts_hosted_remove(user *User, domain string, name string) {
 			db.row_remove(reg_accounts, map[string]any{"id": row["id"]})
 		}
 	}
+}
+
+// account_hosted_get returns a user's hosted account by its id, or nil.
+func account_hosted_get(user *User, id string) map[string]any {
+	for _, row := range accounts_hosted(user, "") {
+		if row["id"] == id {
+			return row
+		}
+	}
+	return nil
+}
+
+// account_url is a hosted account's permanent id on the fediverse,
+// https://<domain>/~<id> (decision 40): the id, never the handle, so a released
+// and reused handle never collides with the old account.
+func account_url(domain string, id string) string {
+	return "https://" + strings.ToLower(domain) + "/~" + id
+}
+
+// account_actor is a hosted account's id on its network, by the account's id,
+// or empty when the user has no such account.
+func account_actor(user *User, id string) string {
+	row := account_hosted_get(user, id)
+	if row == nil {
+		return ""
+	}
+	data, _ := row["data"].(map[string]any)
+	domain, _ := data["domain"].(string)
+	if domain == "" {
+		return ""
+	}
+	return account_url(domain, id)
+}
+
+// === Hosts ===
+//
+// What takes the place of per-host consent for a hosted account is a block
+// list, since that is how these networks work: the owner blocks a host for the
+// whole server, a user blocks one for themselves, and the owner's protocol
+// setting turns a network off. Every request a network makes passes
+// host_allowed and the limiter per destination host, and in the dialer the
+// private-address check; a delivery past the limiter waits for the next window.
+
+// rate_limit_host bounds the requests to one remote host from every account and
+// app together: 60 a minute, the budget Mastodon gives one address. A variable
+// so tests can lower it.
+var rate_limit_host = &rate_limiter{entries: make(map[string]*rate_limit_entry), limit: 60, window: 60}
+
+// network_timeout bounds one request to another server.
+const network_timeout = 30 * time.Second
+
+// block_domain_re is the shape of a blocked domain: lowercase labels, two or
+// more.
+var block_domain_re = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
+
+// networks_database makes the server-wide networks database: the delivery
+// queue, the hosts it has learned about and the owner's domain blocks.
+func networks_database() *DB {
+	db := db_open("db/networks.db")
+	db.exec("create table if not exists deliveries (id text not null primary key, user text not null, account text not null, network text not null, inbox text not null, host text not null, body text not null, attempts integer not null default 0, next integer not null, claimed integer not null default 0, created integer not null)")
+	db.exec("create index if not exists deliveries_next on deliveries(next)")
+	db.exec("create index if not exists deliveries_host on deliveries(host)")
+	db.exec("create table if not exists hosts (host text not null primary key, failures integer not null default 0, success integer not null default 0, failure integer not null default 0, next integer not null default 0, error text not null default '')")
+	db.exec("create table if not exists blocks (domain text not null primary key, created integer not null)")
+	return db
+}
+
+// A host_refusal is why the host policy refused a host: the network is off, or
+// the owner or the user blocks the host.
+type host_refusal struct {
+	Host   string
+	Reason string
+	Off    bool
+}
+
+func (e *host_refusal) Error() string {
+	return e.Reason
+}
+
+// host_allowed says whether this server may contact host on a network for a
+// user: the network is on, and neither the owner nor the user blocks the host
+// or a domain above it. The network is empty for a lookup any network makes, the
+// user nil for a request on the server's own behalf.
+func host_allowed(user *User, network string, host string) error {
+	host = strings.ToLower(host)
+	if host == "" {
+		return &host_refusal{Host: host, Reason: "no host"}
+	}
+	if network != "" && !network_enabled(network) {
+		return &host_refusal{Host: host, Reason: network + " is off", Off: true}
+	}
+	if blocked_by(db_open("db/networks.db"), host) {
+		return &host_refusal{Host: host, Reason: host + " is blocked on this server"}
+	}
+	if user != nil && blocked_by(db_user(user, "user"), host) {
+		return &host_refusal{Host: host, Reason: host + " is blocked"}
+	}
+	return nil
+}
+
+// blocked_by says whether a blocks table names host or a domain above it.
+func blocked_by(db *DB, host string) bool {
+	for h := host; h != ""; {
+		if found, _ := db.exists("select 1 from blocks where domain=?", h); found {
+			return true
+		}
+		i := strings.IndexByte(h, '.')
+		if i < 0 {
+			return false
+		}
+		h = h[i+1:]
+	}
+	return false
+}
+
+// network_target checks one URL against the host policy: HTTPS, not the cloud
+// metadata service, and host_allowed.
+func network_target(user *User, network string, u *url.URL) error {
+	if url_is_cloud_metadata(u.String()) {
+		return &host_refusal{Host: u.Hostname(), Reason: "blocked outbound request to the cloud metadata service"}
+	}
+	if u.Scheme != "https" && !url_allow_private {
+		return &host_refusal{Host: u.Hostname(), Reason: u.String() + " is not https"}
+	}
+	return host_allowed(user, network, u.Hostname())
+}
+
+// network_request sends a request to another server for a user under the host
+// policy: network_target on the request and on each redirect, up to redirects
+// of them, the limiter per host, and the private-address check in the dialer on
+// every hop. The user may be nil; a *host_refusal or a *RateLimitError says why
+// a request was not made.
+func network_request(ctx context.Context, user *User, network string, r *http.Request, redirects int) (*http.Response, error) {
+	if err := network_target(user, network, r.URL); err != nil {
+		return nil, err
+	}
+	host := strings.ToLower(r.URL.Hostname())
+	if !rate_limit_host.allow(host) {
+		return nil, rate_limit_refuse(rate_limit_host, host, "requests per minute to "+host)
+	}
+	if r.Header.Get("User-Agent") == "" {
+		r.Header.Set("User-Agent", "Mochi/"+build_version)
+	}
+	client := &http.Client{Timeout: network_timeout, Transport: url_transport}
+	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if len(via) >= redirects {
+			return fmt.Errorf("too many redirects")
+		}
+		return network_target(user, network, request.URL)
+	}
+	return client.Do(r)
+}
+
+// === Domain blocks ===
+
+var api_account_block = sls.FromStringDict(sl.String("mochi.account.block"), sl.StringDict{
+	"add":    sl.NewBuiltin("mochi.account.block.add", api_account_block_add),
+	"list":   sl.NewBuiltin("mochi.account.block.list", api_account_block_list),
+	"remove": sl.NewBuiltin("mochi.account.block.remove", api_account_block_remove),
+})
+
+var api_server_block = sls.FromStringDict(sl.String("mochi.server.block"), sl.StringDict{
+	"add":    sl.NewBuiltin("mochi.server.block.add", api_server_block_add),
+	"list":   sl.NewBuiltin("mochi.server.block.list", api_server_block_list),
+	"remove": sl.NewBuiltin("mochi.server.block.remove", api_server_block_remove),
+})
+
+// blocks_list reads a blocks table, oldest first.
+func blocks_list(db *DB) []map[string]any {
+	rows, _ := db.rows("select domain, created from blocks order by created")
+	if rows == nil {
+		rows = []map[string]any{}
+	}
+	return rows
+}
+
+// block_add adds a domain to a blocks table.
+func block_add(db *DB, domain string) error {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if !block_domain_re.MatchString(domain) {
+		return fmt.Errorf("invalid domain")
+	}
+	db.exec("insert or ignore into blocks (domain, created) values (?, ?)", domain, now())
+	return nil
+}
+
+// block_remove removes a domain from a blocks table.
+func block_remove(db *DB, domain string) {
+	db.exec("delete from blocks where domain=?", strings.ToLower(strings.TrimSpace(domain)))
+}
+
+// block_call checks a block API's permission and returns the caller.
+func block_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, permission string, syntax string) (*User, string, error) {
+	domain := ""
+	if syntax == "" {
+		if len(args) != 0 {
+			return nil, "", fmt.Errorf("syntax: no arguments")
+		}
+	} else {
+		if len(args) != 1 {
+			return nil, "", fmt.Errorf("syntax: %s", syntax)
+		}
+		ok := false
+		if domain, ok = sl.AsString(args[0]); !ok || domain == "" {
+			return nil, "", fmt.Errorf("invalid domain")
+		}
+	}
+	if err := require_permission(t, fn, permission); err != nil {
+		return nil, "", err
+	}
+	user := principal_caller(t)
+	if user == nil {
+		return nil, "", fmt.Errorf("no user")
+	}
+	return user, domain, nil
+}
+
+// mochi.account.block.list() -> list: The domains the user has blocked, each
+// with the domain and when. No account of the user sends to, follows on or
+// fetches from a blocked domain or one under it, whatever an app is granted.
+func api_account_block_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user, _, err := block_call(t, fn, args, "accounts/read", "")
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl_encode(blocks_list(db_user(user, "user"))), nil
+}
+
+// mochi.account.block.add(domain) -> None: Block a domain for the user.
+func api_account_block_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user, domain, err := block_call(t, fn, args, "accounts/write", "<domain: string>")
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if err := block_add(db_user(user, "user"), domain); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl.None, nil
+}
+
+// mochi.account.block.remove(domain) -> None: Unblock a domain for the user.
+func api_account_block_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user, domain, err := block_call(t, fn, args, "accounts/write", "<domain: string>")
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	block_remove(db_user(user, "user"), domain)
+	return sl.None, nil
+}
+
+// mochi.server.block.list() -> list: The domains the owner has blocked for the
+// whole server, each with the domain and when. No account on this server sends
+// to, follows on or fetches from a blocked domain or one under it.
+func api_server_block_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if _, _, err := block_call(t, fn, args, "server/read", ""); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl_encode(blocks_list(db_open("db/networks.db"))), nil
+}
+
+// mochi.server.block.add(domain) -> None: Block a domain for the whole server.
+func api_server_block_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	_, domain, err := block_call(t, fn, args, "settings/write", "<domain: string>")
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if err := block_add(db_open("db/networks.db"), domain); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl.None, nil
+}
+
+// mochi.server.block.remove(domain) -> None: Unblock a domain for the whole
+// server.
+func api_server_block_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	_, domain, err := block_call(t, fn, args, "settings/write", "<domain: string>")
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	block_remove(db_open("db/networks.db"), domain)
+	return sl.None, nil
 }

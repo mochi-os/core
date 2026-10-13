@@ -174,19 +174,7 @@ func websocket_connection(c *gin.Context) {
 	}
 	id := uid()
 	defer websocket_terminate(ws, u, key, id)
-
-	websockets_lock.Lock()
-	_, found := websockets[u.UID]
-	if !found {
-		websockets[u.UID] = map[string]map[string]*websocket_client{}
-	}
-	_, found = websockets[u.UID][key]
-	if !found {
-		websockets[u.UID][key] = map[string]*websocket_client{}
-	}
-	websockets[u.UID][key][id] = &websocket_client{ws: ws, app: app}
-	websockets_lock.Unlock()
-	// debug("Websocket connection user %d, key %q, id %q", u.UID, key, id)
+	websocket_open(u, key, id, ws, app, web_cookie_get(c, "session", ""))
 
 	for {
 		t, j, err := ws.Read(websocket_context)
@@ -202,6 +190,24 @@ func websocket_connection(c *gin.Context) {
 
 		info("Websocket received message %q; ignoring", j)
 	}
+}
+
+// websocket_open puts a connection in the registry and records the user
+// connected (presence.go), under the login session the browser presented,
+// where one did.
+func websocket_open(u *User, key string, id string, ws *websocket.Conn, app string, session string) {
+	websockets_lock.Lock()
+	_, found := websockets[u.UID]
+	if !found {
+		websockets[u.UID] = map[string]map[string]*websocket_client{}
+	}
+	_, found = websockets[u.UID][key]
+	if !found {
+		websockets[u.UID][key] = map[string]*websocket_client{}
+	}
+	websockets[u.UID][key][id] = &websocket_client{ws: ws, app: app}
+	websockets_lock.Unlock()
+	presence_connect(u.UID, id, session, "web", "")
 }
 
 // websockets_send delivers content to a user's connections on this key. A
@@ -285,6 +291,7 @@ func websocket_terminate(ws *websocket.Conn, u *User, key string, id string) {
 		delete(websockets, u.UID)
 	}
 	websockets_lock.Unlock()
+	presence_disconnect(u.UID, id)
 }
 
 // mochi.websocket.write(key, content) -> None: Send content to connected WebSocket clients

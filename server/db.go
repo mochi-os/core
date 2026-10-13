@@ -86,7 +86,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 15
+	schema_version = 16
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -288,6 +288,9 @@ func db_create() {
 	// Last-login timestamps (kept here, not in users.db, so the cold reference
 	// store doesn't take a write on every login)
 	sessions.exec("create table if not exists logins (user text primary key, last integer not null)")
+
+	// The moment a user's last connection ended (presence.go).
+	sessions.exec("create table if not exists seen (user text primary key, time integer not null)")
 
 	// Per-request token access timestamps. Split out of users.db.tokens so the
 	// every-request "used" write doesn't land on the cold reference store, but
@@ -1413,6 +1416,8 @@ func db_upgrade() {
 			db_upgrade_14()
 		case 15:
 			db_upgrade_15()
+		case 16:
+			db_upgrade_16()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2701,6 +2706,12 @@ func db_upgrade_11() {
 	if have, _ := users.exists("select 1 from pragma_table_info('totp') where name='used'"); !have {
 		users.exec("alter table totp add column used integer not null default 0")
 	}
+}
+
+// db_upgrade_16 adds the moment a user was last seen to sessions.db
+// (presence.go).
+func db_upgrade_16() {
+	db_open("db/sessions.db").exec("create table if not exists seen (user text primary key, time integer not null)")
 }
 
 // db_upgrade_15 adds the other token kinds to users.db tokens - a sign-in by

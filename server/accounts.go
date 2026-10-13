@@ -324,6 +324,7 @@ var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"object":        api_account_object,
 	"password":      sl.NewBuiltin("mochi.account.password", api_account_password),
 	"posts":         sl.NewBuiltin("mochi.account.posts", api_account_posts),
+	"profile":       sl.NewBuiltin("mochi.account.profile", api_account_profile),
 	"providers":     sl.NewBuiltin("mochi.account.providers", api_account_providers),
 	"remove":        sl.NewBuiltin("mochi.account.remove", api_account_remove),
 	"request":       sl.NewBuiltin("mochi.account.request", api_account_request),
@@ -466,6 +467,7 @@ func account_present(user *User, row map[string]any) map[string]any {
 			out[key] = value
 		}
 	}
+	out["profile"], _ = data["profile"].(bool)
 	if !hosted && linked_chat(ptype) {
 		id, _ := row["id"].(string)
 		connected, reason := linked_connected(user.UID, id)
@@ -1075,7 +1077,36 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}), nil
 }
 
-// mochi.account.update(id, label=..., enabled=...) -> bool: Update an account
+// mochi.account.profile() -> list: The accounts on other networks the user shows
+// on their profile page, as the page links them: type, identifier, name and url.
+// Shown by the user's choice, so no permission; a profile is read by anyone
+func api_account_profile(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user, _ := principal_storage(t)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	rows, _ := db_user(user, "user").rows("select id, type, label, identifier, data from accounts where enabled=1 order by created")
+	shown := []any{}
+	for _, row := range rows {
+		ptype := row_string(row, "type")
+		if !provider_network(ptype) {
+			continue
+		}
+		data := account_data(row)
+		if on, _ := data["profile"].(bool); !on {
+			continue
+		}
+		name, _ := data["name"].(string)
+		if name == "" {
+			name = row_string(row, "label")
+		}
+		address, _ := data["url"].(string)
+		shown = append(shown, map[string]any{"type": ptype, "identifier": row["identifier"], "name": name, "url": address})
+	}
+	return sl_encode(shown), nil
+}
+
+// mochi.account.update(id, label=..., enabled=..., profile=...) -> bool: Update an account; profile is whether it is shown on the user's profile page
 func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: integer>, [label=...], [enabled=...]")
@@ -1168,6 +1199,29 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 				} else {
 					db.account_set(id, map[string]any{"data": string(j)})
 				}
+			}
+
+		case "profile":
+			// Whether the user shows the account on their profile page, which
+			// links it with rel="me" for the network to verify.
+			shown := false
+			switch v := kv[1].(type) {
+			case sl.Bool:
+				shown = bool(v)
+			case sl.Int:
+				i, _ := v.Int64()
+				shown = i != 0
+			}
+			row, err := db.row("select data from accounts where id=?", id)
+			if err == nil && row != nil {
+				d := account_data(row)
+				if shown {
+					d["profile"] = true
+				} else {
+					delete(d, "profile")
+				}
+				j, _ := json.Marshal(d)
+				db.account_set(id, map[string]any{"data": string(j)})
 			}
 
 		case "endpoint":

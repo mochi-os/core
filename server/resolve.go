@@ -18,12 +18,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,14 +68,18 @@ func author_valid(s string) bool {
 // resolved is what the UI shows for a person on another network, and what
 // sending to them needs.
 type resolved struct {
-	Network string `json:"network"`
-	Address string `json:"address"` // readable, such as @bob@lemmy.world
-	Name    string `json:"name"`
-	Avatar  string `json:"avatar"`
-	URL     string `json:"url"`    // the person's page, where the network has one
-	ID      string `json:"id"`     // the person's permanent identifier
-	Inbox   string `json:"inbox"`  // where to deliver to the person, on the fediverse
-	Shared  string `json:"shared"` // their server's shared inbox, where it has one
+	Network  string `json:"network"`
+	Type     string `json:"type"`     // what the network says it is: person, group, service
+	Address  string `json:"address"`  // readable, such as @bob@lemmy.world
+	Username string `json:"username"` // the name on its server, without the host
+	Host     string `json:"host"`     // the server the identifier names, where it names one
+	Server   string `json:"server"`   // where the person's records are read: a Bluesky data server
+	Name     string `json:"name"`
+	Avatar   string `json:"avatar"`
+	URL      string `json:"url"`    // the person's page, where the network has one
+	ID       string `json:"id"`     // the person's permanent identifier
+	Inbox    string `json:"inbox"`  // where to deliver to the person, on the fediverse
+	Shared   string `json:"shared"` // their server's shared inbox, where it has one
 }
 
 // identifier_host is the host an identifier names, for the host policy: empty
@@ -102,9 +108,47 @@ func identifier_host(identifier string) string {
 	default:
 		if m := resolve_acct_re.FindStringSubmatch(identifier); m != nil {
 			host = m[2]
+		} else if resolve_handle_form(identifier) {
+			host = identifier
 		}
 	}
 	return strings.ToLower(host)
+}
+
+// resolve_handle_form says whether a string is shaped as a Bluesky handle and
+// as no other identifier: domain labels with dots between, no @, no scheme.
+func resolve_handle_form(s string) bool {
+	return !strings.ContainsAny(s, "@:/") && bluesky_handle_re.MatchString(strings.ToLower(s))
+}
+
+// resolve_network_of says which network a lookup string belongs to: an author
+// identifier's network, else the fediverse for a handle such as bob@lemmy.world
+// and Bluesky for one such as alice.bsky.social.
+func resolve_network_of(identifier string) string {
+	network := author_network(identifier)
+	switch {
+	case network != "":
+	case resolve_acct_re.MatchString(identifier) && !strings.HasPrefix(identifier, "xmpp:"):
+		network = "fediverse"
+	case resolve_handle_form(identifier):
+		network = "bluesky"
+	}
+	return network
+}
+
+// resolve_allowed is the host policy for a lookup: the identifier's network is
+// on, and its host is blocked by neither the server nor the user. The user's
+// own blocks are the caller's; the owner's and the limiter apply inside the
+// fetch, to every host it reaches.
+func resolve_allowed(user *User, identifier string) error {
+	network := resolve_network_of(identifier)
+	if host := identifier_host(identifier); host != "" {
+		return host_allowed(user, network, host)
+	}
+	if network != "" && !network_enabled(network) {
+		return &host_refusal{Reason: network + " is off", Off: true}
+	}
+	return nil
 }
 
 // The cache: a lookup fetched from the network is kept for a day, a failed one
@@ -141,9 +185,26 @@ var resolve_fetch = func(ctx context.Context, address string, accept string) ([]
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return nil, fmt.Errorf("status %d", response.StatusCode)
+		return nil, &resolve_refusal{Status: response.StatusCode}
 	}
 	return io.ReadAll(io.LimitReader(response.Body, resolve_document_maximum))
+}
+
+// A resolve_refusal is a document the server would not give: its status.
+type resolve_refusal struct {
+	Status int
+}
+
+func (e *resolve_refusal) Error() string {
+	return fmt.Sprintf("status %d", e.Status)
+}
+
+// resolve_signed says whether a fetch failed for want of a signature: a
+// server in secure mode answers an unsigned ActivityPub request with 401 or
+// 403, as mastodon.social does.
+func resolve_signed(err error) bool {
+	var refusal *resolve_refusal
+	return errors.As(err, &refusal) && (refusal.Status == 401 || refusal.Status == 403)
 }
 
 // resolve_document_maximum caps a profile document; actor documents run to a
@@ -182,13 +243,29 @@ func author_resolve(ctx context.Context, identifier string) (*resolved, error) {
 // person.
 func resolve_network(ctx context.Context, identifier string) (*resolved, error) {
 	// A fediverse handle, @user@host or user@host, is turned into the account
-	// URL by WebFinger first; it is a convenience of lookup, not an author form.
+	// URL by WebFinger first, and a Bluesky handle, alice.bsky.social, into its
+	// DID; each is a convenience of lookup, not an author form.
 	if m := resolve_acct_re.FindStringSubmatch(identifier); m != nil && !strings.HasPrefix(identifier, "xmpp:") {
-		actor, err := resolve_webfinger(ctx, m[1], strings.ToLower(m[2]))
+		actor, page, err := resolve_webfinger(ctx, m[1], strings.ToLower(m[2]))
 		if err != nil {
 			return nil, err
 		}
-		identifier = actor
+		r, err := resolve_activitypub(ctx, actor)
+		if resolve_signed(err) {
+			// A server in secure mode gives its actor documents to signed
+			// requests only, which come with the hosted accounts of a later
+			// phase. WebFinger has answered the address, the username and the
+			// profile page, which is what following the person's web feed
+			// needs, so the person resolves from that alone, as a person.
+			return &resolved{Network: "fediverse", Type: "person", Address: "@" + m[1] + "@" + strings.ToLower(m[2]), Username: m[1], Host: strings.ToLower(m[2]), Name: m[1], URL: page, ID: actor}, nil
+		}
+		return r, err
+	} else if resolve_handle_form(identifier) {
+		did, err := resolve_handle(ctx, identifier)
+		if err != nil {
+			return nil, err
+		}
+		identifier = did
 	}
 	switch author_network(identifier) {
 	case "fediverse":
@@ -212,8 +289,9 @@ func resolve_json(ctx context.Context, address string, accept string, into any) 
 	return json.Unmarshal(body, into)
 }
 
-// resolve_webfinger turns user@host into the account URL the host publishes.
-func resolve_webfinger(ctx context.Context, user string, host string) (string, error) {
+// resolve_webfinger turns user@host into the account URL the host publishes,
+// and the account's profile page where the host names one.
+func resolve_webfinger(ctx context.Context, user string, host string) (string, string, error) {
 	var document struct {
 		Links []struct {
 			Rel  string `json:"rel"`
@@ -223,15 +301,50 @@ func resolve_webfinger(ctx context.Context, user string, host string) (string, e
 	}
 	address := "https://" + host + "/.well-known/webfinger?resource=" + url.QueryEscape("acct:"+user+"@"+host)
 	if err := resolve_json(ctx, address, "application/jrd+json, application/json", &document); err != nil {
-		return "", err
+		return "", "", err
 	}
+	actor, page := "", ""
 	for _, link := range document.Links {
-		if link.Rel == "self" && strings.HasPrefix(link.Href, "https://") && (strings.Contains(link.Type, "activity+json") || strings.Contains(link.Type, "ld+json")) {
-			return link.Href, nil
+		if !strings.HasPrefix(link.Href, "https://") {
+			continue
+		}
+		switch {
+		case link.Rel == "self" && (strings.Contains(link.Type, "activity+json") || strings.Contains(link.Type, "ld+json")):
+			actor = link.Href
+		case link.Rel == "http://webfinger.net/rel/profile-page":
+			page = link.Href
 		}
 	}
-	return "", fmt.Errorf("no account at %s@%s", user, host)
+	if actor == "" {
+		return "", "", fmt.Errorf("no account at %s@%s", user, host)
+	}
+	return actor, page, nil
 }
+
+// resolve_handle turns a Bluesky handle into its DID: the _atproto TXT record
+// of the name, else the well-known file on it.
+func resolve_handle(ctx context.Context, handle string) (string, error) {
+	handle = strings.ToLower(strings.TrimSpace(handle))
+	if records, err := bluesky_lookup(ctx, "_atproto."+handle); err == nil {
+		for _, record := range records {
+			if value, ok := strings.CutPrefix(strings.TrimSpace(record), "did="); ok && resolve_did_re.MatchString(value) {
+				return value, nil
+			}
+		}
+	}
+	body, err := resolve_fetch(ctx, network_scheme+handle+"/.well-known/atproto-did", "text/plain")
+	if err != nil {
+		return "", fmt.Errorf("the handle %s does not resolve", handle)
+	}
+	did := strings.TrimSpace(string(body))
+	if !resolve_did_re.MatchString(did) {
+		return "", fmt.Errorf("the handle %s names no identity", handle)
+	}
+	return did, nil
+}
+
+// The actor types: a document of any other type is an object, not a person.
+var resolve_actor_types = map[string]bool{"person": true, "group": true, "service": true, "application": true, "organization": true}
 
 // resolve_activitypub reads an actor document: the person's preferred username,
 // display name and icon.
@@ -251,6 +364,10 @@ func resolve_activitypub(ctx context.Context, actor string) (*resolved, error) {
 	if err := resolve_json(ctx, actor, "application/activity+json, application/ld+json", &document); err != nil {
 		return nil, err
 	}
+	kind := strings.ToLower(document.Type)
+	if !resolve_actor_types[kind] {
+		return nil, fmt.Errorf("%s is not a person", actor)
+	}
 	host := ""
 	if u, err := url.Parse(actor); err == nil {
 		host = strings.ToLower(u.Host)
@@ -260,7 +377,11 @@ func resolve_activitypub(ctx context.Context, actor string) (*resolved, error) {
 	if document.ID != "" && identifier_host(document.ID) != strings.ToLower(host) {
 		return nil, fmt.Errorf("actor id %s served by %s", document.ID, host)
 	}
-	r := &resolved{Network: "fediverse", Name: document.Name, URL: actor, ID: actor, Inbox: document.Inbox, Shared: document.Endpoints.SharedInbox}
+	id := document.ID
+	if id == "" {
+		id = actor
+	}
+	r := &resolved{Network: "fediverse", Type: kind, Username: document.PreferredUsername, Host: host, Name: document.Name, URL: actor, ID: id, Inbox: document.Inbox, Shared: document.Endpoints.SharedInbox}
 	if document.PreferredUsername != "" {
 		r.Address = "@" + document.PreferredUsername + "@" + host
 	} else {
@@ -276,8 +397,9 @@ func resolve_activitypub(ctx context.Context, actor string) (*resolved, error) {
 	return r, nil
 }
 
-// resolve_first_url reads an ActivityPub url property, a string or a list of
-// strings or Link objects, and returns the first https URL in it.
+// resolve_first_url reads an ActivityPub url or attributedTo property, a
+// string or a list of strings, Link objects or objects named by id, and
+// returns the first https URL in it.
 func resolve_first_url(v any) string {
 	switch value := v.(type) {
 	case string:
@@ -291,8 +413,10 @@ func resolve_first_url(v any) string {
 			}
 		}
 	case map[string]any:
-		if href, _ := value["href"].(string); strings.HasPrefix(href, "https://") {
-			return href
+		for _, key := range []string{"href", "id"} {
+			if found, _ := value[key].(string); strings.HasPrefix(found, "https://") {
+				return found
+			}
 		}
 	}
 	return ""
@@ -334,23 +458,25 @@ func resolve_bluesky(ctx context.Context, did string) (*resolved, error) {
 	if err := resolve_json(ctx, address, "application/did+ld+json, application/json", &document); err != nil {
 		return nil, err
 	}
-	r := &resolved{Network: "bluesky", Address: did}
+	r := &resolved{Network: "bluesky", Type: "person", Address: did, Host: identifier_host(did), ID: did}
 	for _, known := range document.AlsoKnownAs {
 		if handle, ok := strings.CutPrefix(known, "at://"); ok {
 			r.Address = "@" + handle
+			r.Username = handle
 			r.URL = "https://bsky.app/profile/" + handle
 			break
 		}
 	}
 	pds := ""
 	for _, service := range document.Service {
-		if service.ID == "#atproto_pds" && strings.HasPrefix(service.ServiceEndpoint, "https://") {
+		if service.ID == "#atproto_pds" && strings.HasPrefix(service.ServiceEndpoint, network_scheme) {
 			pds = strings.TrimSuffix(service.ServiceEndpoint, "/")
 		}
 	}
 	if pds == "" {
 		return r, nil
 	}
+	r.Server = pds
 	var record struct {
 		Value struct {
 			DisplayName string `json:"displayName"`
@@ -365,7 +491,7 @@ func resolve_bluesky(ctx context.Context, did string) (*resolved, error) {
 	if err := resolve_json(ctx, profile, "application/json", &record); err == nil {
 		r.Name = record.Value.DisplayName
 		if cid := record.Value.Avatar.Ref.Link; cid != "" {
-			r.Avatar = pds + "/xrpc/com.atproto.sync.getBlob?did=" + url.QueryEscape(did) + "&cid=" + url.QueryEscape(cid)
+			r.Avatar = bluesky_blob(pds, did, cid)
 		}
 	}
 	if r.Name == "" {
@@ -413,9 +539,12 @@ func resolve_xmpp(identifier string) *resolved {
 }
 
 // mochi.account.resolve(identifier) -> dict | None: What the UI shows for a
-// person on another network - network, address, name, avatar and url - fetched
-// from the network and cached, or None when the identifier is not a network
-// identifier or the network did not answer.
+// person on another network - network, address, name, avatar and url - with
+// the permanent id, the type the network gives (person, group, service), the
+// username and the host, fetched from the network and cached. The identifier
+// is an author identifier, a fediverse handle such as bob@lemmy.world or a
+// Bluesky handle such as alice.bsky.social. None when it is none of these or
+// the network did not answer.
 func api_account_resolve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <identifier: string>")
@@ -428,18 +557,8 @@ func api_account_resolve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if !ok {
 		return sl_error(fn, "invalid identifier")
 	}
-	// The user's own blocks and the protocol setting are the caller's; the
-	// owner's blocks and the limiter apply inside the fetch, to every host it
-	// reaches.
-	network := author_network(identifier)
-	if network == "" && resolve_acct_re.MatchString(identifier) && !strings.HasPrefix(identifier, "xmpp:") {
-		network = "fediverse"
-	}
-	if host := identifier_host(identifier); host != "" {
-		if err := host_allowed(user, network, host); err != nil {
-			return sl.None, nil
-		}
-	} else if network != "" && !network_enabled(network) {
+	identifier = strings.TrimSpace(identifier)
+	if resolve_allowed(user, identifier) != nil {
 		return sl.None, nil
 	}
 	r, err := author_resolve(thread_context(t), identifier)
@@ -447,10 +566,126 @@ func api_account_resolve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl.None, nil
 	}
 	return sl_encode(map[string]any{
-		"network": r.Network,
-		"address": r.Address,
-		"name":    r.Name,
-		"avatar":  r.Avatar,
-		"url":     r.URL,
+		"network":  r.Network,
+		"type":     r.Type,
+		"id":       r.ID,
+		"address":  r.Address,
+		"username": r.Username,
+		"host":     r.Host,
+		"name":     r.Name,
+		"avatar":   r.Avatar,
+		"url":      r.URL,
 	}), nil
+}
+
+// === Public posts ===
+
+// bluesky_public_posts reads a page of a Bluesky account's own posts from its
+// data server, which needs no sign-in: the post records, newest first, each
+// shaped as the account's own feed shows a post - the author from the profile,
+// the images as the blobs' addresses - so a reader of either sees one form.
+func bluesky_public_posts(ctx context.Context, did string, cursor string, limit int) (*linked_page, error) {
+	r, err := author_resolve(ctx, did)
+	if err != nil {
+		return nil, err
+	}
+	if r.Server == "" {
+		return nil, fmt.Errorf("%s names no server", did)
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	address := r.Server + "/xrpc/com.atproto.repo.listRecords?repo=" + url.QueryEscape(did) + "&collection=app.bsky.feed.post&limit=" + strconv.Itoa(limit)
+	if cursor != "" {
+		address += "&cursor=" + url.QueryEscape(cursor)
+	}
+	var answer struct {
+		Cursor  string `json:"cursor"`
+		Records []struct {
+			URI   string         `json:"uri"`
+			CID   string         `json:"cid"`
+			Value map[string]any `json:"value"`
+		} `json:"records"`
+	}
+	if err := resolve_json(ctx, address, "application/json", &answer); err != nil {
+		return nil, err
+	}
+	author := map[string]any{"did": did, "handle": strings.TrimPrefix(r.Address, "@"), "displayName": r.Name, "avatar": r.Avatar}
+	page := &linked_page{Items: []any{}}
+	for _, record := range answer.Records {
+		post := map[string]any{"uri": record.URI, "cid": record.CID, "author": author, "record": record.Value}
+		if embed := bluesky_embed_view(r.Server, did, record.Value["embed"]); embed != nil {
+			post["embed"] = embed
+		}
+		page.Items = append(page.Items, map[string]any{"post": post})
+	}
+	if len(answer.Records) > 0 {
+		page.Cursor = answer.Cursor
+	}
+	return page, nil
+}
+
+// bluesky_blob is the address a blob is read at on a data server.
+func bluesky_blob(server string, did string, cid string) string {
+	return server + "/xrpc/com.atproto.sync.getBlob?did=" + url.QueryEscape(did) + "&cid=" + url.QueryEscape(cid)
+}
+
+// bluesky_blob_cid reads a blob reference's content id.
+func bluesky_blob_cid(blob any) string {
+	b, ok := blob.(map[string]any)
+	if !ok {
+		return ""
+	}
+	ref, ok := b["ref"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	cid, _ := ref["$link"].(string)
+	return cid
+}
+
+// bluesky_embed_view shapes a post record's embed as a feed shows it: the
+// images with their blobs' addresses and alternative text, an external link
+// with its thumbnail. Nothing for a quoted record alone.
+func bluesky_embed_view(server string, did string, embed any) map[string]any {
+	e, ok := embed.(map[string]any)
+	if !ok {
+		return nil
+	}
+	kind, _ := e["$type"].(string)
+	switch kind {
+	case "app.bsky.embed.recordWithMedia":
+		return bluesky_embed_view(server, did, e["media"])
+	case "app.bsky.embed.images":
+		images := []any{}
+		list, _ := e["images"].([]any)
+		for _, item := range list {
+			image, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			cid := bluesky_blob_cid(image["image"])
+			if cid == "" {
+				continue
+			}
+			address := bluesky_blob(server, did, cid)
+			alt, _ := image["alt"].(string)
+			images = append(images, map[string]any{"fullsize": address, "thumb": address, "alt": alt})
+		}
+		if len(images) == 0 {
+			return nil
+		}
+		return map[string]any{"$type": "app.bsky.embed.images#view", "images": images}
+	case "app.bsky.embed.external":
+		external, ok := e["external"].(map[string]any)
+		if !ok {
+			return nil
+		}
+		view := map[string]any{"uri": external["uri"], "title": external["title"], "description": external["description"]}
+		if cid := bluesky_blob_cid(external["thumb"]); cid != "" {
+			view["thumb"] = bluesky_blob(server, did, cid)
+		}
+		return map[string]any{"$type": "app.bsky.embed.external#view", "external": view}
+	}
+	return nil
 }

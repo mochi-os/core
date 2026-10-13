@@ -180,3 +180,54 @@ func TestServerPublicURL(t *testing.T) {
 		t.Errorf("mochi.server.url without a domain = %q", text)
 	}
 }
+
+// TestAccountProfile: an account on another network is shown on the profile
+// page once update(profile=True) has been called for it, listed by
+// mochi.account.profile with its page, and hidden again by profile=False; an
+// account of another kind is never listed.
+func TestAccountProfile(t *testing.T) {
+	alice, _ := create_handles_test_env(t)
+	db := db_user(alice, "user")
+	db.exec("create table if not exists accounts (id text not null primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1, \"default\" text not null default '', last_delivered integer not null default 0, device text not null default '')")
+	db.exec("insert into accounts (id, type, label, identifier, data, created) values ('acc1', 'mastodon', 'Alice', '@alice@mastodon.social', '{\"url\":\"https://mastodon.social/@alice\",\"name\":\"Alice\"}', 1)")
+	db.exec("insert into accounts (id, type, label, identifier, data, created) values ('acc2', 'google', 'Mail', 'alice@gmail.com', '{\"profile\":true}', 1)")
+	app := create_external_app("app1")
+	for _, permission := range []string{"accounts/read", "accounts/write"} {
+		permission_grant(alice, app.id, permission)
+	}
+	thread := create_test_thread(alice, app)
+	profile := func() []any {
+		value, err := api_account_profile(thread, sl.NewBuiltin("mochi.account.profile", api_account_profile), nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sl_decode(value).([]any)
+	}
+	if shown := profile(); len(shown) != 0 {
+		t.Errorf("nothing shown yet, got %v", shown)
+	}
+	update := sl.NewBuiltin("mochi.account.update", api_account_update)
+	if _, err := api_account_update(thread, update, sl.Tuple{sl.String("acc1")}, []sl.Tuple{{sl.String("profile"), sl.True}}); err != nil {
+		t.Fatal(err)
+	}
+	shown := profile()
+	if len(shown) != 1 {
+		t.Fatalf("shown = %v, want the Mastodon account alone", shown)
+	}
+	if entry := shown[0].(map[string]any); entry["type"] != "mastodon" || entry["identifier"] != "@alice@mastodon.social" || entry["name"] != "Alice" || entry["url"] != "https://mastodon.social/@alice" {
+		t.Errorf("entry = %v", entry)
+	}
+	value, err := api_account_get(thread, sl.NewBuiltin("mochi.account.get", api_account_get), sl.Tuple{sl.String("acc1")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sl_decode(value).(map[string]any); got["profile"] != true {
+		t.Errorf("get after showing: profile = %v", got["profile"])
+	}
+	if _, err := api_account_update(thread, update, sl.Tuple{sl.String("acc1")}, []sl.Tuple{{sl.String("profile"), sl.False}}); err != nil {
+		t.Fatal(err)
+	}
+	if shown := profile(); len(shown) != 0 {
+		t.Errorf("after hiding: %v", shown)
+	}
+}

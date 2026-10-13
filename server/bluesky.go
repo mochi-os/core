@@ -96,20 +96,9 @@ func bluesky_resolve(ctx context.Context, user *User, identifier string) (*blues
 		if err := host_allowed(user, "", host); err != nil {
 			return nil, err
 		}
-		did = ""
-		if records, err := bluesky_lookup(ctx, "_atproto."+identifier); err == nil {
-			for _, record := range records {
-				if value, ok := strings.CutPrefix(strings.TrimSpace(record), "did="); ok && resolve_did_re.MatchString(value) {
-					did = value
-				}
-			}
-		}
-		if did == "" {
-			status, body, err := bluesky_fetch(ctx, user, network_scheme+identifier+"/.well-known/atproto-did", "text/plain")
-			if err != nil || status != 200 {
-				return nil, fmt.Errorf("the handle %s does not resolve", identifier)
-			}
-			did = strings.TrimSpace(string(body))
+		var err error
+		if did, err = resolve_handle(ctx, identifier); err != nil {
+			return nil, err
 		}
 	}
 	if !resolve_did_re.MatchString(did) {
@@ -956,7 +945,7 @@ func bluesky_upload(ctx context.Context, l *linked, content []byte, kind string)
 	if ref, ok := answer.Blob["ref"].(map[string]any); ok {
 		id, _ = ref["$link"].(string)
 	}
-	return map[string]any{"id": id, "url": l.get("pds") + "/xrpc/com.atproto.sync.getBlob?did=" + url.QueryEscape(l.get("did")) + "&cid=" + url.QueryEscape(id), "data": answer.Blob}, nil
+	return map[string]any{"id": id, "url": bluesky_blob(l.get("pds"), l.get("did"), id), "data": answer.Blob}, nil
 }
 
 // bluesky_request sends an app's own XRPC request: the path is the method's

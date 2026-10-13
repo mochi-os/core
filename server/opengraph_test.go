@@ -77,6 +77,26 @@ func TestOpenGraphStillEscapesMarkup(t *testing.T) {
 	}
 }
 
+// TestOpenGraphLinks: the links an app declares become link tags for the head,
+// escaped; a relation of the wrong shape or an address that is not a web one
+// is left out, and anything but a list of them gives nothing.
+func TestOpenGraphLinks(t *testing.T) {
+	got := opengraph_links([]any{
+		map[string]any{"rel": "me", "href": "https://mastodon.social/@alice"},
+		map[string]any{"rel": "me", "href": `https://bsky.app/profile/a"b`},
+		map[string]any{"rel": "ME", "href": "https://example.com"},
+		map[string]any{"rel": "me", "href": "javascript:alert(1)"},
+		"not a link",
+	})
+	want := `<link rel="me" href="https://mastodon.social/@alice" />` + "\n    " + `<link rel="me" href="https://bsky.app/profile/a&quot;b" />` + "\n    "
+	if got != want {
+		t.Errorf("links = %q, want %q", got, want)
+	}
+	if opengraph_links(nil) != "" || opengraph_links("x") != "" {
+		t.Error("no links should render nothing")
+	}
+}
+
 // Mochi server: making an app's og:image absolute.
 // TestOpenGraphAbsolute covers the shapes apps actually emit. The entity-route
 // case is the defect: people and feeds both emit "-/avatar" from a page served at

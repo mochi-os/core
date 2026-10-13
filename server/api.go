@@ -143,6 +143,7 @@ func api_table() sl.StringDict {
 				"patch":   sl.NewBuiltin("mochi.url.patch", api_url_request),
 				"post":    sl.NewBuiltin("mochi.url.post", api_url_request),
 				"preview": sl.NewBuiltin("mochi.url.preview", api_url_preview),
+				"quote":   sl.NewBuiltin("mochi.url.quote", api_url_quote),
 				"put":     sl.NewBuiltin("mochi.url.put", api_url_request),
 			}),
 			"webpush":   api_webpush,

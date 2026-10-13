@@ -396,12 +396,6 @@ func mastodon_upload(ctx context.Context, l *linked, content []byte, kind string
 	return map[string]any{"id": id, "url": page, "data": media}, nil
 }
 
-// mastodon_request sends an app's own request on the server's interface.
-func mastodon_request(ctx context.Context, l *linked, method string, path string, query map[string]string, body any) (int, []byte, error) {
-	status, data, err := l.json(ctx, method, mastodon_api(l, path, query), body, nil)
-	return status, data, err
-}
-
 // mastodon_refresh_limits reads a server's limits again once a day, for every
 // linked Mastodon account on it.
 func mastodon_refresh_limits(ctx context.Context, l *linked) {

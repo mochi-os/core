@@ -1020,9 +1020,22 @@ func linked_request(ctx context.Context, l *linked, method string, path string, 
 	var status int
 	var data []byte
 	var err error
+	link := ""
 	switch l.kind {
 	case "mastodon":
-		status, data, err = mastodon_request(ctx, l, method, path, query, body)
+		// Mastodon pages a list by its Link header alone, so the header comes
+		// back with the answer.
+		var encoded []byte
+		headers := map[string]string{}
+		if body != nil {
+			encoded = []byte(json_encode(body))
+			headers["Content-Type"] = "application/json"
+		}
+		var header http.Header
+		status, data, header, err = l.request(ctx, method, mastodon_api(l, path, query), headers, encoded)
+		if err == nil {
+			link = header.Get("Link")
+		}
 	case "lemmy":
 		status, data, err = lemmy_request(ctx, l, method, path, query, body)
 	case "bluesky":
@@ -1035,7 +1048,11 @@ func linked_request(ctx context.Context, l *linked, method string, path string, 
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"status": status, "data": linked_decode(data)}, nil
+	result := map[string]any{"status": status, "data": linked_decode(data)}
+	if link != "" {
+		result["link"] = link
+	}
+	return result, nil
 }
 
 // linked_verify checks that the server still accepts the account.
@@ -1142,11 +1159,27 @@ func api_account_timeline(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return linked_page_encode(page), nil
 }
 
-// mochi.account.posts(account, cursor="", limit=40) -> dict: A page of a linked social account's own posts, {items, cursor}, in the network's own form, newest first. Behind the account permission
+// mochi.account.posts(account, cursor="", limit=40) -> dict: A page of a linked social account's own posts, {items, cursor}, in the network's own form, newest first. Behind the account permission. A Bluesky identifier in place of the account reads that account's public posts from its own server, which needs no sign-in, in the same form; None when the server does not answer
 func api_account_posts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	account, cursor, limit, err := linked_page_arguments(fn, args, kwargs)
 	if err != nil {
 		return nil, err
+	}
+	if author_network(account) == "bluesky" {
+		user := principal_caller(t)
+		if user == nil {
+			return sl_error(fn, "no user")
+		}
+		if err := resolve_allowed(user, account); err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		// A server that does not answer is None, as a lookup of the person is:
+		// a scheduled poll of a public account must not die with it.
+		page, err := bluesky_public_posts(thread_context(t), account, cursor, limit)
+		if err != nil {
+			return sl.None, nil
+		}
+		return linked_page_encode(page), nil
 	}
 	l, err := linked_acting(t, fn, account)
 	if err != nil {

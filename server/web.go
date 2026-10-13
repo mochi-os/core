@@ -1352,6 +1352,9 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 	if og_type, ok := og["type"].(string); ok && og_type != "" {
 		content = regexp_replace_meta(content, "og:type", og_type)
 	}
+	if links := opengraph_links(og["links"]); links != "" {
+		content = strings.Replace(content, "</head>", links+"</head>", 1)
+	}
 
 	// Always set og:url to current URL
 	if !strings.Contains(content, `property="og:url"`) {
@@ -1377,6 +1380,29 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 	c.Header("Vary", "Cookie")
 	c.String(http.StatusOK, content)
 	return true
+}
+
+// opengraph_rel_re is the shape of a link relation.
+var opengraph_rel_re = regexp.MustCompile(`^[a-z][a-z-]*$`)
+
+// opengraph_links renders the links an OpenGraph function declares for other
+// sites to read - [{rel, href}], such as rel="me" to the person's accounts on
+// other networks, which those networks verify by fetching the page - as link
+// tags for the head. A crawler reads the served HTML, so they are written here
+// and not by the page's script.
+func opengraph_links(value any) string {
+	links, _ := value.([]any)
+	var tags strings.Builder
+	for _, item := range links {
+		link, _ := item.(map[string]any)
+		rel, _ := link["rel"].(string)
+		href, _ := link["href"].(string)
+		if !opengraph_rel_re.MatchString(rel) || !strings.HasPrefix(href, "https://") && !strings.HasPrefix(href, "http://") {
+			continue
+		}
+		tags.WriteString(`<link rel="` + escape_attribute(rel) + `" href="` + escape_attribute(href) + `" />` + "\n    ")
+	}
+	return tags.String()
 }
 
 // web_action_find resolves a request path to one of the app's actions.

@@ -57,9 +57,13 @@ type resolve_test_documents struct {
 func (d *resolve_test_documents) fetch(ctx context.Context, address string, accept string) ([]byte, error) {
 	d.fetches++
 	if body, found := d.documents[address]; found {
+		// A document of "401" stands for a server that wants a signature.
+		if body == "401" {
+			return nil, &resolve_refusal{Status: 401}
+		}
 		return []byte(body), nil
 	}
-	return nil, fmt.Errorf("status 404")
+	return nil, &resolve_refusal{Status: 404}
 }
 
 func resolve_test_install(t *testing.T, documents map[string]string) *resolve_test_documents {
@@ -158,5 +162,140 @@ func TestResolveXMPPAndFailure(t *testing.T) {
 	}
 	if _, err := author_resolve(context.Background(), "not an identifier"); err == nil {
 		t.Error("a non-identifier should fail")
+	}
+}
+
+// TestResolveSecureMode: a server that gives its actor documents to signed
+// requests only still resolves a handle from WebFinger - the address, the
+// username and the profile page - while an actor URL alone does not.
+func TestResolveSecureMode(t *testing.T) {
+	d := resolve_test_install(t, map[string]string{
+		"https://mastodon.social/.well-known/webfinger?resource=acct%3AMastodon%40mastodon.social": `{"links":[{"rel":"http://webfinger.net/rel/profile-page","type":"text/html","href":"https://mastodon.social/@Mastodon"},{"rel":"self","type":"application/activity+json","href":"https://mastodon.social/users/Mastodon"}]}`,
+		"https://mastodon.social/users/Mastodon":                                                   "401",
+	})
+	r, err := author_resolve(context.Background(), "@Mastodon@mastodon.social")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Network != "fediverse" || r.Type != "person" || r.Address != "@Mastodon@mastodon.social" || r.Username != "Mastodon" || r.Host != "mastodon.social" || r.URL != "https://mastodon.social/@Mastodon" || r.ID != "https://mastodon.social/users/Mastodon" || r.Name != "Mastodon" {
+		t.Errorf("resolved = %+v", r)
+	}
+	if d.fetches != 2 {
+		t.Errorf("fetches = %d, want WebFinger and the refused actor", d.fetches)
+	}
+	if _, err := author_resolve(context.Background(), "https://mastodon.social/users/Mastodon"); err == nil {
+		t.Error("an actor URL with no WebFinger to fall back on resolved")
+	}
+	if !resolve_signed(&resolve_refusal{Status: 403}) || resolve_signed(&resolve_refusal{Status: 404}) || resolve_signed(fmt.Errorf("status 401")) {
+		t.Error("resolve_signed reads the status of a refusal alone")
+	}
+}
+
+// TestResolveActorFields: the type, username and host come with an actor, and
+// a document that is not an actor's is refused.
+func TestResolveActorFields(t *testing.T) {
+	resolve_test_install(t, map[string]string{
+		"https://lemmy.world/c/technology": `{"id":"https://lemmy.world/c/technology","type":"Group","preferredUsername":"technology","name":"Technology"}`,
+		"https://lemmy.world/post/1":       `{"id":"https://lemmy.world/post/1","type":"Page","name":"A post"}`,
+	})
+	r, err := author_resolve(context.Background(), "https://lemmy.world/c/technology")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Type != "group" || r.Username != "technology" || r.Host != "lemmy.world" || r.ID != "https://lemmy.world/c/technology" || r.Address != "@technology@lemmy.world" {
+		t.Errorf("resolved = %+v", r)
+	}
+	if _, err := author_resolve(context.Background(), "https://lemmy.world/post/1"); err == nil {
+		t.Error("a post resolved as a person")
+	}
+}
+
+// TestResolveHandle: a Bluesky handle is a lookup form, resolved to its DID by
+// the DNS record first and the well-known file second; the account's data
+// server comes with the identity.
+func TestResolveHandle(t *testing.T) {
+	did := "did:plc:ewvi7nxzyoun6zhxrhs64oiz"
+	d := resolve_test_install(t, map[string]string{
+		"https://bob.bsky.social/.well-known/atproto-did": did + "\n",
+		"https://plc.directory/" + did:                    `{"alsoKnownAs":["at://bob.bsky.social"],"service":[{"id":"#atproto_pds","type":"AtprotoPersonalDataServer","serviceEndpoint":"https://pds.example"}]}`,
+	})
+	saved := bluesky_lookup
+	records := []string{}
+	bluesky_lookup = func(ctx context.Context, name string) ([]string, error) { return records, nil }
+	t.Cleanup(func() { bluesky_lookup = saved })
+
+	for _, form := range []string{"bob.bsky.social", "Bob.bsky.social"} {
+		if !resolve_handle_form(form) {
+			t.Errorf("%q is a handle", form)
+		}
+	}
+	for _, form := range []string{"@bob.bsky.social", "bob@bsky.social", "https://bsky.app/profile/bob.bsky.social", "bob", "did:plc:ewvi7nxzyoun6zhxrhs64oiz"} {
+		if resolve_handle_form(form) {
+			t.Errorf("%q is not a handle", form)
+		}
+	}
+	if resolve_network_of("bob.bsky.social") != "bluesky" || resolve_network_of("bob@lemmy.world") != "fediverse" || resolve_network_of("bob") != "" {
+		t.Error("the network of a lookup form")
+	}
+	if identifier_host("bob.bsky.social") != "bob.bsky.social" {
+		t.Error("a handle's host is the handle")
+	}
+
+	r, err := author_resolve(context.Background(), "bob.bsky.social")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ID != did || r.Username != "bob.bsky.social" || r.Server != "https://pds.example" || r.Type != "person" {
+		t.Errorf("resolved = %+v", r)
+	}
+	if d.fetches != 3 {
+		t.Errorf("fetches = %d, want the well-known file, the identity and the profile", d.fetches)
+	}
+	records = []string{"did=" + did}
+	resolve_lock.Lock()
+	resolve_cache = map[string]resolve_entry{}
+	resolve_lock.Unlock()
+	if _, err := author_resolve(context.Background(), "bob.bsky.social"); err != nil || d.fetches != 5 {
+		t.Errorf("with a DNS record the well-known file is not fetched: fetches = %d, %v", d.fetches, err)
+	}
+}
+
+// TestBlueskyPublicPosts: an account's post records are read from its data
+// server and shaped as its feed shows them, the author from the profile and
+// the images as blobs; the cursor carries to the next page.
+func TestBlueskyPublicPosts(t *testing.T) {
+	did := "did:plc:ewvi7nxzyoun6zhxrhs64oiz"
+	resolve_test_install(t, map[string]string{
+		"https://plc.directory/" + did: `{"alsoKnownAs":["at://bob.bsky.social"],"service":[{"id":"#atproto_pds","type":"AtprotoPersonalDataServer","serviceEndpoint":"https://pds.example"}]}`,
+		"https://pds.example/xrpc/com.atproto.repo.getRecord?repo=did%3Aplc%3Aewvi7nxzyoun6zhxrhs64oiz&collection=app.bsky.actor.profile&rkey=self":         `{"value":{"displayName":"Bob","avatar":{"ref":{"$link":"bafyavatar"}}}}`,
+		"https://pds.example/xrpc/com.atproto.repo.listRecords?repo=did%3Aplc%3Aewvi7nxzyoun6zhxrhs64oiz&collection=app.bsky.feed.post&limit=2":             `{"cursor":"next","records":[{"uri":"at://` + did + `/app.bsky.feed.post/1","cid":"c1","value":{"text":"One","createdAt":"2026-10-03T00:00:00Z","embed":{"$type":"app.bsky.embed.recordWithMedia","media":{"$type":"app.bsky.embed.images","images":[{"alt":"Alt","image":{"ref":{"$link":"bafyone"}}}]}}}},{"uri":"at://` + did + `/app.bsky.feed.post/2","cid":"c2","value":{"text":"Two","embed":{"$type":"app.bsky.embed.external","external":{"uri":"https://example.com","title":"Example","thumb":{"ref":{"$link":"bafythumb"}}}}}}]}`,
+		"https://pds.example/xrpc/com.atproto.repo.listRecords?repo=did%3Aplc%3Aewvi7nxzyoun6zhxrhs64oiz&collection=app.bsky.feed.post&limit=2&cursor=next": `{"records":[]}`,
+	})
+	page, err := bluesky_public_posts(context.Background(), did, "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 || page.Cursor != "next" {
+		t.Fatalf("page = %+v", page)
+	}
+	first := page.Items[0].(map[string]any)["post"].(map[string]any)
+	author := first["author"].(map[string]any)
+	if author["handle"] != "bob.bsky.social" || author["displayName"] != "Bob" || author["did"] != did {
+		t.Errorf("author = %+v", author)
+	}
+	if first["record"].(map[string]any)["text"] != "One" || first["cid"] != "c1" {
+		t.Errorf("record = %+v", first)
+	}
+	images := first["embed"].(map[string]any)["images"].([]any)
+	if len(images) != 1 || images[0].(map[string]any)["fullsize"] != "https://pds.example/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Aewvi7nxzyoun6zhxrhs64oiz&cid=bafyone" || images[0].(map[string]any)["alt"] != "Alt" {
+		t.Errorf("images = %+v", images)
+	}
+	second := page.Items[1].(map[string]any)["post"].(map[string]any)
+	external := second["embed"].(map[string]any)["external"].(map[string]any)
+	if external["title"] != "Example" || external["thumb"] != "https://pds.example/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Aewvi7nxzyoun6zhxrhs64oiz&cid=bafythumb" {
+		t.Errorf("external = %+v", external)
+	}
+	if page, err := bluesky_public_posts(context.Background(), did, "next", 2); err != nil || len(page.Items) != 0 || page.Cursor != "" {
+		t.Errorf("last page = %+v, %v", page, err)
 	}
 }

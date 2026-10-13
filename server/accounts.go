@@ -461,7 +461,7 @@ func account_present(user *User, row map[string]any) map[string]any {
 	data := account_data(row)
 	hosted := account_hosted_flag(row)
 	out["hosted"] = hosted
-	for _, key := range []string{"server", "url", "name", "avatar", "limits", "error"} {
+	for _, key := range []string{"server", "domain", "url", "name", "avatar", "limits", "error"} {
 		if value, set := data[key]; set {
 			out[key] = value
 		}

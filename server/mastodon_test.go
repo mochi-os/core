@@ -287,14 +287,15 @@ func TestMastodonLink(t *testing.T) {
 		t.Errorf("refused consent: %q", location)
 	}
 
-	// The sign-in endpoints do not take a network provider.
+	// A sign-in with a network provider names the account's server
+	// (network_login_test.go); without one there is nothing to begin.
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/_/auth/oauth/mastodon/begin", strings.NewReader("{}"))
 	c.Params = gin.Params{{Key: "provider", Value: "mastodon"}}
 	web_oauth_begin(c)
-	if w.Code != http.StatusNotFound {
-		t.Errorf("begin with a network provider: %d", w.Code)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("begin with a network provider and no server: %d", w.Code)
 	}
 
 	// A registration whose redirect has changed is made afresh.

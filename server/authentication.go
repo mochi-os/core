@@ -200,6 +200,9 @@ func auth_establish_session(c *gin.Context, user *User) {
 	web_cookie_set(c, "session", session)
 	db_open("db/sessions.db").exec("replace into logins (user, last) values (?, ?)", user.UID, now())
 	audit_login(user.Username, rate_limit_client_ip(c))
+	// A sign-in with an account on another network that reached no user yet
+	// joins the user this login proves (linked.go).
+	network_login_apply(c, user)
 }
 
 // auth_complete_login creates a full session and returns session info as JSON.
@@ -304,6 +307,8 @@ func web_auth_methods(c *gin.Context) {
 			"microsoft": oauth_enabled("microsoft"),
 			"facebook":  oauth_enabled("facebook"),
 			"x":         oauth_enabled("x"),
+			"mastodon":  network_login_offered("mastodon"),
+			"bluesky":   network_login_offered("bluesky"),
 		},
 	})
 }

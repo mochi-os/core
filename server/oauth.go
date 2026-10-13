@@ -323,9 +323,7 @@ func web_oauth_begin(c *gin.Context) {
 	name := c.Param("provider")
 	reg := oauth_providers()
 	provider, ok := reg[name]
-	// A network provider links an account through mochi.account.link, not a
-	// sign-in, until the login app offers it as one.
-	if !ok || !oauth_enabled(name) || provider.network != "" {
+	if !ok || !oauth_enabled(name) {
 		respond_error(c, http.StatusNotFound, "unknown_provider", "errors.unknown_provider", nil)
 		return
 	}
@@ -338,6 +336,23 @@ func web_oauth_begin(c *gin.Context) {
 		Challenge string `json:"challenge"` // base64url(sha256(app_verifier)) (mobile only)
 		Email     string `json:"email"`     // typed address (email-login flow); binds OAuth to that account
 		Token     string `json:"token"`     // step-up re-authentication proof (link only)
+		Server    string `json:"server"`    // the account's server (a Mastodon sign-in)
+		Handle    string `json:"handle"`    // the account's handle (a Bluesky sign-in)
+	}
+	// A network provider signs a user in from the web login page; a link goes
+	// through mochi.account.link, and a native app's sign-in waits on the
+	// Android settings (phase 31).
+	if provider.network != "" {
+		if err := c.ShouldBindJSON(&body); err != nil && err != io.EOF {
+			respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
+			return
+		}
+		if body.Link || body.Mode == "mobile" || !network_login_offered(name) {
+			respond_error(c, http.StatusNotFound, "unknown_provider", "errors.unknown_provider", nil)
+			return
+		}
+		network_login_begin(c, provider, body.Target, body.Server, body.Handle)
+		return
 	}
 	// An empty body is a legitimate "web login, no options" request, so io.EOF
 	// is not an error here; anything else is a malformed body that would
@@ -613,8 +628,18 @@ func web_oauth_callback(c *gin.Context) {
 	}
 
 	// A network link completes in its protocol, bound to the user's session
-	// as a grant is; a refused consent goes back to the app's target.
+	// as a grant is; a refused consent goes back to the app's target. A
+	// network sign-in, bound to the browser as a web login is, completes in
+	// its protocol too and then signs the user in.
 	if provider.network != "" {
+		if link_user == "" && st.Mode == "" {
+			if perr != "" {
+				oauth_error_redirect(c, "access_denied", nil)
+				return
+			}
+			linked_login(c, provider.network, st, code)
+			return
+		}
 		if link_user == "" || (st.Mode != "account" && st.Mode != "mobile") {
 			oauth_error_redirect(c, "state_invalid", nil)
 			return
@@ -1068,31 +1093,7 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target, expe
 		account_oauth_linked(user.UID, provider, p)
 		oauth_verification_record(db, provider, p.Subject, user.UID)
 
-		// OAuth proves a linked account, not the email factor, so any methods
-		// the user requires must still be completed as MFA. Fold this factor
-		// into any pending partial — an OAuth round-trip from the /codes page
-		// continues the sequence begun by another factor.
-		_, remaining := partial_continue(c, user, "oauth")
-		if len(remaining) > 0 {
-			// If email is one of them, send the code now, as the other
-			// non-email first factors (TOTP, passkey) do.
-			for _, method := range remaining {
-				if method == "email" {
-					code_send(user.Username, c)
-					break
-				}
-			}
-			// Carry the requested destination through the MFA hop so the
-			// /codes page can honour it after the last factor completes.
-			codes := "/login/codes"
-			if local := redirect_local(target); local != "" && local != "/" {
-				codes += "?redirect=" + url.QueryEscape(local)
-			}
-			c.Redirect(http.StatusFound, codes)
-			return
-		}
-
-		auth_redirect_login(c, user, target)
+		oauth_login_complete(c, user, target)
 		return
 	}
 
@@ -1138,6 +1139,34 @@ func oauth_login(c *gin.Context, provider string, p *oauth_profile, target, expe
 	oauth_set_profile_cookie(c, p)
 
 	auth_redirect_login(c, user, "/login/identity")
+}
+
+// oauth_login_complete signs in a user a provider has proved. OAuth proves a
+// linked account, not the email factor, so any methods the user requires must
+// still be completed as MFA: this factor is folded into any pending partial -
+// an OAuth round-trip from the /codes page continues the sequence begun by
+// another factor - and the browser goes to the codes page while any remain.
+func oauth_login_complete(c *gin.Context, user *User, target string) {
+	_, remaining := partial_continue(c, user, "oauth")
+	if len(remaining) > 0 {
+		// If email is one of them, send the code now, as the other
+		// non-email first factors (TOTP, passkey) do.
+		for _, method := range remaining {
+			if method == "email" {
+				code_send(user.Username, c)
+				break
+			}
+		}
+		// Carry the requested destination through the MFA hop so the
+		// /codes page can honour it after the last factor completes.
+		codes := "/login/codes"
+		if local := redirect_local(target); local != "" && local != "/" {
+			codes += "?redirect=" + url.QueryEscape(local)
+		}
+		c.Redirect(http.StatusFound, codes)
+		return
+	}
+	auth_redirect_login(c, user, target)
 }
 
 // oauth_set_profile_cookie writes the mochi_me JSON cookie that the login

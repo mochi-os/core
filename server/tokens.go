@@ -397,7 +397,7 @@ func api_token_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 
 	// Verify the token belongs to this user and app
 	db := db_open("db/users.db")
-	row, _ := db.row("select user, app, scopes from tokens where hash = ?", hash)
+	row, _ := db.row("select user, app, scopes, kind from tokens where hash = ?", hash)
 	if row == nil {
 		return sl.False, nil
 	}
@@ -405,16 +405,25 @@ func api_token_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "token does not belong to user")
 	}
 	if row["app"].(string) != app.id {
-		// A device credential (the dav scope) is shared by the apps that
-		// serve DAV, so either may revoke it from its own list; reaching
-		// beyond the app takes the permission minting takes.
-		var scopes []string
-		json.Unmarshal([]byte(row_string(row, "scopes")), &scopes)
-		if !slices.Contains(scopes, "dav") {
-			return sl_error(fn, "token does not belong to app")
-		}
-		if err := require_permission(t, fn, "tokens/create"); err != nil {
-			return sl_error(fn, "%v", err)
+		if row_string(row, "kind") != "" {
+			// A sign-in by another network's client or a minted password
+			// (signin.go) belongs to no app of the user's: the Sessions page
+			// revokes it under the permission that revokes sessions.
+			if err := require_permission(t, fn, "user/sessions/write"); err != nil {
+				return sl_error(fn, "%v", err)
+			}
+		} else {
+			// A device credential (the dav scope) is shared by the apps that
+			// serve DAV, so either may revoke it from its own list; reaching
+			// beyond the app takes the permission minting takes.
+			var scopes []string
+			json.Unmarshal([]byte(row_string(row, "scopes")), &scopes)
+			if !slices.Contains(scopes, "dav") {
+				return sl_error(fn, "token does not belong to app")
+			}
+			if err := require_permission(t, fn, "tokens/create"); err != nil {
+				return sl_error(fn, "%v", err)
+			}
 		}
 	}
 
@@ -422,7 +431,39 @@ func api_token_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.True, nil
 }
 
-// mochi.token.list(scope="") -> list: List all tokens for the current user and app; with a scope, the user's tokens naming that scope from every app, which takes the tokens/create permission
+// token_list_kind lists a user's tokens of another kind (signin.go) from every
+// app, for the Sessions page: a sign-in by another network's client, with the
+// client described, or a minted password; each with its account's address.
+func token_list_kind(user *User, kind string) []map[string]any {
+	rows, _ := db_open("db/users.db").rows("select hash, name, created, expires, kind, client, account, network, device from tokens where user=? and kind=?", user.UID, kind)
+	useds := token_useds(user.UID)
+	accounts := db_user(user, "user")
+	results := []map[string]any{}
+	for _, row := range rows {
+		hash := row_string(row, "hash")
+		name, website := signin_client_describe(row_string(row, "client"))
+		address := ""
+		if account, _ := accounts.row("select identifier from accounts where id=?", row_string(row, "account")); account != nil {
+			address = row_string(account, "identifier")
+		}
+		results = append(results, map[string]any{
+			"hash":    hash,
+			"name":    row["name"],
+			"created": row["created"],
+			"used":    useds[hash],
+			"expires": row["expires"],
+			"kind":    row["kind"],
+			"client":  map[string]any{"id": row["client"], "name": name, "website": website},
+			"account": row["account"],
+			"address": address,
+			"network": row["network"],
+			"device":  row["device"],
+		})
+	}
+	return results
+}
+
+// mochi.token.list(scope="", kind="") -> list: List all tokens for the current user and app; with a scope, the user's tokens naming that scope from every app, which takes the tokens/create permission; with a kind ("signin" or "password"), the user's tokens of that kind from every app, which takes user/sessions/read
 func api_token_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user := principal_caller(t)
 	if user == nil {
@@ -434,9 +475,20 @@ func api_token_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "no app")
 	}
 
-	var scope string
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "scope?", &scope); err != nil {
+	var scope, kind string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "scope?", &scope, "kind?", &kind); err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	if kind != "" {
+		if kind != token_signin && kind != token_password {
+			return sl_error(fn, "unknown token kind %q", kind)
+		}
+		// The sign-ins and passwords of every app, as the Sessions page lists
+		// them beside the sessions, under the permission that lists those.
+		if err := require_permission(t, fn, "user/sessions/read"); err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return sl_encode(token_list_kind(user, kind)), nil
 	}
 	if scope == "" {
 		return sl_encode(token_list(user.UID, app.id, "")), nil

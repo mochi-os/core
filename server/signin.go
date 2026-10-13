@@ -938,16 +938,7 @@ func api_oauth_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if r == nil {
 		return sl.None, nil
 	}
-	name, website := r.Client, ""
-	if cl := client_registered(r.Client); cl != nil {
-		name, website = cl.Name, cl.Website
-	} else if strings.HasPrefix(r.Client, network_scheme) {
-		client_documents_lock.Lock()
-		if cl := client_documents[r.Client]; cl != nil {
-			name, website = cl.Name, cl.Website
-		}
-		client_documents_lock.Unlock()
-	}
+	name, website := signin_client_describe(r.Client)
 	var accounts []map[string]any
 	for _, row := range accounts_hosted(user, r.Network) {
 		data := account_data(row)
@@ -972,6 +963,23 @@ func api_oauth_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		"hint":     r.Hint,
 		"accounts": accounts,
 	}), nil
+}
+
+// signin_client_describe names a client for the user: a registered
+// application's name and website, a known AT Protocol client's from its
+// document, else the id alone.
+func signin_client_describe(id string) (string, string) {
+	if cl := client_registered(id); cl != nil {
+		return cl.Name, cl.Website
+	}
+	if strings.HasPrefix(id, network_scheme) {
+		client_documents_lock.Lock()
+		defer client_documents_lock.Unlock()
+		if cl := client_documents[id]; cl != nil {
+			return cl.Name, cl.Website
+		}
+	}
+	return id, ""
 }
 
 // mochi.oauth.approve(id, account, feed="") -> dict: Approve a sign-in for one of the user's hosted accounts on the request's network, naming the feed posts made from the client land in where the client asks to write and the account has no home feed yet (decision 42). Returns {url}, where the browser is sent: the client's redirect carrying the code. Only the login app holds the permission

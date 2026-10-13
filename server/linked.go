@@ -469,6 +469,184 @@ func linked_exchange(c *gin.Context, data map[string]any) {
 	c.JSON(http.StatusOK, map[string]any{"linked": row_string(row, "id")})
 }
 
+// === Signing in to Mochi with an account on another network ===
+//
+// A Mastodon or Bluesky account signs its holder in to Mochi: the login page
+// begins the same consent a link does, with no user yet, and the callback
+// completes it in the protocol. An identity seen before signs its user in and
+// refreshes the linked account's credential. A new one, where sign-up is open,
+// is kept for ten minutes as a pending identity while the browser goes to the
+// login page to give an email address, which the code sent to it proves; the
+// login that follows - by that code or any other factor - creates or names the
+// user, and the identity joins them as a linked account and as a way to sign
+// in. The provider's email is never trusted for this (decision 6): the user
+// proves the address themselves.
+
+const network_login_cookie = "mochi_network"
+const network_login_lifetime = 600
+
+// network_login_offered reports whether a network's accounts may sign users
+// in here: while the server offers networks, and for Bluesky only with a
+// configured domain, since its consent is by OAuth as a link's is.
+func network_login_offered(name string) bool {
+	if !oauth_enabled(name) {
+		return false
+	}
+	switch name {
+	case "mastodon":
+		return true
+	case "bluesky":
+		return bluesky_client_base() != ""
+	}
+	return false
+}
+
+// network_login_begin starts a sign-in: the ceremony is prepared as a web
+// login's is, bound to the browser, the protocol registers or pushes what it
+// must with no user yet, and the browser is sent to the server's consent.
+func network_login_begin(c *gin.Context, provider *oauth_provider, target string, server string, handle string) {
+	ctx, cancel := context.WithTimeout(context.Background(), linked_timeout)
+	defer cancel()
+	state, st := oauth_ceremony_prepare(c, provider.name, "", target, "", "", "", "")
+	var err error
+	switch provider.network {
+	case "mastodon":
+		if strings.TrimSpace(server) == "" {
+			respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
+			return
+		}
+		err = mastodon_prepare(ctx, nil, st, server)
+	case "bluesky":
+		if strings.TrimSpace(handle) == "" {
+			respond_error(c, http.StatusBadRequest, "invalid_request", "errors.invalid_request", nil)
+			return
+		}
+		err = bluesky_prepare(ctx, nil, st, handle)
+	}
+	if err == nil {
+		_, _, err = oauth_ceremony_begin(c, provider, provider.name, "", state, st)
+	}
+	if err != nil {
+		warn("Signing in with a %s account: %v", provider.name, err)
+		respond_error(c, http.StatusServiceUnavailable, "provider_unavailable", "errors.provider_unavailable", nil)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"url": st.Consent})
+}
+
+// linked_subject is the identity a sign-in is keyed by: the account's
+// permanent identifier on its network, its actor URI on the fediverse and its
+// DID on Bluesky, which outlive a change of handle.
+func linked_subject(kind string, profile *linked_profile) string {
+	return profile.ID
+}
+
+// linked_login completes a sign-in once the account's server has consented.
+func linked_login(c *gin.Context, kind string, st *oauth_state, code string) {
+	ctx, cancel := context.WithTimeout(context.Background(), linked_timeout)
+	defer cancel()
+	var profile *linked_profile
+	var data map[string]any
+	var err error
+	switch kind {
+	case "mastodon":
+		profile, data, err = mastodon_callback(ctx, nil, st, code)
+	case "bluesky":
+		profile, data, err = bluesky_callback(ctx, nil, st, code, c.Query("iss"))
+	}
+	if err != nil || profile == nil || profile.ID == "" {
+		warn("Signing in with a %s account: %v", kind, err)
+		oauth_error_redirect(c, "provider_error", nil)
+		return
+	}
+	subject := linked_subject(kind, profile)
+	users := db_open("db/users.db")
+	if row, _ := users.row("select user from oauth where provider=? and subject=?", kind, subject); row != nil {
+		uid := row_string(row, "user")
+		user := user_by_uid(uid)
+		if user == nil {
+			if user_suspended(uid) {
+				audit_login_failed(profile.Address, rate_limit_client_ip(c), "suspended")
+				oauth_error_redirect(c, "suspended", nil)
+				return
+			}
+			audit_login_failed(profile.Address, rate_limit_client_ip(c), "oauth_user_missing")
+			oauth_error_redirect(c, "provider_error", nil)
+			return
+		}
+		if user_method_disabled(user, "oauth") {
+			audit_login_failed(user.Username, rate_limit_client_ip(c), "oauth_disabled")
+			oauth_error_redirect(c, "oauth_disallowed", nil)
+			return
+		}
+		linked_store(user, kind, profile, data)
+		users.exec("update oauth set name=? where provider=? and subject=?", profile.Name, kind, subject)
+		oauth_login_complete(c, user, st.Target)
+		return
+	}
+	if !setting_signup_enabled() {
+		audit_login_failed(profile.Address, rate_limit_client_ip(c), "oauth_signup_disabled")
+		oauth_error_redirect(c, "signup_disabled", nil)
+		return
+	}
+	pending := map[string]any{"kind": kind, "subject": subject, "profile": profile, "data": data, "target": st.Target}
+	id := random_alphanumeric(32)
+	db_open("db/sessions.db").exec("insert into ceremonies (id, type, user, challenge, data, expires) values (?, 'network_login', '', ?, ?, ?)",
+		id, []byte(id), json_encode(pending), now()+network_login_lifetime)
+	network_login_set(c, id)
+	c.Redirect(http.StatusFound, app_login_route("")+"?network="+kind)
+}
+
+// network_login_set keeps the pending identity's id with the browser for the
+// login that follows. Lax, as the binding cookie is: the login page is
+// reached by a redirect from the account's server.
+func network_login_set(c *gin.Context, id string) {
+	secure := web_https && !web_is_localhost(c)
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(network_login_cookie, id, network_login_lifetime, "/", "", secure, true)
+}
+
+// network_login_unset clears the pending identity's cookie.
+func network_login_unset(c *gin.Context) {
+	secure := web_https && !web_is_localhost(c)
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(network_login_cookie, "", -1, "/", "", secure, true)
+}
+
+// network_login_apply joins a pending identity to the user a login has just
+// proved (auth_establish_session): the identity becomes a way to sign in and
+// the account a linked account, and the ceremony is spent. Without the cookie
+// nothing happens.
+func network_login_apply(c *gin.Context, user *User) {
+	id := web_cookie_get(c, network_login_cookie, "")
+	if id == "" || user == nil {
+		return
+	}
+	network_login_unset(c)
+	sessions := db_open("db/sessions.db")
+	row, _ := sessions.row("select data from ceremonies where id=? and type='network_login' and expires>?", id, now())
+	if row == nil {
+		return
+	}
+	sessions.exec("delete from ceremonies where id=?", id)
+	var pending struct {
+		Kind    string         `json:"kind"`
+		Subject string         `json:"subject"`
+		Profile linked_profile `json:"profile"`
+		Data    map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(row_string(row, "data")), &pending); err != nil || !linked_kind(pending.Kind) || pending.Subject == "" || pending.Profile.ID == "" || pending.Data == nil {
+		return
+	}
+	users := db_open("db/users.db")
+	if taken, _ := users.exists("select 1 from oauth where provider=? and subject=?", pending.Kind, pending.Subject); taken {
+		return
+	}
+	users.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, 1, ?, ?)",
+		user.UID, pending.Kind, pending.Subject, user.Username, pending.Profile.Name, now())
+	linked_store(user, pending.Kind, &pending.Profile, pending.Data)
+}
+
 // === Requests ===
 
 // request sends one request as the account: the method, the full address, the

@@ -289,13 +289,7 @@ func bluesky_refresh_session(ctx context.Context, l *linked) error {
 // bluesky_client_base is where this server publishes its client document:
 // the public URL the owner set for OAuth, else the configured domain.
 func bluesky_client_base() string {
-	if base := strings.TrimRight(setting_effective("oauth_public_url"), "/"); base != "" {
-		return base
-	}
-	if domain := server_domain(); domain != "" {
-		return "https://" + domain
-	}
-	return ""
+	return server_public_url()
 }
 
 // bluesky_client_id is the client's id: the URL of its document.

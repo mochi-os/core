@@ -111,6 +111,7 @@ func api_table() sl.StringDict {
 				"peers":       sl.NewBuiltin("mochi.server.peers", api_server_peers),
 				"started":     sl.NewBuiltin("mochi.server.started", api_server_started),
 				"uptime":      sl.NewBuiltin("mochi.server.uptime", api_server_uptime),
+				"url":         sl.NewBuiltin("mochi.server.url", api_server_url),
 				"version":     sl.NewBuiltin("mochi.server.version", api_server_version),
 				"update": sls.FromStringDict(sl.String("mochi.server.update"), sl.StringDict{
 					"info":    sl.NewBuiltin("mochi.server.update.info", api_server_update_info),

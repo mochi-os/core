@@ -67,6 +67,20 @@ func api_text_markdown(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl_encode(string(markdown([]byte(in)))), nil
 }
 
+// mochi.text.plain(markdown) -> string: Render markdown to plain text: the
+// text of its HTML, with block ends and line breaks as newlines, for a network
+// that takes text and not markup
+func api_text_plain(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <markdown: string>")
+	}
+	in, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid markdown")
+	}
+	return sl_encode(html_text(string(markdown([]byte(in))))), nil
+}
+
 // mochi.text.sortkey(s) -> string: Returns a normalised form of `s` suitable
 // as a `key=` argument to `sorted()` for case- and accent-insensitive sort.
 // Lowercases, NFD-decomposes, and strips combining marks (accents). The
@@ -204,6 +218,7 @@ func text_sortkey(s string) string {
 var api_text = sls.FromStringDict(sl.String("mochi.text"), sl.StringDict{
 	"compare":  sl.NewBuiltin("mochi.text.compare", api_text_compare),
 	"markdown": sl.NewBuiltin("mochi.text.markdown", api_text_markdown),
+	"plain":    sl.NewBuiltin("mochi.text.plain", api_text_plain),
 	"slug":     sl.NewBuiltin("mochi.text.slug", api_text_slug),
 	"sortkey":  sl.NewBuiltin("mochi.text.sortkey", api_text_sortkey),
 	"valid":    sl.NewBuiltin("mochi.text.valid", api_text_valid),

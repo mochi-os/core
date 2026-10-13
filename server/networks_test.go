@@ -153,3 +153,30 @@ func TestNetworksSettingsHiddenUntilSwitch(t *testing.T) {
 	}
 	networks_development = true
 }
+
+// TestServerPublicURL: the address links back to this server are built from
+// - the configured public URL first, else https on the configured domain,
+// else nothing where the server has no public address.
+func TestServerPublicURL(t *testing.T) {
+	create_handles_test_env(t)
+	if url := server_public_url(); url != "https://example.com" {
+		t.Errorf("with a domain = %q", url)
+	}
+	setting_set("oauth_public_url", "https://public.example/")
+	if url := server_public_url(); url != "https://public.example" {
+		t.Errorf("with a public URL = %q", url)
+	}
+	setting_set("oauth_public_url", "")
+	server_domain_name = "localhost"
+	if url := server_public_url(); url != "" {
+		t.Errorf("without a domain = %q", url)
+	}
+	fn := sl.NewBuiltin("mochi.server.url", api_server_url)
+	value, err := api_server_url(nil, fn, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text, _ := sl.AsString(value); text != "" {
+		t.Errorf("mochi.server.url without a domain = %q", text)
+	}
+}

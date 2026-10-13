@@ -65,6 +65,26 @@ func networks_enabled() []string {
 	return on
 }
 
+// server_public_url is the address people and other servers reach this server
+// at: the configured public URL, else https on the configured domain, else
+// empty where the server has no public address.
+func server_public_url() string {
+	if base := strings.TrimRight(setting_effective("oauth_public_url"), "/"); base != "" {
+		return base
+	}
+	if domain := server_domain(); domain != "" {
+		return "https://" + domain
+	}
+	return ""
+}
+
+// mochi.server.url() -> string: The server's public address, https on its
+// configured domain, or empty where it has none - what a link back to a page
+// here is built from
+func api_server_url(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	return sl.String(server_public_url()), nil
+}
+
 // network_address is the address a hosted account has on its network: the
 // handle (with a suffix name's separator written as the network wants it) on
 // the domain. The fediverse and XMPP write user@domain, Matrix @user:domain,

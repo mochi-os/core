@@ -74,6 +74,7 @@ func setup_users_test_schema() {
 func setup_sessions_test_schema() *DB {
 	sessions := db_open("db/sessions.db")
 	sessions.exec("create table sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	sessions.exec("create table if not exists seen (user text primary key, time integer not null)")
 	sessions.exec("create unique index sessions_code on sessions(code)")
 	sessions.exec("create table codes (code text not null, username text not null, expires integer not null, primary key (code, username))")
 	sessions.exec("create table ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")

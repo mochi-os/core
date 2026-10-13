@@ -188,6 +188,8 @@ func websocket_connection(c *gin.Context) {
 			continue
 		}
 
+		// Anything the client sends is activity on the connection (presence.go).
+		presence_touch(u.UID, id)
 		info("Websocket received message %q; ignoring", j)
 	}
 }

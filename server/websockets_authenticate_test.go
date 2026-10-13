@@ -56,6 +56,7 @@ func TestWebsocketTokenTagsTheConnection(t *testing.T) {
 	create_test_users_db(t)
 	sessions_schema := db_open("db/sessions.db")
 	sessions_schema.exec("create table sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	sessions_schema.exec("create table if not exists seen (user text primary key, time integer not null)")
 
 	users := db_open("db/users.db")
 	// user_by_uid loads the user's identity entity alongside the row.
@@ -196,6 +197,7 @@ func websocket_test_credentials(t *testing.T) string {
 	create_test_users_db(t)
 	sessions := db_open("db/sessions.db")
 	sessions.exec("create table sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	sessions.exec("create table if not exists seen (user text primary key, time integer not null)")
 	users := db_open("db/users.db")
 	users.exec("create table entities (id text not null primary key, private text not null, fingerprint text not null, user text not null references users(uid) on delete cascade, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
 	users.exec("insert into users (uid, username) values ('u1', 'one@example.com')")

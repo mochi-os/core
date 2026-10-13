@@ -193,7 +193,7 @@ func domains_init_acme() {
 	domains_acme_manager = &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
 		HostPolicy: domains_host_policy,
-		Cache:      autocert.DirCache(domains_certificates()),
+		Cache:      domains_cache{autocert.DirCache(domains_certificates())},
 	}
 	if directory := domains_acme_directory(); directory != "" {
 		domains_acme_manager.Client = &acme.Client{DirectoryURL: directory}
@@ -202,6 +202,30 @@ func domains_init_acme() {
 		// server left pointing at one serves an error page to every visitor.
 		warn("ACME directory is %q, not the default authority - certificates issued here may not be trusted by browsers", directory)
 	}
+}
+
+// domains_cache is autocert's directory cache, noting each certificate issued
+// for a new host name as it is stored (certificates_record), so the owner can
+// see how much of the authority's weekly allowance is used. A renewal rewrites
+// an existing entry and is exempt from the allowance; the account key and the
+// challenge entries, whose names carry a "+", are not certificates.
+type domains_cache struct {
+	autocert.DirCache
+}
+
+func (c domains_cache) Put(ctx context.Context, name string, data []byte) error {
+	fresh := false
+	if !strings.Contains(name, "+") {
+		_, err := os.Stat(filepath.Join(string(c.DirCache), name))
+		fresh = err != nil
+	}
+	if err := c.DirCache.Put(ctx, name, data); err != nil {
+		return err
+	}
+	if fresh {
+		certificates_record(name)
+	}
+	return nil
 }
 
 // domains_certificates_migrate copies an existing autocert cache from its old

@@ -212,6 +212,15 @@ var system_settings = map[string]SystemSetting{
 		UserReadable: true,
 		ReadOnly:     false,
 	},
+	"description": {
+		Name:         "description",
+		Pattern:      "line",
+		Default:      "",
+		Description:  "A short description of this server, published to the other networks it is on",
+		UserReadable: true,
+		ReadOnly:     false,
+		Public:       true,
+	},
 	"operator_name": {
 		Name:         "operator_name",
 		Pattern:      "line",
@@ -514,7 +523,7 @@ func api_setting_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	for _, def := range system_settings {
 		// The networks' settings exist only once the development switch is on;
 		// until then the owner's page shows nothing of them.
-		if !networks_development && (def.Name == "handles" || network_known(def.Name)) {
+		if !networks_development && networks_setting(def.Name) {
 			continue
 		}
 		value := setting_get(def.Name, def.Default)

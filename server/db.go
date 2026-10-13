@@ -86,7 +86,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 16
+	schema_version = 17
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -1418,6 +1418,8 @@ func db_upgrade() {
 			db_upgrade_15()
 		case 16:
 			db_upgrade_16()
+		case 17:
+			db_upgrade_17()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2712,6 +2714,12 @@ func db_upgrade_11() {
 // (presence.go).
 func db_upgrade_16() {
 	db_open("db/sessions.db").exec("create table if not exists seen (user text primary key, time integer not null)")
+}
+
+// db_upgrade_17 adds the record of issued certificates to the networks
+// database.
+func db_upgrade_17() {
+	networks_database()
 }
 
 // db_upgrade_15 adds the other token kinds to users.db tokens - a sign-in by

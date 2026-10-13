@@ -270,6 +270,7 @@ func create_test_sessions_db(t *testing.T) {
 	// Create sessions tables
 	db := db_open("db/sessions.db")
 	db.exec("create table sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	db.exec("create table if not exists seen (user text primary key, time integer not null)")
 	db.exec("create table codes (code text not null, username text not null, expires integer not null, primary key (code, username))")
 	db.exec("create table ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")
 	db.exec("create table partial (id text primary key, user text not null, completed text not null default '', remaining text not null, expires integer not null)")

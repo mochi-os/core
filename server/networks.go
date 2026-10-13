@@ -81,9 +81,29 @@ func network_address(network string, name string, domain string) string {
 	return ""
 }
 
+// networks_setting reports whether a system setting belongs to the networks:
+// the handle limit, the server description and the four protocol switches,
+// which exist for the owner only once the development switch is on.
+func networks_setting(name string) bool {
+	return name == "handles" || name == "description" || network_known(name)
+}
+
+// network_state is an enabled network's state for the owner: unavailable with
+// the reason "domain" while the server has no configured domain, since a
+// hosted account needs a public address; otherwise working. Each engine adds
+// its own checks here as it is built.
+func network_state(name string) (string, string) {
+	if server_domain() == "" && len(domain_list()) == 0 {
+		return "unavailable", "domain"
+	}
+	return "working", ""
+}
+
 // mochi.server.networks() -> dict: Each network's state for the owner's Status
 // page: "working", "unavailable" with a reason, or "disabled" (the setting or
-// the development switch off), and whether the development switch is on.
+// the development switch off); for Bluesky how many certificates the server
+// has had issued this week against the authority's allowance; and whether the
+// development switch is on.
 func api_server_networks(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "server/read"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -92,9 +112,10 @@ func api_server_networks(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	for _, n := range network_names {
 		state := map[string]any{"state": "disabled", "reason": ""}
 		if network_enabled(n) {
-			// No engine answers for a network yet; each reports its own
-			// unavailability here when it is built.
-			state["state"] = "working"
+			state["state"], state["reason"] = network_state(n)
+		}
+		if n == "bluesky" {
+			state["certificates"] = map[string]any{"issued": certificates_recent(), "limit": certificates_limit}
 		}
 		networks[n] = state
 	}
@@ -102,6 +123,29 @@ func api_server_networks(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		"development": networks_development,
 		"networks":    networks,
 	}), nil
+}
+
+// === Certificates ===
+//
+// Each Bluesky handle under the server's domain is a host name with its own
+// certificate, and the authority issues a limited number of new certificates
+// for one registered domain in a week (letsencrypt.org/docs/rate-limits, read
+// 2026-10-04: 50, refilling one every 202 minutes), renewals exempt. The
+// certificate cache (domains_cache) records each certificate issued for a new
+// name so the owner's Status page can show the week's count.
+
+const certificates_limit = 50
+const certificates_window = 7 * 24 * time.Hour
+
+// certificates_record notes a certificate newly issued for a host name.
+func certificates_record(host string) {
+	networks_database().exec("insert into certificates (host, issued) values (?, ?)", host, time.Now().Unix())
+}
+
+// certificates_recent counts the certificates issued in the last week.
+func certificates_recent() int {
+	row, _ := networks_database().row("select count(*) as issued from certificates where issued>?", time.Now().Add(-certificates_window).Unix())
+	return int(row_int(row, "issued"))
 }
 
 // mochi.account.networks() -> list: The networks a user may host accounts on,
@@ -252,6 +296,9 @@ func networks_database() *DB {
 	// (signin.go).
 	db.exec("create table if not exists applications (id text not null primary key, secret text not null default '', name text not null default '', website text not null default '', redirects text not null default '[]', scopes text not null default '', network text not null, created integer not null)")
 	db.exec("create table if not exists tokens (hash text not null primary key, client text not null, scopes text not null default '', created integer not null)")
+	// The certificates issued for new host names, for the week's count.
+	db.exec("create table if not exists certificates (host text not null, issued integer not null)")
+	db.exec("create index if not exists certificates_issued on certificates(issued)")
 	return db
 }
 

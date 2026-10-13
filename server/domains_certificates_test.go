@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"golang.org/x/crypto/acme/autocert"
 )
 
 // certificates_dirs points cache_dir and data_dir at temporary directories for
@@ -205,10 +203,13 @@ func TestACMEManagerUsesConfiguredDirectory(t *testing.T) {
 	if got := domains_acme_manager.Client.DirectoryURL; got != staging {
 		t.Errorf("directory URL is %q, want %q", got, staging)
 	}
-	cache, ok := domains_acme_manager.Cache.(autocert.DirCache)
+	// The cache is the directory cache wrapped to record each issued
+	// certificate (domains_cache); the directory is the authority's own.
+	wrapped, ok := domains_acme_manager.Cache.(domains_cache)
 	if !ok {
-		t.Fatalf("cache is %T, not a DirCache", domains_acme_manager.Cache)
+		t.Fatalf("cache is %T, not the recording directory cache", domains_acme_manager.Cache)
 	}
+	cache := wrapped.DirCache
 	if !strings.Contains(string(cache), "acme-staging-v02.api.letsencrypt.org") {
 		t.Errorf("cache is %q, not the authority's own directory: staging certificates could be served as real ones", string(cache))
 	}

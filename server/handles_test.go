@@ -8,6 +8,8 @@ package main
 
 import (
 	"testing"
+
+	sl "go.starlark.net/starlark"
 )
 
 // create_handles_test_env builds users.db with users and handles, the domains
@@ -122,6 +124,53 @@ func TestHandleReserve(t *testing.T) {
 	}
 	if _, _, reason := handle_available(alice, "", "fresh", "feed"); reason != "invalid" {
 		t.Errorf("an unknown kind should be invalid, got %q", reason)
+	}
+}
+
+// TestHandleRegistry: an administrator lists every reservation with its
+// holder, in registry order; a user is refused.
+func TestHandleRegistry(t *testing.T) {
+	alice, root := create_handles_test_env(t)
+	for _, r := range []struct {
+		user *User
+		name string
+	}{{alice, "alice"}, {alice, "alice_news"}, {root, "admin"}} {
+		if _, err := handle_reserve(r.user, "", r.name, "handle"); err != nil {
+			t.Fatalf("reserve %s: %v", r.name, err)
+		}
+	}
+	app := create_external_app("app1")
+	fn := sl.NewBuiltin("mochi.handle.registry", api_handle_registry)
+	permission_grant(alice, app.id, "server/read")
+	if _, err := api_handle_registry(create_test_thread(alice, app), fn, nil, nil); err == nil {
+		t.Error("a user listed the registry")
+	}
+	thread := create_test_thread(root, app)
+	if _, err := api_handle_registry(thread, fn, nil, nil); err == nil {
+		t.Error("the registry was listed without server/read")
+	}
+	permission_grant(root, app.id, "server/read")
+	value, err := api_handle_registry(thread, fn, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := sl_decode(value).([]any)
+	if len(rows) != 3 {
+		t.Fatalf("registry has %d rows, want 3", len(rows))
+	}
+	want := []struct{ name, username, holder, parent string }{
+		{"admin", "root@example.com", "Root", ""},
+		{"alice", "alice@example.com", "Alice", ""},
+		{"alice_news", "alice@example.com", "Alice", "alice"},
+	}
+	for i, w := range want {
+		row := rows[i].(map[string]any)
+		if row["name"] != w.name || row["username"] != w.username || row["holder"] != w.holder || row["parent"] != w.parent || row["domain"] != "example.com" {
+			t.Errorf("row %d = %v, want %+v", i, row, w)
+		}
+		if row["addresses"].(map[string]any)["fediverse"] != w.name+"@example.com" {
+			t.Errorf("row %d lacks its addresses: %v", i, row["addresses"])
+		}
 	}
 }
 

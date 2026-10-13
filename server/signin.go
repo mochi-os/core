@@ -39,7 +39,6 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -73,9 +72,6 @@ var signin_access_lifetime int64 = 3600
 
 // signin_refresh_lifetime is how long a refresh token lasts unused.
 var signin_refresh_lifetime int64 = 90 * 86400
-
-// signin_client_re is the shape of a registered client's id.
-var signin_client_re = regexp.MustCompile(`^[A-Za-z0-9_-]{16,64}$`)
 
 // A client is one party that signs users in: registered on this server, or
 // described by the document its id names.

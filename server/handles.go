@@ -191,6 +191,15 @@ func handles_user(uid string) []handle {
 	return rows
 }
 
+// handles_all lists every reservation on the server, by domain, parents before
+// their suffix names.
+func handles_all() []handle {
+	db := db_open("db/users.db")
+	var rows []handle
+	db.scans(&rows, "select * from handles order by domain, parent, name")
+	return rows
+}
+
 // handle_limit is the number of bare names a user may hold in the shared
 // namespace, from the owner's setting. Zero means administrators only.
 func handle_limit() int {
@@ -350,6 +359,7 @@ var api_handle = sls.FromStringDict(sl.String("mochi.handle"), sl.StringDict{
 	"available": sl.NewBuiltin("mochi.handle.available", api_handle_available),
 	"domains":   sl.NewBuiltin("mochi.handle.domains", api_handle_domains),
 	"list":      sl.NewBuiltin("mochi.handle.list", api_handle_list),
+	"registry":  sl.NewBuiltin("mochi.handle.registry", api_handle_registry),
 	"release":   sl.NewBuiltin("mochi.handle.release", api_handle_release),
 	"reserve":   sl.NewBuiltin("mochi.handle.reserve", api_handle_reserve),
 })
@@ -452,6 +462,35 @@ func api_handle_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		"counted":   handle_counted(user),
 		"unlimited": user.administrator(),
 	}), nil
+}
+
+// mochi.handle.registry() -> list: Every reservation on the server with its
+// holder's username and name, for the owner's table of handles. Administrators
+// only.
+func api_handle_registry(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := require_permission(t, fn, "server/read"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	user := principal_caller(t)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	if !user.administrator() {
+		return sl_error(fn, "not administrator")
+	}
+	rows := []map[string]any{}
+	for _, h := range handles_all() {
+		row := handle_present(h)
+		row["user"], row["username"], row["holder"] = h.User, "", ""
+		if holder := user_by_uid(h.User); holder != nil {
+			row["username"] = holder.Username
+			if identity := holder.identity(); identity != nil {
+				row["holder"] = identity.Name
+			}
+		}
+		rows = append(rows, row)
+	}
+	return sl_encode(rows), nil
 }
 
 // mochi.handle.reserve(name, domain="", kind="handle") -> dict: Reserve a name

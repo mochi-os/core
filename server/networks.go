@@ -92,7 +92,12 @@ func api_server_url(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 // and Bluesky makes the handle a host name under the domain.
 func network_address(network string, name string, domain string) string {
 	switch network {
-	case "fediverse", "xmpp":
+	case "fediverse":
+		// The form every fediverse server writes an address in, and the one
+		// its people paste into a search box; WebFinger's acct: drops the
+		// leading @ and the engine builds that from the handle itself.
+		return "@" + name + "@" + domain
+	case "xmpp":
 		return name + "@" + domain
 	case "matrix":
 		return "@" + name + ":" + domain

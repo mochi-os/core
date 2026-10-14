@@ -97,7 +97,7 @@ func TestKeyGenerateAndSign(t *testing.T) {
 func TestAccountKeys(t *testing.T) {
 	alice, _ := create_handles_test_env(t)
 	db := db_user(alice, "user")
-	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('f1', 'fediverse', '', 'alice@example.com', '{\"hosted\":true,\"handle\":\"alice\",\"domain\":\"example.com\"}', 1, 1)")
+	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('f1', 'fediverse', '', '@alice@example.com', '{\"hosted\":true,\"handle\":\"alice\",\"domain\":\"example.com\"}', 1, 1)")
 	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('b1', 'bluesky', '', 'alice.example.com', '{\"hosted\":true,\"handle\":\"alice\",\"domain\":\"example.com\"}', 1, 1)")
 
 	if err := keypairs_create(alice, "f1", "fediverse"); err != nil {
@@ -180,7 +180,7 @@ func TestAccountKeys(t *testing.T) {
 func TestKeysExportRestore(t *testing.T) {
 	alice, _ := create_handles_test_env(t)
 	db := db_user(alice, "user")
-	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('f1', 'fediverse', '', 'alice@example.com', '{\"hosted\":true}', 1, 1)")
+	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('f1', 'fediverse', '', '@alice@example.com', '{\"hosted\":true}', 1, 1)")
 	if err := keypairs_create(alice, "f1", "fediverse"); err != nil {
 		t.Fatal(err)
 	}

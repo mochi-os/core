@@ -231,3 +231,23 @@ func TestAccountProfile(t *testing.T) {
 		t.Errorf("after hiding: %v", shown)
 	}
 }
+
+// TestAccountAddressMigration: a hosted fediverse account made with the
+// earlier name@domain identifier gets the @name@domain address on the next
+// open of the user's database; linked accounts and migrated rows are left.
+func TestAccountAddressMigration(t *testing.T) {
+	alice, _ := create_handles_test_env(t)
+	db := db_user(alice, "user")
+	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('old', 'fediverse', '', 'alice@example.com', '{\"hosted\":true,\"handle\":\"alice\",\"domain\":\"example.com\"}', 1, 1)")
+	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('new', 'fediverse', '', '@alice_news@example.com', '{\"hosted\":true,\"handle\":\"alice_news\",\"domain\":\"example.com\"}', 1, 1)")
+	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('m1', 'mastodon', '', '@bob@remote.example', '{\"server\":\"https://remote.example\"}', 1, 1)")
+	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('x1', 'xmpp', '', 'alice@example.com', '{\"hosted\":true,\"handle\":\"alice\",\"domain\":\"example.com\"}', 1, 1)")
+	networks_tables(db)
+	want := map[string]string{"old": "@alice@example.com", "new": "@alice_news@example.com", "m1": "@bob@remote.example", "x1": "alice@example.com"}
+	for id, address := range want {
+		row, _ := db.row("select identifier from accounts where id=?", id)
+		if row == nil || row["identifier"] != address {
+			t.Errorf("account %s has identifier %v, want %s", id, row["identifier"], address)
+		}
+	}
+}

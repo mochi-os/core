@@ -260,7 +260,7 @@ func TestTokenListByKind(t *testing.T) {
 	}
 	signin := signins[0].(map[string]any)
 	client, _ := signin["client"].(map[string]any)
-	if signin["hash"] != "h-signin" || client["name"] != "Ivory" || client["website"] != "https://ivory.example" || signin["address"] != "alice@example.com" || signin["device"] != "phone" {
+	if signin["hash"] != "h-signin" || client["name"] != "Ivory" || client["website"] != "https://ivory.example" || signin["address"] != "@alice@example.com" || signin["device"] != "phone" {
 		t.Errorf("sign-in = %v", signin)
 	}
 	passwords := listed(linked_kwargs("kind", "password"))

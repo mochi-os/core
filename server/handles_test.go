@@ -61,7 +61,7 @@ func TestHandleNames(t *testing.T) {
 	if handle_parent("alice_news") != "alice" || handle_parent("alice") != "" {
 		t.Errorf("handle_parent wrong")
 	}
-	if network_address("fediverse", "alice_news", "example.com") != "alice_news@example.com" ||
+	if network_address("fediverse", "alice_news", "example.com") != "@alice_news@example.com" ||
 		network_address("matrix", "alice", "example.com") != "@alice:example.com" ||
 		network_address("bluesky", "alice_news", "example.com") != "alice-news.example.com" ||
 		network_address("xmpp", "alice", "example.com") != "alice@example.com" {
@@ -168,7 +168,7 @@ func TestHandleRegistry(t *testing.T) {
 		if row["name"] != w.name || row["username"] != w.username || row["holder"] != w.holder || row["parent"] != w.parent || row["domain"] != "example.com" {
 			t.Errorf("row %d = %v, want %+v", i, row, w)
 		}
-		if row["addresses"].(map[string]any)["fediverse"] != w.name+"@example.com" {
+		if row["addresses"].(map[string]any)["fediverse"] != "@"+w.name+"@example.com" {
 			t.Errorf("row %d lacks its addresses: %v", i, row["addresses"])
 		}
 	}

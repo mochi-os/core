@@ -241,8 +241,10 @@ func accounts_hosted_remove(user *User, domain string, name string) {
 	for _, row := range accounts_hosted(user, "") {
 		data, _ := row["data"].(map[string]any)
 		if data["domain"] == domain && data["handle"] == name {
-			keypairs_delete(db, row["id"].(string))
-			db.row_remove(reg_accounts, map[string]any{"id": row["id"]})
+			id, _ := row["id"].(string)
+			activitypub_account_remove(user, id)
+			keypairs_delete(db, id)
+			db.row_remove(reg_accounts, map[string]any{"id": id})
 		}
 	}
 }
@@ -320,6 +322,15 @@ func networks_database() *DB {
 	// The certificates issued for new host names, for the week's count.
 	db.exec("create table if not exists certificates (host text not null, issued integer not null)")
 	db.exec("create index if not exists certificates_issued on certificates(issued)")
+	// The hosted accounts by permanent id, for a request that arrives with
+	// no user; the activity ids the inbox has seen; and what the inbox queues
+	// for the apps (activitypub.go).
+	db.exec("create table if not exists actors (id text not null primary key, user text not null, domain text not null, handle text not null, network text not null, created integer not null, deleted integer not null default 0, key text not null default '')")
+	db.exec("create index if not exists actors_user on actors(user)")
+	db.exec("create table if not exists received (id text not null primary key, created integer not null)")
+	db.exec("create index if not exists received_created on received(created)")
+	db.exec("create table if not exists inbound (id text not null primary key, user text not null, account text not null, actor text not null, type text not null, body text not null, created integer not null)")
+	db.exec("create index if not exists inbound_account on inbound(account, created)")
 	return db
 }
 

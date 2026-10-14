@@ -50,7 +50,7 @@ var engines []*engine
 // may). An app may not claim any of them as its path, so the reservation holds
 // before an engine exists to answer; a request to a reserved segment with no
 // engine behind it takes the ordinary route and ends as it always did.
-var engine_segments = []string{".well-known", "api", "oauth", "pictrs", "xrpc", "_matrix"}
+var engine_segments = []string{".well-known", "api", "nodeinfo", "oauth", "pictrs", "xrpc", "_matrix"}
 
 // engine_register adds an engine. A prefix is matched whole: "/xrpc/" answers
 // everything under it, "/.well-known/carddav" that one path and nothing else
@@ -135,4 +135,5 @@ func engines_start() {
 	engine_register(dav_engine())
 	engine_register(bluesky_client_engine())
 	engine_register(signin_engine())
+	engine_register(activitypub_engine())
 }

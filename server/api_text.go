@@ -6,6 +6,7 @@
 package main
 
 import (
+	"html"
 	"regexp"
 	"sort"
 	"strings"
@@ -216,10 +217,113 @@ func text_sortkey(s string) string {
 }
 
 var api_text = sls.FromStringDict(sl.String("mochi.text"), sl.StringDict{
-	"compare":  sl.NewBuiltin("mochi.text.compare", api_text_compare),
-	"markdown": sl.NewBuiltin("mochi.text.markdown", api_text_markdown),
-	"plain":    sl.NewBuiltin("mochi.text.plain", api_text_plain),
-	"slug":     sl.NewBuiltin("mochi.text.slug", api_text_slug),
-	"sortkey":  sl.NewBuiltin("mochi.text.sortkey", api_text_sortkey),
-	"valid":    sl.NewBuiltin("mochi.text.valid", api_text_valid),
+	"compare":   sl.NewBuiltin("mochi.text.compare", api_text_compare),
+	"fediverse": sl.NewBuiltin("mochi.text.fediverse", api_text_fediverse),
+	"markdown":  sl.NewBuiltin("mochi.text.markdown", api_text_markdown),
+	"plain":     sl.NewBuiltin("mochi.text.plain", api_text_plain),
+	"slug":      sl.NewBuiltin("mochi.text.slug", api_text_slug),
+	"sortkey":   sl.NewBuiltin("mochi.text.sortkey", api_text_sortkey),
+	"valid":     sl.NewBuiltin("mochi.text.valid", api_text_valid),
 })
+
+// === The fediverse's form of a post ===
+//
+// A post goes to the fediverse as HTML in which a mention is a link to the
+// person's page on their server and a hashtag a link to the tag, each marked
+// as Mastodon marks them so a receiving server shows them as its own. The
+// mentions and hashtags are reported beside the HTML, for the Mention and
+// Hashtag tags the object carries and the people it is addressed to.
+
+// fediverse_mention is @user@host in text: the name as servers allow it, the
+// host with a dot in it, not run on from a word, a path or an address.
+var fediverse_mention = regexp.MustCompile(`(^|[^\w/@.])@([a-zA-Z0-9_.-]+)@([a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,})`)
+
+// fediverse_hashtag is #tag in text: letters, digits and underscores with at
+// least one letter, not run on from a word, an entity or an address.
+var fediverse_hashtag = regexp.MustCompile(`(^|[^\w&/#])#([\p{L}\p{N}_]*\p{L}[\p{L}\p{N}_]*)`)
+
+// fediverse_markup is one HTML tag.
+var fediverse_markup = regexp.MustCompile(`<[^>]*>`)
+
+// fediverse_render renders markdown as the fediverse shows it: the sanitised
+// HTML, with mentions and hashtags linked in its text outside links, code and
+// preformatted text, and the mentions and hashtags found, each once.
+func fediverse_render(markdown_text string, tags string) (string, []map[string]any, []string) {
+	source := string(markdown([]byte(markdown_text)))
+	var out strings.Builder
+	var mentions []map[string]any
+	var hashtags []string
+	seen := map[string]bool{}
+	depth := 0 // inside a, code or pre
+	position := 0
+	for _, span := range fediverse_markup.FindAllStringIndex(source, -1) {
+		if depth == 0 {
+			out.WriteString(fediverse_text(source[position:span[0]], tags, &mentions, &hashtags, seen))
+		} else {
+			out.WriteString(source[position:span[0]])
+		}
+		tag := source[span[0]:span[1]]
+		name := strings.ToLower(strings.TrimLeft(strings.Fields(strings.Trim(tag, "<>/"))[0], "/"))
+		if name == "a" || name == "code" || name == "pre" {
+			if strings.HasPrefix(tag, "</") {
+				if depth > 0 {
+					depth--
+				}
+			} else if !strings.HasSuffix(tag, "/>") {
+				depth++
+			}
+		}
+		out.WriteString(tag)
+		position = span[1]
+	}
+	if depth == 0 {
+		out.WriteString(fediverse_text(source[position:], tags, &mentions, &hashtags, seen))
+	} else {
+		out.WriteString(source[position:])
+	}
+	if mentions == nil {
+		mentions = []map[string]any{}
+	}
+	if hashtags == nil {
+		hashtags = []string{}
+	}
+	return out.String(), mentions, hashtags
+}
+
+// fediverse_text links the mentions and hashtags in one run of text.
+func fediverse_text(text string, tags string, mentions *[]map[string]any, hashtags *[]string, seen map[string]bool) string {
+	text = fediverse_mention.ReplaceAllStringFunc(text, func(found string) string {
+		m := fediverse_mention.FindStringSubmatch(found)
+		user, host := m[2], strings.ToLower(m[3])
+		handle := "@" + user + "@" + host
+		page := "https://" + host + "/@" + user
+		if !seen[strings.ToLower(handle)] {
+			seen[strings.ToLower(handle)] = true
+			*mentions = append(*mentions, map[string]any{"handle": handle, "url": page})
+		}
+		return m[1] + `<span class="h-card" translate="no"><a href="` + html.EscapeString(page) + `" class="u-url mention">@<span>` + html.EscapeString(user) + `</span></a></span>`
+	})
+	text = fediverse_hashtag.ReplaceAllStringFunc(text, func(found string) string {
+		m := fediverse_hashtag.FindStringSubmatch(found)
+		tag := m[2]
+		if !seen["#"+strings.ToLower(tag)] {
+			seen["#"+strings.ToLower(tag)] = true
+			*hashtags = append(*hashtags, tag)
+		}
+		if tags == "" {
+			return found
+		}
+		return m[1] + `<a href="` + html.EscapeString(tags+tag) + `" class="mention hashtag" rel="tag">#<span>` + html.EscapeString(tag) + `</span></a>`
+	})
+	return text
+}
+
+// mochi.text.fediverse(markdown, tags="") -> dict: Render markdown as the fediverse shows a post: {html, mentions, hashtags}. In the HTML a mention @user@host is a link to the person's page on their server and a hashtag #tag a link under the tags address given, each marked as Mastodon marks them; with no tags address a hashtag stays as text. Mentions are [{handle, url}] and hashtags the tags as written, each once; mentions and hashtags inside links, code and preformatted text are left as they are
+func api_text_fediverse(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var in, tags string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "markdown", &in, "tags?", &tags); err != nil {
+		return nil, err
+	}
+	rendered, mentions, hashtags := fediverse_render(in, tags)
+	return sl_encode(map[string]any{"html": rendered, "mentions": mentions, "hashtags": hashtags}), nil
+}

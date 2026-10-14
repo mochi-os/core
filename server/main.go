@@ -221,6 +221,8 @@ func main_serve(ready func()) int {
 	go peers_publish()
 	go queue_manager()
 	go delivery_manager()
+	actors_rebuild()
+	go inbound_manager()
 	go linked_manager()
 	go push_manager()
 	go queue_ack_batcher()

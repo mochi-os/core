@@ -189,11 +189,18 @@ func delivery_attempt(d *delivery) delivery_outcome {
 	if user != nil {
 		actor = account_actor(user, d.Account)
 	}
-	var key *keypair
+	private := ""
 	if actor != "" {
-		key = keypair_get(user, d.Account, key_signing)
+		if key := keypair_get(user, d.Account, key_signing); key != nil {
+			private = key.Private
+		}
 	}
-	if key == nil {
+	if private == "" {
+		// A removed account's tombstone keeps its key for a while, so the
+		// notice of its own deletion still goes out signed (activitypub.go).
+		actor, private = tombstone_key(d.Account)
+	}
+	if private == "" {
 		debug("Delivery to %s dropped: account %s gone", d.Inbox, d.Account)
 		db.exec("delete from deliveries where id=?", d.ID)
 		return delivery_dropped
@@ -208,7 +215,7 @@ func delivery_attempt(d *delivery) delivery_outcome {
 	}
 	request.Header.Set("Content-Type", "application/activity+json")
 	request.Header.Set("Accept", "application/activity+json, application/ld+json")
-	if err := signature_sign(request, actor+"#main-key", key.Private, body); err != nil {
+	if err := signature_sign(request, actor+"#main-key", private, body); err != nil {
 		return delivery_failed_attempt(db, d, err.Error())
 	}
 
@@ -285,6 +292,7 @@ func delivery_cleanup() {
 	db := db_open("db/networks.db")
 	db.exec("delete from deliveries where created<?", now()-delivery_age_maximum)
 	db.exec("delete from hosts where success<? and failure<?", now()-30*86400, now()-30*86400)
+	activitypub_cleanup()
 }
 
 // delivery_host_alive records that a host answered, ending any dead spell.

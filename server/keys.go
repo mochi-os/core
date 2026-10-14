@@ -141,6 +141,19 @@ func key_rsa_private(text string) (*rsa.PrivateKey, error) {
 	return x509.ParsePKCS1PrivateKey(block.Bytes)
 }
 
+// key_rsa_public_of is the PEM public half of a PEM RSA private key, or empty.
+func key_rsa_public_of(private string) string {
+	key, err := key_rsa_private(private)
+	if err != nil {
+		return ""
+	}
+	public, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		return ""
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: public}))
+}
+
 // key_rsa_public reads a PEM public key, as an actor document carries one.
 func key_rsa_public(text string) (*rsa.PublicKey, error) {
 	block, _ := pem.Decode([]byte(text))
@@ -510,19 +523,58 @@ func signature_key_fetch(ctx context.Context, key_id string) (string, error) {
 
 // signature_key_read reads the key from the actor document, uncached.
 func signature_key_read(ctx context.Context, key_id string) (string, error) {
-	if !strings.HasPrefix(key_id, "https://") {
-		return "", fmt.Errorf("keyId is not an https URL")
+	key, err := signature_key_document(ctx, key_id)
+	if err != nil {
+		return "", err
+	}
+	public, _ := key["publicKeyPem"].(string)
+	if public == "" {
+		return "", fmt.Errorf("actor document carries no key %s", key_id)
+	}
+	return public, nil
+}
+
+// signature_key_owner reads the owner the actor document names for a key: the
+// actor the key signs for. Uncached beyond the document fetch; asked only when
+// the key's URL is not the actor's own.
+func signature_key_owner(ctx context.Context, key_id string) (string, error) {
+	key, err := signature_key_document(ctx, key_id)
+	if err != nil {
+		return "", err
+	}
+	owner, _ := key["owner"].(string)
+	if owner == "" {
+		return "", fmt.Errorf("key %s names no owner", key_id)
+	}
+	return owner, nil
+}
+
+// signature_key_document fetches the document a keyId names - the actor
+// document, or the key's own document as some servers serve it - and returns
+// the key entry whose id is the keyId, or the only one. An http keyId is
+// accepted on a loopback host under the development switch that admits private
+// addresses, for a stand-in server under test.
+func signature_key_document(ctx context.Context, key_id string) (map[string]any, error) {
+	if !strings.HasPrefix(key_id, "https://") && !(url_allow_private && strings.HasPrefix(key_id, "http://")) {
+		return nil, fmt.Errorf("keyId is not an https URL")
 	}
 	address, _, _ := strings.Cut(key_id, "#")
 	body, err := resolve_fetch(ctx, address, "application/activity+json, application/ld+json")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	var document struct {
-		PublicKey any `json:"publicKey"`
+		ID        string `json:"id"`
+		Owner     string `json:"owner"`
+		Pem       string `json:"publicKeyPem"`
+		PublicKey any    `json:"publicKey"`
 	}
 	if err := json.Unmarshal(body, &document); err != nil {
-		return "", err
+		return nil, err
+	}
+	// The document may be the key itself.
+	if document.Pem != "" && (document.ID == key_id || document.ID == "") {
+		return map[string]any{"id": document.ID, "owner": document.Owner, "publicKeyPem": document.Pem}, nil
 	}
 	var keys []any
 	switch value := document.PublicKey.(type) {
@@ -535,11 +587,14 @@ func signature_key_read(ctx context.Context, key_id string) (string, error) {
 		key, _ := item.(map[string]any)
 		if id, _ := key["id"].(string); id == key_id || (id == "" && len(keys) == 1) {
 			if public, _ := key["publicKeyPem"].(string); public != "" {
-				return public, nil
+				if _, set := key["owner"]; !set && document.ID != "" {
+					key["owner"] = document.ID
+				}
+				return key, nil
 			}
 		}
 	}
-	return "", fmt.Errorf("actor document carries no key %s", key_id)
+	return nil, fmt.Errorf("actor document carries no key %s", key_id)
 }
 
 // === Starlark API ===

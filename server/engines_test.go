@@ -212,7 +212,7 @@ func TestEngineBodyLimit(t *testing.T) {
 // TestEnginePathReserved: the segments engines answer cannot be an app's path,
 // whole, and the manifest validator refuses one.
 func TestEnginePathReserved(t *testing.T) {
-	for _, path := range []string{"api", "oauth", "pictrs", "xrpc"} {
+	for _, path := range []string{"api", "nodeinfo", "oauth", "pictrs", "xrpc"} {
 		if !engine_path_reserved(path) {
 			t.Errorf("engine_path_reserved(%q) should be true", path)
 		}

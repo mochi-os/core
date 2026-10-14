@@ -468,6 +468,15 @@ func account_present(user *User, row map[string]any) map[string]any {
 		}
 	}
 	out["profile"], _ = data["profile"].(bool)
+	if hosted {
+		out["automated"], _ = data["automated"].(bool)
+		// A fediverse account's permanent id is its page for other servers.
+		if ptype == "fediverse" {
+			if id, _ := row["id"].(string); id != "" {
+				out["url"] = account_actor(user, id)
+			}
+		}
+	}
 	if !hosted && linked_chat(ptype) {
 		id, _ := row["id"].(string)
 		connected, reason := linked_connected(user.UID, id)
@@ -1056,12 +1065,16 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 	superseded := account_device_bind(db, id, device)
 
-	// A hosted account signs as itself from the start (keys.go).
+	// A hosted account signs as itself from the start (keys.go), and is
+	// findable by its permanent id with no user signed in (activitypub.go).
 	if data["hosted"] == true {
 		if err := keypairs_create(user, id, ptype); err != nil {
 			db.row_remove(reg_accounts, map[string]any{"id": id})
 			return sl_error(fn, "cannot make the account's keys: %v", err)
 		}
+		domain, _ := data["domain"].(string)
+		handle, _ := data["handle"].(string)
+		actor_register(user, id, ptype, domain, handle)
 	}
 
 	return sl_encode(map[string]any{
@@ -1101,6 +1114,11 @@ func api_account_profile(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 			name = row_string(row, "label")
 		}
 		address, _ := data["url"].(string)
+		// A hosted fediverse account's page is its permanent id, which
+		// answers a browser with the person's profile.
+		if address == "" && account_hosted_flag(row) && ptype == "fediverse" {
+			address = account_actor(user, row_string(row, "id"))
+		}
 		shown = append(shown, map[string]any{"type": ptype, "identifier": row["identifier"], "name": name, "url": address})
 	}
 	return sl_encode(shown), nil
@@ -1201,24 +1219,27 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 				}
 			}
 
-		case "profile":
-			// Whether the user shows the account on their profile page, which
-			// links it with rel="me" for the network to verify.
-			shown := false
+		case "profile", "automated":
+			// profile: whether the user shows the account on their profile
+			// page, which links it with rel="me" for the network to verify.
+			// automated: whether a hosted account is marked as fed by sources
+			// rather than by the person, which the fediverse shows as a
+			// Service (decision 30).
+			on := false
 			switch v := kv[1].(type) {
 			case sl.Bool:
-				shown = bool(v)
+				on = bool(v)
 			case sl.Int:
 				i, _ := v.Int64()
-				shown = i != 0
+				on = i != 0
 			}
 			row, err := db.row("select data from accounts where id=?", id)
 			if err == nil && row != nil {
 				d := account_data(row)
-				if shown {
-					d["profile"] = true
+				if on {
+					d[key] = true
 				} else {
-					delete(d, "profile")
+					delete(d, key)
 				}
 				j, _ := json.Marshal(d)
 				db.account_set(id, map[string]any{"data": string(j)})
@@ -1298,6 +1319,11 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		ctx, cancel := context.WithTimeout(thread_context(t), 10*time.Second)
 		defer cancel()
 		linked_forget(ctx, l)
+	}
+	// A hosted account's followers are told it is gone, and its id answers
+	// gone from now on (activitypub.go).
+	if account_hosted_flag(row) {
+		activitypub_account_remove(user, id)
 	}
 	keypairs_delete(db, id)
 	db.row_remove(reg_accounts, map[string]any{"id": id})

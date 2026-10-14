@@ -43,7 +43,9 @@ var resolve_acct_re = regexp.MustCompile(`^@?([^@\s/]{1,255})@([a-zA-Z0-9.-]+)$`
 // "bluesky", "matrix" or "xmpp" - or empty for none of them.
 func author_network(identifier string) string {
 	switch {
-	case strings.HasPrefix(identifier, "https://"):
+	case strings.HasPrefix(identifier, "https://"), url_allow_private && strings.HasPrefix(identifier, "http://"):
+		// An http id is a stand-in server on loopback under the development
+		// switch that admits private addresses; nowhere else.
 		u, err := url.Parse(identifier)
 		if err != nil || u.Host == "" || u.User != nil || len(identifier) > 2048 || strings.ContainsAny(identifier, " \t\r\n") {
 			return ""
@@ -80,6 +82,10 @@ type resolved struct {
 	ID       string `json:"id"`     // the person's permanent identifier
 	Inbox    string `json:"inbox"`  // where to deliver to the person, on the fediverse
 	Shared   string `json:"shared"` // their server's shared inbox, where it has one
+	// Template is the server's subscribe template from WebFinger, where it
+	// publishes one: the page a visitor is sent to with {uri} to follow or
+	// reply to someone from their own account.
+	Template string `json:"template"`
 }
 
 // identifier_host is the host an identifier names, for the host policy: empty
@@ -87,7 +93,7 @@ type resolved struct {
 func identifier_host(identifier string) string {
 	host := ""
 	switch {
-	case strings.HasPrefix(identifier, "https://"):
+	case strings.HasPrefix(identifier, "https://"), url_allow_private && strings.HasPrefix(identifier, "http://"):
 		if u, err := url.Parse(identifier); err == nil {
 			host = u.Hostname()
 		}
@@ -167,9 +173,34 @@ type resolve_entry struct {
 var resolve_cache = map[string]resolve_entry{}
 var resolve_lock sync.Mutex
 
+// A resolve_signer signs a fetch as a hosted account, for a server that gives
+// its documents to signed requests only. It travels in the context, put there
+// by resolve_signing, so every fetch a lookup makes carries it.
+type resolve_signer func(r *http.Request)
+
+type resolve_signer_key struct{}
+
+// resolve_signing returns a context whose fetches are signed by sign.
+func resolve_signing(ctx context.Context, sign resolve_signer) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, resolve_signer_key{}, sign)
+}
+
+// resolve_signed_by says whether a context carries a signer.
+func resolve_signed_by(ctx context.Context) resolve_signer {
+	if ctx == nil {
+		return nil
+	}
+	sign, _ := ctx.Value(resolve_signer_key{}).(resolve_signer)
+	return sign
+}
+
 // resolve_fetch does the network request, under the host policy: the owner's
-// domain blocks, the limiter per host and the private-address check. A variable
-// so tests substitute documents without a server.
+// domain blocks, the limiter per host and the private-address check, signed
+// when the context carries a signer. A variable so tests substitute documents
+// without a server.
 var resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -179,6 +210,9 @@ var resolve_fetch = func(ctx context.Context, address string, accept string) ([]
 		return nil, err
 	}
 	request.Header.Set("Accept", accept)
+	if sign := resolve_signed_by(ctx); sign != nil {
+		sign(request)
+	}
 	response, err := network_request(ctx, nil, "", request, 5)
 	if err != nil {
 		return nil, err
@@ -216,11 +250,16 @@ func author_resolve(ctx context.Context, identifier string) (*resolved, error) {
 	identifier = strings.TrimSpace(identifier)
 	resolve_lock.Lock()
 	if entry, found := resolve_cache[identifier]; found && time.Now().Before(entry.expires) {
-		resolve_lock.Unlock()
-		if entry.value == nil {
-			return nil, fmt.Errorf("not resolved")
+		// A failure remembered from an unsigned fetch does not bind a signed
+		// one: a server in secure mode answers the second where it refused
+		// the first.
+		if entry.value != nil || resolve_signed_by(ctx) == nil {
+			resolve_lock.Unlock()
+			if entry.value == nil {
+				return nil, fmt.Errorf("not resolved")
+			}
+			return entry.value, nil
 		}
-		return entry.value, nil
 	}
 	resolve_lock.Unlock()
 
@@ -246,7 +285,7 @@ func resolve_network(ctx context.Context, identifier string) (*resolved, error) 
 	// URL by WebFinger first, and a Bluesky handle, alice.bsky.social, into its
 	// DID; each is a convenience of lookup, not an author form.
 	if m := resolve_acct_re.FindStringSubmatch(identifier); m != nil && !strings.HasPrefix(identifier, "xmpp:") {
-		actor, page, err := resolve_webfinger(ctx, m[1], strings.ToLower(m[2]))
+		actor, page, template, err := resolve_webfinger(ctx, m[1], strings.ToLower(m[2]))
 		if err != nil {
 			return nil, err
 		}
@@ -257,7 +296,10 @@ func resolve_network(ctx context.Context, identifier string) (*resolved, error) 
 			// phase. WebFinger has answered the address, the username and the
 			// profile page, which is what following the person's web feed
 			// needs, so the person resolves from that alone, as a person.
-			return &resolved{Network: "fediverse", Type: "person", Address: "@" + m[1] + "@" + strings.ToLower(m[2]), Username: m[1], Host: strings.ToLower(m[2]), Name: m[1], URL: page, ID: actor}, nil
+			return &resolved{Network: "fediverse", Type: "person", Address: "@" + m[1] + "@" + strings.ToLower(m[2]), Username: m[1], Host: strings.ToLower(m[2]), Name: m[1], URL: page, ID: actor, Template: template}, nil
+		}
+		if r != nil {
+			r.Template = template
 		}
 		return r, err
 	} else if resolve_handle_form(identifier) {
@@ -290,22 +332,28 @@ func resolve_json(ctx context.Context, address string, accept string, into any) 
 }
 
 // resolve_webfinger turns user@host into the account URL the host publishes,
-// and the account's profile page where the host names one.
-func resolve_webfinger(ctx context.Context, user string, host string) (string, string, error) {
+// the account's profile page where the host names one, and the host's
+// subscribe template where it publishes one.
+func resolve_webfinger(ctx context.Context, user string, host string) (string, string, string, error) {
 	var document struct {
 		Links []struct {
-			Rel  string `json:"rel"`
-			Type string `json:"type"`
-			Href string `json:"href"`
+			Rel      string `json:"rel"`
+			Type     string `json:"type"`
+			Href     string `json:"href"`
+			Template string `json:"template"`
 		} `json:"links"`
 	}
-	address := "https://" + host + "/.well-known/webfinger?resource=" + url.QueryEscape("acct:"+user+"@"+host)
+	address := network_base(host) + "/.well-known/webfinger?resource=" + url.QueryEscape("acct:"+user+"@"+host)
 	if err := resolve_json(ctx, address, "application/jrd+json, application/json", &document); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	actor, page := "", ""
+	actor, page, template := "", "", ""
 	for _, link := range document.Links {
-		if !strings.HasPrefix(link.Href, "https://") {
+		if link.Rel == activitypub_subscribe && strings.HasPrefix(link.Template, "https://") && strings.Contains(link.Template, "{uri}") {
+			template = link.Template
+			continue
+		}
+		if !strings.HasPrefix(link.Href, "https://") && !(url_allow_private && strings.HasPrefix(link.Href, "http://")) {
 			continue
 		}
 		switch {
@@ -316,9 +364,9 @@ func resolve_webfinger(ctx context.Context, user string, host string) (string, s
 		}
 	}
 	if actor == "" {
-		return "", "", fmt.Errorf("no account at %s@%s", user, host)
+		return "", "", "", fmt.Errorf("no account at %s@%s", user, host)
 	}
-	return actor, page, nil
+	return actor, page, template, nil
 }
 
 // resolve_handle turns a Bluesky handle into its DID: the _atproto TXT record
@@ -368,13 +416,14 @@ func resolve_activitypub(ctx context.Context, actor string) (*resolved, error) {
 	if !resolve_actor_types[kind] {
 		return nil, fmt.Errorf("%s is not a person", actor)
 	}
-	host := ""
+	host, hostname := "", ""
 	if u, err := url.Parse(actor); err == nil {
 		host = strings.ToLower(u.Host)
+		hostname = strings.ToLower(u.Hostname())
 	}
 	// An actor's document must be served by the host its id names, so no
 	// server can claim an id on another domain.
-	if document.ID != "" && identifier_host(document.ID) != strings.ToLower(host) {
+	if document.ID != "" && identifier_host(document.ID) != hostname {
 		return nil, fmt.Errorf("actor id %s served by %s", document.ID, host)
 	}
 	id := document.ID
@@ -566,15 +615,16 @@ func api_account_resolve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl.None, nil
 	}
 	return sl_encode(map[string]any{
-		"network":  r.Network,
-		"type":     r.Type,
-		"id":       r.ID,
-		"address":  r.Address,
-		"username": r.Username,
-		"host":     r.Host,
-		"name":     r.Name,
-		"avatar":   r.Avatar,
-		"url":      r.URL,
+		"network":   r.Network,
+		"type":      r.Type,
+		"id":        r.ID,
+		"address":   r.Address,
+		"username":  r.Username,
+		"host":      r.Host,
+		"name":      r.Name,
+		"avatar":    r.Avatar,
+		"url":       r.URL,
+		"subscribe": r.Template,
 	}), nil
 }
 

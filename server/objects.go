@@ -257,7 +257,7 @@ func api_account_object_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		"cc":        cc,
 		"object":    object,
 	}
-	object_deliver(thread_context(t), user, account, actor, activity, to, cc)
+	object_deliver(activitypub_signing(thread_context(t), user, account), user, account, actor, activity, to, cc)
 	return object_result(remote, remote, object), nil
 }
 
@@ -313,7 +313,7 @@ func api_account_object_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		"cc":       cc,
 		"object":   object,
 	}
-	object_deliver(thread_context(t), user, account, actor, activity, to, cc)
+	object_deliver(activitypub_signing(thread_context(t), user, account), user, account, actor, activity, to, cc)
 	return object_result(remote, remote, object), nil
 }
 
@@ -372,7 +372,7 @@ func api_account_follow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if actor == "" {
 		return sl_error(fn, "a linked account follows through mochi.account.request")
 	}
-	ctx := thread_context(t)
+	ctx := activitypub_signing(thread_context(t), user, account)
 	r, err := author_resolve(ctx, address)
 	if err != nil || r.Network != "fediverse" || r.ID == "" || r.Inbox == "" {
 		return sl_error(fn, "cannot resolve %s", address)

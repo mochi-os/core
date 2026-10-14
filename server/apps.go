@@ -576,6 +576,9 @@ var (
 			{"account", "*"},
 			{"accounts/ai", ""},
 			{"accounts/read", ""},
+			// Importing a Lemmy account's settings writes its instance blocks
+			// to the user's own block list.
+			{"accounts/write", ""},
 			{"entity/read", ""},
 			{"groups/read", ""},
 			{"interests/read", ""},

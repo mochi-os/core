@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -388,6 +389,22 @@ func blocked_by(db *DB, host string) bool {
 		h = h[i+1:]
 	}
 	return false
+}
+
+// network_base is the address a host is reached at: https, or http for a
+// loopback host where the development switch admits private addresses, so a
+// server on this machine can stand in for a remote one under test.
+func network_base(host string) string {
+	if url_allow_private {
+		name := host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			name = h
+		}
+		if name == "127.0.0.1" || name == "localhost" || name == "::1" {
+			return "http://" + host
+		}
+	}
+	return network_scheme + host
 }
 
 // network_target checks one URL against the host policy: HTTPS, not the cloud

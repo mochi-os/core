@@ -25,7 +25,7 @@ import (
 
 // lemmy_api is the address of a path under the server's /api/v3/.
 func lemmy_api(l *linked, path string, query map[string]string) string {
-	address := network_scheme + l.get("server") + "/api/v3/" + path
+	address := network_base(l.get("server")) + "/api/v3/" + path
 	if len(query) > 0 {
 		values := url.Values{}
 		for key, value := range query {
@@ -314,7 +314,7 @@ func lemmy_upload(ctx context.Context, l *linked, content []byte, kind string, n
 			File string `json:"file"`
 		} `json:"files"`
 	}
-	status, body, err := l.multipart(ctx, network_scheme+l.get("server")+"/pictrs/image", "images[]", name, kind, content, nil, &answer)
+	status, body, err := l.multipart(ctx, network_base(l.get("server"))+"/pictrs/image", "images[]", name, kind, content, nil, &answer)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +324,7 @@ func lemmy_upload(ctx context.Context, l *linked, content []byte, kind string, n
 	file := answer.Files[0].File
 	var data any
 	json_decode(body, &data)
-	return map[string]any{"id": file, "url": network_scheme + l.get("server") + "/pictrs/image/" + file, "data": data}, nil
+	return map[string]any{"id": file, "url": network_base(l.get("server")) + "/pictrs/image/" + file, "data": data}, nil
 }
 
 // lemmy_request sends an app's own request on the server's interface.

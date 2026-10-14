@@ -142,6 +142,7 @@ func api_table() sl.StringDict {
 				"get":     sl.NewBuiltin("mochi.url.get", api_url_request),
 				"patch":   sl.NewBuiltin("mochi.url.patch", api_url_request),
 				"post":    sl.NewBuiltin("mochi.url.post", api_url_request),
+				"card":    sl.NewBuiltin("mochi.url.card", api_url_card),
 				"preview": sl.NewBuiltin("mochi.url.preview", api_url_preview),
 				"quote":   sl.NewBuiltin("mochi.url.quote", api_url_quote),
 				"put":     sl.NewBuiltin("mochi.url.put", api_url_request),
@@ -1309,79 +1310,149 @@ func api_url_preview(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	// Stream-parsed: the parser stops at <body>, so a normal page costs under 100
 	// KB. The 16 MB LimitReader bounds pathological pages and stops a malicious
 	// endpoint streaming forever.
-	return sl.String(url_extract_preview(io.LimitReader(r.Body, 16*1024*1024), rawurl)), nil
+	return sl.String(url_extract_card(io.LimitReader(r.Body, 16*1024*1024), rawurl)["image"]), nil
 }
 
-// url_extract_preview finds the og:image or twitter:image meta tag in HTML
-// and resolves relative URLs against the page URL. Returns "" if neither tag
-// is present or the head ends without one. Reads incrementally so callers
-// stop paying memory cost once <body> is reached.
-func url_extract_preview(body io.Reader, page_url string) string {
+// mochi.url.card(url) -> dict | None: Fetch a web page and return what a link
+// card shows of it: title, description, image and site, from its Open Graph
+// tags, then its Twitter card tags, then the page's own title and description.
+// The image is resolved against the page URL. None on any failure, or where
+// the page gives none of them. Under the same rate limit and url:<domain>
+// permission as mochi.url.preview
+func api_url_card(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var rawurl string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "url", &rawurl); err != nil {
+		return nil, err
+	}
+	app, _ := t.Local("app").(*App)
+	if app != nil && !rate_limit_url.allow(app.id) {
+		return sl.None, nil
+	}
+	if rawurl == "" {
+		return sl.None, nil
+	}
+	if err := require_permission_url(t, fn, rawurl); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	r, err := url_request(starlark_context(t), "GET", rawurl,
+		map[string]string{"timeout": "10"},
+		map[string]string{
+			"User-Agent": "Mozilla/5.0 (compatible; MochiBot/1.0; +https://mochi-os.org)",
+			"Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		}, nil, permission_url_domains(t, app)...)
+	if err != nil {
+		return sl.None, nil
+	}
+	defer r.Body.Close()
+	if r.StatusCode < 200 || r.StatusCode >= 300 {
+		return sl.None, nil
+	}
+	card := url_extract_card(io.LimitReader(r.Body, 16*1024*1024), rawurl)
+	if card["title"] == "" && card["description"] == "" && card["image"] == "" {
+		return sl.None, nil
+	}
+	return sl_encode(map[string]any{"title": card["title"], "description": card["description"], "image": card["image"], "site": card["site"]}), nil
+}
+
+// url_extract_card reads what a link card shows of an HTML page from its
+// head: the Open Graph title, description, image and site name first, the
+// Twitter card tags second, the page's own <title> and description last. The
+// image is resolved against the page URL. Reads incrementally and stops at
+// <body> or </head>, so a normal page costs under 100 KB.
+func url_extract_card(body io.Reader, page_url string) map[string]string {
 	tokenizer := html.NewTokenizer(body)
-	var opengraph_image, twitter_image string
+	found := map[string]string{}
+	in_title := false
+	title := ""
 
 	for {
 		tt := tokenizer.Next()
 		if tt == html.ErrorToken {
 			break
 		}
-		if tt == html.StartTagToken || tt == html.SelfClosingTagToken {
+		switch tt {
+		case html.StartTagToken, html.SelfClosingTagToken:
 			tn, has_attribute := tokenizer.TagName()
 			tag_name := string(tn)
-
 			if tag_name == "body" {
 				break
 			}
-
+			if tag_name == "title" {
+				in_title = true
+				continue
+			}
 			if tag_name == "meta" && has_attribute {
 				var property, name, content string
 				for {
 					key, val, more := tokenizer.TagAttr()
-					k := string(key)
-					v := string(val)
-					switch k {
+					switch string(key) {
 					case "property":
-						property = v
+						property = string(val)
 					case "name":
-						name = v
+						name = string(val)
 					case "content":
-						content = v
+						content = string(val)
 					}
 					if !more {
 						break
 					}
 				}
-				if property == "og:image" && content != "" {
-					opengraph_image = content
-				} else if twitter_image == "" && name == "twitter:image" && content != "" {
-					twitter_image = content
+				if content == "" {
+					continue
+				}
+				if property == "" {
+					property = name
+				}
+				if _, set := found[property]; !set {
+					found[property] = content
 				}
 			}
-		}
-		if tt == html.EndTagToken {
+			continue
+		case html.TextToken:
+			if in_title {
+				title += string(tokenizer.Text())
+			}
+			continue
+		case html.EndTagToken:
 			tn, _ := tokenizer.TagName()
+			if string(tn) == "title" {
+				in_title = false
+				continue
+			}
 			if string(tn) == "head" {
 				break
 			}
+			continue
+		default:
+			continue
 		}
+		break
 	}
 
-	result := opengraph_image
-	if result == "" {
-		result = twitter_image
-	}
-	if result == "" {
+	first := func(keys ...string) string {
+		for _, key := range keys {
+			if value := strings.TrimSpace(found[key]); value != "" {
+				return value
+			}
+		}
 		return ""
 	}
-
-	// Resolve relative URLs
-	base, err := url.Parse(page_url)
-	if err != nil {
-		return result
+	card := map[string]string{
+		"title":       first("og:title", "twitter:title"),
+		"description": first("og:description", "twitter:description", "description"),
+		"image":       first("og:image", "twitter:image"),
+		"site":        first("og:site_name"),
 	}
-	ref, err := url.Parse(result)
-	if err != nil {
-		return result
+	if card["title"] == "" {
+		card["title"] = strings.Join(strings.Fields(title), " ")
 	}
-	return base.ResolveReference(ref).String()
+	if card["image"] != "" {
+		// Resolve relative URLs
+		if base, err := url.Parse(page_url); err == nil {
+			if ref, err := url.Parse(card["image"]); err == nil {
+				card["image"] = base.ResolveReference(ref).String()
+			}
+		}
+	}
+	return card
 }

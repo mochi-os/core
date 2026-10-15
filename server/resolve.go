@@ -600,6 +600,12 @@ func api_account_resolve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 	user := principal_caller(t)
 	if user == nil {
+		// A public action a visitor reaches with no user of their own, such
+		// as a feed's follow and reply controls, looks up under the owner's
+		// policy: the owner's blocks, the host limiter, nothing of the visitor.
+		user, _ = principal_storage(t)
+	}
+	if user == nil {
 		return sl_error(fn, "no user")
 	}
 	identifier, ok := sl.AsString(args[0])

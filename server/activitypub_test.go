@@ -298,8 +298,12 @@ func TestActivityPubFollow(t *testing.T) {
 	if found, _ := db.exists("select 1 from followers where account='f1'"); found {
 		t.Error("follower kept after Undo")
 	}
-	if n, _ := networks_database().row("select count(*) as n from inbound"); row_int(n, "n") != 0 {
-		t.Errorf("the engine's own activities were queued for the apps")
+	// The Follow was handed to the apps once it was accepted, for a
+	// notification; the replay, the Follow of another actor and the Undo were
+	// not.
+	queued, _ := networks_database().rows("select type from inbound")
+	if len(queued) != 1 || queued[0]["type"] != "Follow" {
+		t.Errorf("queued for the apps: %v, want the one Follow", queued)
 	}
 
 	// The shared inbox finds the account from the Follow's object.

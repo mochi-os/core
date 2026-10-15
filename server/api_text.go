@@ -217,6 +217,7 @@ func text_sortkey(s string) string {
 }
 
 var api_text = sls.FromStringDict(sl.String("mochi.text"), sl.StringDict{
+	"clean":     sl.NewBuiltin("mochi.text.clean", api_text_clean),
 	"compare":   sl.NewBuiltin("mochi.text.compare", api_text_compare),
 	"fediverse": sl.NewBuiltin("mochi.text.fediverse", api_text_fediverse),
 	"markdown":  sl.NewBuiltin("mochi.text.markdown", api_text_markdown),
@@ -225,6 +226,18 @@ var api_text = sls.FromStringDict(sl.String("mochi.text"), sl.StringDict{
 	"sortkey":   sl.NewBuiltin("mochi.text.sortkey", api_text_sortkey),
 	"valid":     sl.NewBuiltin("mochi.text.valid", api_text_valid),
 })
+
+// mochi.text.clean(html) -> string: HTML from elsewhere made safe to show, by
+// the policy that sanitises rendered markdown: text formatting, links, lists,
+// images and the like kept, scripts, styles, handlers and unknown elements
+// dropped.
+func api_text_clean(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var source string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "html", &source); err != nil {
+		return nil, err
+	}
+	return sl.String(markdown_policy.Sanitize(source)), nil
+}
 
 // === The fediverse's form of a post ===
 //

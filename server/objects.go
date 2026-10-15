@@ -55,6 +55,10 @@ func networks_tables(db *DB) {
 	db.exec("create table if not exists blocks (domain text not null primary key, created integer not null)")
 	// What a linked account was asked to post, by the app's key (linked.go).
 	db.exec("create table if not exists requests (account text not null, key text not null, result text not null, created integer not null, primary key (account, key))")
+	// People on other networks the user has blocked or muted, by their id
+	// (moderation.go).
+	db.exec("create table if not exists blocked (actor text not null primary key, created integer not null)")
+	db.exec("create table if not exists muted (actor text not null primary key, created integer not null)")
 	// A hosted fediverse account's identifier is its address, written
 	// @name@domain; accounts made before 2026-10-14 held name@domain.
 	db.exec("update accounts set identifier='@'||identifier where type='fediverse' and identifier not like '@%' and data like '%\"hosted\":true%'")

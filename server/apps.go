@@ -565,6 +565,9 @@ var (
 			{"account", "*"},
 			{"accounts/ai", ""},
 			{"accounts/read", ""},
+			// Blocking and muting a person on another network from their
+			// comment writes the user's own blocks and mutes.
+			{"accounts/write", ""},
 			{"entity/read", ""},
 			{"groups/read", ""},
 			{"interests/read", ""},

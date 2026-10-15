@@ -14,13 +14,16 @@
 // activitypub/profile describes the person behind the account, and
 // activitypub/receive takes the activities the inbox queues. Follow and Undo
 // of a Follow are the engine's own: a follow is accepted at once and the
-// follower recorded for delivery.
+// follower recorded for delivery, and the Follow is then handed to the apps
+// as well, so one can tell the person.
 //
 // Every inbound request is checked before anything else sees it: the HTTP
 // signature against the actor's key, fetched from the actor's own server and
-// cached; the actor's host against the owner's and the user's domain blocks;
-// the activity's id against those already seen. Engine routes take no session
-// cookie and no app token: nothing here acts as the signed-in user.
+// cached; the actor's host against the owner's and the user's domain blocks,
+// and the actor against the people the user has blocked or muted
+// (moderation.go); the activity's id against those already seen. Engine
+// routes take no session cookie and no app token: nothing here acts as the
+// signed-in user.
 
 package main
 
@@ -875,9 +878,28 @@ func activitypub_inbox(c *gin.Context, user *User, a *actor) {
 		if err := host_allowed(target_user, "fediverse", host); err != nil {
 			continue
 		}
+		// A blocked person is nobody to the user; a muted one may still
+		// follow and unfollow, and nothing else of theirs is taken.
+		if actor_blocked(target_user, remote) || (actor_muted(target_user, remote) && !activitypub_following(kind, activity)) {
+			debug("ActivityPub inbox dropped %s from %s: blocked or muted by %s", kind, remote, target_user.UID)
+			continue
+		}
 		activitypub_dispatch(activitypub_signing(c.Request.Context(), target_user, target.ID), target_user, target, remote, kind, activity, body)
 	}
 	c.AbortWithStatus(http.StatusAccepted)
+}
+
+// activitypub_following says whether an activity is a Follow or the Undo of
+// one.
+func activitypub_following(kind string, activity map[string]any) bool {
+	if kind == "Follow" {
+		return true
+	}
+	if kind == "Undo" {
+		object, _ := activity["object"].(map[string]any)
+		return object != nil && object["type"] == "Follow"
+	}
+	return false
 }
 
 // activitypub_known says whether a remote actor is anyone to the account, or
@@ -982,6 +1004,8 @@ func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote stri
 			"object":   follow,
 		}
 		deliver(user, a.ID, "fediverse", []string{r.Inbox}, []byte(json_encode(accept)))
+		// The apps hear of the follow too, to tell the person.
+		inbound_add(user, a.ID, remote, kind, body)
 	case "Undo":
 		object, _ := activity["object"].(map[string]any)
 		if object == nil {

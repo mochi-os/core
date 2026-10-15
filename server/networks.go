@@ -536,36 +536,50 @@ func block_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, permission string, 
 	return user, domain, nil
 }
 
-// mochi.account.block.list() -> list: The domains the user has blocked, each
-// with the domain and when. No account of the user sends to, follows on or
-// fetches from a blocked domain or one under it, whatever an app is granted.
+// mochi.account.block.list() -> list: What the user has blocked: domains, each
+// with the domain and when, then people, each with the person's id and when.
+// No account of the user sends to, follows on or fetches from a blocked domain
+// or one under it, whatever an app is granted; a blocked person's activities
+// are taken and dropped, and they are no longer a follower.
 func api_account_block_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	user, _, err := block_call(t, fn, args, "accounts/read", "")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	return sl_encode(blocks_list(db_user(user, "user"))), nil
+	db := db_user(user, "user")
+	return sl_encode(append(blocks_list(db), actor_list(db, "blocked")...)), nil
 }
 
-// mochi.account.block.add(domain) -> None: Block a domain for the user.
+// mochi.account.block.add(target) -> None: Block a domain, or a person by their
+// id on their network, for the user.
 func api_account_block_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user, domain, err := block_call(t, fn, args, "accounts/write", "<domain: string>")
+	user, target, err := block_call(t, fn, args, "accounts/write", "<target: string>")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	if err := block_add(db_user(user, "user"), domain); err != nil {
+	if actor, ok := actor_target(target); ok {
+		blocked_add(user, actor)
+		return sl.None, nil
+	}
+	if err := block_add(db_user(user, "user"), target); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	return sl.None, nil
 }
 
-// mochi.account.block.remove(domain) -> None: Unblock a domain for the user.
+// mochi.account.block.remove(target) -> None: Unblock a domain or a person for
+// the user.
 func api_account_block_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	user, domain, err := block_call(t, fn, args, "accounts/write", "<domain: string>")
+	user, target, err := block_call(t, fn, args, "accounts/write", "<target: string>")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	block_remove(db_user(user, "user"), domain)
+	db := db_user(user, "user")
+	if actor, ok := actor_target(target); ok {
+		db.exec("delete from blocked where actor=?", actor)
+		return sl.None, nil
+	}
+	block_remove(db, target)
 	return sl.None, nil
 }
 

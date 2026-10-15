@@ -496,6 +496,9 @@ func account_present(user *User, row map[string]any) map[string]any {
 			if id, _ := row["id"].(string); id != "" {
 				out["recovery"] = keypair_get(user, id, key_recovery) != nil
 			}
+			// The labellers whose labels the account reads, beside the
+			// owner's (phase 19).
+			out["labelers"] = object_strings(data["labelers"])
 		}
 	}
 	if !hosted && linked_chat(ptype) {
@@ -1201,6 +1204,33 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 					debug("Bluesky profile of %s not updated: %v", id, err)
 				}
 			}
+
+		case "labelers":
+			// The labellers a hosted Bluesky account subscribes to, by
+			// identifier, whose labels come back on what it reads.
+			row := account_hosted_get(user, id)
+			if row == nil || row["type"] != "bluesky" {
+				return sl_error(fn, "only a hosted Bluesky account has labellers")
+			}
+			var labelers []any
+			for _, value := range object_strings(sl_decode(kv[1])) {
+				value = strings.TrimSpace(value)
+				if !resolve_did_re.MatchString(value) {
+					return sl_error(fn, "%q is not an identifier", value)
+				}
+				labelers = append(labelers, value)
+			}
+			if len(labelers) > 20 {
+				return sl_error(fn, "too many labellers")
+			}
+			data := account_data(row)
+			if len(labelers) > 0 {
+				data["labelers"] = labelers
+			} else {
+				delete(data, "labelers")
+			}
+			encoded, _ := json.Marshal(data)
+			db.account_set(id, map[string]any{"data": string(encoded)})
 
 		case "enabled":
 			var val int

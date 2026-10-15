@@ -111,7 +111,7 @@ func network_address(network string, name string, domain string) string {
 // the handle limit, the server description and the four protocol switches,
 // which exist for the owner only once the development switch is on.
 func networks_setting(name string) bool {
-	return name == "handles" || name == "description" || network_known(name)
+	return name == "handles" || name == "description" || name == "labelers" || network_known(name)
 }
 
 // network_state is an enabled network's state for the owner: unavailable with
@@ -147,6 +147,13 @@ func api_server_networks(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 			state["budget"] = map[string]any{
 				"hour": map[string]any{"used": hour, "limit": atproto_budget_hour},
 				"day":  map[string]any{"used": day, "limit": atproto_budget_day},
+			}
+			// The server's standing with the relay: whether it follows this
+			// server, and how many accounts it admits.
+			if network_enabled(n) {
+				if relay := atproto_relay_status(thread_context(t)); relay != nil {
+					state["relay"] = relay
+				}
 			}
 		}
 		networks[n] = state
@@ -587,7 +594,7 @@ func api_account_block_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	}
 	db := db_user(user, "user")
 	if actor, ok := actor_target(target); ok {
-		db.exec("delete from blocked where actor=?", actor)
+		blocked_remove(user, actor)
 		return sl.None, nil
 	}
 	block_remove(db, target)

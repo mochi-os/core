@@ -32,6 +32,8 @@ import (
 	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/gin-gonic/gin"
+	sl "go.starlark.net/starlark"
+	sls "go.starlark.net/starlarkstruct"
 	"nhooyr.io/websocket"
 )
 
@@ -59,7 +61,7 @@ var stream_age int64 = 3 * 86400
 func atproto_engine() *engine {
 	return &engine{
 		name:     "atproto",
-		prefixes: []string{"/xrpc/", "/.well-known/atproto-did"},
+		prefixes: []string{"/xrpc/", "/.well-known/atproto-did", "/.well-known/did.json"},
 		setting:  "bluesky",
 		handler:  atproto_route,
 	}
@@ -495,6 +497,13 @@ func atproto_create(ctx context.Context, user *User, row map[string]any, object 
 	if _, set := object["createdAt"]; !set {
 		object["createdAt"] = time.Now().UTC().Format(time.RFC3339Nano)
 	}
+	// A generator record names this server as the service unless the app
+	// names another.
+	if collection == "app.bsky.feed.generator" {
+		if did, _ := object["did"].(string); did == "" {
+			object["did"] = atproto_generator_did()
+		}
+	}
 	rkey := repository_clock.Next().String()
 	c, committed, err := repository_write(ctx, r, collection, rkey, object, sourced)
 	if err != nil {
@@ -743,12 +752,16 @@ func atproto_route(c *gin.Context) bool {
 		return true
 	}
 	debug("AT Protocol %s %s from %s (%s)", method, path, c.ClientIP(), c.Request.UserAgent())
-	if path == "/.well-known/atproto-did" {
+	if path == "/.well-known/atproto-did" || path == "/.well-known/did.json" {
 		if method != "GET" {
 			atproto_error(c, http.StatusMethodNotAllowed, "InvalidRequest")
 			return true
 		}
-		atproto_well_known(c)
+		if path == "/.well-known/did.json" {
+			atproto_generator_document(c)
+		} else {
+			atproto_well_known(c)
+		}
 		return true
 	}
 	name := strings.TrimPrefix(path, "/xrpc/")
@@ -757,6 +770,10 @@ func atproto_route(c *gin.Context) bool {
 		return true
 	}
 	switch name {
+	case "app.bsky.feed.getFeedSkeleton":
+		atproto_skeleton(c)
+	case "app.bsky.feed.describeFeedGenerator":
+		atproto_describe_generator(c)
 	case "com.atproto.server.describeServer":
 		atproto_describe_server(c)
 	case "com.atproto.identity.resolveHandle":
@@ -823,12 +840,25 @@ func atproto_resolve_handle(c *gin.Context) {
 	c.JSON(http.StatusOK, map[string]any{"did": atproto_did(row)})
 }
 
+// atproto_refused answers for a repository the owner has taken down, and
+// says so; false for one that is served.
+func atproto_refused(c *gin.Context, row map[string]any) bool {
+	if !atproto_down(row) {
+		return false
+	}
+	atproto_error(c, http.StatusBadRequest, "RepoTakendown")
+	return true
+}
+
 // atproto_describe_repo describes a repository: its handle, identifier and
 // collections.
 func atproto_describe_repo(c *gin.Context) {
 	user, row, r := atproto_repository(c.Query("repo"))
 	if r == nil {
 		atproto_error(c, http.StatusBadRequest, "RepoNotFound")
+		return
+	}
+	if atproto_refused(c, row) {
 		return
 	}
 	collections := []string{}
@@ -847,9 +877,12 @@ func atproto_describe_repo(c *gin.Context) {
 
 // atproto_get_record answers one record.
 func atproto_get_record(c *gin.Context) {
-	user, _, r := atproto_repository(c.Query("repo"))
+	user, row, r := atproto_repository(c.Query("repo"))
 	if r == nil {
 		atproto_error(c, http.StatusBadRequest, "RepoNotFound")
+		return
+	}
+	if atproto_refused(c, row) {
 		return
 	}
 	collection, rkey := c.Query("collection"), c.Query("rkey")
@@ -863,9 +896,12 @@ func atproto_get_record(c *gin.Context) {
 
 // atproto_list_records answers a page of a collection.
 func atproto_list_records(c *gin.Context) {
-	user, _, r := atproto_repository(c.Query("repo"))
+	user, row, r := atproto_repository(c.Query("repo"))
 	if r == nil {
 		atproto_error(c, http.StatusBadRequest, "RepoNotFound")
+		return
+	}
+	if atproto_refused(c, row) {
 		return
 	}
 	collection := c.Query("collection")
@@ -902,9 +938,12 @@ func atproto_limit(c *gin.Context, fallback int, maximum int) int {
 
 // atproto_sync_repo answers the whole repository as an archive.
 func atproto_sync_repo(c *gin.Context) {
-	_, _, r := atproto_repository(c.Query("did"))
+	_, row, r := atproto_repository(c.Query("did"))
 	if r == nil || r.head == "" {
 		atproto_error(c, http.StatusNotFound, "RepoNotFound")
+		return
+	}
+	if atproto_refused(c, row) {
 		return
 	}
 	archive, err := repository_archive(c.Request.Context(), r)
@@ -918,23 +957,30 @@ func atproto_sync_repo(c *gin.Context) {
 
 // atproto_sync_commit answers the latest commit's id and revision.
 func atproto_sync_commit(c *gin.Context) {
-	_, _, r := atproto_repository(c.Query("did"))
+	_, row, r := atproto_repository(c.Query("did"))
 	if r == nil || r.head == "" {
 		atproto_error(c, http.StatusNotFound, "RepoNotFound")
+		return
+	}
+	if atproto_refused(c, row) {
 		return
 	}
 	c.JSON(http.StatusOK, map[string]any{"cid": r.head, "rev": r.rev})
 }
 
 // atproto_sync_status answers whether a repository is active and its
-// revision.
+// revision, or that the owner has taken it down.
 func atproto_sync_status(c *gin.Context) {
-	_, _, r := atproto_repository(c.Query("did"))
+	_, row, r := atproto_repository(c.Query("did"))
 	if r == nil {
 		atproto_error(c, http.StatusNotFound, "RepoNotFound")
 		return
 	}
 	answer := map[string]any{"did": r.did, "active": true}
+	if atproto_down(row) {
+		answer["active"] = false
+		answer["status"] = "takendown"
+	}
 	if r.rev != "" {
 		answer["rev"] = r.rev
 	}
@@ -944,9 +990,12 @@ func atproto_sync_status(c *gin.Context) {
 // atproto_sync_record answers a record with the commit and tree that prove
 // it, as an archive.
 func atproto_sync_record(c *gin.Context) {
-	user, _, r := atproto_repository(c.Query("did"))
+	user, row, r := atproto_repository(c.Query("did"))
 	if r == nil || r.head == "" {
 		atproto_error(c, http.StatusNotFound, "RepoNotFound")
+		return
+	}
+	if atproto_refused(c, row) {
 		return
 	}
 	if id, _ := repository_record(user, r.account, c.Query("collection"), c.Query("rkey")); id == "" {
@@ -963,9 +1012,12 @@ func atproto_sync_record(c *gin.Context) {
 
 // atproto_sync_blob answers a blob's bytes.
 func atproto_sync_blob(c *gin.Context) {
-	user, _, r := atproto_repository(c.Query("did"))
+	user, row, r := atproto_repository(c.Query("did"))
 	if r == nil {
 		atproto_error(c, http.StatusNotFound, "RepoNotFound")
+		return
+	}
+	if atproto_refused(c, row) {
 		return
 	}
 	kind, data, found := repository_blob(user, r.account, c.Query("cid"))
@@ -1031,5 +1083,265 @@ func atproto_sync_repos(c *gin.Context) {
 		repos = append(repos, map[string]any{"did": r.did, "head": r.head, "rev": r.rev, "active": true})
 	}
 	answer["repos"] = repos
+	c.JSON(http.StatusOK, answer)
+}
+
+// === Following and the graph (phase 19) ===
+//
+// A hosted account's follows, blocks, likes and reposts are records of its
+// repository, public as everything on the network is; the apps write likes,
+// reposts and replies through mochi.account.object.create, and core writes
+// follows and blocks here so the following and blocked tables stay the one
+// account of them.
+
+// atproto_graph finds the account's record of a graph collection naming a
+// person: the record key, or empty.
+func atproto_graph(user *User, account string, collection string, did string) string {
+	items, _ := repository_records(user, account, collection, 500, "", false)
+	for _, item := range items {
+		value, _ := item["value"].(map[string]any)
+		if subject, _ := value["subject"].(string); subject == did {
+			return item["rkey"].(string)
+		}
+	}
+	return ""
+}
+
+// atproto_follow follows a person as a hosted Bluesky account: a follow record,
+// and the following row the apps read, accepted at once since the network
+// has no acceptance. Following them again writes nothing. Answers the
+// record's URI.
+func atproto_follow(ctx context.Context, user *User, row map[string]any, did string) (string, error) {
+	id, _ := row["id"].(string)
+	r := repository_get(user, id)
+	if r == nil {
+		return "", fmt.Errorf("account has no repository")
+	}
+	if rkey := atproto_graph(user, id, "app.bsky.graph.follow", did); rkey != "" {
+		return "at://" + r.did + "/app.bsky.graph.follow/" + rkey, nil
+	}
+	rkey := repository_clock.Next().String()
+	record := map[string]any{"$type": "app.bsky.graph.follow", "subject": did, "createdAt": time.Now().UTC().Format(time.RFC3339Nano)}
+	if _, _, err := repository_write(ctx, r, "app.bsky.graph.follow", rkey, record, false); err != nil {
+		return "", err
+	}
+	uri := "at://" + r.did + "/app.bsky.graph.follow/" + rkey
+	db_user(user, "user").exec("insert into following (account, actor, inbox, activity, accepted, created) values (?, ?, '', ?, ?, ?) on conflict(account, actor) do update set activity=excluded.activity, accepted=excluded.accepted", id, did, uri, now(), now())
+	return uri, nil
+}
+
+// atproto_unfollow deletes the follow record and the row.
+func atproto_unfollow(ctx context.Context, user *User, row map[string]any, did string) error {
+	id, _ := row["id"].(string)
+	r := repository_get(user, id)
+	if r == nil {
+		return fmt.Errorf("account has no repository")
+	}
+	db_user(user, "user").exec("delete from following where account=? and actor=?", id, did)
+	rkey := atproto_graph(user, id, "app.bsky.graph.follow", did)
+	if rkey == "" {
+		return nil
+	}
+	_, err := repository_remove(ctx, r, "app.bsky.graph.follow", rkey, false)
+	return err
+}
+
+// atproto_block writes or deletes a block record for a person on each of the
+// user's hosted Bluesky accounts: a block is public on the network.
+func atproto_block(ctx context.Context, user *User, did string, on bool) {
+	for _, row := range accounts_hosted(user, "bluesky") {
+		id, _ := row["id"].(string)
+		r := repository_get(user, id)
+		if r == nil || atproto_did(row) == "" {
+			continue
+		}
+		rkey := atproto_graph(user, id, "app.bsky.graph.block", did)
+		var err error
+		switch {
+		case on && rkey == "":
+			record := map[string]any{"$type": "app.bsky.graph.block", "subject": did, "createdAt": time.Now().UTC().Format(time.RFC3339Nano)}
+			_, _, err = repository_write(ctx, r, "app.bsky.graph.block", repository_clock.Next().String(), record, false)
+		case !on && rkey != "":
+			_, err = repository_remove(ctx, r, "app.bsky.graph.block", rkey, false)
+		}
+		if err != nil {
+			warn("Bluesky account %s: block of %s not written: %v", id, did, err)
+		}
+	}
+}
+
+// atproto_posts is a hosted account's own posts from its repository, newest
+// first, in the form the index gives a feed item, so an app reads them as it
+// reads a linked account's.
+func atproto_posts(user *User, row map[string]any, cursor string, limit int) *linked_page {
+	id, _ := row["id"].(string)
+	did := atproto_did(row)
+	handle := row_string(row, "identifier")
+	name, _ := row["label"].(string)
+	items, next := repository_records(user, id, "app.bsky.feed.post", limit, cursor, false)
+	page := &linked_page{Items: []any{}, Cursor: next}
+	author := map[string]any{"did": did, "handle": handle, "displayName": name}
+	for _, item := range items {
+		rkey, _ := item["rkey"].(string)
+		page.Items = append(page.Items, map[string]any{"post": map[string]any{"uri": "at://" + did + "/app.bsky.feed.post/" + rkey, "cid": item["cid"], "author": author, "record": item["value"]}})
+	}
+	return page
+}
+
+// === Account status (phase 19) ===
+//
+// The owner takes a hosted account down: its repository stops being served,
+// relays are told, and its identity stays, so restoring it is one event.
+
+// atproto_down says whether the owner has taken an account down.
+func atproto_down(row map[string]any) bool {
+	status, _ := account_data(row)["status"].(string)
+	return status == "takendown"
+}
+
+// atproto_takedown takes an account down or restores it.
+func atproto_takedown(user *User, row map[string]any, down bool) {
+	id, _ := row["id"].(string)
+	did := atproto_did(row)
+	data := account_data(row)
+	if down {
+		data["status"] = "takendown"
+	} else {
+		delete(data, "status")
+	}
+	encoded, _ := json.Marshal(data)
+	db_user(user, "user").account_set(id, map[string]any{"data": string(encoded)})
+	if did == "" {
+		return
+	}
+	event := map[string]any{"did": did, "active": !down}
+	if down {
+		event["status"] = "takendown"
+	}
+	stream_append(did, "#account", event)
+}
+
+var api_server_account = sls.FromStringDict(sl.String("mochi.server.account"), sl.StringDict{
+	"takedown": sl.NewBuiltin("mochi.server.account.takedown", api_server_account_takedown),
+})
+
+// mochi.server.account.takedown(did, down=True) -> None: Take a hosted Bluesky
+// account on this server down by its identifier, or restore it with
+// down=False: a taken-down repository is not served and relays are told.
+// Requires settings/write
+func api_server_account_takedown(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var did string
+	down := true
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "did", &did, "down?", &down); err != nil {
+		return nil, err
+	}
+	if err := require_permission(t, fn, "settings/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	user, row, _ := atproto_identity(strings.TrimSpace(did))
+	if row == nil {
+		return sl_error(fn, "no such account")
+	}
+	atproto_takedown(user, row, down)
+	return sl.None, nil
+}
+
+// === Feed generators (phase 19) ===
+//
+// A feed an app ranks is published as a Bluesky feed generator: a record in
+// the account's repository naming this server as the generator service, which
+// the index asks for the feed's skeleton - the URIs of the posts, which the
+// index fills in. The service's identity is did:web on the server's domain.
+
+// atproto_generator_did is this server's identity as a feed generator
+// service: did:web on the host the relay reaches it at.
+func atproto_generator_did() string {
+	host := server_domain()
+	if endpoint, err := url.Parse(atproto_endpoint(host)); err == nil && endpoint.Host != "" {
+		host = endpoint.Host
+	}
+	return "did:web:" + strings.ReplaceAll(host, ":", "%3A")
+}
+
+// atproto_generator_document answers the did:web document of this server as
+// a feed generator service.
+func atproto_generator_document(c *gin.Context) {
+	host := activitypub_host(c)
+	c.JSON(http.StatusOK, map[string]any{
+		"@context": []string{"https://www.w3.org/ns/did/v1"},
+		"id":       "did:web:" + host,
+		"service": []map[string]any{{
+			"id":              "#bsky_fg",
+			"type":            "BskyFeedGenerator",
+			"serviceEndpoint": "https://" + host,
+		}},
+	})
+}
+
+// atproto_generators lists the generator records of every account on this
+// server, as describeFeedGenerator wants them.
+func atproto_generators() []map[string]any {
+	feeds := []map[string]any{}
+	rows, _ := networks_database().rows("select did from identities order by did")
+	for _, row := range rows {
+		user, account, r := atproto_identity(row_string(row, "did"))
+		if r == nil || atproto_down(account) {
+			continue
+		}
+		items, _ := repository_records(user, r.account, "app.bsky.feed.generator", 100, "", false)
+		for _, item := range items {
+			feeds = append(feeds, map[string]any{"uri": "at://" + r.did + "/app.bsky.feed.generator/" + item["rkey"].(string)})
+		}
+	}
+	return feeds
+}
+
+// atproto_describe_generator answers what feeds this server generates.
+func atproto_describe_generator(c *gin.Context) {
+	c.JSON(http.StatusOK, map[string]any{"did": "did:web:" + activitypub_host(c), "feeds": atproto_generators()})
+}
+
+// atproto_skeleton answers a feed's skeleton: the app that published the
+// generator record names the posts, through the manifest function
+// atproto/skeleton, given the account, the feed's URI, the cursor and the
+// limit, and answers {posts: [uri, ...], cursor}.
+func atproto_skeleton(c *gin.Context) {
+	feed := strings.TrimSpace(c.Query("feed"))
+	did, collection, rkey, err := bluesky_uri(feed)
+	if err != nil || collection != "app.bsky.feed.generator" {
+		atproto_error(c, http.StatusBadRequest, "UnknownFeed")
+		return
+	}
+	user, row, r := atproto_identity(did)
+	if r == nil || atproto_down(row) {
+		atproto_error(c, http.StatusBadRequest, "UnknownFeed")
+		return
+	}
+	if id, _ := repository_record(user, r.account, "app.bsky.feed.generator", rkey); id == "" {
+		atproto_error(c, http.StatusBadRequest, "UnknownFeed")
+		return
+	}
+	limit := atproto_limit(c, 50, 100)
+	answer := map[string]any{"feed": []any{}}
+	for _, a := range apps_for_function(user, "atproto/skeleton") {
+		result, err := activitypub_call(user, a, "atproto/skeleton", Map{"account": r.account, "feed": feed, "cursor": c.Query("cursor"), "limit": limit})
+		if err != nil {
+			debug("Feed skeleton from %s: %v", a.id, err)
+			continue
+		}
+		skeleton, ok := result.(map[string]any)
+		if !ok {
+			continue
+		}
+		posts := []any{}
+		for _, uri := range object_strings(skeleton["posts"]) {
+			posts = append(posts, map[string]any{"post": uri})
+		}
+		answer["feed"] = posts
+		if cursor, _ := skeleton["cursor"].(string); cursor != "" {
+			answer["cursor"] = cursor
+		}
+		break
+	}
 	c.JSON(http.StatusOK, answer)
 }

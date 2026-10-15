@@ -1106,19 +1106,6 @@ func linked_page_arguments(fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (st
 	return account, cursor, limit, signer, nil
 }
 
-// linked_acting resolves the linked account a page function acts through.
-func linked_acting(t *sl.Thread, fn *sl.Builtin, id string) (*linked, error) {
-	user, row, _, err := account_acting(t, fn, id)
-	if err != nil {
-		return nil, err
-	}
-	l := linked_from(user, row)
-	if l == nil {
-		return nil, fmt.Errorf("a hosted account has no such function yet")
-	}
-	return l, nil
-}
-
 // linked_page_encode writes a page for Starlark.
 func linked_page_encode(page *linked_page) sl.Value {
 	items := page.Items
@@ -1128,15 +1115,36 @@ func linked_page_encode(page *linked_page) sl.Value {
 	return sl_encode(map[string]any{"items": items, "cursor": page.Cursor})
 }
 
-// mochi.account.timeline(account, cursor="", limit=40) -> dict: A page of a linked social account's home timeline, {items, cursor}: the items in the network's own form (Mastodon statuses, Bluesky feed items, Lemmy post views), newest first, and the cursor for the next page, empty at the end. Behind the account permission
+// hosted_bluesky reads a hosted Bluesky account from an acting row, or nil:
+// its timeline, notifications and the index's methods go through Bluesky's
+// index as the account (appview.go).
+func hosted_bluesky(row map[string]any) map[string]any {
+	if row != nil && account_hosted_flag(row) && row["type"] == "bluesky" && atproto_did(row) != "" {
+		return row
+	}
+	return nil
+}
+
+// mochi.account.timeline(account, cursor="", limit=40) -> dict: A page of a social account's home timeline, {items, cursor}: the items in the network's own form (Mastodon statuses, Bluesky feed items, Lemmy post views), newest first, and the cursor for the next page, empty at the end; a hosted Bluesky account's from Bluesky's index. Behind the account permission
 func api_account_timeline(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	account, cursor, limit, _, err := linked_page_arguments(fn, args, kwargs)
 	if err != nil {
 		return nil, err
 	}
-	l, err := linked_acting(t, fn, account)
+	user, row, _, err := account_acting(t, fn, account)
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	if hosted := hosted_bluesky(row); hosted != nil {
+		page, err := appview_page(thread_context(t), user, hosted, "app.bsky.feed.getTimeline", map[string]string{}, "feed", cursor, limit)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return linked_page_encode(page), nil
+	}
+	l := linked_from(user, row)
+	if l == nil {
+		return sl_error(fn, "a hosted account has no such function yet")
 	}
 	page, err := linked_timeline(thread_context(t), l, cursor, limit)
 	if err != nil {
@@ -1190,9 +1198,17 @@ func api_account_posts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		}
 		return linked_page_encode(page), nil
 	}
-	l, err := linked_acting(t, fn, account)
+	user, row, _, err := account_acting(t, fn, account)
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	// A hosted Bluesky account's posts are its own repository's.
+	if hosted := hosted_bluesky(row); hosted != nil {
+		return linked_page_encode(atproto_posts(user, hosted, cursor, limit)), nil
+	}
+	l := linked_from(user, row)
+	if l == nil {
+		return sl_error(fn, "a hosted account has no such function yet")
 	}
 	page, err := linked_posts(thread_context(t), l, cursor, limit)
 	if err != nil {
@@ -1201,15 +1217,26 @@ func api_account_posts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return linked_page_encode(page), nil
 }
 
-// mochi.account.notifications(account, cursor="", limit=40) -> dict: A page of a linked social account's notifications, {items, cursor}, in the network's own form, newest first; on Lemmy each item carries kind, "reply" or "mention". Behind the account permission
+// mochi.account.notifications(account, cursor="", limit=40) -> dict: A page of a social account's notifications, {items, cursor}, in the network's own form, newest first; on Lemmy each item carries kind, "reply" or "mention"; a hosted Bluesky account's from Bluesky's index. Behind the account permission
 func api_account_notifications(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	account, cursor, limit, _, err := linked_page_arguments(fn, args, kwargs)
 	if err != nil {
 		return nil, err
 	}
-	l, err := linked_acting(t, fn, account)
+	user, row, _, err := account_acting(t, fn, account)
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	if hosted := hosted_bluesky(row); hosted != nil {
+		page, err := appview_page(thread_context(t), user, hosted, "app.bsky.notification.listNotifications", map[string]string{}, "notifications", cursor, limit)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return linked_page_encode(page), nil
+	}
+	l := linked_from(user, row)
+	if l == nil {
+		return sl_error(fn, "a hosted account has no such function yet")
 	}
 	page, err := linked_notifications(thread_context(t), l, cursor, limit)
 	if err != nil {
@@ -1263,7 +1290,7 @@ func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl_encode(result), nil
 }
 
-// mochi.account.request(account, method, path, body=None, query=None) -> dict: A request of the app's own through a linked account, on its server's interface: a path under /api/ on Mastodon ("v1/bookmarks"), under /api/v3/ on Lemmy ("community/list"), under /_matrix/ on Matrix ("client/v3/joined_rooms"), or an XRPC method name on Bluesky ("app.bsky.graph.getFollows"); query is a dict of query parameters, body a dict sent as JSON. Returns {status, data} with the answer decoded. Behind the account permission
+// mochi.account.request(account, method, path, body=None, query=None) -> dict: A request of the app's own through an account, on its server's interface: a path under /api/ on Mastodon ("v1/bookmarks"), under /api/v3/ on Lemmy ("community/list"), under /_matrix/ on Matrix ("client/v3/joined_rooms"), or an XRPC method name on Bluesky ("app.bsky.graph.getFollows"); for a hosted Bluesky account the index's methods (app.bsky.*, chat.bsky.*) are forwarded to Bluesky's index as the account. query is a dict of query parameters, body a dict sent as JSON. Returns {status, data} with the answer decoded. Behind the account permission
 func api_account_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, method, path string
 	var body, query sl.Value
@@ -1280,7 +1307,7 @@ func api_account_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if path == "" || strings.Contains(path, "..") || strings.Contains(path, "?") {
 		return sl_error(fn, "invalid path")
 	}
-	l, err := linked_acting(t, fn, account)
+	user, row, _, err := account_acting(t, fn, account)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -1291,6 +1318,17 @@ func api_account_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	parameters := map[string]string{}
 	if query != nil && query != sl.None {
 		parameters = sl_decode_strings(query)
+	}
+	if hosted := hosted_bluesky(row); hosted != nil {
+		result, err := appview_forward(thread_context(t), user, hosted, method, path, parameters, sent)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return sl_encode(result), nil
+	}
+	l := linked_from(user, row)
+	if l == nil {
+		return sl_error(fn, "a hosted account has no such function yet")
 	}
 	result, err := linked_request(thread_context(t), l, method, path, parameters, sent)
 	if err != nil {

@@ -470,12 +470,28 @@ func api_handle_registry(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	for _, h := range handles_all() {
 		row := handle_present(h)
 		row["user"], row["username"], row["holder"] = h.User, "", ""
+		accounts := []map[string]any{}
 		if holder := user_by_uid(h.User); holder != nil {
 			row["username"] = holder.Username
 			if identity := holder.identity(); identity != nil {
 				row["holder"] = identity.Name
 			}
+			// The hosted accounts on the handle, with a Bluesky account's
+			// identifier and whether the owner has taken it down.
+			for _, account := range accounts_hosted(holder, "") {
+				data, _ := account["data"].(map[string]any)
+				if data["domain"] != h.Domain || data["handle"] != h.Name {
+					continue
+				}
+				entry := map[string]any{"id": account["id"], "network": account["type"], "identifier": account["identifier"]}
+				if did, _ := data["did"].(string); did != "" {
+					entry["did"] = did
+					entry["status"] = data["status"]
+				}
+				accounts = append(accounts, entry)
+			}
 		}
+		row["accounts"] = accounts
 		rows = append(rows, row)
 	}
 	return sl_encode(rows), nil

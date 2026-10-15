@@ -36,7 +36,7 @@ const plc_timeout = 20 * time.Second
 // plc_operation builds an unsigned operation: the keys that may change the
 // identity in order of authority, the signing key, the handle as an
 // at:// alias, the server, and the operation it follows (none for the first).
-func plc_operation(rotation []string, signing string, handle string, endpoint string, prev string) map[string]any {
+func plc_operation(rotation []string, signing string, handle string, endpoint string, previous string) map[string]any {
 	keys := make([]any, 0, len(rotation))
 	for _, key := range rotation {
 		keys = append(keys, key)
@@ -49,8 +49,8 @@ func plc_operation(rotation []string, signing string, handle string, endpoint st
 		"services":            map[string]any{"atproto_pds": map[string]any{"type": "AtprotoPersonalDataServer", "endpoint": endpoint}},
 		"prev":                nil,
 	}
-	if prev != "" {
-		op["prev"] = prev
+	if previous != "" {
+		op["prev"] = previous
 	}
 	return op
 }
@@ -206,7 +206,7 @@ func plc_create(ctx context.Context, user *User, account string, handle string, 
 // handle and server with the change applied, chained to it and signed by the
 // server's rotation key. The change sees the operation before it is signed.
 func plc_update(ctx context.Context, user *User, account string, did string, change func(op map[string]any)) error {
-	last, prev, err := plc_last(ctx, did)
+	last, previous, err := plc_last(ctx, did)
 	if err != nil {
 		return err
 	}
@@ -234,7 +234,7 @@ func plc_update(ctx context.Context, user *User, account string, did string, cha
 			endpoint, _ = pds["endpoint"].(string)
 		}
 	}
-	op := plc_operation(keys, signing, handle, endpoint, prev)
+	op := plc_operation(keys, signing, handle, endpoint, previous)
 	change(op)
 	if err := plc_sign(op, private); err != nil {
 		return err
@@ -245,7 +245,7 @@ func plc_update(ctx context.Context, user *User, account string, did string, cha
 // plc_tombstone ends an identity: a tombstone chained to its last operation,
 // after which nothing can be done with it again.
 func plc_tombstone(ctx context.Context, user *User, account string, did string) error {
-	_, prev, err := plc_last(ctx, did)
+	_, previous, err := plc_last(ctx, did)
 	if err != nil {
 		return err
 	}
@@ -253,7 +253,7 @@ func plc_tombstone(ctx context.Context, user *User, account string, did string) 
 	if err != nil {
 		return err
 	}
-	op := map[string]any{"type": "plc_tombstone", "prev": prev}
+	op := map[string]any{"type": "plc_tombstone", "prev": previous}
 	if err := plc_sign(op, private); err != nil {
 		return err
 	}

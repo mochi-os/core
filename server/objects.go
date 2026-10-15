@@ -429,6 +429,23 @@ func api_account_follow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if actor == "" {
 		return sl_error(fn, "a linked account follows through mochi.account.request")
 	}
+	// A Bluesky account follows with a record of its repository; the follow
+	// needs no acceptance.
+	if row["type"] == "bluesky" {
+		r, err := author_resolve(thread_context(t), address)
+		if err != nil || r.Network != "bluesky" || r.ID == "" {
+			return sl_error(fn, "cannot resolve %s", address)
+		}
+		// The host policy applies to the person's data server, since a did:plc
+		// names no host of its own.
+		if err := host_allowed(user, "bluesky", resolved_host(r)); err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		if _, err := atproto_follow(thread_context(t), user, row, r.ID); err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return sl_encode(map[string]any{"id": r.ID, "locked": false, "accepted": true}), nil
+	}
 	if err := account_fediverse(row); err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -690,6 +707,20 @@ func api_account_unfollow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 	if actor == "" {
 		return sl_error(fn, "a linked account unfollows through mochi.account.request")
+	}
+	if acting["type"] == "bluesky" {
+		did := strings.TrimSpace(address)
+		if !strings.HasPrefix(did, "did:") {
+			r, err := author_resolve(thread_context(t), address)
+			if err != nil || r.Network != "bluesky" || r.ID == "" {
+				return sl_error(fn, "cannot resolve %s", address)
+			}
+			did = r.ID
+		}
+		if err := atproto_unfollow(thread_context(t), user, acting, did); err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return sl.None, nil
 	}
 	if err := account_fediverse(acting); err != nil {
 		return sl_error(fn, "%v", err)

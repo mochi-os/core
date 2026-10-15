@@ -183,6 +183,7 @@ func quote_bluesky(ctx context.Context, user *User, identifier string, rkey stri
 		"network": "bluesky",
 		"url":     "https://bsky.app/profile/" + strings.TrimPrefix(r.Address, "@") + "/post/" + rkey,
 		"id":      record.URI,
+		"cid":     record.CID,
 		"text":    text,
 		"html":    "",
 		"image":   "",

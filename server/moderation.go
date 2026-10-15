@@ -16,6 +16,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -30,10 +31,11 @@ var api_account_mute = sls.FromStringDict(sl.String("mochi.account.mute"), sl.St
 })
 
 // actor_target reads a person's id on another network from an API argument,
-// trimmed; false for anything that is not one, such as a domain.
+// trimmed - a fediverse id or a Bluesky identifier; false for anything that is
+// not one, such as a domain.
 func actor_target(target string) (string, bool) {
 	target = strings.TrimSpace(target)
-	if !activitypub_remote_ok(target) {
+	if !activitypub_remote_ok(target) && !resolve_did_re.MatchString(target) {
 		return "", false
 	}
 	return target, true
@@ -61,12 +63,46 @@ func actor_list(db *DB, table string) []map[string]any {
 }
 
 // blocked_add blocks a person for the user: they are forgotten as a follower
-// of every account of the user's, and as someone followed.
+// of every account of the user's, and as someone followed; a person on
+// Bluesky is blocked by a record of each of the user's accounts there.
 func blocked_add(user *User, actor string) {
 	db := db_user(user, "user")
 	db.exec("insert or ignore into blocked (actor, created) values (?, ?)", actor, now())
 	db.exec("delete from followers where actor=?", actor)
 	db.exec("delete from following where actor=?", actor)
+	if strings.HasPrefix(actor, "did:") {
+		atproto_block(context.Background(), user, actor, true)
+	}
+}
+
+// blocked_remove lifts a block on a person, and the records that made it.
+func blocked_remove(user *User, actor string) {
+	db_user(user, "user").exec("delete from blocked where actor=?", actor)
+	if strings.HasPrefix(actor, "did:") {
+		atproto_block(context.Background(), user, actor, false)
+	}
+}
+
+// muted_set mutes or unmutes a person for the user, and at Bluesky's index
+// for each of the user's accounts there, which keeps mutes for an account.
+func muted_set(ctx context.Context, user *User, actor string, on bool) {
+	db := db_user(user, "user")
+	if on {
+		db.exec("insert or ignore into muted (actor, created) values (?, ?)", actor, now())
+	} else {
+		db.exec("delete from muted where actor=?", actor)
+	}
+	if !strings.HasPrefix(actor, "did:") {
+		return
+	}
+	for _, row := range accounts_hosted(user, "bluesky") {
+		if atproto_did(row) == "" {
+			continue
+		}
+		if err := atproto_mute(ctx, user, row, actor, on); err != nil {
+			debug("Bluesky account %s: mute of %s not sent: %v", row["id"], actor, err)
+		}
+	}
 }
 
 // mochi.account.mute.list() -> list: The people the user has muted, each with
@@ -91,7 +127,7 @@ func api_account_mute_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if !ok {
 		return sl_error(fn, "invalid actor")
 	}
-	db_user(user, "user").exec("insert or ignore into muted (actor, created) values (?, ?)", actor, now())
+	muted_set(thread_context(t), user, actor, true)
 	return sl.None, nil
 }
 
@@ -101,7 +137,7 @@ func api_account_mute_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	db_user(user, "user").exec("delete from muted where actor=?", strings.TrimSpace(target))
+	muted_set(thread_context(t), user, strings.TrimSpace(target), false)
 	return sl.None, nil
 }
 

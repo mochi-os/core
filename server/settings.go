@@ -221,6 +221,14 @@ var system_settings = map[string]SystemSetting{
 		ReadOnly:     false,
 		Public:       true,
 	},
+	"labelers": {
+		Name:         "labelers",
+		Pattern:      "line",
+		Default:      "",
+		Description:  "Labellers on Bluesky whose labels apply to what this server's accounts read there, by identifier, comma separated, beside Bluesky's own",
+		UserReadable: true,
+		ReadOnly:     false,
+	},
 	"operator_name": {
 		Name:         "operator_name",
 		Pattern:      "line",

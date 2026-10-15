@@ -222,6 +222,16 @@ the sending host, or the mail will be filed as spam.
     reaches no other loopback address. Never set this on a production
     server.
 
+**appview** = *url*
+:   The Bluesky index hosted Bluesky accounts read their timelines,
+    notifications and the network's methods from, in place of
+    *https://api.bsky.app*. Requests carry a token signed by the
+    account's key for the index named by **appview_did**.
+
+**appview_did** = *did*
+:   The identifier of the index **appview** names, in place of
+    *did:web:api.bsky.app*; the token's audience.
+
 ## [update]
 
 **check** = **true** | **false**

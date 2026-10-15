@@ -68,13 +68,13 @@ type repository struct {
 }
 
 // A repository_operation is one change a commit makes: a record created or
-// replaced (cid and data set) or deleted (cid nil). prev is filled in from
+// replaced (cid and data set) or deleted (cid nil). previous is filled in from
 // the tree as the commit is made.
 type repository_operation struct {
-	path string
-	cid  *cid.Cid
-	prev *cid.Cid
-	data []byte
+	path     string
+	cid      *cid.Cid
+	previous *cid.Cid
+	data     []byte
 }
 
 // A repository_event is what a commit answered: its id, revision and the
@@ -437,7 +437,7 @@ func repository_commit(ctx context.Context, r *repository, ops []repository_oper
 		if err != nil {
 			return nil, fmt.Errorf("record %s: %w", ops[i].path, err)
 		}
-		ops[i].prev = applied.Prev
+		ops[i].previous = applied.Prev
 	}
 	store := repository_store_new()
 	root, err := tree.WriteDiffBlocks(ctx, store)
@@ -490,15 +490,15 @@ func repository_commit(ctx context.Context, r *repository, ops []repository_oper
 		switch {
 		case op.cid == nil:
 			action = "delete"
-		case op.prev != nil:
+		case op.previous != nil:
 			action = "update"
 		}
 		change := map[string]any{"action": action, "path": op.path, "cid": nil}
 		if op.cid != nil {
 			change["cid"] = atdata.CIDLink(*op.cid)
 		}
-		if op.prev != nil {
-			change["prev"] = atdata.CIDLink(*op.prev)
+		if op.previous != nil {
+			change["prev"] = atdata.CIDLink(*op.previous)
 		}
 		changes = append(changes, change)
 	}

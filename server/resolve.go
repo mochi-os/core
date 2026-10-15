@@ -97,6 +97,16 @@ type resolved struct {
 	Moved   string   `json:"moved"`
 }
 
+// resolved_host is the host the host policy judges a resolved person by: the
+// one their identifier names, else their data server's, since a did:plc names
+// no host of its own.
+func resolved_host(r *resolved) string {
+	if host := identifier_host(r.ID); host != "" {
+		return host
+	}
+	return identifier_host(r.Server)
+}
+
 // identifier_host is the host an identifier names, for the host policy: empty
 // where the identifier names none, as a did:plc does.
 func identifier_host(identifier string) string {
@@ -517,7 +527,7 @@ func resolve_bluesky(ctx context.Context, did string) (*resolved, error) {
 			ServiceEndpoint string `json:"serviceEndpoint"`
 		} `json:"service"`
 	}
-	address := "https://plc.directory/" + did
+	address := strings.TrimSuffix(bluesky_plc, "/") + "/" + did
 	if strings.HasPrefix(did, "did:web:") {
 		host := strings.ReplaceAll(strings.TrimPrefix(did, "did:web:"), "%3A", ":")
 		address = "https://" + host + "/.well-known/did.json"
@@ -534,9 +544,11 @@ func resolve_bluesky(ctx context.Context, did string) (*resolved, error) {
 			break
 		}
 	}
+	// A data server is reached over https, or over http where a development
+	// instance may reach private addresses, as a reference fleet's is.
 	pds := ""
 	for _, service := range document.Service {
-		if service.ID == "#atproto_pds" && strings.HasPrefix(service.ServiceEndpoint, network_scheme) {
+		if service.ID == "#atproto_pds" && (strings.HasPrefix(service.ServiceEndpoint, network_scheme) || url_allow_private && strings.HasPrefix(service.ServiceEndpoint, "http://")) {
 			pds = strings.TrimSuffix(service.ServiceEndpoint, "/")
 		}
 	}

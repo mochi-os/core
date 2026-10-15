@@ -175,6 +175,8 @@ func main_serve(ready func()) int {
 	// server at (atproto.go).
 	bluesky_plc = ini_string("development", "plc", bluesky_plc)
 	bluesky_relay = ini_string("development", "relay", bluesky_relay)
+	bluesky_appview = ini_string("development", "appview", bluesky_appview)
+	bluesky_appview_did = ini_string("development", "appview_did", bluesky_appview_did)
 	atproto_endpoint_override = ini_string("development", "endpoint", "")
 	server_domain_name = ini_string("web", "domain", "")
 	web_cache = ini_bool("web", "cache", true)

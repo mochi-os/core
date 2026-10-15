@@ -135,8 +135,8 @@ func (f *plc_fake) accept(did string, log []map[string]any, op map[string]any) e
 	if err != nil {
 		return err
 	}
-	if prev, _ := op["prev"].(string); prev != last {
-		return fmt.Errorf("prev %q is not the last operation %s", prev, last)
+	if previous, _ := op["prev"].(string); previous != last {
+		return fmt.Errorf("prev %q is not the last operation %s", previous, last)
 	}
 	return nil
 }

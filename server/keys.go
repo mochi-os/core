@@ -301,10 +301,10 @@ func keypairs_create(user *User, account string, network string) error {
 
 // keypairs_replace makes a new signing key for an account, keeping the
 // algorithm. The fediverse learns the new key from the account document;
-// Bluesky from a repository commit signed by the new key under a rotation key,
-// which the repository engine issues (phase 18). The rotation key itself is
-// not replaced here: on Bluesky that is an identity operation, and the
-// recovery key the user holds must outrank whatever replaces it.
+// Bluesky from the identity operation and the commit atproto_keys_replaced
+// issues after this. The rotation key itself is not replaced here: on Bluesky
+// that is an identity operation, and the recovery key the user holds must
+// outrank whatever replaces it.
 func keypairs_replace(user *User, account string) error {
 	key := keypair_get(user, account, key_signing)
 	if key == nil {
@@ -653,6 +653,11 @@ func api_account_key_replace(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	if err := keypairs_replace(user, row["id"].(string)); err != nil {
 		return sl_error(fn, "%v", err)
 	}
+	if row["type"] == "bluesky" {
+		if err := atproto_keys_replaced(thread_context(t), user, row["id"].(string)); err != nil {
+			return sl_error(fn, "the new key is made but not yet announced: %v", err)
+		}
+	}
 	return sl.True, nil
 }
 
@@ -670,6 +675,11 @@ func api_account_key_recovery(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	public, private, err := keypair_recovery(user, row["id"].(string))
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	// The identity lists the new key above the server's own, so the user
+	// can act on the account without this server.
+	if err := atproto_recovery_added(thread_context(t), user, row["id"].(string)); err != nil {
+		return sl_error(fn, "the key is made but the identity does not list it yet: %v", err)
 	}
 	return sl_encode(map[string]any{"public": public, "private": private}), nil
 }

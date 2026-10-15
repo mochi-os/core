@@ -486,6 +486,17 @@ func account_present(user *User, row map[string]any) map[string]any {
 			out["aliases"] = object_strings(data["aliases"])
 			out["moved"], _ = data["moved"].(string)
 		}
+		// A Bluesky account's identifier, its page on Bluesky, and whether
+		// the user has kept a recovery key for it.
+		if ptype == "bluesky" {
+			if did, _ := data["did"].(string); did != "" {
+				out["did"] = did
+				out["url"] = "https://bsky.app/profile/" + did
+			}
+			if id, _ := row["id"].(string); id != "" {
+				out["recovery"] = keypair_get(user, id, key_recovery) != nil
+			}
+		}
 	}
 	if !hosted && linked_chat(ptype) {
 		id, _ := row["id"].(string)
@@ -1085,6 +1096,21 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		domain, _ := data["domain"].(string)
 		handle, _ := data["handle"].(string)
 		actor_register(user, id, ptype, domain, handle)
+		// A Bluesky account needs its identity in the directory and its
+		// repository before it exists at all (atproto.go); when that fails,
+		// nothing of the account is left behind.
+		if ptype == "bluesky" {
+			if err := atproto_account_create(thread_context(t), user, id); err != nil {
+				atproto_account_remove(user, id)
+				networks_database().exec("delete from actors where id=?", id)
+				keypairs_delete(db, id)
+				db.row_remove(reg_accounts, map[string]any{"id": id})
+				return sl_error(fn, "cannot create the Bluesky account: %v", err)
+			}
+			if row := account_hosted_get(user, id); row != nil {
+				identifier = row_string(row, "identifier")
+			}
+		}
 	}
 
 	return sl_encode(map[string]any{
@@ -1169,6 +1195,12 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		case "label":
 			label, _ := sl.AsString(kv[1])
 			db.account_set(id, map[string]any{"label": label})
+			// A hosted Bluesky account's profile record carries the name.
+			if row := account_hosted_get(user, id); row != nil && row["type"] == "bluesky" {
+				if err := atproto_profile_write(thread_context(t), user, id); err != nil {
+					debug("Bluesky profile of %s not updated: %v", id, err)
+				}
+			}
 
 		case "enabled":
 			var val int
@@ -1360,9 +1392,13 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		linked_forget(ctx, l)
 	}
 	// A hosted account's followers are told it is gone, and its id answers
-	// gone from now on (activitypub.go).
+	// gone from now on (activitypub.go); a Bluesky account's identity is
+	// tombstoned and its repository dropped (atproto.go).
 	if account_hosted_flag(row) {
 		activitypub_account_remove(user, id)
+		if row["type"] == "bluesky" {
+			atproto_account_remove(user, id)
+		}
 	}
 	keypairs_delete(db, id)
 	db.row_remove(reg_accounts, map[string]any{"id": id})

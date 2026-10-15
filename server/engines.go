@@ -136,4 +136,5 @@ func engines_start() {
 	engine_register(bluesky_client_engine())
 	engine_register(signin_engine())
 	engine_register(activitypub_engine())
+	engine_register(atproto_engine())
 }

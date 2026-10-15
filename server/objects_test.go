@@ -186,7 +186,8 @@ func TestObjectAddressing(t *testing.T) {
 }
 
 // TestObjectRefusals: publishing needs the account permission, the account must
-// be the user's own and on the fediverse, and the object a type.
+// be the user's own and on the fediverse or on Bluesky with its repository
+// made, and the object a type.
 func TestObjectRefusals(t *testing.T) {
 	alice := create_delivery_test_env(t)
 	fn := sl.NewBuiltin("test", nil)
@@ -198,7 +199,9 @@ func TestObjectRefusals(t *testing.T) {
 		t.Errorf("ungranted app = %v, want a permission error", err)
 	}
 	permission_grant(alice, app.id, "account:*")
-	if _, err := api_account_object_create(thread, fn, sl.Tuple{sl.String("b1"), object_dict("type", "Note")}, nil); err == nil || !strings.Contains(err.Error(), "cannot publish yet") {
+	// A Bluesky account whose repository was never made (switching it on
+	// failed, or a row from before the engine) publishes nothing.
+	if _, err := api_account_object_create(thread, fn, sl.Tuple{sl.String("b1"), object_dict("type", "Note")}, nil); err == nil || !strings.Contains(err.Error(), "no repository") {
 		t.Errorf("bluesky account = %v", err)
 	}
 	if _, err := api_account_object_create(thread, fn, sl.Tuple{sl.String("nope"), object_dict("type", "Note")}, nil); err == nil || !strings.Contains(err.Error(), "no such account") {

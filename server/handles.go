@@ -337,20 +337,8 @@ func handles_demoted(uid string) {
 // handle whose holder has a Bluesky account on it: the one case in which a
 // certificate for a name under a wildcard domain is requested on demand.
 func handle_host_answers(host string) bool {
-	host = strings.ToLower(host)
-	i := strings.IndexByte(host, '.')
-	if i <= 0 {
-		return false
-	}
-	h := handle_lookup(host[i+1:], host[:i])
-	if h == nil {
-		return false
-	}
-	holder := user_by_uid(h.User)
-	if holder == nil {
-		return false
-	}
-	return account_hosted(holder, "bluesky", h.Domain, h.Name) != nil
+	_, row := atproto_host_account(host)
+	return row != nil
 }
 
 // === Starlark API ===

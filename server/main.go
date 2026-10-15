@@ -170,6 +170,12 @@ func main_serve(ready func()) int {
 	dev_apps_dir = ini_string("development", "apps", "")
 	dev_reload = ini_bool("development", "reload", false)
 	networks_development = ini_bool("development", "networks", false)
+	// A reference fleet on this machine: its identity directory and relay in
+	// place of the public ones, and the address the relay reaches this
+	// server at (atproto.go).
+	bluesky_plc = ini_string("development", "plc", bluesky_plc)
+	bluesky_relay = ini_string("development", "relay", bluesky_relay)
+	atproto_endpoint_override = ini_string("development", "endpoint", "")
 	server_domain_name = ini_string("web", "domain", "")
 	web_cache = ini_bool("web", "cache", true)
 	web_compress = ini_string("web", "compress", "auto")
@@ -221,6 +227,7 @@ func main_serve(ready func()) int {
 	go peers_publish()
 	go queue_manager()
 	go delivery_manager()
+	go atproto_manager()
 	actors_rebuild()
 	go inbound_manager()
 	go linked_manager()

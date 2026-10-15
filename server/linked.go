@@ -886,26 +886,12 @@ func linked_decode(body []byte) any {
 
 // remembered answers what a key's post was answered with, if it was made.
 func (l *linked) remembered(key string) map[string]any {
-	if key == "" {
-		return nil
-	}
-	row, _ := db_user(l.user, "user").row("select result from requests where account=? and key=?", l.id, key)
-	if row == nil {
-		return nil
-	}
-	var result map[string]any
-	json.Unmarshal([]byte(row_string(row, "result")), &result)
-	return result
+	return request_remembered(l.user, l.id, key)
 }
 
 // remember keeps a key's answer, and drops the day-old ones.
 func (l *linked) remember(key string, result map[string]any) {
-	if key == "" {
-		return
-	}
-	db := db_user(l.user, "user")
-	db.exec("delete from requests where created<?", now()-86400)
-	db.exec("insert or replace into requests (account, key, result, created) values (?, ?, ?, ?)", l.id, key, json_encode(result), now())
+	request_remember(l.user, l.id, key, result)
 }
 
 // === The functions ===
@@ -1251,9 +1237,21 @@ func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if len(data) == 0 || len(data) > media_maximum {
 		return sl_error(fn, "data must be between 1 and %d bytes", media_maximum)
 	}
-	l, err := linked_acting(t, fn, account)
+	user, row, _, err := account_acting(t, fn, account)
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	// A hosted Bluesky account's blobs live in its own repository.
+	if account_hosted_flag(row) && row["type"] == "bluesky" {
+		result, err := atproto_upload(user, row, data, kind)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return sl_encode(result), nil
+	}
+	l := linked_from(user, row)
+	if l == nil {
+		return sl_error(fn, "a hosted account has no such function yet")
 	}
 	if name == "" {
 		name = "file"

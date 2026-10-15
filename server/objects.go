@@ -12,9 +12,9 @@
 // the account. Each is behind the account permission, and every request goes
 // through the host policy, the limiter per host and the delivery queue. An object's id is
 // <actor>/<id>: the engine serves it by asking the app that published it, so
-// core keeps the id, the app, the type and the addressing, not the body. Only
-// fediverse accounts publish yet; a Bluesky, Matrix or XMPP account answers that
-// its network cannot publish yet.
+// core keeps the id, the app, the type and the addressing, not the body. A
+// Bluesky account publishes into its repository instead (atproto.go); a Matrix
+// or XMPP account answers that its network cannot publish yet.
 
 package main
 
@@ -64,14 +64,16 @@ func networks_tables(db *DB) {
 	// A hosted fediverse account's identifier is its address, written
 	// @name@domain; accounts made before 2026-10-14 held name@domain.
 	db.exec("update accounts set identifier='@'||identifier where type='fediverse' and identifier not like '@%' and data like '%\"hosted\":true%'")
+	// A hosted Bluesky account's repository (repository.go).
+	repository_tables(db)
 }
 
 // account_acting resolves the account an app acts through: the account
 // permission, the user whose account it is, the account row with its data
 // decoded, and for a hosted account its actor id. A hosted account acts only
-// while its network is on, and only a fediverse one can publish yet; a linked
-// account acts while the development switch is on, since it only makes
-// requests as the user.
+// while its network is on, and only a fediverse or Bluesky one can publish
+// yet; a linked account acts while the development switch is on, since it only
+// makes requests as the user.
 func account_acting(t *sl.Thread, fn *sl.Builtin, id string) (*User, map[string]any, string, error) {
 	if err := require_permission_account(t, fn, id); err != nil {
 		return nil, nil, "", err
@@ -91,13 +93,23 @@ func account_acting(t *sl.Thread, fn *sl.Builtin, id string) (*User, map[string]
 		return user, row, "", nil
 	}
 	network, _ := row["type"].(string)
-	if network != "fediverse" {
+	if network != "fediverse" && network != "bluesky" {
 		return nil, nil, "", fmt.Errorf("a %s account cannot publish yet", network)
 	}
 	if !network_enabled(network) {
 		return nil, nil, "", fmt.Errorf("%s is off", network)
 	}
 	return user, row, account_actor(user, id), nil
+}
+
+// account_fediverse refuses a hosted account that is not on the fediverse,
+// for the functions that speak ActivityPub: following, moving, boosting and
+// reading as the account. Their Bluesky forms come with phase 19.
+func account_fediverse(row map[string]any) error {
+	if network, _ := row["type"].(string); network != "fediverse" {
+		return fmt.Errorf("a %s account cannot do this yet", network)
+	}
+	return nil
 }
 
 // object_result shapes what a publish answers: the object's id, its page and
@@ -215,11 +227,12 @@ func object_stored_addressing(row map[string]any) (to []string, cc []string) {
 	return stored.To, stored.Cc
 }
 
-// mochi.account.object.create(account, object, key="") -> dict: Publish an object as an account and return {id, url, data}: its id on the network, its page where the network has one, and the object as published. As a hosted account, the object is an ActivityStreams object the app has already put in the network's form (its type, HTML content, attachments, tags); core gives it its id under the account, attributedTo and published, and sends Create to everyone it addresses, which is the public and the account's followers unless the object says otherwise. As a linked account, the object is in the network's own form - a Mastodon status, a Bluesky record, a Lemmy post or comment - and key makes the post once however often it is asked
+// mochi.account.object.create(account, object, key="", sourced=False) -> dict: Publish an object as an account and return {id, url, data}: its id on the network, its page where the network has one, and the object as published. As a hosted fediverse account, the object is an ActivityStreams object the app has already put in the network's form (its type, HTML content, attachments, tags); core gives it its id under the account, attributedTo and published, and sends Create to everyone it addresses, which is the public and the account's followers unless the object says otherwise. As a hosted Bluesky account, the object is a record, with $type naming its collection (a post when absent); core writes it to the account's repository and commits, at once or, for a sourced post (sourced=True), when the relay's budget allows, and data says whether the commit went out. As a linked account, the object is in the network's own form - a Mastodon status, a Bluesky record, a Lemmy post or comment. key makes the post once however often it is asked
 func api_account_object_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, key string
 	var value sl.Value
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "object", &value, "key?", &key); err != nil {
+	var sourced bool
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "object", &value, "key?", &key, "sourced?", &sourced); err != nil {
 		return nil, err
 	}
 	user, row, actor, err := account_acting(t, fn, account)
@@ -229,6 +242,13 @@ func api_account_object_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	object := sl_decode_map(value)
 	if l := linked_from(user, row); l != nil {
 		result, err := linked_create(thread_context(t), l, object, key)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return sl_encode(result), nil
+	}
+	if row["type"] == "bluesky" {
+		result, err := atproto_create(thread_context(t), user, row, object, key, sourced)
 		if err != nil {
 			return sl_error(fn, "%v", err)
 		}
@@ -289,6 +309,13 @@ func api_account_object_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		}
 		return sl_encode(result), nil
 	}
+	if found["type"] == "bluesky" {
+		result, err := atproto_update(thread_context(t), user, found, remote, object)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return sl_encode(result), nil
+	}
 	db := db_user(user, "user")
 	id, row := object_get(db, actor, account, remote)
 	if row == nil || row["deleted"].(int64) != 0 {
@@ -342,6 +369,12 @@ func api_account_object_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		}
 		return sl.None, nil
 	}
+	if found["type"] == "bluesky" {
+		if err := atproto_delete(thread_context(t), user, found, remote); err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return sl.None, nil
+	}
 	db := db_user(user, "user")
 	id, row := object_get(db, actor, account, remote)
 	if row == nil {
@@ -389,12 +422,15 @@ func api_account_follow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "address", &address); err != nil {
 		return nil, err
 	}
-	user, _, actor, err := account_acting(t, fn, account)
+	user, row, actor, err := account_acting(t, fn, account)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	if actor == "" {
 		return sl_error(fn, "a linked account follows through mochi.account.request")
+	}
+	if err := account_fediverse(row); err != nil {
+		return sl_error(fn, "%v", err)
 	}
 	ctx := activitypub_signing(thread_context(t), user, account)
 	r, err := author_resolve(ctx, address)
@@ -405,8 +441,8 @@ func api_account_follow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "%v", err)
 	}
 	account_follow(user, account, actor, r)
-	row, _ := db_user(user, "user").row("select accepted from following where account=? and actor=?", account, r.ID)
-	return sl_encode(map[string]any{"id": r.ID, "locked": r.Locked, "accepted": row != nil && row_int(row, "accepted") > 0}), nil
+	following, _ := db_user(user, "user").row("select accepted from following where account=? and actor=?", account, r.ID)
+	return sl_encode(map[string]any{"id": r.ID, "locked": r.Locked, "accepted": following != nil && row_int(following, "accepted") > 0}), nil
 }
 
 // account_follow records a person as followed by a hosted account, pending
@@ -474,6 +510,9 @@ func api_account_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if actor == "" {
 		return sl_error(fn, "a linked account is moved from its own server")
 	}
+	if err := account_fediverse(row); err != nil {
+		return sl_error(fn, "%v", err)
+	}
 	ctx := activitypub_signing(thread_context(t), user, account)
 	r, err := author_resolve(ctx, address)
 	if err != nil || r.Network != "fediverse" || r.ID == "" {
@@ -535,12 +574,15 @@ func api_account_announce(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "id", &remote); err != nil {
 		return nil, err
 	}
-	user, _, actor, err := account_acting(t, fn, account)
+	user, row, actor, err := account_acting(t, fn, account)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	if actor == "" {
 		return sl_error(fn, "a linked account boosts through mochi.account.request")
+	}
+	if err := account_fediverse(row); err != nil {
+		return sl_error(fn, "%v", err)
 	}
 	remote = strings.TrimSpace(remote)
 	if !activitypub_remote_ok(remote) {
@@ -606,12 +648,15 @@ func api_account_object_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "id", &remote); err != nil {
 		return nil, err
 	}
-	user, _, actor, err := account_acting(t, fn, account)
+	user, row, actor, err := account_acting(t, fn, account)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	if actor == "" {
 		return sl_error(fn, "a linked account reads through mochi.account.request")
+	}
+	if err := account_fediverse(row); err != nil {
+		return sl_error(fn, "%v", err)
 	}
 	remote = strings.TrimSpace(remote)
 	if !activitypub_remote_ok(remote) {
@@ -639,12 +684,15 @@ func api_account_unfollow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "address", &address); err != nil {
 		return nil, err
 	}
-	user, _, actor, err := account_acting(t, fn, account)
+	user, acting, actor, err := account_acting(t, fn, account)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	if actor == "" {
 		return sl_error(fn, "a linked account unfollows through mochi.account.request")
+	}
+	if err := account_fediverse(acting); err != nil {
+		return sl_error(fn, "%v", err)
 	}
 	db := db_user(user, "user")
 	row, _ := db.row("select actor, inbox, activity from following where account=? and actor=?", account, address)

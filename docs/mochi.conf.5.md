@@ -205,6 +205,23 @@ the sending host, or the mail will be filed as spam.
     it lets any app-supplied URL reach the server's own network. Defaults
     to **false**.
 
+**plc** = *url*
+:   The did:plc identity directory hosted Bluesky accounts are registered
+    with, in place of *https://plc.directory*: a reference directory on
+    this machine. An identity made in one directory is unknown to every
+    other, so this is only for a development instance.
+
+**relay** = *url*
+:   The relay told of this server's Bluesky repositories, in place of
+    *https://bsky.network*: a reference relay on this machine.
+
+**endpoint** = *url*
+:   The address published as this server's Bluesky repository endpoint,
+    in place of https on each account's domain, such as
+    *http://localhost:8081* for a reference relay on this machine, which
+    reaches no other loopback address. Never set this on a production
+    server.
+
 ## [update]
 
 **check** = **true** | **false**

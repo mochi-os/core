@@ -128,7 +128,8 @@ func network_state(name string) (string, string) {
 // mochi.server.networks() -> dict: Each network's state for the owner's Status
 // page: "working", "unavailable" with a reason, or "disabled" (the setting or
 // the development switch off); for Bluesky how many certificates the server
-// has had issued this week against the authority's allowance; and whether the
+// has had issued this week against the authority's allowance and how much of
+// the relay's hourly and daily budget of events it has used; and whether the
 // development switch is on.
 func api_server_networks(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "server/read"); err != nil {
@@ -142,6 +143,11 @@ func api_server_networks(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		}
 		if n == "bluesky" {
 			state["certificates"] = map[string]any{"issued": certificates_recent(), "limit": certificates_limit}
+			hour, day := atproto_budget_used()
+			state["budget"] = map[string]any{
+				"hour": map[string]any{"used": hour, "limit": atproto_budget_hour},
+				"day":  map[string]any{"used": day, "limit": atproto_budget_day},
+			}
 		}
 		networks[n] = state
 	}
@@ -248,6 +254,9 @@ func accounts_hosted_remove(user *User, domain string, name string) {
 		if data["domain"] == domain && data["handle"] == name {
 			id, _ := row["id"].(string)
 			activitypub_account_remove(user, id)
+			if row["type"] == "bluesky" {
+				atproto_account_remove(user, id)
+			}
 			keypairs_delete(db, id)
 			db.row_remove(reg_accounts, map[string]any{"id": id})
 		}
@@ -336,6 +345,8 @@ func networks_database() *DB {
 	db.exec("create index if not exists received_created on received(created)")
 	db.exec("create table if not exists inbound (id text not null primary key, user text not null, account text not null, actor text not null, type text not null, body text not null, created integer not null)")
 	db.exec("create index if not exists inbound_account on inbound(account, created)")
+	// The Bluesky identities by did and the update stream (atproto.go).
+	atproto_tables(db)
 	return db
 }
 

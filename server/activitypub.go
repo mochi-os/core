@@ -12,10 +12,16 @@
 // identity; an app supplies the meaning through the functions it declares:
 // activitypub/object answers for an object the app published,
 // activitypub/profile describes the person behind the account, and
-// activitypub/receive takes the activities the inbox queues. Follow and Undo
+// activitypub/receive takes the activities the inbox queues, and
+// activitypub/featured names the objects the account pins. Follow and Undo
 // of a Follow are the engine's own: a follow is accepted at once and the
 // follower recorded for delivery, and the Follow is then handed to the apps
-// as well, so one can tell the person.
+// as well, so one can tell the person. The Accept and Reject of a Follow the
+// account sent, and a Move by someone it follows, are the engine's too: the
+// following table is kept, the follow of a moved person is sent again to
+// where they went, and the apps hear of the Move to follow suit. What a
+// followed person posts reaches the shared inbox addressed to their
+// followers, and is routed to every account here that follows them.
 //
 // Every inbound request is checked before anything else sees it: the HTTP
 // signature against the actor's key, fetched from the actor's own server and
@@ -496,8 +502,7 @@ func activitypub_actor_route(c *gin.Context) {
 		n, _ := db_user(user, "user").row("select count(*) as n from following where account=? and accepted>0", a.ID)
 		activitypub_json(c, http.StatusOK, map[string]any{"@context": activitystreams, "id": actor_id + "/following", "type": "OrderedCollection", "totalItems": row_int(n, "n")})
 	case tail == "featured" && method == "GET":
-		// Pinned posts, which servers ask for on meeting an account; none yet.
-		activitypub_json(c, http.StatusOK, map[string]any{"@context": activitystreams, "id": actor_id + "/featured", "type": "OrderedCollection", "totalItems": 0, "orderedItems": []any{}})
+		activitypub_featured(c, user, a, row)
 	case method == "GET" && tail != "" && !strings.Contains(tail, "/"):
 		activitypub_object(c, user, a, row, tail)
 	default:
@@ -581,6 +586,14 @@ func activitypub_actor(user *User, a *actor, row map[string]any) map[string]any 
 	}
 	if key := keypair_get(user, a.ID, key_signing); key != nil {
 		document["publicKey"] = map[string]any{"id": id + "#main-key", "owner": id, "publicKeyPem": key.Public}
+	}
+	// The person's other identities, which a Move from one of them to this
+	// account must find here; and where this account has moved to.
+	if aliases := object_strings(data["aliases"]); len(aliases) > 0 {
+		document["alsoKnownAs"] = aliases
+	}
+	if moved, _ := data["moved"].(string); moved != "" {
+		document["movedTo"] = moved
 	}
 	if summary, _ := profile["summary"].(string); summary != "" {
 		document["summary"] = summary
@@ -690,6 +703,39 @@ func activitypub_object(c *gin.Context, user *User, a *actor, row map[string]any
 	activitypub_json(c, http.StatusOK, object)
 }
 
+// activitypub_featured answers the account's pinned posts, which servers ask
+// for on meeting an account: the objects each app that published for the
+// account names through activitypub/featured, in the order the apps give
+// them.
+func activitypub_featured(c *gin.Context, user *User, a *actor, row map[string]any) {
+	db := db_user(user, "user")
+	actor_id := account_url(a.Domain, a.ID)
+	items := []any{}
+	apps_rows, _ := db.rows("select distinct app from objects where account=? and deleted=0 and app!=''", a.ID)
+	for _, app_row := range apps_rows {
+		app := app_by_id(row_string(app_row, "app"))
+		if app == nil {
+			continue
+		}
+		result, err := activitypub_call(user, app, "activitypub/featured", Map{"account": a.ID})
+		if err != nil {
+			debug("ActivityPub featured from %s: %v", app.id, err)
+			continue
+		}
+		for _, remote := range object_strings(result) {
+			id, object_row := object_get(db, actor_id, a.ID, remote)
+			if id == "" || object_row["deleted"].(int64) != 0 {
+				continue
+			}
+			object_row["app"] = app.id
+			if object := activitypub_object_document(user, a, row, object_row); object != nil {
+				items = append(items, object)
+			}
+		}
+	}
+	activitypub_json(c, http.StatusOK, map[string]any{"@context": activitypub_context, "id": actor_id + "/featured", "type": "OrderedCollection", "totalItems": len(items), "orderedItems": items})
+}
+
 // activitypub_outbox answers the account's outbox: the collection with its
 // count and first page, and a page of Create activities wrapping the objects
 // as the apps give them now, newest first.
@@ -719,6 +765,21 @@ func activitypub_outbox(c *gin.Context, user *User, a *actor, row map[string]any
 	last := int64(0)
 	for _, object_row := range rows {
 		last = row_int(object_row, "created")
+		if row_string(object_row, "type") == "Announce" {
+			// A boost is an activity of the account's own, not an object an
+			// app holds.
+			to, cc := object_stored_addressing(object_row)
+			items = append(items, map[string]any{
+				"id":        actor_id + "/" + row_string(object_row, "id"),
+				"type":      "Announce",
+				"actor":     actor_id,
+				"published": time.Unix(last, 0).UTC().Format(time.RFC3339),
+				"to":        to,
+				"cc":        cc,
+				"object":    object_announced(object_row),
+			})
+			continue
+		}
 		object := activitypub_object_document(user, a, row, object_row)
 		if object == nil {
 			continue
@@ -842,7 +903,7 @@ func activitypub_inbox(c *gin.Context, user *User, a *actor) {
 	if a != nil {
 		targets = append(targets, a)
 	} else {
-		targets = activitypub_targets(activity)
+		targets = activitypub_targets(remote, activity)
 	}
 	ctx := c.Request.Context()
 	if len(targets) > 0 {
@@ -942,10 +1003,15 @@ func activitypub_key_owner(ctx context.Context, key_id string, remote string) bo
 
 // activitypub_targets finds the accounts a shared-inbox activity is for: those
 // named by its object (a Follow), to, cc or audience, directly or as their
-// followers collection.
-func activitypub_targets(activity map[string]any) []*actor {
+// followers collection, and those following its actor, to whom a post
+// addressed to the actor's followers is delivered this way.
+func activitypub_targets(remote string, activity map[string]any) []*actor {
 	seen := map[string]bool{}
 	var targets []*actor
+	for _, a := range activitypub_followers_of(remote) {
+		seen[a.ID] = true
+		targets = append(targets, a)
+	}
 	consider := func(address string) {
 		u, err := url.Parse(address)
 		if err != nil || !strings.HasPrefix(u.Path, "/~") {
@@ -977,9 +1043,30 @@ func activitypub_targets(activity map[string]any) []*actor {
 	return targets
 }
 
+// activitypub_followers_of lists the live accounts here that follow a remote
+// actor, across users.
+func activitypub_followers_of(remote string) []*actor {
+	var found []*actor
+	rows, _ := networks_database().rows("select distinct user from actors where deleted=0 and network='fediverse'")
+	for _, row := range rows {
+		u := user_by_uid(row_string(row, "user"))
+		if u == nil || user_pending(u) {
+			continue
+		}
+		accounts, _ := db_user(u, "user").rows("select account from following where actor=?", remote)
+		for _, account := range accounts {
+			if a := actor_get(row_string(account, "account")); a != nil && a.Deleted == 0 && a.Network == "fediverse" {
+				found = append(found, a)
+			}
+		}
+	}
+	return found
+}
+
 // activitypub_dispatch acts on one verified activity for one account: a
-// Follow is accepted, an Undo of a Follow forgets the follower, and anything
-// else is queued for the apps.
+// Follow is accepted, an Undo of a Follow forgets the follower, an Accept or
+// Reject settles a follow the account sent, a Move by someone followed sends
+// the follow on to where they went, and anything else is queued for the apps.
 func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote string, kind string, activity map[string]any, body []byte) {
 	actor_id := account_url(a.Domain, a.ID)
 	db := db_user(user, "user")
@@ -1030,6 +1117,17 @@ func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote stri
 			return
 		}
 		inbound_add(user, a.ID, remote, kind, body)
+	case "Move":
+		// A person the account follows has moved: the follow goes to where
+		// they went, once their new identity names the old one as its own,
+		// and the apps hear of it to follow suit.
+		target := activitypub_actor_of(activity["target"])
+		if activitypub_actor_of(activity["object"]) != remote || target == "" || target == remote {
+			return
+		}
+		if following_move(ctx, user, a.ID, remote, target) {
+			inbound_add(user, a.ID, remote, kind, body)
+		}
 	default:
 		inbound_add(user, a.ID, remote, kind, body)
 	}

@@ -310,15 +310,18 @@ var providers = []Provider{
 // Starlark API module
 var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"add":           sl.NewBuiltin("mochi.account.add", api_account_add),
+	"announce":      sl.NewBuiltin("mochi.account.announce", api_account_announce),
 	"block":         api_account_block,
 	"follow":        sl.NewBuiltin("mochi.account.follow", api_account_follow),
 	"followers":     sl.NewBuiltin("mochi.account.followers", api_account_followers),
+	"following":     sl.NewBuiltin("mochi.account.following", api_account_following),
 	"get":           sl.NewBuiltin("mochi.account.get", api_account_get),
 	"grant":         sl.NewBuiltin("mochi.account.grant", api_account_grant),
 	"key":           api_account_key,
 	"link":          sl.NewBuiltin("mochi.account.link", api_account_link),
 	"list":          sl.NewBuiltin("mochi.account.list", api_account_list),
 	"media":         sl.NewBuiltin("mochi.account.media", api_account_media),
+	"move":          sl.NewBuiltin("mochi.account.move", api_account_move),
 	"mute":          api_account_mute,
 	"networks":      sl.NewBuiltin("mochi.account.networks", api_account_networks),
 	"notifications": sl.NewBuiltin("mochi.account.notifications", api_account_notifications),
@@ -473,11 +476,15 @@ func account_present(user *User, row map[string]any) map[string]any {
 	out["profile"], _ = data["profile"].(bool)
 	if hosted {
 		out["automated"], _ = data["automated"].(bool)
-		// A fediverse account's permanent id is its page for other servers.
+		// A fediverse account's permanent id is its page for other servers;
+		// its aliases are the person's other identities, and moved where it
+		// has moved to.
 		if ptype == "fediverse" {
 			if id, _ := row["id"].(string); id != "" {
 				out["url"] = account_actor(user, id)
 			}
+			out["aliases"] = object_strings(data["aliases"])
+			out["moved"], _ = data["moved"].(string)
 		}
 	}
 	if !hosted && linked_chat(ptype) {
@@ -1127,7 +1134,7 @@ func api_account_profile(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(shown), nil
 }
 
-// mochi.account.update(id, label=..., enabled=..., profile=...) -> bool: Update an account; profile is whether it is shown on the user's profile page
+// mochi.account.update(id, label=..., enabled=..., profile=..., automated=..., aliases=[...]) -> bool: Update an account; profile is whether it is shown on the user's profile page, automated whether a hosted account is marked as fed by sources, and aliases the person's accounts elsewhere (handles or ids) that may move to this one, which its fediverse document names as its own
 func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: integer>, [label=...], [enabled=...]")
@@ -1243,6 +1250,35 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 					d[key] = true
 				} else {
 					delete(d, key)
+				}
+				j, _ := json.Marshal(d)
+				db.account_set(id, map[string]any{"data": string(j)})
+			}
+
+		case "aliases":
+			// The person's other identities, resolved to their ids: a Move
+			// from one of them to this account is accepted by the other
+			// server only when this account's document names it.
+			list, _ := kv[1].(*sl.List)
+			aliases := []string{}
+			if list != nil {
+				ctx := activitypub_signing(thread_context(t), user, id)
+				for i := 0; i < list.Len(); i++ {
+					address, _ := sl.AsString(list.Index(i))
+					r, err := author_resolve(ctx, strings.TrimSpace(address))
+					if err != nil || r.Network != "fediverse" || r.ID == "" {
+						return sl_error(fn, "cannot resolve %s", address)
+					}
+					aliases = append(aliases, r.ID)
+				}
+			}
+			row, err := db.row("select data from accounts where id=?", id)
+			if err == nil && row != nil {
+				d := account_data(row)
+				if len(aliases) > 0 {
+					d["aliases"] = aliases
+				} else {
+					delete(d, "aliases")
 				}
 				j, _ := json.Marshal(d)
 				db.account_set(id, map[string]any{"data": string(j)})

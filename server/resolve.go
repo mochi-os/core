@@ -82,10 +82,19 @@ type resolved struct {
 	ID       string `json:"id"`     // the person's permanent identifier
 	Inbox    string `json:"inbox"`  // where to deliver to the person, on the fediverse
 	Shared   string `json:"shared"` // their server's shared inbox, where it has one
+	Outbox   string `json:"outbox"` // where the person's posts are read, on the fediverse
 	// Template is the server's subscribe template from WebFinger, where it
 	// publishes one: the page a visitor is sent to with {uri} to follow or
 	// reply to someone from their own account.
 	Template string `json:"template"`
+	// Locked is a fediverse account that approves its followers one by one,
+	// so a Follow waits for its Accept.
+	Locked bool `json:"locked"`
+	// Aliases are the other identifiers the person says are theirs
+	// (alsoKnownAs), which a Move from one of them must name; Moved is where
+	// the person has moved to, where they have.
+	Aliases []string `json:"aliases"`
+	Moved   string   `json:"moved"`
 }
 
 // identifier_host is the host an identifier names, for the host policy: empty
@@ -405,9 +414,13 @@ func resolve_activitypub(ctx context.Context, actor string) (*resolved, error) {
 		URL               any    `json:"url"`
 		Icon              any    `json:"icon"`
 		Inbox             string `json:"inbox"`
+		Outbox            string `json:"outbox"`
 		Endpoints         struct {
 			SharedInbox string `json:"sharedInbox"`
 		} `json:"endpoints"`
+		ManuallyApprovesFollowers bool   `json:"manuallyApprovesFollowers"`
+		AlsoKnownAs               any    `json:"alsoKnownAs"`
+		MovedTo                   string `json:"movedTo"`
 	}
 	if err := resolve_json(ctx, actor, "application/activity+json, application/ld+json", &document); err != nil {
 		return nil, err
@@ -430,7 +443,12 @@ func resolve_activitypub(ctx context.Context, actor string) (*resolved, error) {
 	if id == "" {
 		id = actor
 	}
-	r := &resolved{Network: "fediverse", Type: kind, Username: document.PreferredUsername, Host: host, Name: document.Name, URL: actor, ID: id, Inbox: document.Inbox, Shared: document.Endpoints.SharedInbox}
+	r := &resolved{Network: "fediverse", Type: kind, Username: document.PreferredUsername, Host: host, Name: document.Name, URL: actor, ID: id, Inbox: document.Inbox, Shared: document.Endpoints.SharedInbox, Outbox: document.Outbox, Locked: document.ManuallyApprovesFollowers, Moved: document.MovedTo}
+	for _, alias := range object_strings(document.AlsoKnownAs) {
+		if activitypub_remote_ok(alias) {
+			r.Aliases = append(r.Aliases, alias)
+		}
+	}
 	if document.PreferredUsername != "" {
 		r.Address = "@" + document.PreferredUsername + "@" + host
 	} else {
@@ -616,7 +634,18 @@ func api_account_resolve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if resolve_allowed(user, identifier) != nil {
 		return sl.None, nil
 	}
-	r, err := author_resolve(thread_context(t), identifier)
+	// A user with a hosted fediverse account looks up as it, signed: a
+	// server that gives its documents to signed requests only (Mastodon's
+	// secure mode, GoToSocial) then answers with the person's name and
+	// avatar rather than refusing.
+	ctx := thread_context(t)
+	for _, row := range accounts_hosted(user, "fediverse") {
+		if id, _ := row["id"].(string); id != "" && account_actor(user, id) != "" {
+			ctx = activitypub_signing(ctx, user, id)
+			break
+		}
+	}
+	r, err := author_resolve(ctx, identifier)
 	if err != nil {
 		return sl.None, nil
 	}
@@ -631,7 +660,95 @@ func api_account_resolve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		"avatar":    r.Avatar,
 		"url":       r.URL,
 		"subscribe": r.Template,
+		"locked":    r.Locked,
+		"moved":     r.Moved,
+		"aliases":   r.Aliases,
 	}), nil
+}
+
+// fediverse_public_posts reads the first page of a fediverse account's
+// outbox, or the page the cursor names: the objects of its Create activities
+// that are posts and not replies, newest first, as the account's server
+// gives them, and each Announce as {type, actor, object, published} with the
+// boosted object's id, for the reader to fetch. The cursor is the next page's
+// address, empty at the end. The context's signer, where the caller is a
+// hosted account, reaches a server that gives its documents to signed
+// requests only.
+func fediverse_public_posts(ctx context.Context, actor string, cursor string) (*linked_page, error) {
+	address := cursor
+	if address == "" {
+		r, err := author_resolve(ctx, actor)
+		if err != nil {
+			return nil, err
+		}
+		if r.Outbox == "" || identifier_host(r.Outbox) != identifier_host(r.ID) {
+			return nil, fmt.Errorf("%s names no outbox", actor)
+		}
+		var outbox struct {
+			First        any   `json:"first"`
+			OrderedItems []any `json:"orderedItems"`
+			Next         any   `json:"next"`
+		}
+		if err := resolve_json(ctx, r.Outbox, "application/activity+json, application/ld+json", &outbox); err != nil {
+			return nil, err
+		}
+		// A collection may carry its items itself, or name its first page.
+		if len(outbox.OrderedItems) > 0 {
+			return fediverse_outbox_page(actor, outbox.OrderedItems, outbox.Next), nil
+		}
+		if first, ok := outbox.First.(map[string]any); ok {
+			if items, ok := first["orderedItems"].([]any); ok {
+				return fediverse_outbox_page(actor, items, first["next"]), nil
+			}
+		}
+		address = resolve_first_url(outbox.First)
+		if address == "" {
+			return &linked_page{Items: []any{}}, nil
+		}
+	}
+	if identifier_host(address) != identifier_host(actor) {
+		return nil, fmt.Errorf("outbox page %s is not on %s", address, identifier_host(actor))
+	}
+	var page struct {
+		OrderedItems []any `json:"orderedItems"`
+		Next         any   `json:"next"`
+	}
+	if err := resolve_json(ctx, address, "application/activity+json, application/ld+json", &page); err != nil {
+		return nil, err
+	}
+	return fediverse_outbox_page(actor, page.OrderedItems, page.Next), nil
+}
+
+// fediverse_outbox_page shapes an outbox page's activities: the objects of
+// the Creates by the actor that are posts and not replies, and the Announces.
+func fediverse_outbox_page(actor string, activities []any, next any) *linked_page {
+	page := &linked_page{Items: []any{}}
+	for _, item := range activities {
+		activity, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		kind, _ := activity["type"].(string)
+		switch kind {
+		case "Create":
+			object, ok := activity["object"].(map[string]any)
+			if !ok || !quote_types[strings.ToLower(fmt.Sprint(object["type"]))] || object["inReplyTo"] != nil {
+				continue
+			}
+			if by := resolve_first_url(object["attributedTo"]); by != "" && by != actor {
+				continue
+			}
+			page.Items = append(page.Items, object)
+		case "Announce":
+			if object := activitypub_actor_of(activity["object"]); object != "" {
+				page.Items = append(page.Items, map[string]any{"type": "Announce", "actor": actor, "object": object, "published": activity["published"]})
+			}
+		}
+	}
+	if address := resolve_first_url(next); address != "" && len(page.Items) > 0 {
+		page.Cursor = address
+	}
+	return page
 }
 
 // === Public posts ===

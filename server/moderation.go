@@ -134,6 +134,35 @@ func api_account_followers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl_encode(rows), nil
 }
 
+// mochi.account.following(account, actor="") -> list: The people a hosted
+// account follows, each with their id, when the follow was sent and when
+// their server accepted it (0 while it waits, as a locked account's does);
+// with actor, only that person. Behind the account permission
+func api_account_following(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var account, actor string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "actor?", &actor); err != nil {
+		return nil, err
+	}
+	user, _, id, err := account_acting(t, fn, account)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if id == "" {
+		return sl_error(fn, "a linked account's follows are read through mochi.account.request")
+	}
+	db := db_user(user, "user")
+	var rows []map[string]any
+	if actor != "" {
+		rows, _ = db.rows("select actor, accepted, created from following where account=? and actor=?", account, actor)
+	} else {
+		rows, _ = db.rows("select actor, accepted, created from following where account=? order by created", account)
+	}
+	if rows == nil {
+		rows = []map[string]any{}
+	}
+	return sl_encode(rows), nil
+}
+
 // mochi.account.report(account, actor, objects=[], content="") -> None: Report
 // a person on another network to their server's moderators, as a hosted
 // account: a Flag naming the person and the objects of theirs complained of,

@@ -1108,16 +1108,16 @@ func linked_media(ctx context.Context, l *linked, address string) (int, string, 
 }
 
 // linked_page_arguments reads the cursor and limit of a page function.
-func linked_page_arguments(fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (string, string, int, error) {
-	var account, cursor string
+func linked_page_arguments(fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (string, string, int, string, error) {
+	var account, cursor, signer string
 	var limit int
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "cursor?", &cursor, "limit?", &limit); err != nil {
-		return "", "", 0, err
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "cursor?", &cursor, "limit?", &limit, "signer?", &signer); err != nil {
+		return "", "", 0, "", err
 	}
 	if limit <= 0 {
 		limit = 40
 	}
-	return account, cursor, limit, nil
+	return account, cursor, limit, signer, nil
 }
 
 // linked_acting resolves the linked account a page function acts through.
@@ -1144,7 +1144,7 @@ func linked_page_encode(page *linked_page) sl.Value {
 
 // mochi.account.timeline(account, cursor="", limit=40) -> dict: A page of a linked social account's home timeline, {items, cursor}: the items in the network's own form (Mastodon statuses, Bluesky feed items, Lemmy post views), newest first, and the cursor for the next page, empty at the end. Behind the account permission
 func api_account_timeline(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	account, cursor, limit, err := linked_page_arguments(fn, args, kwargs)
+	account, cursor, limit, _, err := linked_page_arguments(fn, args, kwargs)
 	if err != nil {
 		return nil, err
 	}
@@ -1159,11 +1159,34 @@ func api_account_timeline(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return linked_page_encode(page), nil
 }
 
-// mochi.account.posts(account, cursor="", limit=40) -> dict: A page of a linked social account's own posts, {items, cursor}, in the network's own form, newest first. Behind the account permission. A Bluesky identifier in place of the account reads that account's public posts from its own server, which needs no sign-in, in the same form; None when the server does not answer
+// mochi.account.posts(account, cursor="", limit=40, signer="") -> dict: A page of a linked social account's own posts, {items, cursor}, in the network's own form, newest first. Behind the account permission. A Bluesky identifier in place of the account reads that account's public posts from its own server, which needs no sign-in, in the same form; a fediverse id or handle reads the person's outbox, the posts as their server gives them and each boost as {type: Announce, object}, the cursor the next page's address, with signer naming a hosted account of the caller's to sign the reading as, for a server that gives its documents to signed requests only; None when the server does not answer
 func api_account_posts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	account, cursor, limit, err := linked_page_arguments(fn, args, kwargs)
+	account, cursor, limit, signer, err := linked_page_arguments(fn, args, kwargs)
 	if err != nil {
 		return nil, err
+	}
+	if author_network(account) == "fediverse" || resolve_acct_re.MatchString(account) && !strings.HasPrefix(account, "xmpp:") {
+		user := principal_caller(t)
+		if user == nil {
+			return sl_error(fn, "no user")
+		}
+		if err := resolve_allowed(user, account); err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		ctx := thread_context(t)
+		if signer != "" {
+			signing, _, _, err := account_acting(t, fn, signer)
+			if err != nil {
+				return sl_error(fn, "%v", err)
+			}
+			ctx = activitypub_signing(ctx, signing, signer)
+		}
+		page, err := fediverse_public_posts(ctx, account, cursor)
+		if err != nil {
+			debug("Outbox of %s not read: %v", account, err)
+			return sl.None, nil
+		}
+		return linked_page_encode(page), nil
 	}
 	if author_network(account) == "bluesky" {
 		user := principal_caller(t)
@@ -1194,7 +1217,7 @@ func api_account_posts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 // mochi.account.notifications(account, cursor="", limit=40) -> dict: A page of a linked social account's notifications, {items, cursor}, in the network's own form, newest first; on Lemmy each item carries kind, "reply" or "mention". Behind the account permission
 func api_account_notifications(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	account, cursor, limit, err := linked_page_arguments(fn, args, kwargs)
+	account, cursor, limit, _, err := linked_page_arguments(fn, args, kwargs)
 	if err != nil {
 		return nil, err
 	}

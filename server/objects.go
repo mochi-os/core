@@ -6,10 +6,11 @@
 // Mochi server: What an account publishes
 //
 // mochi.account.object.* publish, update and delete an object as a hosted
-// account; mochi.account.follow and unfollow follow a person; and
-// mochi.account.media fetches a file from another server as the account. Each
-// is behind the account permission, and every request goes through the host
-// policy, the limiter per host and the delivery queue. An object's id is
+// account, and read one from another server; mochi.account.follow and
+// unfollow follow a person, mochi.account.move moves the account to one
+// elsewhere; and mochi.account.media fetches a file from another server as
+// the account. Each is behind the account permission, and every request goes
+// through the host policy, the limiter per host and the delivery queue. An object's id is
 // <actor>/<id>: the engine serves it by asking the app that published it, so
 // core keeps the id, the app, the type and the addressing, not the body. Only
 // fediverse accounts publish yet; a Bluesky, Matrix or XMPP account answers that
@@ -41,6 +42,7 @@ var media_maximum = 10 << 20
 var api_account_object = sls.FromStringDict(sl.String("mochi.account.object"), sl.StringDict{
 	"create": sl.NewBuiltin("mochi.account.object.create", api_account_object_create),
 	"delete": sl.NewBuiltin("mochi.account.object.delete", api_account_object_delete),
+	"read":   sl.NewBuiltin("mochi.account.object.read", api_account_object_read),
 	"update": sl.NewBuiltin("mochi.account.object.update", api_account_object_update),
 })
 
@@ -351,6 +353,20 @@ func api_account_object_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	db.exec("update objects set deleted=? where id=?", now(), id)
 
 	to, cc := object_stored_addressing(row)
+	if row["type"] == "Announce" {
+		// A boost is taken back with an Undo of the Announce, not a Delete.
+		undo := map[string]any{
+			"@context": activitystreams,
+			"id":       remote + "#undo",
+			"type":     "Undo",
+			"actor":    actor,
+			"to":       to,
+			"cc":       cc,
+			"object":   map[string]any{"id": remote, "type": "Announce", "actor": actor, "object": object_announced(row)},
+		}
+		object_deliver(thread_context(t), user, account, actor, undo, to, cc)
+		return sl.None, nil
+	}
 	activity := map[string]any{
 		"@context": activitystreams,
 		"id":       remote + "#delete",
@@ -364,9 +380,10 @@ func api_account_object_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	return sl.None, nil
 }
 
-// mochi.account.follow(account, address) -> None: Follow a person on the
+// mochi.account.follow(account, address) -> dict: Follow a person on the
 // fediverse as a hosted account, by their handle or their id. The follow is
-// pending until their server accepts it.
+// pending until their server accepts it, which a locked account's owner does
+// by hand; returns {id, locked, accepted} for the person followed.
 func api_account_follow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, address string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "address", &address); err != nil {
@@ -387,7 +404,15 @@ func api_account_follow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err := host_allowed(user, "fediverse", identifier_host(r.ID)); err != nil {
 		return sl_error(fn, "%v", err)
 	}
+	account_follow(user, account, actor, r)
+	row, _ := db_user(user, "user").row("select accepted from following where account=? and actor=?", account, r.ID)
+	return sl_encode(map[string]any{"id": r.ID, "locked": r.Locked, "accepted": row != nil && row_int(row, "accepted") > 0}), nil
+}
 
+// account_follow records a person as followed by a hosted account, pending
+// their server's Accept, and sends the Follow: the same activity again where
+// one was sent before, so a repeated follow never makes a second.
+func account_follow(user *User, account string, actor string, r *resolved) string {
 	db := db_user(user, "user")
 	activity := actor + "/follows/" + uid()
 	if row, _ := db.row("select activity from following where account=? and actor=?", account, r.ID); row != nil {
@@ -396,7 +421,215 @@ func api_account_follow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	db.exec("insert into following (account, actor, inbox, activity, accepted, created) values (?, ?, ?, ?, 0, ?) on conflict(account, actor) do update set inbox=excluded.inbox", account, r.ID, r.Inbox, activity, now())
 	body := map[string]any{"@context": activitystreams, "id": activity, "type": "Follow", "actor": actor, "object": r.ID}
 	deliver(user, account, "fediverse", []string{r.Inbox}, []byte(json_encode(body)))
+	return activity
+}
+
+// following_move sends a hosted account's follow of a person on to where
+// they have moved, once the new identity names the old one among its own
+// (alsoKnownAs): the old row goes, the new one is pending as any follow is.
+// False when the account did not follow the person or the move does not
+// check out.
+func following_move(ctx context.Context, user *User, account string, from string, to string) bool {
+	db := db_user(user, "user")
+	if found, _ := db.exists("select 1 from following where account=? and actor=?", account, from); !found {
+		return false
+	}
+	r, err := author_resolve(ctx, to)
+	if err != nil || r.Network != "fediverse" || r.ID == "" || r.Inbox == "" {
+		debug("ActivityPub move of %s to %s not resolved: %v", from, to, err)
+		return false
+	}
+	named := false
+	for _, alias := range r.Aliases {
+		if alias == from {
+			named = true
+		}
+	}
+	if !named {
+		debug("ActivityPub move of %s to %s refused: %s does not name %s", from, to, r.ID, from)
+		return false
+	}
+	if err := host_allowed(user, "fediverse", identifier_host(r.ID)); err != nil {
+		return false
+	}
+	db.exec("delete from following where account=? and actor=?", account, from)
+	account_follow(user, account, account_actor(user, account), r)
+	return true
+}
+
+// mochi.account.move(account, address) -> None: Move a hosted account to an
+// account elsewhere, by its handle or its id: the other account must already
+// name this one among its own (alsoKnownAs). The account's document names
+// where it went, and its followers' servers are sent a Move so they follow
+// the new account instead. Behind the account permission
+func api_account_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var account, address string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "address", &address); err != nil {
+		return nil, err
+	}
+	user, row, actor, err := account_acting(t, fn, account)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if actor == "" {
+		return sl_error(fn, "a linked account is moved from its own server")
+	}
+	ctx := activitypub_signing(thread_context(t), user, account)
+	r, err := author_resolve(ctx, address)
+	if err != nil || r.Network != "fediverse" || r.ID == "" {
+		return sl_error(fn, "cannot resolve %s", address)
+	}
+	if r.ID == actor {
+		return sl_error(fn, "an account cannot move to itself")
+	}
+	named := false
+	for _, alias := range r.Aliases {
+		if alias == actor {
+			named = true
+		}
+	}
+	if !named {
+		return sl_error(fn, "%s does not name this account among its own", r.Address)
+	}
+	data := account_data(row)
+	data["moved"] = r.ID
+	encoded, _ := json.Marshal(data)
+	db := db_user(user, "user")
+	db.account_set(account, map[string]any{"data": string(encoded)})
+
+	inboxes := []string{}
+	seen := map[string]bool{}
+	followers, _ := db.rows("select inbox, shared from followers where account=?", account)
+	for _, follower := range followers {
+		inbox := row_string(follower, "shared")
+		if inbox == "" {
+			inbox = row_string(follower, "inbox")
+		}
+		if inbox != "" && !seen[inbox] {
+			seen[inbox] = true
+			inboxes = append(inboxes, inbox)
+		}
+	}
+	if len(inboxes) > 0 {
+		activity := map[string]any{
+			"@context": activitystreams,
+			"id":       actor + "#moves/" + uid(),
+			"type":     "Move",
+			"actor":    actor,
+			"object":   actor,
+			"target":   r.ID,
+			"to":       []string{actor + "/followers"},
+		}
+		deliver(user, account, "fediverse", inboxes, []byte(json_encode(activity)))
+	}
 	return sl.None, nil
+}
+
+// mochi.account.announce(account, id) -> dict: Boost an object on another
+// server as a hosted account: an Announce of it to the public and the
+// account's followers, with its author told, which credits the author and
+// copies nothing. Returns {id, url, data} as object.create does, the id being
+// the Announce's, which object.delete undoes. Behind the account permission
+func api_account_announce(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var account, remote string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "id", &remote); err != nil {
+		return nil, err
+	}
+	user, _, actor, err := account_acting(t, fn, account)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if actor == "" {
+		return sl_error(fn, "a linked account boosts through mochi.account.request")
+	}
+	remote = strings.TrimSpace(remote)
+	if !activitypub_remote_ok(remote) {
+		return sl_error(fn, "invalid id")
+	}
+	if err := host_allowed(user, "fediverse", identifier_host(remote)); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	ctx := activitypub_signing(thread_context(t), user, account)
+	to := []string{activitystreams_public}
+	cc := []string{actor + "/followers"}
+	// The author is told, where the object can be read.
+	var object map[string]any
+	if err := resolve_json(ctx, remote, "application/activity+json, application/ld+json", &object); err == nil && object != nil {
+		if author := resolve_first_url(object["attributedTo"]); author != "" {
+			cc = append(cc, author)
+		}
+	}
+	id := uid()
+	announce := actor + "/" + id
+	db := db_user(user, "user")
+	db.exec("insert into objects (id, account, app, type, addressing, created) values (?, ?, ?, 'Announce', ?, ?)", id, account, thread_app_id(t), json_encode(map[string]any{"to": to, "cc": cc, "object": remote}), now())
+	activity := map[string]any{
+		"@context":  activitystreams,
+		"id":        announce,
+		"type":      "Announce",
+		"actor":     actor,
+		"published": time.Now().UTC().Format(time.RFC3339),
+		"to":        to,
+		"cc":        cc,
+		"object":    remote,
+	}
+	object_deliver(ctx, user, account, actor, activity, to, cc)
+	return object_result(announce, remote, map[string]any{"type": "Announce", "object": remote}), nil
+}
+
+// thread_app_id is the id of the app a Starlark thread runs, or empty.
+func thread_app_id(t *sl.Thread) string {
+	if app, _ := t.Local("app").(*App); app != nil {
+		return app.id
+	}
+	return ""
+}
+
+// object_announced reads the object an Announce row boosted, or empty for an
+// object row.
+func object_announced(row map[string]any) string {
+	var stored struct{ Object string }
+	if text, _ := row["addressing"].(string); text != "" {
+		json.Unmarshal([]byte(text), &stored)
+	}
+	return stored.Object
+}
+
+// mochi.account.object.read(account, id) -> dict | None: Read an object on
+// another server by its id, as a hosted account: a post someone boosted, the
+// parent of a reply, signed so a server that gives its documents to signed
+// requests only answers. The object as its server gives it, or None when the
+// host is blocked or off, or did not answer with an object. Behind the
+// account permission
+func api_account_object_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var account, remote string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "id", &remote); err != nil {
+		return nil, err
+	}
+	user, _, actor, err := account_acting(t, fn, account)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if actor == "" {
+		return sl_error(fn, "a linked account reads through mochi.account.request")
+	}
+	remote = strings.TrimSpace(remote)
+	if !activitypub_remote_ok(remote) {
+		return sl_error(fn, "invalid id")
+	}
+	if err := host_allowed(user, "fediverse", identifier_host(remote)); err != nil {
+		return sl.None, nil
+	}
+	var object map[string]any
+	if err := resolve_json(activitypub_signing(thread_context(t), user, account), remote, "application/activity+json, application/ld+json", &object); err != nil || object == nil {
+		debug("Object %s not read: %v", remote, err)
+		return sl.None, nil
+	}
+	// An object is served by the host its id names, as an actor is.
+	if id, _ := object["id"].(string); id != "" && identifier_host(id) != identifier_host(remote) {
+		return sl.None, nil
+	}
+	return sl_encode(object), nil
 }
 
 // mochi.account.unfollow(account, address) -> None: Stop following a person,

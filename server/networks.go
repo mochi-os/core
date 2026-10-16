@@ -329,7 +329,12 @@ var block_domain_re = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.
 // client, and the clients registered to sign users in with their own tokens.
 func networks_database() *DB {
 	db := db_open("db/networks.db")
-	db.exec("create table if not exists deliveries (id text not null primary key, user text not null, account text not null, network text not null, inbox text not null, host text not null, body text not null, attempts integer not null default 0, next integer not null, claimed integer not null default 0, created integer not null)")
+	db.exec("create table if not exists deliveries (id text not null primary key, user text not null, account text not null, network text not null, inbox text not null, host text not null, body text not null, attempts integer not null default 0, next integer not null, claimed integer not null default 0, created integer not null, address text not null default '')")
+	// The actor a row is for where its inbox was not known when it was
+	// queued, resolved before it is sent (delivery.go).
+	if exists, _ := db.exists("select 1 from pragma_table_info('deliveries') where name='address'"); !exists {
+		db.exec("alter table deliveries add column address text not null default ''")
+	}
 	db.exec("create index if not exists deliveries_next on deliveries(next)")
 	db.exec("create index if not exists deliveries_host on deliveries(host)")
 	db.exec("create table if not exists hosts (host text not null primary key, failures integer not null default 0, success integer not null default 0, failure integer not null default 0, next integer not null default 0, error text not null default '')")
@@ -348,8 +353,11 @@ func networks_database() *DB {
 	// for the apps (activitypub.go).
 	db.exec("create table if not exists actors (id text not null primary key, user text not null, domain text not null, handle text not null, network text not null, created integer not null, deleted integer not null default 0, key text not null default '')")
 	db.exec("create index if not exists actors_user on actors(user)")
-	db.exec("create table if not exists received (id text not null primary key, created integer not null)")
-	db.exec("create index if not exists received_created on received(created)")
+	// The activity ids seen by each account; a server-wide record before it
+	// took an activity for one account only.
+	db.exec("drop table if exists received")
+	db.exec("create table if not exists seen (id text not null, account text not null, created integer not null, primary key (id, account))")
+	db.exec("create index if not exists seen_created on seen(created)")
 	db.exec("create table if not exists inbound (id text not null primary key, user text not null, account text not null, actor text not null, type text not null, body text not null, created integer not null)")
 	db.exec("create index if not exists inbound_account on inbound(account, created)")
 	// The Bluesky identities by did and the update stream (atproto.go).
@@ -471,7 +479,9 @@ func network_send(ctx context.Context, user *User, network string, key string, r
 		return nil, err
 	}
 	host := strings.ToLower(r.URL.Hostname())
-	if !rate_limit_host.allow(key) {
+	// The limiter spares other servers; a verified domain of this server's
+	// own is none, and a community and its members here talk through it.
+	if !domain_served(host) && !rate_limit_host.allow(key) {
 		return nil, rate_limit_refuse(rate_limit_host, key, "requests per minute to "+host)
 	}
 	if r.Header.Get("User-Agent") == "" {

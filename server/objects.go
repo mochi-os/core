@@ -61,6 +61,10 @@ func networks_tables(db *DB) {
 	// (moderation.go).
 	db.exec("create table if not exists blocked (actor text not null primary key, created integer not null)")
 	db.exec("create table if not exists muted (actor text not null primary key, created integer not null)")
+	// The files a hosted fediverse account's objects carry, served under the
+	// account (media.go).
+	db.exec("create table if not exists media (id text not null primary key, account text not null, type text not null default '', name text not null default '', description text not null default '', size integer not null default 0, created integer not null)")
+	db.exec("create index if not exists media_account on media(account)")
 	// A hosted fediverse account's identifier is its address, written
 	// @name@domain; accounts made before 2026-10-14 held name@domain.
 	db.exec("update accounts set identifier='@'||identifier where type='fediverse' and identifier not like '@%' and data like '%\"hosted\":true%'")
@@ -165,10 +169,11 @@ func object_strings(v any) []string {
 
 // object_recipients turns an activity's addressing into inboxes: the account's
 // followers for its followers collection, a person's inbox for their id, nothing
-// for the public. Each appears once.
-func object_recipients(ctx context.Context, user *User, account string, actor string, addresses []string) []string {
+// for the public. Each appears once. The ids whose lookup failed for a reason
+// that may pass come back apart, to be queued by address.
+func object_recipients(ctx context.Context, user *User, account string, actor string, addresses []string) ([]string, []string) {
 	seen := map[string]bool{}
-	var inboxes []string
+	var inboxes, unresolved []string
 	add := func(inbox string) {
 		if inbox != "" && !seen[inbox] {
 			seen[inbox] = true
@@ -191,17 +196,24 @@ func object_recipients(ctx context.Context, user *User, account string, actor st
 		case strings.HasPrefix(address, "https://"):
 			if r, err := author_resolve(ctx, address); err == nil {
 				add(r.Inbox)
+			} else if resolve_transient(err) && !seen[address] {
+				seen[address] = true
+				unresolved = append(unresolved, address)
 			}
 		}
 	}
-	return inboxes
+	return inboxes, unresolved
 }
 
-// object_deliver queues an activity to everyone it addresses.
+// object_deliver queues an activity to everyone it addresses: by inbox, or by
+// address for anyone whose inbox could not be found now, which the delivery
+// manager looks up again before sending.
 func object_deliver(ctx context.Context, user *User, account string, actor string, activity map[string]any, to []string, cc []string) {
 	addresses := append(append([]string{}, to...), cc...)
-	inboxes := object_recipients(ctx, user, account, actor, addresses)
-	deliver(user, account, "fediverse", inboxes, []byte(json_encode(activity)))
+	inboxes, unresolved := object_recipients(ctx, user, account, actor, addresses)
+	body := []byte(json_encode(activity))
+	deliver(user, account, "fediverse", inboxes, body)
+	deliver_unresolved(user, account, "fediverse", unresolved, body)
 }
 
 // object_get finds an object of an account by its id, which must be the

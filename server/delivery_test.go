@@ -343,6 +343,32 @@ func TestDeliveryLimiter(t *testing.T) {
 	}
 }
 
+// TestDeliveryOwnDomain: requests to a verified domain this server serves are
+// not counted against the host limiter, which spares other servers; an
+// unverified one is counted.
+func TestDeliveryOwnDomain(t *testing.T) {
+	alice := create_delivery_test_env(t)
+	box := create_inbox(t, alice)
+	rate_limit_host.limit = 1
+	domains := db_open("db/domains.db")
+	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
+	domains.exec("insert or replace into domains (domain, verified, created, updated) values (?, 1, 1, 1)", inbox_host(box))
+	t.Cleanup(func() { domains.exec("delete from domains where domain=?", inbox_host(box)) })
+
+	deliver(alice, "f1", "fediverse", []string{box.server.URL + "/a", box.server.URL + "/b", box.server.URL + "/c"}, []byte(`{}`))
+	delivery_process()
+	if box.count() != 3 || len(delivery_rows(t)) != 0 {
+		t.Errorf("%d of 3 requests to the server's own domain under a budget of 1, %d rows left", box.count(), len(delivery_rows(t)))
+	}
+
+	domains.exec("update domains set verified=0 where domain=?", inbox_host(box))
+	deliver(alice, "f1", "fediverse", []string{box.server.URL + "/d", box.server.URL + "/e"}, []byte(`{}`))
+	delivery_process()
+	if box.count() != 4 || len(delivery_rows(t)) != 1 {
+		t.Errorf("an unverified domain was not limited to its budget of 1: %d requests, %d rows", box.count(), len(delivery_rows(t)))
+	}
+}
+
 // TestDeliveryAccountGone: a row whose account no longer exists is dropped
 // without a request.
 func TestDeliveryAccountGone(t *testing.T) {
@@ -414,5 +440,74 @@ func TestIdentifierHost(t *testing.T) {
 		if got := identifier_host(identifier); got != want {
 			t.Errorf("identifier_host(%q) = %q, want %q", identifier, got, want)
 		}
+	}
+}
+
+// TestDeliveryResolvesLater: an addressee whose actor document the limiter
+// would not let us fetch is queued by address rather than lost, the refusal is
+// not remembered as a failure, and the delivery manager looks the actor up
+// again and sends to the inbox it finds; a lookup that fails outright backs
+// the row off like any other failure.
+func TestDeliveryResolvesLater(t *testing.T) {
+	alice := create_delivery_test_env(t)
+	box := create_inbox(t, alice)
+	carol := "https://remote.example/u/carol"
+	document := `{"id":"` + carol + `","type":"Person","preferredUsername":"carol","inbox":"` + box.server.URL + `/inbox"}`
+	saved := resolve_fetch
+	t.Cleanup(func() { resolve_fetch = saved })
+	answer := func(ctx context.Context, address string, accept string) ([]byte, error) {
+		return nil, &RateLimitError{Retry: 30, detail: "60 requests per minute to remote.example"}
+	}
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		return answer(ctx, address, accept)
+	}
+
+	// Dave answers that there is no such person: he is left out, as before.
+	dave := "https://remote.example/u/dave"
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		if address == dave {
+			return nil, &resolve_refusal{Status: 404}
+		}
+		return answer(ctx, address, accept)
+	}
+
+	object_deliver(context.Background(), alice, "f1", "https://example.com/~f1", map[string]any{"type": "Create", "id": "https://example.com/~f1/o9/activity"}, []string{carol, dave}, nil)
+	if rows := delivery_rows(t); len(rows) != 1 {
+		t.Fatalf("queued %d rows, want carol's alone", len(rows))
+	}
+	row, _ := db_open("db/networks.db").row("select inbox, address, host from deliveries")
+	if row == nil || row["inbox"] != "" || row["address"] != carol || row["host"] != "remote.example" {
+		t.Fatalf("queued row = %v, want one by carol's address", row)
+	}
+	resolve_lock.Lock()
+	_, cached := resolve_cache[carol]
+	resolve_lock.Unlock()
+	if cached {
+		t.Error("the limiter's refusal was remembered as a failed lookup")
+	}
+
+	answer = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		return []byte(document), nil
+	}
+	delivery_process()
+	if box.count() != 1 || box.errors[0] != nil || string(box.bodies[0]) == "" {
+		t.Fatalf("inbox got %d requests (%v), want the activity once, signed", box.count(), box.errors)
+	}
+	if rows := delivery_rows(t); len(rows) != 0 {
+		t.Errorf("%d rows left after the lookup and the send", len(rows))
+	}
+
+	// A lookup that fails outright counts an attempt and waits.
+	resolve_lock.Lock()
+	resolve_cache = map[string]resolve_entry{}
+	resolve_lock.Unlock()
+	answer = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		return nil, &resolve_refusal{Status: 500}
+	}
+	deliver_unresolved(alice, "f1", "fediverse", []string{carol}, []byte(`{}`))
+	delivery_process()
+	rows := delivery_rows(t)
+	if len(rows) != 1 || rows[0]["attempts"].(int64) != 1 || rows[0]["next"].(int64) <= now() {
+		t.Errorf("row after a failed lookup = %v, want one backed off", rows)
 	}
 }

@@ -90,6 +90,10 @@ type resolved struct {
 	// Locked is a fediverse account that approves its followers one by one,
 	// so a Follow waits for its Accept.
 	Locked bool `json:"locked"`
+	// Summary is the actor's own description, as HTML; Sensitive marks a
+	// group whose posts are all taken as sensitive.
+	Summary   string `json:"summary"`
+	Sensitive bool   `json:"sensitive"`
 	// Aliases are the other identifiers the person says are theirs
 	// (alsoKnownAs), which a Move from one of them must name; Moved is where
 	// the person has moved to, where they have.
@@ -252,6 +256,24 @@ func (e *resolve_refusal) Error() string {
 	return fmt.Sprintf("status %d", e.Status)
 }
 
+// resolve_transient says whether a lookup failed for a reason that may pass -
+// our own limiter's refusal, a server error, no answer at all - as against an
+// answer that there is no such person.
+func resolve_transient(err error) bool {
+	var limited *RateLimitError
+	var refusal *resolve_refusal
+	var network *url.Error
+	switch {
+	case errors.As(err, &limited):
+		return true
+	case errors.As(err, &refusal):
+		return refusal.Status >= 500 || refusal.Status == 408 || refusal.Status == 429
+	case errors.As(err, &network):
+		return true
+	}
+	return false
+}
+
 // resolve_signed says whether a fetch failed for want of a signature: a
 // server in secure mode answers an unsigned ActivityPub request with 401 or
 // 403, as mastodon.social does.
@@ -288,7 +310,11 @@ func author_resolve(ctx context.Context, identifier string) (*resolved, error) {
 	if len(resolve_cache) >= resolve_cache_maximum {
 		resolve_cache = map[string]resolve_entry{}
 	}
-	if err != nil {
+	var limited *RateLimitError
+	if errors.As(err, &limited) {
+		// Refused by our own limiter: nothing was learnt about the person,
+		// and the next lookup may go ahead.
+	} else if err != nil {
 		resolve_cache[identifier] = resolve_entry{nil, time.Now().Add(resolve_cache_failure)}
 	} else {
 		resolve_cache[identifier] = resolve_entry{value, time.Now().Add(resolve_cache_success)}
@@ -431,6 +457,8 @@ func resolve_activitypub(ctx context.Context, actor string) (*resolved, error) {
 		ManuallyApprovesFollowers bool   `json:"manuallyApprovesFollowers"`
 		AlsoKnownAs               any    `json:"alsoKnownAs"`
 		MovedTo                   string `json:"movedTo"`
+		Summary                   string `json:"summary"`
+		Sensitive                 bool   `json:"sensitive"`
 	}
 	if err := resolve_json(ctx, actor, "application/activity+json, application/ld+json", &document); err != nil {
 		return nil, err
@@ -453,7 +481,7 @@ func resolve_activitypub(ctx context.Context, actor string) (*resolved, error) {
 	if id == "" {
 		id = actor
 	}
-	r := &resolved{Network: "fediverse", Type: kind, Username: document.PreferredUsername, Host: host, Name: document.Name, URL: actor, ID: id, Inbox: document.Inbox, Shared: document.Endpoints.SharedInbox, Outbox: document.Outbox, Locked: document.ManuallyApprovesFollowers, Moved: document.MovedTo}
+	r := &resolved{Network: "fediverse", Type: kind, Username: document.PreferredUsername, Host: host, Name: document.Name, URL: actor, ID: id, Inbox: document.Inbox, Shared: document.Endpoints.SharedInbox, Outbox: document.Outbox, Locked: document.ManuallyApprovesFollowers, Moved: document.MovedTo, Summary: document.Summary, Sensitive: document.Sensitive}
 	for _, alias := range object_strings(document.AlsoKnownAs) {
 		if activitypub_remote_ok(alias) {
 			r.Aliases = append(r.Aliases, alias)
@@ -620,10 +648,11 @@ func resolve_xmpp(identifier string) *resolved {
 // mochi.account.resolve(identifier) -> dict | None: What the UI shows for a
 // person on another network - network, address, name, avatar and url - with
 // the permanent id, the type the network gives (person, group, service), the
-// username and the host, fetched from the network and cached. The identifier
-// is an author identifier, a fediverse handle such as bob@lemmy.world or a
-// Bluesky handle such as alice.bsky.social. None when it is none of these or
-// the network did not answer.
+// username and the host, fetched from the network and cached; on the
+// fediverse also the outbox, the summary as HTML and, for a group, whether it
+// is sensitive. The identifier is an author identifier, a fediverse handle
+// such as bob@lemmy.world or a Bluesky handle such as alice.bsky.social. None
+// when it is none of these or the network did not answer.
 func api_account_resolve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <identifier: string>")
@@ -675,6 +704,9 @@ func api_account_resolve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		"locked":    r.Locked,
 		"moved":     r.Moved,
 		"aliases":   r.Aliases,
+		"outbox":    r.Outbox,
+		"summary":   r.Summary,
+		"sensitive": r.Sensitive,
 	}), nil
 }
 

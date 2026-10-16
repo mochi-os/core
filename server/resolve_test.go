@@ -110,6 +110,21 @@ func TestResolveActivityPub(t *testing.T) {
 	}
 }
 
+// TestResolveGroup: a community resolves as a group with its outbox, its
+// summary and whether it is sensitive, which a forum joining it reads.
+func TestResolveGroup(t *testing.T) {
+	resolve_test_install(t, map[string]string{
+		"https://lemmy.world/c/books": `{"id":"https://lemmy.world/c/books","type":"Group","preferredUsername":"books","name":"Books","summary":"<p>Reading</p>","sensitive":true,"inbox":"https://lemmy.world/c/books/inbox","outbox":"https://lemmy.world/c/books/outbox"}`,
+	})
+	r, err := author_resolve(context.Background(), "https://lemmy.world/c/books")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Type != "group" || r.Outbox != "https://lemmy.world/c/books/outbox" || r.Summary != "<p>Reading</p>" || !r.Sensitive || r.Address != "@books@lemmy.world" {
+		t.Errorf("resolved = %+v", r)
+	}
+}
+
 // TestResolveBluesky: the DID document gives the handle and the data server,
 // whose profile record gives the name and avatar.
 func TestResolveBluesky(t *testing.T) {

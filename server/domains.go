@@ -468,6 +468,13 @@ func domain_lookup(host string) *domain {
 	return nil
 }
 
+// domain_served says whether the server itself answers for a host: a
+// verified domain of its own, exactly or by wildcard.
+func domain_served(host string) bool {
+	d := domain_lookup(host)
+	return d != nil && d.Verified == 1
+}
+
 // domain_get retrieves a domain by name
 func domain_get(name string) *domain {
 	db := db_open("db/domains.db")

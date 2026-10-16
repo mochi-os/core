@@ -41,6 +41,7 @@ type delivery struct {
 	Attempts int    `db:"attempts"`
 	Next     int64  `db:"next"`
 	Created  int64  `db:"created"`
+	Address  string `db:"address"`
 }
 
 // delivery_batch is how many rows one pass claims; delivery_claim_timeout frees
@@ -96,6 +97,58 @@ func deliver(user *User, account string, network string, inboxes []string, body 
 	return queued
 }
 
+// deliver_unresolved queues a body for each actor whose inbox could not be
+// found when it was sent - their server was over the limiter's budget, slow or
+// down - to be resolved and sent by the delivery manager, under the same
+// retries as any other row, rather than lost. Returns how many it queued.
+func deliver_unresolved(user *User, account string, network string, addresses []string, body []byte) int {
+	db := db_open("db/networks.db")
+	queued := 0
+	for _, address := range addresses {
+		host := identifier_host(address)
+		if host == "" {
+			continue
+		}
+		if err := host_allowed(user, network, host); err != nil {
+			debug("Delivery to %s not queued: %v", address, err)
+			continue
+		}
+		db.exec("insert into deliveries (id, user, account, network, inbox, host, body, next, created, address) values (?, ?, ?, ?, '', ?, ?, ?, ?, ?)", uid(), user.UID, account, network, host, string(body), now(), now(), address)
+		queued++
+	}
+	if queued > 0 {
+		delivery_wake()
+	}
+	return queued
+}
+
+// delivery_resolve finds the inbox of a row queued by its actor's address,
+// and answers it, having recorded it on the row; or answers "" with what
+// became of the row: deferred while the host's budget is spent, backed off on
+// any other failure, dropped when the actor has no inbox.
+func delivery_resolve(db *DB, d *delivery, user *User) (string, delivery_outcome) {
+	ctx := context.Background()
+	if user != nil {
+		ctx = activitypub_signing(ctx, user, d.Account)
+	}
+	r, err := author_resolve(ctx, d.Address)
+	var limited *RateLimitError
+	switch {
+	case errors.As(err, &limited):
+		delivery_defer(db, d.ID, now()+int64(limited.Retry)+1)
+		return "", delivery_deferred
+	case err != nil:
+		debug("Delivery to %s not resolved (attempt %d): %v", d.Address, d.Attempts+1, err)
+		return "", delivery_failed_attempt(db, d, err.Error())
+	case r.Inbox == "":
+		debug("Delivery to %s dropped: no inbox", d.Address)
+		db.exec("delete from deliveries where id=?", d.ID)
+		return "", delivery_dropped
+	}
+	db.exec("update deliveries set inbox=? where id=?", r.Inbox, d.ID)
+	return r.Inbox, delivery_success
+}
+
 // delivery_manager sends what is due, woken by an enqueue or every
 // delivery_poll, and drops what is too old once an hour.
 func delivery_manager() {
@@ -124,7 +177,7 @@ func delivery_claim() map[string][]delivery {
 		select d.id from deliveries d left join hosts h on h.host=d.host
 		where d.next<=? and d.claimed<? and (h.host is null or h.next<=?)
 		order by d.next limit ?)
-		returning id, user, account, network, inbox, host, body, attempts, next, created`,
+		returning id, user, account, network, inbox, host, body, attempts, next, created, address`,
 		now(), now(), now()-delivery_claim_timeout, now(), delivery_batch)
 	if err != nil {
 		info("delivery_claim: %v", err)
@@ -204,6 +257,14 @@ func delivery_attempt(d *delivery) delivery_outcome {
 		debug("Delivery to %s dropped: account %s gone", d.Inbox, d.Account)
 		db.exec("delete from deliveries where id=?", d.ID)
 		return delivery_dropped
+	}
+
+	if d.Inbox == "" {
+		inbox, outcome := delivery_resolve(db, d, user)
+		if inbox == "" {
+			return outcome
+		}
+		d.Inbox = inbox
 	}
 
 	body := []byte(d.Body)

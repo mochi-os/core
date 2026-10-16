@@ -249,6 +249,33 @@ func TestActivityPubActor(t *testing.T) {
 	}
 }
 
+// TestActivityPubSeenPerAccount: an activity reaching the server through two
+// accounts' inboxes - as one sent to a person and to a follower on another of
+// the server's domains does - is given to both; a replay to either is dropped.
+func TestActivityPubSeenPerAccount(t *testing.T) {
+	alice, bob := create_activitypub_test_env(t)
+	db := db_user(alice, "user")
+	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('f2', 'fediverse', '', '@second@example.com', '{\"hosted\":true,\"handle\":\"second\",\"domain\":\"example.com\"}', 1, 1)")
+	if err := keypairs_create(alice, "f2", "fediverse"); err != nil {
+		t.Fatal(err)
+	}
+	actor_register(alice, "f2", "fediverse", "example.com", "second")
+	create := map[string]any{"@context": activitystreams, "id": bob.id + "/notes/1/activity", "type": "Create", "actor": bob.id,
+		"object": map[string]any{"id": bob.id + "/notes/1", "type": "Note", "attributedTo": bob.id, "content": "<p>Hello</p>"}}
+	queued := func(account string) int64 {
+		n, _ := networks_database().row("select count(*) as n from inbound where account=?", account)
+		return row_int(n, "n")
+	}
+	for _, path := range []string{"/~f1/inbox", "/~f2/inbox", "/~f1/inbox"} {
+		if w := signed_post(t, bob, path, create, nil); w.Code != http.StatusAccepted {
+			t.Fatalf("%s: %d %s", path, w.Code, w.Body.String())
+		}
+	}
+	if queued("f1") != 1 || queued("f2") != 1 {
+		t.Errorf("queued f1 %d, f2 %d; want the activity once for each", queued("f1"), queued("f2"))
+	}
+}
+
 // TestActivityPubFollow: a signed Follow records the follower with their inbox
 // and shared inbox and queues an Accept to them; the same activity again is
 // dropped; an Undo forgets them; a Follow of someone else is ignored.

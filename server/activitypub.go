@@ -233,7 +233,7 @@ func tombstone_key(id string) (string, string) {
 // the delivery manager's hourly pass.
 func activitypub_cleanup() {
 	db := networks_database()
-	db.exec("delete from received where created<?", now()-received_age)
+	db.exec("delete from seen where created<?", now()-received_age)
 	db.exec("delete from actors where deleted>0 and deleted<?", now()-tombstone_age)
 }
 
@@ -541,6 +541,9 @@ func activitypub_actor_route(c *gin.Context) {
 		// group's Announce give it: a server told of the activity fetches it
 		// here before it takes the object.
 		activitypub_create(c, user, a, row, strings.TrimSuffix(tail, "/activity"))
+	case method == "GET" && strings.HasPrefix(tail, "media/") && strings.Count(tail, "/") == 1:
+		// A file one of the account's objects carries (media.go).
+		media_serve(c, user, a.ID, strings.TrimPrefix(tail, "media/"))
 	default:
 		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
 	}
@@ -931,14 +934,17 @@ func activitypub_host_of(id string) string {
 	return strings.ToLower(u.Hostname())
 }
 
-// activitypub_received records an activity id as seen, and says whether it
-// was seen before.
-func activitypub_received(id string) bool {
+// activitypub_received records an activity id as seen by an account, and says
+// whether that account saw it before. An activity reaches the server once per
+// inbox it is sent to - an account's own, and the shared inbox of each domain
+// the server's accounts are on - so it is a duplicate only for an account it
+// was already given to.
+func activitypub_received(id string, account string) bool {
 	db := networks_database()
-	if seen, _ := db.exists("select 1 from received where id=?", id); seen {
+	if seen, _ := db.exists("select 1 from seen where id=? and account=?", id, account); seen {
 		return true
 	}
-	db.exec("insert or ignore into received (id, created) values (?, ?)", id, now())
+	db.exec("insert or ignore into seen (id, account, created) values (?, ?, ?)", id, account, now())
 	return false
 }
 
@@ -1013,12 +1019,10 @@ func activitypub_inbox(c *gin.Context, user *User, a *actor) {
 		return
 	}
 
-	if id != "" && activitypub_received(id) {
-		c.AbortWithStatus(http.StatusAccepted)
-		return
-	}
-
 	for _, target := range targets {
+		if id != "" && activitypub_received(id, target.ID) {
+			continue
+		}
 		target_user, _ := actor_account(target.ID)
 		if target_user == nil {
 			continue
@@ -1334,5 +1338,6 @@ func activitypub_account_remove(user *User, id string) {
 	db.exec("delete from followers where account=?", a.ID)
 	db.exec("delete from following where account=?", a.ID)
 	db.exec("delete from objects where account=?", a.ID)
+	media_remove(user, a.ID)
 	networks_database().exec("delete from inbound where account=?", a.ID)
 }

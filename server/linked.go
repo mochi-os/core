@@ -1245,7 +1245,7 @@ func api_account_notifications(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	return linked_page_encode(page), nil
 }
 
-// mochi.account.upload(account, data, type, name="", description="") -> dict: Upload a file through a linked social account for a post to carry, and return the reference the post names it by: {id, url, data} with the network's own answer in data - a Mastodon media attachment, a Bluesky blob, a Lemmy image. description is the alternative text where the network takes one at upload. Behind the account permission
+// mochi.account.upload(account, data, type, name="", description="") -> dict: Upload a file through an account for a post to carry, and return the reference the post names it by: {id, url, data} with the network's own answer in data - a Mastodon media attachment, a Bluesky blob, a Lemmy image; for a hosted fediverse account the file is kept here and served under the account, data being the Document an object may list it as. description is the alternative text where the network takes one at upload. Behind the account permission
 func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, kind, name, description string
 	var content sl.Value
@@ -1268,9 +1268,17 @@ func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	// A hosted Bluesky account's blobs live in its own repository.
+	// A hosted Bluesky account's blobs live in its own repository; a hosted
+	// fediverse account's files are served under its actor.
 	if account_hosted_flag(row) && row["type"] == "bluesky" {
 		result, err := atproto_upload(user, row, data, kind)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return sl_encode(result), nil
+	}
+	if account_hosted_flag(row) && row["type"] == "fediverse" {
+		result, err := media_store(user, row, data, kind, name, description)
 		if err != nil {
 			return sl_error(fn, "%v", err)
 		}

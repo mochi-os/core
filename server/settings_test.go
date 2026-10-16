@@ -606,3 +606,25 @@ func TestPreferenceSetValidatesTheKeysCoreReads(t *testing.T) {
 		}
 	}
 }
+
+// TestUserPreferenceGet: a function with no action or event reads the calling
+// user's preferences as a.user.preference does; an unset one is None, and a
+// call with no user is refused.
+func TestUserPreferenceGet(t *testing.T) {
+	user := create_test_user(t)
+	thread := preference_thread(t, user, "chat", false)
+	if err := preference_set(t, thread, user, "chat_policy", "anyone"); err != nil {
+		t.Fatal(err)
+	}
+	fn := sl.NewBuiltin("mochi.user.preference.get", nil)
+	if value, err := api_user_preference_get(thread, fn, sl.Tuple{sl.String("chat_policy")}, nil); err != nil || value != sl.String("anyone") {
+		t.Errorf("chat_policy = %v, %v", value, err)
+	}
+	if value, err := api_user_preference_get(thread, fn, sl.Tuple{sl.String("chat_typing")}, nil); err != nil || value != sl.None {
+		t.Errorf("an unset preference = %v, %v", value, err)
+	}
+	thread.SetLocal("user", nil)
+	if _, err := api_user_preference_get(thread, fn, sl.Tuple{sl.String("chat_policy")}, nil); err == nil {
+		t.Error("a call with no user read a preference")
+	}
+}

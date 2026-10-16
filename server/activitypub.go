@@ -827,8 +827,12 @@ func activitypub_outbox(c *gin.Context, user *User, a *actor, row map[string]any
 	db := db_user(user, "user")
 	actor_id := account_url(a.Domain, a.ID)
 	outbox := actor_id + "/outbox"
+	// The outbox shows what the account published for everyone, as
+	// Mastodon's does: a direct message or a post for followers alone is not
+	// listed, nor counted.
+	public := "%" + json_encode(activitystreams_public) + "%"
 	if c.Query("page") == "" {
-		n, _ := db.row("select count(*) as n from objects where account=? and deleted=0", a.ID)
+		n, _ := db.row("select count(*) as n from objects where account=? and deleted=0 and addressing like ?", a.ID, public)
 		activitypub_json(c, http.StatusOK, map[string]any{"@context": activitystreams, "id": outbox, "type": "OrderedCollection", "totalItems": row_int(n, "n"), "first": outbox + "?page=true"})
 		return
 	}
@@ -836,8 +840,8 @@ func activitypub_outbox(c *gin.Context, user *User, a *actor, row map[string]any
 	if s := c.Query("before"); s != "" {
 		before, _ = strconv.ParseInt(s, 10, 64)
 	}
-	query := "select id, app, type, addressing, created, updated, deleted from objects where account=? and deleted=0"
-	args := []any{a.ID}
+	query := "select id, app, type, addressing, created, updated, deleted from objects where account=? and deleted=0 and addressing like ?"
+	args := []any{a.ID, public}
 	if before > 0 {
 		query += " and created<?"
 		args = append(args, before)

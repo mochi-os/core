@@ -168,26 +168,37 @@ func presence_seen(uid string) int64 {
 	return seen
 }
 
-// presence_encode writes a user's presence for Starlark.
-func presence_encode(uid string) sl.Value {
+// presence_encode writes a user's presence for Starlark: the status, its
+// text and when they were last seen, and with sessions their connections.
+func presence_encode(uid string, sessions bool) sl.Value {
 	status, seen, connections := presence_user(uid)
-	list := make([]any, 0, len(connections))
+	message := ""
 	for _, c := range connections {
-		list = append(list, map[string]any{"id": c.ID, "session": c.Session, "kind": c.Kind, "device": c.Device, "status": c.Status, "message": c.Message, "since": c.Since, "seen": c.Seen})
+		if c.Status == status && c.Message != "" {
+			message = c.Message
+		}
 	}
-	return sl_encode(map[string]any{"status": status, "seen": seen, "connections": list})
+	out := map[string]any{"status": status, "message": message, "seen": seen}
+	if sessions {
+		list := make([]any, 0, len(connections))
+		for _, c := range connections {
+			list = append(list, map[string]any{"id": c.ID, "session": c.Session, "kind": c.Kind, "device": c.Device, "status": c.Status, "message": c.Message, "since": c.Since, "seen": c.Seen})
+		}
+		out["connections"] = list
+	}
+	return sl_encode(out)
 }
 
-// mochi.presence.get() -> dict: The user's own presence: status (online, busy, away, or offline with no connection), seen (now while connected, else when they were last seen) and connections, each with id, session, kind (web, xmpp, matrix), device, status, message, since and seen. Requires user/sessions/read
+// mochi.presence.get() -> dict: The user's own presence: status (online, busy, away, or offline with no connection), message (the status text of the connection that gives the status, or "") and seen (now while connected, else when they were last seen). With user/sessions/read also connections, each with id, session, kind (web, xmpp, matrix), device, status, message, since and seen. Requires presence/read
 func api_presence_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := require_permission(t, fn, "user/sessions/read"); err != nil {
+	if err := require_permission(t, fn, "presence/read"); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	user := principal_caller(t)
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
-	return presence_encode(user.UID), nil
+	return presence_encode(user.UID, require_permission(t, fn, "user/sessions/read") == nil), nil
 }
 
 // mochi.presence.set(status, message="") -> int: Set the status of the user's connections from this login session - online, away or busy - with a status text, and answer how many connections changed. From a call with no login session, every connection of the user. Requires user/sessions/write

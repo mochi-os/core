@@ -77,10 +77,13 @@ var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"identity": sls.FromStringDict(sl.String("mochi.user.identity"), sl.StringDict{
 		"update": sl.NewBuiltin("mochi.user.identity.update", api_user_identity_update),
 	}),
-	"list":     sl.NewBuiltin("mochi.user.list", api_user_list),
-	"methods":  api_user_methods,
-	"oauth":    api_user_oauth,
-	"passkey":  api_user_passkey,
+	"list":    sl.NewBuiltin("mochi.user.list", api_user_list),
+	"methods": api_user_methods,
+	"oauth":   api_user_oauth,
+	"passkey": api_user_passkey,
+	"preference": sls.FromStringDict(sl.String("mochi.user.preference"), sl.StringDict{
+		"get": sl.NewBuiltin("mochi.user.preference.get", api_user_preference_get),
+	}),
 	"recovery": api_user_recovery,
 	"search":   sl.NewBuiltin("mochi.user.search", api_user_search),
 	"session": sls.FromStringDict(sl.String("mochi.user.session"), sl.StringDict{
@@ -1783,6 +1786,18 @@ func (p *UserPreference) Hash() (uint32, error) { return 0, nil }
 func (p *UserPreference) String() string        { return "UserPreference" }
 func (p *UserPreference) Truth() sl.Bool        { return sl.True }
 func (p *UserPreference) Type() string          { return "UserPreference" }
+
+// mochi.user.preference.get(name) -> string | None: A preference of the user
+// the call is for, as a.user.preference.get reads it, for a function core
+// calls with no action or event, such as one the ActivityPub engine hands an
+// activity
+func api_user_preference_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	user := principal_caller(t)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	return (&UserPreference{user: user}).get(t, fn, args, kwargs)
+}
 
 // a.user.preference.get(name) -> string | None: Get a user preference
 func (p *UserPreference) get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {

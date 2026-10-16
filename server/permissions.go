@@ -85,6 +85,10 @@ var permissions = []Permission{
 	{"preferences/write", false, false},
 	{"user/sessions/read", false, false},
 	{"user/sessions/write", false, false},
+	// Whether the user is online, busy or away, their status text and when
+	// they were last seen, without their sessions: what chat shares with the
+	// user's contacts as the user allows.
+	{"presence/read", false, false},
 	// Restricted permissions
 	{"accounts/notify", true, false},
 	// Installing writes executable code to disk under an app's entity id: this is

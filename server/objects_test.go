@@ -185,6 +185,39 @@ func TestObjectAddressing(t *testing.T) {
 	}
 }
 
+// TestObjectAddressingLoopback: a person addressed by an http id on a
+// stand-in server on loopback is delivered to under the development allowance,
+// as the engine takes their activities, and not without it.
+func TestObjectAddressingLoopback(t *testing.T) {
+	alice := create_delivery_test_env(t)
+	thread := create_acting_thread(alice)
+	fn := sl.NewBuiltin("test", nil)
+	saved := resolve_fetch
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		return []byte(`{"id":"http://127.0.0.1:9999/u/carol","type":"Person","preferredUsername":"carol","inbox":"http://127.0.0.1:9999/u/carol/inbox"}`), nil
+	}
+	saved_private := url_allow_private
+	t.Cleanup(func() {
+		resolve_fetch = saved
+		url_allow_private = saved_private
+	})
+
+	url_allow_private = false
+	if _, err := api_account_object_create(thread, fn, sl.Tuple{sl.String("f1"), object_dict("type", "Note", "content", "<p>one</p>", "to", "http://127.0.0.1:9999/u/carol")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if rows := delivery_rows(t); len(rows) != 0 {
+		t.Errorf("deliveries without the allowance = %v, want none", rows)
+	}
+	url_allow_private = true
+	if _, err := api_account_object_create(thread, fn, sl.Tuple{sl.String("f1"), object_dict("type", "Note", "content", "<p>two</p>", "to", "http://127.0.0.1:9999/u/carol")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if rows := delivery_rows(t); len(rows) != 1 || rows[0]["inbox"] != "http://127.0.0.1:9999/u/carol/inbox" {
+		t.Errorf("deliveries = %v, want carol's inbox", rows)
+	}
+}
+
 // TestObjectRefusals: publishing needs the account permission, the account must
 // be the user's own and on the fediverse or on Bluesky with its repository
 // made, and the object a type.

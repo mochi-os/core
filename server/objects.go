@@ -193,7 +193,7 @@ func object_recipients(ctx context.Context, user *User, account string, actor st
 					add(inbox)
 				}
 			}
-		case strings.HasPrefix(address, "https://"):
+		case activitypub_remote_ok(address):
 			if r, err := author_resolve(ctx, address); err == nil {
 				add(r.Inbox)
 			} else if resolve_transient(err) && !seen[address] {

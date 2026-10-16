@@ -90,9 +90,11 @@ func TestPresenceConnections(t *testing.T) {
 	}
 }
 
-// TestPresenceAPI: the user's own presence is read with user/sessions/read and
-// the status of this login session's connections set with user/sessions/write;
-// a bad status or no permission is refused.
+// TestPresenceAPI: the user's own presence is read with presence/read - the
+// status, its text and when they were last seen - and their connections only
+// with user/sessions/read as well; the status of this login session's
+// connections is set with user/sessions/write; a bad status or no permission
+// is refused.
 func TestPresenceAPI(t *testing.T) {
 	alice := create_presence_test_env(t)
 	app := create_external_app("app1")
@@ -106,7 +108,17 @@ func TestPresenceAPI(t *testing.T) {
 		t.Errorf("get without permission: %v", err)
 	}
 	permission_grant(alice, app.id, "user/sessions/read")
+	if _, err := api_presence_get(thread, fn, nil, nil); err == nil || !strings.Contains(err.Error(), "presence/read") {
+		t.Errorf("get with the sessions permission alone: %v", err)
+	}
+	permission_revoke(alice, app.id, "user/sessions/read")
+	permission_grant(alice, app.id, "presence/read")
 	got := decoded(t)(api_presence_get(thread, fn, nil, nil))
+	if _, listed := got["connections"]; got["status"] != "online" || listed {
+		t.Errorf("get with presence/read alone = %v, want the status without the connections", got)
+	}
+	permission_grant(alice, app.id, "user/sessions/read")
+	got = decoded(t)(api_presence_get(thread, fn, nil, nil))
 	if connections, _ := got["connections"].([]any); got["status"] != "online" || len(connections) != 2 || connections[0].(map[string]any)["session"] != "s1" {
 		t.Errorf("get = %v", got)
 	}
@@ -127,6 +139,11 @@ func TestPresenceAPI(t *testing.T) {
 	connections, _ := got["connections"].([]any)
 	if got["status"] != "online" || connections[0].(map[string]any)["status"] != "away" || connections[0].(map[string]any)["message"] != "back soon" || connections[1].(map[string]any)["status"] != "online" {
 		t.Errorf("after set = %v", got)
+	}
+	// The status text is the one of the connection that gives the status.
+	presence_set(alice.UID, "s2", "", "online", "at my desk")
+	if got = decoded(t)(api_presence_get(thread, fn, nil, nil)); got["message"] != "at my desk" {
+		t.Errorf("message = %v, want the online connection's text", got["message"])
 	}
 	// With no login session on the call, every connection.
 	thread.SetLocal("session", "")

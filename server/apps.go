@@ -549,8 +549,17 @@ var (
 		}},
 		{"1PfwgL5rwmRW9HNqX1UNfjubHue7JsbZG8ft3C1fUzxfZT1e92", "Chat", []struct{ Permission, Object string }{
 			{"account", "*"},
+			// The user's accounts on other networks, which conversations
+			// belong to (the federation plan, phase 22).
+			{"accounts/read", ""},
+			// The user's identity, for a direct message the engine hands chat
+			// with no action or event to carry it.
+			{"entity/read", ""},
 			{"friends/read", ""},
 			{"microphone", ""},
+			// Whether the user is online, shared with their contacts as the
+			// user allows.
+			{"presence/read", ""},
 		}},
 		{"12bMvfv6pVEAVLzBjJuS55oPaZDL3qzoUAtBWB8iK2arTk8GQkr", "Chess", []struct{ Permission, Object string }{
 			{"friends/read", ""},

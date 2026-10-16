@@ -506,8 +506,9 @@ func TestActivityPubQueue(t *testing.T) {
 }
 
 // TestActivityPubObjects: an object the account published is served from its
-// app under its id, a deleted one as a tombstone, the outbox lists them newest
-// first with a page boundary, and a browser is sent to the object's page.
+// app under its id, a deleted one as a tombstone, the outbox lists the public
+// ones newest first with a page boundary, and a browser is sent to the
+// object's page.
 func TestActivityPubObjects(t *testing.T) {
 	alice, _ := create_activitypub_test_env(t)
 	db := db_user(alice, "user")
@@ -515,9 +516,11 @@ func TestActivityPubObjects(t *testing.T) {
 		db.exec("insert into objects (id, account, app, type, addressing, created) values (?, 'f1', 'feeds', 'Note', ?, ?)", id, json_encode(map[string]any{"to": []string{activitystreams_public}, "cc": []string{"https://example.com/~f1/followers"}}), 1000+i)
 	}
 	db.exec("update objects set deleted=2000 where id='o2'")
+	// A direct message, the newest of all: neither listed nor counted.
+	db.exec("insert into objects (id, account, app, type, addressing, created) values ('o4', 'f1', 'chat', 'Note', ?, 1010)", json_encode(map[string]any{"to": []string{"https://remote.example/u/bob"}, "cc": []string{}}))
 	saved_call := activitypub_call
 	activitypub_call = func(user *User, a *App, function string, args Map) (any, error) {
-		if function != "activitypub/object" || a.id != "feeds" || args["account"] != "f1" {
+		if function != "activitypub/object" || (a.id != "feeds" && a.id != "chat") || args["account"] != "f1" {
 			t.Errorf("call %s to %s with %v", function, a.id, args)
 		}
 		id, _ := args["id"].(string)
@@ -529,7 +532,7 @@ func TestActivityPubObjects(t *testing.T) {
 	t.Cleanup(func() { activitypub_call = saved_call })
 	apps_lock.Lock()
 	saved_apps := apps
-	apps = map[string]*App{"feeds": {id: "feeds", internal: &AppVersion{}}}
+	apps = map[string]*App{"feeds": {id: "feeds", internal: &AppVersion{}}, "chat": {id: "chat", internal: &AppVersion{}}}
 	apps_lock.Unlock()
 	t.Cleanup(func() {
 		apps_lock.Lock()

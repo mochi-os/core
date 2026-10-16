@@ -309,6 +309,7 @@ var providers = []Provider{
 
 // Starlark API module
 var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
+	"activity":      sl.NewBuiltin("mochi.account.activity", api_account_activity),
 	"add":           sl.NewBuiltin("mochi.account.add", api_account_add),
 	"announce":      sl.NewBuiltin("mochi.account.announce", api_account_announce),
 	"block":         api_account_block,
@@ -418,6 +419,12 @@ func account_capabilities(row map[string]any) []string {
 		return append([]string{}, provider.Capabilities...)
 	}
 	hosted := account_hosted_flag(row)
+	// A group is listed under "group" alone: it is an app's community, not
+	// one of the person's own accounts, so the Networks page and the publish
+	// lists never see it.
+	if account_group(row) {
+		return []string{"group"}
+	}
 	out := []string{}
 	for _, capability := range provider.Capabilities {
 		if (capability == "network") == hosted {
@@ -476,6 +483,16 @@ func account_present(user *User, row map[string]any) map[string]any {
 	out["profile"], _ = data["profile"].(bool)
 	if hosted {
 		out["automated"], _ = data["automated"].(bool)
+		// A group's own fields (phase 20): what its document shows and who
+		// moderates it.
+		if account_group(row) {
+			out["kind"] = "group"
+			out["summary"], _ = data["summary"].(string)
+			out["page"], _ = data["page"].(string)
+			out["moderators"] = object_strings(data["moderators"])
+			out["restricted"], _ = data["restricted"].(bool)
+			out["sensitive"], _ = data["sensitive"].(bool)
+		}
 		// A fediverse account's permanent id is its page for other servers;
 		// its aliases are the person's other identities, and moved where it
 		// has moved to.
@@ -1052,8 +1069,23 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 			domain = server_domain()
 		}
 		h := handle_lookup(domain, name)
-		if h == nil || h.User != user.UID || h.Kind != "handle" {
+		if h == nil || h.User != user.UID {
 			return sl_error(fn, "handle %q is not held by this user on %s", name, domain)
+		}
+		// A group (a forum's community, phase 20) is a fediverse account on a
+		// community name; a person's account is on a handle.
+		kind, _ := fields["kind"].(string)
+		switch {
+		case kind == "group" && ptype == "fediverse":
+			if h.Kind != "community" {
+				return sl_error(fn, "%q is not a community name", name)
+			}
+		case kind == "":
+			if h.Kind != "handle" {
+				return sl_error(fn, "handle %q is not held by this user on %s", name, domain)
+			}
+		default:
+			return sl_error(fn, "invalid kind %q", kind)
 		}
 		if account_hosted(user, ptype, h.Domain, h.Name) != nil {
 			return sl_error(fn, "an account on %s already exists for this handle", ptype)
@@ -1062,6 +1094,9 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		data["hosted"] = true
 		data["handle"] = h.Name
 		data["domain"] = h.Domain
+		if kind != "" {
+			data["kind"] = kind
+		}
 	}
 
 	// Serialize data to JSON
@@ -1316,6 +1351,67 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 				j, _ := json.Marshal(d)
 				db.account_set(id, map[string]any{"data": string(j)})
 			}
+
+		case "summary", "page", "moderators", "restricted", "sensitive":
+			// A group's document (phase 20): its description, its page for a
+			// browser, the accounts that moderate it (its attributedTo
+			// collection), whether only they may post, and whether it is
+			// marked sensitive.
+			row := account_hosted_get(user, id)
+			if row == nil || !account_group(row) {
+				return sl_error(fn, "only a group has %s", key)
+			}
+			d := account_data(row)
+			switch key {
+			case "summary", "page":
+				value, _ := sl.AsString(kv[1])
+				value = strings.TrimSpace(value)
+				if len(value) > 5000 || (key == "page" && value != "" && !valid(value, "url")) {
+					return sl_error(fn, "invalid %s", key)
+				}
+				if value == "" {
+					delete(d, key)
+				} else {
+					d[key] = value
+				}
+			case "moderators":
+				list, _ := kv[1].(*sl.List)
+				moderators := []string{}
+				if list != nil {
+					for i := 0; i < list.Len(); i++ {
+						moderator, _ := sl.AsString(list.Index(i))
+						moderator = strings.TrimSpace(moderator)
+						if !activitypub_remote_ok(moderator) {
+							return sl_error(fn, "moderators must be ids on the fediverse")
+						}
+						moderators = append(moderators, moderator)
+					}
+				}
+				if len(moderators) > 100 {
+					return sl_error(fn, "at most 100 moderators")
+				}
+				if len(moderators) > 0 {
+					d["moderators"] = moderators
+				} else {
+					delete(d, "moderators")
+				}
+			default:
+				on := false
+				switch v := kv[1].(type) {
+				case sl.Bool:
+					on = bool(v)
+				case sl.Int:
+					i, _ := v.Int64()
+					on = i != 0
+				}
+				if on {
+					d[key] = true
+				} else {
+					delete(d, key)
+				}
+			}
+			j, _ := json.Marshal(d)
+			db.account_set(id, map[string]any{"data": string(j)})
 
 		case "aliases":
 			// The person's other identities, resolved to their ids: a Move

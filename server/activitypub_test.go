@@ -517,6 +517,15 @@ func TestActivityPubObjects(t *testing.T) {
 	if to, _ := object["to"].([]any); len(to) != 1 || to[0] != activitystreams_public {
 		t.Errorf("object addressing = %v", object["to"])
 	}
+	// The Create the object went out in is served at its id, so a server
+	// told of it by a group's Announce can fetch it; a deleted object's is gone.
+	w, create := activitypub_get(t, "/~f1/o1/activity")
+	if inner, _ := create["object"].(map[string]any); w.Code != http.StatusOK || create["type"] != "Create" || create["id"] != "https://example.com/~f1/o1/activity" || create["actor"] != "https://example.com/~f1" || inner["id"] != "https://example.com/~f1/o1" {
+		t.Errorf("create activity = %d %v", w.Code, create)
+	}
+	if w, _ := activitypub_get(t, "/~f1/o2/activity"); w.Code != http.StatusNotFound {
+		t.Errorf("a deleted object's create activity: %d", w.Code)
+	}
 	w, object = activitypub_get(t, "/~f1/o2")
 	if w.Code != http.StatusGone || object["type"] != "Tombstone" || object["formerType"] != "Note" {
 		t.Errorf("deleted object = %d %v", w.Code, object)

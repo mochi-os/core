@@ -357,16 +357,14 @@ func activitypub_webfinger(c *gin.Context) {
 		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
 		return
 	}
-	user, _ := actor_account(a.ID)
+	user, row := actor_account(a.ID)
 	if user == nil {
 		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
 		return
 	}
 	id := account_url(a.Domain, a.ID)
 	page := "https://" + a.Domain + "/@" + a.Handle
-	c.Header("Content-Type", activitypub_jrd+"; charset=utf-8")
-	c.Status(http.StatusOK)
-	c.Writer.Write([]byte(json_encode(map[string]any{
+	jrd := map[string]any{
 		"subject": "acct:" + a.Handle + "@" + a.Domain,
 		"aliases": []string{id, page},
 		"links": []map[string]any{
@@ -374,7 +372,16 @@ func activitypub_webfinger(c *gin.Context) {
 			{"rel": "http://webfinger.net/rel/profile-page", "type": "text/html", "href": page},
 			{"rel": activitypub_subscribe, "template": "https://" + a.Domain + "/~/authorize?uri={uri}"},
 		},
-	})))
+	}
+	// A community tells a server looking a name up what kind of actor it will
+	// find, as Lemmy's WebFinger does, so a person and a community of the same
+	// name on two domains are told apart.
+	if account_group(row) {
+		jrd["links"].([]map[string]any)[0]["properties"] = map[string]any{activitystreams + "#type": "Group"}
+	}
+	c.Header("Content-Type", activitypub_jrd+"; charset=utf-8")
+	c.Status(http.StatusOK)
+	c.Writer.Write([]byte(json_encode(jrd)))
 }
 
 // activitypub_host_meta answers host-meta: where WebFinger is.
@@ -434,7 +441,19 @@ func activitypub_handle_route(c *gin.Context) {
 		c.Redirect(http.StatusFound, account_url(a.Domain, a.ID))
 		return
 	}
-	c.Redirect(http.StatusFound, activitypub_page_url(user))
+	_, row := actor_account(a.ID)
+	c.Redirect(http.StatusFound, activitypub_browser_url(user, row))
+}
+
+// activitypub_browser_url is where a browser is sent for an actor: a group's
+// own page where it names one, else the person's profile.
+func activitypub_browser_url(user *User, row map[string]any) string {
+	if account_group(row) {
+		if page, _ := account_data(row)["page"].(string); page != "" {
+			return page
+		}
+	}
+	return activitypub_page_url(user)
 }
 
 // === The actor and its collections ===
@@ -487,10 +506,22 @@ func activitypub_actor_route(c *gin.Context) {
 	switch {
 	case tail == "" && method == "GET":
 		if !activitypub_wants(c) {
-			c.Redirect(http.StatusFound, activitypub_page_url(user))
+			c.Redirect(http.StatusFound, activitypub_browser_url(user, row))
 			return
 		}
 		activitypub_json(c, http.StatusOK, activitypub_actor(user, a, row))
+	case tail == "moderators" && method == "GET":
+		// A group's moderators, the collection its document attributes it to.
+		if !account_group(row) {
+			respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
+			return
+		}
+		moderators := object_strings(account_data(row)["moderators"])
+		items := make([]any, 0, len(moderators))
+		for _, moderator := range moderators {
+			items = append(items, moderator)
+		}
+		activitypub_json(c, http.StatusOK, map[string]any{"@context": activitystreams, "id": actor_id + "/moderators", "type": "OrderedCollection", "totalItems": len(items), "orderedItems": items})
 	case tail == "inbox" && method == "POST":
 		activitypub_inbox(c, user, a)
 	case tail == "outbox" && method == "GET":
@@ -505,9 +536,42 @@ func activitypub_actor_route(c *gin.Context) {
 		activitypub_featured(c, user, a, row)
 	case method == "GET" && tail != "" && !strings.Contains(tail, "/"):
 		activitypub_object(c, user, a, row, tail)
+	case method == "GET" && strings.HasSuffix(tail, "/activity") && strings.Count(tail, "/") == 1:
+		// The Create an object went out in, at the id the outbox and a
+		// group's Announce give it: a server told of the activity fetches it
+		// here before it takes the object.
+		activitypub_create(c, user, a, row, strings.TrimSuffix(tail, "/activity"))
 	default:
 		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
 	}
+}
+
+// activitypub_create answers /~<id>/<object>/activity: the Create activity of
+// an object the account published, as the outbox lists it; gone with the
+// object.
+func activitypub_create(c *gin.Context, user *User, a *actor, row map[string]any, id string) {
+	db := db_user(user, "user")
+	object_row, _ := db.row("select id, app, type, addressing, created, updated, deleted from objects where id=? and account=?", id, a.ID)
+	if object_row == nil || row_int(object_row, "deleted") != 0 || object_activity(object_row) != nil || row_string(object_row, "type") == "Announce" {
+		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
+		return
+	}
+	object := activitypub_object_document(user, a, row, object_row)
+	if object == nil {
+		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
+		return
+	}
+	remote, _ := object["id"].(string)
+	activitypub_json(c, http.StatusOK, map[string]any{
+		"@context":  activitypub_context,
+		"id":        remote + "/activity",
+		"type":      "Create",
+		"actor":     account_url(a.Domain, a.ID),
+		"published": object["published"],
+		"to":        object["to"],
+		"cc":        object["cc"],
+		"object":    object,
+	})
 }
 
 // activitypub_authorize is the landing of this server's subscribe template:
@@ -544,8 +608,12 @@ func activitypub_profile(user *User, account string) map[string]any {
 	return map[string]any{}
 }
 
-// activitypub_actor builds an account's document.
+// activitypub_actor builds an account's document: a person's, or a group's
+// for a community (phase 20).
 func activitypub_actor(user *User, a *actor, row map[string]any) map[string]any {
+	if account_group(row) {
+		return activitypub_group(user, a, row)
+	}
 	id := account_url(a.Domain, a.ID)
 	data := account_data(row)
 	profile := activitypub_profile(user, a.ID)
@@ -686,6 +754,11 @@ func activitypub_object(c *gin.Context, user *User, a *actor, row map[string]any
 		activitypub_json(c, http.StatusGone, map[string]any{"@context": activitystreams, "id": remote, "type": "Tombstone", "formerType": row_string(object_row, "type"), "deleted": time.Unix(row_int(object_row, "deleted"), 0).UTC().Format(time.RFC3339)})
 		return
 	}
+	if activity := object_activity(object_row); activity != nil {
+		activity["@context"] = activitypub_context
+		activitypub_json(c, http.StatusOK, activity)
+		return
+	}
 	object := activitypub_object_document(user, a, row, object_row)
 	if object == nil {
 		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
@@ -724,7 +797,15 @@ func activitypub_featured(c *gin.Context, user *User, a *actor, row map[string]a
 		}
 		for _, remote := range object_strings(result) {
 			id, object_row := object_get(db, actor_id, a.ID, remote)
-			if id == "" || object_row["deleted"].(int64) != 0 {
+			if id == "" {
+				// A group pins its members' posts, which are objects of
+				// theirs: named by id for the reader to fetch.
+				if account_group(row) && activitypub_remote_ok(remote) {
+					items = append(items, remote)
+				}
+				continue
+			}
+			if object_row["deleted"].(int64) != 0 {
 				continue
 			}
 			object_row["app"] = app.id
@@ -765,6 +846,12 @@ func activitypub_outbox(c *gin.Context, user *User, a *actor, row map[string]any
 	last := int64(0)
 	for _, object_row := range rows {
 		last = row_int(object_row, "created")
+		if activity := object_activity(object_row); activity != nil {
+			// An activity the account sent whole (mochi.account.activity),
+			// kept as it went out.
+			items = append(items, activity)
+			continue
+		}
 		if row_string(object_row, "type") == "Announce" {
 			// A boost is an activity of the account's own, not an object an
 			// app holds.

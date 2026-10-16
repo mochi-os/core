@@ -588,7 +588,8 @@ func api_account_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 // the Announce's, which object.delete undoes. Behind the account permission
 func api_account_announce(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, remote string
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "id", &remote); err != nil {
+	var announced sl.Value
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "id", &remote, "activity?", &announced); err != nil {
 		return nil, err
 	}
 	user, row, actor, err := account_acting(t, fn, account)
@@ -611,11 +612,23 @@ func api_account_announce(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	ctx := activitypub_signing(thread_context(t), user, account)
 	to := []string{activitystreams_public}
 	cc := []string{actor + "/followers"}
-	// The author is told, where the object can be read.
-	var object map[string]any
-	if err := resolve_json(ctx, remote, "application/activity+json, application/ld+json", &object); err == nil && object != nil {
-		if author := resolve_first_url(object["attributedTo"]); author != "" {
-			cc = append(cc, author)
+	// A group announces a member's activity whole, as communities do (phase
+	// 20): the activity travels inside the Announce, its actor told. A boost
+	// names the object alone, with its author told where it can be read.
+	var inner map[string]any
+	if announced != nil && announced != sl.None {
+		inner = sl_decode_map(announced)
+		if inner == nil || inner["id"] != remote || activitypub_actor_of(inner["actor"]) == "" {
+			return sl_error(fn, "the activity must carry the id announced and its actor")
+		}
+		delete(inner, "@context")
+		cc = append(cc, activitypub_actor_of(inner["actor"]))
+	} else {
+		var object map[string]any
+		if err := resolve_json(ctx, remote, "application/activity+json, application/ld+json", &object); err == nil && object != nil {
+			if author := resolve_first_url(object["attributedTo"]); author != "" {
+				cc = append(cc, author)
+			}
 		}
 	}
 	id := uid()
@@ -632,8 +645,71 @@ func api_account_announce(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		"cc":        cc,
 		"object":    remote,
 	}
+	if inner != nil {
+		activity["object"] = inner
+	}
 	object_deliver(ctx, user, account, actor, activity, to, cc)
 	return object_result(announce, remote, map[string]any{"type": "Announce", "object": remote}), nil
+}
+
+// The activities an app may send as a hosted account through
+// mochi.account.activity: what a member or a moderator does to another's
+// object - a moderator's Delete of it among them. Creating, editing and
+// deleting the account's own objects go through mochi.account.object.
+var activity_kinds = map[string]bool{"Like": true, "Dislike": true, "Undo": true, "Lock": true, "Add": true, "Remove": true, "Block": true, "Flag": true, "Delete": true}
+
+// mochi.account.activity(account, activity) -> dict: Send an activity as a hosted fediverse account and return {id, url, data}: a Like or Dislike of an object, the Undo of one, a Lock, an Add or Remove against a collection, a Block, a Flag, or a moderator's Delete of another's object, in the network's form with the object named; core gives it its id under the account, its actor and its time, and the public addressing with the followers told unless the activity carries its own. The activity is listed in the outbox and answered at its id. Behind the account permission
+func api_account_activity(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var account string
+	var value sl.Value
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "activity", &value); err != nil {
+		return nil, err
+	}
+	user, row, actor, err := account_acting(t, fn, account)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if actor == "" {
+		return sl_error(fn, "a linked account acts through mochi.account.request")
+	}
+	if err := account_fediverse(row); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	activity := sl_decode_map(value)
+	kind, _ := activity["type"].(string)
+	if !activity_kinds[kind] {
+		return sl_error(fn, "activity type must be one of Like, Dislike, Undo, Lock, Add, Remove, Block or Flag")
+	}
+	if activity["object"] == nil {
+		return sl_error(fn, "activity needs an object")
+	}
+	id := uid()
+	remote := actor + "/" + id
+	delete(activity, "@context")
+	activity["id"] = remote
+	activity["actor"] = actor
+	if _, set := activity["published"]; !set {
+		activity["published"] = time.Now().UTC().Format(time.RFC3339)
+	}
+	to, cc := object_addressing(activity, actor)
+	db := db_user(user, "user")
+	db.exec("insert into objects (id, account, app, type, addressing, created) values (?, ?, ?, ?, ?, ?)", id, account, thread_app_id(t), kind, json_encode(map[string]any{"to": to, "cc": cc, "activity": activity}), now())
+	body := map[string]any{"@context": activitystreams}
+	for key, item := range activity {
+		body[key] = item
+	}
+	object_deliver(activitypub_signing(thread_context(t), user, account), user, account, actor, body, to, cc)
+	return object_result(remote, "", activity), nil
+}
+
+// object_activity reads the activity an objects row keeps whole, as
+// mochi.account.activity stores it, or nil for an object or a boost.
+func object_activity(row map[string]any) map[string]any {
+	var stored struct{ Activity map[string]any }
+	if text, _ := row["addressing"].(string); text != "" {
+		json.Unmarshal([]byte(text), &stored)
+	}
+	return stored.Activity
 }
 
 // thread_app_id is the id of the app a Starlark thread runs, or empty.

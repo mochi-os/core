@@ -316,12 +316,15 @@ type matrix_sync struct {
 }
 
 // A matrix_state is what the loop keeps between syncs: who is typing in each
-// room, which rooms are one-to-one, and the names members go by.
+// room, which rooms are one-to-one, and the names members go by. The engine's
+// rooms (rooms.go) read their events with one too, and download is where each
+// reads a file from.
 type matrix_state struct {
-	user   string
-	typing map[string][]string
-	direct map[string]bool
-	names  map[string]string
+	user     string
+	typing   map[string][]string
+	direct   map[string]bool
+	names    map[string]string
+	download func(mxc string) string
 }
 
 // matrix_presence is how a Matrix account shows a status of Mochi's.
@@ -343,7 +346,7 @@ func matrix_presence(status string) string {
 func matrix_run(ctx context.Context, l *linked, s *linked_session) error {
 	ctx = linked_session_context(ctx)
 	since := l.get("since")
-	state := &matrix_state{user: l.get("id"), typing: map[string][]string{}, direct: map[string]bool{}, names: map[string]string{}}
+	state := &matrix_state{user: l.get("id"), typing: map[string][]string{}, direct: map[string]bool{}, names: map[string]string{}, download: func(mxc string) string { return matrix_download(l, mxc) }}
 	linked_inbound(l.user, l.id, "matrix", []map[string]any{{"kind": "session"}})
 	shown := matrix_announce(ctx, l, "")
 	done := make(chan struct{})
@@ -404,7 +407,7 @@ func matrix_run(ctx context.Context, l *linked, s *linked_session) error {
 		}
 		s.connected.Store(true)
 		s.reason.Store("")
-		if events := state.read(l, &sync); len(events) > 0 {
+		if events := state.read(&sync); len(events) > 0 {
 			linked_inbound(l.user, l.id, "matrix", events)
 		}
 		if sync.Next != "" && sync.Next != since {
@@ -415,7 +418,7 @@ func matrix_run(ctx context.Context, l *linked, s *linked_session) error {
 }
 
 // read turns a sync into conversation events.
-func (state *matrix_state) read(l *linked, sync *matrix_sync) []map[string]any {
+func (state *matrix_state) read(sync *matrix_sync) []map[string]any {
 	var events []map[string]any
 	// Which rooms are one-to-one, as the account's own data says.
 	for _, e := range sync.Data.Events {
@@ -475,7 +478,7 @@ func (state *matrix_state) read(l *linked, sync *matrix_sync) []map[string]any {
 		events = append(events, info)
 		events = append(events, members...)
 		for _, e := range joined.Timeline.Events {
-			if event := state.timeline(l, room, &e); event != nil {
+			if event := state.timeline(room, &e); event != nil {
 				events = append(events, event)
 			}
 		}
@@ -523,7 +526,7 @@ func (state *matrix_state) read(l *linked, sync *matrix_sync) []map[string]any {
 
 // timeline reads one event of a room's timeline: a message, an edit, an
 // encrypted message, or a redaction.
-func (state *matrix_state) timeline(l *linked, room string, e *matrix_event) map[string]any {
+func (state *matrix_state) timeline(room string, e *matrix_event) map[string]any {
 	own := e.Sender == state.user
 	// What this device sent carries its transaction id; the app has it.
 	if own && e.Unsigned.Transaction != "" {
@@ -574,7 +577,7 @@ func (state *matrix_state) timeline(l *linked, room string, e *matrix_event) map
 	switch kind {
 	case "m.image", "m.file", "m.video", "m.audio":
 		mxc, _ := e.Content["url"].(string)
-		address := matrix_download(l, mxc)
+		address := state.download(mxc)
 		if address == "" {
 			return nil
 		}

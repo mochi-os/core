@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -59,6 +60,7 @@ const key_recovery = "recovery"
 
 const key_rsa = "rsa"
 const key_p256 = "p256"
+const key_ed25519 = "ed25519"
 
 // keys_table creates the keys table in a user database.
 func keys_table(db *DB) {
@@ -102,6 +104,18 @@ func key_generate(algorithm string) (string, string, error) {
 			return "", "", err
 		}
 		return key_did(&private.PublicKey), string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded})), nil
+	case key_ed25519:
+		// A Matrix server's signing key: the public half as Matrix writes it,
+		// unpadded base64.
+		public, private, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return "", "", err
+		}
+		encoded, err := x509.MarshalPKCS8PrivateKey(private)
+		if err != nil {
+			return "", "", err
+		}
+		return base64.RawStdEncoding.EncodeToString(public), string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded})), nil
 	}
 	return "", "", fmt.Errorf("unknown key algorithm %q", algorithm)
 }

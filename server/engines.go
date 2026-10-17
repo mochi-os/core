@@ -137,4 +137,5 @@ func engines_start() {
 	engine_register(signin_engine())
 	engine_register(activitypub_engine())
 	engine_register(atproto_engine())
+	engine_register(federation_engine())
 }

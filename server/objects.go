@@ -25,6 +25,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -76,9 +77,16 @@ func networks_tables(db *DB) {
 // permission, the user whose account it is, the account row with its data
 // decoded, and for a hosted account its actor id. A hosted account acts only
 // while its network is on, and only a fediverse or Bluesky one can publish
-// yet; a linked account acts while the development switch is on, since it only
-// makes requests as the user.
+// through the functions that take it; a linked account acts while the
+// development switch is on, since it only makes requests as the user.
 func account_acting(t *sl.Thread, fn *sl.Builtin, id string) (*User, map[string]any, string, error) {
+	return account_acting_on(t, fn, id, "fediverse", "bluesky")
+}
+
+// account_acting_on is account_acting for a function that takes the hosted
+// accounts of the networks given: a hosted Matrix account's conversations
+// beside the publishing of the others.
+func account_acting_on(t *sl.Thread, fn *sl.Builtin, id string, networks ...string) (*User, map[string]any, string, error) {
 	if err := require_permission_account(t, fn, id); err != nil {
 		return nil, nil, "", err
 	}
@@ -97,11 +105,14 @@ func account_acting(t *sl.Thread, fn *sl.Builtin, id string) (*User, map[string]
 		return user, row, "", nil
 	}
 	network, _ := row["type"].(string)
-	if network != "fediverse" && network != "bluesky" {
+	if !slices.Contains(networks, network) {
 		return nil, nil, "", fmt.Errorf("a %s account cannot publish yet", network)
 	}
 	if !network_enabled(network) {
 		return nil, nil, "", fmt.Errorf("%s is off", network)
+	}
+	if network == "matrix" {
+		return user, row, "", nil
 	}
 	return user, row, account_actor(user, id), nil
 }
@@ -239,7 +250,7 @@ func object_stored_addressing(row map[string]any) (to []string, cc []string) {
 	return stored.To, stored.Cc
 }
 
-// mochi.account.object.create(account, object, key="", sourced=False) -> dict: Publish an object as an account and return {id, url, data}: its id on the network, its page where the network has one, and the object as published. As a hosted fediverse account, the object is an ActivityStreams object the app has already put in the network's form (its type, HTML content, attachments, tags); core gives it its id under the account, attributedTo and published, and sends Create to everyone it addresses, which is the public and the account's followers unless the object says otherwise. As a hosted Bluesky account, the object is a record, with $type naming its collection (a post when absent); core writes it to the account's repository and commits, at once or, for a sourced post (sourced=True), when the relay's budget allows, and data says whether the commit went out. As a linked account, the object is in the network's own form - a Mastodon status, a Bluesky record, a Lemmy post or comment. key makes the post once however often it is asked
+// mochi.account.object.create(account, object, key="", sourced=False) -> dict: Publish an object as an account and return {id, url, data}: its id on the network, its page where the network has one, and the object as published. As a hosted fediverse account, the object is an ActivityStreams object the app has already put in the network's form (its type, HTML content, attachments, tags); core gives it its id under the account, attributedTo and published, and sends Create to everyone it addresses, which is the public and the account's followers unless the object says otherwise. As a hosted Bluesky account, the object is a record, with $type naming its collection (a post when absent); core writes it to the account's repository and commits, at once or, for a sourced post (sourced=True), when the relay's budget allows, and data says whether the commit went out. As a linked account, the object is in the network's own form - a Mastodon status, a Bluesky record, a Lemmy post or comment; as a linked XMPP or Matrix account or a hosted Matrix account, a message: its conversation, its content, and the message it replies to or the thread it is in. key makes the post once however often it is asked
 func api_account_object_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, key string
 	var value sl.Value
@@ -247,7 +258,7 @@ func api_account_object_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "object", &value, "key?", &key, "sourced?", &sourced); err != nil {
 		return nil, err
 	}
-	user, row, actor, err := account_acting(t, fn, account)
+	user, row, actor, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -256,6 +267,13 @@ func api_account_object_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		result, err := linked_create(thread_context(t), l, object, key)
 		if err != nil {
 			return linked_failed(l, fn, err)
+		}
+		return sl_encode(result), nil
+	}
+	if h := matrix_hosted_of(user, row); h != nil {
+		result, err := rooms_object_create(thread_context(t), h, object, key)
+		if err != nil {
+			return hosted_failed(h, fn, err)
 		}
 		return sl_encode(result), nil
 	}
@@ -309,7 +327,7 @@ func api_account_object_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "id", &remote, "object", &value); err != nil {
 		return nil, err
 	}
-	user, found, actor, err := account_acting(t, fn, account)
+	user, found, actor, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -318,6 +336,13 @@ func api_account_object_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		result, err := linked_update(thread_context(t), l, remote, object)
 		if err != nil {
 			return linked_failed(l, fn, err)
+		}
+		return sl_encode(result), nil
+	}
+	if h := matrix_hosted_of(user, found); h != nil {
+		result, err := rooms_object_update(thread_context(t), h, remote, object)
+		if err != nil {
+			return hosted_failed(h, fn, err)
 		}
 		return sl_encode(result), nil
 	}
@@ -365,19 +390,25 @@ func api_account_object_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	return object_result(remote, remote, object), nil
 }
 
-// mochi.account.object.delete(account, id, conversation="") -> bool | None: Withdraw an object the account published, answering True, or None where a linked account's server would not. As a hosted account a Delete goes to everyone it addressed, and its id is kept so the engine answers for it with a tombstone; as a linked account the server is asked to delete it, and on XMPP or Matrix the message is withdrawn from the conversation named (a redaction, a retraction)
+// mochi.account.object.delete(account, id, conversation="") -> bool | None: Withdraw an object the account published, answering True, or None where a linked account's server would not. As a hosted account a Delete goes to everyone it addressed, and its id is kept so the engine answers for it with a tombstone; as a linked account the server is asked to delete it, and on XMPP or Matrix, linked or hosted, the message is withdrawn from the conversation named (a redaction, a retraction)
 func api_account_object_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, remote, conversation string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "id", &remote, "conversation?", &conversation); err != nil {
 		return nil, err
 	}
-	user, found, actor, err := account_acting(t, fn, account)
+	user, found, actor, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	if l := linked_from(user, found); l != nil {
 		if err := linked_delete(thread_context(t), l, remote, conversation); err != nil {
 			return linked_failed(l, fn, err)
+		}
+		return sl.True, nil
+	}
+	if h := matrix_hosted_of(user, found); h != nil {
+		if err := rooms_object_delete(thread_context(t), h, remote, conversation); err != nil {
+			return hosted_failed(h, fn, err)
 		}
 		return sl.True, nil
 	}

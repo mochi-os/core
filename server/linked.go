@@ -1384,9 +1384,14 @@ func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if len(data) == 0 || len(data) > media_maximum {
 		return sl_error(fn, "data must be between 1 and %d bytes", media_maximum)
 	}
-	user, row, _, err := account_acting(t, fn, account)
+	user, row, _, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	// A hosted Matrix account's files come with its media store; until then
+	// an app sends the message without them.
+	if h := matrix_hosted_of(user, row); h != nil {
+		return hosted_failed(h, fn, fmt.Errorf("files are not sent from a hosted Matrix account yet"))
 	}
 	// A hosted Bluesky account's blobs live in its own repository; a hosted
 	// fediverse account's files are served under its actor.

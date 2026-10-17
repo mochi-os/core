@@ -34,7 +34,9 @@
 // (xmpp:name@host), and a person is known as the network knows them
 // (@name:host, xmpp:name@host, acct:name@host). The functions below act the
 // other way: typing, read markers, the user's presence and rooms; messages go
-// through mochi.account.object like any other publishing.
+// through mochi.account.object like any other publishing. A hosted Matrix
+// account's rooms are the engine's (rooms.go), which tells the apps of them
+// in the same events and takes the same functions.
 
 package main
 
@@ -44,6 +46,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/matrix-org/gomatrixserverlib/spec"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 )
@@ -112,18 +115,45 @@ var api_account_room = sls.FromStringDict(sl.String("mochi.account.room"), sl.St
 	"leave":  sl.NewBuiltin("mochi.account.room.leave", api_account_room_leave),
 })
 
-// linked_acting resolves a linked account of a kind given that an app acts
-// through.
-func linked_acting(t *sl.Thread, fn *sl.Builtin, account string, kinds ...string) (*linked, error) {
-	user, row, _, err := account_acting(t, fn, account)
+// A matrix_hosted is a hosted Matrix account an app holds conversations
+// through: its user, its id, and its Matrix id.
+type matrix_hosted struct {
+	user    *User
+	id      string
+	address string
+}
+
+// matrix_hosted_of is an account row's hosted Matrix account, or nil.
+func matrix_hosted_of(user *User, row map[string]any) *matrix_hosted {
+	if row == nil || !account_hosted_flag(row) || row["type"] != "matrix" {
+		return nil
+	}
+	return &matrix_hosted{user: user, id: row_string(row, "id"), address: row_string(row, "identifier")}
+}
+
+// hosted_failed is a hosted Matrix account's failure as the app sees it: None,
+// with the reason in the log, so an app's action carries on as it does for a
+// linked account (linked_failed).
+func hosted_failed(h *matrix_hosted, fn *sl.Builtin, err error) (sl.Value, error) {
+	info("Hosted Matrix account %s: %s: %v", h.id, fn.Name(), err)
+	return sl.None, nil
+}
+
+// conversing resolves the account an app holds conversations through: a
+// linked account of a kind given, or a hosted Matrix account.
+func conversing(t *sl.Thread, fn *sl.Builtin, account string, kinds ...string) (*linked, *matrix_hosted, error) {
+	user, row, _, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	if h := matrix_hosted_of(user, row); h != nil && slices.Contains(kinds, "matrix") {
+		return nil, h, nil
 	}
 	l := linked_from(user, row)
 	if l == nil || !slices.Contains(kinds, l.kind) {
-		return nil, fmt.Errorf("this account has no conversations here")
+		return nil, nil, fmt.Errorf("this account has no conversations here")
 	}
-	return l, nil
+	return l, nil, nil
 }
 
 // linked_client is the running XMPP session of an account.
@@ -185,16 +215,19 @@ func xmpp_update(ctx context.Context, l *linked, id string, object map[string]an
 	return map[string]any{"id": id, "url": "", "data": map[string]any{}}, nil
 }
 
-// mochi.account.typing(account, conversation, typing=True) -> None: Tell a conversation of a linked XMPP or Matrix account that the user is typing, or stopped. The app calls it while the user types, as their switch allows; the other side is told they stopped once the typing ends. Requires the account's permission
+// mochi.account.typing(account, conversation, typing=True) -> None: Tell a conversation of a linked XMPP or Matrix account that the user is typing, or stopped. The app calls it while the user types, as their switch allows; the other side is told they stopped once the typing ends. A hosted Matrix account's rooms are not told yet. Requires the account's permission
 func api_account_typing(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, conversation string
 	typing := true
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "conversation", &conversation, "typing?", &typing); err != nil {
 		return nil, err
 	}
-	l, err := linked_acting(t, fn, account, "xmpp", "matrix")
+	l, h, err := conversing(t, fn, account, "xmpp", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	if h != nil {
+		return sl.None, nil
 	}
 	switch l.kind {
 	case "xmpp":
@@ -212,16 +245,19 @@ func api_account_typing(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl.None, nil
 }
 
-// mochi.account.read(account, conversation, id, shared=True) -> None: Say the user has read a conversation of a linked XMPP or Matrix account up to a message, by its id on the network. Shared, the other members are told (a read marker); not shared, a Matrix server alone is told, to keep the unread count of the user's other clients, and XMPP is told nothing. Requires the account's permission
+// mochi.account.read(account, conversation, id, shared=True) -> None: Say the user has read a conversation of a linked XMPP or Matrix account up to a message, by its id on the network. Shared, the other members are told (a read marker); not shared, a Matrix server alone is told, to keep the unread count of the user's other clients, and XMPP is told nothing. A hosted Matrix account's rooms are not told yet. Requires the account's permission
 func api_account_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, conversation, id string
 	shared := true
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "conversation", &conversation, "id", &id, "shared?", &shared); err != nil {
 		return nil, err
 	}
-	l, err := linked_acting(t, fn, account, "xmpp", "matrix")
+	l, h, err := conversing(t, fn, account, "xmpp", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	if h != nil {
+		return sl.None, nil
 	}
 	switch l.kind {
 	case "xmpp":
@@ -242,16 +278,19 @@ func api_account_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.None, nil
 }
 
-// mochi.account.presence(account, shared) -> None: Say whether a linked XMPP or Matrix account shows the user's presence. Shared, it shows their status in Mochi and its text; not shared, Matrix shows them offline and XMPP extended away, since an XMPP session that said it was unavailable would be sent nothing. Requires the account's permission
+// mochi.account.presence(account, shared) -> None: Say whether a linked XMPP or Matrix account shows the user's presence. Shared, it shows their status in Mochi and its text; not shared, Matrix shows them offline and XMPP extended away, since an XMPP session that said it was unavailable would be sent nothing. A hosted Matrix account shows no presence yet. Requires the account's permission
 func api_account_presence(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account string
 	var shared bool
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "shared", &shared); err != nil {
 		return nil, err
 	}
-	l, err := linked_acting(t, fn, account, "xmpp", "matrix")
+	l, h, err := conversing(t, fn, account, "xmpp", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	if h != nil {
+		return sl.None, nil
 	}
 	if shared {
 		l.store("hidden", nil)
@@ -262,14 +301,14 @@ func api_account_presence(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.None, nil
 }
 
-// mochi.account.room.create(account, people, name="") -> dict: Start a conversation on a linked XMPP or Matrix account with people by their addresses (@name:host on Matrix, name@host on XMPP), and return {conversation, room, people}: the conversation's id, whether it is a room, and each person as {id, name}. With one person it is a one-to-one conversation (on Matrix a private room marked so); with several, a members-only room named name that each is invited to. An address no one is at fails. Requires the account's permission
+// mochi.account.room.create(account, people, name="") -> dict: Start a conversation on a linked XMPP or Matrix account, or a hosted Matrix account, with people by their addresses (@name:host on Matrix, name@host on XMPP), and return {conversation, room, people}: the conversation's id, whether it is a room, and each person as {id, name}. With one person it is a one-to-one conversation (on Matrix a private room marked so); with several, a members-only room named name that each is invited to. An address no one is at fails. Requires the account's permission
 func api_account_room_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, name string
 	var list *sl.List
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "people", &list, "name?", &name); err != nil {
 		return nil, err
 	}
-	l, err := linked_acting(t, fn, account, "xmpp", "matrix")
+	l, h, err := conversing(t, fn, account, "xmpp", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -277,16 +316,42 @@ func api_account_room_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	for i := 0; i < list.Len(); i++ {
 		address, ok := sl.AsString(list.Index(i))
 		if !ok || strings.TrimSpace(address) == "" {
-			return linked_failed(l, fn, fmt.Errorf("invalid address"))
+			return conversing_failed(l, h, fn, fmt.Errorf("invalid address"))
 		}
 		addresses = append(addresses, strings.TrimSpace(address))
 	}
 	if len(addresses) == 0 {
-		return linked_failed(l, fn, fmt.Errorf("no people"))
+		return conversing_failed(l, h, fn, fmt.Errorf("no people"))
 	}
 	ctx := thread_context(t)
 	var people []any
 	var conversation string
+	if h != nil {
+		mine, _ := spec.NewUserID(h.address, true)
+		var ids []string
+		for _, address := range addresses {
+			address = matrix_person(address)
+			if !resolve_matrix_re.MatchString(address) {
+				return hosted_failed(h, fn, fmt.Errorf("invalid address"))
+			}
+			found, err := rooms_profile(ctx, mine.Domain(), address)
+			if err != nil {
+				return hosted_failed(h, fn, err)
+			}
+			if address != h.address && !slices.Contains(ids, address) {
+				ids = append(ids, address)
+				people = append(people, map[string]any{"id": address, "name": found})
+			}
+		}
+		if len(ids) == 0 {
+			return hosted_failed(h, fn, fmt.Errorf("no people"))
+		}
+		room, err := rooms_create(ctx, h.address, ids, name)
+		if err != nil {
+			return hosted_failed(h, fn, err)
+		}
+		return sl_encode(map[string]any{"conversation": room, "room": len(people) > 1, "people": people}), nil
+	}
 	switch l.kind {
 	case "xmpp":
 		var bares []string
@@ -316,10 +381,7 @@ func api_account_room_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	case "matrix":
 		var ids []string
 		for _, address := range addresses {
-			address = strings.TrimPrefix(address, "matrix:u/")
-			if !strings.HasPrefix(address, "@") {
-				address = "@" + address
-			}
+			address = matrix_person(address)
 			found, err := matrix_name(ctx, l, address)
 			if err != nil {
 				return linked_failed(l, fn, err)
@@ -338,18 +400,34 @@ func api_account_room_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	return sl_encode(map[string]any{"conversation": conversation, "room": len(people) > 1, "people": people}), nil
 }
 
-// mochi.account.room.join(account, address, person="") -> dict: Join a room on a linked XMPP or Matrix account by its address (#alias:host or !id:host on Matrix, name@rooms.host on XMPP), and return {conversation, name}. On Matrix it also accepts an invitation, and with person the room is marked in the account's data as the one-to-one conversation with them, as an invitation to one asks. An address that is not a room fails. Requires the account's permission
+// mochi.account.room.join(account, address, person="") -> dict: Join a room on a linked XMPP or Matrix account, or a hosted Matrix account, by its address (#alias:host or !id:host on Matrix, name@rooms.host on XMPP), and return {conversation, name}. On Matrix it also accepts an invitation, and with person the room is marked in the account's data as the one-to-one conversation with them, as an invitation to one asks. A hosted account's apps are told of the room, who is in it and its recent past before the join returns. An address that is not a room fails. Requires the account's permission
 func api_account_room_join(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, address, person string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "address", &address, "person?", &person); err != nil {
 		return nil, err
 	}
-	l, err := linked_acting(t, fn, account, "xmpp", "matrix")
+	l, h, err := conversing(t, fn, account, "xmpp", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	address = strings.TrimSpace(address)
 	ctx := thread_context(t)
+	if h != nil {
+		// Marked one-to-one before the join, which tells the apps of the room.
+		target := matrix_room(address)
+		direct := resolve_matrix_re.MatchString(person) && strings.HasPrefix(target, "!")
+		if direct {
+			rooms_direct_add(h.address, target, person)
+		}
+		room, err := rooms_join(ctx, h.address, target)
+		if err != nil {
+			if direct {
+				rooms_direct_remove(h.address, target)
+			}
+			return hosted_failed(h, fn, err)
+		}
+		return sl_encode(map[string]any{"conversation": room, "name": ""}), nil
+	}
 	switch l.kind {
 	case "xmpp":
 		c, err := linked_client(l)
@@ -362,7 +440,7 @@ func api_account_room_join(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		}
 		return sl_encode(map[string]any{"conversation": "xmpp:" + room, "name": name}), nil
 	default:
-		room, err := matrix_room_join(ctx, l, strings.TrimPrefix(strings.TrimPrefix(address, "matrix:r/"), "matrix:roomid/"))
+		room, err := matrix_room_join(ctx, l, matrix_room(address))
 		if err != nil {
 			return linked_failed(l, fn, err)
 		}
@@ -373,15 +451,21 @@ func api_account_room_join(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 }
 
-// mochi.account.room.leave(account, conversation) -> None: Leave a room of a linked XMPP or Matrix account, or decline an invitation to it, and stop keeping it. Requires the account's permission
+// mochi.account.room.leave(account, conversation) -> None: Leave a room of a linked XMPP or Matrix account, or a hosted Matrix account, or decline an invitation to it, and stop keeping it. Requires the account's permission
 func api_account_room_leave(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, conversation string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "conversation", &conversation); err != nil {
 		return nil, err
 	}
-	l, err := linked_acting(t, fn, account, "xmpp", "matrix")
+	l, h, err := conversing(t, fn, account, "xmpp", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	if h != nil {
+		if err := rooms_leave(thread_context(t), h.address, conversation); err != nil {
+			return hosted_failed(h, fn, err)
+		}
+		return sl.None, nil
 	}
 	switch l.kind {
 	case "xmpp":
@@ -400,4 +484,34 @@ func api_account_room_leave(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		}
 	}
 	return sl.None, nil
+}
+
+// conversing_failed is a failure of either kind of account as the app sees it.
+func conversing_failed(l *linked, h *matrix_hosted, fn *sl.Builtin, err error) (sl.Value, error) {
+	if h != nil {
+		return hosted_failed(h, fn, err)
+	}
+	return linked_failed(l, fn, err)
+}
+
+// matrix_person is a Matrix person's id from an address as typed: @name:host,
+// name:host or matrix:u/name:host.
+func matrix_person(address string) string {
+	address = strings.TrimPrefix(address, "matrix:u/")
+	if !strings.HasPrefix(address, "@") {
+		address = "@" + address
+	}
+	return address
+}
+
+// matrix_room is a Matrix room's id or alias from an address as typed:
+// !id:host, #alias:host, matrix:roomid/id:host or matrix:r/alias:host.
+func matrix_room(address string) string {
+	if rest, ok := strings.CutPrefix(address, "matrix:r/"); ok {
+		return "#" + rest
+	}
+	if rest, ok := strings.CutPrefix(address, "matrix:roomid/"); ok {
+		return "!" + rest
+	}
+	return address
 }

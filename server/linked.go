@@ -15,7 +15,8 @@
 // and the user's domain blocks, the limiter per host and account, and the
 // private-address check. The owner's protocol setting does not apply, since a
 // linked account only makes requests as the user. A chat account (XMPP,
-// Matrix) also has a long-lived session, held by the manager at the end.
+// Matrix) and a Mastodon account also have a long-lived session, held by the
+// manager at the end.
 
 package main
 
@@ -49,10 +50,16 @@ func linked_kind(kind string) bool {
 	return slices.Contains(linked_kinds, kind)
 }
 
-// linked_chat reports whether a kind is a chat network, whose account has a
-// session the manager holds.
+// linked_chat reports whether a kind is a chat network.
 func linked_chat(kind string) bool {
 	return kind == "xmpp" || kind == "matrix"
+}
+
+// linked_held reports whether a kind's account has a session the manager
+// holds: a chat network's, and a Mastodon account's stream of its direct
+// messages.
+func linked_held(kind string) bool {
+	return linked_chat(kind) || kind == "mastodon"
 }
 
 // provider_network reports whether a provider type is a network's: a hosted
@@ -79,7 +86,21 @@ var network_scheme = "https://"
 // inside it with room to answer.
 const linked_timeout = 45 * time.Second
 
-// A linked is one linked account loaded with its data.
+// A linked_bucket names the share of an account's request budget a request
+// draws on: an app's calls draw on one, and the session's own - its syncs, its
+// presence, its first reading of what it missed - on another, so a busy
+// conversation's syncs never leave the user unable to send.
+type linked_bucket struct{}
+
+// linked_session_context is a session's context, its requests drawing on the
+// session's share of the budget.
+func linked_session_context(ctx context.Context) context.Context {
+	return context.WithValue(ctx, linked_bucket{}, "session")
+}
+
+// A linked is one linked account loaded with its data. A session and an
+// app's call may each hold one for the same account, so what changes is
+// written key by key (save).
 type linked struct {
 	user       *User
 	id         string
@@ -87,6 +108,8 @@ type linked struct {
 	label      string
 	identifier string
 	data       map[string]any
+	lock       sync.Mutex
+	changed    map[string]bool
 }
 
 // A linked_profile is what a server says about the account linked on it.
@@ -167,22 +190,64 @@ func linked_get(user *User, id string) *linked {
 
 // get reads a string from the account's data.
 func (l *linked) get(key string) string {
-	value, _ := l.data[key].(string)
+	value, _ := l.value(key).(string)
 	return value
+}
+
+// value reads a value from the account's data.
+func (l *linked) value(key string) any {
+	l.lock.Lock()
+	defer l.lock.Unlock()
+	return l.data[key]
 }
 
 // set changes the account's data in memory; save writes it.
 func (l *linked) set(key string, value any) {
+	l.lock.Lock()
+	defer l.lock.Unlock()
 	if value == nil || value == "" {
 		delete(l.data, key)
-		return
+	} else {
+		l.data[key] = value
 	}
-	l.data[key] = value
+	if l.changed == nil {
+		l.changed = map[string]bool{}
+	}
+	l.changed[key] = true
 }
 
-// save writes the account's data back to its row.
+// save writes the keys changed since the last save to the account's row,
+// leaving every other key as the row has it.
 func (l *linked) save() {
-	db_user(l.user, "user").account_set(l.id, map[string]any{"data": json_encode(l.data)})
+	l.lock.Lock()
+	var removed []any
+	var set []any
+	for key := range l.changed {
+		if value, found := l.data[key]; found {
+			set = append(set, "$."+key, json_encode(value))
+		} else {
+			removed = append(removed, "$."+key)
+		}
+	}
+	l.changed = nil
+	l.lock.Unlock()
+	if len(removed) == 0 && len(set) == 0 {
+		return
+	}
+	expression := "coalesce(nullif(data, ''), '{}')"
+	if len(removed) > 0 {
+		expression = "json_remove(" + expression + strings.Repeat(", ?", len(removed)) + ")"
+	}
+	if len(set) > 0 {
+		expression = "json_set(" + expression + strings.Repeat(", ?, json(?)", len(set)/2) + ")"
+	}
+	db_user(l.user, "user").exec("update accounts set data="+expression+" where id=?", append(append(removed, set...), l.id)...)
+}
+
+// store changes one key and writes it.
+func (l *linked) store(key string, value any) {
+	l.set(key, value)
+	l.save()
 }
 
 // linked_store keeps a newly linked account: the row of the same kind and
@@ -211,7 +276,7 @@ func linked_store(user *User, kind string, profile *linked_profile, data map[str
 		db.account_set(id, map[string]any{"identifier": profile.Address, "data": json_encode(data), "verified": now(), "enabled": 1})
 	}
 	row, _ := db.row("select id, type, label, identifier, data, created, verified, enabled, \"default\", device from accounts where id=?", id)
-	if l := linked_from(user, row); l != nil && linked_chat(kind) {
+	if l := linked_from(user, row); l != nil && linked_held(kind) {
 		linked_stop(user.UID, id)
 		linked_start(l)
 	}
@@ -672,7 +737,11 @@ func (l *linked) request(ctx context.Context, method string, address string, hea
 		if err := l.authorize(request, body); err != nil {
 			return 0, nil, nil, err
 		}
-		response, err := network_send(ctx, l.user, "", strings.ToLower(request.URL.Hostname())+"|"+l.id, request, 0)
+		key := strings.ToLower(request.URL.Hostname()) + "|" + l.id
+		if bucket, _ := ctx.Value(linked_bucket{}).(string); bucket != "" {
+			key += "|" + bucket
+		}
+		response, err := network_send(ctx, l.user, "", key, request, 0)
 		if err != nil {
 			return 0, nil, nil, err
 		}
@@ -775,13 +844,15 @@ func (l *linked) multipart(ctx context.Context, address string, field string, na
 	return status, data, nil
 }
 
-// authorize adds the account's credential to a request.
+// authorize adds the account's credential to a request to the account's own
+// server. A request anywhere else, such as for a file whose address a message
+// gave, goes without it.
 func (l *linked) authorize(request *http.Request, body []byte) error {
 	switch l.kind {
 	case "mastodon", "lemmy", "matrix":
 		// No token yet, as at the sign-in: the request goes plain.
 		token := l.get("token")
-		if token == "" {
+		if token == "" || !l.home(request.URL) {
 			return nil
 		}
 		request.Header.Set("Authorization", "Bearer "+token)
@@ -793,6 +864,20 @@ func (l *linked) authorize(request *http.Request, body []byte) error {
 		return bluesky_authorize(l, request, body)
 	}
 	return nil
+}
+
+// home reports whether an address is on the account's own server: the server
+// a Matrix account's well-known document named, else the account's server.
+func (l *linked) home(address *url.URL) bool {
+	server := l.get("server")
+	if l.kind == "matrix" {
+		base, err := url.Parse(l.get("base"))
+		if err != nil {
+			return false
+		}
+		server = base.Host
+	}
+	return server != "" && strings.EqualFold(address.Host, server)
 }
 
 // expired reports whether an answer says the credential has run out, so that
@@ -896,6 +981,16 @@ func (l *linked) remember(key string, result map[string]any) {
 
 // === The functions ===
 
+// linked_failed notes what a linked account's server would not do and answers
+// None, as an app finds a server it cannot reach: the app learns of the
+// failure from the empty answer rather than having its action ended, so a
+// message is not left half sent and a list of accounts is not left half
+// published to.
+func linked_failed(l *linked, fn *sl.Builtin, err error) (sl.Value, error) {
+	info("Linked %s account %s: %s: %v", l.kind, l.id, fn.Name(), err)
+	return sl.None, nil
+}
+
 // linked_create publishes an object through a linked social account, once per
 // key, and answers the remote id, the page and the network's own answer.
 func linked_create(ctx context.Context, l *linked, object map[string]any, key string) (map[string]any, error) {
@@ -911,8 +1006,12 @@ func linked_create(ctx context.Context, l *linked, object map[string]any, key st
 		result, err = lemmy_create(ctx, l, object)
 	case "bluesky":
 		result, err = bluesky_create(ctx, l, object)
+	case "matrix":
+		result, err = matrix_create(ctx, l, object, key)
+	case "xmpp":
+		result, err = xmpp_create(ctx, l, object, key)
 	default:
-		return nil, fmt.Errorf("a %s account cannot publish; its functions come with chat", l.kind)
+		return nil, fmt.Errorf("a %s account cannot publish", l.kind)
 	}
 	if err != nil {
 		return nil, err
@@ -930,12 +1029,17 @@ func linked_update(ctx context.Context, l *linked, id string, object map[string]
 		return lemmy_update(ctx, l, id, object)
 	case "bluesky":
 		return bluesky_update(ctx, l, id, object)
+	case "matrix":
+		return matrix_update(ctx, l, id, object)
+	case "xmpp":
+		return xmpp_update(ctx, l, id, object)
 	}
-	return nil, fmt.Errorf("a %s account cannot publish; its functions come with chat", l.kind)
+	return nil, fmt.Errorf("a %s account cannot publish", l.kind)
 }
 
-// linked_delete deletes an object the account published.
-func linked_delete(ctx context.Context, l *linked, id string) error {
+// linked_delete deletes an object the account published: on a chat network,
+// a message of the conversation named.
+func linked_delete(ctx context.Context, l *linked, id string, conversation string) error {
 	switch l.kind {
 	case "mastodon":
 		return mastodon_delete(ctx, l, id)
@@ -943,8 +1047,16 @@ func linked_delete(ctx context.Context, l *linked, id string) error {
 		return lemmy_delete(ctx, l, id)
 	case "bluesky":
 		return bluesky_delete(ctx, l, id)
+	case "matrix":
+		return matrix_delete(ctx, l, id, conversation)
+	case "xmpp":
+		c, err := linked_client(l)
+		if err != nil {
+			return err
+		}
+		return c.retract(ctx, conversation, id)
 	}
-	return fmt.Errorf("a %s account cannot publish; its functions come with chat", l.kind)
+	return fmt.Errorf("a %s account cannot publish", l.kind)
 }
 
 // linked_timeline reads a page of the account's home timeline.
@@ -996,6 +1108,14 @@ func linked_upload(ctx context.Context, l *linked, content []byte, kind string, 
 		return lemmy_upload(ctx, l, content, kind, name)
 	case "bluesky":
 		return bluesky_upload(ctx, l, content, kind)
+	case "matrix":
+		return matrix_upload(ctx, l, content, kind, name)
+	case "xmpp":
+		c, err := linked_client(l)
+		if err != nil {
+			return nil, err
+		}
+		return c.upload(ctx, content, kind, name)
 	}
 	return nil, fmt.Errorf("a %s account cannot upload here", l.kind)
 }
@@ -1293,7 +1413,7 @@ func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 	result, err := linked_upload(thread_context(t), l, data, kind, name, description)
 	if err != nil {
-		return sl_error(fn, "%v", err)
+		return linked_failed(l, fn, err)
 	}
 	return sl_encode(result), nil
 }
@@ -1348,29 +1468,26 @@ func api_account_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 // === The chat manager ===
 //
 // A linked XMPP account has a connection to its server for as long as it is
-// linked and enabled, and a linked Matrix account a sync loop; what arrives is
-// handed to linked_inbound. The manager starts one session per account at
-// startup and keeps it, reconnecting on failure at a growing interval, until
-// the account is unlinked or disabled, or the server stops accepting its
-// credential, which waits for the user to link it again.
+// linked and enabled, a linked Matrix account a sync loop, and a linked
+// Mastodon account a stream of its direct messages; what arrives is handed to
+// linked_inbound (conversations.go). The manager starts one session per
+// account at startup and keeps it, reconnecting on failure at a growing
+// interval, until the account is unlinked or disabled, or the server stops
+// accepting its credential, which waits for the user to link it again.
 
-// A linked_session is one account's running session.
+// A linked_session is one account's running session: whether it is
+// connected and why not, the client an XMPP session sends through, and a
+// signal that the user's presence or what they share of it changed.
 type linked_session struct {
 	cancel    context.CancelFunc
 	connected atomic.Bool
 	reason    atomic.Value // string: why it is not connected
+	client    atomic.Pointer[xmpp_client]
+	presence  chan struct{}
 }
 
 var linked_sessions = map[string]*linked_session{}
 var linked_lock sync.Mutex
-
-// linked_inbound receives what a chat account's session hears: a message, a
-// presence, a Matrix sync's rooms. The chat app's functions take it from here
-// when chat is built on the networks; until then it is dropped. A variable so
-// tests can watch it.
-var linked_inbound = func(user *User, account string, kind string, event map[string]any) {
-	debug("Linked %s account %s: %s dropped, no app takes it yet", kind, account, event["kind"])
-}
 
 // linked_session_key names a session.
 func linked_session_key(uid string, id string) string {
@@ -1397,11 +1514,11 @@ func linked_manager() {
 	}
 }
 
-// linked_resume starts a session for every enabled linked chat account of
-// every active user.
+// linked_resume starts a session for every enabled linked account of every
+// active user that holds one.
 func linked_resume() {
 	linked_each(func(user *User, l *linked) {
-		if linked_chat(l.kind) {
+		if linked_held(l.kind) {
 			linked_start(l)
 		}
 	})
@@ -1428,7 +1545,7 @@ func linked_each(fn func(user *User, l *linked)) {
 
 // linked_start begins an account's session, unless one is running.
 func linked_start(l *linked) {
-	if !networks_development || !linked_chat(l.kind) {
+	if !networks_development || !linked_held(l.kind) {
 		return
 	}
 	key := linked_session_key(l.user.UID, l.id)
@@ -1438,7 +1555,7 @@ func linked_start(l *linked) {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &linked_session{cancel: cancel}
+	s := &linked_session{cancel: cancel, presence: make(chan struct{}, 1)}
 	linked_sessions[key] = s
 	go linked_run(ctx, l, s)
 }
@@ -1461,7 +1578,7 @@ func linked_refresh(user *User, id string) {
 	row, _ := db_user(user, "user").row("select id, type, label, identifier, data, enabled from accounts where id=?", id)
 	l := linked_from(user, row)
 	enabled, _ := row["enabled"].(int64)
-	if l == nil || !linked_chat(l.kind) || enabled == 0 {
+	if l == nil || !linked_held(l.kind) || enabled == 0 {
 		linked_stop(user.UID, id)
 		return
 	}
@@ -1499,6 +1616,8 @@ func linked_run(ctx context.Context, l *linked, s *linked_session) {
 			err = xmpp_run(ctx, fresh, s)
 		case "matrix":
 			err = matrix_run(ctx, fresh, s)
+		case "mastodon":
+			err = mastodon_run(ctx, fresh, s)
 		}
 		s.connected.Store(false)
 		if ctx.Err() != nil {
@@ -1509,8 +1628,7 @@ func linked_run(ctx context.Context, l *linked, s *linked_session) {
 			debug("Linked %s account %s: %v", fresh.kind, fresh.id, err)
 		}
 		if errors.Is(err, linked_signed_out) {
-			fresh.set("error", err.Error())
-			fresh.save()
+			fresh.store("error", err.Error())
 			linked_stop(l.user.UID, l.id)
 			return
 		}

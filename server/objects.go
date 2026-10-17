@@ -255,7 +255,7 @@ func api_account_object_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	if l := linked_from(user, row); l != nil {
 		result, err := linked_create(thread_context(t), l, object, key)
 		if err != nil {
-			return sl_error(fn, "%v", err)
+			return linked_failed(l, fn, err)
 		}
 		return sl_encode(result), nil
 	}
@@ -317,7 +317,7 @@ func api_account_object_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	if l := linked_from(user, found); l != nil {
 		result, err := linked_update(thread_context(t), l, remote, object)
 		if err != nil {
-			return sl_error(fn, "%v", err)
+			return linked_failed(l, fn, err)
 		}
 		return sl_encode(result), nil
 	}
@@ -365,10 +365,10 @@ func api_account_object_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	return object_result(remote, remote, object), nil
 }
 
-// mochi.account.object.delete(account, id) -> None: Withdraw an object the account published. As a hosted account a Delete goes to everyone it addressed, and its id is kept so the engine answers for it with a tombstone; as a linked account the server is asked to delete it
+// mochi.account.object.delete(account, id, conversation="") -> bool | None: Withdraw an object the account published, answering True, or None where a linked account's server would not. As a hosted account a Delete goes to everyone it addressed, and its id is kept so the engine answers for it with a tombstone; as a linked account the server is asked to delete it, and on XMPP or Matrix the message is withdrawn from the conversation named (a redaction, a retraction)
 func api_account_object_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	var account, remote string
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "id", &remote); err != nil {
+	var account, remote, conversation string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "id", &remote, "conversation?", &conversation); err != nil {
 		return nil, err
 	}
 	user, found, actor, err := account_acting(t, fn, account)
@@ -376,16 +376,16 @@ func api_account_object_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		return sl_error(fn, "%v", err)
 	}
 	if l := linked_from(user, found); l != nil {
-		if err := linked_delete(thread_context(t), l, remote); err != nil {
-			return sl_error(fn, "%v", err)
+		if err := linked_delete(thread_context(t), l, remote, conversation); err != nil {
+			return linked_failed(l, fn, err)
 		}
-		return sl.None, nil
+		return sl.True, nil
 	}
 	if found["type"] == "bluesky" {
 		if err := atproto_delete(thread_context(t), user, found, remote); err != nil {
 			return sl_error(fn, "%v", err)
 		}
-		return sl.None, nil
+		return sl.True, nil
 	}
 	db := db_user(user, "user")
 	id, row := object_get(db, actor, account, remote)
@@ -393,7 +393,7 @@ func api_account_object_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		return sl_error(fn, "no such object")
 	}
 	if row["deleted"].(int64) != 0 {
-		return sl.None, nil
+		return sl.True, nil
 	}
 	db.exec("update objects set deleted=? where id=?", now(), id)
 
@@ -410,7 +410,7 @@ func api_account_object_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 			"object":   map[string]any{"id": remote, "type": "Announce", "actor": actor, "object": object_announced(row)},
 		}
 		object_deliver(thread_context(t), user, account, actor, undo, to, cc)
-		return sl.None, nil
+		return sl.True, nil
 	}
 	activity := map[string]any{
 		"@context": activitystreams,
@@ -422,7 +422,7 @@ func api_account_object_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		"object":   map[string]any{"id": remote, "type": "Tombstone"},
 	}
 	object_deliver(thread_context(t), user, account, actor, activity, to, cc)
-	return sl.None, nil
+	return sl.True, nil
 }
 
 // mochi.account.follow(account, address) -> dict: Follow a person on the

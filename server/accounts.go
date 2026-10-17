@@ -330,16 +330,20 @@ var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"object":        api_account_object,
 	"password":      sl.NewBuiltin("mochi.account.password", api_account_password),
 	"posts":         sl.NewBuiltin("mochi.account.posts", api_account_posts),
+	"presence":      sl.NewBuiltin("mochi.account.presence", api_account_presence),
 	"profile":       sl.NewBuiltin("mochi.account.profile", api_account_profile),
 	"providers":     sl.NewBuiltin("mochi.account.providers", api_account_providers),
+	"read":          sl.NewBuiltin("mochi.account.read", api_account_read),
 	"remove":        sl.NewBuiltin("mochi.account.remove", api_account_remove),
 	"report":        sl.NewBuiltin("mochi.account.report", api_account_report),
 	"request":       sl.NewBuiltin("mochi.account.request", api_account_request),
 	"resolve":       sl.NewBuiltin("mochi.account.resolve", api_account_resolve),
+	"room":          api_account_room,
 	"sync":          sl.NewBuiltin("mochi.account.sync", api_account_sync),
 	"test":          sl.NewBuiltin("mochi.account.test", api_account_test),
 	"throttled":     sl.NewBuiltin("mochi.account.throttled", api_account_throttled),
 	"timeline":      sl.NewBuiltin("mochi.account.timeline", api_account_timeline),
+	"typing":        sl.NewBuiltin("mochi.account.typing", api_account_typing),
 	"unfollow":      sl.NewBuiltin("mochi.account.unfollow", api_account_unfollow),
 	"update":        sl.NewBuiltin("mochi.account.update", api_account_update),
 	"upload":        sl.NewBuiltin("mochi.account.upload", api_account_upload),
@@ -518,7 +522,7 @@ func account_present(user *User, row map[string]any) map[string]any {
 			out["labelers"] = object_strings(data["labelers"])
 		}
 	}
-	if !hosted && linked_chat(ptype) {
+	if !hosted && linked_held(ptype) {
 		id, _ := row["id"].(string)
 		connected, reason := linked_connected(user.UID, id)
 		out["connected"] = connected

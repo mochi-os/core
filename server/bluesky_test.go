@@ -423,8 +423,8 @@ func TestBlueskyPassword(t *testing.T) {
 	if updated["data"].(map[string]any)["cid"] != "bafy2" {
 		t.Errorf("update = %v", updated)
 	}
-	if _, err := api_account_object_update(thread, fn, sl.Tuple{sl.String(id), sl.String("at://did:plc:other/app.bsky.feed.post/1"), object_dict("text", "x")}, nil); err == nil {
-		t.Error("another account's record was updated")
+	if value, err := api_account_object_update(thread, fn, sl.Tuple{sl.String(id), sl.String("at://did:plc:other/app.bsky.feed.post/1"), object_dict("text", "x")}, nil); err != nil || value != sl.None {
+		t.Errorf("another account's record was updated: %v, %v", value, err)
 	}
 	if _, err := api_account_object_delete(thread, fn, sl.Tuple{sl.String(id), sl.String(created["id"].(string))}, nil); err != nil {
 		t.Errorf("delete: %v", err)

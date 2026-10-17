@@ -99,13 +99,34 @@ type inbound_log struct {
 
 func (log *inbound_log) install(t *testing.T) {
 	t.Helper()
-	linked_inbound = func(user *User, account string, kind string, event map[string]any) {
+	linked_inbound = func(user *User, account string, network string, events []map[string]any) {
 		log.lock.Lock()
-		event["account"] = account
-		event["network"] = kind
-		log.events = append(log.events, event)
+		for _, event := range events {
+			event["account"] = account
+			event["network"] = network
+			log.events = append(log.events, event)
+		}
 		log.lock.Unlock()
 	}
+}
+
+// find answers the first event of a kind matching the condition, waiting for
+// it.
+func (log *inbound_log) find(t *testing.T, kind string, condition func(map[string]any) bool) map[string]any {
+	t.Helper()
+	var found map[string]any
+	wait(t, "a "+kind+" event", func() bool {
+		log.lock.Lock()
+		defer log.lock.Unlock()
+		for _, event := range log.events {
+			if event["kind"] == kind && (condition == nil || condition(event)) {
+				found = event
+				return true
+			}
+		}
+		return false
+	})
+	return found
 }
 
 // wait polls until the condition holds or two seconds pass.
@@ -418,8 +439,8 @@ func TestLinkedLemmy(t *testing.T) {
 	if _, err := api_account_object_delete(thread, fn, sl.Tuple{sl.String(id), sl.String("post/42")}, nil); err != nil {
 		t.Errorf("delete: %v", err)
 	}
-	if _, err := api_account_object_delete(thread, fn, sl.Tuple{sl.String(id), sl.String("nonsense")}, nil); err == nil {
-		t.Error("delete of a malformed id succeeded")
+	if value, err := api_account_object_delete(thread, fn, sl.Tuple{sl.String(id), sl.String("nonsense")}, nil); err != nil || value != sl.None {
+		t.Errorf("delete of a malformed id succeeded: %v, %v", value, err)
 	}
 
 	timeline := decoded(t)(api_account_timeline(thread, fn, sl.Tuple{sl.String(id)}, nil))
@@ -466,7 +487,7 @@ func TestLinkedLemmy(t *testing.T) {
 }
 
 // TestLinkedGuards: the linked functions refuse a hosted account, a missing
-// permission, a bad method or path, a chat account that cannot publish, and
+// permission, a bad method or path, a chat message with no room, and
 // everything with the development switch off; follow stays hosted-only.
 func TestLinkedGuards(t *testing.T) {
 	alice := create_linked_test_env(t)
@@ -484,8 +505,8 @@ func TestLinkedGuards(t *testing.T) {
 	if _, err := api_account_request(thread, fn, sl.Tuple{sl.String("m1"), sl.String("GET"), sl.String("../x")}, nil); err == nil || !strings.Contains(err.Error(), "path") {
 		t.Errorf("bad path: %v", err)
 	}
-	if _, err := api_account_object_create(thread, fn, sl.Tuple{sl.String("m1"), object_dict("body", "hi")}, nil); err == nil || !strings.Contains(err.Error(), "chat") {
-		t.Errorf("create on a chat account: %v", err)
+	if value, err := api_account_object_create(thread, fn, sl.Tuple{sl.String("m1"), object_dict("body", "hi")}, nil); err != nil || value != sl.None {
+		t.Errorf("a message with no room on a chat account: %v, %v", value, err)
 	}
 	if _, err := api_account_follow(thread, fn, sl.Tuple{sl.String("m1"), sl.String("@bob:example.org")}, nil); err == nil || !strings.Contains(err.Error(), "request") {
 		t.Errorf("follow on a linked account: %v", err)
@@ -600,7 +621,7 @@ func create_matrix_fake(t *testing.T) *matrix_fake {
 		f.lock.Unlock()
 		since := r.URL.Query().Get("since")
 		if since == "" {
-			answer(w, 200, map[string]any{"next_batch": "s1", "rooms": map[string]any{"join": map[string]any{"!room:" + fake_host(f.server): map[string]any{"timeline": map[string]any{"events": []any{map[string]any{"type": "m.room.message", "content": map[string]any{"body": "hi"}}}}}}}})
+			answer(w, 200, map[string]any{"next_batch": "s1", "rooms": map[string]any{"join": map[string]any{"!room:" + fake_host(f.server): map[string]any{"timeline": map[string]any{"events": []any{map[string]any{"type": "m.room.message", "event_id": "$e1", "sender": "@bob:" + fake_host(f.server), "origin_server_ts": 1700000000000, "content": map[string]any{"msgtype": "m.text", "body": "hi"}}}}}}}})
 			return
 		}
 		// Nothing new: a long poll that ends quickly here.
@@ -681,16 +702,9 @@ func TestLinkedMatrix(t *testing.T) {
 	}
 
 	wait(t, "the sync loop to connect", func() bool { connected, _ := linked_connected(alice.UID, id); return connected })
-	wait(t, "the first sync's rooms", func() bool {
-		log.lock.Lock()
-		defer log.lock.Unlock()
-		return len(log.events) > 0
-	})
-	log.lock.Lock()
-	event := log.events[0]
-	log.lock.Unlock()
-	rooms, _ := event["rooms"].(map[string]any)
-	if event["network"] != "matrix" || event["account"] != id || event["kind"] != "sync" || rooms["join"] == nil {
+	log.find(t, "session", nil)
+	event := log.find(t, "message", nil)
+	if event["network"] != "matrix" || event["account"] != id || event["conversation"] != "!room:"+host || event["body"] != "hi" || event["from"] != "@bob:"+host || event["id"] != "$e1" || event["created"] != int64(1700000000) {
 		t.Errorf("inbound event = %v", event)
 	}
 	wait(t, "the position to be kept", func() bool { return linked_get(alice, id).get("since") != "" })

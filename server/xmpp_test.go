@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -38,6 +39,8 @@ type xmpp_fake struct {
 	dials    int
 	sessions []*xmpp.Session
 	cert     tls.Certificate
+	received []string
+	answer   func(stanza string) []string
 }
 
 func create_xmpp_fake(t *testing.T, password string, send ...string) *xmpp_fake {
@@ -93,12 +96,47 @@ func (f *xmpp_fake) serve(raw net.Conn, conn net.Conn) {
 	f.lock.Unlock()
 	// The pipe is synchronous, so the stream is read before anything is sent
 	// on it; each stanza goes as its own element.
-	go session.Serve(xmpp.HandlerFunc(func(t xmlstream.TokenReadEncoder, start *xml.StartElement) error { return nil }))
+	go session.Serve(xmpp.HandlerFunc(func(t xmlstream.TokenReadEncoder, start *xml.StartElement) error {
+		var b bytes.Buffer
+		e := xml.NewEncoder(&b)
+		e.EncodeToken(start.Copy())
+		xmlstream.Copy(e, t)
+		e.Flush()
+		text := b.String()
+		f.lock.Lock()
+		f.received = append(f.received, text)
+		answer := f.answer
+		f.lock.Unlock()
+		if answer != nil {
+			for _, reply := range answer(text) {
+				xmpp_write(t, reply)
+			}
+		}
+		return nil
+	}))
 	for _, element := range f.send {
 		if err := session.Send(ctx, xml.NewDecoder(strings.NewReader(element))); err != nil {
 			return
 		}
 	}
+}
+
+// heard answers the stanzas the fake has received that contain every part
+// given.
+func (f *xmpp_fake) heard(parts ...string) []string {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+	var out []string
+	for _, text := range f.received {
+		all := true
+		for _, part := range parts {
+			all = all && strings.Contains(text, part)
+		}
+		if all {
+			out = append(out, text)
+		}
+	}
+	return out
 }
 
 // TestXMPPLink: an XMPP account links by signing in once over TLS, keeping the
@@ -134,18 +172,13 @@ func TestXMPPLink(t *testing.T) {
 	}
 
 	wait(t, "the connection", func() bool { connected, _ := linked_connected(alice.UID, id); return connected })
-	wait(t, "the message and the presence", func() bool {
-		log.lock.Lock()
-		defer log.lock.Unlock()
-		return len(log.events) >= 2
-	})
-	log.lock.Lock()
-	message, presence := log.events[0], log.events[1]
-	log.lock.Unlock()
-	if message["kind"] != "message" || message["body"] != "hello" || message["from"] != "bob@example.org/phone" || message["type"] != "chat" || message["id"] != "m1" || message["network"] != "xmpp" || message["account"] != id {
+	log.find(t, "session", nil)
+	message := log.find(t, "message", nil)
+	presence := log.find(t, "presence", nil)
+	if message["body"] != "hello" || message["from"] != "xmpp:bob@example.org" || message["conversation"] != "xmpp:bob@example.org" || message["room"] != false || message["id"] != "m1" || message["network"] != "xmpp" || message["account"] != id {
 		t.Errorf("message = %v", message)
 	}
-	if presence["kind"] != "presence" || presence["show"] != "away" || presence["from"] != "bob@example.org/phone" {
+	if presence["status"] != "away" || presence["from"] != "xmpp:bob@example.org" {
 		t.Errorf("presence = %v", presence)
 	}
 	if present := decoded(t)(api_account_get(thread, fn, sl.Tuple{sl.String(id)}, nil)); present["connected"] != true {

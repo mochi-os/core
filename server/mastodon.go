@@ -12,18 +12,24 @@
 // posting, with the idempotency key the server honours, the home timeline
 // and the account's own statuses for reading, notifications, and media for
 // uploads. The server's limits are read from its instance document when the
-// account is linked and refreshed daily (decision 24).
+// account is linked and refreshed daily (decision 24). While the account is
+// linked the manager holds the server's stream of its direct messages, and
+// what it carries reaches chat as conversation events (conversations.go).
 
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"nhooyr.io/websocket"
 )
 
 // mastodon_scopes is what Mochi asks a server for: reading and writing as the
@@ -408,4 +414,298 @@ func mastodon_refresh_limits(ctx context.Context, l *linked) {
 	}
 	l.set("refreshed", now())
 	l.save()
+}
+
+// === Direct messages ===
+//
+// A direct message reaches a Mastodon account as a status with direct
+// visibility. The session holds the server's stream - the account's own,
+// with its notifications and deletions, and the stream of its conversations
+// where the server has one - and on each connection first reads the latest
+// conversations, so that what came while it was away, and on the first
+// connection the conversations the account already has, are not missed. Each
+// status reaches chat as a message of the conversation among its people; an
+// edit and a deletion follow it.
+
+// mastodon_conversations is how many conversations a connection reads first,
+// and mastodon_context how many earlier messages of each.
+const (
+	mastodon_conversations = 20
+	mastodon_context       = 40
+)
+
+// mastodon_run is the account's stream. It returns when the stream ends, to
+// be run again, or with linked_signed_out when the server refuses the token.
+func mastodon_run(ctx context.Context, l *linked, s *linked_session) error {
+	ctx = linked_session_context(ctx)
+	address, err := mastodon_stream_address(ctx, l)
+	if err != nil {
+		return err
+	}
+	target, _ := url.Parse(strings.Replace(strings.Replace(address, "wss://", "https://", 1), "ws://", "http://", 1))
+	if err := network_target(l.user, "", target); err != nil {
+		return err
+	}
+	dial, cancel := context.WithTimeout(ctx, linked_timeout)
+	conn, response, err := websocket.Dial(dial, address+"/api/v1/streaming?stream=user", &websocket.DialOptions{
+		HTTPClient:   &http.Client{Transport: url_transport},
+		Subprotocols: []string{l.get("token")},
+	})
+	cancel()
+	if err != nil {
+		if response != nil && (response.StatusCode == 401 || response.StatusCode == 403) {
+			return linked_signed_out
+		}
+		return fmt.Errorf("the stream could not be opened: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	conn.SetReadLimit(linked_body_maximum)
+	// The conversations stream, where the server keeps one; a server that does
+	// not still sends direct messages to the account as mentions.
+	conn.Write(ctx, websocket.MessageText, []byte(`{"type":"subscribe","stream":"direct"}`))
+	s.connected.Store(true)
+	s.reason.Store("")
+	mastodon_catchup(ctx, l)
+	for {
+		kind, data, err := conn.Read(ctx)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("the stream ended: %v", err)
+		}
+		if kind != websocket.MessageText {
+			continue
+		}
+		events := mastodon_stream_event(l, data)
+		if len(events) == 0 {
+			continue
+		}
+		linked_inbound(l.user, l.id, "mastodon", events)
+		if created := as_int64(events[0]["created"]); created > as_int64(l.value("position")) {
+			l.store("position", created)
+		}
+	}
+}
+
+// mastodon_stream_address is where the server's stream is: the address its
+// instance document gives, else the server itself.
+func mastodon_stream_address(ctx context.Context, l *linked) (string, error) {
+	var instance struct {
+		URLs struct {
+			Streaming string `json:"streaming_api"`
+		} `json:"urls"`
+	}
+	status, _, err := l.json(ctx, "GET", mastodon_api(l, "v1/instance", nil), nil, &instance)
+	if err != nil {
+		return "", err
+	}
+	base := strings.Replace(strings.Replace(network_scheme, "https", "wss", 1), "http", "ws", 1) + l.get("server")
+	if status == 200 && (strings.HasPrefix(instance.URLs.Streaming, "wss://") || (network_scheme == "http://" && strings.HasPrefix(instance.URLs.Streaming, "ws://"))) {
+		base = strings.TrimSuffix(instance.URLs.Streaming, "/")
+	}
+	return base, nil
+}
+
+// mastodon_stream_event reads one event of the stream.
+func mastodon_stream_event(l *linked, data []byte) []map[string]any {
+	var message struct {
+		Event   string `json:"event"`
+		Payload string `json:"payload"`
+	}
+	if json.Unmarshal(data, &message) != nil {
+		return nil
+	}
+	switch message.Event {
+	case "delete":
+		return []map[string]any{{"kind": "delete", "id": message.Payload}}
+	case "conversation":
+		var conversation map[string]any
+		if json.Unmarshal([]byte(message.Payload), &conversation) != nil {
+			return nil
+		}
+		status, _ := conversation["last_status"].(map[string]any)
+		accounts, _ := conversation["accounts"].([]any)
+		if event := mastodon_message(l, status, accounts); event != nil {
+			return []map[string]any{event}
+		}
+	case "notification":
+		var notification map[string]any
+		if json.Unmarshal([]byte(message.Payload), &notification) != nil || notification["type"] != "mention" {
+			return nil
+		}
+		status, _ := notification["status"].(map[string]any)
+		if event := mastodon_message(l, status, nil); event != nil {
+			return []map[string]any{event}
+		}
+	case "update", "status.update":
+		var status map[string]any
+		if json.Unmarshal([]byte(message.Payload), &status) != nil {
+			return nil
+		}
+		event := mastodon_message(l, status, nil)
+		if event == nil {
+			return nil
+		}
+		if message.Event == "status.update" {
+			return []map[string]any{{"kind": "edit", "id": event["id"], "from": event["from"], "html": event["html"], "own": event["own"]}}
+		}
+		return []map[string]any{event}
+	}
+	return nil
+}
+
+// mastodon_person is how chat knows a person of a status: acct:name@host,
+// with the account's own server for a name the server gives bare.
+func mastodon_person(l *linked, account map[string]any) string {
+	acct, _ := account["acct"].(string)
+	acct = strings.TrimPrefix(acct, "@")
+	if acct == "" {
+		return ""
+	}
+	if !strings.Contains(acct, "@") {
+		acct += "@" + l.get("server")
+	}
+	return "acct:" + strings.ToLower(acct)
+}
+
+// mastodon_message reads a direct status as a message event: who it is
+// between besides the account (the conversation's accounts where the stream
+// gave them, else the status's author and the people it mentions), its HTML,
+// when it was posted, the status it replies to and its files. Anything not
+// direct is not a message here.
+func mastodon_message(l *linked, status map[string]any, accounts []any) map[string]any {
+	if status == nil || status["visibility"] != "direct" {
+		return nil
+	}
+	id, _ := status["id"].(string)
+	author, _ := status["account"].(map[string]any)
+	from := mastodon_person(l, author)
+	if id == "" || from == "" {
+		return nil
+	}
+	self, _ := author["id"].(string)
+	own := self != "" && self == l.get("account")
+	people := []any{}
+	add := func(person string) {
+		if person != "" && person != mastodon_self(l) {
+			for _, p := range people {
+				if p == person {
+					return
+				}
+			}
+			people = append(people, person)
+		}
+	}
+	if len(accounts) > 0 {
+		for _, a := range accounts {
+			if account, ok := a.(map[string]any); ok {
+				add(mastodon_person(l, account))
+			}
+		}
+	} else {
+		if !own {
+			add(from)
+		}
+		mentions, _ := status["mentions"].([]any)
+		for _, m := range mentions {
+			if mention, ok := m.(map[string]any); ok {
+				add(mastodon_person(l, mention))
+			}
+		}
+	}
+	if len(people) == 0 {
+		return nil
+	}
+	name, _ := author["display_name"].(string)
+	if name == "" {
+		name, _ = author["username"].(string)
+	}
+	html, _ := status["content"].(string)
+	created := now()
+	if published, _ := status["created_at"].(string); published != "" {
+		if t, err := time.Parse(time.RFC3339, published); err == nil {
+			created = t.Unix()
+		}
+	}
+	event := map[string]any{"kind": "message", "people": people, "from": from, "name": name, "id": id, "html": html, "created": created, "own": own, "encrypted": false}
+	if own {
+		event["from"] = mastodon_self(l)
+		event["name"] = ""
+	}
+	if reply, _ := status["in_reply_to_id"].(string); reply != "" {
+		event["reply"] = reply
+	}
+	var files []any
+	attachments, _ := status["media_attachments"].([]any)
+	for _, a := range attachments {
+		attachment, _ := a.(map[string]any)
+		address, _ := attachment["url"].(string)
+		if address == "" {
+			address, _ = attachment["remote_url"].(string)
+		}
+		if address == "" {
+			continue
+		}
+		file := map[string]any{"url": address, "name": xmpp_file_name(address)}
+		if description, _ := attachment["description"].(string); description != "" {
+			file["description"] = description
+		}
+		files = append(files, file)
+	}
+	if len(files) > 0 {
+		event["files"] = files
+	}
+	return event
+}
+
+// mastodon_self is the account as chat knows a person: acct:name@host.
+func mastodon_self(l *linked) string {
+	return "acct:" + strings.ToLower(strings.TrimPrefix(l.identifier, "@"))
+}
+
+// mastodon_catchup reads the account's latest conversations and hands on the
+// messages of each newer than the last the session saw, with the earlier
+// messages their latest replies to.
+func mastodon_catchup(ctx context.Context, l *linked) {
+	position := as_int64(l.value("position"))
+	var conversations []map[string]any
+	status, _, err := l.json(ctx, "GET", mastodon_api(l, "v1/conversations", map[string]string{"limit": strconv.Itoa(mastodon_conversations)}), nil, &conversations)
+	if err != nil || status != 200 {
+		debug("Mastodon account %s: conversations not read: %v", l.id, err)
+		return
+	}
+	latest := position
+	for _, conversation := range conversations {
+		last, _ := conversation["last_status"].(map[string]any)
+		accounts, _ := conversation["accounts"].([]any)
+		newest := mastodon_message(l, last, accounts)
+		if newest == nil || as_int64(newest["created"]) <= position {
+			continue
+		}
+		var events []map[string]any
+		var thread struct {
+			Ancestors []map[string]any `json:"ancestors"`
+		}
+		id, _ := last["id"].(string)
+		if code, _, err := l.json(ctx, "GET", mastodon_api(l, "v1/statuses/"+url.PathEscape(id)+"/context", nil), nil, &thread); err == nil && code == 200 {
+			ancestors := thread.Ancestors
+			if len(ancestors) > mastodon_context {
+				ancestors = ancestors[len(ancestors)-mastodon_context:]
+			}
+			for _, ancestor := range ancestors {
+				if event := mastodon_message(l, ancestor, accounts); event != nil && as_int64(event["created"]) > position {
+					events = append(events, event)
+				}
+			}
+		}
+		events = append(events, newest)
+		linked_inbound(l.user, l.id, "mastodon", events)
+		if created := as_int64(newest["created"]); created > latest {
+			latest = created
+		}
+	}
+	if latest > position {
+		l.store("position", latest)
+	}
 }

@@ -7,10 +7,11 @@
 //
 // Which of a user's sessions are connected right now, each with its status,
 // and when the user was last seen: the record chat reads for conversations
-// over P2P and the chat engines read for XMPP and Matrix clients. Core
-// records - a web socket opening and closing, an engine's client session
-// beginning and ending, a status a client sets - and chat decides what is
-// shared, under the user's switches. Connections live in memory, since none
+// over P2P and the chat engines read for XMPP and Matrix clients, and that a
+// linked XMPP or Matrix account shows (conversations.go). Core records - a web
+// socket opening and closing, an engine's client session beginning and
+// ending, a status a client sets - and chat decides what is shared, under the
+// user's switches. Connections live in memory, since none
 // survives a restart; the time last seen is kept in sessions.db beside the
 // sessions' own access times.
 
@@ -67,6 +68,7 @@ func presence_connect(uid string, connection string, session string, kind string
 		presence_connections[uid] = map[string]*presence_connection{}
 	}
 	presence_connections[uid][connection] = &presence_connection{ID: connection, Session: session, Kind: kind, Device: device, Status: "online", Since: now(), Seen: now()}
+	go linked_presence_notify(uid)
 }
 
 // presence_disconnect records a session ending, and the user seen at this
@@ -84,6 +86,7 @@ func presence_disconnect(uid string, connection string) {
 	}
 	presence_lock.Unlock()
 	presence_seen_record(uid)
+	linked_presence_notify(uid)
 }
 
 // presence_seen_record keeps the moment a user was last seen.
@@ -116,6 +119,9 @@ func presence_set(uid string, session string, connection string, status string, 
 		}
 		c.Status, c.Message, c.Seen = status, message, now()
 		changed++
+	}
+	if changed > 0 {
+		go linked_presence_notify(uid)
 	}
 	return changed
 }

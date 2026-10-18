@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -14,10 +15,13 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"net/url"
+	"os"
 	"slices"
 	"sort"
 	"strconv"
@@ -52,6 +56,9 @@ type matrix_remote struct {
 	edge     map[string][]string
 	aliases  map[string]string
 	received []gomatrixserverlib.PDU
+	edus     []gomatrixserverlib.EDU
+	media    map[string][]byte
+	fetched  int
 	invited  []gomatrixserverlib.PDU
 	asked    []string
 	fail     bool
@@ -66,7 +73,7 @@ func create_matrix_remote(t *testing.T, version gomatrixserverlib.RoomVersion) *
 		t.Fatal(err)
 	}
 	r := &matrix_remote{t: t, key: "ed25519:remote", private: private, public: public, version: verImpl,
-		events: map[string]gomatrixserverlib.PDU{}, before: map[string]map[string]string{}, state: map[string]map[string]string{}, edge: map[string][]string{}, aliases: map[string]string{}}
+		events: map[string]gomatrixserverlib.PDU{}, before: map[string]map[string]string{}, state: map[string]map[string]string{}, edge: map[string][]string{}, aliases: map[string]string{}, media: map[string][]byte{}}
 	r.server = httptest.NewServer(http.HandlerFunc(r.serve))
 	t.Cleanup(r.server.Close)
 	r.name = spec.ServerName(fake_host(r.server))
@@ -304,6 +311,13 @@ func (r *matrix_remote) answer(w http.ResponseWriter, status int, body any) {
 // serve answers the engine's requests, each checked against the engine's
 // signature.
 func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
+	// Where a download redirects to, as a server with a separate file store
+	// answers.
+	if req.URL.Path == "/files/moved" {
+		w.Header().Set("Content-Type", "image/gif")
+		w.Write([]byte("moved picture"))
+		return
+	}
 	if req.URL.Path == "/_matrix/key/v2/server" {
 		document, _ := json.Marshal(map[string]any{"server_name": string(r.name), "valid_until_ts": time.Now().Add(time.Hour).UnixMilli(),
 			"verify_keys": map[string]any{string(r.key): map[string]any{"key": base64.RawStdEncoding.EncodeToString(r.public)}}, "old_verify_keys": map[string]any{}})
@@ -332,10 +346,17 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		var transaction struct {
-			PDUs []json.RawMessage `json:"pdus"`
+			PDUs *[]json.RawMessage      `json:"pdus"`
+			EDUs []gomatrixserverlib.EDU `json:"edus"`
 		}
 		json.Unmarshal(request.Content(), &transaction)
-		for _, raw := range transaction.PDUs {
+		// As Synapse does: a transaction lists its room events, if none.
+		if transaction.PDUs == nil {
+			r.answer(w, 400, map[string]any{"error": "Invalid transaction"})
+			return
+		}
+		r.edus = append(r.edus, transaction.EDUs...)
+		for _, raw := range *transaction.PDUs {
 			if event, err := r.version.NewEventFromUntrustedJSON(raw); err == nil {
 				r.received = append(r.received, event)
 				r.take(event)
@@ -407,11 +428,33 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 		limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
 		r.answer(w, 200, map[string]any{"origin": string(r.name), "origin_server_ts": time.Now().UnixMilli(), "pdus": raw_events(r.walk(req.URL.Query()["v"], map[string]bool{}, limit))})
 	case route == "GET v1/query" && parts[2] == "profile":
-		if req.URL.Query().Get("user_id") != r.user("bob") {
+		names := map[string]string{r.user("bob"): "Bob", r.user("carol"): "Carol"}
+		name, found := names[req.URL.Query().Get("user_id")]
+		if !found {
 			r.answer(w, 404, map[string]any{"errcode": "M_NOT_FOUND"})
 			return
 		}
-		r.answer(w, 200, map[string]any{"displayname": "Bob"})
+		r.answer(w, 200, map[string]any{"displayname": name})
+	case route == "GET v1/media" && parts[2] == "download":
+		data, found := r.media[parts[3]]
+		if !found {
+			r.answer(w, 404, map[string]any{"errcode": "M_NOT_FOUND"})
+			return
+		}
+		r.fetched++
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		metadata, _ := writer.CreatePart(textproto.MIMEHeader{"Content-Type": {"application/json"}})
+		metadata.Write([]byte("{}"))
+		if string(data) == "moved" {
+			writer.CreatePart(textproto.MIMEHeader{"Location": {r.server.URL + "/files/moved"}})
+		} else {
+			part, _ := writer.CreatePart(textproto.MIMEHeader{"Content-Type": {"image/png"}})
+			part.Write(data)
+		}
+		writer.Close()
+		w.Header().Set("Content-Type", "multipart/mixed; boundary="+writer.Boundary())
+		w.Write(body.Bytes())
 	case route == "GET v1/query" && parts[2] == "directory":
 		room := r.aliases[req.URL.Query().Get("room_alias")]
 		if room == "" {
@@ -491,6 +534,19 @@ func (r *matrix_remote) push(t *testing.T, id string, events ...gomatrixserverli
 	return results
 }
 
+// edus_of answers the ephemeral events the remote was sent of a type.
+func (r *matrix_remote) edus_of(kind string) []gomatrixserverlib.EDU {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	var out []gomatrixserverlib.EDU
+	for _, edu := range r.edus {
+		if edu.Type == kind {
+			out = append(out, edu)
+		}
+	}
+	return out
+}
+
 // received_of answers the events the remote was sent of a type, by whom.
 func (r *matrix_remote) received_of(kind string, sender string) []gomatrixserverlib.PDU {
 	r.lock.Lock()
@@ -525,7 +581,31 @@ func create_matrix_test_env(t *testing.T) (*User, *inbound_log) {
 	logrus.SetOutput(io.Discard)
 	log := &inbound_log{}
 	log.install(t)
+	t.Cleanup(federation_workers_drain)
 	return alice, log
+}
+
+// federation_workers_drain ends every destination's worker before the test's
+// databases go: a worker ends only once its queue is empty, so one backing off
+// from a remote the test has closed would otherwise wake in a later test.
+func federation_workers_drain() {
+	db := federation_database()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		db.exec("delete from outbox")
+		db.exec("delete from destinations")
+		federation_workers_lock.Lock()
+		running := len(federation_workers)
+		for _, wake := range federation_workers {
+			select {
+			case wake <- struct{}{}:
+			default:
+			}
+		}
+		federation_workers_lock.Unlock()
+		if running == 0 {
+			return
+		}
+	}
 }
 
 // matrix_join has alice accept an invitation from bob to a room of the
@@ -1261,9 +1341,6 @@ func TestMatrixHostedFunctions(t *testing.T) {
 		"presence": func() (sl.Value, error) {
 			return api_account_presence(thread, fn, sl.Tuple{sl.String("m1"), sl.False}, nil)
 		},
-		"upload": func() (sl.Value, error) {
-			return api_account_upload(thread, fn, sl.Tuple{sl.String("m1"), sl.Bytes("png"), sl.String("image/png")}, nil)
-		},
 		"message to a room not joined": func() (sl.Value, error) {
 			object := sl.NewDict(2)
 			object.SetKey(sl.String("conversation"), sl.String("!r:x"))
@@ -1322,5 +1399,471 @@ func TestMatrixLocal(t *testing.T) {
 	reply := decoded(t)(api_account_object_create(rooted, fn, sl.Tuple{sl.String("m2"), object}, nil))
 	if message := log.find(t, "message", func(e map[string]any) bool { return e["id"] == reply["id"] }); message["account"] != "m1" || message["from"] != "@root:example.com" {
 		t.Errorf("message = %v", message)
+	}
+}
+
+// matrix_signal sends ephemeral events to the engine as the remote.
+func (r *matrix_remote) signal(t *testing.T, id string, edus ...map[string]any) {
+	t.Helper()
+	status, body := r.call(t, "PUT", "/_matrix/federation/v1/send/"+id, map[string]any{"origin": string(r.name), "origin_server_ts": time.Now().UnixMilli(), "pdus": []any{}, "edus": edus})
+	if status != 200 {
+		t.Fatalf("transaction answered %d %v", status, body)
+	}
+}
+
+func matrix_edu(kind string, content any) map[string]any {
+	return map[string]any{"edu_type": kind, "content": content}
+}
+
+// TestMatrixSignals: typing, read receipts and presence go both ways. What
+// another server says of its own users reaches the apps of the accounts in a
+// room with them, and what it says of someone else's is ignored; what the
+// account does goes to the room's servers in transactions of ephemeral events
+// alone, typing told it stopped once no fresh word comes, a read kept back
+// where the user does not share it, and presence offline where they do not
+// share that.
+func TestMatrixSignals(t *testing.T) {
+	alice, log := create_matrix_test_env(t)
+	db_open("db/sessions.db").exec("create table if not exists seen (user text primary key, time integer not null)")
+	saved, connections := signals_typing_held, presence_connections
+	signals_typing_held = 200 * time.Millisecond
+	presence_connections = map[string]map[string]*presence_connection{}
+	defer func() { signals_typing_held, presence_connections = saved, connections }()
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	room := r.room("Signals", "invite")
+	matrix_join(t, r, alice, room)
+	bob := r.user("bob")
+	first := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "hi"})
+	r.push(t, "first", first)
+
+	other := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	other.signal(t, "forged",
+		matrix_edu("m.typing", map[string]any{"room_id": room, "user_id": bob, "typing": true}),
+		matrix_edu("m.presence", map[string]any{"push": []any{map[string]any{"user_id": bob, "presence": "online"}}}))
+	if forged := log.matching(func(e map[string]any) bool { return e["kind"] == "typing" || e["kind"] == "presence" }); len(forged) > 0 {
+		t.Errorf("another server spoke for bob: %v", forged)
+	}
+
+	r.signal(t, "signals",
+		matrix_edu("m.typing", map[string]any{"room_id": room, "user_id": bob, "typing": true}),
+		matrix_edu("m.typing", map[string]any{"room_id": room, "user_id": r.user("mallory"), "typing": true}),
+		matrix_edu("m.receipt", map[string]any{room: map[string]any{"m.read": map[string]any{bob: map[string]any{"event_ids": []string{first.EventID()}, "data": map[string]any{"ts": 1}}}}}),
+		matrix_edu("m.presence", map[string]any{"push": []any{map[string]any{"user_id": bob, "presence": "unavailable", "status_msg": "Lunch"}}}))
+	if typing := log.find(t, "typing", nil); typing["from"] != bob || typing["typing"] != true || typing["conversation"] != room {
+		t.Errorf("typing = %v", typing)
+	}
+	if strangers := log.matching(func(e map[string]any) bool { return e["from"] == r.user("mallory") }); len(strangers) > 0 {
+		t.Errorf("typing from someone not in the room was taken: %v", strangers)
+	}
+	if receipt := log.find(t, "receipt", nil); receipt["from"] != bob || receipt["id"] != first.EventID() || receipt["displayed"] != true {
+		t.Errorf("receipt = %v", receipt)
+	}
+	if presence := log.find(t, "presence", nil); presence["from"] != bob || presence["status"] != "away" || presence["message"] != "Lunch" {
+		t.Errorf("presence = %v", presence)
+	}
+
+	thread := linked_thread(alice)
+	fn := sl.NewBuiltin("test", nil)
+	if answer, err := api_account_typing(thread, fn, sl.Tuple{sl.String("m1"), sl.String(room)}, nil); err != nil || answer != sl.None {
+		t.Fatalf("typing = %v %v", answer, err)
+	}
+	wait(t, "typing and its end", func() bool { return len(r.edus_of("m.typing")) >= 2 })
+	typing := r.edus_of("m.typing")
+	if !strings.Contains(string(typing[0].Content), `"typing":true`) || !strings.Contains(string(typing[0].Content), "@alice:example.com") || !strings.Contains(string(typing[1].Content), `"typing":false`) {
+		t.Errorf("typing sent = %s then %s", typing[0].Content, typing[1].Content)
+	}
+	if typing[0].Origin != "example.com" {
+		t.Errorf("typing from %q", typing[0].Origin)
+	}
+	api_account_read(thread, fn, sl.Tuple{sl.String("m1"), sl.String(room), sl.String(first.EventID())}, []sl.Tuple{{sl.String("shared"), sl.False}})
+	api_account_read(thread, fn, sl.Tuple{sl.String("m1"), sl.String(room), sl.String(first.EventID())}, nil)
+	wait(t, "the read receipt", func() bool { return len(r.edus_of("m.receipt")) >= 1 })
+	time.Sleep(100 * time.Millisecond)
+	if receipts := r.edus_of("m.receipt"); len(receipts) != 1 || !strings.Contains(string(receipts[0].Content), first.EventID()) {
+		t.Errorf("receipts sent = %v, want the shared one alone", receipts)
+	}
+
+	presence_connect("u-alice", "c1", "s1", "web", "")
+	wait(t, "presence online", func() bool {
+		for _, edu := range r.edus_of("m.presence") {
+			if strings.Contains(string(edu.Content), `"presence":"online"`) {
+				return true
+			}
+		}
+		return false
+	})
+	api_account_presence(thread, fn, sl.Tuple{sl.String("m1"), sl.False}, nil)
+	wait(t, "presence offline", func() bool {
+		edus := r.edus_of("m.presence")
+		return len(edus) > 0 && strings.Contains(string(edus[len(edus)-1].Content), `"presence":"offline"`)
+	})
+}
+
+// TestMatrixReactions: a reaction from another server is read as one, and an
+// object naming a reaction is sent as an annotation.
+func TestMatrixReactions(t *testing.T) {
+	alice, log := create_matrix_test_env(t)
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	room := r.room("Reactions", "invite")
+	matrix_join(t, r, alice, room)
+	bob := r.user("bob")
+	first := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "react to me"})
+	like := r.event(room, bob, "m.reaction", nil, map[string]any{"m.relates_to": map[string]any{"rel_type": "m.annotation", "event_id": first.EventID(), "key": "👍"}})
+	r.push(t, "reactions", first, like)
+	if reaction := log.find(t, "reaction", nil); reaction["id"] != first.EventID() || reaction["reaction"] != "👍" || reaction["event"] != like.EventID() || reaction["from"] != bob {
+		t.Errorf("reaction = %v", reaction)
+	}
+	thread := linked_thread(alice)
+	object := sl.NewDict(3)
+	object.SetKey(sl.String("conversation"), sl.String(room))
+	object.SetKey(sl.String("reaction"), sl.String("😍"))
+	object.SetKey(sl.String("message"), sl.String(first.EventID()))
+	sent := decoded(t)(api_account_object_create(thread, sl.NewBuiltin("test", nil), sl.Tuple{sl.String("m1"), object}, nil))
+	wait(t, "the reaction", func() bool { return len(r.received_of("m.reaction", "@alice:example.com")) == 1 })
+	got := r.received_of("m.reaction", "@alice:example.com")[0]
+	if got.EventID() != sent["id"] || !strings.Contains(string(got.Content()), "m.annotation") || !strings.Contains(string(got.Content()), first.EventID()) {
+		t.Errorf("reaction sent = %s", got.JSON())
+	}
+}
+
+// TestMatrixMedia: a file the account sends is kept and served to another
+// server, signed, as the specification's multipart answer, and to no one for
+// another domain; a file another server's user sends is fetched signed and
+// kept in the evictable cache, so a second read does not fetch it again.
+func TestMatrixMedia(t *testing.T) {
+	alice, log := create_matrix_test_env(t)
+	saved := cache_dir
+	cache_dir = t.TempDir()
+	defer func() { cache_dir = saved }()
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	thread := linked_thread(alice)
+	fn := sl.NewBuiltin("test", nil)
+	uploaded := decoded(t)(api_account_upload(thread, fn, sl.Tuple{sl.String("m1"), sl.Bytes("picture bytes"), sl.String("image/png")}, []sl.Tuple{{sl.String("name"), sl.String("cat.png")}}))
+	address, _ := uploaded["url"].(string)
+	id, found := strings.CutPrefix(address, "mxc://example.com/")
+	if !found || uploaded["size"] != int64(13) {
+		t.Fatalf("upload = %v", uploaded)
+	}
+	request := fclient.NewFederationRequest("GET", r.name, "example.com", "/_matrix/federation/v1/media/download/"+id)
+	request.Sign(r.name, r.key, r.private)
+	built, _ := request.HTTPRequest()
+	built.Host, built.URL.Scheme, built.URL.Host, built.Body = "example.com", "http", "example.com", http.NoBody
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = built
+	federation_route(c)
+	if w.Code != 200 || !strings.HasPrefix(w.Header().Get("Content-Type"), "multipart/mixed") || !strings.Contains(w.Body.String(), "picture bytes") || !strings.Contains(w.Body.String(), "image/png") {
+		t.Errorf("served = %d %s %q", w.Code, w.Header().Get("Content-Type"), w.Body.String())
+	}
+	if status, _ := r.call(t, "GET", "/_matrix/federation/v1/media/download/nothing", nil); status != 404 {
+		t.Errorf("no such file = %d", status)
+	}
+	federation_database().exec("update media set domain='other.example' where id=?", id)
+	if status, _ := r.call(t, "GET", "/_matrix/federation/v1/media/download/"+id, nil); status != 404 {
+		t.Errorf("a file another domain sent, asked of this one = %d", status)
+	}
+	federation_database().exec("update media set domain='example.com' where id=?", id)
+
+	r.lock.Lock()
+	r.media["remote1"] = []byte("their picture")
+	r.lock.Unlock()
+	link := content_address("mxc://" + string(r.name) + "/remote1")
+	for i := range 2 {
+		fetched := decoded(t)(api_account_media(thread, fn, sl.Tuple{sl.String("m1"), sl.String(link)}, nil))
+		if fetched["status"] != int64(200) || fmt.Sprintf("%s", fetched["data"]) != "their picture" || fetched["type"] != "image/png" {
+			t.Errorf("fetch %d = %v", i, fetched)
+		}
+	}
+	r.lock.Lock()
+	fetches := r.fetched
+	r.lock.Unlock()
+	if fetches != 1 {
+		t.Errorf("fetched %d times, want once and then from the cache", fetches)
+	}
+	if _, err := os.Stat(content_cached(alice, string(r.name), "remote1")); err != nil {
+		t.Errorf("the fetched file is not in the cache: %v", err)
+	}
+	r.lock.Lock()
+	r.media["remote2"] = []byte("moved")
+	r.lock.Unlock()
+	moved := decoded(t)(api_account_media(thread, fn, sl.Tuple{sl.String("m1"), sl.String(content_address("mxc://" + string(r.name) + "/remote2"))}, nil))
+	if fmt.Sprintf("%s", moved["data"]) != "moved picture" || moved["type"] != "image/gif" {
+		t.Errorf("a redirected file = %v", moved)
+	}
+
+	// In a room: the file the account sends goes as the message it is, and a
+	// file another server's user sends comes with the address it is fetched at.
+	room := r.room("Files", "invite")
+	matrix_join(t, r, alice, room)
+	object := sl.NewDict(2)
+	object.SetKey(sl.String("conversation"), sl.String(room))
+	object.SetKey(sl.String("file"), sl_encode(uploaded))
+	sent := decoded(t)(api_account_object_create(thread, fn, sl.Tuple{sl.String("m1"), object}, nil))
+	wait(t, "the file at the other server", func() bool { return len(r.received_of("m.room.message", "@alice:example.com")) == 1 })
+	if got := r.received_of("m.room.message", "@alice:example.com")[0]; got.EventID() != sent["id"] || !strings.Contains(string(got.Content()), `"msgtype":"m.image"`) || !strings.Contains(string(got.Content()), address) || !strings.Contains(string(got.Content()), "cat.png") {
+		t.Errorf("file sent = %s", got.Content())
+	}
+	picture := r.event(room, r.user("bob"), "m.room.message", nil, map[string]any{"msgtype": "m.image", "body": "their.png", "url": "mxc://" + string(r.name) + "/remote1", "info": map[string]any{"mimetype": "image/png", "size": 13}})
+	r.push(t, "picture", picture)
+	message := log.find(t, "message", func(e map[string]any) bool { return e["id"] == picture.EventID() })
+	files, _ := message["files"].([]any)
+	if len(files) != 1 || fmt.Sprint(files[0]) != fmt.Sprint(map[string]any{"name": "their.png", "size": int64(13), "type": "image/png", "url": link}) {
+		t.Errorf("file received = %v", message)
+	}
+}
+
+// TestMatrixForget: once the last account here leaves a room, its stored
+// history goes, but for the leave until it is sent.
+func TestMatrixForget(t *testing.T) {
+	alice, _ := create_matrix_test_env(t)
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	room := r.room("Forget", "invite")
+	matrix_join(t, r, alice, room)
+	if _, err := api_account_room_leave(linked_thread(alice), sl.NewBuiltin("test", nil), sl.Tuple{sl.String("m1"), sl.String(room)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	db := federation_database()
+	wait(t, "the leave sent and the history gone", func() bool {
+		row, _ := db.row("select count(*) as n from events where room=?", room)
+		return row_int(row, "n") == 0 && len(r.received_of(spec.MRoomMember, "@alice:example.com")) == 1
+	})
+	if row, _ := db.row("select state from rooms where id=?", room); row_int(row, "state") != -1 {
+		t.Errorf("room state = %v, want it marked forgotten", row)
+	}
+	if row, _ := db.row("select count(*) as n from snapshots where room=?", room); row_int(row, "n") != 0 {
+		t.Errorf("states kept = %v", row)
+	}
+
+	// Put out by someone else, the same.
+	kicked := r.room("Kicked", "invite")
+	matrix_join(t, r, alice, kicked)
+	invitee := "@alice:example.com"
+	r.push(t, "kick", r.event(kicked, r.user("bob"), spec.MRoomMember, &invitee, map[string]any{"membership": "leave"}))
+	if row, _ := db.row("select count(*) as n from events where room=?", kicked); row_int(row, "n") != 0 {
+		t.Errorf("events kept of a room the account was put out of = %v", row)
+	}
+}
+
+// TestMatrixDirectory: the people a hosted account knows of are found by
+// name or address, and an address names someone through their server.
+func TestMatrixDirectory(t *testing.T) {
+	alice, _ := create_matrix_test_env(t)
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	room := r.room("Directory", "invite")
+	matrix_join(t, r, alice, room)
+	thread := linked_thread(alice)
+	fn := sl.NewBuiltin("test", nil)
+	found := sl_decode(must_value(t)(api_account_directory(thread, fn, sl.Tuple{sl.String("m1"), sl.String("bo")}, nil)))
+	if fmt.Sprint(found) != fmt.Sprint([]any{map[string]any{"id": r.user("bob"), "name": "Bob"}}) {
+		t.Errorf("by name = %v", found)
+	}
+	found = sl_decode(must_value(t)(api_account_directory(thread, fn, sl.Tuple{sl.String("m1"), sl.String("nobody here")}, nil)))
+	if list, _ := found.([]any); len(list) != 0 {
+		t.Errorf("no one = %v", found)
+	}
+	// Someone in no room with the account, found by address through their
+	// server.
+	federation_database().exec("delete from snapshots")
+	federation_database().exec("delete from events")
+	found = sl_decode(must_value(t)(api_account_directory(thread, fn, sl.Tuple{sl.String("m1"), sl.String(r.user("bob"))}, nil)))
+	if fmt.Sprint(found) != fmt.Sprint([]any{map[string]any{"id": r.user("bob"), "name": "Bob"}}) {
+		t.Errorf("by address = %v", found)
+	}
+}
+
+func must_value(t *testing.T) func(sl.Value, error) sl.Value {
+	return func(value sl.Value, err error) sl.Value {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+}
+
+// matrix_remote_join has one of the remote's users join a room this server
+// holds, as Synapse does: make_join, then send_join, its state then the
+// remote's.
+func matrix_remote_join(t *testing.T, r *matrix_remote, room string, user string) {
+	t.Helper()
+	status, body := r.call(t, "GET", "/_matrix/federation/v1/make_join/"+url.PathEscape(room)+"/"+url.PathEscape(user)+"?ver=10", nil)
+	if status != 200 {
+		t.Fatalf("make_join = %d %v", status, body)
+	}
+	var template gomatrixserverlib.ProtoEvent
+	json.Unmarshal(mustjson(body["event"]), &template)
+	template.SetContent(map[string]any{"membership": "join"})
+	join, _ := r.version.NewEventBuilderFromProtoEvent(&template).Build(time.Now(), r.name, r.key, r.private)
+	status, body = r.call(t, "PUT", "/_matrix/federation/v2/send_join/"+url.PathEscape(room)+"/"+url.PathEscape(join.EventID()), json.RawMessage(join.JSON()))
+	if status != 200 {
+		t.Fatalf("send_join = %d %v", status, body)
+	}
+	r.adopt(room, body)
+	r.lock.Lock()
+	r.take(join)
+	r.lock.Unlock()
+}
+
+// matrix_bridge_env grants the test app the bridge/write permission and records
+// what the engine hands the relaying user.
+func matrix_bridge_env(t *testing.T, alice *User) (*sl.Thread, *inbound_log) {
+	t.Helper()
+	thread := linked_thread(alice)
+	app, _ := thread.Local("app").(*App)
+	permission_grant(alice, app.id, "bridge/write")
+	saved_inbound, saved_avatar := bridge_inbound, bridge_avatar
+	log := &inbound_log{}
+	bridge_inbound = func(user *User, room string, events []map[string]any) {
+		log.lock.Lock()
+		for _, event := range events {
+			event["room"] = room
+			log.events = append(log.events, event)
+		}
+		log.lock.Unlock()
+	}
+	bridge_avatar = func(user *User, entity string) ([]byte, string) { return []byte("face"), "image/png" }
+	t.Cleanup(func() { bridge_inbound, bridge_avatar = saved_inbound, saved_avatar })
+	return thread, log
+}
+
+// TestMatrixBridge: a group's room is made on the server's domain for a
+// person elsewhere, its members seated as stand-ins under their names and
+// avatars; what a member says goes out as their stand-in, and what the
+// person says comes to the relaying user; an invitation to a stand-in is
+// handed on for the member it stands for, and taken, the stand-in joining;
+// and the room closed, every stand-in leaves.
+func TestMatrixBridge(t *testing.T) {
+	alice, _ := create_matrix_test_env(t)
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	thread, log := matrix_bridge_env(t, alice)
+	fn := sl.NewBuiltin("test", nil)
+	bob := r.user("bob")
+	elsewhere := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	carol := elsewhere.user("carol")
+	root := "1RootEntityForTheBridgeTestXXXXXXXXXXXXXXXXXXXXXXX"
+	member := map[string]any{"entity": root, "name": "Root"}
+	people := sl.NewList([]sl.Value{sl.String(bob), sl.String(carol)})
+	made := decoded(t)(api_bridge_create(thread, fn, sl.Tuple{sl.String("chat1"), sl.String("Group"), people}, []sl.Tuple{{sl.String("members"), sl_encode([]any{member})}}))
+	room, _ := made["room"].(string)
+	if room == "" || !strings.Contains(fmt.Sprint(made["people"]), "id:"+bob+" name:Bob") {
+		t.Fatalf("create = %v", made)
+	}
+	standin := bridge_standin_of("@mochi-" + fmt.Sprintf("%x", fingerprint(root)) + ":example.com")
+	if standin == nil || rooms_membership(room, row_string(standin, "id")) != spec.Join {
+		t.Fatalf("the member's stand-in = %v", standin)
+	}
+	content := rooms_member_content(row_string(standin, "id"), spec.Join)
+	if content["displayname"] != "Root" || !strings.HasPrefix(fmt.Sprint(content["avatar_url"]), "mxc://example.com/") {
+		t.Errorf("the stand-in's member content = %v", content)
+	}
+	r.lock.Lock()
+	invited := len(r.invited)
+	r.lock.Unlock()
+	if invited != 1 {
+		t.Errorf("invitations = %d", invited)
+	}
+	elsewhere.lock.Lock()
+	invited = len(elsewhere.invited)
+	elsewhere.lock.Unlock()
+	if invited != 1 {
+		t.Errorf("invitations elsewhere = %d", invited)
+	}
+	if !federation_local("example.com") {
+		t.Error("the stand-ins' domain is not one of this server's")
+	}
+
+	// Bob and carol join. Carol's join, taken here, is passed on to bob's
+	// server from this one's domain, but not back to hers; a row left in the
+	// queue from a domain this server does not speak for holds it up not at
+	// all. Then bob writes, and a member writes back.
+	matrix_remote_join(t, r, room, bob)
+	federation_database().exec("insert into outbox (destination, origin, kind, body, created) values (?, 'stale.example', 'edu', '{}', ?)", string(r.name), now())
+	matrix_remote_join(t, elsewhere, room, carol)
+	wait(t, "carol's join passed on to bob's server", func() bool { return len(r.received_of(spec.MRoomMember, carol)) == 1 })
+	hello := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "hello group"})
+	r.push(t, "hello", hello)
+	if message := log.find(t, "message", nil); message["room"] != room || message["from"] != bob || message["body"] != "hello group" {
+		t.Errorf("relayed message = %v", message)
+	}
+	saved_cache := cache_dir
+	cache_dir = t.TempDir()
+	defer func() { cache_dir = saved_cache }()
+	r.lock.Lock()
+	r.media["group1"] = []byte("group picture")
+	r.lock.Unlock()
+	fetched, _ := api_bridge_media(thread, fn, sl.Tuple{sl.String(room), sl.String(content_address("mxc://" + string(r.name) + "/group1"))}, nil)
+	if dict, _ := fetched.(*sl.Dict); dict == nil {
+		t.Errorf("media = %v", fetched)
+	} else if data, _, _ := dict.Get(sl.String("data")); data == nil || string(data.(sl.Bytes)) != "group picture" {
+		t.Errorf("media data = %v", data)
+	}
+	object := sl.NewDict(1)
+	object.SetKey(sl.String("content"), sl.String("hello bob"))
+	sent := decoded(t)(api_bridge_send(thread, fn, sl.Tuple{sl.String(room), sl.String(root), object}, []sl.Tuple{{sl.String("key"), sl.String("m1")}}))
+	wait(t, "the member's message", func() bool { return len(r.received_of("m.room.message", row_string(standin, "id"))) == 1 })
+	if got := r.received_of("m.room.message", row_string(standin, "id"))[0]; got.EventID() != sent["id"] || !strings.Contains(string(got.Content()), "hello bob") {
+		t.Errorf("sent as the stand-in = %s", got.JSON())
+	}
+	if echoed := log.matching(func(e map[string]any) bool { return e["from"] == row_string(standin, "id") }); len(echoed) > 0 {
+		t.Errorf("a stand-in's own message came back to the relaying user: %v", echoed)
+	}
+	if returned := elsewhere.received_of(spec.MRoomMember, carol); len(returned) > 0 {
+		t.Errorf("carol's server was sent her own join back")
+	}
+	if answer, err := api_bridge_send(thread, fn, sl.Tuple{sl.String(room), sl.String("1StrangerEntityForTheBridgeTestXXXXXXXXXXXXXXXXXXX"), object}, nil); err != nil || answer != sl.None {
+		t.Errorf("someone with no stand-in = %v %v", answer, err)
+	}
+	unseated := "1UnseatedEntityForTheBridgeTestXXXXXXXXXXXXXXXXXXX"
+	bridge_standin(alice, "example.com", unseated, "Unseated")
+	if answer, err := api_bridge_send(thread, fn, sl.Tuple{sl.String(room), sl.String(unseated), object}, nil); err != nil || answer != sl.None {
+		t.Errorf("a stand-in not in the room = %v %v", answer, err)
+	}
+	administrator := user_by_uid("u-root")
+	other := linked_thread(administrator)
+	if app, _ := other.Local("app").(*App); app != nil {
+		permission_grant(administrator, app.id, "bridge/write")
+	}
+	if _, err := api_bridge_send(other, fn, sl.Tuple{sl.String(room), sl.String(root), object}, nil); err == nil {
+		t.Error("another user relayed through a room not theirs")
+	}
+
+	// Bob invites the stand-in to a conversation of his own.
+	private := r.room("Private", "invite")
+	invitee := row_string(standin, "id")
+	r.lock.Lock()
+	invite := r.build(private, bob, spec.MRoomMember, &invitee, map[string]any{"membership": "invite", "is_direct": true}, r.edge[private], r.state[private])
+	r.lock.Unlock()
+	request, _ := fclient.NewInviteV2Request(invite, nil)
+	status, body := r.call(t, "PUT", "/_matrix/federation/v2/invite/"+url.PathEscape(private)+"/"+url.PathEscape(invite.EventID()), request)
+	if status != 200 {
+		t.Fatalf("invite = %d %v", status, body)
+	}
+	countersigned, err := r.version.NewEventFromUntrustedJSON(mustjson(body["event"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if told := log.find(t, "invite", nil); told["room"] != private || told["to"] != root || told["from"] != bob || told["direct"] != true {
+		t.Errorf("invitation handed on = %v", told)
+	}
+	r.lock.Lock()
+	r.take(countersigned)
+	r.lock.Unlock()
+	joined := decoded(t)(api_bridge_join(thread, fn, sl.Tuple{sl.String(private), sl.String(root)}, []sl.Tuple{{sl.String("chat"), sl.String("chat2")}}))
+	if joined["room"] != private || rooms_membership(private, invitee) != spec.Join {
+		t.Errorf("join = %v", joined)
+	}
+	if b := bridge_of(private); b == nil || b.standin != invitee || b.chat != "chat2" {
+		t.Errorf("bridge = %v", b)
+	}
+
+	// Closed: every stand-in leaves the room.
+	if _, err := api_bridge_close(thread, fn, sl.Tuple{sl.String(room)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if rooms_membership(room, invitee) != "" && rooms_membership(room, invitee) != spec.Leave {
+		t.Errorf("the stand-in is still in the closed room")
+	}
+	if bridge_of(room) != nil {
+		t.Error("the closed room is still relayed")
 	}
 }

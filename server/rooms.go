@@ -482,9 +482,32 @@ func rooms_redact(version gomatrixserverlib.IRoomVersion, redaction gomatrixserv
 // action does not hold its database while it waits, and so a conversation a
 // join makes is the app's before the join answers.
 type rooms_outbox struct {
-	order  []string
-	users  map[string]*User
-	events map[string][]map[string]any
+	order   []string
+	users   map[string]*User
+	events  map[string][]map[string]any
+	bridges []rooms_bridged
+}
+
+// A rooms_bridged is what a bridged room's outside people did, for the user
+// whose server relays it (bridge.go).
+type rooms_bridged struct {
+	user   *User
+	room   string
+	events []map[string]any
+}
+
+// bridge queues events of a bridged room for its relaying user.
+func (o *rooms_outbox) bridge(user *User, room string, events ...map[string]any) {
+	if len(events) == 0 {
+		return
+	}
+	for i := range o.bridges {
+		if o.bridges[i].room == room {
+			o.bridges[i].events = append(o.bridges[i].events, events...)
+			return
+		}
+	}
+	o.bridges = append(o.bridges, rooms_bridged{user: user, room: room, events: events})
 }
 
 func (o *rooms_outbox) add(user *User, account string, events ...map[string]any) {
@@ -506,9 +529,13 @@ func (o *rooms_outbox) flush() {
 	for _, account := range o.order {
 		linked_inbound(o.users[account], account, "matrix", o.events[account])
 	}
+	for _, b := range o.bridges {
+		bridge_inbound(b.user, b.room, b.events)
+	}
 	o.order = nil
 	o.users = nil
 	o.events = nil
+	o.bridges = nil
 }
 
 // rooms_receive takes an event another server sent in a transaction, and
@@ -542,6 +569,13 @@ func rooms_receive(ctx context.Context, origin spec.ServerName, raw json.RawMess
 	var out rooms_outbox
 	unlock := rooms_lock(head.Room)
 	err = rooms_accept(ctx, local, origin, version, event, &out, true)
+	// One of this server's accounts put out of the room may have been its
+	// last here.
+	if membership, _ := event.Membership(); err == nil && event.Type() == spec.MRoomMember && (membership == spec.Leave || membership == spec.Ban) && event.StateKey() != nil {
+		if user, e := spec.NewUserID(*event.StateKey(), true); e == nil && federation_local(user.Domain()) {
+			rooms_forget(head.Room)
+		}
+	}
 	unlock()
 	out.flush()
 	return event.EventID(), err
@@ -894,7 +928,7 @@ func rooms_conversation(user string, event gomatrixserverlib.PDU, state rooms_st
 		}
 		return nil
 	}
-	reader := &matrix_state{user: user, typing: map[string][]string{}, direct: map[string]bool{room: rooms_direct(user, room)}, names: rooms_names(room, state), download: func(string) string { return "" }}
+	reader := &matrix_state{user: user, typing: map[string][]string{}, direct: map[string]bool{room: rooms_direct(user, room)}, names: rooms_names(room, state), download: content_address}
 	if message := reader.timeline(room, &e); message != nil {
 		return []map[string]any{message}
 	}
@@ -929,6 +963,11 @@ func rooms_tell(event gomatrixserverlib.PDU, out *rooms_outbox) {
 			continue
 		}
 		out.add(user, account, rooms_conversation(member, event, after)...)
+	}
+	if b := bridge_of(event.RoomID().String()); b != nil {
+		if user := user_by_uid(b.user); user != nil {
+			out.bridge(user, b.room, bridge_events(b, event, after)...)
+		}
 	}
 }
 
@@ -1076,6 +1115,11 @@ func rooms_member_content(address string, membership string) map[string]any {
 		if name := rooms_display(user, account); name != "" {
 			content["displayname"] = name
 		}
+	} else if standin := bridge_standin_of(address); standin != nil {
+		content["displayname"] = row_string(standin, "name")
+		if avatar := row_string(standin, "avatar"); avatar != "" {
+			content["avatar_url"] = avatar
+		}
 	}
 	return content
 }
@@ -1103,9 +1147,9 @@ func rooms_stripped(room string, inviter string) []gomatrixserverlib.InviteStrip
 // === What the user does ===
 
 // rooms_create makes a room as a user with people invited: a one-to-one
-// conversation, marked so, for one person; a named group for several. Each
-// person's server must know them.
-func rooms_create(ctx context.Context, creator string, people []string, name string) (string, error) {
+// conversation, marked so, or a named group. Each person's server must know
+// them.
+func rooms_create(ctx context.Context, creator string, people []string, name string, direct bool) (string, error) {
 	version, err := gomatrixserverlib.GetRoomVersion(rooms_version_default)
 	if err != nil {
 		return "", err
@@ -1114,7 +1158,6 @@ func rooms_create(ctx context.Context, creator string, people []string, name str
 	if err != nil {
 		return "", err
 	}
-	direct := len(people) == 1
 	room := ""
 	if !version.DomainlessRoomIDs() {
 		room = "!" + strings.ReplaceAll(uid(), "-", "") + ":" + string(user.Domain())
@@ -1415,8 +1458,16 @@ func rooms_joined(joined *gomatrixserverlib.PerformJoinResponse) error {
 // it arrives in order: the room, who is in it, and its recent past.
 func rooms_welcome(user string, room string, history []map[string]any) {
 	found, account := federation_user(user)
+	var bridged *bridge
 	if found == nil {
-		return
+		// A stand-in joining for a member: told to the user whose server
+		// relays the room.
+		if bridged = bridge_of(room); bridged == nil || bridged.standin != user {
+			return
+		}
+		if found = user_by_uid(bridged.user); found == nil {
+			return
+		}
 	}
 	state, _ := rooms_current(room)
 	events := []map[string]any{rooms_summary(user, room, state)}
@@ -1431,6 +1482,10 @@ func rooms_welcome(user string, room string, history []map[string]any) {
 	sort.Strings(people)
 	for _, member := range people {
 		events = append(events, map[string]any{"kind": "member", "conversation": room, "id": member, "name": names[room+" "+member], "left": false})
+	}
+	if bridged != nil {
+		bridge_inbound(found, room, append(events, history...))
+		return
 	}
 	linked_inbound(found, account, "matrix", append(events, history...))
 }
@@ -1535,8 +1590,13 @@ func rooms_leave(ctx context.Context, user string, room string) error {
 	content := map[string]any{"membership": spec.Leave}
 	membership := rooms_membership(room, user)
 	if membership == spec.Join || (membership == spec.Invite && rooms_local(room) != "") {
-		_, err := rooms_send(ctx, room, user, spec.MRoomMember, &user, content)
-		return err
+		if _, err := rooms_send(ctx, room, user, spec.MRoomMember, &user, content); err != nil {
+			return err
+		}
+		unlock := rooms_lock(room)
+		rooms_forget(room)
+		unlock()
+		return nil
 	}
 	row, _ := federation_database().row("select sender from invites where room=? and user=?", room, user)
 	if row == nil {
@@ -1581,6 +1641,63 @@ func rooms_leave(ctx context.Context, user string, room string) error {
 	return nil
 }
 
+// rooms_directory is the people a hosted account knows of whose name or
+// address holds a query: those in its rooms, and whoever an address names,
+// at most twenty.
+func rooms_directory(ctx context.Context, h *matrix_hosted, query string) []map[string]any {
+	lower := strings.ToLower(query)
+	seen := map[string]bool{h.address: true}
+	people := []map[string]any{}
+	for _, room := range signals_rooms(h.address) {
+		state, _ := rooms_current(room)
+		names := rooms_names(room, state)
+		for member, membership := range rooms_members(state) {
+			if seen[member] || (membership != spec.Join && membership != spec.Invite) {
+				continue
+			}
+			name := names[room+" "+member]
+			if strings.Contains(strings.ToLower(member), lower) || strings.Contains(strings.ToLower(name), lower) {
+				seen[member] = true
+				if name == "" {
+					name = strings.TrimPrefix(strings.SplitN(member, ":", 2)[0], "@")
+				}
+				people = append(people, map[string]any{"id": member, "name": name})
+			}
+		}
+	}
+	if address := matrix_person(query); resolve_matrix_re.MatchString(address) && !seen[address] {
+		mine, _ := spec.NewUserID(h.address, true)
+		if name, err := rooms_profile(ctx, mine.Domain(), address); err == nil {
+			people = append(people, map[string]any{"id": address, "name": name})
+		}
+	}
+	return people[:min(len(people), 20)]
+}
+
+// rooms_forget drops what this server keeps of a room once no account here
+// is in it or invited to it: its events, its states and its edge, but for the
+// events still waiting to go to other servers. Its version is kept, so an
+// invitation to it later is read as before. The room is held by the caller.
+func rooms_forget(room string) bool {
+	state, _ := rooms_current(room)
+	for member, membership := range rooms_members(state) {
+		if membership != spec.Join && membership != spec.Invite {
+			continue
+		}
+		if user, err := spec.NewUserID(member, true); err == nil && federation_local(user.Domain()) {
+			return false
+		}
+	}
+	db := federation_database()
+	db.exec("delete from events where room=? and id not in (select body from outbox where kind='pdu')", room)
+	db.exec("delete from snapshots where room=?", room)
+	db.exec("delete from extremities where room=?", room)
+	db.exec("delete from directs where room=?", room)
+	// Marked forgotten until an account here is in it again.
+	db.exec("update rooms set state=-1 where id=?", room)
+	return true
+}
+
 // rooms_message sends a message event to a room as a user, once per key.
 func rooms_message(ctx context.Context, account string, user string, room string, kind string, content map[string]any, key string) (string, error) {
 	db := federation_database()
@@ -1610,6 +1727,9 @@ func rooms_profile(ctx context.Context, local spec.ServerName, person string) (s
 		return "", fmt.Errorf("invalid address")
 	}
 	if federation_local(address.Domain()) {
+		if standin := bridge_standin_of(person); standin != nil {
+			return row_string(standin, "name"), nil
+		}
 		user, account := federation_user(person)
 		if user == nil {
 			return "", fmt.Errorf("no one is at %s", person)
@@ -1972,6 +2092,12 @@ func rooms_invite_received(c *gin.Context, r *fclient.FederationRequest, room st
 	membership, _ := event.Membership()
 	invited := *event.StateKey()
 	user, account := federation_user(invited)
+	// A stand-in is invited for the member it stands for, through the user
+	// whose server keeps it (bridge.go).
+	standin := bridge_standin_of(invited)
+	if user == nil && standin != nil {
+		user = user_by_uid(row_string(standin, "user"))
+	}
 	invitee, uerr := spec.NewUserID(invited, true)
 	if membership != spec.Invite || user == nil || uerr != nil {
 		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such user here")
@@ -2026,7 +2152,13 @@ func rooms_invite_received(c *gin.Context, r *fclient.FederationRequest, room st
 	// A room someone here is in learns of the invitation as its own event;
 	// one this server is not in is the user's to accept.
 	if rooms_local(room) == "" {
-		linked_inbound(user, account, "matrix", []map[string]any{{"kind": "invite", "conversation": room, "from": string(event.SenderID()), "name": name, "direct": content.Direct}})
+		invite := map[string]any{"kind": "invite", "conversation": room, "from": string(event.SenderID()), "name": name, "direct": content.Direct}
+		if standin != nil && account == "" {
+			invite["to"] = row_string(standin, "entity")
+			bridge_inbound(user, room, []map[string]any{invite})
+		} else {
+			linked_inbound(user, account, "matrix", []map[string]any{invite})
+		}
 	}
 	c.JSON(http.StatusOK, map[string]any{"event": json.RawMessage(signed.JSON())})
 }
@@ -2184,17 +2316,23 @@ func rooms_serve_backfill(c *gin.Context, r *fclient.FederationRequest, room str
 
 // rooms_serve_profile answers the name one of this server's users goes by.
 func rooms_serve_profile(c *gin.Context, address string, field string) {
-	user, account := federation_user(address)
-	if user == nil {
+	name, avatar := "", ""
+	if user, account := federation_user(address); user != nil {
+		name = rooms_display(user, account)
+	} else if standin := bridge_standin_of(address); standin != nil {
+		name, avatar = row_string(standin, "name"), row_string(standin, "avatar")
+	} else {
 		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such user")
 		return
 	}
-	switch field {
-	case "", "displayname":
-		c.JSON(http.StatusOK, map[string]any{"displayname": rooms_display(user, account)})
-	default:
-		c.JSON(http.StatusOK, map[string]any{})
+	profile := map[string]any{}
+	if (field == "" || field == "displayname") && name != "" {
+		profile["displayname"] = name
 	}
+	if (field == "" || field == "avatar_url") && avatar != "" {
+		profile["avatar_url"] = avatar
+	}
+	c.JSON(http.StatusOK, profile)
 }
 
 // === Messages as objects ===
@@ -2206,17 +2344,15 @@ func rooms_object_create(ctx context.Context, h *matrix_hosted, object map[strin
 	if !strings.HasPrefix(room, "!") {
 		return nil, fmt.Errorf("a message needs the room it goes to")
 	}
-	if _, file := object["file"]; file {
-		return nil, fmt.Errorf("files are not sent from a hosted Matrix account yet")
-	}
 	content, err := matrix_content(object)
 	if err != nil {
 		return nil, err
 	}
-	id, err := rooms_message(ctx, h.id, h.address, room, "m.room.message", content, key)
+	id, err := rooms_message(ctx, h.id, h.address, room, matrix_type(object), content, key)
 	if err != nil {
 		return nil, err
 	}
+	signals_presence(h, signals_renewed)
 	return map[string]any{"id": id, "url": "https://matrix.to/#/" + room + "/" + id, "data": content}, nil
 }
 

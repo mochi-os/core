@@ -57,6 +57,7 @@ func api_table() sl.StringDict {
 			"account":   api_account,
 			"ai":        api_ai,
 			"app":       api_app,
+			"bridge":    api_bridge,
 			"broadcast": api_broadcast,
 			"archive":   api_archive,
 			"cache":     api_cache,

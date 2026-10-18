@@ -90,6 +90,9 @@ var permissions = []Permission{
 	// user's contacts as the user allows.
 	{"presence/read", false, false},
 	// Restricted permissions
+	// Speaking on Matrix as stand-ins for the members of a user's group chats,
+	// whom the user's server relays (decision 39 of the federation plan).
+	{"bridge/write", true, false},
 	{"accounts/notify", true, false},
 	// Installing writes executable code to disk under an app's entity id: this is
 	// permission to run code as any app. Not admin-only - apps_install_user gates

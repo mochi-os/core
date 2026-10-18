@@ -552,6 +552,9 @@ var (
 			// The user's accounts on other networks, which conversations
 			// belong to (the federation plan, phase 22).
 			{"accounts/read", ""},
+			// Relaying a group's members to Matrix and its people from
+			// there back (phase 24).
+			{"bridge/write", ""},
 			// The user's identity, for a direct message the engine hands chat
 			// with no action or event to carry it.
 			{"entity/read", ""},

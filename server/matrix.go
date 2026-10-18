@@ -542,6 +542,15 @@ func (state *matrix_state) timeline(room string, e *matrix_event) map[string]any
 			return nil
 		}
 		return map[string]any{"kind": "delete", "conversation": room, "from": e.Sender, "id": redacts, "own": own}
+	case "m.reaction":
+		relates, _ := e.Content["m.relates_to"].(map[string]any)
+		relation, _ := relates["rel_type"].(string)
+		target, _ := relates["event_id"].(string)
+		key, _ := relates["key"].(string)
+		if relation != "m.annotation" || target == "" || key == "" || e.ID == "" {
+			return nil
+		}
+		return map[string]any{"kind": "reaction", "conversation": room, "from": e.Sender, "id": target, "reaction": key, "event": e.ID, "own": own}
 	case "m.room.encrypted":
 		return map[string]any{"kind": "message", "conversation": room, "room": !state.direct[room], "from": e.Sender, "name": state.names[room+" "+e.Sender], "id": e.ID, "body": "", "created": e.Time / 1000, "own": own, "encrypted": true}
 	case "m.room.message", "m.sticker":
@@ -714,10 +723,26 @@ func matrix_send(ctx context.Context, l *linked, room string, kind string, conte
 	return answer.ID, nil
 }
 
+// matrix_type is the event an app's object is sent as: a reaction, or a
+// message.
+func matrix_type(object map[string]any) string {
+	if reaction, _ := object["reaction"].(string); reaction != "" {
+		return "m.reaction"
+	}
+	return "m.room.message"
+}
+
 // matrix_content is a message's content from an app's object: its text, or a
 // file the account uploaded with the text as its caption, a reply to another
-// message or a reply in a thread.
+// message or a reply in a thread; or a reaction to a message by its id.
 func matrix_content(object map[string]any) (map[string]any, error) {
+	if reaction, _ := object["reaction"].(string); reaction != "" {
+		target, _ := object["message"].(string)
+		if !strings.HasPrefix(target, "$") || len(reaction) > 100 {
+			return nil, fmt.Errorf("a reaction needs the message it is to")
+		}
+		return map[string]any{"m.relates_to": map[string]any{"rel_type": "m.annotation", "event_id": target, "key": reaction}}, nil
+	}
 	text, _ := object["content"].(string)
 	content := map[string]any{"msgtype": "m.text", "body": text}
 	if file, _ := object["file"].(map[string]any); file != nil {
@@ -775,7 +800,7 @@ func matrix_create(ctx context.Context, l *linked, object map[string]any, key st
 	if err != nil {
 		return nil, err
 	}
-	id, err := matrix_send(ctx, l, room, "m.room.message", content, key)
+	id, err := matrix_send(ctx, l, room, matrix_type(object), content, key)
 	if err != nil {
 		return nil, err
 	}
@@ -890,6 +915,36 @@ func matrix_name(ctx context.Context, l *linked, person string) (string, error) 
 		answer.Name = person[1:strings.IndexByte(person, ':')]
 	}
 	return answer.Name, nil
+}
+
+// matrix_directory searches the user directory of a linked account's server,
+// answering at most twenty people as {id, name}.
+func matrix_directory(ctx context.Context, l *linked, query string) ([]map[string]any, error) {
+	var answer struct {
+		Results []struct {
+			ID   string `json:"user_id"`
+			Name string `json:"display_name"`
+		} `json:"results"`
+	}
+	status, body, err := l.json(ctx, "POST", matrix_api(l, "client/v3/user_directory/search", nil), map[string]any{"search_term": query, "limit": 20}, &answer)
+	if err != nil {
+		return nil, err
+	}
+	if status != 200 {
+		return nil, linked_failure(status, body)
+	}
+	people := []map[string]any{}
+	for _, result := range answer.Results {
+		if result.ID == "" || result.ID == l.get("id") {
+			continue
+		}
+		name := result.Name
+		if name == "" {
+			name = strings.TrimPrefix(strings.SplitN(result.ID, ":", 2)[0], "@")
+		}
+		people = append(people, map[string]any{"id": result.ID, "name": name})
+	}
+	return people, nil
 }
 
 // matrix_room_create makes a private room with the people invited: a

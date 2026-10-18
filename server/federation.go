@@ -80,11 +80,18 @@ func federation_database() *DB {
 	db, _, reused := db_open_work("db/matrix.db")
 	if db != nil && !reused {
 		db.exec("create table if not exists servers (name text not null, key text not null, public text not null, valid integer not null, expired integer not null default 0, primary key (name, key))")
-		db.exec("create table if not exists outbox (id integer primary key autoincrement, destination text not null, kind text not null, body text not null, created integer not null)")
+		db.exec("create table if not exists outbox (id integer primary key autoincrement, destination text not null, origin text not null default '', kind text not null, body text not null, created integer not null)")
+		// The domain each row is sent from; rows queued before it are dropped.
+		if found, _ := db.exists("select 1 from pragma_table_info('outbox') where name='origin'"); !found {
+			db.exec("alter table outbox add column origin text not null default ''")
+		}
 		db.exec("create index if not exists outbox_destination on outbox(destination, id)")
 		db.exec("create table if not exists destinations (name text not null primary key, failures integer not null default 0, retry integer not null default 0)")
 		db.exec("create table if not exists transactions (origin text not null, id text not null, received integer not null, primary key (origin, id))")
 		rooms_tables(db)
+		signals_tables(db)
+		content_tables(db)
+		bridge_tables(db)
 	}
 	return db
 }
@@ -115,13 +122,18 @@ var federation_identities = map[spec.ServerName]*federation_identity{}
 var federation_identities_lock sync.Mutex
 
 // federation_local reports whether a server name is one of this server's
-// Matrix domains: a domain it serves with a Matrix account on it.
+// Matrix domains: a domain it serves with a Matrix account on it, or one it
+// keeps a group's stand-ins on.
 func federation_local(name spec.ServerName) bool {
 	domain := strings.ToLower(string(name))
 	if domain == "" {
 		return false
 	}
 	found, _ := networks_database().exists("select 1 from actors where network='matrix' and domain=? and deleted=0", domain)
+	if !found {
+		// A domain the server keeps a group's stand-ins on (bridge.go).
+		found, _ = federation_database().exists("select 1 from standins where domain=?", domain)
+	}
 	return found
 }
 
@@ -158,8 +170,9 @@ func federation_identity_of(name spec.ServerName) *federation_identity {
 // sign with whichever a request comes from.
 func federation_signing() []*fclient.SigningIdentity {
 	rows, _ := networks_database().rows("select distinct domain from actors where network='matrix' and deleted=0")
+	standins, _ := federation_database().rows("select distinct domain from standins")
 	var out []*fclient.SigningIdentity
-	for _, row := range rows {
+	for _, row := range append(rows, standins...) {
 		if id := federation_identity_of(spec.ServerName(row_string(row, "domain"))); id != nil {
 			out = append(out, &fclient.SigningIdentity{ServerName: id.domain, KeyID: id.key, PrivateKey: id.private})
 		}
@@ -601,6 +614,8 @@ func federation_dispatch(c *gin.Context, method string, parts []string, r *fclie
 		default:
 			federation_error(c, http.StatusNotFound, "M_UNRECOGNIZED", "unrecognised request")
 		}
+	case route == "GET v1/media" && (segment(2) == "download" || segment(2) == "thumbnail") && len(parts) == 4:
+		content_serve(c, r, segment(3))
 	case route == "GET v1/publicRooms" || route == "POST v1/publicRooms":
 		c.JSON(http.StatusOK, map[string]any{"chunk": []any{}, "total_room_count_estimate": 0})
 	default:
@@ -611,9 +626,8 @@ func federation_dispatch(c *gin.Context, method string, parts []string, r *fclie
 // === Transactions in ===
 
 // federation_receive_transaction takes a transaction from another server:
-// each event is processed in turn and answered for. A transaction already
-// taken is answered at once. Ephemeral events (typing, receipts, presence)
-// come with a later part of the phase.
+// each room event is processed in turn and answered for, then each ephemeral
+// one (signals.go). A transaction already taken is answered at once.
 func federation_receive_transaction(c *gin.Context, r *fclient.FederationRequest, id string) {
 	origin := string(r.Origin())
 	db := federation_database()
@@ -641,6 +655,11 @@ func federation_receive_transaction(c *gin.Context, r *fclient.FederationRequest
 			results[id] = map[string]any{}
 		}
 	}
+	var out rooms_outbox
+	for _, raw := range t.EDUs {
+		signals_receive(r.Origin(), raw, &out)
+	}
+	out.flush()
 	db.exec("insert or ignore into transactions (origin, id, received) values (?, ?, ?)", origin, id, now())
 	db.exec("delete from transactions where received<?", now()-7*86400)
 	c.JSON(http.StatusOK, map[string]any{"pdus": results})
@@ -653,15 +672,47 @@ func federation_receive_transaction(c *gin.Context, r *fclient.FederationRequest
 var federation_workers = map[string]chan struct{}{}
 var federation_workers_lock sync.Mutex
 
-// federation_send queues an event for each server given, other than this
-// one's own domains, and wakes their workers.
+// federation_send queues a room event for each server given, other than this
+// one's own domains and the server of its sender, which has it already: sent
+// from its sender's domain where that is this server's, else from the domain
+// this server speaks for the room as.
 func federation_send(destinations []string, event gomatrixserverlib.PDU) {
+	user, err := spec.NewUserID(string(event.SenderID()), true)
+	if err != nil {
+		return
+	}
+	origin := string(user.Domain())
+	if !federation_local(user.Domain()) {
+		origin = string(rooms_local(event.RoomID().String()))
+	}
+	var others []string
+	for _, destination := range destinations {
+		if !strings.EqualFold(destination, string(user.Domain())) {
+			others = append(others, destination)
+		}
+	}
+	federation_queue(others, origin, "pdu", event.EventID())
+}
+
+// federation_signal queues an ephemeral event - typing, a read receipt,
+// presence - from one of this server's domains for each server given. One a
+// server has not taken within ten minutes is dropped, since it says nothing
+// worth knowing late.
+func federation_signal(destinations []string, origin string, kind string, content any) {
+	federation_queue(destinations, origin, "edu", json_encode(map[string]any{"edu_type": kind, "content": content}))
+}
+
+// federation_queue adds a row for each destination and wakes its worker.
+func federation_queue(destinations []string, origin string, kind string, body string) {
+	if origin == "" {
+		return
+	}
 	db := federation_database()
 	for _, destination := range destinations {
 		if destination == "" || federation_local(spec.ServerName(destination)) {
 			continue
 		}
-		db.exec("insert into outbox (destination, kind, body, created) values (?, 'pdu', ?, ?)", destination, event.EventID(), now())
+		db.exec("insert into outbox (destination, origin, kind, body, created) values (?, ?, ?, ?, ?)", destination, origin, kind, body, now())
 		federation_worker_start(destination)
 	}
 }
@@ -711,13 +762,14 @@ func federation_backoff(failures int64) int64 {
 }
 
 // federation_worker sends a destination's queue in transactions of up to
-// fifty events until it is empty, waiting out its backoff after a failure;
-// more queued meanwhile has it look again, but not before its backoff ends.
-// What has waited a week for a server that never answers is dropped.
+// fifty room events and a hundred ephemeral ones, all from one domain of this
+// server, until it is empty, waiting out its backoff after a failure; more
+// queued meanwhile has it look again, but not before its backoff ends. What
+// has waited a week for a server that never answers is dropped.
 func federation_worker(destination string, wake chan struct{}) {
 	db := federation_database()
 	for {
-		db.exec("delete from outbox where destination=? and created<?", destination, now()-7*86400)
+		db.exec("delete from outbox where destination=? and (created<? or (kind='edu' and created<?) or origin='')", destination, now()-7*86400, now()-600)
 		if row, _ := db.row("select retry from destinations where name=?", destination); row != nil {
 			if wait := row_int(row, "retry") - now(); wait > 0 {
 				select {
@@ -727,24 +779,45 @@ func federation_worker(destination string, wake chan struct{}) {
 				continue
 			}
 		}
-		rows, _ := db.rows("select id, body from outbox where destination=? and kind='pdu' order by id limit 50", destination)
-		if len(rows) == 0 {
+		first, _ := db.row("select origin from outbox where destination=? order by id limit 1", destination)
+		if first == nil {
 			if federation_worker_done(destination, wake) {
 				return
 			}
 			continue
 		}
-		var pdus []json.RawMessage
+		origin := row_string(first, "origin")
+		// A row this server cannot sign for would hold up the rest.
+		if !federation_local(spec.ServerName(origin)) {
+			db.exec("delete from outbox where destination=? and origin=?", destination, origin)
+			continue
+		}
 		var ids []any
+		var pdus []json.RawMessage
+		rows, _ := db.rows("select id, body from outbox where destination=? and origin=? and kind='pdu' order by id limit 50", destination, origin)
 		for _, row := range rows {
 			ids = append(ids, row["id"])
 			if event := rooms_event(row_string(row, "body")); event != nil {
 				pdus = append(pdus, event.JSON())
 			}
 		}
-		origin := federation_origin(pdus)
+		var edus []gomatrixserverlib.EDU
+		rows, _ = db.rows("select id, body from outbox where destination=? and origin=? and kind='edu' order by id limit 100", destination, origin)
+		for _, row := range rows {
+			ids = append(ids, row["id"])
+			var edu gomatrixserverlib.EDU
+			if json.Unmarshal([]byte(row_string(row, "body")), &edu) == nil {
+				edu.Origin, edu.Destination = origin, destination
+				edus = append(edus, edu)
+			}
+		}
 		err := error(nil)
-		if len(pdus) > 0 && origin != "" {
+		// A transaction of ephemeral events alone still lists its room events,
+		// as none: servers refuse one without the list.
+		if pdus == nil {
+			pdus = []json.RawMessage{}
+		}
+		if len(pdus)+len(edus) > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), federation_timeout+10*time.Second)
 			_, err = federation_client().SendTransaction(ctx, gomatrixserverlib.Transaction{
 				TransactionID:  gomatrixserverlib.TransactionID(uid()),
@@ -752,6 +825,7 @@ func federation_worker(destination string, wake chan struct{}) {
 				Destination:    spec.ServerName(destination),
 				OriginServerTS: spec.AsTimestamp(time.Now()),
 				PDUs:           pdus,
+				EDUs:           edus,
 			})
 			cancel()
 		}
@@ -769,23 +843,10 @@ func federation_worker(destination string, wake chan struct{}) {
 		}
 		db.exec("delete from destinations where name=?", destination)
 		db.exec("delete from outbox where id in ("+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+")", ids...)
+		// An event kept only to be sent, of a room no one here is in any
+		// longer, goes once every server has it (rooms_forget).
+		db.exec("delete from events where room in (select id from rooms where state=-1) and id not in (select body from outbox where kind='pdu')")
 	}
-}
-
-// federation_origin is the domain a transaction is sent from: the domain of
-// the first event's sender, which is the server's own.
-func federation_origin(pdus []json.RawMessage) string {
-	for _, raw := range pdus {
-		var event struct {
-			Sender string `json:"sender"`
-		}
-		if json.Unmarshal(raw, &event) == nil {
-			if user, err := spec.NewUserID(event.Sender, true); err == nil && federation_local(user.Domain()) {
-				return string(user.Domain())
-			}
-		}
-	}
-	return ""
 }
 
 // federation_log carries the library's warnings to the debug log.

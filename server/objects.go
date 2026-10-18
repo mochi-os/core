@@ -870,7 +870,9 @@ func api_account_unfollow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 }
 
 // mochi.account.media(account, url) -> dict: Fetch a file from another server
-// as a hosted account, signed so a server that requires signed fetches answers.
+// as a hosted account, signed so a server that requires signed fetches answers;
+// a hosted Matrix account fetches the address a message's file names, kept in
+// core's evictable cache.
 // Returns the status, the content type and the data, up to ten megabytes, or
 // None when the request could not be made: the host is blocked or off, its
 // budget for the minute is spent, or it did not answer. Nothing is stored.
@@ -879,12 +881,24 @@ func api_account_media(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "url", &address); err != nil {
 		return nil, err
 	}
-	user, row, actor, err := account_acting(t, fn, account)
+	user, row, actor, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	if u, err := url.Parse(address); err != nil || u.Hostname() == "" {
 		return sl_error(fn, "invalid url")
+	}
+	if h := matrix_hosted_of(user, row); h != nil {
+		status, kind, data, err := content_fetch(thread_context(t), h, address)
+		if err != nil {
+			debug("Media %s not fetched: %v", address, err)
+			return sl.None, nil
+		}
+		result := sl.NewDict(3)
+		result.SetKey(sl.String("status"), sl.MakeInt(status))
+		result.SetKey(sl.String("type"), sl.String(kind))
+		result.SetKey(sl.String("data"), sl.Bytes(data))
+		return result, nil
 	}
 	if l := linked_from(user, row); l != nil {
 		status, kind, data, err := linked_media(thread_context(t), l, address)

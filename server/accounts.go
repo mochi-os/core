@@ -198,8 +198,10 @@ var providers = []Provider{
 		}},
 	},
 	{
-		Type:         "matrix",
-		Capabilities: []string{"network", "chat"},
+		Type: "matrix",
+		// A linked account is also a notification destination, told by the
+		// server's notices account (notices.go).
+		Capabilities: []string{"network", "chat", "notify"},
 		Flow:         "handle",
 		Fields: []ProviderField{
 			{Name: "handle", Label: "accounts.field.handle", Type: "text", Required: true, Placeholder: "alice"},
@@ -2427,13 +2429,16 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	sent := 0
 	failed := 0
+	chosen := account != ""
 
 	for _, row := range rows {
 		account, _ := row["id"].(string)
 		ptype, _ := row["type"].(string)
 
-		// Check if provider has notify capability
-		if !provider_has_capability(ptype, "notify") {
+		// The account must notify: a linked account on a network does, its
+		// hosted one does not, and neither is told without being named, since
+		// its "enabled" means it is switched on, not that it notifies.
+		if !slices.Contains(account_capabilities(row), "notify") || (!chosen && provider_network(ptype)) {
 			continue
 		}
 

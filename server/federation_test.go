@@ -1867,3 +1867,173 @@ func TestMatrixBridge(t *testing.T) {
 		t.Error("the closed room is still relayed")
 	}
 }
+
+// TestMatrixKeyReplace: the owner replaces a domain's signing key. What the
+// domain signs from then on carries the new key, other servers checking it
+// are answered with it, and the old key is published as expired, so what it
+// signed - this server's own events among them - stays verifiable. A domain
+// that is not one of the server's Matrix domains is refused.
+func TestMatrixKeyReplace(t *testing.T) {
+	alice, _ := create_matrix_test_env(t)
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	room := r.room("Keys", "invite")
+	matrix_join(t, r, alice, room)
+	state, _ := rooms_current(room)
+	joined := rooms_event(state[rooms_key(spec.MRoomMember, "@alice:example.com")])
+	if joined == nil {
+		t.Fatal("no join kept here")
+	}
+	old := federation_identity_of("example.com").key
+	// Nothing in flight: a request signed with the old key and checked once
+	// it has expired is refused, and waits out a backoff before it goes again.
+	wait(t, "the queue empty", func() bool {
+		row, _ := federation_database().row("select count(*) as n from outbox")
+		return row_int(row, "n") == 0
+	})
+
+	thread := linked_thread(alice)
+	administrator := user_by_uid("u-root")
+	owner := linked_thread(administrator)
+	app, _ := owner.Local("app").(*App)
+	permission_grant(administrator, app.id, "settings/write")
+	fn := sl.NewBuiltin("test", nil)
+	if _, err := api_server_key_replace(thread, fn, sl.Tuple{sl.String("example.com")}, nil); err == nil {
+		t.Error("a user who is not the owner replaced the key")
+	}
+	answer, err := api_server_key_replace(owner, fn, sl.Tuple{sl.String("example.com")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced, _ := sl.AsString(answer)
+	if replaced == "" || replaced == string(old) || string(federation_identity_of("example.com").key) != replaced {
+		t.Fatalf("new key = %q, old %q", replaced, old)
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "http://example.com/_matrix/key/v2/server", nil)
+	federation_route(c)
+	var document struct {
+		Verify map[string]any            `json:"verify_keys"`
+		Old    map[string]map[string]any `json:"old_verify_keys"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &document)
+	if _, found := document.Verify[replaced]; !found || len(document.Verify) != 1 {
+		t.Errorf("verify_keys = %v", document.Verify)
+	}
+	if expired, _ := document.Old[string(old)]["expired_ts"].(float64); expired <= 0 {
+		t.Errorf("old_verify_keys = %v", document.Old)
+	}
+	if !strings.Contains(w.Body.String(), `"ed25519:`+strings.TrimPrefix(replaced, "ed25519:")+`"`) || !strings.Contains(w.Body.String(), `"signatures":{"example.com":{"`+replaced+`"`) {
+		t.Errorf("the document is not signed with the new key: %s", w.Body.String())
+	}
+
+	// This server's own event, signed with the old key, still verifies.
+	if err := gomatrixserverlib.VerifyEventSignatures(t.Context(), joined, federation_keyring(), federation_sender); err != nil {
+		t.Errorf("an event signed with the old key no longer verifies: %v", err)
+	}
+
+	// What it sends now is signed with the new key, and taken.
+	object := sl.NewDict(2)
+	object.SetKey(sl.String("conversation"), sl.String(room))
+	object.SetKey(sl.String("content"), sl.String("after the key"))
+	if _, err := api_account_object_create(thread, fn, sl.Tuple{sl.String("m1"), object}, nil); err != nil {
+		t.Fatal(err)
+	}
+	wait(t, "the message at the other server", func() bool { return len(r.received_of("m.room.message", "@alice:example.com")) == 1 })
+	if got := r.received_of("m.room.message", "@alice:example.com")[0]; !strings.Contains(string(got.JSON()), replaced) {
+		t.Errorf("sent after the replacement but not signed with the new key: %s", got.JSON())
+	}
+
+	if _, err := api_server_key_replace(owner, fn, sl.Tuple{sl.String("other.example")}, nil); err == nil {
+		t.Error("a domain that is not one of the server's Matrix domains was given a key")
+	}
+}
+
+// TestMatrixNotices: a linked Matrix account is told a notification by the
+// server's notices account, on the domain of the user's hosted Matrix account,
+// in a room made the first time and kept; a hosted account is no destination,
+// a network's accounts are told nothing when no account is named, and someone
+// who left the room is told nothing more there, nor invited again.
+func TestMatrixNotices(t *testing.T) {
+	alice, _ := create_matrix_test_env(t)
+	// A delivery that fails is queued for another attempt.
+	db_open("db/queue.db").exec("create table if not exists pushes (id text primary key, user text not null, account text not null, type text not null, identifier text not null default '', data text not null default '', app text not null default '', category text not null default '', object text not null default '', title text not null default '', body text not null default '', link text not null default '', event text not null default '', attempts integer not null default 0, next_retry integer not null, created integer not null)")
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	bob := r.user("bob")
+	db_user(alice, "user").exec("insert into accounts (id, type, label, identifier, data, created, verified, enabled) values ('l1', 'matrix', '', ?, '{}', 1, 1, 1)", bob)
+	thread := linked_thread(alice)
+	app, _ := thread.Local("app").(*App)
+	permission_grant(alice, app.id, "accounts/notify")
+	fn := sl.NewBuiltin("test", nil)
+	notify := func(account string, title string) int64 {
+		t.Helper()
+		kwargs := linked_kwargs("app", "chat", "category", "message", "object", "c1", "title", title, "body", "A message", "link", "/chat/c1")
+		if account != "" {
+			kwargs = append(kwargs, sl.Tuple{sl.String("account"), sl.String(account)})
+		}
+		answer := decoded(t)(api_account_notify(thread, fn, nil, kwargs))
+		sent, _ := answer["sent"].(int64)
+		return sent
+	}
+	invitations := func() int {
+		r.lock.Lock()
+		defer r.lock.Unlock()
+		return len(r.invited)
+	}
+
+	row, _ := db_user(alice, "user").row("select * from accounts where id='l1'")
+	hosted, _ := db_user(alice, "user").row("select * from accounts where id='m1'")
+	if !slices.Contains(account_capabilities(row), "notify") || slices.Contains(account_capabilities(hosted), "notify") {
+		t.Errorf("notify on the linked account %v, on the hosted one %v", account_capabilities(row), account_capabilities(hosted))
+	}
+
+	if sent := notify("l1", "First"); sent != 1 {
+		t.Fatalf("sent = %d", sent)
+	}
+	wait(t, "the invitation from the notices account", func() bool { return invitations() == 1 })
+	r.lock.Lock()
+	invite := r.invited[0]
+	r.lock.Unlock()
+	if string(invite.SenderID()) != "@notices:example.com" || *invite.StateKey() != bob {
+		t.Errorf("invitation = %s", invite.JSON())
+	}
+	room := invite.RoomID().String()
+	if standin := bridge_standin_of("@notices:example.com"); standin == nil || row_string(standin, "name") != "Mochi" {
+		t.Errorf("notices account = %v", standin)
+	}
+
+	// Bob takes it; the next notification reaches him in the same room.
+	r.lock.Lock()
+	r.take(invite)
+	r.lock.Unlock()
+	matrix_remote_join(t, r, room, bob)
+	if sent := notify("l1", "Second"); sent != 1 {
+		t.Fatalf("second sent = %d", sent)
+	}
+	wait(t, "the notification in the room", func() bool { return len(r.received_of("m.room.message", "@notices:example.com")) == 1 })
+	got := r.received_of("m.room.message", "@notices:example.com")[0]
+	if got.RoomID().String() != room || !strings.Contains(string(got.Content()), `Second\nA message`) || !strings.Contains(string(got.Content()), `"msgtype":"m.text"`) {
+		t.Errorf("notification = %s", got.Content())
+	}
+	if invitations() != 1 {
+		t.Errorf("invited again: %d", invitations())
+	}
+
+	// No account named: a network's accounts are not among those told.
+	if sent := notify("", "Everyone"); sent != 0 {
+		t.Errorf("told with no account named = %d", sent)
+	}
+	if sent := notify("m1", "Hosted"); sent != 0 {
+		t.Errorf("told the hosted account = %d", sent)
+	}
+
+	// Bob leaves: nothing more, and no new room.
+	r.push(t, "leave", r.event(room, bob, spec.MRoomMember, &bob, map[string]any{"membership": "leave"}))
+	if sent := notify("l1", "After"); sent != 0 {
+		t.Errorf("told after leaving = %d", sent)
+	}
+	if invitations() != 1 {
+		t.Errorf("invited again after leaving: %d", invitations())
+	}
+}

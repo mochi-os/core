@@ -156,6 +156,16 @@ func api_server_networks(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 				}
 			}
 		}
+		// Each Matrix domain's signing key, which the owner may replace.
+		if n == "matrix" {
+			keys := []any{}
+			for _, domain := range federation_domains() {
+				if id := federation_identity_of(domain); id != nil {
+					keys = append(keys, map[string]any{"domain": string(domain), "key": string(id.key)})
+				}
+			}
+			state["keys"] = keys
+		}
 		networks[n] = state
 	}
 	return sl_encode(map[string]any{
@@ -619,6 +629,19 @@ func api_server_block_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "%v", err)
 	}
 	return sl_encode(blocks_list(db_open("db/networks.db"))), nil
+}
+
+// mochi.server.key.replace(domain) -> string: Replace the Matrix signing key of one of the server's domains and return the new key's id. The old key is published among the domain's old keys, so what it signed stays verifiable. Requires settings/write
+func api_server_key_replace(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	_, domain, err := block_call(t, fn, args, "settings/write", "<domain: string>")
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	key, err := federation_key_replace(domain)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl.String(key), nil
 }
 
 // mochi.server.block.add(domain) -> None: Block a domain for the whole server.

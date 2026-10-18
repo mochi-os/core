@@ -693,7 +693,7 @@ func TestLinkedMatrix(t *testing.T) {
 	if account["identifier"] != "@alice:"+host || account["label"] != "Alice" || account["server"] != host || account["avatar"] != fake.server.URL+"/_matrix/client/v1/media/download/"+host+"/abc" {
 		t.Fatalf("linked account = %v", account)
 	}
-	if granted, _ := account["granted"].([]any); len(granted) != 1 || granted[0] != "chat" {
+	if granted, _ := account["granted"].([]any); len(granted) != 2 || granted[0] != "chat" || granted[1] != "notify" {
 		t.Errorf("granted = %v", account["granted"])
 	}
 	l := linked_get(alice, id)

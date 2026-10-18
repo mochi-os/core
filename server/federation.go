@@ -88,10 +88,14 @@ func federation_database() *DB {
 		db.exec("create index if not exists outbox_destination on outbox(destination, id)")
 		db.exec("create table if not exists destinations (name text not null primary key, failures integer not null default 0, retry integer not null default 0)")
 		db.exec("create table if not exists transactions (origin text not null, id text not null, received integer not null, primary key (origin, id))")
+		// Signing keys a domain has replaced: published as its old keys, with
+		// when they stopped signing, so what they signed stays verifiable.
+		db.exec("create table if not exists retired (domain text not null, key text not null, public text not null, expired integer not null, primary key (domain, key))")
 		rooms_tables(db)
 		signals_tables(db)
 		content_tables(db)
 		bridge_tables(db)
+		notices_tables(db)
 	}
 	return db
 }
@@ -166,18 +170,56 @@ func federation_identity_of(name spec.ServerName) *federation_identity {
 	return id
 }
 
+// federation_domains are the Matrix domains this server speaks for: those of
+// its accounts and those it keeps stand-ins on, each once.
+func federation_domains() []spec.ServerName {
+	rows, _ := networks_database().rows("select distinct domain from actors where network='matrix' and deleted=0")
+	standins, _ := federation_database().rows("select distinct domain from standins")
+	seen := map[string]bool{}
+	var out []spec.ServerName
+	for _, row := range append(rows, standins...) {
+		if domain := strings.ToLower(row_string(row, "domain")); domain != "" && !seen[domain] {
+			seen[domain] = true
+			out = append(out, spec.ServerName(domain))
+		}
+	}
+	return out
+}
+
 // federation_signing lists every Matrix domain's identity, for the client to
 // sign with whichever a request comes from.
 func federation_signing() []*fclient.SigningIdentity {
-	rows, _ := networks_database().rows("select distinct domain from actors where network='matrix' and deleted=0")
-	standins, _ := federation_database().rows("select distinct domain from standins")
 	var out []*fclient.SigningIdentity
-	for _, row := range append(rows, standins...) {
-		if id := federation_identity_of(spec.ServerName(row_string(row, "domain"))); id != nil {
+	for _, domain := range federation_domains() {
+		if id := federation_identity_of(domain); id != nil {
 			out = append(out, &fclient.SigningIdentity{ServerName: id.domain, KeyID: id.key, PrivateKey: id.private})
 		}
 	}
 	return out
+}
+
+// federation_key_replace gives a Matrix domain of this server a new signing
+// key and answers its id. The key it replaces is retired: published among the
+// domain's old keys with the moment it stopped signing, and never signed with
+// again.
+func federation_key_replace(name string) (gomatrixserverlib.KeyID, error) {
+	domain := spec.ServerName(strings.ToLower(name))
+	old := federation_identity_of(domain)
+	if old == nil {
+		return "", fmt.Errorf("not a Matrix domain of this server")
+	}
+	federation_database().exec("insert or ignore into retired (domain, key, public, expired) values (?, ?, ?, ?)", string(domain), string(old.key), base64.RawStdEncoding.EncodeToString(old.public), time.Now().UnixMilli())
+	federation_identities_lock.Lock()
+	networks_keys_lock.Lock()
+	db_open("db/networks.db").exec("delete from keys where name=?", "matrix "+string(domain))
+	networks_keys_lock.Unlock()
+	delete(federation_identities, domain)
+	federation_identities_lock.Unlock()
+	id := federation_identity_of(domain)
+	if id == nil {
+		return "", fmt.Errorf("no new key")
+	}
+	return id.key, nil
 }
 
 // federation_user is the local account a Matrix user id names: the user and
@@ -456,6 +498,14 @@ func (federation_keys) FetchKeys(ctx context.Context, requests map[gomatrixserve
 					ExpiredTS:    gomatrixserverlib.PublicKeyNotExpired,
 					ValidUntilTS: spec.AsTimestamp(time.Now().Add(federation_key_validity)),
 				}
+			} else if row, _ := db.row("select public, expired from retired where domain=? and key=?", string(id.domain), string(request.KeyID)); row != nil {
+				if public, err := base64.RawStdEncoding.DecodeString(row_string(row, "public")); err == nil {
+					out[request] = gomatrixserverlib.PublicKeyLookupResult{
+						VerifyKey:    gomatrixserverlib.VerifyKey{Key: spec.Base64Bytes(public)},
+						ExpiredTS:    spec.Timestamp(row_int(row, "expired")),
+						ValidUntilTS: spec.Timestamp(row_int(row, "expired")),
+					}
+				}
 			}
 			continue
 		}
@@ -497,13 +547,24 @@ func federation_keyring() *gomatrixserverlib.KeyRing {
 	}
 }
 
+// federation_keys_retired are a domain's old keys as its key document lists
+// them: each with when it stopped signing.
+func federation_keys_retired(domain spec.ServerName) map[string]any {
+	out := map[string]any{}
+	rows, _ := federation_database().rows("select key, public, expired from retired where domain=?", string(domain))
+	for _, row := range rows {
+		out[row_string(row, "key")] = map[string]any{"key": row_string(row, "public"), "expired_ts": row_int(row, "expired")}
+	}
+	return out
+}
+
 // federation_key_answer is the signed document of a domain's keys.
 func federation_key_answer(id *federation_identity) ([]byte, error) {
 	document := map[string]any{
 		"server_name":     string(id.domain),
 		"valid_until_ts":  int64(spec.AsTimestamp(time.Now().Add(federation_key_validity))),
 		"verify_keys":     map[string]any{string(id.key): map[string]any{"key": base64.RawStdEncoding.EncodeToString(id.public)}},
-		"old_verify_keys": map[string]any{},
+		"old_verify_keys": federation_keys_retired(id.domain),
 	}
 	unsigned, err := json.Marshal(document)
 	if err != nil {

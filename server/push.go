@@ -64,6 +64,9 @@ var push_deliverers = map[string]func(*Push) (success, retire bool){
 		token, _ := p.Data["token"].(string)
 		return account_deliver_pushbullet(token, p.Title, p.Body, p.Link), false
 	},
+	"matrix": func(p *Push) (bool, bool) {
+		return notices_send(p.User, p.Account, p.Identifier, p.Title, p.Body, p.Link), false
+	},
 	"ntfy": func(p *Push) (bool, bool) {
 		server, _ := p.Data["server"].(string)
 		topic, _ := p.Data["topic"].(string)

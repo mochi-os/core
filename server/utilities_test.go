@@ -908,3 +908,53 @@ func TestTimeLocalFallsBackToUTC(t *testing.T) {
 		t.Error("time_local still warns, and so emails the administrator, for a user preference")
 	}
 }
+
+// Inputs the markdown parser used to take quadratic time over (gomarkdown
+// GHSA-h7w2-xgxh-p66q and the parser hardening that followed it). Feeds and
+// forums render other users' post bodies, so each must finish well inside the
+// limit; the quadratic parser took several times the limit on every one.
+func TestMarkdownLinear(t *testing.T) {
+	inputs := map[string]string{
+		"unmatched emphasis brackets": strings.Repeat("*[", 160*1024),
+		"unclosed link destinations":  strings.Repeat("[x](", 128*1024),
+		"unclosed link titles":        strings.Repeat(`[x](- "title"`, 64*1024),
+		"unclosed fenced blocks":      strings.Repeat("```x\n", 32*1024),
+		"autolink punctuation":        strings.Repeat("http://x) ", 48*1024),
+	}
+	for name, input := range inputs {
+		done := make(chan struct{})
+		go func() {
+			markdown([]byte(input))
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s: rendering %d bytes took over 5 seconds", name, len(input))
+		}
+	}
+}
+
+// What markdown() makes of the constructs posts and documents use, so a library
+// update that changes them fails here rather than in someone's feed.
+func TestMarkdownOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		output string
+	}{
+		{"paragraph", "Hello *world*", "<p>Hello <em>world</em></p>\n"},
+		{"link", "[Mochi](https://mochi-os.org)", `<p><a href="https://mochi-os.org" target="_blank" rel="nofollow noopener">Mochi</a></p>` + "\n"},
+		{"autolink", "see https://mochi-os.org", `<p>see <a href="https://mochi-os.org" target="_blank" rel="nofollow noopener">https://mochi-os.org</a></p>` + "\n"},
+		{"script", "<script>alert(1)</script>", "<p></p>\n"},
+		{"javascript link", "[x](javascript:alert(1))", `<p><a target="_blank">x</a></p>` + "\n"},
+		{"empty link", "[x]()", "<p>x</p>\n"},
+		{"strikethrough", "~~gone~~", "<p><del>gone</del></p>\n"},
+		{"quote after list", "- item\n> quote", "<ul>\n<li>item</li>\n</ul>\n\n<blockquote>\n<p>quote</p>\n</blockquote>\n"},
+	}
+	for _, test := range tests {
+		if output := string(markdown([]byte(test.input))); output != test.output {
+			t.Errorf("%s: markdown(%q) = %q, want %q", test.name, test.input, output, test.output)
+		}
+	}
+}

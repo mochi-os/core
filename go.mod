@@ -30,14 +30,14 @@ require (
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/go-webauthn/webauthn v0.15.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
-	github.com/gomarkdown/markdown v0.0.0-20260417124207-7d523f7318df
+	github.com/gomarkdown/markdown v0.0.0-20261011113952-f83953680332
 	github.com/google/uuid v1.6.0
 	github.com/gotnospirit/messageformat v0.0.0-20221001023931-dfe49f1eb092
 	github.com/ipfs/go-block-format v0.2.0
 	github.com/ipfs/go-cid v0.6.2
 	github.com/ipld/go-car v0.6.1-0.20230509095817-92d28eb23ba4
 	github.com/jmoiron/sqlx v1.3.5
-	github.com/klauspost/compress v1.18.6
+	github.com/klauspost/compress v1.18.7
 	github.com/libp2p/go-libp2p v0.48.0
 	github.com/libp2p/go-libp2p-pubsub v0.14.2
 	github.com/matrix-org/gomatrixserverlib v0.0.0-20260716140101-4fe595dc7f58
@@ -192,9 +192,9 @@ require (
 	github.com/pion/sctp v1.8.39 // indirect
 	github.com/pion/sdp/v3 v3.0.18 // indirect
 	github.com/pion/srtp/v3 v3.0.6 // indirect
-	github.com/pion/stun/v3 v3.1.1 // indirect
+	github.com/pion/stun/v3 v3.1.5 // indirect
 	github.com/pion/transport/v3 v3.0.7 // indirect
-	github.com/pion/transport/v4 v4.0.1 // indirect
+	github.com/pion/transport/v4 v4.0.2 // indirect
 	github.com/pion/turn/v4 v4.0.2 // indirect
 	github.com/pion/webrtc/v4 v4.1.2 // indirect
 	github.com/pjbgf/sha1cd v0.6.0 // indirect

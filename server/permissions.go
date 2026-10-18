@@ -93,6 +93,10 @@ var permissions = []Permission{
 	// Speaking on Matrix as stand-ins for the members of a user's group chats,
 	// whom the user's server relays (decision 39 of the federation plan).
 	{"bridge/write", true, false},
+	// The contacts of the user's hosted XMPP accounts and the presence
+	// subscriptions with them, which people shows beside friends (phase 25).
+	{"roster/read", true, false},
+	{"roster/write", true, false},
 	{"accounts/notify", true, false},
 	// Installing writes executable code to disk under an app's entity id: this is
 	// permission to run code as any app. Not admin-only - apps_install_user gates

@@ -1385,9 +1385,13 @@ func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if len(data) == 0 || len(data) > media_maximum {
 		return sl_error(fn, "data must be between 1 and %d bytes", media_maximum)
 	}
-	user, row, _, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix")
+	user, row, _, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix", "xmpp")
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	// A hosted XMPP account's files wait for its upload service.
+	if x := xmpp_hosted_of(user, row); x != nil {
+		return xmpp_failed(x, fn, fmt.Errorf("a hosted XMPP account sends no files yet"))
 	}
 	// A hosted Matrix account's files are the engine's, named by their mxc
 	// address (content.go).

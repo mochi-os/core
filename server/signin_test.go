@@ -529,11 +529,12 @@ func TestPasswords(t *testing.T) {
 	if len(forms) != 1 {
 		t.Fatalf("%d SCRAM forms, want 1", len(forms))
 	}
-	salt, _ := forms[0][0].([]byte)
-	iterations, _ := forms[0][1].(int)
-	key, _ := forms[0][2].([]byte)
+	salt, iterations, key := forms[0].salt, forms[0].iterations, forms[0].salted
 	if want := sasl.SCRAMSaltPassword(sha256.New, []byte(laptop), salt, iterations); iterations != password_scram_iterations || string(key) != string(want) || len(salt) == 0 {
 		t.Error("the SCRAM form is not the salted password")
+	}
+	if forms[0].token != token_hash(laptop) {
+		t.Error("the SCRAM form does not name its token")
 	}
 	if forms := password_scram("xmpp", "nobody@example.com", "sha256"); len(forms) != 0 {
 		t.Error("SCRAM forms for an unknown address")

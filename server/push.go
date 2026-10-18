@@ -67,6 +67,9 @@ var push_deliverers = map[string]func(*Push) (success, retire bool){
 	"matrix": func(p *Push) (bool, bool) {
 		return notices_send(p.User, p.Account, p.Identifier, p.Title, p.Body, p.Link), false
 	},
+	"xmpp": func(p *Push) (bool, bool) {
+		return notices_xmpp(p.User, p.Identifier, p.Title, p.Body, p.Link), false
+	},
 	"ntfy": func(p *Push) (bool, bool) {
 		server, _ := p.Data["server"].(string)
 		topic, _ := p.Data["topic"].(string)
@@ -309,6 +312,9 @@ func api_account_sync(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 	if user := principal_caller(t); user != nil {
 		account_sync_signal(user, kind)
+		if kind == "contacts" {
+			go xmpp_friends_changed(user)
+		}
 	}
 	return sl.None, nil
 }

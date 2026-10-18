@@ -122,6 +122,11 @@ func network_state(name string) (string, string) {
 	if server_domain() == "" && len(domain_list()) == 0 {
 		return "unavailable", "domain"
 	}
+	if name == "xmpp" {
+		if reason := xmpp_unavailable(); reason != "" {
+			return "unavailable", reason
+		}
+	}
 	return "working", ""
 }
 

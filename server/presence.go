@@ -45,6 +45,20 @@ type presence_connection struct {
 var presence_connections = map[string]map[string]*presence_connection{}
 var presence_lock sync.Mutex
 
+// presence_pending counts the notifications of a presence change still going
+// out, which a test waits for before its databases go.
+var presence_pending sync.WaitGroup
+
+// presence_notify tells what shows the user's presence that it may have
+// changed, without waiting.
+func presence_notify(uid string) {
+	presence_pending.Add(1)
+	go func() {
+		defer presence_pending.Done()
+		linked_presence_notify(uid)
+	}()
+}
+
 var api_presence = sls.FromStringDict(sl.String("mochi.presence"), sl.StringDict{
 	"get": sl.NewBuiltin("mochi.presence.get", api_presence_get),
 	"set": sl.NewBuiltin("mochi.presence.set", api_presence_set),
@@ -68,7 +82,7 @@ func presence_connect(uid string, connection string, session string, kind string
 		presence_connections[uid] = map[string]*presence_connection{}
 	}
 	presence_connections[uid][connection] = &presence_connection{ID: connection, Session: session, Kind: kind, Device: device, Status: "online", Since: now(), Seen: now()}
-	go linked_presence_notify(uid)
+	presence_notify(uid)
 }
 
 // presence_disconnect records a session ending, and the user seen at this
@@ -121,7 +135,7 @@ func presence_set(uid string, session string, connection string, status string, 
 		changed++
 	}
 	if changed > 0 {
-		go linked_presence_notify(uid)
+		presence_notify(uid)
 	}
 	return changed
 }
@@ -156,6 +170,24 @@ func presence_user(uid string) (string, int64, []presence_connection) {
 		return status, now(), connections
 	}
 	return "offline", presence_seen(uid), []presence_connection{}
+}
+
+// presence_without is a user's status and its text over their connections
+// other than those of one kind: what Mochi's own sessions show beside an
+// engine's clients.
+func presence_without(uid string, kind string) (string, string) {
+	_, _, connections := presence_user(uid)
+	status, message := "offline", ""
+	rank := map[string]int{"offline": 0, "away": 1, "busy": 2, "online": 3}
+	for _, c := range connections {
+		if c.Kind == kind {
+			continue
+		}
+		if rank[c.Status] > rank[status] || (c.Status == status && message == "") {
+			status, message = c.Status, c.Message
+		}
+	}
+	return status, message
 }
 
 // presence_seen is when a user not connected was last seen: the moment a

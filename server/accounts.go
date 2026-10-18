@@ -295,7 +295,7 @@ var providers = []Provider{
 	},
 	{
 		Type:         "xmpp",
-		Capabilities: []string{"network", "chat"},
+		Capabilities: []string{"network", "chat", "notify"},
 		Flow:         "handle",
 		Fields: []ProviderField{
 			{Name: "handle", Label: "accounts.field.handle", Type: "text", Required: true, Placeholder: "alice"},
@@ -328,6 +328,7 @@ var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"move":          sl.NewBuiltin("mochi.account.move", api_account_move),
 	"mute":          api_account_mute,
 	"networks":      sl.NewBuiltin("mochi.account.networks", api_account_networks),
+	"roster":        api_account_roster,
 	"notifications": sl.NewBuiltin("mochi.account.notifications", api_account_notifications),
 	"notify":        sl.NewBuiltin("mochi.account.notify", api_account_notify),
 	"object":        api_account_object,

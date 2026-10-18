@@ -134,6 +134,28 @@ announced to NAT-restricted peers. The keys below tune the running service.
 :   Per-connection cap on relayed transfer time. Unset or **0** leaves the
     connection unbounded.
 
+## [xmpp]
+
+The listeners of the XMPP engine, which serves hosted XMPP accounts. They open
+only on a server offering the other networks. A listener whose address or port
+is already taken marks XMPP unavailable on the Status page, and is tried again
+each minute; the server goes on without it.
+
+**address** = *address*
+:   The address the listeners take. Defaults to every address.
+
+**client** = *integer*
+:   The port clients connect to, securing the stream with STARTTLS.
+    Defaults to **5222**; **0** turns it off.
+
+**direct** = *integer*
+:   The port clients connect to in TLS from the start (XEP-0368).
+    Defaults to **5223**; **0** turns it off.
+
+**server** = *integer*
+:   The port other servers connect to. Defaults to **5269**; **0** turns
+    it off, and the accounts can then be reached by no other server.
+
 ## [email]
 
 The sender address for outbound mail (login codes, admin alerts) is not
@@ -163,8 +185,10 @@ the sending host, or the mail will be filed as spam.
 ## [files]
 
 **domains** = *path*
-:   Path to the domain-routing config used by the file-server entity for
-    custom domains (*packages.mochi-os.org*, *mochi-os.org* etc).
+:   Path to a file of certificates installed by hand, a section per
+    domain naming its **certificate** and **key** files. A domain listed
+    there is answered with that certificate rather than one from the
+    certificate authority, by the web server and the XMPP listeners.
     Defaults to empty.
 
 ## [starlark]

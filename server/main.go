@@ -231,6 +231,7 @@ func main_serve(ready func()) int {
 	go delivery_manager()
 	go atproto_manager()
 	go federation_manager()
+	xmpp_start()
 	actors_rebuild()
 	go inbound_manager()
 	go linked_manager()

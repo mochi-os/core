@@ -111,7 +111,7 @@ func account_acting_on(t *sl.Thread, fn *sl.Builtin, id string, networks ...stri
 	if !network_enabled(network) {
 		return nil, nil, "", fmt.Errorf("%s is off", network)
 	}
-	if network == "matrix" {
+	if network == "matrix" || network == "xmpp" {
 		return user, row, "", nil
 	}
 	return user, row, account_actor(user, id), nil
@@ -258,11 +258,18 @@ func api_account_object_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "object", &value, "key?", &key, "sourced?", &sourced); err != nil {
 		return nil, err
 	}
-	user, row, actor, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix")
+	user, row, actor, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix", "xmpp")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	object := sl_decode_map(value)
+	if x := xmpp_hosted_of(user, row); x != nil {
+		result, err := xmpp_object_create(x, object, key)
+		if err != nil {
+			return xmpp_failed(x, fn, err)
+		}
+		return sl_encode(result), nil
+	}
 	if l := linked_from(user, row); l != nil {
 		result, err := linked_create(thread_context(t), l, object, key)
 		if err != nil {
@@ -327,11 +334,22 @@ func api_account_object_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "id", &remote, "object", &value); err != nil {
 		return nil, err
 	}
-	user, found, actor, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix")
+	user, found, actor, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix", "xmpp")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	object := sl_decode_map(value)
+	if x := xmpp_hosted_of(user, found); x != nil {
+		conversation, _ := object["conversation"].(string)
+		text, _ := object["content"].(string)
+		if text == "" {
+			return xmpp_failed(x, fn, fmt.Errorf("a correction needs the new text"))
+		}
+		if err := xmpp_hosted_send(x, conversation, uid(), text, "", remote); err != nil {
+			return xmpp_failed(x, fn, err)
+		}
+		return sl_encode(map[string]any{"id": remote, "url": "", "data": map[string]any{}}), nil
+	}
 	if l := linked_from(user, found); l != nil {
 		result, err := linked_update(thread_context(t), l, remote, object)
 		if err != nil {
@@ -396,9 +414,15 @@ func api_account_object_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "id", &remote, "conversation?", &conversation); err != nil {
 		return nil, err
 	}
-	user, found, actor, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix")
+	user, found, actor, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix", "xmpp")
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	if x := xmpp_hosted_of(user, found); x != nil {
+		if err := xmpp_hosted_retract(x, conversation, remote); err != nil {
+			return xmpp_failed(x, fn, err)
+		}
+		return sl.True, nil
 	}
 	if l := linked_from(user, found); l != nil {
 		if err := linked_delete(thread_context(t), l, remote, conversation); err != nil {
@@ -881,7 +905,7 @@ func api_account_media(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "url", &address); err != nil {
 		return nil, err
 	}
-	user, row, actor, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix")
+	user, row, actor, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix", "xmpp")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -912,19 +936,25 @@ func api_account_media(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		result.SetKey(sl.String("data"), sl.Bytes(data))
 		return result, nil
 	}
-	key := keypair_get(user, account, key_signing)
-	if key == nil {
-		return sl_error(fn, "account has no key")
-	}
 	request, err := http.NewRequestWithContext(thread_context(t), "GET", address, nil)
 	if err != nil {
 		return sl_error(fn, "invalid url")
 	}
 	request.Header.Set("Accept", "*/*")
-	if err := signature_sign(request, actor+"#main-key", key.Private, nil); err != nil {
-		return sl_error(fn, "%v", err)
+	// A file shared on XMPP is fetched as any page is; on the fediverse the
+	// request is signed as the account.
+	network := "xmpp"
+	if xmpp_hosted_of(user, row) == nil {
+		network = "fediverse"
+		key := keypair_get(user, account, key_signing)
+		if key == nil {
+			return sl_error(fn, "account has no key")
+		}
+		if err := signature_sign(request, actor+"#main-key", key.Private, nil); err != nil {
+			return sl_error(fn, "%v", err)
+		}
 	}
-	response, err := network_request(request.Context(), user, "fediverse", request, 5)
+	response, err := network_request(request.Context(), user, network, request, 5)
 	if err != nil {
 		debug("Media %s not fetched: %v", address, err)
 		return sl.None, nil

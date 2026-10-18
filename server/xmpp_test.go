@@ -164,7 +164,7 @@ func TestXMPPLink(t *testing.T) {
 	if account["identifier"] != "alice@example.org" || account["label"] != "alice" || account["server"] != "example.org" || account["url"] != "xmpp:alice@example.org" {
 		t.Fatalf("linked account = %v", account)
 	}
-	if granted, _ := account["granted"].([]any); len(granted) != 1 || granted[0] != "chat" {
+	if granted, _ := account["granted"].([]any); len(granted) != 2 || granted[0] != "chat" || granted[1] != "notify" {
 		t.Errorf("granted = %v", account["granted"])
 	}
 	if l := linked_get(alice, id); l.get("password") != "secret" || l.get("address") != "alice@example.org" || l.get("id") != "xmpp:alice@example.org" {

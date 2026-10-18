@@ -620,6 +620,10 @@ var (
 			{"entity/read", ""},
 			{"groups/read", ""},
 			{"groups/write", ""},
+			// Contacts on XMPP beside friends, invited and accepted as they
+			// are, through the user's hosted XMPP accounts (phase 25).
+			{"roster/read", ""},
+			{"roster/write", ""},
 			// The CardDAV credential a device holds is a token the app mints.
 			{"tokens/create", ""},
 			{"user/identity/write", ""},

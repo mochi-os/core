@@ -1280,7 +1280,10 @@ func password_mint(user *User, app string, account string, network string, name 
 	if password == "" {
 		return ""
 	}
-	salt := []byte(random_alphanumeric(16))
+	// One salt for all of an account's passwords: a SCRAM exchange names
+	// the salt before the client proves which password it holds, so the
+	// server can try each only where they share it.
+	salt := password_salt(user, account)
 	scram := map[string]any{
 		"salt":       base64.StdEncoding.EncodeToString(salt),
 		"iterations": password_scram_iterations,
@@ -1366,21 +1369,51 @@ func password_check(network string, address string, password string) (*User, map
 	if t == nil || t.Kind != token_password || t.User != user.UID || t.Account != row["id"] {
 		return nil, nil, ""
 	}
-	db_open("db/sessions.db").exec("insert into accesses (hash, user, used) values (?, ?, ?) on conflict(hash) do update set used=excluded.used", t.Hash, t.User, now())
+	password_used(t.Hash, t.User)
 	return user, row, t.Name
 }
 
+// password_used records a minted password's use.
+func password_used(hash string, user string) {
+	db_open("db/sessions.db").exec("insert into accesses (hash, user, used) values (?, ?, ?) on conflict(hash) do update set used=excluded.used", hash, user, now())
+}
+
+// password_salt is the salt an account's passwords are kept in SCRAM form
+// with: the one its passwords already have, else a new one.
+func password_salt(user *User, account string) []byte {
+	rows, _ := db_open("db/users.db").rows("select scram from tokens where user=? and kind=? and account=? order by created", user.UID, token_password, account)
+	for _, r := range rows {
+		var scram struct {
+			Salt string `json:"salt"`
+		}
+		if json.Unmarshal([]byte(row_string(r, "scram")), &scram) == nil {
+			if salt, err := base64.StdEncoding.DecodeString(scram.Salt); err == nil && len(salt) > 0 {
+				return salt
+			}
+		}
+	}
+	return []byte(random_alphanumeric(16))
+}
+
+// A password_salted is one minted password's SCRAM form for one hash: its
+// salt, iterations and salted password, and the token it is the form of.
+type password_salted struct {
+	salt       []byte
+	iterations int
+	salted     []byte
+	token      string
+}
+
 // password_scram answers the SCRAM forms of an account's minted passwords for
-// an XMPP server's challenge: each with its salt, iterations and salted
-// password for the hash named, "sha1" or "sha256". The server tries each,
-// since the client names no device.
-func password_scram(network string, address string, hash string) [][3]any {
+// an XMPP server's challenge, each for the hash named, "sha1" or "sha256". The
+// server tries each, since the client names no device.
+func password_scram(network string, address string, algorithm string) []password_salted {
 	user, row := account_by_address(network, address)
 	if user == nil {
 		return nil
 	}
-	rows, _ := db_open("db/users.db").rows("select scram from tokens where user=? and kind=? and account=?", user.UID, token_password, row["id"])
-	var out [][3]any
+	rows, _ := db_open("db/users.db").rows("select hash, scram from tokens where user=? and kind=? and account=? order by created", user.UID, token_password, row["id"])
+	var out []password_salted
 	for _, r := range rows {
 		var scram struct {
 			Salt       string `json:"salt"`
@@ -1392,12 +1425,15 @@ func password_scram(network string, address string, hash string) [][3]any {
 			continue
 		}
 		salt, _ := base64.StdEncoding.DecodeString(scram.Salt)
-		salted := scram.SHA256
-		if hash == "sha1" {
-			salted = scram.SHA1
+		text := scram.SHA256
+		if algorithm == "sha1" {
+			text = scram.SHA1
 		}
-		key, _ := base64.StdEncoding.DecodeString(salted)
-		out = append(out, [3]any{salt, scram.Iterations, key})
+		salted, _ := base64.StdEncoding.DecodeString(text)
+		if len(salt) == 0 || len(salted) == 0 || scram.Iterations <= 0 {
+			continue
+		}
+		out = append(out, password_salted{salt: salt, iterations: scram.Iterations, salted: salted, token: row_string(r, "hash")})
 	}
 	return out
 }

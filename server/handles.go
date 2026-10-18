@@ -75,7 +75,7 @@ var handle_blocked = map[string]bool{
 	"autoconfig": true, "autodiscover": true, "localhost": true, "rooms": true,
 	"matrix": true, "xmpp": true, "conference": true, "upload": true, "cdn": true,
 	"static": true, "assets": true, "media": true, "api": true, "oauth": true,
-	"xrpc": true, "pictrs": true, "mochi": true,
+	"xrpc": true, "pictrs": true, "mochi": true, "notices": true,
 }
 
 // handle_normalise lowercases a name and writes a hyphen as the underscore it

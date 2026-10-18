@@ -303,6 +303,7 @@ type xmpp_message struct {
 		Retract *struct{} `xml:"urn:xmpp:message-retract:0 retract"`
 	} `xml:"urn:xmpp:fasten:0 apply-to"`
 	Reply     *xmpp_reference   `xml:"urn:xmpp:reply:0 reply"`
+	Nick      string            `xml:"http://jabber.org/protocol/nick nick"`
 	Fallbacks []xmpp_fallback   `xml:"urn:xmpp:fallback:0 fallback"`
 	Delay     *xmpp_delay       `xml:"urn:xmpp:delay delay"`
 	Stanzas   []xmpp_identifier `xml:"urn:xmpp:sid:0 stanza-id"`
@@ -768,6 +769,31 @@ func (c *xmpp_client) read(m *xmpp_message, delay *xmpp_delay, sent bool) []map[
 	if own {
 		name = ""
 	}
+	events := xmpp_events(m, delay, from, conversation, sender, name, archive, own)
+	if len(events) == 0 || events[len(events)-1]["kind"] != "message" {
+		return events
+	}
+	event := events[len(events)-1]
+	if m.Markable != nil && !own && m.Type != "groupchat" {
+		c.lock.Lock()
+		c.markable[conversation] = event["id"].(string)
+		c.lock.Unlock()
+	}
+	if archive != "" && m.Type != "groupchat" && delay == nil {
+		c.l.store("archive", archive)
+	}
+	if m.Type == "groupchat" {
+		c.seen(bare, event["created"].(int64))
+	}
+	return events
+}
+
+// xmpp_events turns a message into the conversation events it carries, once
+// its conversation, its sender and the name they go by are known, whether it
+// was the account's own and the id an archive gave it: receipts, typing, a
+// withdrawal, a correction, an invitation to a room, or the message itself,
+// which comes last.
+func xmpp_events(m *xmpp_message, delay *xmpp_delay, from jid.JID, conversation string, sender string, name string, archive string, own bool) []map[string]any {
 	created := now()
 	if delay != nil {
 		if stamp, err := time.Parse(time.RFC3339, delay.Stamp); err == nil {
@@ -843,11 +869,6 @@ func (c *xmpp_client) read(m *xmpp_message, delay *xmpp_delay, sent bool) []map[
 	if body == "" && len(files) == 0 && !encrypted {
 		return events
 	}
-	if m.Markable != nil && !own && m.Type != "groupchat" {
-		c.lock.Lock()
-		c.markable[conversation] = id
-		c.lock.Unlock()
-	}
 	event := map[string]any{"kind": "message", "conversation": conversation, "room": m.Type == "groupchat", "from": sender, "name": name, "id": id, "archive": archive, "body": body, "created": created, "own": own, "encrypted": encrypted}
 	if len(files) > 0 {
 		event["files"] = files
@@ -855,14 +876,7 @@ func (c *xmpp_client) read(m *xmpp_message, delay *xmpp_delay, sent bool) []map[
 	if m.Reply != nil && m.Reply.ID != "" {
 		event["reply"] = m.Reply.ID
 	}
-	events = append(events, event)
-	if archive != "" && m.Type != "groupchat" && delay == nil {
-		c.l.store("archive", archive)
-	}
-	if m.Type == "groupchat" {
-		c.seen(bare, created)
-	}
-	return events
+	return append(events, event)
 }
 
 // xmpp_file_name is the name a shared file's address ends in.
@@ -1456,8 +1470,30 @@ func (c *xmpp_client) message_send(ctx context.Context, conversation string, id 
 		return err
 	}
 	kind := c.kind(to)
+	text := xmpp_message_text(to.String(), kind, id, body, file, reply, correct)
+	c.lock.Lock()
+	if timer := c.typing[conversation]; timer != nil {
+		timer.Stop()
+		delete(c.typing, conversation)
+	}
+	if kind == "groupchat" {
+		c.sent[id] = now()
+		for sent, at := range c.sent {
+			if at < now()-86400 {
+				delete(c.sent, sent)
+			}
+		}
+	}
+	c.lock.Unlock()
+	return c.send(ctx, text)
+}
+
+// xmpp_message_text writes a message of a conversation: its text, or a file by
+// its address, a reply to another, or a correction of an earlier one, asking
+// to be marked as read and, between two people, for a receipt.
+func xmpp_message_text(to string, kind string, id string, body string, file string, reply string, correct string) string {
 	var b strings.Builder
-	b.WriteString(`<message xmlns="jabber:client" to="` + xmpp_escape(to.String()) + `" type="` + kind + `" id="` + xmpp_escape(id) + `">`)
+	b.WriteString(`<message xmlns="jabber:client" to="` + xmpp_escape(to) + `" type="` + kind + `" id="` + xmpp_escape(id) + `">`)
 	if file != "" {
 		body = file
 	}
@@ -1477,21 +1513,7 @@ func (c *xmpp_client) message_send(ctx context.Context, conversation string, id 
 		b.WriteString(`<reply xmlns="urn:xmpp:reply:0" id="` + xmpp_escape(reply) + `"/>`)
 	}
 	b.WriteString(`<active xmlns="http://jabber.org/protocol/chatstates"/><origin-id xmlns="urn:xmpp:sid:0" id="` + xmpp_escape(id) + `"/></message>`)
-	c.lock.Lock()
-	if timer := c.typing[conversation]; timer != nil {
-		timer.Stop()
-		delete(c.typing, conversation)
-	}
-	if kind == "groupchat" {
-		c.sent[id] = now()
-		for sent, at := range c.sent {
-			if at < now()-86400 {
-				delete(c.sent, sent)
-			}
-		}
-	}
-	c.lock.Unlock()
-	return c.send(ctx, b.String())
+	return b.String()
 }
 
 // retract withdraws a message the account sent, by the id it has in the

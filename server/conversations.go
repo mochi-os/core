@@ -59,7 +59,12 @@ var linked_inbound = func(user *User, account string, network string, events []m
 	}
 	list := make([]any, 0, len(events))
 	for _, event := range events {
-		list = append(list, event)
+		if !notices_heard(event) {
+			list = append(list, event)
+		}
+	}
+	if len(list) == 0 {
+		return
 	}
 	for _, a := range apps_for_function(user, "linked/receive") {
 		if _, err := activitypub_call(user, a, "linked/receive", Map{"account": account, "network": network, "events": list}); err != nil {
@@ -94,7 +99,15 @@ func linked_presence(l *linked) (string, string) {
 // linked_presence_notify tells a user's sessions that their presence, or what
 // they share of it, may have changed.
 func linked_presence_notify(uid string) {
-	go signals_presence_notify(uid)
+	presence_pending.Add(2)
+	go func() {
+		defer presence_pending.Done()
+		signals_presence_notify(uid)
+	}()
+	go func() {
+		defer presence_pending.Done()
+		xmpp_mochi_update(uid)
+	}()
 	linked_lock.Lock()
 	defer linked_lock.Unlock()
 	prefix := uid + "/"
@@ -140,21 +153,39 @@ func hosted_failed(h *matrix_hosted, fn *sl.Builtin, err error) (sl.Value, error
 	return sl.None, nil
 }
 
+// An account an app holds conversations through: a linked XMPP or Matrix
+// account, or a hosted Matrix or XMPP account.
+type conversant struct {
+	l *linked
+	h *matrix_hosted
+	x *xmpp_account
+}
+
 // conversing resolves the account an app holds conversations through: a
-// linked account of a kind given, or a hosted Matrix account.
-func conversing(t *sl.Thread, fn *sl.Builtin, account string, kinds ...string) (*linked, *matrix_hosted, error) {
-	user, row, _, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix")
+// linked account of a kind given, or a hosted Matrix or XMPP account.
+func conversing(t *sl.Thread, fn *sl.Builtin, account string, kinds ...string) (*conversant, error) {
+	user, row, _, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix", "xmpp")
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if h := matrix_hosted_of(user, row); h != nil && slices.Contains(kinds, "matrix") {
-		return nil, h, nil
+		return &conversant{h: h}, nil
+	}
+	if x := xmpp_hosted_of(user, row); x != nil && slices.Contains(kinds, "xmpp") {
+		return &conversant{x: x}, nil
 	}
 	l := linked_from(user, row)
 	if l == nil || !slices.Contains(kinds, l.kind) {
-		return nil, nil, fmt.Errorf("this account has no conversations here")
+		return nil, fmt.Errorf("this account has no conversations here")
 	}
-	return l, nil, nil
+	return &conversant{l: l}, nil
+}
+
+// xmpp_failed is a hosted XMPP account's failure as the app sees it: None,
+// with the reason in the log, as for any account.
+func xmpp_failed(x *xmpp_account, fn *sl.Builtin, err error) (sl.Value, error) {
+	info("Hosted XMPP account %s: %s: %v", x.id, fn.Name(), err)
+	return sl.None, nil
 }
 
 // linked_client is the running XMPP session of an account.
@@ -223,12 +254,19 @@ func api_account_typing(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "conversation", &conversation, "typing?", &typing); err != nil {
 		return nil, err
 	}
-	l, h, err := conversing(t, fn, account, "xmpp", "matrix")
+	c, err := conversing(t, fn, account, "xmpp", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
+	l, h := c.l, c.h
 	if h != nil {
 		signals_typing(h, conversation, typing)
+		return sl.None, nil
+	}
+	if c.x != nil {
+		if err := xmpp_hosted_typing(c.x, conversation, typing); err != nil {
+			return xmpp_failed(c.x, fn, err)
+		}
 		return sl.None, nil
 	}
 	switch l.kind {
@@ -254,13 +292,22 @@ func api_account_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "conversation", &conversation, "id", &id, "shared?", &shared); err != nil {
 		return nil, err
 	}
-	l, h, err := conversing(t, fn, account, "xmpp", "matrix")
+	c, err := conversing(t, fn, account, "xmpp", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
+	l, h := c.l, c.h
 	if h != nil {
 		if shared {
 			signals_read(h, conversation, id)
+		}
+		return sl.None, nil
+	}
+	if c.x != nil {
+		if shared {
+			if err := xmpp_hosted_read(c.x, conversation, id); err != nil {
+				return xmpp_failed(c.x, fn, err)
+			}
 		}
 		return sl.None, nil
 	}
@@ -290,12 +337,17 @@ func api_account_presence(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "shared", &shared); err != nil {
 		return nil, err
 	}
-	l, h, err := conversing(t, fn, account, "xmpp", "matrix")
+	c, err := conversing(t, fn, account, "xmpp", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
+	l, h := c.l, c.h
 	if h != nil {
 		signals_share(h, shared)
+		return sl.None, nil
+	}
+	if c.x != nil {
+		xmpp_hosted_share(c.x, shared)
 		return sl.None, nil
 	}
 	if shared {
@@ -314,24 +366,44 @@ func api_account_room_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "people", &list, "name?", &name); err != nil {
 		return nil, err
 	}
-	l, h, err := conversing(t, fn, account, "xmpp", "matrix")
+	c, err := conversing(t, fn, account, "xmpp", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
+	l, h := c.l, c.h
 	var addresses []string
 	for i := 0; i < list.Len(); i++ {
 		address, ok := sl.AsString(list.Index(i))
 		if !ok || strings.TrimSpace(address) == "" {
-			return conversing_failed(l, h, fn, fmt.Errorf("invalid address"))
+			return conversing_failed(c, fn, fmt.Errorf("invalid address"))
 		}
 		addresses = append(addresses, strings.TrimSpace(address))
 	}
 	if len(addresses) == 0 {
-		return conversing_failed(l, h, fn, fmt.Errorf("no people"))
+		return conversing_failed(c, fn, fmt.Errorf("no people"))
 	}
 	ctx := thread_context(t)
 	var people []any
 	var conversation string
+	// A hosted XMPP account holds one-to-one conversations; rooms come with
+	// the room host.
+	if c.x != nil {
+		var bares []string
+		for _, address := range addresses {
+			person, err := xmpp_address(address)
+			if err != nil {
+				return xmpp_failed(c.x, fn, err)
+			}
+			if !person.Equal(c.x.address) && !slices.Contains(bares, person.String()) {
+				bares = append(bares, person.String())
+				people = append(people, map[string]any{"id": "xmpp:" + person.String(), "name": person.Localpart()})
+			}
+		}
+		if len(bares) != 1 {
+			return xmpp_failed(c.x, fn, fmt.Errorf("a hosted XMPP account has no rooms yet"))
+		}
+		return sl_encode(map[string]any{"conversation": "xmpp:" + bares[0], "room": false, "people": people}), nil
+	}
 	if h != nil {
 		mine, _ := spec.NewUserID(h.address, true)
 		var ids []string
@@ -413,9 +485,15 @@ func api_account_room_join(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "address", &address, "person?", &person); err != nil {
 		return nil, err
 	}
-	l, h, err := conversing(t, fn, account, "xmpp", "matrix")
+	c, err := conversing(t, fn, account, "xmpp", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	l, h := c.l, c.h
+	if c.x != nil {
+		// No rooms yet: an address is a person's, which chat asks next.
+		debug("Hosted XMPP account %s: %s is not a room here", c.x.id, address)
+		return sl.None, nil
 	}
 	address = strings.TrimSpace(address)
 	ctx := thread_context(t)
@@ -465,14 +543,19 @@ func api_account_room_leave(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "conversation", &conversation); err != nil {
 		return nil, err
 	}
-	l, h, err := conversing(t, fn, account, "xmpp", "matrix")
+	c, err := conversing(t, fn, account, "xmpp", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
+	l, h := c.l, c.h
 	if h != nil {
 		if err := rooms_leave(thread_context(t), h.address, conversation); err != nil {
 			return hosted_failed(h, fn, err)
 		}
+		return sl.None, nil
+	}
+	if c.x != nil {
+		// A one-to-one conversation has nothing to leave.
 		return sl.None, nil
 	}
 	switch l.kind {
@@ -500,13 +583,14 @@ func api_account_directory(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "query", &query); err != nil {
 		return nil, err
 	}
-	l, h, err := conversing(t, fn, account, "xmpp", "matrix")
+	c, err := conversing(t, fn, account, "xmpp", "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
+	l, h := c.l, c.h
 	query = strings.TrimSpace(query)
 	people := []map[string]any{}
-	if query == "" || len(query) > 200 {
+	if query == "" || len(query) > 200 || c.x != nil {
 		return sl_encode(people), nil
 	}
 	ctx := thread_context(t)
@@ -523,12 +607,15 @@ func api_account_directory(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl_encode(people), nil
 }
 
-// conversing_failed is a failure of either kind of account as the app sees it.
-func conversing_failed(l *linked, h *matrix_hosted, fn *sl.Builtin, err error) (sl.Value, error) {
-	if h != nil {
-		return hosted_failed(h, fn, err)
+// conversing_failed is a failure of any kind of account as the app sees it.
+func conversing_failed(c *conversant, fn *sl.Builtin, err error) (sl.Value, error) {
+	switch {
+	case c.h != nil:
+		return hosted_failed(c.h, fn, err)
+	case c.x != nil:
+		return xmpp_failed(c.x, fn, err)
 	}
-	return linked_failed(l, fn, err)
+	return linked_failed(c.l, fn, err)
 }
 
 // matrix_person is a Matrix person's id from an address as typed: @name:host,

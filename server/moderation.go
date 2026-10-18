@@ -31,10 +31,18 @@ var api_account_mute = sls.FromStringDict(sl.String("mochi.account.mute"), sl.St
 })
 
 // actor_target reads a person's id on another network from an API argument,
-// trimmed - a fediverse id or a Bluesky identifier; false for anything that is
-// not one, such as a domain.
+// trimmed - a fediverse id, a Bluesky identifier, or an XMPP address as
+// xmpp:name@host, lowercased as the XMPP engine keeps it; false for anything
+// that is not one, such as a domain.
 func actor_target(target string) (string, bool) {
 	target = strings.TrimSpace(target)
+	if rest, found := strings.CutPrefix(target, "xmpp:"); found {
+		address, err := xmpp_address(rest)
+		if err != nil {
+			return "", false
+		}
+		return "xmpp:" + strings.ToLower(address.String()), true
+	}
 	if !activitypub_remote_ok(target) && !resolve_did_re.MatchString(target) {
 		return "", false
 	}

@@ -110,8 +110,31 @@ func create_xmpp_server_env(t *testing.T) *xmpp_env {
 		xmpp_resources = map[string]map[string]*xmpp_resource{}
 		xmpp_resources_lock.Unlock()
 		for _, r := range running {
-			r.stop("")
+			r.end("")
 		}
+		// What is kept in memory of this environment's database goes with it.
+		conferences_lock.Lock()
+		conferences = map[string]*conference{}
+		conferences_lock.Unlock()
+		xmpp_joinings_lock.Lock()
+		xmpp_joinings = map[string]*xmpp_joining{}
+		xmpp_joinings_lock.Unlock()
+		xmpp_echoes_lock.Lock()
+		xmpp_echoes = map[string]time.Time{}
+		xmpp_echoes_lock.Unlock()
+		xmpp_acceptances_lock.Lock()
+		xmpp_acceptances = map[string]xmpp_acceptance{}
+		xmpp_acceptances_lock.Unlock()
+		relay_keys_lock.Lock()
+		relay_keys = map[string]relay_key{}
+		relay_keys_lock.Unlock()
+		xmpp_pushes_lock.Lock()
+		xmpp_pushes = map[string]xmpp_push{}
+		xmpp_pushed = map[string]time.Time{}
+		xmpp_pushes_lock.Unlock()
+		xmpp_reached_lock.Lock()
+		xmpp_reached = map[string]xmpp_reach{}
+		xmpp_reached_lock.Unlock()
 		xmpp_peers_lock.Lock()
 		peers := xmpp_peers
 		xmpp_peers = map[string]*xmpp_peer{}
@@ -374,13 +397,30 @@ func TestXMPPSignIn(t *testing.T) {
 // other implementation cannot ask: what it received, as text.
 type xmpp_raw_client struct {
 	x        *xmpp_conn
+	conn     net.Conn
 	full     string
+	features string
 	lock     sync.Mutex
 	received []string
 }
 
 // raw signs a client in by PLAIN and binds the resource asked for.
 func (env *xmpp_env) raw(t *testing.T, address string, password string, resource string) *xmpp_raw_client {
+	t.Helper()
+	c := env.signed(t, address, password)
+	s := c.step(t, `<iq xmlns="jabber:client" type="set" id="b1"><bind xmlns="urn:ietf:params:xml:ns:xmpp-bind"><resource>`+resource+`</resource></bind></iq>`)
+	var bound struct {
+		JID string `xml:"bind>jid"`
+	}
+	s.decode(&bound)
+	c.full = bound.JID
+	c.listen()
+	return c
+}
+
+// signed signs a client in by PLAIN on a new stream, before it binds a
+// resource: its stream's features are kept.
+func (env *xmpp_env) signed(t *testing.T, address string, password string) *xmpp_raw_client {
 	t.Helper()
 	conn, err := net.Dial("tcp", env.client)
 	if err != nil {
@@ -389,52 +429,54 @@ func (env *xmpp_env) raw(t *testing.T, address string, password string, resource
 	t.Cleanup(func() { conn.Close() })
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 	local, domain, _ := strings.Cut(address, "@")
-	x := xmpp_conn_new(conn, 1<<20)
-	step := func(text string) *xmpp_stanza {
-		t.Helper()
-		if text != "" {
-			x.write(text)
-		}
-		s, err := x.next()
-		if err != nil {
-			t.Fatalf("raw client: %v", err)
-		}
-		return s
-	}
+	c := &xmpp_raw_client{x: xmpp_conn_new(conn, 1<<20), conn: conn}
 	begin := func() {
 		t.Helper()
-		x.write(`<?xml version='1.0'?><stream:stream xmlns="jabber:client" xmlns:stream="http://etherx.jabber.org/streams" to="` + domain + `" version="1.0">`)
-		if _, err := x.header(); err != nil {
+		c.x.write(`<?xml version='1.0'?><stream:stream xmlns="jabber:client" xmlns:stream="http://etherx.jabber.org/streams" to="` + domain + `" version="1.0">`)
+		if _, err := c.x.header(); err != nil {
 			t.Fatalf("raw client header: %v", err)
 		}
-		step("")
+		c.features = c.step(t, "").inner
 	}
 	begin()
-	if s := step(`<starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"/>`); s.name != "proceed" {
+	if s := c.step(t, `<starttls xmlns="urn:ietf:params:xml:ns:xmpp-tls"/>`); s.name != "proceed" {
 		t.Fatalf("starttls answered %s", s.name)
 	}
 	secured := tls.Client(conn, &tls.Config{ServerName: domain, RootCAs: env.roots})
 	if err := secured.Handshake(); err != nil {
 		t.Fatal(err)
 	}
-	x = xmpp_conn_new(secured, 1<<20)
+	c.conn = secured
+	c.x = xmpp_conn_new(secured, 1<<20)
 	begin()
 	credentials := base64.StdEncoding.EncodeToString([]byte("\x00" + local + "\x00" + password))
-	if s := step(`<auth xmlns="urn:ietf:params:xml:ns:xmpp-sasl" mechanism="PLAIN">` + credentials + `</auth>`); s.name != "success" {
+	if s := c.step(t, `<auth xmlns="urn:ietf:params:xml:ns:xmpp-sasl" mechanism="PLAIN">`+credentials+`</auth>`); s.name != "success" {
 		t.Fatalf("auth answered %s", s.name)
 	}
-	x.restart()
+	c.x.restart()
 	begin()
-	s := step(`<iq xmlns="jabber:client" type="set" id="b1"><bind xmlns="urn:ietf:params:xml:ns:xmpp-bind"><resource>` + resource + `</resource></bind></iq>`)
-	var bound struct {
-		JID string `xml:"bind>jid"`
+	return c
+}
+
+// step writes text, where there is any, and reads what comes next.
+func (c *xmpp_raw_client) step(t *testing.T, text string) *xmpp_stanza {
+	t.Helper()
+	if text != "" {
+		c.x.write(text)
 	}
-	s.decode(&bound)
-	c := &xmpp_raw_client{x: x, full: bound.JID}
-	conn.SetDeadline(time.Time{})
+	s, err := c.x.next()
+	if err != nil {
+		t.Fatalf("raw client: %v", err)
+	}
+	return s
+}
+
+// listen keeps what arrives from now on, in the background.
+func (c *xmpp_raw_client) listen() {
+	c.conn.SetDeadline(time.Time{})
 	go func() {
 		for {
-			s, err := x.next()
+			s, err := c.x.next()
 			if err != nil {
 				c.lock.Lock()
 				c.received = append(c.received, fmt.Sprintf("<closed>%v</closed>", err))
@@ -446,7 +488,37 @@ func (env *xmpp_env) raw(t *testing.T, address string, password string, resource
 			c.lock.Unlock()
 		}
 	}()
-	return c
+}
+
+// send writes a stanza from the client.
+func (c *xmpp_raw_client) send(text string) {
+	c.x.write(text)
+}
+
+// heard answers what the client received that contains every part.
+func (c *xmpp_raw_client) heard(parts ...string) []string {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	var out []string
+	for _, text := range c.received {
+		all := true
+		for _, part := range parts {
+			all = all && strings.Contains(text, part)
+		}
+		if all {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+// silent checks that nothing with every part arrives within a moment.
+func (c *xmpp_raw_client) silent(t *testing.T, what string, parts ...string) {
+	t.Helper()
+	time.Sleep(300 * time.Millisecond)
+	if heard := c.heard(parts...); len(heard) > 0 {
+		t.Errorf("%s: %v", what, heard)
+	}
 }
 
 // expect waits for a stanza with every part, and answers it.
@@ -478,18 +550,20 @@ func TestXMPPListeners(t *testing.T) {
 	taken, _ := net.Listen("tcp", "127.0.0.1:0")
 	defer taken.Close()
 	_, port, _ := net.SplitHostPort(taken.Addr().String())
-	saved_address, saved_ports := xmpp_listen_address, xmpp_ports
+	saved_address, saved_ports, saved_retry := xmpp_listen_address, xmpp_ports, xmpp_listen_retry
 	xmpp_listen_address = "127.0.0.1"
 	xmpp_ports = map[string]int{"client": 0, "direct": 0, "server": int(atoi(port, 0))}
+	xmpp_listen_retry = 20 * time.Millisecond
+	// The manager is done once the port opens, and only then are the
+	// settings it reads put back.
 	t.Cleanup(func() {
-		xmpp_listen_address, xmpp_ports = saved_address, saved_ports
-		xmpp_closed_lock.Lock()
-		xmpp_closed = nil
-		xmpp_closed_lock.Unlock()
+		xmpp_listen_address, xmpp_ports, xmpp_listen_retry = saved_address, saved_ports, saved_retry
 	})
 	go xmpp_listen_manager()
 	wait(t, "the listener to fail", func() bool { return xmpp_unavailable() == "port" })
 	if state, reason := network_state("xmpp"); state != "unavailable" || reason != "port" {
 		t.Errorf("state = %s %s", state, reason)
 	}
+	taken.Close()
+	wait(t, "THE POINT: the listener tried again until it opens", func() bool { return xmpp_unavailable() == "" })
 }

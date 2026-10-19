@@ -21,6 +21,9 @@
 // bridge/receive, as the conversation events of phase 23. An outside person
 // who invites a stand-in to a conversation of their own reaches the member it
 // stands for the same way, as an invitation the app passes on.
+//
+// The same functions relay a group to XMPP (relays.go, phase 26), for a room
+// named as chat keeps it, xmpp:<room>.
 
 package main
 
@@ -169,8 +172,8 @@ var api_bridge = sls.FromStringDict(sl.String("mochi.bridge"), sl.StringDict{
 })
 
 // bridge_caller is the user an app relays for, with the relay permission and
-// Matrix on.
-func bridge_caller(t *sl.Thread, fn *sl.Builtin) (*User, error) {
+// the network on.
+func bridge_caller(t *sl.Thread, fn *sl.Builtin, network string) (*User, error) {
 	if err := require_permission(t, fn, "bridge/write"); err != nil {
 		return nil, err
 	}
@@ -178,15 +181,43 @@ func bridge_caller(t *sl.Thread, fn *sl.Builtin) (*User, error) {
 	if user == nil || user.Identity == nil {
 		return nil, fmt.Errorf("no user")
 	}
-	if !network_enabled("matrix") {
-		return nil, fmt.Errorf("matrix is off")
+	if !network_enabled(network) {
+		return nil, fmt.Errorf("%s is off", network)
+	}
+	return user, nil
+}
+
+// bridge_network is the network a relayed room or a person to relay is on:
+// XMPP for a room as chat keeps it (xmpp:<room>) or an address name@host,
+// else Matrix.
+func bridge_network(address string) string {
+	address = strings.TrimSpace(address)
+	if strings.HasPrefix(address, "xmpp:") || (!strings.HasPrefix(address, "@") && !strings.HasPrefix(address, "matrix:") && strings.Contains(address, "@")) {
+		return "xmpp"
+	}
+	return "matrix"
+}
+
+// bridge_xmpp reports whether a relayed room is on XMPP.
+func bridge_xmpp(room string) bool {
+	return strings.HasPrefix(room, "xmpp:")
+}
+
+// bridge_relayed is the user relaying a room on XMPP, or an error.
+func bridge_relayed(t *sl.Thread, fn *sl.Builtin, room string) (*User, error) {
+	user, err := bridge_caller(t, fn, "xmpp")
+	if err != nil {
+		return nil, err
+	}
+	if b := bridge_of(room); b == nil || b.user != user.UID {
+		return nil, fmt.Errorf("no such relay")
 	}
 	return user, nil
 }
 
 // bridge_owned is a relayed room of the caller's, or an error.
 func bridge_owned(t *sl.Thread, fn *sl.Builtin, room string) (*User, *bridge, error) {
-	user, err := bridge_caller(t, fn)
+	user, err := bridge_caller(t, fn, "matrix")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -264,19 +295,26 @@ func bridge_seat(ctx context.Context, user *User, r *bridge, domain string, enti
 	return standin, err
 }
 
-// mochi.bridge.available() -> bool: Whether the user's server can relay a group's members to Matrix: Matrix is on, and it has a domain to keep their stand-ins on. Requires the bridge/write permission
+// mochi.bridge.available(network="matrix") -> bool: Whether the user's server can relay a group to a network: on Matrix, Matrix is on and the server has a domain to keep the Mochi members' stand-ins on; on XMPP, XMPP is on and the server has a room service to host the group's room on. Requires the bridge/write permission
 func api_bridge_available(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs); err != nil {
+	network := "matrix"
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "network?", &network); err != nil {
 		return nil, err
 	}
-	user, err := bridge_caller(t, fn)
+	if network != "matrix" && network != "xmpp" {
+		return sl_error(fn, "invalid network")
+	}
+	user, err := bridge_caller(t, fn, network)
 	if err != nil {
 		return sl.False, nil
+	}
+	if network == "xmpp" {
+		return sl.Bool(relay_available(user)), nil
 	}
 	return sl.Bool(bridge_domain(user) != ""), nil
 }
 
-// mochi.bridge.create(chat, name, people, members=[]) -> dict | None: Make a Matrix room for a Mochi group chat that takes people from Matrix, relayed by the user's server: named name, the user's stand-in its creator, each member of members ({entity, name}) seated as a stand-in, and each of people (Matrix addresses) invited. Returns {room, people}, each person as {id, name}; None where Matrix is unreachable or an address has no one at it. Requires the bridge/write permission
+// mochi.bridge.create(chat, name, people, members=[]) -> dict | None: Make a room for a Mochi group chat that takes people from Matrix or XMPP, relayed by the user's server: named name, the user and each member of members ({entity, name}) in it, and each of people invited. On Matrix (addresses @name:host) the user's stand-in makes it and each member is seated as a stand-in; on XMPP (addresses name@host) it is a room for members on the server's room service, each Mochi member an occupant under their name with no address. Returns {room, people}, the room as the other functions name it and each person as {id, name}; None where the network is unreachable or an address has no one at it. Requires the bridge/write permission
 func api_bridge_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var chat, name string
 	var people *sl.List
@@ -284,13 +322,29 @@ func api_bridge_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "chat", &chat, "name", &name, "people", &people, "members?", &members); err != nil {
 		return nil, err
 	}
-	user, err := bridge_caller(t, fn)
+	network := "matrix"
+	var given []string
+	for i := 0; i < people.Len(); i++ {
+		address, _ := sl.AsString(people.Index(i))
+		given = append(given, address)
+		if i == 0 {
+			network = bridge_network(address)
+		}
+	}
+	user, err := bridge_caller(t, fn, network)
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	seated, err := bridge_members(members)
 	if err != nil {
 		return sl_error(fn, "%v", err)
+	}
+	if network == "xmpp" {
+		result, err := relay_create(user, chat, name, given, seated)
+		if err != nil {
+			return bridge_failed(fn, chat, err)
+		}
+		return sl_encode(result), nil
 	}
 	domain := bridge_domain(user)
 	if domain == "" {
@@ -329,11 +383,22 @@ func api_bridge_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl_encode(map[string]any{"room": room, "people": found}), nil
 }
 
-// mochi.bridge.invite(room, person) -> dict | None: Invite a person on Matrix by their address to a relayed room, and return {id, name}; None where no one is at the address. Requires the bridge/write permission
+// mochi.bridge.invite(room, person) -> dict | None: Invite a person by their address to a relayed room, on Matrix or XMPP as the room is, and return {id, name}; on XMPP they are a member of the room from then on. None where no one is at the address. Requires the bridge/write permission
 func api_bridge_invite(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var room, person string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "room", &room, "person", &person); err != nil {
 		return nil, err
+	}
+	if bridge_xmpp(room) {
+		user, err := bridge_relayed(t, fn, room)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		result, err := relay_invite(user, room, person)
+		if err != nil {
+			return bridge_failed(fn, room, err)
+		}
+		return sl_encode(result), nil
 	}
 	_, r, err := bridge_owned(t, fn, room)
 	if err != nil {
@@ -367,11 +432,25 @@ func api_bridge_invite(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl_encode(map[string]any{"id": address, "name": name}), nil
 }
 
-// mochi.bridge.member(room, entity, name) -> string | None: Seat a Mochi member in a relayed room as their stand-in, under the name given, or rename them there; returns the stand-in's Matrix id. Requires the bridge/write permission
+// mochi.bridge.member(room, entity, name) -> string | None: Seat a Mochi member in a relayed room under the name given: on Matrix as their stand-in, renamed there where their name changed, returning its Matrix id; on XMPP as an occupant with no address, returning the nick they go by. Requires the bridge/write permission
 func api_bridge_member(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var room, entity, name string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "room", &room, "entity", &entity, "name", &name); err != nil {
 		return nil, err
+	}
+	if bridge_xmpp(room) {
+		user, err := bridge_relayed(t, fn, room)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		if !valid(entity, "entity") {
+			return sl_error(fn, "invalid entity")
+		}
+		nick, err := relay_member(user, room, entity, name)
+		if err != nil {
+			return bridge_failed(fn, room, err)
+		}
+		return sl.String(nick), nil
 	}
 	user, r, err := bridge_owned(t, fn, room)
 	if err != nil {
@@ -399,11 +478,21 @@ func bridge_speaker(r *bridge, entity string) (string, error) {
 	return row_string(row, "id"), nil
 }
 
-// mochi.bridge.leave(room, entity) -> None: Take a Mochi member's stand-in out of a relayed room. Requires the bridge/write permission
+// mochi.bridge.leave(room, entity) -> None: Take a Mochi member out of a relayed room. Requires the bridge/write permission
 func api_bridge_leave(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var room, entity string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "room", &room, "entity", &entity); err != nil {
 		return nil, err
+	}
+	if bridge_xmpp(room) {
+		user, err := bridge_relayed(t, fn, room)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		if err := relay_leave(user, room, entity); err != nil {
+			return bridge_failed(fn, room, err)
+		}
+		return sl.None, nil
 	}
 	_, r, err := bridge_owned(t, fn, room)
 	if err != nil {
@@ -419,11 +508,21 @@ func api_bridge_leave(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl.None, nil
 }
 
-// mochi.bridge.remove(room, person) -> None: Put a person from Matrix out of a relayed room. Requires the bridge/write permission
+// mochi.bridge.remove(room, person) -> None: Put a person from Matrix or XMPP out of a relayed room; on XMPP they are no longer a member of it. Requires the bridge/write permission
 func api_bridge_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var room, person string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "room", &room, "person", &person); err != nil {
 		return nil, err
+	}
+	if bridge_xmpp(room) {
+		user, err := bridge_relayed(t, fn, room)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		if err := relay_remove(user, room, person); err != nil {
+			return bridge_failed(fn, room, err)
+		}
+		return sl.None, nil
 	}
 	_, r, err := bridge_owned(t, fn, room)
 	if err != nil {
@@ -444,6 +543,16 @@ func api_bridge_rename(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "room", &room, "name", &name); err != nil {
 		return nil, err
 	}
+	if bridge_xmpp(room) {
+		user, err := bridge_relayed(t, fn, room)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		if err := relay_rename(user, room, name); err != nil {
+			return bridge_failed(fn, room, err)
+		}
+		return sl.None, nil
+	}
 	_, r, err := bridge_owned(t, fn, room)
 	if err != nil {
 		return sl_error(fn, "%v", err)
@@ -455,12 +564,23 @@ func api_bridge_rename(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl.None, nil
 }
 
-// mochi.bridge.send(room, entity, object, key="") -> dict | None: Send a Mochi member's message to a relayed room as their stand-in, the object as mochi.account.object.create takes it for Matrix (content, file, reply, thread, or a reaction), and return {id}; key sends it once. Requires the bridge/write permission
+// mochi.bridge.send(room, entity, object, key="") -> dict | None: Send a Mochi member's message to a relayed room as them, the object as mochi.account.object.create takes it (content, file, reply, thread, or a reaction), and return {id}; key sends it once. Requires the bridge/write permission
 func api_bridge_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var room, entity, key string
 	var value sl.Value
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "room", &room, "entity", &entity, "object", &value, "key?", &key); err != nil {
 		return nil, err
+	}
+	if bridge_xmpp(room) {
+		user, err := bridge_relayed(t, fn, room)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		id, err := relay_send(user, room, entity, sl_decode_map(value), key)
+		if err != nil {
+			return bridge_failed(fn, room, err)
+		}
+		return sl_encode(map[string]any{"id": id}), nil
 	}
 	_, r, err := bridge_owned(t, fn, room)
 	if err != nil {
@@ -485,12 +605,23 @@ func api_bridge_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl_encode(map[string]any{"id": id}), nil
 }
 
-// mochi.bridge.update(room, entity, id, object) -> dict | None: Send a new version of a message a Mochi member's stand-in sent to a relayed room: {content}. Requires the bridge/write permission
+// mochi.bridge.update(room, entity, id, object) -> dict | None: Send a new version of a message a Mochi member sent to a relayed room: {content}. Requires the bridge/write permission
 func api_bridge_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var room, entity, id string
 	var value sl.Value
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "room", &room, "entity", &entity, "id", &id, "object", &value); err != nil {
 		return nil, err
+	}
+	if bridge_xmpp(room) {
+		user, err := bridge_relayed(t, fn, room)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		text, _ := sl_decode_map(value)["content"].(string)
+		if err := relay_update(user, room, entity, id, text); err != nil {
+			return bridge_failed(fn, room, err)
+		}
+		return sl_encode(map[string]any{"id": id}), nil
 	}
 	_, r, err := bridge_owned(t, fn, room)
 	if err != nil {
@@ -509,11 +640,21 @@ func api_bridge_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl_encode(result), nil
 }
 
-// mochi.bridge.delete(room, entity, id) -> bool | None: Withdraw a message or reaction a Mochi member's stand-in sent to a relayed room. Requires the bridge/write permission
+// mochi.bridge.delete(room, entity, id) -> bool | None: Withdraw a message or reaction a Mochi member sent to a relayed room. Requires the bridge/write permission
 func api_bridge_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var room, entity, id string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "room", &room, "entity", &entity, "id", &id); err != nil {
 		return nil, err
+	}
+	if bridge_xmpp(room) {
+		user, err := bridge_relayed(t, fn, room)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		if err := relay_delete(user, room, entity, id); err != nil {
+			return bridge_failed(fn, room, err)
+		}
+		return sl.True, nil
 	}
 	_, r, err := bridge_owned(t, fn, room)
 	if err != nil {
@@ -529,12 +670,27 @@ func api_bridge_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl.True, nil
 }
 
-// mochi.bridge.upload(room, data, type, name="") -> dict | None: Keep a file for a relayed room's messages and return {url, name, type, size}, the url its mxc address, for mochi.bridge.send's file. Requires the bridge/write permission
+// mochi.bridge.upload(room, data, type, name="") -> dict | None: Keep a file for a relayed room's messages and return {url, name, type, size}, the url its mxc address on Matrix and the address it is fetched from on XMPP, for mochi.bridge.send's file. Requires the bridge/write permission
 func api_bridge_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var room, kind, name string
 	var data sl.Value
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "room", &room, "data", &data, "type", &kind, "name?", &name); err != nil {
 		return nil, err
+	}
+	if bridge_xmpp(room) {
+		user, err := bridge_relayed(t, fn, room)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		bytes, ok := data.(sl.Bytes)
+		if !ok || len(bytes) == 0 || len(bytes) > media_maximum {
+			return sl_error(fn, "data must be between 1 and %d bytes", media_maximum)
+		}
+		result, err := relay_upload(user, room, []byte(bytes), kind, name)
+		if err != nil {
+			return bridge_failed(fn, room, err)
+		}
+		return sl_encode(result), nil
 	}
 	user, r, err := bridge_owned(t, fn, room)
 	if err != nil {
@@ -555,11 +711,26 @@ func api_bridge_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl_encode(result), nil
 }
 
-// mochi.bridge.media(room, url) -> dict | None: Fetch a file a person from Matrix sent to a relayed room, by the address its message named, and return {status, type, data}, kept in core's evictable cache. Requires the bridge/write permission
+// mochi.bridge.media(room, url) -> dict | None: Fetch a file a person from Matrix or XMPP sent to a relayed room, by the address its message named, and return {status, type, data}; a Matrix file is kept in core's evictable cache. Requires the bridge/write permission
 func api_bridge_media(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var room, address string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "room", &room, "url", &address); err != nil {
 		return nil, err
+	}
+	if bridge_xmpp(room) {
+		user, err := bridge_relayed(t, fn, room)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		status, kind, data, err := relay_media(user, room, address)
+		if err != nil {
+			return bridge_failed(fn, room, err)
+		}
+		result := sl.NewDict(3)
+		result.SetKey(sl.String("status"), sl.MakeInt(status))
+		result.SetKey(sl.String("type"), sl.String(kind))
+		result.SetKey(sl.String("data"), sl.Bytes(data))
+		return result, nil
 	}
 	user, r, err := bridge_owned(t, fn, room)
 	if err != nil {
@@ -582,7 +753,7 @@ func api_bridge_join(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "room", &room, "entity", &entity, "chat?", &chat); err != nil {
 		return nil, err
 	}
-	user, err := bridge_caller(t, fn)
+	user, err := bridge_caller(t, fn, "matrix")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
@@ -599,11 +770,21 @@ func api_bridge_join(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl_encode(map[string]any{"room": room}), nil
 }
 
-// mochi.bridge.close(room) -> None: Stop relaying a room: every stand-in leaves it. Requires the bridge/write permission
+// mochi.bridge.close(room) -> None: Stop relaying a room: on Matrix every stand-in leaves it, on XMPP it ends. Requires the bridge/write permission
 func api_bridge_close(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var room string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "room", &room); err != nil {
 		return nil, err
+	}
+	if bridge_xmpp(room) {
+		user, err := bridge_relayed(t, fn, room)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		if err := relay_close(user, room); err != nil {
+			return bridge_failed(fn, room, err)
+		}
+		return sl.None, nil
 	}
 	_, r, err := bridge_owned(t, fn, room)
 	if err != nil {

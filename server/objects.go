@@ -345,7 +345,7 @@ func api_account_object_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		if text == "" {
 			return xmpp_failed(x, fn, fmt.Errorf("a correction needs the new text"))
 		}
-		if err := xmpp_hosted_send(x, conversation, uid(), text, "", remote); err != nil {
+		if _, err := xmpp_hosted_send(x, conversation, uid(), text, "", "", remote); err != nil {
 			return xmpp_failed(x, fn, err)
 		}
 		return sl_encode(map[string]any{"id": remote, "url": "", "data": map[string]any{}}), nil

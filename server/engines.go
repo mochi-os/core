@@ -45,12 +45,12 @@ var engines []*engine
 
 // engine_segments are the first path segments core reserves for engines: the
 // paths Mastodon, Lemmy, Bluesky and Matrix clients and servers expect at fixed
-// places, plus the account and object paths (decision 40 of the federation
+// places, XMPP's web transports and uploads, plus the account and object paths (decision 40 of the federation
 // plan, "/~<id>" and "/@<handle>", which begin with a character no app path
 // may). An app may not claim any of them as its path, so the reservation holds
 // before an engine exists to answer; a request to a reserved segment with no
 // engine behind it takes the ordinary route and ends as it always did.
-var engine_segments = []string{".well-known", "api", "nodeinfo", "oauth", "pictrs", "xrpc", "_matrix"}
+var engine_segments = []string{".well-known", "api", "nodeinfo", "oauth", "pictrs", "xmpp", "xrpc", "_matrix"}
 
 // engine_register adds an engine. A prefix is matched whole: "/xrpc/" answers
 // everything under it, "/.well-known/carddav" that one path and nothing else
@@ -138,4 +138,6 @@ func engines_start() {
 	engine_register(activitypub_engine())
 	engine_register(atproto_engine())
 	engine_register(federation_engine())
+	engine_register(host_meta_engine())
+	engine_register(xmpp_engine())
 }

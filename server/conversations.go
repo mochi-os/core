@@ -14,7 +14,9 @@
 //	message   conversation, room, from, name, id, archive, body or html,
 //	          created, own, encrypted, reply, thread, files ({url, name,
 //	          type, size}); a Mastodon message names its people instead of
-//	          a conversation
+//	          a conversation, and a hosted XMPP account's encrypted message
+//	          carries its content as it came (payload), which the app keeps
+//	          for the account's archive
 //	edit      a new version of a message: conversation, from, id, body or html
 //	delete    a message withdrawn: conversation, from, id
 //	sent      the id a room gave a message the account sent: conversation,
@@ -25,7 +27,10 @@
 //	presence  someone's presence: from, status, message
 //	room      what a sync says of a conversation: conversation, room, name,
 //	          direct, encrypted, count, heroes, left
-//	member    someone joining or leaving a room: conversation, id, name, left
+//	member    someone joining or leaving a room: conversation, id, name, left,
+//	          and on XMPP their role and affiliation there
+//	reaction  a reaction to a message, or its withdrawal: conversation, from,
+//	          id (the message's), reaction, event (the reaction's own id)
 //	invite    an invitation to a room: conversation, from, name, direct
 //	session   the account's session began; the app answers by saying whether
 //	          the user's presence is shared
@@ -49,6 +54,7 @@ import (
 	"github.com/matrix-org/gomatrixserverlib/spec"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
+	"mellium.im/xmpp/jid"
 )
 
 // linked_inbound hands what an account's session heard to the apps declaring
@@ -203,8 +209,8 @@ func linked_client(l *linked) (*xmpp_client, error) {
 
 // xmpp_create sends a message through an account's session: its text or a
 // file by the address its upload answered, in a conversation, perhaps as a
-// reply. The app's key is the message's id, so the same message is known
-// again.
+// reply, or a reaction to a message. The app's key is the message's id, so
+// the same message is known again.
 func xmpp_create(ctx context.Context, l *linked, object map[string]any, key string) (map[string]any, error) {
 	c, err := linked_client(l)
 	if err != nil {
@@ -213,6 +219,16 @@ func xmpp_create(ctx context.Context, l *linked, object map[string]any, key stri
 	conversation, _ := object["conversation"].(string)
 	text, _ := object["content"].(string)
 	reply, _ := object["reply"].(string)
+	if emoji, found := object["reaction"].(string); found {
+		message, _ := object["message"].(string)
+		if message == "" {
+			return nil, fmt.Errorf("a reaction needs its message")
+		}
+		if err := c.react(ctx, conversation, message, emoji); err != nil {
+			return nil, err
+		}
+		return map[string]any{"id": xmpp_reaction_prefix + message, "url": "", "data": map[string]any{}}, nil
+	}
 	file := ""
 	if f, _ := object["file"].(map[string]any); f != nil {
 		file, _ = f["url"].(string)
@@ -359,7 +375,7 @@ func api_account_presence(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	return sl.None, nil
 }
 
-// mochi.account.room.create(account, people, name="") -> dict: Start a conversation on a linked XMPP or Matrix account, or a hosted Matrix account, with people by their addresses (@name:host on Matrix, name@host on XMPP), and return {conversation, room, people}: the conversation's id, whether it is a room, and each person as {id, name}. With one person it is a one-to-one conversation (on Matrix a private room marked so); with several, a members-only room named name that each is invited to. An address no one is at fails. Requires the account's permission
+// mochi.account.room.create(account, people, name="") -> dict: Start a conversation on a linked XMPP or Matrix account, or a hosted Matrix or XMPP account, with people by their addresses (@name:host on Matrix, name@host on XMPP), and return {conversation, room, people}: the conversation's id, whether it is a room, and each person as {id, name}. With one person it is a one-to-one conversation (on Matrix a private room marked so); with several, a members-only room named name that each is invited to, for a hosted XMPP account on its domain's room service. An address no one is at fails. Requires the account's permission
 func api_account_room_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, name string
 	var list *sl.List
@@ -385,8 +401,8 @@ func api_account_room_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	ctx := thread_context(t)
 	var people []any
 	var conversation string
-	// A hosted XMPP account holds one-to-one conversations; rooms come with
-	// the room host.
+	// A hosted XMPP account's conversation with one person is had with them;
+	// with several, in a room on its domain's room service.
 	if c.x != nil {
 		var bares []string
 		for _, address := range addresses {
@@ -399,10 +415,22 @@ func api_account_room_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 				people = append(people, map[string]any{"id": "xmpp:" + person.String(), "name": person.Localpart()})
 			}
 		}
-		if len(bares) != 1 {
-			return xmpp_failed(c.x, fn, fmt.Errorf("a hosted XMPP account has no rooms yet"))
+		if len(bares) == 0 {
+			return xmpp_failed(c.x, fn, fmt.Errorf("no people"))
 		}
-		return sl_encode(map[string]any{"conversation": "xmpp:" + bares[0], "room": false, "people": people}), nil
+		if len(bares) == 1 {
+			return sl_encode(map[string]any{"conversation": "xmpp:" + bares[0], "room": false, "people": people}), nil
+		}
+		var invited []jid.JID
+		for _, bare := range bares {
+			person, _ := jid.Parse(bare)
+			invited = append(invited, person)
+		}
+		room, err := xmpp_room_create(c.x, invited, name)
+		if err != nil {
+			return xmpp_failed(c.x, fn, err)
+		}
+		return sl_encode(map[string]any{"conversation": "xmpp:" + room, "room": true, "people": people}), nil
 	}
 	if h != nil {
 		mine, _ := spec.NewUserID(h.address, true)
@@ -479,7 +507,7 @@ func api_account_room_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	return sl_encode(map[string]any{"conversation": conversation, "room": len(people) > 1, "people": people}), nil
 }
 
-// mochi.account.room.join(account, address, person="") -> dict: Join a room on a linked XMPP or Matrix account, or a hosted Matrix account, by its address (#alias:host or !id:host on Matrix, name@rooms.host on XMPP), and return {conversation, name}. On Matrix it also accepts an invitation, and with person the room is marked in the account's data as the one-to-one conversation with them, as an invitation to one asks. A hosted account's apps are told of the room, who is in it and its recent past before the join returns. An address that is not a room fails. Requires the account's permission
+// mochi.account.room.join(account, address, person="") -> dict: Join a room on a linked XMPP or Matrix account, or a hosted Matrix or XMPP account, by its address (#alias:host or !id:host on Matrix, name@rooms.host on XMPP), and return {conversation, name}. On Matrix it also accepts an invitation, and with person the room is marked in the account's data as the one-to-one conversation with them, as an invitation to one asks. A hosted account's apps are told of the room, who is in it and its recent past before the join returns, and a hosted XMPP account keeps the room in its bookmarks. An address that is not a room fails. Requires the account's permission
 func api_account_room_join(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, address, person string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "address", &address, "person?", &person); err != nil {
@@ -491,9 +519,13 @@ func api_account_room_join(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 	l, h := c.l, c.h
 	if c.x != nil {
-		// No rooms yet: an address is a person's, which chat asks next.
-		debug("Hosted XMPP account %s: %s is not a room here", c.x.id, address)
-		return sl.None, nil
+		room, name, err := xmpp_room_join(c.x, address)
+		if err != nil {
+			// An address that is not a room is a person's, which chat asks
+			// next.
+			return xmpp_failed(c.x, fn, err)
+		}
+		return sl_encode(map[string]any{"conversation": room, "name": name}), nil
 	}
 	address = strings.TrimSpace(address)
 	ctx := thread_context(t)
@@ -537,7 +569,7 @@ func api_account_room_join(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 }
 
-// mochi.account.room.leave(account, conversation) -> None: Leave a room of a linked XMPP or Matrix account, or a hosted Matrix account, or decline an invitation to it, and stop keeping it. Requires the account's permission
+// mochi.account.room.leave(account, conversation) -> None: Leave a room of a linked XMPP or Matrix account, or a hosted Matrix or XMPP account, or decline an invitation to it, and stop keeping it. Requires the account's permission
 func api_account_room_leave(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, conversation string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "conversation", &conversation); err != nil {
@@ -556,6 +588,9 @@ func api_account_room_leave(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	}
 	if c.x != nil {
 		// A one-to-one conversation has nothing to leave.
+		if room, err := xmpp_target(conversation); err == nil {
+			xmpp_room_leave(c.x, room.Bare().String())
+		}
 		return sl.None, nil
 	}
 	switch l.kind {

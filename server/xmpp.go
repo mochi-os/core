@@ -302,7 +302,11 @@ type xmpp_message struct {
 		ID      string    `xml:"id,attr"`
 		Retract *struct{} `xml:"urn:xmpp:message-retract:0 retract"`
 	} `xml:"urn:xmpp:fasten:0 apply-to"`
-	Reply     *xmpp_reference   `xml:"urn:xmpp:reply:0 reply"`
+	Reply     *xmpp_reference `xml:"urn:xmpp:reply:0 reply"`
+	Reactions *struct {
+		ID    string   `xml:"id,attr"`
+		Items []string `xml:"reaction"`
+	} `xml:"urn:xmpp:reactions:0 reactions"`
 	Nick      string            `xml:"http://jabber.org/protocol/nick nick"`
 	Fallbacks []xmpp_fallback   `xml:"urn:xmpp:fallback:0 fallback"`
 	Delay     *xmpp_delay       `xml:"urn:xmpp:delay delay"`
@@ -388,9 +392,7 @@ type xmpp_presence struct {
 	Show   string `xml:"show"`
 	Status string `xml:"status"`
 	User   *struct {
-		Items []struct {
-			JID string `xml:"jid,attr"`
-		} `xml:"item"`
+		Items    []xmpp_occupant `xml:"item"`
 		Statuses []struct {
 			Code string `xml:"code,attr"`
 		} `xml:"status"`
@@ -398,6 +400,34 @@ type xmpp_presence struct {
 	Error *struct {
 		Inner string `xml:",innerxml"`
 	} `xml:"error"`
+}
+
+// An xmpp_occupant is what a room says of someone in it: their address where
+// it shows it, their affiliation and role, and a new nick.
+type xmpp_occupant struct {
+	JID         string `xml:"jid,attr"`
+	Affiliation string `xml:"affiliation,attr"`
+	Role        string `xml:"role,attr"`
+	Nick        string `xml:"nick,attr"`
+}
+
+// codes are the status codes a room's presence carries.
+func (p *xmpp_presence) codes() map[string]bool {
+	out := map[string]bool{}
+	if p.User != nil {
+		for _, s := range p.User.Statuses {
+			out[s.Code] = true
+		}
+	}
+	return out
+}
+
+// item is what a room's presence says of the occupant, or nil.
+func (p *xmpp_presence) item() *xmpp_occupant {
+	if p.User == nil || len(p.User.Items) == 0 {
+		return nil
+	}
+	return &p.User.Items[0]
 }
 
 type xmpp_request struct {
@@ -791,8 +821,8 @@ func (c *xmpp_client) read(m *xmpp_message, delay *xmpp_delay, sent bool) []map[
 // xmpp_events turns a message into the conversation events it carries, once
 // its conversation, its sender and the name they go by are known, whether it
 // was the account's own and the id an archive gave it: receipts, typing, a
-// withdrawal, a correction, an invitation to a room, or the message itself,
-// which comes last.
+// reaction, a withdrawal, a correction, an invitation to a room, or the
+// message itself, which comes last.
 func xmpp_events(m *xmpp_message, delay *xmpp_delay, from jid.JID, conversation string, sender string, name string, archive string, own bool) []map[string]any {
 	created := now()
 	if delay != nil {
@@ -833,6 +863,17 @@ func xmpp_events(m *xmpp_message, delay *xmpp_delay, from jid.JID, conversation 
 		retracted = m.Fasten.ID
 	}
 	switch {
+	case m.Reactions != nil && m.Reactions.ID != "":
+		// A person's reactions to a message come whole (XEP-0444): the first
+		// is the one kept, none withdrawing theirs.
+		reaction := ""
+		for _, r := range m.Reactions.Items {
+			if r = strings.TrimSpace(r); r != "" {
+				reaction = r
+				break
+			}
+		}
+		return append(events, map[string]any{"kind": "reaction", "conversation": conversation, "from": sender, "id": m.Reactions.ID, "reaction": reaction, "event": xmpp_reaction_prefix + m.Reactions.ID, "own": own})
 	case retracted != "":
 		return append(events, map[string]any{"kind": "delete", "conversation": conversation, "from": sender, "id": retracted, "own": own})
 	case m.Replace != nil && m.Replace.ID != "":
@@ -927,7 +968,11 @@ func (c *xmpp_client) presence(p *xmpp_presence) {
 		case self && waiting != nil:
 			c.joined(bare, nil)
 		case !self && from.Resourcepart() != "" && p.Type != "error":
-			c.emit([]map[string]any{{"kind": "member", "conversation": "xmpp:" + bare, "id": "xmpp:" + from.String(), "name": from.Resourcepart(), "left": p.Type == "unavailable"}})
+			event := map[string]any{"kind": "member", "conversation": "xmpp:" + bare, "id": "xmpp:" + from.String(), "name": from.Resourcepart(), "left": p.Type == "unavailable"}
+			if item := p.item(); item != nil {
+				event["role"], event["affiliation"] = item.Role, item.Affiliation
+			}
+			c.emit([]map[string]any{event})
 		}
 		return
 	}
@@ -1519,11 +1564,25 @@ func xmpp_message_text(to string, kind string, id string, body string, file stri
 // retract withdraws a message the account sent, by the id it has in the
 // conversation: the room's for a room.
 func (c *xmpp_client) retract(ctx context.Context, conversation string, id string) error {
+	if message, found := strings.CutPrefix(id, xmpp_reaction_prefix); found {
+		return c.react(ctx, conversation, message, "")
+	}
 	to, err := xmpp_target(conversation)
 	if err != nil {
 		return err
 	}
 	return c.send(ctx, `<message xmlns="jabber:client" to="`+xmpp_escape(to.String())+`" type="`+c.kind(to)+`" id="`+xmpp_escape(uid())+`"><retract xmlns="urn:xmpp:message-retract:1" id="`+xmpp_escape(id)+`"/><store xmlns="urn:xmpp:hints"/></message>`)
+}
+
+// react sends the user's reaction to a message, replacing the one before; an
+// empty one withdraws it (XEP-0444). In a room the message is named by the id
+// the room gave it.
+func (c *xmpp_client) react(ctx context.Context, conversation string, message string, emoji string) error {
+	to, err := xmpp_target(conversation)
+	if err != nil {
+		return err
+	}
+	return c.send(ctx, xmpp_make("message", xmpp_reactions(message, emoji), "to", to.String(), "type", c.kind(to), "id", uid()).text(xmpp_ns_client))
 }
 
 // type_state tells a conversation the user is typing, and that they stopped

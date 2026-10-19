@@ -55,8 +55,10 @@ var (
 )
 
 // xmpp_database makes the server-wide XMPP database: the secret dialback keys
-// are made with, each hosted account's roster, and the messages waiting for an
-// account's clients.
+// are made with, each hosted account's roster, the messages waiting for an
+// account's clients, their push registrations, what each account publishes,
+// the files their clients upload and the rooms Mochi's own sessions are in;
+// and the room service's rooms, their affiliations and their history.
 var xmpp_database_lock sync.Mutex
 
 func xmpp_database() *DB {
@@ -68,6 +70,16 @@ func xmpp_database() *DB {
 		db.exec("create table if not exists roster (account text not null, address text not null, name text not null default '', subscription text not null default 'none', ask integer not null default 0, pending integer not null default 0, listed integer not null default 0, created integer not null, updated integer not null, primary key (account, address))")
 		db.exec("create table if not exists offline (id integer primary key autoincrement, account text not null, stanza text not null, created integer not null)")
 		db.exec("create index if not exists offline_account on offline(account, id)")
+		db.exec("create table if not exists pushes (account text not null, service text not null, node text not null, options text not null default '', created integer not null, primary key (account, service, node))")
+		db.exec("create table if not exists nodes (account text not null, node text not null, access text not null default 'presence', maximum integer not null default 1, created integer not null, primary key (account, node))")
+		db.exec("create table if not exists items (account text not null, node text not null, item text not null, payload text not null, updated integer not null, primary key (account, node, item))")
+		db.exec("create table if not exists uploads (id text not null primary key, user text not null, account text not null default '', domain text not null, name text not null, type text not null, size integer not null, token text not null default '', created integer not null, stored integer not null default 0)")
+		db.exec("create table if not exists joined (account text not null, address text not null, room text not null, nick text not null, name text not null default '', seen integer not null default 0, created integer not null, primary key (account, room))")
+		db.exec("create table if not exists rooms (address text not null primary key, name text not null default '', description text not null default '', subject text not null default '', subjector text not null default '', persistent integer not null default 0, members integer not null default 0, public integer not null default 0, moderated integer not null default 0, open integer not null default 0, invite integer not null default 0, whois text not null default 'moderators', history integer not null default 20, locked integer not null default 0, created integer not null, updated integer not null)")
+		db.exec("create table if not exists affiliations (room text not null, address text not null, affiliation text not null, nick text not null default '', primary key (room, address))")
+		db.exec("create table if not exists chatlog (id integer primary key autoincrement, room text not null, archive text not null, nick text not null, sender text not null default '', stanza text not null, created integer not null)")
+		db.exec("create index if not exists chatlog_room on chatlog(room, id)")
+		db.exec("create unique index if not exists chatlog_archive on chatlog(room, archive)")
 	}
 	return db
 }
@@ -84,9 +96,15 @@ func xmpp_secret() string {
 }
 
 // xmpp_local reports whether this server answers for a domain on XMPP: one
-// with hosted XMPP accounts, or the server's own, which its notices come
-// from.
+// with hosted XMPP accounts, the server's own, which its notices come from,
+// or the room service of either.
 func xmpp_local(domain string) bool {
+	return xmpp_served(domain) || xmpp_room_base(domain) != ""
+}
+
+// xmpp_served reports whether a domain is one with hosted XMPP accounts, or
+// the server's own.
+func xmpp_served(domain string) bool {
 	domain = strings.ToLower(domain)
 	if domain == "" || !network_enabled("xmpp") {
 		return false
@@ -579,8 +597,8 @@ func xmpp_server_serve(conn net.Conn) {
 // === Upkeep ===
 
 // xmpp_links_manager keeps the engine's tables in bounds: messages kept for
-// clients that have not come back for thirty days go, as do sign-in answers
-// cached for the acceptance rule.
+// clients that have not come back for thirty days go, as do the acceptance
+// rule's answers, pushes no answer came for, and upload slots never used.
 func xmpp_links_manager() {
 	for range time.Tick(time.Hour) {
 		if !network_enabled("xmpp") {
@@ -588,6 +606,8 @@ func xmpp_links_manager() {
 		}
 		xmpp_database().exec("delete from offline where created<?", now()-30*86400)
 		xmpp_accepted_prune()
+		xmpp_push_prune()
+		xmpp_uploads_prune()
 		xmpp_peers_lock.Lock()
 		keys := make([]string, 0, len(xmpp_peers))
 		for key := range xmpp_peers {

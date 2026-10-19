@@ -1366,7 +1366,7 @@ func api_account_notifications(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	return linked_page_encode(page), nil
 }
 
-// mochi.account.upload(account, data, type, name="", description="") -> dict: Upload a file through an account for a post to carry, and return the reference the post names it by: {id, url, data} with the network's own answer in data - a Mastodon media attachment, a Bluesky blob, a Lemmy image; for a hosted fediverse account the file is kept here and served under the account, data being the Document an object may list it as. description is the alternative text where the network takes one at upload. Behind the account permission
+// mochi.account.upload(account, data, type, name="", description="") -> dict: Upload a file through an account for a post to carry, and return the reference the post names it by: {id, url, data} with the network's own answer in data - a Mastodon media attachment, a Bluesky blob, a Lemmy image; for a hosted fediverse account the file is kept here and served under the account, data being the Document an object may list it as; for a hosted Matrix account {url, name, type, size} with url its mxc address, and for a hosted XMPP account the same with url the address the upload service serves it at. description is the alternative text where the network takes one at upload. Behind the account permission
 func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, kind, name, description string
 	var content sl.Value
@@ -1389,9 +1389,14 @@ func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	// A hosted XMPP account's files wait for its upload service.
+	// A hosted XMPP account's files are its upload service's, sent as the
+	// address they are fetched from (uploads.go).
 	if x := xmpp_hosted_of(user, row); x != nil {
-		return xmpp_failed(x, fn, fmt.Errorf("a hosted XMPP account sends no files yet"))
+		result, err := xmpp_upload_store(user, x.id, x.address.Domainpart(), data, kind, name)
+		if err != nil {
+			return xmpp_failed(x, fn, err)
+		}
+		return sl_encode(result), nil
 	}
 	// A hosted Matrix account's files are the engine's, named by their mxc
 	// address (content.go).

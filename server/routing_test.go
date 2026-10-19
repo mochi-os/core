@@ -403,7 +403,7 @@ func TestXMPPAnswers(t *testing.T) {
 // TestXMPPHostedConversation: chat holds a conversation through a hosted
 // account as through a linked one - messages, corrections, withdrawals,
 // typing, read markers and presence go out from Mochi's own sessions - and
-// a file shared with it is fetched; a room is refused, as is a file sent.
+// a file shared with it is fetched.
 func TestXMPPHostedConversation(t *testing.T) {
 	env := create_xmpp_server_env(t)
 	fake := env.apps(t)
@@ -456,15 +456,6 @@ func TestXMPPHostedConversation(t *testing.T) {
 	made := sl_decode(call(api_account_room_create, sl.Tuple{sl.String("x1"), sl.NewList([]sl.Value{sl.String("Bob@Example.com")})})).(map[string]any)
 	if made["conversation"] != "xmpp:bob@example.com" || made["room"] != false {
 		t.Errorf("one-to-one = %v", made)
-	}
-	if value := call(api_account_room_create, sl.Tuple{sl.String("x1"), sl.NewList([]sl.Value{sl.String("bob@example.com"), sl.String("carol@remote.test")})}); value != sl.None {
-		t.Errorf("a room was made: %v", value)
-	}
-	if value := call(api_account_room_join, sl.Tuple{sl.String("x1"), sl.String("lounge@rooms.example.com")}); value != sl.None {
-		t.Errorf("a room was joined: %v", value)
-	}
-	if value := call(api_account_upload, sl.Tuple{sl.String("x1"), sl.Bytes("data"), sl.String("text/plain")}); value != sl.None {
-		t.Errorf("a file was uploaded: %v", value)
 	}
 	files := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
@@ -533,4 +524,42 @@ func TestXMPPRosterAPI(t *testing.T) {
 // mustjid parses an address known to be good.
 func mustjid(text string) jid.JID {
 	return jid.MustParse(text)
+}
+
+// TestXMPPReactions: a reaction (XEP-0444) to a message reaches chat as a
+// reaction event, by the message it is to, its first emoji the one kept and
+// none withdrawing it; chat's reaction through a hosted account goes as the
+// person's whole set, known by the message, and withdrawing it sends none.
+func TestXMPPReactions(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	fake := env.apps(t)
+	fake.allow(env.alice, "bob@example.com")
+	fake.allow(env.bob, "alice@example.com")
+	_, b := env.pair(t)
+
+	b.send(t, `<message xmlns="jabber:client" to="alice@example.com" type="chat" id="r1"><reactions xmlns="urn:xmpp:reactions:0" id="m1"><reaction>👍</reaction><reaction>😂</reaction></reactions></message>`)
+	event := env.log.find(t, "reaction", func(e map[string]any) bool { return e["account"] == "x1" && e["id"] == "m1" })
+	if event["reaction"] != "👍" || event["from"] != "xmpp:bob@example.com" || event["event"] != "reaction|m1" {
+		t.Errorf("THE POINT: the reaction: %v", event)
+	}
+	b.send(t, `<message xmlns="jabber:client" to="alice@example.com" type="chat" id="r2"><reactions xmlns="urn:xmpp:reactions:0" id="m2"/></message>`)
+	withdrawn := env.log.find(t, "reaction", func(e map[string]any) bool { return e["account"] == "x1" && e["id"] == "m2" })
+	if withdrawn["reaction"] != "" {
+		t.Errorf("THE POINT: a withdrawn reaction: %v", withdrawn)
+	}
+
+	result := sl_decode(xmpp_call(t, env.alice, api_account_object_create, sl.Tuple{sl.String("x1"), xmpp_object("conversation", "xmpp:bob@example.com", "reaction", "😍", "message", "m3")})).(map[string]any)
+	if result["id"] != "reaction|m3" {
+		t.Errorf("the reaction's id: %v", result)
+	}
+	b.expect(t, "THE POINT: chat's reaction", `urn:xmpp:reactions:0`, `id="m3"`, "😍</reaction>")
+	xmpp_call(t, env.alice, api_account_object_delete, sl.Tuple{sl.String("x1"), sl.String("reaction|m3")}, sl.Tuple{sl.String("conversation"), sl.String("xmpp:bob@example.com")})
+	wait(t, "THE POINT: the reaction withdrawn", func() bool {
+		for _, text := range b.heard(`urn:xmpp:reactions:0`, `id="m3"`) {
+			if !strings.Contains(text, "</reaction>") {
+				return true
+			}
+		}
+		return false
+	})
 }

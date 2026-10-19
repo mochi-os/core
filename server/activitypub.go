@@ -102,7 +102,7 @@ var activitypub_call = app_call_as_server
 func activitypub_engine() *engine {
 	return &engine{
 		name:     "activitypub",
-		prefixes: []string{"/.well-known/webfinger", "/.well-known/host-meta", "/.well-known/nodeinfo", "/nodeinfo/", "/~", "/@"},
+		prefixes: []string{"/.well-known/webfinger", "/.well-known/nodeinfo", "/nodeinfo/", "/~", "/@"},
 		setting:  "fediverse",
 		body:     activitypub_body_maximum,
 		handler:  activitypub_route,
@@ -386,12 +386,62 @@ func activitypub_webfinger(c *gin.Context) {
 
 // activitypub_host_meta answers host-meta: where WebFinger is.
 func activitypub_host_meta(c *gin.Context) {
-	c.Header("Content-Type", "application/xrd+xml; charset=utf-8")
-	c.String(http.StatusOK, `<?xml version="1.0" encoding="UTF-8"?>
+	host_meta_document(c, true)
+}
+
+// host_meta_engine answers host-meta (RFC 6415) for whichever network needs
+// it: where WebFinger is while the fediverse is on, and the host's XMPP web
+// transports while XMPP is (XEP-0156), as XML and as JSON, to any origin.
+func host_meta_engine() *engine {
+	return &engine{
+		name:     "hostmeta",
+		prefixes: []string{"/.well-known/host-meta", "/.well-known/host-meta.json"},
+		handler:  host_meta_route,
+	}
+}
+
+// host_meta_route answers host-meta where a network that uses it is on.
+func host_meta_route(c *gin.Context) bool {
+	c.Header("Access-Control-Allow-Origin", "*")
+	if c.Request.Method != http.MethodGet || (!network_enabled("fediverse") && !network_enabled("xmpp")) {
+		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
+		return true
+	}
+	host_meta_document(c, network_enabled("fediverse"))
+	return true
+}
+
+// host_meta_document writes host-meta: the WebFinger template where asked,
+// and the XMPP links the host has.
+func host_meta_document(c *gin.Context, lrdd bool) {
+	template := activitypub_base(c) + "/.well-known/webfinger?resource={uri}"
+	links := xmpp_host_links(activitypub_host(c))
+	if strings.HasSuffix(c.Request.URL.Path, ".json") {
+		list := []map[string]any{}
+		if lrdd {
+			list = append(list, map[string]any{"rel": "lrdd", "template": template})
+		}
+		for _, link := range links {
+			list = append(list, map[string]any{"rel": link[0], "href": link[1]})
+		}
+		c.Header("Content-Type", "application/json; charset=utf-8")
+		c.Status(http.StatusOK)
+		c.Writer.Write([]byte(json_encode(map[string]any{"links": list})))
+		return
+	}
+	text := `<?xml version="1.0" encoding="UTF-8"?>
 <XRD xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0">
-  <Link rel="lrdd" template="`+html.EscapeString(activitypub_base(c))+`/.well-known/webfinger?resource={uri}"/>
-</XRD>
-`)
+`
+	if lrdd {
+		text += `  <Link rel="lrdd" template="` + html.EscapeString(template) + `"/>
+`
+	}
+	for _, link := range links {
+		text += `  <Link rel="` + html.EscapeString(link[0]) + `" href="` + html.EscapeString(link[1]) + `"/>
+`
+	}
+	c.Header("Content-Type", "application/xrd+xml; charset=utf-8")
+	c.String(http.StatusOK, text+"</XRD>\n")
 }
 
 // activitypub_nodeinfo_document answers NodeInfo 2.1: the software, the

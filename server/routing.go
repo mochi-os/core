@@ -31,6 +31,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,6 +57,8 @@ var xmpp_server_features = []string{
 	"http://jabber.org/protocol/disco#items",
 	"msgoffline",
 	"urn:xmpp:blocking",
+	"urn:xmpp:carbons:2",
+	"urn:xmpp:http:upload:0",
 	"urn:xmpp:ping",
 	"vcard-temp",
 }
@@ -147,9 +150,14 @@ func xmpp_from_server(s *xmpp_stanza, from jid.JID, to jid.JID) {
 	xmpp_deliver(s, from, to)
 }
 
-// xmpp_deliver takes a stanza for an address here: the server's, the notices
-// address, or an account's, which its user's block list guards.
+// xmpp_deliver takes a stanza for an address here: the room service's, the
+// server's, the notices address, or an account's, which its user's block list
+// guards.
 func xmpp_deliver(s *xmpp_stanza, from jid.JID, to jid.JID) {
+	if xmpp_room_base(to.Domainpart()) != "" {
+		xmpp_conference_deliver(s, from, to)
+		return
+	}
 	if to.Localpart() == "" {
 		if s.name == "iq" {
 			xmpp_answer(s, xmpp_iq_server(s))
@@ -220,8 +228,11 @@ func xmpp_from_client(r *xmpp_resource, s *xmpp_stanza) {
 
 // === Messages ===
 
-// xmpp_client_message sends a client's message, and hands a message of a
-// conversation to the apps as the account's own.
+// xmpp_client_message sends a client's message, copies it to the account's
+// other clients that take copies, and hands a message of a conversation to
+// the apps as the account's own, with the id the account's archive gives it.
+// What a client says in a room it is in, or privately to someone there, is
+// the client's: Mochi's own sessions hear the room for themselves.
 func xmpp_client_message(a *xmpp_account, r *xmpp_resource, s *xmpp_stanza, to jid.JID) {
 	self := to.Bare().Equal(a.address)
 	if !self && xmpp_blocked(a.user, to) {
@@ -232,55 +243,167 @@ func xmpp_client_message(a *xmpp_account, r *xmpp_resource, s *xmpp_stanza, to j
 		}
 		return
 	}
-	xmpp_route(s, r.full, to)
 	kind := s.get("type")
-	if self || to.Localpart() == "" || (kind != "" && kind != "chat" && kind != "normal") {
+	var m xmpp_message
+	decoded := s.decode(&m) == nil
+	room := kind == "groupchat" || r.joined(to.Bare())
+	archive := ""
+	if decoded && !self && !room && to.Localpart() != "" && xmpp_archivable(kind, &m) {
+		archive = uid()
+	}
+	xmpp_route(s, r.full, to)
+	if !self && xmpp_carbon_eligible(s) {
+		sent := s.copy()
+		if archive != "" {
+			xmpp_stanza_id(sent, a.address.String(), archive)
+		}
+		xmpp_carbons(a, sent, "sent", r)
+	}
+	if self || room || to.Localpart() == "" || !decoded || (kind != "" && kind != "chat" && kind != "normal") {
 		return
 	}
 	xmpp_accepted_forget(a, to.Bare())
-	var m xmpp_message
-	if s.decode(&m) != nil {
+	conversation := "xmpp:" + to.Bare().String()
+	events := xmpp_events(&m, nil, r.full, conversation, "xmpp:"+a.address.String(), "", archive, true)
+	xmpp_payload_add(events, s)
+	xmpp_tell(a, events)
+}
+
+// xmpp_in_room reports whether one of the account's clients is in a room.
+func xmpp_in_room(a *xmpp_account, room jid.JID) bool {
+	for _, r := range xmpp_resources_of(a.address.String()) {
+		if r.joined(room) {
+			return true
+		}
+	}
+	return false
+}
+
+// joined reports whether the client has sent presence to a room: a room's
+// address it has joined under some nick.
+func (r *xmpp_resource) joined(room jid.JID) bool {
+	prefix := room.Bare().String() + "/"
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	for to := range r.directed {
+		if strings.HasPrefix(to, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// xmpp_payload_add gives a message event the encrypted content its stanza
+// carries, which chat keeps for the archive.
+func xmpp_payload_add(events []map[string]any, s *xmpp_stanza) {
+	if len(events) == 0 || events[len(events)-1]["kind"] != "message" || events[len(events)-1]["encrypted"] != true {
 		return
 	}
-	conversation := "xmpp:" + to.Bare().String()
-	xmpp_tell(a, xmpp_events(&m, nil, r.full, conversation, "xmpp:"+a.address.String(), "", "", true))
+	if payload := xmpp_payload(s); payload != "" {
+		events[len(events)-1]["payload"] = payload
+	}
 }
 
 // xmpp_message_in takes a message for an account: to the client a full
-// address names, else to every client available, and to the apps, unless the
-// acceptance rule passes it over. One no client takes waits for the next.
+// address names, else to every client available, copied to those that take
+// copies, and to the apps, unless the acceptance rule passes it over. A
+// message of a conversation is given its id in the account's archive; one
+// no client takes waits for the next, and where no client has a connection
+// their push services are told. What a room sends is for the client in it,
+// or for Mochi's own sessions.
 func xmpp_message_in(a *xmpp_account, s *xmpp_stanza, from jid.JID, to jid.JID, own bool) {
 	kind := s.get("type")
+	if to.Resourcepart() == xmpp_mochi_resource && (xmpp_joining_of(a, from.Bare().String()) != nil || xmpp_joined_of(a, from.Bare().String()) != nil) {
+		xmpp_room_in(a, s, from)
+		return
+	}
 	if kind == "groupchat" {
-		xmpp_answer(s, xmpp_failure(s, "service-unavailable", "cancel", ""))
+		// A room's message for a client not online is dropped (RFC 6121).
+		if r := xmpp_resource_get(a.address.String(), to.Resourcepart()); r != nil && to.Resourcepart() != "" {
+			r.send(s.text(xmpp_ns_client))
+		}
 		return
 	}
-	if !own && kind != "error" && !xmpp_accepted(a, from.Bare()) {
-		debug("XMPP message from %s to %s passed over: the acceptance rule does not take it", from.Bare(), a.address)
-		return
-	}
-	text := s.text(xmpp_ns_client)
-	delivered := xmpp_resources_deliver(a, to, text, kind == "error" || kind == "headline")
-	if own || kind == "error" || kind == "headline" {
+	// What a room one of the account's clients is in sends that client - a
+	// private message from someone there, the room's archive - is the
+	// client's, as is the archive's answer to a query the client asked.
+	if to.Resourcepart() != "" && (xmpp_in_room(a, from.Bare()) || xmpp_archive_result(s)) {
+		xmpp_message_deliver(a, to, s, true)
 		return
 	}
 	var m xmpp_message
-	if s.decode(&m) != nil {
+	decoded := s.decode(&m) == nil
+	// A room's invitation is the inviter's, whom the acceptance rule asks of.
+	sender := from.Bare()
+	if decoded && m.Invitation != nil && m.Invitation.Invite != nil {
+		if inviter, err := jid.Parse(m.Invitation.Invite.From); err == nil {
+			sender = inviter.Bare()
+		}
+	}
+	if !own && kind != "error" && !xmpp_accepted(a, sender) {
+		debug("XMPP message from %s to %s passed over: the acceptance rule does not take it", sender, a.address)
+		return
+	}
+	archive := ""
+	if decoded && !own && xmpp_archivable(kind, &m) {
+		archive = uid()
+		s = s.copy()
+		xmpp_stanza_id(s, a.address.String(), archive)
+	}
+	delivered := xmpp_message_deliver(a, to, s, kind == "error" || kind == "headline")
+	if own || kind == "error" || kind == "headline" || !decoded {
 		return
 	}
 	if !delivered && (strings.TrimSpace(m.Body) != "" || m.encrypted()) {
 		xmpp_offline_keep(a, s)
+	}
+	if archive != "" && !xmpp_live(a) {
+		xmpp_push_wake(a)
 	}
 	conversation := "xmpp:" + from.Bare().String()
 	name := from.Localpart()
 	if nick := strings.TrimSpace(m.Nick); nick != "" && len(nick) <= 200 {
 		name = nick
 	}
-	events := xmpp_events(&m, m.Delay, from, conversation, conversation, name, "", false)
+	events := xmpp_events(&m, m.Delay, from, conversation, conversation, name, archive, false)
 	if len(events) > 0 && events[len(events)-1]["kind"] == "message" && m.Markable != nil {
 		xmpp_markable_set(a, conversation, events[len(events)-1]["id"].(string))
 	}
+	xmpp_payload_add(events, s)
 	xmpp_tell(a, events)
+}
+
+// xmpp_message_deliver hands a message to an account's clients: the one a
+// full address names where it is bound, else each available with a priority
+// not below zero, and a copy to each other client that takes copies where it
+// is one of a conversation. A message only for the resource named goes
+// nowhere where it is not bound. It answers whether any client took it.
+func xmpp_message_deliver(a *xmpp_account, to jid.JID, s *xmpp_stanza, only bool) bool {
+	text := s.text(xmpp_ns_client)
+	var took []*xmpp_resource
+	if resource := to.Resourcepart(); resource != "" {
+		if r := xmpp_resource_get(a.address.String(), resource); r != nil {
+			r.send(text)
+			took = append(took, r)
+		} else if only {
+			return false
+		}
+	}
+	if len(took) == 0 {
+		for _, r := range xmpp_resources_of(a.address.String()) {
+			r.lock.Lock()
+			ok := r.available && r.priority >= 0
+			r.lock.Unlock()
+			if ok {
+				r.send(text)
+				took = append(took, r)
+			}
+		}
+	}
+	if xmpp_carbon_eligible(s) {
+		xmpp_carbons(a, s, "received", took...)
+	}
+	return len(took) > 0
 }
 
 // xmpp_resources_deliver hands a stanza to an account's clients: the one a
@@ -308,6 +431,60 @@ func xmpp_resources_deliver(a *xmpp_account, to jid.JID, text string, only bool)
 		}
 	}
 	return delivered
+}
+
+// === Carbons ===
+
+const xmpp_ns_carbons = "urn:xmpp:carbons:2"
+
+// xmpp_carbon_eligible reports whether a message is copied to the account's
+// other clients (XEP-0280): a chat message, or a normal one with a body, that
+// is not marked private, a copy already, or a room's to one of its occupants.
+func xmpp_carbon_eligible(s *xmpp_stanza) bool {
+	kind := s.get("type")
+	body := false
+	for _, c := range s.children() {
+		switch {
+		case c.space == xmpp_ns_carbons:
+			return false
+		case c.space == "urn:xmpp:hints" && c.name == "no-copy":
+			return false
+		case c.space == "http://jabber.org/protocol/muc#user":
+			return false
+		case c.space == xmpp_ns_client && c.name == "body":
+			body = true
+		}
+	}
+	return kind == "chat" || ((kind == "" || kind == "normal") && body)
+}
+
+// xmpp_carbons copies a message to the account's clients that take copies,
+// but for those given: as received where it came to the account, as sent
+// where it went from it.
+func xmpp_carbons(a *xmpp_account, s *xmpp_stanza, direction string, except ...*xmpp_resource) {
+	text := s.text(xmpp_ns_client)
+	for _, r := range xmpp_resources_of(a.address.String()) {
+		if slices.Contains(except, r) {
+			continue
+		}
+		r.lock.Lock()
+		ok := r.carbons && r.available
+		r.lock.Unlock()
+		if ok {
+			r.send(xmpp_make("message", `<`+direction+` xmlns="`+xmpp_ns_carbons+`"><forwarded xmlns="`+xmpp_ns_forward+`">`+text+`</forwarded></`+direction+`>`, "from", a.address.String(), "to", r.full.String(), "type", s.get("type")).text(xmpp_ns_client))
+		}
+	}
+}
+
+// xmpp_carbons_iq answers a client enabling or disabling copies.
+func xmpp_carbons_iq(r *xmpp_resource, s *xmpp_stanza, name string) *xmpp_stanza {
+	if s.get("type") != "set" || (name != "enable" && name != "disable") {
+		return xmpp_failure(s, "bad-request", "modify", "")
+	}
+	r.lock.Lock()
+	r.carbons = name == "enable"
+	r.lock.Unlock()
+	return xmpp_result(s, "")
 }
 
 // xmpp_offline_keep keeps a message for the account's next client, stamped
@@ -347,21 +524,14 @@ var (
 )
 
 // xmpp_tell hands events of an account to the apps declaring linked/receive,
-// in order, after leaving out invitations to rooms, which hosted accounts
-// have none of yet.
+// in order.
 func xmpp_tell(a *xmpp_account, events []map[string]any) {
-	var kept []map[string]any
-	for _, event := range events {
-		if event["kind"] != "invite" {
-			kept = append(kept, event)
-		}
-	}
-	if len(kept) == 0 {
+	if len(events) == 0 {
 		return
 	}
 	user, account := a.user, a.id
 	xmpp_queue(user, func() {
-		linked_inbound(user, account, "xmpp", kept)
+		linked_inbound(user, account, "xmpp", events)
 	})
 }
 
@@ -578,6 +748,15 @@ func xmpp_client_presence(a *xmpp_account, r *xmpp_resource, s *xmpp_stanza, to 
 			xmpp_subscription_out(a, kind, to.Bare())
 		case "", "unavailable":
 			if !xmpp_blocked(a.user, to) {
+				// Where the client sent presence of its own is told it is gone
+				// when it goes: a room it joined, above all.
+				r.lock.Lock()
+				if kind == "" && len(r.directed) < xmpp_directed_maximum {
+					r.directed[to.String()] = true
+				} else if kind == "unavailable" {
+					delete(r.directed, to.String())
+				}
+				r.lock.Unlock()
 				xmpp_route(s, r.full, to)
 			}
 		}
@@ -607,13 +786,26 @@ func xmpp_client_presence(a *xmpp_account, r *xmpp_resource, s *xmpp_stanza, to 
 		r.lock.Lock()
 		available := r.available
 		r.available = false
+		directed := make([]string, 0, len(r.directed))
+		for address := range r.directed {
+			directed = append(directed, address)
+		}
+		r.directed = map[string]bool{}
 		r.lock.Unlock()
 		if available {
 			xmpp_broadcast(a, r.full, s.inner, "unavailable")
 			presence_disconnect(a.user.UID, r.connection)
 		}
+		for _, address := range directed {
+			if target, err := jid.Parse(address); err == nil {
+				xmpp_route(xmpp_make("presence", "", "type", "unavailable"), r.full, target)
+			}
+		}
 	}
 }
+
+// The most addresses one client's presence of its own is kept for.
+const xmpp_directed_maximum = 1000
 
 // xmpp_presence_gone tells an account's contacts that a client whose stream
 // ended is unavailable.
@@ -694,6 +886,9 @@ func xmpp_probes(a *xmpp_account) {
 // subscription request or answer; or presence sent to one of its clients.
 func xmpp_presence_in(a *xmpp_account, s *xmpp_stanza, from jid.JID, to jid.JID, own bool) {
 	kind := s.get("type")
+	if to.Resourcepart() == xmpp_mochi_resource && xmpp_room_heard(a, s, from) {
+		return
+	}
 	switch kind {
 	case "", "unavailable":
 		if to.Resourcepart() != "" {
@@ -725,6 +920,15 @@ func xmpp_presence_in(a *xmpp_account, s *xmpp_stanza, from jid.JID, to jid.JID,
 			xmpp_subscription_in(a, kind, from.Bare(), s)
 		}
 	case "error":
+		// An address that refused a client's presence, a room refusing a
+		// join above all, did not take it.
+		if to.Resourcepart() != "" {
+			if r := xmpp_resource_get(a.address.String(), to.Resourcepart()); r != nil {
+				r.lock.Lock()
+				delete(r.directed, from.String())
+				r.lock.Unlock()
+			}
+		}
 		xmpp_resources_deliver(a, to, s.text(xmpp_ns_client), true)
 	}
 }
@@ -874,6 +1078,9 @@ func xmpp_mochi_update(uid string) {
 		case known:
 			xmpp_broadcast(a, a.mochi(), "", "unavailable")
 		}
+		if changed {
+			xmpp_rooms_announce(a)
+		}
 	}
 }
 
@@ -909,7 +1116,8 @@ func xmpp_client_iq(a *xmpp_account, r *xmpp_resource, s *xmpp_stanza, to jid.JI
 }
 
 // xmpp_iq_own answers a client's request about its own account: the roster,
-// the block list, its vCard, a session, discovery and pings.
+// the block list, its vCard, a session, copies of its messages, its archive,
+// push, what it publishes (PEP), discovery and pings.
 func xmpp_iq_own(a *xmpp_account, r *xmpp_resource, s *xmpp_stanza) *xmpp_stanza {
 	space, name := s.child()
 	kind := s.get("type")
@@ -926,6 +1134,16 @@ func xmpp_iq_own(a *xmpp_account, r *xmpp_resource, s *xmpp_stanza) *xmpp_stanza
 		return xmpp_failure(s, "not-allowed", "cancel", "")
 	case space == xmpp_ns_session && name == "session":
 		return xmpp_result(s, "")
+	case space == xmpp_ns_carbons:
+		return xmpp_carbons_iq(r, s, name)
+	case space == xmpp_ns_archive && name == "query":
+		return xmpp_archive_iq(a, r, s)
+	case space == xmpp_ns_push:
+		return xmpp_push_iq(a, s, name)
+	case (space == xmpp_ns_pubsub || space == xmpp_ns_pubsub_owner) && name == "pubsub":
+		return xmpp_pep_iq(a, s, true)
+	case space == xmpp_ns_info && name == "query" && kind == "get":
+		return xmpp_account_info(s, true)
 	}
 	return xmpp_iq_account(s, space, name)
 }
@@ -940,6 +1158,9 @@ func xmpp_iq_in(a *xmpp_account, s *xmpp_stanza, from jid.JID, to jid.JID) {
 			return
 		}
 		if kind != "get" && kind != "set" {
+			if resource == xmpp_mochi_resource {
+				xmpp_answered(s)
+			}
 			return
 		}
 		if resource == xmpp_mochi_resource {
@@ -950,15 +1171,41 @@ func xmpp_iq_in(a *xmpp_account, s *xmpp_stanza, from jid.JID, to jid.JID) {
 		return
 	}
 	if kind != "get" && kind != "set" {
+		if !xmpp_push_answered(a, s) {
+			xmpp_answered(s)
+		}
 		return
 	}
 	space, name := s.child()
-	if space == xmpp_ns_vcard && name == "vCard" && kind == "get" {
+	switch {
+	case space == xmpp_ns_vcard && name == "vCard" && kind == "get":
 		card, _ := xmpp_vcard(a)
 		xmpp_answer(s, xmpp_result(s, card))
 		return
+	case space == xmpp_ns_pubsub && name == "pubsub":
+		xmpp_answer(s, xmpp_pep_iq_from(a, s, from))
+		return
+	case space == xmpp_ns_info && name == "query" && kind == "get":
+		xmpp_answer(s, xmpp_account_info(s, false))
+		return
 	}
 	xmpp_answer(s, xmpp_iq_account(s, space, name))
+}
+
+// xmpp_account_info is what discovery shows of an account: that it is one,
+// that it publishes (PEP), and to its own clients what it offers them.
+func xmpp_account_info(s *xmpp_stanza, own bool) *xmpp_stanza {
+	features := []string{xmpp_ns_info}
+	if own {
+		features = append(features, xmpp_ns_archive, xmpp_ns_push, "http://jabber.org/protocol/pubsub#publish", "http://jabber.org/protocol/pubsub#publish-options", "http://jabber.org/protocol/pubsub#retract-items", "http://jabber.org/protocol/pubsub#delete-nodes", "urn:xmpp:bookmarks:1#compat")
+	}
+	var text strings.Builder
+	text.WriteString(`<query xmlns="` + xmpp_ns_info + `"><identity category="account" type="registered"/><identity category="pubsub" type="pep"/>`)
+	for _, feature := range features {
+		text.WriteString(`<feature var="` + feature + `"/>`)
+	}
+	text.WriteString(`</query>`)
+	return xmpp_result(s, text.String())
 }
 
 // xmpp_iq_account answers what the server answers for any account:
@@ -976,7 +1223,8 @@ func xmpp_iq_account(s *xmpp_stanza, space string, name string) *xmpp_stanza {
 	return xmpp_failure(s, "service-unavailable", "cancel", "")
 }
 
-// xmpp_iq_server answers a request to the server: discovery and pings.
+// xmpp_iq_server answers a request to the server: discovery, pings and the
+// upload service's slots.
 func xmpp_iq_server(s *xmpp_stanza) *xmpp_stanza {
 	kind := s.get("type")
 	if kind != "get" && kind != "set" {
@@ -989,11 +1237,16 @@ func xmpp_iq_server(s *xmpp_stanza) *xmpp_stanza {
 		for _, feature := range xmpp_server_features {
 			features.WriteString(`<feature var="` + feature + `"/>`)
 		}
-		return xmpp_result(s, `<query xmlns="`+xmpp_ns_info+`"><identity category="server" type="im" name="Mochi"/>`+features.String()+`</query>`)
+		upload := `<x xmlns="` + xmpp_ns_forms + `" type="result"><field var="FORM_TYPE" type="hidden"><value>` + xmpp_ns_upload + `</value></field><field var="max-file-size"><value>` + strconv.Itoa(media_maximum) + `</value></field></x>`
+		return xmpp_result(s, `<query xmlns="`+xmpp_ns_info+`"><identity category="server" type="im" name="Mochi"/><identity category="store" type="file" name="Files"/>`+features.String()+upload+`</query>`)
 	case space == xmpp_ns_items && name == "query" && kind == "get":
-		return xmpp_result(s, `<query xmlns="`+xmpp_ns_items+`"/>`)
+		// The room service under the domain.
+		service := "rooms." + strings.ToLower(s.get("to"))
+		return xmpp_result(s, `<query xmlns="`+xmpp_ns_items+`"><item jid="`+xmpp_escape(service)+`" name="Rooms"/></query>`)
 	case space == xmpp_ns_ping && name == "ping" && kind == "get":
 		return xmpp_result(s, "")
+	case space == xmpp_ns_upload && name == "request" && kind == "get":
+		return xmpp_upload_request(s)
 	}
 	return xmpp_failure(s, "service-unavailable", "cancel", "")
 }
@@ -1094,30 +1347,78 @@ func xmpp_markable_set(a *xmpp_account, conversation string, id string) {
 	xmpp_markable_lock.Unlock()
 }
 
-// xmpp_hosted_target is the person a conversation of a hosted account is
-// with, refusing one the user blocks.
-func xmpp_hosted_target(a *xmpp_account, conversation string) (jid.JID, error) {
+// An xmpp_target is where a conversation of a hosted account goes: the person,
+// or a room Mochi's own sessions are in, with the nick they go by there.
+type xmpp_destination struct {
+	to   jid.JID
+	room bool
+	nick string
+}
+
+// xmpp_hosted_target is where a conversation of a hosted account goes,
+// refusing a person the user blocks.
+func xmpp_hosted_target(a *xmpp_account, conversation string) (*xmpp_destination, error) {
 	to, err := xmpp_target(conversation)
 	if err != nil || to.Localpart() == "" {
-		return jid.JID{}, fmt.Errorf("invalid conversation")
+		return nil, fmt.Errorf("invalid conversation")
 	}
-	to = to.Bare()
+	if j := xmpp_joined_of(a, to.Bare().String()); j != nil && to.Resourcepart() == "" {
+		return &xmpp_destination{to: to.Bare(), room: true, nick: j.nick}, nil
+	}
+	if to.Resourcepart() == "" || xmpp_joined_of(a, to.Bare().String()) == nil {
+		to = to.Bare()
+	}
 	if xmpp_blocked(a.user, to) {
-		return jid.JID{}, fmt.Errorf("the person is blocked")
+		return nil, fmt.Errorf("the person is blocked")
 	}
-	return to, nil
+	return &xmpp_destination{to: to}, nil
+}
+
+// kind is the type a conversation's messages go as.
+func (t *xmpp_destination) kind() string {
+	if t.room {
+		return "groupchat"
+	}
+	return "chat"
+}
+
+// xmpp_hosted_route sends a message from Mochi's own sessions on an account:
+// to a room, kept to know its echo by, or to a person, copied to the
+// account's clients that take copies with the id the account's archive gives
+// it, where it is one the archive keeps.
+func xmpp_hosted_route(a *xmpp_account, t *xmpp_destination, s *xmpp_stanza) string {
+	if t.room {
+		xmpp_room_sent(a, s.get("id"))
+		xmpp_route(s, a.mochi(), t.to)
+		return ""
+	}
+	archive := ""
+	var m xmpp_message
+	if s.decode(&m) == nil && xmpp_archivable(s.get("type"), &m) {
+		archive = uid()
+	}
+	xmpp_route(s, a.mochi(), t.to)
+	if xmpp_carbon_eligible(s) {
+		sent := s.copy()
+		if archive != "" {
+			xmpp_stanza_id(sent, a.address.String(), archive)
+		}
+		xmpp_carbons(a, sent, "sent")
+	}
+	return archive
 }
 
 // xmpp_hosted_send sends a message from Mochi's own sessions on an account:
-// its text, a reply to another, or a correction of an earlier one.
-func xmpp_hosted_send(a *xmpp_account, conversation string, id string, body string, reply string, correct string) error {
-	to, err := xmpp_hosted_target(a, conversation)
+// its text or a file by its address, a reply to another, or a correction of
+// an earlier one. It answers the id the account's archive gave it.
+func xmpp_hosted_send(a *xmpp_account, conversation string, id string, body string, file string, reply string, correct string) (string, error) {
+	t, err := xmpp_hosted_target(a, conversation)
 	if err != nil {
-		return err
+		return "", err
 	}
-	s, err := xmpp_parse(xmpp_message_text(to.String(), "chat", id, body, "", reply, correct))
+	s, err := xmpp_parse(xmpp_message_text(t.to.String(), t.kind(), id, body, file, reply, correct))
 	if err != nil {
-		return err
+		return "", err
 	}
 	xmpp_markable_lock.Lock()
 	key := a.id + " " + conversation
@@ -1126,48 +1427,93 @@ func xmpp_hosted_send(a *xmpp_account, conversation string, id string, body stri
 		delete(xmpp_pauses, key)
 	}
 	xmpp_markable_lock.Unlock()
-	xmpp_accepted_forget(a, to)
-	xmpp_route(s, a.mochi(), to)
-	return nil
+	if !t.room {
+		xmpp_accepted_forget(a, t.to)
+	}
+	return xmpp_hosted_route(a, t, s), nil
 }
 
 // xmpp_object_create sends a message of a conversation from Mochi's own
-// sessions: its text, perhaps a reply. The app's key is its id, so the same
-// message is known again. Files wait for the upload service.
+// sessions: its text, perhaps a reply; a file by the address its upload
+// answered; or a reaction to a message. The app's key is its id, so the same
+// message is known again; the answer carries the id the account's archive
+// gave it.
 func xmpp_object_create(a *xmpp_account, object map[string]any, key string) (map[string]any, error) {
 	conversation, _ := object["conversation"].(string)
 	text, _ := object["content"].(string)
 	reply, _ := object["reply"].(string)
-	if object["file"] != nil {
-		return nil, fmt.Errorf("a hosted XMPP account sends no files yet")
+	if emoji, found := object["reaction"].(string); found {
+		message, _ := object["message"].(string)
+		if message == "" {
+			return nil, fmt.Errorf("a reaction needs its message")
+		}
+		if err := xmpp_hosted_react(a, conversation, message, emoji); err != nil {
+			return nil, err
+		}
+		return map[string]any{"id": xmpp_reaction_prefix + message, "url": "", "data": map[string]any{}}, nil
 	}
-	if text == "" {
-		return nil, fmt.Errorf("a message needs content")
+	file := ""
+	if f, _ := object["file"].(map[string]any); f != nil {
+		file, _ = f["url"].(string)
+	}
+	if text == "" && file == "" {
+		return nil, fmt.Errorf("a message needs content or a file")
 	}
 	id := key
 	if id == "" {
 		id = uid()
 	}
-	if err := xmpp_hosted_send(a, conversation, id, text, reply, ""); err != nil {
+	archive, err := xmpp_hosted_send(a, conversation, id, text, file, reply, "")
+	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": id, "url": "", "data": map[string]any{}}, nil
+	return map[string]any{"id": id, "archive": archive, "url": "", "data": map[string]any{}}, nil
 }
 
-// xmpp_hosted_retract withdraws a message the account sent.
-func xmpp_hosted_retract(a *xmpp_account, conversation string, id string) error {
-	to, err := xmpp_hosted_target(a, conversation)
+// xmpp_reaction_prefix begins the id a reaction is known by: the message it
+// is to, since a person's reactions to a message are replaced as a whole.
+const xmpp_reaction_prefix = "reaction|"
+
+// xmpp_reactions is a message reacting to another (XEP-0444): the emoji the
+// user reacts with, none withdrawing their reaction.
+func xmpp_reactions(message string, emoji string) string {
+	inner := `<reactions xmlns="urn:xmpp:reactions:0" id="` + xmpp_escape(message) + `">`
+	if emoji != "" {
+		inner += `<reaction>` + xmpp_escape(emoji) + `</reaction>`
+	}
+	return inner + `</reactions><store xmlns="urn:xmpp:hints"/>`
+}
+
+// xmpp_hosted_react sends the user's reaction to a message, replacing the one
+// before; an empty one withdraws it. In a room the message is named by the
+// id the room gave it.
+func xmpp_hosted_react(a *xmpp_account, conversation string, message string, emoji string) error {
+	t, err := xmpp_hosted_target(a, conversation)
 	if err != nil {
 		return err
 	}
-	xmpp_route(xmpp_make("message", `<retract xmlns="urn:xmpp:message-retract:1" id="`+xmpp_escape(id)+`"/><store xmlns="urn:xmpp:hints"/>`, "type", "chat", "id", uid()), a.mochi(), to)
+	xmpp_hosted_route(a, t, xmpp_make("message", xmpp_reactions(message, emoji), "type", t.kind(), "id", uid()))
+	return nil
+}
+
+// xmpp_hosted_retract withdraws a message the account sent, or its reaction
+// to one.
+func xmpp_hosted_retract(a *xmpp_account, conversation string, id string) error {
+	if message, found := strings.CutPrefix(id, xmpp_reaction_prefix); found {
+		return xmpp_hosted_react(a, conversation, message, "")
+	}
+	t, err := xmpp_hosted_target(a, conversation)
+	if err != nil {
+		return err
+	}
+	xmpp_hosted_route(a, t, xmpp_make("message", `<retract xmlns="urn:xmpp:message-retract:1" id="`+xmpp_escape(id)+`"/><store xmlns="urn:xmpp:hints"/>`, "type", t.kind(), "id", uid()))
 	return nil
 }
 
 // xmpp_hosted_typing tells a conversation the user is typing, or stopped,
 // and that they stopped once xmpp_pause passes with no more.
 func xmpp_hosted_typing(a *xmpp_account, conversation string, typing bool) error {
-	to, err := xmpp_hosted_target(a, conversation)
+	t, err := xmpp_hosted_target(a, conversation)
 	if err != nil {
 		return err
 	}
@@ -1186,20 +1532,24 @@ func xmpp_hosted_typing(a *xmpp_account, conversation string, typing bool) error
 			xmpp_markable_lock.Lock()
 			delete(xmpp_pauses, key)
 			xmpp_markable_lock.Unlock()
-			xmpp_route(xmpp_make("message", `<paused xmlns="http://jabber.org/protocol/chatstates"/><no-store xmlns="urn:xmpp:hints"/>`, "type", "chat"), a.mochi(), to)
+			xmpp_hosted_route(a, t, xmpp_make("message", `<paused xmlns="http://jabber.org/protocol/chatstates"/><no-store xmlns="urn:xmpp:hints"/>`, "type", t.kind(), "id", uid()))
 		})
 	}
 	xmpp_markable_lock.Unlock()
-	xmpp_route(xmpp_make("message", `<`+state+` xmlns="http://jabber.org/protocol/chatstates"/><no-store xmlns="urn:xmpp:hints"/>`, "type", "chat"), a.mochi(), to)
+	xmpp_hosted_route(a, t, xmpp_make("message", `<`+state+` xmlns="http://jabber.org/protocol/chatstates"/><no-store xmlns="urn:xmpp:hints"/>`, "type", t.kind(), "id", uid()))
 	return nil
 }
 
 // xmpp_hosted_read tells a person the user has read their messages up to
-// one, where it is the one they asked to be told of.
+// one, where it is the one they asked to be told of. The account's other
+// clients are told by their copy.
 func xmpp_hosted_read(a *xmpp_account, conversation string, id string) error {
-	to, err := xmpp_hosted_target(a, conversation)
+	t, err := xmpp_hosted_target(a, conversation)
 	if err != nil {
 		return err
+	}
+	if t.room {
+		return nil
 	}
 	xmpp_markable_lock.Lock()
 	marked := xmpp_markable[a.id+" "+conversation]
@@ -1207,7 +1557,7 @@ func xmpp_hosted_read(a *xmpp_account, conversation string, id string) error {
 	if marked == "" || marked != id {
 		return nil
 	}
-	xmpp_route(xmpp_make("message", `<displayed xmlns="urn:xmpp:chat-markers:0" id="`+xmpp_escape(id)+`"/><store xmlns="urn:xmpp:hints"/>`, "type", "chat", "id", uid()), a.mochi(), to)
+	xmpp_hosted_route(a, t, xmpp_make("message", `<displayed xmlns="urn:xmpp:chat-markers:0" id="`+xmpp_escape(id)+`"/><store xmlns="urn:xmpp:hints"/>`, "type", "chat", "id", uid()))
 	return nil
 }
 

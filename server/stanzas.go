@@ -101,17 +101,22 @@ var xmpp_certificate = domains_get_certificate
 var xmpp_roots *x509.CertPool
 
 // xmpp_start opens the listeners where the development switch is on, and
-// starts the server links' manager.
+// starts the managers of the server links and of the rooms Mochi's own
+// sessions are in.
 func xmpp_start() {
 	if !networks_development {
 		return
 	}
+	// The room service's host under a wildcard domain is one this server
+	// answers for, so its certificate may be asked for on demand.
+	certificate_answer(func(host string) bool { return xmpp_room_base(host) != "" })
 	xmpp_listen_address = ini_string("xmpp", "address", "")
 	for name, port := range xmpp_ports {
 		xmpp_ports[name] = ini_int("xmpp", name, port)
 	}
 	go xmpp_listen_manager()
 	go xmpp_links_manager()
+	go xmpp_rooms_manager()
 }
 
 // xmpp_unavailable says why XMPP is unavailable on this server, for the
@@ -124,6 +129,10 @@ func xmpp_unavailable() string {
 	}
 	return ""
 }
+
+// xmpp_listen_retry is how long the listeners not opened wait to be tried
+// again. A variable so tests can try sooner.
+var xmpp_listen_retry = time.Minute
 
 // xmpp_listen_manager opens each listener, trying those it could not open
 // again each minute until all are open.
@@ -157,7 +166,7 @@ func xmpp_listen_manager() {
 		if len(closed) == 0 {
 			return
 		}
-		time.Sleep(time.Minute)
+		time.Sleep(xmpp_listen_retry)
 	}
 }
 
@@ -499,91 +508,8 @@ func xmpp_failure(s *xmpp_stanza, condition string, kind string, extra string) *
 
 // === Clients ===
 
-// An xmpp_resource is a client signed in to an account and bound to a
-// resource: what it last said of its presence, and what waits to be written
-// to it, by a goroutine of its own so that no one waits on a slow client.
-type xmpp_resource struct {
-	user       *User
-	account    string
-	address    jid.JID
-	full       jid.JID
-	conn       *xmpp_conn
-	out        chan string
-	done       chan struct{}
-	once       sync.Once
-	lock       sync.Mutex
-	available  bool
-	priority   int
-	presence   string
-	connection string
-}
-
-// The bound resources, by account address and resource.
-var (
-	xmpp_resources      = map[string]map[string]*xmpp_resource{}
-	xmpp_resources_lock sync.Mutex
-)
-
-// send queues text for the client, ending the stream of a client that has
-// let too much wait.
-func (r *xmpp_resource) send(text string) {
-	select {
-	case <-r.done:
-	case r.out <- text:
-	default:
-		info("XMPP client %s fell behind; closing its stream", r.full)
-		r.stop("policy-violation")
-	}
-}
-
-// stop ends the client's stream, once, with an error where one is given.
-func (r *xmpp_resource) stop(condition string) {
-	r.once.Do(func() {
-		close(r.done)
-		if condition != "" {
-			r.conn.fail(condition)
-		} else {
-			r.conn.close()
-		}
-	})
-}
-
-// writer writes what is queued for the client.
-func (r *xmpp_resource) writer() {
-	for {
-		select {
-		case <-r.done:
-			return
-		case text := <-r.out:
-			if err := r.conn.write(text); err != nil {
-				r.stop("")
-				return
-			}
-		}
-	}
-}
-
-// xmpp_resources_of lists an account's bound resources.
-func xmpp_resources_of(address string) []*xmpp_resource {
-	xmpp_resources_lock.Lock()
-	defer xmpp_resources_lock.Unlock()
-	var out []*xmpp_resource
-	for _, r := range xmpp_resources[address] {
-		out = append(out, r)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].full.String() < out[j].full.String() })
-	return out
-}
-
-// xmpp_resource_get is an account's bound resource by its name, or nil.
-func xmpp_resource_get(address string, resource string) *xmpp_resource {
-	xmpp_resources_lock.Lock()
-	defer xmpp_resources_lock.Unlock()
-	return xmpp_resources[address][resource]
-}
-
-// xmpp_client_serve negotiates a client's stream - TLS, then the sign-in,
-// then the resource - and routes its stanzas until it ends.
+// xmpp_client_serve takes a connection on a client port: in TLS from the
+// start on the direct port, else secured by STARTTLS.
 func xmpp_client_serve(conn net.Conn, direct bool) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(xmpp_negotiate_timeout))
@@ -594,7 +520,13 @@ func xmpp_client_serve(conn net.Conn, direct bool) {
 	}
 	x := xmpp_conn_new(conn, xmpp_stanza_client)
 	ip, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
-	secure := direct
+	xmpp_client_negotiate(x, ip, direct, x.secure)
+}
+
+// xmpp_client_negotiate negotiates a client's stream - TLS where it is not
+// secure already, then the sign-in, then the resource - and routes its
+// stanzas until it ends. starttls secures a connection that offers it.
+func xmpp_client_negotiate(x xmpp_stream, ip string, secure bool, starttls func(domain string) error) {
 	domain := ""
 	var user *User
 	var account map[string]any
@@ -607,31 +539,32 @@ func xmpp_client_serve(conn net.Conn, direct bool) {
 		if domain == "" {
 			domain = to
 		}
-		x.id = uid()
-		x.open(xmpp_ns_client, domain, "", x.id)
+		id := uid()
+		x.open(xmpp_ns_client, domain, "", id)
 		if attrs["xmlns"] != xmpp_ns_client {
 			x.fail("invalid-namespace")
 			return
 		}
-		if to != domain || !xmpp_local(domain) || domain == "" {
+		if to != domain || !xmpp_local(domain) || domain == "" || xmpp_room_base(domain) != "" {
 			x.fail("host-unknown")
 			return
 		}
 		switch {
 		case !secure:
-			x.write(`<stream:features><starttls xmlns="` + xmpp_ns_tls + `"><required/></starttls></stream:features>`)
+			x.write(xmpp_stream_features(`<starttls xmlns="` + xmpp_ns_tls + `"><required/></starttls>`))
 			s, err := x.next()
-			if err != nil || s.space != xmpp_ns_tls || s.name != "starttls" {
-				x.write(`<failure xmlns="` + xmpp_ns_tls + `"/></stream:stream>`)
+			if err != nil || s.space != xmpp_ns_tls || s.name != "starttls" || starttls == nil {
+				x.write(`<failure xmlns="` + xmpp_ns_tls + `"/>`)
+				x.close()
 				return
 			}
 			x.write(`<proceed xmlns="` + xmpp_ns_tls + `"/>`)
-			if err := x.secure(domain); err != nil {
+			if err := starttls(domain); err != nil {
 				return
 			}
 			secure = true
 		case user == nil:
-			x.write(`<stream:features><mechanisms xmlns="` + xmpp_ns_sasl + `"><mechanism>SCRAM-SHA-256</mechanism><mechanism>SCRAM-SHA-1</mechanism><mechanism>PLAIN</mechanism></mechanisms></stream:features>`)
+			x.write(xmpp_stream_features(`<mechanisms xmlns="` + xmpp_ns_sasl + `"><mechanism>SCRAM-SHA-256</mechanism><mechanism>SCRAM-SHA-1</mechanism><mechanism>PLAIN</mechanism></mechanisms>`))
 			user, account = xmpp_sasl(x, domain, ip)
 			if user == nil {
 				x.close()
@@ -639,23 +572,23 @@ func xmpp_client_serve(conn net.Conn, direct bool) {
 			}
 			x.restart()
 		default:
-			x.write(`<stream:features><bind xmlns="` + xmpp_ns_bind + `"/><session xmlns="` + xmpp_ns_session + `"><optional/></session></stream:features>`)
-			r := xmpp_bind(x, user, account, domain)
+			x.write(xmpp_stream_features(`<bind xmlns="` + xmpp_ns_bind + `"/><session xmlns="` + xmpp_ns_session + `"><optional/></session><sm xmlns="` + xmpp_ns_management + `"/><csi xmlns="` + xmpp_ns_state + `"/>`))
+			r := xmpp_bind(x, user, account)
 			if r == nil {
 				return
 			}
-			conn.SetDeadline(time.Time{})
-			xmpp_client_run(r)
+			x.deadline(time.Time{})
+			xmpp_client_run(r, x)
 			return
 		}
 	}
 }
 
-// xmpp_bind waits for the client to bind a resource, answering the requests
-// that may come before it, and registers the resource. A resource already
-// bound is taken over: the client holding it is told of the conflict and its
-// stream ended, as the newer connection is the one in use.
-func xmpp_bind(x *xmpp_conn, user *User, account map[string]any, domain string) *xmpp_resource {
+// xmpp_bind waits for the client to bind a resource, or to resume one that
+// waits for it, answering the requests that may come before. A resource
+// already bound is taken over: the client holding it is told of the conflict
+// and its stream ended, as the newer connection is the one in use.
+func xmpp_bind(x xmpp_stream, user *User, account map[string]any) *xmpp_resource {
 	address, err := jid.Parse(row_string(account, "identifier"))
 	if err != nil {
 		x.fail("internal-server-error")
@@ -666,6 +599,17 @@ func xmpp_bind(x *xmpp_conn, user *User, account map[string]any, domain string) 
 		s, err := x.next()
 		if err != nil {
 			return nil
+		}
+		if s.space == xmpp_ns_management {
+			switch s.name {
+			case "resume":
+				if r := xmpp_resume(x, user, address, s); r != nil {
+					return r
+				}
+			default:
+				x.write(`<failed xmlns="` + xmpp_ns_management + `"><unexpected-request xmlns="` + xmpp_ns_stanzas + `"/></failed>`)
+			}
+			continue
 		}
 		if s.name != "iq" || s.space != xmpp_ns_client {
 			x.fail("not-authorized")
@@ -692,7 +636,7 @@ func xmpp_bind(x *xmpp_conn, user *User, account map[string]any, domain string) 
 		if full.Resourcepart() == xmpp_mochi_resource {
 			full, _ = address.WithResource(xmpp_mochi_resource + "-" + random_alphanumeric(8))
 		}
-		r := &xmpp_resource{user: user, account: row_string(account, "id"), address: address, full: full, conn: x, out: make(chan string, 512), done: make(chan struct{}), connection: "xmpp-" + uid()}
+		r := xmpp_resource_new(user, row_string(account, "id"), address, full)
 		xmpp_resources_lock.Lock()
 		if xmpp_resources[address.String()] == nil {
 			xmpp_resources[address.String()] = map[string]*xmpp_resource{}
@@ -701,56 +645,10 @@ func xmpp_bind(x *xmpp_conn, user *User, account map[string]any, domain string) 
 		xmpp_resources[address.String()][full.Resourcepart()] = r
 		xmpp_resources_lock.Unlock()
 		if old != nil {
-			old.stop("conflict")
+			old.end("conflict")
 		}
 		x.write(xmpp_make("iq", `<bind xmlns="`+xmpp_ns_bind+`"><jid>`+xmpp_escape(full.String())+`</jid></bind>`, "type", "result", "id", s.get("id")).text(xmpp_ns_client))
 		return r
-	}
-}
-
-// xmpp_client_run routes a bound client's stanzas until its stream ends, then
-// takes its presence away.
-func xmpp_client_run(r *xmpp_resource) {
-	go r.writer()
-	defer xmpp_resource_end(r)
-	for {
-		r.conn.conn.SetReadDeadline(time.Now().Add(xmpp_idle_timeout))
-		s, err := r.conn.next()
-		if err != nil {
-			if err == xmpp_too_large {
-				r.stop("policy-violation")
-			} else {
-				r.stop("")
-			}
-			return
-		}
-		if s.space != xmpp_ns_client {
-			continue
-		}
-		switch s.name {
-		case "message", "presence", "iq":
-			xmpp_from_client(r, s)
-		}
-	}
-}
-
-// xmpp_resource_end forgets a client whose stream ended: its presence goes,
-// and the account's contacts are told it is unavailable.
-func xmpp_resource_end(r *xmpp_resource) {
-	xmpp_resources_lock.Lock()
-	if xmpp_resources[r.address.String()][r.full.Resourcepart()] == r {
-		delete(xmpp_resources[r.address.String()], r.full.Resourcepart())
-		if len(xmpp_resources[r.address.String()]) == 0 {
-			delete(xmpp_resources, r.address.String())
-		}
-	}
-	xmpp_resources_lock.Unlock()
-	r.lock.Lock()
-	available := r.available
-	r.available = false
-	r.lock.Unlock()
-	if available {
-		xmpp_presence_gone(r)
 	}
 }
 
@@ -760,7 +658,7 @@ func xmpp_resource_end(r *xmpp_resource) {
 // passwords minted for the account the name names on the stream's domain,
 // allowing three tries within the sign-in limit per address. It answers the
 // user and the account, or nil once the client has had its tries.
-func xmpp_sasl(x *xmpp_conn, domain string, ip string) (*User, map[string]any) {
+func xmpp_sasl(x xmpp_stream, domain string, ip string) (*User, map[string]any) {
 	for range 3 {
 		s, err := x.next()
 		if err != nil || s.space != xmpp_ns_sasl {
@@ -861,7 +759,7 @@ func xmpp_plain(data []byte, domain string) (*User, map[string]any) {
 // so a sign-in says nothing of whether the account exists. It answers the user,
 // the account and the server's final message, or aborted where the client
 // broke off.
-func xmpp_scram(x *xmpp_conn, mechanism string, first []byte, domain string) (*User, map[string]any, string, bool) {
+func xmpp_scram(x xmpp_stream, mechanism string, first []byte, domain string) (*User, map[string]any, string, bool) {
 	algorithm, hasher := "sha256", sha256.New
 	if mechanism == "SCRAM-SHA-1" {
 		algorithm, hasher = "sha1", sha1.New

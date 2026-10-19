@@ -160,16 +160,23 @@ func (f *xmpp_remote) ask(origin string, id string, key string) bool {
 // wrong, and answers the stream and what this server said of the key.
 func (f *xmpp_remote) link(t *testing.T, wrong bool) (*xmpp_conn, string) {
 	t.Helper()
-	x, err := f.secured("example.com")
+	return f.link_to(t, "example.com", wrong)
+}
+
+// link_to opens the remote's own link to one of this server's domains,
+// answering the key's check, or why the stream was refused.
+func (f *xmpp_remote) link_to(t *testing.T, to string, wrong bool) (*xmpp_conn, string) {
+	t.Helper()
+	x, err := f.secured(to)
 	if err != nil {
-		t.Fatal(err)
+		return nil, "the stream refused: " + err.Error()
 	}
 	t.Cleanup(func() { x.conn.Close() })
-	key := f.key("example.com", x.id)
+	key := f.key(to, x.id)
 	if wrong {
-		key = f.key("example.com", "another")
+		key = f.key(to, "another")
 	}
-	x.write(`<db:result from="` + f.domain + `" to="example.com">` + key + `</db:result>`)
+	x.write(`<db:result from="` + f.domain + `" to="` + to + `">` + key + `</db:result>`)
 	s, err := x.next()
 	if err != nil {
 		t.Fatalf("no answer to the key: %v", err)

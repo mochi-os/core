@@ -134,8 +134,10 @@ func network_state(name string) (string, string) {
 // page: "working", "unavailable" with a reason, or "disabled" (the setting or
 // the development switch off); for Bluesky how many certificates the server
 // has had issued this week against the authority's allowance and how much of
-// the relay's hourly and daily budget of events it has used; and whether the
-// development switch is on.
+// the relay's hourly and daily budget of events it has used; for Matrix each
+// domain's signing key; for XMPP each domain's room service, as {host, state,
+// reason}, unavailable ("dns") where its name does not lead to this server;
+// and whether the development switch is on.
 func api_server_networks(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if err := require_permission(t, fn, "server/read"); err != nil {
 		return sl_error(fn, "%v", err)
@@ -170,6 +172,11 @@ func api_server_networks(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 				}
 			}
 			state["keys"] = keys
+		}
+		// Each XMPP domain's room service, unavailable where its name does not
+		// lead to this server.
+		if n == "xmpp" && network_enabled(n) {
+			state["rooms"] = xmpp_rooms_state(thread_context(t))
 		}
 		networks[n] = state
 	}

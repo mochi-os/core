@@ -12,6 +12,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"regexp"
 	"strings"
@@ -111,6 +112,23 @@ func TestAnonymousCallerStillReachesTheOwnersData(t *testing.T) {
 	}
 	if storage.UID != owner.UID {
 		t.Errorf("reads resolved to %q, want the owner %q - the public page would render empty", storage.UID, owner.UID)
+	}
+}
+
+// TestAnonymousCallerWithNoOwnerIsRefusedAsAbsentStorage. With neither a user
+// nor an owner bound - an anonymous request to a public class-level action that
+// arrived by no domain route - the storage question has no answer, and the
+// refusal must be the typed storage_absent so web_action_error can answer 401
+// instead of logging a fault and answering 500.
+func TestAnonymousCallerWithNoOwnerIsRefusedAsAbsentStorage(t *testing.T) {
+	thread := &sl.Thread{Name: "test"}
+
+	storage, err := principal_storage(thread)
+	if storage != nil {
+		t.Fatalf("storage resolved to %q, want nobody - there is no account to operate on", storage.UID)
+	}
+	if !errors.Is(err, storage_absent) {
+		t.Errorf("principal_storage returned %v, want storage_absent - an untyped error maps to a 500", err)
 	}
 }
 

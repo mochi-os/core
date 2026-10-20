@@ -19,10 +19,18 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 
 	sl "go.starlark.net/starlark"
 )
+
+// storage_absent is the storage principal's answer to a call with no account
+// to operate on: an anonymous request that addressed no entity and arrived by
+// no domain route naming an owner. It is a refusal of the caller, not a fault
+// of the server, so web_action_error answers it with 401 rather than 500 and
+// does not warn. The text is internal and never reaches the client.
+var storage_absent = errors.New("no storage account for an anonymous request")
 
 // principal_caller returns the authenticated requester, or nil when nobody
 // authenticated. Callers that treat nil as a refusal should say so explicitly;
@@ -70,7 +78,7 @@ func principal_storage(t *sl.Thread) (*User, error) {
 
 	if user == nil {
 		if owner == nil {
-			return nil, fmt.Errorf("no user context available")
+			return nil, storage_absent
 		}
 		return owner, nil
 	}

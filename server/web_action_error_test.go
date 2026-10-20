@@ -134,6 +134,37 @@ func TestActionErrorPermissionUnchanged(t *testing.T) {
 	}
 }
 
+// TestActionErrorAbsentStorageIsA401. An anonymous request that resolved no
+// storage account and then touched storage is a caller who needs to sign in,
+// not a server fault: 401 with the usual code, and none of the internal text.
+func TestActionErrorAbsentStorageIsA401(t *testing.T) {
+	recorder := action_error_response(storage_absent)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d - an anonymous caller with no storage account needs to sign in, not retry", recorder.Code, http.StatusUnauthorized)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "authentication_required") {
+		t.Errorf("body is missing the authentication_required code; body was %s", body)
+	}
+	if strings.Contains(body, "storage account") {
+		t.Errorf("the internal error text reached the caller; body was %s", body)
+	}
+}
+
+// The sentinel is raised inside a builtin (mochi.db, mochi.file, ...) and must
+// survive sl_error's "%w: %v" wrapping and the Starlark unwind, as the typed
+// errors above do, or every anonymous probe of a public route is a 500 and a
+// mail to the operator.
+func TestActionErrorAbsentStorageSurvivesWrapping(t *testing.T) {
+	wrapped := fmt.Errorf("%w: %v", storage_absent, "mochi.db.query() no storage account for an anonymous request")
+	wrapped = fmt.Errorf("action failed: %w", wrapped)
+
+	if code := action_error_response(wrapped).Code; code != http.StatusUnauthorized {
+		t.Errorf("wrapped error mapped to %d, want %d", code, http.StatusUnauthorized)
+	}
+}
+
 func TestActionErrorGenericStaysA500(t *testing.T) {
 	recorder := action_error_response(errors.New("division by zero"))
 
@@ -186,5 +217,23 @@ func TestActionErrorRateLimitDoesNotMailTheOperator(t *testing.T) {
 	// broke is exactly what the operator should hear about.
 	if !strings.Contains(function[branch_start+branch_end:], "warn(") {
 		t.Error("the generic failure branch no longer warns, so a real fault would stop reaching the operator")
+	}
+
+	// The absent-storage branch logs nothing: an anonymous probe of a public
+	// route is routine, and at warn it would mail the operator per probe.
+	storage_start := strings.Index(function, "errors.Is(err, storage_absent)")
+	if storage_start < 0 {
+		t.Fatal("could not isolate the absent-storage branch of web_action_error")
+	}
+	storage_end := strings.Index(function[storage_start:], "\n\t}\n")
+	if storage_end < 0 {
+		t.Fatal("could not find the end of the absent-storage branch")
+	}
+	storage_branch := function[storage_start : storage_start+storage_end]
+	if strings.Contains(storage_branch, "warn(") || strings.Contains(storage_branch, "info(") {
+		t.Error("the absent-storage branch logs a refusal that needs no operator")
+	}
+	if !strings.Contains(function[storage_start+storage_end:], "warn(") {
+		t.Error("the absent-storage branch sits after the generic warn, so it never answers")
 	}
 }

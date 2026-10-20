@@ -231,6 +231,15 @@ func web_action_error(c *gin.Context, app string, err error) {
 		return
 	}
 
+	// An anonymous caller whose request resolved no storage account: it reached a
+	// public action with no entity and no domain route naming an owner, and the
+	// action then touched storage. Signing in is the answer, so 401, and no log
+	// line - a public route being probed anonymously is not a fault.
+	if errors.Is(err, storage_absent) {
+		respond_error(c, http.StatusUnauthorized, "authentication_required", "errors.authentication_required", nil)
+		return
+	}
+
 	// The detail goes to the log, not to the caller: err carries the internal
 	// Starlark function name and, when the failure came from the database, the
 	// driver's own message.

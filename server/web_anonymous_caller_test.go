@@ -13,11 +13,15 @@ package main
 
 import (
 	"errors"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
 )
 
@@ -301,5 +305,140 @@ func TestScheduleBindsToStorage(t *testing.T) {
 	}
 	if user, _ := row["user"].(string); user != owner.UID {
 		t.Errorf("scheduled event bound to %q, want the owner %q - the runner has no account to run it as", user, owner.UID)
+	}
+}
+
+// anonymous_dispatch_app builds a Starlark app with a database and two public
+// class-level actions, one that touches storage and one that only answers:
+// what every public `-/...` action looks like to web_action once nobody is
+// signed in. The fixture carries an administrator, so that account being
+// chosen for the request - the fallback this file's history is about - is
+// detectable, and a second account for a domain route to name.
+func anonymous_dispatch_app(t *testing.T) *App {
+	t.Helper()
+	route_owner_env(t)
+	route_owner_user(t, "aadmin", "administrator", "active")
+	route_owner_identity(t, "aadmin")
+	route_owner_user(t, "site", "user", "active")
+	route_owner_identity(t, "site")
+
+	// Starlark.call needs the runtime state the server sets up at startup: a
+	// concurrency semaphore (a nil channel blocks for ever) and a compute
+	// timeout (zero cancels at once).
+	if starlark_semaphore == nil {
+		starlark_semaphore = make(chan struct{}, 32)
+	}
+	original := starlark_default_timeout
+	starlark_default_timeout = 30 * time.Second
+	t.Cleanup(func() { starlark_default_timeout = original })
+
+	star := filepath.Join(t.TempDir(), "app.star")
+	source := `
+def database_create():
+    mochi.db.execute("create table marks (id integer primary key autoincrement)")
+
+def action_touch(a):
+    mochi.db.execute("insert into marks default values")
+    return mochi.db.row("select count(*) as total from marks")
+
+def action_pure(a):
+    return {"pure": True}
+`
+	if err := os.WriteFile(star, []byte(source), 0o600); err != nil {
+		t.Fatalf("writing the test app: %v", err)
+	}
+	av := &AppVersion{Version: "1.0", Execute: []string{star}, Actions: map[string]AppAction{
+		"-/touch": {Function: "action_touch", Public: true},
+		"-/pure":  {Function: "action_pure", Public: true},
+	}}
+	av.Architecture.Engine = "starlark"
+	av.Database.File = "anonymous.db"
+	av.Database.Schema = 1
+	av.Database.Create.Function = "database_create"
+	app := &App{id: "anonymoustest", internal: av}
+	av.app = app
+	if _, found := av.starlark().globals["action_touch"]; !found {
+		t.Fatal("the test app did not load; action_touch is not defined")
+	}
+	t.Cleanup(func() { db_purge_prefix("users") })
+	return app
+}
+
+// anonymous_dispatch runs one request with no credential through web_action.
+// routed is the owner domains_middleware would have published for a domain
+// route; empty for a request that arrived by the app's own path.
+func anonymous_dispatch(t *testing.T, app *App, action string, routed string) (int, string) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/"+app.id+"/"+action, nil)
+	c.Request.Header.Set("Accept", "application/json")
+	routing := routing_class
+	if routed != "" {
+		c.Set("domain_route", "anonymous.example")
+		c.Set("domain_owner", routed)
+		routing = routing_hosted
+	}
+	if !web_action(c, app, action, nil, routing) {
+		t.Fatalf("web_action did not handle %s", action)
+	}
+	return w.Code, w.Body.String()
+}
+
+// anonymous_database reports whether the app's database exists under uid: the
+// trace a request leaves in whichever account it ran against.
+func anonymous_database(uid string, app *App) bool {
+	path, _ := db_app_locate(&User{UID: uid}, app, app.internal)
+	_, err := os.Stat(filepath.Join(data_dir, path))
+	return err == nil
+}
+
+// TestAnonymousRoutelessStorageActionIsA401 is the contract the unit tests
+// above add up to, measured through the dispatcher: an anonymous request to a
+// public class-level action that arrived by no route reaches the handler, and
+// the handler's first storage call comes back to the caller as 401 - not as
+// the administrator's data, and not as a 500.
+func TestAnonymousRoutelessStorageActionIsA401(t *testing.T) {
+	app := anonymous_dispatch_app(t)
+
+	status, body := anonymous_dispatch(t, app, "-/touch", "")
+	if status != 401 || !strings.Contains(body, "authentication_required") {
+		t.Errorf("anonymous -/touch answered %d %s, want 401 authentication_required", status, body)
+	}
+	if anonymous_database("aadmin", app) {
+		t.Error("the administrator's database was opened for an anonymous routeless request")
+	}
+}
+
+// TestAnonymousRoutelessPureActionStillRuns. The refusal is the storage call's,
+// not the dispatcher's: a public action that needs no account must keep
+// answering anonymous callers, or every public page goes dark with the
+// fallback.
+func TestAnonymousRoutelessPureActionStillRuns(t *testing.T) {
+	app := anonymous_dispatch_app(t)
+
+	status, body := anonymous_dispatch(t, app, "-/pure", "")
+	if status != 200 || !strings.Contains(body, `"pure":true`) {
+		t.Errorf("anonymous -/pure answered %d %s, want 200 with the handler's answer", status, body)
+	}
+}
+
+// TestAnonymousRoutedActionRunsAsTheRouteOwner. A domain route naming an owner
+// is how an action that serves anonymous callers from one account's data is
+// bound to it: the same request, routed, runs against that account and no
+// other.
+func TestAnonymousRoutedActionRunsAsTheRouteOwner(t *testing.T) {
+	app := anonymous_dispatch_app(t)
+
+	status, body := anonymous_dispatch(t, app, "-/touch", "site")
+	if status != 200 || !strings.Contains(body, `"total":1`) {
+		t.Errorf("routed anonymous -/touch answered %d %s, want 200 with one mark", status, body)
+	}
+	if !anonymous_database("site", app) {
+		t.Error("the route owner's database was not the one written")
+	}
+	if anonymous_database("aadmin", app) {
+		t.Error("the administrator's database was opened for a routed request")
 	}
 }

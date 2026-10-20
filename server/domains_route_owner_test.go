@@ -1,9 +1,9 @@
 // Mochi server: routes.owner decides whose data a hostname publishes.
 //
 // Two ways that went wrong: an owner who is no longer there (the route keeps
-// serving, and a public action lands on the first administrator), and an owner
-// the caller is not (a path delegate retargets someone else's route and the row
-// keeps its original owner).
+// serving, and a public action used to land on the first administrator), and an
+// owner the caller is not (a path delegate retargets someone else's route and
+// the row keeps its original owner).
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
@@ -194,8 +194,8 @@ func TestPurgeRemovesTheUsersRoutesAndDelegations(t *testing.T) {
 
 // TestAnonymousOwnerRefusesAnUnresolvableRoute is the second line behind the
 // middleware gate: given a route that named an owner, the answer is that owner
-// or nobody. Sliding onto the administrator would publish their storage under a
-// hostname they do not control.
+// or nobody. Sliding onto any other account would publish its storage under a
+// hostname it does not control.
 func TestAnonymousOwnerRefusesAnUnresolvableRoute(t *testing.T) {
 	route_owner_env(t)
 	route_owner_user(t, "aadmin", "administrator", "active")
@@ -203,28 +203,26 @@ func TestAnonymousOwnerRefusesAnUnresolvableRoute(t *testing.T) {
 	route_owner_identity(t, "aadmin")
 	route_owner_identity(t, "site")
 
-	// A public class-level action that arrived by no route still resolves the
-	// administrator - that is the fallback's real job and must survive.
-	if got := web_anonymous_owner("", true); got == nil || got.UID != "aadmin" {
-		t.Errorf("a routeless public action resolved %v, want the administrator", got)
-	}
-	// A non-public action gets nobody, routed or not.
-	if got := web_anonymous_owner("", false); got != nil {
-		t.Errorf("a non-public action resolved %v, want nobody", got)
+	// A request that arrived by no route resolves nobody, however many
+	// administrators exist: the account an anonymous request serves is named
+	// by a route or not at all. The administrator fixture above is the point -
+	// it used to be the answer here.
+	if got := web_anonymous_owner(""); got != nil {
+		t.Errorf("a routeless request resolved %v, want nobody", got)
 	}
 	// A route naming a live account resolves that account.
-	if got := web_anonymous_owner("site", true); got == nil || got.UID != "site" {
+	if got := web_anonymous_owner("site"); got == nil || got.UID != "site" {
 		t.Errorf("a live route owner resolved %v, want the route owner", got)
 	}
 
 	db_open("db/users.db").exec("update users set status='suspended' where uid=?", "site")
-	if got := web_anonymous_owner("site", true); got != nil {
+	if got := web_anonymous_owner("site"); got != nil {
 		t.Errorf("a suspended route owner resolved %v, want nobody - answering as the "+
 			"administrator publishes their storage under someone else's domain", got)
 	}
 
 	db_open("db/users.db").exec("delete from users where uid=?", "site")
-	if got := web_anonymous_owner("site", true); got != nil {
+	if got := web_anonymous_owner("site"); got != nil {
 		t.Errorf("a purged route owner resolved %v, want nobody", got)
 	}
 }

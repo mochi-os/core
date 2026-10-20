@@ -455,7 +455,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			owner = o
 		}
 	} else if owner == nil {
-		owner = web_anonymous_owner(c.GetString("domain_owner"), aa.Public)
+		owner = web_anonymous_owner(c.GetString("domain_owner"))
 	}
 
 	// Handle git Smart HTTP protocol for domain-routed repository entities.
@@ -1181,39 +1181,22 @@ func web_serve_path(c *gin.Context, path string) {
 //
 // A route that named an owner is answered by that owner or not at all. An
 // account that no longer resolves - user_by_uid returns nil for suspended and
-// for purged alike - must not slide onto the administrator, or the hostname
-// starts publishing the administrator's storage under someone else's domain.
+// for purged alike - must not slide onto another account, or the hostname
+// starts publishing that account's storage under someone else's domain.
 // domains_middleware declines to route such a request at all, so this is the
 // second line.
 //
-// The administrator fallback itself is deliberate and load-bearing, not a
-// default nobody chose. A routeless public class-level action has no principal
-// to resolve, and at least one has to have one: POST /comptroller/-/webhook is
-// how Stripe reaches the marketplace, carries no session by construction, and
-// reads its signing secret and writes its orders through mochi.db - which
-// resolves the storage account from here. uid() is UUIDv7, so "lowest uid" is
-// the earliest-created account, and users.go makes that account the first
-// administrator; the marketplace data therefore sits in the account this
-// picks. Nothing declares that binding, which is the weakness - but removing
-// the fallback without first giving such actions an explicit owner takes
-// Stripe webhooks down.
-func web_anonymous_owner(routed string, public bool) *User {
-	if routed != "" {
-		return user_by_uid(routed)
-	}
-	if !public {
+// With no route there is nobody. A public class-level action reached
+// anonymously runs with no storage account, and its first storage call is
+// refused as storage_absent, which web_action_error answers with 401. An
+// action that must serve anonymous callers from one account's data - the
+// comptroller's Stripe webhook - is bound to that account by a domain route
+// naming it as owner, never by a default the server chooses.
+func web_anonymous_owner(routed string) *User {
+	if routed == "" {
 		return nil
 	}
-	db := db_open("db/users.db")
-	row, _ := db.row("select uid from users where role='administrator' order by uid limit 1")
-	if row == nil {
-		return nil
-	}
-	uid, _ := row["uid"].(string)
-	if uid == "" {
-		return nil
-	}
-	return user_by_uid(uid)
+	return user_by_uid(routed)
 }
 
 // web_serves_file reports whether an action declaring a file will answer this

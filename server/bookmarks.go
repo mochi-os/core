@@ -80,7 +80,9 @@ func xmpp_pep_publish(a *xmpp_account, node string, item string, payload string,
 	}
 	db.exec("insert into items (account, node, item, payload, updated) values (?, ?, ?, ?, ?) on conflict(account, node, item) do update set payload=excluded.payload, updated=excluded.updated", a.id, node, item, payload, now())
 	db.exec("delete from items where account=? and node=? and rowid not in (select rowid from items where account=? and node=? order by updated desc, rowid desc limit ?)", a.id, node, a.id, node, config.maximum)
-	xmpp_pep_notify(a, `<items node="`+xmpp_escape(node)+`"><item id="`+xmpp_escape(item)+`">`+payload+`</item></items>`)
+	inner := `<items node="` + xmpp_escape(node) + `"><item id="` + xmpp_escape(item) + `">` + payload + `</item></items>`
+	xmpp_pep_notify(a, inner)
+	xmpp_pep_tell(a, config, inner)
 	if node == xmpp_ns_bookmarks {
 		xmpp_bookmark_published(a, item, payload)
 	}
@@ -95,7 +97,9 @@ func xmpp_pep_retract(a *xmpp_account, node string, item string) bool {
 		return false
 	}
 	db.exec("delete from items where account=? and node=? and item=?", a.id, node, item)
-	xmpp_pep_notify(a, `<items node="`+xmpp_escape(node)+`"><retract id="`+xmpp_escape(item)+`"/></items>`)
+	inner := `<items node="` + xmpp_escape(node) + `"><retract id="` + xmpp_escape(item) + `"/></items>`
+	xmpp_pep_notify(a, inner)
+	xmpp_pep_tell(a, xmpp_node_of(a, node), inner)
 	if node == xmpp_ns_bookmarks {
 		xmpp_bookmark_withdrawn(a, item)
 	}
@@ -111,6 +115,27 @@ func xmpp_pep_notify(a *xmpp_account, inner string) {
 		if available {
 			r.send(xmpp_make("message", `<event xmlns="`+xmpp_ns_pubsub_event+`">`+inner+`</event>`, "from", a.address.String(), "to", r.full.String(), "type", "headline", "id", uid()).text(xmpp_ns_client))
 		}
+	}
+}
+
+// xmpp_pep_tell tells the account's contacts of a change to a node they may
+// read - an OMEMO device list or bundle above all, which their clients
+// follow - as the account's own clients are told: each contact who sees the
+// account's presence, at their address, which their server gives each of
+// their clients.
+func xmpp_pep_tell(a *xmpp_account, config *xmpp_node_config, inner string) {
+	if config == nil || (config.access != "open" && config.access != "presence" && config.access != "roster") {
+		return
+	}
+	for _, item := range xmpp_roster(a) {
+		if item.subscription != "from" && item.subscription != "both" {
+			continue
+		}
+		to, err := jid.Parse(item.address)
+		if err != nil || xmpp_blocked(a.user, to) {
+			continue
+		}
+		xmpp_route(xmpp_make("message", `<event xmlns="`+xmpp_ns_pubsub_event+`">`+inner+`</event>`, "type", "headline", "id", uid()), a.address, to)
 	}
 }
 

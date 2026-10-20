@@ -44,9 +44,11 @@ func (f *xmpp_fake) push(t *testing.T, text string) {
 	f.lock.Lock()
 	session := f.sessions[len(f.sessions)-1]
 	f.lock.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := session.Send(ctx, xml.NewDecoder(strings.NewReader(text))); err != nil {
+	// A context never cancelled: mellium watches the one a send is given,
+	// and seeing it cancelled just after the send returns, puts the
+	// connection's write deadline in the past for a moment, failing a write
+	// under way.
+	if err := session.Send(context.Background(), xml.NewDecoder(strings.NewReader(text))); err != nil {
 		t.Fatalf("push: %v", err)
 	}
 }

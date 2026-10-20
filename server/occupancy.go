@@ -21,6 +21,7 @@
 package main
 
 import (
+	"encoding/xml"
 	"fmt"
 	"strings"
 	"sync"
@@ -105,7 +106,7 @@ func xmpp_condition(s *xmpp_stanza) string {
 	var e struct {
 		Error *struct {
 			Conditions []struct {
-				XMLName struct{ Space, Local string }
+				XMLName xml.Name
 			} `xml:",any"`
 		} `xml:"error"`
 	}
@@ -390,6 +391,9 @@ func xmpp_room_in(a *xmpp_account, s *xmpp_stanza, from jid.JID) {
 		}
 		// Privately, from someone in the room, as they are known there.
 		conversation := "xmpp:" + from.String()
+		if sender, known := omemo_sender(a.id, room, from.Resourcepart()); known {
+			omemo_read(a.user, a.id, &m, sender, "")
+		}
 		events := xmpp_events(&m, m.Delay, from, conversation, conversation, from.Resourcepart(), "", false)
 		xmpp_payload_add(events, s)
 		xmpp_tell(a, events)
@@ -425,6 +429,13 @@ func xmpp_room_in(a *xmpp_account, s *xmpp_stanza, from jid.JID) {
 		}
 		events = []map[string]any{{"kind": "sent", "conversation": conversation, "id": id, "archive": archive}}
 	} else {
+		// A room's encrypted message is read from the person the room shows
+		// its sender to be.
+		if sender, known := omemo_sender(a.id, room, from.Resourcepart()); known {
+			omemo_read(a.user, a.id, &m, sender, room)
+		} else if own {
+			omemo_read(a.user, a.id, &m, a.address, room)
+		}
 		events = xmpp_events(&m, m.Delay, from, conversation, "xmpp:"+from.String(), from.Resourcepart(), archive, own)
 		xmpp_payload_add(events, s)
 	}
@@ -495,6 +506,14 @@ func xmpp_room_heard(a *xmpp_account, s *xmpp_stanza, from jid.JID) bool {
 		event := map[string]any{"kind": "member", "conversation": conversation, "id": "xmpp:" + from.String(), "name": from.Resourcepart(), "left": p.Type == "unavailable"}
 		if item := p.item(); item != nil {
 			event["role"], event["affiliation"] = item.Role, item.Affiliation
+			// A room that shows who its people are gives each one's own
+			// address, which their devices are encrypted to (phase 27).
+			if address, err := jid.Parse(item.JID); err == nil && item.JID != "" {
+				event["address"] = address.Bare().String()
+			}
+			omemo_occupant(a.id, room, from.Resourcepart(), item.JID, p.Type == "unavailable")
+		} else {
+			omemo_occupant(a.id, room, from.Resourcepart(), "", p.Type == "unavailable")
 		}
 		if joining != nil && joining.add(event) {
 			return true

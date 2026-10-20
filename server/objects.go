@@ -23,8 +23,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -345,7 +347,7 @@ func api_account_object_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		if text == "" {
 			return xmpp_failed(x, fn, fmt.Errorf("a correction needs the new text"))
 		}
-		if _, err := xmpp_hosted_send(x, conversation, uid(), text, "", "", remote); err != nil {
+		if _, _, err := xmpp_hosted_send(x, conversation, uid(), text, "", "", remote); err != nil {
 			return xmpp_failed(x, fn, err)
 		}
 		return sl_encode(map[string]any{"id": remote, "url": "", "data": map[string]any{}}), nil
@@ -914,6 +916,13 @@ func api_account_media(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 	if h := matrix_hosted_of(user, row); h != nil {
 		status, kind, data, err := content_fetch(thread_context(t), h, address)
+		if err == nil && encryption_file(user, account, address) != nil {
+			// A file sent encrypted is decrypted with the key its message
+			// carried (encryption.go); its type is the one the message
+			// gives.
+			data, err = encryption_opened(user, account, address, data)
+			kind = ""
+		}
 		if err != nil {
 			debug("Media %s not fetched: %v", address, err)
 			return sl.None, nil
@@ -926,6 +935,12 @@ func api_account_media(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 	if l := linked_from(user, row); l != nil {
 		status, kind, data, err := linked_media(thread_context(t), l, address)
+		if err == nil && (encryption_file(user, account, address) != nil || encryption_shared(user, account, address) != "") {
+			data, err = encryption_opened(user, account, address, data)
+			// Its type is the one its name gives; a Matrix address has none,
+			// leaving the message's own.
+			kind = mime.TypeByExtension(path.Ext(xmpp_file_name(address)))
+		}
 		if err != nil {
 			debug("Media %s not fetched: %v", address, err)
 			return sl.None, nil
@@ -969,9 +984,19 @@ func api_account_media(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		debug("Media %s not read: over %d bytes", address, media_maximum)
 		return sl.None, nil
 	}
+	kind := response.Header.Get("Content-Type")
+	// A file shared encrypted is decrypted with the key its message carried
+	// (omemo.go), its type the one its name gives.
+	if network == "xmpp" && encryption_shared(user, account, address) != "" {
+		if data, err = encryption_opened(user, account, address, data); err != nil {
+			debug("Media %s not decrypted: %v", address, err)
+			return sl.None, nil
+		}
+		kind = mime.TypeByExtension(path.Ext(xmpp_file_name(address)))
+	}
 	result := sl.NewDict(3)
 	result.SetKey(sl.String("status"), sl.MakeInt(response.StatusCode))
-	result.SetKey(sl.String("type"), sl.String(response.Header.Get("Content-Type")))
+	result.SetKey(sl.String("type"), sl.String(kind))
 	result.SetKey(sl.String("data"), sl.Bytes(data))
 	return result, nil
 }

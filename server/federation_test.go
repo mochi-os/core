@@ -63,6 +63,12 @@ type matrix_remote struct {
 	asked    []string
 	fail     bool
 	missing  bool
+	// What the remote answers a key query and a key claim with, as its
+	// users' keys (keyring_test.go).
+	keys   map[string]any
+	claims map[string]any
+	// The key queries and claims it was sent.
+	queries []json.RawMessage
 }
 
 func create_matrix_remote(t *testing.T, version gomatrixserverlib.RoomVersion) *matrix_remote {
@@ -455,6 +461,16 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 		writer.Close()
 		w.Header().Set("Content-Type", "multipart/mixed; boundary="+writer.Boundary())
 		w.Write(body.Bytes())
+	case route == "POST v1/user" && len(parts) == 4 && parts[2] == "keys":
+		r.queries = append(r.queries, json.RawMessage(request.Content()))
+		answer := r.keys
+		if parts[3] == "claim" {
+			answer = r.claims
+		}
+		if answer == nil {
+			answer = map[string]any{}
+		}
+		r.answer(w, 200, answer)
 	case route == "GET v1/query" && parts[2] == "directory":
 		room := r.aliases[req.URL.Query().Get("room_alias")]
 		if room == "" {

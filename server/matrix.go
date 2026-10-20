@@ -325,6 +325,14 @@ type matrix_state struct {
 	direct   map[string]bool
 	names    map[string]string
 	download func(mxc string) string
+	// decrypt reads an encrypted event as the event it carries, nil where
+	// the account's device cannot yet, and remember keeps the key of an
+	// encrypted file by the address it is fetched at (encryption.go).
+	decrypt  func(ctx context.Context, room string, e *matrix_event) *matrix_event
+	remember func(address string, file map[string]any)
+	// verify hands the account's device a step of a verification in a room,
+	// which is its to answer and never a message.
+	verify func(ctx context.Context, room string, e *matrix_event)
 }
 
 // matrix_presence is how a Matrix account shows a status of Mochi's.
@@ -347,6 +355,14 @@ func matrix_run(ctx context.Context, l *linked, s *linked_session) error {
 	ctx = linked_session_context(ctx)
 	since := l.get("since")
 	state := &matrix_state{user: l.get("id"), typing: map[string][]string{}, direct: map[string]bool{}, names: map[string]string{}, download: func(mxc string) string { return matrix_download(l, mxc) }}
+	// The account's encryption device (encryption.go), which reads the
+	// encrypted events and takes what each sync brings it.
+	device, failure := encryption_matrix_of(l.user, l.id)
+	if failure != nil {
+		info("Linked Matrix account %s: no encryption device: %v", l.id, failure)
+	} else {
+		state.decrypt, state.remember, state.verify = device.decrypt, device.remember, device.dispatch
+	}
 	linked_inbound(l.user, l.id, "matrix", []map[string]any{{"kind": "session"}})
 	shown := matrix_announce(ctx, l, "")
 	done := make(chan struct{})
@@ -407,6 +423,9 @@ func matrix_run(ctx context.Context, l *linked, s *linked_session) error {
 		}
 		s.connected.Store(true)
 		s.reason.Store("")
+		if device != nil {
+			device.sync(ctx, body, since)
+		}
 		if events := state.read(&sync); len(events) > 0 {
 			linked_inbound(l.user, l.id, "matrix", events)
 		}
@@ -532,6 +551,19 @@ func (state *matrix_state) timeline(room string, e *matrix_event) map[string]any
 	if own && e.Unsigned.Transaction != "" {
 		return nil
 	}
+	// An encrypted event is what it carries, still marked encrypted.
+	sealed := e.Type == "m.room.encrypted"
+	if sealed && state.decrypt != nil {
+		if decrypted := state.decrypt(context.Background(), room, e); decrypted != nil {
+			e = decrypted
+		}
+	}
+	if strings.HasPrefix(e.Type, "m.key.verification.") || (e.Type == "m.room.message" && e.Content["msgtype"] == "m.key.verification.request") {
+		if state.verify != nil {
+			state.verify(context.Background(), room, e)
+		}
+		return nil
+	}
 	switch e.Type {
 	case "m.room.redaction":
 		redacts := e.Redacts
@@ -552,6 +584,12 @@ func (state *matrix_state) timeline(room string, e *matrix_event) map[string]any
 		}
 		return map[string]any{"kind": "reaction", "conversation": room, "from": e.Sender, "id": target, "reaction": key, "event": e.ID, "own": own}
 	case "m.room.encrypted":
+		// Its key not come: an edit or a reaction comes once it can be read,
+		// a message is shown waiting and filled in then.
+		relates, _ := e.Content["m.relates_to"].(map[string]any)
+		if relation, _ := relates["rel_type"].(string); relation == "m.replace" || relation == "m.annotation" {
+			return nil
+		}
 		return map[string]any{"kind": "message", "conversation": room, "room": !state.direct[room], "from": e.Sender, "name": state.names[room+" "+e.Sender], "id": e.ID, "body": "", "created": e.Time / 1000, "own": own, "encrypted": true}
 	case "m.room.message", "m.sticker":
 	default:
@@ -572,7 +610,7 @@ func (state *matrix_state) timeline(room string, e *matrix_event) map[string]any
 		return map[string]any{"kind": "edit", "conversation": room, "from": e.Sender, "id": replaced, "body": body, "own": own}
 	}
 	body, _ := e.Content["body"].(string)
-	message := map[string]any{"kind": "message", "conversation": room, "room": !state.direct[room], "from": e.Sender, "name": state.names[room+" "+e.Sender], "id": e.ID, "created": e.Time / 1000, "own": own, "encrypted": false}
+	message := map[string]any{"kind": "message", "conversation": room, "room": !state.direct[room], "from": e.Sender, "name": state.names[room+" "+e.Sender], "id": e.ID, "created": e.Time / 1000, "own": own, "encrypted": sealed}
 	if relation == "m.thread" {
 		message["thread"], _ = relates["event_id"].(string)
 	} else if reply, _ := relates["m.in_reply_to"].(map[string]any); reply != nil {
@@ -586,9 +624,17 @@ func (state *matrix_state) timeline(room string, e *matrix_event) map[string]any
 	switch kind {
 	case "m.image", "m.file", "m.video", "m.audio":
 		mxc, _ := e.Content["url"].(string)
+		// An encrypted room's file is encrypted, its key in the message.
+		sealed, _ := e.Content["file"].(map[string]any)
+		if mxc == "" && sealed != nil {
+			mxc, _ = sealed["url"].(string)
+		}
 		address := state.download(mxc)
 		if address == "" {
 			return nil
+		}
+		if sealed != nil && state.remember != nil {
+			state.remember(address, sealed)
 		}
 		name, _ := e.Content["filename"].(string)
 		if name == "" {
@@ -710,6 +756,13 @@ func matrix_txn(key string) string {
 
 // matrix_send sends an event of a kind to a room, answering its id.
 func matrix_send(ctx context.Context, l *linked, room string, kind string, content map[string]any, key string) (string, error) {
+	// An encrypted room's events go encrypted by the account's device.
+	if kind != "m.room.encrypted" {
+		var err error
+		if kind, content, err = encryption_seal(ctx, l.user, l.id, room, kind, content); err != nil {
+			return "", err
+		}
+	}
 	var answer struct {
 		ID string `json:"event_id"`
 	}

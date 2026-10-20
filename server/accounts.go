@@ -318,6 +318,7 @@ var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"follow":        sl.NewBuiltin("mochi.account.follow", api_account_follow),
 	"followers":     sl.NewBuiltin("mochi.account.followers", api_account_followers),
 	"directory":     sl.NewBuiltin("mochi.account.directory", api_account_directory),
+	"encryption":    api_account_encryption,
 	"following":     sl.NewBuiltin("mochi.account.following", api_account_following),
 	"get":           sl.NewBuiltin("mochi.account.get", api_account_get),
 	"grant":         sl.NewBuiltin("mochi.account.grant", api_account_grant),
@@ -1142,6 +1143,11 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		domain, _ := data["domain"].(string)
 		handle, _ := data["handle"].(string)
 		actor_register(user, id, ptype, domain, handle)
+		// A hosted XMPP account's OMEMO device is published from the start,
+		// so others' clients encrypt to it (omemo.go).
+		if ptype == "xmpp" {
+			omemo_start(user, id)
+		}
 		// A Bluesky account needs its identity in the directory and its
 		// repository before it exists at all (atproto.go); when that fails,
 		// nothing of the account is left behind.
@@ -1533,6 +1539,10 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		if row["type"] == "bluesky" {
 			atproto_account_remove(user, id)
 		}
+	}
+	// Its encryption device goes with it (encryption.go).
+	if ptype := row_string(row, "type"); ptype == "matrix" || ptype == "xmpp" {
+		encryption_forget(user, row)
 	}
 	keypairs_delete(db, id)
 	db.row_remove(reg_accounts, map[string]any{"id": id})

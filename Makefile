@@ -6,6 +6,11 @@
 
 version = 2.0.12
 
+# Matrix's Olm and Megolm in pure Go (mautrix-go's goolm), for every build,
+# test and check: without the tag the library links the C libolm, which a
+# build with cgo off cannot.
+export GOFLAGS += -tags=goolm
+
 # Release track. production is the public release: a two-part version such as
 # 2.1, built for every platform and published to the stable apt suite.
 # development is a build between two releases: a three-part version such as

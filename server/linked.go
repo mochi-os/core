@@ -288,6 +288,11 @@ func linked_store(user *User, kind string, profile *linked_profile, data map[str
 // has a way to say so, and the chat session is stopped. The row is removed by
 // the caller.
 func linked_forget(ctx context.Context, l *linked) {
+	// Core's OMEMO device leaves the account's lists while the session can
+	// still say so.
+	if l.kind == "xmpp" {
+		omemo_withdraw(ctx, l.user, l.id)
+	}
 	linked_stop(l.user.UID, l.id)
 	switch l.kind {
 	case "matrix":
@@ -1366,11 +1371,11 @@ func api_account_notifications(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	return linked_page_encode(page), nil
 }
 
-// mochi.account.upload(account, data, type, name="", description="") -> dict: Upload a file through an account for a post to carry, and return the reference the post names it by: {id, url, data} with the network's own answer in data - a Mastodon media attachment, a Bluesky blob, a Lemmy image; for a hosted fediverse account the file is kept here and served under the account, data being the Document an object may list it as; for a hosted Matrix account {url, name, type, size} with url its mxc address, and for a hosted XMPP account the same with url the address the upload service serves it at. description is the alternative text where the network takes one at upload. Behind the account permission
+// mochi.account.upload(account, data, type, name="", description="", conversation="") -> dict: Upload a file through an account for a post to carry, and return the reference the post names it by: {id, url, data} with the network's own answer in data - a Mastodon media attachment, a Bluesky blob, a Lemmy image; for a hosted fediverse account the file is kept here and served under the account, data being the Document an object may list it as; for a hosted Matrix account {url, name, type, size} with url its mxc address, and for a hosted XMPP account the same with url the address the upload service serves it at. description is the alternative text where the network takes one at upload. conversation names the conversation the file is for: one encrypted gets it encrypted, its key sent with the message. Behind the account permission
 func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	var account, kind, name, description string
+	var account, kind, name, description, conversation string
 	var content sl.Value
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "data", &content, "type", &kind, "name?", &name, "description?", &description); err != nil {
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "data", &content, "type", &kind, "name?", &name, "description?", &description, "conversation?", &conversation); err != nil {
 		return nil, err
 	}
 	var data []byte
@@ -1389,6 +1394,38 @@ func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
+	// A file for an encrypted conversation is encrypted with a key of its
+	// own, kept here until the message naming it is sent: in a Matrix room
+	// the message carries the key (encryption.go), on XMPP the address it is
+	// shared by (omemo.go).
+	var sealed any
+	plain, given := data, kind
+	if conversation != "" {
+		switch row["type"] {
+		case "matrix":
+			if encryption_room_encrypted(thread_context(t), user, account, conversation) {
+				data, sealed = encryption_sealed(data)
+			}
+		case "xmpp":
+			if to, err := xmpp_target(conversation); err == nil && omemo_encrypted(thread_context(t), user, account, to, omemo_room(user, account, to)) {
+				var key string
+				data, key = omemo_file_seal(data)
+				sealed = map[string]string{"aesgcm": key}
+			}
+		}
+		if sealed != nil {
+			kind = "application/octet-stream"
+		}
+	}
+	kept := func(result map[string]any) map[string]any {
+		if sealed != nil {
+			if address, _ := result["url"].(string); address != "" {
+				encryption_database(user).exec("insert or replace into files (account, url, file, created) values (?, ?, ?, ?)", account, address, json_encode(sealed), now())
+			}
+			result["type"], result["size"] = given, len(plain)
+		}
+		return result
+	}
 	// A hosted XMPP account's files are its upload service's, sent as the
 	// address they are fetched from (uploads.go).
 	if x := xmpp_hosted_of(user, row); x != nil {
@@ -1396,7 +1433,7 @@ func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		if err != nil {
 			return xmpp_failed(x, fn, err)
 		}
-		return sl_encode(result), nil
+		return sl_encode(kept(result)), nil
 	}
 	// A hosted Matrix account's files are the engine's, named by their mxc
 	// address (content.go).
@@ -1409,7 +1446,7 @@ func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		if err != nil {
 			return hosted_failed(h, fn, err)
 		}
-		return sl_encode(result), nil
+		return sl_encode(kept(result)), nil
 	}
 	// A hosted Bluesky account's blobs live in its own repository; a hosted
 	// fediverse account's files are served under its actor.
@@ -1438,7 +1475,7 @@ func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err != nil {
 		return linked_failed(l, fn, err)
 	}
-	return sl_encode(result), nil
+	return sl_encode(kept(result)), nil
 }
 
 // mochi.account.request(account, method, path, body=None, query=None) -> dict: A request of the app's own through an account, on its server's interface: a path under /api/ on Mastodon ("v1/bookmarks"), under /api/v3/ on Lemmy ("community/list"), under /_matrix/ on Matrix ("client/v3/joined_rooms"), or an XRPC method name on Bluesky ("app.bsky.graph.getFollows"); for a hosted Bluesky account the index's methods (app.bsky.*, chat.bsky.*) are forwarded to Bluesky's index as the account. query is a dict of query parameters, body a dict sent as JSON. Returns {status, data} with the answer decoded. Behind the account permission
@@ -1503,6 +1540,7 @@ func api_account_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 // signal that the user's presence or what they share of it changed.
 type linked_session struct {
 	cancel    context.CancelFunc
+	ended     chan struct{} // closed once the session and what it started end
 	connected atomic.Bool
 	reason    atomic.Value // string: why it is not connected
 	client    atomic.Pointer[xmpp_client]
@@ -1578,9 +1616,12 @@ func linked_start(l *linked) {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &linked_session{cancel: cancel, presence: make(chan struct{}, 1)}
+	s := &linked_session{cancel: cancel, ended: make(chan struct{}), presence: make(chan struct{}, 1)}
 	linked_sessions[key] = s
-	go linked_run(ctx, l, s)
+	go func() {
+		defer close(s.ended)
+		linked_run(ctx, l, s)
+	}()
 }
 
 // linked_stop ends an account's session.
@@ -1592,6 +1633,40 @@ func linked_stop(uid string, id string) {
 	linked_lock.Unlock()
 	if s != nil {
 		s.cancel()
+	}
+}
+
+// linked_stop_user ends every session of a user's accounts, as the user goes,
+// and waits a while for them to end, since what they write goes in the
+// user's databases.
+func linked_stop_user(uid string) {
+	linked_lock.Lock()
+	var running []*linked_session
+	for key, s := range linked_sessions {
+		if strings.HasPrefix(key, uid+"/") {
+			running = append(running, s)
+			delete(linked_sessions, key)
+		}
+	}
+	linked_lock.Unlock()
+	linked_end(running, 10*time.Second)
+}
+
+// linked_end cancels sessions and waits up to a limit for them to end.
+func linked_end(sessions []*linked_session, limit time.Duration) {
+	for _, s := range sessions {
+		s.cancel()
+	}
+	deadline := time.After(limit)
+	for _, s := range sessions {
+		if s.ended == nil {
+			continue
+		}
+		select {
+		case <-s.ended:
+		case <-deadline:
+			return
+		}
 	}
 }
 

@@ -929,6 +929,25 @@ func rooms_conversation(user string, event gomatrixserverlib.PDU, state rooms_st
 		return nil
 	}
 	reader := &matrix_state{user: user, typing: map[string][]string{}, direct: map[string]bool{room: rooms_direct(user, room)}, names: rooms_names(room, state), download: content_address}
+	if found, account := federation_user(user); found != nil {
+		reader.decrypt = func(ctx context.Context, room string, e *matrix_event) *matrix_event {
+			device, err := encryption_matrix_of(found, account)
+			if err != nil {
+				return nil
+			}
+			return device.decrypt(ctx, room, e)
+		}
+		reader.remember = func(address string, file map[string]any) {
+			if device, err := encryption_matrix_of(found, account); err == nil {
+				device.remember(address, file)
+			}
+		}
+		reader.verify = func(ctx context.Context, room string, e *matrix_event) {
+			if device, err := encryption_matrix_of(found, account); err == nil {
+				device.dispatch(ctx, room, e)
+			}
+		}
+	}
 	if message := reader.timeline(room, &e); message != nil {
 		return []map[string]any{message}
 	}
@@ -1708,6 +1727,13 @@ func rooms_message(ctx context.Context, account string, user string, room string
 	}
 	if rooms_membership(room, user) != spec.Join {
 		return "", fmt.Errorf("not in the room")
+	}
+	// An encrypted room's events go encrypted by the account's device.
+	if found, _ := federation_user(user); found != nil && kind != "m.room.encrypted" {
+		var err error
+		if kind, content, err = encryption_seal(ctx, found, account, room, kind, content); err != nil {
+			return "", err
+		}
 	}
 	event, err := rooms_send(ctx, room, user, kind, nil, content)
 	if err != nil {

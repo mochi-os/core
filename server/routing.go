@@ -27,6 +27,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/hex"
@@ -264,6 +265,9 @@ func xmpp_client_message(a *xmpp_account, r *xmpp_resource, s *xmpp_stanza, to j
 	}
 	xmpp_accepted_forget(a, to.Bare())
 	conversation := "xmpp:" + to.Bare().String()
+	// What one of the account's clients encrypted is encrypted to its
+	// device here too.
+	omemo_read(a.user, a.id, &m, a.address, "")
 	events := xmpp_events(&m, nil, r.full, conversation, "xmpp:"+a.address.String(), "", archive, true)
 	xmpp_payload_add(events, s)
 	xmpp_tell(a, events)
@@ -333,6 +337,13 @@ func xmpp_message_in(a *xmpp_account, s *xmpp_stanza, from jid.JID, to jid.JID, 
 	}
 	var m xmpp_message
 	decoded := s.decode(&m) == nil
+	// Someone's OMEMO device list as their server tells of it changing, an
+	// account's own or one it reads.
+	if decoded && m.Event != nil && len(m.Event.Items.Item) > 0 {
+		if d, err := omemo_device_of(a.user, a.id); err == nil {
+			d.heard(context.Background(), from, m.Event.Items.Node, m.Event.Items.Item[0].Inner)
+		}
+	}
 	// A room's invitation is the inviter's, whom the acceptance rule asks of.
 	sender := from.Bare()
 	if decoded && m.Invitation != nil && m.Invitation.Invite != nil {
@@ -365,6 +376,7 @@ func xmpp_message_in(a *xmpp_account, s *xmpp_stanza, from jid.JID, to jid.JID, 
 	if nick := strings.TrimSpace(m.Nick); nick != "" && len(nick) <= 200 {
 		name = nick
 	}
+	omemo_read(a.user, a.id, &m, from.Bare(), "")
 	events := xmpp_events(&m, m.Delay, from, conversation, conversation, name, archive, false)
 	if len(events) > 0 && events[len(events)-1]["kind"] == "message" && m.Markable != nil {
 		xmpp_markable_set(a, conversation, events[len(events)-1]["id"].(string))
@@ -1410,15 +1422,22 @@ func xmpp_hosted_route(a *xmpp_account, t *xmpp_destination, s *xmpp_stanza) str
 
 // xmpp_hosted_send sends a message from Mochi's own sessions on an account:
 // its text or a file by its address, a reply to another, or a correction of
-// an earlier one. It answers the id the account's archive gave it.
-func xmpp_hosted_send(a *xmpp_account, conversation string, id string, body string, file string, reply string, correct string) (string, error) {
+// an earlier one. It answers the id the account's archive gave it, and the
+// encrypted elements it went with where it was encrypted, which the archive
+// gives the account's clients.
+func xmpp_hosted_send(a *xmpp_account, conversation string, id string, body string, file string, reply string, correct string) (string, string, error) {
 	t, err := xmpp_hosted_target(a, conversation)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	s, err := xmpp_parse(xmpp_message_text(t.to.String(), t.kind(), id, body, file, reply, correct))
+	// A conversation whose people have OMEMO devices is encrypted.
+	sealed, err := omemo_seal_message(context.Background(), a.user, a.id, t.to, t.room, body, file)
 	if err != nil {
-		return "", err
+		return "", "", err
+	}
+	s, err := xmpp_parse(xmpp_message_text(t.to.String(), t.kind(), id, body, file, reply, correct, sealed))
+	if err != nil {
+		return "", "", err
 	}
 	xmpp_markable_lock.Lock()
 	key := a.id + " " + conversation
@@ -1430,7 +1449,7 @@ func xmpp_hosted_send(a *xmpp_account, conversation string, id string, body stri
 	if !t.room {
 		xmpp_accepted_forget(a, t.to)
 	}
-	return xmpp_hosted_route(a, t, s), nil
+	return xmpp_hosted_route(a, t, s), sealed, nil
 }
 
 // xmpp_object_create sends a message of a conversation from Mochi's own
@@ -1463,11 +1482,15 @@ func xmpp_object_create(a *xmpp_account, object map[string]any, key string) (map
 	if id == "" {
 		id = uid()
 	}
-	archive, err := xmpp_hosted_send(a, conversation, id, text, file, reply, "")
+	archive, sealed, err := xmpp_hosted_send(a, conversation, id, text, file, reply, "")
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": id, "archive": archive, "url": "", "data": map[string]any{}}, nil
+	answer := map[string]any{"id": id, "archive": archive, "url": "", "data": map[string]any{}}
+	if sealed != "" {
+		answer["encrypted"], answer["payload"] = true, sealed
+	}
+	return answer, nil
 }
 
 // xmpp_reaction_prefix begins the id a reaction is known by: the message it

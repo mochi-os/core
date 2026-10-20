@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -1306,6 +1307,22 @@ func user_purge_local(id string) (string, error) {
 	if !exists {
 		return "", fmt.Errorf("user not found")
 	}
+
+	// The user's linked accounts are forgotten as removing them forgets
+	// them - their servers told, a Matrix device signed out and an OMEMO
+	// device withdrawn - and their sessions end and encryption devices go,
+	// before their identities and databases do.
+	if user := user_by_uid(id); user != nil {
+		for _, row := range accounts_network(user) {
+			if l := linked_from(user, row); l != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				linked_forget(ctx, l)
+				cancel()
+			}
+		}
+	}
+	linked_stop_user(id)
+	encryption_drop_user(id)
 
 	// Drain any queued outbound P2P messages signed by one of the user's
 	// identity entities before the entity rows (and their signing keys) are

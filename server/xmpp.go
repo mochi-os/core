@@ -79,11 +79,13 @@ var xmpp_features = []string{
 	"http://jabber.org/protocol/disco#info",
 	"jabber:x:conference",
 	"jabber:x:oob",
+	"eu.siacs.conversations.axolotl.devicelist+notify",
 	"urn:xmpp:chat-markers:0",
 	"urn:xmpp:message-correct:0",
 	"urn:xmpp:message-retract:1",
 	"urn:xmpp:ping",
 	"urn:xmpp:receipts",
+	"urn:xmpp:omemo:2:devices+notify",
 	"urn:xmpp:reply:0",
 }
 
@@ -230,6 +232,39 @@ func xmpp_reader(text string) xml.TokenReader {
 	return xmpp_raw{d: xml.NewDecoder(strings.NewReader(text))}
 }
 
+// xmpp_text writes what a reader holds back as text, for an answer read
+// whole: a decoder reading tokens leaves a field of its inner XML empty. Each
+// element's namespace is written from its name, so the declarations it came
+// with are dropped rather than repeated.
+func xmpp_text(r xml.TokenReader) ([]byte, error) {
+	var b bytes.Buffer
+	e := xml.NewEncoder(&b)
+	for {
+		token, err := r.Token()
+		if start, ok := token.(xml.StartElement); ok {
+			start.Attr = slices.DeleteFunc(slices.Clone(start.Attr), func(a xml.Attr) bool {
+				return a.Name.Space == "xmlns" || a.Name.Space == "" && a.Name.Local == "xmlns"
+			})
+			token = start
+		}
+		if token != nil {
+			if failure := e.EncodeToken(token); failure != nil {
+				return nil, failure
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := e.Flush(); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
+}
+
 // xmpp_write writes a stanza on a handler's stream, which is how a handler
 // answers: the session's own send methods wait for the handler to return.
 func xmpp_write(w xmlstream.TokenWriter, text string) error {
@@ -339,10 +374,23 @@ type xmpp_message struct {
 	} `xml:"jabber:x:conference x"`
 
 	// The elements an encrypted message is carried in, any of them.
-	OMEMO   *struct{} `xml:"eu.siacs.conversations.axolotl encrypted"`
-	OMEMO2  *struct{} `xml:"urn:xmpp:omemo:2 encrypted"`
-	OpenPGP *struct{} `xml:"urn:xmpp:openpgp:0 openpgp"`
-	Legacy  *struct{} `xml:"jabber:x:encrypted x"`
+	OMEMO   *omemo_element `xml:"eu.siacs.conversations.axolotl encrypted"`
+	OMEMO2  *omemo_element `xml:"urn:xmpp:omemo:2 encrypted"`
+	OpenPGP *struct{}      `xml:"urn:xmpp:openpgp:0 openpgp"`
+	Legacy  *struct{}      `xml:"jabber:x:encrypted x"`
+
+	// A device list someone's server tells of as it changes.
+	Event *struct {
+		Items struct {
+			Node string       `xml:"node,attr"`
+			Item []omemo_item `xml:"item"`
+		} `xml:"items"`
+	} `xml:"http://jabber.org/protocol/pubsub#event event"`
+
+	// What the account's OMEMO device read of an encrypted message: its
+	// body, or that it carried only keys (omemo.go).
+	opened    *string
+	transport bool
 }
 
 // encrypted reports whether a message's content is encrypted: by OMEMO, its
@@ -367,6 +415,9 @@ func (m *xmpp_message) archived(by string) string {
 // clients that do not understand a reply: the quoted message.
 func (m *xmpp_message) text() string {
 	body := m.Body
+	if m.opened != nil {
+		body = *m.opened
+	}
 	for _, f := range m.Fallbacks {
 		if f.For != "urn:xmpp:reply:0" {
 			continue
@@ -497,6 +548,11 @@ func xmpp_run(ctx context.Context, l *linked, s *linked_session) error {
 	}
 	c := &xmpp_client{l: l, session: session, address: address, rooms: map[string]string{}, sent: map[string]int64{}, markable: map[string]string{}, typing: map[string]*time.Timer{}, queries: map[string]*xmpp_query{}, joins: map[string]chan error{}, services: map[string]string{}, queue: make(chan []map[string]any, 256)}
 	done := make(chan struct{})
+	// What the session starts runs while it does, and ends before it does.
+	var started sync.WaitGroup
+	defer started.Wait()
+	running, stop := context.WithCancel(ctx)
+	defer stop()
 	defer close(done)
 	go func() {
 		select {
@@ -505,7 +561,7 @@ func xmpp_run(ctx context.Context, l *linked, s *linked_session) error {
 		case <-done:
 		}
 	}()
-	go c.deliver(done)
+	started.Go(func() { c.deliver(done) })
 	defer c.stop()
 	// The app hears that the session began and says whether the user's
 	// presence is shared before any is sent.
@@ -522,7 +578,7 @@ func xmpp_run(ctx context.Context, l *linked, s *linked_session) error {
 	defer s.client.Store(nil)
 	s.connected.Store(true)
 	s.reason.Store("")
-	go c.begin(ctx)
+	started.Go(func() { c.begin(running) })
 	for {
 		select {
 		case err := <-served:
@@ -571,6 +627,7 @@ func (c *xmpp_client) stop() {
 // begin runs what follows signing in: copies of the account's other clients'
 // traffic, what the archive holds since the session last ran, and the rooms.
 func (c *xmpp_client) begin(ctx context.Context) {
+	omemo_start(c.l.user, c.l.id)
 	if err := c.query(ctx, `<iq xmlns="jabber:client" type="set"><enable xmlns="urn:xmpp:carbons:2"/></iq>`, &xmpp_head{}); err != nil {
 		debug("XMPP account %s: carbons not enabled: %v", c.l.id, err)
 	}
@@ -593,7 +650,11 @@ func (c *xmpp_client) query(ctx context.Context, text string, into xmpp_headed) 
 		return err
 	}
 	defer response.Close()
-	if err := xml.NewTokenDecoder(response).Decode(into); err != nil && err != io.EOF {
+	answer, err := xmpp_text(response)
+	if err != nil {
+		return err
+	}
+	if err := xml.Unmarshal(answer, into); err != nil {
 		return err
 	}
 	if head := into.head(); head.Type == "error" {
@@ -695,6 +756,13 @@ func (c *xmpp_client) message(t xmlstream.TokenWriter, m *xmpp_message) {
 		return
 	}
 	if m.Type == "error" {
+		return
+	}
+	// Someone's OMEMO device list as their server tells of it changing.
+	if m.Event != nil && len(m.Event.Items.Item) > 0 {
+		if d, err := omemo_device_of(c.l.user, c.l.id); err == nil {
+			d.heard(context.Background(), from, m.Event.Items.Node, m.Event.Items.Item[0].Inner)
+		}
 		return
 	}
 	events := c.read(m, m.Delay, false)
@@ -799,6 +867,22 @@ func (c *xmpp_client) read(m *xmpp_message, delay *xmpp_delay, sent bool) []map[
 	if own {
 		name = ""
 	}
+	// An encrypted message is read by the account's device: from the person
+	// a room shows the sender to be, from the account itself where it sent
+	// it from another client.
+	if m.encrypted() {
+		author, room_address := peer.Bare(), ""
+		switch {
+		case own:
+			author = c.address
+		case m.Type == "groupchat":
+			room_address = bare
+			author, _ = omemo_sender(c.l.id, bare, from.Resourcepart())
+		}
+		if m.Type != "groupchat" || author.String() != "" {
+			omemo_read(c.l.user, c.l.id, m, author, room_address)
+		}
+	}
 	events := xmpp_events(m, delay, from, conversation, sender, name, archive, own)
 	if len(events) == 0 || events[len(events)-1]["kind"] != "message" {
 		return events
@@ -876,8 +960,11 @@ func xmpp_events(m *xmpp_message, delay *xmpp_delay, from jid.JID, conversation 
 		return append(events, map[string]any{"kind": "reaction", "conversation": conversation, "from": sender, "id": m.Reactions.ID, "reaction": reaction, "event": xmpp_reaction_prefix + m.Reactions.ID, "own": own})
 	case retracted != "":
 		return append(events, map[string]any{"kind": "delete", "conversation": conversation, "from": sender, "id": retracted, "own": own})
+	case m.transport:
+		// Only keys, completing a session of the account's device.
+		return events
 	case m.Replace != nil && m.Replace.ID != "":
-		if m.encrypted() {
+		if m.encrypted() && m.opened == nil {
 			return events
 		}
 		return append(events, map[string]any{"kind": "edit", "conversation": conversation, "from": sender, "id": m.Replace.ID, "body": m.text(), "own": own})
@@ -903,8 +990,10 @@ func xmpp_events(m *xmpp_message, delay *xmpp_delay, from jid.JID, conversation 
 			body = ""
 		}
 	}
+	// An encrypted message's body is what the account's device read of it,
+	// none where it could not.
 	encrypted := m.encrypted()
-	if encrypted {
+	if encrypted && m.opened == nil {
 		body = ""
 	}
 	if body == "" && len(files) == 0 && !encrypted {
@@ -969,9 +1058,14 @@ func (c *xmpp_client) presence(p *xmpp_presence) {
 			c.joined(bare, nil)
 		case !self && from.Resourcepart() != "" && p.Type != "error":
 			event := map[string]any{"kind": "member", "conversation": "xmpp:" + bare, "id": "xmpp:" + from.String(), "name": from.Resourcepart(), "left": p.Type == "unavailable"}
+			address := ""
 			if item := p.item(); item != nil {
 				event["role"], event["affiliation"] = item.Role, item.Affiliation
+				address = item.JID
 			}
+			// Who is in the room, by the address it shows, which OMEMO
+			// encrypts to.
+			omemo_occupant(c.l.id, bare, from.Resourcepart(), address, p.Type == "unavailable")
 			c.emit([]map[string]any{event})
 		}
 		return
@@ -1515,7 +1609,12 @@ func (c *xmpp_client) message_send(ctx context.Context, conversation string, id 
 		return err
 	}
 	kind := c.kind(to)
-	text := xmpp_message_text(to.String(), kind, id, body, file, reply, correct)
+	// A conversation whose people have OMEMO devices is encrypted.
+	sealed, err := omemo_seal_message(ctx, c.l.user, c.l.id, to, kind == "groupchat", body, file)
+	if err != nil {
+		return err
+	}
+	text := xmpp_message_text(to.String(), kind, id, body, file, reply, correct, sealed)
 	c.lock.Lock()
 	if timer := c.typing[conversation]; timer != nil {
 		timer.Stop()
@@ -1536,15 +1635,21 @@ func (c *xmpp_client) message_send(ctx context.Context, conversation string, id 
 // xmpp_message_text writes a message of a conversation: its text, or a file by
 // its address, a reply to another, or a correction of an earlier one, asking
 // to be marked as read and, between two people, for a receipt.
-func xmpp_message_text(to string, kind string, id string, body string, file string, reply string, correct string) string {
+func xmpp_message_text(to string, kind string, id string, body string, file string, reply string, correct string, sealed string) string {
 	var b strings.Builder
 	b.WriteString(`<message xmlns="jabber:client" to="` + xmpp_escape(to) + `" type="` + kind + `" id="` + xmpp_escape(id) + `">`)
 	if file != "" {
 		body = file
 	}
-	b.WriteString(`<body>` + xmpp_escape(body) + `</body>`)
-	if file != "" {
-		b.WriteString(`<x xmlns="jabber:x:oob"><url>` + xmpp_escape(file) + `</url></x>`)
+	switch {
+	case sealed != "":
+		// Encrypted by the account's OMEMO device, with the text clients
+		// that cannot read it show.
+		b.WriteString(`<body>` + xmpp_escape(omemo_fallback) + `</body>` + sealed + `<encryption xmlns="` + omemo_ns_eme + `" namespace="` + omemo_legacy + `" name="OMEMO"/><store xmlns="` + omemo_ns_hints + `"/>`)
+	case file != "":
+		b.WriteString(`<body>` + xmpp_escape(body) + `</body><x xmlns="jabber:x:oob"><url>` + xmpp_escape(file) + `</url></x>`)
+	default:
+		b.WriteString(`<body>` + xmpp_escape(body) + `</body>`)
 	}
 	if correct != "" {
 		b.WriteString(`<replace xmlns="urn:xmpp:message-correct:0" id="` + xmpp_escape(correct) + `"/>`)

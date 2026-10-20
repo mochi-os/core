@@ -772,3 +772,32 @@ func TestShellJsInitCarriesNoRestoreState(t *testing.T) {
 		}
 	}
 }
+
+// TestShellMenuEntry: the shell loads the menu's entry as its built page names
+// it, not the first asset whose name looks like one - the key component's
+// worker brought chunks of its own called index-*.js, which sorted ahead
+// of the entry.
+func TestShellMenuEntry(t *testing.T) {
+	base := t.TempDir()
+	assets := base + "/web/dist/assets"
+	if err := os.MkdirAll(assets, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"index-AAAA.js", "index-ZZZZ.js", "index-BBBB.css", "worker-CCCC.js"} {
+		os.WriteFile(assets+"/"+name, []byte("x"), 0o644)
+	}
+	page := `<!doctype html><html><head><script type="module" crossorigin src="./assets/index-ZZZZ.js"></script>` +
+		`<link rel="modulepreload" crossorigin href="./assets/index-AAAA.js"><link rel="stylesheet" crossorigin href="./assets/index-BBBB.css"></head></html>`
+	os.WriteFile(base+"/web/dist/index.html", []byte(page), 0o644)
+
+	js, css := shell_menu_entry(base)
+	if js != `<script type="module" src="/menu/assets/index-ZZZZ.js"></script>` {
+		t.Errorf("THE POINT: the entry the page names, not the first index chunk: %q", js)
+	}
+	if css != `<link rel="stylesheet" href="/menu/assets/index-BBBB.css">` {
+		t.Errorf("the stylesheet the page names: %q", css)
+	}
+	if js, css := shell_menu_entry(t.TempDir()); js != "" || css != "" {
+		t.Errorf("an unbuilt menu has no entry: %q %q", js, css)
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.mau.fi/util/dbutil"
 	sl "go.starlark.net/starlark"
 )
 
@@ -39,15 +40,46 @@ func create_linked_test_env(t *testing.T) *User {
 	bluesky_nonces = map[string]string{}
 	t.Cleanup(func() {
 		linked_lock.Lock()
-		running := linked_sessions
+		var running []*linked_session
+		for _, s := range linked_sessions {
+			running = append(running, s)
+		}
 		linked_sessions = map[string]*linked_session{}
 		linked_lock.Unlock()
-		for _, s := range running {
-			s.cancel()
-		}
+		// The sessions end before their databases go with the test.
+		linked_end(running, 5*time.Second)
 		network_scheme, linked_sessions, bluesky_servers, bluesky_nonces, linked_inbound = saved_scheme, saved_sessions, saved_servers, saved_nonces, saved_inbound
+		encryption_reset()
 	})
 	return alice
+}
+
+// encryption_reset waits for the devices' work under way and forgets the
+// devices held, whose databases go with the test.
+func encryption_reset() {
+	done := make(chan struct{})
+	go func() {
+		encryption_running.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+	}
+	encryption_lock.Lock()
+	for _, d := range encryption_matrices {
+		d.end()
+	}
+	encryption_matrices = map[string]*encryption_matrix{}
+	encryption_stores = map[string]*dbutil.Database{}
+	encryption_lock.Unlock()
+	omemo_lock.Lock()
+	omemo_devices = map[string]*omemo_device{}
+	omemo_lock.Unlock()
+	omemo_occupants_lock.Lock()
+	omemo_occupants = map[string]map[string]string{}
+	omemo_occupants_lock.Unlock()
+	encryption_made.Clear()
 }
 
 // linked_thread is a thread of an external app granted the account
@@ -786,4 +818,26 @@ func TestLinkedManagerStartsAtBoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	wait(t, "the session to start again", func() bool { connected, _ := linked_connected(alice.UID, "m1"); return connected })
+}
+
+// TestLinkedStopUserWaits: stopping a user's sessions waits for them to end,
+// since what they write goes in the databases a purge then removes.
+func TestLinkedStopUserWaits(t *testing.T) {
+	create_linked_test_env(t)
+	ended := make(chan struct{})
+	s := &linked_session{ended: ended, cancel: func() {
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			close(ended)
+		}()
+	}}
+	linked_lock.Lock()
+	linked_sessions[linked_session_key("u-gone", "l1")] = s
+	linked_lock.Unlock()
+	linked_stop_user("u-gone")
+	select {
+	case <-ended:
+	default:
+		t.Error("THE POINT: the session ended before its user's stop returned")
+	}
 }

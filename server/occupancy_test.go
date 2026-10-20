@@ -11,17 +11,18 @@ import (
 	"time"
 
 	sl "go.starlark.net/starlark"
+	"mellium.im/xmpp/jid"
 )
 
 // TestXMPPHostedRooms: chat joins a room by its address through a hosted
 // account, as Mochi's own sessions under the account's name, and is told of
-// the room, who is in it in what role and its recent past, in that order,
-// before the join returns; what the room says comes to chat, and what chat
-// sends comes back with the room's id only; the room is kept in the
-// account's bookmarks, which its clients are told of; leaving it withdraws
-// the bookmark. A room a client bookmarks to be joined is joined, and left
-// once the bookmark goes. Put out of a room, chat hears it left. A room
-// whose service no longer has the account in it is joined again.
+// the room, who is in it in what role at what address and its recent past,
+// in that order, before the join returns; what the room says comes to chat,
+// and what chat sends comes back with the room's id only; the room is kept
+// in the account's bookmarks, which its clients are told of; leaving it
+// withdraws the bookmark. A room a client bookmarks to be joined is joined,
+// and left once the bookmark goes. Put out of a room, chat hears it left. A
+// room whose service no longer has the account in it is joined again.
 func TestXMPPHostedRooms(t *testing.T) {
 	env := create_xmpp_server_env(t)
 	env.apps(t)
@@ -53,6 +54,9 @@ func TestXMPPHostedRooms(t *testing.T) {
 	member := env.log.find(t, "member", func(e map[string]any) bool { return e["account"] == "x2" && e["id"] == "xmpp:"+room+"/Alice" })
 	if member["role"] != "moderator" || member["affiliation"] != "owner" {
 		t.Errorf("THE POINT: the room's roles: %v", member)
+	}
+	if member["address"] != "alice@example.com" {
+		t.Errorf("THE POINT: the address a room that shows it gives, bare, for encrypting to: %v", member)
 	}
 	alice.expect(t, "the room told of Mochi's own sessions", `from="`+room+`/bob"`, `jid="bob@example.com/mochi"`)
 	client.expect(t, "THE POINT: the account's clients told of the bookmark", "urn:xmpp:bookmarks:1", `id="`+room+`"`, `autojoin="true"`)
@@ -157,4 +161,46 @@ func TestXMPPHostedRoomCreate(t *testing.T) {
 	}
 	client.send(`<presence xmlns="jabber:client" to="` + room + `/Bob"><x xmlns="http://jabber.org/protocol/muc"/></presence>`)
 	client.expect(t, "a member joins", `from="`+room+`/Bob"`, `code="110"`)
+}
+
+// TestXMPPCondition: an error's condition is the one it names in the
+// stanzas' namespace.
+func TestXMPPCondition(t *testing.T) {
+	s, _ := xmpp_parse(`<iq xmlns="jabber:client" id="x" type="error"><error type="cancel"><other xmlns="urn:example"/><item-not-found xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></iq>`)
+	if condition := xmpp_condition(s); condition != "item-not-found" {
+		t.Errorf("THE POINT: the condition read: %q", condition)
+	}
+	s, _ = xmpp_parse(`<iq xmlns="jabber:client" id="x" type="error"><error type="cancel"/></iq>`)
+	if condition := xmpp_condition(s); condition != "error" {
+		t.Errorf("an error naming none: %q", condition)
+	}
+}
+
+// TestXMPPRoomErrorRejoin: a room's error saying the account is not in it
+// has Mochi's own sessions join it again; another error does not.
+func TestXMPPRoomErrorRejoin(t *testing.T) {
+	saved := xmpp_history_wait
+	xmpp_history_wait = 100 * time.Millisecond
+	t.Cleanup(func() { xmpp_history_wait = saved })
+	env := create_xmpp_server_env(t)
+	env.apps(t)
+	alice := env.raw(t, "alice@example.com", env.mint(t, env.alice, "x1", "Phone"), "phone")
+	room := "club@rooms.example.com"
+	alice.send(`<presence xmlns="jabber:client" to="` + room + `/Alice"><x xmlns="http://jabber.org/protocol/muc"/></presence>`)
+	alice.expect(t, "the room made", `code="201"`)
+	xmpp_configure(t, alice, room, "c1", "muc#roomconfig_persistentroom", "1")
+	xmpp_call(t, env.bob, api_account_room_join, sl.Tuple{sl.String("x2"), sl.String(room)})
+	alice.expect(t, "bob joined", `from="`+room+`/bob"`)
+	a := &xmpp_account{user: env.bob, id: "x2", address: jid.MustParse("bob@example.com")}
+	refused := func(condition string) *xmpp_stanza {
+		s, _ := xmpp_parse(`<message xmlns="jabber:client" from="` + room + `" to="bob@example.com/mochi" type="error" id="e1"><error type="modify"><` + condition + ` xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></message>`)
+		return s
+	}
+	alice.received = nil
+	xmpp_room_in(a, refused("item-not-found"), jid.MustParse(room))
+	alice.silent(t, "THE POINT: joined again on another error", `from="`+room+`/bob"`)
+	xmpp_room_in(a, refused("not-acceptable"), jid.MustParse(room))
+	alice.expect(t, "THE POINT: joined again where the room no longer has the account", `from="`+room+`/bob"`)
+	// The join settles before the test's databases go.
+	wait(t, "the join settled", func() bool { return xmpp_joining_of(a, room) == nil })
 }

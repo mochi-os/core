@@ -15,6 +15,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/xml"
+	"errors"
 	"math/big"
 	"net"
 	"strings"
@@ -63,9 +64,29 @@ func create_xmpp_fake(t *testing.T, password string, send ...string) *xmpp_fake 
 	return f
 }
 
-// dial hands the client one end of a new TLS pipe and serves the other.
+// dial hands the client one end of a new TLS connection over loopback and
+// serves the other. A pipe would hold nothing, so the two ends each writing
+// an answer at once would wait for each other for ever.
 func (f *xmpp_fake) dial(ctx context.Context, address jid.JID) (net.Conn, error) {
-	client, server := net.Pipe()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, _ := listener.Accept()
+		accepted <- conn
+	}()
+	client, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		return nil, err
+	}
+	server := <-accepted
+	if server == nil {
+		client.Close()
+		return nil, errors.New("the fake did not accept")
+	}
 	f.lock.Lock()
 	f.dials++
 	f.lock.Unlock()

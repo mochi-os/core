@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+# Matrix's Olm and Megolm in pure Go, as the Makefile builds it.
+env:
+  GOFLAGS: -tags=goolm
+
 jobs:
   test:
     runs-on: ubuntu-latest

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -265,45 +266,38 @@ func shell_iframe_shim_load(user *User) string {
 	return content
 }
 
-// shell_menu_assets returns the JS and CSS paths for the menu app's built assets
+// shell_menu_assets returns the script and stylesheet tags of the menu app's
+// built entry.
 func shell_menu_assets(a *App, user *User) (string, string) {
 	av := a.active(user)
 	if av == nil {
 		return "", ""
 	}
+	return shell_menu_entry(av.base)
+}
 
-	// Look for the entry point JS and CSS in the dist/assets directory
-	js_path := ""
-	css_path := ""
+// shell_menu_script and shell_menu_stylesheet find the entry script and
+// stylesheet in the menu's built page.
+var (
+	shell_menu_script     = regexp.MustCompile(`<script\b[^>]*\bsrc="(?:\./|/menu/)?assets/([A-Za-z0-9_.-]+\.js)"`)
+	shell_menu_stylesheet = regexp.MustCompile(`<link\b[^>]*\brel="stylesheet"[^>]*\bhref="(?:\./|/menu/)?assets/([A-Za-z0-9_.-]+\.css)"`)
+)
 
-	assets_dir := av.base + "/web/dist/assets"
-	entries, err := os.ReadDir(assets_dir)
+// shell_menu_entry is the menu's entry script and stylesheet as tags, read
+// from the page its build wrote, which names them: the assets directory may
+// hold other chunks whose names look like an entry's.
+func shell_menu_entry(base string) (string, string) {
+	page, err := shell_file_load(base + "/web/dist/index.html")
 	if err != nil {
 		return "", ""
 	}
-
-	for _, entry := range entries {
-		name := entry.Name()
-		if strings.HasPrefix(name, "index-") || strings.HasPrefix(name, "main-") {
-			if strings.HasSuffix(name, ".js") && js_path == "" {
-				js_path = "/menu/assets/" + name
-			}
-			if strings.HasSuffix(name, ".css") && css_path == "" {
-				css_path = "/menu/assets/" + name
-			}
-		}
+	js_tag, css_tag := "", ""
+	if m := shell_menu_script.FindStringSubmatch(page); m != nil {
+		js_tag = `<script type="module" src="/menu/assets/` + m[1] + `"></script>`
 	}
-
-	// Wrap in HTML tags
-	js_tag := ""
-	css_tag := ""
-	if js_path != "" {
-		js_tag = `<script type="module" src="` + js_path + `"></script>`
+	if m := shell_menu_stylesheet.FindStringSubmatch(page); m != nil {
+		css_tag = `<link rel="stylesheet" href="/menu/assets/` + m[1] + `">`
 	}
-	if css_path != "" {
-		css_tag = `<link rel="stylesheet" href="` + css_path + `">`
-	}
-
 	return js_tag, css_tag
 }
 

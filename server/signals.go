@@ -55,6 +55,8 @@ func signals_receive(origin spec.ServerName, raw json.RawMessage, out *rooms_out
 		return err == nil && id.Domain() == origin
 	}
 	switch edu.Type {
+	case "m.device_list_update", "m.signing_key_update", "m.direct_to_device":
+		keyring_receive(origin, edu.Type, edu.Content)
 	case "m.typing":
 		var typing struct {
 			Room   string `json:"room_id"`

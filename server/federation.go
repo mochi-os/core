@@ -92,6 +92,7 @@ func federation_database() *DB {
 		// when they stopped signing, so what they signed stays verifiable.
 		db.exec("create table if not exists retired (domain text not null, key text not null, public text not null, expired integer not null, primary key (domain, key))")
 		rooms_tables(db)
+		keyring_tables(db)
 		signals_tables(db)
 		content_tables(db)
 		bridge_tables(db)
@@ -664,14 +665,13 @@ func federation_dispatch(c *gin.Context, method string, parts []string, r *fclie
 	case route == "GET v1/query" && segment(2) == "directory":
 		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such room alias here")
 	case route == "GET v1/user" && segment(2) == "devices" && len(parts) == 4:
-		// No device keys yet: those come with Matrix clients signing in.
-		c.JSON(http.StatusOK, map[string]any{"user_id": segment(3), "stream_id": 0, "devices": []any{}})
+		keyring_serve_devices(c, segment(3))
 	case route == "POST v1/user" && segment(2) == "keys":
 		switch segment(3) {
 		case "query":
-			c.JSON(http.StatusOK, map[string]any{"device_keys": map[string]any{}})
+			keyring_serve_query(c, r)
 		case "claim":
-			c.JSON(http.StatusOK, map[string]any{"one_time_keys": map[string]any{}})
+			keyring_serve_claim(c, r)
 		default:
 			federation_error(c, http.StatusNotFound, "M_UNRECOGNIZED", "unrecognised request")
 		}
@@ -761,6 +761,13 @@ func federation_send(destinations []string, event gomatrixserverlib.PDU) {
 // worth knowing late.
 func federation_signal(destinations []string, origin string, kind string, content any) {
 	federation_queue(destinations, origin, "edu", json_encode(map[string]any{"edu_type": kind, "content": content}))
+}
+
+// federation_message queues an ephemeral event that must not be lost - an
+// event sent to a device, a change to someone's devices or keys - for each
+// server given: kept as long as a room event is.
+func federation_message(destinations []string, origin string, kind string, content any) {
+	federation_queue(destinations, origin, "message", json_encode(map[string]any{"edu_type": kind, "content": content}))
 }
 
 // federation_queue adds a row for each destination and wakes its worker.
@@ -863,7 +870,7 @@ func federation_worker(destination string, wake chan struct{}) {
 			}
 		}
 		var edus []gomatrixserverlib.EDU
-		rows, _ = db.rows("select id, body from outbox where destination=? and origin=? and kind='edu' order by id limit 100", destination, origin)
+		rows, _ = db.rows("select id, body from outbox where destination=? and origin=? and kind in ('edu', 'message') order by id limit 100", destination, origin)
 		for _, row := range rows {
 			ids = append(ids, row["id"])
 			var edu gomatrixserverlib.EDU
@@ -919,7 +926,8 @@ func (federation_log) Write(line []byte) (int, error) {
 }
 
 // federation_manager starts a worker for every destination with events
-// waiting at startup; federation_send starts the rest.
+// waiting at startup; federation_send starts the rest. Each day what waited
+// past its time for the key store's devices goes (keyring.go).
 func federation_manager() {
 	logrus.SetOutput(federation_log{})
 	logrus.SetLevel(logrus.WarnLevel)
@@ -930,4 +938,9 @@ func federation_manager() {
 	for _, row := range rows {
 		federation_worker_start(row_string(row, "destination"))
 	}
+	go func() {
+		for range time.Tick(24 * time.Hour) {
+			keyring_prune()
+		}
+	}()
 }

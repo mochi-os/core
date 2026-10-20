@@ -432,6 +432,11 @@ func xmpp_archive_items(a *xmpp_account, message map[string]any) []xmpp_entry {
 		}
 	}
 	files, _ := message["files"].([]any)
+	// An encrypted message is given as it came, with the text clients that
+	// cannot read it show, never as the account's device read it.
+	if payload != "" {
+		body, files = omemo_fallback, nil
+	}
 	var links []string
 	var separate [][2]string
 	for _, f := range files {

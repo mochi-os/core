@@ -635,9 +635,13 @@ func (c *xmpp_client) begin(ctx context.Context) {
 	c.rejoin(ctx)
 }
 
-// send writes a stanza from outside the handler.
+// send writes a stanza from outside the handler. mellium is given a context
+// it never sees cancelled: it watches the one a send is given, and one
+// cancelled just after the send returns, as an action's is when it ends,
+// can put the connection's write deadline in the past while another write
+// is under way, failing it and, under TLS, every write after it.
 func (c *xmpp_client) send(ctx context.Context, text string) error {
-	return c.session.Send(ctx, xmpp_reader(text))
+	return c.session.Send(context.WithoutCancel(ctx), xmpp_reader(text))
 }
 
 // query sends a request and reads its answer into into, failing on an error

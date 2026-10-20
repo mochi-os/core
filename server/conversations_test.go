@@ -861,3 +861,38 @@ func TestLinkedSessionBudget(t *testing.T) {
 		t.Errorf("the session ended at its budget: %s", reason)
 	}
 }
+
+// TestXMPPSendCancelled: sends whose contexts are cancelled the moment each
+// returns, as an action's is when it ends, leave the session up and each
+// send after them sent. mellium watches the context a send is given, and
+// one cancelled just after the send returns can put the connection's write
+// deadline in the past while the next write is under way, failing it and,
+// under TLS, every write after it.
+func TestXMPPSendCancelled(t *testing.T) {
+	alice := create_linked_test_env(t)
+	fake := create_xmpp_fake(t, "secret")
+	fake.answer = func(text string) []string {
+		if strings.HasPrefix(text, "<iq") {
+			return []string{`<iq xmlns="jabber:client" type="result" id="` + xml_attribute(text, "id") + `"/>`}
+		}
+		return nil
+	}
+	account := decoded(t)(api_account_link(linked_thread(alice), sl.NewBuiltin("test", nil), sl.Tuple{sl.String("xmpp")}, linked_kwargs("address", "alice@example.org", "password", "secret")))
+	id := account["id"].(string)
+	wait(t, "the connection", func() bool { connected, _ := linked_connected(alice.UID, id); return connected })
+	c, err := linked_client(linked_get(alice, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 500 {
+		ctx, cancel := context.WithCancel(context.Background())
+		err := c.send(ctx, `<message xmlns="jabber:client" to="bob@example.org" type="chat"><body>`+strconv.Itoa(i)+`</body></message>`)
+		cancel()
+		if err != nil {
+			t.Fatalf("THE POINT: send %d after sends whose contexts were cancelled: %v", i, err)
+		}
+	}
+	if connected, reason := linked_connected(alice.UID, id); !connected {
+		t.Errorf("THE POINT: the session still up: %s", reason)
+	}
+}

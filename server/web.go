@@ -588,8 +588,8 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	}
 
 	// CardDAV and CalDAV: the class-level route resolved no entity, so the
-	// owner computed above is the first administrator. The handler takes the
-	// owner from the credential and ignores it.
+	// owner computed above is nobody unless a domain route named one. The
+	// handler takes the owner from the credential and ignores it.
 	if dav_served(aa.Feature) {
 		return dav_http_handler(c, a, aa)
 	}

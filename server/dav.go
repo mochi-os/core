@@ -38,10 +38,10 @@ import (
 // lists and calendar objects as iCalendar text; this file converts at the
 // boundary.
 //
-// The route is class-level and public, so core resolves no entity and would
-// run an anonymous request as the first administrator. The handler therefore
-// authenticates before touching anything, refuses every unauthenticated
-// request, and takes the owner from the credential alone.
+// The route is class-level and public, so core resolves no entity and binds an
+// anonymous request to no account - its first storage call would answer 401.
+// The handler authenticates before touching anything, refuses every
+// unauthenticated request, and takes the owner from the credential alone.
 //
 // Paths follow the shape the library expects under the route prefix:
 //

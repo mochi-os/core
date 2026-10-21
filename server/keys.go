@@ -30,6 +30,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -439,12 +440,18 @@ func signature_parameters(header string) map[string]string {
 	return parameters
 }
 
+// A signature_fetcher reads the public key a keyId names. fresh asks for the
+// key the actor publishes now rather than the one remembered.
+type signature_fetcher func(ctx context.Context, key_id string, fresh bool) (string, error)
+
 // signature_verify checks a signed request: the headers signed cover the
 // request target, host and date (and the digest, when there is a body), the
 // date is within the window, the digest matches the body, and the signature
-// verifies against the key the keyId names, fetched through fetch. Returns the
-// keyId, which identifies the actor.
-func signature_verify(ctx context.Context, r *http.Request, body []byte, fetch func(ctx context.Context, key_id string) (string, error)) (string, error) {
+// verifies against the key the keyId names, fetched through fetch. A signature
+// that fails against the key fetch remembers is tried once more against the
+// key read afresh, since the actor may have replaced it. Returns the keyId,
+// which identifies the actor.
+func signature_verify(ctx context.Context, r *http.Request, body []byte, fetch signature_fetcher) (string, error) {
 	parameters := signature_parameters(r.Header.Get("Signature"))
 	key_id, signature := parameters["keyid"], parameters["signature"]
 	if key_id == "" || signature == "" {
@@ -484,23 +491,35 @@ func signature_verify(ctx context.Context, r *http.Request, body []byte, fetch f
 	if err != nil {
 		return "", fmt.Errorf("signature is not base64")
 	}
-	public, err := fetch(ctx, key_id)
+	public, err := fetch(ctx, key_id, false)
 	if err != nil {
 		return "", fmt.Errorf("key %s: %w", key_id, err)
 	}
-	if err := key_verify_rsa(public, []byte(signature_string(r, names)), decoded); err != nil {
+	message := []byte(signature_string(r, names))
+	if key_verify_rsa(public, message, decoded) == nil {
+		return key_id, nil
+	}
+	current, err := fetch(ctx, key_id, true)
+	if err != nil || key_verify_rsa(current, message, decoded) != nil {
 		return "", fmt.Errorf("signature does not verify")
 	}
 	return key_id, nil
 }
 
-// The fetched-key cache: an actor's key is read once a day; a failed fetch is
-// remembered for an hour. Bounded as the resolve cache is.
+// The fetched-key cache: an actor's key is read once a day, and again when a
+// signature fails against it, at most once a minute, so an actor that replaces
+// its key is heard at once and a stream of forged signatures costs its server
+// one fetch a minute. A failed fetch is remembered for an hour, except a
+// refusal by our own limiter, which says nothing about the key. Bounded as the
+// resolve cache is.
 const signature_key_maximum = 10000
+const signature_key_refresh = time.Minute
 
 type signature_key_entry struct {
-	public  string
-	expires time.Time
+	public    string
+	expires   time.Time
+	refreshed time.Time
+	signed    bool
 }
 
 var signature_keys = map[string]signature_key_entry{}
@@ -508,30 +527,47 @@ var signature_keys_lock sync.Mutex
 
 // signature_key_fetch fetches the PEM public key an ActivityPub keyId names:
 // the actor document at the keyId's URL (fragment aside), whose publicKey
-// carries it. Goes through resolve_fetch, so tests substitute documents.
-func signature_key_fetch(ctx context.Context, key_id string) (string, error) {
+// carries it. Goes through resolve_fetch, so tests substitute documents. fresh
+// reads past a remembered key unless it was read afresh within the last
+// minute. A failure remembered from an unsigned fetch does not bind a signed
+// one: a server in secure mode answers the second where it refused the first.
+func signature_key_fetch(ctx context.Context, key_id string, fresh bool) (string, error) {
+	signed := resolve_signed_by(ctx) != nil
+	now := time.Now()
 	signature_keys_lock.Lock()
-	if entry, found := signature_keys[key_id]; found && time.Now().Before(entry.expires) {
-		signature_keys_lock.Unlock()
-		if entry.public == "" {
+	entry, found := signature_keys[key_id]
+	signature_keys_lock.Unlock()
+	if found && now.Before(entry.expires) {
+		if entry.public != "" && (!fresh || now.Sub(entry.refreshed) < signature_key_refresh) {
+			return entry.public, nil
+		}
+		if entry.public == "" && (entry.signed || !signed) {
 			return "", fmt.Errorf("key not found")
 		}
-		return entry.public, nil
 	}
-	signature_keys_lock.Unlock()
 
 	public, err := signature_key_read(ctx, key_id)
 
 	signature_keys_lock.Lock()
+	defer signature_keys_lock.Unlock()
 	if len(signature_keys) >= signature_key_maximum {
 		signature_keys = map[string]signature_key_entry{}
 	}
-	if err != nil {
-		signature_keys[key_id] = signature_key_entry{"", time.Now().Add(resolve_cache_failure)}
-	} else {
-		signature_keys[key_id] = signature_key_entry{public, time.Now().Add(resolve_cache_success)}
+	if fresh {
+		entry.refreshed = now
 	}
-	signature_keys_lock.Unlock()
+	var limited *RateLimitError
+	switch {
+	case err == nil:
+		signature_keys[key_id] = signature_key_entry{public: public, expires: now.Add(resolve_cache_success), refreshed: entry.refreshed}
+	case errors.As(err, &limited):
+		// Refused by our own limiter: nothing was learnt about the key.
+	case found && entry.public != "" && now.Before(entry.expires):
+		// A re-read that failed keeps the key the actor had.
+		signature_keys[key_id] = entry
+	default:
+		signature_keys[key_id] = signature_key_entry{expires: now.Add(resolve_cache_failure), signed: signed}
+	}
 	return public, err
 }
 

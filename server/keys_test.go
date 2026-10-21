@@ -210,7 +210,7 @@ func TestSignatureSignVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 	key_id := "https://example.com/~abc#main-key"
-	fetch := func(ctx context.Context, id string) (string, error) {
+	fetch := func(ctx context.Context, id string, fresh bool) (string, error) {
 		if id == key_id {
 			return public, nil
 		}
@@ -260,7 +260,7 @@ func TestSignatureSignVerify(t *testing.T) {
 	}
 
 	other_public, _, _ := key_generate(key_rsa)
-	if _, err := signature_verify(context.Background(), sign(body), body, func(context.Context, string) (string, error) { return other_public, nil }); err == nil {
+	if _, err := signature_verify(context.Background(), sign(body), body, func(context.Context, string, bool) (string, error) { return other_public, nil }); err == nil {
 		t.Error("a signature by another key should be refused")
 	}
 
@@ -292,17 +292,151 @@ func TestSignatureKeyFetch(t *testing.T) {
 	signature_keys = map[string]signature_key_entry{}
 	signature_keys_lock.Unlock()
 
-	got, err := signature_key_fetch(context.Background(), "https://remote.example/users/bob#main-key")
+	got, err := signature_key_fetch(context.Background(), "https://remote.example/users/bob#main-key", false)
 	if err != nil || got != public {
 		t.Fatalf("fetched key: %v", err)
 	}
-	if _, err := signature_key_fetch(context.Background(), "https://remote.example/users/bob#main-key"); err != nil || d.fetches != 1 {
+	if _, err := signature_key_fetch(context.Background(), "https://remote.example/users/bob#main-key", false); err != nil || d.fetches != 1 {
 		t.Errorf("a second fetch should come from the cache: fetches = %d", d.fetches)
 	}
-	if _, err := signature_key_fetch(context.Background(), "https://remote.example/users/nobody#main-key"); err == nil {
+	if _, err := signature_key_fetch(context.Background(), "https://remote.example/users/nobody#main-key", false); err == nil {
 		t.Error("an actor that does not exist has no key")
 	}
-	if _, err := signature_key_fetch(context.Background(), "http://remote.example/users/bob#main-key"); err == nil {
+	if _, err := signature_key_fetch(context.Background(), "http://remote.example/users/bob#main-key", false); err == nil {
 		t.Error("a keyId that is not https is refused")
+	}
+}
+
+// signature_keys_test_reset empties the fetched-key cache for a test and again
+// after it.
+func signature_keys_test_reset(t *testing.T) {
+	reset := func() {
+		signature_keys_lock.Lock()
+		signature_keys = map[string]signature_key_entry{}
+		signature_keys_lock.Unlock()
+	}
+	reset()
+	t.Cleanup(reset)
+}
+
+// TestSignatureKeyRefresh: a signature that fails against the remembered key
+// is tried against the key the actor publishes now, so an actor that replaced
+// its key is heard at once; forged signatures cost its server one fetch a
+// minute, and a re-read that fails keeps the key the actor had.
+func TestSignatureKeyRefresh(t *testing.T) {
+	actor := "https://remote.example/users/bob"
+	key_id := actor + "#main-key"
+	document := func(public string) string {
+		encoded, _ := json.Marshal(map[string]any{
+			"id":        actor,
+			"publicKey": map[string]any{"id": key_id, "owner": actor, "publicKeyPem": public},
+		})
+		return string(encoded)
+	}
+	old_public, _, _ := key_generate(key_rsa)
+	new_public, new_private, _ := key_generate(key_rsa)
+	_, forged_private, _ := key_generate(key_rsa)
+	d := resolve_test_install(t, map[string]string{actor: document(old_public)})
+	signature_keys_test_reset(t)
+	ctx := context.Background()
+	body := []byte(`{"type":"Follow"}`)
+	sign := func(private string) *http.Request {
+		r := httptest.NewRequest("POST", "https://here.example/inbox", bytes.NewReader(body))
+		r.Host = "here.example"
+		if err := signature_sign(r, key_id, private, body); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	// age makes the last fresh read of the key a refresh interval old.
+	age := func() {
+		signature_keys_lock.Lock()
+		entry := signature_keys[key_id]
+		entry.refreshed = time.Now().Add(-signature_key_refresh)
+		signature_keys[key_id] = entry
+		signature_keys_lock.Unlock()
+	}
+
+	if public, err := signature_key_fetch(ctx, key_id, false); err != nil || public != old_public {
+		t.Fatalf("the key is not remembered: %v", err)
+	}
+	d.documents[actor] = document(new_public)
+
+	if _, err := signature_verify(ctx, sign(new_private), body, signature_key_fetch); err != nil || d.fetches != 2 {
+		t.Fatalf("a request signed with the actor's new key should verify after one fetch: %v, fetches = %d", err, d.fetches)
+	}
+	if _, err := signature_verify(ctx, sign(new_private), body, signature_key_fetch); err != nil || d.fetches != 2 {
+		t.Errorf("the new key should be remembered: %v, fetches = %d", err, d.fetches)
+	}
+
+	if _, err := signature_verify(ctx, sign(forged_private), body, signature_key_fetch); err == nil || d.fetches != 2 {
+		t.Errorf("a forged signature within a minute of the last re-read should be refused with no fetch: %v, fetches = %d", err, d.fetches)
+	}
+	age()
+	if _, err := signature_verify(ctx, sign(forged_private), body, signature_key_fetch); err == nil || d.fetches != 3 {
+		t.Errorf("a forged signature should be refused after one re-read: %v, fetches = %d", err, d.fetches)
+	}
+
+	age()
+	delete(d.documents, actor)
+	if _, err := signature_verify(ctx, sign(forged_private), body, signature_key_fetch); err == nil || d.fetches != 4 {
+		t.Errorf("a forged signature should be refused, the actor's document gone: %v, fetches = %d", err, d.fetches)
+	}
+	if _, err := signature_verify(ctx, sign(new_private), body, signature_key_fetch); err != nil || d.fetches != 4 {
+		t.Errorf("a re-read that failed should keep the key the actor had: %v, fetches = %d", err, d.fetches)
+	}
+}
+
+// TestSignatureKeyFailures: a refusal by our own limiter is not remembered, and
+// a failure remembered from an unsigned fetch does not bind a signed one, while
+// a signed one's failure does.
+func TestSignatureKeyFailures(t *testing.T) {
+	public, _, _ := key_generate(key_rsa)
+	encoded, _ := json.Marshal(map[string]any{
+		"id":        "https://remote.example/users/bob",
+		"publicKey": map[string]any{"id": "https://remote.example/users/bob#main-key", "owner": "https://remote.example/users/bob", "publicKeyPem": public},
+	})
+	d := resolve_test_install(t, map[string]string{"https://remote.example/users/bob": string(encoded)})
+	signature_keys_test_reset(t)
+	limited := true
+	secure := map[string]bool{}
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		if limited {
+			limited = false
+			return nil, &RateLimitError{Retry: 60}
+		}
+		if secure[address] && resolve_signed_by(ctx) == nil {
+			d.fetches++
+			return nil, &resolve_refusal{Status: 401}
+		}
+		return d.fetch(ctx, address, accept)
+	}
+	ctx := context.Background()
+	key_id := "https://remote.example/users/bob#main-key"
+
+	if _, err := signature_key_fetch(ctx, key_id, false); err == nil {
+		t.Fatal("the limiter's refusal should fail the fetch")
+	}
+	if got, err := signature_key_fetch(ctx, key_id, false); err != nil || got != public {
+		t.Errorf("a refusal by our own limiter should not be remembered: %v", err)
+	}
+
+	secured := "https://secure.example/users/carol"
+	secure[secured] = true
+	d.documents[secured] = strings.Replace(string(encoded), "https://remote.example/users/bob", secured, -1)
+	if _, err := signature_key_fetch(ctx, secured+"#main-key", false); err == nil {
+		t.Fatal("a server in secure mode should refuse an unsigned fetch")
+	}
+	signing := resolve_signing(ctx, func(r *http.Request) {})
+	if got, err := signature_key_fetch(signing, secured+"#main-key", false); err != nil || got != public {
+		t.Errorf("an unsigned fetch's failure should not bind a signed one: %v", err)
+	}
+
+	before := d.fetches
+	if _, err := signature_key_fetch(signing, "https://remote.example/users/nobody#main-key", false); err == nil {
+		t.Fatal("an actor that does not exist has no key")
+	}
+	if _, err := signature_key_fetch(signing, "https://remote.example/users/nobody#main-key", false); err == nil || d.fetches != before+1 {
+		t.Errorf("a signed fetch's failure should be remembered: %v, fetches = %d", err, d.fetches-before)
 	}
 }

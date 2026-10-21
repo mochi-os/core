@@ -60,7 +60,7 @@ func create_inbox(t *testing.T, alice *User) *inbox {
 	t.Helper()
 	box := &inbox{status: 202}
 	key := keypair_get(alice, "f1", key_signing)
-	fetch := func(ctx context.Context, key_id string) (string, error) {
+	fetch := func(ctx context.Context, key_id string, fresh bool) (string, error) {
 		if key_id != "https://example.com/~f1#main-key" {
 			return "", errors.New("unknown key " + key_id)
 		}

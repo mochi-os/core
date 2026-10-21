@@ -94,7 +94,9 @@ func api_table() sl.StringDict {
 			"rss": sls.FromStringDict(sl.String("mochi.rss"), sl.StringDict{
 				"fetch": sl.NewBuiltin("mochi.rss.fetch", api_rss_fetch),
 			}),
-			"schedule": api_schedule,
+			"schedule":   api_schedule,
+			"webmention": api_webmention,
+			"websub":     api_websub,
 			"random": sls.FromStringDict(sl.String("mochi.random"), sl.StringDict{
 				"alphanumeric": sl.NewBuiltin("mochi.random.alphanumeric", api_random_alphanumeric),
 				"bytes":        sl.NewBuiltin("mochi.random.bytes", api_random_bytes),

@@ -865,13 +865,15 @@ var header_readable = map[string]bool{
 // or delete the headers web_security_headers sets, that middleware running
 // before the handler and writing to the same map. Same allowlist reasoning
 // and same canonical keys as header_readable. Location is absent because
-// a.redirect owns it.
+// a.redirect owns it. Link describes the response itself, as a web feed names
+// its WebSub hub in it.
 var header_writable = map[string]bool{
 	"Cache-Control":       true,
 	"Content-Disposition": true,
 	"Content-Type":        true,
 	"Etag":                true,
 	"Last-Modified":       true,
+	"Link":                true,
 }
 
 // a.header(name, value?) -> string|None: Get request header (1 arg) or set response header (2 args)

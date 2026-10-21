@@ -9,6 +9,7 @@ package main
 import (
 	"bytes"
 	"io"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -168,6 +169,7 @@ func api_rss_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		})
 	}
 
+	hub, self := rss_hub(r.Request.URL, r.Header, body)
 	result := map[string]any{
 		"status":  r.StatusCode,
 		"headers": resp_headers,
@@ -175,9 +177,62 @@ func api_rss_fetch(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		"link":    feed.Link,
 		"ttl":     ttl,
 		"items":   items,
+		"hub":     hub,
+		"self":    self,
 	}
 
 	return sl_encode(result), nil
+}
+
+// rss_link_element is a link element of a feed's channel, Atom's or one an
+// RSS feed borrows from Atom; rss_link_attribute one of its attributes.
+var rss_link_element = regexp.MustCompile(`(?is)<(?:[a-z0-9]+:)?link\b[^>]*>`)
+var rss_link_attribute = regexp.MustCompile(`(?is)\b(rel|href)\s*=\s*("[^"]*"|'[^']*')`)
+
+// rss_hub reads the WebSub hub a feed names and the address it names itself
+// by: from the response's Link headers first, as the protocol has a
+// subscriber look, then from the channel's own link elements, before the
+// first item, resolved against the feed's address. Either may be "".
+func rss_hub(page *url.URL, headers http.Header, body []byte) (string, string) {
+	var hub, self string
+	for _, value := range headers.Values("Link") {
+		for _, link := range link_values(value) {
+			if hub == "" && link.relation("hub") {
+				hub = webmention_resolve(page, link.href)
+			}
+			if self == "" && link.relation("self") {
+				self = webmention_resolve(page, link.href)
+			}
+		}
+	}
+	if hub != "" && self != "" {
+		return hub, self
+	}
+	header := body
+	if m := rss_first_item.FindIndex(body); m != nil {
+		header = body[:m[0]]
+	}
+	for _, element := range rss_link_element.FindAll(header, -1) {
+		var rel, href string
+		for _, a := range rss_link_attribute.FindAllSubmatch(element, -1) {
+			value := html.UnescapeString(string(a[2][1 : len(a[2])-1]))
+			if strings.EqualFold(string(a[1]), "rel") {
+				rel = value
+			} else {
+				href = value
+			}
+		}
+		if href == "" {
+			continue
+		}
+		if hub == "" && webmention_has(rel, "hub") {
+			hub = webmention_resolve(page, href)
+		}
+		if self == "" && webmention_has(rel, "self") {
+			self = webmention_resolve(page, href)
+		}
+	}
+	return hub, self
 }
 
 // rss_extract_ttl parses TTL from RSS XML using the RSS-specific parser

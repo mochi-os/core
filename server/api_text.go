@@ -68,6 +68,19 @@ func api_text_markdown(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return sl_encode(string(markdown([]byte(in)))), nil
 }
 
+// mochi.text.links(markdown) -> list: The web addresses a markdown text links
+// to, written as links or as bare addresses, in order and each once
+func api_text_links(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <markdown: string>")
+	}
+	in, ok := sl.AsString(args[0])
+	if !ok {
+		return sl_error(fn, "invalid markdown")
+	}
+	return sl_encode(text_links(in)), nil
+}
+
 // mochi.text.plain(markdown) -> string: Render markdown to plain text: the
 // text of its HTML, with block ends and line breaks as newlines, for a network
 // that takes text and not markup
@@ -220,6 +233,7 @@ var api_text = sls.FromStringDict(sl.String("mochi.text"), sl.StringDict{
 	"clean":     sl.NewBuiltin("mochi.text.clean", api_text_clean),
 	"compare":   sl.NewBuiltin("mochi.text.compare", api_text_compare),
 	"fediverse": sl.NewBuiltin("mochi.text.fediverse", api_text_fediverse),
+	"links":     sl.NewBuiltin("mochi.text.links", api_text_links),
 	"markdown":  sl.NewBuiltin("mochi.text.markdown", api_text_markdown),
 	"plain":     sl.NewBuiltin("mochi.text.plain", api_text_plain),
 	"slug":      sl.NewBuiltin("mochi.text.slug", api_text_slug),

@@ -384,6 +384,10 @@ func networks_database() *DB {
 	db.exec("create index if not exists inbound_account on inbound(account, created)")
 	// The Bluesky identities by did and the update stream (atproto.go).
 	atproto_tables(db)
+	// Subscriptions to web feeds and to this server's, and the mentions
+	// waiting (websub.go, webmention.go).
+	websub_tables(db)
+	webmention_tables(db)
 	return db
 }
 

@@ -1346,6 +1346,10 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 	}
 	if links := opengraph_links(og["links"]); links != "" {
 		content = strings.Replace(content, "</head>", links+"</head>", 1)
+		opengraph_headers(c, og["links"])
+	}
+	if entry := opengraph_entry(og["entry"]); entry != "" {
+		content = strings.Replace(content, `<div id="root"></div>`, `<div id="root">`+entry+`</div>`, 1)
 	}
 
 	// Always set og:url to current URL

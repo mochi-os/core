@@ -539,6 +539,9 @@ var (
 		// The url grant for an ICS subscription is the user's, asked for per
 		// address.
 		{"129RSyiQd49veEysf7x3EjB94yGfUU14TvyB2Cw1tSaH81pFYGm", "Calendars", []struct{ Permission, Object string }{
+			// Events published through the user's accounts on other
+			// networks (the federation plan, phase 30).
+			{"account", "*"},
 			// The birthdays calendar reads contacts through the people service.
 			{"contacts/read", ""},
 			{"entity/read", ""},
@@ -610,7 +613,12 @@ var (
 			{"friends/read", ""},
 		}},
 		{"17Qx3vcsBJ6RcMhshTKfVSBPigPZUAaA52KkpCi4ZYFaekSgrY", "Help", nil},
-		{"12Erusc4s59DJjqmDZXwPQ15ny4RKrRKFJg2DfAmi2unDGaghgq", "Market", nil},
+		// Listings published through the user's accounts on other networks
+		// (phase 30).
+		{"12Erusc4s59DJjqmDZXwPQ15ny4RKrRKFJg2DfAmi2unDGaghgq", "Market", []struct{ Permission, Object string }{
+			{"account", "*"},
+			{"accounts/read", ""},
+		}},
 		{"12ZwHwqDLsdN5FMLcHhWBrDwwYojNZ67dWcZiaynNFcjuHPnx2P", "Notifications", []struct{ Permission, Object string }{
 			{"accounts/notify", ""},
 			{"accounts/read", ""},
@@ -640,6 +648,10 @@ var (
 			{"repositories/write", ""},
 		}},
 		{"12nG95Lzt5SbKcmAqweB3vEWcz6oXUd7i9vf3nCXfBxuyqG9wJ3", "Publisher", []struct{ Permission, Object string }{
+			// Releases announced through the user's accounts on other
+			// networks (phase 30).
+			{"account", "*"},
+			{"accounts/read", ""},
 			{"apps/install", ""},
 			{"apps/read", ""},
 			{"apps/write", ""},
@@ -688,6 +700,10 @@ var (
 		{"12sE7AoAuAdWVsMxDPVY3PDM6YXhbwYfytGeDRD1TD49pKAuhno", "Themes", nil},
 		{"12QcwPkeTpYmxjaYXtA56ff5jMzJYjMZCmV5RpQR1GosFPRXDtf", "Wikis", []struct{ Permission, Object string }{
 			{"access/read", ""},
+			// Pages published through the user's accounts on other networks
+			// (phase 30).
+			{"account", "*"},
+			{"accounts/read", ""},
 			{"entity/read", ""},
 			{"entity/sign", ""},
 			{"groups/read", ""},

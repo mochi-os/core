@@ -682,21 +682,29 @@ func TestPermissionAccountRequire(t *testing.T) {
 }
 
 // TestPermissionAccountDefaults: feeds, forums and chat hold account:* by
-// default, through setup and through the lazy seed while a user is pending;
-// an app without the default holds nothing.
+// default, and calendars, wikis, market and publisher since they publish
+// through accounts too (phase 30), each with accounts/read to list the
+// accounts it may publish to; through setup and through the lazy seed while a
+// user is pending; an app without the default holds nothing.
 func TestPermissionAccountDefaults(t *testing.T) {
 	setup_test_data_dir(t)
 	defer cleanup_test_data_dir(t)
 
-	for _, name := range []string{"Feeds", "Forums", "Chat"} {
-		held := false
+	for _, name := range []string{"Feeds", "Forums", "Chat", "Calendars", "Wikis", "Market", "Publisher"} {
+		held, listed := false, false
 		for _, p := range apps_default_get(name) {
 			if p.Permission == "account" && p.Object == "*" {
 				held = true
 			}
+			if p.Permission == "accounts/read" {
+				listed = true
+			}
 		}
 		if !held {
 			t.Errorf("%s has no default account:* grant", name)
+		}
+		if !listed {
+			t.Errorf("%s cannot list the accounts it publishes to", name)
 		}
 	}
 

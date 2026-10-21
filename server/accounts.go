@@ -470,10 +470,6 @@ func account_granted(user *User, row map[string]any) []string {
 	return out
 }
 
-// account_present returns the redacted row with the capabilities it holds,
-// and for an account on a network whether it is hosted or linked, its
-// server, page, name and avatar, a Mastodon server's limits, and for a chat
-// account whether its session is connected and why not.
 // account_homed says whether an account has a home feed: a hosted fediverse
 // or Bluesky account of a person, which apps sign in to and post from.
 func account_homed(row map[string]any) bool {
@@ -481,6 +477,10 @@ func account_homed(row map[string]any) bool {
 	return account_hosted_flag(row) && !account_group(row) && (ptype == "fediverse" || ptype == "bluesky")
 }
 
+// account_present returns the redacted row with the capabilities it holds,
+// and for an account on a network whether it is hosted or linked, its
+// server, page, name and avatar, a Mastodon server's limits, and for a chat
+// account whether its session is connected and why not.
 func account_present(user *User, row map[string]any) map[string]any {
 	out := account_redact(row)
 	out["granted"] = account_granted(user, row)

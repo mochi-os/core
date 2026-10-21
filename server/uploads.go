@@ -226,7 +226,7 @@ func xmpp_upload_put(c *gin.Context, user *User, row map[string]any) {
 	c.Status(http.StatusCreated)
 }
 
-// Slots are taken one put at a time.
+// xmpp_uploads_lock takes the slots one put at a time.
 var xmpp_uploads_lock sync.Mutex
 
 // xmpp_uploads_prune drops the slots never used.

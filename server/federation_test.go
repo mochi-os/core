@@ -74,11 +74,11 @@ type matrix_remote struct {
 func create_matrix_remote(t *testing.T, version gomatrixserverlib.RoomVersion) *matrix_remote {
 	t.Helper()
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
-	verImpl, err := gomatrixserverlib.GetRoomVersion(version)
+	implementation, err := gomatrixserverlib.GetRoomVersion(version)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &matrix_remote{t: t, key: "ed25519:remote", private: private, public: public, version: verImpl,
+	r := &matrix_remote{t: t, key: "ed25519:remote", private: private, public: public, version: implementation,
 		events: map[string]gomatrixserverlib.PDU{}, before: map[string]map[string]string{}, state: map[string]map[string]string{}, edge: map[string][]string{}, aliases: map[string]string{}, media: map[string][]byte{}}
 	r.server = httptest.NewServer(http.HandlerFunc(r.serve))
 	t.Cleanup(r.server.Close)
@@ -299,11 +299,11 @@ func (r *matrix_remote) template(room string, user string, membership string) go
 		// The first two versions name events by reference.
 		event, _ := builder.Build(time.Now(), r.name, r.key, r.private)
 		var references struct {
-			Prev any `json:"prev_events"`
-			Auth any `json:"auth_events"`
+			Previous any `json:"prev_events"`
+			Auth     any `json:"auth_events"`
 		}
 		json.Unmarshal(event.JSON(), &references)
-		proto.PrevEvents, proto.AuthEvents = references.Prev, references.Auth
+		proto.PrevEvents, proto.AuthEvents = references.Previous, references.Auth
 	}
 	return proto
 }

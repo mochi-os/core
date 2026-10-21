@@ -54,13 +54,14 @@ var (
 	xmpp_link_backoff = time.Hour
 )
 
+// xmpp_database_lock lets one caller open the database at a time.
+var xmpp_database_lock sync.Mutex
+
 // xmpp_database makes the server-wide XMPP database: the secret dialback keys
 // are made with, each hosted account's roster, the messages waiting for an
 // account's clients, their push registrations, what each account publishes,
 // the files their clients upload and the rooms Mochi's own sessions are in;
 // and the room service's rooms, their affiliations and their history.
-var xmpp_database_lock sync.Mutex
-
 func xmpp_database() *DB {
 	xmpp_database_lock.Lock()
 	defer xmpp_database_lock.Unlock()
@@ -187,7 +188,7 @@ var (
 // which a test waits for before its databases go.
 var xmpp_running sync.WaitGroup
 
-// xmpp_link_of is the link from a domain of this server's to another's.
+// xmpp_peer_of is the link from a domain of this server's to another's.
 func xmpp_peer_of(local string, remote string) *xmpp_peer {
 	key := strings.ToLower(local) + " " + strings.ToLower(remote)
 	xmpp_peers_lock.Lock()

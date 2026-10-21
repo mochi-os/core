@@ -277,14 +277,14 @@ func xmpp_room_name(a *xmpp_account, room jid.JID) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	var info struct {
+	var information struct {
 		Identities []struct {
 			Category string `xml:"category,attr"`
 			Name     string `xml:"name,attr"`
 		} `xml:"http://jabber.org/protocol/disco#info query>identity"`
 	}
-	answer.decode(&info)
-	for _, i := range info.Identities {
+	answer.decode(&information)
+	for _, i := range information.Identities {
 		if i.Category == "conference" {
 			name := strings.TrimSpace(i.Name)
 			if name == "" {

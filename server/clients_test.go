@@ -569,11 +569,11 @@ func TestClientsKnocking(t *testing.T) {
 }
 
 // clients_sliding sends a sliding sync request from a position.
-func clients_sliding(t *testing.T, cli *mautrix.Client, pos string, timeout int, body map[string]any) (int, map[string]any) {
+func clients_sliding(t *testing.T, cli *mautrix.Client, position string, timeout int, body map[string]any) (int, map[string]any) {
 	t.Helper()
 	path := "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?timeout=" + fmt.Sprint(timeout)
-	if pos != "" {
-		path += "&pos=" + url.QueryEscape(pos)
+	if position != "" {
+		path += "&pos=" + url.QueryEscape(position)
 	}
 	return clients_request(t, cli, "POST", path, body)
 }
@@ -650,7 +650,7 @@ func TestClientsSliding(t *testing.T) {
 	if !found {
 		t.Errorf("THE POINT: the account's data is not in the extension: %v", global)
 	}
-	pos := first["pos"].(string)
+	position := first["pos"].(string)
 
 	// Nothing new: a request that waits answers when there is.
 	var wait sync.WaitGroup
@@ -658,7 +658,7 @@ func TestClientsSliding(t *testing.T) {
 	wait.Add(1)
 	go func() {
 		defer wait.Done()
-		_, waited = clients_sliding(t, r, pos, 20000, map[string]any{"conn_id": "main"})
+		_, waited = clients_sliding(t, r, position, 20000, map[string]any{"conn_id": "main"})
 	}()
 	time.Sleep(200 * time.Millisecond)
 	if _, err := a.SendText(ctx, older.RoomID, "news"); err != nil {
@@ -672,7 +672,7 @@ func TestClientsSliding(t *testing.T) {
 	next := waited["pos"].(string)
 
 	// The previous position is answered again; an unknown one is refused.
-	if status, again := clients_sliding(t, r, pos, 0, map[string]any{"conn_id": "main"}); status != 200 || again["rooms"].(map[string]any)[string(older.RoomID)] == nil {
+	if status, again := clients_sliding(t, r, position, 0, map[string]any{"conn_id": "main"}); status != 200 || again["rooms"].(map[string]any)[string(older.RoomID)] == nil {
 		t.Errorf("THE POINT: the previous position = %d %v", status, again)
 	}
 	if status, body := clients_sliding(t, r, "999", 0, map[string]any{"conn_id": "main"}); status != 400 || body["errcode"] != "M_UNKNOWN_POS" {

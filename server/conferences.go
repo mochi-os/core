@@ -984,7 +984,7 @@ func (c *conference) iq_in(s *xmpp_stanza, from jid.JID, to jid.JID, out *confer
 	var reply *xmpp_stanza
 	switch {
 	case space == xmpp_ns_info && name == "query" && kind == "get":
-		reply = c.info(s)
+		reply = c.information(s)
 	case space == xmpp_ns_items && name == "query" && kind == "get":
 		var items strings.Builder
 		if c.config.public || o != nil {
@@ -1021,10 +1021,10 @@ func (c *conference) sorted() []*conference_occupant {
 	return list
 }
 
-// info is what discovery shows of the room: its name and the features its
-// configuration makes it, with its description, subject and how many are in
-// it.
-func (c *conference) info(s *xmpp_stanza) *xmpp_stanza {
+// information is what discovery shows of the room: its name and the
+// features its configuration makes it, with its description, subject and how
+// many are in it.
+func (c *conference) information(s *xmpp_stanza) *xmpp_stanza {
 	g := c.config
 	pick := func(yes bool, a string, b string) string {
 		if yes {

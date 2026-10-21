@@ -78,10 +78,11 @@ func rooms_key(kind string, key string) string {
 	return kind + "\x00" + key
 }
 
-// rooms_lock holds a room while an event is taken into it, so its edge and
-// state move one event at a time.
+// rooms_locks are the rooms' locks, by room.
 var rooms_locks sync.Map
 
+// rooms_lock holds a room while an event is taken into it, so its edge and
+// state move one event at a time.
 func rooms_lock(room string) func() {
 	value, _ := rooms_locks.LoadOrStore(room, &sync.Mutex{})
 	lock := value.(*sync.Mutex)
@@ -772,9 +773,9 @@ func rooms_fill(ctx context.Context, local spec.ServerName, origin spec.ServerNa
 
 // rooms_gap makes a prev event no one could send a point to follow from: the
 // state at it asked for, and it stored outside the timeline with that state.
-func rooms_gap(ctx context.Context, local spec.ServerName, origin spec.ServerName, version gomatrixserverlib.IRoomVersion, room string, prev string) error {
+func rooms_gap(ctx context.Context, local spec.ServerName, origin spec.ServerName, version gomatrixserverlib.IRoomVersion, room string, previous string) error {
 	client := federation_client()
-	answer, err := client.LookupState(ctx, local, origin, room, prev, version.Version())
+	answer, err := client.LookupState(ctx, local, origin, room, previous, version.Version())
 	if err != nil {
 		return err
 	}
@@ -789,12 +790,12 @@ func rooms_gap(ctx context.Context, local spec.ServerName, origin spec.ServerNam
 	if _, found := state[rooms_key(spec.MRoomCreate, "")]; !found {
 		return fmt.Errorf("the state has no create event")
 	}
-	transaction, err := client.GetEvent(ctx, local, origin, prev)
+	transaction, err := client.GetEvent(ctx, local, origin, previous)
 	if err != nil || len(transaction.PDUs) == 0 {
 		return fmt.Errorf("cannot fetch it: %v", err)
 	}
 	event, err := version.NewEventFromUntrustedJSON(transaction.PDUs[0])
-	if err != nil || event.EventID() != prev || event.RoomID().String() != room {
+	if err != nil || event.EventID() != previous || event.RoomID().String() != room {
 		return fmt.Errorf("not the event asked for")
 	}
 	if err := gomatrixserverlib.VerifyEventSignatures(ctx, event, federation_keyring(), federation_sender); err != nil {
@@ -806,7 +807,7 @@ func rooms_gap(ctx context.Context, local spec.ServerName, origin spec.ServerNam
 	rejected := rooms_allowed(event, state) != nil
 	snapshot := rooms_snapshot_save(room, state)
 	rooms_keep(event, snapshot, rejected, true)
-	federation_database().exec("update events set before=? where id=? and before=0", snapshot, prev)
+	federation_database().exec("update events set before=? where id=? and before=0", snapshot, previous)
 	return nil
 }
 
@@ -865,7 +866,7 @@ func rooms_names(room string, state rooms_state) map[string]string {
 // whether it is encrypted.
 func rooms_summary(user string, room string, state rooms_state) map[string]any {
 	direct := rooms_direct(user, room)
-	info := map[string]any{"kind": "room", "conversation": room, "room": !direct, "direct": direct}
+	information := map[string]any{"kind": "room", "conversation": room, "room": !direct, "direct": direct}
 	if id := state[rooms_key("m.room.name", "")]; id != "" {
 		if event := rooms_event(id); event != nil {
 			var content struct {
@@ -873,12 +874,12 @@ func rooms_summary(user string, room string, state rooms_state) map[string]any {
 			}
 			json.Unmarshal(event.Content(), &content)
 			if content.Name != "" {
-				info["name"] = content.Name
+				information["name"] = content.Name
 			}
 		}
 	}
 	if state[rooms_key("m.room.encryption", "")] != "" {
-		info["encrypted"] = true
+		information["encrypted"] = true
 	}
 	names := rooms_names(room, state)
 	members := rooms_members(state)
@@ -892,16 +893,16 @@ func rooms_summary(user string, room string, state rooms_state) map[string]any {
 			heroes = append(heroes, member)
 		}
 	}
-	info["count"] = count
+	information["count"] = count
 	sort.Strings(heroes)
 	var list []any
 	for _, hero := range heroes[:min(len(heroes), 5)] {
 		list = append(list, map[string]any{"id": hero, "name": names[room+" "+hero]})
 	}
 	if len(list) > 0 {
-		info["heroes"] = list
+		information["heroes"] = list
 	}
-	return info
+	return information
 }
 
 // rooms_conversation is an event of a room as a user's conversation events.
@@ -1359,7 +1360,7 @@ func rooms_join(ctx context.Context, user string, address string, via ...spec.Se
 		return "", fmt.Errorf("not a room")
 	}
 	servers = append(servers, via...)
-	roomID, err := spec.NewRoomID(room)
+	identifier, err := spec.NewRoomID(room)
 	if err != nil {
 		return "", fmt.Errorf("not a room")
 	}
@@ -1402,7 +1403,7 @@ func rooms_join(ctx context.Context, user string, address string, via ...spec.Se
 		tried[server] = true
 		joined, ferr := gomatrixserverlib.PerformJoin(ctx, rooms_joiner{federation_client()}, gomatrixserverlib.PerformJoinInput{
 			UserID:     joining,
-			RoomID:     roomID,
+			RoomID:     identifier,
 			ServerName: server,
 			Content:    rooms_member_content(user, spec.Join),
 			PrivateKey: id.private,
@@ -1436,7 +1437,7 @@ func rooms_join(ctx context.Context, user string, address string, via ...spec.Se
 // rooms_fetch fetches events by id from a server, for the library's join to
 // check the state it was sent by.
 func rooms_fetch(ctx context.Context, local spec.ServerName, server spec.ServerName, version gomatrixserverlib.RoomVersion, ids []string) ([]gomatrixserverlib.PDU, error) {
-	verImpl, err := gomatrixserverlib.GetRoomVersion(version)
+	implementation, err := gomatrixserverlib.GetRoomVersion(version)
 	if err != nil {
 		return nil, err
 	}
@@ -1450,7 +1451,7 @@ func rooms_fetch(ctx context.Context, local spec.ServerName, server spec.ServerN
 		if err != nil || len(transaction.PDUs) == 0 {
 			return nil, fmt.Errorf("event %s: %v", id, err)
 		}
-		event, err := verImpl.NewEventFromUntrustedJSON(transaction.PDUs[0])
+		event, err := implementation.NewEventFromUntrustedJSON(transaction.PDUs[0])
 		if err != nil || event.EventID() != id {
 			return nil, fmt.Errorf("event %s: not the event asked for", id)
 		}
@@ -1868,7 +1869,7 @@ func (rooms_store) InvitePending(ctx context.Context, room spec.RoomID, sender s
 func (rooms_store) RestrictedRoomJoinInfo(ctx context.Context, room spec.RoomID, sender spec.SenderID, local spec.ServerName) (*gomatrixserverlib.RestrictedRoomJoinInfo, error) {
 	state, _ := rooms_current(room.String())
 	members := rooms_members(state)
-	info := &gomatrixserverlib.RestrictedRoomJoinInfo{LocalServerInRoom: rooms_local(room.String()) != "", UserJoinedToRoom: members[string(sender)] == spec.Join}
+	information := &gomatrixserverlib.RestrictedRoomJoinInfo{LocalServerInRoom: rooms_local(room.String()) != "", UserJoinedToRoom: members[string(sender)] == spec.Join}
 	var ids []string
 	for member, membership := range members {
 		if user, err := spec.NewUserID(member, true); err == nil && membership == spec.Join && user.Domain() == local {
@@ -1876,9 +1877,9 @@ func (rooms_store) RestrictedRoomJoinInfo(ctx context.Context, room spec.RoomID,
 		}
 	}
 	for _, event := range rooms_events(ids) {
-		info.JoinedUsers = append(info.JoinedUsers, event)
+		information.JoinedUsers = append(information.JoinedUsers, event)
 	}
-	return info, nil
+	return information, nil
 }
 
 // rooms_template fills a join or leave event's template for another server
@@ -1930,7 +1931,7 @@ func rooms_versions(names []string) []gomatrixserverlib.RoomVersion {
 // for one of its users.
 func rooms_make_join(c *gin.Context, r *fclient.FederationRequest, room string, user string) {
 	joining, err := spec.NewUserID(user, true)
-	roomID, rerr := spec.NewRoomID(room)
+	identifier, rerr := spec.NewRoomID(room)
 	if err != nil || rerr != nil {
 		federation_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "invalid user or room")
 		return
@@ -1945,7 +1946,7 @@ func rooms_make_join(c *gin.Context, r *fclient.FederationRequest, room string, 
 		Context:           c.Request.Context(),
 		UserID:            *joining,
 		SenderID:          spec.SenderID(user),
-		RoomID:            *roomID,
+		RoomID:            *identifier,
 		RoomVersion:       version.Version(),
 		RemoteVersions:    rooms_versions(c.QueryArray("ver")),
 		RequestOrigin:     r.Origin(),
@@ -1967,7 +1968,7 @@ func rooms_make_join(c *gin.Context, r *fclient.FederationRequest, room string, 
 // rooms_send_join takes another server's join event into a room and answers
 // the state the joining server needs.
 func rooms_send_join(c *gin.Context, r *fclient.FederationRequest, room string, id string, v1 bool) {
-	roomID, err := spec.NewRoomID(room)
+	identifier, err := spec.NewRoomID(room)
 	if err != nil {
 		federation_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "invalid room")
 		return
@@ -1982,7 +1983,7 @@ func rooms_send_join(c *gin.Context, r *fclient.FederationRequest, room string, 
 	ctx := c.Request.Context()
 	answer, err := gomatrixserverlib.HandleSendJoin(gomatrixserverlib.HandleSendJoinInput{
 		Context:                   ctx,
-		RoomID:                    *roomID,
+		RoomID:                    *identifier,
 		EventID:                   id,
 		JoinEvent:                 r.Content(),
 		RoomVersion:               version.Version(),
@@ -2051,7 +2052,7 @@ func rooms_raw(events []gomatrixserverlib.PDU) []json.RawMessage {
 // fill for one of its users.
 func rooms_make_leave(c *gin.Context, r *fclient.FederationRequest, room string, user string) {
 	leaving, err := spec.NewUserID(user, true)
-	roomID, rerr := spec.NewRoomID(room)
+	identifier, rerr := spec.NewRoomID(room)
 	if err != nil || rerr != nil {
 		federation_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "invalid user or room")
 		return
@@ -2065,7 +2066,7 @@ func rooms_make_leave(c *gin.Context, r *fclient.FederationRequest, room string,
 	answer, err := gomatrixserverlib.HandleMakeLeave(gomatrixserverlib.HandleMakeLeaveInput{
 		UserID:            *leaving,
 		SenderID:          spec.SenderID(user),
-		RoomID:            *roomID,
+		RoomID:            *identifier,
 		RoomVersion:       version.Version(),
 		RequestOrigin:     r.Origin(),
 		LocalServerName:   local,
@@ -2309,7 +2310,7 @@ func rooms_invite_received(c *gin.Context, r *fclient.FederationRequest, room st
 		return
 	}
 	event := request.Event()
-	roomID, err := spec.NewRoomID(room)
+	identifier, err := spec.NewRoomID(room)
 	if err != nil || event.EventID() != id || event.Type() != spec.MRoomMember || event.StateKey() == nil {
 		federation_error(c, http.StatusBadRequest, "M_BAD_JSON", "not the invitation named")
 		return
@@ -2336,7 +2337,7 @@ func rooms_invite_received(c *gin.Context, r *fclient.FederationRequest, room st
 	}
 	identity := federation_identity_of(invitee.Domain())
 	signed, err := gomatrixserverlib.HandleInvite(c.Request.Context(), gomatrixserverlib.HandleInviteInput{
-		RoomID:            *roomID,
+		RoomID:            *identifier,
 		RoomVersion:       request.RoomVersion(),
 		InvitedUser:       *invitee,
 		InvitedSenderID:   spec.SenderID(invited),

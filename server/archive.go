@@ -196,9 +196,9 @@ func xmpp_archive_query(s *xmpp_stanza) (*xmpp_query_page, bool) {
 				Values []string `xml:"value"`
 			} `xml:"jabber:x:data x>field"`
 			Set *struct {
-				Max    *string `xml:"max"`
-				After  *string `xml:"after"`
-				Before *string `xml:"before"`
+				Maximum *string `xml:"max"`
+				After   *string `xml:"after"`
+				Before  *string `xml:"before"`
 			} `xml:"http://jabber.org/protocol/rsm set"`
 		} `xml:"urn:xmpp:mam:2 query"`
 	}
@@ -235,8 +235,8 @@ func xmpp_archive_query(s *xmpp_stanza) (*xmpp_query_page, bool) {
 		}
 	}
 	if set := request.Query.Set; set != nil {
-		if set.Max != nil {
-			maximum, err := strconv.Atoi(strings.TrimSpace(*set.Max))
+		if set.Maximum != nil {
+			maximum, err := strconv.Atoi(strings.TrimSpace(*set.Maximum))
 			if err != nil || maximum < 0 {
 				return nil, false
 			}

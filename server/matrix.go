@@ -456,9 +456,9 @@ func (state *matrix_state) read(sync *matrix_sync) []map[string]any {
 		state.direct = direct
 	}
 	for room, joined := range sync.Rooms.Join {
-		info := map[string]any{"kind": "room", "conversation": room, "room": !state.direct[room], "direct": state.direct[room]}
+		information := map[string]any{"kind": "room", "conversation": room, "room": !state.direct[room], "direct": state.direct[room]}
 		if joined.Summary.Joined != nil {
-			info["count"] = *joined.Summary.Joined
+			information["count"] = *joined.Summary.Joined
 		}
 		var members []map[string]any
 		for _, e := range append(append([]matrix_event{}, joined.State.Events...), joined.Timeline.Events...) {
@@ -468,10 +468,10 @@ func (state *matrix_state) read(sync *matrix_sync) []map[string]any {
 			switch e.Type {
 			case "m.room.name":
 				if name, _ := e.Content["name"].(string); name != "" {
-					info["name"] = name
+					information["name"] = name
 				}
 			case "m.room.encryption":
-				info["encrypted"] = true
+				information["encrypted"] = true
 			case "m.room.member":
 				user := *e.Key
 				membership, _ := e.Content["membership"].(string)
@@ -492,9 +492,9 @@ func (state *matrix_state) read(sync *matrix_sync) []map[string]any {
 			heroes = append(heroes, map[string]any{"id": hero, "name": state.names[room+" "+hero]})
 		}
 		if len(heroes) > 0 {
-			info["heroes"] = heroes
+			information["heroes"] = heroes
 		}
-		events = append(events, info)
+		events = append(events, information)
 		events = append(events, members...)
 		for _, e := range joined.Timeline.Events {
 			if event := state.timeline(room, &e); event != nil {
@@ -641,11 +641,11 @@ func (state *matrix_state) timeline(room string, e *matrix_event) map[string]any
 			name = body
 		}
 		file := map[string]any{"url": address, "name": name}
-		if info, _ := e.Content["info"].(map[string]any); info != nil {
-			if mime, _ := info["mimetype"].(string); mime != "" {
+		if information, _ := e.Content["info"].(map[string]any); information != nil {
+			if mime, _ := information["mimetype"].(string); mime != "" {
 				file["type"] = mime
 			}
-			if size, ok := info["size"].(float64); ok {
+			if size, ok := information["size"].(float64); ok {
 				file["size"] = int64(size)
 			}
 		}
@@ -814,14 +814,14 @@ func matrix_content(object map[string]any) (map[string]any, error) {
 		case strings.HasPrefix(kind, "audio/"):
 			msgtype = "m.audio"
 		}
-		info := map[string]any{}
+		information := map[string]any{}
 		if kind != "" {
-			info["mimetype"] = kind
+			information["mimetype"] = kind
 		}
 		if size := as_int64(file["size"]); size > 0 {
-			info["size"] = size
+			information["size"] = size
 		}
-		content = map[string]any{"msgtype": msgtype, "body": name, "filename": name, "url": mxc, "info": info}
+		content = map[string]any{"msgtype": msgtype, "body": name, "filename": name, "url": mxc, "info": information}
 		if text != "" {
 			content["body"] = text
 		}

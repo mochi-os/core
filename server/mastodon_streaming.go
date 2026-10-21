@@ -205,7 +205,7 @@ func mastodon_notifications_page(c *gin.Context, s *mastodon_session, grouped bo
 	limit := mastodon_limit(in, 20)
 	types := in.list("types")
 	excluded := in.list("exclude_types")
-	max, _ := strconv.ParseInt(in.text("max_id"), 10, 64)
+	maximum, _ := strconv.ParseInt(in.text("max_id"), 10, 64)
 	since, _ := strconv.ParseInt(in.text("since_id"), 10, 64)
 	least, _ := strconv.ParseInt(in.text("min_id"), 10, 64)
 	account := in.text("account_id")
@@ -214,7 +214,7 @@ func mastodon_notifications_page(c *gin.Context, s *mastodon_session, grouped bo
 	for _, n := range all {
 		id, _ := strconv.ParseInt(mastodon_string(n, "id"), 10, 64)
 		kind := mastodon_string(n, "type")
-		if (max > 0 && id >= max) || (since > 0 && id <= since) || (least > 0 && id <= least) {
+		if (maximum > 0 && id >= maximum) || (since > 0 && id <= since) || (least > 0 && id <= least) {
 			continue
 		}
 		if (len(types) > 0 && !slices.Contains(types, kind)) || slices.Contains(excluded, kind) {
@@ -835,8 +835,8 @@ func mastodon_conversations_page(c *gin.Context, s *mastodon_session) {
 	in := mastodon_read(c)
 	limit := mastodon_limit(in, 20)
 	before := int64(0)
-	if max := in.text("max_id"); max != "" {
-		if held := mastodon_snapshot_get(s.user, "conversation", mastodon_key(s.user, "conversation", max)); held != nil {
+	if maximum := in.text("max_id"); maximum != "" {
+		if held := mastodon_snapshot_get(s.user, "conversation", mastodon_key(s.user, "conversation", maximum)); held != nil {
 			before = mastodon_integer(held, "updated")
 		}
 	}
@@ -1080,7 +1080,7 @@ func mastodon_stream_remove(st *mastodon_stream) {
 	}
 }
 
-// mastodon_stream_of is the connections of a user's, and whether any.
+// mastodon_streams_of is a user's streaming connections.
 func mastodon_streams_of(uid string) []*mastodon_stream {
 	mastodon_streams_lock.Lock()
 	defer mastodon_streams_lock.Unlock()

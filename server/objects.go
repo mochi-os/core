@@ -727,7 +727,7 @@ func api_account_announce(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 // deleting the account's own objects go through mochi.account.object.
 var activity_kinds = map[string]bool{"Like": true, "Dislike": true, "Undo": true, "Lock": true, "Add": true, "Remove": true, "Block": true, "Flag": true, "Delete": true}
 
-// mochi.account.activity(account, activity) -> dict: Send an activity as a hosted fediverse account and return {id, url, data}: a Like or Dislike of an object, the Undo of one, a Lock, an Add or Remove against a collection, a Block, a Flag, or a moderator's Delete of another's object, in the network's form with the object named; core gives it its id under the account, its actor and its time, and the public addressing with the followers told unless the activity carries its own. The activity is listed in the outbox and answered at its id. Behind the account permission
+// mochi.account.activity(account, activity) -> dict: Send an activity as a hosted fediverse account and return {id, url, data}: a Like or Dislike of an object, the Undo of one, a Lock, an Add or Remove against a collection, a Block, a Flag, or a moderator's Delete of another's object, in the network's form with the object named; core gives it its id under the account, its actor and its time, and the public addressing with the followers told unless the activity carries its own. The activity is answered at its id, and listed in the outbox when it is addressed to the public. Behind the account permission
 func api_account_activity(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account string
 	var value sl.Value

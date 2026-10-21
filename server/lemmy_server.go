@@ -667,10 +667,12 @@ func lemmy_my_user(s *lemmy_session) map[string]any {
 	}
 }
 
-// lemmy_languages are the languages a post may be marked with, by Lemmy's
-// numbers: undetermined first.
+// lemmy_language_codes are the languages a post may be marked with, each at
+// its number in Lemmy's list: undetermined first.
 var lemmy_language_codes = []string{"und", "en", "de", "fr", "es", "it", "nl", "pt", "pl", "ru", "uk", "sv", "da", "nb", "fi", "cs", "hu", "ro", "tr", "el", "he", "ar", "fa", "hi", "ja", "ko", "zh", "id", "vi", "th", "eo"}
 
+// lemmy_languages are the languages as the site lists them, each by its
+// number.
 func lemmy_languages() []any {
 	out := []any{}
 	for i, code := range lemmy_language_codes {

@@ -687,12 +687,14 @@ func mastodon_own(s *mastodon_session, source bool) map[string]any {
 	return out
 }
 
-// strip_tags is HTML's text.
-var strip_tags_re = regexp.MustCompile(`<[^>]*>`)
+// strip_tags_pattern matches an HTML tag.
+var strip_tags_pattern = regexp.MustCompile(`<[^>]*>`)
 
+// strip_tags is HTML's text: its line breaks and paragraphs as new lines,
+// its tags gone and its entities decoded.
 func strip_tags(source string) string {
 	source = strings.NewReplacer("<br>", "\n", "<br/>", "\n", "<br />", "\n", "</p><p>", "\n\n").Replace(source)
-	return html.UnescapeString(strip_tags_re.ReplaceAllString(source, ""))
+	return html.UnescapeString(strip_tags_pattern.ReplaceAllString(source, ""))
 }
 
 // mastodon_figure is someone elsewhere, or a feed or source here, as clients
@@ -1057,8 +1059,8 @@ func mastodon_account_people(c *gin.Context, s *mastodon_session, key string, wh
 		table = "following"
 	}
 	before := int64(1 << 62)
-	if max := in.text("max_id"); max != "" {
-		before, _ = strconv.ParseInt(max, 10, 64)
+	if maximum := in.text("max_id"); maximum != "" {
+		before, _ = strconv.ParseInt(maximum, 10, 64)
 	}
 	rows, _ := db_user(s.user, "user").rows("select actor, created from "+table+" where account=? order by created desc", s.account)
 	last := ""

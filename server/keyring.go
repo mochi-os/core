@@ -678,15 +678,15 @@ func keyring_signing_upload(user string, body json.RawMessage) keyring_answer {
 		Keys  map[string]string `json:"keys"`
 	}
 	master := request["master_key"]
-	masterPublic := ""
+	public := ""
 	if len(master) > 0 {
 		var key uploaded
 		if json.Unmarshal(master, &key) != nil || key.User != user || !slices.Contains(key.Usage, "master") || len(key.Keys) != 1 {
 			return keyring_error(http.StatusBadRequest, "M_INVALID_PARAM", "Invalid master key")
 		}
-		masterPublic = keyring_public(string(master))
+		public = keyring_public(string(master))
 	} else if row, _ := db.row("select key from signing where user=? and purpose='master'", user); row != nil {
-		masterPublic = keyring_public(row_string(row, "key"))
+		public = keyring_public(row_string(row, "key"))
 	}
 	for _, purpose := range []string{"self_signing", "user_signing"} {
 		raw := request[purpose+"_key"]
@@ -697,12 +697,12 @@ func keyring_signing_upload(user string, body json.RawMessage) keyring_answer {
 		if json.Unmarshal(raw, &key) != nil || key.User != user || !slices.Contains(key.Usage, purpose) || len(key.Keys) != 1 {
 			return keyring_error(http.StatusBadRequest, "M_INVALID_PARAM", "Invalid "+purpose+" key")
 		}
-		if masterPublic == "" || !keyring_verify(raw, user, "ed25519:"+masterPublic, masterPublic) {
+		if public == "" || !keyring_verify(raw, user, "ed25519:"+public, public) {
 			return keyring_error(http.StatusBadRequest, "M_INVALID_SIGNATURE", "The "+purpose+" key is not signed by the master key")
 		}
 	}
 	if len(master) > 0 {
-		if row, _ := db.row("select key from signing where user=? and purpose='master'", user); row != nil && keyring_public(row_string(row, "key")) != masterPublic {
+		if row, _ := db.row("select key from signing where user=? and purpose='master'", user); row != nil && keyring_public(row_string(row, "key")) != public {
 			db.exec("delete from signatures where user=? and target=?", user, keyring_public(row_string(row, "key")))
 		}
 		db.exec("insert into signing (user, purpose, key) values (?, 'master', ?) on conflict(user, purpose) do update set key=excluded.key", user, string(keyring_strip(master)))

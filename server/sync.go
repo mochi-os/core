@@ -694,7 +694,7 @@ type sliding_sent struct {
 // carry over from.
 type sliding_connection struct {
 	lock     sync.Mutex
-	pos      int64
+	position int64
 	rooms    map[string]sliding_sent
 	previous map[string]sliding_sent
 	marks    sync_position
@@ -745,16 +745,16 @@ func sliding_sync(c *gin.Context, s *clients_session) {
 	conn := sliding_connection_of(s, body.Connection)
 	conn.lock.Lock()
 	defer conn.lock.Unlock()
-	pos := c.Query("pos")
+	position := c.Query("pos")
 	switch {
-	case pos == "":
+	case position == "":
 		conn.rooms, conn.previous = map[string]sliding_sent{}, nil
 		conn.marks, conn.before = sync_position{}, sync_position{}
-	case pos == strconv.FormatInt(conn.pos, 10):
-	case conn.previous != nil && pos == strconv.FormatInt(conn.pos-1, 10):
+	case position == strconv.FormatInt(conn.position, 10):
+	case conn.previous != nil && position == strconv.FormatInt(conn.position-1, 10):
 		// The answer to the previous request was lost: answer it again.
 		conn.rooms, conn.marks = conn.previous, conn.before
-		conn.pos--
+		conn.position--
 	default:
 		clients_error(c, http.StatusBadRequest, "M_UNKNOWN_POS", "Unknown position")
 		return
@@ -786,15 +786,15 @@ func sliding_sync(c *gin.Context, s *clients_session) {
 	deadline := time.Now().Add(sync_timeout(c))
 	for {
 		waiter := clients_waiter()
-		answer, rooms, marks, empty := sliding_build(s, conn, body, pos == "")
-		if !empty || pos == "" || !sync_wait(c.Request.Context(), waiter, deadline) {
+		answer, rooms, marks, empty := sliding_build(s, conn, body, position == "")
+		if !empty || position == "" || !sync_wait(c.Request.Context(), waiter, deadline) {
 			if c.Request.Context().Err() != nil {
 				return
 			}
 			conn.previous, conn.before = conn.rooms, conn.marks
 			conn.rooms, conn.marks = rooms, marks
-			conn.pos++
-			answer["pos"] = strconv.FormatInt(conn.pos, 10)
+			conn.position++
+			answer["pos"] = strconv.FormatInt(conn.position, 10)
 			c.JSON(http.StatusOK, answer)
 			return
 		}

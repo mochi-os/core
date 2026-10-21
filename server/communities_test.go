@@ -223,8 +223,8 @@ func TestCommunityAnnounce(t *testing.T) {
 
 // TestCommunityActivity: an account sends an activity of the allowed kinds
 // whole, addressed to the public and its followers unless it says otherwise,
-// listed in its outbox and answered at its id; a Create is refused, as is an
-// activity with no object.
+// and answered at its id; its outbox lists it only when it is addressed to
+// the public; a Create is refused, as is an activity with no object.
 func TestCommunityActivity(t *testing.T) {
 	alice, _, id, thread := create_community_test_env(t)
 	fn := sl.NewBuiltin("test", nil)
@@ -256,9 +256,14 @@ func TestCommunityActivity(t *testing.T) {
 	if w.Code != http.StatusOK || served["type"] != "Lock" || served["id"] != remote {
 		t.Errorf("served activity = %d %v", w.Code, served)
 	}
+	value, err = api_account_activity(thread, fn, sl.Tuple{sl.String(id), sl_encode(map[string]any{"@context": activitystreams, "type": "Lock", "object": "https://member.example/~m1/post2"})}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, _ := sl_decode_map(value)["id"].(string)
 	w, outbox := activitypub_get(t, "/~"+id+"/outbox?page=true")
-	if items, _ := outbox["orderedItems"].([]any); w.Code != http.StatusOK || len(items) != 1 || items[0].(map[string]any)["type"] != "Lock" {
-		t.Errorf("outbox = %v", outbox)
+	if items, _ := outbox["orderedItems"].([]any); w.Code != http.StatusOK || len(items) != 1 || items[0].(map[string]any)["id"] != public {
+		t.Errorf("THE POINT: the outbox lists the public Lock alone, not the one to followers and a member: %v", outbox)
 	}
 	_ = alice
 }

@@ -1064,8 +1064,8 @@ func mastodon_timeline_page(c *gin.Context, s *mastodon_session, kind string, ar
 		}
 		return ""
 	}
-	if max := in.text("max_id"); max != "" {
-		args["before"] = cursor(max)
+	if maximum := in.text("max_id"); maximum != "" {
+		args["before"] = cursor(maximum)
 	}
 	if since := in.text("since_id"); since != "" {
 		args["after"] = cursor(since)

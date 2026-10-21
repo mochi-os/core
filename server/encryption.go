@@ -1211,11 +1211,11 @@ func (d *encryption_matrix) restore(ctx context.Context) {
 
 // ssss is the secret storage key a recovery key unlocks.
 func (d *encryption_matrix) ssss(ctx context.Context, recovery string) (*ssss.Key, error) {
-	keyID, data, err := d.machine.SSSS.GetDefaultKeyData(ctx)
+	identifier, data, err := d.machine.SSSS.GetDefaultKeyData(ctx)
 	if err != nil {
 		return nil, err
 	}
-	key, err := data.VerifyRecoveryKey(keyID, recovery)
+	key, err := data.VerifyRecoveryKey(identifier, recovery)
 	if err != nil && !errors.Is(err, ssss.ErrUnverifiableKey) {
 		return nil, err
 	}

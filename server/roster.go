@@ -124,7 +124,7 @@ func xmpp_item_text(item *xmpp_item) string {
 	return text + `/>`
 }
 
-// xmpp_shown reports whether a contact is on the roster a client sees: one
+// xmpp_item_shown reports whether a contact is on the roster a client sees: one
 // added, a friend, or one with a subscription either way or asked for.
 func xmpp_item_shown(item *xmpp_item) bool {
 	return item.listed || item.friend || item.subscription != "none" || item.ask

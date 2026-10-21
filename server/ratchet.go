@@ -195,11 +195,11 @@ func omemo_identity(public []byte) []byte {
 
 // === Derivation ===
 
-func omemo_derive(secret []byte, salt []byte, info string, length int) []byte {
+func omemo_derive(secret []byte, salt []byte, information string, length int) []byte {
 	if salt == nil {
 		salt = make([]byte, 32)
 	}
-	out, err := hkdf.Key(sha256.New, secret, salt, info, length)
+	out, err := hkdf.Key(sha256.New, secret, salt, information, length)
 	if err != nil {
 		panic(err)
 	}

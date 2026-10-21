@@ -102,10 +102,10 @@ func TestXMPPRooms(t *testing.T) {
 	bob.expect(t, "the archive's end", `id="a1"`, `complete="true"`)
 
 	bob.send(`<iq xmlns="jabber:client" type="get" id="d1" to="` + room + `"><query xmlns="http://jabber.org/protocol/disco#info"/></iq>`)
-	info := bob.expect(t, "the room's discovery", `id="d1"`, `category="conference"`)
+	information := bob.expect(t, "the room's discovery", `id="d1"`, `category="conference"`)
 	for _, feature := range []string{`name="Lounge"`, "muc_persistent", "muc_open", "muc_nonanonymous", "muc_public", "urn:xmpp:mam:2"} {
-		if !strings.Contains(info, feature) {
-			t.Errorf("the room's discovery lacks %s: %s", feature, info)
+		if !strings.Contains(information, feature) {
+			t.Errorf("the room's discovery lacks %s: %s", feature, information)
 		}
 	}
 	bob.send(`<iq xmlns="jabber:client" type="get" id="d2" to="rooms.example.com"><query xmlns="http://jabber.org/protocol/disco#items"/></iq>`)

@@ -403,6 +403,7 @@ func (f *mastodon_feeds) call(s *mastodon_session, a *App, function string, args
 func create_mastodon_test_env(t *testing.T) (*User, *mastodon_feeds) {
 	t.Helper()
 	alice := create_signin_test_env(t)
+	setup_vapid(t)
 	db := db_user(alice, "user")
 	db.exec("update accounts set enabled=1, data=? where id='f1'", json_encode(map[string]any{"hosted": true, "handle": "alice", "domain": "example.com", "home": "feed1"}))
 	actor_register(alice, "f1", "fediverse", "example.com", "alice")

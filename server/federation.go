@@ -93,6 +93,7 @@ func federation_database() *DB {
 		db.exec("create table if not exists retired (domain text not null, key text not null, public text not null, expired integer not null, primary key (domain, key))")
 		rooms_tables(db)
 		keyring_tables(db)
+		clients_tables(db)
 		signals_tables(db)
 		content_tables(db)
 		bridge_tables(db)
@@ -663,7 +664,13 @@ func federation_dispatch(c *gin.Context, method string, parts []string, r *fclie
 	case route == "GET v1/query" && segment(2) == "profile":
 		rooms_serve_profile(c, c.Query("user_id"), c.Query("field"))
 	case route == "GET v1/query" && segment(2) == "directory":
-		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such room alias here")
+		rooms_serve_alias(c, c.Query("room_alias"))
+	case route == "GET v1/make_knock" && len(parts) == 4:
+		rooms_make_knock(c, r, segment(2), segment(3))
+	case route == "PUT v1/send_knock" && len(parts) == 4:
+		rooms_send_knock(c, r, segment(2), segment(3))
+	case route == "GET v1/hierarchy" && len(parts) == 3:
+		rooms_serve_hierarchy(c, r, segment(2))
 	case route == "GET v1/user" && segment(2) == "devices" && len(parts) == 4:
 		keyring_serve_devices(c, segment(3))
 	case route == "POST v1/user" && segment(2) == "keys":
@@ -678,7 +685,7 @@ func federation_dispatch(c *gin.Context, method string, parts []string, r *fclie
 	case route == "GET v1/media" && (segment(2) == "download" || segment(2) == "thumbnail") && len(parts) == 4:
 		content_serve(c, r, segment(3))
 	case route == "GET v1/publicRooms" || route == "POST v1/publicRooms":
-		c.JSON(http.StatusOK, map[string]any{"chunk": []any{}, "total_room_count_estimate": 0})
+		rooms_serve_published(c, r)
 	default:
 		federation_error(c, http.StatusNotFound, "M_UNRECOGNIZED", "unrecognised request")
 	}

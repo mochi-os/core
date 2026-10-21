@@ -498,6 +498,9 @@ var (
 	// Default apps to install. Login, Menu, and Home must be first three (bootstrap depends on it), then alphabetical.
 	apps_default = []DefaultApp{
 		{"1FLjnMyW4ozYZhNMqkXTWYgjcoHA7Wif3B3UeAe45chxWnuP1F", "Login", []struct{ Permission, Object string }{
+			// The consent page's choice of a home feed (decision 42).
+			{"feeds/read", ""},
+			{"feeds/write", ""},
 			{"oauth/consent", ""},
 			{"user/authentication/read", ""},
 			{"user/authentication/write", ""},
@@ -657,6 +660,9 @@ var (
 			{"domains/read", ""},
 			{"domains/write", ""},
 			{"entity/read", ""},
+			// A hosted account's home feed, chosen on the Networks page.
+			{"feeds/read", ""},
+			{"feeds/write", ""},
 			{"preferences/write", ""},
 			{"interests/read", ""},
 			{"interests/write", ""},

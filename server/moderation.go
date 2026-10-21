@@ -224,29 +224,46 @@ func api_account_report(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if actor == "" {
 		return sl_error(fn, "a linked account reports through mochi.account.request")
 	}
-	if len(content) > 2048 {
-		return sl_error(fn, "content must be at most 2048 characters")
-	}
-	ctx := activitypub_signing(thread_context(t), user, account)
-	r, err := author_resolve(ctx, address)
-	if err != nil || r.Network != "fediverse" || r.ID == "" || r.Inbox == "" {
-		return sl_error(fn, "cannot resolve %s", address)
-	}
-	if err := host_allowed(user, "fediverse", identifier_host(r.ID)); err != nil {
-		return sl_error(fn, "%v", err)
-	}
-	named := []string{r.ID}
+	var named []string
 	if objects != nil {
 		for i := 0; i < objects.Len(); i++ {
 			object, ok := sl.AsString(objects.Index(i))
-			if !ok || !activitypub_remote_ok(object) {
+			if !ok {
 				return sl_error(fn, "objects must be ids on the person's network")
-			}
-			if activitypub_host_of(object) != activitypub_host_of(r.ID) {
-				return sl_error(fn, "an object must be on the person's own server")
 			}
 			named = append(named, object)
 		}
+	}
+	if err := account_flag(thread_context(t), user, account, actor, address, named, content); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl.None, nil
+}
+
+// account_flag reports a person on the fediverse to their server's
+// moderators as a hosted account: a Flag naming them and the objects of
+// theirs complained of, with the reason, sent to their inbox.
+func account_flag(ctx context.Context, user *User, account string, actor string, address string, objects []string, content string) error {
+	if len(content) > 2048 {
+		return fmt.Errorf("content must be at most 2048 characters")
+	}
+	ctx = activitypub_signing(ctx, user, account)
+	r, err := author_resolve(ctx, address)
+	if err != nil || r.Network != "fediverse" || r.ID == "" || r.Inbox == "" {
+		return fmt.Errorf("cannot resolve %s", address)
+	}
+	if err := host_allowed(user, "fediverse", identifier_host(r.ID)); err != nil {
+		return err
+	}
+	named := []string{r.ID}
+	for _, object := range objects {
+		if !activitypub_remote_ok(object) {
+			return fmt.Errorf("objects must be ids on the person's network")
+		}
+		if activitypub_host_of(object) != activitypub_host_of(r.ID) {
+			return fmt.Errorf("an object must be on the person's own server")
+		}
+		named = append(named, object)
 	}
 	flag := map[string]any{
 		"@context": activitystreams,
@@ -262,7 +279,7 @@ func api_account_report(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		inbox = r.Shared
 	}
 	if deliver(user, account, "fediverse", []string{inbox}, []byte(json_encode(flag))) == 0 {
-		return sl_error(fn, fmt.Sprintf("cannot deliver to %s", inbox))
+		return fmt.Errorf("cannot deliver to %s", inbox)
 	}
-	return sl.None, nil
+	return nil
 }

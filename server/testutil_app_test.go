@@ -91,8 +91,27 @@ func test_data_directory(t testing.TB) string {
 	t.Helper()
 	previous := data_dir
 	data_dir = t.TempDir()
-	t.Cleanup(func() { data_dir = previous })
+	// A presence change goes out after the request that made it, and must
+	// not outlive the databases it reads.
+	t.Cleanup(func() {
+		presence_settle()
+		data_dir = previous
+	})
 	return data_dir
+}
+
+// presence_settle waits, for up to five seconds, for the notifications of
+// presence changes still going out.
+func presence_settle() {
+	done := make(chan struct{})
+	go func() {
+		presence_pending.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+	}
 }
 
 // setup_settings_test_schema creates the settings table many features read

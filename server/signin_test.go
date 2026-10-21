@@ -195,6 +195,12 @@ func TestSigninMastodonClient(t *testing.T) {
 	if _, answer := signin_call("POST", "/oauth/token", "grant_type=authorization_code&code="+code+"&client_id="+client+"&client_secret="+secret+"&code_verifier="+verifier, nil); answer["error"] != "invalid_grant" {
 		t.Errorf("a code used twice: %v", answer)
 	}
+	// A lasting token has no refresh token: an empty one refreshes nothing,
+	// even against a token kept with the empty one's hash, as they were.
+	db_open("db/users.db").exec("update tokens set refresh=? where hash=?", token_hash(""), token_hash(access))
+	if w, answer := signin_call("POST", "/oauth/token", "grant_type=refresh_token&refresh_token=&client_id="+client+"&client_secret="+secret, nil); w.Code != 400 || answer["error"] != "invalid_grant" {
+		t.Errorf("THE POINT: an empty refresh token refreshes nothing: %d %v", w.Code, answer)
+	}
 
 	// The engines take the token; the app routes do not.
 	held, _ := validate(access, "Bearer", "")
@@ -262,6 +268,12 @@ func TestSigninMatrixClient(t *testing.T) {
 	access, refresh, device := token["access_token"].(string), token["refresh_token"].(string), token["device_id"].(string)
 	if held, _ := validate(access, "Bearer", ""); held == nil || held.Network != "matrix" || held.Device != device || held.Account != "m1" {
 		t.Fatalf("validated = %+v", held)
+	}
+	// A client naming its device in the scope signs in as that device.
+	w, _ = signin_call("GET", strings.Replace(base, "client%3Aapi%3A*", "client%3Aapi%3A*%20urn%3Amatrix%3Aorg.matrix.msc2967.client%3Adevice%3AABCDEF", 1)+"&code_challenge="+oauth_challenge(verifier)+"&code_challenge_method=S256", "", nil)
+	named, _ := approve(t, alice, consent_id(t, w), "m1", "")
+	if _, answer := signin_call("POST", "/oauth/token", "grant_type=authorization_code&code="+named+"&redirect_uri=https%3A%2F%2Felement.example%2Fcb&client_id="+client+"&code_verifier="+verifier, nil); answer["device_id"] != "ABCDEF" {
+		t.Errorf("THE POINT: the device the scope names: %v", answer)
 	}
 
 	// Another client cannot refresh it; the client can, once.

@@ -320,6 +320,8 @@ func sl_websocket_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "no app")
 	}
 
-	websockets_send(user, a.id, key, sl_decode(args[1]))
+	content := sl_decode(args[1])
+	websockets_send(user, a.id, key, content)
+	mastodon_heard(user, a, key, content)
 	return sl.None, nil
 }

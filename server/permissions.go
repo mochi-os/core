@@ -134,6 +134,12 @@ var permissions = []Permission{
 	{"domains/write", true, false},
 	{"notifications/write", true, false},
 	{"notifications/read", true, false},
+	// The user's feeds, as the feeds app serves them to other apps: listing
+	// them, and making one - the home feed a hosted account's posts from
+	// other apps land in (decision 42), chosen on the consent page and in
+	// Settings.
+	{"feeds/read", true, false},
+	{"feeds/write", true, false},
 	// Answering another client's sign-in for the user: the consent page's
 	// alone, which lives in the login app (signin.go).
 	{"oauth/consent", true, false},

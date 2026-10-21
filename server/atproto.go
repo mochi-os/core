@@ -56,13 +56,16 @@ var atproto_lookup = func(ctx context.Context, host string) ([]string, error) {
 // relay's own window is a day; three days covers a relay that was away.
 var stream_age int64 = 3 * 86400
 
-// atproto_engine is the engine's registration: the repository interface and
-// the handle's identifier. Off with the bluesky setting.
+// atproto_engine is the engine's registration: the repository interface, the
+// handle's identifier and the interface signed-in apps use (xrpc.go), whose
+// blobs and imported repositories are the largest bodies; each method reads
+// no more than its own bound. Off with the bluesky setting.
 func atproto_engine() *engine {
 	return &engine{
 		name:     "atproto",
 		prefixes: []string{"/xrpc/", "/.well-known/atproto-did", "/.well-known/did.json"},
 		setting:  "bluesky",
+		body:     xrpc_import_maximum,
 		handler:  atproto_route,
 	}
 }
@@ -72,7 +75,29 @@ func atproto_engine() *engine {
 // the update stream.
 func atproto_tables(db *DB) {
 	db.exec("create table if not exists identities (did text not null primary key, account text not null, user text not null, created integer not null)")
-	db.exec("create table if not exists stream (sequence integer not null primary key, did text not null, kind text not null, body blob not null, created integer not null)")
+	// A relay resumes from the last sequence it read, so a number is never
+	// given twice: AUTOINCREMENT keeps the last one even when the replay
+	// window has emptied the table.
+	atproto_stream_once.Do(func() { atproto_stream_rebuild(db) })
+	db.exec("create table if not exists stream (sequence integer not null primary key autoincrement, did text not null, kind text not null, body blob not null, created integer not null)")
+	db.exec("create index if not exists stream_created on stream(created)")
+}
+
+var atproto_stream_once sync.Once
+
+// atproto_stream_rebuild moves a stream table made before its sequence was
+// AUTOINCREMENT onto one that is, keeping its events; their highest number
+// becomes the last given.
+func atproto_stream_rebuild(db *DB) {
+	row, _ := db.row("select sql from sqlite_master where type='table' and name='stream'")
+	if row == nil || strings.Contains(strings.ToLower(row_string(row, "sql")), "autoincrement") {
+		return
+	}
+	db.exec("drop table if exists stream_rebuilt")
+	db.exec("create table stream_rebuilt (sequence integer not null primary key autoincrement, did text not null, kind text not null, body blob not null, created integer not null)")
+	db.exec("insert into stream_rebuilt (sequence, did, kind, body, created) select sequence, did, kind, body, created from stream")
+	db.exec("drop table stream")
+	db.exec("alter table stream_rebuilt rename to stream")
 	db.exec("create index if not exists stream_created on stream(created)")
 }
 
@@ -482,6 +507,9 @@ func atproto_create(ctx context.Context, user *User, row map[string]any, object 
 	if result := request_remembered(user, id, key); result != nil {
 		return result, nil
 	}
+	if atproto_deactivated(row) {
+		return nil, fmt.Errorf("account is deactivated")
+	}
 	r := repository_get(user, id)
 	if r == nil {
 		return nil, fmt.Errorf("account has no repository")
@@ -528,6 +556,9 @@ func atproto_record_of(r *repository, uri string) (string, string, error) {
 
 // atproto_update writes a new version of a record the account holds.
 func atproto_update(ctx context.Context, user *User, row map[string]any, uri string, object map[string]any) (map[string]any, error) {
+	if atproto_deactivated(row) {
+		return nil, fmt.Errorf("account is deactivated")
+	}
 	id, _ := row["id"].(string)
 	r := repository_get(user, id)
 	if r == nil {
@@ -549,6 +580,9 @@ func atproto_update(ctx context.Context, user *User, row map[string]any, uri str
 
 // atproto_delete deletes a record the account holds.
 func atproto_delete(ctx context.Context, user *User, row map[string]any, uri string) error {
+	if atproto_deactivated(row) {
+		return fmt.Errorf("account is deactivated")
+	}
 	id, _ := row["id"].(string)
 	r := repository_get(user, id)
 	if r == nil {
@@ -614,7 +648,9 @@ func stream_append(did string, kind string, body map[string]any) int64 {
 	stream_lock.Lock()
 	defer stream_lock.Unlock()
 	db := networks_database()
-	last, _ := db.row("select coalesce(max(sequence), 0) as last from stream")
+	// The frame carries its number, so it is chosen here: after the last
+	// given, which the table keeps even when it holds no events.
+	last, _ := db.row("select max(coalesce((select max(sequence) from stream), 0), coalesce((select seq from sqlite_sequence where name='stream'), 0)) as last")
 	sequence := row_int(last, "last") + 1
 	body["seq"] = sequence
 	if _, set := body["time"]; !set {
@@ -747,7 +783,8 @@ func atproto_route(c *gin.Context) bool {
 	c.Header("Access-Control-Allow-Origin", "*")
 	if method == "OPTIONS" {
 		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Accept, Content-Type, Authorization")
+		c.Header("Access-Control-Allow-Headers", "Accept, Accept-Language, Content-Type, Authorization, DPoP, Atproto-Proxy, Atproto-Accept-Labelers")
+		c.Header("Access-Control-Expose-Headers", "DPoP-Nonce, WWW-Authenticate, Atproto-Content-Labelers")
 		c.AbortWithStatus(http.StatusNoContent)
 		return true
 	}
@@ -765,6 +802,11 @@ func atproto_route(c *gin.Context) bool {
 		return true
 	}
 	name := strings.TrimPrefix(path, "/xrpc/")
+	// What a signed-in app asks of its data server; the methods the engine
+	// serves to the network itself are answered below.
+	if !atproto_served[name] && xrpc_dispatch(c, name) {
+		return true
+	}
 	if method != "GET" {
 		atproto_error(c, http.StatusMethodNotAllowed, "InvalidRequest")
 		return true
@@ -806,6 +848,16 @@ func atproto_route(c *gin.Context) bool {
 	return true
 }
 
+// atproto_served are the methods the engine answers anyone: the feed
+// generator's, which the index asks, and the reads of repositories.
+var atproto_served = map[string]bool{
+	"app.bsky.feed.getFeedSkeleton": true, "app.bsky.feed.describeFeedGenerator": true,
+	"com.atproto.server.describeServer": true, "com.atproto.repo.describeRepo": true, "com.atproto.repo.getRecord": true, "com.atproto.repo.listRecords": true,
+	"com.atproto.sync.getRepo": true, "com.atproto.sync.getLatestCommit": true, "com.atproto.sync.getRepoStatus": true, "com.atproto.sync.getRecord": true,
+	"com.atproto.sync.getBlob": true, "com.atproto.sync.listBlobs": true, "com.atproto.sync.listRepos": true, "com.atproto.sync.subscribeRepos": true,
+	"com.atproto.identity.resolveHandle": true,
+}
+
 // atproto_well_known answers a handle's identifier at the handle's host.
 func atproto_well_known(c *gin.Context) {
 	_, row := atproto_host_account(c.Request.Host)
@@ -832,22 +884,35 @@ func atproto_describe_server(c *gin.Context) {
 // atproto_resolve_handle answers the identifier of a handle this server
 // hosts.
 func atproto_resolve_handle(c *gin.Context) {
-	_, row := atproto_host_account(c.Query("handle"))
-	if row == nil || atproto_did(row) == "" {
-		atproto_error(c, http.StatusBadRequest, "HandleNotFound")
+	handle := strings.ToLower(strings.TrimSpace(c.Query("handle")))
+	_, row := atproto_host_account(handle)
+	if row != nil && atproto_did(row) != "" {
+		c.JSON(http.StatusOK, map[string]any{"did": atproto_did(row)})
 		return
 	}
-	c.JSON(http.StatusOK, map[string]any{"did": atproto_did(row)})
+	// A handle elsewhere, as a signed-in app asks of its data server, is
+	// resolved as the network resolves one.
+	if _, raw := xrpc_bearer(c); raw != "" && handle != "" {
+		if did, err := resolve_handle(c.Request.Context(), handle); err == nil && did != "" {
+			c.JSON(http.StatusOK, map[string]any{"did": did})
+			return
+		}
+	}
+	atproto_error(c, http.StatusBadRequest, "HandleNotFound")
 }
 
 // atproto_refused answers for a repository the owner has taken down, and
 // says so; false for one that is served.
 func atproto_refused(c *gin.Context, row map[string]any) bool {
-	if !atproto_down(row) {
-		return false
+	if atproto_down(row) {
+		atproto_error(c, http.StatusBadRequest, "RepoTakendown")
+		return true
 	}
-	atproto_error(c, http.StatusBadRequest, "RepoTakendown")
-	return true
+	if atproto_deactivated(row) {
+		atproto_error(c, http.StatusBadRequest, "RepoDeactivated")
+		return true
+	}
+	return false
 }
 
 // atproto_describe_repo describes a repository: its handle, identifier and
@@ -977,9 +1042,9 @@ func atproto_sync_status(c *gin.Context) {
 		return
 	}
 	answer := map[string]any{"did": r.did, "active": true}
-	if atproto_down(row) {
+	if status := atproto_status(row); status != "" {
 		answer["active"] = false
-		answer["status"] = "takendown"
+		answer["status"] = status
 	}
 	if r.rev != "" {
 		answer["rev"] = r.rev
@@ -1076,11 +1141,16 @@ func atproto_sync_repos(c *gin.Context) {
 			answer["cursor"] = repos[len(repos)-1]["did"]
 			break
 		}
-		_, _, r := atproto_identity(row_string(row, "did"))
+		_, account, r := atproto_identity(row_string(row, "did"))
 		if r == nil {
 			continue
 		}
-		repos = append(repos, map[string]any{"did": r.did, "head": r.head, "rev": r.rev, "active": true})
+		repo := map[string]any{"did": r.did, "head": r.head, "rev": r.rev, "active": true}
+		if status := atproto_status(account); status != "" {
+			repo["active"] = false
+			repo["status"] = status
+		}
+		repos = append(repos, repo)
 	}
 	answer["repos"] = repos
 	c.JSON(http.StatusOK, answer)
@@ -1118,7 +1188,11 @@ func atproto_follow(ctx context.Context, user *User, row map[string]any, did str
 		return "", fmt.Errorf("account has no repository")
 	}
 	if rkey := atproto_graph(user, id, "app.bsky.graph.follow", did); rkey != "" {
-		return "at://" + r.did + "/app.bsky.graph.follow/" + rkey, nil
+		// A record an app wrote (xrpc.go) has its row already; one from
+		// before is given it.
+		uri := "at://" + r.did + "/app.bsky.graph.follow/" + rkey
+		db_user(user, "user").exec("insert or ignore into following (account, actor, inbox, activity, accepted, created) values (?, ?, '', ?, ?, ?)", id, did, uri, now(), now())
+		return uri, nil
 	}
 	rkey := repository_clock.Next().String()
 	record := map[string]any{"$type": "app.bsky.graph.follow", "subject": did, "createdAt": time.Now().UTC().Format(time.RFC3339Nano)}
@@ -1197,6 +1271,25 @@ func atproto_posts(user *User, row map[string]any, cursor string, limit int) *li
 func atproto_down(row map[string]any) bool {
 	status, _ := account_data(row)["status"].(string)
 	return status == "takendown"
+}
+
+// atproto_deactivated says whether an account is deactivated: moved to
+// another server, or arrived from one and not yet activated (xrpc.go).
+func atproto_deactivated(row map[string]any) bool {
+	deactivated, _ := account_data(row)["deactivated"].(bool)
+	return deactivated
+}
+
+// atproto_status is why an account's repository is not active, as the sync
+// methods answer it, or empty.
+func atproto_status(row map[string]any) string {
+	if atproto_down(row) {
+		return "takendown"
+	}
+	if atproto_deactivated(row) {
+		return "deactivated"
+	}
+	return ""
 }
 
 // atproto_takedown takes an account down or restores it.
@@ -1285,7 +1378,7 @@ func atproto_generators() []map[string]any {
 	rows, _ := networks_database().rows("select did from identities order by did")
 	for _, row := range rows {
 		user, account, r := atproto_identity(row_string(row, "did"))
-		if r == nil || atproto_down(account) {
+		if r == nil || atproto_status(account) != "" {
 			continue
 		}
 		items, _ := repository_records(user, r.account, "app.bsky.feed.generator", 100, "", false)
@@ -1313,7 +1406,7 @@ func atproto_skeleton(c *gin.Context) {
 		return
 	}
 	user, row, r := atproto_identity(did)
-	if r == nil || atproto_down(row) {
+	if r == nil || atproto_status(row) != "" {
 		atproto_error(c, http.StatusBadRequest, "UnknownFeed")
 		return
 	}

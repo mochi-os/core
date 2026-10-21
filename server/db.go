@@ -463,6 +463,7 @@ func db_user(u *User, name string) *DB {
 		keys_table(db)
 		networks_tables(db)
 		numbers_table(db)
+		statuses_tables(db)
 
 		// User interest profiles for personalised ranking
 		db.exec("create table if not exists interests (qid text not null primary key, weight integer not null default 100, updated integer not null default 0)")

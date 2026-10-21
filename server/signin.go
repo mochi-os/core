@@ -160,6 +160,8 @@ func signin_route(c *gin.Context) bool {
 		})
 	case path == "/api/v1/apps" && method == "POST":
 		signin_register_mastodon(c)
+	case path == "/api/v1/apps/verify_credentials" && method == "GET":
+		signin_app_credentials(c)
 	case path == "/oauth/register" && method == "POST":
 		signin_register(c)
 	case path == "/oauth/par" && method == "POST":
@@ -207,10 +209,16 @@ func signin_issuer(c *gin.Context) string {
 	return strings.TrimSuffix(network_scheme, "://") + "://" + host
 }
 
-// signin_metadata is the authorization server's document.
+// signin_metadata answers the authorization server's document.
 func signin_metadata(c *gin.Context) {
+	c.JSON(http.StatusOK, signin_document(c))
+}
+
+// signin_document is the authorization server's document, which Matrix
+// clients also read at their own path.
+func signin_document(c *gin.Context) map[string]any {
 	issuer := signin_issuer(c)
-	c.JSON(http.StatusOK, map[string]any{
+	return map[string]any{
 		"issuer":                                           issuer,
 		"authorization_endpoint":                           issuer + "/oauth/authorize",
 		"token_endpoint":                                   issuer + "/oauth/token",
@@ -230,7 +238,7 @@ func signin_metadata(c *gin.Context) {
 		"client_id_metadata_document_supported":            true,
 		"require_request_uri_registration":                 false,
 		"ui_locales_supported":                             []string{"en"},
-	})
+	}
 }
 
 // signin_fail answers an OAuth error in the protocol's shape.
@@ -326,6 +334,7 @@ func signin_register_mastodon(c *gin.Context) {
 		scopes = "read"
 	}
 	cl := client_store(name, strings.TrimSpace(body.Website), redirects, scopes, "fediverse", true)
+	webpush_ensure()
 	c.JSON(http.StatusOK, map[string]any{
 		"id":            cl.ID,
 		"name":          cl.Name,
@@ -335,8 +344,24 @@ func signin_register_mastodon(c *gin.Context) {
 		"redirect_uris": cl.Redirects,
 		"client_id":     cl.ID,
 		"client_secret": cl.Secret,
-		"vapid_key":     "",
+		"vapid_key":     webpush_public,
 	})
+}
+
+// signin_app_credentials answers the app a Mastodon token was issued to, as
+// an app checks its token.
+func signin_app_credentials(c *gin.Context) {
+	t := signin_validate(c)
+	if t == nil {
+		return
+	}
+	cl := client_registered(t.Client)
+	if cl == nil {
+		signin_fail(c, http.StatusUnauthorized, "invalid_token", "the token's app is gone")
+		return
+	}
+	webpush_ensure()
+	c.JSON(http.StatusOK, map[string]any{"id": cl.ID, "name": cl.Name, "website": cl.Website, "scopes": strings.Fields(cl.Scopes), "redirect_uri": strings.Join(cl.Redirects, "\n"), "redirect_uris": cl.Redirects, "vapid_key": webpush_public})
 }
 
 // signin_register registers a client dynamically (RFC 7591), as Matrix
@@ -1087,27 +1112,75 @@ func signin_token_code(c *gin.Context, cl *signin_client, key string) {
 	signin_issue(c, cl, user, account, code.Scope, key, "")
 }
 
+// A signin_minted is a sign-in's new tokens: the access token, the refresh
+// token where it expires, when it expires, and the device it is for.
+type signin_minted struct {
+	token   string
+	refresh string
+	expires int64
+	device  string
+}
+
+// signin_device is the device a Matrix client asks for in its scope
+// (urn:matrix:client:device:<id>, or MSC2967's unstable form), or "".
+func signin_device(scope string) string {
+	for _, s := range strings.Fields(scope) {
+		for _, prefix := range []string{"urn:matrix:client:device:", "urn:matrix:org.matrix.msc2967.client:device:"} {
+			if id, ok := strings.CutPrefix(s, prefix); ok && id != "" && len(id) <= 100 && !strings.ContainsAny(id, "/ ") {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// signin_mint mints the tokens for a sign-in: an access token that expires
+// when expiring is set, with a refresh token then, bound to the client, the
+// account, the key and the device - the one named, else the one the scope
+// asks for, else a new one.
+func signin_mint(user *User, client string, name string, network string, account string, scope string, key string, device string, expiring bool) *signin_minted {
+	m := &signin_minted{device: device}
+	if m.device == "" {
+		m.device = signin_device(scope)
+	}
+	if m.device == "" {
+		m.device = strings.ToUpper(random_alphanumeric(10))
+	}
+	if expiring {
+		m.expires = now() + signin_access_lifetime
+		m.refresh = token_generate()
+	}
+	m.token = token_generate()
+	if m.token == "" {
+		return nil
+	}
+	refresh := ""
+	if m.refresh != "" {
+		refresh = token_hash(m.refresh)
+	}
+	db_open("db/users.db").exec("insert into tokens (hash, user, app, name, scopes, action, entity, created, expires, kind, client, account, network, jkt, refresh, device) values (?, ?, '', ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		token_hash(m.token), user.UID, name, json_encode(strings.Fields(scope)), now(), m.expires, token_signin, client, account, network, key, refresh, m.device)
+	db_open("db/sessions.db").exec("insert into accesses (hash, user, used) values (?, ?, ?)", token_hash(m.token), user.UID, now())
+	// A Matrix client's device is the account's from its sign-in, listed
+	// among its devices before it makes a request.
+	if network == "matrix" {
+		if h := matrix_hosted_of(user, account_hosted_get(user, account)); h != nil {
+			federation_database().exec("insert or ignore into clients (user, device, name, created) values (?, ?, ?, ?)", h.address, m.device, name, now())
+		}
+	}
+	return m
+}
+
 // signin_issue mints the tokens for a sign-in and answers them: an access
 // token that lasts on the fediverse and expires elsewhere, with a refresh
 // token where it expires, bound to the client, the account and the key.
 func signin_issue(c *gin.Context, cl *signin_client, user *User, account string, scope string, key string, device string) {
-	var expires int64
-	refresh := ""
-	if cl.Network != "fediverse" {
-		expires = now() + signin_access_lifetime
-		refresh = token_generate()
-	}
-	if device == "" {
-		device = random_alphanumeric(10)
-	}
-	token := token_generate()
-	if token == "" {
+	m := signin_mint(user, cl.ID, cl.Name, cl.Network, account, scope, key, device, cl.Network != "fediverse")
+	if m == nil {
 		signin_fail(c, http.StatusInternalServerError, "server_error", "no token")
 		return
 	}
-	db_open("db/users.db").exec("insert into tokens (hash, user, app, name, scopes, action, entity, created, expires, kind, client, account, network, jkt, refresh, device) values (?, ?, '', ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		token_hash(token), user.UID, cl.Name, json_encode(strings.Fields(scope)), now(), expires, token_signin, cl.ID, account, cl.Network, key, token_hash(refresh), device)
-	db_open("db/sessions.db").exec("insert into accesses (hash, user, used) values (?, ?, ?)", token_hash(token), user.UID, now())
+	token, refresh, expires, device := m.token, m.refresh, m.expires, m.device
 	answer := map[string]any{
 		"access_token": token,
 		"token_type":   "Bearer",
@@ -1138,6 +1211,12 @@ func signin_issue(c *gin.Context, cl *signin_client, user *User, account string,
 // the client's, unused and within its life, and the proof by the bound key.
 // The old tokens end.
 func signin_token_refresh(c *gin.Context, cl *signin_client, key string) {
+	// A token with no refresh token keeps none, but rows kept before kept
+	// the empty one's hash: an empty refresh token refreshes nothing.
+	if c.PostForm("refresh_token") == "" {
+		signin_fail(c, http.StatusBadRequest, "invalid_grant", "a refresh token is required")
+		return
+	}
 	db := db_open("db/users.db")
 	var t Token
 	if !db.scan(&t, "select hash, user, app, name, scopes, action, entity, created, expires, kind, client, account, network, jkt, refresh, device from tokens where refresh=? and kind=?", token_hash(c.PostForm("refresh_token")), token_signin) || t.Client != cl.ID {
@@ -1314,11 +1393,9 @@ func account_by_address(network string, address string) (*User, map[string]any) 
 		if strings.HasPrefix(address, "did:") {
 			return account_by_did(address)
 		}
-		for _, d := range handle_domains(nil) {
-			if rest, ok := strings.CutSuffix(address, "."+d); ok {
-				name, domain = strings.ReplaceAll(rest, "-", "_"), d
-			}
-		}
+		// A handle is a host, as the engine resolves it: a name on this
+		// server's domain or one a user runs, or such a domain itself.
+		return atproto_host_account(address)
 	}
 	if name == "" || domain == "" {
 		return nil, nil

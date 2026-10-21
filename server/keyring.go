@@ -1051,20 +1051,19 @@ func keyring_better(user string, version string, room string, session string, da
 
 // keyring_data reads or keeps an item of the account's data by its type.
 func keyring_data(user string, method string, kind string, body json.RawMessage) keyring_answer {
-	db := federation_database()
 	switch method {
 	case "GET":
-		row, _ := db.row("select content from data where user=? and type=?", user, kind)
-		if row == nil {
+		content := clients_setting(user, "", kind)
+		if content == nil {
 			return keyring_error(http.StatusNotFound, "M_NOT_FOUND", "No such data")
 		}
-		return keyring_ok(json.RawMessage(row_string(row, "content")))
+		return keyring_ok(content)
 	case "PUT":
 		var object map[string]any
 		if json.Unmarshal(body, &object) != nil {
 			return keyring_error(http.StatusBadRequest, "M_NOT_JSON", "Invalid data")
 		}
-		db.exec("insert into data (user, type, content) values (?, ?, ?) on conflict(user, type) do update set content=excluded.content", user, kind, string(body))
+		clients_setting_set(user, "", kind, body)
 		return keyring_ok(map[string]any{})
 	}
 	return keyring_error(http.StatusNotFound, "M_UNRECOGNIZED", "Unrecognised request")
@@ -1078,8 +1077,16 @@ func keyring_data(user string, method string, kind string, body json.RawMessage)
 // and the position to give next. What it was given before that position is
 // let go.
 func keyring_sync(user string, device string, since string) map[string]any {
-	db := federation_database()
 	delivered, changes := keyring_position(since)
+	events, delivered := keyring_deliveries(user, device, delivered)
+	changed, changes := keyring_changes(user, changes, since == "")
+	return map[string]any{"events": events, "changed": changed, "left": []string{}, "counts": keyring_counts(user, device), "fallback": keyring_unused(user, device), "next": fmt.Sprintf("%d_%d", delivered, changes)}
+}
+
+// keyring_deliveries is what was sent a device since a delivery it was
+// given, at most a hundred, and the last given; those before are let go.
+func keyring_deliveries(user string, device string, delivered int64) ([]map[string]any, int64) {
+	db := federation_database()
 	if delivered > 0 {
 		db.exec("delete from deliveries where user=? and device=? and id<=?", user, device, delivered)
 	}
@@ -1091,24 +1098,30 @@ func keyring_sync(user string, device string, since string) map[string]any {
 		events = append(events, map[string]any{"sender": row_string(row, "sender"), "type": row_string(row, "type"), "content": content})
 		delivered = row_int(row, "id")
 	}
+	return events, delivered
+}
+
+// keyring_changes is who changed their devices since a change, of those a
+// user shares a room with, and the last change; a first sync starts from
+// now, since the device asks for what it needs.
+func keyring_changes(user string, changes int64, first bool) ([]string, int64) {
+	db := federation_database()
 	changed := []string{}
-	if since == "" {
-		// A device's first sync starts from now: it asks for what it needs.
+	if first {
 		row, _ := db.row("select max(id) as id from changes")
+		return changed, row_int(row, "id")
+	}
+	rows, _ := db.rows("select id, user, viewer from changes where id>? order by id", changes)
+	shared := keyring_sharing(user)
+	for _, row := range rows {
 		changes = row_int(row, "id")
-	} else {
-		rows, _ := db.rows("select id, user, viewer from changes where id>? order by id", changes)
-		shared := keyring_sharing(user)
-		for _, row := range rows {
-			changes = row_int(row, "id")
-			person := row_string(row, "user")
-			viewer := row_string(row, "viewer")
-			if (viewer == "" || viewer == user) && (person == user || shared[person]) && !slices.Contains(changed, person) {
-				changed = append(changed, person)
-			}
+		person := row_string(row, "user")
+		viewer := row_string(row, "viewer")
+		if (viewer == "" || viewer == user) && (person == user || shared[person]) && !slices.Contains(changed, person) {
+			changed = append(changed, person)
 		}
 	}
-	return map[string]any{"events": events, "changed": changed, "left": []string{}, "counts": keyring_counts(user, device), "fallback": keyring_unused(user, device), "next": fmt.Sprintf("%d_%d", delivered, changes)}
+	return changed, changes
 }
 
 // keyring_position reads a sync position: the last delivery and the last

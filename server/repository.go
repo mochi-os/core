@@ -361,6 +361,11 @@ func repository_write(ctx context.Context, r *repository, collection string, rke
 // repository_write does.
 func repository_remove(ctx context.Context, r *repository, collection string, rkey string, sourced bool) (bool, error) {
 	db := db_user(r.user, "user")
+	// A record that is not there is gone already: deleting it again would
+	// commit the deletion of nothing, which relays refuse.
+	if held, _ := db.exists("select 1 from records where account=? and collection=? and rkey=?", r.account, collection, rkey); !held {
+		return false, nil
+	}
 	db.exec("delete from records where account=? and collection=? and rkey=?", r.account, collection, rkey)
 	path := collection + "/" + rkey
 	db.exec("delete from waiting where account=? and path=?", r.account, path)
@@ -467,6 +472,14 @@ func repository_commit(ctx context.Context, r *repository, ops []repository_oper
 		data := store.blocks[c]
 		db.exec("insert or ignore into nodes (account, cid, data) values (?, ?, ?)", r.account, c.String(), data)
 		carutil.LdWrite(&archive, c.Bytes(), data)
+	}
+	// The tree's root, which a relay reads the commit against, is written
+	// only when it changed; a commit that changes nothing - a new signing
+	// key announced, an account activated - carries it from the database.
+	if _, written := store.blocks[*root]; !written {
+		if node, _ := db.row("select data from nodes where account=? and cid=?", r.account, root.String()); node != nil {
+			carutil.LdWrite(&archive, root.Bytes(), repository_bytes(node["data"]))
+		}
 	}
 	written := map[cid.Cid]bool{}
 	for _, op := range ops {

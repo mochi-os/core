@@ -138,6 +138,9 @@ func engines_start() {
 	engine_register(activitypub_engine())
 	engine_register(atproto_engine())
 	engine_register(federation_engine())
+	engine_register(clients_engine())
+	engine_register(mastodon_engine())
+	engine_register(lemmy_engine())
 	engine_register(host_meta_engine())
 	engine_register(xmpp_engine())
 }

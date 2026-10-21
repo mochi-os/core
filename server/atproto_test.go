@@ -167,14 +167,17 @@ func create_atproto_test_env(t *testing.T) (*User, *plc_fake) {
 	actor_register(alice, "b1", "bluesky", "example.com", "alice")
 	gin.SetMode(gin.TestMode)
 	plc := create_plc_fake(t)
-	saved_plc, saved_lookup, saved_hour, saved_day := bluesky_plc, atproto_lookup, atproto_budget_hour, atproto_budget_day
-	bluesky_plc = plc.server.URL
+	// A relay asked to crawl answers here rather than at the network's.
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(relay.Close)
+	saved_plc, saved_lookup, saved_hour, saved_day, saved_relay := bluesky_plc, atproto_lookup, atproto_budget_hour, atproto_budget_day, bluesky_relay
+	bluesky_plc, bluesky_relay = plc.server.URL, relay.URL
 	atproto_lookup = func(ctx context.Context, host string) ([]string, error) { return []string{"203.0.113.7"}, nil }
 	atproto_budget_hour, atproto_budget_day = 1500, 10000
 	networks_database().exec("delete from stream")
 	networks_database().exec("delete from identities")
 	t.Cleanup(func() {
-		bluesky_plc, atproto_lookup, atproto_budget_hour, atproto_budget_day = saved_plc, saved_lookup, saved_hour, saved_day
+		bluesky_plc, atproto_lookup, atproto_budget_hour, atproto_budget_day, bluesky_relay = saved_plc, saved_lookup, saved_hour, saved_day, saved_relay
 	})
 	return alice, plc
 }
@@ -848,5 +851,70 @@ func TestAtprotoReaches(t *testing.T) {
 	}
 	if err := atproto_reaches(ctx, "example.com", "example.com"); err != nil {
 		t.Errorf("the domain itself was refused: %v", err)
+	}
+}
+
+// TestAtprotoStreamSequence: a sequence number is never given twice - after
+// the replay window has emptied the stream the next event carries on from
+// the last, and a stream table from before its sequence was AUTOINCREMENT is
+// rebuilt with its events, carrying on from their highest.
+func TestAtprotoStreamSequence(t *testing.T) {
+	create_atproto_test_env(t)
+	db := networks_database()
+	var last int64
+	for range 3 {
+		last = stream_append("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa", "#identity", map[string]any{"did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"})
+	}
+	db.exec("delete from stream")
+	if next := stream_append("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa", "#identity", map[string]any{"did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"}); next != last+1 {
+		t.Errorf("after the window emptied the stream, the next event is %d, want %d", next, last+1)
+	}
+
+	db.exec("drop table stream")
+	db.exec("create table stream (sequence integer not null primary key, did text not null, kind text not null, body blob not null, created integer not null)")
+	db.exec("insert into stream (sequence, did, kind, body, created) values (40, 'did:plc:aaaaaaaaaaaaaaaaaaaaaaaa', '#identity', x'00', 1), (41, 'did:plc:aaaaaaaaaaaaaaaaaaaaaaaa', '#identity', x'00', 2)")
+	db.exec("delete from sqlite_sequence where name='stream'")
+	atproto_stream_rebuild(db)
+	row, _ := db.row("select sql from sqlite_master where type='table' and name='stream'")
+	if !strings.Contains(strings.ToLower(row_string(row, "sql")), "autoincrement") {
+		t.Fatalf("the stream table was not rebuilt: %v", row)
+	}
+	if n, _ := db.row("select count(*) as n from stream"); row_int(n, "n") != 2 {
+		t.Errorf("%d events kept, want 2", row_int(n, "n"))
+	}
+	if held, _ := db.exists("select 1 from sqlite_master where type='index' and name='stream_created'"); !held {
+		t.Error("the rebuilt table has no index on created")
+	}
+	db.exec("delete from stream")
+	if next := stream_append("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa", "#identity", map[string]any{"did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"}); next != 42 {
+		t.Errorf("after the rebuild and an empty window, the next event is %d, want 42", next)
+	}
+	// Rebuilt again once the window has emptied it, the table would lose the
+	// last number it gave.
+	db.exec("delete from stream")
+	atproto_stream_rebuild(db)
+	if next := stream_append("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa", "#identity", map[string]any{"did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"}); next != 43 {
+		t.Errorf("an AUTOINCREMENT stream table was rebuilt again: the next event is %d, want 43", next)
+	}
+}
+
+// TestAtprotoRemoveMissing: deleting a record the repository does not hold -
+// one an app deleted before Mochi took back what it stood for - commits
+// nothing, since a commit deleting nothing is refused by relays.
+func TestAtprotoRemoveMissing(t *testing.T) {
+	alice, _ := create_atproto_test_env(t)
+	ctx := context.Background()
+	if err := atproto_account_create(ctx, alice, "b1"); err != nil {
+		t.Fatal(err)
+	}
+	r := repository_get(alice, "b1")
+	head, events := r.head, len(stream_events(t, 0))
+	committed, err := repository_remove(ctx, r, "app.bsky.feed.like", "3missing", false)
+	if err != nil || committed || r.head != head || len(stream_events(t, 0)) != events {
+		t.Errorf("THE POINT: removing a missing record committed: %v %v, %d events after %d", committed, err, len(stream_events(t, 0)), events)
+	}
+	row := account_hosted_get(alice, "b1")
+	if err := atproto_delete(ctx, alice, row, "at://"+atproto_did(row)+"/app.bsky.feed.like/3missing"); err != nil || len(stream_events(t, 0)) != events {
+		t.Errorf("deleting a missing record = %v, %d events after %d", err, len(stream_events(t, 0)), events)
 	}
 }

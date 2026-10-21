@@ -474,6 +474,13 @@ func account_granted(user *User, row map[string]any) []string {
 // and for an account on a network whether it is hosted or linked, its
 // server, page, name and avatar, a Mastodon server's limits, and for a chat
 // account whether its session is connected and why not.
+// account_homed says whether an account has a home feed: a hosted fediverse
+// or Bluesky account of a person, which apps sign in to and post from.
+func account_homed(row map[string]any) bool {
+	ptype, _ := row["type"].(string)
+	return account_hosted_flag(row) && !account_group(row) && (ptype == "fediverse" || ptype == "bluesky")
+}
+
 func account_present(user *User, row map[string]any) map[string]any {
 	out := account_redact(row)
 	out["granted"] = account_granted(user, row)
@@ -492,6 +499,10 @@ func account_present(user *User, row map[string]any) map[string]any {
 	out["profile"], _ = data["profile"].(bool)
 	if hosted {
 		out["automated"], _ = data["automated"].(bool)
+		// The feed posts made from other apps land in (decision 42).
+		if account_homed(row) {
+			out["home"], _ = data["home"].(string)
+		}
 		// A group's own fields (phase 20): what its document shows and who
 		// moderates it.
 		if account_group(row) {
@@ -822,7 +833,7 @@ func api_account_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	return sl_encode(account_present(user, row)), nil
 }
 
-// mochi.account.add(type, label=..., address=..., token=..., api_key=..., url=..., endpoint=..., auth=..., p256dh=..., secret=..., topic=..., server=...) -> dict: Add an account
+// mochi.account.add(type, label=..., address=..., token=..., api_key=..., url=..., endpoint=..., auth=..., p256dh=..., secret=..., topic=..., server=..., arriving=...) -> dict: Add an account; a hosted Bluesky account with arriving="true" waits for one moving here from another server
 func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <type: string>, [label=...], [address=...], [token=...], [api_key=...], [url=...], [endpoint=...], [auth=...], [p256dh=...], [secret=...], [topic=...], [server=...]")
@@ -1106,6 +1117,16 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		if kind != "" {
 			data["kind"] = kind
 		}
+		// A Bluesky account may wait for one moving here from another
+		// server (xrpc.go): it takes that account's identity on arriving,
+		// and stays deactivated until its identity names this server.
+		if arriving, _ := fields["arriving"].(string); arriving == "true" {
+			if ptype != "bluesky" {
+				return sl_error(fn, "only a Bluesky account arrives from another server")
+			}
+			data["arriving"] = true
+			data["deactivated"] = true
+		}
 	}
 
 	// Serialize data to JSON
@@ -1151,7 +1172,7 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		// A Bluesky account needs its identity in the directory and its
 		// repository before it exists at all (atproto.go); when that fails,
 		// nothing of the account is left behind.
-		if ptype == "bluesky" {
+		if ptype == "bluesky" && data["arriving"] != true {
 			if err := atproto_account_create(thread_context(t), user, id); err != nil {
 				atproto_account_remove(user, id)
 				networks_database().exec("delete from actors where id=?", id)
@@ -1212,7 +1233,7 @@ func api_account_profile(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	return sl_encode(shown), nil
 }
 
-// mochi.account.update(id, label=..., enabled=..., profile=..., automated=..., aliases=[...]) -> bool: Update an account; profile is whether it is shown on the user's profile page, automated whether a hosted account is marked as fed by sources, and aliases the person's accounts elsewhere (handles or ids) that may move to this one, which its fediverse document names as its own
+// mochi.account.update(id, label=..., enabled=..., profile=..., automated=..., aliases=[...], home=...) -> bool: Update an account; profile is whether it is shown on the user's profile page, automated whether a hosted account is marked as fed by sources, aliases the person's accounts elsewhere (handles or ids) that may move to this one, which its fediverse document names as its own, and home the feed a hosted fediverse or Bluesky account's posts from other apps land in, or empty for none
 func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) != 1 {
 		return sl_error(fn, "syntax: <id: integer>, [label=...], [enabled=...]")
@@ -1280,6 +1301,25 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			}
 			encoded, _ := json.Marshal(data)
 			db.account_set(id, map[string]any{"data": string(encoded)})
+
+		case "home":
+			// The feed a hosted account's posts from other apps land in, or
+			// none (decision 42).
+			row := account_hosted_get(user, id)
+			if row == nil || !account_homed(row) {
+				return sl_error(fn, "only a hosted fediverse or Bluesky account has a home feed")
+			}
+			feed, _ := sl.AsString(kv[1])
+			if feed != "" && !valid(feed, "entity") {
+				return sl_error(fn, "invalid feed")
+			}
+			data := account_data(row)
+			if feed != "" {
+				data["home"] = feed
+			} else {
+				delete(data, "home")
+			}
+			db.account_set(id, map[string]any{"data": json_encode(data)})
 
 		case "enabled":
 			var val int

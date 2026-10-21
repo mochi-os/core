@@ -371,6 +371,8 @@ func TestEveryDeclaredPermissionIsEnforcedSomewhere(t *testing.T) {
 		// mochi.service.call enforces whatever a function declares.
 		"contacts/read":       true,
 		"calendars/read":      true,
+		"feeds/read":          true,
+		"feeds/write":         true,
 		"friends/read":        true,
 		"notifications/read":  true,
 		"notifications/send":  true,

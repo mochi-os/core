@@ -66,10 +66,15 @@ func signals_receive(origin spec.ServerName, raw json.RawMessage, out *rooms_out
 		if json.Unmarshal(edu.Content, &typing) != nil || !theirs(typing.User) || rooms_membership(typing.Room, typing.User) != spec.Join {
 			return
 		}
+		typing_set(typing.Room, typing.User, typing.Typing, typing_remote)
 		signals_tell(typing.Room, typing.User, out, map[string]any{"kind": "typing", "conversation": typing.Room, "from": typing.User, "typing": typing.Typing})
 	case "m.receipt":
 		var receipts map[string]map[string]map[string]struct {
 			Events []string `json:"event_ids"`
+			Data   struct {
+				Time   int64  `json:"ts"`
+				Thread string `json:"thread_id"`
+			} `json:"data"`
 		}
 		if json.Unmarshal(edu.Content, &receipts) != nil {
 			return
@@ -79,6 +84,7 @@ func signals_receive(origin spec.ServerName, raw json.RawMessage, out *rooms_out
 				if !theirs(user) || rooms_membership(room, user) != spec.Join || len(receipt.Events) == 0 {
 					continue
 				}
+				receipts_set(room, user, "m.read", receipt.Data.Thread, receipt.Events[len(receipt.Events)-1], receipt.Data.Time)
 				signals_tell(room, user, out, map[string]any{"kind": "receipt", "conversation": room, "from": user, "id": receipt.Events[len(receipt.Events)-1], "displayed": true})
 			}
 		}
@@ -192,6 +198,7 @@ func signals_typing_send(h *matrix_hosted, room string, typing bool) {
 	if rooms_membership(room, h.address) != spec.Join {
 		return
 	}
+	typing_set(room, h.address, typing, signals_typing_held)
 	user, _ := spec.NewUserID(h.address, true)
 	state, _ := rooms_current(room)
 	federation_signal(rooms_servers(state), string(user.Domain()), "m.typing", map[string]any{"room_id": room, "user_id": h.address, "typing": typing})
@@ -206,6 +213,7 @@ func signals_read(h *matrix_hosted, room string, id string) {
 	if rooms_membership(room, h.address) != spec.Join || rooms_event(id) == nil {
 		return
 	}
+	receipts_set(room, h.address, "m.read", "", id, time.Now().UnixMilli())
 	user, _ := spec.NewUserID(h.address, true)
 	state, _ := rooms_current(room)
 	content := map[string]any{room: map[string]any{"m.read": map[string]any{h.address: map[string]any{"event_ids": []string{id}, "data": map[string]any{"ts": time.Now().UnixMilli()}}}}}
@@ -290,4 +298,81 @@ func signals_presence_notify(uid string) {
 			signals_presence(h, signals_changed)
 		}
 	}
+}
+
+// === What clients are told ===
+//
+// Who is typing in each room is held in memory, each until a time; each
+// change moves typing_count on, the position the clients' syncs count it in.
+// Read receipts are kept, each at a new position as it moves.
+
+// typing_remote is how long another server's word that someone types stands
+// without a fresh one.
+const typing_remote = 30 * time.Second
+
+var typing_rooms = map[string]map[string]time.Time{}
+var typing_count int64
+var typing_lock sync.Mutex
+
+// typing_changes is each room's typing's latest change, by position.
+var typing_changes = map[string]int64{}
+
+// typing_set records that someone types in a room, until a time, or stopped.
+func typing_set(room string, user string, typing bool, held time.Duration) {
+	typing_lock.Lock()
+	people := typing_rooms[room]
+	if people == nil {
+		people = map[string]time.Time{}
+		typing_rooms[room] = people
+	}
+	_, was := people[user]
+	if typing {
+		people[user] = time.Now().Add(held)
+	} else {
+		delete(people, user)
+	}
+	if typing != was {
+		typing_count++
+		typing_changes[room] = typing_count
+	}
+	typing_lock.Unlock()
+	clients_wake()
+}
+
+// typing_users is who types in a room now.
+func typing_users(room string) []string {
+	typing_lock.Lock()
+	defer typing_lock.Unlock()
+	users := []string{}
+	for user, until := range typing_rooms[room] {
+		if time.Now().Before(until) {
+			users = append(users, user)
+		} else {
+			delete(typing_rooms[room], user)
+			typing_count++
+			typing_changes[room] = typing_count
+		}
+	}
+	sort.Strings(users)
+	return users
+}
+
+// typing_position is typing's position now.
+func typing_position() int64 {
+	typing_lock.Lock()
+	defer typing_lock.Unlock()
+	return typing_count
+}
+
+// receipts_set records how far someone has read a room, of a kind - m.read,
+// or m.read.private, which only their own clients see - in a thread or the
+// whole room, at a new position.
+func receipts_set(room string, user string, kind string, thread string, event string, ts int64) {
+	if ts <= 0 {
+		ts = time.Now().UnixMilli()
+	}
+	db := federation_database()
+	db.exec("delete from receipts where room=? and user=? and type=? and thread=?", room, user, kind, thread)
+	db.exec("insert into receipts (room, user, type, thread, event, ts) values (?, ?, ?, ?, ?, ?)", room, user, kind, thread, event, ts)
+	clients_wake()
 }

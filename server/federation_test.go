@@ -373,6 +373,18 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 		r.answer(w, 200, map[string]any{"event": r.template(parts[2], parts[3], "join"), "room_version": string(r.version.Version())})
 	case route == "GET v1/make_leave":
 		r.answer(w, 200, map[string]any{"event": r.template(parts[2], parts[3], "leave"), "room_version": string(r.version.Version())})
+	case route == "GET v1/make_knock":
+		r.answer(w, 200, map[string]any{"event": r.template(parts[2], parts[3], "knock"), "room_version": string(r.version.Version())})
+	case route == "PUT v1/send_knock":
+		event, err := r.version.NewEventFromUntrustedJSON(request.Content())
+		if err != nil {
+			r.answer(w, 400, map[string]any{"errcode": "M_BAD_JSON"})
+			return
+		}
+		r.received = append(r.received, event)
+		r.take(event)
+		name := r.events[r.state[parts[2]][rooms_key("m.room.name", "")]]
+		r.answer(w, 200, map[string]any{"knock_room_state": []gomatrixserverlib.InviteStrippedState{gomatrixserverlib.NewInviteStrippedState(name)}})
 	case route == "PUT v2/send_join":
 		event, err := r.version.NewEventFromUntrustedJSON(request.Content())
 		if err != nil {

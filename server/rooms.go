@@ -403,8 +403,15 @@ func rooms_keep(event gomatrixserverlib.PDU, before int64, rejected bool, outlie
 			membership, _ = event.Membership()
 		}
 	}
-	federation_database().exec("insert into events (id, room, type, key, membership, sender, depth, body, rejected, outlier, redacted, before, received) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict(id) do update set outlier=excluded.outlier, before=excluded.before, rejected=excluded.rejected where events.outlier=1 and excluded.outlier=0",
+	db := federation_database()
+	db.exec("insert into events (id, room, type, key, membership, sender, depth, body, rejected, outlier, redacted, before, received) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict(id) do update set outlier=excluded.outlier, before=excluded.before, rejected=excluded.rejected where events.outlier=1 and excluded.outlier=0",
 		event.EventID(), event.RoomID().String(), event.Type(), key, membership, string(event.SenderID()), event.Depth(), string(event.JSON()), rejected, outlier, event.Redacted(), before, now())
+	// An event taken into the timeline takes its place in the order the
+	// clients' syncs count in, once.
+	if !outlier && !rejected {
+		db.exec("insert or ignore into stream (room, event) values (?, ?)", event.RoomID().String(), event.EventID())
+		clients_wake()
+	}
 }
 
 // rooms_known says whether an event is in a room's timeline, as against
@@ -983,6 +990,7 @@ func rooms_tell(event gomatrixserverlib.PDU, out *rooms_outbox) {
 		}
 		out.add(user, account, rooms_conversation(member, event, after)...)
 	}
+	notifications_tell(event, after)
 	if b := bridge_of(event.RoomID().String()); b != nil {
 		if user := user_by_uid(b.user); user != nil {
 			out.bridge(user, b.room, bridge_events(b, event, after)...)
@@ -1133,6 +1141,9 @@ func rooms_member_content(address string, membership string) map[string]any {
 	if user, account := federation_user(address); user != nil {
 		if name := rooms_display(user, account); name != "" {
 			content["displayname"] = name
+		}
+		if avatar := clients_avatar(user, account); avatar != "" {
+			content["avatar_url"] = avatar
 		}
 	} else if standin := bridge_standin_of(address); standin != nil {
 		content["displayname"] = row_string(standin, "name")
@@ -1314,8 +1325,9 @@ func (j rooms_joiner) SendJoin(ctx context.Context, origin spec.ServerName, s sp
 
 // rooms_join joins a user to a room by its id or an alias, answering its id:
 // by the room's own event where someone here is in it, else through a server
-// in it - the alias's, the one the invitation came from, the room id's.
-func rooms_join(ctx context.Context, user string, address string) (string, error) {
+// in it - the alias's, the one the invitation came from, those the client
+// names, the room id's.
+func rooms_join(ctx context.Context, user string, address string, via ...spec.ServerName) (string, error) {
 	joining, err := spec.NewUserID(user, true)
 	if err != nil {
 		return "", err
@@ -1329,18 +1341,24 @@ func rooms_join(ctx context.Context, user string, address string) (string, error
 			return "", fmt.Errorf("not a room")
 		}
 		if federation_local(domain) {
-			return "", fmt.Errorf("no such room")
+			row, _ := federation_database().row("select room from aliases where alias=?", address)
+			if row == nil {
+				return "", fmt.Errorf("no such room")
+			}
+			room = row_string(row, "room")
+		} else {
+			directory, err := federation_client().LookupRoomAlias(ctx, local, domain, address)
+			if err != nil || directory.RoomID == "" {
+				return "", fmt.Errorf("no such room: %v", err)
+			}
+			room = directory.RoomID
+			servers = append(servers, directory.Servers...)
+			servers = append(servers, domain)
 		}
-		directory, err := federation_client().LookupRoomAlias(ctx, local, domain, address)
-		if err != nil || directory.RoomID == "" {
-			return "", fmt.Errorf("no such room: %v", err)
-		}
-		room = directory.RoomID
-		servers = append(servers, directory.Servers...)
-		servers = append(servers, domain)
 	} else if !strings.HasPrefix(address, "!") {
 		return "", fmt.Errorf("not a room")
 	}
+	servers = append(servers, via...)
 	roomID, err := spec.NewRoomID(room)
 	if err != nil {
 		return "", fmt.Errorf("not a room")
@@ -1358,6 +1376,7 @@ func rooms_join(ctx context.Context, user string, address string) (string, error
 			return "", err
 		}
 		federation_database().exec("delete from invites where room=? and user=?", room, user)
+		federation_database().exec("delete from pending where room=? and user=?", room, user)
 		rooms_welcome(user, room, rooms_recent(user, room, event))
 		return room, nil
 	}
@@ -1407,6 +1426,7 @@ func rooms_join(ctx context.Context, user string, address string) (string, error
 			return "", err
 		}
 		federation_database().exec("delete from invites where room=? and user=?", room, user)
+		federation_database().exec("delete from pending where room=? and user=?", room, user)
 		rooms_welcome(user, room, rooms_backfill(ctx, local, server, room, user, joined.JoinEvent))
 		return room, nil
 	}
@@ -1617,15 +1637,21 @@ func rooms_leave(ctx context.Context, user string, room string) error {
 		unlock()
 		return nil
 	}
-	row, _ := federation_database().row("select sender from invites where room=? and user=?", room, user)
-	if row == nil {
+	// An invitation is declined through the server it came from, a knock
+	// withdrawn through the server it went through.
+	var server spec.ServerName
+	if row, _ := federation_database().row("select sender from invites where room=? and user=?", room, user); row != nil {
+		inviter, err := spec.NewUserID(row_string(row, "sender"), true)
+		if err != nil {
+			return err
+		}
+		server = inviter.Domain()
+	} else if row, _ := federation_database().row("select server from pending where room=? and user=? and kind='knock'", room, user); row != nil {
+		server = spec.ServerName(row_string(row, "server"))
+	} else {
 		return nil
 	}
 	leaving, err := spec.NewUserID(user, true)
-	if err != nil {
-		return err
-	}
-	inviter, err := spec.NewUserID(row_string(row, "sender"), true)
 	if err != nil {
 		return err
 	}
@@ -1634,7 +1660,7 @@ func rooms_leave(ctx context.Context, user string, room string) error {
 		return fmt.Errorf("not a Matrix domain here")
 	}
 	client := federation_client()
-	template, err := client.MakeLeave(ctx, leaving.Domain(), inviter.Domain(), room, user)
+	template, err := client.MakeLeave(ctx, leaving.Domain(), server, room, user)
 	if err != nil {
 		return fmt.Errorf("declining: %w", err)
 	}
@@ -1653,10 +1679,11 @@ func rooms_leave(ctx context.Context, user string, room string) error {
 	if err != nil {
 		return err
 	}
-	if err := client.SendLeave(ctx, leaving.Domain(), inviter.Domain(), event); err != nil {
+	if err := client.SendLeave(ctx, leaving.Domain(), server, event); err != nil {
 		return fmt.Errorf("declining: %w", err)
 	}
 	federation_database().exec("delete from invites where room=? and user=?", room, user)
+	clients_pending(room, user, spec.Leave, "", "")
 	return nil
 }
 
@@ -2100,6 +2127,178 @@ func rooms_send_leave(c *gin.Context, r *fclient.FederationRequest, room string,
 	c.JSON(http.StatusOK, map[string]any{})
 }
 
+// rooms_make_knock answers another server's request for a knock event to
+// fill for one of its users, which the room's rules allow only where they
+// let people knock.
+func rooms_make_knock(c *gin.Context, r *fclient.FederationRequest, room string, user string) {
+	knocking, err := spec.NewUserID(user, true)
+	if err != nil || knocking.Domain() != r.Origin() {
+		federation_error(c, http.StatusForbidden, "M_FORBIDDEN", "the knock must come from its user's server")
+		return
+	}
+	version := rooms_version(room)
+	local := rooms_local(room)
+	if version == nil || local == "" {
+		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such room here")
+		return
+	}
+	if !slices.Contains(c.QueryArray("ver"), string(version.Version())) {
+		federation_error(c, http.StatusBadRequest, "M_INCOMPATIBLE_ROOM_VERSION", "the room's version is not one the server speaks")
+		return
+	}
+	proto := gomatrixserverlib.ProtoEvent{SenderID: user, RoomID: room, Type: spec.MRoomMember, StateKey: &user}
+	proto.SetContent(map[string]any{"membership": "knock"})
+	event, state, err := rooms_template(version, room, local, &proto)
+	if err != nil {
+		rooms_refuse(c, err)
+		return
+	}
+	provider, err := gomatrixserverlib.NewAuthEvents(state)
+	if err == nil {
+		err = gomatrixserverlib.Allowed(event, provider, federation_sender)
+	}
+	if err != nil {
+		federation_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, map[string]any{"event": proto, "room_version": version.Version()})
+}
+
+// rooms_send_knock takes another server's knock, for one of its own users,
+// into a room, and answers the state that shows the room.
+func rooms_send_knock(c *gin.Context, r *fclient.FederationRequest, room string, id string) {
+	version := rooms_version(room)
+	local := rooms_local(room)
+	if version == nil || local == "" {
+		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such room here")
+		return
+	}
+	ctx := c.Request.Context()
+	event, err := version.NewEventFromUntrustedJSON(r.Content())
+	if err != nil || event.EventID() != id || event.RoomID().String() != room {
+		federation_error(c, http.StatusBadRequest, "M_BAD_JSON", "not the knock named")
+		return
+	}
+	sender, err := spec.NewUserID(string(event.SenderID()), true)
+	membership, _ := event.Membership()
+	if err != nil || event.Type() != spec.MRoomMember || !event.StateKeyEquals(string(event.SenderID())) || sender.Domain() != r.Origin() || membership != "knock" {
+		federation_error(c, http.StatusBadRequest, "M_BAD_JSON", "not a knock of the server's own user")
+		return
+	}
+	if err := gomatrixserverlib.VerifyEventSignatures(ctx, event, federation_keyring(), federation_sender); err != nil {
+		federation_error(c, http.StatusForbidden, "M_FORBIDDEN", "bad signature")
+		return
+	}
+	var out rooms_outbox
+	unlock := rooms_lock(room)
+	err = rooms_accept(ctx, local, r.Origin(), version, event, &out, false)
+	if err == nil && !rooms_known(event.EventID()) {
+		err = fmt.Errorf("the room has moved past it")
+	}
+	if err == nil {
+		after, _ := rooms_current(room)
+		federation_send(rooms_servers(after), event)
+	}
+	unlock()
+	out.flush()
+	if err != nil {
+		federation_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, map[string]any{"knock_room_state": rooms_stripped(room, "")})
+}
+
+// rooms_serve_alias answers another server what room one of this server's
+// aliases names, and the servers in it.
+func rooms_serve_alias(c *gin.Context, alias string) {
+	row, _ := federation_database().row("select room from aliases where alias=?", alias)
+	if row == nil {
+		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such room alias here")
+		return
+	}
+	room := row_string(row, "room")
+	state, _ := rooms_current(room)
+	servers := rooms_servers(state)
+	if local := rooms_local(room); local != "" && !slices.Contains(servers, string(local)) {
+		servers = append([]string{string(local)}, servers...)
+	}
+	c.JSON(http.StatusOK, map[string]any{"room_id": room, "servers": servers})
+}
+
+// rooms_serve_published answers another server this server's directory of
+// rooms.
+func rooms_serve_published(c *gin.Context, r *fclient.FederationRequest) {
+	var body struct {
+		Limit  int    `json:"limit"`
+		Since  string `json:"since"`
+		Filter struct {
+			Term string `json:"generic_search_term"`
+		} `json:"filter"`
+	}
+	if c.Request.Method == "POST" {
+		json.Unmarshal(r.Content(), &body)
+	} else {
+		body.Limit, _ = strconv.Atoi(c.Query("limit"))
+		body.Since = c.Query("since")
+	}
+	c.JSON(http.StatusOK, rooms_published(body.Filter.Term, body.Limit, body.Since))
+}
+
+// rooms_serve_hierarchy answers another server a space this server is in:
+// the room and its children here, for a room anyone may join or read, or one
+// the asking server has someone in.
+func rooms_serve_hierarchy(c *gin.Context, r *fclient.FederationRequest, room string) {
+	entry := rooms_entry(room)
+	if entry == nil || !rooms_viewable(room, r.Origin()) {
+		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such room here")
+		return
+	}
+	suggested := c.Query("suggested_only") == "true"
+	children := []map[string]any{}
+	inaccessible := []string{}
+	var rooms []map[string]any
+	state, _ := rooms_current(room)
+	for key, id := range state {
+		if !strings.HasPrefix(key, "m.space.child\x00") {
+			continue
+		}
+		event := rooms_event(id)
+		if event == nil || event.StateKey() == nil {
+			continue
+		}
+		var content map[string]any
+		json.Unmarshal(event.Content(), &content)
+		if content["via"] == nil || (suggested && content["suggested"] != true) {
+			continue
+		}
+		children = append(children, map[string]any{"type": event.Type(), "state_key": *event.StateKey(), "content": content, "sender": string(event.SenderID()), "origin_server_ts": int64(event.OriginServerTS())})
+		child := *event.StateKey()
+		if inner := rooms_entry(child); inner != nil && rooms_viewable(child, r.Origin()) {
+			inner["children_state"] = []any{}
+			rooms = append(rooms, inner)
+		} else if rooms_version(child) != nil {
+			inaccessible = append(inaccessible, child)
+		}
+	}
+	entry["children_state"] = children
+	if rooms == nil {
+		rooms = []map[string]any{}
+	}
+	c.JSON(http.StatusOK, map[string]any{"room": entry, "children": rooms, "inaccessible_children": inaccessible})
+}
+
+// rooms_viewable says whether a server may see a room in a walk of spaces:
+// one anyone may join, knock on or read, or one it has someone in.
+func rooms_viewable(room string, server spec.ServerName) bool {
+	rule, _ := clients_state_content(room, spec.MRoomJoinRules, "")["join_rule"].(string)
+	visibility, _ := clients_state_content(room, spec.MRoomHistoryVisibility, "")["history_visibility"].(string)
+	if rule == spec.Public || rule == "knock" || rule == "knock_restricted" || visibility == "world_readable" {
+		return true
+	}
+	state, _ := rooms_current(room)
+	return slices.Contains(rooms_servers(state), string(server))
+}
+
 // rooms_invite_received takes another server's invitation of one of this
 // server's users: checked and countersigned, kept until the user accepts or
 // declines it, and the user's apps told.
@@ -2172,6 +2371,7 @@ func rooms_invite_received(c *gin.Context, r *fclient.FederationRequest, room st
 	json.Unmarshal(event.Content(), &content)
 	federation_database().exec("insert into invites (room, user, version, sender, body, state, created) values (?, ?, ?, ?, ?, ?, ?) on conflict(room, user) do update set version=excluded.version, sender=excluded.sender, body=excluded.body, state=excluded.state, created=excluded.created",
 		room, invited, string(request.RoomVersion()), string(event.SenderID()), string(signed.JSON()), json_encode(stripped), now())
+	clients_pending(room, invited, spec.Invite, string(r.Origin()), "")
 	if content.Direct {
 		rooms_direct_add(invited, room, string(event.SenderID()))
 	}

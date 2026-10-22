@@ -512,11 +512,16 @@ docker: docker-stage
 	    --tag $(docker_image):production \
 	    --push \
 	    . && echo ">>> docker build+push: $$(($$(date +%s)-t))s" | tee -a $(timing)
+	@# The containerd image store keeps a local copy of every pushed image, one
+	@# per release, and nothing here runs it: GHCR holds the release.
+	@-docker image rm $(sort $(addprefix $(docker_image):,$(version) $(docker_minor) latest production)) > /dev/null
 
-# Reclaim disk from repeated image builds: dangling :dev images and the build
+# Reclaim disk from repeated image builds: release tags an interrupted `docker`
+# target left behind (GHCR holds those), dangling :dev images and the build
 # cache of both builders. daemon.json caps the default builder at 5GB but does
-# not govern the buildx one. Tagged images are left alone.
+# not govern the buildx one. :dev is kept for docker-local and docker-scan.
 docker-clean:
+	-docker image ls $(docker_image) --format '{{.Tag}}' | grep -vxE 'dev|<none>' | sed 's|^|$(docker_image):|' | xargs -r docker image rm
 	docker image prune -f
 	docker builder prune -af
 	-docker buildx prune -af

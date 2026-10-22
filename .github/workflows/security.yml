@@ -55,6 +55,7 @@ jobs:
             aquasec/trivy:0.70.0 fs \
             --scanners vuln --severity HIGH,CRITICAL \
             --exit-code 1 --no-progress --timeout 10m \
+            --skip-dirs /src/third_party \
             --ignorefile /.trivyignore /src
 
   container:

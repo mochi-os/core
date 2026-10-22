@@ -269,7 +269,21 @@ func rooms_resolve(version gomatrixserverlib.IRoomVersion, sets []rooms_state) (
 		lists = append(lists, list)
 		all = append(all, list...)
 	}
-	resolved, err := gomatrixserverlib.ResolveConflictsNew(version.Version(), lists, rooms_chain(all), federation_sender, rooms_rejected)
+	// The events resolution reads by id are the states' auth chain and the
+	// states' own events: from version 12 it walks the conflicted subgraph
+	// from each conflicted event, which it looks up among them.
+	known := rooms_chain(all)
+	have := map[string]bool{}
+	for _, event := range known {
+		have[event.EventID()] = true
+	}
+	for _, event := range all {
+		if !have[event.EventID()] {
+			have[event.EventID()] = true
+			known = append(known, event)
+		}
+	}
+	resolved, err := gomatrixserverlib.ResolveConflictsNew(version.Version(), lists, known, federation_sender, rooms_rejected)
 	if err != nil {
 		return nil, err
 	}

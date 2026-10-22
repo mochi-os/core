@@ -463,7 +463,9 @@ vulnerability-scan:
 # Advisory scan of the module graph. Complements vulnerability-scan: no
 # reachability analysis, but it sees every module and catches advisories the
 # Go vulnerability database has not picked up. Mirrors the dependencies job
-# in .github/workflows/security.yml.
+# in .github/workflows/security.yml. The vendored gomatrixserverlib's own
+# go.mod states its minimum versions, not what core builds with, which core's
+# go.mod decides; it is skipped.
 dependency-scan:
 	docker run --rm -v $(CURDIR):/src:ro \
 	    -v $(HOME)/.cache/trivy:/root/.cache/trivy \
@@ -471,6 +473,7 @@ dependency-scan:
 	    aquasec/trivy:latest fs \
 	    --scanners vuln --severity HIGH,CRITICAL \
 	    --exit-code 1 --no-progress --timeout 10m \
+	    --skip-dirs /src/third_party \
 	    --ignorefile /.trivyignore /src
 
 # Report whether the base image tag has moved past the digest the Dockerfile
@@ -696,5 +699,14 @@ test:
 
 test-race:
 	CGO_ENABLED=1 go test -race -count=1 -timeout 600s ./...
+
+# test-networks runs the other networks' tests alone: the engines, linked
+# accounts, the handle registry, keys, delivery, permissions and the
+# certificate policy, named by the files that hold them.
+networks_files = activitypub api_text_fediverse api_text_plain appview archive atproto bluesky clients communities conferences conversations delivery encryption engines federation following handles keyring keys lemmy_server linked links management mastodon_server mastodon media moderation network_login networks objects occupancy omemo_interop omemo presence quote ratchet relays routing signin stanzas transports uploads url_card webmention websub xmpp xrpc
+networks_tests = ${shell grep -ho '^func Test[A-Za-z0-9_]*' $(networks_files:%=server/%_test.go) | sed 's/^func //' | paste -sd'|' -}
+
+test-networks:
+	CGO_ENABLED=0 go test -count=1 -timeout 300s -run '^($(networks_tests)|TestPermissionAccount[A-Za-z]*|TestDomainHostPolicyWildcard)$$' ./server/
 
 -include local/Makefile

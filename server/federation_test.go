@@ -972,6 +972,88 @@ func TestMatrixTransactions(t *testing.T) {
 	}
 }
 
+// TestMatrixRoomVersions: in every room version, a room joined on another
+// server is served back to a server in it and to no other, branches setting
+// the room's name resolve as the version's algorithm has it, and an event
+// whose signature does not verify is refused and never shown.
+func TestMatrixRoomVersions(t *testing.T) {
+	alice, log := create_matrix_test_env(t)
+	for _, version := range []gomatrixserverlib.RoomVersion{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"} {
+		t.Run("v"+string(version), func(t *testing.T) {
+			r := create_matrix_remote(t, version)
+			stranger := create_matrix_remote(t, version)
+			room := r.room("Versions "+string(version), "invite")
+			bob := r.user("bob")
+			empty := ""
+			past := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "past " + string(version)})
+			matrix_join(t, r, alice, room)
+			shown := func(body string) bool {
+				return len(log.matching(func(e map[string]any) bool { return e["kind"] == "message" && e["body"] == body })) > 0
+			}
+
+			// Backfill served: a server in the room reads its past, another
+			// reads nothing.
+			latest := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "latest " + string(version)})
+			r.push(t, "latest"+string(version), latest)
+			status, body := r.call(t, "GET", "/_matrix/federation/v1/backfill/"+url.PathEscape(room)+"?v="+url.QueryEscape(latest.EventID())+"&limit=50", nil)
+			served := map[string]bool{}
+			pdus, _ := body["pdus"].([]any)
+			for _, item := range pdus {
+				if event, err := r.version.NewEventFromUntrustedJSON(mustjson(item)); err == nil {
+					served[event.EventID()] = true
+				}
+			}
+			if status != 200 || !served[past.EventID()] || !served[latest.EventID()] {
+				t.Errorf("backfill = %d, %d events, past %v, latest %v", status, len(pdus), served[past.EventID()], served[latest.EventID()])
+			}
+			if status, body := stranger.call(t, "GET", "/_matrix/federation/v1/backfill/"+url.PathEscape(room)+"?v="+url.QueryEscape(latest.EventID())+"&limit=50", nil); status != 200 || len(body["pdus"].([]any)) != 0 {
+				t.Errorf("backfill for a server not in the room = %d %v", status, body)
+			}
+
+			// A state conflict: two names set on parallel branches, the second
+			// both deeper and later, which the first version's algorithm
+			// prefers by depth and the later ones by time.
+			r.lock.Lock()
+			edge, state := slices.Clone(r.edge[room]), maps.Clone(r.state[room])
+			alpha := r.build(room, bob, "m.room.name", &empty, map[string]any{"name": "Alpha " + string(version)}, edge, state)
+			r.events[alpha.EventID()], r.before[alpha.EventID()] = alpha, state
+			r.lock.Unlock()
+			time.Sleep(5 * time.Millisecond)
+			r.lock.Lock()
+			step := r.build(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "step " + string(version)}, edge, state)
+			r.events[step.EventID()], r.before[step.EventID()] = step, state
+			beta := r.build(room, bob, "m.room.name", &empty, map[string]any{"name": "Beta " + string(version)}, []string{step.EventID()}, state)
+			r.events[beta.EventID()], r.before[beta.EventID()] = beta, state
+			r.lock.Unlock()
+			r.push(t, "beta"+string(version), beta)
+			r.push(t, "alpha"+string(version), alpha)
+			current, _ := rooms_current(room)
+			if current[rooms_key("m.room.name", "")] != beta.EventID() {
+				t.Errorf("resolved name = %s, want the deeper, later branch's %s", current[rooms_key("m.room.name", "")], beta.EventID())
+			}
+			for _, branch := range []string{alpha.EventID(), beta.EventID()} {
+				if found, _ := federation_database().exists("select 1 from extremities where room=? and event=?", room, branch); !found {
+					t.Errorf("branch %s is not at the room's edge", branch)
+				}
+			}
+
+			// A bad signature: an event signed with a key that is not the
+			// sending server's.
+			_, other, _ := ed25519.GenerateKey(rand.Reader)
+			r.lock.Lock()
+			own := r.private
+			r.private = other
+			forged := r.build(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "forged " + string(version)}, []string{beta.EventID()}, r.state[room])
+			r.private = own
+			r.lock.Unlock()
+			results := r.push(t, "forged"+string(version), forged)
+			if result, _ := results[forged.EventID()].(map[string]any); result["error"] == nil || shown("forged "+string(version)) || rooms_known(forged.EventID()) {
+				t.Errorf("an event with a bad signature: %v", results)
+			}
+		})
+	}
+}
+
 // TestMatrixOutbound: what the user does reaches the other server, which a
 // server that fails waits out with a backoff before it is sent again; edits
 // and redactions follow; and leaving is a leave event.

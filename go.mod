@@ -253,3 +253,8 @@ require (
 	lukechampine.com/blake3 v1.4.1 // indirect
 	mellium.im/reader v0.1.0 // indirect
 )
+
+// gomatrixserverlib at the pinned commit with one fix to state resolution
+// version 2.1 (room version 12), which upstream does not have; see the
+// change marked in third_party/gomatrixserverlib/stateresolutionv2.go.
+replace github.com/matrix-org/gomatrixserverlib => ./third_party/gomatrixserverlib

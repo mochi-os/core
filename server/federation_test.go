@@ -75,6 +75,15 @@ type matrix_remote struct {
 	claims map[string]any
 	// The key queries and claims it was sent.
 	queries []json.RawMessage
+	// What it answers a route with in place of its usual answer, as a server
+	// refusing it would.
+	refuse map[string]matrix_refusal
+}
+
+// A matrix_refusal is a status and the body a remote answers it with.
+type matrix_refusal struct {
+	status int
+	body   map[string]any
 }
 
 func create_matrix_remote(t *testing.T, version gomatrixserverlib.RoomVersion) *matrix_remote {
@@ -85,7 +94,7 @@ func create_matrix_remote(t *testing.T, version gomatrixserverlib.RoomVersion) *
 		t.Fatal(err)
 	}
 	r := &matrix_remote{t: t, key: "ed25519:remote", private: private, public: public, version: implementation,
-		events: map[string]gomatrixserverlib.PDU{}, before: map[string]map[string]string{}, state: map[string]map[string]string{}, edge: map[string][]string{}, aliases: map[string]string{}, media: map[string][]byte{}, names: map[string]string{}, legacy: map[string][]byte{}}
+		events: map[string]gomatrixserverlib.PDU{}, before: map[string]map[string]string{}, state: map[string]map[string]string{}, edge: map[string][]string{}, aliases: map[string]string{}, media: map[string][]byte{}, names: map[string]string{}, legacy: map[string][]byte{}, refuse: map[string]matrix_refusal{}}
 	r.server = httptest.NewServer(http.HandlerFunc(r.serve))
 	t.Cleanup(r.server.Close)
 	r.name = spec.ServerName(fake_host(r.server))
@@ -367,6 +376,10 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 		parts[i], _ = url.PathUnescape(parts[i])
 	}
 	route := req.Method + " " + parts[0] + "/" + parts[1]
+	if refusal, refused := r.refuse[route]; refused {
+		r.answer(w, refusal.status, refusal.body)
+		return
+	}
 	switch {
 	case route == "PUT v1/send":
 		if r.fail {
@@ -396,6 +409,12 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 	case route == "GET v1/make_leave":
 		r.answer(w, 200, map[string]any{"event": r.template(parts[2], parts[3], "leave"), "room_version": string(r.version.Version())})
 	case route == "GET v1/make_knock":
+		// As a server does, a knock from a server that does not speak the
+		// room's version is refused.
+		if !slices.Contains(req.URL.Query()["ver"], string(r.version.Version())) {
+			r.answer(w, 400, map[string]any{"errcode": "M_INCOMPATIBLE_ROOM_VERSION", "error": "Your homeserver does not support the features required to knock on this room"})
+			return
+		}
 		r.answer(w, 200, map[string]any{"event": r.template(parts[2], parts[3], "knock"), "room_version": string(r.version.Version())})
 	case route == "PUT v1/send_knock":
 		event, err := r.version.NewEventFromUntrustedJSON(request.Content())

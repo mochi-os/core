@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,6 +31,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/matrix-org/gomatrix"
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 )
@@ -89,6 +91,23 @@ func clients_engine() *engine {
 // clients_error answers a Matrix error.
 func clients_error(c *gin.Context, status int, code string, message string) {
 	c.JSON(status, map[string]any{"errcode": code, "error": message}) // i18n-ok: Matrix error codes and their text are protocol, read by clients
+}
+
+// clients_refuse answers a request that failed: where another server refused
+// it, with that server's own status, code and message, and otherwise as
+// forbidden, with the reason.
+func clients_refuse(c *gin.Context, err error) {
+	var remote gomatrix.HTTPError
+	if errors.As(err, &remote) {
+		var answer gomatrix.RespError
+		if json.Unmarshal(remote.Contents, &answer) == nil && answer.ErrCode != "" && remote.Code >= 400 && remote.Code < 500 {
+			clients_error(c, remote.Code, answer.ErrCode, answer.Err)
+			return
+		}
+		clients_error(c, http.StatusBadGateway, "M_UNKNOWN", fmt.Sprintf("the other server answered %d", remote.Code))
+		return
+	}
+	clients_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
 }
 
 // clients_answer writes a key store's answer.

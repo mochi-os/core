@@ -608,6 +608,20 @@ func TestClientsKnocking(t *testing.T) {
 	if !knock {
 		t.Errorf("THE POINT: the room was not told of the knock: %+v", heard.Rooms.Join[room])
 	}
+	// The knock withdrawn, and made again.
+	if _, err := r.LeaveRoom(ctx, room); err != nil {
+		t.Fatal(err)
+	}
+	if membership := rooms_membership(string(room), "@root:example.com"); membership != spec.Leave {
+		t.Errorf("THE POINT: the withdrawn knock left root's membership %q", membership)
+	}
+	withdrawn, err := r.SyncRequest(ctx, 0, knocked.NextBatch, "", false, "")
+	if err != nil || !clients_left_with(withdrawn, string(room), "@root:example.com") {
+		t.Errorf("THE POINT: the knocker's sync of the withdrawn knock = %+v %v", withdrawn.Rooms, err)
+	}
+	if _, err := r.KnockRoom(ctx, string(room), &mautrix.ReqKnockRoom{}); err != nil || rooms_membership(string(room), "@root:example.com") != "knock" {
+		t.Errorf("knocking again: %v", err)
+	}
 	if _, err := a.InviteUser(ctx, room, &mautrix.ReqInviteUser{UserID: "@root:example.com"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1462,6 +1476,45 @@ func TestClientsInvites(t *testing.T) {
 	if found, _ := federation_database().exists("select 1 from invites where room=?", vanished); found {
 		t.Error("the declined invitation is kept")
 	}
+}
+
+// TestClientsRefusals: a join, a knock or an invitation another server
+// refuses is answered to the client with that server's own status, code and
+// message, and one that server fails on without an answer of its own as a bad
+// gateway; never with the refusal's raw body.
+func TestClientsRefusals(t *testing.T) {
+	alice, _ := create_clients_test_env(t)
+	ctx := t.Context()
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	a := clients_client(t, alice, "m1", "@alice:example.com", "ALICE")
+	room := r.room("Closed", "knock")
+	via := "?server_name=" + url.QueryEscape(string(r.name))
+	r.lock.Lock()
+	r.refuse["GET v1/make_join"] = matrix_refusal{403, map[string]any{"errcode": "M_FORBIDDEN", "error": "This room is closed"}}
+	r.refuse["GET v1/make_knock"] = matrix_refusal{404, map[string]any{"errcode": "M_NOT_FOUND", "error": "No such room"}}
+	r.refuse["PUT v2/invite"] = matrix_refusal{403, map[string]any{"errcode": "M_FORBIDDEN", "error": "Invitations are not accepted"}}
+	r.lock.Unlock()
+	check := func(what string, status int, body map[string]any, want int, code string, message string) {
+		t.Helper()
+		if status != want || body["errcode"] != code || body["error"] != message {
+			t.Errorf("THE POINT: %s = %d %v, want %d %s %q", what, status, body, want, code, message)
+		}
+	}
+	status, body := clients_request(t, a, "POST", "/_matrix/client/v3/join/"+url.PathEscape(room)+via, map[string]any{})
+	check("a refused join", status, body, 403, "M_FORBIDDEN", "This room is closed")
+	status, body = clients_request(t, a, "POST", "/_matrix/client/v3/knock/"+url.PathEscape(room)+via, map[string]any{})
+	check("a refused knock", status, body, 404, "M_NOT_FOUND", "No such room")
+	made, err := a.CreateRoom(ctx, &mautrix.ReqCreateRoom{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, body = clients_request(t, a, "POST", "/_matrix/client/v3/rooms/"+url.PathEscape(string(made.RoomID))+"/invite", map[string]any{"user_id": r.user("bob")})
+	check("a refused invitation", status, body, 403, "M_FORBIDDEN", "Invitations are not accepted")
+	r.lock.Lock()
+	r.refuse["GET v1/make_knock"] = matrix_refusal{500, map[string]any{}}
+	r.lock.Unlock()
+	status, body = clients_request(t, a, "POST", "/_matrix/client/v3/knock/"+url.PathEscape(room)+via, map[string]any{})
+	check("a knock the server failed on", status, body, 502, "M_UNKNOWN", "the other server answered 500")
 }
 
 // TestClientsNotificationsKept: notifications are kept for an account only

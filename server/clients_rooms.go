@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
 	"slices"
@@ -682,7 +683,7 @@ func clients_join(c *gin.Context, s *clients_session, address string) {
 	defer cancel()
 	room, err := rooms_join(ctx, s.h.address, address, via...)
 	if err != nil {
-		clients_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
+		clients_refuse(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, map[string]any{"room_id": room})
@@ -729,7 +730,7 @@ func clients_knock(c *gin.Context, s *clients_session, address string) {
 		return
 	}
 	if err := clients_knock_remote(ctx, s, room, servers, content); err != nil {
-		clients_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
+		clients_refuse(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, map[string]any{"room_id": room})
@@ -752,7 +753,9 @@ func clients_knock_remote(ctx context.Context, s *clients_session, room string, 
 		if federation_local(server) {
 			continue
 		}
-		made, err := federation_client().MakeKnock(ctx, knocking.Domain(), server, room, s.h.address, rooms_versions(nil))
+		// Every version this server speaks, as a join asks: the room's
+		// server refuses a knock from a server that does not speak its own.
+		made, err := federation_client().MakeKnock(ctx, knocking.Domain(), server, room, s.h.address, slices.Sorted(maps.Keys(gomatrixserverlib.RoomVersions())))
 		if err != nil {
 			failure = err
 			continue
@@ -811,7 +814,7 @@ func clients_membership(c *gin.Context, s *clients_session, room string, action 
 		unlock()
 		out.flush()
 		if err != nil {
-			clients_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
+			clients_refuse(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, map[string]any{})

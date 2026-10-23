@@ -1889,7 +1889,7 @@ func rooms_history_before(ctx context.Context, local spec.ServerName, server spe
 func rooms_leave(ctx context.Context, user string, room string) error {
 	content := map[string]any{"membership": spec.Leave}
 	membership := rooms_membership(room, user)
-	if membership == spec.Join || (membership == spec.Invite && rooms_local(room) != "") {
+	if membership == spec.Join || ((membership == spec.Invite || membership == spec.Knock) && rooms_local(room) != "") {
 		event, err := rooms_send(ctx, room, user, spec.MRoomMember, &user, content)
 		if err != nil {
 			return err

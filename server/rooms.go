@@ -687,6 +687,11 @@ func rooms_receive(ctx context.Context, origin spec.ServerName, raw json.RawMess
 	if json.Unmarshal(raw, &head) != nil || head.Room == "" {
 		return "", nil
 	}
+	if rooms_local(head.Room) == "" {
+		if id, found, err := rooms_withdrawn(ctx, head.Room, raw); found {
+			return id, err
+		}
+	}
 	version := rooms_version(head.Room)
 	if version == nil {
 		return "", nil
@@ -715,12 +720,58 @@ func rooms_receive(ctx context.Context, origin spec.ServerName, raw json.RawMess
 	// last here.
 	if membership, _ := event.Membership(); err == nil && event.Type() == spec.MRoomMember && (membership == spec.Leave || membership == spec.Ban) && event.StateKey() != nil {
 		if user, e := spec.NewUserID(*event.StateKey(), true); e == nil && federation_local(user.Domain()) {
-			rooms_forget(head.Room)
+			shown := clients_leaving(event, *event.StateKey())
+			if rooms_forget(head.Room) {
+				clients_pending(head.Room, *event.StateKey(), spec.Leave, "", shown)
+			}
 		}
 	}
 	unlock()
 	out.flush()
 	return event.EventID(), err
+}
+
+// rooms_withdrawn takes a leave or ban another server sent for one of this
+// server's users it invited to a room no one here is in: the invitation is
+// withdrawn, and the room left in the user's syncs. Only the user who invited
+// them may withdraw it, as nothing here can check the room's state. It
+// answers the event's id, whether it was one, and why it was refused.
+func rooms_withdrawn(ctx context.Context, room string, raw json.RawMessage) (string, bool, error) {
+	var head struct {
+		Type string  `json:"type"`
+		Key  *string `json:"state_key"`
+	}
+	if json.Unmarshal(raw, &head) != nil || head.Type != spec.MRoomMember || head.Key == nil {
+		return "", false, nil
+	}
+	user := *head.Key
+	row, _ := federation_database().row("select version, sender from invites where room=? and user=?", room, user)
+	if row == nil {
+		return "", false, nil
+	}
+	version, err := gomatrixserverlib.GetRoomVersion(gomatrixserverlib.RoomVersion(row_string(row, "version")))
+	if err != nil {
+		return "", false, nil
+	}
+	event, err := version.NewEventFromUntrustedJSON(raw)
+	if err != nil {
+		return "", false, nil
+	}
+	if membership, _ := event.Membership(); membership != spec.Leave && membership != spec.Ban {
+		return "", false, nil
+	}
+	if string(event.SenderID()) != row_string(row, "sender") {
+		return event.EventID(), true, fmt.Errorf("only the user who invited them may withdraw an invitation")
+	}
+	if err := gomatrixserverlib.VerifyEventSignatures(ctx, event, federation_keyring(), federation_sender); err != nil {
+		return event.EventID(), true, fmt.Errorf("signature: %w", err)
+	}
+	federation_database().exec("delete from invites where room=? and user=?", room, user)
+	clients_pending(room, user, spec.Leave, "", clients_leaving(event, user))
+	if found, account := federation_user(user); found != nil {
+		linked_inbound(found, account, "matrix", []map[string]any{{"kind": "room", "conversation": room, "left": true}})
+	}
+	return event.EventID(), true, nil
 }
 
 // rooms_auth_ids are the events an event is authorised by: its auth events,
@@ -1247,7 +1298,17 @@ func rooms_commit(version gomatrixserverlib.IRoomVersion, event gomatrixserverli
 	}
 	after, _ := rooms_current(room)
 	rooms_tell(event, out)
-	federation_send(rooms_servers(before, after), event)
+	servers := rooms_servers(before, after)
+	// An invitation withdrawn or a knock refused goes to its user's server
+	// too, which has no one joined to hear of it otherwise.
+	if membership, _ := event.Membership(); event.Type() == spec.MRoomMember && (membership == spec.Leave || membership == spec.Ban) && event.StateKey() != nil {
+		if previous := rooms_members(before)[*event.StateKey()]; previous == spec.Invite || previous == spec.Knock {
+			if target, err := spec.NewUserID(*event.StateKey(), true); err == nil && !federation_local(target.Domain()) && !slices.Contains(servers, string(target.Domain())) {
+				servers = append(servers, string(target.Domain()))
+			}
+		}
+	}
+	federation_send(servers, event)
 	return nil
 }
 
@@ -1829,11 +1890,17 @@ func rooms_leave(ctx context.Context, user string, room string) error {
 	content := map[string]any{"membership": spec.Leave}
 	membership := rooms_membership(room, user)
 	if membership == spec.Join || (membership == spec.Invite && rooms_local(room) != "") {
-		if _, err := rooms_send(ctx, room, user, spec.MRoomMember, &user, content); err != nil {
+		event, err := rooms_send(ctx, room, user, spec.MRoomMember, &user, content)
+		if err != nil {
 			return err
 		}
+		// A room forgotten keeps none of its events, the user's leave with
+		// them, so their syncs are given it as one never joined is.
+		shown := clients_leaving(event, user)
 		unlock := rooms_lock(room)
-		rooms_forget(room)
+		if rooms_forget(room) {
+			clients_pending(room, user, spec.Leave, "", shown)
+		}
 		unlock()
 		return nil
 	}
@@ -1851,40 +1918,104 @@ func rooms_leave(ctx context.Context, user string, room string) error {
 	} else {
 		return nil
 	}
+	// One that server will not take, having left the room or gone, is
+	// declined here alone: the user is not held to it.
+	event, err := rooms_decline(ctx, user, room, server, content)
+	if err != nil {
+		info("Matrix %s declining %s through %s: %v; declined here alone", user, room, server, err)
+		event = rooms_outofband(user, room, content)
+	}
+	shown := ""
+	if event != nil {
+		shown = clients_leaving(event, user)
+	}
+	federation_database().exec("delete from invites where room=? and user=?", room, user)
+	clients_pending(room, user, spec.Leave, "", shown)
+	return nil
+}
+
+// rooms_decline sends a user's leave of a room this server is not in
+// through a server that is, and answers it.
+func rooms_decline(ctx context.Context, user string, room string, server spec.ServerName, content map[string]any) (gomatrixserverlib.PDU, error) {
 	leaving, err := spec.NewUserID(user, true)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	id := federation_identity_of(leaving.Domain())
 	if id == nil {
-		return fmt.Errorf("not a Matrix domain here")
+		return nil, fmt.Errorf("not a Matrix domain here")
 	}
 	client := federation_client()
 	template, err := client.MakeLeave(ctx, leaving.Domain(), server, room, user)
 	if err != nil {
-		return fmt.Errorf("declining: %w", err)
+		return nil, err
 	}
 	version, err := gomatrixserverlib.GetRoomVersion(template.RoomVersion)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	proto := template.LeaveEvent
 	if proto.Type != spec.MRoomMember || proto.StateKey == nil || *proto.StateKey != user || proto.SenderID != user {
-		return fmt.Errorf("declining: not a leave for the user")
+		return nil, fmt.Errorf("not a leave for the user")
 	}
 	if err := proto.SetContent(content); err != nil {
-		return err
+		return nil, err
 	}
 	event, err := version.NewEventBuilderFromProtoEvent(&proto).Build(time.Now(), id.domain, id.key, id.private)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := client.SendLeave(ctx, leaving.Domain(), server, event); err != nil {
-		return fmt.Errorf("declining: %w", err)
+		return nil, err
 	}
-	federation_database().exec("delete from invites where room=? and user=?", room, user)
-	clients_pending(room, user, spec.Leave, "", "")
-	return nil
+	return event, nil
+}
+
+// rooms_outofband is a user's leave of a room this server is not in, built
+// here alone for their syncs where no server in the room will take it: after
+// their invitation and authorised as it was, as Synapse builds one, else
+// after nothing. It goes nowhere.
+func rooms_outofband(user string, room string, content map[string]any) gomatrixserverlib.PDU {
+	leaving, err := spec.NewUserID(user, true)
+	if err != nil {
+		return nil
+	}
+	id := federation_identity_of(leaving.Domain())
+	if id == nil {
+		return nil
+	}
+	version := rooms_version(room)
+	proto := gomatrixserverlib.ProtoEvent{SenderID: user, RoomID: room, Type: spec.MRoomMember, StateKey: &user, PrevEvents: []string{}, AuthEvents: []string{}, Depth: 1}
+	if row, _ := federation_database().row("select version, body from invites where room=? and user=?", room, user); row != nil {
+		if invited, err := gomatrixserverlib.GetRoomVersion(gomatrixserverlib.RoomVersion(row_string(row, "version"))); err == nil {
+			version = invited
+			// The first two versions name events by reference, which an
+			// invitation alone does not give.
+			if invite, err := invited.NewEventFromTrustedJSON([]byte(row_string(row, "body")), false); err == nil && invited.Version() != gomatrixserverlib.RoomVersionV1 && invited.Version() != gomatrixserverlib.RoomVersionV2 {
+				create := "$" + strings.TrimPrefix(room, "!")
+				auth := []string{}
+				for _, prior := range invite.AuthEventIDs() {
+					if !invited.DomainlessRoomIDs() || prior != create {
+						auth = append(auth, prior)
+					}
+				}
+				proto.PrevEvents, proto.AuthEvents, proto.Depth = []string{invite.EventID()}, append(auth, invite.EventID()), invite.Depth()+1
+			}
+		}
+	}
+	if version == nil {
+		if version, err = gomatrixserverlib.GetRoomVersion(rooms_version_default); err != nil {
+			return nil
+		}
+	}
+	if err := proto.SetContent(content); err != nil {
+		return nil
+	}
+	event, err := version.NewEventBuilderFromProtoEvent(&proto).Build(time.Now(), id.domain, id.key, id.private)
+	if err != nil {
+		return nil
+	}
+	return event
 }
 
 // rooms_directory is the people a hosted account knows of whose name or
@@ -2575,9 +2706,20 @@ func rooms_invite_received(c *gin.Context, r *fclient.FederationRequest, room st
 	if content.Direct {
 		rooms_direct_add(invited, room, string(event.SenderID()))
 	}
-	// A room someone here is in learns of the invitation as its own event;
-	// one this server is not in is the user's to accept.
-	if rooms_local(room) == "" {
+	// A room someone here is in takes the invitation as its own event now,
+	// so the user may join before it comes again in its server's next
+	// transaction; one this server is not in is the user's to accept.
+	if local := rooms_local(room); local != "" {
+		if version := rooms_version(room); version != nil {
+			var out rooms_outbox
+			unlock := rooms_lock(room)
+			if err := rooms_accept(c.Request.Context(), local, r.Origin(), version, signed, &out, true); err != nil {
+				info("Matrix invitation %s to %s not taken into the room: %v", id, room, err)
+			}
+			unlock()
+			out.flush()
+		}
+	} else {
 		invite := map[string]any{"kind": "invite", "conversation": room, "from": string(event.SenderID()), "name": name, "direct": content.Direct}
 		if standin != nil && account == "" {
 			invite["to"] = row_string(standin, "entity")

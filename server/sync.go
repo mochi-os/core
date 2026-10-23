@@ -595,12 +595,14 @@ func sync_knocked(s *clients_session, room string, from sync_position, initial b
 // sync_left is a room left since the position: its timeline up to the
 // leaving, or nothing but the leaving of a room this server is not in.
 func sync_left(s *clients_session, room string, from sync_position, next sync_position, limit int) map[string]any {
-	if row, _ := federation_database().row("select position from pending where room=? and user=? and kind='leave'", room, s.h.address); row != nil && rooms_membership(room, s.h.address) == "" {
+	if row, _ := federation_database().row("select position, state from pending where room=? and user=? and kind='leave'", room, s.h.address); row != nil && rooms_membership(room, s.h.address) == "" {
 		if row_int(row, "position") <= from.invites {
 			return nil
 		}
+		events := []any{}
+		json.Unmarshal([]byte(row_string(row, "state")), &events)
 		return map[string]any{
-			"timeline":     map[string]any{"events": []any{}, "limited": false},
+			"timeline":     map[string]any{"events": events, "limited": false},
 			"state":        map[string]any{"events": []any{}},
 			"account_data": map[string]any{"events": []any{}},
 		}

@@ -1287,7 +1287,7 @@ func TestClientsFederation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if withdrawn.Rooms.Leave[id.RoomID(remote)] == nil || withdrawn.Rooms.Knock[id.RoomID(remote)] != nil {
+	if !clients_left_with(withdrawn, remote, "@alice:example.com") || withdrawn.Rooms.Knock[id.RoomID(remote)] != nil {
 		t.Errorf("THE POINT: the withdrawn knock = %+v", withdrawn.Rooms)
 	}
 
@@ -1307,11 +1307,160 @@ func TestClientsFederation(t *testing.T) {
 		t.Fatal(err)
 	}
 	declined, err := a.SyncRequest(ctx, 0, invited.NextBatch, "", false, "")
-	if err != nil || declined.Rooms.Leave[id.RoomID(unwanted)] == nil {
+	if err != nil || !clients_left_with(declined, unwanted, "@alice:example.com") {
 		t.Errorf("THE POINT: the declined invitation = %+v %v", declined.Rooms, err)
 	}
 	if again, err := a.SyncRequest(ctx, 0, declined.NextBatch, "", false, ""); err != nil || again.Rooms.Leave[id.RoomID(unwanted)] != nil {
 		t.Errorf("the declining was given twice: %+v %v", again, err)
+	}
+}
+
+// clients_left_with says whether a sync gives a room among its left rooms with
+// the user's leave in its timeline.
+func clients_left_with(answer *mautrix.RespSync, room string, user string) bool {
+	entry := answer.Rooms.Leave[id.RoomID(room)]
+	if entry == nil {
+		return false
+	}
+	for _, e := range entry.Timeline.Events {
+		if e.Type == event.StateMember && e.GetStateKey() == user && e.Content.Raw["membership"] == "leave" {
+			return true
+		}
+	}
+	return false
+}
+
+// TestClientsInvites: an invitation to a room this server is in is taken into
+// the room at once, so its user may join before the inviting server's
+// transaction brings it. An invitation withdrawn reaches the invitee's server,
+// whose sync then gives the room as left, but only from the user who invited
+// them. Leaving a room no one else here is in is given by the sync with the
+// leave, and an invitation whose server will not take the leave is declined
+// here alone, with a leave built here.
+func TestClientsInvites(t *testing.T) {
+	alice, _ := create_clients_test_env(t)
+	log := &inbound_log{}
+	log.install(t)
+	ctx := t.Context()
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	a := clients_client(t, alice, "m1", "@alice:example.com", "ALICE")
+	bob := r.user("bob")
+	invite := func(r *matrix_remote, room string, user string) {
+		t.Helper()
+		event := r.event(room, r.user("bob"), spec.MRoomMember, &user, map[string]any{"membership": "invite"})
+		request, _ := fclient.NewInviteV2Request(event, nil)
+		if status, body := r.call(t, "PUT", "/_matrix/federation/v2/invite/"+url.PathEscape(room)+"/"+url.PathEscape(event.EventID()), request); status != 200 {
+			t.Fatalf("invite = %d %v", status, body)
+		}
+	}
+	sync := func(since string) *mautrix.RespSync {
+		t.Helper()
+		answer, err := a.SyncRequest(ctx, 0, since, "", false, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return answer
+	}
+	left := func(answer *mautrix.RespSync, room string) bool {
+		return clients_left_with(answer, room, "@alice:example.com")
+	}
+
+	// Root invited to a room alice is in, joining before the transaction.
+	shared := r.room("Shared", "invite")
+	matrix_join(t, r, alice, shared)
+	invite(r, shared, "@root:example.com")
+	if _, err := rooms_join(ctx, "@root:example.com", shared); err != nil || rooms_membership(shared, "@root:example.com") != spec.Join {
+		t.Errorf("THE POINT: joining before the invitation's transaction = %v, membership %q", err, rooms_membership(shared, "@root:example.com"))
+	}
+
+	// An invitation to a room no one here is in, withdrawn by another server
+	// and then by the inviting one.
+	start := sync("")
+	withdrawn := r.room("Withdrawn", "invite")
+	invite(r, withdrawn, "@alice:example.com")
+	invited := sync(start.NextBatch)
+	if invited.Rooms.Invite[id.RoomID(withdrawn)] == nil {
+		t.Fatalf("the invitation = %+v", invited.Rooms)
+	}
+	invitee := "@alice:example.com"
+	r.lock.Lock()
+	forged := r.build(withdrawn, r.user("carol"), spec.MRoomMember, &invitee, map[string]any{"membership": "leave"}, r.edge[withdrawn], r.state[withdrawn])
+	r.lock.Unlock()
+	if result, _ := r.push(t, "forged", forged)[forged.EventID()].(map[string]any); result["error"] == nil {
+		t.Errorf("THE POINT: an invitation withdrawn by someone other than its inviter = %v", result)
+	}
+	if found, _ := federation_database().exists("select 1 from invites where room=? and user=?", withdrawn, invitee); !found {
+		t.Fatal("THE POINT: someone other than its inviter withdrew the invitation")
+	}
+	kick := r.event(withdrawn, bob, spec.MRoomMember, &invitee, map[string]any{"membership": "leave"})
+	if result, _ := r.push(t, "kick", kick)[kick.EventID()].(map[string]any); result["error"] != nil {
+		t.Errorf("the withdrawal = %v", result)
+	}
+	gone := sync(invited.NextBatch)
+	if !left(gone, withdrawn) || gone.Rooms.Invite[id.RoomID(withdrawn)] != nil {
+		t.Errorf("THE POINT: the withdrawn invitation = %+v", gone.Rooms)
+	}
+	if found, _ := federation_database().exists("select 1 from invites where room=? and user=?", withdrawn, invitee); found {
+		t.Error("THE POINT: the withdrawn invitation is kept")
+	}
+	log.find(t, "room", func(e map[string]any) bool { return e["conversation"] == withdrawn && e["left"] == true })
+
+	// Alice put out of a room of bob's, the last of anyone here in it.
+	kicked := r.room("Kicked", "invite")
+	matrix_join(t, r, alice, kicked)
+	joined := sync(gone.NextBatch)
+	out := r.event(kicked, bob, spec.MRoomMember, &invitee, map[string]any{"membership": "leave"})
+	if result, _ := r.push(t, "out", out)[out.EventID()].(map[string]any); result["error"] != nil {
+		t.Errorf("the kick = %v", result)
+	}
+	put := sync(joined.NextBatch)
+	if !left(put, kicked) {
+		t.Errorf("THE POINT: put out of a room, the last here = %+v", put.Rooms)
+	}
+
+	// Alice's invitation of bob, withdrawn, goes to bob's server.
+	made, err := a.CreateRoom(ctx, &mautrix.ReqCreateRoom{RoomVersion: "10", Invite: []id.UserID{id.UserID(bob)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.KickUser(ctx, made.RoomID, &mautrix.ReqKickUser{UserID: id.UserID(bob)}); err != nil {
+		t.Fatal(err)
+	}
+	wait(t, "THE POINT: the withdrawal sent to bob's server", func() bool {
+		for _, e := range r.received_of(spec.MRoomMember, "@alice:example.com") {
+			if membership, _ := e.Membership(); e.StateKeyEquals(bob) && membership == spec.Leave {
+				return true
+			}
+		}
+		return false
+	})
+
+	// Alice leaving it, the last of anyone here.
+	alone := sync(put.NextBatch)
+	if _, err := a.LeaveRoom(ctx, made.RoomID); err != nil {
+		t.Fatal(err)
+	}
+	if after := sync(alone.NextBatch); !left(after, string(made.RoomID)) {
+		t.Errorf("THE POINT: leaving a room alone = %+v", after.Rooms)
+	}
+
+	// An invitation declined once its server has gone.
+	lost := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	vanished := lost.room("Vanished", "invite")
+	invite(lost, vanished, invitee)
+	pending := sync(alone.NextBatch)
+	if pending.Rooms.Invite[id.RoomID(vanished)] == nil {
+		t.Fatalf("the invitation = %+v", pending.Rooms)
+	}
+	lost.server.Close()
+	if _, err := a.LeaveRoom(ctx, id.RoomID(vanished)); err != nil {
+		t.Errorf("THE POINT: declining an invitation whose server has gone: %v", err)
+	}
+	if declined := sync(pending.NextBatch); !left(declined, vanished) || declined.Rooms.Invite[id.RoomID(vanished)] != nil {
+		t.Errorf("THE POINT: the invitation declined here = %+v", declined.Rooms)
+	}
+	if found, _ := federation_database().exists("select 1 from invites where room=?", vanished); found {
+		t.Error("the declined invitation is kept")
 	}
 }
 

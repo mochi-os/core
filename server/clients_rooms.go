@@ -188,6 +188,12 @@ func clients_pending(room string, user string, kind string, server string, state
 	clients_wake()
 }
 
+// clients_leaving is a leave of a room as a user's syncs give it once this
+// server keeps nothing of the room: the event, shown as at the leaving.
+func clients_leaving(event gomatrixserverlib.PDU, user string) string {
+	return json_encode([]any{clients_event(event, user, "", false)})
+}
+
 // clients_window is the part of a room's timeline a user may see, by
 // position: from the start where its history is shared, else from their
 // first invitation or join, as its visibility says; to their leaving where

@@ -51,6 +51,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/server"
 	"github.com/go-git/go-git/v5/storage"
 	"github.com/go-git/go-git/v5/storage/filesystem"
+	"github.com/go-git/go-git/v5/utils/merkletrie"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
 )
@@ -231,6 +232,28 @@ const git_compare_maximum int64 = 1 << 20 // 1MB
 // walk with a truncation note rather than failing the call.
 const git_changes_maximum = 1000
 const git_patch_maximum = 8 << 20 // 8MB
+
+// git_rename_maximum is the most added, and the most deleted, files a diff
+// looks for renames among; past it each is reported as added or deleted.
+// go-git's rename matching runs to completion once started - the context
+// reaches the tree walk but not the matching - so its cost is bounded before
+// it starts. Identical files pair by hash, except that files sharing one
+// content (empty files, a licence copied into every package) are scored
+// against each other pair by pair: measured against go-git v5.19.2, 1,000
+// deleted against 1,000 added empty files took 0.25 s.
+const git_rename_maximum = 1000
+
+// git_pairs_maximum and git_similarity_maximum bound rename detection by
+// content, which pairs a file moved and edited in the same commit. go-git
+// scores each deleted file against each added one of similar size, reading
+// and indexing the added file afresh for every pair, so the cost is the pairs
+// plus the deleted count times the added bytes. Past either limit only
+// identical files are paired, and a file over git_compare_maximum only ever
+// pairs when identical. Measured against go-git v5.19.2, the slowest shapes at
+// these limits - 8 deleted against 8 added 1 MB files, or 100 against 100 of
+// 6.7 KB, every line distinct - took 1.4 s.
+const git_pairs_maximum = 10000
+const git_similarity_maximum int64 = 64 << 20 // 64MB
 
 // git_list_maximum and git_offset_maximum bound commit listings. limit and
 // offset come from app callers who pass user input through; a negative limit
@@ -1697,32 +1720,164 @@ func api_git_blob_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}), nil
 }
 
-// git_comparable answers both sides of a change and whether each is small
-// enough to diff. An absent side (an add or a delete) has no size to check.
-func git_comparable(change *object.Change) (from, to *object.File, ok bool, err error) {
-	from, to, err = change.Files()
+// git_changes lists what changed from base to head, renames paired, limited
+// to path when it is not empty. A nil base is the empty tree, so every file in
+// head is added. The tree walk stops when ctx is cancelled. Renames are paired
+// after the walk rather than by its own option so that their cost can be
+// checked before go-git starts on them.
+func git_changes(ctx context.Context, repo *git.Repository, base, head *object.Tree, path string) (object.Changes, error) {
+	changes, err := object.DiffTreeWithOptions(ctx, base, head, nil)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, err
 	}
-	if from != nil && from.Size > git_compare_maximum {
-		return from, to, false, nil
+	changes, err = git_renames(repo, changes)
+	if err != nil {
+		return nil, err
 	}
-	if to != nil && to.Size > git_compare_maximum {
-		return from, to, false, nil
+	if path == "" {
+		return changes, nil
 	}
-	return from, to, true, nil
+
+	// After pairing, so a file moved into or out of path is reported as the
+	// rename it is rather than as an addition or a deletion.
+	var within object.Changes
+	for _, change := range changes {
+		if git_within(change.From.Name, path) || git_within(change.To.Name, path) {
+			within = append(within, change)
+		}
+	}
+	return within, nil
 }
 
-// git_name is the path a change is reported under: the new side's, or the old
-// side's for a delete.
-func git_name(from, to *object.File) string {
-	if to != nil {
-		return to.Name
+// git_within reports whether name is path or lies under it, on whole
+// segments: "src" holds "src/a.go" but not "srcfoo/a.go".
+func git_within(name, path string) bool {
+	return name == path || strings.HasPrefix(name, path+"/")
+}
+
+// git_renames pairs the deletions and additions in changes that are one file
+// moved, under git_rename_maximum, git_pairs_maximum and
+// git_similarity_maximum: identical files by hash, then files edited as well
+// as moved by content.
+func git_renames(repo *git.Repository, changes object.Changes) (object.Changes, error) {
+	added := 0
+	deleted := 0
+	for _, change := range changes {
+		action, err := change.Action()
+		if err != nil {
+			return nil, err
+		}
+		switch action {
+		case merkletrie.Insert:
+			added++
+		case merkletrie.Delete:
+			deleted++
+		}
 	}
-	if from != nil {
-		return from.Name
+	if added == 0 || deleted == 0 || added > git_rename_maximum || deleted > git_rename_maximum {
+		return changes, nil
 	}
-	return ""
+	changes, err := object.DetectRenames(changes, &object.DiffTreeOptions{DetectRenames: true, OnlyExactRenames: true})
+	if err != nil {
+		return nil, err
+	}
+
+	// What is left unpaired is compared by content, apart from what go-git
+	// would skip (anything not a regular file) and files too large to compare,
+	// which it would read whole for every pair. The sizes come from the object
+	// headers.
+	var kept, candidates object.Changes
+	added = 0
+	deleted = 0
+	var total int64
+	for _, change := range changes {
+		action, err := change.Action()
+		if err != nil {
+			return nil, err
+		}
+		entry := change.To
+		if action == merkletrie.Delete {
+			entry = change.From
+		}
+		if action == merkletrie.Modify || entry.TreeEntry.Mode != filemode.Regular {
+			kept = append(kept, change)
+			continue
+		}
+		size, err := repo.Storer.EncodedObjectSize(entry.TreeEntry.Hash)
+		if err != nil {
+			return nil, err
+		}
+		if size > git_compare_maximum {
+			kept = append(kept, change)
+			continue
+		}
+		candidates = append(candidates, change)
+		if action == merkletrie.Insert {
+			added++
+			total += size
+		} else {
+			deleted++
+		}
+	}
+	if added == 0 || deleted == 0 || added*deleted > git_pairs_maximum || int64(deleted)*total > git_similarity_maximum {
+		return changes, nil
+	}
+	candidates, err = object.DetectRenames(candidates, &object.DiffTreeOptions{DetectRenames: true, RenameScore: object.DefaultDiffTreeOptions.RenameScore})
+	if err != nil {
+		return nil, err
+	}
+	changes = append(kept, candidates...)
+	sort.Sort(changes)
+	return changes, nil
+}
+
+// git_status answers how a change is reported: name is the new path, or the
+// old one for a deletion; previous is the old path of a rename and otherwise
+// empty. A side that is not a file - absent, or a submodule - has no path, as
+// in the rendered patch, and a change with neither has no status.
+func git_status(change *object.Change) (name, previous, status string) {
+	from := ""
+	if change.From.TreeEntry.Mode.IsFile() {
+		from = change.From.Name
+	}
+	to := ""
+	if change.To.TreeEntry.Mode.IsFile() {
+		to = change.To.Name
+	}
+	switch {
+	case from == "" && to == "":
+		return "", "", ""
+	case from == "":
+		return to, "", "added"
+	case to == "":
+		return from, "", "deleted"
+	case from != to:
+		return to, from, "renamed"
+	}
+	return to, "", "modified"
+}
+
+// git_identical reports a file moved without an edit. It has nothing to
+// compare, whatever its size, so it is rendered from its paths alone rather
+// than having both sides read.
+func git_identical(change *object.Change) bool {
+	return change.From.TreeEntry.Mode.IsFile() && change.From.TreeEntry.Mode == change.To.TreeEntry.Mode && change.From.TreeEntry.Hash == change.To.TreeEntry.Hash
+}
+
+// git_comparable answers whether both sides of a change are small enough to
+// diff. An absent side (an add or a delete) has no size to check.
+func git_comparable(change *object.Change) (bool, error) {
+	from, to, err := change.Files()
+	if err != nil {
+		return false, err
+	}
+	if from != nil && from.Size > git_compare_maximum {
+		return false, nil
+	}
+	if to != nil && to.Size > git_compare_maximum {
+		return false, nil
+	}
+	return true, nil
 }
 
 // git_patch renders a diff one change at a time, under the caps: a file over
@@ -1739,13 +1894,22 @@ func git_patch(ctx context.Context, changes object.Changes) (string, error) {
 			fmt.Fprintf(&out, "# diff truncated: %d more files\n", len(changes)-i)
 			break
 		}
-		from, to, ok, err := git_comparable(change)
+		name, previous, status := git_status(change)
+		if git_identical(change) {
+			fmt.Fprintf(&out, "diff --git a/%s b/%s\nrename from %s\nrename to %s\n", previous, name, previous, name)
+			continue
+		}
+		ok, err := git_comparable(change)
 		if err != nil {
 			return "", err
 		}
 		if !ok {
-			name := git_name(from, to)
-			fmt.Fprintf(&out, "diff --git a/%s b/%s\n# not compared: over the %d byte limit\n", name, name, git_compare_maximum)
+			if status == "renamed" {
+				fmt.Fprintf(&out, "diff --git a/%s b/%s\nrename from %s\nrename to %s\n", previous, name, previous, name)
+			} else {
+				fmt.Fprintf(&out, "diff --git a/%s b/%s\n", name, name)
+			}
+			fmt.Fprintf(&out, "# not compared: over the %d byte limit\n", git_compare_maximum)
 			continue
 		}
 		patch, err := object.Changes{change}.Patch()
@@ -1757,78 +1921,108 @@ func git_patch(ctx context.Context, changes object.Changes) (string, error) {
 	return out.String(), nil
 }
 
-// mochi.git.diff(entity, base, head) -> string: Get unified diff
-func api_git_diff(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 3 {
-		return sl_error(fn, "syntax: <entity: string>, <base: string>, <head: string>")
+// git_diff_changes answers what mochi.git.diff and mochi.git.diff.stats
+// report: the arguments checked, the caller's read access checked, and the
+// changes from base to head. A base of None or "" is the empty tree, for a
+// first commit, which has no parent.
+func git_diff_changes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple) (object.Changes, error) {
+	failure := func(format string, values ...any) (object.Changes, error) {
+		_, err := sl_error(fn, format, values...)
+		return nil, err
+	}
+
+	if len(args) < 3 || len(args) > 4 {
+		return failure("syntax: <entity: string>, <base: string or None>, <head: string>, [path: string]")
 	}
 
 	entity, ok := sl.AsString(args[0])
 	if !ok || !valid(entity, "entity") {
-		return sl_error(fn, "invalid entity")
+		return failure("invalid entity")
 	}
 
-	base, ok := sl.AsString(args[1])
-	if !ok || base == "" {
-		return sl_error(fn, "invalid base")
+	base := ""
+	if args[1] != sl.None {
+		base, ok = sl.AsString(args[1])
+		if !ok {
+			return failure("invalid base")
+		}
 	}
 
 	head, ok := sl.AsString(args[2])
 	if !ok || head == "" {
-		return sl_error(fn, "invalid head")
+		return failure("invalid head")
 	}
+
+	path := ""
+	if len(args) > 3 && args[3] != sl.None {
+		path, ok = sl.AsString(args[3])
+		if !ok {
+			return failure("invalid path")
+		}
+	}
+	path = strings.Trim(path, "/")
 
 	owner := principal_owner(t)
 	app := principal_app(t)
 	if owner == nil {
-		return sl_error(fn, "no owner")
+		return failure("no owner")
 	}
 	if app == nil {
-		return sl_error(fn, "no app")
+		return failure("no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
-		return sl_error(fn, "permission denied: repository read required to diff")
+		return failure("permission denied: repository read required to diff")
 	}
 
 	repo, err := git_open(owner, app, entity)
 	if err != nil {
-		return sl_error(fn, "failed to open repository: %v", err)
+		return failure("failed to open repository: %v", err)
 	}
 
-	base_hash, err := git_resolve_ref(repo, base)
-	if err != nil {
-		return sl_error(fn, "failed to resolve base: %v", err)
+	var base_tree *object.Tree
+	if base != "" {
+		base_hash, err := git_resolve_ref(repo, base)
+		if err != nil {
+			return failure("failed to resolve base: %v", err)
+		}
+		base_commit, err := repo.CommitObject(*base_hash)
+		if err != nil {
+			return failure("failed to get base commit: %v", err)
+		}
+		base_tree, err = base_commit.Tree()
+		if err != nil {
+			return failure("failed to get base tree: %v", err)
+		}
 	}
 
 	head_hash, err := git_resolve_ref(repo, head)
 	if err != nil {
-		return sl_error(fn, "failed to resolve head: %v", err)
-	}
-
-	base_commit, err := repo.CommitObject(*base_hash)
-	if err != nil {
-		return sl_error(fn, "failed to get base commit: %v", err)
+		return failure("failed to resolve head: %v", err)
 	}
 
 	head_commit, err := repo.CommitObject(*head_hash)
 	if err != nil {
-		return sl_error(fn, "failed to get head commit: %v", err)
-	}
-
-	base_tree, err := base_commit.Tree()
-	if err != nil {
-		return sl_error(fn, "failed to get base tree: %v", err)
+		return failure("failed to get head commit: %v", err)
 	}
 
 	head_tree, err := head_commit.Tree()
 	if err != nil {
-		return sl_error(fn, "failed to get head tree: %v", err)
+		return failure("failed to get head tree: %v", err)
 	}
 
-	changes, err := base_tree.Diff(head_tree)
+	changes, err := git_changes(starlark_context(t), repo, base_tree, head_tree, path)
 	if err != nil {
-		return sl_error(fn, "failed to compute diff: %v", err)
+		return failure("failed to compute diff: %v", err)
+	}
+	return changes, nil
+}
+
+// mochi.git.diff(entity, base, head, [path]) -> string: Get unified diff, base None for the empty tree, limited to a file or folder
+func api_git_diff(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	changes, err := git_diff_changes(t, fn, args)
+	if err != nil {
+		return sl.None, err
 	}
 
 	patch, err := git_patch(starlark_context(t), changes)
@@ -1839,78 +2033,15 @@ func api_git_diff(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	return sl.String(patch), nil
 }
 
-// mochi.git.diff.stats(entity, base, head) -> dict: Get diff statistics
+// mochi.git.diff.stats(entity, base, head, [path]) -> dict: Get diff statistics, base None for the empty tree, limited to a file or folder
 func api_git_diff_stats(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 3 {
-		return sl_error(fn, "syntax: <entity: string>, <base: string>, <head: string>")
-	}
-
-	entity, ok := sl.AsString(args[0])
-	if !ok || !valid(entity, "entity") {
-		return sl_error(fn, "invalid entity")
-	}
-
-	base, ok := sl.AsString(args[1])
-	if !ok || base == "" {
-		return sl_error(fn, "invalid base")
-	}
-
-	head, ok := sl.AsString(args[2])
-	if !ok || head == "" {
-		return sl_error(fn, "invalid head")
-	}
-
-	owner := principal_owner(t)
-	app := principal_app(t)
-	if owner == nil {
-		return sl_error(fn, "no owner")
-	}
-	if app == nil {
-		return sl_error(fn, "no app")
-	}
-
-	if !git_can_read(t, owner, app, entity) {
-		return sl_error(fn, "permission denied: repository read required to diff")
-	}
-
-	repo, err := git_open(owner, app, entity)
-	if err != nil {
-		return sl_error(fn, "failed to open repository: %v", err)
-	}
-
-	base_hash, err := git_resolve_ref(repo, base)
-	if err != nil {
-		return sl_error(fn, "failed to resolve base: %v", err)
-	}
-
-	head_hash, err := git_resolve_ref(repo, head)
-	if err != nil {
-		return sl_error(fn, "failed to resolve head: %v", err)
-	}
-
-	base_commit, err := repo.CommitObject(*base_hash)
-	if err != nil {
-		return sl_error(fn, "failed to get base commit: %v", err)
-	}
-
-	head_commit, err := repo.CommitObject(*head_hash)
-	if err != nil {
-		return sl_error(fn, "failed to get head commit: %v", err)
-	}
-
-	base_tree, err := base_commit.Tree()
-	if err != nil {
-		return sl_error(fn, "failed to get base tree: %v", err)
-	}
-
-	head_tree, err := head_commit.Tree()
-	if err != nil {
-		return sl_error(fn, "failed to get head tree: %v", err)
-	}
-
-	changes, err := base_tree.Diff(head_tree)
-	if err != nil {
-		return sl_error(fn, "failed to compute diff: %v", err)
+	// A call cancelled during the tree walk has compared nothing.
+	truncated := false
+	changes, err := git_diff_changes(t, fn, args)
+	if errors.Is(err, object.ErrCanceled) {
+		truncated = true
+	} else if err != nil {
+		return sl.None, err
 	}
 
 	// One file at a time under the same caps as git_patch: the counts need the
@@ -1920,39 +2051,51 @@ func api_git_diff_stats(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	var files []map[string]any
 	additions := 0
 	deletions := 0
-	truncated := false
 	for i, change := range changes {
 		if i >= git_changes_maximum || ctx.Err() != nil {
 			truncated = true
 			break
 		}
-		from, to, ok, err := git_comparable(change)
+		name, previous, status := git_status(change)
+		if status == "" {
+			// A submodule, which the patch does not render either.
+			continue
+		}
+		file := map[string]any{
+			"name":      name,
+			"previous":  previous,
+			"status":    status,
+			"additions": 0,
+			"deletions": 0,
+			"skipped":   false,
+		}
+		files = append(files, file)
+		if git_identical(change) {
+			continue
+		}
+		ok, err := git_comparable(change)
 		if err != nil {
 			return sl_error(fn, "failed to compute diff: %v", err)
 		}
 		if !ok {
-			files = append(files, map[string]any{
-				"name":      git_name(from, to),
-				"additions": 0,
-				"deletions": 0,
-				"skipped":   true,
-			})
+			file["skipped"] = true
 			continue
 		}
 		patch, err := object.Changes{change}.Patch()
 		if err != nil {
 			return sl_error(fn, "failed to generate patch: %v", err)
 		}
+		// A binary file has no stats, so it is listed with no counts.
+		added := 0
+		removed := 0
 		for _, stat := range patch.Stats() {
-			files = append(files, map[string]any{
-				"name":      stat.Name,
-				"additions": stat.Addition,
-				"deletions": stat.Deletion,
-				"skipped":   false,
-			})
-			additions += stat.Addition
-			deletions += stat.Deletion
+			added += stat.Addition
+			removed += stat.Deletion
 		}
+		file["additions"] = added
+		file["deletions"] = removed
+		additions += added
+		deletions += removed
 	}
 
 	return sl_encode(map[string]any{

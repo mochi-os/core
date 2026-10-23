@@ -35,7 +35,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -357,6 +359,88 @@ func rooms_authorised(event gomatrixserverlib.PDU, auth []gomatrixserverlib.PDU)
 	return gomatrixserverlib.Allowed(event, provider, federation_sender)
 }
 
+// rooms_acl is a room's server access list, its patterns compiled.
+type rooms_acl struct {
+	allow    []*regexp.Regexp
+	deny     []*regexp.Regexp
+	literals bool
+}
+
+// rooms_acls is each access list read, by its event's id, which never
+// changes.
+var rooms_acls sync.Map
+
+// rooms_acl_allows says whether a room's server access list lets a server
+// take part; a room without a list lets every server.
+func rooms_acl_allows(room string, server spec.ServerName) bool {
+	current, _ := rooms_current(room)
+	id := current[rooms_key("m.room.server_acl", "")]
+	if id == "" {
+		return true
+	}
+	acl, found := rooms_acls.Load(id)
+	if !found {
+		event := rooms_event(id)
+		if event == nil {
+			return true
+		}
+		var content map[string]any
+		json.Unmarshal(event.Content(), &content)
+		acl, _ = rooms_acls.LoadOrStore(id, rooms_acl_read(content))
+	}
+	return acl.(*rooms_acl).allows(server)
+}
+
+// rooms_acl_read is an access list from its event's content: IP addresses
+// allowed unless allow_ip_literals is false.
+func rooms_acl_read(content map[string]any) *rooms_acl {
+	acl := &rooms_acl{allow: rooms_acl_patterns(content["allow"]), deny: rooms_acl_patterns(content["deny"]), literals: true}
+	if literals, ok := content["allow_ip_literals"].(bool); ok {
+		acl.literals = literals
+	}
+	return acl
+}
+
+// allows matches a server by its name without the port: an IP address is
+// refused where the list does not allow them, then a name a denied pattern
+// matches, and then one no allowed pattern matches, so a list without allow
+// lets no one.
+func (a *rooms_acl) allows(server spec.ServerName) bool {
+	host, _, valid := spec.ParseAndValidateServerName(server)
+	if !valid {
+		return false
+	}
+	if !a.literals && (strings.HasPrefix(host, "[") || net.ParseIP(host) != nil) {
+		return false
+	}
+	for _, pattern := range a.deny {
+		if pattern.MatchString(host) {
+			return false
+		}
+	}
+	for _, pattern := range a.allow {
+		if pattern.MatchString(host) {
+			return true
+		}
+	}
+	return false
+}
+
+// rooms_acl_patterns compiles an access list's patterns, in which * stands
+// for any run of characters and ? for one, matched without regard to case; a
+// value not a list holds none.
+func rooms_acl_patterns(value any) []*regexp.Regexp {
+	items, _ := value.([]any)
+	var out []*regexp.Regexp
+	for _, item := range items {
+		if pattern, ok := item.(string); ok {
+			expression := strings.ReplaceAll(strings.ReplaceAll(regexp.QuoteMeta(pattern), `\*`, ".*"), `\?`, ".")
+			out = append(out, regexp.MustCompile("(?i)^"+expression+"$"))
+		}
+	}
+	return out
+}
+
 // rooms_members is who a state names in a room and as what: join, invite,
 // leave, ban or knock.
 func rooms_members(state rooms_state) map[string]string {
@@ -610,6 +694,9 @@ func rooms_receive(ctx context.Context, origin spec.ServerName, raw json.RawMess
 	event, err := version.NewEventFromUntrustedJSON(raw)
 	if err != nil {
 		return "", nil
+	}
+	if !rooms_acl_allows(head.Room, origin) {
+		return event.EventID(), fmt.Errorf("the room's server access list denies %s", origin)
 	}
 	if rooms_known(event.EventID()) {
 		return event.EventID(), nil

@@ -63,7 +63,7 @@ func signals_receive(origin spec.ServerName, raw json.RawMessage, out *rooms_out
 			User   string `json:"user_id"`
 			Typing bool   `json:"typing"`
 		}
-		if json.Unmarshal(edu.Content, &typing) != nil || !theirs(typing.User) || rooms_membership(typing.Room, typing.User) != spec.Join {
+		if json.Unmarshal(edu.Content, &typing) != nil || !theirs(typing.User) || rooms_membership(typing.Room, typing.User) != spec.Join || !rooms_acl_allows(typing.Room, origin) {
 			return
 		}
 		typing_set(typing.Room, typing.User, typing.Typing, typing_remote)
@@ -80,6 +80,9 @@ func signals_receive(origin spec.ServerName, raw json.RawMessage, out *rooms_out
 			return
 		}
 		for room, kinds := range receipts {
+			if !rooms_acl_allows(room, origin) {
+				continue
+			}
 			for user, receipt := range kinds["m.read"] {
 				if !theirs(user) || rooms_membership(room, user) != spec.Join || len(receipt.Events) == 0 {
 					continue

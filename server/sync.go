@@ -457,11 +457,12 @@ func clients_join_position(room string, user string) int64 {
 }
 
 // sync_ephemeral is a room's typing and receipts changed since a position,
-// or now for a room given whole.
+// or now for a room given whole, its typing then only where someone types:
+// the client knows of no one typing there to be told has stopped.
 func sync_ephemeral(room string, user string, from sync_position, whole bool) []map[string]any {
 	events := []map[string]any{}
-	if whole || typing_changed(room, from.typing) {
-		events = append(events, map[string]any{"type": "m.typing", "content": map[string]any{"user_ids": typing_users(room)}})
+	if users := typing_users(room); (whole && len(users) > 0) || (!whole && typing_changed(room, from.typing)) {
+		events = append(events, map[string]any{"type": "m.typing", "content": map[string]any{"user_ids": users}})
 	}
 	since := from.receipts
 	if whole {

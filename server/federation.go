@@ -647,6 +647,17 @@ func federation_dispatch(c *gin.Context, method string, parts []string, r *fclie
 		return ""
 	}
 	route := method + " " + segment(0) + "/" + segment(1)
+	// A room's server access list is applied to the server asking at the
+	// endpoints of its events and memberships, as the specification lists
+	// them; a transaction's events are checked one by one (rooms_receive).
+	switch route {
+	case "GET v1/make_join", "PUT v1/send_join", "PUT v2/send_join", "GET v1/make_leave", "PUT v1/send_leave", "PUT v2/send_leave", "PUT v2/invite",
+		"GET v1/make_knock", "PUT v1/send_knock", "GET v1/state", "GET v1/state_ids", "GET v1/event_auth", "POST v1/get_missing_events", "GET v1/backfill":
+		if !rooms_acl_allows(segment(2), r.Origin()) {
+			federation_error(c, http.StatusForbidden, "M_FORBIDDEN", "the room's server access list denies this server")
+			return
+		}
+	}
 	switch {
 	case route == "PUT v1/send" && len(parts) == 3:
 		federation_receive_transaction(c, r, segment(2))

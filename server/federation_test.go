@@ -1168,6 +1168,130 @@ func TestMatrixHistory(t *testing.T) {
 	}
 }
 
+// TestMatrixACL: a room's server access list is applied to the server it
+// denies: its events are refused, its typing and read receipts dropped, and
+// the endpoints of the room's events answer it 403; under a list that does
+// not name it, it takes part as before.
+func TestMatrixACL(t *testing.T) {
+	alice, log := create_matrix_test_env(t)
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	room := r.room("Access", "invite")
+	matrix_join(t, r, alice, room)
+	bob := r.user("bob")
+	empty := ""
+	count := func(kind string) int {
+		return len(log.matching(func(e map[string]any) bool { return e["kind"] == kind }))
+	}
+	shown := func(body string) bool {
+		return len(log.matching(func(e map[string]any) bool { return e["kind"] == "message" && e["body"] == body })) > 0
+	}
+	signals := func(name string, event gomatrixserverlib.PDU) {
+		r.signal(t, name,
+			matrix_edu("m.typing", map[string]any{"room_id": room, "user_id": bob, "typing": true}),
+			matrix_edu("m.receipt", map[string]any{room: map[string]any{"m.read": map[string]any{bob: map[string]any{"event_ids": []string{event.EventID()}, "data": map[string]any{"ts": 1}}}}}))
+	}
+
+	// A list denying another server: this one's events and signals are taken.
+	r.push(t, "allowing", r.event(room, bob, "m.room.server_acl", &empty, map[string]any{"allow": []string{"*"}, "deny": []string{"other.example"}}))
+	allowed := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "under a list that allows"})
+	r.push(t, "allowed", allowed)
+	signals("allowed-signals", allowed)
+	if !shown("under a list that allows") || count("typing") != 1 || count("receipt") != 1 {
+		t.Fatalf("CONTROL: a server the list does not deny was refused: typing %d, receipts %d", count("typing"), count("receipt"))
+	}
+	if status, _ := r.call(t, "GET", "/_matrix/federation/v1/backfill/"+url.PathEscape(room)+"?v="+url.QueryEscape(allowed.EventID())+"&limit=5", nil); status != 200 {
+		t.Fatalf("CONTROL: backfill for a server the list allows = %d", status)
+	}
+
+	// A list denying this server, sent while it was allowed.
+	r.push(t, "denying", r.event(room, bob, "m.room.server_acl", &empty, map[string]any{"allow": []string{"*"}, "deny": []string{"127.0.0.1"}}))
+	denied := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "from a denied server"})
+	results := r.push(t, "denied", denied)
+	if result, _ := results[denied.EventID()].(map[string]any); !strings.Contains(fmt.Sprint(result["error"]), "access list") || shown("from a denied server") {
+		t.Errorf("THE POINT: an event from a server the room's list denies was taken: %v", results)
+	}
+	signals("denied-signals", denied)
+	if count("typing") != 1 || count("receipt") != 1 {
+		t.Errorf("THE POINT: typing or a receipt from a denied server was taken: typing %d, receipts %d", count("typing"), count("receipt"))
+	}
+	for _, request := range []struct{ method, path string }{
+		{"GET", "/_matrix/federation/v1/backfill/" + url.PathEscape(room) + "?v=" + url.QueryEscape(allowed.EventID()) + "&limit=5"},
+		{"GET", "/_matrix/federation/v1/state_ids/" + url.PathEscape(room) + "?event_id=" + url.QueryEscape(allowed.EventID())},
+		{"GET", "/_matrix/federation/v1/make_leave/" + url.PathEscape(room) + "/" + url.PathEscape(bob)},
+	} {
+		if status, body := r.call(t, request.method, request.path, nil); status != 403 || body["errcode"] != "M_FORBIDDEN" {
+			t.Errorf("THE POINT: %s %s for a denied server = %d %v", request.method, request.path, status, body)
+		}
+	}
+}
+
+// TestSyncTyping: a room given whole lists typing only where someone types
+// in it, so a room no one has typed in shows no ephemeral events on a first
+// sync; a room whose typing changed since the last sync lists it, the empty
+// list too when the last one stopped.
+func TestSyncTyping(t *testing.T) {
+	create_matrix_test_env(t)
+	room, alice, bob := "!typing:example.com", "@alice:example.com", "@bob:remote.example"
+	typing := func(events []map[string]any) []string {
+		for _, event := range events {
+			if event["type"] == "m.typing" {
+				users, _ := event["content"].(map[string]any)["user_ids"].([]string)
+				return append([]string{}, users...)
+			}
+		}
+		return nil
+	}
+	if users := typing(sync_ephemeral(room, alice, sync_position{}, true)); users != nil {
+		t.Errorf("THE POINT: a room no one types in, given whole, listed typing: %v", users)
+	}
+	typing_set(room, bob, true, time.Minute)
+	if users := typing(sync_ephemeral(room, alice, sync_position{}, true)); len(users) != 1 || users[0] != bob {
+		t.Errorf("CONTROL: a room given whole while bob types = %v", users)
+	}
+	typing_lock.Lock()
+	before := typing_count
+	typing_lock.Unlock()
+	typing_set(room, bob, false, 0)
+	if users := typing(sync_ephemeral(room, alice, sync_position{typing: before}, false)); users == nil || len(users) != 0 {
+		t.Errorf("CONTROL: typing stopped since the last sync = %v, want the empty list", users)
+	}
+}
+
+// TestMatrixACLList: an access list matches a server by its name without its
+// port and without regard to case, * and ? its wildcards; a denied pattern
+// beats an allowed one; IP addresses are refused only where allow_ip_literals
+// is false; and a list with no allow, or an allow that is not a list, lets
+// no one.
+func TestMatrixACLList(t *testing.T) {
+	for _, c := range []struct {
+		content map[string]any
+		server  string
+		want    bool
+	}{
+		{map[string]any{"allow": []any{"*"}}, "matrix.example", true},
+		{map[string]any{"allow": []any{"*.example"}}, "matrix.example", true},
+		{map[string]any{"allow": []any{"*.example"}}, "example", false},
+		{map[string]any{"allow": []any{"matri?.example"}}, "matrix.example", true},
+		{map[string]any{"allow": []any{"matri?.example"}}, "matrixx.example", false},
+		{map[string]any{"allow": []any{"*"}, "deny": []any{"evil.example"}}, "evil.example:8448", false},
+		{map[string]any{"allow": []any{"*"}, "deny": []any{"evil.example"}}, "EVIL.Example", false},
+		{map[string]any{"allow": []any{"*"}, "deny": []any{"evil.example"}}, "good.example", true},
+		{map[string]any{"allow": []any{"evil.example"}, "deny": []any{"evil.example"}}, "evil.example", false},
+		{map[string]any{"allow": []any{"*"}}, "192.0.2.1:8448", true},
+		{map[string]any{"allow": []any{"*"}, "allow_ip_literals": false}, "192.0.2.1:8448", false},
+		{map[string]any{"allow": []any{"*"}, "allow_ip_literals": false}, "[2001:db8::1]:8448", false},
+		{map[string]any{"allow": []any{"*"}, "allow_ip_literals": false}, "matrix.example", true},
+		{map[string]any{}, "matrix.example", false},
+		{map[string]any{"allow": "*"}, "matrix.example", false},
+		{map[string]any{"allow": []any{7, "matrix.example"}}, "matrix.example", true},
+		{map[string]any{"allow": []any{"*"}}, "", false},
+	} {
+		if got := rooms_acl_read(c.content).allows(spec.ServerName(c.server)); got != c.want {
+			t.Errorf("THE POINT: %v allows %q = %v, want %v", c.content, c.server, got, c.want)
+		}
+	}
+}
+
 // TestMatrixRoomVersions: in every room version, a room joined on another
 // server is served back to a server in it and to no other, branches setting
 // the room's name resolve as the version's algorithm has it, and an event

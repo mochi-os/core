@@ -866,6 +866,7 @@ func rooms_accept(ctx context.Context, local spec.ServerName, origin spec.Server
 	if err := rooms_settle(version, room); err != nil {
 		return err
 	}
+	keyring_membership(event)
 	if event.Type() == spec.MRoomRedaction {
 		rooms_redact(version, event)
 	}
@@ -1240,6 +1241,7 @@ func rooms_commit(version gomatrixserverlib.IRoomVersion, event gomatrixserverli
 	if err := rooms_settle(version, room); err != nil {
 		return err
 	}
+	keyring_membership(event)
 	if event.Type() == spec.MRoomRedaction {
 		rooms_redact(version, event)
 	}
@@ -1653,7 +1655,11 @@ func rooms_joined(joined *gomatrixserverlib.PerformJoinResponse) error {
 	before := rooms_snapshot_save(room, state)
 	rooms_keep(event, before, false, false)
 	rooms_advance(event)
-	return rooms_settle(version, room)
+	if err := rooms_settle(version, room); err != nil {
+		return err
+	}
+	keyring_membership(event)
+	return nil
 }
 
 // rooms_welcome tells a user's apps of a room they joined, as one batch so

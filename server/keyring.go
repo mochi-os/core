@@ -55,8 +55,12 @@ func keyring_tables(db *DB) {
 	db.exec("create index if not exists deliveries_device on deliveries(user, device, id)")
 	// Whose devices or cross-signing keys changed, in order; a change seen
 	// only by viewer where one is named (a signature of theirs on someone
-	// else's key).
-	db.exec("create table if not exists changes (id integer primary key autoincrement, user text not null, viewer text not null default '', created integer not null)")
+	// else's key, someone joining a room with them). Gone where the user no
+	// longer shares any room with the viewer, who stops tracking them.
+	db.exec("create table if not exists changes (id integer primary key autoincrement, user text not null, viewer text not null default '', gone integer not null default 0, created integer not null)")
+	if found, _ := db.exists("select 1 from pragma_table_info('changes') where name='gone'"); !found {
+		db.exec("alter table changes add column gone integer not null default 0")
+	}
 	// The account's key backup: its versions, and the room keys backed up.
 	db.exec("create table if not exists backups (user text not null, version integer not null, algorithm text not null, auth text not null, etag integer not null default 0, deleted integer not null default 0, primary key (user, version))")
 	db.exec("create table if not exists sessions (user text not null, version integer not null, room text not null, session text not null, data text not null, primary key (user, version, room, session))")
@@ -614,7 +618,9 @@ func keyring_claim(ctx context.Context, user string, body json.RawMessage) keyri
 			continue
 		}
 		if federation_local(id.Domain()) {
-			claimed[person] = keyring_take(person, wanted)
+			if keys := keyring_take(person, wanted); len(keys) > 0 {
+				claimed[person] = keys
+			}
 			continue
 		}
 		server := string(id.Domain())
@@ -1079,8 +1085,8 @@ func keyring_data(user string, method string, kind string, body json.RawMessage)
 func keyring_sync(user string, device string, since string) map[string]any {
 	delivered, changes := keyring_position(since)
 	events, delivered := keyring_deliveries(user, device, delivered)
-	changed, changes := keyring_changes(user, changes, since == "")
-	return map[string]any{"events": events, "changed": changed, "left": []string{}, "counts": keyring_counts(user, device), "fallback": keyring_unused(user, device), "next": fmt.Sprintf("%d_%d", delivered, changes)}
+	changed, left, changes := keyring_changes(user, changes, since == "")
+	return map[string]any{"events": events, "changed": changed, "left": left, "counts": keyring_counts(user, device), "fallback": keyring_unused(user, device), "next": fmt.Sprintf("%d_%d", delivered, changes)}
 }
 
 // keyring_deliveries is what was sent a device since a delivery it was
@@ -1102,26 +1108,104 @@ func keyring_deliveries(user string, device string, delivered int64) ([]map[stri
 }
 
 // keyring_changes is who changed their devices since a change, of those a
-// user shares a room with, and the last change; a first sync starts from
-// now, since the device asks for what it needs.
-func keyring_changes(user string, changes int64, first bool) ([]string, int64) {
+// user shares a room with, who no longer shares any room with them, and the
+// last change; a first sync starts from now, since the device asks for what
+// it needs.
+func keyring_changes(user string, changes int64, first bool) ([]string, []string, int64) {
 	db := federation_database()
-	changed := []string{}
 	if first {
 		row, _ := db.row("select max(id) as id from changes")
-		return changed, row_int(row, "id")
+		return []string{}, []string{}, row_int(row, "id")
 	}
-	rows, _ := db.rows("select id, user, viewer from changes where id>? order by id", changes)
-	shared := keyring_sharing(user)
+	rows, _ := db.rows("select id, user, viewer, gone from changes where id>? order by id", changes)
 	for _, row := range rows {
 		changes = row_int(row, "id")
+	}
+	changed, left := keyring_tally(user, rows)
+	return changed, left, changes
+}
+
+// keyring_tally sorts changes a user may see into those whose devices
+// changed, of people sharing a room with them now, and those no longer
+// sharing any, whether they share one now deciding.
+func keyring_tally(user string, rows []map[string]any) ([]string, []string) {
+	shared := keyring_sharing(user)
+	changed, left := []string{}, []string{}
+	for _, row := range rows {
 		person := row_string(row, "user")
 		viewer := row_string(row, "viewer")
-		if (viewer == "" || viewer == user) && (person == user || shared[person]) && !slices.Contains(changed, person) {
+		if viewer != "" && viewer != user {
+			continue
+		}
+		if row_int(row, "gone") != 0 {
+			if !shared[person] && !slices.Contains(left, person) {
+				left = append(left, person)
+			}
+		} else if (person == user || shared[person]) && !slices.Contains(changed, person) {
 			changed = append(changed, person)
 		}
 	}
-	return changed, changes
+	return changed, left
+}
+
+// keyring_membership records what a membership the room took means for
+// device lists, the room's state settled: someone joining is a change for
+// each local member, and where they are local, each member is one for them;
+// someone leaving, where it ends their sharing any room with someone, is a
+// departure for each. A join that was already one, a change of name, is
+// neither.
+func keyring_membership(event gomatrixserverlib.PDU) {
+	if event.Type() != spec.MRoomMember || event.StateKey() == nil {
+		return
+	}
+	member := *event.StateKey()
+	membership, _ := event.Membership()
+	previous := ""
+	if row, _ := federation_database().row("select before from events where id=?", event.EventID()); row != nil {
+		if id := rooms_snapshot(row_int(row, "before"))[rooms_key(spec.MRoomMember, member)]; id != "" {
+			if prior := rooms_event(id); prior != nil {
+				previous, _ = prior.Membership()
+			}
+		}
+	}
+	joined := membership == spec.Join && previous != spec.Join
+	left := membership != spec.Join && membership != spec.Invite && (previous == spec.Join || previous == spec.Invite)
+	if !joined && !left {
+		return
+	}
+	db := federation_database()
+	current, _ := rooms_current(event.RoomID().String())
+	local := func(user string) bool {
+		found, _ := federation_user(user)
+		return found != nil
+	}
+	note := func(person string, viewer string, gone bool) {
+		db.exec("insert into changes (user, viewer, gone, created) values (?, ?, ?, ?)", person, viewer, gone, now())
+	}
+	if joined && local(member) {
+		// The joiner is a change for their own other devices too.
+		note(member, member, false)
+	}
+	for other, status := range rooms_members(current) {
+		if other == member || (status != spec.Join && status != spec.Invite) {
+			continue
+		}
+		if joined {
+			if local(other) {
+				note(member, other, false)
+			}
+			if local(member) {
+				note(other, member, false)
+			}
+			continue
+		}
+		if local(other) && !keyring_sharing(other)[member] {
+			note(member, other, true)
+		}
+		if local(member) && !keyring_sharing(member)[other] {
+			note(other, member, true)
+		}
+	}
 }
 
 // keyring_position reads a sync position: the last delivery and the last
@@ -1256,8 +1340,12 @@ func keyring_serve_claim(c *gin.Context, r *fclient.FederationRequest) {
 	}
 	claimed := map[string]any{}
 	for user, wanted := range request.Keys {
-		if keyring_local(user) {
-			claimed[user] = keyring_take(user, wanted)
+		if !keyring_local(user) {
+			continue
+		}
+		// A user with no key left to claim is left out, not answered empty.
+		if keys := keyring_take(user, wanted); len(keys) > 0 {
+			claimed[user] = keys
 		}
 	}
 	c.JSON(http.StatusOK, map[string]any{"one_time_keys": claimed})

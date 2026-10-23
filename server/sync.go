@@ -281,7 +281,7 @@ func sync_build(s *clients_session, from sync_position, initial bool, full bool,
 	address := s.h.address
 	next := sync_latest()
 	deliveries, delivered := keyring_deliveries(address, s.device, from.delivered)
-	changed, changes := keyring_changes(address, from.changes, initial)
+	changed, gone, changes := keyring_changes(address, from.changes, initial)
 	next.delivered, next.changes = delivered, changes
 	limit := filter.Room.Timeline.Limit
 	if limit <= 0 {
@@ -323,12 +323,12 @@ func sync_build(s *clients_session, from sync_position, initial bool, full bool,
 		"account_data":                     map[string]any{"events": data},
 		"presence":                         map[string]any{"events": []any{}},
 		"to_device":                        map[string]any{"events": deliveries},
-		"device_lists":                     map[string]any{"changed": changed, "left": []string{}},
+		"device_lists":                     map[string]any{"changed": changed, "left": gone},
 		"device_one_time_keys_count":       keyring_counts(address, s.device),
 		"device_unused_fallback_key_types": keyring_unused(address, s.device),
 		"org.matrix.msc2732.device_unused_fallback_key_types": keyring_unused(address, s.device),
 	}
-	empty := len(joined) == 0 && len(invited) == 0 && len(left) == 0 && len(knocked) == 0 && len(data) == 0 && len(deliveries) == 0 && len(changed) == 0
+	empty := len(joined) == 0 && len(invited) == 0 && len(left) == 0 && len(knocked) == 0 && len(data) == 0 && len(deliveries) == 0 && len(changed) == 0 && len(gone) == 0
 	return answer, empty
 }
 
@@ -1122,14 +1122,14 @@ func sliding_extend(s *clients_session, asked sliding_extensions, marks sync_pos
 		quiet = quiet && len(events) == 0
 	}
 	if asked.Keys != nil && sliding_enabled(asked.Keys.Enabled, false) {
-		changed, changes := keyring_changes(address, marks.changes, first)
+		changed, gone, changes := keyring_changes(address, marks.changes, first)
 		marks.changes = changes
 		extensions["e2ee"] = map[string]any{
-			"device_lists":                     map[string]any{"changed": changed, "left": []string{}},
+			"device_lists":                     map[string]any{"changed": changed, "left": gone},
 			"device_one_time_keys_count":       keyring_counts(address, s.device),
 			"device_unused_fallback_key_types": keyring_unused(address, s.device),
 		}
-		quiet = quiet && len(changed) == 0
+		quiet = quiet && len(changed) == 0 && len(gone) == 0
 	}
 	if asked.Data != nil && sliding_enabled(asked.Data.Enabled, false) {
 		global := sync_data(address, "", marks.settings, first)

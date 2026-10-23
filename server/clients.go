@@ -24,7 +24,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -926,17 +925,9 @@ func clients_device_delete(s *clients_session, device string) bool {
 // positions, of those the user shares a room with.
 func clients_key_changes(c *gin.Context, s *clients_session) {
 	from, to := sync_parse(c.Query("from")), sync_parse(c.Query("to"))
-	rows, _ := federation_database().rows("select user, viewer from changes where id>? and id<=? order by id", from.changes, to.changes)
-	shared := keyring_sharing(s.h.address)
-	changed := []string{}
-	for _, row := range rows {
-		person := row_string(row, "user")
-		viewer := row_string(row, "viewer")
-		if (viewer == "" || viewer == s.h.address) && (person == s.h.address || shared[person]) && !slices.Contains(changed, person) {
-			changed = append(changed, person)
-		}
-	}
-	c.JSON(http.StatusOK, map[string]any{"changed": changed, "left": []string{}})
+	rows, _ := federation_database().rows("select user, viewer, gone from changes where id>? and id<=? order by id", from.changes, to.changes)
+	changed, left := keyring_tally(s.h.address, rows)
+	c.JSON(http.StatusOK, map[string]any{"changed": changed, "left": left})
 }
 
 // === Profiles ===

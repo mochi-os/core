@@ -12,10 +12,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/matrix-org/gomatrixserverlib"
+	"github.com/matrix-org/gomatrixserverlib/spec"
 	sl "go.starlark.net/starlark"
 )
 
@@ -76,6 +78,107 @@ func keys_request(t *testing.T, account string, user string, device string, meth
 func keys_sync(t *testing.T, user string, device string, since string) map[string]any {
 	t.Helper()
 	return sl_decode(sl_encode(keyring_sync(user, device, since))).(map[string]any)
+}
+
+// TestKeyringDeviceLists: a key sync lists in changed someone a user newly
+// shares a room with, whether the user joined their room or they the
+// user's, and in left someone the user no longer shares any room with,
+// whether they left or the user did, and not while another room is still
+// shared; whether they share a room at the sync decides which; a change of
+// name is neither; and a claim of keys no one has leaves the user out.
+func TestKeyringDeviceLists(t *testing.T) {
+	alice, _ := create_matrix_test_env(t)
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	room, second := r.room("devices", "invite"), r.room("second", "invite")
+	bob, carol := r.user("bob"), r.user("carol")
+	ad := keyring_device("@alice:example.com", "Mochi")
+	listed := func(value any, person string) bool {
+		list, _ := value.([]any)
+		return slices.Contains(list, any(person))
+	}
+	position := fmt.Sprint(keys_sync(t, "@alice:example.com", ad, "")["next"])
+	next := func() map[string]any {
+		t.Helper()
+		got := keys_sync(t, "@alice:example.com", ad, position)
+		position = fmt.Sprint(got["next"])
+		return got
+	}
+	member := func(name string, where string, who string, membership string, content map[string]any) gomatrixserverlib.PDU {
+		if content == nil {
+			content = map[string]any{}
+		}
+		content["membership"] = membership
+		sender := who
+		if membership == "invite" {
+			sender = bob
+		}
+		event := r.event(where, sender, spec.MRoomMember, &who, content)
+		r.push(t, name, event)
+		return event
+	}
+
+	matrix_join(t, r, alice, room)
+	if got := next(); !listed(got["changed"], bob) || !listed(got["changed"], "@alice:example.com") {
+		t.Errorf("THE POINT: joining a room listed not its members and the joiner, for their other devices: %v", got["changed"])
+	}
+	matrix_join(t, r, alice, second)
+	next()
+	for _, where := range []string{room, second} {
+		member("carol-invite-"+where, where, carol, "invite", nil)
+		member("carol-join-"+where, where, carol, "join", nil)
+	}
+	if got := next(); !listed(got["changed"], carol) {
+		t.Errorf("THE POINT: someone joining the user's room was not listed: %v", got["changed"])
+	}
+	member("rename", room, bob, "join", map[string]any{"displayname": "Robert"})
+	if got := next(); listed(got["changed"], bob) {
+		t.Errorf("THE POINT: a change of name was listed as a change of devices: %v", got["changed"])
+	}
+	member("carol-leave-room", room, carol, "leave", nil)
+	if got := next(); listed(got["left"], carol) {
+		t.Errorf("THE POINT: someone still sharing another room was listed as left: %v", got["left"])
+	}
+	member("carol-leave-second", second, carol, "leave", nil)
+	if got := next(); !listed(got["left"], carol) || listed(got["changed"], carol) {
+		t.Errorf("THE POINT: someone the user no longer shares a room with was not listed as left: changed %v, left %v", got["changed"], got["left"])
+	}
+	member("carol-back-invite", second, carol, "invite", nil)
+	member("carol-back", second, carol, "join", nil)
+	member("carol-gone", second, carol, "leave", nil)
+	if got := next(); !listed(got["left"], carol) || listed(got["changed"], carol) {
+		t.Errorf("THE POINT: joining and leaving between two syncs was not told as the leaving: changed %v, left %v", got["changed"], got["left"])
+	}
+	member("carol-again-invite", second, carol, "invite", nil)
+	member("carol-again", second, carol, "join", nil)
+	next()
+	member("carol-out", second, carol, "leave", nil)
+	member("carol-in-invite", second, carol, "invite", nil)
+	member("carol-in", second, carol, "join", nil)
+	if got := next(); listed(got["left"], carol) || !listed(got["changed"], carol) {
+		t.Errorf("THE POINT: leaving and joining again between two syncs was not told as the joining: changed %v, left %v", got["changed"], got["left"])
+	}
+
+	nothing := map[string]any{"one_time_keys": map[string]any{"@alice:example.com": map[string]any{"NODEVICE": "signed_curve25519"}}}
+	if status, body := r.call(t, "POST", "/_matrix/federation/v1/user/keys/claim", nothing); status != 200 || body["one_time_keys"].(map[string]any)["@alice:example.com"] != nil {
+		t.Errorf("THE POINT: another server's claim of keys alice has none of answered her: %d %v", status, body)
+	}
+	if answer := keyring_claim(t.Context(), "@alice:example.com", mustjson(nothing)); answer.status != 200 || answer.body.(map[string]any)["one_time_keys"].(map[string]any)["@alice:example.com"] != nil {
+		t.Errorf("THE POINT: a claim here of keys alice has none of answered her: %d %v", answer.status, answer.body)
+	}
+
+	thread := linked_thread(alice)
+	for _, where := range []string{room, second} {
+		if _, err := api_account_room_leave(thread, sl.NewBuiltin("test", nil), sl.Tuple{sl.String("m1"), sl.String(where)}, nil); err != nil {
+			t.Fatal(err)
+		}
+		got := next()
+		if where == room && listed(got["left"], bob) {
+			t.Errorf("THE POINT: leaving one of two rooms shared with bob listed him as left: %v", got["left"])
+		}
+		if where == second && !listed(got["left"], bob) {
+			t.Errorf("THE POINT: leaving the last room shared with bob did not list him as left: changed %v, left %v", got["changed"], got["left"])
+		}
+	}
 }
 
 // keys_hosted_pair is alice's and root's hosted Matrix accounts here, in a

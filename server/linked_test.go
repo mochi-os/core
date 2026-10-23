@@ -404,6 +404,18 @@ func fake_host(server *httptest.Server) string {
 // image with the cookie the image store wants, and send the app's own
 // requests; a wrong password and a blocked server are refused; the test
 // reports a sign-in the server stopped accepting.
+// TestLemmyAddress pins where an app's path on a linked Lemmy server goes:
+// under the 0.19 interface, or under /api/ for one of Lemmy 1.0's own routes.
+func TestLemmyAddress(t *testing.T) {
+	l := &linked{kind: "lemmy", data: map[string]any{"server": "lemmy.example"}}
+	if got := lemmy_api(l, "user/export_settings", nil); got != "https://lemmy.example/api/v3/user/export_settings" {
+		t.Errorf("0.19 path = %s", got)
+	}
+	if got := lemmy_api(l, "v4/account/settings/export", map[string]string{"page": "1"}); got != "https://lemmy.example/api/v4/account/settings/export?page=1" {
+		t.Errorf("1.0 path = %s", got)
+	}
+}
+
 func TestLinkedLemmy(t *testing.T) {
 	alice := create_linked_test_env(t)
 	fake := create_lemmy_fake(t)

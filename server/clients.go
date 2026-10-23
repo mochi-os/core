@@ -19,9 +19,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -338,7 +340,16 @@ func clients_dispatch(c *gin.Context, domain spec.ServerName, parts []string) {
 		c.JSON(http.StatusOK, map[string]any{"issuer": issuer})
 		return
 	case "GET register", "POST register", "GET register/available":
-		clients_error(c, http.StatusForbidden, "M_FORBIDDEN", "Accounts are made in Mochi")
+		switch {
+		case !clients_registration:
+			clients_error(c, http.StatusForbidden, "M_FORBIDDEN", "Accounts are made in Mochi")
+		case route == "POST register":
+			clients_register(c, domain)
+		case route == "GET register/available":
+			clients_register_available(c, domain)
+		default:
+			c.JSON(http.StatusOK, clients_register_flows())
+		}
 		return
 	}
 	if taken, ok := clients_match(parts, "profile", "*"); ok && method == "GET" {
@@ -537,7 +548,7 @@ func clients_login(c *gin.Context, domain spec.ServerName) {
 	if !strings.HasPrefix(address, "@") {
 		address = "@" + name + ":" + string(domain)
 	}
-	user, row, device := password_check("matrix", address, body.Password)
+	user, row, device := password_check("matrix", address, clients_password(address, body.Password))
 	if user == nil {
 		clients_error(c, http.StatusForbidden, "M_FORBIDDEN", "The address or the password is wrong")
 		return
@@ -576,6 +587,171 @@ func clients_login(c *gin.Context, domain spec.ServerName) {
 		answer["expires_in_ms"] = (m.expires - now()) * 1000
 	}
 	c.JSON(http.StatusOK, answer)
+}
+
+// === Registering, in development only ===
+//
+// Accounts are made in Mochi. A development server with [development]
+// registration on makes them through the client interface too, so a test
+// suite that registers its people, as Complement does, can drive the engine:
+// each registration is a user, their handle on the server's domain and a
+// hosted Matrix account on it, the password given kept as one minted for it.
+
+// clients_registration is whether the client interface takes registrations.
+var clients_registration = false
+
+// clients_localpart is the form of a name registered: a Matrix localpart of
+// letters, digits, hyphens and underscores. A registration records its handle
+// itself, so the names a test suite gives, such as user-1-alice, are taken
+// though Mochi's own rules for a handle a person reserves are narrower.
+var clients_localpart = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// clients_register_flows is the one stage a registration asks.
+func clients_register_flows() map[string]any {
+	return map[string]any{"flows": []any{map[string]any{"stages": []string{"m.login.dummy"}}}, "params": map[string]any{}, "session": random_alphanumeric(24)}
+}
+
+// clients_register makes an account for a name on the server's own domain,
+// once the client has answered the dummy stage, and signs a device in to it
+// unless asked not to.
+func clients_register(c *gin.Context, domain spec.ServerName) {
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Device   string `json:"device_id"`
+		Name     string `json:"initial_device_display_name"`
+		Inhibit  bool   `json:"inhibit_login"`
+		Refresh  bool   `json:"refresh_token"`
+		Auth     struct {
+			Type string `json:"type"`
+		} `json:"auth"`
+	}
+	if !clients_body(c, &body) {
+		return
+	}
+	if c.Query("kind") == "guest" {
+		clients_error(c, http.StatusForbidden, "M_GUEST_ACCESS_FORBIDDEN", "Guests are not taken")
+		return
+	}
+	if string(domain) != server_domain() {
+		clients_error(c, http.StatusForbidden, "M_FORBIDDEN", "Accounts are registered on the server's own domain")
+		return
+	}
+	if body.Auth.Type != "m.login.dummy" {
+		c.JSON(http.StatusUnauthorized, clients_register_flows())
+		return
+	}
+	name := strings.ToLower(strings.TrimSpace(body.Username))
+	if name == "" {
+		name = "user" + strings.ToLower(random_alphanumeric(10))
+	}
+	if !clients_localpart.MatchString(name) {
+		clients_error(c, http.StatusBadRequest, "M_INVALID_USERNAME", "The name is not one Mochi can hold")
+		return
+	}
+	if len(body.Device) > 100 || strings.ContainsAny(body.Device, "/ ") {
+		clients_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "Invalid device id")
+		return
+	}
+	// Mochi holds user-1 and user_1 as one name, written the second way,
+	// which is the account's address.
+	name = handle_normalise(name)
+	user, account, err := clients_register_account(string(domain), name, body.Password)
+	if err != nil {
+		if err == clients_taken {
+			clients_error(c, http.StatusBadRequest, "M_USER_IN_USE", "The name is taken")
+			return
+		}
+		clients_error(c, http.StatusBadRequest, "M_UNKNOWN", err.Error())
+		return
+	}
+	address := network_address("matrix", name, string(domain))
+	if body.Inhibit {
+		c.JSON(http.StatusOK, map[string]any{"user_id": address, "home_server": string(domain)})
+		return
+	}
+	label := strings.TrimSpace(body.Name)
+	if label == "" {
+		label = name
+	}
+	m := signin_mint(user, "", label, "matrix", account, clients_api_scopes[0], "", body.Device, body.Refresh)
+	if m == nil {
+		clients_error(c, http.StatusInternalServerError, "M_UNKNOWN", "No token")
+		return
+	}
+	answer := map[string]any{"user_id": address, "access_token": m.token, "device_id": m.device, "home_server": string(domain)}
+	if m.refresh != "" {
+		answer["refresh_token"] = m.refresh
+		answer["expires_in_ms"] = (m.expires - now()) * 1000
+	}
+	c.JSON(http.StatusOK, answer)
+}
+
+// clients_taken is the error of a name someone holds already.
+var clients_taken = fmt.Errorf("taken")
+
+// clients_register_account makes a registration's user, with an identity
+// named for them, their handle and a hosted Matrix account on it, and keeps
+// the password given for it. Answers the user and the account's id.
+func clients_register_account(domain string, name string, password string) (*User, string, error) {
+	if handle_get(domain, handle_normalise(name)) != nil {
+		return nil, "", clients_taken
+	}
+	address := email_address(name + "@" + domain)
+	if address == "" {
+		address = name + "@registration.invalid"
+	}
+	if user_by_username(address) != nil {
+		return nil, "", clients_taken
+	}
+	user, problem := user_create(address)
+	if user == nil {
+		return nil, "", fmt.Errorf("cannot make the user: %s", problem)
+	}
+	if _, err := entity_create(user, "person", name, "public", ""); err != nil {
+		return nil, "", fmt.Errorf("cannot make the identity: %v", err)
+	}
+	// Each name registered is a person's own: a test suite's user-1 and
+	// user-2 are two people, not names under one person's user.
+	h := &handle{Domain: domain, Name: handle_normalise(name), User: user.UID, Kind: "handle", Created: now()}
+	db_open("db/users.db").exec("insert into handles (domain, name, user, parent, kind, created) values (?, ?, ?, '', ?, ?)", h.Domain, h.Name, h.User, h.Kind, h.Created)
+	account, err := account_hosted_add(user, "matrix", h)
+	if err != nil {
+		return nil, "", fmt.Errorf("cannot make the account: %v", err)
+	}
+	if password != "" {
+		password_store(user, "", account, "matrix", "registration", clients_password(network_address("matrix", h.Name, domain), password))
+	}
+	return user, account, nil
+}
+
+// clients_password is a password as Mochi keeps it for the account at an
+// address: one a registration in development chose is kept with the prefix
+// every minted password carries and the account's id, since a test suite
+// gives every person the same one, and found again by them.
+func clients_password(address string, password string) string {
+	if !clients_registration || password == "" || strings.HasPrefix(password, "mochi-") {
+		return password
+	}
+	_, row := account_by_address("matrix", address)
+	if row == nil {
+		return password
+	}
+	return "mochi-" + row_string(row, "id") + "-" + password
+}
+
+// clients_register_available says whether a name may be registered.
+func clients_register_available(c *gin.Context, domain spec.ServerName) {
+	name := strings.ToLower(strings.TrimSpace(c.Query("username")))
+	if !clients_localpart.MatchString(name) {
+		clients_error(c, http.StatusBadRequest, "M_INVALID_USERNAME", "The name is not one Mochi can hold")
+		return
+	}
+	if handle_get(string(domain), handle_normalise(name)) != nil {
+		clients_error(c, http.StatusBadRequest, "M_USER_IN_USE", "The name is taken")
+		return
+	}
+	c.JSON(http.StatusOK, map[string]any{"available": true})
 }
 
 // clients_refresh renews a token a device signed in for the old way, by its
@@ -634,7 +810,7 @@ func clients_interactive(c *gin.Context, s *clients_session, raw json.RawMessage
 		c.JSON(http.StatusUnauthorized, flows)
 		return false
 	}
-	if user, row, _ := password_check("matrix", s.h.address, auth.Password); user == nil || user.UID != s.user.UID || row_string(row, "id") != s.h.id {
+	if user, row, _ := password_check("matrix", s.h.address, clients_password(s.h.address, auth.Password)); user == nil || user.UID != s.user.UID || row_string(row, "id") != s.h.id {
 		flows["errcode"], flows["error"] = "M_FORBIDDEN", "The password is wrong" // i18n-ok: Matrix error codes and their text are protocol, read by clients
 		c.JSON(http.StatusUnauthorized, flows)
 		return false
@@ -792,6 +968,7 @@ func clients_profile_get(c *gin.Context, domain spec.ServerName, person string, 
 	} else {
 		found, err := federation_client().LookupProfile(c.Request.Context(), domain, address.Domain(), person, "")
 		if err != nil {
+			debug("Matrix profile of %s not read: %v", person, err)
 			clients_error(c, http.StatusNotFound, "M_NOT_FOUND", "The profile could not be read")
 			return
 		}

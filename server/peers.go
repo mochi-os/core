@@ -186,9 +186,20 @@ func bootstrap_addresses_parse(list string) []Peer {
 // peers_bootstrap_load reloads peers_bootstrap and peer_default_publisher from
 // mochi.conf after ini_load, falling back to the hardcoded defaults. Each
 // [bootstrap] addresses entry carries its own /p2p/<id>: address and identity.
+// net_isolated is [development] isolated: a server that joins no Mochi
+// network, neither by its bootstrap peers nor by multicast DNS.
+var net_isolated = false
+
 func peers_bootstrap_load() {
 	peer_default_publisher = ini_string("publisher", "peer", peer_default_publisher_hardcoded)
 
+	// A server a test suite runs, isolated in development, never meets the
+	// Mochi network: it has no bootstrap peers to find it through, and its
+	// test people go into no one's directory.
+	if net_isolated {
+		peers_bootstrap = nil
+		return
+	}
 	raw := ini_strings_commas("bootstrap", "addresses")
 	list := bootstrap_addresses_hardcoded
 	if len(raw) > 0 {

@@ -1199,6 +1199,26 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}), nil
 }
 
+// account_hosted_add makes a hosted account on a handle the user holds, with
+// its keys and its actor, as mochi.account.add makes one, for a caller in
+// core: a registration in development (clients.go). Not for Bluesky, whose
+// identity the directory must hold first. Answers the account's id.
+func account_hosted_add(user *User, ptype string, h *handle) (string, error) {
+	db := db_user(user, "user")
+	id := uid()
+	data := json_encode(map[string]any{"hosted": true, "handle": h.Name, "domain": h.Domain})
+	if _, err := db.internal.Exec("insert into accounts (id, type, label, identifier, data, created, verified, device) values (?, ?, '', ?, ?, ?, ?, '')",
+		id, ptype, network_address(ptype, h.Name, h.Domain), data, now(), now()); err != nil {
+		return "", err
+	}
+	if err := keypairs_create(user, id, ptype); err != nil {
+		db.row_remove(reg_accounts, map[string]any{"id": id})
+		return "", err
+	}
+	actor_register(user, id, ptype, h.Domain, h.Name)
+	return id, nil
+}
+
 // mochi.account.profile() -> list: The accounts on other networks the user shows
 // on their profile page, as the page links them: type, identifier, name and url.
 // Shown by the user's choice, so no permission; a profile is read by anyone

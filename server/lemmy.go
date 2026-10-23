@@ -23,9 +23,14 @@ import (
 	"strings"
 )
 
-// lemmy_api is the address of a path under the server's /api/v3/.
+// lemmy_api is the address of a path under the server's /api/v3/, or under
+// /api/ for one beginning v4/: Lemmy 1.0 keeps the 0.19 interface but moved
+// some routes to its own, the settings export among them.
 func lemmy_api(l *linked, path string, query map[string]string) string {
 	address := network_base(l.get("server")) + "/api/v3/" + path
+	if strings.HasPrefix(path, "v4/") {
+		address = network_base(l.get("server")) + "/api/" + path
+	}
 	if len(query) > 0 {
 		values := url.Values{}
 		for key, value := range query {

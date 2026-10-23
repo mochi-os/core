@@ -363,6 +363,12 @@ func TestObjectAnnounce(t *testing.T) {
 	if item, _ := items[0].(map[string]any); item["type"] != "Announce" || item["id"] != announce || item["object"] != bob.id+"/notes/3" {
 		t.Errorf("outbox item = %v", items[0])
 	}
+	// Fetched by its id, the boost is the Announce, never asked of the app
+	// that made it, which would answer the boosted post as the account's own.
+	fetched, document := activitypub_get(t, strings.TrimPrefix(announce, "https://example.com"))
+	if fetched.Code != 200 || document["type"] != "Announce" || document["id"] != announce || document["actor"] != "https://example.com/~f1" || document["object"] != bob.id+"/notes/3" {
+		t.Errorf("Announce fetched = %d %v", fetched.Code, document)
+	}
 
 	if _, err := api_account_object_delete(thread, fn, sl.Tuple{sl.String("f1"), sl.String(announce)}, nil); err != nil {
 		t.Fatal(err)

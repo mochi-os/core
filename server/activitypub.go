@@ -793,8 +793,28 @@ func activitypub_object_document(user *User, a *actor, row map[string]any, objec
 	return object
 }
 
+// activitypub_announce is a boost row as the activity it is, or nil for any
+// other row: an activity of the account's own, not an object an app holds,
+// so the app is never asked for it.
+func activitypub_announce(actor_id string, object_row map[string]any) map[string]any {
+	if row_string(object_row, "type") != "Announce" {
+		return nil
+	}
+	to, cc := object_stored_addressing(object_row)
+	return map[string]any{
+		"id":        actor_id + "/" + row_string(object_row, "id"),
+		"type":      "Announce",
+		"actor":     actor_id,
+		"published": time.Unix(row_int(object_row, "created"), 0).UTC().Format(time.RFC3339),
+		"to":        to,
+		"cc":        cc,
+		"object":    object_announced(object_row),
+	}
+}
+
 // activitypub_object answers /~<id>/<object>: the object from its app, a
-// tombstone where it was deleted, a redirect to its page for a browser.
+// boost as its Announce, a tombstone where it was deleted, a redirect to its
+// page for a browser.
 func activitypub_object(c *gin.Context, user *User, a *actor, row map[string]any, id string) {
 	db := db_user(user, "user")
 	object_row, _ := db.row("select id, app, type, addressing, created, updated, deleted from objects where id=? and account=?", id, a.ID)
@@ -810,6 +830,11 @@ func activitypub_object(c *gin.Context, user *User, a *actor, row map[string]any
 	if activity := object_activity(object_row); activity != nil {
 		activity["@context"] = activitypub_context
 		activitypub_json(c, http.StatusOK, activity)
+		return
+	}
+	if announce := activitypub_announce(account_url(a.Domain, a.ID), object_row); announce != nil {
+		announce["@context"] = activitypub_context
+		activitypub_json(c, http.StatusOK, announce)
 		return
 	}
 	object := activitypub_object_document(user, a, row, object_row)
@@ -909,19 +934,8 @@ func activitypub_outbox(c *gin.Context, user *User, a *actor, row map[string]any
 			items = append(items, activity)
 			continue
 		}
-		if row_string(object_row, "type") == "Announce" {
-			// A boost is an activity of the account's own, not an object an
-			// app holds.
-			to, cc := object_stored_addressing(object_row)
-			items = append(items, map[string]any{
-				"id":        actor_id + "/" + row_string(object_row, "id"),
-				"type":      "Announce",
-				"actor":     actor_id,
-				"published": time.Unix(last, 0).UTC().Format(time.RFC3339),
-				"to":        to,
-				"cc":        cc,
-				"object":    object_announced(object_row),
-			})
+		if announce := activitypub_announce(actor_id, object_row); announce != nil {
+			items = append(items, announce)
 			continue
 		}
 		object := activitypub_object_document(user, a, row, object_row)

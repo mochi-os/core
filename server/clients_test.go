@@ -985,6 +985,87 @@ func TestClientsAccount(t *testing.T) {
 	}
 }
 
+// TestClientsRegistration: with [development] registration on, the client
+// interface asks the dummy stage, then makes a user, their handle and a
+// hosted Matrix account, signs a device in and keeps the password to sign
+// in with again; a name taken, a guest and another domain are refused.
+func TestClientsRegistration(t *testing.T) {
+	create_clients_test_env(t)
+	// A registration's user and identity live where any user's do.
+	db_create()
+	saved, domain := clients_registration, server_domain_name
+	clients_registration, server_domain_name = true, "example.com"
+	t.Cleanup(func() { clients_registration, server_domain_name = saved, domain })
+
+	// Before anyone registers, the domain is a Matrix one the server signs
+	// as, which the first registration's rooms need.
+	server_domain_name = "fresh.example"
+	if !federation_local("fresh.example") || !slices.Contains(federation_domains(), spec.ServerName("fresh.example")) {
+		t.Errorf("THE POINT: the registration domain is a Matrix domain before anyone registers: %v %v", federation_local("fresh.example"), federation_domains())
+	}
+	clients_registration = false
+	if federation_local("fresh.example") || slices.Contains(federation_domains(), spec.ServerName("fresh.example")) {
+		t.Errorf("CONTROL: with registration off, a domain no one holds is not a Matrix one")
+	}
+	clients_registration, server_domain_name = true, "example.com"
+
+	asked := map[string]any{"username": "carol", "password": "secret-carol-1"}
+	if status, answer := clients_request(t, nil, "POST", "/_matrix/client/v3/register", asked); status != 401 || answer["session"] == nil {
+		t.Fatalf("THE POINT: the first request is asked the dummy stage: %d %v", status, answer)
+	}
+	asked["auth"] = map[string]any{"type": "m.login.dummy"}
+	status, answer := clients_request(t, nil, "POST", "/_matrix/client/v3/register", asked)
+	token, _ := answer["access_token"].(string)
+	if status != 200 || answer["user_id"] != "@carol:example.com" || token == "" || answer["device_id"] == nil {
+		t.Fatalf("THE POINT: the registration makes the account and signs a device in: %d %v", status, answer)
+	}
+	cli, err := mautrix.NewClient("http://example.com", id.UserID("@carol:example.com"), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, answer := clients_request(t, cli, "GET", "/_matrix/client/v3/account/whoami", nil); status != 200 || answer["user_id"] != "@carol:example.com" {
+		t.Errorf("THE POINT: the token is the account's: %d %v", status, answer)
+	}
+	login := map[string]any{"type": "m.login.password", "identifier": map[string]any{"type": "m.id.user", "user": "carol"}, "password": "secret-carol-1"}
+	if status, answer := clients_request(t, nil, "POST", "/_matrix/client/v3/login", login); status != 200 || answer["user_id"] != "@carol:example.com" {
+		t.Errorf("THE POINT: the password given signs in again: %d %v", status, answer)
+	}
+	if status, answer := clients_request(t, nil, "POST", "/_matrix/client/v3/register", asked); status != 400 || answer["errcode"] != "M_USER_IN_USE" {
+		t.Errorf("a name taken: %d %v", status, answer)
+	}
+	db_open("db/users.db").exec("insert into handles (domain, name, user, parent, kind, created) values ('example.com', 'held', 'u-root', '', 'handle', 1)")
+	if status, answer := clients_request(t, nil, "POST", "/_matrix/client/v3/register", map[string]any{"username": "held", "auth": map[string]any{"type": "m.login.dummy"}}); status != 400 || answer["errcode"] != "M_USER_IN_USE" {
+		t.Errorf("THE POINT: a name someone holds in Mochi is taken: %d %v", status, answer)
+	}
+	if status, answer := clients_request(t, nil, "GET", "/_matrix/client/v3/register/available?username=carol", nil); status != 400 || answer["errcode"] != "M_USER_IN_USE" {
+		t.Errorf("carol available: %d %v", status, answer)
+	}
+	if status, answer := clients_request(t, nil, "GET", "/_matrix/client/v3/register/available?username=dave", nil); status != 200 || answer["available"] != true {
+		t.Errorf("dave available: %d %v", status, answer)
+	}
+	for _, name := range []string{"user-1", "user-2", "user-3-alice"} {
+		if status, answer := clients_request(t, nil, "POST", "/_matrix/client/v3/register", map[string]any{"username": name, "password": "the-same-for-all", "auth": map[string]any{"type": "m.login.dummy"}}); status != 200 || answer["user_id"] != "@"+handle_normalise(name)+":example.com" {
+			t.Errorf("THE POINT: %s is a person's own name, not one under user, answered as Mochi writes it, with the password everyone has: %d %v", name, status, answer)
+		}
+	}
+	same := map[string]any{"type": "m.login.password", "identifier": map[string]any{"type": "m.id.user", "user": "user-3-alice"}, "password": "the-same-for-all"}
+	if status, answer := clients_request(t, nil, "POST", "/_matrix/client/v3/login", same); status != 200 || answer["user_id"] != "@user_3_alice:example.com" {
+		t.Errorf("THE POINT: a password two people share signs each in as themselves: %d %v", status, answer)
+	}
+	if status, _ := clients_request(t, nil, "POST", "/_matrix/client/v3/register?kind=guest", asked); status != 403 {
+		t.Errorf("a guest was taken: %d", status)
+	}
+	server_domain_name = "elsewhere.example"
+	if status, _ := clients_request(t, nil, "POST", "/_matrix/client/v3/register", map[string]any{"username": "erin", "auth": map[string]any{"type": "m.login.dummy"}}); status != 403 {
+		t.Errorf("a registration on a domain not the server's was taken: %d", status)
+	}
+	server_domain_name = "example.com"
+	clients_registration = false
+	if status, _ := clients_request(t, nil, "POST", "/_matrix/client/v3/register", map[string]any{"username": "erin", "auth": map[string]any{"type": "m.login.dummy"}}); status != 403 {
+		t.Errorf("THE POINT: with registration off, accounts are made in Mochi only: %d", status)
+	}
+}
+
 // TestClientsKeys: a client's device keys go to the key store, another
 // account's client finds them, a message sent to the device reaches it by
 // its sync, and its one-time keys are counted there.

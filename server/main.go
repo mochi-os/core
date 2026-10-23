@@ -170,6 +170,10 @@ func main_serve(ready func()) int {
 	dev_apps_dir = ini_string("development", "apps", "")
 	dev_reload = ini_bool("development", "reload", false)
 	networks_development = ini_bool("development", "networks", false)
+	// A development server whose Matrix client interface takes registrations,
+	// for a test suite that registers its people (clients.go).
+	clients_registration = ini_bool("development", "registration", false)
+	net_isolated = ini_bool("development", "isolated", false)
 	// A reference fleet on this machine: its identity directory and relay in
 	// place of the public ones, and the address the relay reaches this
 	// server at (atproto.go).

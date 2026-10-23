@@ -275,8 +275,11 @@ func net_start() {
 	// multicast interface (containers under qemu, certain k8s CNI plugins,
 	// firewalled networks) still reach peers via the DHT and bootstrap nodes,
 	// so a startup failure here shouldn't take the server down.
-	if err := mdns.NewMdnsService(net_me, "mochi", &mdns_notifee{h: net_me}).Start(); err != nil {
-		warn("mDNS peer discovery disabled: %v", err)
+	// An isolated server, one a test suite runs, looks for no one.
+	if !net_isolated {
+		if err := mdns.NewMdnsService(net_me, "mochi", &mdns_notifee{h: net_me}).Start(); err != nil {
+			warn("mDNS peer discovery disabled: %v", err)
+		}
 	}
 
 	// Start pubsubs. The topic validator must be registered before Join, so no

@@ -237,3 +237,20 @@ func TestPeerAdmitBoundsUnprovenPeers(t *testing.T) {
 		t.Error("proving a peer did not free a slot: the ceiling counts connected peers, which it must not")
 	}
 }
+
+// TestPeersBootstrapIsolated: a server isolated in development has no
+// bootstrap peers, so a test suite's server never meets the Mochi network.
+func TestPeersBootstrapIsolated(t *testing.T) {
+	saved, list := net_isolated, peers_bootstrap
+	t.Cleanup(func() { net_isolated, peers_bootstrap = saved, list })
+	net_isolated = false
+	peers_bootstrap_load()
+	if len(peers_bootstrap) == 0 {
+		t.Fatal("CONTROL: a server not isolated has the bootstrap peers")
+	}
+	net_isolated = true
+	peers_bootstrap_load()
+	if len(peers_bootstrap) != 0 {
+		t.Errorf("THE POINT: an isolated server has no bootstrap peers: %v", peers_bootstrap)
+	}
+}

@@ -1359,6 +1359,13 @@ func password_mint(user *User, app string, account string, network string, name 
 	if password == "" {
 		return ""
 	}
+	password_store(user, app, account, network, name, password)
+	return password
+}
+
+// password_store keeps a password for an account as password_mint keeps the
+// ones it makes; a registration in development gives its own (clients.go).
+func password_store(user *User, app string, account string, network string, name string, password string) {
 	// One salt for all of an account's passwords: a SCRAM exchange names
 	// the salt before the client proves which password it holds, so the
 	// server can try each only where they share it.
@@ -1372,7 +1379,6 @@ func password_mint(user *User, app string, account string, network string, name 
 	db_open("db/users.db").exec("insert into tokens (hash, user, app, name, scopes, action, entity, created, expires, kind, account, network, scram) values (?, ?, ?, ?, '[]', '', '', ?, 0, ?, ?, ?, ?)",
 		token_hash(password), user.UID, app, name, now(), token_password, account, network, json_encode(scram))
 	db_open("db/sessions.db").exec("insert into accesses (hash, user, used) values (?, ?, 0)", token_hash(password), user.UID)
-	return password
 }
 
 // account_by_address finds the hosted account an address names on a network:

@@ -135,6 +135,11 @@ func federation_local(name spec.ServerName) bool {
 	if domain == "" {
 		return false
 	}
+	// The domain registrations are taken on, in development, is a Matrix
+	// domain before anyone registers (clients.go).
+	if clients_registration && domain == server_domain() {
+		return true
+	}
 	found, _ := networks_database().exists("select 1 from actors where network='matrix' and domain=? and deleted=0", domain)
 	if !found {
 		// A domain the server keeps a group's stand-ins on (bridge.go).
@@ -179,6 +184,12 @@ func federation_domains() []spec.ServerName {
 	standins, _ := federation_database().rows("select distinct domain from standins")
 	seen := map[string]bool{}
 	var out []spec.ServerName
+	// The domain registrations are taken on, in development, before anyone
+	// registers (clients.go).
+	if clients_registration && server_domain() != "" {
+		seen[server_domain()] = true
+		out = append(out, spec.ServerName(server_domain()))
+	}
 	for _, row := range append(rows, standins...) {
 		if domain := strings.ToLower(row_string(row, "domain")); domain != "" && !seen[domain] {
 			seen[domain] = true

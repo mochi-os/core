@@ -1478,7 +1478,7 @@ func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	return sl_encode(kept(result)), nil
 }
 
-// mochi.account.request(account, method, path, body=None, query=None) -> dict: A request of the app's own through an account, on its server's interface: a path under /api/ on Mastodon ("v1/bookmarks"), under /api/v3/ on Lemmy ("community/list"), under /_matrix/ on Matrix ("client/v3/joined_rooms"), or an XRPC method name on Bluesky ("app.bsky.graph.getFollows"); for a hosted Bluesky account the index's methods (app.bsky.*, chat.bsky.*) are forwarded to Bluesky's index as the account. query is a dict of query parameters, body a dict sent as JSON. Returns {status, data} with the answer decoded. Behind the account permission
+// mochi.account.request(account, method, path, body=None, query=None) -> dict: A request of the app's own through an account, on its server's interface: a path under /api/ on Mastodon ("v1/bookmarks"), under /api/v3/ on Lemmy ("community/list", or under /api/ for Lemmy 1.0's own routes: "v4/account/settings/export"), under /_matrix/ on Matrix ("client/v3/joined_rooms"), or an XRPC method name on Bluesky ("app.bsky.graph.getFollows"); for a hosted Bluesky account the index's methods (app.bsky.*, chat.bsky.*) are forwarded to Bluesky's index as the account. query is a dict of query parameters, body a dict sent as JSON. Returns {status, data} with the answer decoded. Behind the account permission
 func api_account_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, method, path string
 	var body, query sl.Value

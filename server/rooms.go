@@ -834,13 +834,13 @@ func rooms_fill(ctx context.Context, local spec.ServerName, origin spec.ServerNa
 	}
 }
 
-// rooms_gap makes a prev event no one could send a point to follow from: the
-// state at it asked for, and it stored outside the timeline with that state.
-func rooms_gap(ctx context.Context, local spec.ServerName, origin spec.ServerName, version gomatrixserverlib.IRoomVersion, room string, previous string) error {
-	client := federation_client()
-	answer, err := client.LookupState(ctx, local, origin, room, previous, version.Version())
+// rooms_state_at is the state before an event as another server has it: its
+// events stored, each checked by its own auth events, and those that pass
+// making up the state, which must hold the room's create event.
+func rooms_state_at(ctx context.Context, local spec.ServerName, origin spec.ServerName, version gomatrixserverlib.IRoomVersion, room string, id string) (rooms_state, error) {
+	answer, err := federation_client().LookupState(ctx, local, origin, room, id, version.Version())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	events := append(answer.AuthEvents.UntrustedEvents(version.Version()), answer.StateEvents.UntrustedEvents(version.Version())...)
 	kept := rooms_outliers(ctx, version, events)
@@ -851,8 +851,19 @@ func rooms_gap(ctx context.Context, local spec.ServerName, origin spec.ServerNam
 		}
 	}
 	if _, found := state[rooms_key(spec.MRoomCreate, "")]; !found {
-		return fmt.Errorf("the state has no create event")
+		return nil, fmt.Errorf("the state has no create event")
 	}
+	return state, nil
+}
+
+// rooms_gap makes a prev event no one could send a point to follow from: the
+// state at it asked for, and it stored outside the timeline with that state.
+func rooms_gap(ctx context.Context, local spec.ServerName, origin spec.ServerName, version gomatrixserverlib.IRoomVersion, room string, previous string) error {
+	state, err := rooms_state_at(ctx, local, origin, version, room, previous)
+	if err != nil {
+		return err
+	}
+	client := federation_client()
 	transaction, err := client.GetEvent(ctx, local, origin, previous)
 	if err != nil || len(transaction.PDUs) == 0 {
 		return fmt.Errorf("cannot fetch it: %v", err)
@@ -1637,9 +1648,10 @@ func rooms_recent(user string, room string, join gomatrixserverlib.PDU) []map[st
 }
 
 // rooms_backfill fetches a room's recent past on joining it, and answers its
-// messages as the joining user's conversation events, oldest first. The
-// events are kept outside the timeline: the room's state is what the join
-// brought.
+// messages as the joining user's conversation events, oldest first: each
+// checked by its own auth events and by the state before it, as the timeline's
+// are. The events are kept outside the timeline: the room's state is what the
+// join brought.
 func rooms_backfill(ctx context.Context, local spec.ServerName, server spec.ServerName, room string, user string, join gomatrixserverlib.PDU) []map[string]any {
 	version := rooms_version(room)
 	if version == nil {
@@ -1666,25 +1678,56 @@ func rooms_backfill(ctx context.Context, local spec.ServerName, server spec.Serv
 	unlock := rooms_lock(room)
 	current, _ := rooms_current(room)
 	var told []map[string]any
+	// The state after each event, worked out oldest first: the history's
+	// own events build it, and the server is asked only for the state
+	// before an event that follows one from before the history.
+	after := map[string]rooms_state{}
 	for _, event := range gomatrixserverlib.ReverseTopologicalOrdering(good, gomatrixserverlib.TopologicalOrderByPrevEvents) {
-		if rooms_event(event.EventID()) != nil {
-			continue
-		}
-		auth, err := rooms_auth(ctx, local, server, version, event)
+		before, err := rooms_history_before(ctx, local, server, version, room, event, after)
 		if err != nil {
+			debug("Matrix room %s: history event %s: %v", room, event.EventID(), err)
 			continue
 		}
-		if rooms_authorised(event, auth) != nil {
-			rooms_keep(event, 0, true, true)
-			continue
+		var rejected bool
+		if rooms_event(event.EventID()) != nil {
+			rejected = rooms_rejected(event.EventID())
+		} else {
+			auth, err := rooms_auth(ctx, local, server, version, event)
+			if err != nil {
+				continue
+			}
+			rejected = rooms_authorised(event, auth) != nil || rooms_allowed(event, before) != nil
+			rooms_keep(event, 0, rejected, true)
+			if !rejected && event.StateKey() == nil && string(event.SenderID()) != user {
+				told = append(told, rooms_conversation(user, event, current)...)
+			}
 		}
-		rooms_keep(event, 0, false, true)
-		if event.StateKey() == nil && string(event.SenderID()) != user {
-			told = append(told, rooms_conversation(user, event, current)...)
+		state := maps.Clone(before)
+		if !rejected && event.StateKey() != nil {
+			state[rooms_key(event.Type(), *event.StateKey())] = event.EventID()
 		}
+		after[event.EventID()] = state
 	}
 	unlock()
 	return told
+}
+
+// rooms_history_before is the state before an event of a room's history:
+// resolved from the states after the events it follows, those of the history
+// as worked out and those held here, or where one is neither, the state
+// before it as the server it came from has it.
+func rooms_history_before(ctx context.Context, local spec.ServerName, server spec.ServerName, version gomatrixserverlib.IRoomVersion, room string, event gomatrixserverlib.PDU, after map[string]rooms_state) (rooms_state, error) {
+	var sets []rooms_state
+	for _, prev := range event.PrevEventIDs() {
+		if state, ok := after[prev]; ok {
+			sets = append(sets, state)
+		} else if state, ok := rooms_after(prev); ok {
+			sets = append(sets, state)
+		} else {
+			return rooms_state_at(ctx, local, server, version, room, event.EventID())
+		}
+	}
+	return rooms_resolve(version, sets)
 }
 
 // rooms_leave takes a user out of a room, or declines an invitation to one

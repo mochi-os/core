@@ -1079,6 +1079,95 @@ func TestMatrixAuthEvents(t *testing.T) {
 
 }
 
+// TestMatrixHistory: the history fetched on joining a room is checked by the
+// state before each event as well as by its own auth events, so a message a
+// banned member's server sends after the ban, naming the join from before it,
+// is not shown; the state is worked out from the history itself, the server
+// asked only for the state before it where the history does not reach the
+// room's beginning; and what the member said before the ban stays.
+func TestMatrixHistory(t *testing.T) {
+	alice, log := create_matrix_test_env(t)
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	bob, carol := r.user("bob"), r.user("carol")
+	shown := func(body string) bool {
+		return len(log.matching(func(e map[string]any) bool { return e["kind"] == "message" && e["body"] == body })) > 0
+	}
+	lookups := func() int {
+		r.lock.Lock()
+		defer r.lock.Unlock()
+		n := 0
+		for _, asked := range r.asked {
+			if strings.HasPrefix(asked, "GET /_matrix/federation/v1/state/") {
+				n++
+			}
+		}
+		return n
+	}
+	// banned has carol join a room, say something, be banned, and then her
+	// server send a message after the ban naming her old join.
+	banned := func(room string, before string, filler int, after string) (gomatrixserverlib.PDU, gomatrixserverlib.PDU) {
+		r.event(room, bob, spec.MRoomMember, &carol, map[string]any{"membership": "invite"})
+		join := r.event(room, carol, spec.MRoomMember, &carol, map[string]any{"membership": "join"})
+		r.event(room, carol, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": before})
+		r.event(room, bob, spec.MRoomMember, &carol, map[string]any{"membership": "ban"})
+		for i := range filler {
+			r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": fmt.Sprintf("filler %d", i)})
+		}
+		r.lock.Lock()
+		state := r.state[room]
+		forged := r.forge(room, carol, after, r.edge[room], []string{state[rooms_key(spec.MRoomCreate, "")], state[rooms_key(spec.MRoomPowerLevels, "")], join.EventID()})
+		r.take(forged)
+		r.lock.Unlock()
+		return join, forged
+	}
+
+	// The whole history fetched, back to the room's beginning.
+	room := r.room("History", "invite")
+	join, forged := banned(room, "before my ban", 0, "after my ban")
+	r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "after the ban"})
+	// Carol's server joins her again, which the ban refuses, and sends a
+	// message after it naming her old join: the state after a rejected
+	// event is the state before it, the ban.
+	r.lock.Lock()
+	rejoin := r.build(room, carol, spec.MRoomMember, &carol, map[string]any{"membership": "join"}, r.edge[room], r.state[room])
+	r.events[rejoin.EventID()], r.before[rejoin.EventID()], r.edge[room] = rejoin, maps.Clone(r.state[room]), []string{rejoin.EventID()}
+	state := r.state[room]
+	rejoined := r.forge(room, carol, "after my rejoin", r.edge[room], []string{state[rooms_key(spec.MRoomCreate, "")], state[rooms_key(spec.MRoomPowerLevels, "")], join.EventID()})
+	r.take(rejoined)
+	r.lock.Unlock()
+	r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "after the rejoin"})
+	asked := lookups()
+	matrix_join(t, r, alice, room)
+	if !shown("before my ban") || !shown("after the ban") || !shown("after the rejoin") {
+		t.Fatal("CONTROL: the history was not shown")
+	}
+	if shown("after my ban") || !rooms_rejected(forged.EventID()) {
+		t.Error("THE POINT: a banned member's message from after the ban was shown in the history")
+	}
+	if !rooms_rejected(rejoin.EventID()) {
+		t.Fatal("CONTROL: the join the ban refuses was not rejected")
+	}
+	if shown("after my rejoin") || !rooms_rejected(rejoined.EventID()) {
+		t.Error("THE POINT: a message after a rejected join was judged by that join")
+	}
+	if lookups() != asked {
+		t.Error("THE POINT: the server was asked for state a history reaching the room's beginning holds")
+	}
+
+	// A longer history than is fetched, the ban before what is.
+	long := r.room("Long history", "invite")
+	_, forged = banned(long, "before my ban, long ago", rooms_history+5, "long after my ban")
+	r.event(long, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "the latest"})
+	asked = lookups()
+	matrix_join(t, r, alice, long)
+	if !shown("the latest") || lookups() == asked {
+		t.Fatal("CONTROL: the history was not taken from the state before it")
+	}
+	if shown("long after my ban") || !rooms_rejected(forged.EventID()) {
+		t.Error("THE POINT: a banned member's message was shown in a history beginning after the ban")
+	}
+}
+
 // TestMatrixRoomVersions: in every room version, a room joined on another
 // server is served back to a server in it and to no other, branches setting
 // the room's name resolve as the version's algorithm has it, and an event

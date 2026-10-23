@@ -106,6 +106,54 @@ func clients_request(t *testing.T, cli *mautrix.Client, method string, path stri
 	return response.StatusCode, answer
 }
 
+// TestClientsMedia: the authenticated media paths a client of spec v1.11
+// uses answer as the old ones do; a file from another server keeps the name
+// that server gave it; and a file from a server without federation media is
+// fetched at that server's unauthenticated download.
+func TestClientsMedia(t *testing.T) {
+	alice, _ := create_clients_test_env(t)
+	saved := cache_dir
+	cache_dir = t.TempDir()
+	defer func() { cache_dir = saved }()
+	cli := clients_client(t, alice, "m1", "@alice:example.com", "")
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	r.lock.Lock()
+	r.media["named"], r.names["named"] = []byte("a remote picture"), "🐔.png"
+	r.legacy["older"], r.names["older"] = []byte("an older server's file"), "older.txt"
+	r.lock.Unlock()
+	fetch := func(path string) (int, string, string) {
+		t.Helper()
+		request := httptest.NewRequest("GET", "http://example.com"+path, http.NoBody)
+		request.Header.Set("Authorization", "Bearer "+cli.AccessToken)
+		response, err := clients_transport{}.RoundTrip(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(response.Body)
+		return response.StatusCode, response.Header.Get("Content-Disposition"), string(data)
+	}
+	if status, body := clients_request(t, cli, "GET", "/_matrix/media/v3/config", nil); status != 200 || body["m.upload.size"] == nil {
+		t.Fatalf("CONTROL: the old media config = %d %v", status, body)
+	}
+	if status, body := clients_request(t, cli, "GET", "/_matrix/client/v1/media/config", nil); status != 200 || body["m.upload.size"] == nil {
+		t.Errorf("THE POINT: the authenticated media config = %d %v", status, body)
+	}
+	status, disposition, data := fetch("/_matrix/client/v1/media/download/" + string(r.name) + "/named")
+	if status != 200 || data != "a remote picture" {
+		t.Errorf("THE POINT: an authenticated download = %d %q", status, data)
+	}
+	if !strings.Contains(disposition, "filename*=utf-8''"+url.PathEscape("🐔.png")) {
+		t.Errorf("THE POINT: a remote file's name was not kept: %q", disposition)
+	}
+	if status, _, data := fetch("/_matrix/client/v1/media/thumbnail/" + string(r.name) + "/named?width=32&height=32"); status != 200 || data != "a remote picture" {
+		t.Errorf("THE POINT: an authenticated thumbnail = %d %q", status, data)
+	}
+	status, disposition, data = fetch("/_matrix/client/v1/media/download/" + string(r.name) + "/older")
+	if status != 200 || data != "an older server's file" || !strings.Contains(disposition, "older.txt") {
+		t.Errorf("THE POINT: a file from a server without federation media = %d %q %q", status, data, disposition)
+	}
+}
+
 // clients_bodies is the bodies of a list of events' messages, in order.
 func clients_bodies(events []*event.Event) []string {
 	var out []string

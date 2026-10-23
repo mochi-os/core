@@ -115,10 +115,30 @@ func content_address(mxc string) string {
 	return "https://" + server + "/_matrix/federation/v1/media/download/" + id
 }
 
-// content_cached is where a fetched file is kept in the cache, and the file
-// beside it holding its type.
+// content_cached is where a fetched file is kept in the cache, and the files
+// beside it holding its type and the name its server gave it.
 func content_cached(user *User, server string, id string) string {
 	return filepath.Join(cache_dir, "apps", user.UID, "matrix", strings.ReplaceAll(server, ":", "_"), id)
+}
+
+// content_name is a file's name: this server's own as it was uploaded, or
+// another server's as that server gave it when fetched, or empty.
+func content_name(user *User, server string, id string) string {
+	if row, _ := federation_database().row("select name from media where id=? and domain=?", id, server); row != nil {
+		return row_string(row, "name")
+	}
+	name, _ := os.ReadFile(content_cached(user, server, id) + ".name")
+	return string(name)
+}
+
+// content_disposition is the file name a Content-Disposition header gives,
+// its RFC 2231 form decoded, or empty.
+func content_disposition(value string) string {
+	_, parameters, err := mime.ParseMediaType(value)
+	if err != nil {
+		return ""
+	}
+	return parameters["filename"]
 }
 
 // content_fetch fetches a file another server's user sent, as a hosted
@@ -144,7 +164,7 @@ func content_fetch(ctx context.Context, h *matrix_hosted, address string) (int, 
 	if err != nil {
 		return 0, "", nil, err
 	}
-	var kind string
+	var kind, name string
 	var data []byte
 	if federation_local(spec.ServerName(server)) {
 		row, _ := federation_database().row("select user, type from media where id=? and domain=?", id, server)
@@ -162,52 +182,81 @@ func content_fetch(ctx context.Context, h *matrix_hosted, address string) (int, 
 			return 0, "", nil, err
 		}
 		defer response.Body.Close()
+		// A server from before federation media answers it as a path it
+		// does not know: its own unauthenticated download, then.
+		if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusMethodNotAllowed || response.StatusCode == http.StatusBadRequest {
+			legacy, err := content_legacy(ctx, server, id)
+			if err != nil {
+				return 0, "", nil, err
+			}
+			defer legacy.Body.Close()
+			response = legacy
+		}
 		if response.StatusCode != 200 {
 			return response.StatusCode, "", nil, nil
 		}
-		kind, data, err = content_read(ctx, h.user, response)
+		kind, name, data, err = content_read(ctx, h.user, response)
 		if err != nil {
 			return 0, "", nil, err
 		}
 	}
 	if _, err := cache_write_file(path, bytes.NewReader(data)); err == nil {
 		os.WriteFile(path+".type", []byte(kind), 0o644)
+		if name != "" {
+			os.WriteFile(path+".name", []byte(name), 0o644)
+		}
 	}
 	return 200, kind, data, nil
 }
 
-// content_read reads a federation download's answer: the file, or the
-// address it redirects to, from the multipart answer's second part.
-func content_read(ctx context.Context, user *User, response *http.Response) (string, []byte, error) {
+// content_legacy asks a server for one of its files at its unauthenticated
+// download path, as a server from before federation media serves them, and
+// for its own file only.
+func content_legacy(ctx context.Context, server string, id string) (*http.Response, error) {
+	request, err := http.NewRequestWithContext(ctx, "GET", "matrix://"+server+"/_matrix/media/v3/download/"+url.PathEscape(server)+"/"+url.PathEscape(id)+"?allow_remote=false", nil)
+	if err != nil {
+		return nil, err
+	}
+	return (&http.Client{Transport: federation_transport{}, Timeout: federation_timeout}).Do(request)
+}
+
+// content_read reads a download's answer: the file, or the address it
+// redirects to, from the multipart answer's second part, or the answer whole
+// where it is not multipart; with its type and the name its server gives it.
+func content_read(ctx context.Context, user *User, response *http.Response) (string, string, []byte, error) {
 	media, parameters, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if err != nil || !strings.HasPrefix(media, "multipart/") {
 		data, err := read_limited(response.Body, int64(media_maximum))
-		return response.Header.Get("Content-Type"), data, err
+		return response.Header.Get("Content-Type"), content_disposition(response.Header.Get("Content-Disposition")), data, err
 	}
 	reader := multipart.NewReader(response.Body, parameters["boundary"])
 	if _, err := reader.NextPart(); err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	part, err := reader.NextPart()
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
+	name := content_disposition(part.Header.Get("Content-Disposition"))
 	if location := part.Header.Get("Location"); location != "" {
 		request, err := http.NewRequestWithContext(ctx, "GET", location, nil)
 		if err != nil {
-			return "", nil, err
+			return "", "", nil, err
 		}
 		redirected, err := network_request(ctx, user, "matrix", request, 3)
 		if err != nil {
-			return "", nil, err
+			return "", "", nil, err
 		}
 		defer redirected.Body.Close()
 		if redirected.StatusCode != 200 {
-			return "", nil, fmt.Errorf("the file's address answered %d", redirected.StatusCode)
+			return "", "", nil, fmt.Errorf("the file's address answered %d", redirected.StatusCode)
+		}
+		if given := content_disposition(redirected.Header.Get("Content-Disposition")); given != "" {
+			name = given
 		}
 		data, err := read_limited(redirected.Body, int64(media_maximum))
-		return redirected.Header.Get("Content-Type"), data, err
+		return redirected.Header.Get("Content-Type"), name, data, err
 	}
 	data, err := read_limited(io.Reader(part), int64(media_maximum))
-	return part.Header.Get("Content-Type"), data, err
+	return part.Header.Get("Content-Type"), name, data, err
 }

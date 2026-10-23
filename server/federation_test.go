@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"mime"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -58,11 +59,16 @@ type matrix_remote struct {
 	received []gomatrixserverlib.PDU
 	edus     []gomatrixserverlib.EDU
 	media    map[string][]byte
-	fetched  int
-	invited  []gomatrixserverlib.PDU
-	asked    []string
-	fail     bool
-	missing  bool
+	// A file's name as the remote gives it, and files it serves only at
+	// its unauthenticated download, as a server from before federation
+	// media does.
+	names   map[string]string
+	legacy  map[string][]byte
+	fetched int
+	invited []gomatrixserverlib.PDU
+	asked   []string
+	fail    bool
+	missing bool
 	// What the remote answers a key query and a key claim with, as its
 	// users' keys (keyring_test.go).
 	keys   map[string]any
@@ -79,7 +85,7 @@ func create_matrix_remote(t *testing.T, version gomatrixserverlib.RoomVersion) *
 		t.Fatal(err)
 	}
 	r := &matrix_remote{t: t, key: "ed25519:remote", private: private, public: public, version: implementation,
-		events: map[string]gomatrixserverlib.PDU{}, before: map[string]map[string]string{}, state: map[string]map[string]string{}, edge: map[string][]string{}, aliases: map[string]string{}, media: map[string][]byte{}}
+		events: map[string]gomatrixserverlib.PDU{}, before: map[string]map[string]string{}, state: map[string]map[string]string{}, edge: map[string][]string{}, aliases: map[string]string{}, media: map[string][]byte{}, names: map[string]string{}, legacy: map[string][]byte{}}
 	r.server = httptest.NewServer(http.HandlerFunc(r.serve))
 	t.Cleanup(r.server.Close)
 	r.name = spec.ServerName(fake_host(r.server))
@@ -324,6 +330,22 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 		w.Write([]byte("moved picture"))
 		return
 	}
+	if id, found := strings.CutPrefix(req.URL.Path, "/_matrix/media/v3/download/"+string(r.name)+"/"); found && req.URL.Query().Get("allow_remote") == "false" {
+		r.lock.Lock()
+		data, held := r.legacy[id]
+		name := r.names[id]
+		r.lock.Unlock()
+		if !held {
+			r.answer(w, 404, map[string]any{"errcode": "M_NOT_FOUND"})
+			return
+		}
+		if name != "" {
+			w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": name}))
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write(data)
+		return
+	}
 	if req.URL.Path == "/_matrix/key/v2/server" {
 		document, _ := json.Marshal(map[string]any{"server_name": string(r.name), "valid_until_ts": time.Now().Add(time.Hour).UnixMilli(),
 			"verify_keys": map[string]any{string(r.key): map[string]any{"key": base64.RawStdEncoding.EncodeToString(r.public)}}, "old_verify_keys": map[string]any{}})
@@ -467,7 +489,11 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 		if string(data) == "moved" {
 			writer.CreatePart(textproto.MIMEHeader{"Location": {r.server.URL + "/files/moved"}})
 		} else {
-			part, _ := writer.CreatePart(textproto.MIMEHeader{"Content-Type": {"image/png"}})
+			header := textproto.MIMEHeader{"Content-Type": {"image/png"}}
+			if name := r.names[parts[3]]; name != "" {
+				header.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+			}
+			part, _ := writer.CreatePart(header)
 			part.Write(data)
 		}
 		writer.Close()

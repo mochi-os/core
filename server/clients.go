@@ -238,10 +238,12 @@ func clients_route(c *gin.Context) bool {
 		return true
 	}
 	area, parts := clients_parts(path)
-	switch area {
-	case "media":
+	switch {
+	// The authenticated media paths are the client interface's, under
+	// client/v1/media.
+	case area == "media" || (area == "client" && len(parts) > 0 && parts[0] == "media"):
 		clients_media(c, parts)
-	case "client":
+	case area == "client":
 		clients_dispatch(c, domain, parts)
 	default:
 		clients_error(c, http.StatusNotFound, "M_UNRECOGNIZED", "Unrecognised request")
@@ -1339,8 +1341,8 @@ func clients_media(c *gin.Context, parts []string) {
 		name := ""
 		if len(parts) >= 4 {
 			name = parts[3]
-		} else if row, _ := federation_database().row("select name from media where id=? and domain=?", id, server); row != nil {
-			name = row_string(row, "name")
+		} else {
+			name = content_name(s.h.user, server, id)
 		}
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("Content-Security-Policy", "sandbox; default-src 'none'; script-src 'none'; plugin-types application/pdf; style-src 'unsafe-inline'; object-src 'self';")

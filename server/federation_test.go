@@ -972,6 +972,113 @@ func TestMatrixTransactions(t *testing.T) {
 	}
 }
 
+// TestMatrixAuthEvents: an event is checked against its own auth events as
+// the auth rules consider them, wherever it arrives - in a transaction, in
+// the auth chain fetched to check one, in the history fetched on joining and
+// at a gap - and is rejected where one of them was itself rejected, where two
+// name the same member, or where one is not among those its auth needs.
+func TestMatrixAuthEvents(t *testing.T) {
+	alice, log := create_matrix_test_env(t)
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	room := r.room("Auth", "invite")
+	bob, dave := r.user("bob"), r.user("dave")
+	empty := ""
+	invite := r.event(room, bob, spec.MRoomMember, &dave, map[string]any{"membership": "invite"})
+	join := r.event(room, dave, spec.MRoomMember, &dave, map[string]any{"membership": "join"})
+	shown := func(body string) bool {
+		return len(log.matching(func(e map[string]any) bool { return e["kind"] == "message" && e["body"] == body })) > 0
+	}
+
+	// Dave, with no power, sets the power levels: the room rejects it, and
+	// the remote serves it as an auth event of the events after.
+	r.lock.Lock()
+	create, levels, rules := r.state[room][rooms_key(spec.MRoomCreate, "")], r.state[room][rooms_key(spec.MRoomPowerLevels, "")], r.state[room][rooms_key(spec.MRoomJoinRules, "")]
+	seized := r.build(room, dave, spec.MRoomPowerLevels, &empty, map[string]any{"users": map[string]any{dave: 100}}, r.edge[room], r.state[room])
+	r.events[seized.EventID()] = seized
+	history := r.forge(room, dave, "history on seized power", r.edge[room], []string{create, seized.EventID(), join.EventID()})
+	r.take(history)
+	r.lock.Unlock()
+	r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "history after it"})
+
+	// History on joining: the message authorised by the rejected power
+	// levels is not shown, the one after it is.
+	matrix_join(t, r, alice, room)
+	if !shown("history after it") {
+		t.Fatal("CONTROL: the history was not fetched")
+	}
+	if !rooms_rejected(seized.EventID()) {
+		t.Fatal("CONTROL: the power levels dave had no power to set were not rejected")
+	}
+	if shown("history on seized power") || !rooms_rejected(history.EventID()) {
+		t.Error("THE POINT: history authorised by rejected power levels was shown")
+	}
+
+	refused := func(name string, event gomatrixserverlib.PDU, body string, why string) {
+		t.Helper()
+		results := r.push(t, name, event)
+		if result, _ := results[event.EventID()].(map[string]any); result["error"] == nil || shown(body) || !rooms_rejected(event.EventID()) {
+			t.Errorf("THE POINT: %s: %v", why, results)
+		}
+	}
+	r.lock.Lock()
+	edge, state := slices.Clone(r.edge[room]), maps.Clone(r.state[room])
+	// In a transaction: a message naming the rejected power levels.
+	direct := r.forge(room, dave, "on seized power", edge, []string{create, seized.EventID(), join.EventID()})
+	// Fetched to check another: dave's membership on the rejected power
+	// levels, which a message names in place of his join.
+	seizing := maps.Clone(state)
+	seizing[rooms_key(spec.MRoomPowerLevels, "")] = seized.EventID()
+	rejoin := r.build(room, dave, spec.MRoomMember, &dave, map[string]any{"membership": "join", "displayname": "Dave"}, edge, seizing)
+	r.events[rejoin.EventID()] = rejoin
+	outlier := r.forge(room, dave, "on a rejected membership", edge, []string{create, levels, rejoin.EventID()})
+	// Two memberships of dave's, the join last.
+	twice := r.forge(room, dave, "two memberships", edge, []string{create, levels, invite.EventID(), join.EventID()})
+	// The join rules, which a message's auth does not need.
+	extra := r.forge(room, bob, "join rules named", edge, []string{create, levels, rules, state[rooms_key(spec.MRoomMember, bob)]})
+	for _, event := range []gomatrixserverlib.PDU{direct, outlier, twice, extra} {
+		r.events[event.EventID()] = event
+	}
+	r.lock.Unlock()
+	refused("direct", direct, "on seized power", "a message naming rejected power levels was taken")
+	refused("outlier", outlier, "on a rejected membership", "a message naming a membership authorised by rejected power levels was taken")
+	if !rooms_rejected(rejoin.EventID()) {
+		t.Error("THE POINT: a membership fetched to check another, authorised by rejected power levels, was kept as good")
+	}
+	refused("twice", twice, "two memberships", "a message naming two of dave's memberships was taken")
+	refused("extra", extra, "join rules named", "a message naming the join rules was taken")
+	if !shown("history after it") || rooms_rejected(join.EventID()) {
+		t.Error("CONTROL: the room's own events stand")
+	}
+
+	// The room moves past a rejected event, which leaves the state as it
+	// found it: an event following it is taken.
+	r.lock.Lock()
+	follower := r.build(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "after the rejected"}, []string{direct.EventID()}, state)
+	r.lock.Unlock()
+	r.push(t, "follower", follower)
+	if !shown("after the rejected") || !rooms_point(direct.EventID()) {
+		t.Error("THE POINT: an event following a rejected one was not taken")
+	}
+
+	// At a gap: the event the state at it is asked for names the rejected
+	// power levels, and is kept rejected though that state allows it.
+	r.lock.Lock()
+	hole := r.forge(room, dave, "in the hole", r.edge[room], []string{create, seized.EventID(), join.EventID()})
+	r.take(hole)
+	r.lock.Unlock()
+	beyond := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "beyond the hole"})
+	r.missing = true
+	r.push(t, "hole", beyond)
+	r.missing = false
+	if !shown("beyond the hole") || !rooms_point(hole.EventID()) {
+		t.Fatal("CONTROL: the event after the hole was not taken from the state at it")
+	}
+	if !rooms_rejected(hole.EventID()) {
+		t.Error("THE POINT: the event at a gap, authorised by rejected power levels, was kept as good")
+	}
+
+}
+
 // TestMatrixRoomVersions: in every room version, a room joined on another
 // server is served back to a server in it and to no other, branches setting
 // the room's name resolve as the version's algorithm has it, and an event

@@ -324,6 +324,39 @@ func rooms_allowed(event gomatrixserverlib.PDU, state rooms_state) error {
 	return gomatrixserverlib.Allowed(event, provider, federation_sender)
 }
 
+// rooms_authorised checks an event against its own auth events, as the auth
+// rules consider them: none naming a type and state key another does, none
+// outside what the event's auth needs, none this server rejected, and the
+// event allowed by them.
+func rooms_authorised(event gomatrixserverlib.PDU, auth []gomatrixserverlib.PDU) error {
+	needed := map[gomatrixserverlib.StateKeyTuple]bool{}
+	for _, tuple := range gomatrixserverlib.StateNeededForAuth([]gomatrixserverlib.PDU{event}).Tuples() {
+		needed[tuple] = true
+	}
+	seen := map[gomatrixserverlib.StateKeyTuple]bool{}
+	for _, a := range auth {
+		if a.StateKey() == nil {
+			return fmt.Errorf("auth event %s is not a state event", a.EventID())
+		}
+		tuple := gomatrixserverlib.StateKeyTuple{EventType: a.Type(), StateKey: *a.StateKey()}
+		if seen[tuple] {
+			return fmt.Errorf("auth events name %s %q twice", a.Type(), *a.StateKey())
+		}
+		seen[tuple] = true
+		if !needed[tuple] {
+			return fmt.Errorf("auth event %s is not one its auth needs", a.EventID())
+		}
+		if rooms_rejected(a.EventID()) {
+			return fmt.Errorf("auth event %s was rejected", a.EventID())
+		}
+	}
+	provider, err := gomatrixserverlib.NewAuthEvents(auth)
+	if err != nil {
+		return err
+	}
+	return gomatrixserverlib.Allowed(event, provider, federation_sender)
+}
+
 // rooms_members is who a state names in a room and as what: join, invite,
 // leave, ban or knock.
 func rooms_members(state rooms_state) map[string]string {
@@ -668,8 +701,7 @@ func rooms_outliers(ctx context.Context, version gomatrixserverlib.IRoomVersion,
 			for _, id := range ids {
 				list = append(list, auth[id])
 			}
-			provider, err := gomatrixserverlib.NewAuthEvents(list)
-			rejected = err != nil || gomatrixserverlib.Allowed(event, provider, federation_sender) != nil
+			rejected = rooms_authorised(event, list) != nil
 		}
 		rooms_keep(event, 0, rejected, true)
 		kept[event.EventID()] = !rejected
@@ -691,12 +723,17 @@ func rooms_accept(ctx context.Context, local spec.ServerName, origin spec.Server
 	if err != nil {
 		return err
 	}
-	provider, err := gomatrixserverlib.NewAuthEvents(auth)
-	if err == nil {
-		err = gomatrixserverlib.Allowed(event, provider, federation_sender)
-	}
-	if err != nil {
-		rooms_keep(event, 0, true, false)
+	if err := rooms_authorised(event, auth); err != nil {
+		// Kept with the state before it where the events it follows are all
+		// held: a rejected event leaves the state as it found it, and the
+		// events after it follow from it.
+		snapshot := int64(0)
+		if len(event.PrevEventIDs()) > 0 && !slices.ContainsFunc(event.PrevEventIDs(), func(prev string) bool { return !rooms_point(prev) }) {
+			if _, id, e := rooms_before(version, event); e == nil {
+				snapshot = id
+			}
+		}
+		rooms_keep(event, snapshot, true, false)
 		return fmt.Errorf("not allowed by its auth events: %w", err)
 	}
 
@@ -723,22 +760,11 @@ func rooms_accept(ctx context.Context, local spec.ServerName, origin spec.Server
 		}
 	}
 
-	var sets []rooms_state
-	var candidates []int64
-	for _, prev := range event.PrevEventIDs() {
-		if after, ok := rooms_after(prev); ok {
-			sets = append(sets, after)
-		}
-		if row, _ := federation_database().row("select before from events where id=?", prev); row != nil {
-			candidates = append(candidates, row_int(row, "before"))
-		}
-	}
-	before, err := rooms_resolve(version, sets)
+	before, snapshot, err := rooms_before(version, event)
 	if err != nil {
 		return err
 	}
-	current, id := rooms_current(room)
-	snapshot := rooms_snapshot_of(room, before, append(candidates, id)...)
+	current, _ := rooms_current(room)
 	if err := rooms_allowed(event, before); err != nil {
 		rooms_keep(event, snapshot, true, false)
 		return fmt.Errorf("not allowed by the state before it: %w", err)
@@ -758,6 +784,29 @@ func rooms_accept(ctx context.Context, local spec.ServerName, origin spec.Server
 	}
 	rooms_tell(event, out)
 	return nil
+}
+
+// rooms_before is the state before an event, resolved from the states after
+// the events it follows that are held, and the id of its snapshot: a prev
+// event's or the room's where it is the same.
+func rooms_before(version gomatrixserverlib.IRoomVersion, event gomatrixserverlib.PDU) (rooms_state, int64, error) {
+	room := event.RoomID().String()
+	var sets []rooms_state
+	var candidates []int64
+	for _, prev := range event.PrevEventIDs() {
+		if after, ok := rooms_after(prev); ok {
+			sets = append(sets, after)
+		}
+		if row, _ := federation_database().row("select before from events where id=?", prev); row != nil {
+			candidates = append(candidates, row_int(row, "before"))
+		}
+	}
+	before, err := rooms_resolve(version, sets)
+	if err != nil {
+		return nil, 0, err
+	}
+	_, id := rooms_current(room)
+	return before, rooms_snapshot_of(room, before, append(candidates, id)...), nil
 }
 
 // rooms_fill asks the server an event came from for the events between the
@@ -815,10 +864,11 @@ func rooms_gap(ctx context.Context, local spec.ServerName, origin spec.ServerNam
 	if err := gomatrixserverlib.VerifyEventSignatures(ctx, event, federation_keyring(), federation_sender); err != nil {
 		return err
 	}
-	if _, err := rooms_auth(ctx, local, origin, version, event); err != nil {
+	auth, err := rooms_auth(ctx, local, origin, version, event)
+	if err != nil {
 		return err
 	}
-	rejected := rooms_allowed(event, state) != nil
+	rejected := rooms_authorised(event, auth) != nil || rooms_allowed(event, state) != nil
 	snapshot := rooms_snapshot_save(room, state)
 	rooms_keep(event, snapshot, rejected, true)
 	federation_database().exec("update events set before=? where id=? and before=0", snapshot, previous)
@@ -1624,8 +1674,7 @@ func rooms_backfill(ctx context.Context, local spec.ServerName, server spec.Serv
 		if err != nil {
 			continue
 		}
-		provider, err := gomatrixserverlib.NewAuthEvents(auth)
-		if err != nil || gomatrixserverlib.Allowed(event, provider, federation_sender) != nil {
+		if rooms_authorised(event, auth) != nil {
 			rooms_keep(event, 0, true, true)
 			continue
 		}

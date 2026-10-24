@@ -69,6 +69,9 @@ type matrix_remote struct {
 	asked   []string
 	fail    bool
 	missing bool
+	// The most events it answers /get_missing_events with, where set: the
+	// newest of those asked for, short of the gap.
+	most int
 	// What the remote answers a key query and a key claim with, as its
 	// users' keys (keyring_test.go).
 	keys   map[string]any
@@ -477,6 +480,16 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 	case route == "GET v1/state":
 		state := r.list(r.before[req.URL.Query().Get("event_id")])
 		r.answer(w, 200, map[string]any{"pdus": raw_events(state), "auth_chain": raw_events(r.chain(state))})
+	case route == "GET v1/state_ids":
+		state := r.list(r.before[req.URL.Query().Get("event_id")])
+		ids := func(events []gomatrixserverlib.PDU) []string {
+			out := []string{}
+			for _, event := range events {
+				out = append(out, event.EventID())
+			}
+			return out
+		}
+		r.answer(w, 200, map[string]any{"pdu_ids": ids(state), "auth_chain_ids": ids(r.chain(state))})
 	case route == "GET v1/hierarchy":
 		// A room as the remote describes it to a walk of spaces, whoever
 		// asks, for the asking server to filter.
@@ -513,7 +526,11 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 				from = append(from, r.events[id].PrevEventIDs()...)
 			}
 		}
-		r.answer(w, 200, map[string]any{"events": raw_events(r.walk(from, stop, missing.Limit))})
+		found := r.walk(from, stop, missing.Limit)
+		if r.most > 0 && len(found) > r.most {
+			found = found[len(found)-r.most:]
+		}
+		r.answer(w, 200, map[string]any{"events": raw_events(found)})
 	case route == "GET v1/backfill":
 		limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
 		r.answer(w, 200, map[string]any{"origin": string(r.name), "origin_server_ts": time.Now().UnixMilli(), "pdus": raw_events(r.walk(req.URL.Query()["v"], map[string]bool{}, limit))})
@@ -980,14 +997,113 @@ func TestMatrixTransactions(t *testing.T) {
 		t.Error("the fetched event has no state")
 	}
 
-	// Where they cannot be had, the state at them is.
+	// What the server asked the remote for since a point.
+	asked := func(since int, prefix string) []string {
+		r.lock.Lock()
+		defer r.lock.Unlock()
+		var out []string
+		for _, request := range r.asked[since:] {
+			if strings.HasPrefix(request, prefix) {
+				out = append(out, request)
+			}
+		}
+		return out
+	}
+	mark := func() int {
+		r.lock.Lock()
+		defer r.lock.Unlock()
+		return len(r.asked)
+	}
+
+	// Where they cannot be had, the event is refused, as Synapse refuses it,
+	// and the state at them is not asked for.
+	since := mark()
 	r.missing = true
-	hole := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "never sent"})
+	r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "never sent"})
 	beyond := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "beyond the hole"})
-	r.push(t, "hole", beyond)
+	results = r.push(t, "hole", beyond)
 	r.missing = false
-	if !shown("beyond the hole") || shown("never sent") || !rooms_point(hole.EventID()) {
-		t.Error("the event after a hole was not taken from the state at it")
+	if result, _ := results[beyond.EventID()].(map[string]any); !strings.Contains(fmt.Sprint(result["error"]), "isn't divulging") || shown("beyond the hole") || shown("never sent") || rooms_known(beyond.EventID()) {
+		t.Errorf("THE POINT: an event whose prev events its server will not give = %v", results)
+	}
+	if found := append(asked(since, "GET /_matrix/federation/v1/state/"), asked(since, "GET /_matrix/federation/v1/state_ids/")...); len(found) != 0 {
+		t.Errorf("THE POINT: the state at a hole was asked for: %v", found)
+	}
+
+	// An event fetched for it whose own prev events are not given: the state
+	// at them is asked for by its events' ids, all held here.
+	since = mark()
+	r.most = 1
+	unseen := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "unseen"})
+	r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "past the gap"})
+	after := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "after the gap"})
+	r.push(t, "partial", after)
+	r.most = 0
+	if !shown("past the gap") || !shown("after the gap") || shown("unseen") || !rooms_point(unseen.EventID()) {
+		t.Error("THE POINT: the events after a gap in those fetched were not taken")
+	}
+	if len(asked(since, "GET /_matrix/federation/v1/state_ids/")) != 1 || len(asked(since, "GET /_matrix/federation/v1/state/")) != 0 {
+		t.Errorf("THE POINT: the state at a gap, all held, was not asked for by its ids alone: %v", asked(since, "GET"))
+	}
+
+	// The state's events not held are fetched one by one where few, and the
+	// whole state is asked for where most are missing.
+	key := func(n int) *string {
+		k := fmt.Sprint(n)
+		return &k
+	}
+	var held []gomatrixserverlib.PDU
+	for n := range 10 {
+		held = append(held, r.event(room, bob, "m.test", key(n), map[string]any{"n": n}))
+	}
+	r.push(t, "held", held...)
+	gap := func(name string, unsent int) int {
+		t.Helper()
+		since := mark()
+		r.most = 1
+		for n := range unsent {
+			r.event(room, bob, "m.test", key(100*len(name)+n), map[string]any{"unsent": n})
+		}
+		r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": name + " unseen"})
+		r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": name + " past"})
+		r.push(t, name, r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": name + " after"}))
+		r.most = 0
+		if !shown(name + " after") {
+			t.Errorf("the events after the %s gap were not taken", name)
+		}
+		return since
+	}
+	since = gap("few", 1)
+	if len(asked(since, "GET /_matrix/federation/v1/event/")) != 2 || len(asked(since, "GET /_matrix/federation/v1/state/")) != 0 {
+		t.Errorf("THE POINT: a state event missing among many held was not fetched alone: %v", asked(since, "GET"))
+	}
+	since = gap("most", 30)
+	if len(asked(since, "GET /_matrix/federation/v1/state/")) != 1 {
+		t.Errorf("THE POINT: a state mostly missing was not asked for whole: %v", asked(since, "GET"))
+	}
+
+	// An auth event the events after a gap name, which the state at the gap
+	// brings in, is taken from that state, not asked for again.
+	since = mark()
+	r.event(room, bob, spec.MRoomMember, &bob, map[string]any{"membership": "join", "displayname": "Robert"})
+	r.most = 1
+	r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "renamed unseen"})
+	r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "renamed past"})
+	r.push(t, "renamed", r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "renamed after"}))
+	r.most = 0
+	if !shown("renamed after") || len(asked(since, "GET /_matrix/federation/v1/event_auth/")) != 0 {
+		t.Errorf("THE POINT: an auth event the state at a gap brings in was asked for: %v", asked(since, "GET"))
+	}
+
+	// Why an event was refused reads as the remote's refusal, not its bytes.
+	r.lock.Lock()
+	r.refuse["GET v1/event_auth"] = matrix_refusal{404, map[string]any{"errcode": "M_NOT_FOUND", "error": "Unknown event"}}
+	edge, state = slices.Clone(r.edge[room]), maps.Clone(r.state[room])
+	orphan := r.forge(room, bob, "orphan", edge, []string{state[rooms_key(spec.MRoomCreate, "")], state[rooms_key(spec.MRoomPowerLevels, "")], state[rooms_key(spec.MRoomMember, bob)], "$nowhere"})
+	r.lock.Unlock()
+	results = r.push(t, "orphan", orphan)
+	if result, _ := results[orphan.EventID()].(map[string]any); result["error"] != "auth events: M_NOT_FOUND: Unknown event" {
+		t.Errorf("THE POINT: the reason an event was refused = %v", result)
 	}
 
 	// Branches: two names set on parallel branches, the later winning.
@@ -1142,15 +1258,37 @@ func TestMatrixAuthEvents(t *testing.T) {
 	hole := r.forge(room, dave, "in the hole", r.edge[room], []string{create, seized.EventID(), join.EventID()})
 	r.take(hole)
 	r.lock.Unlock()
+	r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "past the hole"})
 	beyond := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "beyond the hole"})
-	r.missing = true
+	r.most = 1
 	r.push(t, "hole", beyond)
-	r.missing = false
+	r.most = 0
 	if !shown("beyond the hole") || !rooms_point(hole.EventID()) {
 		t.Fatal("CONTROL: the event after the hole was not taken from the state at it")
 	}
 	if !rooms_rejected(hole.EventID()) {
 		t.Error("THE POINT: the event at a gap, authorised by rejected power levels, was kept as good")
+	}
+
+	// A gap whose state, as the remote has it, names the rejected power
+	// levels: the state kept for it leaves them out.
+	r.lock.Lock()
+	r.state[room][rooms_key(spec.MRoomPowerLevels, "")] = seized.EventID()
+	r.lock.Unlock()
+	unseen := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "on seized state"})
+	r.lock.Lock()
+	r.state[room][rooms_key(spec.MRoomPowerLevels, "")] = levels
+	r.lock.Unlock()
+	r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "past the seized state"})
+	r.most = 1
+	r.push(t, "seized-state", r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "beyond the seized state"}))
+	r.most = 0
+	row, _ := federation_database().row("select before from events where id=?", unseen.EventID())
+	if row == nil || row_int(row, "before") <= 0 {
+		t.Fatal("CONTROL: the gap was not kept with the state at it")
+	}
+	if rooms_snapshot(row_int(row, "before"))[rooms_key(spec.MRoomPowerLevels, "")] == seized.EventID() {
+		t.Error("THE POINT: the state kept at a gap names power levels this server rejected")
 	}
 
 }
@@ -1173,7 +1311,7 @@ func TestMatrixHistory(t *testing.T) {
 		defer r.lock.Unlock()
 		n := 0
 		for _, asked := range r.asked {
-			if strings.HasPrefix(asked, "GET /_matrix/federation/v1/state/") {
+			if strings.HasPrefix(asked, "GET /_matrix/federation/v1/state/") || strings.HasPrefix(asked, "GET /_matrix/federation/v1/state_ids/") {
 				n++
 			}
 		}

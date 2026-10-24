@@ -186,6 +186,50 @@ func keyring_tell(user string, kind string, content any) {
 	}
 }
 
+// keyring_introduce tells the servers a user of this server's join newly
+// shares a room with of each of the user's devices, as the spec has a server
+// do whenever a user joins a room with servers not yet hearing of their
+// devices: those in no other room the user is in.
+func keyring_introduce(user string, room string) {
+	id, err := spec.NewUserID(user, true)
+	if err != nil || !federation_local(id.Domain()) {
+		return
+	}
+	hearing := map[string]bool{}
+	for _, other := range signals_rooms(user) {
+		if other != room {
+			state, _ := rooms_current(other)
+			for _, server := range rooms_servers(state) {
+				hearing[server] = true
+			}
+		}
+	}
+	state, _ := rooms_current(room)
+	var servers []string
+	for _, server := range rooms_servers(state) {
+		if !hearing[server] {
+			servers = append(servers, server)
+		}
+	}
+	if len(servers) == 0 {
+		return
+	}
+	db := federation_database()
+	position, _ := db.row("select max(id) as id from changes where user=? and viewer=''", user)
+	rows, _ := db.rows("select device, name, keys from clients where user=? order by device", user)
+	for _, row := range rows {
+		device := row_string(row, "device")
+		content := map[string]any{"user_id": user, "device_id": device, "stream_id": row_int(position, "id"), "prev_id": []int64{}, "deleted": false}
+		if keys := row_string(row, "keys"); keys != "" {
+			content["keys"] = keyring_signed(user, device, keys, "")
+		}
+		if name := row_string(row, "name"); name != "" {
+			content["device_display_name"] = name
+		}
+		federation_message(servers, string(id.Domain()), "m.device_list_update", content)
+	}
+}
+
 // keyring_name is a device's name.
 func keyring_name(user string, device string) string {
 	row, _ := federation_database().row("select name from clients where user=? and device=?", user, device)
@@ -1172,6 +1216,9 @@ func keyring_membership(event gomatrixserverlib.PDU) {
 	left := membership != spec.Join && membership != spec.Invite && (previous == spec.Join || previous == spec.Invite)
 	if !joined && !left {
 		return
+	}
+	if joined {
+		keyring_introduce(member, event.RoomID().String())
 	}
 	db := federation_database()
 	current, _ := rooms_current(event.RoomID().String())

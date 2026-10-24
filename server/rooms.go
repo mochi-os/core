@@ -857,6 +857,36 @@ func rooms_accept(ctx context.Context, local spec.ServerName, origin spec.Server
 	if rooms_known(event.EventID()) {
 		return nil
 	}
+	// The events it follows first, as Synapse takes them: those missing
+	// asked for, and where they cannot all be had, the state at each one
+	// still missing, which brings in auth events it names that were not held.
+	missing := func() []string {
+		var list []string
+		for _, prev := range event.PrevEventIDs() {
+			if !rooms_point(prev) {
+				list = append(list, prev)
+			}
+		}
+		return list
+	}
+	if len(missing()) > 0 && fill && origin != "" && !federation_local(origin) {
+		rooms_fill(ctx, local, origin, version, event, out)
+		// One sent whose prev events its server will not give is refused,
+		// as Synapse refuses it: the state it would follow from would be
+		// its sender's to choose, and it could become the room's edge.
+		if len(missing()) > 0 {
+			return fmt.Errorf("Your server isn't divulging details about prev_events referenced in this event")
+		}
+	}
+	for _, prev := range missing() {
+		if origin == "" || federation_local(origin) {
+			return fmt.Errorf("prev event %s missing", prev)
+		}
+		if err := rooms_gap(ctx, local, origin, version, room, prev); err != nil {
+			return fmt.Errorf("prev event %s: %w", prev, err)
+		}
+	}
+
 	auth, err := rooms_auth(ctx, local, origin, version, event)
 	if err != nil {
 		return err
@@ -873,29 +903,6 @@ func rooms_accept(ctx context.Context, local spec.ServerName, origin spec.Server
 		}
 		rooms_keep(event, snapshot, true, false)
 		return fmt.Errorf("not allowed by its auth events: %w", err)
-	}
-
-	// The events it follows, those missing asked for, and where they cannot
-	// all be had, the state at each one still missing.
-	missing := func() []string {
-		var list []string
-		for _, prev := range event.PrevEventIDs() {
-			if !rooms_point(prev) {
-				list = append(list, prev)
-			}
-		}
-		return list
-	}
-	if len(missing()) > 0 && fill && origin != "" && !federation_local(origin) {
-		rooms_fill(ctx, local, origin, version, event, out)
-	}
-	for _, prev := range missing() {
-		if origin == "" || federation_local(origin) {
-			return fmt.Errorf("prev event %s missing", prev)
-		}
-		if err := rooms_gap(ctx, local, origin, version, room, prev); err != nil {
-			return fmt.Errorf("prev event %s: %w", prev, err)
-		}
 	}
 
 	before, snapshot, err := rooms_before(version, event)
@@ -973,19 +980,47 @@ func rooms_fill(ctx context.Context, local spec.ServerName, origin spec.ServerNa
 	}
 }
 
-// rooms_state_at is the state before an event as another server has it: its
-// events stored, each checked by its own auth events, and those that pass
-// making up the state, which must hold the room's create event.
+// rooms_state_at is the state before an event as another server has it, as
+// Synapse asks for it: its events' ids, then those not held one by one, or
+// the whole state where more than a tenth are missing. What is fetched is
+// stored, each checked by its own auth events, and the state is made of
+// those that pass, which must hold the room's create event.
 func rooms_state_at(ctx context.Context, local spec.ServerName, origin spec.ServerName, version gomatrixserverlib.IRoomVersion, room string, id string) (rooms_state, error) {
-	answer, err := federation_client().LookupState(ctx, local, origin, room, id, version.Version())
+	client := federation_client()
+	ids, err := client.LookupStateIDs(ctx, local, origin, room, id)
 	if err != nil {
 		return nil, err
 	}
-	events := append(answer.AuthEvents.UntrustedEvents(version.Version()), answer.StateEvents.UntrustedEvents(version.Version())...)
-	kept := rooms_outliers(ctx, version, events)
+	wanted := slices.Compact(slices.Sorted(slices.Values(append(slices.Clone(ids.StateEventIDs), ids.AuthEventIDs...))))
+	held := rooms_events(wanted)
+	var missing []string
+	for _, want := range wanted {
+		if held[want] == nil {
+			missing = append(missing, want)
+		}
+	}
+	var events []gomatrixserverlib.PDU
+	if len(missing)*10 >= len(wanted) {
+		answer, err := client.LookupState(ctx, local, origin, room, id, version.Version())
+		if err != nil {
+			return nil, err
+		}
+		events = append(answer.AuthEvents.UntrustedEvents(version.Version()), answer.StateEvents.UntrustedEvents(version.Version())...)
+	} else {
+		for _, want := range missing {
+			transaction, err := client.GetEvent(ctx, local, origin, want)
+			if err != nil || len(transaction.PDUs) == 0 {
+				continue
+			}
+			if e, err := version.NewEventFromUntrustedJSON(transaction.PDUs[0]); err == nil && e.EventID() == want {
+				events = append(events, e)
+			}
+		}
+	}
+	rooms_outliers(ctx, version, events)
 	state := rooms_state{}
-	for _, e := range answer.StateEvents.UntrustedEvents(version.Version()) {
-		if kept[e.EventID()] && e.StateKey() != nil && e.RoomID().String() == room {
+	for _, e := range rooms_events(ids.StateEventIDs) {
+		if !rooms_rejected(e.EventID()) && e.StateKey() != nil && e.RoomID().String() == room {
 			state[rooms_key(e.Type(), *e.StateKey())] = e.EventID()
 		}
 	}

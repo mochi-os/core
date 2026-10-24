@@ -1868,6 +1868,51 @@ func TestClientsHierarchy(t *testing.T) {
 	}
 }
 
+// TestClientsDevicesOnJoin: a join tells the servers it newly shares a room
+// with of each of the joiner's devices, as the spec has it, and not those
+// already sharing one.
+func TestClientsDevicesOnJoin(t *testing.T) {
+	alice, _ := create_clients_test_env(t)
+	ctx := t.Context()
+	a := clients_client(t, alice, "m1", "@alice:example.com", "ALICE")
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	told := func() int {
+		n := 0
+		for _, edu := range r.edus_of("m.device_list_update") {
+			var content map[string]any
+			json.Unmarshal(edu.Content, &content)
+			if content["user_id"] == "@alice:example.com" && content["device_id"] == "ALICE" {
+				n++
+			}
+		}
+		return n
+	}
+	first := r.room("First", "invite")
+	matrix_join(t, r, alice, first)
+	wait(t, "THE POINT: alice's device told to the server she newly shares a room with", func() bool { return told() == 1 })
+
+	// A second room with the same server: it hears of her devices already.
+	second := r.room("Second", "invite")
+	matrix_join(t, r, alice, second)
+	sent, err := a.SendText(ctx, id.RoomID(second), "after joining")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait(t, "the message after the second join", func() bool {
+		r.lock.Lock()
+		defer r.lock.Unlock()
+		for _, event := range r.received {
+			if event.EventID() == string(sent.EventID) {
+				return true
+			}
+		}
+		return false
+	})
+	if n := told(); n != 1 {
+		t.Errorf("THE POINT: a server already hearing of alice's devices was told %d times", n)
+	}
+}
+
 // TestClientsNotificationsKept: notifications are kept for an account only
 // once a Matrix client is signed in to it.
 func TestClientsNotificationsKept(t *testing.T) {

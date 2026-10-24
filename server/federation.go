@@ -47,6 +47,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/matrix-org/gomatrix"
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/matrix-org/gomatrixserverlib/spec"
@@ -740,7 +741,7 @@ func federation_receive_transaction(c *gin.Context, r *fclient.FederationRequest
 			continue
 		}
 		if err != nil {
-			results[id] = map[string]any{"error": err.Error()}
+			results[id] = map[string]any{"error": federation_reason(err)}
 		} else {
 			results[id] = map[string]any{}
 		}
@@ -753,6 +754,27 @@ func federation_receive_transaction(c *gin.Context, r *fclient.FederationRequest
 	db.exec("insert or ignore into transactions (origin, id, received) values (?, ?, ?)", origin, id, now())
 	db.exec("delete from transactions where received<?", now()-7*86400)
 	c.JSON(http.StatusOK, map[string]any{"pdus": results})
+}
+
+// federation_reason is why something failed, as the server it is told to
+// reads it: where another server refused a request on the way, its own code
+// and message in place of its answer's raw bytes.
+func federation_reason(err error) string {
+	var remote gomatrix.HTTPError
+	if !errors.As(err, &remote) {
+		return err.Error()
+	}
+	return strings.Replace(err.Error(), remote.Error(), federation_refusal(remote), 1)
+}
+
+// federation_refusal is what another server's refusal says: its code and
+// message, or the status it answered where it gave neither.
+func federation_refusal(remote gomatrix.HTTPError) string {
+	var answer gomatrix.RespError
+	if json.Unmarshal(remote.Contents, &answer) == nil && answer.ErrCode != "" {
+		return answer.ErrCode + ": " + answer.Err
+	}
+	return fmt.Sprintf("the other server answered %d", remote.Code)
 }
 
 // === Transactions out ===

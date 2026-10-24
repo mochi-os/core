@@ -104,7 +104,7 @@ func clients_refuse(c *gin.Context, err error) {
 			clients_error(c, remote.Code, answer.ErrCode, answer.Err)
 			return
 		}
-		clients_error(c, http.StatusBadGateway, "M_UNKNOWN", fmt.Sprintf("the other server answered %d", remote.Code))
+		clients_error(c, http.StatusBadGateway, "M_UNKNOWN", federation_refusal(remote))
 		return
 	}
 	clients_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())

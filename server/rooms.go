@@ -1226,6 +1226,14 @@ func rooms_build(version gomatrixserverlib.IRoomVersion, room string, sender str
 	if id == nil {
 		return nil, fmt.Errorf("%s is not a Matrix domain here", user.Domain())
 	}
+	// A join of someone already joined names no one as letting them in, which
+	// is for joining only: other servers drop a join naming a user whose
+	// server did not sign it.
+	if values, ok := content.(map[string]any); ok && kind == spec.MRoomMember && key != nil && values["membership"] == spec.Join && values["join_authorised_via_users_server"] != nil && rooms_membership(room, *key) == spec.Join {
+		values = maps.Clone(values)
+		delete(values, "join_authorised_via_users_server")
+		content = values
+	}
 	proto := gomatrixserverlib.ProtoEvent{SenderID: sender, RoomID: room, Type: kind, StateKey: key}
 	if err := proto.SetContent(content); err != nil {
 		return nil, err
@@ -1595,24 +1603,35 @@ func rooms_join(ctx context.Context, user string, address string, via ...spec.Se
 	case spec.Ban:
 		return "", fmt.Errorf("banned from the room")
 	}
-	// Someone here is in the room: the join is the room's own event.
+	// Someone here is in the room: the join is the room's own event. Where
+	// the room admits the members of others and no one here may invite, it
+	// is made through the server of someone who may, as from outside.
 	if version := rooms_version(room); version != nil && rooms_local(room) != "" {
-		event, err := rooms_send(ctx, room, user, spec.MRoomMember, &user, rooms_member_content(user, spec.Join))
+		content := rooms_member_content(user, spec.Join)
+		through, err := rooms_restricted(version, room, user, local, content)
 		if err != nil {
 			return "", err
 		}
-		federation_database().exec("delete from invites where room=? and user=?", room, user)
-		federation_database().exec("delete from pending where room=? and user=?", room, user)
-		rooms_welcome(user, room, rooms_recent(user, room, event))
-		return room, nil
+		if through == nil {
+			event, err := rooms_send(ctx, room, user, spec.MRoomMember, &user, content)
+			if err != nil {
+				return "", err
+			}
+			federation_database().exec("delete from invites where room=? and user=?", room, user)
+			federation_database().exec("delete from pending where room=? and user=?", room, user)
+			rooms_welcome(user, room, rooms_recent(user, room, event))
+			return room, nil
+		}
+		servers = through
 	}
 	if row, _ := federation_database().row("select sender from invites where room=? and user=?", room, user); row != nil {
 		if inviter, err := spec.NewUserID(row_string(row, "sender"), true); err == nil {
 			servers = append([]spec.ServerName{inviter.Domain()}, servers...)
 		}
 	}
-	// A room id of the versions before 12 names the server that made it.
-	if i := strings.IndexByte(room, ':'); i > 0 {
+	// A room id of the versions before 12 names the server that made it,
+	// which is asked where nothing else names a server to ask.
+	if i := strings.IndexByte(room, ':'); i > 0 && !slices.ContainsFunc(servers, func(server spec.ServerName) bool { return !federation_local(server) }) {
 		servers = append(servers, spec.ServerName(room[i+1:]))
 	}
 	id := federation_identity_of(local)
@@ -1683,6 +1702,63 @@ func rooms_fetch(ctx context.Context, local spec.ServerName, server spec.ServerN
 		out = append(out, event)
 	}
 	return out, nil
+}
+
+// rooms_restricted readies a user's join of a room this server is in that
+// admits the members of other rooms, as Synapse does: it names a member here
+// who may invite as letting them in, where they are joined to a room it
+// admits, or, where no one here may invite, answers the servers of those who
+// may, to join through. A join of a room that admits anyone, or of someone
+// invited or joined already, needs neither.
+func rooms_restricted(version gomatrixserverlib.IRoomVersion, room string, user string, local spec.ServerName, content map[string]any) ([]spec.ServerName, error) {
+	if version.CheckRestrictedJoinsAllowed() != nil {
+		return nil, nil
+	}
+	state, _ := rooms_current(room)
+	rules := rooms_event(state[rooms_key(spec.MRoomJoinRules, "")])
+	var rule gomatrixserverlib.JoinRuleContent
+	if rules == nil || json.Unmarshal(rules.Content(), &rule) != nil || (rule.JoinRule != spec.Restricted && rule.JoinRule != spec.KnockRestricted) {
+		return nil, nil
+	}
+	members := rooms_members(state)
+	if members[user] == spec.Join || members[user] == spec.Invite {
+		return nil, nil
+	}
+	var creators []string
+	if create := rooms_event(state[rooms_key(spec.MRoomCreate, "")]); create != nil && version.PrivilegedCreators() {
+		creators = gomatrixserverlib.CreatorsFromCreateEvent(create)
+	}
+	var levels *gomatrixserverlib.PowerLevelContent
+	if event := rooms_event(state[rooms_key(spec.MRoomPowerLevels, "")]); event != nil {
+		levels, _ = event.PowerLevels()
+	}
+	var here []string
+	elsewhere := map[spec.ServerName]bool{}
+	for member, membership := range members {
+		id, err := spec.NewUserID(member, true)
+		if err != nil || membership != spec.Join || !(slices.Contains(creators, member) || levels == nil || levels.UserLevel(spec.SenderID(member)) >= levels.Invite) {
+			continue
+		}
+		if id.Domain() == local {
+			here = append(here, member)
+		} else if !federation_local(id.Domain()) {
+			elsewhere[id.Domain()] = true
+		}
+	}
+	if len(here) == 0 {
+		if len(elsewhere) == 0 {
+			return nil, spec.UnableToAuthoriseJoin("No one in the room may let you in.")
+		}
+		return slices.Sorted(maps.Keys(elsewhere)), nil
+	}
+	for _, allow := range rule.Allow {
+		if allow.Type == spec.MRoomMembership && rooms_membership(allow.RoomID, user) == spec.Join {
+			sort.Strings(here)
+			content["join_authorised_via_users_server"] = here[0]
+			return nil, nil
+		}
+	}
+	return nil, spec.Forbidden("You are not joined to any matching rooms.")
 }
 
 // rooms_joined takes in what a join through another server answered: the

@@ -292,7 +292,19 @@ func raw_events(events []gomatrixserverlib.PDU) []json.RawMessage {
 func (r *matrix_remote) template(room string, user string, membership string) gomatrixserverlib.ProtoEvent {
 	state := r.state[room]
 	proto := gomatrixserverlib.ProtoEvent{SenderID: user, RoomID: room, Type: spec.MRoomMember, StateKey: &user}
-	proto.SetContent(map[string]any{"membership": membership})
+	content := map[string]any{"membership": membership}
+	// A join of a room that admits the members of others names bob, who
+	// may invite, as letting them in, as a resident server does.
+	if rules := r.events[state[rooms_key(spec.MRoomJoinRules, "")]]; membership == "join" && rules != nil {
+		var rule struct {
+			JoinRule string `json:"join_rule"`
+		}
+		json.Unmarshal(rules.Content(), &rule)
+		if rule.JoinRule == spec.Restricted || rule.JoinRule == spec.KnockRestricted {
+			content["join_authorised_via_users_server"] = r.user("bob")
+		}
+	}
+	proto.SetContent(content)
 	depth := int64(0)
 	for _, prev := range r.edge[room] {
 		depth = max(depth, r.events[prev].Depth())
@@ -432,6 +444,8 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 			r.answer(w, 400, map[string]any{"errcode": "M_BAD_JSON", "error": err.Error()})
 			return
 		}
+		// Signed here too, as the server of whoever let them in.
+		event = event.Sign(string(r.name), r.key, r.private)
 		state := r.list(r.state[parts[2]])
 		r.take(event)
 		r.answer(w, 200, map[string]any{"origin": string(r.name), "state": raw_events(state), "auth_chain": raw_events(r.chain(append(state, event))), "event": json.RawMessage(event.JSON()), "members_omitted": false, "servers_in_room": []string{string(r.name)}})

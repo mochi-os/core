@@ -333,6 +333,35 @@ type JoinRuleContentAllowRule struct {
 	RoomID string `json:"room_id"`
 }
 
+// UnmarshalJSON reads join rules content.
+// Changed for Mochi: what in allow is not a rule is left out, and an allow
+// that is not a list allows no one, as Synapse reads them, rather than the
+// whole content refused, which answered another server's join of the room
+// with an internal error.
+func (c *JoinRuleContent) UnmarshalJSON(data []byte) error {
+	var content struct {
+		JoinRule *string         `json:"join_rule"`
+		Allow    json.RawMessage `json:"allow"`
+	}
+	if err := json.Unmarshal(data, &content); err != nil {
+		return err
+	}
+	if content.JoinRule != nil {
+		c.JoinRule = *content.JoinRule
+	}
+	c.Allow = nil
+	var items []json.RawMessage
+	if json.Unmarshal(content.Allow, &items) == nil {
+		for _, item := range items {
+			var rule JoinRuleContentAllowRule
+			if json.Unmarshal(item, &rule) == nil {
+				c.Allow = append(c.Allow, rule)
+			}
+		}
+	}
+	return nil
+}
+
 // NewJoinRuleContentFromAuthEvents loads the join rule content from the join rules event in the auth event.
 // Returns an error if there was an error loading the join rule event or parsing the content.
 func NewJoinRuleContentFromAuthEvents(authEvents AuthEventProvider) (c JoinRuleContent, err error) {

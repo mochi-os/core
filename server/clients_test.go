@@ -1517,6 +1517,134 @@ func TestClientsRefusals(t *testing.T) {
 	check("a knock the server failed on", status, body, 502, "M_UNKNOWN", "the other server answered 500")
 }
 
+// TestClientsRestricted: a room that admits the members of another is joined
+// here naming a member here who may invite as letting them in, refused here
+// to someone in no room it admits, and joined through the server of someone
+// who may invite where no one here may; a join through the servers named
+// never tries the room's own; a member's join of a room they are in names no
+// one; in a public room a client makes only those with power may invite, in a
+// private one anyone; and another server's join of a room whose allow list is
+// not one is refused, not failed.
+func TestClientsRestricted(t *testing.T) {
+	alice, root := create_clients_test_env(t)
+	ctx := t.Context()
+	a := clients_client(t, alice, "m1", "@alice:example.com", "ALICE")
+	b := clients_client(t, root, "m2", "@root:example.com", "ROOT")
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	empty := ""
+	rules := func(allow any) map[string]any { return map[string]any{"join_rule": "restricted", "allow": allow} }
+	allowed, err := a.CreateRoom(ctx, &mautrix.ReqCreateRoom{Preset: "public_chat", RoomVersion: "10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	made, err := a.CreateRoom(ctx, &mautrix.ReqCreateRoom{Preset: "public_chat", RoomVersion: "10", InitialState: []*event.Event{{Type: event.StateJoinRules, StateKey: &empty, Content: event.Content{Raw: rules([]any{map[string]any{"type": "m.room_membership", "room_id": string(allowed.RoomID)}})}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	room := string(made.RoomID)
+
+	// Root, in no room it admits, is refused here, where alice may invite,
+	// and the server of a member who may not is not asked.
+	gate, err := a.CreateRoom(ctx, &mautrix.ReqCreateRoom{Preset: "public_chat", RoomVersion: "10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	matrix_remote_join(t, r, string(gate.RoomID), r.user("bob"))
+	if _, err := a.SendStateEvent(ctx, gate.RoomID, event.StateJoinRules, "", rules([]any{map[string]any{"type": "m.room_membership", "room_id": string(allowed.RoomID)}})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.JoinRoomByID(ctx, gate.RoomID); err == nil {
+		t.Error("THE POINT: root joined a room admitting the members of one they are not in")
+	}
+	r.lock.Lock()
+	asked := slices.ContainsFunc(r.asked, func(request string) bool { return strings.Contains(request, "make_join/"+string(gate.RoomID)) })
+	r.lock.Unlock()
+	if asked {
+		t.Error("THE POINT: the server of a member who may not invite was asked to let root in")
+	}
+
+	// In a public room a client makes only those with power may invite; in a
+	// private one anyone.
+	private, err := a.CreateRoom(ctx, &mautrix.ReqCreateRoom{Preset: "private_chat", Invite: []id.UserID{"@root:example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.JoinRoomByID(ctx, private.RoomID); err != nil {
+		t.Fatal(err)
+	}
+	if status, body := clients_request(t, b, "POST", "/_matrix/client/v3/rooms/"+url.PathEscape(string(private.RoomID))+"/invite", map[string]any{"user_id": "@carol:example.com"}); status != 200 {
+		t.Errorf("THE POINT: an invitation by a member of a private room = %d %v", status, body)
+	}
+	if _, err := b.JoinRoomByID(ctx, allowed.RoomID); err != nil {
+		t.Fatal(err)
+	}
+	if status, body := clients_request(t, b, "POST", "/_matrix/client/v3/rooms/"+url.PathEscape(string(allowed.RoomID))+"/invite", map[string]any{"user_id": "@carol:example.com"}); status != 403 {
+		t.Errorf("THE POINT: an invitation by a member without power = %d %v", status, body)
+	}
+
+	// Root, in the allowed room, joins, let in by alice.
+	if _, err := b.JoinRoomByID(ctx, made.RoomID); err != nil {
+		t.Fatalf("THE POINT: joining a room root's other room admits them to: %v", err)
+	}
+	current, _ := rooms_current(room)
+	joined := rooms_event(current[rooms_key(spec.MRoomMember, "@root:example.com")])
+	if joined == nil || !strings.Contains(string(joined.Content()), `"join_authorised_via_users_server":"@alice:example.com"`) {
+		t.Errorf("THE POINT: root's join names no one here as letting them in: %v", joined)
+	}
+
+	// Root's join of the room they are in names no one.
+	if _, err := b.SendStateEvent(ctx, made.RoomID, event.StateMember, "@root:example.com", map[string]any{"membership": "join", "displayname": "Rooty", "join_authorised_via_users_server": "unused"}); err != nil {
+		t.Fatal(err)
+	}
+	current, _ = rooms_current(room)
+	again := rooms_event(current[rooms_key(spec.MRoomMember, "@root:example.com")])
+	if again == nil || strings.Contains(string(again.Content()), "join_authorised_via_users_server") {
+		t.Errorf("THE POINT: a join of a room root is in names someone: %v", again)
+	} else if err := gomatrixserverlib.VerifyEventSignatures(ctx, again, federation_keyring(), federation_sender); err != nil {
+		t.Errorf("THE POINT: other servers would drop root's join: %v", err)
+	}
+
+	// Another server's join of a room whose allow list is not a list, or
+	// holds what is not a rule, is refused as admitting no one.
+	for _, allow := range []any{"invalid", []any{"invalid"}} {
+		if _, err := a.SendStateEvent(ctx, made.RoomID, event.StateJoinRules, "", rules(allow)); err != nil {
+			t.Fatal(err)
+		}
+		if status, body := r.call(t, "GET", "/_matrix/federation/v1/make_join/"+url.PathEscape(room)+"/"+url.PathEscape(r.user("bob"))+"?ver=10", nil); status != 403 {
+			t.Errorf("THE POINT: another server's join of a room allowing %v = %d %v", allow, status, body)
+		}
+	}
+
+	// A room elsewhere that admits the members of a room no one here is in:
+	// root's join goes through a server in it, which lets them in. Its id
+	// names no server, from version 12, so only the room's members do.
+	r12 := create_matrix_remote(t, gomatrixserverlib.RoomVersionV12)
+	other := r12.room("Elsewhere", "public")
+	club := r12.room("Club", "invite")
+	r12.event(club, r12.user("bob"), spec.MRoomJoinRules, &empty, rules([]any{map[string]any{"type": "m.room_membership", "room_id": other}}))
+	r12.event(club, r12.user("bob"), spec.MRoomPowerLevels, &empty, map[string]any{"users": map[string]any{}, "invite": 50, "redact": 50, "ban": 50, "kick": 50, "state_default": 50, "events_default": 0, "users_default": 0})
+	matrix_join(t, r12, alice, club)
+	if _, err := rooms_join(ctx, "@root:example.com", club); err != nil || rooms_membership(club, "@root:example.com") != spec.Join {
+		t.Errorf("THE POINT: joining through a server that may let root in = %v, membership %q", err, rooms_membership(club, "@root:example.com"))
+	}
+
+	// A join through the servers named never tries the room's own.
+	refusing := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	refusing.lock.Lock()
+	refusing.refuse["GET v1/make_join"] = matrix_refusal{403, map[string]any{"errcode": "M_FORBIDDEN", "error": "This server cannot let you in"}}
+	refusing.lock.Unlock()
+	open := r.room("Open", "public")
+	if _, err := rooms_join(ctx, "@root:example.com", open, refusing.name); err == nil || rooms_membership(open, "@root:example.com") == spec.Join {
+		t.Errorf("THE POINT: a join through a server that refused it went through the room's own: %v", err)
+	}
+	r.lock.Lock()
+	asked = slices.ContainsFunc(r.asked, func(request string) bool { return strings.Contains(request, "make_join/"+open) })
+	r.lock.Unlock()
+	if asked {
+		t.Error("THE POINT: the room's own server was asked")
+	}
+}
+
 // TestClientsNotificationsKept: notifications are kept for an account only
 // once a Matrix client is signed in to it.
 func TestClientsNotificationsKept(t *testing.T) {

@@ -4,7 +4,7 @@
 # This file is part of Mochi, licensed under the GNU AGPL v3 with the
 # Mochi Application Interface Exception - see license.txt and license-exception.md.
 
-version = 2.0.14
+version = 2.0.15
 
 # Matrix's Olm and Megolm in pure Go (mautrix-go's goolm), for every build,
 # test and check: without the tag the library links the C libolm, which a

@@ -34,6 +34,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/storage"
 	sl "go.starlark.net/starlark"
 )
 
@@ -574,6 +575,233 @@ func TestCommitLogIgnoresSiblingPaths(t *testing.T) {
 	}
 	if got := messages(""); len(got) != 3 {
 		t.Errorf("log for the whole tree = %v, want all three commits", got)
+	}
+}
+
+// TestCommitLogComparesEachCommitWithItsParents. The log compared each commit
+// with the next one the walk visited rather than with its parents, so after a
+// merge a branch's work was credited to the merge and to commits on the other
+// branch that never touched the path.
+func TestCommitLogComparesEachCommitWithItsParents(t *testing.T) {
+	id, repo, thread := read_env_repo(t, "parents")
+	root := read_commit(t, repo, nil, read_snapshot(t, repo, map[string]read_file{
+		"readme": read_text("r"),
+	}), "root")
+	side := read_commit(t, repo, []plumbing.Hash{root}, read_snapshot(t, repo, map[string]read_file{
+		"readme": read_text("r"), "lib/g.txt": read_text("g"),
+	}), "side adds g")
+	main := read_commit(t, repo, []plumbing.Hash{root}, read_snapshot(t, repo, map[string]read_file{
+		"readme": read_text("r"), "f.txt": read_text("f"),
+	}), "main adds f")
+	merge := read_commit(t, repo, []plumbing.Hash{main, side}, read_snapshot(t, repo, map[string]read_file{
+		"readme": read_text("r"), "f.txt": read_text("f"), "lib/g.txt": read_text("g"),
+	}), "merge side")
+	resolved := read_commit(t, repo, []plumbing.Hash{merge, side}, read_snapshot(t, repo, map[string]read_file{
+		"readme": read_text("r"), "f.txt": read_text("f"), "lib/g.txt": read_text("g, resolved"),
+	}), "merge again, resolving g")
+	read_branch(t, repo, "main", resolved)
+
+	messages := func(path string) []string {
+		value, err := read_call(t, thread, api_git_commit_log, sl.String(id), sl.String("main"), sl.String(path), sl.None)
+		if err != nil {
+			t.Fatalf("log %q: %v", path, err)
+		}
+		var out []string
+		for _, item := range read_value(t, value).([]any) {
+			out = append(out, item.(map[string]any)["message"].(string))
+		}
+		sort.Strings(out)
+		return out
+	}
+	want := func(path string, expected ...string) {
+		t.Helper()
+		sort.Strings(expected)
+		if got := messages(path); strings.Join(got, "|") != strings.Join(expected, "|") {
+			t.Errorf("log for %q = %v, want %v", path, got, expected)
+		}
+	}
+	// THE POINT: the merge took g whole from the side branch, so the side
+	// commit is g's change; root and the merge are not.
+	want("lib/g.txt", "side adds g", "merge again, resolving g")
+	want("lib", "side adds g", "merge again, resolving g")
+	want("f.txt", "main adds f")
+	want("readme", "root")
+	want("missing.txt")
+	// A merge's tree differs from both its parents', so it is a change to the
+	// whole tree.
+	want("", "root", "side adds g", "main adds f", "merge side", "merge again, resolving g")
+}
+
+// TestCommitBetweenMatchesReachability. between walks both histories newest
+// first and stops once everything left is base's; whatever it lists must be
+// exactly what head reaches and base does not, across merges both ways and a
+// commit whose clock was set behind its parent's, newest first.
+func TestCommitBetweenMatchesReachability(t *testing.T) {
+	id, repo, thread := read_env_repo(t, "reach")
+	tree := read_snapshot(t, repo, map[string]read_file{"a": read_text("a")})
+	commit := func(message string, parents ...plumbing.Hash) plumbing.Hash {
+		return read_commit(t, repo, parents, tree, message)
+	}
+	root := commit("root")
+	a1 := commit("a1", root)
+	b1 := commit("b1", root)
+	a2 := commit("a2", a1)
+	b2 := commit("b2", b1)
+	b3 := commit("b3", b2, a2) // main merged into the feature
+	a3 := commit("a3", a2, b2) // the feature's start merged into main
+	b4 := commit("b4", b3)
+	// A commit dated before its own parent and grandparent, as a wrong clock
+	// writes it.
+	read_clock -= 3
+	skewed := commit("skewed", b4)
+	read_clock += 10
+	b5 := commit("b5", skewed)
+	refs := map[string]plumbing.Hash{"root": root, "a1": a1, "a2": a2, "a3": a3, "b1": b1, "b2": b2, "b3": b3, "b4": b4, "skewed": skewed, "b5": b5}
+	for name, hash := range refs {
+		read_branch(t, repo, name, hash)
+	}
+
+	ancestors := func(hash plumbing.Hash) map[plumbing.Hash]bool {
+		seen := map[plumbing.Hash]bool{}
+		queue := []plumbing.Hash{hash}
+		for len(queue) > 0 {
+			h := queue[0]
+			queue = queue[1:]
+			if seen[h] {
+				continue
+			}
+			seen[h] = true
+			c, err := repo.CommitObject(h)
+			if err != nil {
+				t.Fatalf("commit %s: %v", h, err)
+			}
+			queue = append(queue, c.ParentHashes...)
+		}
+		return seen
+	}
+	for base := range refs {
+		for head := range refs {
+			value, err := read_call(t, thread, api_git_commit_between, sl.String(id), sl.String(base), sl.String(head))
+			if err != nil {
+				t.Fatalf("between %s..%s: %v", base, head, err)
+			}
+			excluded := ancestors(refs[base])
+			want := map[string]bool{}
+			for h := range ancestors(refs[head]) {
+				if !excluded[h] {
+					want[h.String()] = true
+				}
+			}
+			got := map[string]bool{}
+			for _, item := range read_value(t, value).([]any) {
+				entry := item.(map[string]any)
+				got[entry["sha"].(string)] = true
+			}
+			if len(got) != len(want) {
+				t.Errorf("between %s..%s listed %d commits, want %d", base, head, len(got), len(want))
+				continue
+			}
+			for sha := range want {
+				if !got[sha] {
+					t.Errorf("between %s..%s left out %s", base, head, sha)
+				}
+			}
+		}
+	}
+}
+
+// read_counter wraps a repository's object store and counts the objects read
+// from it, by type.
+type read_counter struct {
+	storage.Storer
+	reads map[plumbing.ObjectType]int
+}
+
+func (s *read_counter) EncodedObject(kind plumbing.ObjectType, hash plumbing.Hash) (plumbing.EncodedObject, error) {
+	o, err := s.Storer.EncodedObject(kind, hash)
+	if err == nil {
+		s.reads[o.Type()]++
+	}
+	return o, err
+}
+
+// read_counted opens repo again over a counting store.
+func read_counted(t *testing.T, repo *git.Repository) (*git.Repository, *read_counter) {
+	t.Helper()
+	counter := &read_counter{Storer: repo.Storer, reads: map[plumbing.ObjectType]int{}}
+	counted, err := git.Open(counter, nil)
+	if err != nil {
+		t.Fatalf("open counted: %v", err)
+	}
+	return counted, counter
+}
+
+// TestCommitBetweenReadsOnlyTheRange. between loaded every ancestor of base
+// and of head on every call, so comparing two neighbouring commits read the
+// whole history twice. It reads the range and a few commits past it.
+func TestCommitBetweenReadsOnlyTheRange(t *testing.T) {
+	_, repo, _ := read_env_repo(t, "range")
+	tree := read_snapshot(t, repo, map[string]read_file{"a": read_text("a")})
+	tip := read_commit(t, repo, nil, tree, "root")
+	var chain []plumbing.Hash
+	for i := 0; i < 300; i++ {
+		tip = read_commit(t, repo, []plumbing.Hash{tip}, tree, fmt.Sprintf("c%d", i))
+		chain = append(chain, tip)
+	}
+	counted, counter := read_counted(t, repo)
+	base, _ := counted.CommitObject(chain[296])
+	head, _ := counted.CommitObject(chain[299])
+	counter.reads = map[plumbing.ObjectType]int{}
+
+	commits, err := git_between(context.Background(), counted, base, head)
+	if err != nil {
+		t.Fatalf("between: %v", err)
+	}
+	if len(commits) != 3 {
+		t.Fatalf("between listed %d commits, want 3", len(commits))
+	}
+	// THE POINT: three commits apart is a few reads, not two walks of 300.
+	if reads := counter.reads[plumbing.CommitObject]; reads > 3+git_between_slop+3 {
+		t.Errorf("between read %d commits for a range of 3", reads)
+	}
+}
+
+// TestCommitLogOpensOnlyThePathsFolders. The log diffed every commit's whole
+// tree against the next commit's to find the few that touched one path. It
+// reads each commit's top folder, and a folder below only when its hash
+// changed.
+func TestCommitLogOpensOnlyThePathsFolders(t *testing.T) {
+	_, repo, _ := read_env_repo(t, "folders")
+	files := map[string]read_file{"lib/g.txt": read_text("g")}
+	tip := read_commit(t, repo, nil, read_snapshot(t, repo, files), "add g")
+	for i := 0; i < 40; i++ {
+		files[fmt.Sprintf("other/deep/f%d.txt", i)] = read_text(fmt.Sprint(i))
+		tip = read_commit(t, repo, []plumbing.Hash{tip}, read_snapshot(t, repo, files), fmt.Sprintf("other %d", i))
+	}
+	counted, counter := read_counted(t, repo)
+	iter, err := counted.Log(&git.LogOptions{From: tip})
+	if err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	counter.reads = map[plumbing.ObjectType]int{}
+	paths := git_path_walker(counted, "lib/g.txt")
+	var touched []string
+	err = iter.ForEach(func(c *object.Commit) error {
+		changed, err := paths.touched(c)
+		if changed {
+			touched = append(touched, c.Message)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if len(touched) != 1 || touched[0] != "add g" {
+		t.Fatalf("touched %v, want only the commit that added g", touched)
+	}
+	// THE POINT: 41 top folders and lib once, and no "other" folder.
+	if reads := counter.reads[plumbing.TreeObject]; reads > 41+1 {
+		t.Errorf("the walk read %d trees for 41 commits", reads)
 	}
 }
 

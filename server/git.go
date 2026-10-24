@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"container/heap"
 	"context"
 	"crypto/sha1"
 	"encoding/binary"
@@ -1338,31 +1339,33 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl.None, nil // ref not found
 	}
 
-	// A directory matches its own entries only: a bare prefix test made the
-	// log for "src" include every commit touching "src2/" or "src.txt". An
-	// empty path is the whole tree.
-	prefix := strings.TrimSuffix(path, "/") + "/"
-	iter, err := repo.Log(&git.LogOptions{
-		From: *hash,
-		PathFilter: func(p string) bool {
-			return path == "" || p == path || strings.HasPrefix(p, prefix)
-		},
-	})
+	iter, err := repo.Log(&git.LogOptions{From: *hash})
 	if err != nil {
 		return sl.None, nil // log not found
 	}
 
+	ctx := starlark_context(t)
+	paths := git_path_walker(repo, path)
 	var commits []map[string]any
 	err = iter.ForEach(func(c *object.Commit) error {
 		if len(commits) >= limit {
 			return io.EOF
 		}
-		commits = append(commits, map[string]any{
-			"sha":     c.Hash.String(),
-			"message": strings.TrimSpace(c.Message),
-			"author":  c.Author.Name,
-			"date":    c.Author.When.Unix(),
-		})
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		touched, err := paths.touched(c)
+		if err != nil {
+			return err
+		}
+		if touched {
+			commits = append(commits, map[string]any{
+				"sha":     c.Hash.String(),
+				"message": strings.TrimSpace(c.Message),
+				"author":  c.Author.Name,
+				"date":    c.Author.When.Unix(),
+			})
+		}
 		return nil
 	})
 
@@ -1371,6 +1374,126 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	return sl_encode(commits), nil
+}
+
+// git_path_entry is what a tree holds at a path: the object and its mode, or
+// nothing.
+type git_path_entry struct {
+	hash  plumbing.Hash
+	mode  filemode.FileMode
+	found bool
+}
+
+// git_paths answers which commits changed one path. Each commit is compared
+// with its own parents, so a merge's side branch is not mistaken for a change,
+// and only the trees along the path are read: a folder whose hash a commit
+// shares with its parent is not opened. What it reads is remembered by hash
+// for the rest of the walk, since most commits leave most folders as they
+// were.
+type git_paths struct {
+	repo     *git.Repository
+	segments []string
+	trees    []map[plumbing.Hash]git_path_entry
+	commits  map[plumbing.Hash]git_path_entry
+}
+
+// git_path_walker prepares a walk for path. An empty path is the whole tree,
+// which every commit with a change of any kind touches. A directory is its
+// own entries only: "src" is not "src2" or "src.txt".
+func git_path_walker(repo *git.Repository, path string) *git_paths {
+	var segments []string
+	for _, segment := range strings.Split(strings.Trim(path, "/"), "/") {
+		if segment != "" {
+			segments = append(segments, segment)
+		}
+	}
+	trees := make([]map[plumbing.Hash]git_path_entry, len(segments))
+	for i := range trees {
+		trees[i] = map[plumbing.Hash]git_path_entry{}
+	}
+	return &git_paths{repo: repo, segments: segments, trees: trees, commits: map[plumbing.Hash]git_path_entry{}}
+}
+
+// touched reports whether c changed the path: a commit with no parent created
+// it, one with a parent left it different, and a merge left it different from
+// every parent. A merge that took the path whole from one side is that side's
+// change, not its own.
+func (w *git_paths) touched(c *object.Commit) (bool, error) {
+	entry, err := w.at(c.Hash, c.TreeHash)
+	if err != nil {
+		return false, err
+	}
+	if len(c.ParentHashes) == 0 {
+		return entry.found, nil
+	}
+	for _, parent := range c.ParentHashes {
+		previous, err := w.commit(parent)
+		if err != nil {
+			return false, err
+		}
+		if previous == entry {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// commit answers the entry at the path in the commit with this hash.
+func (w *git_paths) commit(hash plumbing.Hash) (git_path_entry, error) {
+	if entry, ok := w.commits[hash]; ok {
+		return entry, nil
+	}
+	c, err := w.repo.CommitObject(hash)
+	if err != nil {
+		return git_path_entry{}, err
+	}
+	return w.at(hash, c.TreeHash)
+}
+
+// at answers the entry at the path in a commit's root tree.
+func (w *git_paths) at(commit, root plumbing.Hash) (git_path_entry, error) {
+	if entry, ok := w.commits[commit]; ok {
+		return entry, nil
+	}
+	entry := git_path_entry{hash: root, mode: filemode.Dir, found: true}
+	if len(w.segments) > 0 {
+		var err error
+		entry, err = w.lookup(0, root)
+		if err != nil {
+			return git_path_entry{}, err
+		}
+	}
+	w.commits[commit] = entry
+	return entry, nil
+}
+
+// lookup answers the entry for the path's segments from depth down, inside
+// the tree with this hash.
+func (w *git_paths) lookup(depth int, tree plumbing.Hash) (git_path_entry, error) {
+	if entry, ok := w.trees[depth][tree]; ok {
+		return entry, nil
+	}
+	t, err := w.repo.TreeObject(tree)
+	if err != nil {
+		return git_path_entry{}, err
+	}
+	var entry git_path_entry
+	for _, e := range t.Entries {
+		if e.Name != w.segments[depth] {
+			continue
+		}
+		if depth == len(w.segments)-1 {
+			entry = git_path_entry{hash: e.Hash, mode: e.Mode, found: true}
+		} else if e.Mode == filemode.Dir {
+			entry, err = w.lookup(depth+1, e.Hash)
+			if err != nil {
+				return git_path_entry{}, err
+			}
+		}
+		break
+	}
+	w.trees[depth][tree] = entry
+	return entry, nil
 }
 
 // mochi.git.commit.between(entity, base, head) -> list: Commits between refs
@@ -1433,47 +1556,166 @@ func api_git_commit_between(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		return sl.None, nil // base commit not found
 	}
 
-	// Find commits in head not in base. Both walks are bounded: without a
-	// bound this loaded every ancestor of base into a map and every ancestor
-	// of head into the result, two full-history walks per call on refs the
-	// caller chose. The base walk stops at git_offset_maximum commits, the
-	// head walk at that many visited or git_list_maximum collected; a longer
-	// history is answered with its newest commits.
-	base_ancestors := make(map[plumbing.Hash]bool)
-	base_iter := object.NewCommitIterCTime(base_commit, nil, nil)
-	base_iter.ForEach(func(c *object.Commit) error {
-		if len(base_ancestors) >= git_offset_maximum {
-			return io.EOF
-		}
-		base_ancestors[c.Hash] = true
-		return nil
-	})
+	between, err := git_between(starlark_context(t), repo, base_commit, head_commit)
+	if err != nil {
+		return sl_error(fn, "failed to list commits: %v", err)
+	}
 
-	var commits []map[string]any
-	visited := 0
-	head_iter := object.NewCommitIterCTime(head_commit, nil, nil)
-	head_iter.ForEach(func(c *object.Commit) error {
-		visited++
-		if visited > git_offset_maximum || len(commits) >= git_list_maximum {
-			return io.EOF
-		}
-		if !base_ancestors[c.Hash] {
-			commits = append(commits, map[string]any{
-				"sha":     c.Hash.String(),
-				"message": strings.TrimSpace(c.Message),
-				"author":  c.Author.Name,
-				"date":    c.Author.When.Unix(),
-			})
-		}
-		return nil
-	})
-
-	// Reverse to get chronological order
-	for i, j := 0, len(commits)-1; i < j; i, j = i+1, j-1 {
-		commits[i], commits[j] = commits[j], commits[i]
+	// Oldest first.
+	commits := make([]map[string]any, 0, len(between))
+	for i := len(between) - 1; i >= 0; i-- {
+		c := between[i]
+		commits = append(commits, map[string]any{
+			"sha":     c.Hash.String(),
+			"message": strings.TrimSpace(c.Message),
+			"author":  c.Author.Name,
+			"date":    c.Author.When.Unix(),
+		})
 	}
 
 	return sl_encode(commits), nil
+}
+
+// Which side of a comparison reaches a commit.
+const (
+	git_from_head uint8 = 1
+	git_from_base uint8 = 2
+)
+
+// git_between_slop is how many commits git_between walks past the point
+// where everything left is base's, for a commit whose committer clock was
+// set behind its parent's.
+const git_between_slop = 5
+
+// git_between lists the commits head reaches and base does not, newest first,
+// at most git_list_maximum of them. It walks both histories together, newest
+// first, carrying each side's mark down to the parents, and stops once every
+// commit still to visit is base's: it reads the range and the history just
+// past it rather than all of either. Each side's walk stops at
+// git_offset_maximum commits, as the two separate walks did; a longer range
+// is answered with its newest commits. As in git's own walk, a commit whose
+// clock was wrong by more than git_between_slop commits can leave base's
+// older history unwalked, and commits there are then listed as head's.
+func git_between(ctx context.Context, repo *git.Repository, base, head *object.Commit) ([]*object.Commit, error) {
+	marks := map[plumbing.Hash]uint8{}
+	walked := map[plumbing.Hash]bool{}
+	loaded := map[plumbing.Hash]*object.Commit{}
+	queue := &git_commit_queue{}
+	mark := func(c *object.Commit, side uint8) {
+		if marks[c.Hash]&side == side {
+			return
+		}
+		marks[c.Hash] |= side
+		loaded[c.Hash] = c
+		if !walked[c.Hash] {
+			heap.Push(queue, c)
+			return
+		}
+		// Base reaches a commit already walked for head, a clock out of
+		// order: its parents are loaded, so carry base's mark down through
+		// them now rather than walking them again.
+		if side&git_from_base == 0 {
+			return
+		}
+		stack := []*object.Commit{c}
+		for len(stack) > 0 {
+			top := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			for _, hash := range top.ParentHashes {
+				parent := loaded[hash]
+				if parent == nil || marks[hash]&git_from_base != 0 {
+					continue
+				}
+				marks[hash] |= git_from_base
+				if walked[hash] {
+					stack = append(stack, parent)
+				} else {
+					heap.Push(queue, parent)
+				}
+			}
+		}
+	}
+	mark(head, git_from_head)
+	mark(base, git_from_base)
+
+	var order []plumbing.Hash
+	slop := git_between_slop
+	for visited := 0; queue.Len() > 0 && visited < 2*git_offset_maximum; {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		c := heap.Pop(queue).(*object.Commit)
+		// Queued twice when the second side reached it before it was walked.
+		if walked[c.Hash] {
+			continue
+		}
+		walked[c.Hash] = true
+		visited++
+		side := marks[c.Hash]
+		if side == git_from_head {
+			order = append(order, c.Hash)
+		}
+		for _, hash := range c.ParentHashes {
+			parent, ok := loaded[hash]
+			if !ok {
+				var err error
+				parent, err = repo.CommitObject(hash)
+				if err != nil {
+					return nil, err
+				}
+			}
+			mark(parent, side)
+		}
+
+		if git_all_base(*queue, marks) {
+			slop--
+			if slop == 0 {
+				break
+			}
+		} else {
+			slop = git_between_slop
+		}
+	}
+
+	// A commit listed before base's walk reached it is base's after all.
+	var commits []*object.Commit
+	for _, hash := range order {
+		if marks[hash] != git_from_head {
+			continue
+		}
+		commits = append(commits, loaded[hash])
+		if len(commits) >= git_list_maximum {
+			break
+		}
+	}
+	return commits, nil
+}
+
+// git_all_base reports whether every queued commit is one base reaches.
+func git_all_base(queue git_commit_queue, marks map[plumbing.Hash]uint8) bool {
+	for _, c := range queue {
+		if marks[c.Hash]&git_from_base == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// git_commit_queue holds commits newest first by committer time, as git
+// walks history.
+type git_commit_queue []*object.Commit
+
+func (q git_commit_queue) Len() int { return len(q) }
+func (q git_commit_queue) Less(i, j int) bool {
+	return q[i].Committer.When.After(q[j].Committer.When)
+}
+func (q git_commit_queue) Swap(i, j int) { q[i], q[j] = q[j], q[i] }
+func (q *git_commit_queue) Push(x any)   { *q = append(*q, x.(*object.Commit)) }
+func (q *git_commit_queue) Pop() any {
+	old := *q
+	c := old[len(old)-1]
+	*q = old[:len(old)-1]
+	return c
 }
 
 // mochi.git.tree(entity, ref, path) -> list: List directory contents

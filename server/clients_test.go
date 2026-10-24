@@ -1645,6 +1645,229 @@ func TestClientsRestricted(t *testing.T) {
 	}
 }
 
+// TestClientsHierarchy: a walk of a space goes depth first, siblings in the
+// space's order, expanding spaces alone and listing only the rooms the user
+// may see, a page at a time; it is answered to someone not in a space they
+// may see, and refused for one they may not; a room's summary carries what
+// it admits and the user's membership, the directory does not, and a room
+// elsewhere is summed up only to someone it would show; and another server
+// is told of a private child once it has someone invited, and of a
+// restricted one once it has someone in a room the child admits.
+func TestClientsHierarchy(t *testing.T) {
+	alice, root := create_clients_test_env(t)
+	ctx := t.Context()
+	a := clients_client(t, alice, "m1", "@alice:example.com", "ALICE")
+	b := clients_client(t, root, "m2", "@root:example.com", "ROOT")
+	create := func(cli *mautrix.Client, name string, preset string, space bool, state ...*event.Event) string {
+		t.Helper()
+		request := &mautrix.ReqCreateRoom{Name: name, Preset: preset, RoomVersion: "10", InitialState: state}
+		if space {
+			request.CreationContent = map[string]any{"type": "m.space"}
+		}
+		made, err := cli.CreateRoom(ctx, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(made.RoomID)
+	}
+	link := func(parent string, child string, content map[string]any) {
+		t.Helper()
+		content["via"] = []string{"example.com"}
+		if _, err := a.SendStateEvent(ctx, id.RoomID(parent), event.StateSpaceChild, child, content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	empty := ""
+	top := create(a, "Root", "public_chat", true)
+	r1 := create(a, "R1", "public_chat", false)
+	ss1 := create(a, "SS1", "public_chat", true)
+	r2 := create(a, "R2", "public_chat", false)
+	r5 := create(a, "R5", "public_chat", false)
+	ss2 := create(a, "SS2", "public_chat", true)
+	r3 := create(a, "R3", "public_chat", false)
+	r4 := create(b, "R4", "public_chat", false, &event.Event{Type: event.StateHistoryVisibility, StateKey: &empty, Content: event.Content{Raw: map[string]any{"history_visibility": "world_readable"}}})
+	private := create(a, "Private", "private_chat", false)
+	restricted := create(a, "Restricted", "public_chat", false, &event.Event{Type: event.StateJoinRules, StateKey: &empty, Content: event.Content{Raw: map[string]any{"join_rule": "restricted", "allow": []any{map[string]any{"type": "m.room_membership", "room_id": top}}}}})
+	link(top, r1, map[string]any{"order": "1", "suggested": true})
+	link(top, ss1, map[string]any{"order": "2"})
+	link(top, r2, map[string]any{"order": "3", "suggested": true})
+	link(top, private, map[string]any{"order": "4"})
+	link(top, restricted, map[string]any{"order": "5"})
+	link(r2, r5, map[string]any{})
+	link(ss1, ss2, map[string]any{})
+	link(ss2, r3, map[string]any{})
+	link(ss2, r4, map[string]any{"order": "a"})
+	names := map[string]string{top: "Root", r1: "R1", ss1: "SS1", r2: "R2", r5: "R5", ss2: "SS2", r3: "R3", r4: "R4", private: "Private", restricted: "Restricted"}
+	walk := func(cli *mautrix.Client, room string, query string) (int, []string, map[string]any) {
+		t.Helper()
+		status, body := clients_request(t, cli, "GET", "/_matrix/client/v1/rooms/"+url.PathEscape(room)+"/hierarchy"+query, nil)
+		var order []string
+		list, _ := body["rooms"].([]any)
+		for _, item := range list {
+			entry := item.(map[string]any)
+			order = append(order, names[entry["room_id"].(string)])
+		}
+		return status, order, body
+	}
+	entry := func(body map[string]any, room string) map[string]any {
+		list, _ := body["rooms"].([]any)
+		for _, item := range list {
+			if found := item.(map[string]any); found["room_id"] == room {
+				return found
+			}
+		}
+		return nil
+	}
+
+	// Depth first, siblings by their order key and then those without one,
+	// R2's link to R5 passed over since R2 is no space.
+	status, order, body := walk(a, top, "")
+	if want := []string{"Root", "R1", "SS1", "SS2", "R4", "R3", "R2", "Private", "Restricted"}; status != 200 || !slices.Equal(order, want) {
+		t.Errorf("THE POINT: the walk = %d %v, want %v", status, order, want)
+	}
+	if children, _ := entry(body, r2)["children_state"].([]any); len(children) != 0 {
+		t.Errorf("THE POINT: a room that is no space has children: %v", children)
+	}
+	if found := entry(body, restricted); found == nil || found["allowed_room_ids"] != nil {
+		t.Errorf("a walk's restricted entry = %v", found)
+	}
+	if children, _ := entry(body, top)["children_state"].([]any); len(children) != 5 || children[0].(map[string]any)["state_key"] != r1 || children[0].(map[string]any)["event_id"] != nil {
+		t.Errorf("THE POINT: the space's children = %v", children)
+	}
+
+	// A page at a time.
+	status, order, body = walk(a, top, "?limit=4")
+	token, _ := body["next_batch"].(string)
+	if want := []string{"Root", "R1", "SS1", "SS2"}; status != 200 || !slices.Equal(order, want) || token == "" {
+		t.Errorf("THE POINT: the first page = %d %v %q", status, order, token)
+	}
+	status, order, body = walk(a, top, "?from="+url.QueryEscape(token))
+	if want := []string{"R4", "R3", "R2", "Private", "Restricted"}; status != 200 || !slices.Equal(order, want) || body["next_batch"] != nil {
+		t.Errorf("THE POINT: the next page = %d %v %v", status, order, body["next_batch"])
+	}
+	if status, _, _ := walk(a, top, "?max_depth=1&from="+url.QueryEscape(token)); status != 400 {
+		t.Errorf("a page asked differently = %d", status)
+	}
+	if status, _, _ := walk(a, top, "?from=nothing"); status != 400 {
+		t.Errorf("an unknown page = %d", status)
+	}
+
+	// As deep as asked, a space's links listed even where they go no deeper.
+	_, order, body = walk(a, top, "?max_depth=1")
+	if want := []string{"Root", "R1", "SS1", "R2", "Private", "Restricted"}; !slices.Equal(order, want) {
+		t.Errorf("THE POINT: one deep = %v, want %v", order, want)
+	}
+	if children, _ := entry(body, ss1)["children_state"].([]any); len(children) != 1 {
+		t.Errorf("one deep, SS1's links = %v", children)
+	}
+
+	// Root, in none of it, is answered the public space, without the private
+	// room or the one admitting the space's members; joining the space and
+	// being invited to the private room shows both.
+	status, order, _ = walk(b, top, "")
+	if want := []string{"Root", "R1", "SS1", "SS2", "R4", "R3", "R2"}; status != 200 || !slices.Equal(order, want) {
+		t.Errorf("THE POINT: the walk for someone in none of it = %d %v, want %v", status, order, want)
+	}
+	if _, err := b.JoinRoomByID(ctx, id.RoomID(top)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.InviteUser(ctx, id.RoomID(private), &mautrix.ReqInviteUser{UserID: "@root:example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, order, _ = walk(b, top, ""); !slices.Contains(order, "Private") || !slices.Contains(order, "Restricted") {
+		t.Errorf("THE POINT: the walk once invited and in the space = %v", order)
+	}
+	// A space they may not see is refused.
+	hidden := create(a, "Hidden", "private_chat", true)
+	if status, _, _ := walk(b, hidden, ""); status != 403 {
+		t.Errorf("THE POINT: a walk of a space root may not see = %d", status)
+	}
+
+	// The summary of a room: what it admits, its version and the user's
+	// membership; one they may not see is not found.
+	status, summary := clients_request(t, a, "GET", "/_matrix/client/v1/room_summary/"+url.PathEscape(restricted), nil)
+	if allowed, _ := summary["allowed_room_ids"].([]any); status != 200 || summary["join_rule"] != "restricted" || len(allowed) != 1 || allowed[0] != top || summary["membership"] != "join" || summary["room_version"] != "10" {
+		t.Errorf("THE POINT: the summary of a restricted room = %d %v", status, summary)
+	}
+	if status, summary := clients_request(t, a, "GET", "/_matrix/client/v1/room_summary/"+url.PathEscape(r1), nil); status != 200 || summary["allowed_room_ids"] != nil {
+		t.Errorf("THE POINT: the summary of a public room = %d %v", status, summary)
+	}
+	if status, summary := clients_request(t, b, "GET", "/_matrix/client/v1/room_summary/"+url.PathEscape(r3), nil); status != 200 || summary["membership"] != "leave" {
+		t.Errorf("the summary of a room root is not in = %d %v", status, summary)
+	}
+	if status, _ := clients_request(t, b, "GET", "/_matrix/client/v1/room_summary/"+url.PathEscape(hidden), nil); status != 404 {
+		t.Errorf("THE POINT: the summary of a room root may not see = %d", status)
+	}
+	// The directory says nothing of what a room admits.
+	if status, body := clients_request(t, a, "PUT", "/_matrix/client/v3/directory/list/room/"+url.PathEscape(restricted), map[string]any{"visibility": "public"}); status != 200 {
+		t.Fatalf("publishing = %d %v", status, body)
+	}
+	_, listed := clients_request(t, a, "GET", "/_matrix/client/v3/publicRooms", nil)
+	chunk, _ := listed["chunk"].([]any)
+	for _, item := range chunk {
+		if found := item.(map[string]any); found["room_id"] == restricted && found["allowed_room_ids"] != nil {
+			t.Errorf("THE POINT: the directory's entry = %v", found)
+		}
+	}
+
+	// A private room elsewhere is summed up to alice only once she is
+	// invited to it.
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	elsewhere := r.room("Elsewhere", "invite")
+	via := "?via=" + url.QueryEscape(string(r.name))
+	if status, _ := clients_request(t, a, "GET", "/_matrix/client/v1/room_summary/"+url.PathEscape(elsewhere)+via, nil); status != 404 {
+		t.Errorf("THE POINT: the summary of a private room elsewhere = %d", status)
+	}
+	invitee := "@alice:example.com"
+	invite := r.event(elsewhere, r.user("bob"), spec.MRoomMember, &invitee, map[string]any{"membership": "invite"})
+	request, _ := fclient.NewInviteV2Request(invite, nil)
+	if status, body := r.call(t, "PUT", "/_matrix/federation/v2/invite/"+url.PathEscape(elsewhere)+"/"+url.PathEscape(invite.EventID()), request); status != 200 {
+		t.Fatalf("invite = %d %v", status, body)
+	}
+	if status, summary := clients_request(t, a, "GET", "/_matrix/client/v1/room_summary/"+url.PathEscape(elsewhere)+via, nil); status != 200 || summary["name"] != "Elsewhere" || summary["membership"] != "invite" {
+		t.Errorf("THE POINT: the summary of a private room elsewhere alice is invited to = %d %v", status, summary)
+	}
+
+	// Another server sees the private room as a child once it has someone
+	// invited to it, and the restricted one once it has someone in the
+	// space it admits the members of.
+	children := func() ([]string, []string, map[string]any) {
+		t.Helper()
+		status, body := r.call(t, "GET", "/_matrix/federation/v1/hierarchy/"+url.PathEscape(top), nil)
+		if status != 200 {
+			t.Fatalf("the federation walk = %d %v", status, body)
+		}
+		var described []string
+		entries := map[string]any{}
+		list, _ := body["children"].([]any)
+		for _, item := range list {
+			name := names[item.(map[string]any)["room_id"].(string)]
+			described = append(described, name)
+			entries[name] = item
+		}
+		var hidden []string
+		inaccessible, _ := body["inaccessible_children"].([]any)
+		for _, item := range inaccessible {
+			hidden = append(hidden, names[item.(string)])
+		}
+		return described, hidden, entries
+	}
+	if described, hidden, _ := children(); slices.Contains(described, "Restricted") || slices.Contains(described, "Private") || !slices.Contains(hidden, "Restricted") || !slices.Contains(hidden, "Private") {
+		t.Errorf("THE POINT: another server with no one in the space told of %v, not of %v", described, hidden)
+	}
+	if _, err := a.InviteUser(ctx, id.RoomID(private), &mautrix.ReqInviteUser{UserID: id.UserID(r.user("carol"))}); err != nil {
+		t.Fatal(err)
+	}
+	matrix_remote_join(t, r, top, r.user("bob"))
+	told, untold, entries := children()
+	if !slices.Contains(told, "Restricted") || slices.Contains(untold, "Restricted") || !slices.Contains(told, "Private") {
+		t.Errorf("THE POINT: another server with someone invited and in the space told of %v, not of %v", told, untold)
+	}
+	if allowed, _ := entries["Restricted"].(map[string]any)["allowed_room_ids"].([]any); len(allowed) != 1 || allowed[0] != top {
+		t.Errorf("THE POINT: the restricted child told another server = %v", entries["Restricted"])
+	}
+}
+
 // TestClientsNotificationsKept: notifications are kept for an account only
 // once a Matrix client is signed in to it.
 func TestClientsNotificationsKept(t *testing.T) {

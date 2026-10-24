@@ -2651,20 +2651,51 @@ func rooms_serve_published(c *gin.Context, r *fclient.FederationRequest) {
 	c.JSON(http.StatusOK, rooms_published(body.Filter.Term, body.Limit, body.Since))
 }
 
-// rooms_serve_hierarchy answers another server a space this server is in:
-// the room and its children here, for a room anyone may join or read, or one
-// the asking server has someone in.
+// rooms_serve_hierarchy answers another server a space this server is in,
+// as Synapse does: the room, with its children where it is a space, those
+// here the server may see described, those here it may not named, for the
+// asking server to filter by its own users' memberships.
 func rooms_serve_hierarchy(c *gin.Context, r *fclient.FederationRequest, room string) {
 	entry := rooms_entry(room)
-	if entry == nil || !rooms_viewable(room, r.Origin()) {
+	if entry == nil || rooms_local(room) == "" || !rooms_viewable(room, r.Origin()) {
 		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such room here")
 		return
 	}
-	suggested := c.Query("suggested_only") == "true"
 	children := []map[string]any{}
+	if entry["room_type"] == "m.space" {
+		children = rooms_children(room, c.Query("suggested_only") == "true")
+	}
+	rooms := []map[string]any{}
 	inaccessible := []string{}
-	var rooms []map[string]any
+	for _, child := range children {
+		key, _ := child["state_key"].(string)
+		if rooms_local(key) == "" {
+			continue
+		}
+		if inner := rooms_entry(key); inner != nil && rooms_viewable(key, r.Origin()) {
+			inner["children_state"] = []any{}
+			rooms = append(rooms, inner)
+		} else {
+			inaccessible = append(inaccessible, key)
+		}
+	}
+	entry["children_state"] = children
+	c.JSON(http.StatusOK, map[string]any{"room": entry, "children": rooms, "inaccessible_children": inaccessible})
+}
+
+// rooms_children are a space's m.space.child events naming servers to join
+// through, as the stripped events a walk of it gives, in the space's order:
+// by order key, then when they were sent, then by room. The suggested ones
+// alone, where asked.
+func rooms_children(room string, suggested bool) []map[string]any {
+	type child struct {
+		order   string
+		ordered bool
+		sent    int64
+		event   map[string]any
+	}
 	state, _ := rooms_current(room)
+	var list []child
 	for key, id := range state {
 		if !strings.HasPrefix(key, "m.space.child\x00") {
 			continue
@@ -2675,35 +2706,79 @@ func rooms_serve_hierarchy(c *gin.Context, r *fclient.FederationRequest, room st
 		}
 		var content map[string]any
 		json.Unmarshal(event.Content(), &content)
-		if content["via"] == nil || (suggested && content["suggested"] != true) {
+		if len(clients_strings(content["via"])) == 0 || (suggested && content["suggested"] != true) {
 			continue
 		}
-		children = append(children, map[string]any{"type": event.Type(), "state_key": *event.StateKey(), "content": content, "sender": string(event.SenderID()), "origin_server_ts": int64(event.OriginServerTS())})
-		child := *event.StateKey()
-		if inner := rooms_entry(child); inner != nil && rooms_viewable(child, r.Origin()) {
-			inner["children_state"] = []any{}
-			rooms = append(rooms, inner)
-		} else if rooms_version(child) != nil {
-			inaccessible = append(inaccessible, child)
+		order, ordered := content["order"].(string)
+		ordered = ordered && len(order) <= 50 && !strings.ContainsFunc(order, func(r rune) bool { return r < 0x20 || r > 0x7e })
+		list = append(list, child{order, ordered, int64(event.OriginServerTS()), map[string]any{"type": event.Type(), "state_key": *event.StateKey(), "content": content, "sender": string(event.SenderID()), "origin_server_ts": int64(event.OriginServerTS())}})
+	}
+	sort.Slice(list, func(i int, j int) bool {
+		a, b := list[i], list[j]
+		switch {
+		case a.ordered != b.ordered:
+			return a.ordered
+		case a.ordered && a.order != b.order:
+			return a.order < b.order
+		case a.sent != b.sent:
+			return a.sent < b.sent
 		}
+		return a.event["state_key"].(string) < b.event["state_key"].(string)
+	})
+	out := make([]map[string]any, 0, len(list))
+	for _, c := range list {
+		out = append(out, c.event)
 	}
-	entry["children_state"] = children
-	if rooms == nil {
-		rooms = []map[string]any{}
-	}
-	c.JSON(http.StatusOK, map[string]any{"room": entry, "children": rooms, "inaccessible_children": inaccessible})
+	return out
 }
 
-// rooms_viewable says whether a server may see a room in a walk of spaces:
-// one anyone may join, knock on or read, or one it has someone in.
+// rooms_admitted are the rooms whose members a room admits, where its rule
+// is to admit them, or nil.
+func rooms_admitted(room string) []string {
+	rules := clients_state_content(room, spec.MRoomJoinRules, "")
+	if rules["join_rule"] != spec.Restricted && rules["join_rule"] != spec.KnockRestricted {
+		return nil
+	}
+	encoded, _ := json.Marshal(rules)
+	var rule gomatrixserverlib.JoinRuleContent
+	json.Unmarshal(encoded, &rule)
+	allowed := []string{}
+	for _, allow := range rule.Allow {
+		if allow.Type == spec.MRoomMembership && allow.RoomID != "" {
+			allowed = append(allowed, allow.RoomID)
+		}
+	}
+	return allowed
+}
+
+// rooms_viewable says whether a server may see a room in a walk of spaces,
+// as Synapse has it: one anyone may join, knock on or read, one it has
+// someone in or invited to, or one admitting the members of a room it has
+// someone in.
 func rooms_viewable(room string, server spec.ServerName) bool {
 	rule, _ := clients_state_content(room, spec.MRoomJoinRules, "")["join_rule"].(string)
 	visibility, _ := clients_state_content(room, spec.MRoomHistoryVisibility, "")["history_visibility"].(string)
-	if rule == spec.Public || rule == "knock" || rule == "knock_restricted" || visibility == "world_readable" {
+	if rule == spec.Public || rule == spec.Knock || rule == spec.KnockRestricted || visibility == "world_readable" {
 		return true
 	}
-	state, _ := rooms_current(room)
-	return slices.Contains(rooms_servers(state), string(server))
+	present := func(room string, memberships ...string) bool {
+		state, _ := rooms_current(room)
+		for member, membership := range rooms_members(state) {
+			if user, err := spec.NewUserID(member, true); err == nil && user.Domain() == server && slices.Contains(memberships, membership) {
+				return true
+			}
+		}
+		return false
+	}
+	if present(room, spec.Join, spec.Invite) {
+		return true
+	}
+	for _, other := range rooms_admitted(room) {
+		if present(other, spec.Join) {
+			return true
+		}
+	}
+	return false
 }
 
 // rooms_invite_received takes another server's invitation of one of this

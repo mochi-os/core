@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -340,6 +341,10 @@ func clients_rooms_dispatch(c *gin.Context, s *clients_session, parts []string) 
 	}
 	if taken, ok := clients_match(parts, "join", "*"); ok && method == "POST" {
 		clients_join(c, s, taken[0])
+		return true
+	}
+	if taken, ok := clients_match(parts, "room_summary", "*"); ok && method == "GET" {
+		clients_summary(c, s, taken[0])
 		return true
 	}
 	if taken, ok := clients_match(parts, "knock", "*"); ok && method == "POST" {
@@ -1529,6 +1534,7 @@ func rooms_published(term string, limit int, since string) map[string]any {
 		if entry == nil {
 			continue
 		}
+		delete(entry, "allowed_room_ids")
 		text := strings.ToLower(fmt.Sprint(entry["name"], " ", entry["topic"], " ", entry["canonical_alias"]))
 		if term != "" && !strings.Contains(text, strings.ToLower(term)) {
 			continue
@@ -1587,6 +1593,9 @@ func rooms_entry(room string) map[string]any {
 	}
 	if kind, _ := clients_state_content(room, spec.MRoomCreate, "")["type"].(string); kind != "" {
 		entry["room_type"] = kind
+	}
+	if allowed := rooms_admitted(room); allowed != nil {
+		entry["allowed_room_ids"] = allowed
 	}
 	return entry
 }
@@ -1780,97 +1789,254 @@ func clients_search(c *gin.Context, s *clients_session) {
 
 // === Spaces ===
 
-// clients_hierarchy walks a space: the room and the rooms its m.space.child
-// events name, as deep as asked, those the server is in described from
-// their state and those it is not asked of their servers.
+// clients_walks are the walks of spaces clients are paging through, by the
+// next_batch token each page answered, each kept five minutes.
+var clients_walks = map[string]*clients_walk{}
+var clients_walks_lock sync.Mutex
+
+// A clients_walk is a walk of a space part done: what it was asked, which a
+// page of it must ask again, the rooms still to visit and those visited.
+type clients_walk struct {
+	user      string
+	room      string
+	depth     int
+	suggested bool
+	queue     []clients_visit
+	seen      map[string]bool
+	created   int64
+}
+
+// A clients_visit is a room still to visit in a walk: how deep it is, the
+// servers its link names, and what its parent's server said of it.
+type clients_visit struct {
+	room   string
+	depth  int
+	via    []string
+	answer map[string]any
+}
+
+// clients_hierarchy walks a space depth first, as Synapse does: the rooms the
+// user may see, each with its children where it is a space, the children in
+// the space's order, as deep as asked and a page at a time. Those this server
+// is in are described from their state, the others asked of their servers.
 func clients_hierarchy(c *gin.Context, s *clients_session, room string) {
-	if !clients_member(c, s, room) {
-		return
+	depth, limit := 3, 50
+	for name, value := range map[string]*int{"max_depth": &depth, "limit": &limit} {
+		if given := c.Query(name); given != "" {
+			number, err := strconv.Atoi(given)
+			if err != nil || number < 0 || (name == "limit" && number < 1) {
+				clients_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "Invalid "+name)
+				return
+			}
+			*value = number
+		}
 	}
-	depth, err := strconv.Atoi(c.DefaultQuery("max_depth", "3"))
-	if err != nil {
-		depth = 3
-	}
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	limit = min(max(limit, 1), 100)
+	limit = min(limit, 100)
 	suggested := c.Query("suggested_only") == "true"
+	walk := &clients_walk{user: s.h.address, room: room, depth: depth, suggested: suggested, seen: map[string]bool{}}
+	if from := c.Query("from"); from != "" {
+		clients_walks_lock.Lock()
+		for token, kept := range clients_walks {
+			if kept.created < now()-300 {
+				delete(clients_walks, token)
+			}
+		}
+		kept := clients_walks[from]
+		clients_walks_lock.Unlock()
+		if kept == nil || kept.user != walk.user || kept.room != room || kept.depth != depth || kept.suggested != suggested {
+			clients_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "Unknown pagination token")
+			return
+		}
+		walk.queue = slices.Clone(kept.queue)
+		walk.seen = maps.Clone(kept.seen)
+	} else {
+		entry := rooms_entry(room)
+		if rooms_local(room) == "" || entry == nil || !clients_accessible(room, s.h.address, entry) {
+			clients_error(c, http.StatusForbidden, "M_FORBIDDEN", "You may not see this room")
+			return
+		}
+		walk.queue = []clients_visit{{room: room}}
+	}
 	mine, _ := spec.NewUserID(s.h.address, true)
 	rooms := []map[string]any{}
-	seen := map[string]bool{}
-	type visit struct {
-		room  string
-		depth int
-		via   []string
-	}
-	queue := []visit{{room, 0, nil}}
-	for len(queue) > 0 && len(rooms) < limit {
-		v := queue[0]
-		queue = queue[1:]
-		if seen[v.room] {
+	for len(walk.queue) > 0 && len(rooms) < limit {
+		v := walk.queue[0]
+		walk.queue = walk.queue[1:]
+		if walk.seen[v.room] {
 			continue
 		}
-		seen[v.room] = true
-		entry := rooms_entry(v.room)
-		var children []map[string]any
-		if entry != nil {
-			state, _ := rooms_current(v.room)
-			for key, id := range state {
-				if !strings.HasPrefix(key, "m.space.child\x00") {
-					continue
-				}
-				event := rooms_event(id)
-				if event == nil {
-					continue
-				}
-				var content map[string]any
-				json.Unmarshal(event.Content(), &content)
-				if content["via"] == nil || (suggested && content["suggested"] != true) {
-					continue
-				}
-				children = append(children, clients_event(event, s.h.address, "", false))
+		walk.seen[v.room] = true
+		var entry map[string]any
+		children := []map[string]any{}
+		answers := map[string]map[string]any{}
+		inaccessible := map[string]bool{}
+		if rooms_local(v.room) != "" {
+			if entry = rooms_entry(v.room); entry != nil && entry["room_type"] == "m.space" {
+				children = rooms_children(v.room, suggested)
 			}
-		} else if len(v.via) > 0 {
-			for _, server := range v.via {
-				found, err := federation_client().RoomHierarchy(c.Request.Context(), mine.Domain(), spec.ServerName(server), v.room, suggested)
-				if err != nil {
-					continue
-				}
-				encoded, _ := json.Marshal(found.Room)
-				json.Unmarshal(encoded, &entry)
-				for _, child := range found.Room.ChildrenState {
-					var event map[string]any
-					encoded, _ := json.Marshal(child)
-					json.Unmarshal(encoded, &event)
-					children = append(children, event)
-				}
-				break
-			}
+		} else if v.answer != nil && (v.answer["room_type"] != "m.space" || v.depth >= depth) {
+			// What the parent's server said is all a room that is not a space,
+			// or one the walk goes no deeper than, needs.
+			entry = maps.Clone(v.answer)
+		} else {
+			entry, children, answers, inaccessible = clients_remote(c.Request.Context(), mine.Domain(), v, suggested)
 		}
-		if entry == nil {
+		if entry == nil || !clients_accessible(v.room, s.h.address, entry) {
 			continue
 		}
+		delete(entry, "allowed_room_ids")
 		entry["children_state"] = children
-		if children == nil {
-			entry["children_state"] = []map[string]any{}
-		}
 		rooms = append(rooms, entry)
 		if v.depth >= depth {
 			continue
 		}
+		var next []clients_visit
 		for _, child := range children {
 			key, _ := child["state_key"].(string)
-			var via []string
-			if content, ok := child["content"].(map[string]any); ok {
-				if servers, ok := content["via"].([]any); ok {
-					for _, server := range servers {
-						if name, ok := server.(string); ok {
-							via = append(via, name)
-						}
-					}
-				}
+			if inaccessible[key] {
+				continue
 			}
-			queue = append(queue, visit{key, v.depth + 1, via})
+			content, _ := child["content"].(map[string]any)
+			next = append(next, clients_visit{room: key, depth: v.depth + 1, via: clients_strings(content["via"]), answer: answers[key]})
+		}
+		walk.queue = append(next, walk.queue...)
+	}
+	answer := map[string]any{"rooms": rooms}
+	if len(walk.queue) > 0 {
+		token := uid()
+		walk.created = now()
+		clients_walks_lock.Lock()
+		clients_walks[token] = walk
+		clients_walks_lock.Unlock()
+		answer["next_batch"] = token
+	}
+	c.JSON(http.StatusOK, answer)
+}
+
+// clients_remote asks the servers a link names what a room this server is
+// not in is, as a walk of a space does: the room, its children, what the
+// server said of each, and those it said this server may not see.
+func clients_remote(ctx context.Context, origin spec.ServerName, v clients_visit, suggested bool) (map[string]any, []map[string]any, map[string]map[string]any, map[string]bool) {
+	for _, server := range v.via {
+		found, err := federation_client().RoomHierarchy(ctx, origin, spec.ServerName(server), v.room, suggested)
+		if err != nil || found.Room.RoomID != v.room {
+			continue
+		}
+		var entry map[string]any
+		encoded, _ := json.Marshal(found.Room)
+		json.Unmarshal(encoded, &entry)
+		children := []map[string]any{}
+		for _, child := range found.Room.ChildrenState {
+			var event map[string]any
+			encoded, _ := json.Marshal(child)
+			json.Unmarshal(encoded, &event)
+			children = append(children, event)
+		}
+		answers := map[string]map[string]any{}
+		for _, child := range found.Children {
+			var described map[string]any
+			encoded, _ := json.Marshal(child)
+			json.Unmarshal(encoded, &described)
+			answers[child.RoomID] = described
+		}
+		inaccessible := map[string]bool{}
+		for _, child := range found.InaccessibleChildren {
+			inaccessible[child] = true
+		}
+		return entry, children, answers, inaccessible
+	}
+	return nil, nil, nil, nil
+}
+
+// clients_accessible says whether a user may see a room in a walk of spaces
+// or its summary, as Synapse has it: one anyone may join, knock on or read, one
+// they are in or invited to, or one admitting the members of a room they are
+// joined to. The entry is the room as described here or by its server.
+func clients_accessible(room string, user string, entry map[string]any) bool {
+	rule, _ := entry["join_rule"].(string)
+	if rule == spec.Public || rule == spec.Knock || rule == spec.KnockRestricted || entry["world_readable"] == true {
+		return true
+	}
+	if membership := rooms_membership(room, user); membership == spec.Join || membership == spec.Invite {
+		return true
+	}
+	if invited, _ := federation_database().exists("select 1 from invites where room=? and user=?", room, user); invited {
+		return true
+	}
+	for _, other := range clients_strings(entry["allowed_room_ids"]) {
+		if rooms_membership(other, user) == spec.Join {
+			return true
 		}
 	}
-	c.JSON(http.StatusOK, map[string]any{"rooms": rooms})
+	return false
+}
+
+// clients_strings are the strings of a list, as decoded JSON or as built.
+func clients_strings(value any) []string {
+	switch list := value.(type) {
+	case []string:
+		return list
+	case []any:
+		var out []string
+		for _, item := range list {
+			if text, ok := item.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// clients_summary describes a room to someone who may see it, as a walk of
+// spaces does, with its version, its encryption and their membership (spec
+// v1.15, MSC3266). A room this server is not in is asked of the servers the
+// request names, or that its alias's server answers.
+func clients_summary(c *gin.Context, s *clients_session, address string) {
+	room := address
+	servers := append(c.QueryArray("via"), c.QueryArray("server_name")...)
+	mine, _ := spec.NewUserID(s.h.address, true)
+	if strings.HasPrefix(address, "#") {
+		_, domain, err := gomatrixserverlib.SplitID('#', address)
+		if err != nil {
+			clients_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "Invalid alias")
+			return
+		}
+		if federation_local(domain) {
+			row, _ := federation_database().row("select room from aliases where alias=?", address)
+			room = row_string(row, "room")
+		} else if found, err := federation_client().LookupRoomAlias(c.Request.Context(), mine.Domain(), domain, address); err == nil {
+			room = found.RoomID
+			for _, server := range found.Servers {
+				servers = append(servers, string(server))
+			}
+		}
+	}
+	var entry map[string]any
+	if room != "" && rooms_local(room) != "" {
+		if entry = rooms_entry(room); entry != nil {
+			if version := rooms_version(room); version != nil {
+				entry["room_version"] = string(version.Version())
+			}
+			if algorithm, _ := clients_state_content(room, "m.room.encryption", "")["algorithm"].(string); algorithm != "" {
+				entry["encryption"] = algorithm
+			}
+		}
+	} else if room != "" {
+		entry, _, _, _ = clients_remote(c.Request.Context(), mine.Domain(), clients_visit{room: room, via: servers}, true)
+		delete(entry, "children_state")
+	}
+	if entry == nil || !clients_accessible(room, s.h.address, entry) {
+		clients_error(c, http.StatusNotFound, "M_NOT_FOUND", "Room not found or is not accessible")
+		return
+	}
+	membership := rooms_membership(room, s.h.address)
+	if invited, _ := federation_database().exists("select 1 from invites where room=? and user=?", room, s.h.address); membership == "" && invited {
+		membership = spec.Invite
+	}
+	if membership == "" {
+		membership = spec.Leave
+	}
+	entry["membership"] = membership
+	c.JSON(http.StatusOK, entry)
 }

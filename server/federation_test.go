@@ -477,6 +477,23 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 	case route == "GET v1/state":
 		state := r.list(r.before[req.URL.Query().Get("event_id")])
 		r.answer(w, 200, map[string]any{"pdus": raw_events(state), "auth_chain": raw_events(r.chain(state))})
+	case route == "GET v1/hierarchy":
+		// A room as the remote describes it to a walk of spaces, whoever
+		// asks, for the asking server to filter.
+		state := r.state[parts[2]]
+		if state == nil {
+			r.answer(w, 404, map[string]any{"errcode": "M_NOT_FOUND"})
+			return
+		}
+		entry := map[string]any{"room_id": parts[2], "num_joined_members": 1, "world_readable": false, "guest_can_join": false, "children_state": []any{}}
+		for kind, field := range map[string]string{spec.MRoomJoinRules: "join_rule", "m.room.name": "name"} {
+			if event := r.events[state[rooms_key(kind, "")]]; event != nil {
+				var content map[string]any
+				json.Unmarshal(event.Content(), &content)
+				entry[field] = content[field]
+			}
+		}
+		r.answer(w, 200, map[string]any{"room": entry, "children": []any{}, "inaccessible_children": []any{}})
 	case route == "GET v1/event_auth":
 		r.answer(w, 200, map[string]any{"auth_chain": raw_events(r.chain([]gomatrixserverlib.PDU{r.events[parts[3]]}))})
 	case route == "POST v1/get_missing_events":

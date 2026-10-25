@@ -615,32 +615,7 @@ func keyring_remote_query(ctx context.Context, user string, server string, wante
 // keyring_federation sends a signed POST to another server from the domain
 // of the user it is for, decoding the answer as it came.
 func keyring_federation(ctx context.Context, user string, server string, path string, content any, into any) error {
-	id, err := spec.NewUserID(user, true)
-	if err != nil {
-		return err
-	}
-	identity := federation_identity_of(id.Domain())
-	if identity == nil {
-		return fmt.Errorf("this server does not speak for %s", id.Domain())
-	}
-	request := fclient.NewFederationRequest("POST", identity.domain, spec.ServerName(server), path)
-	if err := request.SetContent(content); err != nil {
-		return err
-	}
-	if err := request.Sign(identity.domain, identity.key, identity.private); err != nil {
-		return err
-	}
-	prepared, err := request.HTTPRequest()
-	if err != nil {
-		return err
-	}
-	bounded, cancel := context.WithTimeout(ctx, federation_timeout)
-	defer cancel()
-	var raw json.RawMessage
-	if err := federation_client().DoRequestAndParseResponse(bounded, prepared.WithContext(bounded), &raw); err != nil {
-		return err
-	}
-	return json.Unmarshal(raw, into)
+	return federation_ask(ctx, user, "POST", server, path, content, into)
 }
 
 // keyring_claim claims a one-time key of each device named, else its

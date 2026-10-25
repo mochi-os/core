@@ -36,6 +36,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"html"
 	"io"
 	"net"
@@ -191,6 +192,10 @@ func actors_rebuild() {
 			}
 			db.exec("insert into actors (id, user, domain, handle, network, created) values (?, ?, ?, ?, ?, ?) on conflict(id) do update set user=excluded.user, domain=excluded.domain, handle=excluded.handle, network=excluded.network", id, h.User, h.Domain, h.Name, ptype, created)
 			seen[id] = true
+			// A Bluesky account's identifier is found by its registry too.
+			if did := atproto_did(row); ptype == "bluesky" && did != "" {
+				atproto_register(did, id, user)
+			}
 		}
 	}
 	rows, _ := db.rows("select id from actors where deleted=0")
@@ -209,7 +214,7 @@ func actor_account(id string) (*User, map[string]any) {
 		return nil, nil
 	}
 	user := user_by_uid(a.User)
-	if user == nil || user_pending(user) {
+	if user == nil || user_quiet(user) {
 		return nil, nil
 	}
 	row := account_hosted_get(user, id)
@@ -1076,7 +1081,9 @@ func activitypub_inbox(c *gin.Context, user *User, a *actor) {
 	key_id, err := signature_verify(ctx, c.Request, body, signature_key_fetch)
 	if err != nil {
 		debug("ActivityPub inbox refused %s from %s: %v", kind, remote, err)
-		respond_error(c, http.StatusUnauthorized, "signature", "errors.signature_invalid", nil)
+		if !activitypub_deferred(c, err) {
+			respond_error(c, http.StatusUnauthorized, "signature", "errors.signature_invalid", nil)
+		}
 		return
 	}
 	// The key must belong to the actor: the same host at least, and the actor
@@ -1087,6 +1094,7 @@ func activitypub_inbox(c *gin.Context, user *User, a *actor) {
 		return
 	}
 
+	var later error
 	for _, target := range targets {
 		if id != "" && activitypub_received(id, target.ID) {
 			continue
@@ -1104,9 +1112,42 @@ func activitypub_inbox(c *gin.Context, user *User, a *actor) {
 			debug("ActivityPub inbox dropped %s from %s: blocked or muted by %s", kind, remote, target_user.UID)
 			continue
 		}
-		activitypub_dispatch(activitypub_signing(c.Request.Context(), target_user, target.ID), target_user, target, remote, kind, activity, body)
+		if err := activitypub_dispatch(activitypub_signing(c.Request.Context(), target_user, target.ID), target_user, target, remote, kind, activity, body); err != nil {
+			// Not taken for this account for now: forgotten as seen, so
+			// the activity sent again is.
+			networks_database().exec("delete from seen where id=? and account=?", id, target.ID)
+			later = err
+		}
+	}
+	if later != nil && activitypub_deferred(c, later) {
+		return
 	}
 	c.AbortWithStatus(http.StatusAccepted)
+}
+
+// activitypub_deferred answers a request as one to send again later when what
+// it needs could not be read for now - this server's own limit on requests to
+// the sender's host, which a burst of new people from one large server
+// reaches, or that host failing: 429 or 503 with Retry-After, which senders
+// retry, where a 401 or a 202 that took nothing loses the activity. Says
+// whether it answered.
+func activitypub_deferred(c *gin.Context, err error) bool {
+	var limited *RateLimitError
+	switch {
+	case errors.As(err, &limited):
+		retry := limited.Retry
+		if retry <= 0 {
+			retry = int(resolve_cache_transient.Seconds())
+		}
+		c.Header("Retry-After", strconv.Itoa(retry))
+		c.AbortWithStatus(http.StatusTooManyRequests)
+	case resolve_transient(err):
+		c.Header("Retry-After", strconv.Itoa(int(resolve_cache_transient.Seconds())))
+		c.AbortWithStatus(http.StatusServiceUnavailable)
+	default:
+		return false
+	}
+	return true
 }
 
 // activitypub_following says whether an activity is a Follow or the Undo of
@@ -1134,7 +1175,7 @@ func activitypub_known(user *User, a *actor, remote string) bool {
 	rows, _ := networks_database().rows("select distinct user from actors where deleted=0")
 	for _, row := range rows {
 		u := user_by_uid(row_string(row, "user"))
-		if u == nil || user_pending(u) {
+		if u == nil || user_quiet(u) {
 			continue
 		}
 		db := db_user(u, "user")
@@ -1209,7 +1250,7 @@ func activitypub_followers_of(remote string) []*actor {
 	rows, _ := networks_database().rows("select distinct user from actors where deleted=0 and network='fediverse'")
 	for _, row := range rows {
 		u := user_by_uid(row_string(row, "user"))
-		if u == nil || user_pending(u) {
+		if u == nil || user_quiet(u) {
 			continue
 		}
 		accounts, _ := db_user(u, "user").rows("select account from following where actor=?", remote)
@@ -1226,18 +1267,22 @@ func activitypub_followers_of(remote string) []*actor {
 // Follow is accepted, an Undo of a Follow forgets the follower, an Accept or
 // Reject settles a follow the account sent, a Move by someone followed sends
 // the follow on to where they went, and anything else is queued for the apps.
-func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote string, kind string, activity map[string]any, body []byte) {
+// An error is a failure that may pass, for the sender to send again.
+func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote string, kind string, activity map[string]any, body []byte) error {
 	actor_id := account_url(a.Domain, a.ID)
 	db := db_user(user, "user")
 	switch kind {
 	case "Follow":
 		if activitypub_actor_of(activity["object"]) != actor_id {
-			return
+			return nil
 		}
 		r, err := author_resolve(ctx, remote)
 		if err != nil || r.Inbox == "" {
 			debug("ActivityPub follow from %s not resolved: %v", remote, err)
-			return
+			if resolve_transient(err) {
+				return err
+			}
+			return nil
 		}
 		db.exec("insert into followers (account, actor, inbox, shared, created) values (?, ?, ?, ?, ?) on conflict(account, actor) do update set inbox=excluded.inbox, shared=excluded.shared", a.ID, remote, r.Inbox, r.Shared, now())
 		follow := map[string]any{"id": activity["id"], "type": "Follow", "actor": remote, "object": actor_id}
@@ -1255,25 +1300,25 @@ func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote stri
 	case "Undo":
 		object, _ := activity["object"].(map[string]any)
 		if object == nil {
-			return
+			return nil
 		}
 		if object["type"] == "Follow" && activitypub_actor_of(object["actor"]) == remote && activitypub_actor_of(object["object"]) == actor_id {
 			db.exec("delete from followers where account=? and actor=?", a.ID, remote)
-			return
+			return nil
 		}
 		inbound_add(user, a.ID, remote, kind, body)
 	case "Accept":
 		object, _ := activity["object"].(map[string]any)
 		if object != nil && object["type"] == "Follow" && activitypub_actor_of(object["actor"]) == actor_id {
 			db.exec("update following set accepted=? where account=? and actor=?", now(), a.ID, remote)
-			return
+			return nil
 		}
 		inbound_add(user, a.ID, remote, kind, body)
 	case "Reject":
 		object, _ := activity["object"].(map[string]any)
 		if object != nil && object["type"] == "Follow" && activitypub_actor_of(object["actor"]) == actor_id {
 			db.exec("delete from following where account=? and actor=?", a.ID, remote)
-			return
+			return nil
 		}
 		inbound_add(user, a.ID, remote, kind, body)
 	case "Move":
@@ -1282,7 +1327,7 @@ func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote stri
 		// and the apps hear of it to follow suit.
 		target := activitypub_actor_of(activity["target"])
 		if activitypub_actor_of(activity["object"]) != remote || target == "" || target == remote {
-			return
+			return nil
 		}
 		if following_move(ctx, user, a.ID, remote, target) {
 			inbound_add(user, a.ID, remote, kind, body)
@@ -1290,6 +1335,7 @@ func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote stri
 	default:
 		inbound_add(user, a.ID, remote, kind, body)
 	}
+	return nil
 }
 
 // === The inbound queue ===
@@ -1350,7 +1396,7 @@ func inbound_process() int {
 			}
 		}
 		user := user_by_uid(user_id)
-		if user != nil && !user_pending(user) && len(activities) > 0 {
+		if user != nil && !user_quiet(user) && len(activities) > 0 {
 			for _, a := range apps_for_function(user, "activitypub/receive") {
 				if _, err := activitypub_call(user, a, "activitypub/receive", Map{"account": account, "activities": activities}); err != nil {
 					info("ActivityPub receive in %s for account %s: %v", a.id, account, err)

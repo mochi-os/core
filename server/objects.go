@@ -96,6 +96,9 @@ func account_acting_on(t *sl.Thread, fn *sl.Builtin, id string, networks ...stri
 	if err != nil || user == nil {
 		return nil, nil, "", fmt.Errorf("no user")
 	}
+	if user_quiet(user) {
+		return nil, nil, "", fmt.Errorf("the account is closing")
+	}
 	row := account_network_get(user, id)
 	if row == nil {
 		return nil, nil, "", fmt.Errorf("no such account")

@@ -86,7 +86,7 @@ func xmpp_account_of(address jid.JID) *xmpp_account {
 		return nil
 	}
 	user, row := account_by_address("xmpp", address.Bare().String())
-	if user == nil || user_pending(user) {
+	if user == nil || user_quiet(user) {
 		return nil
 	}
 	return &xmpp_account{user: user, id: row_string(row, "id"), address: address.Bare()}

@@ -50,11 +50,12 @@ type sync_position struct {
 	typing    int64
 	invites   int64
 	rules     int64
+	presence  int64
 }
 
 // String is the position as a client gives it back.
 func (p sync_position) String() string {
-	return fmt.Sprintf("m%d_%d_%d_%d_%d_%d_%d_%d", p.stream, p.delivered, p.changes, p.receipts, p.settings, p.typing, p.invites, p.rules)
+	return fmt.Sprintf("m%d_%d_%d_%d_%d_%d_%d_%d_%d", p.stream, p.delivered, p.changes, p.receipts, p.settings, p.typing, p.invites, p.rules, p.presence)
 }
 
 // sync_parse reads a position a client gives back; an unknown one reads as
@@ -66,7 +67,7 @@ func sync_parse(token string) sync_position {
 		return p
 	}
 	values := strings.Split(rest, "_")
-	targets := []*int64{&p.stream, &p.delivered, &p.changes, &p.receipts, &p.settings, &p.typing, &p.invites, &p.rules}
+	targets := []*int64{&p.stream, &p.delivered, &p.changes, &p.receipts, &p.settings, &p.typing, &p.invites, &p.rules, &p.presence}
 	for i, value := range values {
 		if i < len(targets) {
 			*targets[i], _ = strconv.ParseInt(value, 10, 64)
@@ -99,6 +100,7 @@ func sync_latest() sync_position {
 		typing:   typing_position(),
 		invites:  sync_last(db, "pending"),
 		rules:    sync_last(db, "rules"),
+		presence: sync_last(db, "presences"),
 	}
 }
 
@@ -254,6 +256,14 @@ func sync_wait(ctx context.Context, waiter chan struct{}, deadline time.Time) bo
 // everything for a device's first sync, waiting for something where nothing
 // is new yet.
 func sync_legacy(c *gin.Context, s *clients_session) {
+	// Syncing keeps the client present, as Synapse has it, unless it says
+	// otherwise.
+	switch c.DefaultQuery("set_presence", "online") {
+	case "online":
+		clients_present(s, "online", "", true)
+	case "unavailable":
+		clients_present(s, "unavailable", "", true)
+	}
 	since := c.Query("since")
 	full := c.Query("full_state") == "true"
 	filter := sync_filter_read(s, c.Query("filter"))
@@ -313,6 +323,7 @@ func sync_build(s *clients_session, from sync_position, initial bool, full bool,
 			}
 		}
 	}
+	shown := sync_presence(address, from.presence, initial)
 	data := sync_data(address, "", from.settings, initial)
 	if initial || from.rules < next.rules {
 		data = append(data, map[string]any{"type": "m.push_rules", "content": rules_ruleset(address)})
@@ -321,15 +332,56 @@ func sync_build(s *clients_session, from sync_position, initial bool, full bool,
 		"next_batch":                       next.String(),
 		"rooms":                            map[string]any{"join": joined, "invite": invited, "leave": left, "knock": knocked},
 		"account_data":                     map[string]any{"events": data},
-		"presence":                         map[string]any{"events": []any{}},
+		"presence":                         map[string]any{"events": shown},
 		"to_device":                        map[string]any{"events": deliveries},
 		"device_lists":                     map[string]any{"changed": changed, "left": gone},
 		"device_one_time_keys_count":       keyring_counts(address, s.device),
 		"device_unused_fallback_key_types": keyring_unused(address, s.device),
 		"org.matrix.msc2732.device_unused_fallback_key_types": keyring_unused(address, s.device),
 	}
-	empty := len(joined) == 0 && len(invited) == 0 && len(left) == 0 && len(knocked) == 0 && len(data) == 0 && len(deliveries) == 0 && len(changed) == 0 && len(gone) == 0
+	empty := len(joined) == 0 && len(invited) == 0 && len(left) == 0 && len(knocked) == 0 && len(data) == 0 && len(deliveries) == 0 && len(changed) == 0 && len(gone) == 0 && len(shown) == 0
 	return answer, empty
+}
+
+// sync_presence is the presence changed since a position, all of it for a
+// first sync, of the user and the people they share a room with.
+func sync_presence(user string, since int64, initial bool) []any {
+	if initial {
+		since = 0
+	}
+	db := federation_database()
+	rows, _ := db.rows("select user, presence, message, active, updated from presences where position>? order by position", since)
+	shown := []any{}
+	if len(rows) == 0 {
+		return shown
+	}
+	people := map[string]bool{user: true}
+	for room, membership := range clients_memberships(user) {
+		if membership != spec.Join {
+			continue
+		}
+		state, _ := rooms_current(room)
+		for member, membership := range rooms_members(state) {
+			if membership == spec.Join {
+				people[member] = true
+			}
+		}
+	}
+	for _, row := range rows {
+		person := row_string(row, "user")
+		if !people[person] {
+			continue
+		}
+		content := map[string]any{"presence": row_string(row, "presence"), "last_active_ago": max(int64(0), (now()-row_int(row, "updated"))*1000)}
+		if message := row_string(row, "message"); message != "" {
+			content["status_msg"] = message
+		}
+		if row_int(row, "active") == 1 {
+			content["currently_active"] = true
+		}
+		shown = append(shown, map[string]any{"type": "m.presence", "sender": person, "content": content})
+	}
+	return shown
 }
 
 // clients_forgotten says whether the account forgot a room it left.
@@ -559,11 +611,13 @@ func sync_invited(s *clients_session, room string, from sync_position, next sync
 	if event == nil {
 		return nil
 	}
+	// Stripped state events, the invitation's own among them, as clients
+	// are shown an invitation from another server.
 	var stripped []any
 	for _, part := range rooms_stripped(room, string(event.SenderID())) {
 		stripped = append(stripped, part)
 	}
-	stripped = append(stripped, clients_event(event, s.h.address, "", false))
+	stripped = append(stripped, gomatrixserverlib.NewInviteStrippedState(event))
 	return map[string]any{"invite_state": map[string]any{"events": stripped}}
 }
 
@@ -589,7 +643,7 @@ func sync_knocked(s *clients_session, room string, from sync_position, initial b
 	for _, part := range rooms_stripped(room, "") {
 		stripped = append(stripped, part)
 	}
-	return append(stripped, clients_event(event, s.h.address, "", false))
+	return append(stripped, gomatrixserverlib.NewInviteStrippedState(event))
 }
 
 // sync_left is a room left since the position: its timeline up to the

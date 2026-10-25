@@ -269,9 +269,15 @@ func xrpc_dispatch(c *gin.Context, name string) bool {
 		xrpc_create_account(c)
 	case "GET com.atproto.server.listAppPasswords":
 		c.JSON(http.StatusOK, map[string]any{"passwords": []any{}})
-	case "POST com.atproto.server.createAppPassword", "POST com.atproto.identity.updateHandle", "POST com.atproto.server.requestEmailUpdate", "POST com.atproto.server.updateEmail", "POST com.atproto.server.requestAccountDelete", "POST com.atproto.server.deleteAccount":
+	case "POST com.atproto.server.createAppPassword", "POST com.atproto.server.requestEmailUpdate", "POST com.atproto.server.updateEmail", "POST com.atproto.server.requestAccountDelete", "POST com.atproto.server.deleteAccount":
 		if s := xrpc_authenticate(c, true); s != nil {
 			xrpc_fail(c, http.StatusBadRequest, "InvalidRequest", "This is done in Mochi")
+		}
+	case "POST com.atproto.identity.updateHandle":
+		// A hosted account's handle is kept for good (the federation plan,
+		// decision 13), changed only by moving the account elsewhere.
+		if s := xrpc_authenticate(c, true); s != nil {
+			xrpc_fail(c, http.StatusBadRequest, "InvalidRequest", "A handle on this server cannot be changed")
 		}
 	case "GET com.atproto.identity.getRecommendedDidCredentials":
 		xrpc_recommended(c)

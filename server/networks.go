@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -282,12 +283,34 @@ func accounts_hosted_remove(user *User, domain string, name string) {
 		data, _ := row["data"].(map[string]any)
 		if data["domain"] == domain && data["handle"] == name {
 			id, _ := row["id"].(string)
-			activitypub_account_remove(user, id)
-			if row["type"] == "bluesky" {
-				atproto_account_remove(user, id)
+			account_hosted_gone(user, row)
+			if ptype := row_string(row, "type"); ptype == "matrix" || ptype == "xmpp" {
+				encryption_forget(user, row)
 			}
 			keypairs_delete(db, id)
 			db.row_remove(reg_accounts, map[string]any{"id": id})
+		}
+	}
+}
+
+// account_hosted_gone tells a hosted account's network it is gone, which
+// cannot be taken back: the fediverse by a Delete of the actor to its
+// followers' servers, Bluesky by tombstoning its identity, Matrix by its
+// leaving every room it is in.
+func account_hosted_gone(user *User, row map[string]any) {
+	id := row_string(row, "id")
+	activitypub_account_remove(user, id)
+	switch row_string(row, "type") {
+	case "bluesky":
+		atproto_account_remove(user, id)
+	case "matrix":
+		address := row_string(row, "identifier")
+		for _, room := range signals_rooms(address) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := rooms_leave(ctx, address, room); err != nil {
+				info("Matrix %s leaving %s on going: %v", address, room, err)
+			}
+			cancel()
 		}
 	}
 }
@@ -345,12 +368,26 @@ const network_timeout = 30 * time.Second
 // more.
 var block_domain_re = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
+// networks_schema holds the networks databases whose schema this process has
+// set up, by path, guarded by networks_schema_lock: the statements run once
+// for each database opened, not on every call, which with a room of
+// thousands made each event cost seconds.
+var networks_schema = map[string]bool{}
+var networks_schema_lock sync.Mutex
+
 // networks_database makes the server-wide networks database: the delivery
 // queue, the hosts it has learned about, the owner's domain blocks, Mochi's
 // registrations as a client on other servers, the server's own keys as a
 // client, and the clients registered to sign users in with their own tokens.
 func networks_database() *DB {
 	db := db_open("db/networks.db")
+	path := filepath.Join(data_dir, "db/networks.db")
+	networks_schema_lock.Lock()
+	defer networks_schema_lock.Unlock()
+	if networks_schema[path] {
+		return db
+	}
+	defer func() { networks_schema[path] = true }()
 	db.exec("create table if not exists deliveries (id text not null primary key, user text not null, account text not null, network text not null, inbox text not null, host text not null, body text not null, attempts integer not null default 0, next integer not null, claimed integer not null default 0, created integer not null, address text not null default '')")
 	// The actor a row is for where its inbox was not known when it was
 	// queued, resolved before it is sent (delivery.go).

@@ -19,6 +19,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -120,6 +121,20 @@ func deliver_unresolved(user *User, account string, network string, addresses []
 		delivery_wake()
 	}
 	return queued
+}
+
+// delivery_former is the address an account had on another server before it
+// was restored here, when the delivery's activity is sent as that address.
+func delivery_former(user *User, d *delivery) string {
+	former, _ := account_data(account_hosted_get(user, d.Account))["former"].(string)
+	if former == "" {
+		return ""
+	}
+	var activity map[string]any
+	if json.Unmarshal([]byte(d.Body), &activity) != nil || activitypub_actor_of(activity["actor"]) != former {
+		return ""
+	}
+	return former
 }
 
 // delivery_resolve finds the inbox of a row queued by its actor's address,
@@ -252,6 +267,11 @@ func delivery_attempt(d *delivery) delivery_outcome {
 		// A removed account's tombstone keeps its key for a while, so the
 		// notice of its own deletion still goes out signed (activitypub.go).
 		actor, private = tombstone_key(d.Account)
+	} else if former := delivery_former(user, d); former != "" {
+		// An account restored here from another server sends the Move of its
+		// followers as the address it had there, whose key it kept
+		// (auth_restore.go).
+		actor = former
 	}
 	if private == "" {
 		debug("Delivery to %s dropped: account %s gone", d.Inbox, d.Account)

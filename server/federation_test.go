@@ -66,12 +66,16 @@ type matrix_remote struct {
 	legacy  map[string][]byte
 	fetched int
 	invited []gomatrixserverlib.PDU
+	// The room state each invitation it was sent carried, as sent.
+	shown   [][]map[string]any
 	asked   []string
 	fail    bool
 	missing bool
 	// The most events it answers /get_missing_events with, where set: the
 	// newest of those asked for, short of the gap.
 	most int
+	// Whether the auth chains it answers leave out the room's create event.
+	bare bool
 	// What the remote answers a key query and a key claim with, as its
 	// users' keys (keyring_test.go).
 	keys   map[string]any
@@ -386,7 +390,7 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 	r.asked = append(r.asked, req.Method+" "+req.URL.Path)
-	parts := strings.Split(strings.TrimPrefix(req.URL.Path, "/_matrix/federation/"), "/")
+	parts := strings.Split(strings.TrimPrefix(req.URL.EscapedPath(), "/_matrix/federation/"), "/")
 	for i := range parts {
 		parts[i], _ = url.PathUnescape(parts[i])
 	}
@@ -469,6 +473,11 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 		}
 		signed := invite.Event().Sign(string(r.name), r.key, r.private)
 		r.invited = append(r.invited, signed)
+		var carried struct {
+			State []map[string]any `json:"invite_room_state"`
+		}
+		json.Unmarshal(request.Content(), &carried)
+		r.shown = append(r.shown, carried.State)
 		r.answer(w, 200, map[string]any{"event": json.RawMessage(signed.JSON())})
 	case route == "GET v1/event":
 		event := r.events[parts[2]]
@@ -508,7 +517,11 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 		}
 		r.answer(w, 200, map[string]any{"room": entry, "children": []any{}, "inaccessible_children": []any{}})
 	case route == "GET v1/event_auth":
-		r.answer(w, 200, map[string]any{"auth_chain": raw_events(r.chain([]gomatrixserverlib.PDU{r.events[parts[3]]}))})
+		chain := r.chain([]gomatrixserverlib.PDU{r.events[parts[3]]})
+		if r.bare {
+			chain = slices.DeleteFunc(chain, func(event gomatrixserverlib.PDU) bool { return event.Type() == spec.MRoomCreate })
+		}
+		r.answer(w, 200, map[string]any{"auth_chain": raw_events(chain)})
 	case route == "POST v1/get_missing_events":
 		if r.missing {
 			r.answer(w, 200, map[string]any{"events": []any{}})
@@ -531,6 +544,24 @@ func (r *matrix_remote) serve(w http.ResponseWriter, req *http.Request) {
 			found = found[len(found)-r.most:]
 		}
 		r.answer(w, 200, map[string]any{"events": raw_events(found)})
+	case route == "GET v1/timestamp_to_event":
+		when, _ := strconv.ParseInt(req.URL.Query().Get("ts"), 10, 64)
+		forward := req.URL.Query().Get("dir") == "f"
+		var found gomatrixserverlib.PDU
+		for _, event := range r.events {
+			ts := int64(event.OriginServerTS())
+			if event.RoomID().String() != parts[2] {
+				continue
+			}
+			if (forward && ts >= when && (found == nil || ts < int64(found.OriginServerTS()))) || (!forward && ts <= when && (found == nil || ts > int64(found.OriginServerTS()))) {
+				found = event
+			}
+		}
+		if found == nil {
+			r.answer(w, 404, map[string]any{"errcode": "M_NOT_FOUND"})
+			return
+		}
+		r.answer(w, 200, map[string]any{"event_id": found.EventID(), "origin_server_ts": int64(found.OriginServerTS())})
 	case route == "GET v1/backfill":
 		limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
 		r.answer(w, 200, map[string]any{"origin": string(r.name), "origin_server_ts": time.Now().UnixMilli(), "pdus": raw_events(r.walk(req.URL.Query()["v"], map[string]bool{}, limit))})
@@ -848,6 +879,26 @@ func TestMatrixRequests(t *testing.T) {
 	if status, body := r.call(t, "GET", "/_matrix/federation/v1/event/"+url.PathEscape("$abc/def+ghi"), nil); status != 404 || body["errcode"] != "M_NOT_FOUND" {
 		t.Errorf("an escaped slash in an event id = %d %v, want the event looked for", status, body)
 	}
+	// A user id naming no valid server is a bad request.
+	if status, _ := r.call(t, "GET", "/_matrix/federation/v1/query/profile?user_id="+url.QueryEscape("@user1:localhost:http")+"&field=displayname", nil); status != 400 {
+		t.Errorf("THE POINT: a profile of a user on a malformed server = %d, want 400", status)
+	}
+	// Paths with no route are unknown, signed or not, and a route asked with
+	// another method is told so, as Synapse answers them.
+	for _, c := range []struct {
+		method string
+		path   string
+		status int
+	}{
+		{"GET", "/_matrix/federation/unknown", 404},
+		{"GET", "/_matrix/federation/v1/unknown", 404},
+		{"PUT", "/_matrix/federation/v1/version", 405},
+		{"POST", "/_matrix/federation/v1/send/x", 405},
+	} {
+		if status, body := matrix_engine_request(t, httptest.NewRequest(c.method, "http://example.com"+c.path, nil)); status != c.status || body["errcode"] != "M_UNRECOGNIZED" {
+			t.Errorf("THE POINT: %s %s = %d %v, want %d", c.method, c.path, status, body, c.status)
+		}
+	}
 	networks_database().exec("insert into blocks (domain, created) values ('127.0.0.1', 1)")
 	if status, _ := r.call(t, "GET", path, nil); status != 403 {
 		t.Errorf("request from a blocked server = %d, want 403", status)
@@ -938,6 +989,51 @@ func TestMatrixJoin(t *testing.T) {
 // where they cannot be had the state at them is; branches are resolved by
 // the room version's algorithm; and an event the room has moved past is
 // kept but not shown or built on.
+// A matrix_faulty client panics when asked for missing events, as a fault in
+// taking an event would.
+type matrix_faulty struct {
+	fclient.FederationClient
+}
+
+func (matrix_faulty) LookupMissingEvents(context.Context, spec.ServerName, spec.ServerName, string, fclient.MissingEvents, gomatrixserverlib.RoomVersion) (fclient.RespMissingEvents, error) {
+	panic("a fault in taking the event")
+}
+
+// TestMatrixFault: a fault in taking one event of a transaction is that
+// event's failure alone. The transaction is answered, the rest of it taken,
+// and the room let go for the events that follow.
+func TestMatrixFault(t *testing.T) {
+	alice, log := create_matrix_test_env(t)
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	faulty, other := r.room("Faulty", "invite"), r.room("Other", "invite")
+	bob := r.user("bob")
+	matrix_join(t, r, alice, faulty)
+	matrix_join(t, r, alice, other)
+	shown := func(body string) bool {
+		return len(log.matching(func(e map[string]any) bool { return e["kind"] == "message" && e["body"] == body })) > 0
+	}
+	// An event whose prev event is missing has the engine ask for it.
+	r.event(faulty, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "missed"})
+	broken := r.event(faulty, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "after a fault"})
+	fine := r.event(other, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "beside a fault"})
+	saved := federation_client
+	t.Cleanup(func() { federation_client = saved })
+	federation_client = func() fclient.FederationClient { return matrix_faulty{saved()} }
+	results := r.push(t, "fault", broken, fine)
+	if result, _ := results[broken.EventID()].(map[string]any); result == nil || result["error"] == nil {
+		t.Errorf("THE POINT: the event a fault stopped = %v", results)
+	}
+	if !shown("beside a fault") {
+		t.Error("THE POINT: the rest of the transaction was not taken")
+	}
+	value, _ := rooms_locks.Load(faulty)
+	if lock, ok := value.(*sync.Mutex); !ok || !lock.TryLock() {
+		t.Error("THE POINT: the room was left held")
+	} else {
+		lock.Unlock()
+	}
+}
+
 func TestMatrixTransactions(t *testing.T) {
 	alice, log := create_matrix_test_env(t)
 	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
@@ -971,8 +1067,9 @@ func TestMatrixTransactions(t *testing.T) {
 	r.lock.Unlock()
 	intruder := message(carol, "let me in", edge, state)
 	results := r.push(t, "intruder", intruder)
-	if result, _ := results[intruder.EventID()].(map[string]any); result["error"] == nil || shown("let me in") || !rooms_rejected(intruder.EventID()) {
-		t.Errorf("an event from someone not in the room: %v", results)
+	// Each is answered as handled, as Synapse answers an event it rejects.
+	if result, _ := results[intruder.EventID()].(map[string]any); result == nil || result["error"] != nil || shown("let me in") || !rooms_rejected(intruder.EventID()) {
+		t.Errorf("THE POINT: an event from someone not in the room: %v", results)
 	}
 
 	// Rejected by its own auth events, which leave out bob's membership,
@@ -982,8 +1079,8 @@ func TestMatrixTransactions(t *testing.T) {
 	unauthorised := r.forge(room, bob, "no membership named", edge, []string{state[rooms_key(spec.MRoomCreate, "")], state[rooms_key(spec.MRoomPowerLevels, "")]})
 	r.lock.Unlock()
 	results = r.push(t, "unauthorised", unauthorised)
-	if result, _ := results[unauthorised.EventID()].(map[string]any); result["error"] == nil || shown("no membership named") {
-		t.Errorf("an event its auth events do not allow: %v", results)
+	if result, _ := results[unauthorised.EventID()].(map[string]any); result == nil || result["error"] != nil || shown("no membership named") || !rooms_rejected(unauthorised.EventID()) {
+		t.Errorf("THE POINT: an event its auth events do not allow: %v", results)
 	}
 
 	// Missing events asked for.
@@ -1148,8 +1245,8 @@ func TestMatrixTransactions(t *testing.T) {
 	banned := r.forge(room, carol, "after the ban", []string{ban.EventID()}, []string{r.state[room][rooms_key(spec.MRoomCreate, "")], r.state[room][rooms_key(spec.MRoomPowerLevels, "")], join.EventID()})
 	r.lock.Unlock()
 	results = r.push(t, "banned", banned)
-	if result, _ := results[banned.EventID()].(map[string]any); result["error"] == nil || shown("after the ban") || !rooms_rejected(banned.EventID()) {
-		t.Errorf("an event the state before it does not allow: %v", results)
+	if result, _ := results[banned.EventID()].(map[string]any); result == nil || result["error"] != nil || shown("after the ban") || !rooms_rejected(banned.EventID()) {
+		t.Errorf("THE POINT: an event the state before it does not allow: %v", results)
 	}
 	late := message(carol, "from before the ban", edge, state)
 	r.push(t, "late", late)
@@ -1208,7 +1305,7 @@ func TestMatrixAuthEvents(t *testing.T) {
 	refused := func(name string, event gomatrixserverlib.PDU, body string, why string) {
 		t.Helper()
 		results := r.push(t, name, event)
-		if result, _ := results[event.EventID()].(map[string]any); result["error"] == nil || shown(body) || !rooms_rejected(event.EventID()) {
+		if result, _ := results[event.EventID()].(map[string]any); result == nil || result["error"] != nil || shown(body) || !rooms_rejected(event.EventID()) {
 			t.Errorf("THE POINT: %s: %v", why, results)
 		}
 	}
@@ -1540,7 +1637,7 @@ func TestMatrixRoomVersions(t *testing.T) {
 			if status != 200 || !served[past.EventID()] || !served[latest.EventID()] {
 				t.Errorf("backfill = %d, %d events, past %v, latest %v", status, len(pdus), served[past.EventID()], served[latest.EventID()])
 			}
-			if status, body := stranger.call(t, "GET", "/_matrix/federation/v1/backfill/"+url.PathEscape(room)+"?v="+url.QueryEscape(latest.EventID())+"&limit=50", nil); status != 200 || len(body["pdus"].([]any)) != 0 {
+			if status, body := stranger.call(t, "GET", "/_matrix/federation/v1/backfill/"+url.PathEscape(room)+"?v="+url.QueryEscape(latest.EventID())+"&limit=50", nil); status != 403 || body["error"] != "Host not in room." {
 				t.Errorf("backfill for a server not in the room = %d %v", status, body)
 			}
 
@@ -1569,6 +1666,77 @@ func TestMatrixRoomVersions(t *testing.T) {
 				if found, _ := federation_database().exists("select 1 from extremities where room=? and event=?", room, branch); !found {
 					t.Errorf("branch %s is not at the room's edge", branch)
 				}
+			}
+
+			// A conflict over a control event: carol, then bob, set the join
+			// rule on parallel branches. Power orders them, the more powerful
+			// first and the other applied over it. Before version 12 they are
+			// equal and the earlier goes first, so bob's rule stands; from it
+			// bob, the creator, outranks carol though her level is above any
+			// other, so hers does, as Synapse resolves it.
+			powers := r.room("Powers "+string(version), "public")
+			matrix_join(t, r, alice, powers)
+			carol := r.user("carol")
+			joined := r.event(powers, carol, spec.MRoomMember, &carol, map[string]any{"membership": "join"})
+			levels := map[string]any{carol: 9493420}
+			if !r.version.PrivilegedCreators() {
+				levels = map[string]any{bob: 100, carol: 100}
+			}
+			raised := r.event(powers, bob, spec.MRoomPowerLevels, &empty, map[string]any{"users": levels, "invite": 0, "redact": 50, "ban": 50, "kick": 50, "state_default": 50, "events_default": 0, "users_default": 0})
+			r.push(t, "raised"+string(version), joined, raised)
+			r.lock.Lock()
+			edge, state = slices.Clone(r.edge[powers]), maps.Clone(r.state[powers])
+			knocked := r.build(powers, carol, spec.MRoomJoinRules, &empty, map[string]any{"join_rule": "knock"}, edge, state)
+			time.Sleep(5 * time.Millisecond)
+			closed := r.build(powers, bob, spec.MRoomJoinRules, &empty, map[string]any{"join_rule": "invite"}, edge, state)
+			for _, event := range []gomatrixserverlib.PDU{closed, knocked} {
+				r.events[event.EventID()], r.before[event.EventID()] = event, state
+			}
+			r.lock.Unlock()
+			taken := r.push(t, "rules"+string(version), closed, knocked)
+			for _, event := range []gomatrixserverlib.PDU{closed, knocked} {
+				if result, _ := taken[event.EventID()].(map[string]any); result == nil || result["error"] != nil || !rooms_known(event.EventID()) {
+					t.Errorf("THE POINT: a join rule on a branch = %v, taken %v", taken[event.EventID()], rooms_known(event.EventID()))
+				}
+			}
+			current, _ = rooms_current(powers)
+			want := map[gomatrixserverlib.RoomVersion]string{"12": knocked.EventID()}[version]
+			if version != "1" && version != "12" {
+				want = closed.EventID()
+			}
+			if got := current[rooms_key(spec.MRoomJoinRules, "")]; want != "" && got != want {
+				t.Errorf("THE POINT: resolved join rule = %s, want %s", got, want)
+			}
+
+			// An auth event the engine lacks, fetched with a chain that leaves
+			// out the create event, as from version 12 no event's JSON names
+			// it.
+			r.lock.Lock()
+			tips := []string{closed.EventID(), knocked.EventID()}
+			changed := r.build(powers, bob, spec.MRoomPowerLevels, &empty, map[string]any{"users": levels, "invite": 0, "redact": 60, "ban": 50, "kick": 50, "state_default": 50, "events_default": 0, "users_default": 0}, tips, state)
+			r.events[changed.EventID()], r.before[changed.EventID()] = changed, state
+			after := maps.Clone(state)
+			after[rooms_key(spec.MRoomPowerLevels, "")] = changed.EventID()
+			told := r.build(powers, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "told " + string(version)}, tips, after)
+			r.events[told.EventID()], r.before[told.EventID()] = told, after
+			r.lock.Unlock()
+			r.lock.Lock()
+			r.bare = true
+			r.lock.Unlock()
+			taken = r.push(t, "told"+string(version), told)
+			r.lock.Lock()
+			r.bare = false
+			r.lock.Unlock()
+			if result, _ := taken[told.EventID()].(map[string]any); result == nil || result["error"] != nil || !rooms_known(told.EventID()) || rooms_event(changed.EventID()) == nil {
+				t.Errorf("THE POINT: an event whose auth event was fetched = %v, auth event held %v", taken[told.EventID()], rooms_event(changed.EventID()) != nil)
+			}
+			r.lock.Lock()
+			fetched := slices.ContainsFunc(r.asked, func(path string) bool {
+				return strings.HasPrefix(path, "GET /_matrix/federation/v1/event_auth/") && strings.HasSuffix(path, told.EventID())
+			})
+			r.lock.Unlock()
+			if !fetched {
+				t.Errorf("the chain of %s was never asked for: %v", told.EventID(), r.asked)
 			}
 
 			// A bad signature: an event signed with a key that is not the
@@ -1751,11 +1919,20 @@ func TestMatrixRooms(t *testing.T) {
 				t.Errorf("event_auth = %d %v", status, body)
 			}
 			// And one not in it may not.
-			if status, _ := stranger.call(t, "GET", "/_matrix/federation/v1/event/"+url.PathEscape(before["id"].(string)), nil); status != 404 {
-				t.Errorf("event for a server not in the room = %d", status)
+			// And one not in it is refused, as Synapse refuses it.
+			if status, _ := stranger.call(t, "GET", "/_matrix/federation/v1/event/"+url.PathEscape(before["id"].(string)), nil); status != 403 {
+				t.Errorf("THE POINT: event for a server not in the room = %d", status)
 			}
-			if status, body := stranger.call(t, "GET", "/_matrix/federation/v1/backfill/"+url.PathEscape(room)+"?v="+url.QueryEscape(join.EventID())+"&limit=20", nil); status != 200 || len(body["pdus"].([]any)) != 0 {
-				t.Errorf("backfill for a server not in the room = %d %v", status, body)
+			if status, body := stranger.call(t, "GET", "/_matrix/federation/v1/backfill/"+url.PathEscape(room)+"?v="+url.QueryEscape(join.EventID())+"&limit=20", nil); status != 403 {
+				t.Errorf("THE POINT: backfill for a server not in the room = %d %v", status, body)
+			}
+			for _, path := range []string{"state_ids/" + url.PathEscape(room) + "?event_id=" + url.QueryEscape(join.EventID()), "event_auth/" + url.PathEscape(room) + "/" + url.PathEscape(join.EventID())} {
+				if status, _ := stranger.call(t, "GET", "/_matrix/federation/v1/"+path, nil); status != 403 {
+					t.Errorf("THE POINT: %s for a server not in the room = %d", path, status)
+				}
+			}
+			if status, _ := stranger.call(t, "POST", "/_matrix/federation/v1/get_missing_events/"+url.PathEscape(room), map[string]any{"earliest_events": []string{}, "latest_events": []string{join.EventID()}, "limit": 10}); status != 403 {
+				t.Errorf("THE POINT: missing events for a server not in the room = %d", status)
 			}
 			if status, _ := stranger.call(t, "GET", "/_matrix/federation/v1/make_join/"+url.PathEscape(room)+"/"+url.PathEscape(stranger.user("eve"))+"?ver="+string(version), nil); status != 403 {
 				t.Errorf("make_join uninvited = %d, want 403", status)
@@ -1825,10 +2002,23 @@ func TestMatrixGroup(t *testing.T) {
 		t.Errorf("the user among the people = %v (named %v)", made, name)
 	}
 	r.lock.Lock()
-	invited := len(r.invited)
+	invited, shown := len(r.invited), slices.Clone(r.shown)
 	r.lock.Unlock()
 	if invited != 2 {
 		t.Errorf("invitations = %d", invited)
+	}
+	// What each invitation carries of the room is whole events, the create
+	// event among them, as spec v1.18 has it and Synapse sends it.
+	for _, state := range shown {
+		whole := len(state) > 0
+		created := false
+		for _, event := range state {
+			whole = whole && event["origin_server_ts"] != nil && event["signatures"] != nil
+			created = created || event["type"] == spec.MRoomCreate
+		}
+		if !whole || !created {
+			t.Errorf("THE POINT: an invitation's room state = %v", state)
+		}
 	}
 }
 
@@ -2498,6 +2688,30 @@ func TestMatrixBridge(t *testing.T) {
 	}
 	if b := bridge_of(private); b == nil || b.standin != invitee || b.chat != "chat2" {
 		t.Errorf("bridge = %v", b)
+	}
+
+	// An invitation to a stand-in that bob withdraws before it is taken: the
+	// withdrawal is handed on as the invitation was.
+	withdrawn := r.room("Withdrawn", "invite")
+	r.lock.Lock()
+	asked := r.build(withdrawn, bob, spec.MRoomMember, &invitee, map[string]any{"membership": "invite"}, r.edge[withdrawn], r.state[withdrawn])
+	r.lock.Unlock()
+	request, _ = fclient.NewInviteV2Request(asked, nil)
+	if status, body := r.call(t, "PUT", "/_matrix/federation/v2/invite/"+url.PathEscape(withdrawn)+"/"+url.PathEscape(asked.EventID()), request); status != 200 {
+		t.Fatalf("invite = %d %v", status, body)
+	} else if countersigned, err := r.version.NewEventFromUntrustedJSON(mustjson(body["event"])); err == nil {
+		r.lock.Lock()
+		r.take(countersigned)
+		r.lock.Unlock()
+	}
+	rescinded := r.event(withdrawn, bob, spec.MRoomMember, &invitee, map[string]any{"membership": "leave"})
+	if result, _ := r.push(t, "rescinded", rescinded)[rescinded.EventID()].(map[string]any); result == nil || result["error"] != nil {
+		t.Errorf("the withdrawal = %v", result)
+	}
+	if told := log.matching(func(e map[string]any) bool {
+		return e["kind"] == "invite" && e["room"] == withdrawn && e["left"] == true
+	}); len(told) != 1 || told[0]["to"] != root || told[0]["from"] != bob {
+		t.Errorf("THE POINT: the withdrawal handed on = %v", told)
 	}
 
 	// Closed: every stand-in leaves the room.

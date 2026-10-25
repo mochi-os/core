@@ -17,6 +17,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -25,6 +26,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
@@ -34,6 +36,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -169,8 +172,9 @@ func key_rsa_public_of(private string) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: public}))
 }
 
-// key_rsa_public reads a PEM public key, as an actor document carries one.
-func key_rsa_public(text string) (*rsa.PublicKey, error) {
+// key_public reads a PEM public key, as an actor document carries one: RSA,
+// in the PKIX or the PKCS#1 form, or Ed25519.
+func key_public(text string) (crypto.PublicKey, error) {
 	block, _ := pem.Decode([]byte(text))
 	if block == nil {
 		return nil, fmt.Errorf("no PEM block")
@@ -181,6 +185,15 @@ func key_rsa_public(text string) (*rsa.PublicKey, error) {
 		if public, err1 := x509.ParsePKCS1PublicKey(block.Bytes); err1 == nil {
 			return public, nil
 		}
+		return nil, err
+	}
+	return parsed, nil
+}
+
+// key_rsa_public reads a PEM RSA public key.
+func key_rsa_public(text string) (*rsa.PublicKey, error) {
+	parsed, err := key_public(text)
+	if err != nil {
 		return nil, err
 	}
 	public, ok := parsed.(*rsa.PublicKey)
@@ -375,12 +388,19 @@ func account_sign(user *User, account string, data []byte) ([]byte, error) {
 // The draft-cavage form Mastodon, Lemmy and the rest of the fediverse use: a
 // Signature header naming the key, the headers signed and the RSA-SHA256
 // signature over them, with (request-target), host and date always signed and
-// digest when there is a body.
+// digest when there is a body. Requests are signed in this form; the RFC 9421
+// form is accepted inbound as well (below).
 
 // signature_window is how far a signed request's Date may be from now. Mastodon
 // accepts twelve hours, Lemmy one; the generous end is taken inbound, since a
 // server with a slow clock is a reason to warn, not to drop its posts.
 const signature_window = 12 * time.Hour
+
+// signature_timely says whether a signature's time is within the window.
+func signature_timely(at time.Time) bool {
+	skew := time.Since(at)
+	return skew <= signature_window && skew >= -signature_window
+}
 
 // signature_sign signs a request as an account: the Date, Host, Digest (when
 // there is a body) and Signature headers are set. key_id is the URL the actor
@@ -447,11 +467,14 @@ type signature_fetcher func(ctx context.Context, key_id string, fresh bool) (str
 // signature_verify checks a signed request: the headers signed cover the
 // request target, host and date (and the digest, when there is a body), the
 // date is within the window, the digest matches the body, and the signature
-// verifies against the key the keyId names, fetched through fetch. A signature
-// that fails against the key fetch remembers is tried once more against the
-// key read afresh, since the actor may have replaced it. Returns the keyId,
-// which identifies the actor.
+// verifies against the key the keyId names, fetched through fetch. A request
+// carrying Signature-Input is signed in the RFC 9421 form instead, and is
+// checked by signature_message_verify. Returns the keyId, which identifies the
+// actor.
 func signature_verify(ctx context.Context, r *http.Request, body []byte, fetch signature_fetcher) (string, error) {
+	if len(r.Header.Values("Signature-Input")) > 0 {
+		return signature_message_verify(ctx, r, body, fetch)
+	}
 	parameters := signature_parameters(r.Header.Get("Signature"))
 	key_id, signature := parameters["keyid"], parameters["signature"]
 	if key_id == "" || signature == "" {
@@ -475,7 +498,7 @@ func signature_verify(ctx context.Context, r *http.Request, body []byte, fetch s
 	if err != nil {
 		return "", fmt.Errorf("no date")
 	}
-	if skew := time.Since(date); skew > signature_window || skew < -signature_window {
+	if !signature_timely(date) {
 		return "", fmt.Errorf("date outside the signature window")
 	}
 	if len(body) > 0 {
@@ -491,19 +514,602 @@ func signature_verify(ctx context.Context, r *http.Request, body []byte, fetch s
 	if err != nil {
 		return "", fmt.Errorf("signature is not base64")
 	}
-	public, err := fetch(ctx, key_id, false)
-	if err != nil {
-		return "", fmt.Errorf("key %s: %w", key_id, err)
-	}
 	message := []byte(signature_string(r, names))
-	if key_verify_rsa(public, message, decoded) == nil {
-		return key_id, nil
-	}
-	current, err := fetch(ctx, key_id, true)
-	if err != nil || key_verify_rsa(current, message, decoded) != nil {
-		return "", fmt.Errorf("signature does not verify")
+	if err := signature_key_verify(ctx, fetch, key_id, func(public string) error {
+		return key_verify_rsa(public, message, decoded)
+	}); err != nil {
+		return "", err
 	}
 	return key_id, nil
+}
+
+// signature_key_verify checks a signature against the key a keyId names,
+// fetched through fetch. A signature that fails against the key fetch
+// remembers is tried once more against the key read afresh, since the actor
+// may have replaced it.
+func signature_key_verify(ctx context.Context, fetch signature_fetcher, key_id string, check func(public string) error) error {
+	public, err := fetch(ctx, key_id, false)
+	if err != nil {
+		return fmt.Errorf("key %s: %w", key_id, err)
+	}
+	if check(public) == nil {
+		return nil
+	}
+	current, err := fetch(ctx, key_id, true)
+	if err != nil || check(current) != nil {
+		return fmt.Errorf("signature does not verify")
+	}
+	return nil
+}
+
+// === HTTP message signatures ===
+//
+// The RFC 9421 form WordPress and NodeBB sign with before falling back to
+// draft-cavage: Signature-Input lists each signature's covered components and
+// its parameters (keyid, alg, created, expires) under a label, and Signature
+// carries the signature under the same label, over a base built from those
+// components in order.
+
+// signature_message_maximum is how many of a request's signatures are tried:
+// each may name a key to fetch.
+const signature_message_maximum = 4
+
+// signature_message_verify checks a request signed in the RFC 9421 form, and
+// returns the keyid of the first of its signatures that verifies.
+func signature_message_verify(ctx context.Context, r *http.Request, body []byte, fetch signature_fetcher) (string, error) {
+	inputs, err := structured_dictionary(strings.Join(r.Header.Values("Signature-Input"), ", "))
+	if err != nil {
+		return "", fmt.Errorf("signature input: %w", err)
+	}
+	signatures, err := structured_dictionary(strings.Join(r.Header.Values("Signature"), ", "))
+	if err != nil {
+		return "", fmt.Errorf("signature: %w", err)
+	}
+	if len(inputs) == 0 {
+		return "", fmt.Errorf("no signature")
+	}
+	var failures []error
+	for i, input := range inputs {
+		if i == signature_message_maximum {
+			break
+		}
+		var signature []byte
+		for _, member := range signatures {
+			if member.name == input.name {
+				signature, _ = member.item.value.([]byte)
+			}
+		}
+		key_id, err := signature_message_check(ctx, r, body, input, signature, fetch)
+		if err == nil {
+			return key_id, nil
+		}
+		failures = append(failures, fmt.Errorf("%s: %w", input.name, err))
+	}
+	return "", errors.Join(failures...)
+}
+
+// signature_message_check checks one RFC 9421 signature: it covers the method,
+// the target and, when there is a body, the body's digest, which must match;
+// its created time (or its Date, when it has none) is within the window and
+// its expiry has not passed; and it verifies against the key its keyid names,
+// by its alg or the key's own. Returns the keyid.
+func signature_message_check(ctx context.Context, r *http.Request, body []byte, input structured_member, signature []byte, fetch signature_fetcher) (string, error) {
+	if !input.inner {
+		return "", fmt.Errorf("signature input is not a list of components")
+	}
+	if len(signature) == 0 {
+		return "", fmt.Errorf("no signature")
+	}
+	parameters := input.item.parameters
+	key_id, _ := parameters["keyid"].(string)
+	if key_id == "" {
+		return "", fmt.Errorf("no keyid")
+	}
+	algorithm := ""
+	if value, set := parameters["alg"]; set {
+		algorithm, _ = value.(string)
+		if algorithm != "rsa-v1_5-sha256" && algorithm != "rsa-pss-sha512" && algorithm != "ed25519" {
+			return "", fmt.Errorf("unsupported signature algorithm %v", value)
+		}
+	}
+
+	covered := map[string]bool{}
+	for _, component := range input.list {
+		if name, ok := component.value.(string); ok {
+			covered[name] = true
+		}
+	}
+	target := covered["@target-uri"] || ((covered["@authority"] || covered["host"]) && (covered["@request-target"] || covered["@path"]))
+	if !covered["@method"] || !target {
+		return "", fmt.Errorf("signature does not cover the method and target")
+	}
+	if len(body) > 0 && !covered["content-digest"] {
+		return "", fmt.Errorf("signature does not cover the body")
+	}
+
+	if value, set := parameters["created"]; set {
+		created, ok := value.(int64)
+		if !ok {
+			return "", fmt.Errorf("created is not an integer")
+		}
+		if !signature_timely(time.Unix(created, 0)) {
+			return "", fmt.Errorf("created outside the signature window")
+		}
+	} else if covered["date"] {
+		date, err := http.ParseTime(r.Header.Get("Date"))
+		if err != nil {
+			return "", fmt.Errorf("no date")
+		}
+		if !signature_timely(date) {
+			return "", fmt.Errorf("date outside the signature window")
+		}
+	} else {
+		return "", fmt.Errorf("signature has no time")
+	}
+	if value, set := parameters["expires"]; set {
+		expires, ok := value.(int64)
+		if !ok {
+			return "", fmt.Errorf("expires is not an integer")
+		}
+		if time.Now().After(time.Unix(expires, 0)) {
+			return "", fmt.Errorf("signature expired")
+		}
+	}
+
+	if covered["content-digest"] {
+		if err := signature_digest(r, body); err != nil {
+			return "", err
+		}
+	}
+	base, err := signature_base(r, input)
+	if err != nil {
+		return "", err
+	}
+	if err := signature_key_verify(ctx, fetch, key_id, func(public string) error {
+		return signature_check(public, algorithm, []byte(base), signature)
+	}); err != nil {
+		return "", err
+	}
+	return key_id, nil
+}
+
+// signature_base builds an RFC 9421 signature base: a line per covered
+// component, its identifier, colon, space and value, then the signature
+// parameters as Signature-Input carries them.
+func signature_base(r *http.Request, input structured_member) (string, error) {
+	lines := make([]string, 0, len(input.list)+1)
+	seen := map[string]bool{}
+	for _, component := range input.list {
+		name, ok := component.value.(string)
+		if !ok || len(component.parameters) > 0 {
+			return "", fmt.Errorf("unsupported component %v", component.value)
+		}
+		if seen[name] {
+			return "", fmt.Errorf("component %s covered twice", name)
+		}
+		seen[name] = true
+		value, err := signature_component(r, name)
+		if err != nil {
+			return "", err
+		}
+		lines = append(lines, structured_string(name)+": "+value)
+	}
+	lines = append(lines, `"@signature-params": `+input.text)
+	return strings.Join(lines, "\n"), nil
+}
+
+// signature_component is a covered component's value: a derived component, or
+// a header's values with surrounding whitespace trimmed, joined by a comma and
+// a space. The scheme is https, as every address this server publishes is,
+// whatever terminated TLS before the request reached it.
+func signature_component(r *http.Request, name string) (string, error) {
+	switch name {
+	case "@method":
+		return r.Method, nil
+	case "@target-uri":
+		return "https://" + r.Host + r.URL.RequestURI(), nil
+	case "@authority":
+		return strings.TrimSuffix(strings.ToLower(r.Host), ":443"), nil
+	case "@scheme":
+		return "https", nil
+	case "@request-target":
+		return r.URL.RequestURI(), nil
+	case "@path":
+		if path := r.URL.EscapedPath(); path != "" {
+			return path, nil
+		}
+		return "/", nil
+	case "@query":
+		return "?" + r.URL.RawQuery, nil
+	}
+	if strings.HasPrefix(name, "@") || name != strings.ToLower(name) {
+		return "", fmt.Errorf("unsupported component %s", name)
+	}
+	values := r.Header.Values(name)
+	if len(values) == 0 && name == "host" {
+		values = []string{r.Host}
+	}
+	if len(values) == 0 {
+		return "", fmt.Errorf("request carries no %s", name)
+	}
+	trimmed := make([]string, len(values))
+	for i, value := range values {
+		trimmed[i] = strings.Trim(value, " \t")
+	}
+	return strings.Join(trimmed, ", "), nil
+}
+
+// signature_digest checks the body against its Content-Digest (RFC 9530): each
+// SHA-256 and SHA-512 digest given must match, and there must be one.
+func signature_digest(r *http.Request, body []byte) error {
+	digests, err := structured_dictionary(strings.Join(r.Header.Values("Content-Digest"), ", "))
+	if err != nil {
+		return fmt.Errorf("content digest: %w", err)
+	}
+	checked := false
+	for _, digest := range digests {
+		var expected []byte
+		switch digest.name {
+		case "sha-256":
+			sum := sha256.Sum256(body)
+			expected = sum[:]
+		case "sha-512":
+			sum := sha512.Sum512(body)
+			expected = sum[:]
+		default:
+			continue
+		}
+		if value, _ := digest.item.value.([]byte); !bytes.Equal(value, expected) {
+			return fmt.Errorf("content digest does not match the body")
+		}
+		checked = true
+	}
+	if !checked {
+		return fmt.Errorf("no SHA-256 or SHA-512 content digest")
+	}
+	return nil
+}
+
+// signature_check verifies an RFC 9421 signature against a PEM public key by
+// the algorithm named, or when none is named by the one the key's type
+// implies: rsa-v1_5-sha256 for RSA, ed25519 for Ed25519.
+func signature_check(public string, algorithm string, message []byte, signature []byte) error {
+	key, err := key_public(public)
+	if err != nil {
+		return err
+	}
+	switch key := key.(type) {
+	case *rsa.PublicKey:
+		switch algorithm {
+		case "", "rsa-v1_5-sha256":
+			return key_verify_rsa(public, message, signature)
+		case "rsa-pss-sha512":
+			digest := sha512.Sum512(message)
+			return rsa.VerifyPSS(key, crypto.SHA512, digest[:], signature, &rsa.PSSOptions{SaltLength: 64})
+		}
+	case ed25519.PublicKey:
+		if algorithm == "" || algorithm == "ed25519" {
+			if !ed25519.Verify(key, message, signature) {
+				return fmt.Errorf("signature does not verify")
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("signature algorithm %q does not suit the key", algorithm)
+}
+
+// === Structured fields ===
+//
+// Enough of RFC 8941 to read RFC 9421 signatures and RFC 9530 digests:
+// dictionaries whose members are items or inner lists of items, each with
+// parameters. Integers, decimals, strings, tokens, byte sequences and booleans
+// are read; the dates and display strings RFC 9651 adds are not.
+
+// A structured_token is a token, kept apart from a string.
+type structured_token string
+
+// structured_item is a bare item and its parameters.
+type structured_item struct {
+	value      any
+	parameters map[string]any
+}
+
+// structured_member is a dictionary member: an item, or an inner list when
+// inner is set, list then holding its items and item its parameters. text is
+// the member's value as the field carries it.
+type structured_member struct {
+	name  string
+	inner bool
+	list  []structured_item
+	item  structured_item
+	text  string
+}
+
+// structured is a structured field being read.
+type structured struct {
+	text     string
+	position int
+}
+
+// structured_dictionary reads a dictionary field. A repeated name keeps its
+// first place and takes its last value.
+func structured_dictionary(text string) ([]structured_member, error) {
+	s := &structured{text: text}
+	s.spaces()
+	var members []structured_member
+	index := map[string]int{}
+	for !s.done() {
+		name, err := s.key()
+		if err != nil {
+			return nil, err
+		}
+		member := structured_member{name: name}
+		if s.next('=') {
+			start := s.position
+			if s.peek() == '(' {
+				member.inner = true
+				member.list, member.item.parameters, err = s.inner()
+			} else {
+				member.item, err = s.item()
+			}
+			if err != nil {
+				return nil, err
+			}
+			member.text = s.text[start:s.position]
+		} else {
+			member.item.value = true
+			if member.item.parameters, err = s.parameters(); err != nil {
+				return nil, err
+			}
+		}
+		if i, found := index[name]; found {
+			members[i] = member
+		} else {
+			index[name] = len(members)
+			members = append(members, member)
+		}
+		s.whitespace()
+		if s.done() {
+			break
+		}
+		if !s.next(',') {
+			return nil, fmt.Errorf("expected a comma at %d", s.position)
+		}
+		s.whitespace()
+		if s.done() {
+			return nil, fmt.Errorf("trailing comma")
+		}
+	}
+	return members, nil
+}
+
+// done says whether the field is read to its end.
+func (s *structured) done() bool {
+	return s.position >= len(s.text)
+}
+
+// peek is the next character, or zero at the end.
+func (s *structured) peek() byte {
+	if s.done() {
+		return 0
+	}
+	return s.text[s.position]
+}
+
+// next reads the next character if it is the one given.
+func (s *structured) next(c byte) bool {
+	if !s.done() && s.text[s.position] == c {
+		s.position++
+		return true
+	}
+	return false
+}
+
+// spaces skips spaces.
+func (s *structured) spaces() {
+	for s.peek() == ' ' {
+		s.position++
+	}
+}
+
+// whitespace skips spaces and tabs.
+func (s *structured) whitespace() {
+	for c := s.peek(); c == ' ' || c == '\t'; c = s.peek() {
+		s.position++
+	}
+}
+
+// key reads a dictionary or parameter name.
+func (s *structured) key() (string, error) {
+	start := s.position
+	if c := s.peek(); (c < 'a' || c > 'z') && c != '*' {
+		return "", fmt.Errorf("expected a name at %d", s.position)
+	}
+	for c := s.peek(); (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' || c == '*'; c = s.peek() {
+		s.position++
+	}
+	return s.text[start:s.position], nil
+}
+
+// inner reads an inner list and its parameters.
+func (s *structured) inner() ([]structured_item, map[string]any, error) {
+	s.position++
+	list := []structured_item{}
+	for !s.done() {
+		s.spaces()
+		if s.next(')') {
+			parameters, err := s.parameters()
+			return list, parameters, err
+		}
+		item, err := s.item()
+		if err != nil {
+			return nil, nil, err
+		}
+		list = append(list, item)
+		if c := s.peek(); c != ' ' && c != ')' {
+			return nil, nil, fmt.Errorf("expected a space or ) at %d", s.position)
+		}
+	}
+	return nil, nil, fmt.Errorf("unterminated inner list")
+}
+
+// item reads a bare item and its parameters.
+func (s *structured) item() (structured_item, error) {
+	value, err := s.bare()
+	if err != nil {
+		return structured_item{}, err
+	}
+	parameters, err := s.parameters()
+	return structured_item{value: value, parameters: parameters}, err
+}
+
+// parameters reads the parameters that follow an item or inner list.
+func (s *structured) parameters() (map[string]any, error) {
+	parameters := map[string]any{}
+	for s.next(';') {
+		s.spaces()
+		name, err := s.key()
+		if err != nil {
+			return nil, err
+		}
+		var value any = true
+		if s.next('=') {
+			if value, err = s.bare(); err != nil {
+				return nil, err
+			}
+		}
+		parameters[name] = value
+	}
+	return parameters, nil
+}
+
+// bare reads a bare item: an int64 for an integer, a float64 for a decimal, a
+// string, a structured_token, a []byte for a byte sequence, or a bool.
+func (s *structured) bare() (any, error) {
+	c := s.peek()
+	switch {
+	case c == '-' || (c >= '0' && c <= '9'):
+		return s.number()
+	case c == '"':
+		return s.quoted()
+	case c == ':':
+		return s.binary()
+	case c == '?':
+		return s.boolean()
+	case c == '*' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'):
+		return s.token()
+	}
+	return nil, fmt.Errorf("unexpected %q at %d", c, s.position)
+}
+
+// number reads an integer of up to fifteen digits, or a decimal of up to
+// twelve before the point and three after.
+func (s *structured) number() (any, error) {
+	negative := s.next('-')
+	if c := s.peek(); c < '0' || c > '9' {
+		return nil, fmt.Errorf("expected a digit at %d", s.position)
+	}
+	start := s.position
+	decimal := false
+	for !s.done() {
+		c := s.peek()
+		if c == '.' && !decimal {
+			if s.position-start > 12 {
+				return nil, fmt.Errorf("decimal too long at %d", start)
+			}
+			decimal = true
+		} else if c < '0' || c > '9' {
+			break
+		}
+		s.position++
+		if length := s.position - start; (!decimal && length > 15) || (decimal && length > 16) {
+			return nil, fmt.Errorf("number too long at %d", start)
+		}
+	}
+	text := s.text[start:s.position]
+	if !decimal {
+		value, err := strconv.ParseInt(text, 10, 64)
+		if negative {
+			value = -value
+		}
+		return value, err
+	}
+	if _, fraction, _ := strings.Cut(text, "."); fraction == "" || len(fraction) > 3 {
+		return nil, fmt.Errorf("invalid decimal at %d", start)
+	}
+	value, err := strconv.ParseFloat(text, 64)
+	if negative {
+		value = -value
+	}
+	return value, err
+}
+
+// quoted reads a string, whose only escapes are \" and \\.
+func (s *structured) quoted() (any, error) {
+	s.position++
+	var text strings.Builder
+	for !s.done() {
+		c := s.text[s.position]
+		s.position++
+		switch {
+		case c == '\\':
+			if s.done() || (s.peek() != '"' && s.peek() != '\\') {
+				return nil, fmt.Errorf("invalid escape at %d", s.position)
+			}
+			text.WriteByte(s.peek())
+			s.position++
+		case c == '"':
+			return text.String(), nil
+		case c < 0x20 || c > 0x7e:
+			return nil, fmt.Errorf("invalid character in string at %d", s.position)
+		default:
+			text.WriteByte(c)
+		}
+	}
+	return nil, fmt.Errorf("unterminated string")
+}
+
+// token reads a token.
+func (s *structured) token() (any, error) {
+	start := s.position
+	s.position++
+	for !s.done() && (strings.IndexByte("!#$%&'*+-.^_`|~:/", s.peek()) >= 0 || (s.peek() >= '0' && s.peek() <= '9') || (s.peek() >= 'a' && s.peek() <= 'z') || (s.peek() >= 'A' && s.peek() <= 'Z')) {
+		s.position++
+	}
+	return structured_token(s.text[start:s.position]), nil
+}
+
+// binary reads a byte sequence: base64 between colons, its padding optional.
+func (s *structured) binary() (any, error) {
+	s.position++
+	end := strings.IndexByte(s.text[s.position:], ':')
+	if end < 0 {
+		return nil, fmt.Errorf("unterminated byte sequence")
+	}
+	encoded := s.text[s.position : s.position+end]
+	s.position += end + 1
+	decoded, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(encoded, "="))
+	if err != nil {
+		return nil, fmt.Errorf("byte sequence is not base64")
+	}
+	return decoded, nil
+}
+
+// boolean reads ?1 or ?0.
+func (s *structured) boolean() (any, error) {
+	s.position++
+	switch {
+	case s.next('1'):
+		return true, nil
+	case s.next('0'):
+		return false, nil
+	}
+	return nil, fmt.Errorf("invalid boolean at %d", s.position)
+}
+
+// structured_string writes a string as a structured field carries it.
+func structured_string(value string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`
 }
 
 // The fetched-key cache: an actor's key is read once a day, and again when a
@@ -520,6 +1126,7 @@ type signature_key_entry struct {
 	expires   time.Time
 	refreshed time.Time
 	signed    bool
+	failure   error
 }
 
 var signature_keys = map[string]signature_key_entry{}
@@ -542,6 +1149,9 @@ func signature_key_fetch(ctx context.Context, key_id string, fresh bool) (string
 			return entry.public, nil
 		}
 		if entry.public == "" && (entry.signed || !signed) {
+			if entry.failure != nil {
+				return "", entry.failure
+			}
 			return "", fmt.Errorf("key not found")
 		}
 	}
@@ -566,7 +1176,7 @@ func signature_key_fetch(ctx context.Context, key_id string, fresh bool) (string
 		// A re-read that failed keeps the key the actor had.
 		signature_keys[key_id] = entry
 	default:
-		signature_keys[key_id] = signature_key_entry{expires: now.Add(resolve_cache_failure), signed: signed}
+		signature_keys[key_id] = signature_key_entry{expires: now.Add(resolve_failure(err)), signed: signed, failure: err}
 	}
 	return public, err
 }

@@ -40,6 +40,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -248,7 +249,7 @@ func federation_user(id string) (*User, string) {
 		return nil, ""
 	}
 	u := user_by_uid(a.User)
-	if u == nil || user_pending(u) {
+	if u == nil || user_quiet(u) {
 		return nil, ""
 	}
 	return u, a.ID
@@ -487,6 +488,51 @@ func federation_transports(name string) *http.Transport {
 	return t
 }
 
+// federation_get sends a signed GET to another server from one of this
+// server's domains, decoding the answer as it came.
+func federation_get(ctx context.Context, local spec.ServerName, server string, path string, into any) error {
+	return federation_signed(ctx, local, "GET", server, path, nil, into)
+}
+
+// federation_ask sends a signed request to another server from the domain of
+// the user it is for, decoding the answer as it came.
+func federation_ask(ctx context.Context, user string, method string, server string, path string, content any, into any) error {
+	id, err := spec.NewUserID(user, true)
+	if err != nil {
+		return err
+	}
+	return federation_signed(ctx, id.Domain(), method, server, path, content, into)
+}
+
+// federation_signed sends a request to another server signed as one of this
+// server's domains, with content where there is some, decoding the answer.
+func federation_signed(ctx context.Context, local spec.ServerName, method string, server string, path string, content any, into any) error {
+	identity := federation_identity_of(local)
+	if identity == nil {
+		return fmt.Errorf("this server does not speak for %s", local)
+	}
+	request := fclient.NewFederationRequest(method, identity.domain, spec.ServerName(server), path)
+	if content != nil {
+		if err := request.SetContent(content); err != nil {
+			return err
+		}
+	}
+	if err := request.Sign(identity.domain, identity.key, identity.private); err != nil {
+		return err
+	}
+	prepared, err := request.HTTPRequest()
+	if err != nil {
+		return err
+	}
+	bounded, cancel := context.WithTimeout(ctx, federation_timeout)
+	defer cancel()
+	var raw json.RawMessage
+	if err := federation_client().DoRequestAndParseResponse(bounded, prepared.WithContext(bounded), &raw); err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, into)
+}
+
 // federation_client is the client the engine sends with, signing as each of
 // the server's Matrix domains. A variable so tests can hand over their own.
 var federation_client = func() fclient.FederationClient {
@@ -589,6 +635,17 @@ func federation_key_answer(id *federation_identity) ([]byte, error) {
 
 // === Routes ===
 
+// federation_methods are the methods each federation route the engine
+// answers takes, by its version and first segment.
+var federation_methods = map[string][]string{
+	"v1/send": {"PUT"}, "v1/make_join": {"GET"}, "v1/send_join": {"PUT"}, "v2/send_join": {"PUT"},
+	"v1/make_leave": {"GET"}, "v1/send_leave": {"PUT"}, "v2/send_leave": {"PUT"}, "v2/invite": {"PUT"},
+	"v1/event": {"GET"}, "v1/state": {"GET"}, "v1/state_ids": {"GET"}, "v1/event_auth": {"GET"},
+	"v1/get_missing_events": {"POST"}, "v1/backfill": {"GET"}, "v1/query": {"GET"},
+	"v1/make_knock": {"GET"}, "v1/send_knock": {"PUT"}, "v1/hierarchy": {"GET"}, "v1/user": {"GET", "POST"},
+	"v1/media": {"GET"}, "v1/publicRooms": {"GET", "POST"}, "v1/timestamp_to_event": {"GET"},
+}
+
 // federation_route dispatches a request on the engine's paths.
 func federation_route(c *gin.Context) bool {
 	path := c.Request.URL.Path
@@ -615,11 +672,31 @@ func federation_route(c *gin.Context) bool {
 		c.Data(http.StatusOK, "application/json", signed)
 		return true
 	case path == "/_matrix/federation/v1/version":
+		if method != "GET" {
+			federation_error(c, http.StatusMethodNotAllowed, "M_UNRECOGNIZED", "unrecognised request")
+			return true
+		}
 		c.JSON(http.StatusOK, map[string]any{"server": map[string]any{"name": "Mochi", "version": build_version}})
 		return true
 	case strings.HasPrefix(path, "/_matrix/federation/"):
 		if !federation_local(domain) {
 			federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no Matrix server here")
+			return true
+		}
+		// A path the engine has no route for is unknown whoever asks, and
+		// one asked with another method is told so, before any signature is
+		// checked, as Synapse answers them.
+		segments := strings.Split(strings.TrimPrefix(path, "/_matrix/federation/"), "/")
+		methods, known := []string(nil), false
+		if len(segments) >= 2 {
+			methods, known = federation_methods[segments[0]+"/"+segments[1]]
+		}
+		if !known {
+			federation_error(c, http.StatusNotFound, "M_UNRECOGNIZED", "unrecognised request")
+			return true
+		}
+		if !slices.Contains(methods, method) {
+			federation_error(c, http.StatusMethodNotAllowed, "M_UNRECOGNIZED", "unrecognised request")
 			return true
 		}
 		request := federation_verify(c)
@@ -692,6 +769,8 @@ func federation_dispatch(c *gin.Context, method string, parts []string, r *fclie
 		rooms_make_knock(c, r, segment(2), segment(3))
 	case route == "PUT v1/send_knock" && len(parts) == 4:
 		rooms_send_knock(c, r, segment(2), segment(3))
+	case route == "GET v1/timestamp_to_event" && len(parts) == 3:
+		rooms_serve_nearest(c, r, segment(2))
 	case route == "GET v1/hierarchy" && len(parts) == 3:
 		rooms_serve_hierarchy(c, r, segment(2))
 	case route == "GET v1/user" && segment(2) == "devices" && len(parts) == 4:
@@ -736,11 +815,21 @@ func federation_receive_transaction(c *gin.Context, r *fclient.FederationRequest
 	}
 	results := map[string]any{}
 	for _, raw := range t.PDUs {
-		id, err := rooms_receive(c.Request.Context(), r.Origin(), raw)
+		// A fault in taking one event is that event's failure alone, as
+		// Synapse answers any exception in one, and the rest are still taken.
+		var id string
+		var err error
+		guard("Matrix event from "+origin, func() {
+			id, err = rooms_identify(raw), fmt.Errorf("the event could not be taken")
+		}, func() {
+			id, err = rooms_receive(c.Request.Context(), r.Origin(), raw)
+		})
 		if id == "" {
 			continue
 		}
-		if err != nil {
+		// An event taken and kept as rejected was handled; only one that
+		// could not be is an error.
+		if rejection := (rooms_rejection{}); err != nil && !errors.As(err, &rejection) {
 			results[id] = map[string]any{"error": federation_reason(err)}
 		} else {
 			results[id] = map[string]any{}
@@ -992,6 +1081,11 @@ func federation_manager() {
 	go func() {
 		for range time.Tick(24 * time.Hour) {
 			keyring_prune()
+		}
+	}()
+	go func() {
+		for range time.Tick(time.Minute) {
+			clients_presence_lapse()
 		}
 	}()
 }

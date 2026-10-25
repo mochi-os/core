@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +53,9 @@ func clients_tables(db *DB) {
 	// timelines into the order once, in the order they arrived.
 	db.exec("insert or ignore into stream (room, event) select room, id from events where outlier=0 and rejected=0 and not exists (select 1 from stream) order by received, rowid")
 	db.exec("create table if not exists receipts (position integer primary key autoincrement, room text not null, user text not null, type text not null, thread text not null default '', event text not null, ts integer not null, unique (room, user, type, thread))")
+	// The presence clients are shown of each user, local or not, at the
+	// position it last changed.
+	db.exec("create table if not exists presences (position integer primary key autoincrement, user text not null unique, presence text not null, message text not null default '', active integer not null default 0, updated integer not null)")
 	db.exec("create table if not exists settings (position integer primary key autoincrement, user text not null, room text not null default '', type text not null, content text not null, unique (user, room, type))")
 	// What the key store kept as account data before the client interface
 	// kept it here, with a position for sync.
@@ -324,6 +328,15 @@ func clients_match(parts []string, pattern ...string) ([]string, bool) {
 	return taken, true
 }
 
+// clients_methods are the methods the client interface's fixed paths take.
+var clients_methods = map[string][]string{
+	"versions": {"GET"}, "login": {"GET", "POST"}, "refresh": {"POST"}, "auth_metadata": {"GET"}, "auth_issuer": {"GET"},
+	"register": {"GET", "POST"}, "register/available": {"GET"}, "account/whoami": {"GET"}, "logout": {"POST"},
+	"logout/all": {"POST"}, "capabilities": {"GET"}, "devices": {"GET"}, "delete_devices": {"POST"},
+	"account/3pid": {"GET"}, "account/password": {"POST"}, "account/deactivate": {"POST"}, "voip/turnServer": {"GET"},
+	"thirdparty/protocols": {"GET"}, "user_directory/search": {"POST"}, "keys/changes": {"GET"},
+}
+
 // clients_dispatch answers a client request by its method and parts: first
 // those that need no sign-in, then the signed-in device's.
 func clients_dispatch(c *gin.Context, domain spec.ServerName, parts []string) {
@@ -370,6 +383,12 @@ func clients_dispatch(c *gin.Context, domain spec.ServerName, parts []string) {
 		default:
 			c.JSON(http.StatusOK, clients_register_flows())
 		}
+		return
+	}
+	// A fixed path asked with a method it does not take is told so, signed
+	// in or not, as Synapse answers it.
+	if methods, known := clients_methods[strings.Join(parts, "/")]; known && !slices.Contains(methods, method) {
+		clients_error(c, http.StatusMethodNotAllowed, "M_UNRECOGNIZED", "Unrecognised request")
 		return
 	}
 	if taken, ok := clients_match(parts, "profile", "*"); ok && method == "GET" {
@@ -1062,15 +1081,31 @@ func clients_presence(c *gin.Context, s *clients_session, person string) {
 			clients_error(c, http.StatusForbidden, "M_FORBIDDEN", "Cannot set another user's presence")
 			return
 		}
-		var body map[string]any
+		var body struct {
+			Presence string `json:"presence"`
+			Message  string `json:"status_msg"`
+		}
 		if !clients_body(c, &body) {
 			return
 		}
+		if body.Presence != "online" && body.Presence != "unavailable" && body.Presence != "offline" {
+			clients_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "Unknown presence")
+			return
+		}
+		clients_present(s, body.Presence, body.Message, false)
 		c.JSON(http.StatusOK, map[string]any{})
 		return
 	}
 	answer := map[string]any{"presence": "offline"}
-	if user, account := federation_user(person); user != nil {
+	if row, _ := federation_database().row("select presence, message, active from presences where user=?", person); row != nil && federation_user_absent(person) {
+		answer["presence"] = row_string(row, "presence")
+		if message := row_string(row, "message"); message != "" {
+			answer["status_msg"] = message
+		}
+		if row_int(row, "active") == 1 {
+			answer["currently_active"] = true
+		}
+	} else if user, account := federation_user(person); user != nil {
 		row, _ := federation_database().row("select hidden from presence where account=?", account)
 		if row_int(row, "hidden") == 0 {
 			status, _, connections := presence_user(user.UID)
@@ -1088,6 +1123,76 @@ func clients_presence(c *gin.Context, s *clients_session, person string) {
 		}
 	}
 	c.JSON(http.StatusOK, answer)
+}
+
+// federation_user_absent says whether an address is no account here, whose
+// presence is what its server last told.
+func federation_user_absent(address string) bool {
+	user, _ := federation_user(address)
+	return user == nil
+}
+
+// clients_presence_lapsed is how long a client's presence stands without it
+// syncing or setting it again.
+const clients_presence_lapsed = 5 * 60
+
+// clients_present records a client's presence for its account's user, as a
+// connection of the device's, which Mochi's own presence and the account's
+// rooms then show: online, unavailable as away, offline as gone. A sync
+// keeps it, its status text as it was, telling no one where it is as it was.
+func clients_present(s *clients_session, presence string, message string, syncing bool) {
+	connection := "matrix:" + s.h.id + ":" + s.device
+	if presence == "offline" {
+		presence_disconnect(s.user.UID, connection)
+		return
+	}
+	status := "online"
+	if presence == "unavailable" {
+		status = "away"
+	}
+	_, _, connections := presence_user(s.user.UID)
+	index := slices.IndexFunc(connections, func(c presence_connection) bool { return c.ID == connection })
+	if index < 0 {
+		presence_connect(s.user.UID, connection, "", "matrix", s.device)
+	} else if syncing {
+		if connections[index].Status == status {
+			presence_touch(s.user.UID, connection)
+			return
+		}
+		message = connections[index].Message
+	}
+	presence_set(s.user.UID, "", connection, status, message)
+}
+
+// clients_presence_lapse lets go of the presence of clients that have not
+// synced or set it within the lapse, as Synapse lets a user idle out.
+func clients_presence_lapse() {
+	presence_lock.Lock()
+	var lapsed [][2]string
+	for uid, connections := range presence_connections {
+		for id, c := range connections {
+			if c.Kind == "matrix" && now()-c.Seen > clients_presence_lapsed {
+				lapsed = append(lapsed, [2]string{uid, id})
+			}
+		}
+	}
+	presence_lock.Unlock()
+	for _, l := range lapsed {
+		presence_disconnect(l[0], l[1])
+	}
+}
+
+// clients_presence_record keeps the presence clients are shown of a user, at
+// a new position, where it changed.
+func clients_presence_record(user string, presence string, message string, active bool) {
+	db := federation_database()
+	if row, _ := db.row("select presence, message, active from presences where user=?", user); row != nil && row_string(row, "presence") == presence && row_string(row, "message") == message && (row_int(row, "active") == 1) == active {
+		return
+	}
+	// Replaced in one statement, at a new position: two changes at once
+	// must not both delete and insert.
+	db.exec("insert or replace into presences (user, presence, message, active, updated) values (?, ?, ?, ?, ?)", user, presence, message, active, now())
+	clients_wake()
 }
 
 // === Finding people ===
@@ -1366,6 +1471,11 @@ func clients_media(c *gin.Context, parts []string) {
 			c.Header("Content-Disposition", disposition)
 		}
 		c.Data(http.StatusOK, kind, data)
+		return
+	}
+	// A media path asked with a method it does not take is told so.
+	if (len(parts) == 1 && (parts[0] == "config" || parts[0] == "preview_url" || parts[0] == "upload")) || (len(parts) >= 3 && (parts[0] == "download" || parts[0] == "thumbnail")) {
+		clients_error(c, http.StatusMethodNotAllowed, "M_UNRECOGNIZED", "Unrecognised request")
 		return
 	}
 	clients_error(c, http.StatusNotFound, "M_UNRECOGNIZED", "Unrecognised request")

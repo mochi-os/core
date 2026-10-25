@@ -11,8 +11,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -254,6 +256,7 @@ func atproto_thread(alice *User) *sl.Thread {
 func TestAtprotoAccount(t *testing.T) {
 	alice, plc := create_atproto_test_env(t)
 	ctx := context.Background()
+	created := time.Now().UnixMilli()
 	if err := atproto_account_create(ctx, alice, "b1"); err != nil {
 		t.Fatal(err)
 	}
@@ -303,12 +306,13 @@ func TestAtprotoAccount(t *testing.T) {
 	if len(all) != 3 || all[0].RepoIdentity == nil || all[1].RepoAccount == nil || all[2].RepoCommit == nil {
 		t.Fatalf("stream = %d events", len(all))
 	}
-	if all[0].RepoIdentity.Did != did || all[0].RepoIdentity.Handle == nil || *all[0].RepoIdentity.Handle != "alice.example.com" || all[0].RepoIdentity.Seq != 1 {
+	if all[0].RepoIdentity.Did != did || all[0].RepoIdentity.Handle == nil || *all[0].RepoIdentity.Handle != "alice.example.com" || all[0].RepoIdentity.Seq < created {
 		t.Errorf("identity event = %+v", all[0].RepoIdentity)
 	}
-	if !all[1].RepoAccount.Active || all[1].RepoAccount.Seq != 2 {
+	if !all[1].RepoAccount.Active || all[1].RepoAccount.Seq <= all[0].RepoIdentity.Seq {
 		t.Errorf("account event = %+v", all[1].RepoAccount)
 	}
+
 	first := atproto_commit_event(t)
 	if first.Repo != did || first.Rev != r.rev || first.Commit.String() != r.head || first.PrevData != nil || first.Since != nil || len(first.Ops) != 1 || first.Ops[0].Path != "app.bsky.actor.profile/self" {
 		t.Errorf("commit event = %+v", first)
@@ -503,6 +507,11 @@ func TestAtprotoPublish(t *testing.T) {
 // one with it; what waits is readable at once; the manager commits what
 // waits when the budget frees.
 func TestAtprotoBudget(t *testing.T) {
+	// Numbered from the last given alone, as before the stream counted from
+	// the time.
+	saved_clock := stream_clock
+	stream_clock = func() int64 { return 0 }
+	t.Cleanup(func() { stream_clock = saved_clock })
 	alice, _ := create_atproto_test_env(t)
 	ctx := context.Background()
 	if err := atproto_account_create(ctx, alice, "b1"); err != nil {
@@ -612,22 +621,32 @@ func TestAtprotoSubscribe(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	if event := read(conn); event.RepoIdentity == nil || event.RepoIdentity.Seq != 1 {
-		t.Fatalf("first frame = %+v", event)
+	first := read(conn)
+	if first.RepoIdentity == nil {
+		t.Fatalf("first frame = %+v", first)
 	}
-	if event := read(conn); event.RepoAccount == nil {
-		t.Fatalf("second frame = %+v", event)
+	// Each event numbered past the one before, though not always the next
+	// number: the numbers follow the time.
+	seen := first.RepoIdentity.Seq
+	second := read(conn)
+	if second.RepoAccount == nil || second.RepoAccount.Seq <= seen {
+		t.Fatalf("second frame = %+v", second)
 	}
-	if event := read(conn); event.RepoCommit == nil || event.RepoCommit.Seq != 3 {
+	seen = second.RepoAccount.Seq
+	if event := read(conn); event.RepoCommit == nil || event.RepoCommit.Seq <= seen {
 		t.Fatalf("third frame = %+v", event)
+	} else {
+		seen = event.RepoCommit.Seq
 	}
 	// A new commit arrives live.
 	r := repository_get(alice, "b1")
 	if _, _, err := repository_write(ctx, r, "app.bsky.feed.post", "live", map[string]any{"$type": "app.bsky.feed.post", "text": "Live", "createdAt": "2026-10-15T00:00:00Z"}, false); err != nil {
 		t.Fatal(err)
 	}
-	if event := read(conn); event.RepoCommit == nil || event.RepoCommit.Seq != 4 || len(event.RepoCommit.Ops) != 1 || event.RepoCommit.Ops[0].Path != "app.bsky.feed.post/live" {
+	if event := read(conn); event.RepoCommit == nil || event.RepoCommit.Seq <= seen || len(event.RepoCommit.Ops) != 1 || event.RepoCommit.Ops[0].Path != "app.bsky.feed.post/live" {
 		t.Fatalf("live frame = %+v", event)
+	} else {
+		seen = event.RepoCommit.Seq
 	}
 
 	// From the present: nothing replayed, the next commit comes.
@@ -639,18 +658,111 @@ func TestAtprotoSubscribe(t *testing.T) {
 	if _, _, err := repository_write(ctx, r, "app.bsky.feed.post", "next", map[string]any{"$type": "app.bsky.feed.post", "text": "Next", "createdAt": "2026-10-15T00:00:00Z"}, false); err != nil {
 		t.Fatal(err)
 	}
-	if event := read(fresh); event.RepoCommit == nil || event.RepoCommit.Seq != 5 {
+	if event := read(fresh); event.RepoCommit == nil || event.RepoCommit.Seq <= seen || event.RepoCommit.Ops[0].Path != "app.bsky.feed.post/next" {
 		t.Fatalf("fresh frame = %+v", event)
 	}
 
 	// Ahead of the stream.
-	ahead, _, err := websocket.Dial(ctx, address+"?cursor=999", nil)
+	ahead, _, err := websocket.Dial(ctx, address+"?cursor="+strconv.FormatInt(stream_last()+1000, 10), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ahead.Close(websocket.StatusNormalClosure, "")
 	if event := read(ahead); event.Error == nil || event.Error.Error != "FutureCursor" {
 		t.Fatalf("ahead frame = %+v", event)
+	}
+}
+
+// TestAtprotoStreamRestored: a server restored from an older backup, its
+// stream holding fewer events than it gave, numbers the next past every one
+// it gave before, which a relay's cursor holds; the numbers never go below
+// the time.
+func TestAtprotoStreamRestored(t *testing.T) {
+	create_atproto_test_env(t)
+	saved := stream_clock
+	t.Cleanup(func() { stream_clock = saved })
+	clock := int64(1000)
+	stream_clock = func() int64 { return clock }
+	did := "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"
+	if given := stream_append(did, "#identity", map[string]any{"did": did}); given != 1000 {
+		t.Errorf("THE POINT: at the time 1000 the stream numbered an event %d", given)
+	}
+	if next := stream_append(did, "#identity", map[string]any{"did": did}); next != 1001 {
+		t.Errorf("the next event in the same moment is %d, want 1001", next)
+	}
+	// Later, restored from a backup that held none of them.
+	clock = 5000
+	networks_database().exec("delete from stream")
+	networks_database().exec("update sqlite_sequence set seq=0 where name='stream'")
+	if restored := stream_append(did, "#identity", map[string]any{"did": did}); restored != 5000 {
+		t.Errorf("THE POINT: restored, the stream numbers its next event %d, want 5000, past the 1001 it gave before", restored)
+	}
+	// A clock set back does not take the numbers back with it.
+	clock = 10
+	if next := stream_append(did, "#identity", map[string]any{"did": did}); next != 5001 {
+		t.Errorf("with the clock set back, the next event is %d, want 5001", next)
+	}
+}
+
+// TestAtprotoNotify: a commit asks the relay to crawl its domain, the first
+// after a start at once and then at most every twenty minutes, so a relay
+// that gave the server up as offline after a restart follows it again.
+func TestAtprotoNotify(t *testing.T) {
+	alice, _ := create_atproto_test_env(t)
+	ctx := context.Background()
+	var lock sync.Mutex
+	asked := []string{}
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		lock.Lock()
+		asked = append(asked, r.URL.Path+" "+string(body))
+		lock.Unlock()
+	}))
+	t.Cleanup(relay.Close)
+	saved := bluesky_relay
+	bluesky_relay = relay.URL
+	t.Cleanup(func() { bluesky_relay = saved })
+	if err := atproto_account_create(ctx, alice, "b1"); err != nil {
+		t.Fatal(err)
+	}
+	count := func() int {
+		time.Sleep(200 * time.Millisecond)
+		lock.Lock()
+		defer lock.Unlock()
+		return len(asked)
+	}
+	// A start: nothing asked yet this run.
+	atproto_notified_lock.Lock()
+	atproto_notified = map[string]time.Time{}
+	atproto_notified_lock.Unlock()
+	before := count()
+	r := repository_get(alice, "b1")
+	for _, key := range []string{"one", "two"} {
+		if _, _, err := repository_write(ctx, r, "app.bsky.feed.post", key, map[string]any{"$type": "app.bsky.feed.post", "text": key, "createdAt": "2026-10-24T00:00:00Z"}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := count() - before; n != 1 {
+		t.Fatalf("THE POINT: two commits after a start asked the relay %d times, want once", n)
+	}
+	lock.Lock()
+	last := asked[len(asked)-1]
+	lock.Unlock()
+	if !strings.HasPrefix(last, "/xrpc/com.atproto.sync.requestCrawl ") || !strings.Contains(last, `"hostname"`) {
+		t.Errorf("the relay was asked %q", last)
+	}
+	// Twenty minutes on, the next commit asks again.
+	atproto_notified_lock.Lock()
+	for domain := range atproto_notified {
+		atproto_notified[domain] = time.Now().Add(-atproto_notify_interval)
+	}
+	atproto_notified_lock.Unlock()
+	before = count()
+	if _, _, err := repository_write(ctx, r, "app.bsky.feed.post", "three", map[string]any{"$type": "app.bsky.feed.post", "text": "three", "createdAt": "2026-10-24T00:00:00Z"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if n := count() - before; n != 1 {
+		t.Errorf("THE POINT: a commit twenty minutes on asked the relay %d times, want once", n)
 	}
 }
 
@@ -859,6 +971,11 @@ func TestAtprotoReaches(t *testing.T) {
 // the last, and a stream table from before its sequence was AUTOINCREMENT is
 // rebuilt with its events, carrying on from their highest.
 func TestAtprotoStreamSequence(t *testing.T) {
+	// Numbered from the last given alone, as before the stream counted from
+	// the time.
+	saved_clock := stream_clock
+	stream_clock = func() int64 { return 0 }
+	t.Cleanup(func() { stream_clock = saved_clock })
 	create_atproto_test_env(t)
 	db := networks_database()
 	var last int64
@@ -916,5 +1033,63 @@ func TestAtprotoRemoveMissing(t *testing.T) {
 	row := account_hosted_get(alice, "b1")
 	if err := atproto_delete(ctx, alice, row, "at://"+atproto_did(row)+"/app.bsky.feed.like/3missing"); err != nil || len(stream_events(t, 0)) != events {
 		t.Errorf("deleting a missing record = %v, %d events after %d", err, len(stream_events(t, 0)), events)
+	}
+}
+
+// TestRestoreHosted: a restored user's hosted accounts on handles held again
+// here carry over, each network's registry naming them theirs; restored onto
+// another domain, a Bluesky account moves its identity here under the same
+// name, and the others, whose addresses stay with their domain, are dropped.
+func TestRestoreHosted(t *testing.T) {
+	alice, _, plc := create_appview_test_env(t)
+	did := atproto_did(account_hosted_get(alice, "b1"))
+	// A server whose registries know nothing of her.
+	networks_database().exec("delete from actors")
+	networks_database().exec("delete from identities")
+	restore_hosted(alice.UID)
+	if a := actor_get("f1"); a == nil || a.User != alice.UID || a.Network != "fediverse" {
+		t.Errorf("THE POINT: the fediverse account's actor = %+v", a)
+	}
+	if user, _, _ := atproto_identity(did); user == nil || user.UID != alice.UID {
+		t.Errorf("THE POINT: the Bluesky identity is not found as hers: %v", user)
+	}
+
+	// Onto another domain: the accounts were on one this server does not
+	// serve, and none of her handles came with her.
+	for _, id := range []string{"f1", "b1"} {
+		data := account_data(account_hosted_get(alice, id))
+		data["domain"] = "old.example"
+		db_user(alice, "user").account_set(id, map[string]any{"data": json_encode(data)})
+	}
+	db_open("db/users.db").exec("delete from handles where user=?", alice.UID)
+	networks_database().exec("delete from actors")
+	networks_database().exec("delete from identities")
+	plc.lock.Lock()
+	before := len(plc.logs[did])
+	plc.lock.Unlock()
+	restore_hosted(alice.UID)
+	if account_hosted_get(alice, "f1") != nil {
+		t.Error("THE POINT: the fediverse account, whose address stays with its domain, was kept")
+	}
+	row := account_hosted_get(alice, "b1")
+	if row == nil || row_string(row, "identifier") != "alice.example.com" || account_data(row)["domain"] != "example.com" {
+		t.Fatalf("THE POINT: the Bluesky account carried over = %v", row)
+	}
+	plc.lock.Lock()
+	log := plc.logs[did]
+	plc.lock.Unlock()
+	if len(log) != before+1 {
+		t.Fatalf("THE POINT: operations on the identity = %d, want one more than %d", len(log), before)
+	}
+	last := log[len(log)-1]
+	endpoint := last["services"].(map[string]any)["atproto_pds"].(map[string]any)["endpoint"]
+	if fmt.Sprint(last["alsoKnownAs"]) != "[at://alice.example.com]" || endpoint != atproto_endpoint("example.com") {
+		t.Errorf("THE POINT: the identity moved here = %v at %v", last["alsoKnownAs"], endpoint)
+	}
+	if h := handle_get("example.com", "alice"); h == nil || h.User != alice.UID {
+		t.Errorf("THE POINT: the name here = %+v", h)
+	}
+	if user, _, _ := atproto_identity(did); user == nil || user.UID != alice.UID {
+		t.Errorf("THE POINT: the carried identity is not found as hers")
 	}
 }

@@ -1595,10 +1595,7 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	// gone from now on (activitypub.go); a Bluesky account's identity is
 	// tombstoned and its repository dropped (atproto.go).
 	if account_hosted_flag(row) {
-		activitypub_account_remove(user, id)
-		if row["type"] == "bluesky" {
-			atproto_account_remove(user, id)
-		}
+		account_hosted_gone(user, row)
 	}
 	// Its encryption device goes with it (encryption.go).
 	if ptype := row_string(row, "type"); ptype == "matrix" || ptype == "xmpp" {

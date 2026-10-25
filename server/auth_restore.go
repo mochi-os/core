@@ -14,6 +14,7 @@ package main
 
 import (
 	"archive/zip"
+	"context"
 	"crypto/ed25519"
 	"database/sql"
 	"encoding/json"
@@ -511,14 +512,187 @@ func restore_finish_account(uid string, manifest export_manifest, bundle string)
 	udb.exec("update users set restore_source=? where uid=?", restore_source_origin(manifest.Source), uid)
 
 	var links []export_link
-	if err := restore_read_json(filepath.Join(bundle, "linked.json"), &links); err != nil {
-		return
-	}
-	for _, l := range links {
-		udb.exec("replace into relinks (user, service, identifier, linked) values (?, ?, ?, ?)",
-			uid, l.Service, l.Identifier, l.Linked)
+	if err := restore_read_json(filepath.Join(bundle, "linked.json"), &links); err == nil {
+		for _, l := range links {
+			udb.exec("replace into relinks (user, service, identifier, linked) values (?, ?, ?, ?)",
+				uid, l.Service, l.Identifier, l.Linked)
+		}
 	}
 	restore_handles(uid, bundle)
+	restore_hosted(uid)
+}
+
+// restore_hosted settles the restored user's hosted accounts, as "Export,
+// restore and deletion" in the federation plan has it. One on a handle held
+// again here carries over with its address, keys and followers, its
+// network's registry naming it this user's. A Bluesky account whose handle
+// stayed behind carries over by its identifier, moved to the same name on
+// this server's domain where that is free; a fediverse account takes that
+// name too, its followers sent a Move from the old address, while the old
+// server still serves it. The rest, whose addresses stay with the domain
+// they were on, are dropped, for the user to make new ones on the Networks
+// page.
+func restore_hosted(uid string) {
+	user := user_by_uid(uid)
+	if user == nil {
+		return
+	}
+	held := map[string]bool{}
+	for _, h := range handles_user(uid) {
+		held[h.Domain+"\x00"+h.Name] = true
+	}
+	db := db_user(user, "user")
+	for _, row := range accounts_hosted(user, "") {
+		data, _ := row["data"].(map[string]any)
+		domain, _ := data["domain"].(string)
+		name, _ := data["handle"].(string)
+		id, network := row_string(row, "id"), row_string(row, "type")
+		if held[domain+"\x00"+name] {
+			actor_register(user, id, network, domain, name)
+			if did := atproto_did(row); network == "bluesky" && did != "" {
+				atproto_register(did, id, user)
+			}
+			continue
+		}
+		if network == "bluesky" && restore_bluesky(user, row, name) {
+			continue
+		}
+		if network == "fediverse" && restore_fediverse(user, row, name) {
+			continue
+		}
+		info("Restore %s: hosted %s account %s@%s stays with its domain", uid, network, name, domain)
+		keypairs_delete(db, id)
+		db.row_remove(reg_accounts, map[string]any{"id": id})
+	}
+}
+
+// restore_bluesky carries a Bluesky account over by its identifier onto a
+// name on this server's domain: the name reserved, the identity's server and
+// handle moved here, and the relays told. It says whether it carried it.
+func restore_bluesky(user *User, row map[string]any, name string) bool {
+	domain, did, id := server_domain(), atproto_did(row), row_string(row, "id")
+	if domain == "" || did == "" || name == "" {
+		return false
+	}
+	reserved, held := restore_name(user, domain, name)
+	if !held {
+		return false
+	}
+	address := network_address("bluesky", name, domain)
+	ctx, cancel := context.WithTimeout(context.Background(), plc_timeout)
+	defer cancel()
+	err := plc_update(ctx, user, id, did, func(op map[string]any) {
+		op["alsoKnownAs"] = []any{"at://" + address}
+		op["services"] = map[string]any{"atproto_pds": map[string]any{"type": "AtprotoPersonalDataServer", "endpoint": atproto_endpoint(domain)}}
+	})
+	if err != nil {
+		info("Restore %s: Bluesky account %s not moved here: %v", user.UID, did, err)
+		if reserved {
+			handle_release(user, domain, name)
+		}
+		return false
+	}
+	data, _ := row["data"].(map[string]any)
+	data["domain"], data["handle"] = domain, name
+	delete(data, "apex")
+	encoded, _ := json.Marshal(data)
+	db_user(user, "user").account_set(id, map[string]any{"data": string(encoded), "identifier": address})
+	actor_register(user, id, "bluesky", domain, name)
+	atproto_register(did, id, user)
+	stream_append(did, "#identity", map[string]any{"did": did, "handle": address})
+	stream_append(did, "#account", map[string]any{"did": did, "active": true})
+	go atproto_crawl(domain)
+	return true
+}
+
+// restore_name reserves a name on this server's domain for a restored
+// account, or finds it already the user's, as when another of their accounts
+// took it first. Says whether this call reserved it, and whether it is theirs.
+func restore_name(user *User, domain string, name string) (bool, bool) {
+	if h := handle_get(domain, handle_normalise(name)); h != nil {
+		return false, h.User == user.UID
+	}
+	if _, err := handle_reserve(user, domain, name, "handle"); err != nil {
+		return false, false
+	}
+	return true, true
+}
+
+// restore_fediverse moves a fediverse account whose handle stayed behind onto
+// the same name on this server's domain, while the old server still serves
+// the old address with the key the bundle holds: the account keeps its id and
+// key under the new address, which names the old one among its own; the old
+// address's followers are sent a Move, signed as the old address, so their
+// servers follow the new one; and the people it followed are followed again
+// from the new one. It says whether it moved the account.
+func restore_fediverse(user *User, row map[string]any, name string) bool {
+	domain, id := server_domain(), row_string(row, "id")
+	data := account_data(row)
+	old, _ := data["domain"].(string)
+	if domain == "" || name == "" || old == "" || old == domain {
+		return false
+	}
+	key := keypair_get(user, id, key_signing)
+	if key == nil {
+		return false
+	}
+	former := account_url(old, id)
+	ctx, cancel := context.WithTimeout(context.Background(), network_timeout)
+	defer cancel()
+	served, err := signature_key_document(ctx, former+"#main-key")
+	if err != nil || strings.TrimSpace(fmt.Sprint(served["publicKeyPem"])) != strings.TrimSpace(key.Public) {
+		info("Restore %s: fediverse account %s not moved here, its old server not serving it: %v", user.UID, former, err)
+		return false
+	}
+	if _, held := restore_name(user, domain, name); !held {
+		return false
+	}
+	db := db_user(user, "user")
+	inboxes := []string{}
+	seen := map[string]bool{}
+	followers, _ := db.rows("select inbox, shared from followers where account=?", id)
+	for _, follower := range followers {
+		inbox := row_string(follower, "shared")
+		if inbox == "" {
+			inbox = row_string(follower, "inbox")
+		}
+		if inbox != "" && !seen[inbox] {
+			seen[inbox] = true
+			inboxes = append(inboxes, inbox)
+		}
+	}
+	aliases := []any{}
+	for _, alias := range object_strings(data["aliases"]) {
+		if alias != former {
+			aliases = append(aliases, alias)
+		}
+	}
+	data["domain"], data["handle"], data["former"], data["aliases"] = domain, name, former, append(aliases, former)
+	delete(data, "apex")
+	delete(data, "moved")
+	encoded, _ := json.Marshal(data)
+	db.account_set(id, map[string]any{"data": string(encoded), "identifier": network_address("fediverse", name, domain)})
+	actor_register(user, id, "fediverse", domain, name)
+	actor := account_url(domain, id)
+
+	// The followers follow the new address once their servers take the
+	// Move, and are recorded again as their Follows arrive.
+	db.exec("delete from followers where account=?", id)
+	if len(inboxes) > 0 {
+		move := map[string]any{"@context": activitystreams, "id": former + "#moves/" + uid(), "type": "Move", "actor": former, "object": former, "target": actor, "to": []string{former + "/followers"}}
+		deliver(user, id, "fediverse", inboxes, []byte(json_encode(move)))
+	}
+	following, _ := db.rows("select actor, inbox from following where account=?", id)
+	for _, f := range following {
+		activity := actor + "/follows/" + uid()
+		db.exec("update following set activity=?, accepted=0 where account=? and actor=?", activity, id, row_string(f, "actor"))
+		if inbox := row_string(f, "inbox"); inbox != "" {
+			follow := map[string]any{"@context": activitystreams, "id": activity, "type": "Follow", "actor": actor, "object": row_string(f, "actor")}
+			deliver(user, id, "fediverse", []string{inbox}, []byte(json_encode(follow)))
+		}
+	}
+	info("Restore %s: fediverse account %s moved here as %s, %d follower servers told, %d follows sent again", user.UID, former, actor, len(inboxes), len(following))
+	return true
 }
 
 // restore_handles reserves the bundle's handles again where this server serves

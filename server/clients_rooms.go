@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -203,7 +204,9 @@ func clients_leaving(event gomatrixserverlib.PDU, user string) string {
 func clients_window(room string, user string) (int64, int64) {
 	db := federation_database()
 	rows, _ := db.rows("select s.position, e.membership from stream s join events e on e.id=s.event where s.room=? and e.type='m.room.member' and e.key=? order by s.position", room, user)
-	floor, ceiling := int64(0), int64(clients_unbounded)
+	// From the start, history fetched from other servers below it included,
+	// where the room shares its history.
+	floor, ceiling := int64(-clients_unbounded), int64(clients_unbounded)
 	visibility := clients_state_content(room, "m.room.history_visibility", "")["history_visibility"]
 	invited, joined := int64(0), int64(0)
 	for _, row := range rows {
@@ -553,6 +556,24 @@ func clients_make(ctx context.Context, creator string, body clients_creation, pr
 	if version.CreatorInCreateEvent() {
 		create["creator"] = creator
 	}
+	// From version 12 the people a trusted private room is made with are its
+	// creators too, as Synapse makes them, with whoever else is asked for.
+	if version.PrivilegedCreators() && preset == "trusted_private_chat" && len(body.Invite) > 0 {
+		creators := []string{}
+		if listed, ok := create["additional_creators"].([]any); ok {
+			for _, item := range listed {
+				if person, ok := item.(string); ok && !slices.Contains(creators, person) {
+					creators = append(creators, person)
+				}
+			}
+		}
+		for _, person := range body.Invite {
+			if !slices.Contains(creators, person) {
+				creators = append(creators, person)
+			}
+		}
+		create["additional_creators"] = creators
+	}
 	if predecessor != "" {
 		create["predecessor"] = map[string]any{"room_id": predecessor}
 	}
@@ -584,15 +605,20 @@ func clients_make(ctx context.Context, creator string, body clients_creation, pr
 	if !version.PrivilegedCreators() {
 		users[creator] = 100
 	}
-	if preset == "trusted_private_chat" {
+	if preset == "trusted_private_chat" && !version.PrivilegedCreators() {
 		for _, person := range body.Invite {
 			users[person] = 100
 		}
 	}
+	// From version 12 only a creator may replace the room, as Synapse has it.
+	tombstone := 100
+	if version.PrivilegedCreators() {
+		tombstone = 150
+	}
 	powers := map[string]any{
 		"users": users, "users_default": 0, "events_default": 0, "state_default": 50,
 		"ban": 50, "kick": 50, "redact": 50, "invite": 50,
-		"events":        map[string]any{"m.room.name": 50, "m.room.power_levels": 100, "m.room.history_visibility": 100, "m.room.canonical_alias": 50, "m.room.avatar": 50, "m.room.encryption": 100, "m.room.tombstone": 100, "m.room.server_acl": 100},
+		"events":        map[string]any{"m.room.name": 50, "m.room.power_levels": 100, "m.room.history_visibility": 100, "m.room.canonical_alias": 50, "m.room.avatar": 50, "m.room.encryption": 100, "m.room.tombstone": tombstone, "m.room.server_acl": 100},
 		"notifications": map[string]any{"room": 50},
 	}
 	// Anyone in a private room may invite, as Synapse's presets have it; in
@@ -607,18 +633,29 @@ func clients_make(ctx context.Context, creator string, body clients_creation, pr
 		{spec.MRoomMember, creator, rooms_member_content(creator, spec.Join)},
 		{spec.MRoomPowerLevels, "", powers},
 	}
-	if alias != "" {
+	// The preset's rules where the state asked does not set them, as Synapse
+	// sends them: a public room has no guest access to forbid, its absence
+	// forbidding it.
+	given := map[string]bool{}
+	for _, initial := range body.Initial {
+		given[rooms_key(initial.Type, initial.Key)] = true
+	}
+	if alias != "" && !given[rooms_key("m.room.canonical_alias", "")] {
 		steps = append(steps, step{"m.room.canonical_alias", "", map[string]any{"alias": alias}})
 	}
 	join, guest := spec.Invite, "can_join"
 	if preset == "public_chat" {
-		join, guest = spec.Public, "forbidden"
+		join, guest = spec.Public, ""
 	}
-	steps = append(steps,
-		step{spec.MRoomJoinRules, "", map[string]any{"join_rule": join}},
-		step{spec.MRoomHistoryVisibility, "", map[string]any{"history_visibility": "shared"}},
-		step{"m.room.guest_access", "", map[string]any{"guest_access": guest}},
-	)
+	if !given[rooms_key(spec.MRoomJoinRules, "")] {
+		steps = append(steps, step{spec.MRoomJoinRules, "", map[string]any{"join_rule": join}})
+	}
+	if !given[rooms_key(spec.MRoomHistoryVisibility, "")] {
+		steps = append(steps, step{spec.MRoomHistoryVisibility, "", map[string]any{"history_visibility": "shared"}})
+	}
+	if guest != "" && !given[rooms_key("m.room.guest_access", "")] {
+		steps = append(steps, step{"m.room.guest_access", "", map[string]any{"guest_access": guest}})
+	}
 	for _, initial := range body.Initial {
 		if initial.Type == spec.MRoomCreate || initial.Type == spec.MRoomMember || initial.Type == spec.MRoomPowerLevels {
 			continue
@@ -816,9 +853,8 @@ func clients_membership(c *gin.Context, s *clients_session, room string, action 
 			return
 		}
 		var out rooms_outbox
-		unlock := rooms_lock(room)
-		err := rooms_invite_locked(ctx, version, room, s.h.address, body.User, false, &out)
-		unlock()
+		var err error
+		rooms_hold(room, func() { err = rooms_invite_locked(ctx, version, room, s.h.address, body.User, false, &out) })
 		out.flush()
 		if err != nil {
 			clients_refuse(c, err)
@@ -913,6 +949,11 @@ func clients_state(c *gin.Context, s *clients_session, room string, kind string,
 			clients_error(c, http.StatusNotFound, "M_NOT_FOUND", "No such state")
 			return
 		}
+		// The whole event where asked (spec v1.16), the content otherwise.
+		if c.Query("format") == "event" {
+			c.JSON(http.StatusOK, clients_event(event, s.h.address, s.device, true))
+			return
+		}
 		c.Data(http.StatusOK, "application/json", event.Content())
 	case "PUT":
 		var content map[string]any
@@ -920,16 +961,30 @@ func clients_state(c *gin.Context, s *clients_session, room string, kind string,
 			return
 		}
 		if kind == spec.MRoomCreate {
-			clients_error(c, http.StatusForbidden, "M_FORBIDDEN", "A room's creation cannot be changed")
+			clients_error(c, http.StatusBadRequest, "M_BAD_JSON", "A room's creation cannot be changed")
 			return
 		}
 		if kind == "m.room.canonical_alias" && !clients_aliases_held(room, content) {
 			clients_error(c, http.StatusBadRequest, "M_BAD_ALIAS", "The alias does not name the room")
 			return
 		}
+		// The same state again from the same sender is the event already
+		// there, sent no second time, as Synapse has it.
+		if kind != spec.MRoomMember {
+			state, _ := rooms_current(room)
+			if held := rooms_event(state[rooms_key(kind, key)]); held != nil && string(held.SenderID()) == s.h.address {
+				asked, _ := json.Marshal(content)
+				if same, err := gomatrixserverlib.CanonicalJSON(asked); err == nil {
+					if was, err := gomatrixserverlib.CanonicalJSON(held.Content()); err == nil && string(same) == string(was) {
+						c.JSON(http.StatusOK, map[string]any{"event_id": held.EventID()})
+						return
+					}
+				}
+			}
+		}
 		event, err := rooms_send(c.Request.Context(), room, s.h.address, kind, &key, content)
 		if err != nil {
-			clients_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
+			clients_unsent(c, err)
 			return
 		}
 		clients_told(s, event)
@@ -937,6 +992,21 @@ func clients_state(c *gin.Context, s *clients_session, room string, kind string,
 	default:
 		clients_error(c, http.StatusMethodNotAllowed, "M_UNRECOGNIZED", "Unrecognised request")
 	}
+}
+
+// clients_unsent answers why an event was not sent: one malformed in itself,
+// such as power levels past what canonical JSON holds or naming a version 12
+// room's creator, is a bad request, as Synapse answers it; any other is
+// refused.
+func clients_unsent(c *gin.Context, err error) {
+	var invalid gomatrixserverlib.EventValidationError
+	var pointed *gomatrixserverlib.EventValidationError
+	var malformed gomatrixserverlib.BadJSONError
+	if errors.As(err, &invalid) || errors.As(err, &pointed) || errors.As(err, &malformed) {
+		clients_error(c, http.StatusBadRequest, "M_BAD_JSON", err.Error())
+		return
+	}
+	clients_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
 }
 
 // clients_aliases_held checks a canonical alias names the room: each alias
@@ -1040,13 +1110,27 @@ func clients_told(s *clients_session, event gomatrixserverlib.PDU) {
 // === History ===
 
 // clients_token reads a position a client gives back: one of /messages'
-// own, "p" and the position, or a sync position.
+// own, "p" and the position, or a sync position. Paging from it in either
+// direction leaves out the event at it.
 func clients_token(token string) int64 {
+	position, _ := clients_gap(token)
+	return position
+}
+
+// clients_gap reads a position a client gives back, and whether it is the
+// gap just after the event at it, "q" and the position, as /context answers
+// its ends, Synapse's tokens being between events: paging back from it
+// takes that event in, paging forward does not.
+func clients_gap(token string) (int64, bool) {
+	if position, ok := strings.CutPrefix(token, "q"); ok {
+		n, _ := strconv.ParseInt(position, 10, 64)
+		return n, true
+	}
 	if position, ok := strings.CutPrefix(token, "p"); ok {
 		n, _ := strconv.ParseInt(position, 10, 64)
-		return n
+		return n, false
 	}
-	return sync_parse(token).stream
+	return sync_parse(token).stream, false
 }
 
 // clients_messages answers a page of a room's history from a position, back
@@ -1065,28 +1149,45 @@ func clients_messages(c *gin.Context, s *clients_session, room string) {
 	backwards := c.DefaultQuery("dir", "b") == "b"
 	from := c.Query("from")
 	var position int64
+	gap := false
 	switch {
 	case from != "":
-		position = clients_token(from)
+		position, gap = clients_gap(from)
 	case backwards:
 		position = clients_unbounded + 1
 	default:
-		position = 0
+		position = -clients_unbounded
 	}
-	stop := int64(-1)
+	// A position may be below 0, where history fetched from other servers
+	// is (rooms_below).
+	stop, bounded := int64(0), false
 	if to := c.Query("to"); to != "" {
-		stop = clients_token(to)
+		stop, bounded = clients_token(to), true
 	}
 	var entries []clients_entry
 	if backwards {
 		after := floor - 1
-		if stop >= 0 {
+		if bounded {
 			after = max(after, stop-1)
 		}
-		entries = clients_timeline(room, after, min(position, ceiling+1), limit, true)
+		upper := position
+		if gap {
+			upper = position + 1
+		}
+		entries = clients_timeline(room, after, min(upper, ceiling+1), limit, true)
+		// Paged back past all the room's past held here, where the user may
+		// see what came before, more is fetched from the servers in it, as
+		// Synapse fetches it.
+		if len(entries) < limit && !bounded && floor < 0 {
+			ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+			if rooms_earlier(ctx, room, s.h.address) {
+				entries = clients_timeline(room, after, min(upper, ceiling+1), limit, true)
+			}
+			cancel()
+		}
 	} else {
 		before := ceiling + 1
-		if stop >= 0 {
+		if bounded {
 			before = min(before, stop+1)
 		}
 		entries = clients_timeline(room, max(position, floor-1), before, limit, false)
@@ -1142,14 +1243,18 @@ func clients_context(c *gin.Context, s *clients_session, room string, id string)
 		around = append(around, entry.event)
 	}
 	answer["events_before"], answer["events_after"] = ahead, behind
-	answer["start"] = "p" + strconv.FormatInt(position, 10)
-	answer["end"] = "p" + strconv.FormatInt(position, 10)
+	// The gaps just before the first event given and just after the last,
+	// as Synapse's tokens are, so paging either way from either end goes
+	// on from there.
+	first, last := position, position
 	if len(before) > 0 {
-		answer["start"] = "p" + strconv.FormatInt(before[len(before)-1].position, 10)
+		first = before[len(before)-1].position
 	}
 	if len(after) > 0 {
-		answer["end"] = "p" + strconv.FormatInt(after[len(after)-1].position, 10)
+		last = after[len(after)-1].position
 	}
+	answer["start"] = "q" + strconv.FormatInt(first-1, 10)
+	answer["end"] = "q" + strconv.FormatInt(last, 10)
 	if state, ok := rooms_after(id); ok {
 		answer["state"] = clients_events(rooms_list(state), s.h.address, s.device, true)
 	}
@@ -1253,17 +1358,32 @@ func clients_timestamp(c *gin.Context, s *clients_session, room string) {
 		clients_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "Invalid time")
 		return
 	}
-	floor, ceiling := clients_window(room, s.h.address)
 	forward := c.DefaultQuery("dir", "f") == "f"
-	entries := clients_timeline(room, floor-1, ceiling+1, 5000, !forward)
-	for _, entry := range entries {
-		ts := int64(entry.event.OriginServerTS())
-		if (forward && ts >= when) || (!forward && ts <= when) {
-			c.JSON(http.StatusOK, map[string]any{"event_id": entry.event.EventID(), "origin_server_ts": ts})
-			return
+	floor, ceiling := clients_window(room, s.h.address)
+	found := rooms_nearest(room, when, forward, floor, ceiling)
+	// Where nothing here is near, or what is borders history not held, the
+	// servers in the room are asked, as Synapse asks them, and their answer
+	// taken where it is nearer, its history fetched for paging from it.
+	if found == nil || slices.ContainsFunc(found.PrevEventIDs(), func(previous string) bool { return rooms_event(previous) == nil }) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+		defer cancel()
+		if remote := rooms_nearest_remote(ctx, room, when, forward); remote != nil && (found == nil || abs64(int64(remote.OriginServerTS())-when) < abs64(int64(found.OriginServerTS())-when)) {
+			found = remote
 		}
 	}
-	clients_error(c, http.StatusNotFound, "M_NOT_FOUND", "No event at that time")
+	if found == nil {
+		clients_error(c, http.StatusNotFound, "M_NOT_FOUND", "No event at that time")
+		return
+	}
+	c.JSON(http.StatusOK, map[string]any{"event_id": found.EventID(), "origin_server_ts": int64(found.OriginServerTS())})
+}
+
+// abs64 is a number's distance from 0.
+func abs64(n int64) int64 {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // === Reading ===
@@ -1426,20 +1546,29 @@ func clients_alias(c *gin.Context, s *clients_session, alias string) {
 // clients_powerful says whether a user may send a state event of a kind in a
 // room by its power levels.
 func clients_powerful(room string, user string, kind string) bool {
+	// From version 12 a room's creators are above any power.
+	state, _ := rooms_current(room)
+	if create := rooms_event(state[rooms_key(spec.MRoomCreate, "")]); create != nil {
+		if version, err := gomatrixserverlib.GetRoomVersion(create.Version()); err == nil && version.PrivilegedCreators() && slices.Contains(gomatrixserverlib.CreatorsFromCreateEvent(create), user) {
+			return true
+		}
+	}
 	levels := clients_state_content(room, spec.MRoomPowerLevels, "")
 	need := 50.0
+	if level, ok := levels["state_default"].(float64); ok {
+		need = level
+	}
 	if events, ok := levels["events"].(map[string]any); ok {
 		if level, ok := events[kind].(float64); ok {
 			need = level
 		}
-	} else if level, ok := levels["state_default"].(float64); ok {
-		need = level
 	}
 	have := 0.0
+	if level, ok := levels["users_default"].(float64); ok {
+		have = level
+	}
 	if users, ok := levels["users"].(map[string]any); ok {
 		if level, ok := users[user].(float64); ok {
-			have = level
-		} else if level, ok := levels["users_default"].(float64); ok {
 			have = level
 		}
 	}
@@ -1607,7 +1736,8 @@ func rooms_entry(room string) map[string]any {
 // tombstone naming it, and its aliases move.
 func clients_upgrade(c *gin.Context, s *clients_session, room string) {
 	var body struct {
-		Version string `json:"new_version"`
+		Version  string   `json:"new_version"`
+		Creators []string `json:"additional_creators"`
 	}
 	if !clients_body(c, &body) {
 		return
@@ -1616,7 +1746,8 @@ func clients_upgrade(c *gin.Context, s *clients_session, room string) {
 		clients_error(c, http.StatusForbidden, "M_FORBIDDEN", "Only the room's administrators may upgrade it")
 		return
 	}
-	if _, err := gomatrixserverlib.GetRoomVersion(gomatrixserverlib.RoomVersion(body.Version)); err != nil {
+	version, err := gomatrixserverlib.GetRoomVersion(gomatrixserverlib.RoomVersion(body.Version))
+	if err != nil {
 		clients_error(c, http.StatusBadRequest, "M_UNSUPPORTED_ROOM_VERSION", "That room version is not supported")
 		return
 	}
@@ -1624,6 +1755,17 @@ func clients_upgrade(c *gin.Context, s *clients_session, room string) {
 	creation.Creation = map[string]any{}
 	if kind, ok := clients_state_content(room, spec.MRoomCreate, "")["type"]; ok {
 		creation.Creation["type"] = kind
+	}
+	creators := []string{s.h.address}
+	if version.PrivilegedCreators() && len(body.Creators) > 0 {
+		for _, person := range body.Creators {
+			if _, err := spec.NewUserID(person, true); err != nil {
+				clients_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "Invalid user id "+person)
+				return
+			}
+		}
+		creation.Creation["additional_creators"] = body.Creators
+		creators = append(creators, body.Creators...)
 	}
 	for _, kind := range []string{spec.MRoomJoinRules, spec.MRoomHistoryVisibility, "m.room.guest_access", "m.room.name", "m.room.topic", "m.room.avatar", "m.room.encryption", "m.room.server_acl", "m.room.canonical_alias"} {
 		content := clients_state_content(room, kind, "")
@@ -1637,6 +1779,16 @@ func clients_upgrade(c *gin.Context, s *clients_session, room string) {
 		}{kind, "", content})
 	}
 	powers := clients_state_content(room, spec.MRoomPowerLevels, "")
+	// From version 12 creators are above power and may not be listed with it.
+	if users, ok := powers["users"].(map[string]any); ok && version.PrivilegedCreators() {
+		kept := map[string]any{}
+		for person, level := range users {
+			if !slices.Contains(creators, person) {
+				kept[person] = level
+			}
+		}
+		powers["users"] = kept
+	}
 	if len(powers) > 0 {
 		creation.Override = powers
 	}

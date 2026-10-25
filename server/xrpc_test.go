@@ -217,6 +217,10 @@ func TestXrpcSession(t *testing.T) {
 	}
 	db_open("db/users.db").exec("update tokens set expires=? where hash=?", now()+60, token_hash(renewed))
 
+	// A handle is kept for good, and the app is told so, not sent to Mochi.
+	if w, answer := xrpc_call(t, "POST", "com.atproto.identity.updateHandle", renewed, map[string]any{"handle": "other.example.com"}, nil); w.Code != http.StatusBadRequest || answer["message"] != "A handle on this server cannot be changed" {
+		t.Errorf("THE POINT: a handle change = %d %v", w.Code, answer)
+	}
 	if w, _ := xrpc_call(t, "POST", "com.atproto.server.deleteSession", again, nil, nil); w.Code != http.StatusOK {
 		t.Errorf("deleteSession = %d", w.Code)
 	}

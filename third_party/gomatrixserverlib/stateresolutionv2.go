@@ -262,6 +262,12 @@ func ResolveStateConflictsV2New(
 		isRejectedFn:              isRejectedFn,
 		isRejectedCache:           make(map[string]bool),
 	}
+	// Changed for Mochi: the room's create event is known from the start.
+	// From version 12 an event's sender is ranked by it, and the event is
+	// checked against it though its auth events no longer name it; version
+	// 2.1, which applies the unconflicted state only at the end, had neither,
+	// and panicked sorting any conflicted power levels.
+	r.resolvedCreate = getCreateEvent(unconflicted)
 	var roomID *spec.RoomID
 	if len(conflicted) > 0 {
 		validRoomID := conflicted[0].RoomID()

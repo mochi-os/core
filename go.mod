@@ -254,7 +254,8 @@ require (
 	mellium.im/reader v0.1.0 // indirect
 )
 
-// gomatrixserverlib at the pinned commit with one fix to state resolution
-// version 2.1 (room version 12), which upstream does not have; see the
-// change marked in third_party/gomatrixserverlib/stateresolutionv2.go.
+// gomatrixserverlib at the pinned commit with fixes upstream does not have,
+// each marked "Changed for Mochi:" in third_party/gomatrixserverlib: two to
+// state resolution version 2.1 (room version 12, stateresolutionv2.go) and a
+// lenient reading of join rules (eventcontent.go).
 replace github.com/matrix-org/gomatrixserverlib => ./third_party/gomatrixserverlib

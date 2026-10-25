@@ -37,6 +37,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"sort"
@@ -90,6 +91,13 @@ func rooms_lock(room string) func() {
 	lock := value.(*sync.Mutex)
 	lock.Lock()
 	return lock.Unlock
+}
+
+// rooms_hold runs f with a room held, letting it go however f ends: a panic
+// that left it held would stop every later event of the room for good.
+func rooms_hold(room string, f func()) {
+	defer rooms_lock(room)()
+	f()
 }
 
 // rooms_version is a room's version as the store has it, or nil for a room
@@ -677,6 +685,26 @@ func (o *rooms_outbox) flush() {
 	o.bridges = nil
 }
 
+// rooms_identify is the id of an event another server sent, or empty where
+// it cannot be read.
+func rooms_identify(raw json.RawMessage) string {
+	var head struct {
+		Room string `json:"room_id"`
+	}
+	if json.Unmarshal(raw, &head) != nil {
+		return ""
+	}
+	version := rooms_version(head.Room)
+	if version == nil {
+		return ""
+	}
+	event, err := version.NewEventFromUntrustedJSON(raw)
+	if err != nil {
+		return ""
+	}
+	return event.EventID()
+}
+
 // rooms_receive takes an event another server sent in a transaction, and
 // answers its id and why it was refused. An event of a room this server is
 // not in has no version to read it by, and is passed over.
@@ -714,19 +742,19 @@ func rooms_receive(ctx context.Context, origin spec.ServerName, raw json.RawMess
 		return event.EventID(), fmt.Errorf("no one here is in the room")
 	}
 	var out rooms_outbox
-	unlock := rooms_lock(head.Room)
-	err = rooms_accept(ctx, local, origin, version, event, &out, true)
-	// One of this server's accounts put out of the room may have been its
-	// last here.
-	if membership, _ := event.Membership(); err == nil && event.Type() == spec.MRoomMember && (membership == spec.Leave || membership == spec.Ban) && event.StateKey() != nil {
-		if user, e := spec.NewUserID(*event.StateKey(), true); e == nil && federation_local(user.Domain()) {
-			shown := clients_leaving(event, *event.StateKey())
-			if rooms_forget(head.Room) {
-				clients_pending(head.Room, *event.StateKey(), spec.Leave, "", shown)
+	rooms_hold(head.Room, func() {
+		err = rooms_accept(ctx, local, origin, version, event, &out, true)
+		// One of this server's accounts put out of the room may have been
+		// its last here.
+		if membership, _ := event.Membership(); err == nil && event.Type() == spec.MRoomMember && (membership == spec.Leave || membership == spec.Ban) && event.StateKey() != nil {
+			if user, e := spec.NewUserID(*event.StateKey(), true); e == nil && federation_local(user.Domain()) {
+				shown := clients_leaving(event, *event.StateKey())
+				if rooms_forget(head.Room) {
+					clients_pending(head.Room, *event.StateKey(), spec.Leave, "", shown)
+				}
 			}
 		}
-	}
-	unlock()
+	})
 	out.flush()
 	return event.EventID(), err
 }
@@ -770,6 +798,10 @@ func rooms_withdrawn(ctx context.Context, room string, raw json.RawMessage) (str
 	clients_pending(room, user, spec.Leave, "", clients_leaving(event, user))
 	if found, account := federation_user(user); found != nil {
 		linked_inbound(found, account, "matrix", []map[string]any{{"kind": "room", "conversation": room, "left": true}})
+	} else if standin := bridge_standin_of(user); standin != nil {
+		// A stand-in's invitation was handed on for the member it stands
+		// for, and so is its withdrawal.
+		bridge_inbound(user_by_uid(row_string(standin, "user")), room, []map[string]any{{"kind": "invite", "conversation": room, "to": row_string(standin, "entity"), "from": string(event.SenderID()), "left": true}})
 	}
 	return event.EventID(), true, nil
 }
@@ -826,6 +858,20 @@ func rooms_outliers(ctx context.Context, version gomatrixserverlib.IRoomVersion,
 		}
 	}
 	kept := map[string]bool{}
+	// From version 12 the order ranks each sender by the room's create event,
+	// which a chain may leave out, as no event's JSON names it: the one held
+	// is added, and without one nothing could be checked.
+	creation := func(event gomatrixserverlib.PDU) bool {
+		return event.Type() == spec.MRoomCreate && event.StateKeyEquals("")
+	}
+	if len(good) > 0 && version.PrivilegedCreators() && !slices.ContainsFunc(good, creation) {
+		state, _ := rooms_current(good[0].RoomID().String())
+		create := rooms_event(state[rooms_key(spec.MRoomCreate, "")])
+		if create == nil {
+			return kept
+		}
+		good = append(good, create)
+	}
 	for _, event := range gomatrixserverlib.ReverseTopologicalOrdering(good, gomatrixserverlib.TopologicalOrderByAuthEvents) {
 		if stored := rooms_event(event.EventID()); stored != nil {
 			kept[event.EventID()] = !rooms_rejected(event.EventID())
@@ -845,6 +891,12 @@ func rooms_outliers(ctx context.Context, version gomatrixserverlib.IRoomVersion,
 		kept[event.EventID()] = !rejected
 	}
 	return kept
+}
+
+// A rooms_rejection is why an event was taken and kept as rejected, which
+// the server that sent it is answered as handled, as Synapse answers it.
+type rooms_rejection struct {
+	error
 }
 
 // rooms_accept takes a checked event into a room's timeline: the state before
@@ -896,13 +948,13 @@ func rooms_accept(ctx context.Context, local spec.ServerName, origin spec.Server
 		// held: a rejected event leaves the state as it found it, and the
 		// events after it follow from it.
 		snapshot := int64(0)
-		if len(event.PrevEventIDs()) > 0 && !slices.ContainsFunc(event.PrevEventIDs(), func(prev string) bool { return !rooms_point(prev) }) {
+		if len(event.PrevEventIDs()) > 0 && !slices.ContainsFunc(event.PrevEventIDs(), func(previous string) bool { return !rooms_point(previous) }) {
 			if _, id, e := rooms_before(version, event); e == nil {
 				snapshot = id
 			}
 		}
 		rooms_keep(event, snapshot, true, false)
-		return fmt.Errorf("not allowed by its auth events: %w", err)
+		return rooms_rejection{fmt.Errorf("not allowed by its auth events: %w", err)}
 	}
 
 	before, snapshot, err := rooms_before(version, event)
@@ -912,7 +964,7 @@ func rooms_accept(ctx context.Context, local spec.ServerName, origin spec.Server
 	current, _ := rooms_current(room)
 	if err := rooms_allowed(event, before); err != nil {
 		rooms_keep(event, snapshot, true, false)
-		return fmt.Errorf("not allowed by the state before it: %w", err)
+		return rooms_rejection{fmt.Errorf("not allowed by the state before it: %w", err)}
 	}
 	if err := rooms_allowed(event, current); err != nil {
 		rooms_keep(event, snapshot, false, true)
@@ -1362,12 +1414,14 @@ func rooms_send(ctx context.Context, room string, sender string, kind string, ke
 		return nil, fmt.Errorf("not in the room")
 	}
 	var out rooms_outbox
-	unlock := rooms_lock(room)
-	event, err := rooms_build(version, room, sender, kind, key, content)
-	if err == nil {
-		err = rooms_commit(version, event, &out)
-	}
-	unlock()
+	var event gomatrixserverlib.PDU
+	var err error
+	rooms_hold(room, func() {
+		event, err = rooms_build(version, room, sender, kind, key, content)
+		if err == nil {
+			err = rooms_commit(version, event, &out)
+		}
+	})
 	out.flush()
 	return event, err
 }
@@ -1423,9 +1477,9 @@ func rooms_member_content(address string, membership string) map[string]any {
 	return content
 }
 
-// rooms_stripped is the part of a room's state an invitation carries, so the
-// invited can tell what room it is.
-func rooms_stripped(room string, inviter string) []gomatrixserverlib.InviteStrippedState {
+// rooms_shown is the part of a room's state an invitation or a knock carries,
+// so the invited can tell what room it is.
+func rooms_shown(room string, inviter string) []gomatrixserverlib.PDU {
 	state, _ := rooms_current(room)
 	var ids []string
 	for _, key := range []string{rooms_key(spec.MRoomCreate, ""), rooms_key(spec.MRoomJoinRules, ""), rooms_key("m.room.name", ""), rooms_key("m.room.avatar", ""), rooms_key("m.room.canonical_alias", ""), rooms_key("m.room.encryption", ""), rooms_key(spec.MRoomMember, inviter)} {
@@ -1434,13 +1488,28 @@ func rooms_stripped(room string, inviter string) []gomatrixserverlib.InviteStrip
 		}
 	}
 	loaded := rooms_events(ids)
-	var out []gomatrixserverlib.InviteStrippedState
+	var out []gomatrixserverlib.PDU
 	for _, id := range ids {
 		if event := loaded[id]; event != nil {
-			out = append(out, gomatrixserverlib.NewInviteStrippedState(event))
+			out = append(out, event)
 		}
 	}
 	return out
+}
+
+// rooms_stripped is that state as clients are shown it.
+func rooms_stripped(room string, inviter string) []gomatrixserverlib.InviteStrippedState {
+	var out []gomatrixserverlib.InviteStrippedState
+	for _, event := range rooms_shown(room, inviter) {
+		out = append(out, gomatrixserverlib.NewInviteStrippedState(event))
+	}
+	return out
+}
+
+// rooms_pdus is that state as other servers are sent it: whole events, as
+// the specification has it from v1.18 (MSC4311) and Synapse sends it.
+func rooms_pdus(room string, inviter string) []json.RawMessage {
+	return rooms_raw(rooms_shown(room, inviter))
 }
 
 // === What the user does ===
@@ -1555,13 +1624,11 @@ func rooms_invite_locked(ctx context.Context, version gomatrixserverlib.IRoomVer
 		return err
 	}
 	if !federation_local(invitee.Domain()) {
-		request, err := fclient.NewInviteV2Request(event, rooms_stripped(room, inviter))
-		if err != nil {
-			return err
+		var answer struct {
+			Event json.RawMessage `json:"event"`
 		}
-		inviting, _ := spec.NewUserID(inviter, true)
-		answer, err := federation_client().SendInviteV2(ctx, inviting.Domain(), invitee.Domain(), request)
-		if err != nil {
+		request := map[string]any{"event": json.RawMessage(event.JSON()), "room_version": string(version.Version()), "invite_room_state": rooms_pdus(room, inviter)}
+		if err := federation_ask(ctx, inviter, "PUT", string(invitee.Domain()), "/_matrix/federation/v2/invite/"+url.PathEscape(room)+"/"+url.PathEscape(event.EventID()), request, &answer); err != nil {
 			return fmt.Errorf("invitation refused: %w", err)
 		}
 		signed, err := version.NewEventFromUntrustedJSON(answer.Event)
@@ -1913,16 +1980,22 @@ func rooms_recent(user string, room string, join gomatrixserverlib.PDU) []map[st
 }
 
 // rooms_backfill fetches a room's recent past on joining it, and answers its
-// messages as the joining user's conversation events, oldest first: each
-// checked by its own auth events and by the state before it, as the timeline's
-// are. The events are kept outside the timeline: the room's state is what the
-// join brought.
+// messages as the joining user's conversation events (rooms_older).
 func rooms_backfill(ctx context.Context, local spec.ServerName, server spec.ServerName, room string, user string, join gomatrixserverlib.PDU) []map[string]any {
+	return rooms_older(ctx, local, server, room, user, join.PrevEventIDs())
+}
+
+// rooms_older fetches a room's past before events from a server, and answers
+// its messages as a user's conversation events, oldest first: each checked by
+// its own auth events and by the state before it, as the timeline's are. The
+// events are kept outside the timeline, the room's state being what it was,
+// and go below it in the order clients page back through (rooms_below).
+func rooms_older(ctx context.Context, local spec.ServerName, server spec.ServerName, room string, user string, from []string) []map[string]any {
 	version := rooms_version(room)
-	if version == nil {
+	if version == nil || len(from) == 0 {
 		return nil
 	}
-	transaction, err := federation_client().Backfill(ctx, local, server, room, rooms_history, join.PrevEventIDs())
+	transaction, err := federation_client().Backfill(ctx, local, server, room, rooms_history, from)
 	if err != nil {
 		debug("Matrix room %s: history from %s: %v", room, server, err)
 		return nil
@@ -1940,9 +2013,10 @@ func rooms_backfill(ctx context.Context, local spec.ServerName, server spec.Serv
 			good = append(good, event)
 		}
 	}
-	unlock := rooms_lock(room)
+	defer rooms_lock(room)()
 	current, _ := rooms_current(room)
 	var told []map[string]any
+	var shown []string
 	// The state after each event, worked out oldest first: the history's
 	// own events build it, and the server is asked only for the state
 	// before an event that follows one from before the history.
@@ -1967,14 +2041,75 @@ func rooms_backfill(ctx context.Context, local spec.ServerName, server spec.Serv
 				told = append(told, rooms_conversation(user, event, current)...)
 			}
 		}
+		if !rejected {
+			shown = append(shown, event.EventID())
+		}
 		state := maps.Clone(before)
 		if !rejected && event.StateKey() != nil {
 			state[rooms_key(event.Type(), *event.StateKey())] = event.EventID()
 		}
 		after[event.EventID()] = state
 	}
-	unlock()
+	rooms_below(room, shown)
 	return told
+}
+
+// rooms_below_lock keeps two rooms' history from taking the same positions.
+var rooms_below_lock sync.Mutex
+
+// rooms_below puts a room's history, oldest first, below everything in the
+// order clients' syncs count in: at positions under the lowest, so a client
+// paging back comes to it and no sync counts it as new.
+func rooms_below(room string, events []string) {
+	db := federation_database()
+	var fresh []string
+	for _, id := range events {
+		if held, _ := db.exists("select 1 from stream where event=?", id); !held {
+			fresh = append(fresh, id)
+		}
+	}
+	if len(fresh) == 0 {
+		return
+	}
+	rooms_below_lock.Lock()
+	defer rooms_below_lock.Unlock()
+	row, _ := db.row("select coalesce(min(position), 1) as lowest from stream")
+	position := min(row_int(row, "lowest"), 1) - int64(len(fresh))
+	for _, id := range fresh {
+		db.exec("insert or ignore into stream (position, room, event) values (?, ?, ?)", position, room, id)
+		position++
+	}
+}
+
+// rooms_earlier fetches more of a room's past for a client paging back past
+// all of it here, from the events the earliest here follows, through each
+// server in the room until one gives some. It says whether any came.
+func rooms_earlier(ctx context.Context, room string, user string) bool {
+	db := federation_database()
+	row, _ := db.row("select event from stream where room=? order by position limit 1", room)
+	oldest := rooms_event(row_string(row, "event"))
+	local := rooms_local(room)
+	if oldest == nil || local == "" {
+		return false
+	}
+	var from []string
+	for _, prev := range oldest.PrevEventIDs() {
+		if held, _ := db.exists("select 1 from stream where event=?", prev); !held {
+			from = append(from, prev)
+		}
+	}
+	if len(from) == 0 {
+		return false
+	}
+	current, _ := rooms_current(room)
+	before, _ := db.row("select min(position) as lowest from stream where room=?", room)
+	for _, server := range rooms_servers(current) {
+		rooms_older(ctx, local, spec.ServerName(server), room, user, from)
+		if after, _ := db.row("select min(position) as lowest from stream where room=?", room); row_int(after, "lowest") < row_int(before, "lowest") {
+			return true
+		}
+	}
+	return false
 }
 
 // rooms_history_before is the state before an event of a room's history:
@@ -2008,11 +2143,11 @@ func rooms_leave(ctx context.Context, user string, room string) error {
 		// A room forgotten keeps none of its events, the user's leave with
 		// them, so their syncs are given it as one never joined is.
 		shown := clients_leaving(event, user)
-		unlock := rooms_lock(room)
-		if rooms_forget(room) {
-			clients_pending(room, user, spec.Leave, "", shown)
-		}
-		unlock()
+		rooms_hold(room, func() {
+			if rooms_forget(room) {
+				clients_pending(room, user, spec.Leave, "", shown)
+			}
+		})
 		return nil
 	}
 	// An invitation is declined through the server it came from, a knock
@@ -2444,16 +2579,16 @@ func rooms_send_join(c *gin.Context, r *fclient.FederationRequest, room string, 
 	event := answer.JoinEvent
 	if !answer.AlreadyJoined {
 		var out rooms_outbox
-		unlock := rooms_lock(room)
-		err = rooms_accept(ctx, local, r.Origin(), version, event, &out, false)
-		if err == nil && !rooms_known(event.EventID()) {
-			err = fmt.Errorf("the room has moved past it")
-		}
-		if err == nil {
-			before, _ := rooms_current(room)
-			federation_send(rooms_servers(before), event)
-		}
-		unlock()
+		rooms_hold(room, func() {
+			err = rooms_accept(ctx, local, r.Origin(), version, event, &out, false)
+			if err == nil && !rooms_known(event.EventID()) {
+				err = fmt.Errorf("the room has moved past it")
+			}
+			if err == nil {
+				before, _ := rooms_current(room)
+				federation_send(rooms_servers(before), event)
+			}
+		})
 		out.flush()
 		if err != nil {
 			federation_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
@@ -2550,13 +2685,13 @@ func rooms_send_leave(c *gin.Context, r *fclient.FederationRequest, room string,
 		return
 	}
 	var out rooms_outbox
-	unlock := rooms_lock(room)
-	err = rooms_accept(ctx, local, r.Origin(), version, event, &out, false)
-	if err == nil && rooms_known(event.EventID()) {
-		after, _ := rooms_current(room)
-		federation_send(rooms_servers(after), event)
-	}
-	unlock()
+	rooms_hold(room, func() {
+		err = rooms_accept(ctx, local, r.Origin(), version, event, &out, false)
+		if err == nil && rooms_known(event.EventID()) {
+			after, _ := rooms_current(room)
+			federation_send(rooms_servers(after), event)
+		}
+	})
 	out.flush()
 	if err != nil {
 		federation_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
@@ -2632,22 +2767,22 @@ func rooms_send_knock(c *gin.Context, r *fclient.FederationRequest, room string,
 		return
 	}
 	var out rooms_outbox
-	unlock := rooms_lock(room)
-	err = rooms_accept(ctx, local, r.Origin(), version, event, &out, false)
-	if err == nil && !rooms_known(event.EventID()) {
-		err = fmt.Errorf("the room has moved past it")
-	}
-	if err == nil {
-		after, _ := rooms_current(room)
-		federation_send(rooms_servers(after), event)
-	}
-	unlock()
+	rooms_hold(room, func() {
+		err = rooms_accept(ctx, local, r.Origin(), version, event, &out, false)
+		if err == nil && !rooms_known(event.EventID()) {
+			err = fmt.Errorf("the room has moved past it")
+		}
+		if err == nil {
+			after, _ := rooms_current(room)
+			federation_send(rooms_servers(after), event)
+		}
+	})
 	out.flush()
 	if err != nil {
 		federation_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, map[string]any{"knock_room_state": rooms_stripped(room, "")})
+	c.JSON(http.StatusOK, map[string]any{"knock_room_state": rooms_pdus(room, "")})
 }
 
 // rooms_serve_alias answers another server what room one of this server's
@@ -2898,11 +3033,11 @@ func rooms_invite_received(c *gin.Context, r *fclient.FederationRequest, room st
 	if local := rooms_local(room); local != "" {
 		if version := rooms_version(room); version != nil {
 			var out rooms_outbox
-			unlock := rooms_lock(room)
-			if err := rooms_accept(c.Request.Context(), local, r.Origin(), version, signed, &out, true); err != nil {
-				info("Matrix invitation %s to %s not taken into the room: %v", id, room, err)
-			}
-			unlock()
+			rooms_hold(room, func() {
+				if err := rooms_accept(c.Request.Context(), local, r.Origin(), version, signed, &out, true); err != nil {
+					info("Matrix invitation %s to %s not taken into the room: %v", id, room, err)
+				}
+			})
 			out.flush()
 		}
 	} else {
@@ -2952,22 +3087,57 @@ func rooms_visible(server spec.ServerName, event gomatrixserverlib.PDU) bool {
 	return visibility == "shared" && present(current, spec.Join)
 }
 
-// rooms_serve_event answers one event of a room for a server that may see it.
+// rooms_hosting says whether a server has someone joined to a room now, which
+// Synapse asks of a server before answering it for the room's events.
+func rooms_hosting(c *gin.Context, room string, server spec.ServerName) bool {
+	current, _ := rooms_current(room)
+	if !slices.Contains(rooms_servers(current), string(server)) {
+		federation_error(c, http.StatusForbidden, "M_FORBIDDEN", "Host not in room.")
+		return false
+	}
+	return true
+}
+
+// rooms_seen is an event as a server is given it: whole where it may see it,
+// redacted where it may not, as Synapse gives one, so the room's history
+// still joins up.
+func rooms_seen(server spec.ServerName, event gomatrixserverlib.PDU) json.RawMessage {
+	if rooms_visible(server, event) {
+		return event.JSON()
+	}
+	version, err := gomatrixserverlib.GetRoomVersion(event.Version())
+	if err != nil {
+		return nil
+	}
+	redacted, err := version.RedactEventJSON(event.JSON())
+	if err != nil {
+		return nil
+	}
+	return redacted
+}
+
+// rooms_serve_event answers one event of a room for a server in it.
 func rooms_serve_event(c *gin.Context, r *fclient.FederationRequest, id string) {
 	event := rooms_event(id)
-	if event == nil || !rooms_visible(r.Origin(), event) {
+	if event == nil {
 		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such event")
 		return
 	}
-	c.JSON(http.StatusOK, map[string]any{"origin": string(r.Destination()), "origin_server_ts": int64(spec.AsTimestamp(time.Now())), "pdus": []json.RawMessage{event.JSON()}})
+	if !rooms_hosting(c, event.RoomID().String(), r.Origin()) {
+		return
+	}
+	c.JSON(http.StatusOK, map[string]any{"origin": string(r.Destination()), "origin_server_ts": int64(spec.AsTimestamp(time.Now())), "pdus": []json.RawMessage{rooms_seen(r.Origin(), event)}})
 }
 
 // rooms_serve_state answers the state of a room before an event, as events or
 // their ids, with its auth chain.
 func rooms_serve_state(c *gin.Context, r *fclient.FederationRequest, room string, id string, ids bool) {
+	if !rooms_hosting(c, room, r.Origin()) {
+		return
+	}
 	event := rooms_event(id)
 	row, _ := federation_database().row("select before from events where id=? and room=?", id, room)
-	if event == nil || row == nil || row_int(row, "before") <= 0 || !rooms_visible(r.Origin(), event) {
+	if event == nil || row == nil || row_int(row, "before") <= 0 {
 		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such event")
 		return
 	}
@@ -2991,8 +3161,11 @@ func rooms_ids(events []gomatrixserverlib.PDU) []string {
 
 // rooms_serve_auth answers an event's auth chain.
 func rooms_serve_auth(c *gin.Context, r *fclient.FederationRequest, room string, id string) {
+	if !rooms_hosting(c, room, r.Origin()) {
+		return
+	}
 	event := rooms_event(id)
-	if event == nil || event.RoomID().String() != room || !rooms_visible(r.Origin(), event) {
+	if event == nil || event.RoomID().String() != room {
 		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such event")
 		return
 	}
@@ -3000,8 +3173,10 @@ func rooms_serve_auth(c *gin.Context, r *fclient.FederationRequest, room string,
 }
 
 // rooms_walk goes back through a room from events by their prev events,
-// deepest first, to as many as asked for, stopping at those named.
-func rooms_walk(server spec.ServerName, room string, from []string, stop map[string]bool, limit int, depth int64, include bool) []gomatrixserverlib.PDU {
+// deepest first, to as many as asked for, stopping at those named. An event
+// the asking server may not see is walked through, for it to be given
+// redacted (rooms_seen).
+func rooms_walk(room string, from []string, stop map[string]bool, limit int, depth int64, include bool) []gomatrixserverlib.PDU {
 	seen := map[string]bool{}
 	var out []gomatrixserverlib.PDU
 	queue := slices.Clone(from)
@@ -3021,9 +3196,6 @@ func rooms_walk(server spec.ServerName, room string, from []string, stop map[str
 		sort.Slice(level, func(i int, j int) bool { return level[i].Depth() > level[j].Depth() })
 		queue = nil
 		for _, event := range level {
-			if !rooms_visible(server, event) {
-				continue
-			}
 			if !first || include {
 				if len(out) >= limit {
 					break
@@ -3045,6 +3217,9 @@ func rooms_serve_missing(c *gin.Context, r *fclient.FederationRequest, room stri
 		federation_error(c, http.StatusBadRequest, "M_BAD_JSON", "not a request for missing events")
 		return
 	}
+	if !rooms_hosting(c, room, r.Origin()) {
+		return
+	}
 	limit := request.Limit
 	if limit <= 0 {
 		limit = 10
@@ -3053,23 +3228,111 @@ func rooms_serve_missing(c *gin.Context, r *fclient.FederationRequest, room stri
 	for _, id := range request.EarliestEvents {
 		stop[id] = true
 	}
-	events := rooms_walk(r.Origin(), room, request.LatestEvents, stop, min(limit, 100), int64(request.MinDepth), false)
+	events := rooms_walk(room, request.LatestEvents, stop, min(limit, 100), int64(request.MinDepth), false)
 	slices.Reverse(events)
-	c.JSON(http.StatusOK, map[string]any{"events": rooms_raw(events)})
+	c.JSON(http.StatusOK, map[string]any{"events": rooms_given(r.Origin(), events)})
 }
 
 // rooms_serve_backfill answers a room's past before the events named.
 func rooms_serve_backfill(c *gin.Context, r *fclient.FederationRequest, room string, from []string, limit string) {
+	if !rooms_hosting(c, room, r.Origin()) {
+		return
+	}
 	count, _ := strconv.Atoi(limit)
 	if count <= 0 {
 		count = 10
 	}
-	events := rooms_walk(r.Origin(), room, from, map[string]bool{}, min(count, 100), 0, true)
-	c.JSON(http.StatusOK, map[string]any{"origin": string(r.Destination()), "origin_server_ts": int64(spec.AsTimestamp(time.Now())), "pdus": rooms_raw(events)})
+	events := rooms_walk(room, from, map[string]bool{}, min(count, 100), 0, true)
+	c.JSON(http.StatusOK, map[string]any{"origin": string(r.Destination()), "origin_server_ts": int64(spec.AsTimestamp(time.Now())), "pdus": rooms_given(r.Origin(), events)})
+}
+
+// rooms_given is events as a server is given them (rooms_seen).
+func rooms_given(server spec.ServerName, events []gomatrixserverlib.PDU) []json.RawMessage {
+	out := make([]json.RawMessage, 0, len(events))
+	for _, event := range events {
+		if raw := rooms_seen(server, event); raw != nil {
+			out = append(out, raw)
+		}
+	}
+	return out
+}
+
+// rooms_nearest is the event of a room held here nearest a time on one side
+// of it, between two positions of its timeline: the first at or after it,
+// or the last at or before it, the earlier or later in the room's order
+// where several share a time.
+func rooms_nearest(room string, when int64, forward bool, floor int64, ceiling int64) gomatrixserverlib.PDU {
+	var found gomatrixserverlib.PDU
+	for _, entry := range clients_timeline(room, floor-1, ceiling+1, 100000, !forward) {
+		ts := int64(entry.event.OriginServerTS())
+		if forward && ts >= when && (found == nil || ts < int64(found.OriginServerTS())) {
+			found = entry.event
+		}
+		if !forward && ts <= when && (found == nil || ts > int64(found.OriginServerTS())) {
+			found = entry.event
+		}
+	}
+	return found
+}
+
+// rooms_nearest_remote asks the servers in a room for its event nearest a
+// time, each in turn until one answers, and takes in the history before it
+// for paging from it, answering it where it is then held.
+func rooms_nearest_remote(ctx context.Context, room string, when int64, forward bool) gomatrixserverlib.PDU {
+	local := rooms_local(room)
+	version := rooms_version(room)
+	if local == "" || version == nil {
+		return nil
+	}
+	direction := "b"
+	if forward {
+		direction = "f"
+	}
+	current, _ := rooms_current(room)
+	for _, server := range rooms_servers(current) {
+		var answer struct {
+			Event string `json:"event_id"`
+		}
+		path := "/_matrix/federation/v1/timestamp_to_event/" + url.PathEscape(room) + "?ts=" + strconv.FormatInt(when, 10) + "&dir=" + direction
+		if err := federation_get(ctx, local, server, path, &answer); err != nil || answer.Event == "" {
+			continue
+		}
+		if rooms_event(answer.Event) == nil {
+			rooms_older(ctx, local, spec.ServerName(server), room, "", []string{answer.Event})
+		}
+		if event := rooms_event(answer.Event); event != nil {
+			return event
+		}
+	}
+	return nil
+}
+
+// rooms_serve_nearest answers a server in a room with its event nearest a
+// time, as held here.
+func rooms_serve_nearest(c *gin.Context, r *fclient.FederationRequest, room string) {
+	if !rooms_hosting(c, room, r.Origin()) {
+		return
+	}
+	when, err := strconv.ParseInt(c.Query("ts"), 10, 64)
+	if err != nil {
+		federation_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "not a time")
+		return
+	}
+	found := rooms_nearest(room, when, c.DefaultQuery("dir", "f") == "f", -clients_unbounded, clients_unbounded)
+	if found == nil {
+		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no event at that time")
+		return
+	}
+	c.JSON(http.StatusOK, map[string]any{"event_id": found.EventID(), "origin_server_ts": int64(found.OriginServerTS())})
 }
 
 // rooms_serve_profile answers the name one of this server's users goes by.
 func rooms_serve_profile(c *gin.Context, address string, field string) {
+	// A user id naming no valid server is a bad request, as Synapse has it.
+	if _, err := spec.NewUserID(address, true); err != nil {
+		federation_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "not a user id")
+		return
+	}
 	name, avatar := "", ""
 	if user, account := federation_user(address); user != nil {
 		name = rooms_display(user, account)

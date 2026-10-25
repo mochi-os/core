@@ -182,15 +182,28 @@ func resolve_allowed(user *User, identifier string) error {
 
 // The cache: a lookup fetched from the network is kept for a day, a failed one
 // for an hour, so a feed of a hundred comments by one person costs one fetch.
-// Bounded by count; when full the whole cache is dropped, which costs a refetch
-// and nothing else.
+// A failure that may pass (resolve_transient: the host down or slow) is kept
+// a minute, sparing the host the retries of a burst without answering "not
+// found" for an hour after it is back, and while kept answers the same error,
+// so a caller still sees it may pass. Bounded by count; when full the whole
+// cache is dropped, which costs a refetch and nothing else.
 const resolve_cache_success = 24 * time.Hour
 const resolve_cache_failure = time.Hour
+const resolve_cache_transient = time.Minute
 const resolve_cache_maximum = 10000
 
 type resolve_entry struct {
 	value   *resolved
 	expires time.Time
+	failure error
+}
+
+// resolve_failure is how long a failed lookup is remembered.
+func resolve_failure(err error) time.Duration {
+	if resolve_transient(err) {
+		return resolve_cache_transient
+	}
+	return resolve_cache_failure
 }
 
 var resolve_cache = map[string]resolve_entry{}
@@ -297,6 +310,9 @@ func author_resolve(ctx context.Context, identifier string) (*resolved, error) {
 		if entry.value != nil || resolve_signed_by(ctx) == nil {
 			resolve_lock.Unlock()
 			if entry.value == nil {
+				if entry.failure != nil {
+					return nil, entry.failure
+				}
 				return nil, fmt.Errorf("not resolved")
 			}
 			return entry.value, nil
@@ -315,9 +331,9 @@ func author_resolve(ctx context.Context, identifier string) (*resolved, error) {
 		// Refused by our own limiter: nothing was learnt about the person,
 		// and the next lookup may go ahead.
 	} else if err != nil {
-		resolve_cache[identifier] = resolve_entry{nil, time.Now().Add(resolve_cache_failure)}
+		resolve_cache[identifier] = resolve_entry{nil, time.Now().Add(resolve_failure(err)), err}
 	} else {
-		resolve_cache[identifier] = resolve_entry{value, time.Now().Add(resolve_cache_success)}
+		resolve_cache[identifier] = resolve_entry{value, time.Now().Add(resolve_cache_success), nil}
 	}
 	resolve_lock.Unlock()
 	return value, err

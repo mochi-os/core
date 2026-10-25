@@ -138,7 +138,7 @@ var bridge_avatar = func(user *User, entity string) ([]byte, string) {
 // relaying user's apps declaring bridge/receive. A variable so tests can
 // watch it.
 var bridge_inbound = func(user *User, room string, events []map[string]any) {
-	if user == nil || len(events) == 0 || user_pending(user) {
+	if user == nil || len(events) == 0 || user_quiet(user) {
 		return
 	}
 	list := make([]any, 0, len(events))
@@ -283,9 +283,8 @@ func bridge_seat(ctx context.Context, user *User, r *bridge, domain string, enti
 			return "", fmt.Errorf("no such room")
 		}
 		var out rooms_outbox
-		unlock := rooms_lock(r.room)
-		err := rooms_invite_locked(ctx, version, r.room, r.standin, standin, false, &out)
-		unlock()
+		var err error
+		rooms_hold(r.room, func() { err = rooms_invite_locked(ctx, version, r.room, r.standin, standin, false, &out) })
 		out.flush()
 		if err != nil {
 			return "", err
@@ -422,9 +421,7 @@ func api_bridge_invite(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_encode(map[string]any{"id": address, "name": name}), nil
 	}
 	var out rooms_outbox
-	unlock := rooms_lock(room)
-	err = rooms_invite_locked(ctx, version, room, r.standin, address, false, &out)
-	unlock()
+	rooms_hold(room, func() { err = rooms_invite_locked(ctx, version, room, r.standin, address, false, &out) })
 	out.flush()
 	if err != nil {
 		return bridge_failed(fn, room, err)
@@ -807,9 +804,7 @@ func api_bridge_close(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		}
 	}
 	federation_database().exec("delete from bridges where room=?", room)
-	unlock := rooms_lock(room)
-	rooms_forget(room)
-	unlock()
+	rooms_hold(room, func() { rooms_forget(room) })
 	return sl.None, nil
 }
 

@@ -97,6 +97,7 @@ func signals_receive(origin spec.ServerName, raw json.RawMessage, out *rooms_out
 				User    string `json:"user_id"`
 				State   string `json:"presence"`
 				Message string `json:"status_msg"`
+				Active  bool   `json:"currently_active"`
 			} `json:"push"`
 		}
 		if json.Unmarshal(edu.Content, &presence) != nil {
@@ -113,6 +114,11 @@ func signals_receive(origin spec.ServerName, raw json.RawMessage, out *rooms_out
 			case "unavailable":
 				status = "away"
 			}
+			state := p.State
+			if state != "online" && state != "unavailable" {
+				state = "offline"
+			}
+			clients_presence_record(p.User, state, p.Message, p.Active)
 			event := map[string]any{"kind": "presence", "from": p.User, "status": status, "message": p.Message}
 			for _, room := range signals_rooms(p.User) {
 				signals_tell(room, p.User, out, event)
@@ -272,6 +278,7 @@ func signals_presence(h *matrix_hosted, when int) {
 	if message != "" && status != "offline" {
 		presence["status_msg"] = message
 	}
+	clients_presence_record(h.address, matrix_presence(status), presence_message(message, status), status == "online")
 	user, _ := spec.NewUserID(h.address, true)
 	rooms := signals_rooms(h.address)
 	var states []rooms_state
@@ -286,6 +293,14 @@ func signals_presence(h *matrix_hosted, when int) {
 		signals_tell(room, h.address, &out, event)
 	}
 	out.flush()
+}
+
+// presence_message is the status text shown with a presence: none offline.
+func presence_message(message string, status string) string {
+	if status == "offline" {
+		return ""
+	}
+	return message
 }
 
 // signals_presence_notify tells the rooms of a user's hosted Matrix accounts

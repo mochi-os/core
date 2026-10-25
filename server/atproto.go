@@ -136,7 +136,7 @@ func atproto_identity(did string) (*User, map[string]any, *repository) {
 		return nil, nil, nil
 	}
 	user := user_by_uid(row_string(row, "user"))
-	if user == nil || user_pending(user) {
+	if user == nil || user_quiet(user) {
 		return nil, nil, nil
 	}
 	account := account_hosted_get(user, row_string(row, "account"))
@@ -433,8 +433,36 @@ func atproto_recovery_added(ctx context.Context, user *User, id string) error {
 	return plc_update(ctx, user, id, atproto_did(row), func(op map[string]any) {})
 }
 
+// atproto_notified is when a commit on each domain last asked the relays to
+// crawl it: at most every atproto_notify_interval, as Bluesky's own data
+// server asks. A relay that gave the server up as offline - after a restart
+// it did not wait out - follows it again only when asked, so without this a
+// server's posts would stop reaching the network for good; the first commit
+// after a start always asks.
+var atproto_notified = map[string]time.Time{}
+var atproto_notified_lock sync.Mutex
+
+const atproto_notify_interval = 20 * time.Minute
+
+// atproto_notify asks the relays to crawl a domain when it is due.
+func atproto_notify(domain string) {
+	if domain == "" {
+		return
+	}
+	atproto_notified_lock.Lock()
+	last, found := atproto_notified[domain]
+	due := !found || time.Since(last) >= atproto_notify_interval
+	if due {
+		atproto_notified[domain] = time.Now()
+	}
+	atproto_notified_lock.Unlock()
+	if due {
+		go atproto_crawl(domain)
+	}
+}
+
 // atproto_crawl asks the relay to read this server's repositories, once an
-// account is made on a domain. Best effort: a relay that already knows the
+// account is made on a domain and as commits are made (atproto_notify). Best effort: a relay that already knows the
 // host, or refuses, costs nothing but a line in the log.
 func atproto_crawl(domain string) {
 	endpoint, err := url.Parse(atproto_endpoint(domain))
@@ -649,9 +677,14 @@ func stream_append(did string, kind string, body map[string]any) int64 {
 	defer stream_lock.Unlock()
 	db := networks_database()
 	// The frame carries its number, so it is chosen here: after the last
-	// given, which the table keeps even when it holds no events.
+	// given, which the table keeps even when it holds no events, and never
+	// below the time in milliseconds, so a server restored from an older
+	// backup goes on past every number it gave before instead of giving them
+	// again, which a relay holding a cursor past them would never read; the
+	// relay then finds each repository's commits no longer follow on from
+	// the one it holds, and reads the repository afresh.
 	last, _ := db.row("select max(coalesce((select max(sequence) from stream), 0), coalesce((select seq from sqlite_sequence where name='stream'), 0)) as last")
-	sequence := row_int(last, "last") + 1
+	sequence := max(row_int(last, "last")+1, stream_clock())
 	body["seq"] = sequence
 	if _, set := body["time"]; !set {
 		body["time"] = time.Now().UTC().Format(time.RFC3339Nano)
@@ -670,6 +703,10 @@ func stream_append(did string, kind string, body map[string]any) int64 {
 	}
 	return sequence
 }
+
+// stream_clock is the floor stream_append numbers events from: the time in
+// milliseconds. A variable so tests set the time.
+var stream_clock = func() int64 { return time.Now().UnixMilli() }
 
 // stream_last is the sequence of the last event, zero before any.
 func stream_last() int64 {

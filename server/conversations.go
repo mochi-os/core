@@ -60,7 +60,7 @@ import (
 // linked_inbound hands what an account's session heard to the apps declaring
 // linked/receive, in one call per batch. A variable so tests can watch it.
 var linked_inbound = func(user *User, account string, network string, events []map[string]any) {
-	if user == nil || len(events) == 0 || user_pending(user) {
+	if user == nil || len(events) == 0 || user_quiet(user) {
 		return
 	}
 	list := make([]any, 0, len(events))

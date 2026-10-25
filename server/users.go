@@ -63,6 +63,15 @@ func user_pending(u *User) bool {
 	return u != nil && u.Status == "pending-restore"
 }
 
+// user_quiet reports whether a user's accounts on other networks are quiet:
+// mid-restore, or closing within the grace period, when nothing of them is
+// published or taken in and their addresses answer as no one's (the
+// federation plan, "Closing an account"); cancelling the closure brings them
+// back.
+func user_quiet(u *User) bool {
+	return user_pending(u) || (u != nil && u.Status == "closing")
+}
+
 var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"activate": sl.NewBuiltin("mochi.user.activate", api_user_activate),
 	"close":    sl.NewBuiltin("mochi.user.close", api_user_close),
@@ -1310,14 +1319,18 @@ func user_purge_local(id string) (string, error) {
 
 	// The user's linked accounts are forgotten as removing them forgets
 	// them - their servers told, a Matrix device signed out and an OMEMO
-	// device withdrawn - and their sessions end and encryption devices go,
-	// before their identities and databases do.
+	// device withdrawn - and each hosted account's network is told it is
+	// gone as removing it tells it (account_hosted_gone); then their
+	// sessions end and encryption devices go, before their identities and
+	// databases do.
 	if user := user_by_uid(id); user != nil {
 		for _, row := range accounts_network(user) {
 			if l := linked_from(user, row); l != nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				linked_forget(ctx, l)
 				cancel()
+			} else if account_hosted_flag(row) {
+				account_hosted_gone(user, row)
 			}
 		}
 	}

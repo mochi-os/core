@@ -709,4 +709,11 @@ networks_tests = ${shell grep -ho '^func Test[A-Za-z0-9_]*' $(networks_files:%=s
 test-networks:
 	CGO_ENABLED=0 go test -count=1 -timeout 300s -run '^($(networks_tests)|TestPermissionAccount[A-Za-z]*|TestDomainHostPolicyWildcard)$$' ./server/
 
+# test-load runs the federation plan's load tests (phase 38): a post to 500
+# follower servers, a burst of 500 activities at one account, joining a
+# room of 2,000 members and the Bluesky relay budget's hour of writes, each
+# logging what it measured. Slow, so skipped elsewhere.
+test-load:
+	MOCHI_LOAD=1 CGO_ENABLED=0 go test -count=1 -timeout 1800s -v -run '^TestLoad(Fediverse|Matrix|Bluesky)' ./server/
+
 -include local/Makefile

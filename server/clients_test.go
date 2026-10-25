@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -54,13 +55,24 @@ func create_clients_test_env(t *testing.T) (*User, *User) {
 	alice, _ := create_matrix_test_env(t)
 	db_open("db/users.db").exec("create table if not exists tokens (hash text primary key not null, user text not null, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '')")
 	db_open("db/sessions.db").exec("create table if not exists accesses (hash text primary key not null, user text not null, used integer not null default 0)")
+	db_open("db/sessions.db").exec("create table if not exists seen (user text primary key, time integer not null)")
 	root := user_by_uid("u-root")
 	db_user(root, "user").exec("insert into accounts (id, type, label, identifier, data, created, verified, enabled) values ('m2', 'matrix', 'Root', '@root:example.com', ?, 1, 1, 1)", json_encode(map[string]any{"hosted": true, "handle": "root", "domain": "example.com"}))
 	actor_register(root, "m2", "matrix", "example.com", "root")
+	// A client's syncs make its user present (clients_present), which must
+	// not outlast the test.
+	presence_lock.Lock()
+	present := presence_connections
+	presence_connections = map[string]map[string]*presence_connection{}
+	presence_lock.Unlock()
 	t.Cleanup(func() {
 		sliding_lock.Lock()
 		sliding_connections = map[string]*sliding_connection{}
 		sliding_lock.Unlock()
+		presence_settle()
+		presence_lock.Lock()
+		presence_connections = present
+		presence_lock.Unlock()
 	})
 	return alice, root
 }
@@ -321,7 +333,9 @@ func TestClientsConversation(t *testing.T) {
 		t.Errorf("the next page repeats the first or is empty: %v %v", clients_bodies(rest.Chunk), err)
 	}
 
-	// A sync waiting for something new answers as soon as there is.
+	// A sync waiting for something new answers as soon as there is: root's
+	// own presence, which syncing gave, told first.
+	presence_settle()
 	latest, err := r.SyncRequest(ctx, 0, typed.NextBatch, "", false, "")
 	if err != nil {
 		t.Fatal(err)
@@ -561,6 +575,398 @@ func TestClientsRooms(t *testing.T) {
 	if !slices.Equal(walked_rooms, []string{string(space.RoomID), upgraded.Replacement}) || walked.Rooms[0].RoomType != "m.space" || len(walked.Rooms[0].ChildrenState) != 1 {
 		t.Errorf("THE POINT: the space's walk = %v %+v", walked_rooms, walked.Rooms)
 	}
+}
+
+// TestClientsCreators: in room version 12, as Synapse makes it, the people a
+// trusted private room is made with are its creators and only creators may
+// replace a room; power levels naming a creator or past canonical JSON's
+// integers, or a new create event, are a bad request; the create event is
+// had whole with its room's id; an invitation shows stripped events; and a
+// creator in no power levels may upgrade, others' power carried over and the
+// new room's creators left out of it.
+func TestClientsCreators(t *testing.T) {
+	alice, root := create_clients_test_env(t)
+	a := clients_client(t, alice, "m1", "@alice:example.com", "ALICE")
+	r := clients_client(t, root, "m2", "@root:example.com", "ROOT")
+	status, body := clients_request(t, a, "POST", "/_matrix/client/v3/createRoom", map[string]any{"room_version": "12", "preset": "trusted_private_chat", "is_direct": true, "invite": []string{"@root:example.com"}})
+	made, _ := body["room_id"].(string)
+	if status != 200 || made == "" {
+		t.Fatalf("createRoom = %d %v", status, body)
+	}
+	room := id.RoomID(made)
+	if create := clients_state_of(t, a, room, spec.MRoomCreate, ""); fmt.Sprint(create["additional_creators"]) != "[@root:example.com]" {
+		t.Errorf("THE POINT: the invited are creators: %v", create)
+	}
+	levels := clients_state_of(t, a, room, spec.MRoomPowerLevels, "")
+	if users, _ := levels["users"].(map[string]any); len(users) != 0 {
+		t.Errorf("THE POINT: creators listed with power: %v", levels)
+	}
+	if events, _ := levels["events"].(map[string]any); events["m.room.tombstone"] != 150.0 {
+		t.Errorf("THE POINT: a tombstone needs %v, want 150", events["m.room.tombstone"])
+	}
+
+	// The invitation as root's sync shows it: stripped events, the create
+	// event among them.
+	status, body = clients_request(t, r, "GET", "/_matrix/client/v3/sync?timeout=0", nil)
+	invited, _ := body["rooms"].(map[string]any)["invite"].(map[string]any)[made].(map[string]any)
+	shown, _ := invited["invite_state"].(map[string]any)["events"].([]any)
+	stripped, created := len(shown) > 0, false
+	for _, item := range shown {
+		event, _ := item.(map[string]any)
+		stripped = stripped && event["origin_server_ts"] == nil && event["event_id"] == nil
+		created = created || event["type"] == spec.MRoomCreate
+	}
+	if status != 200 || !stripped || !created {
+		t.Errorf("THE POINT: the invitation's state = %d %v", status, shown)
+	}
+	if _, err := r.JoinRoom(t.Context(), made, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	path := "/_matrix/client/v3/rooms/" + url.PathEscape(made) + "/state/"
+	for _, c := range []struct {
+		kind    string
+		content map[string]any
+		why     string
+	}{
+		{spec.MRoomPowerLevels, map[string]any{"users": map[string]any{"@alice:example.com": 100}}, "power levels naming a creator"},
+		{spec.MRoomPowerLevels, map[string]any{"users": map[string]any{"@carol:example.com": 9007199254740992}}, "a power past canonical JSON's integers"},
+		{spec.MRoomCreate, map[string]any{"room_version": "12", "entropy": 1}, "a new create event"},
+	} {
+		if status, body := clients_request(t, a, "PUT", path+c.kind+"/", c.content); status != 400 || body["errcode"] != "M_BAD_JSON" {
+			t.Errorf("THE POINT: %s = %d %v", c.why, status, body)
+		}
+	}
+	if status, body := clients_request(t, a, "GET", path+spec.MRoomCreate+"/?format=event", nil); status != 200 || body["room_id"] != made || body["type"] != spec.MRoomCreate {
+		t.Errorf("THE POINT: the whole create event = %d %v", status, body)
+	}
+
+	// Alice, a creator in no power levels, upgrades the room, carol's power
+	// carried over and root, named a creator again, left out of it.
+	if status, body := clients_request(t, a, "PUT", path+spec.MRoomPowerLevels+"/", map[string]any{"users": map[string]any{"@carol:example.com": 50}}); status != 200 {
+		t.Fatalf("power levels = %d %v", status, body)
+	}
+	status, body = clients_request(t, a, "POST", "/_matrix/client/v3/rooms/"+url.PathEscape(made)+"/upgrade", map[string]any{"new_version": "12", "additional_creators": []string{"@root:example.com"}})
+	replacement, _ := body["replacement_room"].(string)
+	if status != 200 || replacement == "" {
+		t.Fatalf("THE POINT: a creator's upgrade = %d %v", status, body)
+	}
+	if create := clients_state_of(t, a, id.RoomID(replacement), spec.MRoomCreate, ""); fmt.Sprint(create["additional_creators"]) != "[@root:example.com]" {
+		t.Errorf("THE POINT: the new room's creators = %v", create)
+	}
+	if users, _ := clients_state_of(t, a, id.RoomID(replacement), spec.MRoomPowerLevels, "")["users"].(map[string]any); len(users) != 1 || users["@carol:example.com"] != 50.0 {
+		t.Errorf("THE POINT: the new room's power = %v", users)
+	}
+
+	// A version 11 room, where alice and root have power, upgraded to 12 with
+	// root a creator too: both are left out of the new room's power.
+	status, body = clients_request(t, a, "POST", "/_matrix/client/v3/createRoom", map[string]any{"room_version": "11", "preset": "private_chat", "invite": []string{"@root:example.com"}})
+	older, _ := body["room_id"].(string)
+	if status != 200 {
+		t.Fatalf("createRoom = %d %v", status, body)
+	}
+	if status, body := clients_request(t, a, "PUT", "/_matrix/client/v3/rooms/"+url.PathEscape(older)+"/state/"+spec.MRoomPowerLevels+"/", map[string]any{"users": map[string]any{"@alice:example.com": 100, "@root:example.com": 100, "@carol:example.com": 50}}); status != 200 {
+		t.Fatalf("power levels = %d %v", status, body)
+	}
+	status, body = clients_request(t, a, "POST", "/_matrix/client/v3/rooms/"+url.PathEscape(older)+"/upgrade", map[string]any{"new_version": "12", "additional_creators": []string{"@root:example.com"}})
+	replacement, _ = body["replacement_room"].(string)
+	if status != 200 || replacement == "" {
+		t.Fatalf("THE POINT: an upgrade to version 12 = %d %v", status, body)
+	}
+	if users, _ := clients_state_of(t, a, id.RoomID(replacement), spec.MRoomPowerLevels, "")["users"].(map[string]any); len(users) != 1 || users["@carol:example.com"] != 50.0 {
+		t.Errorf("THE POINT: the upgraded room's power = %v", users)
+	}
+}
+
+// TestClientsPast: a room joined on another server shows a client its past
+// before the join, which paging back past fetches more of; an event of it
+// is had with those around it; the event nearest a time is found among it,
+// and asked of the room's servers where it is not held; and those servers
+// are answered the same.
+func TestClientsPast(t *testing.T) {
+	alice, _ := create_clients_test_env(t)
+	ctx := t.Context()
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	a := clients_client(t, alice, "m1", "@alice:example.com", "ALICE")
+	room := r.room("Past", "public")
+	bob := r.user("bob")
+	var said []gomatrixserverlib.PDU
+	for i := range rooms_history + 10 {
+		time.Sleep(2 * time.Millisecond)
+		said = append(said, r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": fmt.Sprintf("said %d", i)}))
+	}
+	time.Sleep(2 * time.Millisecond)
+	if _, err := a.JoinRoom(ctx, room, &mautrix.ReqJoinRoom{Via: []string{string(r.name)}}); err != nil {
+		t.Fatal(err)
+	}
+	page := func(from string, limit int) (int, map[string]any) {
+		path := "/_matrix/client/v3/rooms/" + url.PathEscape(room) + "/messages?dir=b&limit=" + strconv.Itoa(limit)
+		if from != "" {
+			path += "&from=" + url.QueryEscape(from)
+		}
+		return clients_request(t, a, "GET", path, nil)
+	}
+	bodies := func(chunk []any) []string {
+		var out []string
+		for _, item := range chunk {
+			if content, _ := item.(map[string]any)["content"].(map[string]any); content["body"] != nil {
+				out = append(out, fmt.Sprint(content["body"]))
+			}
+		}
+		return out
+	}
+	status, body := page("", 20)
+	if seen := bodies(body["chunk"].([]any)); status != 200 || !slices.Contains(seen, fmt.Sprintf("said %d", rooms_history+9)) {
+		t.Errorf("THE POINT: the past before the join, at the latest = %d %v", status, seen)
+	}
+	// Paging back through all of it, and past what the join fetched.
+	var seen []string
+	from := ""
+	for range 10 {
+		status, body = page(from, 30)
+		if status != 200 {
+			t.Fatalf("messages = %d %v", status, body)
+		}
+		seen = append(seen, bodies(body["chunk"].([]any))...)
+		end, _ := body["end"].(string)
+		if end == "" {
+			break
+		}
+		from = end
+	}
+	if !slices.Contains(seen, "said 0") || !slices.Contains(seen, fmt.Sprintf("said %d", rooms_history+9)) {
+		t.Errorf("THE POINT: paging back reaches the room's start: %d messages, the first %v", len(seen), slices.Contains(seen, "said 0"))
+	}
+	// Paging forward from the start begins at the room's own.
+	if status, body := clients_request(t, a, "GET", "/_matrix/client/v3/rooms/"+url.PathEscape(room)+"/messages?dir=f&limit=20", nil); status != 200 || len(bodies(body["chunk"].([]any))) == 0 || bodies(body["chunk"].([]any))[0] != "said 0" {
+		t.Errorf("THE POINT: paging forward from the start = %d %v", status, body["chunk"])
+	}
+	// An event of the past with those around it.
+	middle := said[30]
+	if status, body := clients_request(t, a, "GET", "/_matrix/client/v3/rooms/"+url.PathEscape(room)+"/context/"+url.PathEscape(middle.EventID())+"?limit=2", nil); status != 200 || body["event"].(map[string]any)["event_id"] != middle.EventID() {
+		t.Errorf("THE POINT: the context of an event of the past = %d %v", status, body)
+	}
+	// Paging back from the context's end, and forward from its start, takes
+	// the event in, the ends being between events.
+	if status, body := clients_request(t, a, "GET", "/_matrix/client/v3/rooms/"+url.PathEscape(room)+"/context/"+url.PathEscape(middle.EventID())+"?limit=0", nil); status == 200 {
+		for _, c := range []struct{ token, direction string }{{fmt.Sprint(body["end"]), "b"}, {fmt.Sprint(body["start"]), "f"}} {
+			_, page := clients_request(t, a, "GET", "/_matrix/client/v3/rooms/"+url.PathEscape(room)+"/messages?dir="+c.direction+"&limit=1&from="+url.QueryEscape(c.token), nil)
+			if chunk, _ := page["chunk"].([]any); len(chunk) != 1 || chunk[0].(map[string]any)["event_id"] != middle.EventID() {
+				t.Errorf("THE POINT: paging %s from the context's %s = %v", c.direction, c.token, page["chunk"])
+			}
+		}
+	}
+	// The event nearest a time, among the past.
+	nearest := func(when int64, direction string) (int, map[string]any) {
+		return clients_request(t, a, "GET", "/_matrix/client/v1/rooms/"+url.PathEscape(room)+"/timestamp_to_event?ts="+strconv.FormatInt(when, 10)+"&dir="+direction, nil)
+	}
+	if status, body := nearest(int64(middle.OriginServerTS()), "f"); status != 200 || body["event_id"] != middle.EventID() {
+		t.Errorf("THE POINT: the event at a time in the past = %d %v, want %s", status, body, middle.EventID())
+	}
+	if status, body := nearest(int64(middle.OriginServerTS())+1, "b"); status != 200 || body["event_id"] != middle.EventID() {
+		t.Errorf("THE POINT: the event before a time in the past = %d %v, want %s", status, body, middle.EventID())
+	}
+	// Answered to a server in the room as here.
+	if status, body := r.call(t, "GET", "/_matrix/federation/v1/timestamp_to_event/"+url.PathEscape(room)+"?ts="+strconv.FormatInt(int64(middle.OriginServerTS()), 10)+"&dir=f", nil); status != 200 || body["event_id"] != middle.EventID() {
+		t.Errorf("THE POINT: timestamp_to_event over federation = %d %v", status, body)
+	}
+}
+
+// TestClientsNearestRemote: where nothing held is near a time, the room's
+// servers are asked, and the history before their answer fetched.
+func TestClientsNearestRemote(t *testing.T) {
+	alice, _ := create_clients_test_env(t)
+	ctx := t.Context()
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	a := clients_client(t, alice, "m1", "@alice:example.com", "ALICE")
+	room := r.room("Remote past", "public")
+	bob := r.user("bob")
+	time.Sleep(2 * time.Millisecond)
+	early := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "early"})
+	for i := range rooms_history + 5 {
+		time.Sleep(time.Millisecond)
+		r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": fmt.Sprintf("later %d", i)})
+	}
+	if _, err := a.JoinRoom(ctx, room, &mautrix.ReqJoinRoom{Via: []string{string(r.name)}}); err != nil {
+		t.Fatal(err)
+	}
+	if rooms_event(early.EventID()) != nil {
+		t.Fatal("CONTROL: the early message came with the join")
+	}
+	status, body := clients_request(t, a, "GET", "/_matrix/client/v1/rooms/"+url.PathEscape(room)+"/timestamp_to_event?ts="+strconv.FormatInt(int64(early.OriginServerTS()), 10)+"&dir=b", nil)
+	if status != 200 || body["event_id"] != early.EventID() {
+		t.Errorf("THE POINT: the event nearest a time asked of the room's server = %d %v, want %s", status, body, early.EventID())
+	}
+	if clients_position(early.EventID()) >= 0 {
+		t.Errorf("THE POINT: the answer's history was not fetched below the timeline: position %d", clients_position(early.EventID()))
+	}
+}
+
+// TestClientsPresence: a client sets its presence, which goes to the servers
+// it shares a room with and to the people here who share one; another
+// server's presence reaches the clients sharing a room with its user and is
+// had on asking; and a client that stops syncing lapses offline.
+func TestClientsPresence(t *testing.T) {
+	alice, root := create_clients_test_env(t)
+	ctx := t.Context()
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	a := clients_client(t, alice, "m1", "@alice:example.com", "ALICE")
+	o := clients_client(t, root, "m2", "@root:example.com", "ROOT")
+	room := r.room("Presence", "public")
+	bob := r.user("bob")
+	for _, cli := range []*mautrix.Client{a, o} {
+		if _, err := cli.JoinRoom(ctx, room, &mautrix.ReqJoinRoom{Via: []string{string(r.name)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	presence_settle()
+	start, err := o.SyncRequest(ctx, 0, "", "", false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shown := func(since string, person string) map[string]any {
+		t.Helper()
+		presence_settle()
+		status, body := clients_request(t, o, "GET", "/_matrix/client/v3/sync?timeout=0&since="+url.QueryEscape(since), nil)
+		if status != 200 {
+			t.Fatalf("sync = %d %v", status, body)
+		}
+		for _, item := range body["presence"].(map[string]any)["events"].([]any) {
+			if event := item.(map[string]any); event["sender"] == person {
+				return event["content"].(map[string]any)
+			}
+		}
+		return nil
+	}
+
+	// Alice sets hers.
+	if status, body := clients_request(t, a, "PUT", "/_matrix/client/v3/presence/"+url.PathEscape("@alice:example.com")+"/status", map[string]any{"presence": "unavailable", "status_msg": "Lunch"}); status != 200 {
+		t.Fatalf("presence = %d %v", status, body)
+	}
+	if content := shown(start.NextBatch, "@alice:example.com"); content["presence"] != "unavailable" || content["status_msg"] != "Lunch" {
+		t.Errorf("THE POINT: alice's presence as root's sync shows it = %v", content)
+	}
+	wait(t, "alice's presence at bob's server", func() bool {
+		for _, edu := range r.edus_of("m.presence") {
+			if strings.Contains(string(edu.Content), `"@alice:example.com"`) && strings.Contains(string(edu.Content), `"Lunch"`) && strings.Contains(string(edu.Content), `"unavailable"`) {
+				return true
+			}
+		}
+		return false
+	})
+
+	// Bob's, from his server.
+	r.signal(t, "presence", matrix_edu("m.presence", map[string]any{"push": []any{map[string]any{"user_id": bob, "presence": "online", "status_msg": "Here", "currently_active": true, "last_active_ago": 0}}}))
+	if content := shown(start.NextBatch, bob); content["presence"] != "online" || content["status_msg"] != "Here" || content["currently_active"] != true {
+		t.Errorf("THE POINT: bob's presence as root's sync shows it = %v", content)
+	}
+	if status, body := clients_request(t, o, "GET", "/_matrix/client/v3/presence/"+url.PathEscape(bob)+"/status", nil); status != 200 || body["presence"] != "online" || body["status_msg"] != "Here" {
+		t.Errorf("THE POINT: bob's presence asked for = %d %v", status, body)
+	}
+
+	// Alice's client stops syncing, and lapses.
+	presence_lock.Lock()
+	for _, c := range presence_connections[alice.UID] {
+		if c.Kind == "matrix" {
+			c.Seen -= clients_presence_lapsed + 1
+		}
+	}
+	presence_lock.Unlock()
+	clients_presence_lapse()
+	if content := shown(start.NextBatch, "@alice:example.com"); content["presence"] != "offline" {
+		t.Errorf("THE POINT: alice's presence once her client lapsed = %v", content)
+	}
+}
+
+// TestClientsMethods: a known path asked with a method it does not take is
+// told so, an unknown one is unknown.
+func TestClientsMethods(t *testing.T) {
+	alice, _ := create_clients_test_env(t)
+	a := clients_client(t, alice, "m1", "@alice:example.com", "ALICE")
+	for _, c := range []struct {
+		method string
+		path   string
+		status int
+	}{
+		{"PUT", "/_matrix/client/v3/login", 405},
+		{"PATCH", "/_matrix/media/v3/upload", 405},
+		{"DELETE", "/_matrix/client/v3/account/whoami", 405},
+		{"GET", "/_matrix/client/v3/unknown", 404},
+	} {
+		if status, body := clients_request(t, a, c.method, c.path, nil); status != c.status || body["errcode"] != "M_UNRECOGNIZED" {
+			t.Errorf("THE POINT: %s %s = %d %v, want %d", c.method, c.path, status, body, c.status)
+		}
+	}
+}
+
+// TestClientsHistory: a public room is made with the preset's rules but no
+// guest access to forbid, and with state asked in place of the preset's, as
+// Synapse makes one; and a server joining it late is given what it may not
+// see of the room's history redacted, the walk going on past it to the
+// room's start.
+func TestClientsHistory(t *testing.T) {
+	alice, _ := create_clients_test_env(t)
+	ctx := t.Context()
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	a := clients_client(t, alice, "m1", "@alice:example.com", "ALICE")
+	made, err := a.CreateRoom(ctx, &mautrix.ReqCreateRoom{Preset: "public_chat", InitialState: []*event.Event{{Type: event.StateHistoryVisibility, StateKey: new(string), Content: event.Content{Raw: map[string]any{"history_visibility": "joined"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	room := string(made.RoomID)
+	current, _ := rooms_current(room)
+	if current[rooms_key("m.room.guest_access", "")] != "" {
+		t.Error("THE POINT: a public room forbids guests with an event")
+	}
+	visibilities := 0
+	for _, event := range rooms_walk(room, []string{current[rooms_key(spec.MRoomHistoryVisibility, "")]}, map[string]bool{}, 50, 0, true) {
+		if event.Type() == spec.MRoomHistoryVisibility {
+			visibilities++
+		}
+	}
+	if visibilities != 1 {
+		t.Errorf("THE POINT: history visibility set %d times, want once, as asked", visibilities)
+	}
+	// The same state again from its sender is no new event.
+	held := current[rooms_key(spec.MRoomHistoryVisibility, "")]
+	if status, body := clients_request(t, a, "PUT", "/_matrix/client/v3/rooms/"+url.PathEscape(room)+"/state/"+spec.MRoomHistoryVisibility+"/", map[string]any{"history_visibility": "joined"}); status != 200 || body["event_id"] != held {
+		t.Errorf("THE POINT: the same visibility again = %d %v, want %s", status, body, held)
+	}
+	if _, err := a.SendText(ctx, made.RoomID, "before bob came"); err != nil {
+		t.Fatal(err)
+	}
+	matrix_remote_join(t, r, room, r.user("bob"))
+	r.lock.Lock()
+	joined := r.edge[room][0]
+	r.lock.Unlock()
+	check := func(name string, events []any) {
+		t.Helper()
+		var message map[string]any
+		started := false
+		for _, item := range events {
+			event, _ := item.(map[string]any)
+			if event["type"] == "m.room.message" {
+				message = event
+			}
+			started = started || event["type"] == spec.MRoomCreate
+		}
+		if content, _ := message["content"].(map[string]any); message == nil || len(content) != 0 {
+			t.Errorf("THE POINT: %s gives the message bob may not see as %v", name, message)
+		}
+		if !started {
+			t.Errorf("THE POINT: %s stops short of the room's start: %d events", name, len(events))
+		}
+	}
+	status, body := r.call(t, "GET", "/_matrix/federation/v1/backfill/"+url.PathEscape(room)+"?v="+url.QueryEscape(joined)+"&limit=20", nil)
+	if status != 200 {
+		t.Fatalf("backfill = %d %v", status, body)
+	}
+	check("backfill", body["pdus"].([]any))
+	status, body = r.call(t, "POST", "/_matrix/federation/v1/get_missing_events/"+url.PathEscape(room), map[string]any{"earliest_events": []string{}, "latest_events": []string{joined}, "limit": 20})
+	if status != 200 {
+		t.Fatalf("missing events = %d %v", status, body)
+	}
+	check("missing events", body["events"].([]any))
 }
 
 // TestClientsKnocking: someone knocks on a room whose rule is to knock and
@@ -1257,6 +1663,16 @@ func TestClientsFederation(t *testing.T) {
 	status, body = r.call(t, "PUT", "/_matrix/federation/v1/send_knock/"+url.PathEscape(string(club.RoomID))+"/"+url.PathEscape(knock.EventID()), json.RawMessage(knock.JSON()))
 	if state, _ := body["knock_room_state"].([]any); status != 200 || len(state) == 0 {
 		t.Fatalf("THE POINT: send_knock = %d %v", status, body)
+	}
+	// Whole events, the create event among them (spec v1.18).
+	for _, item := range body["knock_room_state"].([]any) {
+		if event, _ := item.(map[string]any); event["origin_server_ts"] == nil || event["signatures"] == nil {
+			t.Errorf("THE POINT: the knock's room state = %v", body["knock_room_state"])
+			break
+		}
+	}
+	if !strings.Contains(string(mustjson(body["knock_room_state"])), `"type":"m.room.create"`) {
+		t.Errorf("THE POINT: the knock's room state has no create event: %v", body["knock_room_state"])
 	}
 	if rooms_membership(string(club.RoomID), bob) != "knock" {
 		t.Errorf("THE POINT: bob's membership = %q", rooms_membership(string(club.RoomID), bob))
@@ -1963,5 +2379,28 @@ func TestClientsPositions(t *testing.T) {
 	clients_pending("!c:example.com", "@alice:example.com", "invite", "", "")
 	if next := sync_latest().invites; next != before+1 {
 		t.Errorf("the next invitation is at %d, want %d", next, before+1)
+	}
+}
+
+// TestClientsPresenceConcurrent: presence recorded for one user from many
+// goroutines at once keeps one row, each change at a new position, and never
+// fails, as a delete and an insert racing did, taking the server down.
+func TestClientsPresenceConcurrent(t *testing.T) {
+	create_clients_test_env(t)
+	before := sync_last(federation_database(), "presences")
+	var group sync.WaitGroup
+	for i := range 50 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			clients_presence_record("@alice:example.com", []string{"online", "unavailable"}[i%2], fmt.Sprint(i), i%2 == 0)
+		}()
+	}
+	group.Wait()
+	if row, _ := federation_database().row("select count(*) as count from presences where user='@alice:example.com'"); row_int(row, "count") != 1 {
+		t.Errorf("THE POINT: rows for one user = %v", row)
+	}
+	if sync_last(federation_database(), "presences") <= before {
+		t.Error("THE POINT: the changes took no new position")
 	}
 }

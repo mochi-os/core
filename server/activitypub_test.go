@@ -8,11 +8,18 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -343,6 +350,42 @@ func TestActivityPubFollow(t *testing.T) {
 	}
 }
 
+// TestActivityPubInboxMessageSignature: a Follow signed in the RFC 9421 form,
+// as WordPress signs it, is taken by the inbox though it arrives over plain
+// http from a proxy that ended TLS, and the same signature over another body is
+// refused.
+func TestActivityPubInboxMessageSignature(t *testing.T) {
+	alice, bob := create_activitypub_test_env(t)
+	post := func(body []byte, signed []byte) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest("POST", "http://example.com/~f1/inbox", bytes.NewReader(body))
+		r.Header.Set("Content-Type", activitypub_type)
+		digest := sha256.Sum256(signed)
+		r.Header.Set("Content-Digest", "sha-256=:"+base64.StdEncoding.EncodeToString(digest[:])+":")
+		components := [][2]string{{"@method", "POST"}, {"@target-uri", "https://example.com/~f1/inbox"}, {"@authority", "example.com"}, {"content-digest", r.Header.Get("Content-Digest")}}
+		signature_message_test_sign(r, "sig1", components, fmt.Sprintf(`;created=%d;keyid="%s";alg="rsa-v1_5-sha256"`, time.Now().Unix(), bob.key_id), func(base []byte) []byte {
+			signature, err := key_sign_rsa(bob.private, base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return signature
+		})
+		return activitypub_request(t, r)
+	}
+	body := []byte(json_encode(follow_activity(bob, "https://remote.example/follows/1")))
+	other := []byte(json_encode(follow_activity(bob, "https://remote.example/follows/2")))
+
+	if w := post(other, body); w.Code != http.StatusUnauthorized {
+		t.Errorf("a body the signed digest does not match: %d, want 401", w.Code)
+	}
+	if w := post(body, body); w.Code != http.StatusAccepted {
+		t.Fatalf("an RFC 9421 signed Follow: %d %s", w.Code, w.Body.String())
+	}
+	if found, _ := db_user(alice, "user").exists("select 1 from followers where account='f1' and actor=?", bob.id); !found {
+		t.Error("the RFC 9421 signed Follow should record bob as a follower")
+	}
+}
+
 // TestActivityPubInboxRefusals: an unsigned request, a tampered body, a key
 // from another host, a body too large or malformed, and an actor that is not a
 // fediverse id are refused; a blocked host is taken and dropped.
@@ -409,6 +452,243 @@ func TestActivityPubInboxRefusals(t *testing.T) {
 	r = httptest.NewRequest("POST", "https://example.com/~f1/inbox", bytes.NewReader([]byte(json_encode(gone))))
 	if w := activitypub_request(t, r); w.Code != http.StatusAccepted || fetches != 0 {
 		t.Errorf("delete of an unknown actor: %d after %d fetches", w.Code, fetches)
+	}
+}
+
+// TestActivityPubKeyUnavailable: a sender's key that cannot be read for now -
+// this server's own limit on requests to its host, which a burst of new
+// people from one large server reaches, or the host failing - is answered as
+// a request to send again later, which senders retry where they drop a 401,
+// and the failure is kept a minute as the same answer; so is a Follow whose
+// follower cannot be read, rather than a 202 that took nothing; a key that
+// is not there is refused, and kept an hour.
+func TestActivityPubKeyUnavailable(t *testing.T) {
+	alice, bob := create_activitypub_test_env(t)
+	saved := resolve_fetch
+	var failure error
+	fetches := 0
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		if failure != nil && address == bob.id {
+			fetches++
+			return nil, failure
+		}
+		return saved(ctx, address, accept)
+	}
+	t.Cleanup(func() { resolve_fetch = saved })
+
+	failure = &RateLimitError{Retry: 30}
+	if w := signed_post(t, bob, "/~f1/inbox", follow_activity(bob, "https://remote.example/follows/k1"), nil); w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") != "30" {
+		t.Errorf("THE POINT: refused by the limit, answered %d with Retry-After %q, want 429 and 30", w.Code, w.Header().Get("Retry-After"))
+	}
+	failure = &resolve_refusal{Status: 503}
+	if w := signed_post(t, bob, "/~f1/inbox", follow_activity(bob, "https://remote.example/follows/k2"), nil); w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") != "60" {
+		t.Errorf("THE POINT: the host failing, answered %d with Retry-After %q, want 503 and 60", w.Code, w.Header().Get("Retry-After"))
+	}
+	before := fetches
+	if w := signed_post(t, bob, "/~f1/inbox", follow_activity(bob, "https://remote.example/follows/k3"), nil); w.Code != http.StatusServiceUnavailable || fetches != before {
+		t.Errorf("THE POINT: kept, the failure answered %d after %d more fetches, want 503 from the cache", w.Code, fetches-before)
+	}
+	signature_keys_lock.Lock()
+	entry := signature_keys[bob.key_id]
+	signature_keys_lock.Unlock()
+	if kept := time.Until(entry.expires); kept > resolve_cache_transient {
+		t.Errorf("THE POINT: the failure is kept %v, want at most %v", kept, resolve_cache_transient)
+	}
+	if found, _ := db_user(alice, "user").exists("select 1 from followers where account='f1'"); found {
+		t.Error("a Follow whose key was not read recorded a follower")
+	}
+
+	// The host back and the minute past, the Follow sent again is taken.
+	failure = nil
+	signature_keys_lock.Lock()
+	entry.expires = time.Now().Add(-time.Second)
+	signature_keys[bob.key_id] = entry
+	signature_keys_lock.Unlock()
+	if w := signed_post(t, bob, "/~f1/inbox", follow_activity(bob, "https://remote.example/follows/k3"), nil); w.Code != http.StatusAccepted {
+		t.Errorf("sent again: %d", w.Code)
+	}
+	if found, _ := db_user(alice, "user").exists("select 1 from followers where account='f1' and actor=?", bob.id); !found {
+		t.Error("the Follow sent again recorded no follower")
+	}
+
+	// A Follow whose key is held but whose follower cannot be read for now
+	// is answered as one to send again, and taken when it is.
+	dave_public, dave_private, err := key_generate(key_rsa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dave := &remote_person{id: "https://remote.example/u/dave", key_id: "https://remote.example/u/dave#main-key", inbox: "https://remote.example/u/dave/inbox", public: dave_public, private: dave_private}
+	signature_keys_lock.Lock()
+	signature_keys[dave.key_id] = signature_key_entry{public: dave.public, expires: time.Now().Add(time.Hour)}
+	signature_keys_lock.Unlock()
+	reads := 0
+	limited := true
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		if address == dave.id {
+			reads++
+			if limited {
+				return nil, &RateLimitError{Retry: 20}
+			}
+			return []byte(`{"id":"` + dave.id + `","type":"Person","preferredUsername":"dave","inbox":"` + dave.inbox + `","publicKey":{"id":"` + dave.key_id + `","owner":"` + dave.id + `","publicKeyPem":` + json_encode(dave.public) + `}}`), nil
+		}
+		return saved(ctx, address, accept)
+	}
+	if w := signed_post(t, dave, "/~f1/inbox", follow_activity(dave, "https://remote.example/follows/d1"), nil); w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") != "20" || reads == 0 {
+		t.Errorf("THE POINT: a follower not read for now, answered %d with Retry-After %q after %d reads, want 429 and 20", w.Code, w.Header().Get("Retry-After"), reads)
+	}
+	limited = false
+	if w := signed_post(t, dave, "/~f1/inbox", follow_activity(dave, "https://remote.example/follows/d1"), nil); w.Code != http.StatusAccepted {
+		t.Errorf("sent again: %d", w.Code)
+	}
+	if found, _ := db_user(alice, "user").exists("select 1 from followers where account='f1' and actor=?", dave.id); !found {
+		t.Error("THE POINT: the Follow sent again, the same id, was not taken: it was kept as seen")
+	}
+
+	// A key that is not there is a refusal, kept an hour.
+	public, private, err := key_generate(key_rsa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	carol := &remote_person{id: "https://remote.example/u/carol", key_id: "https://remote.example/u/carol#main-key", inbox: "https://remote.example/u/carol/inbox", public: public, private: private}
+	if w := signed_post(t, carol, "/~f1/inbox", follow_activity(carol, "https://remote.example/follows/c1"), nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("a key not there: %d, want 401", w.Code)
+	}
+	signature_keys_lock.Lock()
+	missing := signature_keys[carol.key_id]
+	signature_keys_lock.Unlock()
+	if kept := time.Until(missing.expires); kept < resolve_cache_failure-time.Minute {
+		t.Errorf("a key not there is kept %v, want %v", kept, resolve_cache_failure)
+	}
+}
+
+// TestRestoreFediverseMove: restored onto another domain while the old server
+// still serves the old address with the key the bundle holds, a fediverse
+// account takes the same name here under its id and key, names the old
+// address among its own, sends its followers' servers a Move signed as the
+// old address, and follows again from the new one; with the old server not
+// serving it, the account stays behind.
+func TestRestoreFediverseMove(t *testing.T) {
+	alice := create_delivery_test_env(t)
+	key := keypair_get(alice, "f1", key_signing)
+	type sent struct{ key, path, body string }
+	var lock sync.Mutex
+	var received []sent
+	box := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_, signed, _ := strings.Cut(r.Header.Get("Signature"), `keyId="`)
+		signed, _, _ = strings.Cut(signed, `"`)
+		lock.Lock()
+		received = append(received, sent{signed, r.URL.Path, string(body)})
+		lock.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(box.Close)
+	db := db_user(alice, "user")
+	db.exec("insert into followers (account, actor, inbox, shared, created) values ('f1', 'https://remote.example/u/bob', ?, ?, 1)", box.URL+"/u/bob/inbox", box.URL+"/inbox")
+	db.exec("insert into following (account, actor, inbox, activity, accepted, created) values ('f1', 'https://remote.example/u/carol', ?, 'https://old.example/~f1/follows/1', 5, 1)", box.URL+"/u/carol/inbox")
+
+	// The bundle came from old.example, which served the account; none of
+	// her handles came with her.
+	data := account_data(account_hosted_get(alice, "f1"))
+	data["domain"] = "old.example"
+	db.account_set("f1", map[string]any{"data": json_encode(data), "identifier": "@alice@old.example"})
+	db.exec("delete from accounts where id='b1'")
+	db_open("db/users.db").exec("delete from handles where user=?", alice.UID)
+	networks_database().exec("delete from actors")
+	saved := resolve_fetch
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		if address == "https://old.example/~f1" {
+			return []byte(`{"id":"https://old.example/~f1","type":"Person","preferredUsername":"alice","inbox":"https://old.example/~f1/inbox","publicKey":{"id":"https://old.example/~f1#main-key","owner":"https://old.example/~f1","publicKeyPem":` + json_encode(key.Public) + `}}`), nil
+		}
+		return nil, &resolve_refusal{Status: 404}
+	}
+	t.Cleanup(func() { resolve_fetch = saved })
+
+	restore_hosted(alice.UID)
+	row := account_hosted_get(alice, "f1")
+	if row == nil {
+		t.Fatal("THE POINT: the account the old server still serves was dropped")
+	}
+	moved := account_data(row)
+	if moved["domain"] != "example.com" || row_string(row, "identifier") != "@alice@example.com" || moved["former"] != "https://old.example/~f1" {
+		t.Errorf("THE POINT: the account here = %v as %s", moved, row_string(row, "identifier"))
+	}
+	if aliases := object_strings(moved["aliases"]); !slices.Contains(aliases, "https://old.example/~f1") {
+		t.Errorf("THE POINT: the new address names %v among its own, not the old one", aliases)
+	}
+	if a := actor_get("f1"); a == nil || a.Domain != "example.com" || a.User != alice.UID {
+		t.Errorf("THE POINT: the actor here = %+v", a)
+	}
+	if h := handle_get("example.com", "alice"); h == nil || h.User != alice.UID {
+		t.Errorf("THE POINT: the name here = %+v", h)
+	}
+	if kept := keypair_get(alice, "f1", key_signing); kept == nil || kept.Public != key.Public {
+		t.Error("THE POINT: the account did not keep its key")
+	}
+	if found, _ := db.exists("select 1 from followers where account='f1'"); found {
+		t.Error("the old address's followers are kept, before their servers follow the new one")
+	}
+	if follow, _ := db.row("select activity, accepted from following where account='f1'"); follow == nil || !strings.HasPrefix(row_string(follow, "activity"), "https://example.com/~f1/follows/") || row_int(follow, "accepted") != 0 {
+		t.Errorf("THE POINT: the follow of carol = %v, want one pending from the new address", follow)
+	}
+	for delivery_process() > 0 {
+	}
+	lock.Lock()
+	defer lock.Unlock()
+	var move, follow *sent
+	for i := range received {
+		var activity map[string]any
+		json.Unmarshal([]byte(received[i].body), &activity)
+		switch activity["type"] {
+		case "Move":
+			if activity["actor"] == "https://old.example/~f1" && activity["object"] == "https://old.example/~f1" && activity["target"] == "https://example.com/~f1" {
+				move = &received[i]
+			}
+		case "Follow":
+			if activity["actor"] == "https://example.com/~f1" && activity["object"] == "https://remote.example/u/carol" {
+				follow = &received[i]
+			}
+		}
+	}
+	if move == nil || move.path != "/inbox" || move.key != "https://old.example/~f1#main-key" {
+		t.Errorf("THE POINT: the Move to the followers' server = %+v, want one at the shared inbox signed as the old address; received %v", move, received)
+	}
+	if follow == nil || follow.path != "/u/carol/inbox" || follow.key != "https://example.com/~f1#main-key" {
+		t.Errorf("THE POINT: the follow sent again = %+v, want one signed as the new address", follow)
+	}
+
+	// A name already hers is shared, not taken again; one another holds is
+	// not hers; a Bluesky account that fails to move onto a name shared
+	// with the account moved here leaves the name, and the account, alone.
+	if reserved, held := restore_name(alice, "example.com", "alice"); reserved || !held {
+		t.Errorf("THE POINT: a name already hers: reserved %v, held %v", reserved, held)
+	}
+	other := &User{UID: "other"}
+	handle_reserve(other, "example.com", "taken", "handle")
+	if reserved, held := restore_name(alice, "example.com", "taken"); reserved || held {
+		t.Errorf("THE POINT: a name another holds: reserved %v, held %v", reserved, held)
+	}
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) }))
+	t.Cleanup(refusing.Close)
+	saved_plc := bluesky_plc
+	bluesky_plc = refusing.URL
+	t.Cleanup(func() { bluesky_plc = saved_plc })
+	if restore_bluesky(alice, map[string]any{"id": "b9", "type": "bluesky", "data": map[string]any{"did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa", "handle": "alice", "domain": "old.example"}}, "alice") {
+		t.Fatal("a Bluesky account with no identity to move was moved")
+	}
+	if h := handle_get("example.com", "alice"); h == nil || account_hosted_get(alice, "f1") == nil {
+		t.Error("THE POINT: the Bluesky account's failure released the name, and the account moved onto it")
+	}
+
+	// The old server not serving it, the account stays with its domain.
+	db.exec("delete from accounts")
+	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('f2', 'fediverse', '', '@alice@old.example', '{\"hosted\":true,\"handle\":\"alice\",\"domain\":\"old.example\"}', 1, 1)")
+	if err := keypairs_create(alice, "f2", "fediverse"); err != nil {
+		t.Fatal(err)
+	}
+	restore_hosted(alice.UID)
+	if account_hosted_get(alice, "f2") != nil {
+		t.Error("THE POINT: an account its old server does not serve was moved")
 	}
 }
 
@@ -717,5 +997,63 @@ func TestActivityPubSignedLookup(t *testing.T) {
 	}
 	if rows := delivery_rows(t); len(rows) != 1 || rows[0]["inbox"] != bob.inbox {
 		t.Errorf("deliveries = %v, want the Accept to bob's inbox", rows)
+	}
+}
+
+// TestActivityPubClosing: an account closing within its grace period has its
+// hosted account go quiet, as under a network switched off: its actor and
+// WebFinger answer as no one's, a Follow is not taken and nothing is
+// published as it; cancelling the closure brings it back.
+func TestActivityPubClosing(t *testing.T) {
+	alice, bob := create_activitypub_test_env(t)
+	webfinger := func() int {
+		return activitypub_request(t, httptest.NewRequest("GET", "https://example.com/.well-known/webfinger?resource=acct:alice@example.com", nil)).Code
+	}
+	if w, _ := activitypub_get(t, "/~f1"); w.Code != http.StatusOK || webfinger() != http.StatusOK {
+		t.Fatalf("CONTROL: the actor = %d, webfinger %d", w.Code, webfinger())
+	}
+	db_open("db/users.db").exec("update users set status='closing' where uid=?", alice.UID)
+	if w, _ := activitypub_get(t, "/~f1"); w.Code == http.StatusOK {
+		t.Errorf("THE POINT: a closing account's actor = %d", w.Code)
+	}
+	if code := webfinger(); code != http.StatusNotFound {
+		t.Errorf("THE POINT: a closing account's webfinger = %d", code)
+	}
+	if w := signed_post(t, bob, "/~f1/inbox", follow_activity(bob, "https://remote.example/follows/closing"), nil); w.Code == http.StatusAccepted {
+		t.Errorf("THE POINT: a Follow of a closing account was taken: %d", w.Code)
+	}
+	if followed, _ := db_user(alice, "user").exists("select 1 from followers where account='f1' and actor=?", bob.id); followed {
+		t.Error("THE POINT: a closing account gained a follower")
+	}
+	if _, _, _, err := account_acting_on(linked_thread(user_by_uid(alice.UID)), nil, "f1", "fediverse"); err == nil || !strings.Contains(err.Error(), "closing") {
+		t.Errorf("THE POINT: publishing as a closing account = %v", err)
+	}
+	db_open("db/users.db").exec("update users set status='active' where uid=?", alice.UID)
+	if w, _ := activitypub_get(t, "/~f1"); w.Code != http.StatusOK || webfinger() != http.StatusOK {
+		t.Errorf("THE POINT: the closure cancelled, the actor = %d, webfinger %d", w.Code, webfinger())
+	}
+}
+
+// TestActivityPubUserDeleted: deleting a user tells each hosted account's
+// network it is gone, as removing the account does: the fediverse account's
+// followers' servers get a Delete of the actor, which then answers gone.
+func TestActivityPubUserDeleted(t *testing.T) {
+	alice, _ := create_activitypub_test_env(t)
+	box := create_inbox(t, alice)
+	db_user(alice, "user").exec("insert into followers (account, actor, inbox, shared, created) values ('f1', 'https://remote.example/u/bob', ?, ?, 1)", box.server.URL+"/u/bob/inbox", box.server.URL+"/inbox")
+	// The rest of what a purge clears.
+	db_create()
+	if _, err := user_purge_local(alice.UID); err != nil {
+		t.Fatal(err)
+	}
+	rows := delivery_rows(t)
+	if len(rows) != 1 || rows[0]["inbox"] != box.server.URL+"/inbox" {
+		t.Fatalf("THE POINT: deliveries on deleting the user = %v, want a Delete to the follower's server", rows)
+	}
+	if _, activity := delivery_body(t); activity["type"] != "Delete" || activity["object"] != "https://example.com/~f1" {
+		t.Errorf("THE POINT: what the follower's server is sent = %v", activity)
+	}
+	if w, _ := activitypub_get(t, "/~f1"); w.Code != http.StatusGone {
+		t.Errorf("THE POINT: the deleted user's actor = %d", w.Code)
 	}
 }

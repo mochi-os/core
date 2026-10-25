@@ -260,3 +260,61 @@ func TestAppsForFunction(t *testing.T) {
 		t.Errorf("apps_for_function for an undeclared function returned %d apps", n)
 	}
 }
+
+// TestNetworksDormant: with the development switch off, every path the
+// networks' engines answer is not found, as before any of them existed, its
+// preflight too; and with the switch on, a network the owner has switched off
+// answers nothing on its paths while the others still do.
+func TestNetworksDormant(t *testing.T) {
+	create_domains_test_env(t)
+	engines_test_reset(t)
+	gin.SetMode(gin.TestMode)
+	saved := networks_development
+	t.Cleanup(func() { networks_development = saved })
+	engines_start()
+	paths := map[string][]string{
+		"fediverse": {"/.well-known/nodeinfo", "/.well-known/webfinger?resource=acct:alice@example.com", "/nodeinfo/2.1", "/@alice", "/api/v1/instance", "/api/v3/site"},
+		"bluesky":   {"/xrpc/com.atproto.server.describeServer", "/.well-known/atproto-did"},
+		"matrix":    {"/_matrix/federation/v1/version", "/.well-known/matrix/server", "/_matrix/client/versions", "/.well-known/matrix/client"},
+		"xmpp":      {"/xmpp/websocket"},
+		"":          {"/oauth/authorize", "/.well-known/oauth-authorization-server", "/api/v1/apps", "/oauth/client-metadata.json", "/websub", "/webmention/x", "/.well-known/host-meta"},
+	}
+	probe := func(method string, path string) int {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(method, "http://example.com"+path, nil)
+		c.Request.Host = "example.com"
+		if !engine_route(c) {
+			return 0
+		}
+		return w.Code
+	}
+	networks_development = false
+	for _, list := range paths {
+		for _, path := range list {
+			for _, method := range []string{"GET", "OPTIONS"} {
+				if code := probe(method, path); code != 0 && code != http.StatusNotFound {
+					t.Errorf("THE POINT: with the development switch off, %s %s = %d", method, path, code)
+				}
+			}
+		}
+	}
+	networks_development = true
+	for _, network := range network_names {
+		setting_set(network, "false")
+		for _, path := range paths[network] {
+			if code := probe("GET", path); code != http.StatusNotFound {
+				t.Errorf("THE POINT: with %s switched off, GET %s = %d", network, path, code)
+			}
+		}
+		for _, other := range network_names {
+			if other == network || len(paths[other]) == 0 {
+				continue
+			}
+			if code := probe("GET", paths[other][0]); code == http.StatusNotFound && other != "xmpp" {
+				t.Errorf("with %s switched off, %s's %s = %d", network, other, paths[other][0], code)
+			}
+		}
+		setting_set(network, "true")
+	}
+}

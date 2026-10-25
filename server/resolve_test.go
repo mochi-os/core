@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestAuthorNetwork: each network's identifier form is recognised, a Mochi
@@ -107,6 +108,45 @@ func TestResolveActivityPub(t *testing.T) {
 	// The actor URL itself resolves without WebFinger.
 	if r, err := author_resolve(context.Background(), "https://lemmy.world/u/bob"); err != nil || r.Address != "@bob@lemmy.world" || d.fetches != 3 {
 		t.Errorf("actor URL lookup: %+v, %v, fetches %d", r, err, d.fetches)
+	}
+}
+
+// TestResolveTransient: a lookup that failed for a reason that may pass is
+// kept a minute and answers the same error while kept, so a caller still
+// sees it may pass; one that found nothing is kept an hour.
+func TestResolveTransient(t *testing.T) {
+	d := resolve_test_install(t, map[string]string{})
+	down := &resolve_refusal{Status: 503}
+	saved := resolve_fetch
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		if strings.Contains(address, "down.example") {
+			d.fetches++
+			return nil, down
+		}
+		return saved(ctx, address, accept)
+	}
+	if _, err := author_resolve(context.Background(), "https://down.example/u/bob"); !resolve_transient(err) {
+		t.Fatalf("first lookup: %v, want the host's failure", err)
+	}
+	fetches := d.fetches
+	if _, err := author_resolve(context.Background(), "https://down.example/u/bob"); !resolve_transient(err) || d.fetches != fetches {
+		t.Errorf("THE POINT: kept, the failure reads %v after %d more fetches, want the same error from the cache", err, d.fetches-fetches)
+	}
+	resolve_lock.Lock()
+	kept := time.Until(resolve_cache["https://down.example/u/bob"].expires)
+	missing := time.Now()
+	resolve_lock.Unlock()
+	if kept > resolve_cache_transient {
+		t.Errorf("THE POINT: a failure that may pass is kept %v, want at most %v", kept, resolve_cache_transient)
+	}
+	if _, err := author_resolve(context.Background(), "https://gone.example/u/bob"); err == nil || resolve_transient(err) {
+		t.Fatalf("a missing person: %v", err)
+	}
+	resolve_lock.Lock()
+	gone := resolve_cache["https://gone.example/u/bob"].expires.Sub(missing)
+	resolve_lock.Unlock()
+	if gone < resolve_cache_failure-time.Minute {
+		t.Errorf("a person not found is kept %v, want %v", gone, resolve_cache_failure)
 	}
 }
 

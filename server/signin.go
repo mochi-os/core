@@ -134,6 +134,12 @@ func signin_engine() *engine {
 
 // signin_route dispatches one request.
 func signin_route(c *gin.Context) bool {
+	// Dormant, nothing is answered, a preflight neither, as before the
+	// engine existed.
+	if !networks_development || signin_issuer(c) == "" {
+		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
+		return true
+	}
 	c.Header("Access-Control-Allow-Origin", "*")
 	c.Header("Access-Control-Expose-Headers", "DPoP-Nonce, WWW-Authenticate")
 	if c.Request.Method == "OPTIONS" {
@@ -141,10 +147,6 @@ func signin_route(c *gin.Context) bool {
 		c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, DPoP")
 		c.Header("Access-Control-Max-Age", "86400")
 		c.AbortWithStatus(http.StatusNoContent)
-		return true
-	}
-	if !networks_development || signin_issuer(c) == "" {
-		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
 		return true
 	}
 	path, method := c.Request.URL.Path, c.Request.Method

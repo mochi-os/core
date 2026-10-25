@@ -539,6 +539,8 @@ func repository_commit(ctx context.Context, r *repository, ops []repository_oper
 		}
 	}
 	sequence := stream_append(r.did, "#commit", body)
+	domain, _ := account_data(account_hosted_get(r.user, r.account))["domain"].(string)
+	atproto_notify(domain)
 	return &repository_event{head: r.head, rev: r.rev, sequence: sequence}, nil
 }
 

@@ -38,7 +38,7 @@ Sera ya msingi kwenye seva hii ni kwamba **maudhui ya watu wazima/ngono yanaruhu
 
 ## Kuripoti ukiukaji
 
-Ukikutana na maudhui au tabia inayokiuka sheria hizi, tafadhali iripoti. Programu nyingi zinajumuisha chaguo la "Ripoti" kwenye machapisho na wasifu binafsi. Kwa jambo lolote linalohitaji uangalifu wa moja kwa moja kutoka kwa {{operator.name}}, ikijumuisha malalamiko ya kisheria na dharura, tuma barua pepe **{{operator.email}}**
+Ukikutana na maudhui au tabia inayokiuka sheria hizi, tafadhali iripoti. Programu nyingi zinajumuisha chaguo la "Ripoti" kwenye machapisho na wasifu binafsi, na vivyo hivyo programu za mitandao mingine unazotumia na seva hii; ripoti yako inamfikia {{operator.name}}, na ripoti kuhusu mtu kwenye seva nyingine inaweza pia kutumwa kwa wasimamizi wa maudhui wa seva hiyo, bila kusema ni nani aliyeitoa. Watu kwenye mitandao mingine wanaweza kuripoti maudhui kutoka seva hii kupitia seva zao wenyewe, na ripoti hizo pia zinamfikia {{operator.name}}. Kwa jambo lolote linalohitaji uangalifu wa moja kwa moja kutoka kwa {{operator.name}}, ikijumuisha malalamiko ya kisheria na dharura, tuma barua pepe **{{operator.email}}**
 
 ## Utekelezaji
 

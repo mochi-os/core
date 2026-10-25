@@ -38,7 +38,7 @@ Manufar tsoho a kan wannan sabar ita ce **abun ciki na manya/jima'i ana yarda da
 
 ## Bayar da rahoton keta
 
-Idan ka ci karo da abun ciki ko hali da ya keta waɗannan ƙa'idoji, da fatan za a kai rahoto. Apps da yawa sun haɗa da zaɓin "Report" akan posts da profiles ɗaya-ɗaya. Don duk wani abu da ke buƙatar kulawa kai tsaye daga {{operator.name}}, gami da koke-koke na shari'a da gaggawa, aiko da imel zuwa **{{operator.email}}**
+Idan ka ci karo da abun ciki ko hali da ya keta waɗannan ƙa'idoji, da fatan za a kai rahoto. Apps da yawa sun haɗa da zaɓin "Report" akan posts da profiles ɗaya-ɗaya, haka ma apps na wasu cibiyoyi da kake amfani da su tare da wannan sabar; rahotonka yana isa ga {{operator.name}}, kuma ana iya aika rahoto game da wani a kan wata sabar ga masu sa ido na waccan sabar ma, ba tare da faɗin wanda ya kai shi ba. Mutane a kan wasu cibiyoyi za su iya kai rahoton abun ciki daga wannan sabar ta sabar nasu, kuma waɗannan rahotanni ma suna isa ga {{operator.name}}. Don duk wani abu da ke buƙatar kulawa kai tsaye daga {{operator.name}}, gami da koke-koke na shari'a da gaggawa, aiko da imel zuwa **{{operator.email}}**
 
 ## Aiwatarwa
 

@@ -38,7 +38,7 @@ Predvolená politika na tomto serveri je, že **obsah pre dospelých/sexuálny o
 
 ## Nahlasovanie porušení
 
-Ak narazíte na obsah alebo správanie, ktoré porušuje tieto pravidlá, nahláste to. Mnohé aplikácie obsahujú možnosť „Nahlásiť“ pri jednotlivých príspevkoch a profiloch. Pre čokoľvek, čo si vyžaduje priamu pozornosť {{operator.name}}, vrátane právnych sťažností a núdzových situácií, napíšte na **{{operator.email}}**
+Ak narazíte na obsah alebo správanie, ktoré porušuje tieto pravidlá, nahláste to. Mnohé aplikácie obsahujú možnosť „Nahlásiť“ pri jednotlivých príspevkoch a profiloch a rovnako aj aplikácie iných sietí, ktoré používate s týmto serverom; vaše nahlásenie sa dostane k {{operator.name}} a nahlásenie niekoho na inom serveri môže byť zaslané aj moderátorom daného servera bez uvedenia, kto ho podal. Ľudia z iných sietí môžu nahlásiť obsah z tohto servera prostredníctvom svojich vlastných serverov a aj tieto nahlásenia sa dostanú k {{operator.name}}. Pre čokoľvek, čo si vyžaduje priamu pozornosť {{operator.name}}, vrátane právnych sťažností a núdzových situácií, napíšte na **{{operator.email}}**
 
 ## Vymáhanie
 

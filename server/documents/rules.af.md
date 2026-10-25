@@ -38,7 +38,7 @@ Die verstekbeleid op hierdie bediener is dat **volwasse/seksuele inhoud slegs to
 
 ## Aanmelding van oortredings
 
-Indien jy inhoud of gedrag teëkom wat hierdie reëls oortree, meld dit asseblief aan. Baie programme sluit 'n "Meld aan"-opsie op individuele plasings en profiele in. Vir enigiets wat direkte aandag van {{operator.name}} vereis, insluitend regsklagtes en noodgevalle, stuur 'n e-pos na **{{operator.email}}**
+Indien jy inhoud of gedrag teëkom wat hierdie reëls oortree, meld dit asseblief aan. Baie programme sluit 'n "Meld aan"-opsie op individuele plasings en profiele in, en so ook die programme van ander netwerke wat jy saam met hierdie bediener gebruik; jou aanmelding bereik {{operator.name}}, en 'n aanmelding oor iemand op 'n ander bediener kan ook aan daardie bediener se moderators gestuur word, sonder om te sê wie dit gedoen het. Mense op ander netwerke kan inhoud van hierdie bediener deur hul eie bedieners aanmeld, en daardie aanmeldings bereik {{operator.name}} ook. Vir enigiets wat direkte aandag van {{operator.name}} vereis, insluitend regsklagtes en noodgevalle, stuur 'n e-pos na **{{operator.email}}**
 
 ## Handhawing
 

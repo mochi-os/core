@@ -38,7 +38,7 @@ Bu sunucudaki varsayılan politika, **yetişkinlere yönelik/cinsel içeriğe ya
 
 ## İhlalleri bildirme
 
-Bu kuralları ihlal eden bir içerik veya davranışla karşılaşırsanız lütfen bildirin. Birçok uygulama, bireysel gönderiler ve profiller üzerinde "Bildir" seçeneği içerir. {{operator.name}}'in doğrudan ilgilenmesini gerektiren her şey için, yasal şikayetler ve acil durumlar dahil, **{{operator.email}}** adresine e-posta gönderin
+Bu kuralları ihlal eden bir içerik veya davranışla karşılaşırsanız lütfen bildirin. Birçok uygulama, bireysel gönderiler ve profiller üzerinde "Bildir" seçeneği içerir ve bu sunucuyla birlikte kullandığınız diğer ağların uygulamaları da bu seçeneği içerir; şikayetiniz {{operator.name}}'e ulaşır, başka bir sunucudaki birisi hakkındaki bir şikayet ise onu kimin yaptığı belirtilmeden o sunucunun moderatörlerine de gönderilebilir. Diğer ağlardaki kişiler bu sunucudaki içeriği kendi sunucuları aracılığıyla şikayet edebilir ve bu şikayetler de {{operator.name}}'e ulaşır. {{operator.name}}'in doğrudan ilgilenmesini gerektiren her şey için, yasal şikayetler ve acil durumlar dahil, **{{operator.email}}** adresine e-posta gönderin
 
 ## Uygulama
 

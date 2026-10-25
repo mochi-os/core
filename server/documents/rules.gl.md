@@ -38,7 +38,7 @@ A política predeterminada deste servidor é que **o contido para adultos/sexual
 
 ## Denunciar infraccións
 
-Se atopa contido ou comportamento que infrinxa estas normas, denúncieo. Moitas aplicacións inclúen unha opción "Denunciar" nas publicacións e perfís individuais. Para calquera asunto que requira atención directa de {{operator.name}}, incluídas as queixas legais e as emerxencias, escriba a **{{operator.email}}**
+Se atopa contido ou comportamento que infrinxa estas normas, denúncieo. Moitas aplicacións inclúen unha opción "Denunciar" nas publicacións e perfís individuais, igual que as aplicacións doutras redes que use con este servidor; a súa denuncia chega a {{operator.name}}, e unha denuncia sobre alguén doutro servidor tamén se pode enviar aos moderadores dese servidor, sen indicar quen a fixo. As persoas doutras redes poden denunciar contido deste servidor a través dos seus propios servidores, e esas denuncias tamén chegan a {{operator.name}}. Para calquera asunto que requira atención directa de {{operator.name}}, incluídas as queixas legais e as emerxencias, escriba a **{{operator.email}}**
 
 ## Aplicación
 

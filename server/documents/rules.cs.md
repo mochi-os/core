@@ -38,7 +38,7 @@ Výchozí pravidlo na tomto serveru je, že **obsah pro dospělé / sexuální o
 
 ## Hlášení porušení
 
-Pokud narazíte na obsah nebo chování, které porušuje tato pravidla, prosím nahlaste je. Mnoho aplikací nabízí možnost „Nahlásit“ u jednotlivých příspěvků a profilů. V čemkoli, co vyžaduje přímou pozornost {{operator.name}}, včetně právních stížností a naléhavých případů, pište na **{{operator.email}}**
+Pokud narazíte na obsah nebo chování, které porušuje tato pravidla, prosím nahlaste je. Mnoho aplikací nabízí možnost „Nahlásit“ u jednotlivých příspěvků a profilů, stejně jako aplikace jiných sítí, které s tímto serverem používáte; vaše hlášení dorazí k {{operator.name}} a hlášení na někoho na jiném serveru může být odesláno také moderátorům daného serveru, aniž by uvádělo, kdo je podal. Lidé v jiných sítích mohou nahlásit obsah z tohoto serveru prostřednictvím svých vlastních serverů a tato hlášení rovněž dorazí k {{operator.name}}. V čemkoli, co vyžaduje přímou pozornost {{operator.name}}, včetně právních stížností a naléhavých případů, pište na **{{operator.email}}**
 
 ## Prosazování
 

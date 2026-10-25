@@ -38,7 +38,7 @@ Selle serveri vaikepoliitika on, et **täiskasvanutele mõeldud / seksuaalne sis
 
 ## Rikkumistest teatamine
 
-Kui kohtate sisu või käitumist, mis neid reegleid rikub, palun teatage sellest. Paljud rakendused sisaldavad üksikute postituste ja profiilide juures valikut "Teata". Kõige osas, mis nõuab {{operator.name}} otsest tähelepanu, sealhulgas õiguslikud kaebused ja hädaolukorrad, saatke e-kiri aadressile **{{operator.email}}**
+Kui kohtate sisu või käitumist, mis neid reegleid rikub, palun teatage sellest. Paljud rakendused sisaldavad üksikute postituste ja profiilide juures valikut "Teata", samuti teiste võrkude rakendused, mida te selle serveriga kasutate; teie teade jõuab {{operator.name}} kätte ning teade kellegi kohta teises serveris võidakse saata ka tolle serveri moderaatoritele, ilma et selles öeldaks, kes selle esitas. Teiste võrkude inimesed saavad selle serveri sisust teatada oma serverite kaudu ning ka need teated jõuavad {{operator.name}} kätte. Kõige osas, mis nõuab {{operator.name}} otsest tähelepanu, sealhulgas õiguslikud kaebused ja hädaolukorrad, saatke e-kiri aadressile **{{operator.email}}**
 
 ## Jõustamine
 

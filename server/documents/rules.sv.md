@@ -38,7 +38,7 @@ Standardpolicyn på denna server är att **vuxen-/sexuellt innehåll endast är 
 
 ## Anmälan av överträdelser
 
-Om du stöter på innehåll eller beteende som bryter mot dessa regler, anmäl det. Många appar har en "Anmäl"-funktion på enskilda inlägg och profiler. För allt som kräver direkt uppmärksamhet från {{operator.name}}, inklusive juridiska klagomål och nödsituationer, skicka e-post till **{{operator.email}}**
+Om du stöter på innehåll eller beteende som bryter mot dessa regler, anmäl det. Många appar har en "Anmäl"-funktion på enskilda inlägg och profiler, och det har även apparna för andra nätverk som du använder med denna server; din anmälan når {{operator.name}}, och en anmälan om någon på en annan server kan även skickas till den serverns moderatorer, utan att det anges vem som gjorde den. Personer i andra nätverk kan anmäla innehåll från denna server via sina egna servrar, och även de anmälningarna når {{operator.name}}. För allt som kräver direkt uppmärksamhet från {{operator.name}}, inklusive juridiska klagomål och nödsituationer, skicka e-post till **{{operator.email}}**
 
 ## Tillämpning
 

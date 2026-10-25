@@ -38,7 +38,7 @@ The default policy on this server is that **adult/sexual content is allowed only
 
 ## Reporting violations
 
-If you encounter content or behaviour that breaches these rules, please report it. Many apps include a "Report" option on individual posts and profiles. For anything that requires direct attention from {{operator.name}}, including legal complaints and emergencies, email **{{operator.email}}**
+If you encounter content or behaviour that breaches these rules, please report it. Many apps include a "Report" option on individual posts and profiles, and so do the apps of other networks you use with this server; your report reaches {{operator.name}}, and a report about someone on another server may also be sent to that server's moderators, without saying who made it. People on other networks can report content from this server through their own servers, and those reports reach {{operator.name}} too. For anything that requires direct attention from {{operator.name}}, including legal complaints and emergencies, email **{{operator.email}}**
 
 ## Enforcement
 

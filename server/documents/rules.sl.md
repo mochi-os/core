@@ -38,7 +38,7 @@ Privzeto pravilo na tem strežniku je, da je **vsebina za odrasle/spolna vsebina
 
 ## Prijava kršitev
 
-Če naletite na vsebino ali vedenje, ki krši ta pravila, jo prosimo prijavite. Številne aplikacije imajo možnost »Prijavi« na posameznih objavah in profilih. Za vse, kar zahteva neposredno pozornost {{operator.name}}, vključno s pravnimi pritožbami in nujnimi primeri, pišite na **{{operator.email}}**
+Če naletite na vsebino ali vedenje, ki krši ta pravila, jo prosimo prijavite. Številne aplikacije imajo možnost »Prijavi« na posameznih objavah in profilih, prav tako pa tudi aplikacije drugih omrežij, ki jih uporabljate s tem strežnikom; vaša prijava pride do {{operator.name}}, prijava o nekom na drugem strežniku pa se lahko pošlje tudi moderatorjem tistega strežnika, ne da bi bilo navedeno, kdo jo je podal. Ljudje v drugih omrežjih lahko vsebino s tega strežnika prijavijo prek svojih strežnikov in tudi te prijave pridejo do {{operator.name}}. Za vse, kar zahteva neposredno pozornost {{operator.name}}, vključno s pravnimi pritožbami in nujnimi primeri, pišite na **{{operator.email}}**
 
 ## Izvrševanje
 

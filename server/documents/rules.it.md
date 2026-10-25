@@ -38,7 +38,7 @@ La policy predefinita su questo server è che **i contenuti per adulti/sessuali 
 
 ## Segnalazione delle violazioni
 
-Se incontri contenuti o comportamenti che violano queste regole, segnalali. Molte app includono un'opzione "Segnala" sui singoli post e profili. Per qualsiasi questione che richieda l'attenzione diretta di {{operator.name}}, comprese le denunce legali e le emergenze, scrivi a **{{operator.email}}**
+Se incontri contenuti o comportamenti che violano queste regole, segnalali. Molte app includono un'opzione "Segnala" sui singoli post e profili, così come le app di altre reti che utilizzi con questo server; la tua segnalazione arriva a {{operator.name}}, e una segnalazione su qualcuno che si trova su un altro server può essere inviata anche ai moderatori di quel server, senza indicare chi l'ha fatta. Le persone su altre reti possono segnalare contenuti di questo server tramite i propri server, e anche quelle segnalazioni arrivano a {{operator.name}}. Per qualsiasi questione che richieda l'attenzione diretta di {{operator.name}}, comprese le denunce legali e le emergenze, scrivi a **{{operator.email}}**
 
 ## Applicazione
 

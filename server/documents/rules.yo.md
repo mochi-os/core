@@ -38,7 +38,7 @@ Nípa lílò sáfà yìí o gbà láti tẹ̀lé àwọn òfin wọ̀nyí. Ìrú
 
 ## Ìròyìn àwọn ìrú òfin
 
-Bí o bá pàdé àkóónú tàbí ìwà tí ó tako àwọn òfin wọ̀nyí, jọ̀wọ́ ròyìn rẹ̀. Ọ̀pọ̀ àwọn app ní àṣàyàn "Ròyìn" lórí àwọn ìfiwéránṣẹ́ àti àwọn profile kọ̀ọ̀kan. Fún ohun yòówù tí ó nílò àfiyèsí tààrà láti ọ̀dọ̀ {{operator.name}}, pẹ̀lú àwọn ẹ̀sùn òfin àti pajáwìrì, fi ímeèlì ránṣẹ́ sí **{{operator.email}}**
+Bí o bá pàdé àkóónú tàbí ìwà tí ó tako àwọn òfin wọ̀nyí, jọ̀wọ́ ròyìn rẹ̀. Ọ̀pọ̀ àwọn app ní àṣàyàn "Ròyìn" lórí àwọn ìfiwéránṣẹ́ àti àwọn profile kọ̀ọ̀kan, bẹ́ẹ̀ náà sì ni àwọn app ti àwọn nẹ́tíwọ́kì mìíràn tí o ń lò pẹ̀lú sáfà yìí; ìròyìn rẹ ń dé ọ̀dọ̀ {{operator.name}}, ìròyìn nípa ẹnìkan lórí sáfà mìíràn sì lè jẹ́ fífi ránṣẹ́ sí àwọn alábòójútó àkóónú sáfà náà pẹ̀lú, láìsọ ẹni tí ó ṣe é. Àwọn ènìyàn lórí àwọn nẹ́tíwọ́kì mìíràn lè ròyìn àkóónú láti sáfà yìí nípasẹ̀ àwọn sáfà tiwọn, àwọn ìròyìn wọ̀nyẹn náà sì ń dé ọ̀dọ̀ {{operator.name}}. Fún ohun yòówù tí ó nílò àfiyèsí tààrà láti ọ̀dọ̀ {{operator.name}}, pẹ̀lú àwọn ẹ̀sùn òfin àti pajáwìrì, fi ímeèlì ránṣẹ́ sí **{{operator.email}}**
 
 ## Ìmúṣẹ
 

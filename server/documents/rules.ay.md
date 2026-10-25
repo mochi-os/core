@@ -38,7 +38,7 @@ Aka servidoran defectorjam politicapax akawa: **jaqi/sexual contenidox akhamakip
 
 ## Mayjt'ayañ qillqantaña
 
-Aka reglanakar mayjt'ayir contenido jan ukax jakawi uñstayasta ukhaxa, qillqantma. Walja aplicacionanakax sapa qillqantañar ukat perfilanakar mä "Qillqantaña" opciónaniwa. {{operator.name}} ukan apnaqirin uñjañ wakiskix taqi kunatakix, legales mayisiwinakat ukat emergencianakat tuqsa, **{{operator.email}}** uka chimpur correo apayma.
+Aka reglanakar mayjt'ayir contenido jan ukax jakawi uñstayasta ukhaxa, qillqantma. Walja aplicacionanakax sapa qillqantañar ukat perfilanakar mä "Qillqantaña" opciónaniwa, ukat aka servidoramp apnaqkta uka yaqha redanakan aplicacionanakapasa ukhamarakiwa; qillqantawimax {{operator.name}} ukar puri, ukat yaqha servidoran maynit qillqantawix uka servidoran moderadoranakaparus apayasispawa, khitis qillqantki uk jan sisa. Yaqha redanakankir jaqinakax aka servidorat contenido pachpa servidoranakap tuqi qillqantapxaspawa, ukat uka qillqantawinakax {{operator.name}} ukarus puripxarakiwa. {{operator.name}} ukan apnaqirin uñjañ wakiskix taqi kunatakix, legales mayisiwinakat ukat emergencianakat tuqsa, **{{operator.email}}** uka chimpur correo apayma.
 
 ## Reglanak phuqhayaña
 

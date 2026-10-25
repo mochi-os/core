@@ -38,7 +38,7 @@ Kawijakan baku dina server ieu nyaéta **eusi déwasa/seksual ngan diidinan upam
 
 ## Ngalaporkeun palanggaran
 
-Upami Anjeun mendakan eusi atanapi paripolah anu nglanggar aturan ieu, mangga laporkeun. Seueur aplikasi kalebet pilihan "Laporkeun" dina pos sareng profil individu. Pikeun naon waé anu peryogi perhatosan langsung ti {{operator.name}}, kalebet keluhan hukum sareng darurat, kintunkeun email ka **{{operator.email}}**
+Upami Anjeun mendakan eusi atanapi paripolah anu nglanggar aturan ieu, mangga laporkeun. Seueur aplikasi kalebet pilihan "Laporkeun" dina pos sareng profil individu, kitu ogé aplikasi jaringan sanés anu Anjeun anggo sareng server ieu; laporan Anjeun dugi ka {{operator.name}}, sareng laporan ngeunaan batur dina server sanés tiasa ogé dikintunkeun ka moderator server éta, tanpa nyebatkeun saha anu ngadamelna. Jalma dina jaringan sanés tiasa ngalaporkeun eusi ti server ieu ngalangkungan server maranéhna nyalira, sareng laporan-laporan éta ogé dugi ka {{operator.name}}. Pikeun naon waé anu peryogi perhatosan langsung ti {{operator.name}}, kalebet keluhan hukum sareng darurat, kintunkeun email ka **{{operator.email}}**
 
 ## Penegakan
 

@@ -38,7 +38,7 @@ Le bhith a' cleachdadh an fhrithealaiche seo, tha thu ag aontachadh na riaghailt
 
 ## Briseadh aithris
 
-Ma thig thu tarsainn susbaint no giùlan a tha a' briseadh nan riaghailtean seo, dèan aithris air. Tha "Aithris" mar roghainn ann am mòran de dh'aplacaidean air postaichean is pròifilean fa leth. Airson rud sam bith a tha ag iarraidh aire dhìreach bho {{operator.name}}, a' gabhail a-steach gearanan laghail agus èiginnean, cuir post-d gu **{{operator.email}}**
+Ma thig thu tarsainn susbaint no giùlan a tha a' briseadh nan riaghailtean seo, dèan aithris air. Tha "Aithris" mar roghainn ann am mòran de dh'aplacaidean air postaichean is pròifilean fa leth, agus cuideachd ann an aplacaidean lìonraidhean eile a chleachdas tu leis an fhrithealaiche seo; ruigidh an aithris agad {{operator.name}}, agus dh'fhaodadh aithris mu chuideigin air frithealaiche eile a bhith air a cur cuideachd gu modaratairean an fhrithealaiche sin, gun innse cò a rinn i. 'S urrainn do dhaoine air lìonraidhean eile aithris a dhèanamh air susbaint bhon fhrithealaiche seo tro na frithealaichean aca fhèin, agus ruigidh na h-aithrisean sin {{operator.name}} cuideachd. Airson rud sam bith a tha ag iarraidh aire dhìreach bho {{operator.name}}, a' gabhail a-steach gearanan laghail agus èiginnean, cuir post-d gu **{{operator.email}}**
 
 ## Cur an gnìomh
 

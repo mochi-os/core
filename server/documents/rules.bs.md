@@ -38,7 +38,7 @@ Zadana politika na ovom serveru je da je **sadržaj za odrasle/seksualni sadrža
 
 ## Prijava kršenja
 
-Ako naiđete na sadržaj ili ponašanje koje krši ova pravila, molimo prijavite. Mnoge aplikacije imaju opciju "Prijavi" na pojedinačnim objavama i profilima. Za sve što zahtijeva direktnu pažnju {{operator.name}}-a, uključujući zakonske žalbe i hitne situacije, pošaljite e-mail na **{{operator.email}}**
+Ako naiđete na sadržaj ili ponašanje koje krši ova pravila, molimo prijavite. Mnoge aplikacije imaju opciju "Prijavi" na pojedinačnim objavama i profilima, kao i aplikacije drugih mreža koje koristite s ovim serverom; vaša prijava stiže do {{operator.name}}-a, a prijava o nekome na drugom serveru može biti poslana i moderatorima tog servera, bez navođenja ko ju je podnio. Ljudi na drugim mrežama mogu prijaviti sadržaj s ovog servera putem svojih servera, i te prijave također stižu do {{operator.name}}-a. Za sve što zahtijeva direktnu pažnju {{operator.name}}-a, uključujući zakonske žalbe i hitne situacije, pošaljite e-mail na **{{operator.email}}**
 
 ## Provođenje pravila
 

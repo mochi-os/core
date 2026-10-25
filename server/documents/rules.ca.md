@@ -38,7 +38,7 @@ La política per defecte d'aquest servidor és que **el contingut per a adults o
 
 ## Denúncia d'infraccions
 
-Si trobeu contingut o comportament que infringeixi aquestes normes, denuncieu-ho. Moltes aplicacions inclouen una opció "Denuncia" a publicacions i perfils individuals. Per a qualsevol cosa que requereixi atenció directa de {{operator.name}}, incloses queixes legals i emergències, envieu un correu a **{{operator.email}}**
+Si trobeu contingut o comportament que infringeixi aquestes normes, denuncieu-ho. Moltes aplicacions inclouen una opció "Denuncia" a publicacions i perfils individuals, igual que les aplicacions d'altres xarxes que utilitzeu amb aquest servidor; la vostra denúncia arriba a {{operator.name}}, i una denúncia sobre algú d'un altre servidor també es pot enviar als moderadors d'aquell servidor, sense dir qui l'ha feta. Les persones d'altres xarxes poden denunciar contingut d'aquest servidor a través dels seus propis servidors, i aquestes denúncies també arriben a {{operator.name}}. Per a qualsevol cosa que requereixi atenció directa de {{operator.name}}, incloses queixes legals i emergències, envieu un correu a **{{operator.email}}**
 
 ## Aplicació
 

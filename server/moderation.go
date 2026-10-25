@@ -208,9 +208,11 @@ func api_account_following(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 }
 
 // mochi.account.report(account, actor, objects=[], content="") -> None: Report
-// a person on another network to their server's moderators, as a hosted
+// a person on another network to their server's moderators, through a hosted
 // account: a Flag naming the person and the objects of theirs complained of,
-// with the reason, sent to their inbox. Behind the account permission
+// with the reason, sent to their inbox from the server's own account on the
+// account's domain, so their server does not learn who reported. Behind the
+// account permission
 func api_account_report(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, address, content string
 	var objects *sl.List
@@ -234,20 +236,25 @@ func api_account_report(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			named = append(named, object)
 		}
 	}
-	if err := account_flag(thread_context(t), user, account, actor, address, named, content); err != nil {
+	if err := account_flag(thread_context(t), user, actor, address, named, content); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	return sl.None, nil
 }
 
 // account_flag reports a person on the fediverse to their server's
-// moderators as a hosted account: a Flag naming them and the objects of
-// theirs complained of, with the reason, sent to their inbox.
-func account_flag(ctx context.Context, user *User, account string, actor string, address string, objects []string, content string) error {
+// moderators for a hosted account: a Flag naming them and the objects of
+// theirs complained of, with the reason, sent to their inbox as the server's
+// own account on the hosted account's domain, as Mastodon forwards a report,
+// and with the lookups it makes signed by that account too, so their server
+// never learns who made the report.
+func account_flag(ctx context.Context, user *User, actor string, address string, objects []string, content string) error {
 	if len(content) > 2048 {
 		return fmt.Errorf("content must be at most 2048 characters")
 	}
-	ctx = activitypub_signing(ctx, user, account)
+	domain := activitypub_host_of(actor)
+	server := activitypub_server_actor(domain)
+	ctx = activitypub_server_signing(ctx, domain)
 	r, err := author_resolve(ctx, address)
 	if err != nil || r.Network != "fediverse" || r.ID == "" || r.Inbox == "" {
 		return fmt.Errorf("cannot resolve %s", address)
@@ -267,9 +274,9 @@ func account_flag(ctx context.Context, user *User, account string, actor string,
 	}
 	flag := map[string]any{
 		"@context": activitystreams,
-		"id":       actor + "#flags/" + uid(),
+		"id":       server + "#flags/" + uid(),
 		"type":     "Flag",
-		"actor":    actor,
+		"actor":    server,
 		"to":       []string{r.ID},
 		"object":   named,
 		"content":  content,
@@ -278,7 +285,7 @@ func account_flag(ctx context.Context, user *User, account string, actor string,
 	if r.Shared != "" {
 		inbox = r.Shared
 	}
-	if deliver(user, account, "fediverse", []string{inbox}, []byte(json_encode(flag))) == 0 {
+	if deliver(user, activitypub_server_account+domain, "fediverse", []string{inbox}, []byte(json_encode(flag))) == 0 {
 		return fmt.Errorf("cannot deliver to %s", inbox)
 	}
 	return nil

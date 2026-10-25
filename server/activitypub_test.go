@@ -1057,3 +1057,66 @@ func TestActivityPubUserDeleted(t *testing.T) {
 		t.Errorf("THE POINT: the deleted user's actor = %d", w.Code)
 	}
 }
+
+// TestServerActor: each of the server's domains has an account of the
+// server's own at /~/actor, an Application with a key, found by WebFinger as
+// <domain>@<domain> and by its id; a domain not the server's has none; and a
+// delivery queued as it goes out signed with its key, which its document
+// publishes.
+func TestServerActor(t *testing.T) {
+	create_activitypub_test_env(t)
+	w, document := activitypub_get(t, "/~/actor")
+	if w.Code != http.StatusOK || document["id"] != "https://example.com/~/actor" || document["type"] != "Application" || document["preferredUsername"] != "example.com" || document["inbox"] != "https://example.com/~/actor/inbox" {
+		t.Fatalf("THE POINT: the server's account = %d %v", w.Code, document)
+	}
+	key, _ := document["publicKey"].(map[string]any)
+	public, _ := key["publicKeyPem"].(string)
+	if key["id"] != "https://example.com/~/actor#main-key" || key["owner"] != "https://example.com/~/actor" || public == "" {
+		t.Fatalf("THE POINT: the server account's key = %v", key)
+	}
+	for _, resource := range []string{"acct:example.com@example.com", "https://example.com/~/actor"} {
+		r := httptest.NewRequest("GET", "https://example.com/.well-known/webfinger?resource="+resource, nil)
+		w := activitypub_request(t, r)
+		var jrd struct {
+			Subject string
+			Links   []map[string]string
+		}
+		json.Unmarshal(w.Body.Bytes(), &jrd)
+		if w.Code != http.StatusOK || jrd.Subject != "acct:example.com@example.com" || len(jrd.Links) != 1 || jrd.Links[0]["href"] != "https://example.com/~/actor" {
+			t.Errorf("THE POINT: webfinger %s = %d %s", resource, w.Code, w.Body.String())
+		}
+	}
+	r := httptest.NewRequest("GET", "https://elsewhere.example/~/actor", nil)
+	r.Header.Set("Accept", activitypub_type)
+	if w := activitypub_request(t, r); w.Code != http.StatusNotFound {
+		t.Errorf("THE POINT: a domain not the server's has an account: %d", w.Code)
+	}
+	r = httptest.NewRequest("GET", "https://example.com/.well-known/webfinger?resource=acct:elsewhere.example@elsewhere.example", nil)
+	if w := activitypub_request(t, r); w.Code != http.StatusNotFound {
+		t.Errorf("webfinger of another domain's server account = %d", w.Code)
+	}
+
+	var signed string
+	box := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		id, err := signature_verify(r.Context(), r, body, func(ctx context.Context, key_id string, fresh bool) (string, error) {
+			if key_id != "https://example.com/~/actor#main-key" {
+				return "", fmt.Errorf("unknown key %s", key_id)
+			}
+			return public, nil
+		})
+		if err == nil {
+			signed = id
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(box.Close)
+	alice := user_by_uid("u-alice")
+	if deliver(alice, activitypub_server_account+"example.com", "fediverse", []string{box.URL + "/inbox"}, []byte(`{"type":"Flag"}`)) != 1 {
+		t.Fatal("not queued")
+	}
+	delivery_process()
+	if signed != "https://example.com/~/actor#main-key" {
+		t.Errorf("THE POINT: the delivery was not signed as the server's account: %q", signed)
+	}
+}

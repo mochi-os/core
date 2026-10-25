@@ -38,7 +38,7 @@ Y polisi diofyn ar y gweinydd hwn yw bod **cynnwys i oedolion/rhywiol yn cael ei
 
 ## Adrodd am doriadau
 
-Os ydych yn dod ar draws cynnwys neu ymddygiad sy'n torri'r rheolau hyn, adroddwch amdano. Mae llawer o apiau yn cynnwys opsiwn "Adrodd" ar bostiadau a phroffiliau unigol. Ar gyfer unrhyw beth sy'n gofyn am sylw uniongyrchol gan {{operator.name}}, gan gynnwys cwynion cyfreithiol ac argyfyngau, anfonwch e-bost at **{{operator.email}}**
+Os ydych yn dod ar draws cynnwys neu ymddygiad sy'n torri'r rheolau hyn, adroddwch amdano. Mae llawer o apiau yn cynnwys opsiwn "Adrodd" ar bostiadau a phroffiliau unigol, ac felly hefyd apiau rhwydweithiau eraill rydych yn eu defnyddio gyda'r gweinydd hwn; mae eich adroddiad yn cyrraedd {{operator.name}}, a gall adroddiad am rywun ar weinydd arall gael ei anfon hefyd at gymedrolwyr y gweinydd hwnnw, heb ddweud pwy a'i gwnaeth. Gall pobl ar rwydweithiau eraill adrodd am gynnwys o'r gweinydd hwn drwy eu gweinyddion eu hunain, ac mae'r adroddiadau hynny'n cyrraedd {{operator.name}} hefyd. Ar gyfer unrhyw beth sy'n gofyn am sylw uniongyrchol gan {{operator.name}}, gan gynnwys cwynion cyfreithiol ac argyfyngau, anfonwch e-bost at **{{operator.email}}**
 
 ## Gorfodi
 

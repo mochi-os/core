@@ -253,25 +253,30 @@ const (
 func delivery_attempt(d *delivery) delivery_outcome {
 	db := db_open("db/networks.db")
 	user := user_by_uid(d.User)
-	actor := ""
-	if user != nil {
-		actor = account_actor(user, d.Account)
-	}
-	private := ""
-	if actor != "" {
-		if key := keypair_get(user, d.Account, key_signing); key != nil {
-			private = key.Private
+	actor, private := "", ""
+	if domain, found := strings.CutPrefix(d.Account, activitypub_server_account); found {
+		// The server's own account, which a forwarded report goes out as
+		// (activitypub.go).
+		actor, private = activitypub_server_actor(domain), activitypub_server_private()
+	} else {
+		if user != nil {
+			actor = account_actor(user, d.Account)
 		}
-	}
-	if private == "" {
-		// A removed account's tombstone keeps its key for a while, so the
-		// notice of its own deletion still goes out signed (activitypub.go).
-		actor, private = tombstone_key(d.Account)
-	} else if former := delivery_former(user, d); former != "" {
-		// An account restored here from another server sends the Move of its
-		// followers as the address it had there, whose key it kept
-		// (auth_restore.go).
-		actor = former
+		if actor != "" {
+			if key := keypair_get(user, d.Account, key_signing); key != nil {
+				private = key.Private
+			}
+		}
+		if private == "" {
+			// A removed account's tombstone keeps its key for a while, so the
+			// notice of its own deletion still goes out signed (activitypub.go).
+			actor, private = tombstone_key(d.Account)
+		} else if former := delivery_former(user, d); former != "" {
+			// An account restored here from another server sends the Move of
+			// its followers as the address it had there, whose key it kept
+			// (auth_restore.go).
+			actor = former
+		}
 	}
 	if private == "" {
 		debug("Delivery to %s dropped: account %s gone", d.Inbox, d.Account)

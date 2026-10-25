@@ -38,7 +38,7 @@ Imaammanni sarvera kana irra duraan jiru, **qabiyyeen ga'eessaa/saalaa kan eeyya
 
 ## Cabsuu gabaasuu
 
-Yoo qabiyyee yookaan amala seerota kana cabsu argite, maaloo gabaasi. App'wwan baayyeen filannoo "Gabaasi" maxxansa fi profaayilii dhuunfaa irratti qabu. Wanta xiyyeeffannaa kallattii {{operator.name}} barbaadu kamiyyuu, komii seeraa fi balaa hatattamaa dabalatee, email **{{operator.email}}**.
+Yoo qabiyyee yookaan amala seerota kana cabsu argite, maaloo gabaasi. App'wwan baayyeen filannoo "Gabaasi" maxxansa fi profaayilii dhuunfaa irratti qabu, app'wwan netiwoorkiiwwan biroo kanneen ati sarvera kana waliin fayyadamtus akkasuma; gabaasni kee {{operator.name}} bira ga'a, gabaasni waa'ee nama sarvera biraa irra jiruu immoo osoo eenyu akka gabaase hin ibsin moderetaroota sarvera sanaatiifis ergamuu danda'a. Namoonni netiwoorkiiwwan biroo irra jiran sarverota mataa isaaniitiin qabiyyee sarvera kana irraa dhufe gabaasuu danda'u, gabaasni sunis {{operator.name}} bira ga'a. Wanta xiyyeeffannaa kallattii {{operator.name}} barbaadu kamiyyuu, komii seeraa fi balaa hatattamaa dabalatee, email **{{operator.email}}**.
 
 ## Hojiitti hiikuu
 

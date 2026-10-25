@@ -38,7 +38,7 @@ Politika e parazgjedhur në këtë server është që **përmbajtja për të rri
 
 ## Raportimi i shkeljeve
 
-Nëse hasni në përmbajtje ose sjellje që shkel këto rregulla, ju lutemi raportojeni. Shumë aplikacione përfshijnë një opsion "Raporto" në postimet dhe profilet individuale. Për gjithçka që kërkon vëmendje të drejtpërdrejtë nga {{operator.name}}, përfshirë ankesat ligjore dhe emergjencat, dërgoni email në **{{operator.email}}**
+Nëse hasni në përmbajtje ose sjellje që shkel këto rregulla, ju lutemi raportojeni. Shumë aplikacione përfshijnë një opsion "Raporto" në postimet dhe profilet individuale, ashtu si edhe aplikacionet e rrjeteve të tjera që përdorni me këtë server; raportimi juaj arrin te {{operator.name}}, dhe një raportim për dikë në një server tjetër mund t'u dërgohet edhe moderatorëve të atij serveri, pa treguar se kush e ka bërë. Njerëzit në rrjete të tjera mund të raportojnë përmbajtje nga ky server përmes serverëve të tyre, dhe edhe ato raportime arrijnë te {{operator.name}}. Për gjithçka që kërkon vëmendje të drejtpërdrejtë nga {{operator.name}}, përfshirë ankesat ligjore dhe emergjencat, dërgoni email në **{{operator.email}}**
 
 ## Zbatimi
 

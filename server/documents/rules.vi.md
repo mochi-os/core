@@ -38,7 +38,7 @@ Chính sách mặc định trên máy chủ này là **nội dung dành cho ngư
 
 ## Báo cáo vi phạm
 
-Nếu bạn gặp nội dung hoặc hành vi vi phạm các quy tắc này, vui lòng báo cáo. Nhiều ứng dụng có sẵn lựa chọn "Báo cáo" trên các bài đăng và hồ sơ cá nhân. Đối với bất cứ điều gì cần sự chú ý trực tiếp từ {{operator.name}}, bao gồm khiếu nại pháp lý và tình huống khẩn cấp, hãy gửi email đến **{{operator.email}}**
+Nếu bạn gặp nội dung hoặc hành vi vi phạm các quy tắc này, vui lòng báo cáo. Nhiều ứng dụng có sẵn lựa chọn "Báo cáo" trên các bài đăng và hồ sơ cá nhân, và các ứng dụng của những mạng khác mà bạn sử dụng với máy chủ này cũng vậy; báo cáo của bạn sẽ đến {{operator.name}}, và báo cáo về một người trên máy chủ khác cũng có thể được gửi đến các kiểm duyệt viên của máy chủ đó mà không cho biết ai đã gửi. Những người trên các mạng khác có thể báo cáo nội dung từ máy chủ này thông qua máy chủ của chính họ, và những báo cáo đó cũng đến {{operator.name}}. Đối với bất cứ điều gì cần sự chú ý trực tiếp từ {{operator.name}}, bao gồm khiếu nại pháp lý và tình huống khẩn cấp, hãy gửi email đến **{{operator.email}}**
 
 ## Thực thi
 

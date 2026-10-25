@@ -38,7 +38,7 @@ Bu serverdə standart siyasət ondan ibarətdir ki, **yetkin/cinsi məzmuna yaln
 
 ## Pozuntuların bildirilməsi
 
-Bu qaydaları pozan məzmun və ya davranışla qarşılaşsanız, lütfən bildirin. Bir çox tətbiq fərdi yazılar və profillərdə "Şikayət et" seçimi təklif edir. {{operator.name}}-dən birbaşa diqqət tələb edən hər şey, o cümlədən qanuni şikayətlər və təcili hallar üçün **{{operator.email}}** ünvanına e-poçt göndərin
+Bu qaydaları pozan məzmun və ya davranışla qarşılaşsanız, lütfən bildirin. Bir çox tətbiq fərdi yazılar və profillərdə "Şikayət et" seçimi təklif edir, bu serverlə istifadə etdiyiniz digər şəbəkələrin tətbiqləri də; şikayətiniz {{operator.name}}-ə çatır, başqa serverdəki kiminsə barəsində şikayət isə onu kimin etdiyi göstərilmədən həmin serverin moderatorlarına da göndərilə bilər. Digər şəbəkələrdəki insanlar bu serverdən olan məzmundan öz serverləri vasitəsilə şikayət edə bilər və həmin şikayətlər də {{operator.name}}-ə çatır. {{operator.name}}-dən birbaşa diqqət tələb edən hər şey, o cümlədən qanuni şikayətlər və təcili hallar üçün **{{operator.email}}** ünvanına e-poçt göndərin
 
 ## İcra
 

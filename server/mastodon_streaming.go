@@ -857,8 +857,9 @@ func mastodon_list_answer(c *gin.Context, s *mastodon_session, result any, err e
 // mastodon_report keeps a report the user makes of someone for this
 // server's administrators, with the statuses named and their text; and, the
 // person being on another server, sends it on to their server's moderators
-// as a Flag naming the statuses by their ids there, unless the client asks it
-// not be forwarded.
+// as a Flag naming the statuses by their ids there, from the server's own
+// account so that server does not learn who reported, unless the client asks
+// it not be forwarded.
 func mastodon_report(c *gin.Context, s *mastodon_session) {
 	in := mastodon_read(c)
 	key, account := mastodon_account_by_number(c, s, in.text("account_id"))
@@ -936,7 +937,7 @@ func mastodon_report(c *gin.Context, s *mastodon_session) {
 				theirs = append(theirs, object)
 			}
 		}
-		if err := account_flag(c.Request.Context(), s.user, s.account, s.actor, key, theirs, comment); err != nil {
+		if err := account_flag(c.Request.Context(), s.user, s.actor, key, theirs, comment); err != nil {
 			debug("Mastodon report of %s not forwarded: %v", key, err)
 		} else {
 			forwarded = true

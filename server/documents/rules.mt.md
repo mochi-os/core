@@ -38,7 +38,7 @@ Il-politika prestabbilita fuq dan is-server hi li **kontenut għall-adulti/sessw
 
 ## Rappurtar ta' ksur
 
-Jekk tiltaqa' ma' kontenut jew imġiba li tikser dawn ir-regoli, jekk jogħġbok irrappurtaha. Bosta apps jinkludu opzjoni "Rappurta" fuq posts u profili individwali. Għal kull ħaġa li teħtieġ attenzjoni diretta minn {{operator.name}}, inklużi lmenti legali u emerġenzi, ibgħat email lil **{{operator.email}}**
+Jekk tiltaqa' ma' kontenut jew imġiba li tikser dawn ir-regoli, jekk jogħġbok irrappurtaha. Bosta apps jinkludu opzjoni "Rappurta" fuq posts u profili individwali, u hekk ukoll l-apps ta' netwerks oħra li tuża ma' dan is-server; ir-rapport tiegħek jasal għand {{operator.name}}, u rapport dwar xi ħadd fuq server ieħor jista' jintbagħat ukoll lill-moderaturi ta' dak is-server, mingħajr ma jgħid min għamlu. Nies fuq netwerks oħra jistgħu jirrappurtaw kontenut minn dan is-server permezz tas-servers tagħhom stess, u dawk ir-rapporti jaslu wkoll għand {{operator.name}}. Għal kull ħaġa li teħtieġ attenzjoni diretta minn {{operator.name}}, inklużi lmenti legali u emerġenzi, ibgħat email lil **{{operator.email}}**
 
 ## Infurzar
 

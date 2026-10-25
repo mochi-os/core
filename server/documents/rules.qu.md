@@ -38,7 +38,7 @@ Kay servidorpi qhawasqa kamachiyqa **kuraq runakunapaq sexual willay saqisqallam
 
 ## Pantakuyta willay
 
-Kay kamachikuykunata p'akiq willayta utaq imayna kayta tariqtiyki, ama hina kaspa willamuy. Askha appkunaqa "Willay" akllanata sapan publicasqakunapi, perfilkunapi churanku. Imapaqpas {{operator.name}}pa sapaq qhawayninta munaqtin, legal mañakuykunata, utqay kuyuykunatapas, **{{operator.email}}**man emailta apachiy.
+Kay kamachikuykunata p'akiq willayta utaq imayna kayta tariqtiyki, ama hina kaspa willamuy. Askha appkunaqa "Willay" akllanata sapan publicasqakunapi, perfilkunapi churanku, kay servidorwan llamk'achisqayki huk redkunapa appninkunapas churallankutaq; denunciaykiqa {{operator.name}}man chayan, huk servidorpi kaq runamanta denunciataq chay servidorpa moderadorninkunamanpas kachasqa kanmanmi, mana pichus ruwasqanta nispa. Huk redkunapi runakunaqa kay servidormanta willaykunata kikinku servidorninkunawan denunciayta atinkum, chay denunciakunapas {{operator.name}}manmi chayallantaq. Imapaqpas {{operator.name}}pa sapaq qhawayninta munaqtin, legal mañakuykunata, utqay kuyuykunatapas, **{{operator.email}}**man emailta apachiy.
 
 ## Hunt'achiy
 

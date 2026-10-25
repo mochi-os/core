@@ -38,7 +38,7 @@ Polîtîkaya pêşwext li ser vê serverê ev e ku **naveroka mezinan/zayendî t
 
 ## Ragihandina binpêkirinan
 
-Heke hûn rastî naveroka an reftarek ku van qaîdeyan binpê dike werin, ji kerema xwe wê ragihîn. Gelek sepan li ser posten û profîlên kesane vebijarka "Ragihandin" hene. Ji bo her tiştê ku ji {{operator.name}} bal a rasterast hewce dike, tev de gilî û girînên qanûnî, ji **{{operator.email}}** re e-nameyek bişînin.
+Heke hûn rastî naveroka an reftarek ku van qaîdeyan binpê dike werin, ji kerema xwe wê ragihîn. Gelek sepan li ser posten û profîlên kesane vebijarka "Ragihandin" hene, û sepanên torên din ên ku hûn bi vê serverê re bi kar tînin jî wisa ne; rapora we digihîje {{operator.name}}, û raporek li ser kesekî li ser serverek din dibe ku ji moderatorên wê serverê re jî were şandin, bêyî ku bê gotin ka kê ew çêkiriye. Kesên li ser torên din dikarin naveroka ji vê serverê bi rêya serverên xwe rapor bikin, û ew rapor jî digihîjin {{operator.name}}. Ji bo her tiştê ku ji {{operator.name}} bal a rasterast hewce dike, tev de gilî û girînên qanûnî, ji **{{operator.email}}** re e-nameyek bişînin.
 
 ## Sepandin
 

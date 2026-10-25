@@ -38,7 +38,7 @@ Kebijakan default di server ini adalah bahwa **konten dewasa/seksual hanya diper
 
 ## Melaporkan pelanggaran
 
-Jika Anda menemukan konten atau perilaku yang melanggar aturan ini, mohon laporkan. Banyak aplikasi menyertakan opsi "Laporkan" pada pos dan profil individual. Untuk apa pun yang memerlukan perhatian langsung dari {{operator.name}}, termasuk keluhan hukum dan keadaan darurat, kirim email ke **{{operator.email}}**
+Jika Anda menemukan konten atau perilaku yang melanggar aturan ini, mohon laporkan. Banyak aplikasi menyertakan opsi "Laporkan" pada pos dan profil individual, begitu pula aplikasi dari jaringan lain yang Anda gunakan dengan server ini; laporan Anda sampai ke {{operator.name}}, dan laporan tentang seseorang di server lain juga dapat dikirim ke moderator server tersebut, tanpa menyebutkan siapa yang membuatnya. Orang-orang di jaringan lain dapat melaporkan konten dari server ini melalui server mereka sendiri, dan laporan tersebut juga sampai ke {{operator.name}}. Untuk apa pun yang memerlukan perhatian langsung dari {{operator.name}}, termasuk keluhan hukum dan keadaan darurat, kirim email ke **{{operator.email}}**
 
 ## Penegakan
 

@@ -38,7 +38,7 @@ Politik defo sou sèvè sa a se ke **kontni adilt/seksyèl pèmèt sèlman si** 
 
 ## Rapòte vyolasyon
 
-Si ou rankontre kontni oswa konpòtman ki vyole règ sa yo, tanpri rapòte li. Anpil aplikasyon gen yon opsyon "Rapòte" sou piblikasyon ak pwofil endividyèl. Pou nenpòt bagay ki bezwen atansyon dirèk {{operator.name}}, tankou plent legal ak ijans, voye imèl bay **{{operator.email}}**
+Si ou rankontre kontni oswa konpòtman ki vyole règ sa yo, tanpri rapòte li. Anpil aplikasyon gen yon opsyon "Rapòte" sou piblikasyon ak pwofil endividyèl, epi aplikasyon lòt rezo ou itilize ak sèvè sa a genyen l tou ; rapò ou rive jwenn {{operator.name}}, epi yon rapò sou yon moun ki sou yon lòt sèvè ka voye tou bay moderatè lòt sèvè a, san li pa di kiyès ki te fè l. Moun ki sou lòt rezo ka rapòte kontni ki soti sou sèvè sa a atravè pwòp sèvè pa yo, epi rapò sa yo rive jwenn {{operator.name}} tou. Pou nenpòt bagay ki bezwen atansyon dirèk {{operator.name}}, tankou plent legal ak ijans, voye imèl bay **{{operator.email}}**
 
 ## Aplikasyon
 

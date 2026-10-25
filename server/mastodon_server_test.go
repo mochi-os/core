@@ -1137,8 +1137,9 @@ func TestMastodonConversations(t *testing.T) {
 }
 
 // TestMastodonReports: a report of someone on another server goes to their
-// server's moderators as a Flag from the account, naming the statuses of
-// theirs complained of and the comment; the user cannot report themselves.
+// server's moderators as a Flag from the server's own account, naming the
+// statuses of theirs complained of and the comment; the user cannot report
+// themselves.
 func TestMastodonReports(t *testing.T) {
 	alice, _ := create_mastodon_test_env(t)
 	token := mastodon_token(t, alice, "read write")
@@ -1160,7 +1161,7 @@ func TestMastodonReports(t *testing.T) {
 	var flag map[string]any
 	json.Unmarshal([]byte(row_string(row, "body")), &flag)
 	objects := object_strings(flag["object"])
-	if flag["type"] != "Flag" || flag["actor"] != account_url("example.com", "f1") || flag["content"] != "Spam, again" || len(objects) != 2 || objects[0] != "https://remote.example/users/bob" || objects[1] != "https://remote.example/notes/9" {
+	if flag["type"] != "Flag" || flag["actor"] != activitypub_server_actor("example.com") || flag["content"] != "Spam, again" || len(objects) != 2 || objects[0] != "https://remote.example/users/bob" || objects[1] != "https://remote.example/notes/9" {
 		t.Errorf("THE POINT: the Flag = %v", flag)
 	}
 	self := mastodon_number(alice, "account", "identity:e-alice", 0)

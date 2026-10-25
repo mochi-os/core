@@ -38,7 +38,7 @@ Sjálfgefin stefna á þessum þjóni er að **kynferðislegt efni fyrir fullor�
 
 ## Tilkynningar um brot
 
-Ef þú rekst á efni eða hegðun sem brýtur gegn þessum reglum, vinsamlegast tilkynntu það. Mörg forrit hafa „Tilkynna" valkost á einstökum færslum og notendasniðum. Fyrir allt sem krefst beinnar athygli {{operator.name}}, þar á meðal lagalegar kvartanir og neyðartilvik, sendu tölvupóst á **{{operator.email}}**
+Ef þú rekst á efni eða hegðun sem brýtur gegn þessum reglum, vinsamlegast tilkynntu það. Mörg forrit hafa „Tilkynna" valkost á einstökum færslum og notendasniðum, og það sama á við um forrit annarra neta sem þú notar með þessum þjóni; tilkynning þín berst til {{operator.name}}, og tilkynning um einhvern á öðrum þjóni kann einnig að vera send til umsjónarmanna þess þjóns, án þess að fram komi hver gerði hana. Fólk á öðrum netum getur tilkynnt efni frá þessum þjóni gegnum sína eigin þjóna, og þær tilkynningar berast einnig til {{operator.name}}. Fyrir allt sem krefst beinnar athygli {{operator.name}}, þar á meðal lagalegar kvartanir og neyðartilvik, sendu tölvupóst á **{{operator.email}}**
 
 ## Framfylgd
 

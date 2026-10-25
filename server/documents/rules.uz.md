@@ -38,7 +38,7 @@ Ushbu serverdagi standart siyosat shundayki, **kattalar uchun moʻljallangan/jin
 
 ## Buzilishlar haqida xabar berish
 
-Agar ushbu qoidalarni buzuvchi kontent yoki xatti-harakatga duch kelsangiz, iltimos, bu haqda xabar bering. Koʻplab ilovalar alohida postlar va profillarda "Xabar berish" variantini taqdim etadi. {{operator.name}}ning bevosita eʼtiborini talab qiladigan har qanday narsa, jumladan huquqiy shikoyatlar va favqulodda holatlar uchun **{{operator.email}}** manziliga elektron xat yuboring.
+Agar ushbu qoidalarni buzuvchi kontent yoki xatti-harakatga duch kelsangiz, iltimos, bu haqda xabar bering. Koʻplab ilovalar alohida postlar va profillarda "Xabar berish" variantini taqdim etadi, ushbu server bilan foydalanadigan boshqa tarmoqlar ilovalarida ham shunday imkoniyat bor; shikoyatingiz {{operator.name}}ga yetib boradi, boshqa serverdagi kimdir haqidagi shikoyat esa uni kim yuborgani koʻrsatilmagan holda oʻsha server moderatorlariga ham yuborilishi mumkin. Boshqa tarmoqlardagi odamlar ushbu serverdagi kontent haqida oʻz serverlari orqali shikoyat qilishi mumkin va bu shikoyatlar ham {{operator.name}}ga yetib boradi. {{operator.name}}ning bevosita eʼtiborini talab qiladigan har qanday narsa, jumladan huquqiy shikoyatlar va favqulodda holatlar uchun **{{operator.email}}** manziliga elektron xat yuboring.
 
 ## Ijro etish
 

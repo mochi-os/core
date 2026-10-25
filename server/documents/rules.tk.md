@@ -38,7 +38,7 @@ Bu serweriň deslapky syýasaty: **ulular/jyns mazmuny diňe** duýgur diýip a�
 
 ## Bozulmalary habar bermek
 
-Bu düzgünleri bozýan mazmuna ýa-da hereketlere duşsaňyz, ony habar beriň. Köp programmada aýry-aýry ýazgylar we profillerde "Habar ber" mümkinçiligi bar. {{operator.name}}-iň gönüden-göni ünsüni talap edýän zatlar üçin, şol sanda ýuridiki şikaýatlar we adatdan daşary ýagdaýlar üçin, **{{operator.email}}** salgysyna ýazyň
+Bu düzgünleri bozýan mazmuna ýa-da hereketlere duşsaňyz, ony habar beriň. Köp programmada aýry-aýry ýazgylar we profillerde "Habar ber" mümkinçiligi bar, bu serwer bilen ulanýan beýleki torlaryňyzyň programmalarynda hem şeýle; siziň şikaýatyňyz {{operator.name}}-e ýetýär, başga bir serwerdäki kimdir biri baradaky şikaýat bolsa ony kimiň edendigi aýdylman şol serweriň moderatorlaryna hem iberilip bilner. Beýleki torlardaky adamlar bu serwerdäki mazmun barada öz serwerleri arkaly habar berip bilerler we şol şikaýatlar hem {{operator.name}}-e ýetýär. {{operator.name}}-iň gönüden-göni ünsüni talap edýän zatlar üçin, şol sanda ýuridiki şikaýatlar we adatdan daşary ýagdaýlar üçin, **{{operator.email}}** salgysyna ýazyň
 
 ## Ýerine ýetirmek
 

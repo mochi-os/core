@@ -38,7 +38,7 @@ Kawicaksanan baku ing server punika inggih punika **konten dewasa/seksual namung
 
 ## Nglapuraken pelanggaran
 
-Menawi panjenengan manggih konten utawi prilaku ingkang nglanggar pranatan punika, mangga lapuraken. Kathah aplikasi ingkang nyediakaken pilihan "Lapur" ing postingan saha profil individu. Kangge punapa kemawon ingkang mbetahaken kawigatosan langsung saking {{operator.name}}, kalebet kalakuwan hukum saha kahanan darurat, kintunaken email dhateng **{{operator.email}}**
+Menawi panjenengan manggih konten utawi prilaku ingkang nglanggar pranatan punika, mangga lapuraken. Kathah aplikasi ingkang nyediakaken pilihan "Lapur" ing postingan saha profil individu, mekaten ugi aplikasi saking jaringan sanes ingkang panjenengan ginakaken kaliyan server punika; laporan panjenengan dumugi {{operator.name}}, lan laporan babagan tiyang ing server sanes ugi saged dipun kintunaken dhateng moderator server kasebut, tanpa nyebataken sinten ingkang damel. Tiyang-tiyang ing jaringan sanes saged nglapuraken konten saking server punika lumantar server piyambakipun, lan laporan-laporan kasebut ugi dumugi {{operator.name}}. Kangge punapa kemawon ingkang mbetahaken kawigatosan langsung saking {{operator.name}}, kalebet kalakuwan hukum saha kahanan darurat, kintunaken email dhateng **{{operator.email}}**
 
 ## Penegakan
 

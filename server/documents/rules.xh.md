@@ -38,7 +38,7 @@ Umgaqo-nkqubo omiselweyo kule seva kukuba **umxholo wabantu abadala/wesondo uvun
 
 ## Ukuxela ukuyaphulwa
 
-Ukuba uthelelana nomxholo okanye ukuziphatha okwaphula le mithetho, nceda ukuxele. Iiapp ezininzi ziquka ukhetho lwe-"Xela" kwiposti nakwiiprofayile zabanye abantu. Nantoni na efuna ingqalelo ngqo evela ku {{operator.name}}, kuquka izikhalazo zomthetho kunye namaxesha onxunguphalo, thumela i-imeyile **{{operator.email}}**
+Ukuba uthelelana nomxholo okanye ukuziphatha okwaphula le mithetho, nceda ukuxele. Iiapp ezininzi ziquka ukhetho lwe-"Xela" kwiposti nakwiiprofayile zabanye abantu, kwaye neeapp zezinye iinethiwekhi ozisebenzisa kunye nale seva ziyalubonelela; ingxelo yakho ifika ku {{operator.name}}, kwaye ingxelo ngomntu okwenye iseva ingathunyelwa nakubalawuli bomxholo baloo seva, ngaphandle kokuchaza ukuba ngubani oyenzileyo. Abantu abakwezinye iinethiwekhi banokuxela umxholo osuka kule seva ngeeseva zabo, kwaye ezo ngxelo nazo zifika ku {{operator.name}}. Nantoni na efuna ingqalelo ngqo evela ku {{operator.name}}, kuquka izikhalazo zomthetho kunye namaxesha onxunguphalo, thumela i-imeyile **{{operator.email}}**
 
 ## Ukunyanzelisa
 

@@ -9,6 +9,7 @@ When you sign up and use this server we collect:
 - **Account data**: a username, the authentication methods you choose (email address, passkeys, authenticator app, recovery codes, or an account from a third-party login provider), and any profile information you add (display name, avatar, biography).
 - **Content you create**: posts, messages, comments, files, and any other data you choose to publish through the apps installed on this server.
 - **Content from other people**: posts, messages, and profile details of people on other Mochi servers and on other networks, which reach this server because you or other users follow, subscribe to, or correspond with them.
+- **Reports**: a report you make about someone, or that someone makes about you, on Mochi or from another network, is kept for this server's administrators to act on.
 - **Technical data**: IP address, browser/device information, and timestamps for the requests you make. This is used to keep the service secure and operating, and to detect abuse.
 - **Cookies**: a session cookie is set when you sign in. It stores only an opaque session identifier; we do not use cookies for advertising or cross-site tracking.
 
@@ -21,7 +22,9 @@ Mochi is a **peer-to-peer (P2P) network**, not a single-server platform. That ch
 - Content you publish to followers, subscribers, or shared spaces is **replicated to other Mochi servers** that host those followers or subscribers. {{operator.name}} cannot delete copies of your content from servers it does not run. If you delete a post, this server will send a deletion notice to the peers it has previously sent the post to, but the deletion is best-effort and depends on the cooperation of those peers.
 - Your **identity (username, profile, public keys)** is published to the Mochi directory if you choose a public profile, so other Mochi users can find and contact you.
 - Direct, private content (drafts, private notes, private messages between specific recipients) stays on this server and the recipients' servers only; it is not part of the public P2P network.
-- Where this server lets you **connect to other networks** - by linking an account you hold on another service, or by hosting an account here that people on other networks can follow or message - what you publish or send through that account goes to servers on those networks. They are not Mochi servers and {{operator.name}} does not run them. An account like this is public on its network, and on some networks so are the accounts you follow and the posts you like. Editing or deleting something later sends a request that those servers may ignore.
+- Where this server lets you **connect to other networks** - by linking an account you hold on another service, or by hosting an account here that people on other networks can follow or message - what you publish or send through that account goes to servers on those networks. They are not Mochi servers and {{operator.name}} does not run them. An account like this is public on its network, and on some networks so are the accounts you follow, the posts you like and, on Bluesky, the people you block. Editing or deleting something later sends a request that those servers may ignore.
+- People you chat with, on Mochi and on other networks, can see when you are online. You can turn this off with **Show when I'm online** in the chat app's settings.
+- A report you make about someone on another server may also be sent to that server's moderators, as this server's report rather than yours: it does not say who made it.
 
 In short: anything you choose to share with other people, on Mochi or on other networks, will travel beyond {{operator.name}}'s control, by design. Treat content you publish as you would email or any other federated communication.
 
@@ -32,6 +35,8 @@ We share the minimum personal data required with the following third parties whe
 - **Email service**: outbound emails (sign-in codes, address verification, notifications) are sent through an SMTP provider configured by {{operator.name}}.
 - **Third-party login providers**: if you sign in with Google, GitHub, Microsoft, Facebook, or another OAuth provider, that provider learns that you signed in to this server and shares your email address and basic profile data with us.
 - **Payment providers**: if you make a purchase through a marketplace app, the payment is processed by Stripe (or whichever payment provider {{operator.name}} has configured). We do not store full card details.
+- **Push notification services**: notifications to the Mochi app on Android are delivered through Google's Firebase Cloud Messaging, which carries their title and text. If you sign in to this server with another app, such as a Mastodon, Matrix or XMPP app, its notifications are delivered through the push service that app uses, and may include the message a notification is about.
+- **Certificate authority**: where this server hosts Bluesky accounts under its own domain, each account's address is issued a security certificate. Certificate authorities publish every certificate they issue in public logs, so those addresses are listed there.
 - **Other networks**: if you link an account you hold on another service, that service receives what you post through it, and this server stores the credential that lets it act for you there. If you host an account here for another network, the servers and services of that network receive what you publish to it, along with the account's public address.
 
 ## Your rights

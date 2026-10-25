@@ -38,7 +38,7 @@ Standardretningslinjen på denne serveren er at **voksent/seksuelt innhold er ti
 
 ## Rapportering av brudd
 
-Hvis du møter innhold eller atferd som bryter disse reglene, vennligst rapporter det. Mange apper har et «Rapporter»-valg på enkeltinnlegg og profiler. For alt som krever direkte oppfølging fra {{operator.name}}, inkludert juridiske klager og nødssituasjoner, send e-post til **{{operator.email}}**
+Hvis du møter innhold eller atferd som bryter disse reglene, vennligst rapporter det. Mange apper har et «Rapporter»-valg på enkeltinnlegg og profiler, og det har også appene for andre nettverk som du bruker med denne serveren; rapporten din når {{operator.name}}, og en rapport om noen på en annen server kan også bli sendt til moderatorene på den serveren, uten at det står hvem som sendte den. Personer i andre nettverk kan rapportere innhold fra denne serveren gjennom sine egne servere, og også disse rapportene når {{operator.name}}. For alt som krever direkte oppfølging fra {{operator.name}}, inkludert juridiske klager og nødssituasjoner, send e-post til **{{operator.email}}**
 
 ## Håndheving
 

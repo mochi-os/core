@@ -38,7 +38,7 @@ Inqubomgomo ezenzakalelayo kule seva ukuthi **okuqukethwe kwabantu abadala/kwezo
 
 ## Ukubika ukweqa imithetho
 
-Uma uhlangabezana nokuqukethwe noma ukuziphatha okwephula le mithetho, sicela ukubike. Izinhlelo zokusebenza eziningi zifaka inketho ye-"Bika" ezithunjelweni nasemaphrofayilini ngamanye. Kunoma yini edinga ukunakwa okuqondile ku-{{operator.name}}, kufaka izikhalazo zezomthetho nezimo eziphuthumayo, thumela i-imeyili ku-**{{operator.email}}**
+Uma uhlangabezana nokuqukethwe noma ukuziphatha okwephula le mithetho, sicela ukubike. Izinhlelo zokusebenza eziningi zifaka inketho ye-"Bika" ezithunjelweni nasemaphrofayilini ngamanye, kanjalo nezinhlelo zokusebenza zamanye amanethiwekhi ozisebenzisa nale seva; umbiko wakho ufika ku-{{operator.name}}, futhi umbiko ngomuntu okwenye iseva ungathunyelwa nakubalawuli bokuqukethwe baleyo seva, ngaphandle kokusho ukuthi ubani owenzile. Abantu abakwamanye amanethiwekhi bangabika okuqukethwe okuvela kule seva ngamaseva abo, futhi leyo mibiko nayo ifika ku-{{operator.name}}. Kunoma yini edinga ukunakwa okuqondile ku-{{operator.name}}, kufaka izikhalazo zezomthetho nezimo eziphuthumayo, thumela i-imeyili ku-**{{operator.email}}**
 
 ## Ukuphoqelelwa
 

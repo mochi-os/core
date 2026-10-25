@@ -6,7 +6,9 @@
 package main
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -125,13 +127,27 @@ func TestAccountFollowers(t *testing.T) {
 	}
 }
 
-// TestAccountReport: a report goes out as a Flag from the account to the
-// person's shared inbox, naming them and the objects complained of; an object
-// on another server, or a person who does not resolve, is refused.
+// TestAccountReport: a report goes out as a Flag to the person's shared
+// inbox, naming them and the objects complained of, from the server's own
+// account on the reporting account's domain and queued as that account, so
+// their server never learns who reported; an object on another server, or a
+// person who does not resolve, is refused.
 func TestAccountReport(t *testing.T) {
 	alice, bob := create_activitypub_test_env(t)
 	fn := sl.NewBuiltin("test", nil)
 	thread := create_acting_thread(alice)
+	// The lookups made in forwarding, by whose key they are signed.
+	var keys []string
+	saved := resolve_fetch
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		if sign := resolve_signed_by(ctx); sign != nil {
+			r := httptest.NewRequest("GET", address, nil)
+			sign(r)
+			keys = append(keys, r.Header.Get("Signature"))
+		}
+		return saved(ctx, address, accept)
+	}
+	t.Cleanup(func() { resolve_fetch = saved })
 	objects := sl.NewList([]sl.Value{sl.String("https://remote.example/notes/9")})
 	if _, err := api_account_report(thread, fn, sl.Tuple{sl.String("f1"), sl.String(bob.id)}, []sl.Tuple{{sl.String("objects"), objects}, {sl.String("content"), sl.String("Spam")}}); err != nil {
 		t.Fatal(err)
@@ -142,11 +158,20 @@ func TestAccountReport(t *testing.T) {
 	}
 	_, flag := delivery_body(t)
 	named := object_strings(flag["object"])
-	if flag["type"] != "Flag" || flag["actor"] != "https://example.com/~f1" || flag["content"] != "Spam" || len(named) != 2 || named[0] != bob.id || named[1] != "https://remote.example/notes/9" {
-		t.Errorf("Flag = %v", flag)
+	if flag["type"] != "Flag" || flag["actor"] != "https://example.com/~/actor" || flag["content"] != "Spam" || len(named) != 2 || named[0] != bob.id || named[1] != "https://remote.example/notes/9" {
+		t.Errorf("THE POINT: Flag = %v", flag)
 	}
-	if id, _ := flag["id"].(string); !strings.HasPrefix(id, "https://example.com/~f1#flags/") {
-		t.Errorf("Flag id = %q", id)
+	if id, _ := flag["id"].(string); !strings.HasPrefix(id, "https://example.com/~/actor#flags/") {
+		t.Errorf("THE POINT: Flag id = %q", id)
+	}
+	if row, _ := db_open("db/networks.db").row("select account from deliveries"); row_string(row, "account") != "server:example.com" {
+		t.Errorf("THE POINT: the Flag is queued as %v, not the server's account", row)
+	}
+	if strings.Contains(json_encode(flag), "~f1") {
+		t.Errorf("THE POINT: the Flag names the reporting account: %v", flag)
+	}
+	if len(keys) == 0 || !strings.Contains(strings.Join(keys, " "), `keyId="https://example.com/~/actor#main-key"`) || strings.Contains(strings.Join(keys, " "), "~f1") {
+		t.Errorf("THE POINT: the lookups were not signed as the server's account: %v", keys)
 	}
 
 	elsewhere := sl.NewList([]sl.Value{sl.String("https://other.example/notes/1")})

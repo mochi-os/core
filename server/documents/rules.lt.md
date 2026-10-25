@@ -38,7 +38,7 @@ Numatytoji šio serverio politika yra ta, kad **suaugusiesiems skirtas/seksualin
 
 ## Pranešimai apie pažeidimus
 
-Jei pastebėjote turinį ar elgesį, kuris pažeidžia šias taisykles, prašome pranešti. Daugelyje programėlių yra parinktis „Pranešti" prie atskirų įrašų ir profilių. Dėl visko, kam reikia tiesioginio {{operator.name}} dėmesio, įskaitant teisinius skundus ir avarines situacijas, rašykite el. paštu **{{operator.email}}**
+Jei pastebėjote turinį ar elgesį, kuris pažeidžia šias taisykles, prašome pranešti. Daugelyje programėlių yra parinktis „Pranešti" prie atskirų įrašų ir profilių, kaip ir kitų tinklų programėlėse, kurias naudojate su šiuo serveriu; jūsų pranešimas pasiekia {{operator.name}}, o pranešimas apie ką nors kitame serveryje taip pat gali būti išsiųstas to serverio moderatoriams, nenurodant, kas jį pateikė. Kitų tinklų žmonės gali pranešti apie šio serverio turinį per savo serverius, ir tie pranešimai taip pat pasiekia {{operator.name}}. Dėl visko, kam reikia tiesioginio {{operator.name}} dėmesio, įskaitant teisinius skundus ir avarines situacijas, rašykite el. paštu **{{operator.email}}**
 
 ## Vykdymas
 

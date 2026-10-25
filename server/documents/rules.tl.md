@@ -38,7 +38,7 @@ Ang default na patakaran sa server na ito ay **pinapayagan lamang ang adult/sexu
 
 ## Pag-uulat ng mga paglabag
 
-Kung makatagpo ka ng nilalaman o pag-uugaling lumalabag sa mga patakarang ito, mangyaring iulat ito. Maraming app ang may "Report" na opsyon sa mga indibidwal na post at profile. Para sa anumang nangangailangan ng direktang atensyon mula sa {{operator.name}}, kabilang ang mga legal complaint at emergency, mag-email sa **{{operator.email}}**
+Kung makatagpo ka ng nilalaman o pag-uugaling lumalabag sa mga patakarang ito, mangyaring iulat ito. Maraming app ang may "Report" na opsyon sa mga indibidwal na post at profile, at gayundin ang mga app ng ibang network na ginagamit mo kasama ng server na ito; umaabot ang iyong report sa {{operator.name}}, at ang report tungkol sa isang tao sa ibang server ay maaari ring ipadala sa mga moderator ng server na iyon, nang hindi sinasabi kung sino ang gumawa nito. Ang mga tao sa ibang network ay maaaring mag-report ng nilalaman mula sa server na ito sa pamamagitan ng sarili nilang mga server, at umaabot din ang mga report na iyon sa {{operator.name}}. Para sa anumang nangangailangan ng direktang atensyon mula sa {{operator.name}}, kabilang ang mga legal complaint at emergency, mag-email sa **{{operator.email}}**
 
 ## Pagpapatupad
 

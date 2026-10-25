@@ -38,7 +38,7 @@ Mboheko ko mohendahápe ha'e **tembiapokue kakuaápe/sexual oñemoneĩ rupive ra
 
 ## Ñembyaiha ñemomarandu
 
-Rejuhúvo tembiapokue térã teko ñembyaiháva ko'ã mboheko, eñemomarandu favor. Heta tembiporu oguereko peteĩ "Mombe'u" opción tembiapokue ha perfil rehe peteĩ-peteĩ. Oikotevẽva {{operator.name}} ñemboaje directo, ojuajuhápe quejas legales ha emergencia, emondo correo **{{operator.email}}** rupive
+Rejuhúvo tembiapokue térã teko ñembyaiháva ko'ã mboheko, eñemomarandu favor. Heta tembiporu oguereko peteĩ "Mombe'u" opción tembiapokue ha perfil rehe peteĩ-peteĩ, ha upéicha avei ambue ñanduti tembiporu reiporúva ko mohendaha ndive; nde ñemombe'u oguahẽ {{operator.name}}-pe, ha peteĩ ñemombe'u peteĩ tapicha oĩva ambue mohendahápe rehe ikatu oñemondo avei upe mohendaha moderador-kuérape, he'i'ỹre máva ojapo hague. Tapicha oĩva ambue ñanduti-kuérape ikatu omombe'u ko mohendaha tembiapokue imohendaha tee rupive, ha umi ñemombe'u oguahẽ avei {{operator.name}}-pe. Oikotevẽva {{operator.name}} ñemboaje directo, ojuajuhápe quejas legales ha emergencia, emondo correo **{{operator.email}}** rupive
 
 ## Mbojere
 

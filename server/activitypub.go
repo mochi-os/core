@@ -341,6 +341,10 @@ func activitypub_webfinger(c *gin.Context) {
 	switch {
 	case strings.HasPrefix(resource, "acct:"):
 		name, domain, found := strings.Cut(strings.TrimPrefix(resource, "acct:"), "@")
+		if found && strings.EqualFold(name, domain) && domain_ours(domain) {
+			activitypub_server_webfinger(c, strings.ToLower(domain))
+			return
+		}
 		if found {
 			a = actor_by_handle(domain, name)
 		}
@@ -348,6 +352,9 @@ func activitypub_webfinger(c *gin.Context) {
 		u, err := url.Parse(resource)
 		if err == nil {
 			switch {
+			case u.Path == "/~/actor" && domain_ours(u.Hostname()):
+				activitypub_server_webfinger(c, strings.ToLower(u.Hostname()))
+				return
 			case strings.HasPrefix(u.Path, "/~"):
 				a = actor_get(strings.TrimPrefix(u.Path, "/~"))
 			case strings.HasPrefix(u.Path, "/@"):
@@ -383,6 +390,84 @@ func activitypub_webfinger(c *gin.Context) {
 	// name on two domains are told apart.
 	if account_group(row) {
 		jrd["links"].([]map[string]any)[0]["properties"] = map[string]any{activitystreams + "#type": "Group"}
+	}
+	c.Header("Content-Type", activitypub_jrd+"; charset=utf-8")
+	c.Status(http.StatusOK)
+	c.Writer.Write([]byte(json_encode(jrd)))
+}
+
+// === The server's own account ===
+//
+// Each of the server's domains has an account of the server's own at /~/actor:
+// an Application, as Mastodon's instance actor is, speaking for the server
+// rather than for anyone on it, found by WebFinger as <domain>@<domain>. A
+// report forwarded to another server goes out as it, signed with the server's
+// key, and the lookups made in forwarding it are signed by it too, so that
+// server never learns who made the report.
+
+// activitypub_server_key names the server account's key in networks.db.
+const activitypub_server_key = "fediverse/actor"
+
+// activitypub_server_account is how the delivery queue names the server's own
+// account on a domain: this prefix and the domain, where a hosted account's
+// row has its id.
+const activitypub_server_account = "server:"
+
+// activitypub_server_actor is the server's own account on a domain.
+func activitypub_server_actor(domain string) string {
+	return "https://" + strings.ToLower(domain) + "/~/actor"
+}
+
+// activitypub_server_private is the server account's private key, made on
+// first use.
+func activitypub_server_private() string {
+	return networks_key(activitypub_server_key, key_rsa)
+}
+
+// activitypub_server_signing returns a context whose lookups are signed as the
+// server's own account on a domain.
+func activitypub_server_signing(ctx context.Context, domain string) context.Context {
+	id, private := activitypub_server_actor(domain), activitypub_server_private()
+	if private == "" {
+		return ctx
+	}
+	return resolve_signing(ctx, func(r *http.Request) {
+		signature_sign(r, id+"#main-key", private, nil)
+	})
+}
+
+// activitypub_server_document answers the server's own account on the domain
+// asked.
+func activitypub_server_document(c *gin.Context) {
+	host := activitypub_host(c)
+	id := activitypub_server_actor(host)
+	document := map[string]any{
+		"@context":                  activitypub_context,
+		"id":                        id,
+		"type":                      "Application",
+		"preferredUsername":         host,
+		"name":                      host,
+		"url":                       "https://" + host,
+		"inbox":                     id + "/inbox",
+		"endpoints":                 map[string]any{"sharedInbox": "https://" + host + "/~/inbox"},
+		"manuallyApprovesFollowers": true,
+		"discoverable":              false,
+		"indexable":                 false,
+	}
+	if public := key_rsa_public_of(activitypub_server_private()); public != "" {
+		document["publicKey"] = map[string]any{"id": id + "#main-key", "owner": id, "publicKeyPem": public}
+	}
+	activitypub_json(c, http.StatusOK, document)
+}
+
+// activitypub_server_webfinger answers WebFinger for the server's own account
+// on a domain.
+func activitypub_server_webfinger(c *gin.Context, domain string) {
+	id := activitypub_server_actor(domain)
+	jrd := map[string]any{
+		"subject": "acct:" + domain + "@" + domain,
+		"aliases": []string{id},
+		"links":   []map[string]any{{"rel": "self", "type": activitypub_type, "href": id}},
 	}
 	c.Header("Content-Type", activitypub_jrd+"; charset=utf-8")
 	c.Status(http.StatusOK)
@@ -526,6 +611,10 @@ func activitypub_actor_route(c *gin.Context) {
 			activitypub_inbox(c, nil, nil)
 		case tail == "authorize" && method == "GET":
 			activitypub_authorize(c)
+		case tail == "actor" && method == "GET" && domain_ours(activitypub_host(c)):
+			activitypub_server_document(c)
+		case tail == "actor/inbox" && method == "POST" && domain_ours(activitypub_host(c)):
+			activitypub_inbox(c, nil, nil)
 		default:
 			respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
 		}

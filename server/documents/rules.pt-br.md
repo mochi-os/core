@@ -38,7 +38,7 @@ A política padrão deste servidor é que **conteúdo adulto/sexual é permitido
 
 ## Denunciando violações
 
-Se você encontrar conteúdo ou comportamento que viole estas regras, por favor denuncie. Muitos aplicativos incluem uma opção "Denunciar" em postagens e perfis individuais. Para qualquer assunto que exija atenção direta de {{operator.name}}, incluindo reclamações jurídicas e emergências, escreva para **{{operator.email}}**
+Se você encontrar conteúdo ou comportamento que viole estas regras, por favor denuncie. Muitos aplicativos incluem uma opção "Denunciar" em postagens e perfis individuais, assim como os aplicativos de outras redes que você usa com este servidor; sua denúncia chega a {{operator.name}}, e uma denúncia sobre alguém em outro servidor também pode ser enviada aos moderadores desse servidor, sem informar quem a fez. Pessoas de outras redes podem denunciar conteúdo deste servidor por meio de seus próprios servidores, e essas denúncias também chegam a {{operator.name}}. Para qualquer assunto que exija atenção direta de {{operator.name}}, incluindo reclamações jurídicas e emergências, escreva para **{{operator.email}}**
 
 ## Aplicação
 

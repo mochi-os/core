@@ -38,7 +38,7 @@ Zadana politika na ovom poslužitelju jest da je **sadržaj za odrasle / seksual
 
 ## Prijava kršenja
 
-Ako naiđete na sadržaj ili ponašanje koje krši ova pravila, molimo prijavite ga. Mnoge aplikacije nude opciju „Prijavi“ na pojedinačnim objavama i profilima. Za sve što zahtijeva izravnu pozornost {{operator.name}}, uključujući pravne pritužbe i hitne slučajeve, pošaljite e-poštu na **{{operator.email}}**
+Ako naiđete na sadržaj ili ponašanje koje krši ova pravila, molimo prijavite ga. Mnoge aplikacije nude opciju „Prijavi“ na pojedinačnim objavama i profilima, kao i aplikacije drugih mreža koje koristite s ovim poslužiteljem; vaša prijava stiže do {{operator.name}}, a prijava o nekome na drugom poslužitelju može biti poslana i moderatorima tog poslužitelja, bez navođenja tko ju je podnio. Ljudi na drugim mrežama mogu prijaviti sadržaj s ovog poslužitelja putem vlastitih poslužitelja, i te prijave također stižu do {{operator.name}}. Za sve što zahtijeva izravnu pozornost {{operator.name}}, uključujući pravne pritužbe i hitne slučajeve, pošaljite e-poštu na **{{operator.email}}**
 
 ## Provedba
 

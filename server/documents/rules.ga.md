@@ -38,7 +38,7 @@ Is é beartas réamhshocraithe an fhreastalaí seo go gceadaítear **ábhar do d
 
 ## Sáruithe a thuairisciú
 
-Má fheiceann tú ábhar nó iompar a sháraíonn na rialacha seo, déan tuairisc air le do thoil. Áirítear le go leor aipeanna rogha "Tuairiscigh" ar phostálacha agus ar phróifílí aonair. Le haghaidh rud ar bith a éilíonn aird dhíreach ó {{operator.name}}, lena n-áirítear gearáin dhlíthiúla agus éigeandálaí, cuir ríomhphost chuig **{{operator.email}}**
+Má fheiceann tú ábhar nó iompar a sháraíonn na rialacha seo, déan tuairisc air le do thoil. Áirítear le go leor aipeanna rogha "Tuairiscigh" ar phostálacha agus ar phróifílí aonair, agus is amhlaidh d'aipeanna líonraí eile a úsáideann tú leis an bhfreastalaí seo; sroicheann do thuairisc {{operator.name}}, agus féadfar tuairisc faoi dhuine ar fhreastalaí eile a sheoladh chuig modhnóirí an fhreastalaí sin freisin, gan a lua cé a rinne í. Is féidir le daoine ar líonraí eile ábhar ón bhfreastalaí seo a thuairisciú trína bhfreastalaithe féin, agus sroicheann na tuairiscí sin {{operator.name}} freisin. Le haghaidh rud ar bith a éilíonn aird dhíreach ó {{operator.name}}, lena n-áirítear gearáin dhlíthiúla agus éigeandálaí, cuir ríomhphost chuig **{{operator.email}}**
 
 ## Forfheidhmiú
 

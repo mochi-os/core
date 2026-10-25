@@ -38,7 +38,7 @@ Domyślną polityką tego serwera jest, że **treści dla dorosłych/seksualne s
 
 ## Zgłaszanie naruszeń
 
-Jeśli napotkasz treści lub zachowania naruszające niniejsze zasady, zgłoś je. Wiele aplikacji udostępnia opcję „Zgłoś” przy poszczególnych postach i profilach. W sprawach wymagających bezpośredniej uwagi {{operator.name}}, w tym skarg prawnych i sytuacji nagłych, napisz na adres **{{operator.email}}**
+Jeśli napotkasz treści lub zachowania naruszające niniejsze zasady, zgłoś je. Wiele aplikacji udostępnia opcję „Zgłoś” przy poszczególnych postach i profilach, podobnie jak aplikacje innych sieci, których używasz z tym serwerem; Twoje zgłoszenie trafia do {{operator.name}}, a zgłoszenie dotyczące osoby z innego serwera może zostać przekazane również moderatorom tamtego serwera, bez wskazania, kto je złożył. Osoby z innych sieci mogą zgłaszać treści z tego serwera za pośrednictwem własnych serwerów i te zgłoszenia również trafiają do {{operator.name}}. W sprawach wymagających bezpośredniej uwagi {{operator.name}}, w tym skarg prawnych i sytuacji nagłych, napisz na adres **{{operator.email}}**
 
 ## Egzekwowanie
 

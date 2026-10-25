@@ -38,7 +38,7 @@ Dasar lalai di pelayan ini ialah **kandungan dewasa/seksual dibenarkan hanya jik
 
 ## Melaporkan pelanggaran
 
-Jika anda menemui kandungan atau tingkah laku yang melanggar peraturan ini, sila laporkannya. Banyak aplikasi menyertakan pilihan "Laporkan" pada siaran dan profil individu. Untuk apa-apa yang memerlukan perhatian terus daripada {{operator.name}}, termasuk aduan undang-undang dan kecemasan, e-melkan **{{operator.email}}**
+Jika anda menemui kandungan atau tingkah laku yang melanggar peraturan ini, sila laporkannya. Banyak aplikasi menyertakan pilihan "Laporkan" pada siaran dan profil individu, begitu juga aplikasi rangkaian lain yang anda gunakan dengan pelayan ini; laporan anda sampai kepada {{operator.name}}, dan laporan tentang seseorang di pelayan lain juga mungkin dihantar kepada moderator pelayan tersebut, tanpa menyatakan siapa yang membuatnya. Orang di rangkaian lain boleh melaporkan kandungan daripada pelayan ini melalui pelayan mereka sendiri, dan laporan tersebut juga sampai kepada {{operator.name}}. Untuk apa-apa yang memerlukan perhatian terus daripada {{operator.name}}, termasuk aduan undang-undang dan kecemasan, e-melkan **{{operator.email}}**
 
 ## Penguatkuasaan
 

@@ -38,7 +38,7 @@ Standardpolitikken på denne server er, at **indhold for voksne/seksuelt indhold
 
 ## Anmeldelse af overtrædelser
 
-Hvis du støder på indhold eller adfærd, der overtræder disse regler, så anmeld det. Mange apps indeholder en "Anmeld"-mulighed på enkelte opslag og profiler. For alt, der kræver direkte opmærksomhed fra {{operator.name}}, herunder juridiske klager og nødsituationer, send en e-mail til **{{operator.email}}**
+Hvis du støder på indhold eller adfærd, der overtræder disse regler, så anmeld det. Mange apps indeholder en "Anmeld"-mulighed på enkelte opslag og profiler, og det gør apps fra andre netværk, du bruger med denne server, også; din anmeldelse når frem til {{operator.name}}, og en anmeldelse af nogen på en anden server kan også blive sendt til den servers moderatorer uden at oplyse, hvem der har indgivet den. Personer på andre netværk kan anmelde indhold fra denne server via deres egne servere, og disse anmeldelser når også frem til {{operator.name}}. For alt, der kræver direkte opmærksomhed fra {{operator.name}}, herunder juridiske klager og nødsituationer, send en e-mail til **{{operator.email}}**
 
 ## Håndhævelse
 

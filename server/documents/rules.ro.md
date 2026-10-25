@@ -38,7 +38,7 @@ Politica implicită pe acest server este că **conținutul pentru adulți/sexual
 
 ## Raportarea încălcărilor
 
-Dacă întâlniți conținut sau comportament care încalcă aceste reguli, vă rugăm să le raportați. Multe aplicații includ o opțiune „Raportează” pe postările și profilurile individuale. Pentru orice necesită atenție directă din partea {{operator.name}}, inclusiv plângeri legale și urgențe, trimiteți un e-mail la **{{operator.email}}**
+Dacă întâlniți conținut sau comportament care încalcă aceste reguli, vă rugăm să le raportați. Multe aplicații includ o opțiune „Raportează” pe postările și profilurile individuale, la fel ca aplicațiile altor rețele pe care le folosiți cu acest server; raportarea dumneavoastră ajunge la {{operator.name}}, iar o raportare despre cineva de pe un alt server poate fi trimisă și moderatorilor acelui server, fără a preciza cine a făcut-o. Persoanele din alte rețele pot raporta conținut de pe acest server prin propriile servere, iar acele raportări ajung și ele la {{operator.name}}. Pentru orice necesită atenție directă din partea {{operator.name}}, inclusiv plângeri legale și urgențe, trimiteți un e-mail la **{{operator.email}}**
 
 ## Aplicare
 

@@ -38,7 +38,7 @@ La politique par défaut sur ce serveur est que **les contenus pour adultes ou �
 
 ## Signaler les infractions
 
-Si vous rencontrez un contenu ou un comportement qui enfreint ces règles, veuillez le signaler. De nombreuses applications proposent une option « Signaler » sur les publications et les profils individuels. Pour tout ce qui requiert l'attention directe de {{operator.name}}, y compris les plaintes juridiques et les urgences, écrivez à **{{operator.email}}**
+Si vous rencontrez un contenu ou un comportement qui enfreint ces règles, veuillez le signaler. De nombreuses applications proposent une option « Signaler » sur les publications et les profils individuels, tout comme les applications d'autres réseaux que vous utilisez avec ce serveur ; votre signalement parvient à {{operator.name}}, et un signalement concernant quelqu'un sur un autre serveur peut aussi être transmis aux modérateurs de ce serveur-là, sans indiquer qui l'a fait. Les personnes d'autres réseaux peuvent signaler du contenu de ce serveur via leurs propres serveurs, et ces signalements parviennent aussi à {{operator.name}}. Pour tout ce qui requiert l'attention directe de {{operator.name}}, y compris les plaintes juridiques et les urgences, écrivez à **{{operator.email}}**
 
 ## Application
 

@@ -38,7 +38,7 @@ Izmantojot šo serveri, jūs piekrītat ievērot šos noteikumus. Pārkāpumu re
 
 ## Pārkāpumu ziņošana
 
-Ja saskaraties ar saturu vai uzvedību, kas pārkāpj šos noteikumus, lūdzu, ziņojiet par to. Daudzas lietotnes ietver opciju "Ziņot" atsevišķiem ierakstiem un profiliem. Visam, kas prasa tiešu uzmanību no {{operator.name}}, tostarp juridiskām sūdzībām un ārkārtas situācijām, rakstiet uz **{{operator.email}}**
+Ja saskaraties ar saturu vai uzvedību, kas pārkāpj šos noteikumus, lūdzu, ziņojiet par to. Daudzas lietotnes ietver opciju "Ziņot" atsevišķiem ierakstiem un profiliem, tāpat kā citu tīklu lietotnes, ko izmantojat ar šo serveri; jūsu ziņojums nonāk pie {{operator.name}}, un ziņojums par kādu citā serverī var tikt nosūtīts arī tā servera moderatoriem, nenorādot, kas to iesniedza. Citu tīklu cilvēki var ziņot par šī servera saturu caur saviem serveriem, un arī šie ziņojumi nonāk pie {{operator.name}}. Visam, kas prasa tiešu uzmanību no {{operator.name}}, tostarp juridiskām sūdzībām un ārkārtas situācijām, rakstiet uz **{{operator.email}}**
 
 ## Izpildes nodrošināšana
 

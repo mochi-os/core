@@ -38,7 +38,7 @@ La política predeterminada de este servidor es que el **contenido para adultos 
 
 ## Reportar infracciones
 
-Si encuentras contenido o comportamientos que infrinjan estas reglas, repórtalo. Muchas aplicaciones incluyen una opción de "Reportar" en publicaciones y perfiles individuales. Para cualquier asunto que requiera la atención directa de {{operator.name}}, incluidas las denuncias legales y las emergencias, escribe a **{{operator.email}}**
+Si encuentras contenido o comportamientos que infrinjan estas reglas, repórtalo. Muchas aplicaciones incluyen una opción de "Reportar" en publicaciones y perfiles individuales, al igual que las aplicaciones de otras redes que usas con este servidor; tu reporte llega a {{operator.name}}, y un reporte sobre alguien de otro servidor también puede enviarse a los moderadores de ese servidor, sin decir quién lo hizo. Las personas de otras redes pueden reportar contenido de este servidor a través de sus propios servidores, y esos reportes también llegan a {{operator.name}}. Para cualquier asunto que requiera la atención directa de {{operator.name}}, incluidas las denuncias legales y las emergencias, escribe a **{{operator.email}}**
 
 ## Aplicación
 

@@ -38,7 +38,7 @@ Zerbitzari honen lehenetsitako politika hau da: **helduentzako/sexu-edukia bakar
 
 ## Arau-hausteak salatzea
 
-Arau hauek hausten dituen edukia edo portaera aurkitzen baduzu, jakinarazi mesedez. Aplikazio askok "Salatu" aukera dute argitalpen eta profil indibidualetan. {{operator.name}}-(r)en arreta zuzena behar duen edozertarako, lege-kexak eta larrialdiak barne, idatzi mezu elektroniko bat hona: **{{operator.email}}**
+Arau hauek hausten dituen edukia edo portaera aurkitzen baduzu, jakinarazi mesedez. Aplikazio askok "Salatu" aukera dute argitalpen eta profil indibidualetan, baita zerbitzari honekin erabiltzen dituzun beste sareetako aplikazioek ere; zure salaketa {{operator.name}}-(r)i iristen zaio, eta beste zerbitzari bateko norbaiti buruzko salaketa zerbitzari horretako moderatzaileei ere bidal dakieke, nork egin duen esan gabe. Beste sareetako pertsonek zerbitzari honetako edukia salatu dezakete beren zerbitzarien bidez, eta salaketa horiek ere {{operator.name}}-(r)i iristen zaizkio. {{operator.name}}-(r)en arreta zuzena behar duen edozertarako, lege-kexak eta larrialdiak barne, idatzi mezu elektroniko bat hona: **{{operator.email}}**
 
 ## Betearazpena
 

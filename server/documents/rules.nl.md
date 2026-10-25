@@ -38,7 +38,7 @@ Het standaardbeleid op deze server is dat **inhoud voor volwassenen of seksuele 
 
 ## Overtredingen melden
 
-Als u inhoud of gedrag tegenkomt dat in strijd is met deze regels, meld dit dan. Veel apps bieden een optie "Melden" bij afzonderlijke berichten en profielen. Voor zaken die rechtstreekse aandacht van {{operator.name}} vragen, waaronder juridische klachten en noodgevallen, mailt u naar **{{operator.email}}**
+Als u inhoud of gedrag tegenkomt dat in strijd is met deze regels, meld dit dan. Veel apps bieden een optie "Melden" bij afzonderlijke berichten en profielen, net als de apps van andere netwerken die u met deze server gebruikt; uw melding komt bij {{operator.name}} terecht, en een melding over iemand op een andere server kan ook naar de moderators van die server worden gestuurd, zonder dat erin staat wie de melding heeft gedaan. Mensen op andere netwerken kunnen inhoud van deze server melden via hun eigen servers, en ook die meldingen komen bij {{operator.name}} terecht. Voor zaken die rechtstreekse aandacht van {{operator.name}} vragen, waaronder juridische klachten en noodgevallen, mailt u naar **{{operator.email}}**
 
 ## Handhaving
 

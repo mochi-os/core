@@ -38,7 +38,7 @@ A szerver alapértelmezett szabályzata szerint **felnőtt vagy szexuális tarta
 
 ## Szabálysértések bejelentése
 
-Ha olyan tartalommal vagy magatartással találkozol, amely sérti ezeket a szabályokat, kérjük, jelentsd. Sok alkalmazás kínál „Bejelentés" lehetőséget az egyes bejegyzéseknél és profiloknál. Bármi olyanban, ami {{operator.name}} közvetlen figyelmét igényli, beleértve a jogi panaszokat és a vészhelyzeteket, írj a következő címre: **{{operator.email}}**
+Ha olyan tartalommal vagy magatartással találkozol, amely sérti ezeket a szabályokat, kérjük, jelentsd. Sok alkalmazás kínál „Bejelentés" lehetőséget az egyes bejegyzéseknél és profiloknál, és ugyanígy a más hálózatok azon alkalmazásai is, amelyeket ezzel a szerverrel használsz; a bejelentésed {{operator.name}} elé kerül, egy másik szerveren lévő személyről szóló bejelentés pedig annak a szervernek a moderátoraihoz is eljuthat, anélkül, hogy kiderülne, ki tette. A más hálózatokon lévő emberek a saját szervereiken keresztül jelenthetik az erről a szerverről származó tartalmat, és ezek a bejelentések is {{operator.name}} elé kerülnek. Bármi olyanban, ami {{operator.name}} közvetlen figyelmét igényli, beleértve a jogi panaszokat és a vészhelyzeteket, írj a következő címre: **{{operator.email}}**
 
 ## Végrehajtás
 

@@ -38,7 +38,7 @@ Die Standardrichtlinie auf diesem Server lautet, dass **Inhalte für Erwachsene/
 
 ## Verstöße melden
 
-Wenn Sie auf Inhalte oder Verhalten stoßen, die gegen diese Regeln verstoßen, melden Sie diese bitte. Viele Apps enthalten eine Option „Melden" auf einzelnen Beiträgen und Profilen. Für alles, was die direkte Aufmerksamkeit von {{operator.name}} erfordert, einschließlich rechtlicher Beschwerden und Notfälle, senden Sie eine E-Mail an **{{operator.email}}**
+Wenn Sie auf Inhalte oder Verhalten stoßen, die gegen diese Regeln verstoßen, melden Sie diese bitte. Viele Apps enthalten eine Option „Melden" auf einzelnen Beiträgen und Profilen, ebenso die Apps anderer Netzwerke, die Sie mit diesem Server nutzen; Ihre Meldung erreicht {{operator.name}}, und eine Meldung zu jemandem auf einem anderen Server kann auch an die Moderatoren jenes Servers gesendet werden, ohne anzugeben, wer sie eingereicht hat. Personen in anderen Netzwerken können Inhalte von diesem Server über ihre eigenen Server melden, und diese Meldungen erreichen ebenfalls {{operator.name}}. Für alles, was die direkte Aufmerksamkeit von {{operator.name}} erfordert, einschließlich rechtlicher Beschwerden und Notfälle, senden Sie eine E-Mail an **{{operator.email}}**
 
 ## Durchsetzung
 

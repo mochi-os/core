@@ -38,7 +38,7 @@ Tämän palvelimen oletuskäytäntö on, että **aikuis- tai seksuaalinen sisäl
 
 ## Rikkomusten ilmoittaminen
 
-Jos kohtaat sisältöä tai käyttäytymistä, joka rikkoo näitä sääntöjä, ilmoita siitä. Monissa sovelluksissa on yksittäisten julkaisujen ja profiilien yhteydessä "Ilmoita"-toiminto. Kaikessa, joka vaatii suoraan operaattorin {{operator.name}} huomiota, mukaan lukien lakivalitukset ja hätätilanteet, lähetä sähköpostia osoitteeseen **{{operator.email}}**
+Jos kohtaat sisältöä tai käyttäytymistä, joka rikkoo näitä sääntöjä, ilmoita siitä. Monissa sovelluksissa on yksittäisten julkaisujen ja profiilien yhteydessä "Ilmoita"-toiminto, kuten myös muiden verkkojen sovelluksissa, joita käytät tämän palvelimen kanssa; ilmoituksesi tavoittaa operaattorin {{operator.name}}, ja ilmoitus jostakusta toisella palvelimella voidaan lähettää myös kyseisen palvelimen moderaattoreille kertomatta, kuka sen teki. Muiden verkkojen ihmiset voivat ilmoittaa tämän palvelimen sisällöstä omien palvelimiensa kautta, ja myös nämä ilmoitukset tavoittavat operaattorin {{operator.name}}. Kaikessa, joka vaatii suoraan operaattorin {{operator.name}} huomiota, mukaan lukien lakivalitukset ja hätätilanteet, lähetä sähköpostia osoitteeseen **{{operator.email}}**
 
 ## Sääntöjen soveltaminen
 

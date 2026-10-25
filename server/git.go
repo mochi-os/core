@@ -31,6 +31,8 @@ import (
 	"sync"
 	"time"
 
+	"core/third_party/unified"
+
 	"github.com/dsnet/compress/bzip2"
 	"github.com/gin-gonic/gin"
 	"github.com/go-git/go-billy/v5"
@@ -2158,7 +2160,11 @@ func git_patch(ctx context.Context, changes object.Changes) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		out.WriteString(patch.String())
+		// The text patch.String() writes, from a copy of go-git's encoder that
+		// splits lines without a regular expression.
+		if err := unified.NewUnifiedEncoder(&out, unified.DefaultContextLines).Encode(patch); err != nil {
+			return "", err
+		}
 	}
 	return out.String(), nil
 }

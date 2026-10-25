@@ -102,7 +102,7 @@ func read_text(s string) read_file {
 }
 
 // read_blob stores content as a loose blob.
-func read_blob(t *testing.T, repo *git.Repository, data []byte) plumbing.Hash {
+func read_blob(t testing.TB, repo *git.Repository, data []byte) plumbing.Hash {
 	t.Helper()
 	obj := repo.Storer.NewEncodedObject()
 	obj.SetType(plumbing.BlobObject)
@@ -122,7 +122,7 @@ func read_blob(t *testing.T, repo *git.Repository, data []byte) plumbing.Hash {
 // read_snapshot stores a tree holding files, keyed by path; a "/" in a path
 // makes a subtree. Entries are ordered the way git orders them, a directory
 // sorting as its name with "/" appended.
-func read_snapshot(t *testing.T, repo *git.Repository, files map[string]read_file) plumbing.Hash {
+func read_snapshot(t testing.TB, repo *git.Repository, files map[string]read_file) plumbing.Hash {
 	t.Helper()
 	direct := map[string]read_file{}
 	nested := map[string]map[string]read_file{}

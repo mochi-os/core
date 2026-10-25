@@ -1,6 +1,7 @@
 // Mochi server: what mochi.git.diff and mochi.git.diff.stats report - renames
 // paired, a first commit diffed against the empty tree, a diff limited to a
-// file or folder, and each file's status.
+// file or folder, each file's status, and patch text as go-git writes it at a
+// cost that does not grow with each line of a file.
 //
 // Copyright © 2026 Mochisoft OÜ
 // SPDX-License-Identifier: AGPL-3.0-only
@@ -13,12 +14,16 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/rand"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/storage/memory"
 	sl "go.starlark.net/starlark"
 )
 
@@ -329,21 +334,14 @@ func TestDiffNotesNameTheFullPath(t *testing.T) {
 	}
 }
 
-// diff_statuses counts the statuses git_changes reports between two
-// snapshots.
-func diff_statuses(t *testing.T, label string, before, after map[string]read_file) map[string]int {
+// diff_changes answers the changes git_changes reports between two snapshots.
+func diff_changes(t testing.TB, repo *git.Repository, before, after map[string]read_file) object.Changes {
 	t.Helper()
-	_, repo, _ := read_env_repo(t, label)
-	trees := []map[string]read_file{before, after}
-	var roots []plumbing.Hash
-	for _, files := range trees {
-		roots = append(roots, read_snapshot(t, repo, files))
-	}
-	base, err := repo.TreeObject(roots[0])
+	base, err := repo.TreeObject(read_snapshot(t, repo, before))
 	if err != nil {
 		t.Fatalf("base tree: %v", err)
 	}
-	head, err := repo.TreeObject(roots[1])
+	head, err := repo.TreeObject(read_snapshot(t, repo, after))
 	if err != nil {
 		t.Fatalf("head tree: %v", err)
 	}
@@ -351,6 +349,15 @@ func diff_statuses(t *testing.T, label string, before, after map[string]read_fil
 	if err != nil {
 		t.Fatalf("git_changes: %v", err)
 	}
+	return changes
+}
+
+// diff_statuses counts the statuses git_changes reports between two
+// snapshots.
+func diff_statuses(t *testing.T, label string, before, after map[string]read_file) map[string]int {
+	t.Helper()
+	_, repo, _ := read_env_repo(t, label)
+	changes := diff_changes(t, repo, before, after)
 	out := map[string]int{}
 	for _, change := range changes {
 		_, _, status := git_status(change)
@@ -394,4 +401,205 @@ func TestDiffRenameLimits(t *testing.T) {
 	if got := diff_statuses(t, "manyedits", before, after); got["renamed"] != 0 {
 		t.Errorf("101 deleted against 100 added: %v, want none paired by content", got)
 	}
+}
+
+// diff_words are the lines random texts are drawn from, few enough that equal
+// lines recur as they do in source.
+var diff_words = []string{"alpha", "beta", "gamma", "", "}", "\treturn nil", "delta", "epsilon"}
+
+// diff_random is count lines drawn from diff_words.
+func diff_random(random *rand.Rand, count int) []string {
+	lines := make([]string, count)
+	for i := range lines {
+		lines[i] = diff_words[random.Intn(len(diff_words))]
+	}
+	return lines
+}
+
+// diff_edit changes up to four runs of up to six lines: inserted, removed or
+// replaced.
+func diff_edit(random *rand.Rand, lines []string) []string {
+	out := append([]string(nil), lines...)
+	for range random.Intn(5) {
+		at := random.Intn(len(out) + 1)
+		count := 1 + random.Intn(6)
+		end := min(at+count, len(out))
+		switch random.Intn(3) {
+		case 0:
+			out = append(out[:at:at], append(diff_random(random, count), out[at:]...)...)
+		case 1:
+			out = append(out[:at:at], out[end:]...)
+		default:
+			copy(out[at:end], diff_random(random, end-at))
+		}
+	}
+	return out
+}
+
+// diff_join is lines as a file, with a final newline or without one.
+func diff_join(lines []string, newline bool) read_file {
+	text := strings.Join(lines, "\n")
+	if newline && len(lines) > 0 {
+		text += "\n"
+	}
+	return read_text(text)
+}
+
+// TestDiffTextMatchesGoGit. The patch text comes from a copy of go-git's
+// encoder that splits lines without a regular expression. Every kind of
+// change reads as go-git's own patch.String() writes it.
+func TestDiffTextMatchesGoGit(t *testing.T) {
+	_, repo, _ := read_env_repo(t, "text")
+	executable := func(s string) read_file { return read_file{mode: filemode.Executable, data: []byte(s)} }
+	long := diff_lines("long", 200, -1)
+	before := map[string]read_file{
+		"modify/middle":   long,
+		"modify/close":    long,
+		"modify/far":      long,
+		"modify/first":    long,
+		"modify/last":     long,
+		"newline/remove":  read_text("a\nb\n"),
+		"newline/add":     read_text("a\nb"),
+		"newline/neither": read_text("a\nb"),
+		"blank":           read_text("\n\nx\n\n\ny\n\n"),
+		"crlf":            read_text("a\r\nb\r\nc\r\n"),
+		"invalid":         read_text("\xff\xfe one\nmid\n\xc3 two\n"),
+		"empty/emptied":   read_text("x\ny\n"),
+		"empty/filled":    read_text(""),
+		"empty/deleted":   read_text(""),
+		"deleted":         diff_lines("deleted", 30, -1),
+		"binary/changed":  read_text("\x00\x01binary\n"),
+		"binary/deleted":  read_text("\x00gone"),
+		"mode/only":       read_text("same\n"),
+		"mode/edited":     read_text("one\ntwo\n"),
+		"old/moved":       diff_lines("moved", 50, -1),
+	}
+	after := map[string]read_file{
+		"modify/middle":   diff_lines("long", 200, 100),
+		"modify/close":    read_text(strings.Replace(strings.Replace(string(long.data), "long line 50\n", "fifty\n", 1), "long line 55\n", "", 1)),
+		"modify/far":      read_text(strings.Replace(strings.Replace(string(long.data), "long line 20\n", "twenty\n", 1), "long line 120\n", "a\nb\nc\n", 1)),
+		"modify/first":    diff_lines("long", 200, 0),
+		"modify/last":     diff_lines("long", 200, 199),
+		"newline/remove":  read_text("a\nb"),
+		"newline/add":     read_text("a\nb\n"),
+		"newline/neither": read_text("a\nc"),
+		"blank":           read_text("\n\nx\n\nz\ny\n"),
+		"crlf":            read_text("a\r\nB\r\nc\r\n"),
+		"invalid":         read_text("\xff\xfe one\nmiddle\n\xc3 two\n"),
+		"empty/emptied":   read_text(""),
+		"empty/filled":    read_text("x\n"),
+		"empty/added":     read_text(""),
+		"added":           diff_lines("added", 30, -1),
+		"unended":         read_text("one\ntwo"),
+		"binary/changed":  read_text("\x00\x02binary\n"),
+		"binary/added":    read_text("\x00new"),
+		"mode/only":       executable("same\n"),
+		"mode/edited":     executable("one\n2\n"),
+		"new/moved":       diff_lines("moved", 50, 25),
+	}
+	random := rand.New(rand.NewSource(1))
+	for i := range 300 {
+		lines := diff_random(random, random.Intn(61))
+		name := fmt.Sprintf("random/%03d", i)
+		before[name] = diff_join(lines, random.Intn(4) > 0)
+		after[name] = diff_join(diff_edit(random, lines), random.Intn(4) > 0)
+	}
+
+	changes := diff_changes(t, repo, before, after)
+	var all strings.Builder
+	for _, change := range changes {
+		name, _, _ := git_status(change)
+		patch, err := object.Changes{change}.Patch()
+		if err != nil {
+			t.Fatalf("%s: patch: %v", name, err)
+		}
+		want := patch.String()
+		all.WriteString(want)
+		got, err := git_patch(context.Background(), object.Changes{change})
+		if err != nil {
+			t.Fatalf("%s: git_patch: %v", name, err)
+		}
+		if got != want {
+			t.Errorf("%s differs from go-git's text:\n--- go-git\n%s--- git_patch\n%s", name, want, got)
+		}
+	}
+
+	// The fixtures reach every part of the format.
+	text := all.String()
+	for _, part := range []string{"new file mode ", "deleted file mode ", "old mode 100644\nnew mode 100755\n",
+		"rename from old/moved\nrename to new/moved\n", "Binary files ", "\\ No newline at end of file\n", "\r\n", "\xff"} {
+		if !strings.Contains(text, part) {
+			t.Errorf("no fixture's text holds %q", part)
+		}
+	}
+	if count := strings.Count(diff_file(text, "modify/far"), "\n@@ "); count != 2 {
+		t.Errorf("modify/far has %d hunks, want 2", count)
+	}
+	if count := strings.Count(diff_file(text, "modify/close"), "\n@@ "); count != 1 {
+		t.Errorf("modify/close has %d hunks, want 1", count)
+	}
+	if count := strings.Count(text, "diff --git a/random/"); count < 200 {
+		t.Errorf("%d random files compared, want at least 200", count)
+	}
+}
+
+// diff_file is one file's part of a patch's text.
+func diff_file(text, name string) string {
+	start := strings.Index(text, "diff --git a/"+name+" ")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(text[start+1:], "diff --git ")
+	if end < 0 {
+		return text[start:]
+	}
+	return text[start : start+1+end]
+}
+
+// diff_edited is one line edited in the middle of a file of count lines.
+func diff_edited(t testing.TB, repo *git.Repository, count int) object.Changes {
+	t.Helper()
+	return diff_changes(t, repo,
+		map[string]read_file{"file": diff_lines("text", count, -1)},
+		map[string]read_file{"file": diff_lines("text", count, count/2)})
+}
+
+// TestDiffTextCostDoesNotGrowPerLine. go-git's encoder split every chunk into
+// lines with a regular expression, one allocation for each line of the file
+// however small the edit, and 40% of the time a diff of large files took.
+func TestDiffTextCostDoesNotGrowPerLine(t *testing.T) {
+	_, repo, _ := read_env_repo(t, "perline")
+	allocations := func(count int) float64 {
+		changes := diff_edited(t, repo, count)
+		return testing.AllocsPerRun(5, func() {
+			if _, err := git_patch(context.Background(), changes); err != nil {
+				t.Fatalf("git_patch: %v", err)
+			}
+		})
+	}
+	small, large := allocations(2000), allocations(8000)
+	if grown := large - small; grown > 600 {
+		t.Errorf("a one-line edit to 8,000 lines took %.0f allocations more than to 2,000 lines, want at most 600", grown)
+	}
+}
+
+// BenchmarkDiffText times the text of a one-line edit to a file of 5,000
+// lines, against go-git's own encoder of the same change.
+func BenchmarkDiffText(b *testing.B) {
+	repo, err := git.Init(memory.NewStorage(), nil)
+	if err != nil {
+		b.Fatalf("init: %v", err)
+	}
+	changes := diff_edited(b, repo, 5000)
+	b.Run("git_patch", func(b *testing.B) {
+		for b.Loop() {
+			git_patch(context.Background(), changes)
+		}
+	})
+	b.Run("go-git", func(b *testing.B) {
+		for b.Loop() {
+			patch, _ := changes.Patch()
+			_ = patch.String()
+		}
+	})
 }

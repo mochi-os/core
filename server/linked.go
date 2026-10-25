@@ -1343,7 +1343,7 @@ func api_account_posts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	return linked_page_encode(page), nil
 }
 
-// mochi.account.notifications(account, cursor="", limit=40) -> dict: A page of a social account's notifications, {items, cursor}, in the network's own form, newest first; on Lemmy each item carries kind, "reply" or "mention"; a hosted Bluesky account's from Bluesky's index. Behind the account permission
+// mochi.account.notifications(account, cursor="", limit=40) -> dict: A page of a social account's notifications, {items, cursor}, in the network's own form, newest first; on Lemmy each item carries kind, "reply" or "mention"; a hosted Bluesky account's from Bluesky's index, without those from anyone the owner blocks. Behind the account permission
 func api_account_notifications(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	account, cursor, limit, _, err := linked_page_arguments(fn, args, kwargs)
 	if err != nil {
@@ -1358,6 +1358,12 @@ func api_account_notifications(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		if err != nil {
 			return sl_error(fn, "%v", err)
 		}
+		page.Items = slices.DeleteFunc(page.Items, func(item any) bool {
+			entry, _ := item.(map[string]any)
+			author, _ := entry["author"].(map[string]any)
+			did, _ := author["did"].(string)
+			return server_blocked(did)
+		})
 		return linked_page_encode(page), nil
 	}
 	l := linked_from(user, row)

@@ -425,6 +425,9 @@ func networks_database() *DB {
 	// waiting (websub.go, webmention.go).
 	websub_tables(db)
 	webmention_tables(db)
+	// The reports for the administrators and the people the owner blocks
+	// (reports.go).
+	report_tables(db)
 	return db
 }
 
@@ -573,6 +576,7 @@ var api_account_block = sls.FromStringDict(sl.String("mochi.account.block"), sl.
 
 var api_server_block = sls.FromStringDict(sl.String("mochi.server.block"), sl.StringDict{
 	"add":    sl.NewBuiltin("mochi.server.block.add", api_server_block_add),
+	"check":  sl.NewBuiltin("mochi.server.block.check", api_server_block_check),
 	"list":   sl.NewBuiltin("mochi.server.block.list", api_server_block_list),
 	"remove": sl.NewBuiltin("mochi.server.block.remove", api_server_block_remove),
 })
@@ -674,14 +678,18 @@ func api_account_block_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	return sl.None, nil
 }
 
-// mochi.server.block.list() -> list: The domains the owner has blocked for the
-// whole server, each with the domain and when. No account on this server sends
-// to, follows on or fetches from a blocked domain or one under it.
+// mochi.server.block.list() -> list: What the owner has blocked for the whole
+// server: domains, each with the domain and when, then people, each with the
+// person's id and when. No account on this server sends to, follows on or
+// fetches from a blocked domain or one under it; a blocked person's
+// activities, events and stanzas are taken and dropped, and they are no longer
+// anyone's follower.
 func api_server_block_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if _, _, err := block_call(t, fn, args, "server/read", ""); err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	return sl_encode(blocks_list(db_open("db/networks.db"))), nil
+	db := networks_database()
+	return sl_encode(append(blocks_list(db), actor_list(db, "blocked")...)), nil
 }
 
 // mochi.server.key.replace(domain) -> string: Replace the Matrix signing key of one of the server's domains and return the new key's id. The old key is published among the domain's old keys, so what it signed stays verifiable. Requires settings/write
@@ -697,25 +705,51 @@ func api_server_key_replace(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	return sl.String(key), nil
 }
 
-// mochi.server.block.add(domain) -> None: Block a domain for the whole server.
-func api_server_block_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	_, domain, err := block_call(t, fn, args, "settings/write", "<domain: string>")
+// mochi.server.block.check(target) -> string: Whether the owner can block a target: "" if so, "invalid" for neither a domain nor a person on a network, "local" for a person or a domain of this server's own. Requires server/read
+func api_server_block_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	_, target, err := block_call(t, fn, args, "server/read", "<target: string>")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	if err := block_add(db_open("db/networks.db"), domain); err != nil {
+	return sl.String(block_refusal(target)), nil
+}
+
+// mochi.server.block.add(target) -> None: Block a domain for the whole server,
+// or a person by their id on their network: a fediverse id, a Bluesky did, a
+// Matrix user id or an XMPP address as xmpp:name@host. A person of this
+// server's own is suspended instead.
+func api_server_block_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	_, target, err := block_call(t, fn, args, "settings/write", "<target: string>")
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if actor, ok := block_target(target); ok {
+		if err := server_blocked_add(actor); err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		return sl.None, nil
+	}
+	if block_refusal(target) == "local" {
+		return sl_error(fn, "a domain of this server's own is not blocked")
+	}
+	if err := block_add(networks_database(), target); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	return sl.None, nil
 }
 
-// mochi.server.block.remove(domain) -> None: Unblock a domain for the whole
-// server.
+// mochi.server.block.remove(target) -> None: Unblock a domain or a person for
+// the whole server.
 func api_server_block_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	_, domain, err := block_call(t, fn, args, "settings/write", "<domain: string>")
+	_, target, err := block_call(t, fn, args, "settings/write", "<target: string>")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	block_remove(db_open("db/networks.db"), domain)
+	db := networks_database()
+	if actor, ok := block_target(target); ok {
+		db.exec("delete from blocked where actor=?", actor)
+		return sl.None, nil
+	}
+	block_remove(db, target)
 	return sl.None, nil
 }

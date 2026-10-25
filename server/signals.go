@@ -50,12 +50,21 @@ func signals_receive(origin spec.ServerName, raw json.RawMessage, out *rooms_out
 	if json.Unmarshal(raw, &edu) != nil {
 		return
 	}
+	// Of the server's own users, and of none the owner blocks.
 	theirs := func(user string) bool {
 		id, err := spec.NewUserID(user, true)
-		return err == nil && id.Domain() == origin
+		return err == nil && id.Domain() == origin && !server_blocked(user)
 	}
 	switch edu.Type {
-	case "m.device_list_update", "m.signing_key_update", "m.direct_to_device":
+	case "m.direct_to_device":
+		var message struct {
+			Sender string `json:"sender"`
+		}
+		if json.Unmarshal(edu.Content, &message) == nil && server_blocked(message.Sender) {
+			return
+		}
+		keyring_receive(origin, edu.Type, edu.Content)
+	case "m.device_list_update", "m.signing_key_update":
 		keyring_receive(origin, edu.Type, edu.Content)
 	case "m.typing":
 		var typing struct {

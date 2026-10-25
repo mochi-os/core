@@ -736,6 +736,11 @@ func federation_dispatch(c *gin.Context, method string, parts []string, r *fclie
 			return
 		}
 	}
+	// Someone the owner blocks joins and knocks on no room here.
+	if (route == "GET v1/make_join" || route == "GET v1/make_knock") && server_blocked(segment(3)) {
+		federation_error(c, http.StatusForbidden, "M_FORBIDDEN", "the user is blocked")
+		return
+	}
 	switch {
 	case route == "PUT v1/send" && len(parts) == 3:
 		federation_receive_transaction(c, r, segment(2))

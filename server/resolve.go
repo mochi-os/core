@@ -166,11 +166,15 @@ func resolve_network_of(identifier string) string {
 }
 
 // resolve_allowed is the host policy for a lookup: the identifier's network is
-// on, and its host is blocked by neither the server nor the user. The user's
-// own blocks are the caller's; the owner's and the limiter apply inside the
-// fetch, to every host it reaches.
+// on, the owner does not block the person, and their host is blocked by
+// neither the server nor the user. The user's own blocks are the caller's;
+// the owner's and the limiter apply inside the fetch, to every host it
+// reaches.
 func resolve_allowed(user *User, identifier string) error {
 	network := resolve_network_of(identifier)
+	if server_blocked(identifier) {
+		return &host_refusal{Host: identifier_host(identifier), Reason: identifier + " is blocked on this server"}
+	}
 	if host := identifier_host(identifier); host != "" {
 		return host_allowed(user, network, host)
 	}

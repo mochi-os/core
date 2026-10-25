@@ -58,6 +58,7 @@ var xmpp_server_features = []string{
 	"http://jabber.org/protocol/disco#items",
 	"msgoffline",
 	"urn:xmpp:blocking",
+	"urn:xmpp:reporting:1",
 	"urn:xmpp:carbons:2",
 	"urn:xmpp:http:upload:0",
 	"urn:xmpp:ping",
@@ -634,11 +635,14 @@ func xmpp_accepted_prune() {
 
 // === Blocking ===
 
-// xmpp_blocked reports whether the user blocks an address: its person, or a
-// domain it is on or under.
+// xmpp_blocked reports whether the user blocks an address, or the owner its
+// person: its person, or a domain it is on or under.
 func xmpp_blocked(user *User, other jid.JID) bool {
-	if other.Localpart() != "" && actor_blocked(user, "xmpp:"+strings.ToLower(other.Bare().String())) {
-		return true
+	if other.Localpart() != "" {
+		person := "xmpp:" + strings.ToLower(other.Bare().String())
+		if actor_blocked(user, person) || server_blocked(person) {
+			return true
+		}
 	}
 	return blocked_by(db_user(user, "user"), strings.ToLower(other.Domainpart()))
 }
@@ -661,7 +665,9 @@ func xmpp_blocklist(user *User) []string {
 
 // xmpp_blocking_iq answers a client's blocking command (XEP-0191): the list,
 // or addresses blocked or unblocked, which every client of the account is
-// told of. Blocking someone takes the account's presence from them.
+// told of. Blocking someone takes the account's presence from them. A block
+// may carry a report of spam or abuse (XEP-0377), kept for the
+// administrators.
 func xmpp_blocking_iq(a *xmpp_account, s *xmpp_stanza, name string) *xmpp_stanza {
 	kind := s.get("type")
 	if name == "blocklist" && kind == "get" {
@@ -676,24 +682,35 @@ func xmpp_blocking_iq(a *xmpp_account, s *xmpp_stanza, name string) *xmpp_stanza
 	}
 	var request struct {
 		Block []struct {
-			JID string `xml:"jid,attr"`
+			JID    string       `xml:"jid,attr"`
+			Report *xmpp_report `xml:"urn:xmpp:reporting:1 report"`
 		} `xml:"block>item"`
 		Unblock []struct {
 			JID string `xml:"jid,attr"`
 		} `xml:"unblock>item"`
 	}
 	s.decode(&request)
-	entries := request.Block
-	if name == "unblock" {
-		entries = request.Unblock
-	}
 	var addresses []jid.JID
-	for _, item := range entries {
-		address, err := jid.Parse(item.JID)
-		if err != nil {
-			return xmpp_failure(s, "jid-malformed", "modify", "")
+	reports := map[string]*xmpp_report{}
+	if name == "unblock" {
+		for _, item := range request.Unblock {
+			address, err := jid.Parse(item.JID)
+			if err != nil {
+				return xmpp_failure(s, "jid-malformed", "modify", "")
+			}
+			addresses = append(addresses, address.Bare())
 		}
-		addresses = append(addresses, address.Bare())
+	} else {
+		for _, item := range request.Block {
+			address, err := jid.Parse(item.JID)
+			if err != nil {
+				return xmpp_failure(s, "jid-malformed", "modify", "")
+			}
+			addresses = append(addresses, address.Bare())
+			if item.Report != nil {
+				reports[address.Bare().String()] = item.Report
+			}
+		}
 	}
 	if name == "block" && len(addresses) == 0 {
 		return xmpp_failure(s, "bad-request", "modify", "")
@@ -714,6 +731,9 @@ func xmpp_blocking_iq(a *xmpp_account, s *xmpp_stanza, name string) *xmpp_stanza
 			block_add(db, address.Domainpart())
 		case name == "block":
 			blocked_add(a.user, "xmpp:"+strings.ToLower(address.String()))
+			if r := reports[address.String()]; r != nil {
+				xmpp_report_add(a, address, r)
+			}
 			for _, r := range xmpp_resources_of(a.address.String()) {
 				r.lock.Lock()
 				available := r.available
@@ -733,6 +753,49 @@ func xmpp_blocking_iq(a *xmpp_account, s *xmpp_stanza, name string) *xmpp_stanza
 		r.send(xmpp_make("iq", push, "type", "set", "id", "push-"+uid(), "to", r.full.String()).text(xmpp_ns_client))
 	}
 	return xmpp_result(s, "")
+}
+
+// An xmpp_report is a report on a blocking command (XEP-0377): its reason,
+// the messages it names by their archive ids, and the reporter's words.
+type xmpp_report struct {
+	Reason  string `xml:"reason,attr"`
+	Stanzas []struct {
+		By string `xml:"by,attr"`
+		ID string `xml:"id,attr"`
+	} `xml:"urn:xmpp:sid:0 stanza-id"`
+	Text []string `xml:"text"`
+}
+
+// xmpp_report_add keeps a client's report of someone it blocked, for the
+// administrators.
+func xmpp_report_add(a *xmpp_account, address jid.JID, r *xmpp_report) {
+	category := "other"
+	switch r.Reason {
+	case "urn:xmpp:reporting:spam":
+		category = "spam"
+	case "urn:xmpp:reporting:abuse":
+		category = "abuse"
+	}
+	var objects []string
+	for _, stanza := range r.Stanzas {
+		if stanza.ID != "" {
+			objects = append(objects, stanza.ID)
+		}
+	}
+	person := "xmpp:" + strings.ToLower(address.String())
+	local := ""
+	if user := person_local(person); user != nil {
+		local = user.UID
+	}
+	report_add(report{
+		Network:  "xmpp",
+		Reporter: "xmpp:" + strings.ToLower(a.address.Bare().String()),
+		Person:   person,
+		User:     local,
+		Objects:  objects,
+		Category: category,
+		Comment:  strings.Join(r.Text, "\n"),
+	})
 }
 
 // === Presence ===

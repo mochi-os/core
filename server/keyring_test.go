@@ -510,6 +510,15 @@ func TestKeyringFederation(t *testing.T) {
 	if !strings.Contains(fmt.Sprint(got["changed"]), r.user("bob")) {
 		t.Errorf("THE POINT: bob's device change reached alice's device: %v", got["changed"])
 	}
+	// Nothing bob sends a device here once the owner blocks him.
+	if err := server_blocked_add(r.user("bob")); err != nil {
+		t.Fatal(err)
+	}
+	r.signal(t, "e4", matrix_edu("m.direct_to_device", map[string]any{"sender": r.user("bob"), "type": "m.room.encrypted", "message_id": "m4", "messages": map[string]any{"@alice:example.com": map[string]any{ad: map[string]any{"ciphertext": "from blocked bob"}}}}))
+	if events, _ := keys_sync(t, "@alice:example.com", ad, fmt.Sprint(got["next"]))["events"].([]any); len(events) != 0 {
+		t.Errorf("THE POINT: a blocked person's message reached alice's device: %v", events)
+	}
+	networks_database().exec("delete from blocked")
 
 	r.lock.Lock()
 	r.keys = map[string]any{"device_keys": map[string]any{r.user("bob"): map[string]any{"BOBDEV": map[string]any{"user_id": r.user("bob"), "device_id": "BOBDEV", "keys": map[string]any{"ed25519:BOBDEV": "bobkey"}}}, "@carol:elsewhere.test": map[string]any{"C": map[string]any{}}}}

@@ -590,6 +590,15 @@ func xmpp_server_serve(conn net.Conn) {
 				x.fail("not-authorized")
 				return
 			}
+			// Someone the owner blocks reaches nobody here.
+			if from.Localpart() != "" && server_blocked("xmpp:"+strings.ToLower(from.Bare().String())) {
+				if s.name != "presence" {
+					if reply := xmpp_failure(s, "service-unavailable", "cancel", ""); reply != nil {
+						x.write(reply.text(xmpp_ns_server))
+					}
+				}
+				continue
+			}
 			xmpp_from_server(s, from, to)
 		}
 	}

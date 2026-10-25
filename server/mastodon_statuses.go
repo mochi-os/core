@@ -670,14 +670,14 @@ func mastodon_fetch(c *gin.Context, s *mastodon_session, id string) map[string]a
 	return note
 }
 
-// mastodon_statuses are posts as statuses, those the user muted or blocked
-// the author of, or that a filter hides, left out.
+// mastodon_statuses are posts as statuses, those whose author the user muted
+// or blocked or the owner blocked, or that a filter hides, left out.
 func mastodon_statuses(s *mastodon_session, posts []map[string]any) []any {
 	out := []any{}
 	for _, post := range posts {
 		status := mastodon_post(s, post)
 		author := status["account"].(map[string]any)
-		if key, _ := author["uri"].(string); key != s.actor && (actor_blocked(s.user, key) || actor_muted(s.user, key)) {
+		if key, _ := author["uri"].(string); key != s.actor && (actor_blocked(s.user, key) || actor_muted(s.user, key) || server_blocked(key)) {
 			continue
 		}
 		if mastodon_hidden(status) {

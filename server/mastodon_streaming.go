@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/gin-gonic/gin"
@@ -567,36 +568,7 @@ func mastodon_other_dispatch(c *gin.Context, s *mastodon_session, version string
 		mastodon_conversations_page(c, s)
 		return true
 	case "POST v1/reports":
-		in := mastodon_read(c)
-		key := mastodon_key(s.user, "account", in.text("account_id"))
-		if key == "" {
-			mastodon_error(c, http.StatusNotFound, "Record not found")
-			return true
-		}
-		// A person on another server is reported to its moderators, with the
-		// statuses complained of by their ids there; someone here has none
-		// to report them to.
-		if !strings.HasPrefix(key, "https://") {
-			mastodon_error(c, http.StatusUnprocessableEntity, "Only someone on another server can be reported")
-			return true
-		}
-		var objects []string
-		for _, number := range in.list("status_ids") {
-			if item := mastodon_find(c, s, number); item != nil {
-				if uri := strings.TrimPrefix(item.key, "note:"); strings.HasPrefix(item.key, "note:") {
-					objects = append(objects, uri)
-				} else if remote := mastodon_string(item.post, "remote"); item.comment == nil && strings.HasPrefix(remote, "https://") {
-					objects = append(objects, remote)
-				} else if remote := mastodon_string(item.comment, "remote"); strings.HasPrefix(remote, "https://") {
-					objects = append(objects, remote)
-				}
-			}
-		}
-		if err := account_flag(c.Request.Context(), s.user, s.account, s.actor, key, objects, in.text("comment")); err != nil {
-			mastodon_error(c, http.StatusUnprocessableEntity, err.Error())
-			return true
-		}
-		c.JSON(http.StatusOK, map[string]any{"id": mastodon_number(s.user, "report", uid(), now()), "action_taken": false, "category": in.text("category"), "comment": in.text("comment"), "forwarded": true, "created_at": mastodon_time(now()), "status_ids": in.list("status_ids"), "rule_ids": []any{}, "target_account": mastodon_snapshot_get(s.user, "account", key)})
+		mastodon_report(c, s)
 		return true
 	}
 	if taken, ok := mastodon_match(parts, "notifications", "*"); ok && method == "GET" {
@@ -880,6 +852,108 @@ func mastodon_list_answer(c *gin.Context, s *mastodon_session, result any, err e
 		return
 	}
 	c.JSON(http.StatusOK, map[string]any{})
+}
+
+// mastodon_report keeps a report the user makes of someone for this
+// server's administrators, with the statuses named and their text; and, the
+// person being on another server, sends it on to their server's moderators
+// as a Flag naming the statuses by their ids there, unless the client asks it
+// not be forwarded.
+func mastodon_report(c *gin.Context, s *mastodon_session) {
+	in := mastodon_read(c)
+	key, account := mastodon_account_by_number(c, s, in.text("account_id"))
+	local := person_local(key)
+	if key == s.actor || (local != nil && local.UID == s.user.UID) {
+		mastodon_error(c, http.StatusUnprocessableEntity, "Validation failed: You cannot report yourself")
+		return
+	}
+	if key == "" || account == nil {
+		mastodon_error(c, http.StatusNotFound, "Record not found")
+		return
+	}
+	comment := in.text("comment")
+	if utf8.RuneCountInString(comment) > 1000 {
+		mastodon_error(c, http.StatusUnprocessableEntity, "Validation failed: Comment is too long (maximum is 1000 characters)")
+		return
+	}
+	category := in.text("category")
+	if !slices.Contains([]string{"spam", "legal", "violation", "other"}, category) {
+		category = "other"
+	}
+	var objects, texts []string
+	numbers := []string{}
+	for _, number := range in.list("status_ids") {
+		item := mastodon_find(c, s, number)
+		if item == nil {
+			continue
+		}
+		numbers = append(numbers, number)
+		status := mastodon_render(c, s, item)
+		if uri := strings.TrimPrefix(item.key, "note:"); strings.HasPrefix(item.key, "note:") {
+			objects = append(objects, uri)
+		} else if remote := mastodon_string(item.post, "remote"); item.comment == nil && strings.HasPrefix(remote, "https://") {
+			objects = append(objects, remote)
+		} else if remote := mastodon_string(item.comment, "remote"); strings.HasPrefix(remote, "https://") {
+			objects = append(objects, remote)
+		} else if uri, _ := status["uri"].(string); uri != "" {
+			objects = append(objects, uri)
+		}
+		if content, _ := status["content"].(string); html_text(content) != "" {
+			texts = append(texts, html_text(content))
+		}
+	}
+	user := ""
+	if local != nil {
+		user = local.UID
+	}
+	name := key
+	if acct, _ := account["acct"].(string); acct != "" {
+		name = "@" + acct
+		if !strings.Contains(acct, "@") {
+			name += "@" + s.domain
+		}
+	}
+	id := report_add(report{
+		Network:  "fediverse",
+		Reporter: s.actor,
+		Person:   key,
+		User:     user,
+		Objects:  objects,
+		Category: category,
+		Comment:  comment,
+		Content:  strings.Join(texts, "\n\n"),
+		Names:    map[string]string{s.actor: "@" + s.handle + "@" + s.domain, key: name},
+	})
+	if id == "" {
+		mastodon_error(c, http.StatusTooManyRequests, "Too many reports are waiting")
+		return
+	}
+	forwarded := false
+	if local == nil && strings.HasPrefix(key, "https://") && (!in.has("forward") || in.flag("forward")) {
+		var theirs []string
+		for _, object := range objects {
+			if activitypub_host_of(object) == activitypub_host_of(key) {
+				theirs = append(theirs, object)
+			}
+		}
+		if err := account_flag(c.Request.Context(), s.user, s.account, s.actor, key, theirs, comment); err != nil {
+			debug("Mastodon report of %s not forwarded: %v", key, err)
+		} else {
+			forwarded = true
+		}
+	}
+	c.JSON(http.StatusOK, map[string]any{
+		"id":              mastodon_number(s.user, "report", id, now()),
+		"action_taken":    false,
+		"action_taken_at": nil,
+		"category":        category,
+		"comment":         comment,
+		"forwarded":       forwarded,
+		"created_at":      mastodon_time(now()),
+		"status_ids":      numbers,
+		"rule_ids":        []any{},
+		"target_account":  account,
+	})
 }
 
 // === Push ===

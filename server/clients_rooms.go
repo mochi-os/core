@@ -444,12 +444,76 @@ func clients_rooms_dispatch(c *gin.Context, s *clients_session, parts []string) 
 		clients_upgrade(c, s, room)
 	case method == "GET" && len(rest) == 1 && rest[0] == "hierarchy":
 		clients_hierarchy(c, s, room)
-	case method == "POST" && len(rest) >= 1 && rest[0] == "report":
-		c.JSON(http.StatusOK, map[string]any{})
+	case method == "POST" && len(rest) == 2 && rest[0] == "report":
+		clients_report(c, s, room, rest[1])
+	case method == "POST" && len(rest) == 1 && rest[0] == "report":
+		clients_report(c, s, room, "")
 	default:
 		clients_error(c, http.StatusNotFound, "M_UNRECOGNIZED", "Unrecognised request")
 	}
 	return true
+}
+
+// === Reports ===
+
+// clients_report keeps a user's report of an event in a room, or of the room,
+// for the server's administrators, as Synapse does: an event the user cannot
+// see, or a room that is not here, is answered as not found.
+func clients_report(c *gin.Context, s *clients_session, room string, id string) {
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if !clients_body(c, &body) {
+		return
+	}
+	r := report{Network: "matrix", Reporter: s.h.address, Room: room, Comment: body.Reason}
+	if id != "" {
+		event := rooms_event(id)
+		if event == nil || event.RoomID().String() != room || rooms_membership(room, s.h.address) == "" {
+			clients_error(c, http.StatusNotFound, "M_NOT_FOUND", "Unable to report event: it does not exist or you aren't able to see it.")
+			return
+		}
+		var content struct {
+			Body string `json:"body"`
+		}
+		json.Unmarshal(event.Content(), &content)
+		r.Person = string(event.SenderID())
+		r.Objects = []string{id}
+		r.Content = content.Body
+	} else if rooms_version(room) == nil {
+		clients_error(c, http.StatusNotFound, "M_NOT_FOUND", "Room does not exist")
+		return
+	}
+	clients_report_keep(c, r)
+}
+
+// clients_report_user keeps a user's report of a person (MSC4260). Whether
+// the person exists is not told.
+func clients_report_user(c *gin.Context, s *clients_session, person string) {
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if !clients_body(c, &body) {
+		return
+	}
+	if _, err := spec.NewUserID(person, true); err != nil {
+		clients_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "Invalid user id")
+		return
+	}
+	clients_report_keep(c, report{Network: "matrix", Reporter: s.h.address, Person: person, Comment: body.Reason})
+}
+
+// clients_report_keep keeps a report, with the local user its person is, and
+// answers the client.
+func clients_report_keep(c *gin.Context, r report) {
+	if user := person_local(r.Person); r.Person != "" && user != nil {
+		r.User = user.UID
+	}
+	if report_add(r) == "" {
+		clients_error(c, http.StatusTooManyRequests, "M_LIMIT_EXCEEDED", "Too many reports are waiting")
+		return
+	}
+	c.JSON(http.StatusOK, map[string]any{})
 }
 
 // === Making rooms ===

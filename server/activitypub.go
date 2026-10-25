@@ -1060,6 +1060,11 @@ func activitypub_inbox(c *gin.Context, user *User, a *actor) {
 		c.AbortWithStatus(http.StatusAccepted)
 		return
 	}
+	if server_blocked(remote) {
+		debug("ActivityPub inbox dropped %s from %s: blocked on this server", kind, remote)
+		c.AbortWithStatus(http.StatusAccepted)
+		return
+	}
 
 	// The accounts the activity is for: the one whose inbox it is, or for the
 	// shared inbox those it addresses or follows. The first signs the fetches
@@ -1266,7 +1271,8 @@ func activitypub_followers_of(remote string) []*actor {
 // activitypub_dispatch acts on one verified activity for one account: a
 // Follow is accepted, an Undo of a Follow forgets the follower, an Accept or
 // Reject settles a follow the account sent, a Move by someone followed sends
-// the follow on to where they went, and anything else is queued for the apps.
+// the follow on to where they went, a Flag about a person is a report for the
+// administrators, and anything else is queued for the apps.
 // An error is a failure that may pass, for the sender to send again.
 func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote string, kind string, activity map[string]any, body []byte) error {
 	actor_id := account_url(a.Domain, a.ID)
@@ -1332,10 +1338,52 @@ func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote stri
 		if following_move(ctx, user, a.ID, remote, target) {
 			inbound_add(user, a.ID, remote, kind, body)
 		}
+	case "Flag":
+		// A report to a community is its moderators', in the app that keeps
+		// it; one about a person goes to the administrators, never to the
+		// person's own apps.
+		if account_group(account_hosted_get(user, a.ID)) {
+			inbound_add(user, a.ID, remote, kind, body)
+			return nil
+		}
+		activitypub_report(ctx, user, a, actor_id, remote, activity)
 	default:
 		inbound_add(user, a.ID, remote, kind, body)
 	}
 	return nil
+}
+
+// activitypub_report keeps a Flag about a hosted account as a report: the
+// objects it names other than the account, and the reporter's words. The
+// reporter is shown by the address their server publishes, or its host,
+// since a server reports as a representative of its own.
+func activitypub_report(ctx context.Context, user *User, a *actor, actor_id string, remote string, activity map[string]any) {
+	var objects []string
+	list, single := activity["object"].([]any)
+	if !single {
+		list = []any{activity["object"]}
+	}
+	for _, item := range list {
+		if id := activitypub_actor_of(item); id != "" && id != actor_id {
+			objects = append(objects, id)
+		}
+	}
+	comment, _ := activity["content"].(string)
+	host := activitypub_host_of(remote)
+	name := host
+	if r, err := author_resolve(ctx, remote); err == nil && r.Address != "" && r.Type == "person" {
+		name = r.Address
+	}
+	report_add(report{
+		Network:  "fediverse",
+		Reporter: remote,
+		Person:   actor_id,
+		User:     user.UID,
+		Objects:  objects,
+		Comment:  html_text(comment),
+		Names:    map[string]string{remote: name, actor_id: "@" + a.Handle + "@" + a.Domain},
+		Host:     host,
+	})
 }
 
 // === The inbound queue ===

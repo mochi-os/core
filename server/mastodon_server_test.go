@@ -1138,7 +1138,7 @@ func TestMastodonConversations(t *testing.T) {
 
 // TestMastodonReports: a report of someone on another server goes to their
 // server's moderators as a Flag from the account, naming the statuses of
-// theirs complained of and the comment; someone here cannot be reported.
+// theirs complained of and the comment; the user cannot report themselves.
 func TestMastodonReports(t *testing.T) {
 	alice, _ := create_mastodon_test_env(t)
 	token := mastodon_token(t, alice, "read write")
@@ -1164,7 +1164,7 @@ func TestMastodonReports(t *testing.T) {
 		t.Errorf("THE POINT: the Flag = %v", flag)
 	}
 	self := mastodon_number(alice, "account", "identity:e-alice", 0)
-	if w, refused := mastodon_request(t, token, "POST", "/api/v1/reports", map[string]any{"account_id": self, "comment": "x"}); w.Code != http.StatusUnprocessableEntity || mastodon_map(refused)["error"] != "Only someone on another server can be reported" {
-		t.Errorf("reporting someone here = %d %v", w.Code, refused)
+	if w, refused := mastodon_request(t, token, "POST", "/api/v1/reports", map[string]any{"account_id": self, "comment": "x"}); w.Code != http.StatusUnprocessableEntity || mastodon_map(refused)["error"] != "Validation failed: You cannot report yourself" {
+		t.Errorf("reporting oneself = %d %v", w.Code, refused)
 	}
 }

@@ -111,6 +111,8 @@ func api_table() sl.StringDict {
 				"network":     sl.NewBuiltin("mochi.server.network", api_server_network),
 				"account":     api_server_account,
 				"block":       api_server_block,
+				"hosts":       sl.NewBuiltin("mochi.server.hosts", api_server_hosts),
+				"report":      api_server_report,
 				"key": sls.FromStringDict(sl.String("mochi.server.key"), sl.StringDict{
 					"replace": sl.NewBuiltin("mochi.server.key.replace", api_server_key_replace),
 				}),

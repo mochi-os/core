@@ -467,6 +467,10 @@ func clients_dispatch(c *gin.Context, domain spec.ServerName, parts []string) {
 		clients_profile_set(c, s, taken[0], taken[1])
 		return
 	}
+	if taken, ok := clients_match(parts, "users", "*", "report"); ok && method == "POST" {
+		clients_report_user(c, s, taken[0])
+		return
+	}
 	if taken, ok := clients_match(parts, "presence", "*", "status"); ok {
 		clients_presence(c, s, taken[0])
 		return

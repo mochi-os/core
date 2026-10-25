@@ -971,6 +971,14 @@ func rooms_accept(ctx context.Context, local spec.ServerName, origin spec.Server
 		debug("Matrix room %s: event %s soft-failed: %v", room, event.EventID(), err)
 		return nil
 	}
+	// What a person the owner blocks says is kept as one the room has moved
+	// past is: not built on, and shown to no one here. Their state events
+	// are taken, since the room's state is every server's.
+	if event.StateKey() == nil && server_blocked(string(event.SenderID())) {
+		rooms_keep(event, snapshot, false, true)
+		debug("Matrix room %s: event %s soft-failed: %s is blocked on this server", room, event.EventID(), event.SenderID())
+		return nil
+	}
 	rooms_keep(event, snapshot, false, false)
 	rooms_advance(event)
 	if err := rooms_settle(version, room); err != nil {
@@ -2984,6 +2992,10 @@ func rooms_invite_received(c *gin.Context, r *fclient.FederationRequest, room st
 	// the user's own blocks are checked here, the server's with the request.
 	if err := host_allowed(user, "matrix", federation_host(r.Origin())); err != nil {
 		federation_error(c, http.StatusForbidden, "M_FORBIDDEN", "the server is blocked")
+		return
+	}
+	if server_blocked(string(event.SenderID())) {
+		federation_error(c, http.StatusForbidden, "M_FORBIDDEN", "the sender is blocked")
 		return
 	}
 	identity := federation_identity_of(invitee.Domain())

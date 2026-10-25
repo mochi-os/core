@@ -31,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	"core/third_party/pack"
 	"core/third_party/unified"
 
 	"github.com/dsnet/compress/bzip2"
@@ -160,6 +161,22 @@ func (s *git_storage) HasEncodedObject(h plumbing.Hash) error {
 		}
 	}
 	return s.Storer.HasEncodedObject(h)
+}
+
+// DeltaObject answers an object as the repository stores it - a delta when it
+// is one - so a pack sent from it reuses the stored delta rather than sending
+// the object whole. Without it the wrapper hid the method, and a clone was
+// sent every object whole.
+func (s *git_storage) DeltaObject(t plumbing.ObjectType, h plumbing.Hash) (plumbing.EncodedObject, error) {
+	if s.staging != nil {
+		if obj, err := s.staging.EncodedObject(t, h); err == nil {
+			return obj, nil
+		}
+	}
+	if stored, ok := s.Storer.(storer.DeltaObjectStorer); ok {
+		return stored.DeltaObject(t, h)
+	}
+	return s.Storer.EncodedObject(t, h)
 }
 
 func (s *git_storage) EncodedObjectSize(h plumbing.Hash) (int64, error) {
@@ -385,6 +402,10 @@ func git_init(owner *User, app *App, entity string) error {
 
 	repo, err := git.PlainInit(path, true) // true = bare repository
 	if err != nil {
+		return err
+	}
+	// Nothing is packed yet, and what is packed from now on is searched by path.
+	if err := git_searched_mark(repo.Storer); err != nil {
 		return err
 	}
 
@@ -5234,6 +5255,15 @@ func (c *git_capped) Write(p []byte) (int, error) {
 // against what the client already holds, the ordinary encoder deltifies within
 // the pack, and neither wins every time. Oversize fetches skip the comparison.
 func git_upload_pack_send(band *git_band, storage storer.Storer, selection *git_selection) error {
+	if whole := git_pack_whole(storage, selection.objects); whole != nil {
+		defer whole.Close()
+		written, err := band.send(whole)
+		if err != nil {
+			return err
+		}
+		band.message("Sending objects: %s, done.\n", git_bytes(written))
+		return nil
+	}
 	if chosen := git_upload_pack_candidate(storage, selection); chosen != nil {
 		written, err := band.send(bytes.NewReader(chosen))
 		if err != nil {
@@ -5245,7 +5275,8 @@ func git_upload_pack_send(band *git_band, storage storer.Storer, selection *git_
 
 	reader, writer := io.Pipe()
 	go func() {
-		encoder := packfile.NewEncoder(writer, storage, false)
+		encoder := pack.NewEncoder(writer, storage, false)
+		encoder.Search = git_loose(storage)
 		_, err := encoder.Encode(selection.objects, git_pack_window)
 		writer.CloseWithError(err)
 	}()
@@ -5317,12 +5348,66 @@ func git_thin_candidate(storage storer.Storer, selection *git_selection) []byte 
 	return pack
 }
 
-// git_pack_plain encodes objects with go-git's encoder, which deltifies them
-// against each other within a sliding window and never against anything the
-// pack does not carry.
+// git_pack_whole opens the repository's pack when it is the only one and holds
+// exactly the objects to send - a clone of a repository just pushed or just
+// repacked - so the pack can be sent as it is, with nothing encoded. A pack
+// holding anything more is never sent: an object the references no longer
+// reach may be one its owner meant to be rid of.
+func git_pack_whole(storage storer.Storer, objects []plumbing.Hash) *os.File {
+	if wrapped, ok := storage.(*git_storage); ok {
+		storage = wrapped.Storer
+	}
+	store, ok := storage.(*filesystem.Storage)
+	if !ok || len(objects) == 0 {
+		return nil
+	}
+	found, err := filepath.Glob(filepath.Join(store.Filesystem().Root(), "objects", "pack", "pack-*.pack"))
+	if err != nil || len(found) != 1 {
+		return nil
+	}
+	name := strings.TrimSuffix(found[0], ".pack")
+
+	// The index's fan-out table ends with its object count, so most requests
+	// are told apart without reading the rest.
+	index, err := os.Open(name + ".idx")
+	if err != nil {
+		return nil
+	}
+	defer index.Close()
+	header := make([]byte, 8+256*4)
+	if _, err := io.ReadFull(index, header); err != nil {
+		return nil
+	}
+	if binary.BigEndian.Uint32(header[len(header)-4:]) != uint32(len(objects)) {
+		return nil
+	}
+	if _, err := index.Seek(0, io.SeekStart); err != nil {
+		return nil
+	}
+	decoded := idxfile.NewMemoryIndex()
+	if err := idxfile.NewDecoder(bufio.NewReader(index)).Decode(decoded); err != nil {
+		return nil
+	}
+	for _, hash := range objects {
+		if held, err := decoded.Contains(hash); err != nil || !held {
+			return nil
+		}
+	}
+	pack, err := os.Open(name + ".pack")
+	if err != nil {
+		return nil
+	}
+	return pack
+}
+
+// git_pack_plain encodes objects with the copy of go-git's encoder, which
+// sends what is stored as it is stored and deltifies the rest against each
+// other within a sliding window, never against anything the pack does not
+// carry.
 func git_pack_plain(storage storer.Storer, objects []plumbing.Hash) ([]byte, error) {
 	capped := &git_capped{limit: git_pack_memory_maximum}
-	encoder := packfile.NewEncoder(capped, storage, false)
+	encoder := pack.NewEncoder(capped, storage, false)
+	encoder.Search = git_loose(storage)
 	if _, err := encoder.Encode(objects, git_pack_window); err != nil {
 		return nil, err
 	}
@@ -5658,6 +5743,11 @@ var (
 	// before a push repacks it. git's own gc --auto uses the same number.
 	git_repack_minimum = 6700
 
+	// git_packs_maximum is how many packs a repository may hold before a push
+	// repacks it: each push is kept as a pack of its own, and every object
+	// read looks through them all. git's own gc.autoPackLimit.
+	git_packs_maximum = 50
+
 	// git_repack_interval bounds how often one repository repacks, so a busy
 	// repository that stays over the threshold does not repack per push, and a
 	// repository that fails (a corrupt object) retries slowly rather than on
@@ -5697,7 +5787,7 @@ func git_repack_consider(repo_path string) {
 	if left, seen := git_repack_remaining.Load(repo_path); seen {
 		remaining, _ = left.(int)
 	}
-	if git_loose_count(repo_path)-remaining < git_repack_minimum {
+	if git_loose_count(repo_path)-remaining < git_repack_minimum && git_pack_count(repo_path) <= git_packs_maximum && !git_unsearched(repo_path) {
 		return
 	}
 	// One repack per repository at a time. Nothing else serialises against it:
@@ -5744,69 +5834,159 @@ func git_repack(repo_path string) error {
 	if err != nil {
 		return err
 	}
-	reachable, err := git_reachable(repo.Storer)
+	reachable, names, err := git_reachable(repo.Storer)
 	if err != nil {
 		return err
 	}
 	if err := git_prune(repo.Storer, reachable, time.Now().Add(-git_prune_age)); err != nil {
 		return err
 	}
-	return git_pack(repo.Storer, reachable)
+	// A repository packed before packs were searched by path searches every
+	// object stored whole, once; after that only loose objects, which no
+	// search has seen.
+	searched := git_searched(repo.Storer)
+	var search func(plumbing.Hash) bool
+	if searched {
+		search = git_loose(repo.Storer)
+	}
+	if err := git_pack(repo.Storer, reachable, names, search); err != nil {
+		return err
+	}
+	if !searched {
+		return git_searched_mark(repo.Storer)
+	}
+	return nil
 }
 
-// git_reachable answers every object the references reach. A blob has nothing
-// beneath it, so one named by a file entry is counted without being read - a
-// walk that read them would decompress every file in the history. A
-// submodule entry names a commit in another repository, so it is not followed.
-func git_reachable(storage storage.Storer) (map[plumbing.Hash]struct{}, error) {
+// git_searched reports whether every object a repository holds in a pack has
+// been searched for a delta base by a search that knew its path: by the git
+// client that pushed it, or by a repack. Packs made before were searched by
+// type and size alone, and found a third of the deltas git does.
+func git_searched(storage storage.Storer) bool {
+	settings, err := storage.Config()
+	if err != nil {
+		return false
+	}
+	return settings.Raw.Section("mochi").Option("deltas") == "paths"
+}
+
+// git_searched_mark records that git_searched holds for a repository.
+func git_searched_mark(storage storage.Storer) error {
+	settings, err := storage.Config()
+	if err != nil {
+		return err
+	}
+	settings.Raw.Section("mochi").SetOption("deltas", "paths")
+	return storage.SetConfig(settings)
+}
+
+// git_loose answers whether the repository in storage holds an object loose:
+// written by Mochi itself, or by a push that could not be kept whole, and
+// searched for a delta base by nothing yet. A packed object has been, so a
+// clone sends it as it is stored rather than searching for it again.
+func git_loose(storage storer.Storer) func(plumbing.Hash) bool {
+	if wrapped, ok := storage.(*git_storage); ok {
+		storage = wrapped.Storer
+	}
+	loose := map[plumbing.Hash]struct{}{}
+	if store, ok := storage.(storer.LooseObjectStorer); ok {
+		store.ForEachObjectHash(func(hash plumbing.Hash) error {
+			loose[hash] = struct{}{}
+			return nil
+		})
+	}
+	return func(hash plumbing.Hash) bool {
+		_, found := loose[hash]
+		return found
+	}
+}
+
+// git_reachable answers every object the references reach, and for each tree
+// and file the git_name of the first path the walk met it at, which sorts
+// versions of one file together when a repack looks for delta bases. A blob
+// has nothing beneath it, so one named by a file entry is counted without
+// being read - a walk that read them would decompress every file in the
+// history. A submodule entry names a commit in another repository, so it is
+// not followed.
+func git_reachable(storage storage.Storer) (map[plumbing.Hash]struct{}, map[plumbing.Hash]uint32, error) {
 	references, err := storage.IterReferences()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var pending []plumbing.Hash
+	type entry struct {
+		hash plumbing.Hash
+		path string
+	}
+	var pending []entry
 	err = references.ForEach(func(reference *plumbing.Reference) error {
 		if reference.Type() == plumbing.HashReference {
-			pending = append(pending, reference.Hash())
+			pending = append(pending, entry{hash: reference.Hash()})
 		}
 		return nil
 	})
 	references.Close()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// A stack rather than recursion, since a history is as deep as it is long.
 	reachable := map[plumbing.Hash]struct{}{}
+	names := map[plumbing.Hash]uint32{}
 	for len(pending) > 0 {
-		hash := pending[len(pending)-1]
+		next := pending[len(pending)-1]
 		pending = pending[:len(pending)-1]
-		if _, seen := reachable[hash]; seen {
+		if _, seen := reachable[next.hash]; seen {
 			continue
 		}
-		reachable[hash] = struct{}{}
-		found, err := object.GetObject(storage, hash)
+		reachable[next.hash] = struct{}{}
+		names[next.hash] = git_name(next.path)
+		found, err := object.GetObject(storage, next.hash)
 		if err != nil {
-			return nil, fmt.Errorf("reading object %s: %v", hash, err)
+			return nil, nil, fmt.Errorf("reading object %s: %v", next.hash, err)
 		}
 		switch found := found.(type) {
 		case *object.Commit:
-			pending = append(pending, found.TreeHash)
-			pending = append(pending, found.ParentHashes...)
+			pending = append(pending, entry{hash: found.TreeHash})
+			for _, parent := range found.ParentHashes {
+				pending = append(pending, entry{hash: parent})
+			}
 		case *object.Tree:
-			for _, entry := range found.Entries {
+			for _, child := range found.Entries {
+				path := child.Name
+				if next.path != "" {
+					path = next.path + "/" + child.Name
+				}
 				switch {
-				case entry.Mode == filemode.Submodule:
-				case entry.Mode.IsFile():
-					reachable[entry.Hash] = struct{}{}
+				case child.Mode == filemode.Submodule:
+				case child.Mode.IsFile():
+					if _, seen := reachable[child.Hash]; !seen {
+						reachable[child.Hash] = struct{}{}
+						names[child.Hash] = git_name(path)
+					}
 				default:
-					pending = append(pending, entry.Hash)
+					pending = append(pending, entry{hash: child.Hash, path: path})
 				}
 			}
 		case *object.Tag:
-			pending = append(pending, found.Target)
+			pending = append(pending, entry{hash: found.Target})
 		}
 	}
-	return reachable, nil
+	return reachable, names, nil
+}
+
+// git_name is git's pack_name_hash of a path: in effect its last sixteen
+// characters other than spaces, the last counting most, so files of one name
+// sort together and files ending alike sort near each other.
+func git_name(path string) uint32 {
+	var hash uint32
+	for i := 0; i < len(path); i++ {
+		switch c := path[i]; c {
+		case ' ', '\t', '\n', '\v', '\f', '\r':
+		default:
+			hash = (hash >> 2) + uint32(c)<<24
+		}
+	}
+	return hash
 }
 
 // git_prune deletes the loose objects the references do not reach and that are
@@ -5833,14 +6013,17 @@ func git_prune(storage storage.Storer, reachable map[plumbing.Hash]struct{}, cut
 
 // git_pack writes the reachable objects into one packfile, then deletes their
 // loose copies and the packs it replaces, unpacking whatever those hold that
-// is no longer reachable. The pack is closed - checked, indexed and moved into
+// is no longer reachable. A delta already stored is kept; names, each object's
+// git_name, sort versions of one file together for the delta search, and
+// search says which objects stored whole to search for a base, nil meaning
+// all of them. The pack is closed - checked, indexed and moved into
 // place - before anything is deleted, so a pack that fails to write costs
 // nothing; go-git's own repack deletes the loose copies first, and a failed
 // close then loses them.
 //
 // It needs the plain filesystem storer: the push path wraps it to hide
 // PackfileWriter, and a wrapped storer cannot pack.
-func git_pack(storage storage.Storer, reachable map[plumbing.Hash]struct{}) error {
+func git_pack(storage storage.Storer, reachable map[plumbing.Hash]struct{}, names map[plumbing.Hash]uint32, search func(plumbing.Hash) bool) error {
 	packed, ok := storage.(storer.PackedObjectStorer)
 	if !ok {
 		return git.ErrPackedObjectsNotSupported
@@ -5870,7 +6053,10 @@ func git_pack(storage storage.Storer, reachable map[plumbing.Hash]struct{}) erro
 	if err != nil {
 		return err
 	}
-	pack, err := packfile.NewEncoder(writer, storage, false).Encode(hashes, settings.Pack.Window)
+	encoder := pack.NewEncoder(writer, storage, false)
+	encoder.Names = names
+	encoder.Search = search
+	written, err := encoder.Encode(hashes, settings.Pack.Window)
 	if err != nil {
 		writer.Close()
 		return err
@@ -5889,7 +6075,7 @@ func git_pack(storage storage.Storer, reachable map[plumbing.Hash]struct{}) erro
 		return err
 	}
 	for _, old := range previous {
-		if old == pack {
+		if old == written {
 			continue
 		}
 		if err := git_unpack(storage, old, reachable); err != nil {
@@ -5993,6 +6179,21 @@ func git_unpack(storage storage.Storer, pack plumbing.Hash, reachable map[plumbi
 	}
 }
 
+// git_pack_count counts a repository's packs.
+func git_pack_count(repo_path string) int {
+	matches, _ := filepath.Glob(filepath.Join(repo_path, "objects", "pack", "pack-*.pack"))
+	return len(matches)
+}
+
+// git_unsearched reports a repository holding packs that git_searched does not
+// cover, which the next repack searches again.
+func git_unsearched(repo_path string) bool {
+	if git_pack_count(repo_path) == 0 {
+		return false
+	}
+	return !git_searched(filesystem.NewStorage(osfs.New(repo_path), nil))
+}
+
 // git_loose_count counts the loose objects a repository holds, reading only the
 // two-character fan-out directories - no stat per object, and nothing outside
 // objects/ (a push's quarantine lives beside it and is not part of this).
@@ -6032,6 +6233,211 @@ func git_quarantine(repo_path string) (string, error) {
 		return "", fmt.Errorf("unable to create a staging directory: %v", err)
 	}
 	return path, nil
+}
+
+// git_push_pack names the copy of a push's pack kept in its staging directory.
+const git_push_pack = "push.pack"
+
+// git_tee copies a push's pack to a file as the pack is read, so it can be kept
+// whole once accepted. A copy that cannot be written is abandoned rather than
+// failing the push, which then stores its objects one by one.
+type git_tee struct {
+	io.ReadCloser
+	file   *os.File
+	failed bool
+}
+
+func (t *git_tee) Read(p []byte) (int, error) {
+	n, err := t.ReadCloser.Read(p)
+	if n > 0 && !t.failed {
+		if _, err := t.file.Write(p[:n]); err != nil {
+			t.failed = true
+		}
+	}
+	return n, err
+}
+
+// finish closes the copy, removing it if it was abandoned.
+func (t *git_tee) finish() {
+	t.file.Close()
+	if t.failed {
+		os.Remove(t.file.Name())
+	}
+}
+
+// git_store moves an accepted push into the repository: its pack as it came,
+// or, when that cannot be kept, the objects it held one by one.
+func git_store(staging, repo_path string) error {
+	err := git_keep(staging, repo_path)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		info("git_store: keeping the pack pushed to %s failed, storing its objects instead: %v", repo_path, err)
+	}
+	return git_promote(staging, repo_path)
+}
+
+// git_keep moves a push's pack into the repository as it came, rather than the
+// objects it holds one by one, so the deltas the pushing client found are kept.
+// Repacking loose objects finds fewer, and searching for them costs more than
+// the push. A thin pack, which git push sends, has deltas based on objects the
+// repository already holds; those bases are appended first, as git's
+// index-pack --fix-thin does, since a stored pack must hold every base its
+// deltas need. The pack is checked and indexed before anything is written to
+// the repository.
+func git_keep(staging, repo_path string) error {
+	file, err := os.OpenFile(filepath.Join(staging, git_push_pack), os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// Every object the pack carries was written to staging as it was checked,
+	// so a base that staging does not hold is one the pack does not carry.
+	scanner := packfile.NewScanner(file)
+	_, count, err := scanner.Header()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return nil
+	}
+	staged := filesystem.NewStorage(osfs.New(staging), cache.NewObjectLRUDefault())
+	repository := filesystem.NewStorage(osfs.New(repo_path), cache.NewObjectLRUDefault())
+	missing := map[plumbing.Hash]struct{}{}
+	var bases []plumbing.Hash
+	for range count {
+		header, err := scanner.NextObjectHeader()
+		if err != nil {
+			return err
+		}
+		if header.Type == plumbing.REFDeltaObject && staged.HasEncodedObject(header.Reference) != nil {
+			if _, found := missing[header.Reference]; !found {
+				missing[header.Reference] = struct{}{}
+				bases = append(bases, header.Reference)
+			}
+		}
+		if _, _, err := scanner.NextObject(io.Discard); err != nil {
+			return err
+		}
+	}
+	if len(bases) > 0 {
+		if err := git_thicken(file, repository, count, bases); err != nil {
+			return err
+		}
+	}
+
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	writer := new(idxfile.Writer)
+	parser, err := packfile.NewParser(packfile.NewScanner(file), writer)
+	if err != nil {
+		return err
+	}
+	checksum, err := parser.Parse()
+	if err != nil {
+		return err
+	}
+	index, err := writer.Index()
+	if err != nil {
+		return err
+	}
+
+	// The index goes in first, as go-git writes them: packs are found by their
+	// .pack file, so one is never seen without its index.
+	name := filepath.Join(repo_path, "objects", "pack", "pack-"+checksum.String())
+	if _, err := os.Stat(name + ".pack"); err == nil {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(name), 0755); err != nil {
+		return err
+	}
+	encoded, err := os.OpenFile(name+".idx", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0444)
+	if err != nil {
+		return err
+	}
+	if _, err := idxfile.NewEncoder(encoded).Encode(index); err != nil {
+		encoded.Close()
+		os.Remove(name + ".idx")
+		return err
+	}
+	if err := encoded.Close(); err != nil {
+		os.Remove(name + ".idx")
+		return err
+	}
+	if err := os.Chmod(file.Name(), 0444); err != nil {
+		os.Remove(name + ".idx")
+		return err
+	}
+	if err := os.Rename(file.Name(), name+".pack"); err != nil {
+		os.Remove(name + ".idx")
+		return err
+	}
+	return nil
+}
+
+// git_thicken appends bases, whole, to the pack in file, whose deltas need them
+// but which does not carry them, and rewrites the pack's object count and
+// checksum to match.
+func git_thicken(file *os.File, store storer.EncodedObjectStorer, count uint32, bases []plumbing.Hash) error {
+	information, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	end := information.Size() - sha1.Size
+	if end < 12 {
+		return fmt.Errorf("pack too short to hold %d objects", count)
+	}
+	if err := file.Truncate(end); err != nil {
+		return err
+	}
+	if _, err := file.Seek(end, io.SeekStart); err != nil {
+		return err
+	}
+	writer := bufio.NewWriter(file)
+	compressor := zlib.NewWriter(writer)
+	for _, hash := range bases {
+		base, err := store.EncodedObject(plumbing.AnyObject, hash)
+		if err != nil {
+			return err
+		}
+		if err := git_pack_entry(writer, base.Type(), base.Size()); err != nil {
+			return err
+		}
+		content, err := base.Reader()
+		if err != nil {
+			return err
+		}
+		compressor.Reset(writer)
+		_, err = io.Copy(compressor, content)
+		content.Close()
+		if err != nil {
+			return err
+		}
+		if err := compressor.Close(); err != nil {
+			return err
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		return err
+	}
+
+	var total [4]byte
+	binary.BigEndian.PutUint32(total[:], count+uint32(len(bases)))
+	if _, err := file.WriteAt(total[:], 8); err != nil {
+		return err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	digest := sha1.New()
+	if _, err := io.Copy(digest, file); err != nil {
+		return err
+	}
+	_, err = file.Write(digest.Sum(nil))
+	return err
 }
 
 // git_promote moves the staged objects into the repository, once the whole pack
@@ -6255,15 +6661,27 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, ow
 		req.Packfile = nil
 	}
 
+	// A copy of the pack as it is read, kept whole once accepted.
+	var tee *git_tee
+	if req.Packfile != nil {
+		if file, err := os.Create(filepath.Join(staging, git_push_pack)); err == nil {
+			tee = &git_tee{ReadCloser: req.Packfile, file: file}
+			req.Packfile = tee
+		}
+	}
+
 	// Process the receive-pack request
 	status, err := session.ReceivePack(ctx, req)
+	if tee != nil {
+		tee.finish()
+	}
 	if err != nil {
 		// The pack was refused. The deferred removal takes the staged objects
 		// with it, so the repository is exactly as it was, and no reference is
 		// touched.
 		info("git_receive_pack: %s: %v", repo_path, err)
 	} else {
-		if err := git_promote(staging, repo_path); err != nil {
+		if err := git_store(staging, repo_path); err != nil {
 			warn("git_receive_pack: unable to promote staged objects for %s: %v", repo_path, err)
 			c.String(http.StatusInternalServerError, "Failed to store push") // i18n-ok: git protocol, read by the client not a person
 			return true

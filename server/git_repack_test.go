@@ -605,7 +605,7 @@ func TestReachableReadsNoFiles(t *testing.T) {
 	repack_test_commit(t, repo, entries)
 
 	counter := &repack_test_counter{Storer: repo.Storer}
-	reachable, err := git_reachable(counter)
+	reachable, _, err := git_reachable(counter)
 	if err != nil {
 		t.Fatalf("git_reachable: %v", err)
 	}
@@ -659,13 +659,13 @@ func TestPackFailureLosesNothing(t *testing.T) {
 	if !ok {
 		t.Fatalf("setup: storage is %T, not the filesystem storer", repo.Storer)
 	}
-	reachable, err := git_reachable(plain)
+	reachable, names, err := git_reachable(plain)
 	if err != nil {
 		t.Fatalf("git_reachable: %v", err)
 	}
 	loose := git_loose_count(path)
 
-	err = git_pack(repack_test_spoiled{Storage: plain}, reachable)
+	err = git_pack(repack_test_spoiled{Storage: plain}, reachable, names, nil)
 	if err == nil {
 		t.Fatal("git_pack reported success for a pack that could not be written")
 	}

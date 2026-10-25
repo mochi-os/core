@@ -835,6 +835,181 @@ func TestCommitListRefusesBadPaging(t *testing.T) {
 	}
 }
 
+// read_history commits count commits to branch main from a root, merging in
+// a side branch of three, begun five commits back, at every twentieth, so the
+// walk order is not simply newest first. It answers the tip.
+func read_history(t *testing.T, repo *git.Repository, count int) plumbing.Hash {
+	t.Helper()
+	tree := read_snapshot(t, repo, map[string]read_file{"a": read_text("a")})
+	tip := read_commit(t, repo, nil, tree, "root")
+	line := []plumbing.Hash{tip}
+	for i := 1; i < count; i++ {
+		parents := []plumbing.Hash{tip}
+		if i%20 == 0 && len(line) > 5 {
+			side := line[len(line)-5]
+			for j := range 3 {
+				side = read_commit(t, repo, []plumbing.Hash{side}, tree, fmt.Sprintf("side %d %d", i, j))
+			}
+			parents = append(parents, side)
+		}
+		tip = read_commit(t, repo, parents, tree, fmt.Sprintf("commit %d", i))
+		line = append(line, tip)
+	}
+	read_branch(t, repo, "main", tip)
+	return tip
+}
+
+// read_walk lists history from tip in go-git's log order.
+func read_walk(t *testing.T, repo *git.Repository, tip plumbing.Hash) []string {
+	t.Helper()
+	iter, err := repo.Log(&git.LogOptions{From: tip})
+	if err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	var out []string
+	iter.ForEach(func(c *object.Commit) error {
+		out = append(out, c.Hash.String())
+		return nil
+	})
+	return out
+}
+
+// read_page lists one page of main's commits through mochi.git.commit.list.
+func read_page(t *testing.T, thread *sl.Thread, id string, limit, offset int) []string {
+	t.Helper()
+	value, err := read_call(t, thread, api_git_commit_list, sl.String(id), sl.String("main"), sl.MakeInt(limit), sl.MakeInt(offset))
+	if err != nil {
+		t.Fatalf("commit.list(%d, %d): %v", limit, offset, err)
+	}
+	commits, _ := read_value(t, value).([]any)
+	out := []string{}
+	for _, commit := range commits {
+		out = append(out, commit.(map[string]any)["sha"].(string))
+	}
+	return out
+}
+
+// TestCommitListPagesFollowTheWalk. A page below the first comes from a walk
+// remembered for the repository and tip. Paged in any size, a history with
+// merges lists as go-git walks it, and a push that moves the tip moves the
+// pages with it.
+func TestCommitListPagesFollowTheWalk(t *testing.T) {
+	id, repo, thread := read_env_repo(t, "pages")
+	tip := read_history(t, repo, 300)
+	want := read_walk(t, repo, tip)
+
+	var got []string
+	for offset := 0; ; offset += 50 {
+		page := read_page(t, thread, id, 50, offset)
+		got = append(got, page...)
+		if len(page) < 50 {
+			break
+		}
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("paging by 50 listed %d commits out of walk order, want %d", len(got), len(want))
+	}
+
+	for _, page := range [][2]int{{7, 13}, {1, len(want) - 1}, {100, 250}, {50, len(want) - 20}, {50, len(want)}, {50, git_offset_maximum}} {
+		limit, offset := page[0], page[1]
+		expect := want[min(offset, len(want)):min(offset+limit, len(want))]
+		if got := read_page(t, thread, id, limit, offset); strings.Join(got, " ") != strings.Join(expect, " ") {
+			t.Errorf("page of %d at %d listed %d commits, not the walk's %d there", limit, offset, len(got), len(expect))
+		}
+	}
+
+	commit, _ := repo.CommitObject(tip)
+	moved := read_commit(t, repo, []plumbing.Hash{tip}, commit.TreeHash, "pushed")
+	read_branch(t, repo, "main", moved)
+	want = read_walk(t, repo, moved)
+	if got := read_page(t, thread, id, 50, 50); strings.Join(got, " ") != strings.Join(want[50:100], " ") {
+		t.Error("THE POINT: after a push, the second page still listed the old tip's commits")
+	}
+}
+
+// TestCommitListDeepPagesReadOnlyTheirOwnCommits. Every page walked from the
+// tip past each commit above it, so scrolling down a history read it once a
+// page. Once a walk is remembered, a page 2,000 commits down costs what one
+// 50 down does.
+func TestCommitListDeepPagesReadOnlyTheirOwnCommits(t *testing.T) {
+	id, repo, thread := read_env_repo(t, "deep")
+	tree := read_snapshot(t, repo, map[string]read_file{"a": read_text("a")})
+	tip := read_commit(t, repo, nil, tree, "root")
+	for i := range 2100 {
+		tip = read_commit(t, repo, []plumbing.Hash{tip}, tree, fmt.Sprintf("commit %d", i))
+	}
+	read_branch(t, repo, "main", tip)
+
+	allocations := func(offset int) float64 {
+		return testing.AllocsPerRun(3, func() { read_page(t, thread, id, 50, offset) })
+	}
+	shallow, deep, last := allocations(50), allocations(2000), allocations(2090)
+	if deep-shallow > 1000 {
+		t.Errorf("THE POINT: a page 2,000 commits down took %.0f allocations more than one 50 down", deep-shallow)
+	}
+	// The last page asks past the end of the 2,101 commits, which a walk
+	// that reached the end already answers.
+	if last-shallow > 1000 {
+		t.Errorf("the last page took %.0f allocations more than one 50 down", last-shallow)
+	}
+}
+
+// TestCommitListPagingWalksAFewTimes. Paging down a history 50 at a time
+// walks it from the tip a few times, each twice as deep as the last, rather
+// than once a page.
+func TestCommitListPagingWalksAFewTimes(t *testing.T) {
+	_, repo, _ := read_env_repo(t, "paging")
+	tip := read_history(t, repo, 2000)
+	counted, counter := read_counted(t, repo)
+	total := len(read_walk(t, repo, tip))
+	for offset := 50; offset < total; offset += 50 {
+		iter, err := counted.Log(&git.LogOptions{From: tip})
+		if err != nil {
+			t.Fatalf("log: %v", err)
+		}
+		if _, err := git_walked(context.Background(), iter, "paging "+tip.String(), offset+50); err != nil {
+			t.Fatalf("git_walked: %v", err)
+		}
+	}
+	if reads := counter.reads[plumbing.CommitObject]; reads > 4*total {
+		t.Errorf("THE POINT: paging down %d commits read %d", total, reads)
+	}
+}
+
+// TestCommitListRemembersFewWalks. git_walks keeps git_walk_entries walks and
+// drops the one used longest ago.
+func TestCommitListRemembersFewWalks(t *testing.T) {
+	_, repo, _ := read_env_repo(t, "walks")
+	tip := read_history(t, repo, 5)
+	saved := git_walks.entries
+	git_walks.entries = map[string]*git_walk{}
+	t.Cleanup(func() { git_walks.entries = saved })
+
+	walk := func(key string) {
+		iter, err := repo.Log(&git.LogOptions{From: tip})
+		if err != nil {
+			t.Fatalf("log: %v", err)
+		}
+		if _, err := git_walked(context.Background(), iter, key, 2); err != nil {
+			t.Fatalf("git_walked: %v", err)
+		}
+	}
+	for i := range git_walk_entries {
+		walk(fmt.Sprintf("walk %d", i))
+	}
+	walk("walk 0")
+	walk("one more")
+	if len(git_walks.entries) != git_walk_entries {
+		t.Errorf("%d walks remembered, want %d", len(git_walks.entries), git_walk_entries)
+	}
+	if git_walks.entries["walk 0"] == nil || git_walks.entries["one more"] == nil {
+		t.Error("the walks used last were dropped")
+	}
+	if git_walks.entries["walk 1"] != nil {
+		t.Error("the walk used longest ago was kept")
+	}
+}
+
 // TestCommitBetweenIsBounded. between walked every ancestor of base into a map
 // and every ancestor of head into the result. Both walks stop at
 // git_offset_maximum commits and the result at git_list_maximum, and the

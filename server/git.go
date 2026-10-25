@@ -1197,17 +1197,37 @@ func api_git_commit_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl.None, nil // log not found
 	}
 
-	var commits []map[string]any
-	count := 0
-	err = iter.ForEach(func(c *object.Commit) error {
-		if count < offset {
-			count++
+	// The first page is read as history is walked. A deeper one comes from
+	// the walk git_walked remembers, so only its own commits are read.
+	var page []*object.Commit
+	if offset == 0 {
+		err = iter.ForEach(func(c *object.Commit) error {
+			if len(page) >= limit {
+				return storer.ErrStop
+			}
+			page = append(page, c)
 			return nil
+		})
+		if err != nil {
+			return sl_error(fn, "failed to iterate commits: %v", err)
 		}
-		if len(commits) >= limit {
-			return io.EOF
+	} else {
+		key := git_repo_path(owner, app, entity) + " " + hash.String()
+		hashes, err := git_walked(starlark_context(t), iter, key, offset+limit)
+		if err != nil {
+			return sl_error(fn, "failed to iterate commits: %v", err)
 		}
+		for _, h := range hashes[min(offset, len(hashes)):min(offset+limit, len(hashes))] {
+			c, err := repo.CommitObject(h)
+			if err != nil {
+				return sl_error(fn, "failed to read commit %s: %v", h, err)
+			}
+			page = append(page, c)
+		}
+	}
 
+	var commits []map[string]any
+	for _, c := range page {
 		var parents []string
 		for _, p := range c.ParentHashes {
 			parents = append(parents, p.String())
@@ -1221,15 +1241,80 @@ func api_git_commit_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 			"date":    c.Author.When.Unix(),
 			"parents": parents,
 		})
-		count++
-		return nil
-	})
-
-	if err != nil && err != io.EOF {
-		return sl_error(fn, "failed to iterate commits: %v", err)
 	}
 
 	return sl_encode(commits), nil
+}
+
+// git_walk_entries caps how many walks git_walks remembers. Each holds at
+// most git_offset_maximum + git_list_maximum hashes, 220 KB.
+const git_walk_entries = 32
+
+// git_walk is how far a commit listing has walked history from one tip, in
+// the order it lists commits, and whether that reached the end.
+type git_walk struct {
+	hashes   []plumbing.Hash
+	complete bool
+	used     int64
+}
+
+// git_walks remembers recent walks by repository and tip, so a deeper page of
+// a commit listing does not walk again past every commit above it. A push
+// moves the tip, so a remembered walk never goes stale.
+var git_walks = struct {
+	sync.Mutex
+	entries map[string]*git_walk
+	clock   int64
+}{entries: map[string]*git_walk{}}
+
+// git_walked answers the hashes of at least need commits that iter walks, or
+// of all of them if history is shorter, remembering them under key. A walk
+// goes twice as deep as asked and as the one before, so paging to the end of
+// a history walks it a few times rather than once a page.
+func git_walked(ctx context.Context, iter object.CommitIter, key string, need int) ([]plumbing.Hash, error) {
+	depth := 2 * need
+	git_walks.Lock()
+	if walk := git_walks.entries[key]; walk != nil {
+		git_walks.clock++
+		walk.used = git_walks.clock
+		if walk.complete || len(walk.hashes) >= need {
+			git_walks.Unlock()
+			return walk.hashes, nil
+		}
+		depth = max(depth, 2*len(walk.hashes))
+	}
+	git_walks.Unlock()
+	depth = max(min(depth, git_offset_maximum+git_list_maximum), need)
+
+	var hashes []plumbing.Hash
+	err := iter.ForEach(func(c *object.Commit) error {
+		if len(hashes) >= depth {
+			return storer.ErrStop
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		hashes = append(hashes, c.Hash)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	git_walks.Lock()
+	defer git_walks.Unlock()
+	if git_walks.entries[key] == nil && len(git_walks.entries) >= git_walk_entries {
+		oldest := ""
+		for name, walk := range git_walks.entries {
+			if oldest == "" || walk.used < git_walks.entries[oldest].used {
+				oldest = name
+			}
+		}
+		delete(git_walks.entries, oldest)
+	}
+	git_walks.clock++
+	git_walks.entries[key] = &git_walk{hashes: hashes, complete: len(hashes) < depth, used: git_walks.clock}
+	return hashes, nil
 }
 
 // mochi.git.commit.get(entity, sha) -> dict: Get a single commit

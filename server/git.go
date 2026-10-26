@@ -5780,6 +5780,14 @@ var (
 	git_repack_remaining sync.Map
 )
 
+// git_repack_slot is held by the one repack the server runs at a time, whatever
+// the repository. A repository's first repack searches every object for
+// deltas, and one of core's history took 68 s and 1.4 GB inside the server
+// process; pushes to many repositories in a row, as pushing every repository
+// does, started them all at once. A repack waiting for the slot holds nothing
+// yet.
+var git_repack_slot = make(chan struct{}, 1)
+
 // git_repack_consider counts a repository's loose objects and repacks it in the
 // background when there are enough of them. Called after a push has promoted
 // its objects and moved its references, so what it counts is settled.
@@ -5796,7 +5804,8 @@ func git_repack_consider(repo_path string) {
 	if git_loose_count(repo_path)-remaining < git_repack_minimum && git_pack_count(repo_path) <= git_packs_maximum && !git_unsearched(repo_path) {
 		return
 	}
-	// One repack per repository at a time. Nothing else serialises against it,
+	// One repack per repository waiting or running, and one running on the
+	// whole server (git_repack_slot). Nothing else serialises against it,
 	// and a concurrent push loses nothing to it: repack replaces only the packs
 	// it listed before writing its own, writes out loose whatever they hold
 	// that the references it walked do not reach, and its sweep leaves the
@@ -5813,6 +5822,8 @@ func git_repack_consider(repo_path string) {
 		// that should cost a warning and nothing else.
 		guard("repository repack", nil, func() {
 			defer git_repack_running.Delete(repo_path)
+			git_repack_slot <- struct{}{}
+			defer func() { <-git_repack_slot }()
 			if err := git_repack_dispatch(repo_path); err != nil {
 				// What a failed repack left says nothing about what the
 				// next one can do, so it retries after the interval.

@@ -1050,3 +1050,70 @@ func TestPackSweepLeavesAPushArriving(t *testing.T) {
 	}
 	repack_test_readable(t, path, blob)
 }
+
+// A repository's first repack searches every object for deltas, and one of
+// core's history took 1.4 GB inside the server process. Pushes to many
+// repositories in a row, as pushing every repository does, started every
+// repack at once; they now take turns, and every one still runs.
+func TestRepackConsiderRunsOneAcrossRepositories(t *testing.T) {
+	minimum := git_repack_minimum
+	dispatch := git_repack_dispatch
+	defer func() {
+		git_repack_minimum = minimum
+		git_repack_dispatch = dispatch
+	}()
+	git_repack_minimum = 3
+
+	var paths []string
+	for i := 0; i < 3; i++ {
+		path, _ := repack_test_repository(t, 5)
+		git_repack_attempted.Delete(path)
+		paths = append(paths, path)
+		defer git_repack_attempted.Delete(path)
+		defer git_repack_remaining.Delete(path)
+	}
+
+	release := make(chan struct{})
+	var running, peak, done int
+	var lock sync.Mutex
+	git_repack_dispatch = func(string) error {
+		lock.Lock()
+		running++
+		if running > peak {
+			peak = running
+		}
+		lock.Unlock()
+		<-release
+		lock.Lock()
+		running--
+		done++
+		lock.Unlock()
+		return nil
+	}
+
+	for _, path := range paths {
+		git_repack_consider(path)
+	}
+	time.Sleep(200 * time.Millisecond)
+	close(release)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		lock.Lock()
+		finished := done
+		lock.Unlock()
+		if finished == len(paths) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	lock.Lock()
+	defer lock.Unlock()
+	if peak != 1 {
+		t.Errorf("%d repacks of different repositories ran at once, want 1", peak)
+	}
+	if done != len(paths) {
+		t.Errorf("%d of %d repositories were repacked; a repack waiting its turn must still run", done, len(paths))
+	}
+}

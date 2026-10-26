@@ -12,6 +12,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	git "github.com/go-git/go-git/v5"
+	"github.com/tailscale/hujson"
 )
 
 // web_bearer_env builds the minimum a web_action auth decision needs: a user
@@ -248,6 +250,7 @@ def action_logout(a):
 	av := &AppVersion{Version: "1.0", Execute: []string{star}, Actions: map[string]AppAction{
 		"-/open":    {Function: "action_who", Public: true},
 		"-/picture": {Function: "action_who", Public: true, Asset: true},
+		"-/avatar":  {Function: "action_who", Public: true, Asset: true, Shared: true},
 		"-/private": {Function: "action_who"},
 		"-/session": {Function: "action_session"},
 		"-/storage": {Function: "action_storage", Public: true},
@@ -321,25 +324,42 @@ func TestBearerGateSetsAsideAnotherAppsToken(t *testing.T) {
 		t.Errorf("another app's token with the session cookie got %d %s; want the cookie's user", status, body)
 	}
 
-	// A read of an asset action keeps it, so an image another app embeds still
-	// loads as the user; a write there does not.
+	// A read of an asset action other apps embed - marked shared, as a
+	// person's avatar is - keeps it, so the avatar still loads as the user; a
+	// write there does not.
 	for _, token := range []string{other, asset} {
-		status, body = web_bearer_target(t, app, "", "Bearer "+token, "GET", "-/picture")
+		status, body = web_bearer_target(t, app, "", "Bearer "+token, "GET", "-/avatar")
 		if status != 200 || !strings.Contains(body, signed) {
-			t.Errorf("another app's token reading an asset action got %d %s; want it to run as the user", status, body)
+			t.Errorf("another app's token reading a shared asset action got %d %s; want it to run as the user", status, body)
 		}
 	}
-	status, body = web_bearer_target(t, app, "", "Bearer "+other, "POST", "-/picture")
+	status, body = web_bearer_target(t, app, "", "Bearer "+other, "POST", "-/avatar")
 	if status != 200 || !strings.Contains(body, unsigned) {
-		t.Errorf("another app's token writing to an asset action got %d %s; want it to run anonymously", status, body)
+		t.Errorf("another app's token writing to a shared asset action got %d %s; want it to run anonymously", status, body)
+	}
+
+	// Any other asset action - an attachment, a photo - serves whatever id it
+	// is asked for, so a read sets the token aside too: kept, any app's page
+	// holding an id could read the user's private ones.
+	for _, token := range []string{other, asset} {
+		status, body = web_bearer_target(t, app, "", "Bearer "+token, "GET", "-/picture")
+		if status != 200 || !strings.Contains(body, unsigned) {
+			t.Errorf("another app's token reading an unshared asset action got %d %s; want it to run anonymously", status, body)
+		}
 	}
 
 	// Set aside means wholly: another app's asset token writing to an asset
 	// action is anonymous, not refused as the read-only credential it no longer
 	// is.
-	status, body = web_bearer_target(t, app, "", "Bearer "+asset, "POST", "-/picture")
+	status, body = web_bearer_target(t, app, "", "Bearer "+asset, "POST", "-/avatar")
 	if status != 200 || !strings.Contains(body, unsigned) {
-		t.Errorf("another app's asset token writing to an asset action got %d %s; want it to run anonymously", status, body)
+		t.Errorf("another app's asset token writing to a shared asset action got %d %s; want it to run anonymously", status, body)
+	}
+
+	// Control: the app's own token reads its unshared asset as the user.
+	status, body = web_bearer_target(t, app, "", "Bearer "+own, "GET", "-/picture")
+	if status != 200 || !strings.Contains(body, signed) {
+		t.Errorf("own token reading an unshared asset action got %d %s; want it to run as the user", status, body)
 	}
 
 	// A private action still refuses it outright.
@@ -780,5 +800,41 @@ func TestWebActionRefusesARestoringOwner(t *testing.T) {
 	web_action(c, app, "-/storage", e, routing_domain)
 	if w.Code != 503 || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain") || w.Body.Len() == 0 || strings.HasPrefix(w.Body.String(), "{") {
 		t.Errorf("a browser visiting a restoring owner's page got %d %q %s; want 503 with the message as text", w.Code, w.Header().Get("Content-Type"), w.Body.String())
+	}
+}
+
+// Every app's page shows a person's avatar and style through the people app,
+// with its own token. Only the routes the people manifest marks shared keep
+// that token, so a missing mark turns every other app's avatars anonymous, and
+// a person this server knows only through the user's directory then fails to
+// load. Read from the people app's source, skipped where it is absent.
+func TestPeopleEmbeddedRoutesAreShared(t *testing.T) {
+	base := "../../apps/people"
+	if _, err := os.Stat(base + "/app.json"); err != nil {
+		t.Skipf("apps/people source absent: %v", err)
+	}
+	// Parsed as app_read parses it, without the checks that need a server
+	// version and the app's files.
+	raw, err := os.ReadFile(base + "/app.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := hujson.Standardize(raw)
+	if err != nil {
+		t.Fatalf("the people manifest: %v", err)
+	}
+	var av AppVersion
+	if err := json.Unmarshal(data, &av); err != nil {
+		t.Fatalf("the people manifest: %v", err)
+	}
+	for _, route := range []string{":person/-/avatar", ":person/-/style"} {
+		action, found := av.Actions[route]
+		if !found {
+			t.Errorf("the people manifest has no %s", route)
+			continue
+		}
+		if !action.Public || !action.Asset || !action.Shared {
+			t.Errorf("%s is public=%v asset=%v shared=%v; other apps embed it, so it must be all three", route, action.Public, action.Asset, action.Shared)
+		}
 	}
 }

@@ -51,6 +51,12 @@ type AppAction struct {
 	// travels in copied links, and an app's every action would otherwise be
 	// one GET away for its half hour of life.
 	Asset bool `json:"asset"`
+	// Shared marks an asset action other apps' pages embed - a person's
+	// avatar, shown by every app - and so may be read with another app's
+	// token, as the user it names. Every other public action sets such a
+	// token aside and answers anonymously: kept, any app's page holding an
+	// attachment's id could read it as the user, private or not.
+	Shared bool `json:"shared"`
 	// Site marks an action that publishes a website, exempting it from the
 	// safe-serve policy (SVG sanitized, unsafe types forced to download).
 	// Declared, never inferred from the request arriving on a domain route.

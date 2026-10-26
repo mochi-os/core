@@ -470,8 +470,9 @@ func domain_lookup(host string) *domain {
 
 // domain_certified is the domain a certificate for a host is asked under: the
 // host's own, else for a name an engine answers under one of the server's
-// domains - XMPP's room service, rooms.<domain> - that domain's, against
-// whose weekly allowance it counts.
+// domains - XMPP's room service, rooms.<domain>, and a hosted Bluesky
+// account's handle, <handle>.<domain> - that domain's, against whose weekly
+// allowance it counts.
 func domain_certified(host string) *domain {
 	if d := domain_lookup(host); d != nil {
 		return d
@@ -480,6 +481,9 @@ func domain_certified(host string) *domain {
 		host = h
 	}
 	if base := xmpp_room_base(host); base != "" {
+		return domain_lookup(base)
+	}
+	if base := atproto_handle_base(host); base != "" {
 		return domain_lookup(base)
 	}
 	return nil

@@ -191,6 +191,21 @@ func atproto_host_account(host string) (*User, map[string]any) {
 	return holder, row
 }
 
+// atproto_handle_base is the domain a hosted Bluesky account's handle host
+// is under, which its certificate is asked under (domain_certified), or ""
+// for a host that is no account's handle, or with Bluesky off.
+func atproto_handle_base(host string) string {
+	if !network_enabled("bluesky") {
+		return ""
+	}
+	_, row := atproto_host_account(host)
+	if row == nil {
+		return ""
+	}
+	domain, _ := account_data(row)["domain"].(string)
+	return domain
+}
+
 // atproto_repository resolves what a request names a repository by, an
 // identifier or a handle, to its user, account and repository.
 func atproto_repository(name string) (*User, map[string]any, *repository) {

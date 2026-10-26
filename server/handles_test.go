@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 
 	sl "go.starlark.net/starlark"
@@ -295,5 +296,42 @@ func TestHandleHostAnswers(t *testing.T) {
 	accounts_hosted_remove(alice, "example.com", "alice")
 	if account_hosted(alice, "bluesky", "example.com", "alice") != nil {
 		t.Error("accounts_hosted_remove should delete the hosted account")
+	}
+}
+
+// TestHandleHostCertified: a hosted Bluesky handle's host under one of the
+// server's domains, with no wildcard row, gets its certificate under that
+// domain once its holder has a Bluesky account on it, a name under the
+// handle too, and no other host under the domain does.
+func TestHandleHostCertified(t *testing.T) {
+	alice, _ := create_handles_test_env(t)
+	db_open("db/domains.db").exec("insert or replace into domains (domain, verified, tls, created, updated) values ('example.com', 1, 1, 1, 1)")
+	for _, name := range []string{"alice", "alice_test"} {
+		if _, err := handle_reserve(alice, "", name, "handle"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if d := domain_certified("alice.example.com"); d != nil {
+		t.Errorf("a handle with no Bluesky account certified under %s", d.Domain)
+	}
+	db := db_user(alice, "user")
+	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('a1', 'bluesky', '', 'alice.example.com', '{\"hosted\":true,\"handle\":\"alice\",\"domain\":\"example.com\"}', 1, 1)")
+	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('a2', 'bluesky', '', 'alice-test.example.com', '{\"hosted\":true,\"handle\":\"alice_test\",\"domain\":\"example.com\"}', 1, 1)")
+	for _, host := range []string{"alice.example.com", "alice-test.example.com"} {
+		if d := domain_certified(host); d == nil || d.Domain != "example.com" {
+			t.Errorf("THE POINT: %s certified under %v", host, d)
+		}
+		if err := domains_host_policy(context.Background(), host); err != nil {
+			t.Errorf("THE POINT: %s's certificate refused: %v", host, err)
+		}
+	}
+	for _, host := range []string{"bob.example.com", "alice.elsewhere.test"} {
+		if d := domain_certified(host); d != nil {
+			t.Errorf("%s certified under %s", host, d.Domain)
+		}
+	}
+	networks_development = false
+	if d := domain_certified("alice.example.com"); d != nil {
+		t.Errorf("with Bluesky off, the handle's host certified under %s", d.Domain)
 	}
 }

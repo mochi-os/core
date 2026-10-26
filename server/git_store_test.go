@@ -871,3 +871,69 @@ func TestRepackIsOnDiskBeforeItDeletes(t *testing.T) {
 		t.Error("the folder did not reach disk with the new pack in it before the repack deleted what it replaces")
 	}
 }
+
+// The marker is written as git writes a config: whole, to a new file renamed
+// over the old one. go-git's SetConfig emptied the live file and then wrote
+// into it, so a crash between the two left it empty, and one partway through
+// left a config no open of the repository could read. Writing in place needs
+// the live file writable; a rename needs only the folder, so a read-only
+// config tells the two apart.
+func TestSearchedMarkReplacesTheConfig(t *testing.T) {
+	path, repo := repack_test_empty(t)
+	config := filepath.Join(path, "config")
+	if err := os.Chmod(config, 0444); err != nil {
+		t.Fatal(err)
+	}
+	if err := git_searched_mark(repo.Storer); err != nil {
+		t.Fatalf("THE POINT: the marker was written into the live config: %v", err)
+	}
+	reopened, err := git.PlainOpen(path)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	if !git_searched(reopened.Storer) {
+		t.Error("the marker did not reach the config")
+	}
+	settings, err := reopened.Storer.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !settings.Core.IsBare {
+		t.Error("the config lost what it held: core.bare is gone")
+	}
+	information, err := os.Stat(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if information.Mode().Perm() != 0644 {
+		t.Errorf("the config is mode %o, want 0644 as git leaves it", information.Mode().Perm())
+	}
+	entries, _ := os.ReadDir(path)
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "config.") {
+			t.Errorf("a temporary %s was left beside the config", entry.Name())
+		}
+	}
+}
+
+// go-git makes a pack and its index read-only once they are in place, through
+// a filesystem method the repack's flushing wrapper must not hide.
+func TestRepackLeavesPacksReadOnly(t *testing.T) {
+	path, _ := repack_test_repository(t, 3)
+	if err := git_repack(path); err != nil {
+		t.Fatalf("git_repack: %v", err)
+	}
+	packs := store_packs(t, path)
+	if len(packs) != 1 {
+		t.Fatalf("setup: packs %v", packs)
+	}
+	for _, file := range []string{packs[0], strings.TrimSuffix(packs[0], ".pack") + ".idx"} {
+		information, err := os.Stat(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if information.Mode().Perm() != 0444 {
+			t.Errorf("%s is mode %o, want 0444", filepath.Base(file), information.Mode().Perm())
+		}
+	}
+}

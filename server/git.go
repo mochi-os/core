@@ -5892,14 +5892,54 @@ func git_searched(storage storage.Storer) bool {
 	return settings.Raw.Section("mochi").Option("deltas") == "paths"
 }
 
-// git_searched_mark records that git_searched holds for a repository.
+// git_searched_mark records that git_searched holds for a repository. The
+// config is written whole to a new file and renamed over the old one, as git
+// writes it: go-git's SetConfig empties the live file and then writes into it,
+// so a crash between the two left it empty, and one partway through the write
+// left a config no open of the repository could read.
 func git_searched_mark(storage storage.Storer) error {
 	settings, err := storage.Config()
 	if err != nil {
 		return err
 	}
 	settings.Raw.Section("mochi").SetOption("deltas", "paths")
-	return storage.SetConfig(settings)
+	if err := settings.Validate(); err != nil {
+		return err
+	}
+	data, err := settings.Marshal()
+	if err != nil {
+		return err
+	}
+	directory, err := git_filesystem(storage)
+	if err != nil {
+		return err
+	}
+	file, err := directory.TempFile("", "config.")
+	if err != nil {
+		return err
+	}
+	name := file.Name()
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		directory.Remove(name)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		directory.Remove(name)
+		return err
+	}
+	// A temporary file is the owner's alone; a config is not.
+	if changer, ok := directory.(billy.Chmod); ok {
+		if err := changer.Chmod(name, 0644); err != nil {
+			directory.Remove(name)
+			return err
+		}
+	}
+	if err := directory.Rename(name, "config"); err != nil {
+		directory.Remove(name)
+		return err
+	}
+	return nil
 }
 
 // git_loose answers whether the repository in storage holds an object loose:
@@ -6482,6 +6522,15 @@ func (d git_durable) Rename(from, to string) error {
 		return err
 	}
 	return git_flush(filepath.Dir(filepath.Join(d.root, to)))
+}
+
+// Chmod passes through: go-git makes a pack and its index read-only once they
+// are in place, through billy.Chmod, which embedding the filesystem hides.
+func (d git_durable) Chmod(name string, mode os.FileMode) error {
+	if changer, ok := d.Filesystem.(billy.Chmod); ok {
+		return changer.Chmod(name, mode)
+	}
+	return nil
 }
 
 // Create answers a file flushed as it closes: a pack's index, written before

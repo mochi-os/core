@@ -306,6 +306,13 @@ func TestRepackSweepsOrphanedPackFiles(t *testing.T) {
 	}
 	orphans := repack_test_siblings(t, path, before[0])
 	orphans = append(orphans, repack_test_siblings(t, path, "pack-8585dad0e179053f14ffd5aca38eb6280d15d61b")...)
+	// git wrote them beside its packs long before any repack here.
+	old := time.Now().Add(-git_sweep_age - time.Minute)
+	for _, orphan := range orphans {
+		if err := os.Chtimes(orphan, old, old); err != nil {
+			t.Fatalf("ageing %s: %v", orphan, err)
+		}
+	}
 
 	// Something new to pack, so the repack replaces the pack rather than
 	// writing the same one again.
@@ -851,6 +858,16 @@ func TestRepackConsiderRunsOneAtATime(t *testing.T) {
 // git_keep does with a push.
 func repack_test_install(t *testing.T, path string, data []byte) {
 	t.Helper()
+	name := repack_test_index(t, path, data)
+	if err := os.WriteFile(name+".pack", data, 0444); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// repack_test_index writes a pack's index into the repository, as git_keep
+// does first, and answers the path both are named after.
+func repack_test_index(t *testing.T, path string, data []byte) string {
+	t.Helper()
 	writer := new(idxfile.Writer)
 	parser, err := packfile.NewParser(packfile.NewScanner(bytes.NewReader(data)), writer)
 	if err != nil {
@@ -876,9 +893,7 @@ func repack_test_install(t *testing.T, path string, data []byte) {
 		t.Fatal(err)
 	}
 	encoded.Close()
-	if err := os.WriteFile(name+".pack", data, 0444); err != nil {
-		t.Fatal(err)
-	}
+	return name
 }
 
 // repack_test_unpack parses a pack and answers the objects it holds.
@@ -994,4 +1009,44 @@ func TestPackBreaksADeltaCycleAcrossPacks(t *testing.T) {
 // storer_reader is what the checks above read objects through.
 type storer_reader interface {
 	EncodedObject(plumbing.ObjectType, plumbing.Hash) (plumbing.EncodedObject, error)
+}
+
+// A push writes its pack's index before the pack itself, so a pack is never
+// seen without one; in between, the index is named after a pack that is not
+// there. A repack ending at that moment swept it as an orphan, the pack then
+// landed without it, and every read of the repository failed until the index
+// was rebuilt by hand.
+func TestPackSweepLeavesAPushArriving(t *testing.T) {
+	path, _ := repack_test_repository(t, 3)
+	if err := git_repack(path); err != nil {
+		t.Fatalf("git_repack: %v", err)
+	}
+
+	build := memory.NewStorage()
+	encoded := build.NewEncodedObject()
+	encoded.SetType(plumbing.BlobObject)
+	writer, _ := encoded.Writer()
+	io.WriteString(writer, "pushed while a repack was ending\n")
+	writer.Close()
+	blob, err := build.SetEncodedObject(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _, err := git_pack_thin(build, []plumbing.Hash{blob}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	name := repack_test_index(t, path, data)
+	repo, err := git.PlainOpen(path)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	if err := git_pack_sweep(repo.Storer); err != nil {
+		t.Fatalf("git_pack_sweep: %v", err)
+	}
+	if err := os.WriteFile(name+".pack", data, 0444); err != nil {
+		t.Fatal(err)
+	}
+	repack_test_readable(t, path, blob)
 }

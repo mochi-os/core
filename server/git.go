@@ -5796,9 +5796,11 @@ func git_repack_consider(repo_path string) {
 	if git_loose_count(repo_path)-remaining < git_repack_minimum && git_pack_count(repo_path) <= git_packs_maximum && !git_unsearched(repo_path) {
 		return
 	}
-	// One repack per repository at a time. Nothing else serialises against it:
-	// a concurrent push writes objects a repack cannot touch, because repack
-	// only packs what the references reach.
+	// One repack per repository at a time. Nothing else serialises against it,
+	// and a concurrent push loses nothing to it: repack replaces only the packs
+	// it listed before writing its own, writes out loose whatever they hold
+	// that the references it walked do not reach, and its sweep leaves the
+	// fresh index of a pack still landing alone.
 	if _, running := git_repack_running.LoadOrStore(repo_path, true); running {
 		return
 	}
@@ -6094,12 +6096,21 @@ func git_pack(storage storage.Storer, reachable map[plumbing.Hash]struct{}, name
 	return git_pack_sweep(storage)
 }
 
+// git_sweep_age is how long a file named after a missing pack is left before
+// the sweep removes it. A push writes its pack's index before the pack itself
+// (git_keep), so for a moment the index is named after a pack that is not
+// there yet; it is seconds old.
+const git_sweep_age = time.Hour
+
 // git_pack_sweep removes whatever is named after a pack that is gone - the
 // bitmap and reverse index git writes beside each pack, and any other file of
 // that name. go-git deletes only a pack and its index, and the packs on the
 // production server were written by git itself, so every repack that replaced
 // one left both behind. Sweeping for any orphan rather than naming the packs
-// just replaced also clears what an earlier repack stranded.
+// just replaced also clears what an earlier repack stranded, and what a push
+// that died between its index and its pack left. A fresh orphan is left for a
+// later sweep: it may be a push's index whose pack is still landing, and
+// without it the repository could not read that pack.
 func git_pack_sweep(storage storage.Storer) error {
 	directory, err := git_filesystem(storage)
 	if err != nil {
@@ -6116,10 +6127,11 @@ func git_pack_sweep(storage storage.Storer) error {
 			present[base] = true
 		}
 	}
+	cutoff := time.Now().Add(-git_sweep_age)
 	for _, entry := range entries {
 		name := entry.Name()
 		base := strings.TrimSuffix(name, filepath.Ext(name))
-		if !strings.HasPrefix(base, "pack-") || present[base] {
+		if !strings.HasPrefix(base, "pack-") || present[base] || entry.ModTime().After(cutoff) {
 			continue
 		}
 		if err := directory.Remove(directory.Join(folder, name)); err != nil && !os.IsNotExist(err) {

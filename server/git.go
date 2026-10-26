@@ -5849,7 +5849,10 @@ var git_repack_dispatch = git_repack
 // submodule entry into a commit this repository does not hold. One walk
 // serves both steps.
 func git_repack(repo_path string) error {
-	repo, err := git.PlainOpen(repo_path)
+	// On a filesystem that flushes what it writes before the repack deletes
+	// what that replaces (git_durable).
+	durable := git_durable{Filesystem: osfs.New(repo_path), root: repo_path}
+	repo, err := git.Open(filesystem.NewStorage(durable, cache.NewObjectLRUDefault()), nil)
 	if err != nil {
 		return err
 	}
@@ -6422,11 +6425,85 @@ func git_keep(staging, repo_path string) error {
 		os.Remove(name + ".idx")
 		return err
 	}
+	// On disk before it can be found, and found before the references move:
+	// after a crash a reference must never name a pack whose bytes were lost.
+	if err := git_flush(name + ".idx"); err != nil {
+		os.Remove(name + ".idx")
+		return err
+	}
+	if err := git_flush(file.Name()); err != nil {
+		os.Remove(name + ".idx")
+		return err
+	}
 	if err := os.Rename(file.Name(), name+".pack"); err != nil {
 		os.Remove(name + ".idx")
 		return err
 	}
+	return git_flush(filepath.Dir(name))
+}
+
+// git_flush writes a file's contents, or a directory's entries, through to
+// disk. A rename or a write is otherwise on disk whenever the kernel gets to
+// it, and after a crash a file renamed into place can be there with its bytes
+// lost. A directory the system will not flush (Windows opens none for it) is
+// skipped: the files are what matter there. Behind a var so a test can see
+// what is flushed, and when.
+var git_flush = func(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := file.Sync(); err != nil {
+		if information, problem := file.Stat(); problem == nil && information.IsDir() {
+			return nil
+		}
+		return err
+	}
 	return nil
+}
+
+// git_durable is a repository's filesystem whose new files and renames reach
+// disk before they can be found. go-git writes a pack to a temporary file and
+// renames it into place, and a repack then deletes the loose objects and the
+// packs it replaces: without this, a crash could keep the deletions and lose
+// the new pack's bytes, and with them the repository's history.
+type git_durable struct {
+	billy.Filesystem
+	root string
+}
+
+// Rename flushes what is renamed, then the folder it lands in.
+func (d git_durable) Rename(from, to string) error {
+	if err := git_flush(filepath.Join(d.root, from)); err != nil {
+		return err
+	}
+	if err := d.Filesystem.Rename(from, to); err != nil {
+		return err
+	}
+	return git_flush(filepath.Dir(filepath.Join(d.root, to)))
+}
+
+// Create answers a file flushed as it closes: a pack's index, written before
+// the pack is renamed beside it.
+func (d git_durable) Create(name string) (billy.File, error) {
+	file, err := d.Filesystem.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return git_durable_file{File: file, path: filepath.Join(d.root, name)}, nil
+}
+
+type git_durable_file struct {
+	billy.File
+	path string
+}
+
+func (f git_durable_file) Close() error {
+	if err := f.File.Close(); err != nil {
+		return err
+	}
+	return git_flush(f.path)
 }
 
 // git_thicken appends bases, whole, to the pack in file, whose deltas need them

@@ -757,3 +757,117 @@ func TestPushWholeIsKept(t *testing.T) {
 		t.Errorf("a whole push left packs %v, want the one it came in", packs)
 	}
 }
+
+// store_flushes records what git_flush is asked to write through, and what the
+// repository held at that moment, for the test's lifetime.
+type store_flush struct {
+	path  string
+	packs int
+	loose int
+}
+
+func store_flushes(t *testing.T, repository string) *[]store_flush {
+	t.Helper()
+	flushed := &[]store_flush{}
+	original := git_flush
+	git_flush = func(path string) error {
+		*flushed = append(*flushed, store_flush{path: path, packs: len(store_packs(t, repository)), loose: git_loose_count(repository)})
+		return original(path)
+	}
+	t.Cleanup(func() { git_flush = original })
+	return flushed
+}
+
+// After a crash, a reference must never name a pack whose bytes were lost: a
+// push's index and pack reach disk before the pack can be found, and the
+// folder after, all before git_store returns and the references move.
+func TestPushIsOnDiskBeforeItIsFound(t *testing.T) {
+	path, _ := repack_test_empty(t)
+	staging, _ := store_cut(t, path, 0, func(data []byte) []byte { return data })
+	flushed := store_flushes(t, path)
+	if err := git_store(staging, path); err != nil {
+		t.Fatalf("git_store: %v", err)
+	}
+	packs := store_packs(t, path)
+	if len(packs) != 1 {
+		t.Fatalf("the push left packs %v, want one", packs)
+	}
+	name := strings.TrimSuffix(packs[0], ".pack")
+
+	var index, pack, folder bool
+	for _, flush := range *flushed {
+		switch {
+		case flush.path == name+".idx":
+			index = flush.packs == 0
+		case flush.path == filepath.Join(staging, git_push_pack):
+			pack = flush.packs == 0
+		case flush.path == filepath.Dir(name):
+			folder = flush.packs == 1
+		}
+	}
+	if !index {
+		t.Error("the index did not reach disk before the pack could be found")
+	}
+	if !pack {
+		t.Error("the pack did not reach disk before it was renamed into place")
+	}
+	if !folder {
+		t.Error("the folder the pack was renamed into was not written through after the rename")
+	}
+}
+
+// A repack deletes the loose objects and the packs its new pack replaces. The
+// new pack, its index and the folder reach disk before anything is deleted:
+// otherwise a crash could keep the deletions and lose the repository.
+func TestRepackIsOnDiskBeforeItDeletes(t *testing.T) {
+	path, _ := repack_test_repository(t, 3)
+	if err := git_repack(path); err != nil {
+		t.Fatalf("first git_repack: %v", err)
+	}
+	repo, err := git.PlainOpen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := repack_test_blob(t, repo, "packed by the second repack\n")
+	if err := repo.Storer.SetReference(plumbing.NewHashReference("refs/tags/new", blob)); err != nil {
+		t.Fatal(err)
+	}
+	loose := git_loose_count(path)
+	if loose == 0 {
+		t.Fatal("setup: nothing loose to pack")
+	}
+
+	flushed := store_flushes(t, path)
+	if err := git_repack(path); err != nil {
+		t.Fatalf("second git_repack: %v", err)
+	}
+	after := store_packs(t, path)
+	if len(after) != 1 || git_loose_count(path) != 0 {
+		t.Fatalf("setup: the repack left packs %v and %d loose objects", after, git_loose_count(path))
+	}
+	name := strings.TrimSuffix(after[0], ".pack")
+
+	var pack, index, folder bool
+	for _, flush := range *flushed {
+		// Before anything is deleted: the loose objects all there, and the
+		// old pack beside the new one once it lands.
+		whole := flush.loose == loose
+		switch {
+		case strings.Contains(filepath.Base(flush.path), "tmp_pack_"):
+			pack = whole && flush.packs == 1
+		case flush.path == name+".idx":
+			index = whole
+		case flush.path == filepath.Dir(name):
+			folder = folder || (whole && flush.packs == 2)
+		}
+	}
+	if !pack {
+		t.Error("the new pack did not reach disk before it was renamed into place")
+	}
+	if !index {
+		t.Error("the new index did not reach disk before the repack deleted what it replaces")
+	}
+	if !folder {
+		t.Error("the folder did not reach disk with the new pack in it before the repack deleted what it replaces")
+	}
+}

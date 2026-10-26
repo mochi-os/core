@@ -423,6 +423,20 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		return true
 	}
 
+	// A JWT is minted for one app. The app-token gate below refuses another
+	// app's token on a private action, but a public action skips that gate and
+	// still runs as whoever the token names, and any app's page can send its
+	// token to any URL here: it read the user's repositories and wikis through
+	// their public info actions, and cloned private repositories through the
+	// public git route. So another app's token is set aside before the git
+	// routes and the owner below read the user, and the request goes on as the
+	// cookie, if any, says.
+	if foreign_token_ignored(jwt_app, has_bearer, api_token, a, aa, c.Request.Method) {
+		debug("foreign app token ignored: token app=%s app=%s action=%s method=%s", jwt_app, a.id, name, c.Request.Method)
+		user = web_auth(c)
+		jwt_purpose, carried = "", false
+	}
+
 	// A token may be bound to one action and entity: routing ignores the method,
 	// so without this an RSS token is equally good on the app's delete action.
 	// Matched on the action pattern (":wiki/rss"); unbound tokens stay app-wide.
@@ -1220,6 +1234,20 @@ func web_serves_file(c *gin.Context, aa *AppAction) bool {
 // and the static files, which need no credential at all.
 func asset_token_ignored(purpose string, aa *AppAction, static bool) bool {
 	return purpose == token_purpose_asset && aa != nil && !aa.Asset && !static
+}
+
+// foreign_token_ignored reports whether a verified JWT names an app other than
+// the one serving a public action, and so must not act as the user there. A
+// read of an asset action keeps it: pages embed other apps' images, a person's
+// avatar above all, and reaching a person this server knows only through the
+// user's own directory takes the user's identity. An asset action serves the
+// bytes it is asked for by id, and lists nothing. Private actions are left to
+// the app-token gate, which refuses the token outright.
+func foreign_token_ignored(app string, bearer bool, token *Token, a *App, aa *AppAction, method string) bool {
+	if !bearer || token != nil || a == nil || aa == nil || app == a.id || !aa.Public {
+		return false
+	}
+	return !aa.Asset || (method != http.MethodGet && method != http.MethodHead)
 }
 
 // opengraph_absolute makes an app's og:image absolute: a crawler fetching from

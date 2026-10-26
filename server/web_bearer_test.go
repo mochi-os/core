@@ -14,8 +14,11 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -196,5 +199,131 @@ func TestBearerGateHoldsAnAssetTokenToReads(t *testing.T) {
 	status, body = web_bearer_method(t, app, session, "Bearer "+asset, "GET")
 	if status != 403 || !strings.Contains(body, "app_token_required") {
 		t.Errorf("asset token on an unmarked action got %d %s; want 403 app_token_required, the token set aside", status, body)
+	}
+}
+
+// web_bearer_caller builds a Starlark app whose actions answer whether they
+// ran as a user, on the bearer fixture's account and session. The app-token
+// gate is skipped for public actions, so what matters there is who the action
+// runs as, which only a real handler can report.
+func web_bearer_caller(t *testing.T) (*App, string) {
+	t.Helper()
+	_, _, session := web_bearer_env(t)
+
+	// Starlark.call needs the runtime state the server sets up at startup: a
+	// concurrency semaphore (a nil channel blocks for ever) and a compute
+	// timeout (zero cancels at once).
+	if starlark_semaphore == nil {
+		starlark_semaphore = make(chan struct{}, 32)
+	}
+	original := starlark_default_timeout
+	starlark_default_timeout = 30 * time.Second
+	t.Cleanup(func() { starlark_default_timeout = original })
+
+	star := filepath.Join(t.TempDir(), "app.star")
+	source := `
+def action_who(a):
+    return {"signed": a.user != None}
+`
+	if err := os.WriteFile(star, []byte(source), 0o600); err != nil {
+		t.Fatalf("writing the test app: %v", err)
+	}
+	av := &AppVersion{Version: "1.0", Execute: []string{star}, Actions: map[string]AppAction{
+		"-/open":    {Function: "action_who", Public: true},
+		"-/picture": {Function: "action_who", Public: true, Asset: true},
+		"-/private": {Function: "action_who"},
+	}}
+	av.Architecture.Engine = "starlark"
+	app := &App{id: "bearertest", internal: av}
+	av.app = app
+	if _, found := av.starlark().globals["action_who"]; !found {
+		t.Fatal("the test app did not load; action_who is not defined")
+	}
+	return app, session
+}
+
+// web_bearer_target runs one request through web_action at a full target, so a
+// query-string token can be carried.
+func web_bearer_target(t *testing.T, app *App, session string, authorization string, method string, target string) (int, string) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(method, "/bearertest/"+target, nil)
+	c.Request.Header.Set("Accept", "application/json")
+	if session != "" {
+		c.Request.AddCookie(&http.Cookie{Name: "session", Value: session})
+	}
+	if authorization != "" {
+		c.Request.Header.Set("Authorization", authorization)
+	}
+	action, _, _ := strings.Cut(target, "?")
+	web_action(c, app, action, nil, routing_class)
+	return w.Code, w.Body.String()
+}
+
+// Any app's page holds its own app token and can send it to any URL on the
+// server, so a token minted for another app must not act as the user on a
+// public action, which the app-token gate does not cover. The requests carry
+// no cookie, as a sandboxed app frame's do.
+func TestBearerGateSetsAsideAnotherAppsToken(t *testing.T) {
+	app, session := web_bearer_caller(t)
+	own := auth_create_app_token("bearer-user", session, app.id)
+	other := auth_create_app_token("bearer-user", session, "otherapp")
+	asset := auth_create_asset_token("bearer-user", session, "otherapp")
+	if own == "" || other == "" || asset == "" {
+		t.Fatal("could not mint the tokens")
+	}
+	signed := `"signed":true`
+	unsigned := `"signed":false`
+
+	// Control: the app's own token runs a public action as the user.
+	status, body := web_bearer_target(t, app, "", "Bearer "+own, "GET", "-/open")
+	if status != 200 || !strings.Contains(body, signed) {
+		t.Fatalf("own token on a public action got %d %s; want it to run as the user", status, body)
+	}
+
+	// Another app's token, in the header or the query string, is set aside.
+	status, body = web_bearer_target(t, app, "", "Bearer "+other, "GET", "-/open")
+	if status != 200 || !strings.Contains(body, unsigned) {
+		t.Errorf("another app's token on a public action got %d %s; want it to run anonymously", status, body)
+	}
+	status, body = web_bearer_target(t, app, "", "", "GET", "-/open?token="+other)
+	if status != 200 || !strings.Contains(body, unsigned) {
+		t.Errorf("another app's token in the query string got %d %s; want it to run anonymously", status, body)
+	}
+
+	// Set aside, the request goes on as the cookie says: the shell page, which
+	// has the cookie, keeps its user.
+	status, body = web_bearer_target(t, app, session, "Bearer "+other, "GET", "-/open")
+	if status != 200 || !strings.Contains(body, signed) {
+		t.Errorf("another app's token with the session cookie got %d %s; want the cookie's user", status, body)
+	}
+
+	// A read of an asset action keeps it, so an image another app embeds still
+	// loads as the user; a write there does not.
+	for _, token := range []string{other, asset} {
+		status, body = web_bearer_target(t, app, "", "Bearer "+token, "GET", "-/picture")
+		if status != 200 || !strings.Contains(body, signed) {
+			t.Errorf("another app's token reading an asset action got %d %s; want it to run as the user", status, body)
+		}
+	}
+	status, body = web_bearer_target(t, app, "", "Bearer "+other, "POST", "-/picture")
+	if status != 200 || !strings.Contains(body, unsigned) {
+		t.Errorf("another app's token writing to an asset action got %d %s; want it to run anonymously", status, body)
+	}
+
+	// Set aside means wholly: another app's asset token writing to an asset
+	// action is anonymous, not refused as the read-only credential it no longer
+	// is.
+	status, body = web_bearer_target(t, app, "", "Bearer "+asset, "POST", "-/picture")
+	if status != 200 || !strings.Contains(body, unsigned) {
+		t.Errorf("another app's asset token writing to an asset action got %d %s; want it to run anonymously", status, body)
+	}
+
+	// A private action still refuses it outright.
+	status, body = web_bearer_target(t, app, "", "Bearer "+other, "GET", "-/private")
+	if status != 403 || !strings.Contains(body, "app_token_mismatch") {
+		t.Errorf("another app's token on a private action got %d %s; want 403 app_token_mismatch", status, body)
 	}
 }

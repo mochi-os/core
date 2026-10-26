@@ -3510,6 +3510,12 @@ func git_http_handler(c *gin.Context, a *App, owner *User, user *User, e *Entity
 		c.String(http.StatusNotFound, "Repository not found") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
+	// Mid-restore the owner's files are renamed underneath anything holding
+	// them, the repositories and the app database the access rules live in.
+	if user_pending(owner) {
+		c.String(http.StatusServiceUnavailable, "Account is being restored") // i18n-ok: git protocol, read by the client not a person
+		return true
+	}
 
 	// Build repository path from the pre-resolved entity
 	repo_path := git_repo_path(owner, a, e.ID)

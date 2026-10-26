@@ -627,11 +627,16 @@ func (a *Action) sl_logout(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "%v", err)
 	}
 
+	// The cookie is the browser's, and a token in the URL binds its user
+	// before the cookie is read: a live session of another account is not this
+	// caller's to end. One naming no live session is cleared as before.
 	session := web_cookie_get(a.web, "session", "")
-	if session != "" {
-		login_delete(session)
+	if holder := session_user(session); holder == "" || (a.user != nil && holder == a.user.UID) {
+		if session != "" {
+			login_delete(session)
+		}
+		web_cookie_unset(a.web, "session")
 	}
-	web_cookie_unset(a.web, "session")
 
 	// Audit log logout
 	if a.user != nil {

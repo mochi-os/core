@@ -305,6 +305,13 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	// cookie already identified the user. has_bearer means a token verified, never
 	// that a header was sent: the prefix alone made "Bearer x" satisfy the app
 	// gate.
+	//
+	// The header's token decides the app and purpose the gates below judge, so
+	// it must name the user the request runs as. One naming another user than
+	// the URL token or the cookie already bound is set aside: otherwise a
+	// victim's asset token from a copied image link, sent beside the caller's
+	// own token for any app, ran that app's private actions as the victim, and
+	// with the read-only rule judged on the caller's token.
 	auth_header := c.GetHeader("Authorization")
 	if strings.HasPrefix(auth_header, "Bearer ") {
 		bearer := strings.TrimPrefix(auth_header, "Bearer ")
@@ -312,6 +319,10 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			// API token authentication
 			if api_token == nil {
 				api_token = token_validate(bearer)
+				if api_token != nil && user != nil && api_token.User != user.UID {
+					debug("API token for another user ignored: token user=%q bound user=%q", api_token.User, user.UID)
+					api_token = nil
+				}
 				if api_token != nil {
 					has_bearer = true
 					if user == nil {
@@ -326,7 +337,10 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			}
 		} else {
 			// JWT authentication — extract app claim for authorization
-			if claims, err := jwt_verify_claims(bearer); err == nil && claims.User != "" {
+			claims, err := jwt_verify_claims(bearer)
+			if err == nil && claims.User != "" && user != nil && claims.User != user.UID {
+				debug("API JWT for another user ignored: token user=%q bound user=%q", claims.User, user.UID)
+			} else if err == nil && claims.User != "" {
 				uid := claims.User
 				jwt_app = claims.App
 				jwt_purpose = claims.Purpose
@@ -356,6 +370,94 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	// API tokens are restricted to their app
 	if api_token != nil && api_token.App != a.id {
 		respond_error(c, http.StatusForbidden, "token_not_valid_for_this_app", "errors.app_token_invalid", nil)
+		return true
+	}
+
+	// Built-in catalog endpoint: /<app>/-/labels and /<app>/-/labels/<tag>.
+	// Public — used by tooling (Translate Mochi app, dev introspection).
+	// The web SPA bundles its own Lingui catalogs and does not call this.
+	if name == "-/labels" || strings.HasPrefix(name, "-/labels/") {
+		return web_serve_labels(c, av, strings.TrimPrefix(name, "-/labels"))
+	}
+
+	accept := c.GetHeader("Accept")
+	prefer_html := strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
+	aa := web_action_find(av, name, e, prefer_html)
+	if aa == nil {
+		return false
+	}
+
+	bound := user
+
+	// A JWT is minted for one app. The app-token gate below refuses another
+	// app's token on a private action, but a public action skips that gate and
+	// still runs as whoever the token names, and any app's page can send its
+	// token to any URL here: it read the user's repositories and wikis through
+	// their public info actions, and cloned private repositories through the
+	// public git route. So another app's token is set aside before the git
+	// routes and the owner below read the user, and the request goes on as the
+	// cookie, if any, says.
+	if foreign_token_ignored(jwt_app, has_bearer, api_token, a, aa, c.Request.Method) {
+		debug("foreign app token ignored: token app=%s app=%s action=%s method=%s", jwt_app, a.id, name, c.Request.Method)
+		user = web_auth(c)
+		jwt_purpose, carried = "", false
+	}
+
+	// Git clients send /info/refs, /git-upload-pack and /git-receive-pack
+	// directly under a repository's own domain, and they are answered below
+	// without the action routing chose for the path, the repository's page.
+	// That page is a static file, which an asset token may load; git is not.
+	git_route := e != nil && e.Class == "repository" && (name == "info/refs" || name == "git-upload-pack" || name == "git-receive-pack")
+
+	// Static assets from sandboxed iframes carry no cookies (opaque origin) and
+	// are public, so they skip auth. True only when a file will actually be
+	// served, not merely declared, and not narrowed to iframes - deep links carry
+	// no Bearer.
+	shell_static := !git_route && web_static(c, aa)
+
+	// An asset token is what a page puts in an image or attachment URL, so a
+	// copied link hands it over. It authenticates only the actions declared to
+	// serve such bytes; anywhere else it is set aside here, before the gates
+	// below, and the request goes on as the cookie, if any, says: an action
+	// that needs a credential refuses it as it would any anonymous call, and a
+	// public one answers anonymously rather than as the user the token names.
+	// Actions declare no method, so without this a GET with the token in its
+	// query ran any of them.
+	if asset_token_ignored(jwt_purpose, aa, shell_static) {
+		debug("asset token ignored: app=%s action=%s method=%s", a.id, name, c.Request.Method)
+		user = web_auth(c)
+		jwt_app, jwt_purpose, has_bearer = "", "", false
+		// An API token sent beside it named the token's user, not the cookie's.
+		if api_token != nil && (user == nil || api_token.User != user.UID) {
+			api_token = nil
+		}
+	}
+
+	// A set-aside goes on as the cookie says, so the version chosen and the
+	// action found above may have been the token user's. Choose them again for
+	// whoever the request now runs as, before the account gates, the owner and
+	// the git routes below read the user.
+	if !same_user(user, bound) {
+		av = a.active(user)
+		if av == nil {
+			return false
+		}
+		if dev_reload {
+			av.reload()
+		}
+		aa = web_action_find(av, name, e, prefer_html)
+		if aa == nil {
+			return false
+		}
+		shell_static = !git_route && web_static(c, aa)
+	}
+
+	// web_security_headers lets an OPTIONS probe through so a DAV route can
+	// answer it with its capabilities; every other action gets the preflight
+	// answer it always got. Judged on the action found for whoever the request
+	// runs as.
+	if c.Request.Method == http.MethodOptions && !dav_served(aa.Feature) {
+		web_options_preflight(c)
 		return true
 	}
 
@@ -401,42 +503,6 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		return true
 	}
 
-	// Built-in catalog endpoint: /<app>/-/labels and /<app>/-/labels/<tag>.
-	// Public — used by tooling (Translate Mochi app, dev introspection).
-	// The web SPA bundles its own Lingui catalogs and does not call this.
-	if name == "-/labels" || strings.HasPrefix(name, "-/labels/") {
-		return web_serve_labels(c, av, strings.TrimPrefix(name, "-/labels"))
-	}
-
-	accept := c.GetHeader("Accept")
-	prefer_html := strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
-	aa := web_action_find(av, name, e, prefer_html)
-	if aa == nil {
-		return false
-	}
-
-	// web_security_headers lets an OPTIONS probe through so a DAV route can
-	// answer it with its capabilities; every other action gets the preflight
-	// answer it always got.
-	if c.Request.Method == http.MethodOptions && !dav_served(aa.Feature) {
-		web_options_preflight(c)
-		return true
-	}
-
-	// A JWT is minted for one app. The app-token gate below refuses another
-	// app's token on a private action, but a public action skips that gate and
-	// still runs as whoever the token names, and any app's page can send its
-	// token to any URL here: it read the user's repositories and wikis through
-	// their public info actions, and cloned private repositories through the
-	// public git route. So another app's token is set aside before the git
-	// routes and the owner below read the user, and the request goes on as the
-	// cookie, if any, says.
-	if foreign_token_ignored(jwt_app, has_bearer, api_token, a, aa, c.Request.Method) {
-		debug("foreign app token ignored: token app=%s app=%s action=%s method=%s", jwt_app, a.id, name, c.Request.Method)
-		user = web_auth(c)
-		jwt_purpose, carried = "", false
-	}
-
 	// A token may be bound to one action and entity: routing ignores the method,
 	// so without this an RSS token is equally good on the app's delete action.
 	// Matched on the action pattern (":wiki/rss"); unbound tokens stay app-wide.
@@ -473,32 +539,22 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	}
 
 	// Handle git Smart HTTP protocol for domain-routed repository entities.
-	// Git clients send requests to /info/refs, /git-upload-pack, /git-receive-pack
-	// directly under the entity URL, bypassing standard app action routing.
-	if e != nil && e.Class == "repository" {
-		if name == "info/refs" || name == "git-upload-pack" || name == "git-receive-pack" {
-			return git_http_handler(c, a, owner, user, e, name)
-		}
+	if git_route {
+		return git_http_handler(c, a, owner, user, e, name)
 	}
 
-	// Static assets from sandboxed iframes carry no cookies (opaque origin) and
-	// are public, so they skip auth. True only when a file will actually be
-	// served, not merely declared, and not narrowed to iframes - deep links carry
-	// no Bearer.
-	shell_static := web_serves_file(c, aa) || (aa.Files != "" && aa.filepath != "")
-
-	// An asset token is what a page puts in an image or attachment URL, so a
-	// copied link hands it over. It authenticates only the actions declared to
-	// serve such bytes; anywhere else it is set aside here, before the gates
-	// below, and the request goes on as the cookie, if any, says: an action
-	// that needs a credential refuses it as it would any anonymous call, and a
-	// public one answers anonymously rather than as the user the token names.
-	// Actions declare no method, so without this a GET with the token in its
-	// query ran any of them.
-	if asset_token_ignored(jwt_purpose, aa, shell_static) {
-		debug("asset token ignored: app=%s action=%s method=%s", a.id, name, c.Request.Method)
-		user = web_auth(c)
-		jwt_app, jwt_purpose, has_bearer = "", "", false
+	// Mid-restore an account's files are renamed underneath anything holding
+	// them. Its own requests are refused above, but another caller's requests
+	// reach them as surely: an anonymous request to a public action runs with
+	// the owner's storage. git_http_handler refuses the git routes itself. A
+	// visitor's browser gets the message as text, not raw JSON.
+	if user_pending(owner) && !app_is_login(a) {
+		if prefer_html {
+			respond_text(c, http.StatusServiceUnavailable, "errors.account_restoring", nil)
+		} else {
+			respond_error(c, http.StatusServiceUnavailable, "restore_in_progress", "errors.account_restoring", nil)
+		}
+		return true
 	}
 
 	// Require authentication for non-public actions
@@ -824,7 +880,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		// callers - an app token has no cookie but names its session in the `kid`
 		// it was signed under, and its holder is as entitled to a step-up as a
 		// browser is.
-		s.set("session", web_session(c))
+		s.set("session", web_session_held(c, user))
 		s.set("language", request_language(c, user))
 		if e != nil {
 			s.set("route_entity", e.ID)
@@ -1213,6 +1269,12 @@ func web_anonymous_owner(routed string) *User {
 	return user_by_uid(routed)
 }
 
+// web_static reports whether a request is answered with a file the action
+// declares, by itself or from a directory, which needs no credential.
+func web_static(c *gin.Context, aa *AppAction) bool {
+	return web_serves_file(c, aa) || (aa.Files != "" && aa.filepath != "")
+}
+
 // web_serves_file reports whether an action declaring a file will answer this
 // request with the file rather than with its function. Both the shell_static
 // bypass and the branch that writes the file ask it, so they cannot disagree.
@@ -1227,6 +1289,15 @@ func web_serves_file(c *gin.Context, aa *AppAction) bool {
 	}
 	accept := c.GetHeader("Accept")
 	return strings.Contains(accept, "text/html") && !strings.Contains(accept, "application/json")
+}
+
+// same_user reports whether two users are the same account, nil being nobody.
+// web_auth answers a fresh value each call, so the pointers cannot say.
+func same_user(a *User, b *User) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.UID == b.UID
 }
 
 // asset_token_ignored reports whether a credential minted for URL-borne use is
@@ -2466,4 +2537,36 @@ func web_session(c *gin.Context) string {
 		return ""
 	}
 	return jwt_session(token)
+}
+
+// web_session_held is web_session for the account a request runs as. A URL
+// token binds its user before the cookie is read, and web_action sets aside a
+// header token naming another user, so either may be someone else's session;
+// marking it current or binding a step-up to it would credit this caller with
+// a session that is not theirs.
+func web_session_held(c *gin.Context, user *User) string {
+	if user == nil {
+		return ""
+	}
+	if session := web_cookie_get(c, "session", ""); session != "" && session_user(session) == user.UID {
+		return session
+	}
+	header := c.GetHeader("Authorization")
+	if !strings.HasPrefix(header, "Bearer ") {
+		return ""
+	}
+	token := strings.TrimPrefix(header, "Bearer ")
+	if claims, err := jwt_verify_claims(token); err != nil || claims.User != user.UID {
+		return ""
+	}
+	return jwt_session(token)
+}
+
+// session_user answers the account a live login session belongs to, or empty.
+func session_user(code string) string {
+	var s Session
+	if code == "" || !db_open("db/sessions.db").scan(&s, "select * from sessions where code=? and expires>=?", code, now()) {
+		return ""
+	}
+	return s.User
 }

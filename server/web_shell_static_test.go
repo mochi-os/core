@@ -69,9 +69,12 @@ func TestServesFileMatchesTheServingBranch(t *testing.T) {
 	text := string(source)
 
 	if n := strings.Count(text, "web_serves_file(c, aa)"); n != 2 {
-		t.Errorf("web_serves_file is called %d times in web.go, want exactly 2 - the shell_static bypass and the serving branch", n)
+		t.Errorf("web_serves_file is called %d times in web.go, want exactly 2 - web_static, which the shell_static bypass asks, and the serving branch", n)
 	}
-	if strings.Count(text, "shell_static := web_serves_file(c, aa)") != 1 {
-		t.Error("shell_static no longer derives from web_serves_file; the bypass and the serving branch can now disagree")
+	if strings.Count(text, "return web_serves_file(c, aa) ||") != 1 {
+		t.Error("web_static no longer derives from web_serves_file; the bypass and the serving branch can now disagree")
+	}
+	if n := strings.Count(text, "shell_static := !git_route && web_static(c, aa)") + strings.Count(text, "shell_static = !git_route && web_static(c, aa)"); n != 2 {
+		t.Errorf("shell_static is set from web_static %d times, want 2 - as the action is first found and again after a set-aside", n)
 	}
 }

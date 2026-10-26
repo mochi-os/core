@@ -12,22 +12,29 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	stack "runtime/debug"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/format/idxfile"
+	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage"
 	"github.com/go-git/go-git/v5/storage/filesystem"
+	"github.com/go-git/go-git/v5/storage/memory"
 )
 
 // repack_test_repository builds a bare repository holding `commits` commits,
@@ -838,4 +845,153 @@ func TestRepackConsiderRunsOneAtATime(t *testing.T) {
 		t.Error("no repack ran at all, so the guard was not measured")
 	}
 	git_repack_attempted.Delete(path)
+}
+
+// repack_test_install puts a pack and its index into the repository, as
+// git_keep does with a push.
+func repack_test_install(t *testing.T, path string, data []byte) {
+	t.Helper()
+	writer := new(idxfile.Writer)
+	parser, err := packfile.NewParser(packfile.NewScanner(bytes.NewReader(data)), writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checksum, err := parser.Parse()
+	if err != nil {
+		t.Fatalf("parsing the pack: %v", err)
+	}
+	index, err := writer.Index()
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Join(path, "objects", "pack", "pack-"+checksum.String())
+	if err := os.MkdirAll(filepath.Dir(name), 0755); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := os.Create(name + ".idx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idxfile.NewEncoder(encoded).Encode(index); err != nil {
+		t.Fatal(err)
+	}
+	encoded.Close()
+	if err := os.WriteFile(name+".pack", data, 0444); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// repack_test_unpack parses a pack and answers the objects it holds.
+func repack_test_unpack(t *testing.T, data []byte) *memory.Storage {
+	t.Helper()
+	read := memory.NewStorage()
+	parser, err := packfile.NewParserWithStorage(packfile.NewScanner(bytes.NewReader(data)), read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parser.Parse(); err != nil {
+		t.Fatalf("the pack does not parse: %v", err)
+	}
+	return read
+}
+
+// An object held in two packs is read from whichever go-git finds first, and
+// that choice varies from one read to the next. With A stored as a delta of B
+// in one pack and B as a delta of A in the other, a clone or a repack could
+// follow the two for ever: the stack overflowed, which no recover catches,
+// and the server died. A branch deleted and pushed again stores them so.
+func TestPackBreaksADeltaCycleAcrossPacks(t *testing.T) {
+	// A cycle followed for ever dies at this limit rather than after a
+	// gigabyte of stack.
+	defer stack.SetMaxStack(stack.SetMaxStack(64 << 20))
+
+	path, _ := repack_test_empty(t)
+	build := memory.NewStorage()
+	text := strings.Repeat("a line of a file that changes a little between versions\n", 300)
+	blob := func(contents string) plumbing.Hash {
+		encoded := build.NewEncodedObject()
+		encoded.SetType(plumbing.BlobObject)
+		writer, _ := encoded.Writer()
+		io.WriteString(writer, contents)
+		writer.Close()
+		hash, err := build.SetEncodedObject(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hash
+	}
+	store := func(value interface {
+		Encode(plumbing.EncodedObject) error
+	}) plumbing.Hash {
+		encoded := build.NewEncodedObject()
+		if err := value.Encode(encoded); err != nil {
+			t.Fatal(err)
+		}
+		hash, err := build.SetEncodedObject(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hash
+	}
+	a := blob(text + "the first ending\n")
+	b := blob(text + "the second ending\n")
+	tree := store(&object.Tree{Entries: []object.TreeEntry{
+		{Name: "a.txt", Mode: filemode.Regular, Hash: a},
+		{Name: "b.txt", Mode: filemode.Regular, Hash: b},
+	}})
+	signature := object.Signature{Name: "Test", Email: "test@example.com", When: time.Now()}
+	commit := store(&object.Commit{Author: signature, Committer: signature, Message: "commit\n", TreeHash: tree})
+
+	first, deltas, err := git_pack_thin(build, []plumbing.Hash{commit, tree, b, a}, map[plumbing.Hash]plumbing.Hash{a: b})
+	if err != nil || deltas != 1 {
+		t.Fatalf("the first pack: %d deltas, %v", deltas, err)
+	}
+	second, deltas, err := git_pack_thin(build, []plumbing.Hash{a, b}, map[plumbing.Hash]plumbing.Hash{b: a})
+	if err != nil || deltas != 1 {
+		t.Fatalf("the second pack: %d deltas, %v", deltas, err)
+	}
+	repack_test_install(t, path, first)
+	repack_test_install(t, path, second)
+	repo, err := git.PlainOpen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Storer.SetReference(plumbing.NewHashReference("refs/heads/main", commit)); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[plumbing.Hash]int64{}
+	for _, hash := range []plumbing.Hash{commit, tree, a, b} {
+		object, _ := build.EncodedObject(plumbing.AnyObject, hash)
+		want[hash] = object.Size()
+	}
+	check := func(label string, read storer_reader) {
+		for hash, size := range want {
+			object, err := read.EncodedObject(plumbing.AnyObject, hash)
+			if err != nil || object.Size() != size {
+				t.Errorf("%s: object %s is missing or wrong (%v)", label, hash, err)
+			}
+		}
+	}
+
+	// Each read picks a pack afresh, so a clone meets the cycle one time in
+	// four; forty make missing it unlikely past one in ten thousand.
+	for i := 0; i < 40; i++ {
+		storage := filesystem.NewStorage(osfs.New(path), cache.NewObjectLRUDefault())
+		data, err := git_pack_plain(storage, []plumbing.Hash{commit, tree, a, b})
+		if err != nil {
+			t.Fatalf("clone %d: %v", i, err)
+		}
+		check(fmt.Sprintf("clone %d", i), repack_test_unpack(t, data))
+	}
+
+	if err := git_repack(path); err != nil {
+		t.Fatalf("repack: %v", err)
+	}
+	repack_test_readable(t, path, commit, tree, a, b)
+}
+
+// storer_reader is what the checks above read objects through.
+type storer_reader interface {
+	EncodedObject(plumbing.ObjectType, plumbing.Hash) (plumbing.EncodedObject, error)
 }

@@ -3,8 +3,8 @@
 // LICENSE beside this file.
 //
 // Changed for Mochi: objects sort by type, path name hash and size, as git
-// sorts them, and an object stored whole is searched for a delta base only
-// when Search says so.
+// sorts them, an object stored whole is searched for a delta base only when
+// Search says so, and a cycle of reused deltas is broken.
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -153,8 +153,11 @@ func (dw *deltaSelector) fixAndBreakChains(objectsToPack []*ObjectToPack) error 
 		m[otp.Hash()] = otp
 	}
 
+	// Changed for Mochi: the objects whose base chain is being followed. See
+	// fixAndBreakChainsOne.
+	walking := make(map[*ObjectToPack]bool)
 	for _, otp := range objectsToPack {
-		if err := dw.fixAndBreakChainsOne(m, otp); err != nil {
+		if err := dw.fixAndBreakChainsOne(m, walking, otp); err != nil {
 			return err
 		}
 	}
@@ -162,7 +165,7 @@ func (dw *deltaSelector) fixAndBreakChains(objectsToPack []*ObjectToPack) error 
 	return nil
 }
 
-func (dw *deltaSelector) fixAndBreakChainsOne(objectsToPack map[plumbing.Hash]*ObjectToPack, otp *ObjectToPack) error {
+func (dw *deltaSelector) fixAndBreakChainsOne(objectsToPack map[plumbing.Hash]*ObjectToPack, walking map[*ObjectToPack]bool, otp *ObjectToPack) error {
 	if !otp.Object.Type().IsDelta() {
 		return nil
 	}
@@ -188,7 +191,19 @@ func (dw *deltaSelector) fixAndBreakChainsOne(objectsToPack map[plumbing.Hash]*O
 		return dw.undeltify(otp)
 	}
 
-	if err := dw.fixAndBreakChainsOne(objectsToPack, base); err != nil {
+	// Changed for Mochi: an object held in more than one pack is read from
+	// whichever the store finds first, so one pack can give A as a delta of B
+	// and another B as a delta of A. Following that chain never ends: the
+	// stack overflows, which kills the process. A base already being followed
+	// closes such a cycle, so this object is stored whole instead, as git's
+	// pack-objects breaks the same cycles.
+	walking[otp] = true
+	defer delete(walking, otp)
+	if walking[base] {
+		return dw.undeltify(otp)
+	}
+
+	if err := dw.fixAndBreakChainsOne(objectsToPack, walking, base); err != nil {
 		return err
 	}
 

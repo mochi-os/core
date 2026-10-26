@@ -646,3 +646,114 @@ func TestCloneSendsTheStoredPack(t *testing.T) {
 	git_run(t, clone, "cat-file", "-e", written.String())
 	git_run(t, clone, "fsck")
 }
+
+// store_cut stages a push - its objects as receive-pack writes them, and its
+// pack as it came - with the pack's bytes made by shape, and answers the
+// staging directory and the objects. The pack is whole: blob, tree, commit,
+// the blob's text naming the push so that two pushes hold different objects.
+func store_cut(t *testing.T, path string, number int, shape func([]byte) []byte) (string, []plumbing.Hash) {
+	t.Helper()
+	staging, err := git_quarantine(path)
+	if err != nil {
+		t.Fatalf("git_quarantine: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(staging) })
+	staged := filesystem.NewStorage(osfs.New(staging), cache.NewObjectLRUDefault())
+	store := func(value interface {
+		Encode(plumbing.EncodedObject) error
+	}) plumbing.Hash {
+		encoded := staged.NewEncodedObject()
+		if err := value.Encode(encoded); err != nil {
+			t.Fatal(err)
+		}
+		hash, err := staged.SetEncodedObject(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hash
+	}
+	blob := staged.NewEncodedObject()
+	blob.SetType(plumbing.BlobObject)
+	writer, _ := blob.Writer()
+	fmt.Fprintf(writer, "push %d, whole, then cut\n", number)
+	writer.Close()
+	hash, err := staged.SetEncodedObject(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := store(&object.Tree{Entries: []object.TreeEntry{{Name: "a.txt", Mode: 0100644, Hash: hash}}})
+	signature := object.Signature{Name: "Test", Email: "test@example.com", When: time.Now()}
+	commit := store(&object.Commit{Author: signature, Committer: signature, Message: "commit\n", TreeHash: tree})
+	objects := []plumbing.Hash{commit, tree, hash}
+
+	data, _, err := git_pack_thin(staged, objects, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, git_push_pack), shape(data), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return staging, objects
+}
+
+// A pack ends with a checksum of everything before it. go-git's parser takes
+// a pack cut off exactly there for a whole one, and nothing checked past it:
+// the pack was kept under an all-zero name and sent to cloners as it was,
+// failing them, and a second pack cut the same way found the name taken and
+// was discarded with its objects. Such a pack is not kept; its objects are
+// stored one by one, and a clone has them all.
+func TestPushCutAtItsChecksumIsNotKept(t *testing.T) {
+	cases := []struct {
+		name  string
+		shape func([]byte) []byte
+	}{
+		{"cut at its checksum", func(data []byte) []byte { return data[:len(data)-20] }},
+		{"with bytes after its checksum", func(data []byte) []byte { return append(append([]byte{}, data...), "trailing"...) }},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			path, repo := repack_test_empty(t)
+			// Two such pushes: the second used to find the first's all-zero
+			// name taken, and was discarded.
+			var all []plumbing.Hash
+			for i := 0; i < 2; i++ {
+				staging, objects := store_cut(t, path, i, tt.shape)
+				if err := git_store(staging, path); err != nil {
+					t.Fatalf("git_store: %v", err)
+				}
+				all = append(all, objects...)
+			}
+
+			if packs := store_packs(t, path); len(packs) != 0 {
+				t.Errorf("the pushes left packs %v; a pack not whole must not be kept", packs)
+			}
+			for _, hash := range all {
+				if _, err := repo.Storer.EncodedObject(plumbing.AnyObject, hash); err != nil {
+					t.Errorf("object %s was not stored: %v", hash, err)
+				}
+			}
+			data, err := git_pack_plain(repo.Storer, all)
+			if err != nil {
+				t.Fatalf("clone: %v", err)
+			}
+			read := repack_test_unpack(t, data)
+			for _, hash := range all {
+				if _, err := read.EncodedObject(plumbing.AnyObject, hash); err != nil {
+					t.Errorf("the clone lacks %s: %v", hash, err)
+				}
+			}
+		})
+	}
+}
+
+// Control: a whole pack is kept as it came.
+func TestPushWholeIsKept(t *testing.T) {
+	path, _ := repack_test_empty(t)
+	staging, _ := store_cut(t, path, 0, func(data []byte) []byte { return data })
+	if err := git_store(staging, path); err != nil {
+		t.Fatalf("git_store: %v", err)
+	}
+	if packs := store_packs(t, path); len(packs) != 1 {
+		t.Errorf("a whole push left packs %v, want the one it came in", packs)
+	}
+}

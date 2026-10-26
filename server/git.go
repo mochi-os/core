@@ -6351,6 +6351,28 @@ func git_keep(staging, repo_path string) error {
 			return err
 		}
 	}
+	// A pack ends with a checksum of everything before it, and nothing
+	// after. go-git's parser takes a pack cut off exactly at the checksum for
+	// a whole one, with a checksum of zeros, and checks nothing past it: such
+	// a pack was kept under an all-zero name and streamed to cloners, whom it
+	// fails, and the next pack cut the same way found that name taken and was
+	// discarded with its objects. Kept whole or not at all: git_store then
+	// stores the objects one by one, each checked against its own hash as it
+	// arrived.
+	if _, err := scanner.Checksum(); err != nil {
+		return fmt.Errorf("the pack's checksum is missing or wrong: %w", err)
+	}
+	end, err := scanner.SeekFromStart(0)
+	if err != nil {
+		return err
+	}
+	information, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if end != information.Size() {
+		return fmt.Errorf("%d bytes follow the pack's checksum", information.Size()-end)
+	}
 	if len(bases) > 0 {
 		if err := git_thicken(file, repository, count, bases); err != nil {
 			return err

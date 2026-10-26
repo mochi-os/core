@@ -226,7 +226,7 @@ func atproto_apex_taken(user *User, domain string) bool {
 
 // atproto_reaches checks that a handle's host reaches this server before
 // Bluesky is switched on for it: the host resolves to an address the
-// account's domain resolves to, which catches a missing wildcard record and
+// account's domain is reached at, which catches a missing wildcard record and
 // a clashing one.
 func atproto_reaches(ctx context.Context, host string, domain string) error {
 	if host == domain {
@@ -242,6 +242,7 @@ func atproto_reaches(ctx context.Context, host string, domain string) error {
 	if err != nil || len(own) == 0 {
 		return fmt.Errorf("%s does not resolve", domain)
 	}
+	own = domain_addresses(own)
 	for _, a := range addresses {
 		for _, b := range own {
 			if a == b {

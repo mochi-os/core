@@ -966,6 +966,38 @@ func TestAtprotoReaches(t *testing.T) {
 	}
 }
 
+// TestAtprotoReachesHostsFile: a server whose hosts file names its own domain
+// as 127.0.1.1, as Debian and Ubuntu write it, is reached at the addresses on
+// its interfaces, and a host leading to loopback reaches nobody outside.
+func TestAtprotoReachesHostsFile(t *testing.T) {
+	saved, saved_interfaces := atproto_lookup, domain_interfaces
+	defer func() { atproto_lookup, domain_interfaces = saved, saved_interfaces }()
+	atproto_lookup = func(ctx context.Context, host string) ([]string, error) {
+		switch host {
+		case "self.test":
+			return []string{"127.0.1.1"}, nil
+		case "dave.self.test":
+			return []string{"2001:db8::9", "203.0.113.9"}, nil
+		case "erin.self.test":
+			return []string{"198.51.100.1"}, nil
+		case "loop.self.test":
+			return []string{"127.0.1.1"}, nil
+		}
+		return nil, fmt.Errorf("no such host")
+	}
+	domain_interfaces = func() []string { return []string{"203.0.113.9", "2001:db8::9"} }
+	ctx := context.Background()
+	if err := atproto_reaches(ctx, "dave.self.test", "self.test"); err != nil {
+		t.Errorf("THE POINT: a host leading to this machine was refused: %v", err)
+	}
+	if err := atproto_reaches(ctx, "erin.self.test", "self.test"); err == nil {
+		t.Error("a host elsewhere was accepted")
+	}
+	if err := atproto_reaches(ctx, "loop.self.test", "self.test"); err == nil {
+		t.Error("THE POINT: a host leading to loopback was accepted")
+	}
+}
+
 // TestAtprotoStreamSequence: a sequence number is never given twice - after
 // the replay window has emptied the stream the next event carries on from
 // the last, and a stream table from before its sequence was AUTOINCREMENT is

@@ -244,7 +244,8 @@ func TestXMPPRoomsReached(t *testing.T) {
 	create_xmpp_server_env(t)
 	actor_register(user_by_uid("u-bob"), "x3", "xmpp", "other.test", "bob")
 	actor_register(user_by_uid("u-bob"), "x4", "xmpp", "third.test", "bob")
-	saved_host, saved_srv := xmpp_lookup_host, xmpp_lookup_srv
+	actor_register(user_by_uid("u-bob"), "x5", "xmpp", "fourth.test", "bob")
+	saved_host, saved_srv, saved_interfaces := xmpp_lookup_host, xmpp_lookup_srv, domain_interfaces
 	xmpp_lookup_host = func(ctx context.Context, host string) ([]string, error) {
 		switch host {
 		case "example.com", "rooms.example.com", "server.third.test":
@@ -253,9 +254,16 @@ func TestXMPPRoomsReached(t *testing.T) {
 			return []string{"192.0.2.1"}, nil
 		case "rooms.other.test":
 			return []string{"198.51.100.7"}, nil
+		case "fourth.test":
+			// The hosts file names the machine itself, as Debian and Ubuntu
+			// write it.
+			return []string{"127.0.1.1"}, nil
+		case "rooms.fourth.test":
+			return []string{"192.0.2.9"}, nil
 		}
 		return nil, fmt.Errorf("no such host")
 	}
+	domain_interfaces = func() []string { return []string{"192.0.2.9"} }
 	xmpp_lookup_srv = func(ctx context.Context, service string, proto string, name string) (string, []*net.SRV, error) {
 		if name == "rooms.third.test" {
 			return "", []*net.SRV{{Target: "server.third.test.", Port: 5269}}, nil
@@ -263,7 +271,7 @@ func TestXMPPRoomsReached(t *testing.T) {
 		return "", nil, fmt.Errorf("no records")
 	}
 	t.Cleanup(func() {
-		xmpp_lookup_host, xmpp_lookup_srv = saved_host, saved_srv
+		xmpp_lookup_host, xmpp_lookup_srv, domain_interfaces = saved_host, saved_srv, saved_interfaces
 		xmpp_reached = map[string]xmpp_reach{}
 	})
 	states := map[string]string{}
@@ -274,6 +282,9 @@ func TestXMPPRoomsReached(t *testing.T) {
 	if states["rooms.example.com"] != "working " || states["rooms.third.test"] != "working " {
 		t.Errorf("THE POINT: room services that lead here: %v", states)
 	}
+	if states["rooms.fourth.test"] != "working " {
+		t.Errorf("THE POINT: a room service leading to this machine, whose hosts file names its domain: %v", states)
+	}
 	if states["rooms.other.test"] != "unavailable dns" {
 		t.Errorf("THE POINT: a room service that leads elsewhere: %v", states)
 	}
@@ -282,7 +293,7 @@ func TestXMPPRoomsReached(t *testing.T) {
 	app := create_external_app("status")
 	permission_grant(user_by_uid("u-bob"), app.id, "server/read")
 	rooms, _ := networks_states(t, create_test_thread(user_by_uid("u-bob"), app))["xmpp"]["rooms"].([]any)
-	if len(rooms) != 3 {
+	if len(rooms) != 4 {
 		t.Errorf("THE POINT: the Status page's room services: %v", rooms)
 	}
 }

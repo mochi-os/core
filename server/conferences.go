@@ -121,7 +121,7 @@ func xmpp_rooms_state(ctx context.Context) []any {
 // xmpp_room_reach says why a domain's room service cannot be reached, or ""
 // where it can: its host, found as other servers find it - by its SRV
 // records, else by its name - must lead to an address the domain itself is
-// found at, the domain's being known to reach this server.
+// reached at, the domain's being known to reach this server.
 func xmpp_room_reach(ctx context.Context, domain string) string {
 	xmpp_reached_lock.Lock()
 	cached, found := xmpp_reached[domain]
@@ -148,7 +148,14 @@ func xmpp_room_reach(ctx context.Context, domain string) string {
 		}
 		return out
 	}
-	ours := addresses(domain)
+	var resolved []string
+	for address := range addresses(domain) {
+		resolved = append(resolved, address)
+	}
+	ours := map[string]bool{}
+	for _, address := range domain_addresses(resolved) {
+		ours[address] = true
+	}
 	reason := "dns"
 	for address := range addresses("rooms." + domain) {
 		if ours[address] {

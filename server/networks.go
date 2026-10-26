@@ -80,6 +80,45 @@ func server_public_url() string {
 	return ""
 }
 
+// domain_addresses are the addresses other servers reach a domain at, from
+// what this machine's own lookup of it found. A loopback address there comes
+// from the hosts file naming the machine itself - Debian and Ubuntu map the
+// machine's name to 127.0.1.1 - and stands for the addresses on the machine's
+// interfaces.
+func domain_addresses(found []string) []string {
+	var out []string
+	local := false
+	for _, address := range found {
+		if ip := net.ParseIP(address); ip != nil && ip.IsLoopback() {
+			local = true
+			continue
+		}
+		out = append(out, address)
+	}
+	if local {
+		out = append(out, domain_interfaces()...)
+	}
+	return out
+}
+
+// domain_interfaces lists the addresses on this machine's interfaces, other
+// than loopback and link-local ones. A variable so tests can give their own.
+var domain_interfaces = func() []string {
+	addresses, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, a := range addresses {
+		network, ok := a.(*net.IPNet)
+		if !ok || network.IP.IsLoopback() || network.IP.IsLinkLocalUnicast() {
+			continue
+		}
+		out = append(out, network.IP.String())
+	}
+	return out
+}
+
 // mochi.server.url() -> string: The server's public address, https on its
 // configured domain, or empty where it has none - what a link back to a page
 // here is built from

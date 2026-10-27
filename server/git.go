@@ -97,15 +97,12 @@ var api_git = sls.FromStringDict(sl.String("mochi.git"), sl.StringDict{
 })
 
 // git_loader implements server.Loader to load repository storage from filesystem paths.
-// budget, when positive, is the number of decoded object bytes a push may add
-// (see git_storage). staging, when set, is a directory the push's objects are
-// written to instead of the repository (see git_quarantine).
+// budget, when positive, is the number of decoded object bytes the store may
+// take (see git_storage). staging, when set, is a directory objects are written
+// to instead of the repository (see git_quarantine).
 type git_loader struct {
 	budget  int64
 	staging string
-	// storage is the metered store Load built, kept so the push can learn
-	// how much of its budget the pack's own objects left.
-	storage *git_storage
 }
 
 // Load loads a storer.Storer for the given endpoint path
@@ -114,35 +111,20 @@ func (l *git_loader) Load(ep *transport.Endpoint) (storer.Storer, error) {
 	if _, err := fs.Stat("config"); err != nil {
 		return nil, transport.ErrRepositoryNotFound
 	}
-	// Wrap in git_storage to hide PackfileWriter interface. Without this,
-	// packfile.UpdateObjectStorage takes a raw-copy path that can't resolve
-	// thin pack deltas (base objects not included in the pack). The wrapper
-	// forces the parser path which looks up base objects from the storer.
 	wrapped := &git_storage{
-		Storer:    filesystem.NewStorage(fs, cache.NewObjectLRUDefault()),
-		remaining: l.budget,
-		metered:   l.budget > 0,
+		Storer: filesystem.NewStorage(fs, cache.NewObjectLRUDefault()),
+		meter:  git_meter{remaining: l.budget, metered: l.budget > 0},
 	}
 	if l.staging != "" {
 		wrapped.staging = filesystem.NewStorage(osfs.New(l.staging), cache.NewObjectLRUDefault())
 	}
-	l.storage = wrapped
 	return wrapped, nil
 }
 
-// left answers the decoded bytes the push's account may still store once the
-// objects Load's store was handed are counted, or git_unmetered.
-func (l *git_loader) left() int64 {
-	if l.storage == nil || !l.storage.metered {
-		return git_unmetered
-	}
-	return l.storage.remaining
-}
-
-// git_storage wraps storer.Storer to hide PackfileWriter, so the packfile
-// parser resolves thin-pack deltas from the object store and hands every
-// decoded object to SetEncodedObject - the one place that sees what a pack
-// expands to. The meter counts decoded bytes against a quota measured on disk,
+// git_storage wraps a repository's storer.Storer. For a push stored object by
+// object (git_loosen), go-git's packfile parser resolves thin-pack deltas from
+// the object store and hands every decoded object to SetEncodedObject, which
+// meters it. The meter counts decoded bytes against a quota measured on disk,
 // so it refuses early.
 //
 // With staging set the wrapper is a quarantine: objects are WRITTEN to the
@@ -153,9 +135,8 @@ func (l *git_loader) left() int64 {
 // refusal leaves the repository untouched.
 type git_storage struct {
 	storer.Storer
-	staging   storer.EncodedObjectStorer // quarantine for this push, when set
-	remaining int64                      // decoded bytes still allowed, when metered
-	metered   bool
+	staging storer.EncodedObjectStorer // quarantine for this push, when set
+	meter   git_meter
 }
 
 func (s *git_storage) EncodedObject(t plumbing.ObjectType, h plumbing.Hash) (plumbing.EncodedObject, error) {
@@ -202,21 +183,11 @@ func (s *git_storage) EncodedObjectSize(h plumbing.Hash) (int64, error) {
 }
 
 func (s *git_storage) SetEncodedObject(obj plumbing.EncodedObject) (plumbing.Hash, error) {
-	if s.metered {
-		// A fixed ceiling as well as the quota. The quota is the account's
-		// remaining storage, which for a fresh account is the whole allowance,
-		// so on its own it lets one object be arbitrarily large.
-		//
-		// This bounds what is STORED, not peak memory: go-git has already
-		// inflated the object by the time it calls this. See the header comment
-		// on git_object_maximum for why the memory bound is not available here.
-		if obj.Size() > git_object_maximum {
-			return plumbing.ZeroHash, fmt.Errorf("push contains an object of %d bytes, over the %d limit", obj.Size(), git_object_maximum)
-		}
-		s.remaining -= obj.Size()
-		if s.remaining < 0 {
-			return plumbing.ZeroHash, fmt.Errorf("push exceeds the storage available to this account")
-		}
+	// This bounds what is STORED, not peak memory: go-git has already
+	// inflated the object by the time it calls this. See the header comment
+	// on git_object_maximum.
+	if err := s.meter.charge(obj.Size()); err != nil {
+		return plumbing.ZeroHash, err
 	}
 	if s.staging != nil {
 		return s.staging.SetEncodedObject(obj)
@@ -224,18 +195,56 @@ func (s *git_storage) SetEncodedObject(obj plumbing.EncodedObject) (plumbing.Has
 	return s.Storer.SetEncodedObject(obj)
 }
 
+// git_meter counts the decoded bytes a push adds against what its account may
+// still store.
+type git_meter struct {
+	remaining int64 // decoded bytes still allowed, when metered
+	metered   bool
+}
+
+// charge counts an object of size bytes. A fixed ceiling applies as well as
+// the quota: the quota is the account's remaining storage, which for a fresh
+// account is the whole allowance, so on its own it lets one object be
+// arbitrarily large.
+func (m *git_meter) charge(size int64) error {
+	if !m.metered {
+		return nil
+	}
+	if size > git_object_maximum {
+		return &git_refusal{reason: fmt.Sprintf("push contains an object of %d bytes, over the %d limit", size, git_object_maximum)}
+	}
+	m.remaining -= size
+	if m.remaining < 0 {
+		return &git_refusal{reason: "push exceeds the storage available to this account"}
+	}
+	return nil
+}
+
+// git_refusal is a push refused outright, rather than left to be stored object
+// by object: for what it would store, however it were stored, or for a pack no
+// parse stores soundly.
+type git_refusal struct {
+	reason string
+}
+
+func (r *git_refusal) Error() string {
+	return r.reason
+}
+
 // git_object_maximum is the largest single object a push may add.
 //
-// It fires after go-git has inflated the object, so it bounds the repository
-// rather than the memory the parse takes. Metering earlier is not available to
-// this package: go-git's parser streams an object straight to disk only for a
-// storage satisfying its `lazyObjectWriter`, whose header-callback result type
+// A whole object's size is in its pack entry's header, and git_index refuses
+// it there, before it is inflated. A delta's size is known only once go-git's
+// parser has resolved it, in memory, so for a delta the limit bounds the
+// repository rather than the memory the parse takes; and a push stored object
+// by object (git_loosen) is charged for each object only once it is inflated.
+// Metering that parse earlier is not available to this package: go-git's
+// parser streams an object straight to disk only for a storage satisfying its
+// `lazyObjectWriter`, whose header-callback result type
 // (`packfile.objectHeaderWriter`) is unexported, so no type declared outside
 // that package can satisfy it - `filesystem.Storage`, which has the method with
 // the identical underlying signature, does not either. Verified by assertion
-// against go-git v5.19.2, not inferred. Until that interface is exported, the
-// parse costs the sum of the pack's declared object sizes in memory whatever
-// this file does.
+// against go-git v5.19.2, not inferred.
 const git_object_maximum int64 = 2 << 30 // 2GB
 
 // git_push_maximum is the largest receive-pack body accepted, whatever the
@@ -301,8 +310,8 @@ const git_offset_maximum = 10000
 const git_link_maximum int64 = 4096
 
 // git_transport is the go-git server transport for handling git protocol.
-// Unmetered: it serves fetches and ref advertisements, which store nothing.
-// Pushes build their own transport carrying the owner's remaining storage.
+// Unmetered: it serves fetches and ref advertisements, which store nothing,
+// and the protocol of a push, whose pack git_receive takes and meters itself.
 var git_transport = server.NewServer(&git_loader{})
 
 // git_diff_module is a callable module that also has a .stats method
@@ -4343,7 +4352,7 @@ func git_budget_needed(service string) bool {
 // git_request_maximum returns the largest request body this service may send. A
 // receive-pack body becomes repository content, so it is bounded by the owner's
 // remaining storage; upload-pack negotiation is never stored and gets the fixed
-// ceiling above. This bounds the pack as sent - git_storage meters what it
+// ceiling above. This bounds the pack as sent - git_receive meters what it
 // decodes to.
 func git_request_maximum(service string, budget int64) int64 {
 	if service != "git-receive-pack" {
@@ -6481,164 +6490,274 @@ func git_quarantine(repo_path string) (string, error) {
 // git_push_pack names the copy of a push's pack kept in its staging directory.
 const git_push_pack = "push.pack"
 
-// git_tee copies a push's pack to a file as the pack is read, so it can be kept
-// whole once accepted. A copy that cannot be written is abandoned rather than
-// failing the push, which then stores its objects one by one.
-type git_tee struct {
-	io.ReadCloser
-	file   *os.File
-	failed bool
-}
-
-func (t *git_tee) Read(p []byte) (int, error) {
-	n, err := t.ReadCloser.Read(p)
-	if n > 0 && !t.failed {
-		if _, err := t.file.Write(p[:n]); err != nil {
-			t.failed = true
-		}
-	}
-	return n, err
-}
-
-// finish closes the copy, removing it if it was abandoned.
-func (t *git_tee) finish() {
-	t.file.Close()
-	if t.failed {
-		os.Remove(t.file.Name())
-	}
-}
-
-// git_unmetered is the limit of a push whose account has no storage quota.
-const git_unmetered = -1
-
-// git_store moves an accepted push into the repository: its pack as it came,
-// or, when that cannot be kept, the objects it held one by one. limit is the
-// decoded bytes the account may still store, or git_unmetered.
-func git_store(staging, repo_path string, limit int64) error {
-	err := git_keep(staging, repo_path, limit)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		info("git_store: keeping the pack pushed to %s failed, storing its objects instead: %v", repo_path, err)
-	}
-	return git_promote(staging, repo_path)
-}
-
-// git_keep moves a push's pack into the repository as it came, rather than the
-// objects it holds one by one, so the deltas the pushing client found are kept.
-// Repacking loose objects finds fewer, and searching for them costs more than
-// the push. A thin pack, which git push sends, has deltas based on objects the
-// repository already holds; those bases are appended first, as git's
-// index-pack --fix-thin does, since a stored pack must hold every base its
-// deltas need. The pack is checked and indexed before anything is written to
-// the repository.
-func git_keep(staging, repo_path string, limit int64) error {
-	file, err := os.OpenFile(filepath.Join(staging, git_push_pack), os.O_RDWR, 0)
+// git_receive takes a push's pack whole into its staging directory and readies
+// it there: indexed, to be kept as it came (git_index), or, when it cannot be
+// kept, its objects stored one by one (git_loosen). It answers the index, or
+// nil for a push stored object by object. budget, when positive, is the
+// decoded bytes the account may still store. An error refuses the push, and
+// nothing has reached the repository.
+func git_receive(pack io.Reader, staging, repo_path string, budget int64) (*idxfile.MemoryIndex, error) {
+	file, err := os.OpenFile(filepath.Join(staging, git_push_pack), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0644)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer file.Close()
+	copied, err := io.Copy(file, pack)
+	if err != nil {
+		return nil, err
+	}
+	if copied == 0 {
+		return nil, packfile.ErrEmptyPackfile
+	}
 
-	// Every object the pack carries was written to staging as it was checked,
-	// so a base that staging does not hold is one the pack does not carry.
+	index, err := git_index(file, repo_path, git_meter{remaining: budget, metered: budget > 0})
+	if err == nil {
+		return index, nil
+	}
+	var refusal *git_refusal
+	if errors.As(err, &refusal) {
+		return nil, err
+	}
+	info("git_receive: the pack pushed to %s cannot be kept, storing its objects instead: %v", repo_path, err)
+	return nil, git_loosen(file, staging, repo_path, budget)
+}
+
+// git_index readies a push's pack, in file, to be kept as it came rather than
+// as the objects it holds one by one, so the deltas the pushing client found
+// are kept. Repacking loose objects finds fewer, and searching for them costs
+// more than the push. A thin pack, which a git client pushes, has deltas based
+// on objects the repository already holds; those bases are appended, as git's
+// index-pack --fix-thin does, since a stored pack must hold every base its
+// deltas need. The pack is then parsed once, charging the meter for each object
+// it holds and building its index, which is answered; nil for a pack of no
+// objects.
+//
+// A refusal by the meter refuses the push. Any other error leaves the file as
+// it came, for the push to be stored object by object, by the parse that
+// stored every push before packs were kept: it decides whether the pack is
+// sound, as it always has.
+func git_index(file *os.File, repo_path string, meter git_meter) (index *idxfile.MemoryIndex, err error) {
+	// A first pass reads what the entries' headers say: each whole object's
+	// size, charged before any object is inflated, and the bases of reference
+	// deltas. go-git's parser resolves a delta whose base is not in the pack
+	// only from a store it has written every object of the pack to, and that
+	// writing is what storing a push object by object costs.
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
 	scanner := packfile.NewScanner(file)
 	_, count, err := scanner.Header()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if count == 0 {
-		return nil
-	}
-	staged := filesystem.NewStorage(osfs.New(staging), cache.NewObjectLRUDefault())
-	repository := filesystem.NewStorage(osfs.New(repo_path), cache.NewObjectLRUDefault())
-	missing := map[plumbing.Hash]struct{}{}
-	var bases []plumbing.Hash
+	//
+	// It also checks what go-git's storage-free parse does not, and git does:
+	// each entry's type, and that its content inflates to the size it
+	// declares. go-git's scanner refuses content past that size, not short of
+	// it. An entry of a type git does not know refuses the push wherever it is
+	// in the pack, since go-git's parse into a store, which a pack not kept
+	// goes to, panics on type 0; a short entry is left to that parse, and the
+	// scan goes on past it so that such an entry later still refuses the push.
+	scan := meter
+	referenced := map[plumbing.Hash]struct{}{}
+	var candidates []plumbing.Hash
+	var short error
 	for range count {
 		header, err := scanner.NextObjectHeader()
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if header.Type == plumbing.REFDeltaObject && staged.HasEncodedObject(header.Reference) != nil {
-			if _, found := missing[header.Reference]; !found {
-				missing[header.Reference] = struct{}{}
-				bases = append(bases, header.Reference)
+		switch header.Type {
+		case plumbing.CommitObject, plumbing.TreeObject, plumbing.BlobObject, plumbing.TagObject:
+			if err := scan.charge(header.Length); err != nil {
+				return nil, err
 			}
+		case plumbing.OFSDeltaObject:
+		case plumbing.REFDeltaObject:
+			if _, found := referenced[header.Reference]; !found {
+				referenced[header.Reference] = struct{}{}
+				candidates = append(candidates, header.Reference)
+			}
+		default:
+			return nil, &git_refusal{reason: fmt.Sprintf("the pack holds an entry of unknown type %d", int(header.Type))}
 		}
-		if _, _, err := scanner.NextObject(io.Discard); err != nil {
-			return err
+		written, _, err := scanner.NextObject(io.Discard)
+		if err != nil {
+			return nil, err
 		}
+		if written != header.Length && short == nil {
+			short = fmt.Errorf("an entry declaring %d bytes inflates to %d", header.Length, written)
+		}
+	}
+	if short != nil {
+		return nil, short
 	}
 	// A pack ends with a checksum of everything before it, and nothing
 	// after. go-git's parser takes a pack cut off exactly at the checksum for
 	// a whole one, with a checksum of zeros, and checks nothing past it: such
 	// a pack was kept under an all-zero name and streamed to cloners, whom it
 	// fails, and the next pack cut the same way found that name taken and was
-	// discarded with its objects. Kept whole or not at all: git_store then
-	// stores the objects one by one, each checked against its own hash as it
-	// arrived.
-	if _, err := scanner.Checksum(); err != nil {
-		return fmt.Errorf("the pack's checksum is missing or wrong: %w", err)
-	}
-	end, err := scanner.SeekFromStart(0)
+	// discarded with its objects. Kept whole or not at all: the push is then
+	// stored object by object, each checked against its own hash.
+	checksum, err := scanner.Checksum()
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("the pack's checksum is missing or wrong: %w", err)
+	}
+	size, err := scanner.SeekFromStart(0)
+	if err != nil {
+		return nil, err
 	}
 	information, err := file.Stat()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if end != information.Size() {
-		return fmt.Errorf("%d bytes follow the pack's checksum", information.Size()-end)
+	if size != information.Size() {
+		return nil, fmt.Errorf("%d bytes follow the pack's checksum", information.Size()-size)
 	}
-	if len(bases) > 0 {
-		// The bases are whole copies of objects the repository holds, and the
-		// meter saw none of them: it charged the pushed objects, a few bytes
-		// for a delta that keeps a sliver of a large file. Charged here in the
-		// meter's own unit, and when they do not fit the pack is not kept: its
-		// objects are stored one by one, each whole, needing no base.
-		if limit != git_unmetered {
-			var size int64
-			for _, hash := range bases {
-				base, err := repository.EncodedObject(plumbing.AnyObject, hash)
-				if err != nil {
-					return err
-				}
-				size += base.Size()
-			}
-			if size > limit {
-				return fmt.Errorf("the %d bytes of bases the pack needs exceed the %d the account may still store", size, limit)
-			}
+	if count == 0 {
+		return nil, nil
+	}
+
+	// Which deltas a reference names are in the pack is known only once they
+	// are resolved, so every base the repository holds is appended; one it
+	// lacks has to be in the pack, which the parse finds out. A base appended
+	// that the pack carries as well is caught below: the index lists an
+	// object once, and the pack then holds more objects than its index.
+	repository := filesystem.NewStorage(osfs.New(repo_path), cache.NewObjectLRUDefault())
+	var bases []plumbing.Hash
+	var appended int64
+	for _, hash := range candidates {
+		base, err := repository.EncodedObject(plumbing.AnyObject, hash)
+		if errors.Is(err, plumbing.ErrObjectNotFound) {
+			continue
 		}
+		if err != nil {
+			return nil, err
+		}
+		bases = append(bases, hash)
+		appended += base.Size()
+	}
+	// The bases are whole copies of objects the repository holds, and the
+	// account is charged for them as for the pushed objects, in the meter's
+	// own unit. When they do not fit the pack is not kept: its objects are
+	// stored one by one, each whole, needing no base. This is checked again
+	// once the parse has charged the deltas too.
+	if scan.metered && appended > scan.remaining {
+		return nil, fmt.Errorf("the %d bytes of bases the pack needs exceed the %d the account may still store", appended, scan.remaining)
+	}
+	end := size - sha1.Size
+	if len(bases) > 0 {
+		// A pack not restored is not the pack as it came, and is not stored
+		// object by object either: it would be charged for its bases.
+		defer func() {
+			if err != nil {
+				if problem := git_thin(file, end, count, checksum); problem != nil {
+					info("git_index: the pack pushed to %s could not be restored: %v, after: %v", repo_path, problem, err)
+					err = &git_refusal{reason: "the pack could not be restored after its bases were appended"}
+				}
+			}
+		}()
 		if err := git_thicken(file, repository, count, bases); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return err
+		return nil, err
 	}
-	writer := new(idxfile.Writer)
-	parser, err := packfile.NewParser(packfile.NewScanner(file), writer)
+	indexer := &git_indexer{meter: meter, end: end}
+	parser, err := packfile.NewParser(packfile.NewScanner(file), indexer)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := parser.Parse(); err != nil {
+		return nil, err
+	}
+	if indexer.meter.metered && appended > indexer.meter.remaining {
+		return nil, fmt.Errorf("the %d bytes of bases the pack needs exceed the %d the account may still store", appended, indexer.meter.remaining)
+	}
+	index, err = indexer.Index()
+	if err != nil {
+		return nil, err
+	}
+	listed, err := index.Count()
+	if err != nil {
+		return nil, err
+	}
+	if held := int64(count) + int64(len(bases)); listed != held {
+		return nil, fmt.Errorf("the pack holds %d objects and its index %d: one is in the pack twice", held, listed)
+	}
+	return index, nil
+}
+
+// git_indexer builds a pack's index as go-git's parser resolves it, charging
+// the meter for each object the push sent: those before end. The bases
+// appended after them were charged before the pack was thickened.
+type git_indexer struct {
+	idxfile.Writer
+	meter git_meter
+	end   int64
+}
+
+// OnInflatedObjectHeader is called with each object's resolved type and size,
+// a delta's included.
+func (x *git_indexer) OnInflatedObjectHeader(kind plumbing.ObjectType, size int64, position int64) error {
+	if position < x.end {
+		if err := x.meter.charge(size); err != nil {
+			return err
+		}
+	}
+	return x.Writer.OnInflatedObjectHeader(kind, size, position)
+}
+
+// git_loosen stores the objects of a push's pack, in file, one by one in its
+// staging directory, for a pack that cannot be kept as it came. It is go-git's
+// own parse into a quarantine store: thin deltas resolve through the store's
+// reads, which fall through to the repository, and the store meters each
+// object it is given.
+func git_loosen(file *os.File, staging, repo_path string, budget int64) error {
+	store, err := (&git_loader{budget: budget, staging: staging}).Load(&transport.Endpoint{Path: repo_path})
 	if err != nil {
 		return err
 	}
-	checksum, err := parser.Parse()
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	parser, err := packfile.NewParserWithStorage(packfile.NewScanner(file), store)
 	if err != nil {
 		return err
 	}
-	index, err := writer.Index()
-	if err != nil {
-		return err
+	_, err = parser.Parse()
+	return err
+}
+
+// git_store moves an accepted push into the repository from its staging
+// directory: its pack as it came when git_receive indexed it, or the objects
+// it held one by one.
+func git_store(staging, repo_path string, index *idxfile.MemoryIndex) error {
+	if index != nil {
+		return git_keep(staging, repo_path, index)
 	}
+	return git_promote(staging, repo_path)
+}
+
+// git_keep moves a push's pack, indexed by git_index, into the repository.
+func git_keep(staging, repo_path string, index *idxfile.MemoryIndex) error {
+	pack := filepath.Join(staging, git_push_pack)
 
 	// The index goes in first, as go-git writes them: packs are found by their
 	// .pack file, so one is never seen without its index.
-	name := filepath.Join(repo_path, "objects", "pack", "pack-"+checksum.String())
+	name := filepath.Join(repo_path, "objects", "pack", "pack-"+plumbing.Hash(index.PackfileChecksum).String())
 	if _, err := os.Stat(name + ".pack"); err == nil {
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(name), 0755); err != nil {
+		return err
+	}
+	// An index without its pack is left by a push of the same pack that
+	// stopped between the two. It is read-only, so it is replaced, not
+	// rewritten.
+	if err := os.Remove(name + ".idx"); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	encoded, err := os.OpenFile(name+".idx", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0444)
@@ -6654,7 +6773,7 @@ func git_keep(staging, repo_path string, limit int64) error {
 		os.Remove(name + ".idx")
 		return err
 	}
-	if err := os.Chmod(file.Name(), 0444); err != nil {
+	if err := os.Chmod(pack, 0444); err != nil {
 		os.Remove(name + ".idx")
 		return err
 	}
@@ -6664,11 +6783,11 @@ func git_keep(staging, repo_path string, limit int64) error {
 		os.Remove(name + ".idx")
 		return err
 	}
-	if err := git_flush(file.Name()); err != nil {
+	if err := git_flush(pack); err != nil {
 		os.Remove(name + ".idx")
 		return err
 	}
-	if err := os.Rename(file.Name(), name+".pack"); err != nil {
+	if err := os.Rename(pack, name+".pack"); err != nil {
 		os.Remove(name + ".idx")
 		return err
 	}
@@ -6807,6 +6926,21 @@ func git_thicken(file *os.File, store storer.EncodedObjectStorer, count uint32, 
 		return err
 	}
 	_, err = file.Write(digest.Sum(nil))
+	return err
+}
+
+// git_thin undoes git_thicken: the pack in file is cut back to its own objects,
+// which end at end, with the object count and checksum it came with.
+func git_thin(file *os.File, end int64, count uint32, checksum plumbing.Hash) error {
+	if err := file.Truncate(end); err != nil {
+		return err
+	}
+	if _, err := file.WriteAt(checksum[:], end); err != nil {
+		return err
+	}
+	var total [4]byte
+	binary.BigEndian.PutUint32(total[:], count)
+	_, err := file.WriteAt(total[:], 8)
 	return err
 }
 
@@ -6960,8 +7094,7 @@ func git_deletes_only(commands []*packp.Command) bool {
 }
 
 // git_receive_pack handles the git-receive-pack service (push). budget is the
-// decoded object bytes the owner may still store; the session gets its own
-// transport so that meter is per-push rather than shared.
+// decoded object bytes the owner may still store.
 func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, owner *User, budget int64) bool {
 	ep := &transport.Endpoint{Path: repo_path}
 	ctx := context.Background()
@@ -6985,11 +7118,11 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, ow
 		budget = 1
 	}
 
-	// Objects land here first and move into the repository only once the whole
-	// pack has been accepted. Without it a push refused part-way - over quota,
-	// or a corrupt pack - left everything it had already written on disk,
-	// unreachable and counting against the owner's storage with nothing in the
-	// product able to reclaim it.
+	// The pack lands here first, and it or its objects move into the
+	// repository only once the whole pack has been accepted. Without it a push
+	// refused part-way - over quota, or a corrupt pack - left everything it had
+	// already written on disk, unreachable and counting against the owner's
+	// storage with nothing in the product able to reclaim it.
 	staging, err := git_quarantine(repo_path)
 	if err != nil {
 		info("git_receive_pack: %s: %v", repo_path, err)
@@ -6998,8 +7131,7 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, ow
 	}
 	defer os.RemoveAll(staging)
 
-	loader := &git_loader{budget: budget, staging: staging}
-	session, err := server.NewServer(loader).NewReceivePackSession(ep, nil)
+	session, err := git_transport.NewReceivePackSession(ep, nil)
 	if err != nil {
 		info("git_receive_pack: failed to create session for %s: %v", repo_path, err)
 		c.String(http.StatusInternalServerError, "Failed to create session") // i18n-ok: git protocol, read by the client not a person
@@ -7015,46 +7147,46 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, ow
 		return true
 	}
 
-	// go-git writes the pack and updates the references inside one ReceivePack
-	// call, with no seam between them, and its reference update is the half this
-	// function replaces - see git_references_apply. Taking the commands off the
-	// request leaves the call doing only the half that is correct.
+	// go-git's ReceivePack call updates the references, and its update is what
+	// this function replaces - see git_references_apply. Taking the commands
+	// off the request leaves it out.
 	commands := req.Commands
 	req.Commands = nil
 
 	// A push whose every command is a delete carries no packfile at all - git
 	// sends the command list, its flush packet, and stops. go-git sets Packfile
 	// to the rest of the body whatever is left in it, so it is non-nil at end of
-	// input, and the scanner it hands that to answers "empty packfile" and takes
+	// input, and git_receive, handed that, answers "empty packfile" and takes
 	// the whole push down with it. Nothing here needs the pack, so drop it: a
 	// delete moves a reference and stores nothing.
 	if git_deletes_only(commands) {
 		req.Packfile = nil
 	}
 
-	// A copy of the pack as it is read, kept whole once accepted.
-	var tee *git_tee
-	if req.Packfile != nil {
-		if file, err := os.Create(filepath.Join(staging, git_push_pack)); err == nil {
-			tee = &git_tee{ReadCloser: req.Packfile, file: file}
-			req.Packfile = tee
+	// go-git is handed no pack, which leaves the call the protocol: git_receive
+	// takes the pack whole into staging and readies it there, so it can be kept
+	// as it came. go-git's own handling parsed every pushed object into a file
+	// of its own, which cost most of the push and was thrown away when the pack
+	// was kept.
+	pack := req.Packfile
+	req.Packfile = nil
+
+	status, err := session.ReceivePack(ctx, req)
+	var index *idxfile.MemoryIndex
+	if err == nil && pack != nil {
+		index, err = git_receive(pack, staging, repo_path, budget)
+		if err != nil && status != nil {
+			// As go-git reports a pack it could not store.
+			status.UnpackStatus = err.Error()
 		}
 	}
-
-	// Process the receive-pack request
-	status, err := session.ReceivePack(ctx, req)
-	if tee != nil {
-		tee.finish()
-	}
 	if err != nil {
-		// The pack was refused. The deferred removal takes the staged objects
+		// The pack was refused. The deferred removal takes what was staged
 		// with it, so the repository is exactly as it was, and no reference is
 		// touched.
 		info("git_receive_pack: %s: %v", repo_path, err)
 	} else {
-		// What the pack's own objects left of the account's storage, for the
-		// bases a thin pack has appended to it (git_keep).
-		if err := git_store(staging, repo_path, loader.left()); err != nil {
+		if err := git_store(staging, repo_path, index); err != nil {
 			warn("git_receive_pack: unable to promote staged objects for %s: %v", repo_path, err)
 			c.String(http.StatusInternalServerError, "Failed to store push") // i18n-ok: git protocol, read by the client not a person
 			return true

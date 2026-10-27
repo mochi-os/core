@@ -21,6 +21,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,6 +92,17 @@ func push_send(t *testing.T, user *User, repo string, commands ...*packp.Command
 // push_send_pack is push_send with a caller-supplied packfile.
 func push_send_pack(t *testing.T, user *User, repo string, pack []byte, commands ...*packp.Command) map[string]string {
 	t.Helper()
+	statuses := map[string]string{}
+	for _, status := range push_report(t, user, repo, pack, commands...).CommandStatuses {
+		statuses[status.ReferenceName.String()] = status.Status
+	}
+	return statuses
+}
+
+// push_report is push_send_pack answering the whole report the client reads,
+// with an account that may store 1MB more.
+func push_report(t *testing.T, user *User, repo string, pack []byte, commands ...*packp.Command) *packp.ReportStatus {
+	t.Helper()
 	request := packp.NewReferenceUpdateRequest()
 	request.Capabilities.Set(capability.ReportStatus)
 	request.Commands = commands
@@ -105,15 +117,11 @@ func push_send_pack(t *testing.T, user *User, repo string, pack []byte, commands
 	context.Request = httptest.NewRequest("POST", "/", nil)
 	git_receive_pack(context, git_repo_path(user, test_app, repo), io.NopCloser(&body), user, 1<<20)
 
-	statuses := map[string]string{}
 	report := packp.NewReportStatus()
 	if err := report.Decode(recorder.Body); err != nil {
 		t.Fatalf("decode report (body %q): %v", recorder.Body.String(), err)
 	}
-	for _, status := range report.CommandStatuses {
-		statuses[status.ReferenceName.String()] = status.Status
-	}
-	return statuses
+	return report
 }
 
 // push_default seeds the branch HEAD names, so a test working on some other
@@ -455,6 +463,34 @@ func TestAcceptedPushPromotesAndCleansUp(t *testing.T) {
 	leftover, _ := filepath.Glob(filepath.Join(path, "incoming-*"))
 	if len(leftover) != 0 {
 		t.Errorf("the push left %d staging directories behind: %v", len(leftover), leftover)
+	}
+}
+
+// TestPushOverQuotaIsReported. A push the account's storage cannot take is
+// refused as an unpack error, which the client shows the pusher, and moves no
+// reference and stores nothing.
+func TestPushOverQuotaIsReported(t *testing.T) {
+	user, _ := create_git_test_env(t)
+	if err := git_init(user, test_app, "full"); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	path := git_repo_path(user, test_app, "full")
+	main := plumbing.NewBranchReferenceName("main")
+
+	hash, pack := push_blob(t, make([]byte, 2<<20))
+	report := push_report(t, user, "full", pack, &packp.Command{Name: main, Old: plumbing.ZeroHash, New: hash})
+	if !strings.Contains(report.UnpackStatus, "exceeds the storage available") {
+		t.Errorf("THE POINT: a 2MB push against 1MB of storage was reported as %q", report.UnpackStatus)
+	}
+	store := push_store(t, user, "full")
+	if _, err := store.Reference(main); err == nil {
+		t.Error("the refused push created its branch")
+	}
+	if err := store.HasEncodedObject(hash); err == nil {
+		t.Error("the refused push stored its object")
+	}
+	if leftover, _ := filepath.Glob(filepath.Join(path, "incoming-*")); len(leftover) != 0 {
+		t.Errorf("the push left staging directories behind: %v", leftover)
 	}
 }
 

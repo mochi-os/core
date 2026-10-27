@@ -12,6 +12,10 @@ package main
 
 import (
 	"bytes"
+	"compress/zlib"
+	"crypto/sha1"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -26,6 +30,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
+	"github.com/go-git/go-git/v5/plumbing/format/idxfile"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
@@ -179,8 +184,8 @@ func TestPushKeepsThePack(t *testing.T) {
 	}
 }
 
-// TestPushNotKeptStoresItsObjects. A pack that cannot be kept - here, one whose
-// copy is missing - is stored one object at a time, as before.
+// TestPushNotKeptStoresItsObjects. A push not kept as its pack reaches the
+// repository through the objects staged for it one by one.
 func TestPushNotKeptStoresItsObjects(t *testing.T) {
 	path, repo := repack_test_empty(t)
 	staging, err := git_quarantine(path)
@@ -202,7 +207,7 @@ func TestPushNotKeptStoresItsObjects(t *testing.T) {
 		t.Fatalf("staging a blob: %v", err)
 	}
 
-	if err := git_store(staging, path, git_unmetered); err != nil {
+	if err := git_store(staging, path, nil); err != nil {
 		t.Fatalf("git_store: %v", err)
 	}
 	if _, err := repo.Storer.EncodedObject(plumbing.AnyObject, hash); err != nil {
@@ -648,53 +653,90 @@ func TestCloneSendsTheStoredPack(t *testing.T) {
 	git_run(t, clone, "fsck")
 }
 
-// store_cut stages a push - its objects as receive-pack writes them, and its
-// pack as it came - with the pack's bytes made by shape, and answers the
-// staging directory and the objects. The pack is whole: blob, tree, commit,
-// the blob's text naming the push so that two pushes hold different objects.
-func store_cut(t *testing.T, path string, number int, shape func([]byte) []byte) (string, []plumbing.Hash) {
+// store_cut makes a push's pack - blob, tree, commit, the blob's text naming
+// the push so that two pushes hold different objects - with its bytes made by
+// shape, and answers the pack and the objects.
+func store_cut(t *testing.T, number int, shape func([]byte) []byte) ([]byte, []plumbing.Hash) {
+	t.Helper()
+	build := memory.NewStorage()
+	store := func(value interface {
+		Encode(plumbing.EncodedObject) error
+	}) plumbing.Hash {
+		encoded := build.NewEncodedObject()
+		if err := value.Encode(encoded); err != nil {
+			t.Fatal(err)
+		}
+		hash, err := build.SetEncodedObject(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hash
+	}
+	hash := store_blob(t, build, []byte(fmt.Sprintf("push %d, whole, then cut\n", number)))
+	tree := store(&object.Tree{Entries: []object.TreeEntry{{Name: "a.txt", Mode: 0100644, Hash: hash}}})
+	signature := object.Signature{Name: "Test", Email: "test@example.com", When: time.Now()}
+	commit := store(&object.Commit{Author: signature, Committer: signature, Message: "commit\n", TreeHash: tree})
+	objects := []plumbing.Hash{commit, tree, hash}
+
+	data, _, err := git_pack_thin(build, objects, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return shape(data), objects
+}
+
+// store_blob stores body as a blob in store and answers its hash.
+func store_blob(t *testing.T, store storer.EncodedObjectStorer, body []byte) plumbing.Hash {
+	t.Helper()
+	blob := store.NewEncodedObject()
+	blob.SetType(plumbing.BlobObject)
+	writer, err := blob.Writer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.Write(body)
+	writer.Close()
+	hash, err := store.SetEncodedObject(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hash
+}
+
+// store_stage makes a staging directory for a push to the repository at path,
+// removed when the test ends.
+func store_stage(t *testing.T, path string) string {
 	t.Helper()
 	staging, err := git_quarantine(path)
 	if err != nil {
 		t.Fatalf("git_quarantine: %v", err)
 	}
 	t.Cleanup(func() { os.RemoveAll(staging) })
-	staged := filesystem.NewStorage(osfs.New(staging), cache.NewObjectLRUDefault())
-	store := func(value interface {
-		Encode(plumbing.EncodedObject) error
-	}) plumbing.Hash {
-		encoded := staged.NewEncodedObject()
-		if err := value.Encode(encoded); err != nil {
-			t.Fatal(err)
-		}
-		hash, err := staged.SetEncodedObject(encoded)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return hash
-	}
-	blob := staged.NewEncodedObject()
-	blob.SetType(plumbing.BlobObject)
-	writer, _ := blob.Writer()
-	fmt.Fprintf(writer, "push %d, whole, then cut\n", number)
-	writer.Close()
-	hash, err := staged.SetEncodedObject(blob)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tree := store(&object.Tree{Entries: []object.TreeEntry{{Name: "a.txt", Mode: 0100644, Hash: hash}}})
-	signature := object.Signature{Name: "Test", Email: "test@example.com", When: time.Now()}
-	commit := store(&object.Commit{Author: signature, Committer: signature, Message: "commit\n", TreeHash: tree})
-	objects := []plumbing.Hash{commit, tree, hash}
+	return staging
+}
 
-	data, _, err := git_pack_thin(staged, objects, nil)
+// store_receive takes a push of data to the repository at path into a staging
+// directory, as git_receive_pack does, and answers the directory and the index
+// git_receive made, failing the test if the push was refused. A budget of 0 is
+// an account with no quota.
+func store_receive(t *testing.T, path string, data []byte, budget int64) (string, *idxfile.MemoryIndex) {
+	t.Helper()
+	staging := store_stage(t, path)
+	index, err := git_receive(bytes.NewReader(data), staging, path, budget)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("git_receive: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(staging, git_push_pack), shape(data), 0644); err != nil {
-		t.Fatal(err)
+	return staging, index
+}
+
+// store_push takes a push of data into the repository at path, as
+// git_receive_pack does, failing the test if it was refused.
+func store_push(t *testing.T, path string, data []byte, budget int64) {
+	t.Helper()
+	staging, index := store_receive(t, path, data, budget)
+	if err := git_store(staging, path, index); err != nil {
+		t.Fatalf("git_store: %v", err)
 	}
-	return staging, objects
 }
 
 // A pack ends with a checksum of everything before it. go-git's parser takes
@@ -718,10 +760,8 @@ func TestPushCutAtItsChecksumIsNotKept(t *testing.T) {
 			// name taken, and was discarded.
 			var all []plumbing.Hash
 			for i := 0; i < 2; i++ {
-				staging, objects := store_cut(t, path, i, tt.shape)
-				if err := git_store(staging, path, git_unmetered); err != nil {
-					t.Fatalf("git_store: %v", err)
-				}
+				data, objects := store_cut(t, i, tt.shape)
+				store_push(t, path, data, 0)
 				all = append(all, objects...)
 			}
 
@@ -750,10 +790,8 @@ func TestPushCutAtItsChecksumIsNotKept(t *testing.T) {
 // Control: a whole pack is kept as it came.
 func TestPushWholeIsKept(t *testing.T) {
 	path, _ := repack_test_empty(t)
-	staging, _ := store_cut(t, path, 0, func(data []byte) []byte { return data })
-	if err := git_store(staging, path, git_unmetered); err != nil {
-		t.Fatalf("git_store: %v", err)
-	}
+	data, _ := store_cut(t, 0, func(data []byte) []byte { return data })
+	store_push(t, path, data, 0)
 	if packs := store_packs(t, path); len(packs) != 1 {
 		t.Errorf("a whole push left packs %v, want the one it came in", packs)
 	}
@@ -784,9 +822,10 @@ func store_flushes(t *testing.T, repository string) *[]store_flush {
 // folder after, all before git_store returns and the references move.
 func TestPushIsOnDiskBeforeItIsFound(t *testing.T) {
 	path, _ := repack_test_empty(t)
-	staging, _ := store_cut(t, path, 0, func(data []byte) []byte { return data })
+	data, _ := store_cut(t, 0, func(data []byte) []byte { return data })
+	staging, kept := store_receive(t, path, data, 0)
 	flushed := store_flushes(t, path)
-	if err := git_store(staging, path, git_unmetered); err != nil {
+	if err := git_store(staging, path, kept); err != nil {
 		t.Fatalf("git_store: %v", err)
 	}
 	packs := store_packs(t, path)
@@ -939,55 +978,25 @@ func TestRepackLeavesPacksReadOnly(t *testing.T) {
 	}
 }
 
-// store_sliver stages a thin push of one object: the first 100 bytes of a 64KB
+// store_sliver makes a thin push of one object: the first 100 bytes of a 64KB
 // file the repository already holds, sent as a delta against it. The meter
 // charges the object's 100 bytes; keeping the pack appends the whole file.
-func store_sliver(t *testing.T) (string, *git.Repository, string, plumbing.Hash, plumbing.Hash) {
+func store_sliver(t *testing.T) (string, *git.Repository, []byte, plumbing.Hash, plumbing.Hash) {
 	t.Helper()
 	path, repo := repack_test_empty(t)
 	large := make([]byte, 64<<10)
 	rand.New(rand.NewSource(7)).Read(large)
-	stored := repo.Storer.NewEncodedObject()
-	stored.SetType(plumbing.BlobObject)
-	writer, _ := stored.Writer()
-	writer.Write(large)
-	writer.Close()
-	base, err := repo.Storer.SetEncodedObject(stored)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	staging, err := git_quarantine(path)
-	if err != nil {
-		t.Fatalf("git_quarantine: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(staging) })
-	staged := filesystem.NewStorage(osfs.New(staging), cache.NewObjectLRUDefault())
-	sliver := staged.NewEncodedObject()
-	sliver.SetType(plumbing.BlobObject)
-	writer, _ = sliver.Writer()
-	writer.Write(large[:100])
-	writer.Close()
-	hash, err := staged.SetEncodedObject(sliver)
-	if err != nil {
-		t.Fatal(err)
-	}
+	base := store_blob(t, repo.Storer, large)
 
 	// The pack is built from a store holding both, as the client's does.
 	both := memory.NewStorage()
-	for _, object := range []plumbing.EncodedObject{stored, sliver} {
-		if _, err := both.SetEncodedObject(object); err != nil {
-			t.Fatal(err)
-		}
-	}
+	store_blob(t, both, large)
+	hash := store_blob(t, both, large[:100])
 	data, deltas, err := git_pack_thin(both, []plumbing.Hash{hash}, map[plumbing.Hash]plumbing.Hash{hash: base})
 	if err != nil || deltas != 1 {
 		t.Fatalf("setup: %d deltas, %v", deltas, err)
 	}
-	if err := os.WriteFile(filepath.Join(staging, git_push_pack), data, 0644); err != nil {
-		t.Fatal(err)
-	}
-	return path, repo, staging, hash, base
+	return path, repo, data, hash, base
 }
 
 // A thin pack's bases are appended whole, and the meter saw none of them: a
@@ -995,10 +1004,8 @@ func store_sliver(t *testing.T) (string, *git.Repository, string, plumbing.Hash,
 // stored every file again. They are charged now, and when they do not fit the
 // pack is not kept; its objects are stored one by one, needing no base.
 func TestPushBasesAreCharged(t *testing.T) {
-	path, repo, staging, hash, _ := store_sliver(t)
-	if err := git_store(staging, path, 1000); err != nil {
-		t.Fatalf("git_store: %v", err)
-	}
+	path, repo, data, hash, _ := store_sliver(t)
+	store_push(t, path, data, 1000)
 	if packs := store_packs(t, path); len(packs) != 0 {
 		t.Errorf("THE POINT: a push whose bases do not fit what the account may store was kept as packs %v", packs)
 	}
@@ -1010,17 +1017,357 @@ func TestPushBasesAreCharged(t *testing.T) {
 // Control: with room for its bases, or no quota at all, the pack is kept
 // whole, the base appended.
 func TestPushBasesFitAndAreKept(t *testing.T) {
-	for _, limit := range []int64{1 << 30, git_unmetered} {
-		path, _, staging, _, _ := store_sliver(t)
-		if err := git_store(staging, path, limit); err != nil {
-			t.Fatalf("git_store: %v", err)
-		}
+	for _, budget := range []int64{1 << 30, 0} {
+		path, _, data, _, _ := store_sliver(t)
+		store_push(t, path, data, budget)
 		packs := store_packs(t, path)
 		if len(packs) != 1 {
-			t.Fatalf("limit %d: the push left packs %v, want the one it came in", limit, packs)
+			t.Fatalf("budget %d: the push left packs %v, want the one it came in", budget, packs)
 		}
 		if objects, _ := store_file(t, packs[0]); objects != 2 {
-			t.Errorf("limit %d: the kept pack holds %d objects, want the sliver and its base", limit, objects)
+			t.Errorf("budget %d: the kept pack holds %d objects, want the sliver and its base", budget, objects)
 		}
+	}
+}
+
+// Whether a thin pack's bases fit is known for certain only once its deltas
+// have been resolved and charged, after the bases were appended. A pack whose
+// bases fit beside its whole objects but not beside the delta it resolves to
+// is stored object by object, from the pack as it came: stored from the pack
+// with its base appended, the base would be charged too, and the push refused.
+func TestPushBasesChargedAfterTheDeltas(t *testing.T) {
+	path, repo, data, hash, _ := store_sliver(t)
+	// Room for the base, but not for the base and the sliver's 100 bytes.
+	budget := int64(64<<10) + 50
+	staging, index := store_receive(t, path, data, budget)
+	if index != nil {
+		t.Errorf("THE POINT: a pack whose base and delta exceed the budget is to be kept")
+	}
+	if err := git_store(staging, path, index); err != nil {
+		t.Fatalf("git_store: %v", err)
+	}
+	if packs := store_packs(t, path); len(packs) != 0 {
+		t.Errorf("the push left packs %v", packs)
+	}
+	if _, err := repo.Storer.EncodedObject(plumbing.AnyObject, hash); err != nil {
+		t.Errorf("the pushed object was not stored: %v", err)
+	}
+}
+
+// A pack kept as it came is no longer also stored object by object: that cost
+// most of a push, a compressed file per object, and was thrown away when the
+// pack was kept. A thin pack and a whole one each reach the repository with no
+// object staged on its own.
+func TestPushKeptStagesNoObjects(t *testing.T) {
+	path, _, data, _, _ := store_sliver(t)
+	whole, _ := store_cut(t, 0, func(data []byte) []byte { return data })
+	for _, pack := range [][]byte{data, whole} {
+		staging, index := store_receive(t, path, pack, 1<<30)
+		if index == nil {
+			t.Fatal("the pack is not to be kept")
+		}
+		if loose := git_loose_count(staging); loose != 0 {
+			t.Errorf("THE POINT: a kept push staged %d objects one by one", loose)
+		}
+		if err := git_store(staging, path, index); err != nil {
+			t.Fatalf("git_store: %v", err)
+		}
+	}
+}
+
+// store_entry is a pack entry declaring an object of size bytes, whose
+// compressed content is not there: what follows the header is not zlib.
+func store_entry(size int64) []byte {
+	var data bytes.Buffer
+	data.WriteString("PACK")
+	binary.Write(&data, binary.BigEndian, uint32(2))
+	binary.Write(&data, binary.BigEndian, uint32(1))
+	git_pack_entry(&data, plumbing.BlobObject, size)
+	data.WriteString("not a zlib stream")
+	sum := sha1.Sum(data.Bytes())
+	data.Write(sum[:])
+	return data.Bytes()
+}
+
+// A whole object's size is in its entry's header, and it is charged from there,
+// before it is inflated: an entry declaring more than the account may store,
+// or more than any object may be, refuses the push without its content being
+// read. Charged only once inflated, this entry's content - not zlib at all -
+// would fail the push for another reason.
+func TestPushRefusedOnAWholeObjectsDeclaredSize(t *testing.T) {
+	cases := []struct {
+		name   string
+		size   int64
+		budget int64
+		reason string
+	}{
+		{"over the quota", 1 << 20, 1000, "exceeds the storage available"},
+		{"over the object limit", git_object_maximum + 1, git_object_maximum * 8, "over the"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			path, _ := repack_test_empty(t)
+			staging := store_stage(t, path)
+			_, err := git_receive(bytes.NewReader(store_entry(tt.size)), staging, path, tt.budget)
+			var refusal *git_refusal
+			if !errors.As(err, &refusal) || !strings.Contains(err.Error(), tt.reason) {
+				t.Errorf("THE POINT: an entry declaring %d bytes against a budget of %d gave %v, want a refusal (%s)", tt.size, tt.budget, err, tt.reason)
+			}
+		})
+	}
+}
+
+// store_pair makes a pack of two blobs of 1000 bytes, the second sent as a
+// delta against the first, which the pack carries.
+func store_pair(t *testing.T) []byte {
+	t.Helper()
+	build := memory.NewStorage()
+	text := []byte(store_lines(3, 30))[:1000]
+	first := store_blob(t, build, text)
+	edited := append([]byte{}, text...)
+	copy(edited[500:], "an edit in the middle")
+	second := store_blob(t, build, edited)
+	data, deltas, err := git_pack_thin(build, []plumbing.Hash{first, second}, map[plumbing.Hash]plumbing.Hash{second: first})
+	if err != nil || deltas != 1 {
+		t.Fatalf("setup: %d deltas, %v", deltas, err)
+	}
+	return data
+}
+
+// A delta's size is known only once it is resolved, and it is charged then:
+// the push of two 1000-byte objects, one a delta of the other, needs 2000
+// bytes of an account's storage, not the 1000 its whole object declares.
+func TestPushDeltaChargedWhenResolved(t *testing.T) {
+	data := store_pair(t)
+	path, _ := repack_test_empty(t)
+	staging := store_stage(t, path)
+	_, err := git_receive(bytes.NewReader(data), staging, path, 1999)
+	var refusal *git_refusal
+	if !errors.As(err, &refusal) {
+		t.Errorf("THE POINT: a push of 2000 bytes against a budget of 1999 gave %v, want a refusal", err)
+	}
+
+	// Control: exactly the room it needs.
+	path, _ = repack_test_empty(t)
+	store_push(t, path, data, 2000)
+	if packs := store_packs(t, path); len(packs) != 1 {
+		t.Errorf("a push exactly filling the budget left packs %v, want the one it came in", packs)
+	}
+}
+
+// A pack holding one object twice is indexed with it once, and git refuses to
+// open a pack whose index lists fewer objects than it holds. Such a pack is
+// stored object by object. The client may send an object twice, or send whole
+// an object the repository holds and a delta against it, which git_index
+// appends a second time as a base it cannot tell is in the pack.
+func TestPushHoldingAnObjectTwiceIsNotKept(t *testing.T) {
+	cases := []struct {
+		name string
+		pack func(t *testing.T, repo *git.Repository) ([]byte, []plumbing.Hash)
+	}{
+		{"sent twice", func(t *testing.T, repo *git.Repository) ([]byte, []plumbing.Hash) {
+			build := memory.NewStorage()
+			hash := store_blob(t, build, []byte("twice\n"))
+			data, _, err := git_pack_thin(build, []plumbing.Hash{hash, hash}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return data, []plumbing.Hash{hash}
+		}},
+		{"appended as a base the pack carries", func(t *testing.T, repo *git.Repository) ([]byte, []plumbing.Hash) {
+			build := memory.NewStorage()
+			text := []byte(store_lines(4, 30))[:1000]
+			first := store_blob(t, build, text)
+			store_blob(t, repo.Storer, text)
+			edited := append([]byte{}, text...)
+			copy(edited[500:], "an edit in the middle")
+			second := store_blob(t, build, edited)
+			data, deltas, err := git_pack_thin(build, []plumbing.Hash{first, second}, map[plumbing.Hash]plumbing.Hash{second: first})
+			if err != nil || deltas != 1 {
+				t.Fatalf("setup: %d deltas, %v", deltas, err)
+			}
+			return data, []plumbing.Hash{first, second}
+		}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			path, repo := repack_test_empty(t)
+			data, objects := tt.pack(t, repo)
+			store_push(t, path, data, 0)
+			if packs := store_packs(t, path); len(packs) != 0 {
+				t.Errorf("THE POINT: a pack holding an object twice was kept as %v", packs)
+			}
+			for _, hash := range objects {
+				if _, err := repo.Storer.EncodedObject(plumbing.AnyObject, hash); err != nil {
+					t.Errorf("object %s was not stored: %v", hash, err)
+				}
+			}
+		})
+	}
+}
+
+// store_part is one entry of a pack made by hand: its type, the size its
+// header declares, the base a reference delta names, and its content.
+type store_part struct {
+	kind      plumbing.ObjectType
+	size      int64
+	reference plumbing.Hash
+	content   []byte
+}
+
+// store_parts makes a pack of parts as given, whatever their types and sizes
+// say, with a correct checksum.
+func store_parts(parts ...store_part) []byte {
+	var data bytes.Buffer
+	data.WriteString("PACK")
+	binary.Write(&data, binary.BigEndian, uint32(2))
+	binary.Write(&data, binary.BigEndian, uint32(len(parts)))
+	for _, part := range parts {
+		git_pack_entry(&data, part.kind, part.size)
+		if part.kind == plumbing.REFDeltaObject {
+			data.Write(part.reference[:])
+		}
+		compressor := zlib.NewWriter(&data)
+		compressor.Write(part.content)
+		compressor.Close()
+	}
+	sum := sha1.Sum(data.Bytes())
+	data.Write(sum[:])
+	return data.Bytes()
+}
+
+// git refuses a pack holding an entry of a type it does not know, and go-git's
+// storage-free parse does not: such a pack was kept, and every repack of the
+// repository failed after it. go-git's parse into a store, which a pack not
+// kept goes to, panics on type 0. The push is refused, wherever the entry is.
+func TestPushOfAnUnknownTypeIsRefused(t *testing.T) {
+	blob := store_part{kind: plumbing.BlobObject, size: 6, content: []byte("hello\n")}
+	short := store_part{kind: plumbing.BlobObject, size: 100, content: []byte("hello\n")}
+	cases := []struct {
+		name  string
+		parts []store_part
+	}{
+		{"type 0", []store_part{blob, {kind: 0, size: 1, content: []byte("x")}}},
+		{"type 5", []store_part{blob, {kind: 5, size: 1, content: []byte("x")}}},
+		{"type 0 after a short entry", []store_part{short, {kind: 0, size: 1, content: []byte("x")}}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			path, _ := repack_test_empty(t)
+			staging := store_stage(t, path)
+			var err error
+			func() {
+				defer func() {
+					if problem := recover(); problem != nil {
+						err = fmt.Errorf("panicked: %v", problem)
+					}
+				}()
+				_, err = git_receive(bytes.NewReader(store_parts(tt.parts...)), staging, path, 0)
+			}()
+			var refusal *git_refusal
+			if !errors.As(err, &refusal) || !strings.Contains(err.Error(), "unknown type") {
+				t.Errorf("THE POINT: a pack holding an entry of unknown type gave %v, want a refusal naming it", err)
+			}
+		})
+	}
+}
+
+// git refuses a pack whose entry inflates to less than its header declares,
+// and neither go-git's scanner nor its storage-free parse does: such a pack
+// was kept, unreadable by git. It is not kept now; the parse that stores
+// objects one by one decides it, as it did before packs were kept.
+func TestPushOfAShortEntryIsNotKept(t *testing.T) {
+	base := "hello world\n"
+	// A delta making "hello\n" of base: copy its first 5 bytes, insert "\n".
+	delta := []byte{byte(len(base)), 6, 0x90, 5, 1, '\n'}
+	hash := plumbing.ComputeHash(plumbing.BlobObject, []byte(base))
+	whole := func(declared int64) []store_part {
+		return []store_part{{kind: plumbing.BlobObject, size: declared, content: []byte(base)}}
+	}
+	deltified := func(declared int64) []store_part {
+		return []store_part{
+			{kind: plumbing.BlobObject, size: int64(len(base)), content: []byte(base)},
+			{kind: plumbing.REFDeltaObject, size: declared, reference: hash, content: delta},
+		}
+	}
+	cases := []struct {
+		name  string
+		parts func(int64) []store_part
+		size  int64
+	}{
+		{"whole", whole, int64(len(base))},
+		{"a delta", deltified, int64(len(delta))},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			// Control: declaring its size, the pack is kept.
+			path, _ := repack_test_empty(t)
+			staging := store_stage(t, path)
+			index, err := git_receive(bytes.NewReader(store_parts(tt.parts(tt.size)...)), staging, path, 0)
+			if index == nil || err != nil {
+				t.Fatalf("setup: the pack as it should be was not to be kept: %v", err)
+			}
+
+			path, _ = repack_test_empty(t)
+			staging = store_stage(t, path)
+			index, err = git_receive(bytes.NewReader(store_parts(tt.parts(tt.size+10)...)), staging, path, 0)
+			if index != nil {
+				t.Error("THE POINT: a pack with an entry short of its declared size is to be kept")
+			}
+			t.Logf("stored one by one: %v", err)
+		})
+	}
+}
+
+// A push that stops between writing its pack's index and moving the pack in
+// leaves the index behind, read-only. The client retrying the same pack could
+// not write that index, and every retry failed until a repack's sweep, an hour
+// later at the soonest, removed it.
+func TestPushRetriedOverAnIndexLeftBehind(t *testing.T) {
+	path, _ := repack_test_empty(t)
+	data, objects := store_cut(t, 0, func(data []byte) []byte { return data })
+	staging, index := store_receive(t, path, data, 0)
+	name := filepath.Join(path, "objects", "pack", "pack-"+plumbing.Hash(index.PackfileChecksum).String()+".idx")
+	if err := os.MkdirAll(filepath.Dir(name), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(name, []byte("left by a push that stopped"), 0444); err != nil {
+		t.Fatal(err)
+	}
+	if err := git_store(staging, path, index); err != nil {
+		t.Fatalf("THE POINT: the retried push was not stored: %v", err)
+	}
+	stored := filesystem.NewStorage(osfs.New(path), cache.NewObjectLRUDefault())
+	for _, hash := range objects {
+		if _, err := stored.EncodedObject(plumbing.AnyObject, hash); err != nil {
+			t.Errorf("object %s cannot be read: %v", hash, err)
+		}
+	}
+}
+
+// A thin pack's bases are appended to it before it is parsed, and it is cut
+// back to the pack as it came when it is not kept. A pack that could not be
+// cut back was stored object by object from what it had become, charged for
+// bases it never sent, and its report to the client ran to two lines. It is
+// refused.
+func TestPushNotRestoredIsRefused(t *testing.T) {
+	path, _, data, _, _ := store_sliver(t)
+	name := filepath.Join(t.TempDir(), git_push_pack)
+	if err := os.WriteFile(name, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Read-only: its bases cannot be appended, nor the pack cut back.
+	file, err := os.Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	_, err = git_index(file, path, git_meter{})
+	var refusal *git_refusal
+	if !errors.As(err, &refusal) {
+		t.Errorf("THE POINT: a pack that could not be restored gave %v, want a refusal", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "\n") {
+		t.Errorf("the report to the client runs to more than one line: %q", err.Error())
 	}
 }

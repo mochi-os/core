@@ -169,7 +169,12 @@ var read_clock int64
 func read_commit(t *testing.T, repo *git.Repository, parents []plumbing.Hash, tree plumbing.Hash, message string) plumbing.Hash {
 	t.Helper()
 	read_clock++
-	when := time.Unix(1700000000+read_clock, 0)
+	return read_commit_at(t, repo, parents, tree, message, time.Unix(1700000000+read_clock, 0))
+}
+
+// read_commit_at stores a commit made at when.
+func read_commit_at(t *testing.T, repo *git.Repository, parents []plumbing.Hash, tree plumbing.Hash, message string, when time.Time) plumbing.Hash {
+	t.Helper()
 	signature := object.Signature{Name: "Reader", Email: "reader@example.com", When: when}
 	commit := &object.Commit{
 		Author:       signature,
@@ -632,6 +637,150 @@ func TestCommitLogComparesEachCommitWithItsParents(t *testing.T) {
 	want("", "root", "side adds g", "main adds f", "merge side", "merge again, resolving g")
 }
 
+// read_messages answers the messages of the commits a list or log call
+// returns, in its order.
+func read_messages(t *testing.T, thread *sl.Thread, fn func(*sl.Thread, *sl.Builtin, sl.Tuple, []sl.Tuple) (sl.Value, error), args ...sl.Value) []string {
+	t.Helper()
+	value, err := read_call(t, thread, fn, args...)
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	var out []string
+	for _, item := range read_value(t, value).([]any) {
+		out = append(out, item.(map[string]any)["message"].(string))
+	}
+	return out
+}
+
+func read_same(t *testing.T, label string, got []string, want ...string) {
+	t.Helper()
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("%s = %v, want %v", label, got, want)
+	}
+}
+
+// TestCommitListsAreNewestFirst. Both lists walked depth first down first
+// parents, so a merged branch's commits came after the whole main line back
+// to the root, however recent they were.
+func TestCommitListsAreNewestFirst(t *testing.T) {
+	id, repo, thread := read_env_repo(t, "newest")
+	files := func(names ...string) plumbing.Hash {
+		snapshot := map[string]read_file{}
+		for _, name := range names {
+			snapshot[name] = read_text(name)
+		}
+		return read_snapshot(t, repo, snapshot)
+	}
+	root := read_commit(t, repo, nil, files("readme"), "root")
+	main := read_commit(t, repo, []plumbing.Hash{root}, files("readme", "lib/a"), "main adds a")
+	side := read_commit(t, repo, []plumbing.Hash{root}, files("readme", "lib/b"), "side adds b")
+	later := read_commit(t, repo, []plumbing.Hash{main}, files("readme", "lib/a", "notes"), "main adds notes")
+	merge := read_commit(t, repo, []plumbing.Hash{later, side}, files("readme", "lib/a", "lib/b", "notes"), "merge side")
+	read_branch(t, repo, "main", merge)
+
+	// THE POINT: the side branch's commit sits by its time, not after root.
+	read_same(t, "commit list", read_messages(t, thread, api_git_commit_list, sl.String(id), sl.String("main"), sl.MakeInt(10), sl.MakeInt(0)),
+		"merge side", "main adds notes", "side adds b", "main adds a", "root")
+	// A deeper page comes from the remembered walk, in the same order.
+	read_same(t, "second page", read_messages(t, thread, api_git_commit_list, sl.String(id), sl.String("main"), sl.MakeInt(2), sl.MakeInt(2)),
+		"side adds b", "main adds a")
+	read_same(t, "history of lib", read_messages(t, thread, api_git_commit_log, sl.String(id), sl.String("main"), sl.String("lib"), sl.None),
+		"merge side", "side adds b", "main adds a")
+}
+
+// TestCommitLogLeavesOutChangesAMergeDiscarded. A merge that kept the path as
+// one parent had it goes on through that parent only, as git log does, so a
+// change on the other side that the merge threw away is not the path's
+// history. Every parent was walked, and such a change was listed.
+func TestCommitLogLeavesOutChangesAMergeDiscarded(t *testing.T) {
+	id, repo, thread := read_env_repo(t, "discarded")
+	files := func(f, g, h string) plumbing.Hash {
+		return read_snapshot(t, repo, map[string]read_file{"f": read_text(f), "g": read_text(g), "h": read_text(h)})
+	}
+	root := read_commit(t, repo, nil, files("1", "1", "1"), "root")
+	side := read_commit(t, repo, []plumbing.Hash{root}, files("2", "1", "1"), "side changes f")
+	main := read_commit(t, repo, []plumbing.Hash{root}, files("1", "2", "2"), "main changes g and h")
+	merge := read_commit(t, repo, []plumbing.Hash{main, side}, files("1", "2", "1"), "merge, keeping main's f and side's h")
+	read_branch(t, repo, "main", merge)
+
+	log := func(path string) []string {
+		return read_messages(t, thread, api_git_commit_log, sl.String(id), sl.String("main"), sl.String(path), sl.None)
+	}
+	// THE POINT: the merge kept the first parent's f and the second's h, so
+	// neither side's change to them is listed.
+	read_same(t, "history of f", log("f"), "root")
+	read_same(t, "history of h", log("h"), "root")
+	read_same(t, "history of g", log("g"), "main changes g and h", "root")
+}
+
+// TestCommitListsBreakTiesAsGitDoes. Between commits of the same second, git
+// log lists first the one it reached first: a merge's parents in their order.
+func TestCommitListsBreakTiesAsGitDoes(t *testing.T) {
+	id, repo, thread := read_env_repo(t, "ties")
+	when := time.Unix(1800000000, 0)
+	root := read_commit_at(t, repo, nil, read_snapshot(t, repo, map[string]read_file{"readme": read_text("r")}), "root", when.Add(-time.Hour))
+	var parents []plumbing.Hash
+	all := map[string]read_file{"readme": read_text("r")}
+	for _, name := range []string{"p1", "p2", "p3", "p4"} {
+		tree := read_snapshot(t, repo, map[string]read_file{"readme": read_text("r"), "lib/" + name: read_text(name)})
+		parents = append(parents, read_commit_at(t, repo, []plumbing.Hash{root}, tree, name, when))
+		all["lib/"+name] = read_text(name)
+	}
+	merge := read_commit_at(t, repo, parents, read_snapshot(t, repo, all), "octopus", when.Add(time.Second))
+	read_branch(t, repo, "main", merge)
+
+	// THE POINT: the four parents share a second, and come in their order.
+	read_same(t, "commit list", read_messages(t, thread, api_git_commit_list, sl.String(id), sl.String("main"), sl.MakeInt(10), sl.MakeInt(0)),
+		"octopus", "p1", "p2", "p3", "p4", "root")
+	read_same(t, "history of lib", read_messages(t, thread, api_git_commit_log, sl.String(id), sl.String("main"), sl.String("lib"), sl.None),
+		"octopus", "p1", "p2", "p3", "p4")
+}
+
+// TestCommitWalkHoldsFewWaitingCommits. A walk queues a merge's parents all
+// at once; a merge of thousands of parents with long messages would hold every
+// one of them in memory while its walk lasted.
+func TestCommitWalkHoldsFewWaitingCommits(t *testing.T) {
+	_, repo, _ := read_env_repo(t, "wide")
+	when := time.Unix(1800000000, 0)
+	tree := read_snapshot(t, repo, map[string]read_file{"readme": read_text("r")})
+	root := read_commit_at(t, repo, nil, tree, "root", when.Add(-time.Hour))
+	var parents []plumbing.Hash
+	want := []string{"octopus"}
+	for i := range git_log_held + 8 {
+		name := fmt.Sprintf("p%03d", i)
+		parents = append(parents, read_commit_at(t, repo, []plumbing.Hash{root}, tree, name, when))
+		want = append(want, name)
+	}
+	want = append(want, "root")
+	tip, err := repo.CommitObject(read_commit_at(t, repo, parents, tree, "octopus", when.Add(time.Second)))
+	if err != nil {
+		t.Fatalf("tip: %v", err)
+	}
+
+	walk := git_log_start(repo, tip, nil)
+	first, err := walk.Next()
+	if err != nil {
+		t.Fatalf("next: %v", err)
+	}
+	// THE POINT: with every parent waiting, only git_log_held are kept read.
+	held := 0
+	for _, entry := range walk.queue {
+		if entry.commit != nil {
+			held++
+		}
+	}
+	if len(walk.queue) != len(parents) || held > git_log_held {
+		t.Errorf("waiting %d, held %d; want %d waiting, at most %d held", len(walk.queue), held, len(parents), git_log_held)
+	}
+	// The rest are read again in their turn, in the same order.
+	got := []string{first.Message}
+	walk.ForEach(func(c *object.Commit) error {
+		got = append(got, c.Message)
+		return nil
+	})
+	read_same(t, "walk", got, want...)
+}
+
 // TestCommitBetweenMatchesReachability. between walks both histories newest
 // first and stops once everything left is base's; whatever it lists must be
 // exactly what head reaches and base does not, across merges both ways and a
@@ -779,15 +928,19 @@ func TestCommitLogOpensOnlyThePathsFolders(t *testing.T) {
 		tip = read_commit(t, repo, []plumbing.Hash{tip}, read_snapshot(t, repo, files), fmt.Sprintf("other %d", i))
 	}
 	counted, counter := read_counted(t, repo)
-	iter, err := counted.Log(&git.LogOptions{From: tip})
+	start, err := counted.CommitObject(tip)
 	if err != nil {
-		t.Fatalf("log: %v", err)
+		t.Fatalf("tip: %v", err)
 	}
 	counter.reads = map[plumbing.ObjectType]int{}
 	paths := git_path_walker(counted, "lib/g.txt")
+	iter := git_log_start(counted, start, func(c *object.Commit) ([]plumbing.Hash, error) {
+		_, parents, err := paths.touched(c)
+		return parents, err
+	})
 	var touched []string
 	err = iter.ForEach(func(c *object.Commit) error {
-		changed, err := paths.touched(c)
+		changed, _, err := paths.touched(c)
 		if changed {
 			touched = append(touched, c.Message)
 		}
@@ -859,13 +1012,14 @@ func read_history(t *testing.T, repo *git.Repository, count int) plumbing.Hash {
 	return tip
 }
 
-// read_walk lists history from tip in go-git's log order.
+// read_walk lists history from tip in the order commit.list walks it.
 func read_walk(t *testing.T, repo *git.Repository, tip plumbing.Hash) []string {
 	t.Helper()
-	iter, err := repo.Log(&git.LogOptions{From: tip})
+	start, err := repo.CommitObject(tip)
 	if err != nil {
-		t.Fatalf("log: %v", err)
+		t.Fatalf("tip: %v", err)
 	}
+	iter := git_log_start(repo, start, nil)
 	var out []string
 	iter.ForEach(func(c *object.Commit) error {
 		out = append(out, c.Hash.String())
@@ -891,8 +1045,8 @@ func read_page(t *testing.T, thread *sl.Thread, id string, limit, offset int) []
 
 // TestCommitListPagesFollowTheWalk. A page below the first comes from a walk
 // remembered for the repository and tip. Paged in any size, a history with
-// merges lists as go-git walks it, and a push that moves the tip moves the
-// pages with it.
+// merges lists as the first page's walk does, and a push that moves the tip
+// moves the pages with it.
 func TestCommitListPagesFollowTheWalk(t *testing.T) {
 	id, repo, thread := read_env_repo(t, "pages")
 	tip := read_history(t, repo, 300)

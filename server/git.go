@@ -1226,10 +1226,11 @@ func api_git_commit_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl.None, nil // ref not found
 	}
 
-	iter, err := repo.Log(&git.LogOptions{From: *hash})
+	tip, err := repo.CommitObject(*hash)
 	if err != nil {
 		return sl.None, nil // log not found
 	}
+	iter := git_log_start(repo, tip, nil)
 
 	// The first page is read as history is walked. A deeper one comes from
 	// the walk git_walked remembers, so only its own commits are read.
@@ -1283,6 +1284,130 @@ func api_git_commit_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 // git_walk_entries caps how many walks git_walks remembers. Each holds at
 // most git_offset_maximum + git_list_maximum hashes, 220 KB.
 const git_walk_entries = 32
+
+// git_log walks history from a commit in git log's order: newest first by
+// committer time, and between commits of the same second, the one reached
+// first. follow answers the parents a commit's history goes on through; nil
+// follows them all. go-git's own walk goes depth first down first parents,
+// which lists a merged branch's commits after the whole main line back to the
+// root.
+type git_log struct {
+	repo   *git.Repository
+	follow func(*object.Commit) ([]plumbing.Hash, error)
+	queue  git_log_queue
+	queued map[plumbing.Hash]bool
+	count  int
+	held   int
+}
+
+// git_log_held caps how many waiting commits a walk keeps read. The rest keep
+// only their hash and time and are read again when their turn comes, so a
+// merge of thousands of parents does not hold every parent's message at once.
+// Ordinary history never waits on this many.
+const git_log_held = 64
+
+// git_log_entry is a commit waiting in a walk, and when it was queued. commit
+// is nil past git_log_held.
+type git_log_entry struct {
+	hash   plumbing.Hash
+	when   time.Time
+	commit *object.Commit
+	order  int
+}
+
+// git_log_queue holds a walk's waiting commits, the next to list on top.
+type git_log_queue []git_log_entry
+
+func (q git_log_queue) Len() int      { return len(q) }
+func (q git_log_queue) Swap(i, j int) { q[i], q[j] = q[j], q[i] }
+func (q git_log_queue) Less(i, j int) bool {
+	a, b := q[i].when, q[j].when
+	if !a.Equal(b) {
+		return a.After(b)
+	}
+	return q[i].order < q[j].order
+}
+func (q *git_log_queue) Push(x any) { *q = append(*q, x.(git_log_entry)) }
+func (q *git_log_queue) Pop() any {
+	last := (*q)[len(*q)-1]
+	*q = (*q)[:len(*q)-1]
+	return last
+}
+
+func git_log_start(repo *git.Repository, tip *object.Commit, follow func(*object.Commit) ([]plumbing.Hash, error)) *git_log {
+	l := &git_log{repo: repo, follow: follow, queued: map[plumbing.Hash]bool{}}
+	l.add(tip)
+	return l
+}
+
+func (l *git_log) add(c *object.Commit) {
+	l.queued[c.Hash] = true
+	entry := git_log_entry{hash: c.Hash, when: c.Committer.When, order: l.count}
+	if l.held < git_log_held {
+		entry.commit = c
+		l.held++
+	}
+	heap.Push(&l.queue, entry)
+	l.count++
+}
+
+// Next answers the next commit, queueing the parents its history goes on
+// through.
+func (l *git_log) Next() (*object.Commit, error) {
+	if l.queue.Len() == 0 {
+		return nil, io.EOF
+	}
+	entry := heap.Pop(&l.queue).(git_log_entry)
+	c := entry.commit
+	if c != nil {
+		l.held--
+	} else {
+		var err error
+		if c, err = l.repo.CommitObject(entry.hash); err != nil {
+			return nil, err
+		}
+	}
+	parents := c.ParentHashes
+	if l.follow != nil {
+		var err error
+		if parents, err = l.follow(c); err != nil {
+			return nil, err
+		}
+	}
+	for _, hash := range parents {
+		if l.queued[hash] {
+			continue
+		}
+		parent, err := l.repo.CommitObject(hash)
+		if err != nil {
+			return nil, err
+		}
+		l.add(parent)
+	}
+	return c, nil
+}
+
+// ForEach calls each with every commit in turn, as go-git's walks do: an
+// each that answers storer.ErrStop ends the walk without error.
+func (l *git_log) ForEach(each func(*object.Commit) error) error {
+	for {
+		c, err := l.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := each(c); err != nil {
+			if err == storer.ErrStop {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+func (l *git_log) Close() {}
 
 // git_walk is how far a commit listing has walked history from one tip, in
 // the order it lists commits, and whether that reached the end.
@@ -1460,13 +1585,17 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl.None, nil // ref not found
 	}
 
-	iter, err := repo.Log(&git.LogOptions{From: *hash})
+	tip, err := repo.CommitObject(*hash)
 	if err != nil {
 		return sl.None, nil // log not found
 	}
 
 	ctx := starlark_context(t)
 	paths := git_path_walker(repo, path)
+	iter := git_log_start(repo, tip, func(c *object.Commit) ([]plumbing.Hash, error) {
+		_, parents, err := paths.touched(c)
+		return parents, err
+	})
 	var commits []map[string]any
 	err = iter.ForEach(func(c *object.Commit) error {
 		if len(commits) >= limit {
@@ -1475,7 +1604,7 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		touched, err := paths.touched(c)
+		touched, _, err := paths.touched(c)
 		if err != nil {
 			return err
 		}
@@ -1535,28 +1664,31 @@ func git_path_walker(repo *git.Repository, path string) *git_paths {
 	return &git_paths{repo: repo, segments: segments, trees: trees, commits: map[plumbing.Hash]git_path_entry{}}
 }
 
-// touched reports whether c changed the path: a commit with no parent created
-// it, one with a parent left it different, and a merge left it different from
-// every parent. A merge that took the path whole from one side is that side's
-// change, not its own.
-func (w *git_paths) touched(c *object.Commit) (bool, error) {
+// touched reports whether c changed the path, and the parents the path's
+// history goes on through. A commit with no parent created the path if it
+// holds it. One that left the path as a parent had it did not change it, and
+// as in git log its history goes on through the first such parent only: what
+// the others did to the path was not kept, so their commits are not its
+// history. One that left the path unlike every parent changed it, and its
+// history goes on through them all.
+func (w *git_paths) touched(c *object.Commit) (bool, []plumbing.Hash, error) {
 	entry, err := w.at(c.Hash, c.TreeHash)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	if len(c.ParentHashes) == 0 {
-		return entry.found, nil
+		return entry.found, nil, nil
 	}
 	for _, parent := range c.ParentHashes {
 		previous, err := w.commit(parent)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		if previous == entry {
-			return false, nil
+			return false, []plumbing.Hash{parent}, nil
 		}
 	}
-	return true, nil
+	return true, c.ParentHashes, nil
 }
 
 // commit answers the entry at the path in the commit with this hash.

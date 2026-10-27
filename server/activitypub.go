@@ -831,10 +831,13 @@ func activitypub_actor(user *User, a *actor, row map[string]any) map[string]any 
 		if label == "" {
 			label = href
 		}
+		// The link's text is the whole address, as Mastodon writes its own
+		// fields: it verifies a remote account's field only where the text is
+		// the href, and hides the scheme with the invisible class.
 		attachments = append(attachments, map[string]any{
 			"type":  "PropertyValue",
 			"name":  label,
-			"value": `<a href="` + html.EscapeString(href) + `" rel="me nofollow noopener noreferrer" target="_blank">` + html.EscapeString(strings.TrimPrefix(href, "https://")) + `</a>`,
+			"value": `<a href="` + html.EscapeString(href) + `" rel="me nofollow noopener noreferrer" target="_blank" translate="no"><span class="invisible">https://</span><span class="">` + html.EscapeString(strings.TrimPrefix(href, "https://")) + `</span><span class="invisible"></span></a>`,
 		})
 	}
 	if len(attachments) > 0 {

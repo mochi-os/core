@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	xhtml "golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
 // create_activitypub_test_env is create_delivery_test_env with alice's handle
@@ -84,6 +86,33 @@ func activitypub_get(t *testing.T, path string) (*httptest.ResponseRecorder, map
 	var document map[string]any
 	json.Unmarshal(w.Body.Bytes(), &document)
 	return w, document
+}
+
+// activitypub_field_verifiable reads a profile field's value as Mastodon does
+// before verifying it: one element, a link, whose text is its href.
+func activitypub_field_verifiable(value string) bool {
+	nodes, err := xhtml.ParseFragment(strings.NewReader(value), &xhtml.Node{Type: xhtml.ElementNode, Data: "div", DataAtom: atom.Div})
+	if err != nil || len(nodes) != 1 || nodes[0].Type != xhtml.ElementNode || nodes[0].Data != "a" {
+		return false
+	}
+	href := ""
+	for _, a := range nodes[0].Attr {
+		if a.Key == "href" {
+			href = a.Val
+		}
+	}
+	var text strings.Builder
+	var walk func(*xhtml.Node)
+	walk = func(n *xhtml.Node) {
+		if n.Type == xhtml.TextNode {
+			text.WriteString(n.Data)
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(nodes[0])
+	return href != "" && href == text.String()
 }
 
 // signed_post posts an activity to a path, signed as the remote person, with
@@ -219,6 +248,11 @@ func TestActivityPubActor(t *testing.T) {
 	}
 	if field, _ := attachments[0].(map[string]any); field["type"] != "PropertyValue" || field["name"] != "Mastodon" || !strings.Contains(field["value"].(string), `rel="me nofollow noopener noreferrer"`) || !strings.Contains(field["value"].(string), "https://mastodon.example/@alice") {
 		t.Errorf("attachment = %v", attachments[0])
+	}
+	// Mastodon verifies a remote account's field only where the value is one
+	// link whose text is its href (Account::Field#extract_url_from_html).
+	if field, _ := attachments[0].(map[string]any); !activitypub_field_verifiable(field["value"].(string)) {
+		t.Errorf("THE POINT: the field's link text is not its href, so Mastodon never verifies it: %v", field["value"])
 	}
 
 	// Collections answer their counts.

@@ -1419,30 +1419,56 @@ type git_walk struct {
 
 // git_walks remembers recent walks by repository and tip, so a deeper page of
 // a commit listing does not walk again past every commit above it. A push
-// moves the tip, so a remembered walk never goes stale.
+// moves the tip, so a remembered walk never goes stale. walking holds the
+// walks under way, each closed when its walk ends.
 var git_walks = struct {
 	sync.Mutex
 	entries map[string]*git_walk
+	walking map[string]chan struct{}
 	clock   int64
-}{entries: map[string]*git_walk{}}
+}{entries: map[string]*git_walk{}, walking: map[string]chan struct{}{}}
 
 // git_walked answers the hashes of at least need commits that iter walks, or
 // of all of them if history is shorter, remembering them under key. A walk
 // goes twice as deep as asked and as the one before, so paging to the end of
-// a history walks it a few times rather than once a page.
+// a history walks it a few times rather than once a page. A request that
+// finds the same history being walked waits for that walk rather than walking
+// it too, so one key's walks run one at a time and each goes deeper than the
+// one it replaces.
 func git_walked(ctx context.Context, iter object.CommitIter, key string, need int) ([]plumbing.Hash, error) {
 	depth := 2 * need
 	git_walks.Lock()
-	if walk := git_walks.entries[key]; walk != nil {
-		git_walks.clock++
-		walk.used = git_walks.clock
-		if walk.complete || len(walk.hashes) >= need {
-			git_walks.Unlock()
-			return walk.hashes, nil
+	for {
+		if walk := git_walks.entries[key]; walk != nil {
+			git_walks.clock++
+			walk.used = git_walks.clock
+			if walk.complete || len(walk.hashes) >= need {
+				git_walks.Unlock()
+				return walk.hashes, nil
+			}
+			depth = max(depth, 2*len(walk.hashes))
 		}
-		depth = max(depth, 2*len(walk.hashes))
+		walking := git_walks.walking[key]
+		if walking == nil {
+			break
+		}
+		git_walks.Unlock()
+		select {
+		case <-walking:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		git_walks.Lock()
 	}
+	done := make(chan struct{})
+	git_walks.walking[key] = done
 	git_walks.Unlock()
+	defer func() {
+		git_walks.Lock()
+		delete(git_walks.walking, key)
+		git_walks.Unlock()
+		close(done)
+	}()
 	depth = max(min(depth, git_offset_maximum+git_list_maximum), need)
 
 	var hashes []plumbing.Hash

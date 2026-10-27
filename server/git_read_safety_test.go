@@ -1164,6 +1164,161 @@ func TestCommitListRemembersFewWalks(t *testing.T) {
 	}
 }
 
+// read_held is a walk that says when it starts and, given a release, waits for
+// it before walking.
+type read_held struct {
+	object.CommitIter
+	started chan struct{}
+	release chan struct{}
+}
+
+func read_hold(t *testing.T, repo *git.Repository, tip plumbing.Hash, release chan struct{}) *read_held {
+	t.Helper()
+	start, err := repo.CommitObject(tip)
+	if err != nil {
+		t.Fatalf("tip: %v", err)
+	}
+	return &read_held{CommitIter: git_log_start(repo, start, nil), started: make(chan struct{}), release: release}
+}
+
+func (h *read_held) ForEach(each func(*object.Commit) error) error {
+	close(h.started)
+	if h.release != nil {
+		<-h.release
+	}
+	return h.CommitIter.ForEach(each)
+}
+
+// read_walked is what a git_walked call answered.
+type read_walked struct {
+	hashes []plumbing.Hash
+	err    error
+}
+
+// read_walking calls git_walked in a goroutine of its own.
+func read_walking(ctx context.Context, iter object.CommitIter, key string, need int) chan read_walked {
+	out := make(chan read_walked, 1)
+	go func() {
+		hashes, err := git_walked(ctx, iter, key, need)
+		out <- read_walked{hashes, err}
+	}()
+	return out
+}
+
+func read_answer(t *testing.T, label string, answer chan read_walked) read_walked {
+	t.Helper()
+	select {
+	case walked := <-answer:
+		return walked
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s never answered", label)
+	}
+	return read_walked{}
+}
+
+// read_fresh_walks starts a test with no walks remembered or under way.
+func read_fresh_walks(t *testing.T) {
+	git_walks.Lock()
+	entries, walking := git_walks.entries, git_walks.walking
+	git_walks.entries, git_walks.walking = map[string]*git_walk{}, map[string]chan struct{}{}
+	git_walks.Unlock()
+	t.Cleanup(func() {
+		git_walks.Lock()
+		git_walks.entries, git_walks.walking = entries, walking
+		git_walks.Unlock()
+	})
+}
+
+// read_settle is long enough for a request that does not wait to have walked.
+const read_settle = 200 * time.Millisecond
+
+// TestCommitListWalksAHistoryOnce. Deeper pages of one history asked for
+// together each walked it, and whichever walk ended last was remembered, so a
+// shallower walk could replace a deeper one.
+func TestCommitListWalksAHistoryOnce(t *testing.T) {
+	_, repo, _ := read_env_repo(t, "once")
+	tip := read_history(t, repo, 200)
+	read_fresh_walks(t)
+	ctx := context.Background()
+
+	// The same page asked for while its walk is under way.
+	key := "same " + tip.String()
+	release := make(chan struct{})
+	first := read_hold(t, repo, tip, release)
+	first_answer := read_walking(ctx, first, key, 60)
+	<-first.started
+	second := read_hold(t, repo, tip, nil)
+	second_answer := read_walking(ctx, second, key, 60)
+	time.Sleep(read_settle)
+	close(release)
+	a, b := read_answer(t, "first", first_answer), read_answer(t, "second", second_answer)
+	if a.err != nil || b.err != nil || len(a.hashes) != 120 || len(b.hashes) != 120 {
+		t.Errorf("answered %d (%v) and %d (%v), want 120 each", len(a.hashes), a.err, len(b.hashes), b.err)
+	}
+	select {
+	case <-second.started:
+		t.Error("THE POINT: the second request walked the history too")
+	default:
+	}
+
+	// A deeper page asked for while a shallower one's walk is under way.
+	key = "deeper " + tip.String()
+	release = make(chan struct{})
+	shallow := read_hold(t, repo, tip, release)
+	shallow_answer := read_walking(ctx, shallow, key, 10)
+	<-shallow.started
+	deep_answer := read_walking(ctx, read_hold(t, repo, tip, nil), key, 60)
+	time.Sleep(read_settle)
+	close(release)
+	read_answer(t, "shallow", shallow_answer)
+	read_answer(t, "deep", deep_answer)
+	git_walks.Lock()
+	remembered := len(git_walks.entries[key].hashes)
+	git_walks.Unlock()
+	if remembered != 120 {
+		t.Errorf("THE POINT: a walk of %d replaced the deeper one of 120", remembered)
+	}
+}
+
+// TestCommitListWaitEndsWithItsRequest. A request waiting on another's walk
+// gives up when it is cancelled, and walks itself when the walk it waited on
+// fails.
+func TestCommitListWaitEndsWithItsRequest(t *testing.T) {
+	_, repo, _ := read_env_repo(t, "handover")
+	tip := read_history(t, repo, 200)
+	read_fresh_walks(t)
+	key := "handover " + tip.String()
+
+	release := make(chan struct{})
+	walker, cancel := context.WithCancel(context.Background())
+	first := read_hold(t, repo, tip, release)
+	first_answer := read_walking(walker, first, key, 60)
+	<-first.started
+
+	gone, stop := context.WithCancel(context.Background())
+	stop()
+	select {
+	case walked := <-read_walking(gone, read_hold(t, repo, tip, nil), key, 60):
+		if walked.err != context.Canceled {
+			t.Errorf("a cancelled wait answered %v", walked.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("THE POINT: a cancelled request went on waiting for the walk")
+	}
+
+	waiter := read_hold(t, repo, tip, nil)
+	waiter_answer := read_walking(context.Background(), waiter, key, 60)
+	time.Sleep(read_settle)
+	cancel()
+	close(release)
+	if walked := read_answer(t, "walker", first_answer); walked.err != context.Canceled {
+		t.Errorf("the cancelled walk answered %v", walked.err)
+	}
+	if walked := read_answer(t, "waiter", waiter_answer); walked.err != nil || len(walked.hashes) != 120 {
+		t.Errorf("THE POINT: after the walk it waited on failed, the waiting request answered %d (%v), want 120", len(walked.hashes), walked.err)
+	}
+}
+
 // TestCommitBetweenIsBounded. between walked every ancestor of base into a map
 // and every ancestor of head into the result. Both walks stop at
 // git_offset_maximum commits and the result at git_list_maximum, and the

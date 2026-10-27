@@ -30,6 +30,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/storage/filesystem"
+	"github.com/go-git/go-git/v5/storage/memory"
 )
 
 // store_packs lists a repository's packs.
@@ -201,7 +202,7 @@ func TestPushNotKeptStoresItsObjects(t *testing.T) {
 		t.Fatalf("staging a blob: %v", err)
 	}
 
-	if err := git_store(staging, path); err != nil {
+	if err := git_store(staging, path, git_unmetered); err != nil {
 		t.Fatalf("git_store: %v", err)
 	}
 	if _, err := repo.Storer.EncodedObject(plumbing.AnyObject, hash); err != nil {
@@ -718,7 +719,7 @@ func TestPushCutAtItsChecksumIsNotKept(t *testing.T) {
 			var all []plumbing.Hash
 			for i := 0; i < 2; i++ {
 				staging, objects := store_cut(t, path, i, tt.shape)
-				if err := git_store(staging, path); err != nil {
+				if err := git_store(staging, path, git_unmetered); err != nil {
 					t.Fatalf("git_store: %v", err)
 				}
 				all = append(all, objects...)
@@ -750,7 +751,7 @@ func TestPushCutAtItsChecksumIsNotKept(t *testing.T) {
 func TestPushWholeIsKept(t *testing.T) {
 	path, _ := repack_test_empty(t)
 	staging, _ := store_cut(t, path, 0, func(data []byte) []byte { return data })
-	if err := git_store(staging, path); err != nil {
+	if err := git_store(staging, path, git_unmetered); err != nil {
 		t.Fatalf("git_store: %v", err)
 	}
 	if packs := store_packs(t, path); len(packs) != 1 {
@@ -785,7 +786,7 @@ func TestPushIsOnDiskBeforeItIsFound(t *testing.T) {
 	path, _ := repack_test_empty(t)
 	staging, _ := store_cut(t, path, 0, func(data []byte) []byte { return data })
 	flushed := store_flushes(t, path)
-	if err := git_store(staging, path); err != nil {
+	if err := git_store(staging, path, git_unmetered); err != nil {
 		t.Fatalf("git_store: %v", err)
 	}
 	packs := store_packs(t, path)
@@ -934,6 +935,92 @@ func TestRepackLeavesPacksReadOnly(t *testing.T) {
 		}
 		if information.Mode().Perm() != 0444 {
 			t.Errorf("%s is mode %o, want 0444", filepath.Base(file), information.Mode().Perm())
+		}
+	}
+}
+
+// store_sliver stages a thin push of one object: the first 100 bytes of a 64KB
+// file the repository already holds, sent as a delta against it. The meter
+// charges the object's 100 bytes; keeping the pack appends the whole file.
+func store_sliver(t *testing.T) (string, *git.Repository, string, plumbing.Hash, plumbing.Hash) {
+	t.Helper()
+	path, repo := repack_test_empty(t)
+	large := make([]byte, 64<<10)
+	rand.New(rand.NewSource(7)).Read(large)
+	stored := repo.Storer.NewEncodedObject()
+	stored.SetType(plumbing.BlobObject)
+	writer, _ := stored.Writer()
+	writer.Write(large)
+	writer.Close()
+	base, err := repo.Storer.SetEncodedObject(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	staging, err := git_quarantine(path)
+	if err != nil {
+		t.Fatalf("git_quarantine: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(staging) })
+	staged := filesystem.NewStorage(osfs.New(staging), cache.NewObjectLRUDefault())
+	sliver := staged.NewEncodedObject()
+	sliver.SetType(plumbing.BlobObject)
+	writer, _ = sliver.Writer()
+	writer.Write(large[:100])
+	writer.Close()
+	hash, err := staged.SetEncodedObject(sliver)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The pack is built from a store holding both, as the client's does.
+	both := memory.NewStorage()
+	for _, object := range []plumbing.EncodedObject{stored, sliver} {
+		if _, err := both.SetEncodedObject(object); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, deltas, err := git_pack_thin(both, []plumbing.Hash{hash}, map[plumbing.Hash]plumbing.Hash{hash: base})
+	if err != nil || deltas != 1 {
+		t.Fatalf("setup: %d deltas, %v", deltas, err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, git_push_pack), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path, repo, staging, hash, base
+}
+
+// A thin pack's bases are appended whole, and the meter saw none of them: a
+// push of slivers of large files cost a few bytes each against the quota and
+// stored every file again. They are charged now, and when they do not fit the
+// pack is not kept; its objects are stored one by one, needing no base.
+func TestPushBasesAreCharged(t *testing.T) {
+	path, repo, staging, hash, _ := store_sliver(t)
+	if err := git_store(staging, path, 1000); err != nil {
+		t.Fatalf("git_store: %v", err)
+	}
+	if packs := store_packs(t, path); len(packs) != 0 {
+		t.Errorf("THE POINT: a push whose bases do not fit what the account may store was kept as packs %v", packs)
+	}
+	if _, err := repo.Storer.EncodedObject(plumbing.AnyObject, hash); err != nil {
+		t.Errorf("the pushed object was not stored: %v", err)
+	}
+}
+
+// Control: with room for its bases, or no quota at all, the pack is kept
+// whole, the base appended.
+func TestPushBasesFitAndAreKept(t *testing.T) {
+	for _, limit := range []int64{1 << 30, git_unmetered} {
+		path, _, staging, _, _ := store_sliver(t)
+		if err := git_store(staging, path, limit); err != nil {
+			t.Fatalf("git_store: %v", err)
+		}
+		packs := store_packs(t, path)
+		if len(packs) != 1 {
+			t.Fatalf("limit %d: the push left packs %v, want the one it came in", limit, packs)
+		}
+		if objects, _ := store_file(t, packs[0]); objects != 2 {
+			t.Errorf("limit %d: the kept pack holds %d objects, want the sliver and its base", limit, objects)
 		}
 	}
 }

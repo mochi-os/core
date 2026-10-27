@@ -288,3 +288,42 @@ func TestGitPushCeilings(t *testing.T) {
 		t.Error("an object over the remaining quota was stored")
 	}
 }
+
+// The push hands what its own objects left of the budget to git_store, which
+// charges a thin pack's bases against it: the loader keeps the store it built
+// so that is known once the pack has been read.
+func TestGitLoaderReportsWhatIsLeft(t *testing.T) {
+	user, _ := create_git_test_env(t)
+	if err := git_init(user, test_app, "repo1"); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	endpoint := &transport.Endpoint{Path: git_repo_path(user, test_app, "repo1")}
+
+	if left := (&git_loader{}).left(); left != git_unmetered {
+		t.Errorf("a loader that built no store reports %d left, want unmetered", left)
+	}
+	unmetered := &git_loader{}
+	if _, err := unmetered.Load(endpoint); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if left := unmetered.left(); left != git_unmetered {
+		t.Errorf("an unmetered push reports %d left, want unmetered", left)
+	}
+
+	metered := &git_loader{budget: 4096}
+	store, err := metered.Load(endpoint)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	object := store.NewEncodedObject()
+	object.SetType(plumbing.BlobObject)
+	writer, _ := object.Writer()
+	writer.Write(make([]byte, 1000))
+	writer.Close()
+	if _, err := store.SetEncodedObject(object); err != nil {
+		t.Fatal(err)
+	}
+	if left := metered.left(); left != 3096 {
+		t.Errorf("a push of 1000 bytes against 4096 reports %d left, want 3096", left)
+	}
+}

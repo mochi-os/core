@@ -103,6 +103,9 @@ var api_git = sls.FromStringDict(sl.String("mochi.git"), sl.StringDict{
 type git_loader struct {
 	budget  int64
 	staging string
+	// storage is the metered store Load built, kept so the push can learn
+	// how much of its budget the pack's own objects left.
+	storage *git_storage
 }
 
 // Load loads a storer.Storer for the given endpoint path
@@ -123,7 +126,17 @@ func (l *git_loader) Load(ep *transport.Endpoint) (storer.Storer, error) {
 	if l.staging != "" {
 		wrapped.staging = filesystem.NewStorage(osfs.New(l.staging), cache.NewObjectLRUDefault())
 	}
+	l.storage = wrapped
 	return wrapped, nil
+}
+
+// left answers the decoded bytes the push's account may still store once the
+// objects Load's store was handed are counted, or git_unmetered.
+func (l *git_loader) left() int64 {
+	if l.storage == nil || !l.storage.metered {
+		return git_unmetered
+	}
+	return l.storage.remaining
 }
 
 // git_storage wraps storer.Storer to hide PackfileWriter, so the packfile
@@ -6337,10 +6350,14 @@ func (t *git_tee) finish() {
 	}
 }
 
+// git_unmetered is the limit of a push whose account has no storage quota.
+const git_unmetered = -1
+
 // git_store moves an accepted push into the repository: its pack as it came,
-// or, when that cannot be kept, the objects it held one by one.
-func git_store(staging, repo_path string) error {
-	err := git_keep(staging, repo_path)
+// or, when that cannot be kept, the objects it held one by one. limit is the
+// decoded bytes the account may still store, or git_unmetered.
+func git_store(staging, repo_path string, limit int64) error {
+	err := git_keep(staging, repo_path, limit)
 	if err == nil {
 		return nil
 	}
@@ -6358,7 +6375,7 @@ func git_store(staging, repo_path string) error {
 // index-pack --fix-thin does, since a stored pack must hold every base its
 // deltas need. The pack is checked and indexed before anything is written to
 // the repository.
-func git_keep(staging, repo_path string) error {
+func git_keep(staging, repo_path string, limit int64) error {
 	file, err := os.OpenFile(filepath.Join(staging, git_push_pack), os.O_RDWR, 0)
 	if err != nil {
 		return err
@@ -6417,6 +6434,24 @@ func git_keep(staging, repo_path string) error {
 		return fmt.Errorf("%d bytes follow the pack's checksum", information.Size()-end)
 	}
 	if len(bases) > 0 {
+		// The bases are whole copies of objects the repository holds, and the
+		// meter saw none of them: it charged the pushed objects, a few bytes
+		// for a delta that keeps a sliver of a large file. Charged here in the
+		// meter's own unit, and when they do not fit the pack is not kept: its
+		// objects are stored one by one, each whole, needing no base.
+		if limit != git_unmetered {
+			var size int64
+			for _, hash := range bases {
+				base, err := repository.EncodedObject(plumbing.AnyObject, hash)
+				if err != nil {
+					return err
+				}
+				size += base.Size()
+			}
+			if size > limit {
+				return fmt.Errorf("the %d bytes of bases the pack needs exceed the %d the account may still store", size, limit)
+			}
+		}
 		if err := git_thicken(file, repository, count, bases); err != nil {
 			return err
 		}
@@ -6805,7 +6840,8 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, ow
 	}
 	defer os.RemoveAll(staging)
 
-	session, err := server.NewServer(&git_loader{budget: budget, staging: staging}).NewReceivePackSession(ep, nil)
+	loader := &git_loader{budget: budget, staging: staging}
+	session, err := server.NewServer(loader).NewReceivePackSession(ep, nil)
 	if err != nil {
 		info("git_receive_pack: failed to create session for %s: %v", repo_path, err)
 		c.String(http.StatusInternalServerError, "Failed to create session") // i18n-ok: git protocol, read by the client not a person
@@ -6858,7 +6894,9 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, ow
 		// touched.
 		info("git_receive_pack: %s: %v", repo_path, err)
 	} else {
-		if err := git_store(staging, repo_path); err != nil {
+		// What the pack's own objects left of the account's storage, for the
+		// bases a thin pack has appended to it (git_keep).
+		if err := git_store(staging, repo_path, loader.left()); err != nil {
 			warn("git_receive_pack: unable to promote staged objects for %s: %v", repo_path, err)
 			c.String(http.StatusInternalServerError, "Failed to store push") // i18n-ok: git protocol, read by the client not a person
 			return true

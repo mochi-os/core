@@ -1557,6 +1557,56 @@ func inbound_process() int {
 // account: a Delete of the actor goes to every follower's server, signed with
 // the key the tombstone keeps, and the id answers gone from now on. The
 // account's own rows go with the account.
+// activitypub_follower_inboxes lists where an account's followers are reached:
+// a server's shared inbox once for all its followers, else each one's own.
+func activitypub_follower_inboxes(user *User, account string) []string {
+	inboxes := []string{}
+	seen := map[string]bool{}
+	rows, _ := db_user(user, "user").rows("select inbox, shared from followers where account=?", account)
+	for _, row := range rows {
+		inbox := row_string(row, "shared")
+		if inbox == "" {
+			inbox = row_string(row, "inbox")
+		}
+		if inbox != "" && !seen[inbox] {
+			seen[inbox] = true
+			inboxes = append(inboxes, inbox)
+		}
+	}
+	return inboxes
+}
+
+// activitypub_update_send sends a hosted account's document as it stands to
+// its followers' servers as an Update, so the copy each keeps - its name,
+// avatar, summary, links, key and aliases - follows the account. Returns how
+// many deliveries it queued.
+func activitypub_update_send(user *User, account string) int {
+	a := actor_get(account)
+	if a == nil || a.Network != "fediverse" || a.Deleted != 0 {
+		return 0
+	}
+	row := account_hosted_get(user, account)
+	if row == nil {
+		return 0
+	}
+	inboxes := activitypub_follower_inboxes(user, account)
+	if len(inboxes) == 0 {
+		return 0
+	}
+	actor_id := account_url(a.Domain, a.ID)
+	document := activitypub_actor(user, a, row)
+	delete(document, "@context")
+	activity := map[string]any{
+		"@context": activitystreams,
+		"id":       actor_id + "#updates/" + strconv.FormatInt(now(), 10),
+		"type":     "Update",
+		"actor":    actor_id,
+		"to":       []string{activitystreams_public},
+		"object":   document,
+	}
+	return deliver(user, account, "fediverse", inboxes, []byte(json_encode(activity)))
+}
+
 func activitypub_account_remove(user *User, id string) {
 	a := actor_get(id)
 	if a == nil || a.Network != "fediverse" || a.Deleted != 0 {

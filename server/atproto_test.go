@@ -936,6 +936,27 @@ func TestAtprotoCreateRefused(t *testing.T) {
 	}
 }
 
+// TestAtprotoProfileRefresh: when the person's own profile changes, which the
+// people app reports, the profile record of their hosted Bluesky account is
+// written again with it.
+func TestAtprotoProfileRefresh(t *testing.T) {
+	alice, _ := create_atproto_test_env(t)
+	if err := atproto_account_create(context.Background(), alice, "b1"); err != nil {
+		t.Fatal(err)
+	}
+	saved := account_change_delay
+	account_change_delay = 20 * time.Millisecond
+	t.Cleanup(func() { account_change_delay = saved })
+	db_open("db/users.db").exec("update entities set name='Alice Liddell' where user=? and class='person'", alice.UID)
+	if _, err := sl.Call(atproto_thread(alice), sl.NewBuiltin("mochi.account.refresh", api_account_refresh), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, value := repository_record(alice, "b1", "app.bsky.actor.profile", "self"); value["displayName"] != "Alice Liddell" {
+		t.Errorf("THE POINT: the profile record follows the person's profile: %v", value)
+	}
+}
+
 // TestAtprotoReaches: the host check itself.
 func TestAtprotoReaches(t *testing.T) {
 	saved := atproto_lookup

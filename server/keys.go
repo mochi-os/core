@@ -1318,6 +1318,11 @@ func api_account_key_replace(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 			return sl_error(fn, "the new key is made but not yet announced: %v", err)
 		}
 	}
+	// The fediverse learns the new key from the document, sent to the
+	// followers' servers.
+	if row["type"] == "fediverse" {
+		account_changed(user, row["id"].(string))
+	}
 	return sl.True, nil
 }
 

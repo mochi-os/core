@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	sl "go.starlark.net/starlark"
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 )
@@ -287,6 +288,138 @@ func TestActivityPubActor(t *testing.T) {
 	w = activitypub_request(t, httptest.NewRequest("GET", "https://example.com/~/authorize?uri=acct%3Abob%40remote.example", nil))
 	if w.Code != http.StatusFound || w.Header().Get("Location") != "/feeds/find?link=acct%3Abob%40remote.example" {
 		t.Errorf("authorize: %d %s", w.Code, w.Header().Get("Location"))
+	}
+}
+
+// TestActivityPubActorUpdate: a hosted account's changed document goes to its
+// followers' servers as an Update, once to each server and once for a run of
+// edits, when its name, its automated mark or its aliases change, when the
+// person shows another account on their profile, when its key is replaced and
+// when the person's own profile changes; a change the document does not show
+// sends nothing.
+func TestActivityPubActorUpdate(t *testing.T) {
+	alice, _ := create_activitypub_test_env(t)
+	db := db_user(alice, "user")
+	db.exec("insert into followers (account, actor, inbox, shared, created) values ('f1', 'https://remote.example/u/bob', 'https://remote.example/u/bob/inbox', 'https://remote.example/inbox', 1)")
+	db.exec("insert into followers (account, actor, inbox, shared, created) values ('f1', 'https://remote.example/u/carol', 'https://remote.example/u/carol/inbox', 'https://remote.example/inbox', 1)")
+	db.exec("insert into followers (account, actor, inbox, shared, created) values ('f1', 'https://other.example/u/dan', 'https://other.example/u/dan/inbox', '', 1)")
+	networks := db_open("db/networks.db")
+	saved := account_change_delay
+	account_change_delay = 20 * time.Millisecond
+	t.Cleanup(func() { account_change_delay = saved })
+	// The documents queued since the last look, by inbox; the queue is then
+	// emptied.
+	sent := func(accounts ...string) map[string]map[string]any {
+		account := "f1"
+		if len(accounts) > 0 {
+			account = accounts[0]
+		}
+		time.Sleep(200 * time.Millisecond)
+		rows, _ := networks.rows("select inbox, body from deliveries where account=?", account)
+		networks.exec("delete from deliveries")
+		out := map[string]map[string]any{}
+		for _, row := range rows {
+			var activity map[string]any
+			json.Unmarshal([]byte(row_string(row, "body")), &activity)
+			if _, twice := out[row_string(row, "inbox")]; twice {
+				t.Errorf("THE POINT: %s sent the Update twice", row_string(row, "inbox"))
+			}
+			out[row_string(row, "inbox")] = activity
+		}
+		return out
+	}
+	expect := func(why string, got map[string]map[string]any) map[string]any {
+		t.Helper()
+		if len(got) != 2 || got["https://remote.example/inbox"] == nil || got["https://other.example/u/dan/inbox"] == nil {
+			t.Fatalf("THE POINT: %s: Update sent to %v, want each server once", why, got)
+		}
+		activity := got["https://remote.example/inbox"]
+		document, _ := activity["object"].(map[string]any)
+		if activity["type"] != "Update" || activity["actor"] != "https://example.com/~f1" || document["id"] != "https://example.com/~f1" {
+			t.Fatalf("%s: activity = %v", why, activity)
+		}
+		if _, set := document["@context"]; set {
+			t.Errorf("%s: the document carries its own @context inside the activity", why)
+		}
+		return document
+	}
+
+	app := create_external_app("app4")
+	permission_grant(alice, app.id, "accounts/write")
+	permission_grant(alice, app.id, "accounts/read")
+	thread := create_test_thread(alice, app)
+	update := func(id string, key string, value sl.Value) {
+		t.Helper()
+		if _, err := sl.Call(thread, sl.NewBuiltin("mochi.account.update", api_account_update), sl.Tuple{sl.String(id)}, []sl.Tuple{{sl.String(key), value}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A run of edits goes out once, as the document then stands.
+	update("f1", "label", sl.String("Alice Liddell"))
+	update("f1", "automated", sl.True)
+	document := expect("renamed and marked automated", sent())
+	if document["name"] != "Alice Liddell" || document["type"] != "Service" {
+		t.Errorf("THE POINT: the Update carries the document as it stands: %v", document)
+	}
+
+	// The name alone.
+	update("f1", "label", sl.String("Alice"))
+	if document := expect("renamed", sent()); document["name"] != "Alice" {
+		t.Errorf("renamed: %v", document["name"])
+	}
+
+	// The automated mark alone, back to a person.
+	update("f1", "automated", sl.False)
+	if document := expect("marked a person", sent()); document["type"] != "Person" {
+		t.Errorf("marked a person: %v", document["type"])
+	}
+
+	// A change the document does not show sends nothing.
+	update("f1", "enabled", sl.True)
+	if got := sent(); len(got) != 0 {
+		t.Errorf("an unseen change sent %v", got)
+	}
+
+	// Showing another account on the profile changes the links f1 carries.
+	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('m1', 'mastodon', '', '@alice@mastodon.example', '{\"url\":\"https://mastodon.example/@alice\"}', 1, 1)")
+	update("m1", "profile", sl.True)
+	expect("another account shown on the profile", sent())
+
+	// The aliases a move from elsewhere needs.
+	update("f1", "aliases", sl.NewList(nil))
+	expect("aliases set", sent())
+
+	// A new key, which the followers' servers learn from the document.
+	if _, err := sl.Call(thread, sl.NewBuiltin("mochi.account.key.replace", api_account_key_replace), sl.Tuple{sl.String("f1")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	document = expect("key replaced", sent())
+	key, _ := document["publicKey"].(map[string]any)
+	if key["publicKeyPem"] != keypair_get(alice, "f1", key_signing).Public {
+		t.Error("THE POINT: the Update carries the new key")
+	}
+
+	// The person's own profile, which the people app reports.
+	if _, err := sl.Call(thread, sl.NewBuiltin("mochi.account.refresh", api_account_refresh), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	expect("the person's profile changed", sent())
+
+	// A community's document, its description changed.
+	actor_register(alice, "g1", "fediverse", "example.com", "books")
+	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('g1', 'fediverse', 'Books', '!books@example.com', '{\"hosted\":true,\"handle\":\"books\",\"domain\":\"example.com\",\"kind\":\"group\"}', 1, 1)")
+	db.exec("insert into followers (account, actor, inbox, shared, created) values ('g1', 'https://other.example/u/dan', 'https://other.example/u/dan/inbox', '', 1)")
+	update("g1", "summary", sl.String("Books and reading"))
+	if got := sent("g1"); len(got) != 1 || got["https://other.example/u/dan/inbox"]["type"] != "Update" {
+		t.Errorf("THE POINT: a community's changed description goes to its followers: %v", got)
+	}
+
+	// With no followers there is nowhere to send it.
+	db.exec("delete from followers")
+	update("f1", "label", sl.String("Alice L"))
+	if got := sent(); len(got) != 0 {
+		t.Errorf("an account with no followers sent %v", got)
 	}
 }
 

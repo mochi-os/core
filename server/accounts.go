@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -339,6 +340,7 @@ var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"profile":       sl.NewBuiltin("mochi.account.profile", api_account_profile),
 	"providers":     sl.NewBuiltin("mochi.account.providers", api_account_providers),
 	"read":          sl.NewBuiltin("mochi.account.read", api_account_read),
+	"refresh":       sl.NewBuiltin("mochi.account.refresh", api_account_refresh),
 	"remove":        sl.NewBuiltin("mochi.account.remove", api_account_remove),
 	"report":        sl.NewBuiltin("mochi.account.report", api_account_report),
 	"request":       sl.NewBuiltin("mochi.account.request", api_account_request),
@@ -1281,6 +1283,11 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl.False, nil
 	}
 
+	// changed: the account's own document differs; shown: the accounts the
+	// person shows on their profile differ, which every hosted fediverse
+	// account's document links.
+	changed, shown := false, false
+
 	// Process kwargs
 	for _, kv := range kwargs {
 		key := string(kv[0].(sl.String))
@@ -1288,6 +1295,7 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		case "label":
 			label, _ := sl.AsString(kv[1])
 			db.account_set(id, map[string]any{"label": label})
+			changed = true
 			// A hosted Bluesky account's profile record carries the name.
 			if row := account_hosted_get(user, id); row != nil && row["type"] == "bluesky" {
 				if err := atproto_profile_write(thread_context(t), user, id); err != nil {
@@ -1425,6 +1433,11 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 				j, _ := json.Marshal(d)
 				db.account_set(id, map[string]any{"data": string(j)})
 			}
+			if key == "profile" {
+				shown = true
+			} else {
+				changed = true
+			}
 
 		case "summary", "page", "moderators", "restricted", "sensitive":
 			// A group's document (phase 20): its description, its page for a
@@ -1486,6 +1499,7 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			}
 			j, _ := json.Marshal(d)
 			db.account_set(id, map[string]any{"data": string(j)})
+			changed = true
 
 		case "aliases":
 			// The person's other identities, resolved to their ids: a Move
@@ -1515,6 +1529,7 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 				j, _ := json.Marshal(d)
 				db.account_set(id, map[string]any{"data": string(j)})
 			}
+			changed = true
 
 		case "endpoint":
 			// Used by function_push_register's local-distributor branch
@@ -1541,7 +1556,100 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		}
 	}
 
+	// The servers that keep a copy of a changed document are sent it. A Bluesky
+	// account's name was written to its profile record above.
+	if changed {
+		if row := account_hosted_get(user, id); row != nil && row["type"] == "fediverse" {
+			account_changed(user, id)
+		}
+	}
+	if shown {
+		for _, row := range accounts_hosted(user, "fediverse") {
+			if !account_group(row) {
+				account_changed(user, row_string(row, "id"))
+			}
+		}
+	}
+
 	return sl.True, nil
+}
+
+// account_changing are the hosted accounts whose copy on other networks is
+// out of date, each sent once its changes have paused (account_change_delay),
+// so a run of edits goes out as one.
+var (
+	account_changing      = map[string]*time.Timer{}
+	account_changing_lock sync.Mutex
+	account_change_delay  = 10 * time.Second
+)
+
+// account_changed notes that what other networks hold of a hosted account has
+// changed - its name, the person's profile, its links, its key, its aliases -
+// for it to be sent to them: a fediverse account's document as an Update to
+// its followers' servers, a Bluesky account's profile record rewritten.
+func account_changed(user *User, account string) {
+	key := user.UID + " " + account
+	account_changing_lock.Lock()
+	defer account_changing_lock.Unlock()
+	if timer, found := account_changing[key]; found {
+		timer.Reset(account_change_delay)
+		return
+	}
+	account_changing[key] = time.AfterFunc(account_change_delay, func() {
+		account_changing_lock.Lock()
+		delete(account_changing, key)
+		account_changing_lock.Unlock()
+		account_change_send(user, account)
+	})
+}
+
+// account_change_send sends a hosted account as it stands to the network it
+// is on.
+func account_change_send(user *User, account string) {
+	row := account_hosted_get(user, account)
+	if row == nil {
+		return
+	}
+	switch row["type"] {
+	case "fediverse":
+		activitypub_update_send(user, account)
+	case "bluesky":
+		if err := atproto_profile_write(context.Background(), user, account); err != nil {
+			debug("Bluesky profile of %s not updated: %v", account, err)
+		}
+	}
+}
+
+// account_profile_changed notes that the person's own profile - their name,
+// avatar, banner, summary or the accounts they show on it - has changed, which
+// each of their hosted fediverse and Bluesky accounts carries.
+func account_profile_changed(user *User) {
+	for _, network := range []string{"fediverse", "bluesky"} {
+		for _, row := range accounts_hosted(user, network) {
+			if account_group(row) {
+				continue
+			}
+			account_changed(user, row_string(row, "id"))
+		}
+	}
+}
+
+// mochi.account.refresh() -> None: Tell the networks the user's profile has
+// changed - their name, avatar, banner or summary - so each hosted account's
+// copy there follows: a fediverse account's followers' servers are sent its
+// document, a Bluesky account's profile record is rewritten. Sent once the
+// changes pause. It sends only what the user's own accounts already publish,
+// so it needs no permission.
+func api_account_refresh(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 0 || len(kwargs) != 0 {
+		return sl_error(fn, "syntax: no arguments")
+	}
+	user := principal_caller(t)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+	account_profile_changed(user)
+	return sl.None, nil
 }
 
 // mochi.account.remove(id) -> bool: Remove an account

@@ -104,7 +104,6 @@ func (db *DB) access_check(owner *User, user string, role string, resource strin
 // group_memberships walk of up to group_depth_maximum levels, and the old
 // per-operation calling pattern paid for it once per level.
 func (db *DB) access_check_any(owner *User, user string, role string, resource string, operations []string) bool {
-	db.access_setup() // Ensure table exists
 
 	// Get resource hierarchy
 	var resources []string
@@ -169,7 +168,6 @@ func (db *DB) access_decide(resources []string, subjects []string, user string, 
 
 // Grant or deny access
 func (db *DB) access_set(subject string, resource string, operation string, grant bool, granter string) {
-	db.access_setup() // Ensure table exists
 	g := 0
 	if grant {
 		g = 1
@@ -181,13 +179,11 @@ func (db *DB) access_set(subject string, resource string, operation string, gran
 
 // Clear all access rules for a resource (and its sub-resources).
 func (db *DB) access_clear_resource(resource string) {
-	db.access_setup() // Ensure table exists
 	db.exec("delete from access where resource=? or resource like ?", resource, resource+"/%")
 }
 
 // Clear all access rules for a subject.
 func (db *DB) access_clear_subject(subject string) {
-	db.access_setup() // Ensure table exists
 	db.exec("delete from access where subject=?", subject)
 }
 
@@ -204,7 +200,6 @@ func (db *DB) access_list_subject(subject string) ([]map[string]any, error) {
 
 // Revoke access.
 func (db *DB) access_revoke(subject string, resource string, operation string) {
-	db.access_setup() // Ensure table exists
 	db.exec("delete from access where subject=? and resource=? and operation=?", subject, resource, operation)
 }
 

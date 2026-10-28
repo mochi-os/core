@@ -136,28 +136,29 @@ func encryption_store(user *User) (*dbutil.Database, error) {
 	return store, nil
 }
 
-// The encryption databases opened whose tables are made, by their handle: a
-// database opened again, as after its user went, has them made again.
-var encryption_made sync.Map
-
-// encryption_database is the user's encryption database as core's own, its
-// tables made the first time: the Matrix devices, the events waiting for
-// their keys and the keys of files sent encrypted here, and the OMEMO
-// devices' (omemo.go). The crypto library's own are its to make.
+// encryption_database is the user's encryption database as core's own,
+// brought to its current version (encryption_steps): the Matrix devices, the
+// events waiting for their keys and the keys of files sent encrypted here, and
+// the OMEMO devices' (omemo.go). The crypto library's own are its to make.
 func encryption_database(user *User) *DB {
-	db := db_open(fmt.Sprintf("users/%s/encryption.db", user.UID))
-	if db == nil {
-		return nil
-	}
-	if _, made := encryption_made.Load(db); !made {
-		db.exec("create table if not exists devices (account text not null primary key, device text not null, since text not null default '', created integer not null)")
-		db.exec("create table if not exists pending (account text not null, room text not null, session text not null, event text not null, created integer not null)")
-		db.exec("create index if not exists pending_session on pending(account, room, session)")
-		db.exec("create table if not exists files (account text not null, url text not null, file text not null, created integer not null, primary key (account, url))")
-		omemo_tables(db)
-		encryption_made.Store(db, true)
-	}
+	path := fmt.Sprintf("users/%s/encryption.db", user.UID)
+	db := db_open(path)
+	db_upgrade_file(db, path, encryption_steps)
 	return db
+}
+
+// encryption_steps are encryption.db's versioned steps (db_upgrade_file).
+var encryption_steps = []func(*DB) error{encryption_upgrade_1}
+
+// encryption_upgrade_1 lays encryption.db's own tables as they were when it
+// gained a version.
+func encryption_upgrade_1(db *DB) error {
+	db.exec("create table if not exists devices (account text not null primary key, device text not null, since text not null default '', created integer not null)")
+	db.exec("create table if not exists pending (account text not null, room text not null, session text not null, event text not null, created integer not null)")
+	db.exec("create index if not exists pending_session on pending(account, room, session)")
+	db.exec("create table if not exists files (account text not null, url text not null, file text not null, created integer not null, primary key (account, url))")
+	omemo_tables(db)
+	return nil
 }
 
 // encryption_pickle is the key a device's pickled keys are kept under.

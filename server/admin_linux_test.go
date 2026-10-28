@@ -55,7 +55,7 @@ func read_test_db(t *testing.T, path string) int {
 }
 
 func TestSnapshotInPlaceProducesBackupFiles(t *testing.T) {
-	tmp := test_data_directory(t)
+	tmp := test_bare_directory(t)
 
 	if err := os.MkdirAll(filepath.Join(tmp, "run"), 0750); err != nil {
 		t.Fatal(err)
@@ -97,7 +97,7 @@ func TestSnapshotInPlaceProducesBackupFiles(t *testing.T) {
 	})
 }
 func TestSnapshotReapsStaleBackup(t *testing.T) {
-	tmp := test_data_directory(t)
+	tmp := test_bare_directory(t)
 
 	if err := os.MkdirAll(filepath.Join(tmp, "run"), 0750); err != nil {
 		t.Fatal(err)
@@ -128,7 +128,7 @@ func TestSnapshotReapsStaleBackup(t *testing.T) {
 // The compat path: a legacy `.db.snap` whose live `.db` was deleted should
 // still be reaped.
 func TestSnapshotReapsStaleLegacySnap(t *testing.T) {
-	tmp := test_data_directory(t)
+	tmp := test_bare_directory(t)
 
 	if err := os.MkdirAll(filepath.Join(tmp, "run"), 0750); err != nil {
 		t.Fatal(err)
@@ -159,7 +159,7 @@ func TestSnapshotReapsStaleLegacySnap(t *testing.T) {
 // snapshot writes `.db.backup`, the legacy sibling must be dropped so the
 // tar export does not ship two copies of the same DB.
 func TestSnapshotRemovesLegacySnapAfterWrite(t *testing.T) {
-	tmp := test_data_directory(t)
+	tmp := test_bare_directory(t)
 
 	if err := os.MkdirAll(filepath.Join(tmp, "run"), 0750); err != nil {
 		t.Fatal(err)
@@ -184,7 +184,7 @@ func TestSnapshotRemovesLegacySnapAfterWrite(t *testing.T) {
 	}
 }
 func TestSnapshotSkipsRunAndCache(t *testing.T) {
-	tmp := test_data_directory(t)
+	tmp := test_bare_directory(t)
 
 	if err := os.MkdirAll(filepath.Join(tmp, "run"), 0750); err != nil {
 		t.Fatal(err)

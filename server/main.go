@@ -207,8 +207,9 @@ func main_serve(ready func()) int {
 	cache_configure()
 	db_start()
 	// Before anything can open an app database: an app's migration reads the
-	// export this writes, and takes its absence as "no rows".
-	attachment_export_sweep()
+	// attachment export app.db's steps write, and takes its absence as "no
+	// rows".
+	db_app_system_sweep()
 	if err := domains_load_certs(); err != nil {
 		warn("Failed to load domain certificates: %v", err)
 	}
@@ -248,7 +249,6 @@ func main_serve(ready func()) int {
 	go broadcast_manager()
 	go restore_cleanup_orphans()
 	go users_orphans()
-	go db_app_system_sweep()
 	go sessions_manager()
 	go update_manager()
 	// Register the configured [web] domain (if any) before the web server

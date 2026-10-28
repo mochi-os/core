@@ -227,16 +227,15 @@ func broadcast_sequence_table_create(db *DB) {
 func broadcast_received_table_create(db *DB) {
 	db.create("received", "create table if not exists received (sender text not null, key text not null, last integer not null default 0, seen integer not null default 0, primary key (sender, key))")
 	// Idle-resync (#165): seen = host-local time of the last applied broadcast
-	// for (sender, key). Added here so the migration rides every advance/touch
-	// path on existing received tables.
+	// for (sender, key); an app.db laid before it gains it here.
 	if exists, _ := db.exists("select 1 from pragma_table_info('received') where name='seen'"); !exists {
 		db.exec("alter table received add column seen integer not null default 0")
 	}
 }
 
-// broadcast_log_table_create creates the log table for an app DB. Called from
-// db_app open and defensively from the append/replay paths. No backfill: an app
-// adopting broadcast late leaves subscribers to the per-app request_resync.
+// broadcast_log_table_create lays the log table in app.db, part of
+// system_upgrade_1. No backfill: an app adopting broadcast late leaves
+// subscribers to the per-app request_resync.
 func broadcast_log_table_create(db *DB) {
 	db.create("log", "create table if not exists log (key text not null, peer text not null, sequence integer not null, event text not null, data text not null, created integer not null, primary key (key, peer, sequence))")
 	db.create("log_created", "create index if not exists log_created on log(created)")
@@ -265,7 +264,6 @@ func broadcast_subscribed_record(db *DB, key, peer string, subscribers []string)
 	if key == "" || peer == "" || len(subscribers) == 0 {
 		return
 	}
-	broadcast_subscribed_table_create(db)
 	now := now()
 
 	// One read to find what is already fresh, so the steady state writes
@@ -301,7 +299,6 @@ func broadcast_subscribed_add(db *DB, key, peer, subscriber string) bool {
 	if key == "" || peer == "" || subscriber == "" {
 		return false
 	}
-	broadcast_subscribed_table_create(db)
 	existed, _ := db.exists("select 1 from subscribed where key=? and peer=? and subscriber=?", key, peer, subscriber)
 	db.exec("insert into subscribed (key, peer, subscriber, updated) values (?, ?, ?, ?) on conflict(key, peer, subscriber) do update set updated = excluded.updated", key, peer, subscriber, now())
 	return !existed
@@ -331,7 +328,6 @@ func broadcast_subscribed_allowed(db *DB, key, peer, subscriber string) bool {
 // concurrent callers read the same value, emit duplicate sequences, and fail
 // UNIQUE on the matching log INSERT.
 func broadcast_next_local(db *DB, key, peer string) int64 {
-	broadcast_sequence_table_create(db)
 	const allocate = "insert into sequence (key, peer, last) values (?, ?, 1) on conflict(key, peer) do update set last = sequence.last + 1 returning last"
 	var seq int64
 	if err := db.internal.QueryRow(allocate, key, peer).Scan(&seq); err != nil {
@@ -365,7 +361,6 @@ func broadcast_seen_get(db *DB, key string) int64 {
 // sentinel sender=” row so it never collides with a real per-peer position
 // row or the gap detector (which reads a specific (sender=peer, key)).
 func broadcast_touch_local(db *DB, key string) {
-	broadcast_received_table_create(db)
 	db.exec("insert into received (sender, key, last, seen) values ('', ?, 0, ?) on conflict(sender, key) do update set seen = excluded.seen", key, now())
 }
 
@@ -391,7 +386,6 @@ func broadcast_advance_local(db *DB, sender, key string, sequence int64) {
 // called by broadcast_pending_drain_chain so its own advance does not re-enter
 // the drain loop. Keep the SQL in sync with the public advance above.
 func broadcast_advance_local_simple(db *DB, sender, key string, sequence int64) {
-	broadcast_received_table_create(db)
 	// seen = now() stamps the host-local idle-resync (#165) signal on every
 	// applied broadcast - one chokepoint covering every app and event type.
 	// now() computed in Go, not in SQL, so tests can control it.
@@ -454,7 +448,6 @@ func json_integers_restore(value any) any {
 // broadcast_log_append writes one log row in the same transaction as the
 // sequence bump. Returns the allocated sequence.
 func broadcast_log_append(db *DB, key, peer, event string, data []byte) int64 {
-	broadcast_log_table_create(db)
 	broadcast_log_age_trim(db, key, peer)
 	sequence := broadcast_next_local(db, key, peer)
 	// insert OR IGNORE: the log is append-only keyed on (key, peer, sequence) and
@@ -612,7 +605,6 @@ func broadcast_subscribed_remove(db *DB, key, peer, subscriber string) bool {
 	// A revoked subscriber may no longer resync, so its ack floor would only
 	// protect rows nobody can be served; left behind, a lagging one pins the log
 	// until the hard cap evicts past it.
-	broadcast_acknowledged_table_create(db)
 	db.exec("delete from acknowledged where key=? and peer=? and subscriber=?", key, peer, subscriber)
 	broadcast_log_ack_trim(db, key, peer)
 	return removed
@@ -1090,7 +1082,6 @@ func (e *Event) broadcast_acknowledge() error {
 		return nil
 	}
 
-	broadcast_acknowledged_table_create(e.db)
 	e.db.exec("insert into acknowledged (key, peer, subscriber, last) values (?, ?, ?, ?) on conflict(key, peer, subscriber) do update set last = max(acknowledged.last, excluded.last)", key, peer, e.from, sequence)
 	broadcast_log_ack_trim(e.db, key, peer)
 	// A subscriber acking is alive: clear any failure streak.

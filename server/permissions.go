@@ -377,7 +377,6 @@ func permission_granted(u *User, app_id string, permission string) bool {
 	name, object := permission_split(permission)
 
 	db := db_user(u, "user")
-	db.permissions_setup()
 
 	// A permission naming an object is granted by a row for that object or for
 	// the wildcard; a url permission also by a row for a parent domain.
@@ -439,7 +438,6 @@ func permission_grant(u *User, app_id string, permission string) {
 	name, object := permission_split(permission)
 
 	db := db_user(u, "user")
-	db.permissions_setup()
 	db.permissions_upsert(app_id, name, object, 1)
 }
 
@@ -452,7 +450,6 @@ func permission_revoke(u *User, app_id string, permission string) {
 	name, object := permission_split(permission)
 
 	db := db_user(u, "user")
-	db.permissions_setup()
 	// granted=0 rather than a row delete, and the difference matters: the row's
 	// presence is the whole reason the revoke sticks. permissions_default is
 	// insert-or-ignore, so a later setup pass finds this key already present and
@@ -467,7 +464,6 @@ func permissions_list(u *User, app_id, language string) []map[string]any {
 	}
 
 	db := db_user(u, "user")
-	db.permissions_setup()
 
 	rows, err := db.rows("select permission, object, granted from permissions where app=?", app_id)
 	if err != nil {
@@ -546,7 +542,6 @@ func app_user_setup(u *User, app_id string) {
 	// Grant default permissions. permissions_default is insert-or-ignore, so this
 	// never resurrects a permission the user revoked: the revoke left a granted=0
 	// row behind, and the seed skips any key that already has one.
-	db.permissions_setup()
 	for _, p := range defaults {
 		db.permissions_default(app_id, p.Permission, p.Object)
 	}
@@ -649,7 +644,6 @@ func permission_url_domains(t *sl.Thread, app *App) []string {
 		return nil
 	}
 	db := db_user(user, "user")
-	db.permissions_setup()
 	rows, _ := db.rows("select object from permissions where app=? and permission='url' and granted=1", app.id)
 	var domains []string
 	for _, row := range rows {

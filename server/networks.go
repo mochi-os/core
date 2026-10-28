@@ -20,7 +20,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -407,32 +406,21 @@ const network_timeout = 30 * time.Second
 // more.
 var block_domain_re = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
-// networks_schema holds the networks databases whose schema this process has
-// set up, by path, guarded by networks_schema_lock: the statements run once
-// for each database opened, not on every call, which with a room of
-// thousands made each event cost seconds.
-var networks_schema = map[string]bool{}
-var networks_schema_lock sync.Mutex
-
-// networks_database makes the server-wide networks database: the delivery
-// queue, the hosts it has learned about, the owner's domain blocks, Mochi's
-// registrations as a client on other servers, the server's own keys as a
-// client, and the clients registered to sign users in with their own tokens.
+// networks_database opens the server-wide networks database, whose tables
+// networks_create lays.
 func networks_database() *DB {
-	db := db_open("db/networks.db")
-	path := filepath.Join(data_dir, "db/networks.db")
-	networks_schema_lock.Lock()
-	defer networks_schema_lock.Unlock()
-	if networks_schema[path] {
-		return db
-	}
-	defer func() { networks_schema[path] = true }()
+	return db_open("db/networks.db")
+}
+
+// networks_create lays the server-wide networks database, for db_create and
+// db_upgrade_18: the delivery queue (whose rows carry, in address, the actor
+// they are for where its inbox was not known when queued), the hosts it has
+// learned about, the owner's domain blocks, Mochi's registrations as a client
+// on other servers, the server's own keys as a client, and the clients
+// registered to sign users in with their own tokens. A change here is also a
+// new db_upgrade_N step, and db_upgrade_18 keeps a copy of this as it was.
+func networks_create(db *DB) {
 	db.exec("create table if not exists deliveries (id text not null primary key, user text not null, account text not null, network text not null, inbox text not null, host text not null, body text not null, attempts integer not null default 0, next integer not null, claimed integer not null default 0, created integer not null, address text not null default '')")
-	// The actor a row is for where its inbox was not known when it was
-	// queued, resolved before it is sent (delivery.go).
-	if exists, _ := db.exists("select 1 from pragma_table_info('deliveries') where name='address'"); !exists {
-		db.exec("alter table deliveries add column address text not null default ''")
-	}
 	db.exec("create index if not exists deliveries_next on deliveries(next)")
 	db.exec("create index if not exists deliveries_host on deliveries(host)")
 	db.exec("create table if not exists hosts (host text not null primary key, failures integer not null default 0, success integer not null default 0, failure integer not null default 0, next integer not null default 0, error text not null default '')")
@@ -451,9 +439,7 @@ func networks_database() *DB {
 	// for the apps (activitypub.go).
 	db.exec("create table if not exists actors (id text not null primary key, user text not null, domain text not null, handle text not null, network text not null, created integer not null, deleted integer not null default 0, key text not null default '')")
 	db.exec("create index if not exists actors_user on actors(user)")
-	// The activity ids seen by each account; a server-wide record before it
-	// took an activity for one account only.
-	db.exec("drop table if exists received")
+	// The activity ids seen by each account.
 	db.exec("create table if not exists seen (id text not null, account text not null, created integer not null, primary key (id, account))")
 	db.exec("create index if not exists seen_created on seen(created)")
 	db.exec("create table if not exists inbound (id text not null primary key, user text not null, account text not null, actor text not null, type text not null, body text not null, created integer not null)")
@@ -467,7 +453,8 @@ func networks_database() *DB {
 	// The reports for the administrators and the people the owner blocks
 	// (reports.go).
 	report_tables(db)
-	return db
+	// The image store's uploads (lemmy_server.go).
+	lemmy_tables(db)
 }
 
 var networks_keys_lock sync.Mutex

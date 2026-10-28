@@ -379,12 +379,11 @@ func restore_apply(uid, bundle string, manifest export_manifest, account export_
 	restore_auth(uid, account, secrets)
 	restore_finish_account(uid, manifest, bundle)
 
-	// A pre-library bundle carries app.db attachment stores; export-and-drop them
-	// before the account activates. This is the one path that adds user data to a
-	// running server, which the startup sweep cannot cover.
-	if exported, dropped := attachment_export_user(uid); dropped > 0 {
-		info("Attachment export (restore %q): %d stores exported, %d tables dropped", uid, exported, dropped)
-	}
+	// The bundle's app.db files come from whichever version wrote them; bring
+	// them to this server's before the account activates - a pre-library bundle's
+	// attachment stores are exported and dropped. This is the one path that adds
+	// app.db files to a running server, which the startup sweep cannot cover.
+	db_app_system_upgrade(uid)
 
 	// Migrations run lazily on first app access via db_open's forward
 	// ladder; the schema guard already ruled out any downgrade. Flip to
@@ -999,6 +998,12 @@ func restore_schema_guard(bundle string) (string, error) {
 	err := filepath.WalkDir(bundle, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
+		}
+		// Only an app's own database, in its db directory: core's files in
+		// the bundle (user.db, notifications.db, app.db) keep versions of
+		// their own and may share a name with an app's.
+		if filepath.Base(filepath.Dir(path)) != "db" {
+			return nil
 		}
 		l, ok := by_file[d.Name()]
 		if !ok {

@@ -73,10 +73,11 @@ func TestBroadcastTouchSeedsSeen(t *testing.T) {
 }
 
 // TestBroadcastSeenColumnMigration — an existing received table without the seen
-// column (pre-#165 db) reads as seen=0, and the first advance migrates it in
-// place and stamps seen without losing last.
+// column (pre-#165 db) reads as seen=0, gains it when the file is brought to
+// its current version, and the next advance stamps seen without losing last.
 func TestBroadcastSeenColumnMigration(t *testing.T) {
-	db := setup_broadcast_log_test(t)
+	test_data_directory(t)
+	db := db_open("db/test.db")
 
 	// Old-schema table: no seen column.
 	db.exec("create table received (sender text not null, key text not null, last integer not null default 0, primary key (sender, key))")
@@ -84,6 +85,11 @@ func TestBroadcastSeenColumnMigration(t *testing.T) {
 
 	if s := broadcast_seen_get(db, "feed1"); s != 0 {
 		t.Errorf("seen on pre-migration table: got %d, want 0", s)
+	}
+
+	db_upgrade_file(db, "db/test.db", db_system_steps)
+	if found, _ := db.exists("select 1 from pragma_table_info('received') where name='seen'"); !found {
+		t.Fatal("THE POINT: the versioned steps left received without seen")
 	}
 
 	before := now()

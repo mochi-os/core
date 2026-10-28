@@ -55,7 +55,8 @@ func lemmy_engine() *engine {
 	}
 }
 
-// lemmy_tables makes the image store's table in networks.db.
+// lemmy_tables lays the image store's table in networks.db, part of
+// networks_create.
 func lemmy_tables(db *DB) {
 	db.exec("create table if not exists pictrs (file text not null primary key, user text not null, token text not null, type text not null, created integer not null)")
 }
@@ -1772,7 +1773,6 @@ func lemmy_pictrs_directory() string {
 // image to anyone, and a deletion by the token the upload was given.
 func lemmy_pictrs(c *gin.Context, rest string) {
 	db := networks_database()
-	lemmy_tables(db)
 	switch {
 	case c.Request.Method == "POST" && rest == "":
 		s := lemmy_authenticate(c)

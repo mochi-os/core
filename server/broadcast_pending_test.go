@@ -18,7 +18,7 @@ import (
 func setup_broadcast_pending_test(t *testing.T) *DB {
 	t.Helper()
 	test_data_directory(t)
-	db := db_open("db/test.db")
+	db := test_system_database("db/test.db")
 	return db
 }
 
@@ -27,7 +27,8 @@ func setup_broadcast_pending_test(t *testing.T) *DB {
 // column was spelled out holds `msg_id`, and every later insert names
 // `message`. Without the rename those inserts fail against the old table.
 func TestBroadcastPendingRenamesLegacyColumn(t *testing.T) {
-	db := setup_broadcast_pending_test(t)
+	test_data_directory(t)
+	db := db_open("db/test.db")
 
 	// The pre-rename schema, as an existing install carries it.
 	db.exec(`create table pending (
@@ -49,7 +50,7 @@ func TestBroadcastPendingRenamesLegacyColumn(t *testing.T) {
 		(peer, key, sequence, source, target, service, event, msg_id, content, received)
 		values ('p', 'k', 1, 'src', 'dst', 'svc', 'ev', 'kept', 'x', 0)`)
 
-	broadcast_pending_table_create(db)
+	db_upgrade_file(db, "db/test.db", db_system_steps)
 
 	if old, _ := db.exists("select 1 from pragma_table_info('pending') where name='msg_id'"); old {
 		t.Error("msg_id survived: every insert names `message`, so writes to this install fail")

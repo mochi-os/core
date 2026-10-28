@@ -70,38 +70,33 @@ var federation_timeout = 30 * time.Second
 // specification requires. A variable so tests can serve from plain servers.
 var federation_scheme = "https"
 
-// The database the engine keeps for every user together: the rooms (rooms.go),
-// the other servers' keys, the queue to each other server and the
-// transactions already taken. Its tables are made each time it is opened, so
-// nothing uses it before they exist.
-var federation_database_lock sync.Mutex
-
+// federation_database opens the database the engine keeps for every user
+// together, whose tables federation_create lays.
 func federation_database() *DB {
-	federation_database_lock.Lock()
-	defer federation_database_lock.Unlock()
-	db, _, reused := db_open_work("db/matrix.db")
-	if db != nil && !reused {
-		db.exec("create table if not exists servers (name text not null, key text not null, public text not null, valid integer not null, expired integer not null default 0, primary key (name, key))")
-		db.exec("create table if not exists outbox (id integer primary key autoincrement, destination text not null, origin text not null default '', kind text not null, body text not null, created integer not null)")
-		// The domain each row is sent from; rows queued before it are dropped.
-		if found, _ := db.exists("select 1 from pragma_table_info('outbox') where name='origin'"); !found {
-			db.exec("alter table outbox add column origin text not null default ''")
-		}
-		db.exec("create index if not exists outbox_destination on outbox(destination, id)")
-		db.exec("create table if not exists destinations (name text not null primary key, failures integer not null default 0, retry integer not null default 0)")
-		db.exec("create table if not exists transactions (origin text not null, id text not null, received integer not null, primary key (origin, id))")
-		// Signing keys a domain has replaced: published as its old keys, with
-		// when they stopped signing, so what they signed stays verifiable.
-		db.exec("create table if not exists retired (domain text not null, key text not null, public text not null, expired integer not null, primary key (domain, key))")
-		rooms_tables(db)
-		keyring_tables(db)
-		clients_tables(db)
-		signals_tables(db)
-		content_tables(db)
-		bridge_tables(db)
-		notices_tables(db)
-	}
-	return db
+	return db_open("db/matrix.db")
+}
+
+// federation_create lays the engine's database, for db_create and
+// db_upgrade_18: the rooms (rooms.go), the other servers' keys, the queue to
+// each other server - each row with the domain it is sent from - and the
+// transactions already taken. A change here is also a new db_upgrade_N step,
+// and db_upgrade_18 keeps a copy of this as it was.
+func federation_create(db *DB) {
+	db.exec("create table if not exists servers (name text not null, key text not null, public text not null, valid integer not null, expired integer not null default 0, primary key (name, key))")
+	db.exec("create table if not exists outbox (id integer primary key autoincrement, destination text not null, origin text not null default '', kind text not null, body text not null, created integer not null)")
+	db.exec("create index if not exists outbox_destination on outbox(destination, id)")
+	db.exec("create table if not exists destinations (name text not null primary key, failures integer not null default 0, retry integer not null default 0)")
+	db.exec("create table if not exists transactions (origin text not null, id text not null, received integer not null, primary key (origin, id))")
+	// Signing keys a domain has replaced: published as its old keys, with
+	// when they stopped signing, so what they signed stays verifiable.
+	db.exec("create table if not exists retired (domain text not null, key text not null, public text not null, expired integer not null, primary key (domain, key))")
+	rooms_tables(db)
+	keyring_tables(db)
+	clients_tables(db)
+	signals_tables(db)
+	content_tables(db)
+	bridge_tables(db)
+	notices_tables(db)
 }
 
 // federation_engine is the engine's registration.

@@ -81,7 +81,6 @@ func encryption_reset() {
 	omemo_occupants_lock.Lock()
 	omemo_occupants = map[string]map[string]string{}
 	omemo_occupants_lock.Unlock()
-	encryption_made.Clear()
 }
 
 // linked_thread is a thread of an external app granted the account

@@ -41,25 +41,19 @@ import (
 // interface: the stable one and MSC2967's.
 var clients_api_scopes = []string{"urn:matrix:client:api:*", "urn:matrix:org.matrix.msc2967.client:api:*"}
 
-// clients_tables makes what the client interface keeps in matrix.db beside
-// the engine's rooms: the order events entered the rooms' timelines, which
-// sync's positions count in; read receipts; the accounts' data, global and
-// per room; filters; push rules, pushers and the notifications they made;
-// room aliases and the room directory.
+// clients_tables lays, as part of federation_create, what the client interface
+// keeps in matrix.db beside the engine's rooms: the order events entered the
+// rooms' timelines, which sync's positions count in; read receipts; the
+// accounts' data, global and per room; filters; push rules, pushers and the
+// notifications they made; room aliases and the room directory.
 func clients_tables(db *DB) {
 	db.exec("create table if not exists stream (position integer primary key autoincrement, room text not null, event text not null unique)")
 	db.exec("create index if not exists stream_room on stream(room, position)")
-	// A server that kept rooms before the client interface takes their
-	// timelines into the order once, in the order they arrived.
-	db.exec("insert or ignore into stream (room, event) select room, id from events where outlier=0 and rejected=0 and not exists (select 1 from stream) order by received, rowid")
 	db.exec("create table if not exists receipts (position integer primary key autoincrement, room text not null, user text not null, type text not null, thread text not null default '', event text not null, ts integer not null, unique (room, user, type, thread))")
 	// The presence clients are shown of each user, local or not, at the
 	// position it last changed.
 	db.exec("create table if not exists presences (position integer primary key autoincrement, user text not null unique, presence text not null, message text not null default '', active integer not null default 0, updated integer not null)")
 	db.exec("create table if not exists settings (position integer primary key autoincrement, user text not null, room text not null default '', type text not null, content text not null, unique (user, room, type))")
-	// What the key store kept as account data before the client interface
-	// kept it here, with a position for sync.
-	db.exec("insert or ignore into settings (user, room, type, content) select user, '', type, content from data")
 	db.exec("create table if not exists filters (id integer primary key autoincrement, user text not null, body text not null)")
 	db.exec("create table if not exists rules (position integer primary key autoincrement, user text not null, kind text not null, id text not null, priority integer not null default 0, body text not null, enabled integer not null default 1, unique (user, kind, id))")
 	db.exec("create table if not exists pushers (user text not null, app text not null, key text not null, device text not null default '', kind text not null, body text not null, created integer not null, primary key (app, key, user))")

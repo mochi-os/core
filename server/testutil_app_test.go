@@ -84,10 +84,21 @@ func setup_sessions_test_schema() *DB {
 }
 
 // test_data_directory points data_dir at a fresh temporary directory for the
-// rest of the test and restores the previous value when it ends. t.TempDir
-// removes the tree itself, and the restore is registered after it so it runs
-// first, which is why callers need no cleanup of their own.
+// rest of the test and restores the previous value when it ends, with the
+// server-wide databases whose openers lay nothing laid as a fresh install has
+// them (test_network_databases).
 func test_data_directory(t testing.TB) string {
+	t.Helper()
+	directory := test_bare_directory(t)
+	test_network_databases()
+	return directory
+}
+
+// test_bare_directory points data_dir at a fresh, empty temporary directory
+// for the rest of the test and restores the previous value when it ends.
+// t.TempDir removes the tree itself, and the restore is registered after it so
+// it runs first, which is why callers need no cleanup of their own.
+func test_bare_directory(t testing.TB) string {
 	t.Helper()
 	previous := data_dir
 	data_dir = t.TempDir()
@@ -98,6 +109,26 @@ func test_data_directory(t testing.TB) string {
 		data_dir = previous
 	})
 	return data_dir
+}
+
+// test_network_databases lays the server-wide databases whose openers lay
+// nothing, as db_create does on a fresh install: the network engines'
+// networks.db, matrix.db, xmpp.db and world.db, and apps.db.
+func test_network_databases() {
+	apps_create(db_apps())
+	networks_create(networks_database())
+	federation_create(federation_database())
+	xmpp_tables(xmpp_database())
+	world_create(db_open("db/world.db"))
+}
+
+// test_system_database opens a database in the data directory brought to its
+// current version as an app.db is (db_system_steps), for tests of the tables
+// that live there.
+func test_system_database(file string) *DB {
+	db := db_open(file)
+	db_upgrade_file(db, file, db_system_steps)
+	return db
 }
 
 // presence_settle waits, for up to five seconds, for the notifications of

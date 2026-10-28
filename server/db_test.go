@@ -970,9 +970,10 @@ func TestAppSystemNoSettingsTable(t *testing.T) {
 	}
 }
 
-// TestAttachmentExportSweep: a store with rows exports then drops, an empty one
-// drops with no file, a missing table is untouched, an existing export is kept,
-// a second pass is a no-op.
+// TestAttachmentExportSweep: app.db's second step, run by the startup sweep. A
+// store with rows exports then drops, an empty one drops with no file, a
+// missing table is untouched, an existing export is kept, a second pass is a
+// no-op.
 func TestAttachmentExportSweep(t *testing.T) {
 	tmp_dir := test_data_directory(t)
 
@@ -984,7 +985,7 @@ func TestAttachmentExportSweep(t *testing.T) {
 	rows.exec(create)
 	rows.exec(insert, "0123456789abcdef0123456789abcdef", "post/1", "", "photo.jpg", 1234, "image/jpeg", "creator", "caption", "", 1, 1700000000)
 	rows.exec(insert, "fedcba9876543210fedcba9876543210", "post/1", "remote-entity", "remote.png", 99, "image/png", "", "", "", 2, 1700000001)
-	rows.exec("create table access ( id text )")
+	rows.exec("create table other ( id text )")
 	files := filepath.Join(tmp_dir, "users", "u1", "rows", "files")
 	os.MkdirAll(filepath.Join(files, "thumbnails"), 0755)
 	os.MkdirAll(filepath.Join(files, "previews"), 0755)
@@ -997,7 +998,7 @@ func TestAttachmentExportSweep(t *testing.T) {
 
 	// u2/none: an app.db without the table.
 	none := db_open("users/u2/none/app.db")
-	none.exec("create table access ( id text )")
+	none.exec("create table other ( id text )")
 
 	// u2/kept: rows, and an export already on disk from an earlier pass.
 	kept := db_open("users/u2/kept/app.db")
@@ -1007,7 +1008,7 @@ func TestAttachmentExportSweep(t *testing.T) {
 	os.MkdirAll(kept_files, 0755)
 	os.WriteFile(filepath.Join(kept_files, attachment_export_file), []byte("[]"), 0644)
 
-	attachment_export_sweep()
+	db_app_system_sweep()
 
 	// u1/rows: exported, dropped, variants gone, original kept.
 	data, err := os.ReadFile(filepath.Join(files, attachment_export_file))
@@ -1036,7 +1037,7 @@ func TestAttachmentExportSweep(t *testing.T) {
 	if present, _ := rows.exists("select 1 from sqlite_master where type='table' and name='attachments'"); present {
 		t.Error("u1/rows still has its attachments table")
 	}
-	if present, _ := rows.exists("select 1 from sqlite_master where type='table' and name='access'"); !present {
+	if present, _ := rows.exists("select 1 from sqlite_master where type='table' and name='other'"); !present {
 		t.Error("u1/rows lost a table that was not the attachments table")
 	}
 	if file_exists(filepath.Join(files, "thumbnails")) || file_exists(filepath.Join(files, "previews")) {
@@ -1069,7 +1070,7 @@ func TestAttachmentExportSweep(t *testing.T) {
 
 	// A second pass has nothing to do and changes nothing.
 	os.Remove(filepath.Join(files, attachment_export_file))
-	attachment_export_sweep()
+	db_app_system_sweep()
 	if file_exists(filepath.Join(files, attachment_export_file)) {
 		t.Error("a second pass rewrote an export from a table that no longer exists")
 	}

@@ -570,18 +570,9 @@ func count_rows(db *DB, query string, args ...any) int64 {
 
 // Manage the directory
 func directory_manager() {
-	// directory.db is rebuildable network state: an operator may wipe it
-	// and let republish + sync repopulate. Self-heal the schema so a wiped
-	// file doesn't strand the server until the next migration.
-	db := db_open("db/directory.db")
-	db.exec("create table if not exists entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, message text not null default '', expires text not null default '', signature text not null default '', primary key ( entity, peer ) )")
-	db.exec("create index if not exists entries_name on entries( name )")
-	db.exec("create index if not exists entries_class on entries( class )")
-	db.exec("create index if not exists entries_fingerprint on entries( fingerprint )")
-	db.exec("create index if not exists entries_peer on entries( peer )")
-	db.exec("create index if not exists entries_seen on entries( seen )")
-	db.exec("create index if not exists entries_created on entries( created )")
-
+	// directory.db is rebuildable network state: an operator may wipe it and
+	// let republish and sync fill it again. A wiped file is laid again at
+	// startup by db_create (db_rebuilt_dbs).
 	time.Sleep(3 * time.Second)
 
 	// Republish every local public entity before the first sync. After a

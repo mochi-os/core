@@ -456,10 +456,13 @@ func (aa *ActionAccess) sl_require(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 		role = a.user.Role
 	}
 
-	db := db_app(owner, app)
+	// The access rules live in the app's system database, as every other
+	// access check reads them.
+	db := db_app_system(owner, app)
 	if db == nil {
-		return sl_error(fn, "app has no database configured")
+		return sl_error(fn, "no system database")
 	}
+	defer db.close()
 	if !db.access_check(owner, user, role, resource, operation) {
 		return sl_error(fn, "access denied")
 	}

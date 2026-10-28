@@ -70,24 +70,21 @@ func atproto_engine() *engine {
 	}
 }
 
-// atproto_tables makes the server-wide tables the engine keeps in
-// networks.db: the identities by did, for a request that names no user, and
-// the update stream.
+// atproto_tables lays the server-wide tables the engine keeps in networks.db,
+// part of networks_create: the identities by did, for a request that names no
+// user, and the update stream.
 func atproto_tables(db *DB) {
 	db.exec("create table if not exists identities (did text not null primary key, account text not null, user text not null, created integer not null)")
 	// A relay resumes from the last sequence it read, so a number is never
 	// given twice: AUTOINCREMENT keeps the last one even when the replay
 	// window has emptied the table.
-	atproto_stream_once.Do(func() { atproto_stream_rebuild(db) })
 	db.exec("create table if not exists stream (sequence integer not null primary key autoincrement, did text not null, kind text not null, body blob not null, created integer not null)")
 	db.exec("create index if not exists stream_created on stream(created)")
 }
 
-var atproto_stream_once sync.Once
-
 // atproto_stream_rebuild moves a stream table made before its sequence was
 // AUTOINCREMENT onto one that is, keeping its events; their highest number
-// becomes the last given.
+// becomes the last given. Run once, by db_upgrade_18.
 func atproto_stream_rebuild(db *DB) {
 	row, _ := db.row("select sql from sqlite_master where type='table' and name='stream'")
 	if row == nil || strings.Contains(strings.ToLower(row_string(row, "sql")), "autoincrement") {

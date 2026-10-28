@@ -194,21 +194,19 @@ func commit_hook_function(av *AppVersion) string {
 	return av.Commit.Function
 }
 
-// commits_table_create lazily creates the `commits` pending-fire log and
-// its index on the handle it's given (the app system DB, app.db).
+// commits_table_create lays the `commits` pending-fire log and its index in
+// app.db, part of system_upgrade_1.
 func commits_table_create(db *DB) {
 	db.exec("create table if not exists commits (seq integer primary key autoincrement, name text not null, kind text not null, row_uid text not null default '', ts integer not null, fired integer not null default 0, attempts integer not null default 0)")
 	db.exec("create index if not exists commits_fired on commits(fired, ts)")
-	// attempts bounds the retry. Added here rather than through a separate
-	// migration so it rides every path that touches the table, the way
-	// received.seen and directory.confirmed were added.
+	// attempts bounds the retry; an app.db laid before it gains it here.
 	if exists, _ := db.exists("select 1 from pragma_table_info('commits') where name='attempts'"); !exists {
 		db.exec("alter table commits add column attempts integer not null default 0")
 	}
 }
 
-// commits_setup opens the app system DB (app.db) for the commit hook. The
-// `commits` table itself is created once per handle in db_app_system.
+// commits_setup opens the app system DB (app.db) for the commit hook, whose
+// `commits` table app.db's versioned steps lay (system_upgrade_1).
 //
 // The CALLER owns the release. Closing here stamped `closed` on the handle
 // being returned, and db_manager evicts any handle idle for 60 s - closing both
@@ -217,22 +215,7 @@ func commits_table_create(db *DB) {
 // slot, so a drain under load outlives the window and the append that follows
 // panics through must() with "database is closed".
 func commits_setup(u *User, a *App) *DB {
-	sys := db_app_system(u, a) // handle-ok: returned to the caller, which owns the release
-	if sys == nil {
-		return nil
-	}
-	// FUTURE CLEANUP: drops the pre-relocation `_commit_log` orphan from the
-	// app's data DB. Probed directly rather than inferred from the `commits`
-	// table being absent, which stopped being a first-run signal once
-	// db_app_system took over creating it; the probe is a cached statement, not
-	// DDL, so it does not flush anything. Removable once no system in the fleet
-	// can carry the old table - delete this block.
-	if data := db_app(u, a); data != nil {
-		if orphan, _ := data.exists("select 1 from sqlite_master where type='table' and name='_commit_log'"); orphan {
-			data.exec("drop table if exists _commit_log")
-		}
-	}
-	return sys
+	return db_app_system(u, a) // handle-ok: returned to the caller, which owns the release
 }
 
 // commits_append writes a pending row and returns its seq. The "name"

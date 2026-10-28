@@ -1215,9 +1215,8 @@ func api_url_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 
 const url_idempotency_ttl int64 = 3600 // 1 hour
 
-// idempotency_setup ensures the per-app `idempotency` cache table in the app
-// system DB (app.db). Called on every lookup and store rather than at open, so
-// it must stay a single unconditional statement.
+// idempotency_setup lays the per-app `idempotency` cache table in the app
+// system DB (app.db), part of system_upgrade_1.
 func idempotency_setup(sysdb *DB) {
 	sysdb.exec("create table if not exists idempotency (key text primary key, status integer not null, headers blob, body blob, ts integer not null)")
 }
@@ -1231,7 +1230,6 @@ func url_idempotency_lookup(u *User, a *App, key string) map[string]any {
 	if sysdb == nil {
 		return nil
 	}
-	idempotency_setup(sysdb)
 	sysdb.exec("delete from idempotency where ts < ?", now()-url_idempotency_ttl)
 
 	row, _ := sysdb.row("select status, headers, body from idempotency where key=? and ts > ?", key, now()-url_idempotency_ttl)
@@ -1266,7 +1264,6 @@ func url_idempotency_store(u *User, a *App, key string, status int, headers map[
 	if sysdb == nil {
 		return
 	}
-	idempotency_setup(sysdb)
 	sysdb.exec("insert or replace into idempotency (key, status, headers, body, ts) values (?, ?, ?, ?, ?)",
 		key, status, cbor_encode(headers), body, now())
 }

@@ -67,8 +67,9 @@ var (
 	}{}
 )
 
-// world_init registers the built-in world app, creates the table, and starts
-// the expiry sweep. Called from main_serve alongside directory_init.
+// world_init registers the built-in world app and starts the expiry sweep.
+// Called from main_serve alongside directory_init; world.db's table is laid by
+// db_create and db_upgrade_18 (world_create).
 func world_init() {
 	a := app("world")
 	a.service("world")
@@ -76,11 +77,15 @@ func world_init() {
 	// has already authenticated; the message envelope is anonymous.
 	a.event_anonymous("publish", world_publish_event)
 
-	db := db_open("db/world.db")
+	go world_manager()
+}
+
+// world_create lays world.db, for db_create and db_upgrade_18: the worlds other
+// servers announce, by the peer announcing them. A change here is also a new
+// db_upgrade_N step, and db_upgrade_18 keeps a copy of this as it was.
+func world_create(db *DB) {
 	db.exec("create table if not exists worlds ( peer text not null, world text not null, name text not null, address text not null, version integer not null, services text not null, seen integer not null, primary key (peer, world) )")
 	db.exec("create index if not exists worlds_seen on worlds( seen )")
-
-	go world_manager()
 }
 
 // world_manager ages out listings whose world has stopped refreshing.

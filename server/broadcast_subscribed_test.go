@@ -13,7 +13,7 @@ import (
 func setup_subscribed_test(t *testing.T) *DB {
 	t.Helper()
 	test_data_directory(t)
-	db := db_open("db/test.db")
+	db := test_system_database("db/test.db")
 	return db
 }
 

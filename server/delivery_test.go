@@ -24,7 +24,6 @@ import (
 func create_delivery_test_env(t *testing.T) *User {
 	t.Helper()
 	alice, _ := create_handles_test_env(t)
-	networks_database()
 	db := db_user(alice, "user")
 	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('f1', 'fediverse', '', '@alice@example.com', '{\"hosted\":true,\"handle\":\"alice\",\"domain\":\"example.com\"}', 1, 1)")
 	db.exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('b1', 'bluesky', '', 'alice.example.com', '{\"hosted\":true,\"handle\":\"alice\",\"domain\":\"example.com\"}', 1, 1)")

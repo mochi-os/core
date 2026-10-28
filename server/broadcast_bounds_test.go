@@ -195,7 +195,7 @@ func TestBroadcastResyncSweepDropsExpired(t *testing.T) {
 func TestBroadcastPendingStreamCap(t *testing.T) {
 	setup_replication_test(t)
 
-	db := db_open("db/bounds.db")
+	db := test_system_database("db/bounds.db")
 	if db == nil {
 		t.Fatal("no database")
 	}
@@ -234,7 +234,7 @@ func TestBroadcastPendingStreamCap(t *testing.T) {
 func TestBroadcastPendingByteCaps(t *testing.T) {
 	setup_replication_test(t)
 
-	db := db_open("db/bytes.db")
+	db := test_system_database("db/bytes.db")
 	if db == nil {
 		t.Fatal("no database")
 	}

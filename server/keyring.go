@@ -38,7 +38,7 @@ import (
 	"github.com/matrix-org/gomatrixserverlib/spec"
 )
 
-// keyring_tables makes the key store in matrix.db.
+// keyring_tables lays the key store in matrix.db, part of federation_create.
 func keyring_tables(db *DB) {
 	// A device of an account here: its name and its uploaded keys.
 	db.exec("create table if not exists clients (user text not null, device text not null, name text not null default '', keys text not null default '', created integer not null, seen integer not null default 0, primary key (user, device))")
@@ -58,9 +58,6 @@ func keyring_tables(db *DB) {
 	// else's key, someone joining a room with them). Gone where the user no
 	// longer shares any room with the viewer, who stops tracking them.
 	db.exec("create table if not exists changes (id integer primary key autoincrement, user text not null, viewer text not null default '', gone integer not null default 0, created integer not null)")
-	if found, _ := db.exists("select 1 from pragma_table_info('changes') where name='gone'"); !found {
-		db.exec("alter table changes add column gone integer not null default 0")
-	}
 	// The account's key backup: its versions, and the room keys backed up.
 	db.exec("create table if not exists backups (user text not null, version integer not null, algorithm text not null, auth text not null, etag integer not null default 0, deleted integer not null default 0, primary key (user, version))")
 	db.exec("create table if not exists sessions (user text not null, version integer not null, room text not null, session text not null, data text not null, primary key (user, version, room, session))")

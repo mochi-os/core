@@ -54,35 +54,34 @@ var (
 	xmpp_link_backoff = time.Hour
 )
 
-// xmpp_database_lock lets one caller open the database at a time.
-var xmpp_database_lock sync.Mutex
-
-// xmpp_database makes the server-wide XMPP database: the secret dialback keys
-// are made with, each hosted account's roster, the messages waiting for an
-// account's clients, their push registrations, what each account publishes,
-// the files their clients upload and the rooms Mochi's own sessions are in;
-// and the room service's rooms, their affiliations and their history.
+// xmpp_database opens the server-wide XMPP database, whose tables xmpp_tables
+// lays.
 func xmpp_database() *DB {
-	xmpp_database_lock.Lock()
-	defer xmpp_database_lock.Unlock()
-	db, _, reused := db_open_work("db/xmpp.db")
-	if db != nil && !reused {
-		db.exec("create table if not exists secrets (name text not null primary key, value text not null)")
-		db.exec("create table if not exists roster (account text not null, address text not null, name text not null default '', subscription text not null default 'none', ask integer not null default 0, pending integer not null default 0, listed integer not null default 0, created integer not null, updated integer not null, primary key (account, address))")
-		db.exec("create table if not exists offline (id integer primary key autoincrement, account text not null, stanza text not null, created integer not null)")
-		db.exec("create index if not exists offline_account on offline(account, id)")
-		db.exec("create table if not exists pushes (account text not null, service text not null, node text not null, options text not null default '', created integer not null, primary key (account, service, node))")
-		db.exec("create table if not exists nodes (account text not null, node text not null, access text not null default 'presence', maximum integer not null default 1, created integer not null, primary key (account, node))")
-		db.exec("create table if not exists items (account text not null, node text not null, item text not null, payload text not null, updated integer not null, primary key (account, node, item))")
-		db.exec("create table if not exists uploads (id text not null primary key, user text not null, account text not null default '', domain text not null, name text not null, type text not null, size integer not null, token text not null default '', created integer not null, stored integer not null default 0)")
-		db.exec("create table if not exists joined (account text not null, address text not null, room text not null, nick text not null, name text not null default '', seen integer not null default 0, created integer not null, primary key (account, room))")
-		db.exec("create table if not exists rooms (address text not null primary key, name text not null default '', description text not null default '', subject text not null default '', subjector text not null default '', persistent integer not null default 0, members integer not null default 0, public integer not null default 0, moderated integer not null default 0, open integer not null default 0, invite integer not null default 0, whois text not null default 'moderators', history integer not null default 20, locked integer not null default 0, created integer not null, updated integer not null)")
-		db.exec("create table if not exists affiliations (room text not null, address text not null, affiliation text not null, nick text not null default '', primary key (room, address))")
-		db.exec("create table if not exists chatlog (id integer primary key autoincrement, room text not null, archive text not null, nick text not null, sender text not null default '', stanza text not null, created integer not null)")
-		db.exec("create index if not exists chatlog_room on chatlog(room, id)")
-		db.exec("create unique index if not exists chatlog_archive on chatlog(room, archive)")
-	}
-	return db
+	return db_open("db/xmpp.db")
+}
+
+// xmpp_tables lays the server-wide XMPP database, for db_create and
+// db_upgrade_18: the secret dialback keys are made with, each hosted account's
+// roster, the messages waiting for an account's clients, their push
+// registrations, what each account publishes, the files their clients upload
+// and the rooms Mochi's own sessions are in; and the room service's rooms,
+// their affiliations and their history. A change here is also a new
+// db_upgrade_N step, and db_upgrade_18 keeps a copy of this as it was.
+func xmpp_tables(db *DB) {
+	db.exec("create table if not exists secrets (name text not null primary key, value text not null)")
+	db.exec("create table if not exists roster (account text not null, address text not null, name text not null default '', subscription text not null default 'none', ask integer not null default 0, pending integer not null default 0, listed integer not null default 0, created integer not null, updated integer not null, primary key (account, address))")
+	db.exec("create table if not exists offline (id integer primary key autoincrement, account text not null, stanza text not null, created integer not null)")
+	db.exec("create index if not exists offline_account on offline(account, id)")
+	db.exec("create table if not exists pushes (account text not null, service text not null, node text not null, options text not null default '', created integer not null, primary key (account, service, node))")
+	db.exec("create table if not exists nodes (account text not null, node text not null, access text not null default 'presence', maximum integer not null default 1, created integer not null, primary key (account, node))")
+	db.exec("create table if not exists items (account text not null, node text not null, item text not null, payload text not null, updated integer not null, primary key (account, node, item))")
+	db.exec("create table if not exists uploads (id text not null primary key, user text not null, account text not null default '', domain text not null, name text not null, type text not null, size integer not null, token text not null default '', created integer not null, stored integer not null default 0)")
+	db.exec("create table if not exists joined (account text not null, address text not null, room text not null, nick text not null, name text not null default '', seen integer not null default 0, created integer not null, primary key (account, room))")
+	db.exec("create table if not exists rooms (address text not null primary key, name text not null default '', description text not null default '', subject text not null default '', subjector text not null default '', persistent integer not null default 0, members integer not null default 0, public integer not null default 0, moderated integer not null default 0, open integer not null default 0, invite integer not null default 0, whois text not null default 'moderators', history integer not null default 20, locked integer not null default 0, created integer not null, updated integer not null)")
+	db.exec("create table if not exists affiliations (room text not null, address text not null, affiliation text not null, nick text not null default '', primary key (room, address))")
+	db.exec("create table if not exists chatlog (id integer primary key autoincrement, room text not null, archive text not null, nick text not null, sender text not null default '', stanza text not null, created integer not null)")
+	db.exec("create index if not exists chatlog_room on chatlog(room, id)")
+	db.exec("create unique index if not exists chatlog_archive on chatlog(room, archive)")
 }
 
 // xmpp_secret is the server's secret for dialback keys, made on first use.

@@ -55,8 +55,8 @@ const broadcast_pending_gc_default_ttl_days = 2
 // checking more often than the staleness signal moves.
 const broadcast_pending_gc_period_seconds = 60 * 60
 
-// broadcast_pending_table_create lazily creates the table; the call
-// is idempotent and the schema matches the comment block above.
+// broadcast_pending_table_create lays the table in app.db, part of
+// system_upgrade_1; the schema matches the comment block above.
 func broadcast_pending_table_create(db *DB) {
 	db.create("pending", `create table if not exists pending (
 		peer text not null,
@@ -74,9 +74,7 @@ func broadcast_pending_table_create(db *DB) {
 		primary key (peer, key, sequence)
 	)`)
 
-	// Installs made before the column was spelled out carry `msg_id`. Renamed
-	// here rather than in a schema migration because the table itself is
-	// created lazily on the write path and has never been in one.
+	// Installs made before the column was spelled out carry `msg_id`.
 	if old, _ := db.exists("select 1 from pragma_table_info('pending') where name='msg_id'"); old {
 		db.exec(`alter table pending rename column msg_id to message`)
 	}
@@ -118,7 +116,6 @@ func broadcast_pending_streams(db *DB, peer string) int {
 // the per-stream cap dropped it. Either way the caller still fires the resync
 // request - the buffer is an optimisation, not the gap-fill mechanism.
 func broadcast_pending_insert(db *DB, peer, key string, sequence int64, source, target, service, event, message, sender_app, sender_services string, content []byte) bool {
-	broadcast_pending_table_create(db)
 	// Byte checks first: the per-row one costs nothing, and refusing an
 	// oversized row before counting anything keeps the expensive path for
 	// payloads that could actually be buffered.

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,17 +57,16 @@ type DB struct {
 	starlark *sqlx.DB
 	user     *User
 	app      *App
-	// system_setup is set once db_app_system has run access_setup / journal_setup
-	// on this handle. Gated on this rather than db_open_work's `reused`, so a
-	// handle first cached by a raw db_open still gets its setups. Guarded by
+	// versioned is set once this process has brought a file that keeps its own
+	// version to its last step (db_upgrade_file): a per-user database,
+	// encryption.db, an app's app.db. Gated on this rather than db_open_work's
+	// `reused`, so a handle first cached by a raw db_open is still brought up to
+	// date. Guarded by lock(path).
+	versioned bool
+	// retry is when a handle whose steps failed may try them again, so a file
+	// that cannot be brought up to date is not tried on every open. Guarded by
 	// lock(path).
-	system_setup bool
-	// user_setup is the same gate for db_user's per-name table setup. Every
-	// create/alter in that block runs uncached and then flushes this handle's
-	// prepared statements (exec_e's DDL branch), so re-running it per call left
-	// user.db - the most-used per-user database, opened once per access check -
-	// with a permanently empty statement cache. Guarded by lock(path).
-	user_setup bool
+	retry int64
 	// ready is set once db_app has finished database_create/upgrade on this
 	// handle; the reused fast-path requires it so a concurrent opener waits rather
 	// than querying a schema that does not exist yet (#227). Guarded by
@@ -86,7 +86,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 17
+	schema_version = 18
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -189,305 +189,439 @@ func db_authorise_lifecycle(action sqlite3.AuthorizerActionCode, name3rd, name4t
 	return db_authorise_starlark(action, name3rd, name4th, schema, inner)
 }
 
-func db_create() {
+// db_create lays the server-wide databases as a new install has them: all of
+// them, or only those named - a transient or rebuilt database found missing at
+// startup, laid fresh while the others keep the schema their install reached.
+// Laying every database over an older install would meet tables db_create
+// knows newer shapes of before db_upgrade had changed them.
+func db_create(names ...string) {
 	db_migrating.Add(1)
 	defer db_migrating.Add(-1)
-	info("Creating new database")
-
-	// Settings
-	settings := db_open("db/settings.db")
-	settings.exec("create table if not exists settings ( name text not null primary key, value text not null )")
-	settings.exec("insert or ignore into settings ( name, value ) values ( 'schema', ? )", schema_version)
-
-	// Documents: operator-customisable Markdown for server rules / terms / privacy.
-	// Bundled defaults live in core/server/documents/ (embedded); this table
-	// holds only operator overrides keyed by (name, language).
-	settings.exec("create table if not exists documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
-
-	// Users. `uid` is the globally-stable identifier used everywhere — for
-	// replication, cross-host data references, FK joins, and the on-disk
-	// `users/<uid>/` data directory. Callers supply the uid via the Go
-	// uid() helper at INSERT time; no triggers.
-	users := db_open("db/users.db")
-	users.exec("create table if not exists users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default '', disabled text not null default '', status text not null default 'active', restore_source text not null default '', restore_passkeys integer not null default 0, purge integer not null default 0)")
-	users.exec("create unique index if not exists users_username on users (username)")
-
-	// Services the user must re-link after a server move (restore). Populated
-	// at restore time from the bundle's linked.json; rows clear as the user
-	// re-links each on the destination. Drives the post-restore banner.
-	users.exec("create table if not exists relinks (user text not null references users(uid) on delete cascade, service text not null, identifier text not null default '', linked integer not null default 0, primary key (user, service))")
-
-	// Passkey credential definitions and sign count. Sign count is WebAuthn
-	// replay-prevention state and lives here so it survives sessions.db
-	// corruption. Only the cosmetic last-used timestamp lives in sessions.db.
-	users.exec("create table if not exists credentials (id blob primary key, user text not null references users(uid) on delete cascade, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
-	users.exec("create index if not exists credentials_user on credentials(user)")
-
-	// Recovery codes
-	users.exec("create table if not exists recovery (id integer primary key, user text not null references users(uid) on delete cascade, hash text not null, created integer not null)")
-	users.exec("create index if not exists recovery_user on recovery(user)")
-
-	// TOTP secrets. pending holds a secret from an unproven enrolment, kept
-	// separate from secret so starting an enrolment cannot disturb the
-	// authenticator the user is currently logging in with.
-	users.exec("create table if not exists totp (user text primary key references users(uid) on delete cascade, secret text not null, verified integer not null default 0, pending text not null default '', used integer not null default 0, created integer not null)")
-
-	// OAuth identity definitions (Google, GitHub, Microsoft, Facebook, X).
-	// Last-used timestamp lives in sessions.db.verifications so this cold
-	// reference store doesn't take a write on every OAuth login.
-	users.exec("create table if not exists oauth (id integer primary key, user text not null references users(uid) on delete cascade, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
-	users.exec("create index if not exists oauth_user on oauth(user)")
-
-	// API token definitions. Hot per-request "used" timestamp lives in
-	// sessions.db.accesses; here we keep just the definition so token loss
-	// doesn't follow sessions.db corruption.
-	users.exec("create table if not exists tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '')")
-	users.exec("create index if not exists tokens_refresh on tokens(refresh)")
-	users.exec("create index if not exists tokens_user on tokens(user)")
-	users.exec("create index if not exists tokens_app on tokens(app)")
-
-	// Handles: the names behind hosted accounts on other networks, one
-	// namespace per domain (handles.go). Here beside users and entities because
-	// discovery requests resolve them with no user signed in.
-	users.exec("create table if not exists handles (domain text not null, name text not null, user text not null references users(uid) on delete cascade, parent text not null default '', kind text not null default 'handle', created integer not null, primary key (domain, name))")
-	users.exec("create index if not exists handles_user on handles(user)")
-
-	// Entities
-	users.exec("create table if not exists entities (id text not null primary key, private text not null, fingerprint text not null, user text not null references users(uid) on delete cascade, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
-	users.exec("create index if not exists entities_fingerprint on entities(fingerprint)")
-	users.exec("create index if not exists entities_user on entities(user)")
-	users.exec("create index if not exists entities_parent on entities(parent)")
-	users.exec("create index if not exists entities_class on entities(class)")
-	users.exec("create index if not exists entities_name on entities(name)")
-	users.exec("create index if not exists entities_privacy on entities(privacy)")
-	users.exec("create index if not exists entities_published on entities(published)")
-
-	// Sessions (login codes and sessions - transient auth data)
-	sessions := db_open("db/sessions.db")
-	sessions.exec("create table if not exists codes ( code text not null, username text not null, expires integer not null, primary key ( code, username ) )")
-	sessions.exec("create index if not exists codes_expires on codes( expires )")
-	sessions.exec("create table if not exists sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
-	sessions.exec("create unique index if not exists sessions_code on sessions(code)")
-	sessions.exec("create index if not exists sessions_expires on sessions(expires)")
-	sessions.exec("create index if not exists sessions_user on sessions(user)")
-
-	// WebAuthn ceremony sessions (temporary)
-	sessions.exec("create table if not exists ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")
-	sessions.exec("create index if not exists ceremonies_expires on ceremonies(expires)")
-
-	// Partial authentication sessions (for MFA)
-	sessions.exec("create table if not exists partial (id text primary key, user text not null, completed text not null default '', remaining text not null, expires integer not null)")
-	sessions.exec("create index if not exists partial_expires on partial(expires)")
-
-	// Step-up re-authentication proofs: short-lived single-use tokens
-	// earned by re-verifying the user's login factor(s) before a
-	// sensitive action. methods is the accrued set of factors verified.
-	sessions.exec("create table if not exists reauthentication (id text primary key, user text not null, session text not null default '', methods text not null default '', expires integer not null)")
-	sessions.exec("create index if not exists reauthentication_expires on reauthentication(expires)")
-
-	// Last-login timestamps (kept here, not in users.db, so the cold reference
-	// store doesn't take a write on every login)
-	sessions.exec("create table if not exists logins (user text primary key, last integer not null)")
-
-	// The moment a user's last connection ended (presence.go).
-	sessions.exec("create table if not exists seen (user text primary key, time integer not null)")
-
-	// Per-request token access timestamps. Split out of users.db.tokens so the
-	// every-request "used" write doesn't land on the cold reference store, but
-	// the token definitions themselves stay in users.db so token loss doesn't
-	// follow sessions.db corruption. `user` duplicated here for cascade.
-	sessions.exec("create table if not exists accesses (hash text primary key not null, user text not null, used integer not null default 0)")
-	sessions.exec("create index if not exists accesses_user on accesses(user)")
-
-	// Cosmetic last-used timestamp per passkey. Sign count (replay-prevention
-	// state) stays in users.db.credentials; only the cosmetic stat lives here.
-	sessions.exec("create table if not exists passkeys (credential blob primary key, user text not null, last integer not null default 0)")
-	sessions.exec("create index if not exists passkeys_user on passkeys(user)")
-
-	// OAuth verification state (last time each linked identity was used to log
-	// in). Split from users.db.oauth so per-login writes don't land on the cold
-	// reference store. `oauth` references users.db.oauth(id); `user` duplicated
-	// here for cascade.
-	sessions.exec("create table if not exists verifications (oauth integer primary key, user text not null, last integer not null default 0)")
-	sessions.exec("create index if not exists verifications_user on verifications(user)")
-
-	// Directory. One row per (entity, peer): one host's listing of one entity,
-	// asserted by that host alone, and self-verifying - `signature` is the
-	// entity's ed25519 signature over the whole row, peer included.
-	directory := db_open("db/directory.db")
-	directory.exec("create table if not exists entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, message text not null default '', expires text not null default '', signature text not null default '', primary key ( entity, peer ) )")
-	directory.exec("create index if not exists entries_name on entries( name )")
-	directory.exec("create index if not exists entries_class on entries( class )")
-	directory.exec("create index if not exists entries_fingerprint on entries( fingerprint )")
-	directory.exec("create index if not exists entries_peer on entries( peer )")
-	directory.exec("create index if not exists entries_seen on entries( seen )")
-	directory.exec("create index if not exists entries_created on entries( created )")
-
-	// Peers
-	peers := db_open("db/peers.db")
-	peers.exec("create table if not exists peers ( id text not null, address text not null, updated integer not null, success integer not null default 0, failure integer not null default 0, primary key ( id, address ) )")
-	// Claimed display names per peer with their verification verdict
-	peers.exec("create table if not exists names ( id text not null, name text not null, updated integer not null, primary key ( id, name ) )")
-	// Latest signed peer record per peer: self-certifying addresses
-	peers.exec("create table if not exists records ( id text not null primary key, record blob not null, sequence integer not null, updated integer not null )")
-
-	// Delivery to other servers' inboxes, the hosts reached and the owner's
-	// domain blocks
-	networks_database()
-
-	// Message queue with reliability tracking
-	queue := db_open("db/queue.db")
-	// Outgoing message queue
-	queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20, claimed integer not null default 0 )")
-	// (status, priority, next_retry) covers both queue_select queries. Without the
-	// priority column the main query sorts the whole ready set and the bulk query
-	// scans it.
-	queue.exec("create index if not exists queue_status_priority_retry on queue (status, priority, next_retry)")
-	queue.exec("create index if not exists queue_target on queue (target)")
-	queue.exec("create index if not exists queue_target_priority_retry on queue (target, priority desc, next_retry)")
-	// journal_inflight bridges send->ack for the per-peer journal delivery
-	// cursor (#28): one row per shipped journal op, resolved when the
-	// transport ACK lands so journal_delivery can advance. Co-located with
-	// the ack delete so the resolve is a same-DB lookup.
-	queue.exec("create table if not exists journal_inflight (id text primary key, user text not null, peer text not null, stream text not null, sequence integer not null, created integer not null)")
-	// Per-recipient delivery health: failure memory per recipient entity, rows
-	// only where there is a failure history. `evicted` stamps the drop-subscriber
-	// dispatch; only a stamped row is residue the cleanup sweep may delete.
-	queue.exec(health_schema)
-	queue.exec(`create table if not exists pushes ( id text primary key, user text not null,
-		account text not null, type text not null, identifier text not null default '',
-		data text not null default '', app text not null default '', category text not null default '',
-		object text not null default '', title text not null default '', body text not null default '',
-		link text not null default '', event text not null default '', attempts integer not null default 0,
-		next_retry integer not null, created integer not null )`)
-	queue.exec("create index if not exists pushes_next_retry on pushes(next_retry)")
-
-	// Domains
-	domains := db_open("db/domains.db")
-	domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
-	domains.exec("create table if not exists routes (domain text not null, path text not null default '', method text not null default 'app', target text not null, context text not null default '', owner text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
-	if exists, _ := domains.exists("select 1 from pragma_table_info('routes') where name='owner'"); !exists {
-		domains.exec("alter table routes add column owner text not null default ''")
+	lay := func(name string) bool {
+		return len(names) == 0 || slices.Contains(names, name)
 	}
-	domains.exec("create index if not exists routes_domain on routes(domain)")
-	domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner text not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
-	domains.exec("create index if not exists delegations_domain on delegations(domain)")
-	domains.exec("create index if not exists delegations_owner on delegations(owner)")
+	if len(names) == 0 {
+		info("Creating new database")
+	} else {
+		info("Laying missing databases: %s", strings.Join(names, ", "))
+	}
 
-	// Apps (for multi-version and user-configurable routing)
-	apps := db_open("db/apps.db")
-	apps.exec("create table if not exists classes (class text not null primary key, app text not null)")
-	apps.exec("create table if not exists services (service text not null primary key, app text not null)")
-	apps.exec("create table if not exists paths (path text not null primary key, app text not null)")
-	apps.exec("create table if not exists versions (app text not null primary key, version text, track text)")
-	apps.exec("create table if not exists tracks (app text not null, track text not null, version text not null, primary key (app, track))")
-	apps.exec("create table if not exists apps (app text not null primary key, installed integer not null)")
+	if lay("settings") {
+		// Settings
+		settings := db_open("db/settings.db")
+		settings.exec("create table if not exists settings ( name text not null primary key, value text not null )")
+		settings.exec("insert or ignore into settings ( name, value ) values ( 'schema', ? )", schema_version)
 
-	// Scheduled events
-	schedule := db_open("db/schedule.db")
-	schedule.exec("create table if not exists schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
-	schedule.exec("create index if not exists schedule_due on schedule(due)")
-	schedule.exec("create index if not exists schedule_app_event on schedule(app, event)")
+		// Documents: operator-customisable Markdown for server rules / terms / privacy.
+		// Bundled defaults live in core/server/documents/ (embedded); this table
+		// holds only operator overrides keyed by (name, language).
+		settings.exec("create table if not exists documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
+	}
 
-	// External-data caches (Wikidata qid labels + searches)
-	external := db_open("db/external.db")
-	external.exec("create table if not exists qids (qid text not null, lang text not null, label text not null, fetched integer not null, primary key (qid, lang))")
-	external.exec("create table if not exists qid_searches (query text not null, lang text not null, results text not null, fetched integer not null, primary key (query, lang))")
+	if lay("users") {
+		// Users. `uid` is the globally-stable identifier used everywhere — for
+		// replication, cross-host data references, FK joins, and the on-disk
+		// `users/<uid>/` data directory. Callers supply the uid via the Go
+		// uid() helper at INSERT time; no triggers.
+		users := db_open("db/users.db")
+		users.exec("create table if not exists users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default '', disabled text not null default '', status text not null default 'active', restore_source text not null default '', restore_passkeys integer not null default 0, purge integer not null default 0)")
+		users.exec("create unique index if not exists users_username on users (username)")
 
+		// Services the user must re-link after a server move (restore). Populated
+		// at restore time from the bundle's linked.json; rows clear as the user
+		// re-links each on the destination. Drives the post-restore banner.
+		users.exec("create table if not exists relinks (user text not null references users(uid) on delete cascade, service text not null, identifier text not null default '', linked integer not null default 0, primary key (user, service))")
+
+		// Passkey credential definitions and sign count. Sign count is WebAuthn
+		// replay-prevention state and lives here so it survives sessions.db
+		// corruption. Only the cosmetic last-used timestamp lives in sessions.db.
+		users.exec("create table if not exists credentials (id blob primary key, user text not null references users(uid) on delete cascade, public_key blob not null, sign_count integer not null default 0, name text not null default '', transports text not null default '', backup_eligible integer not null default 0, backup_state integer not null default 0, created integer not null)")
+		users.exec("create index if not exists credentials_user on credentials(user)")
+
+		// Recovery codes
+		users.exec("create table if not exists recovery (id integer primary key, user text not null references users(uid) on delete cascade, hash text not null, created integer not null)")
+		users.exec("create index if not exists recovery_user on recovery(user)")
+
+		// TOTP secrets. pending holds a secret from an unproven enrolment, kept
+		// separate from secret so starting an enrolment cannot disturb the
+		// authenticator the user is currently logging in with.
+		users.exec("create table if not exists totp (user text primary key references users(uid) on delete cascade, secret text not null, verified integer not null default 0, pending text not null default '', used integer not null default 0, created integer not null)")
+
+		// OAuth identity definitions (Google, GitHub, Microsoft, Facebook, X).
+		// Last-used timestamp lives in sessions.db.verifications so this cold
+		// reference store doesn't take a write on every OAuth login.
+		users.exec("create table if not exists oauth (id integer primary key, user text not null references users(uid) on delete cascade, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
+		users.exec("create index if not exists oauth_user on oauth(user)")
+
+		// API token definitions. Hot per-request "used" timestamp lives in
+		// sessions.db.accesses; here we keep just the definition so token loss
+		// doesn't follow sessions.db corruption.
+		users.exec("create table if not exists tokens (hash text primary key not null, user text not null references users(uid) on delete cascade, app text not null, name text not null default '', scopes text not null default '', action text not null default '', entity text not null default '', created integer not null, expires integer not null default 0, kind text not null default '', client text not null default '', account text not null default '', network text not null default '', jkt text not null default '', refresh text not null default '', device text not null default '', scram text not null default '')")
+		users.exec("create index if not exists tokens_refresh on tokens(refresh)")
+		users.exec("create index if not exists tokens_user on tokens(user)")
+		users.exec("create index if not exists tokens_app on tokens(app)")
+
+		// Handles: the names behind hosted accounts on other networks, one
+		// namespace per domain (handles.go). Here beside users and entities because
+		// discovery requests resolve them with no user signed in.
+		users.exec("create table if not exists handles (domain text not null, name text not null, user text not null references users(uid) on delete cascade, parent text not null default '', kind text not null default 'handle', created integer not null, primary key (domain, name))")
+		users.exec("create index if not exists handles_user on handles(user)")
+
+		// Entities
+		users.exec("create table if not exists entities (id text not null primary key, private text not null, fingerprint text not null, user text not null references users(uid) on delete cascade, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+		users.exec("create index if not exists entities_fingerprint on entities(fingerprint)")
+		users.exec("create index if not exists entities_user on entities(user)")
+		users.exec("create index if not exists entities_parent on entities(parent)")
+		users.exec("create index if not exists entities_class on entities(class)")
+		users.exec("create index if not exists entities_name on entities(name)")
+		users.exec("create index if not exists entities_privacy on entities(privacy)")
+		users.exec("create index if not exists entities_published on entities(published)")
+	}
+
+	if lay("sessions") {
+		// Sessions (login codes and sessions - transient auth data)
+		sessions := db_open("db/sessions.db")
+		sessions.exec("create table if not exists codes ( code text not null, username text not null, expires integer not null, primary key ( code, username ) )")
+		sessions.exec("create index if not exists codes_expires on codes( expires )")
+		sessions.exec("create table if not exists sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+		sessions.exec("create unique index if not exists sessions_code on sessions(code)")
+		sessions.exec("create index if not exists sessions_expires on sessions(expires)")
+		sessions.exec("create index if not exists sessions_user on sessions(user)")
+
+		// WebAuthn ceremony sessions (temporary)
+		sessions.exec("create table if not exists ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")
+		sessions.exec("create index if not exists ceremonies_expires on ceremonies(expires)")
+
+		// Partial authentication sessions (for MFA)
+		sessions.exec("create table if not exists partial (id text primary key, user text not null, completed text not null default '', remaining text not null, expires integer not null)")
+		sessions.exec("create index if not exists partial_expires on partial(expires)")
+
+		// Step-up re-authentication proofs: short-lived single-use tokens
+		// earned by re-verifying the user's login factor(s) before a
+		// sensitive action. methods is the accrued set of factors verified.
+		sessions.exec("create table if not exists reauthentication (id text primary key, user text not null, session text not null default '', methods text not null default '', expires integer not null)")
+		sessions.exec("create index if not exists reauthentication_expires on reauthentication(expires)")
+
+		// Last-login timestamps (kept here, not in users.db, so the cold reference
+		// store doesn't take a write on every login)
+		sessions.exec("create table if not exists logins (user text primary key, last integer not null)")
+
+		// The moment a user's last connection ended (presence.go).
+		sessions.exec("create table if not exists seen (user text primary key, time integer not null)")
+
+		// Per-request token access timestamps. Split out of users.db.tokens so the
+		// every-request "used" write doesn't land on the cold reference store, but
+		// the token definitions themselves stay in users.db so token loss doesn't
+		// follow sessions.db corruption. `user` duplicated here for cascade.
+		sessions.exec("create table if not exists accesses (hash text primary key not null, user text not null, used integer not null default 0)")
+		sessions.exec("create index if not exists accesses_user on accesses(user)")
+
+		// Cosmetic last-used timestamp per passkey. Sign count (replay-prevention
+		// state) stays in users.db.credentials; only the cosmetic stat lives here.
+		sessions.exec("create table if not exists passkeys (credential blob primary key, user text not null, last integer not null default 0)")
+		sessions.exec("create index if not exists passkeys_user on passkeys(user)")
+
+		// OAuth verification state (last time each linked identity was used to log
+		// in). Split from users.db.oauth so per-login writes don't land on the cold
+		// reference store. `oauth` references users.db.oauth(id); `user` duplicated
+		// here for cascade.
+		sessions.exec("create table if not exists verifications (oauth integer primary key, user text not null, last integer not null default 0)")
+		sessions.exec("create index if not exists verifications_user on verifications(user)")
+	}
+
+	if lay("directory") {
+		// Directory. One row per (entity, peer): one host's listing of one entity,
+		// asserted by that host alone, and self-verifying - `signature` is the
+		// entity's ed25519 signature over the whole row, peer included.
+		directory := db_open("db/directory.db")
+		directory.exec("create table if not exists entries ( entity text not null, peer text not null, name text not null, class text not null, data text not null default '', fingerprint text not null default '', version integer not null default 0, created integer not null, seen integer not null, message text not null default '', expires text not null default '', signature text not null default '', primary key ( entity, peer ) )")
+		directory.exec("create index if not exists entries_name on entries( name )")
+		directory.exec("create index if not exists entries_class on entries( class )")
+		directory.exec("create index if not exists entries_fingerprint on entries( fingerprint )")
+		directory.exec("create index if not exists entries_peer on entries( peer )")
+		directory.exec("create index if not exists entries_seen on entries( seen )")
+		directory.exec("create index if not exists entries_created on entries( created )")
+	}
+
+	if lay("peers") {
+		// Peers
+		peers := db_open("db/peers.db")
+		peers.exec("create table if not exists peers ( id text not null, address text not null, updated integer not null, success integer not null default 0, failure integer not null default 0, primary key ( id, address ) )")
+		// Claimed display names per peer with their verification verdict
+		peers.exec("create table if not exists names ( id text not null, name text not null, updated integer not null, primary key ( id, name ) )")
+		// Latest signed peer record per peer: self-certifying addresses
+		peers.exec("create table if not exists records ( id text not null primary key, record blob not null, sequence integer not null, updated integer not null )")
+	}
+
+	if lay("networks") {
+		// Delivery to other servers' inboxes, the hosts reached and the owner's
+		// domain blocks
+		networks_create(db_open("db/networks.db"))
+	}
+
+	if lay("matrix") {
+		// The Matrix engine's rooms, keys and queues for every user together
+		federation_create(db_open("db/matrix.db"))
+	}
+
+	if lay("xmpp") {
+		// The XMPP engine's rosters, queues and rooms
+		xmpp_tables(db_open("db/xmpp.db"))
+	}
+
+	if lay("world") {
+		// The worlds other servers announce (world.go)
+		world_create(db_open("db/world.db"))
+	}
+
+	if lay("queue") {
+		// Message queue with reliability tracking
+		queue := db_open("db/queue.db")
+		// Outgoing message queue
+		queue.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20, claimed integer not null default 0 )")
+		// (status, priority, next_retry) covers both queue_select queries. Without the
+		// priority column the main query sorts the whole ready set and the bulk query
+		// scans it.
+		queue.exec("create index if not exists queue_status_priority_retry on queue (status, priority, next_retry)")
+		queue.exec("create index if not exists queue_target on queue (target)")
+		queue.exec("create index if not exists queue_target_priority_retry on queue (target, priority desc, next_retry)")
+		// journal_inflight bridges send->ack for the per-peer journal delivery
+		// cursor (#28): one row per shipped journal op, resolved when the
+		// transport ACK lands so journal_delivery can advance. Co-located with
+		// the ack delete so the resolve is a same-DB lookup.
+		queue.exec("create table if not exists journal_inflight (id text primary key, user text not null, peer text not null, stream text not null, sequence integer not null, created integer not null)")
+		// Per-recipient delivery health: failure memory per recipient entity, rows
+		// only where there is a failure history. `evicted` stamps the drop-subscriber
+		// dispatch; only a stamped row is residue the cleanup sweep may delete.
+		queue.exec(health_schema)
+		queue.exec(`create table if not exists pushes ( id text primary key, user text not null,
+			account text not null, type text not null, identifier text not null default '',
+			data text not null default '', app text not null default '', category text not null default '',
+			object text not null default '', title text not null default '', body text not null default '',
+			link text not null default '', event text not null default '', attempts integer not null default 0,
+			next_retry integer not null, created integer not null )`)
+		queue.exec("create index if not exists pushes_next_retry on pushes(next_retry)")
+	}
+
+	if lay("domains") {
+		// Domains
+		domains := db_open("db/domains.db")
+		domains.exec("create table if not exists domains (domain text primary key, verified integer not null default 0, token text not null default '', tls integer not null default 1, created integer not null, updated integer not null)")
+		domains.exec("create table if not exists routes (domain text not null, path text not null default '', method text not null default 'app', target text not null, context text not null default '', owner text not null default '', priority integer not null default 0, enabled integer not null default 1, created integer not null, updated integer not null, primary key (domain, path), foreign key (domain) references domains(domain) on delete cascade)")
+		if exists, _ := domains.exists("select 1 from pragma_table_info('routes') where name='owner'"); !exists {
+			domains.exec("alter table routes add column owner text not null default ''")
+		}
+		domains.exec("create index if not exists routes_domain on routes(domain)")
+		domains.exec("create table if not exists delegations (id integer primary key, domain text not null, path text not null, owner text not null, created integer not null, updated integer not null, unique(domain, path, owner), foreign key (domain) references domains(domain) on delete cascade)")
+		domains.exec("create index if not exists delegations_domain on delegations(domain)")
+		domains.exec("create index if not exists delegations_owner on delegations(owner)")
+	}
+
+	if lay("apps") {
+		// Apps (for multi-version and user-configurable routing)
+		apps_create(db_apps())
+	}
+
+	if lay("schedule") {
+		// Scheduled events
+		schedule := db_open("db/schedule.db")
+		schedule.exec("create table if not exists schedule (id integer primary key, user text not null, app text not null, due int not null, event text not null, data text not null, interval int not null, created int not null)")
+		schedule.exec("create index if not exists schedule_due on schedule(due)")
+		schedule.exec("create index if not exists schedule_app_event on schedule(app, event)")
+	}
+
+	if lay("external") {
+		// External-data caches (Wikidata qid labels + searches)
+		external := db_open("db/external.db")
+		external.exec("create table if not exists qids (qid text not null, lang text not null, label text not null, fetched integer not null, primary key (qid, lang))")
+		external.exec("create table if not exists qid_searches (query text not null, lang text not null, results text not null, fetched integer not null, primary key (query, lang))")
+	}
 }
 
-// db_apps opens the apps.db database, creating tables if needed.
+// db_apps opens apps.db, whose tables apps_create lays.
 func db_apps() *DB {
-	db := db_open("db/apps.db")
+	return db_open("db/apps.db")
+}
+
+// apps_create lays apps.db, for db_create: the system-wide bindings of
+// classes, services and paths to apps, the version each app runs and the one
+// each track follows, and when each app was installed.
+func apps_create(db *DB) {
 	db.exec("create table if not exists classes (class text not null primary key, app text not null)")
 	db.exec("create table if not exists services (service text not null primary key, app text not null)")
 	db.exec("create table if not exists paths (path text not null primary key, app text not null)")
-	db.exec("create table if not exists versions (app text not null primary key, version text not null default '', track text not null default '')")
+	db.exec("create table if not exists versions (app text not null primary key, version text, track text)")
 	db.exec("create table if not exists tracks (app text not null, track text not null, version text not null, primary key (app, track))")
 	db.exec("create table if not exists apps (app text not null primary key, installed integer not null)")
-	return db
 }
 
-// db_user opens a database in the user's directory
+// db_user opens a database in the user's directory, brought to its current
+// version (db_user_steps).
 func db_user(u *User, name string) *DB {
 	path := fmt.Sprintf("users/%s/%s.db", u.UID, name)
 	db := db_open(path)
 	// Bind under databases_lock via db_bind: these fields live on the shared
 	// cached handle, so assigning them directly races any concurrent opener.
 	db_bind(db, u, nil)
+	db_upgrade_file(db, path, db_user_steps[name])
+	return db
+}
 
-	// The setup below belongs to the handle, not the call: db_user is reached
-	// from the access check and from every routing lookup, and running its DDL
-	// each time discarded the handle's prepared statements every time. Gated the
-	// way db_app_system gates system_setup, including the re-check under the
-	// lock so a concurrent opener does not run it twice.
-	if db.user_setup {
-		return db
+// db_user_steps are the versioned steps of each per-user database, by name. A
+// name with none is a file core keeps no tables in.
+var db_user_steps = map[string][]func(*DB) error{
+	"user":          {user_upgrade_1},
+	"notifications": {notifications_upgrade_1},
+}
+
+// user_upgrade_1 lays user.db as it was when it gained a version, and makes
+// once the changes it used to make on every open: the column additions, the
+// accounts table's move to text ids and the hosted fediverse addresses. It and
+// the functions it calls are frozen (db_upgrade_file).
+func user_upgrade_1(db *DB) error {
+	db.exec("create table if not exists preferences (name text primary key, value text not null)")
+	db.groups_setup()
+	db.permissions_setup()
+
+	// App preferences (for multi-version and user-configurable routing)
+	db.exec("create table if not exists classes (class text not null primary key, app text not null)")
+	db.exec("create table if not exists services (service text not null primary key, app text not null)")
+	db.exec("create table if not exists paths (path text not null primary key, app text not null)")
+	db.exec("create table if not exists versions (app text not null primary key, version text not null default '', track text not null default '')")
+
+	// Connected accounts (email, browser push, AI services, MCP)
+	db.exec("create table if not exists accounts (id text not null primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1, \"default\" text not null default '', last_delivered integer not null default 0, device text not null default '')")
+	db.exec("create index if not exists accounts_type on accounts(type)")
+	if exists, _ := db.exists("select 1 from pragma_table_info('accounts') where name='last_delivered'"); !exists {
+		db.exec("alter table accounts add column last_delivered integer not null default 0")
+	}
+	db.accounts_migrate()
+	// The device a per-device account was registered from (devices.go).
+	if exists, _ := db.exists("select 1 from pragma_table_info('accounts') where name='device'"); !exists {
+		db.exec("alter table accounts add column device text not null default ''")
+	}
+	db.exec("create index if not exists accounts_device on accounts(device)")
+
+	// Devices the user runs Mochi on; push accounts hang off them.
+	db.exec("create table if not exists devices (id text not null primary key, label text not null default '', created integer not null, seen integer not null default 0)")
+
+	// Keys of hosted accounts on other networks (keys.go).
+	keys_table(db)
+	networks_tables(db)
+	numbers_table(db)
+	statuses_tables(db)
+
+	// User interest profiles for personalised ranking
+	db.exec("create table if not exists interests (qid text not null primary key, weight integer not null default 100, updated integer not null default 0)")
+
+	// Internal key-value settings (Go-only, no Starlark API)
+	db.exec("create table if not exists settings (key text not null primary key, text text not null default '', number integer not null default 0)")
+
+	// The user's learned directory: private routing memory (directory_user.go)
+	directory_user_table(db)
+
+	// Per-user app state (permission setup tracking)
+	db.apps_setup()
+	return nil
+}
+
+// notifications_upgrade_1 lays the per-user notification-delivery dedup (email
+// and web push) as it was when the file gained a version.
+func notifications_upgrade_1(db *DB) error {
+	db.exec("create table if not exists email_delivered (address text not null, event_id text not null, ts integer not null, primary key (address, event_id))")
+	db.exec("create index if not exists email_delivered_ts on email_delivered(ts)")
+	db.exec("create table if not exists webpush_delivered (endpoint text not null, event_id text not null, ts integer not null, primary key (endpoint, event_id))")
+	db.exec("create index if not exists webpush_delivered_ts on webpush_delivered(ts)")
+	return nil
+}
+
+// db_upgrade_file brings a database file that keeps its own version to the
+// last of its steps, once per handle: step i takes the file from version i to
+// i+1, the version held in the file's pragma user_version. A new file runs
+// every step in order: step 1 lays the file as it was when it gained a version,
+// each later step one change. Files at every earlier version run them, so a
+// released step is never edited - a change to one of these files is always a
+// new step - and TestVersionedStepsKeepTheirSchema holds them to that. A file
+// at a later version than the steps know, from a newer server, is left as it
+// is.
+//
+// A step that fails or panics - a damaged file, or a crafted one in a restored
+// bundle - leaves the version where it was and is tried again on this handle
+// after db_upgrade_retry: one bad file must not take the server down, and a
+// passing cause (no file descriptor free, a lock held) must not leave the file
+// behind for the life of the process.
+func db_upgrade_file(db *DB, path string, steps []func(*DB) error) {
+	if db == nil || db.versioned {
+		return
 	}
 	l := lock(path)
 	l.Lock()
 	defer l.Unlock()
-	if db.user_setup {
-		return db
+	// Re-checked under the lock: a concurrent opener waits here for the steps
+	// rather than reading a file still being laid.
+	if db.versioned || now() < db.retry {
+		return
 	}
-
-	// Create tables for user.db
-	if name == "user" {
-		db.exec("create table if not exists preferences (name text primary key, value text not null)")
-		db.groups_setup()
-		db.permissions_setup()
-
-		// App preferences (for multi-version and user-configurable routing)
-		db.exec("create table if not exists classes (class text not null primary key, app text not null)")
-		db.exec("create table if not exists services (service text not null primary key, app text not null)")
-		db.exec("create table if not exists paths (path text not null primary key, app text not null)")
-		db.exec("create table if not exists versions (app text not null primary key, version text not null default '', track text not null default '')")
-
-		// Connected accounts (email, browser push, AI services, MCP)
-		db.exec("create table if not exists accounts (id text not null primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1, \"default\" text not null default '', last_delivered integer not null default 0, device text not null default '')")
-		db.exec("create index if not exists accounts_type on accounts(type)")
-		if exists, _ := db.exists("select 1 from pragma_table_info('accounts') where name='last_delivered'"); !exists {
-			db.exec("alter table accounts add column last_delivered integer not null default 0")
+	var version int
+	if err := db.internal.QueryRow("pragma user_version").Scan(&version); err != nil {
+		db_upgrade_failed(db, path, 0, err)
+		return
+	}
+	for version < len(steps) {
+		if err := db_upgrade_step(db, steps[version], version+1); err != nil {
+			db_upgrade_failed(db, path, version+1, err)
+			return
 		}
-		db.accounts_migrate()
-		// The device a per-device account was registered from (devices.go).
-		if exists, _ := db.exists("select 1 from pragma_table_info('accounts') where name='device'"); !exists {
-			db.exec("alter table accounts add column device text not null default ''")
+		version++
+	}
+	db.versioned = true
+}
+
+// db_upgrade_retry is how long a handle waits before trying failed steps again.
+const db_upgrade_retry = 60
+
+// db_upgrade_warned holds the files whose failure has been reported, by path:
+// warn mails the administrator, once is enough.
+var db_upgrade_warned sync.Map
+
+// db_upgrade_failed records a failed step on the handle and reports it.
+func db_upgrade_failed(db *DB, path string, version int, err error) {
+	db.retry = now() + db_upgrade_retry
+	if _, reported := db_upgrade_warned.LoadOrStore(path, true); reported {
+		debug("Database %s: upgrade to version %d failed again: %v", path, version, err)
+		return
+	}
+	warn("Database %s: upgrade to version %d failed: %v", path, version, err)
+}
+
+// db_upgrade_step runs one step and records the version it reaches, a panic in
+// either returned as its error.
+func db_upgrade_step(db *DB, step func(*DB) error, version int) (err error) {
+	defer func() {
+		if failure := recover(); failure != nil {
+			err = fmt.Errorf("%v", failure)
 		}
-		db.exec("create index if not exists accounts_device on accounts(device)")
-
-		// Devices the user runs Mochi on; push accounts hang off them.
-		db.exec("create table if not exists devices (id text not null primary key, label text not null default '', created integer not null, seen integer not null default 0)")
-
-		// Keys of hosted accounts on other networks (keys.go).
-		keys_table(db)
-		networks_tables(db)
-		numbers_table(db)
-		statuses_tables(db)
-
-		// User interest profiles for personalised ranking
-		db.exec("create table if not exists interests (qid text not null primary key, weight integer not null default 100, updated integer not null default 0)")
-
-		// Internal key-value settings (Go-only, no Starlark API)
-		db.exec("create table if not exists settings (key text not null primary key, text text not null default '', number integer not null default 0)")
-
-		// The user's learned directory: private routing memory (directory_user.go)
-		directory_user_table(db)
-
-		// Per-user app state (permission setup tracking)
-		db.apps_setup()
+	}()
+	if err := step(db); err != nil {
+		return err
 	}
+	return db.exec_e(fmt.Sprintf("pragma user_version=%d", version))
+}
 
-	// Per-user notification-delivery dedup (email + web push)
-	if name == "notifications" {
-		db.exec("create table if not exists email_delivered (address text not null, event_id text not null, ts integer not null, primary key (address, event_id))")
-		db.exec("create index if not exists email_delivered_ts on email_delivered(ts)")
-		db.exec("create table if not exists webpush_delivered (endpoint text not null, event_id text not null, ts integer not null, primary key (endpoint, event_id))")
-		db.exec("create index if not exists webpush_delivered_ts on webpush_delivered(ts)")
+// db_discard closes a handle this caller opened and nothing else holds, so a
+// walk over many files keeps no descriptors open behind it. A handle that was
+// already cached when opened is left as it was.
+func db_discard(db *DB, reused bool) {
+	if db == nil || reused {
+		return
 	}
-
-	db.user_setup = true
-	return db
+	databases_lock.Lock()
+	if databases[db.key] == db {
+		delete(databases, db.key)
+	}
+	databases_lock.Unlock()
+	db.internal.Close()
+	db.starlark.Close()
 }
 
 // Per-database page-count cap applied to every connection by db_setup_conn. At
@@ -629,9 +763,9 @@ func db_app_locate(u *User, app *App, av *AppVersion) (string, string) {
 	return path, fmt.Sprintf("%s|%s", filepath.Join(data_dir, path), av.Version)
 }
 
-// db_app_system opens the system database (app.db) for an app.
-// Contains the access table managed by the platform.
-// Always available even if app has no declared database file.
+// db_app_system opens the system database (app.db) for an app, brought to its
+// current version (db_system_steps). Always available even if the app has no
+// declared database file.
 func db_app_system(u *User, app *App) *DB {
 	if u == nil || app == nil {
 		return nil
@@ -643,137 +777,57 @@ func db_app_system(u *User, app *App) *DB {
 		return nil
 	}
 	db_bind(db, u, app)
-
-	// Run the platform system-table setups (and the access-table migration) the
-	// first time THIS handle is used as an app-system DB — even if a raw db_open
-	// cached it first (which leaves system_setup false). Idempotent. (#111)
-	if db.system_setup {
-		return db
-	}
-
-	l := lock(path)
-	l.Lock()
-	defer l.Unlock()
-	if db.system_setup {
-		return db
-	}
-
-	db_app_system_setup(db)
-	db.system_setup = true
-
+	db_upgrade_file(db, path, db_system_steps)
 	return db
 }
 
-// db_app_system_setup brings one app.db up to date: the access tables, the
-// broadcast state tables and the commit-hook log, each an idempotent create
-// carrying its own column migrations. One list for both the open path and the
-// startup sweep: the sweep marks a handle set up and the open path trusts that
-// mark, so anything the sweep skipped would stay skipped for as long as the
-// handle stayed cached. The broadcast tables are created here rather than only
-// by the send/receive paths' defensive creates, and the commit-hook log here
-// rather than once per fired commit, which flushed the handle's prepared
-// statements each time.
-func db_app_system_setup(db *DB) {
+// db_system_steps are app.db's versioned steps.
+var db_system_steps = []func(*DB) error{system_upgrade_1, system_upgrade_2}
+
+// system_upgrade_1 lays app.db as it was when it gained a version: the access
+// tables, the broadcast state, the commit-hook log and the idempotency cache,
+// with the column changes they used to make on every open or first use. It and
+// the functions it calls are frozen (db_upgrade_file).
+func system_upgrade_1(db *DB) error {
 	db.access_setup()
 	broadcast_sequence_table_create(db)
 	broadcast_received_table_create(db)
 	broadcast_log_table_create(db)
 	broadcast_acknowledged_table_create(db)
+	broadcast_subscribed_table_create(db)
 	broadcast_pending_table_create(db)
 	commits_table_create(db)
+	idempotency_setup(db)
+	return nil
 }
 
-// db_app_system_sweep runs the app-system setup over every existing app.db at
-// startup, so one nothing touches is still brought up to date.
+// db_app_system_sweep brings every app.db on the server to its current version
+// at startup, before any request: a step may move data an app's own migration
+// then reads, as system_upgrade_2 writes the attachment export an app takes the
+// absence of as "no rows".
 func db_app_system_sweep() {
-	users_root := filepath.Join(data_dir, "users")
-	users, err := os.ReadDir(users_root)
+	users, err := os.ReadDir(filepath.Join(data_dir, "users"))
 	if err != nil {
 		return
 	}
 	count := 0
 	for _, u := range users {
-		if !u.IsDir() {
-			continue
-		}
-		apps, err := os.ReadDir(filepath.Join(users_root, u.Name()))
-		if err != nil {
-			continue
-		}
-		for _, a := range apps {
-			if !a.IsDir() {
-				continue
-			}
-			path := fmt.Sprintf("users/%s/%s/app.db", u.Name(), a.Name())
-			if !file_exists(filepath.Join(data_dir, path)) {
-				continue
-			}
-			// Scoped so the release runs on every exit: this sweep walks every
-			// app.db on the host at startup, so a handle it opens and never
-			// releases is one that can never be evicted.
-			func() {
-				db, _, reused := db_open_work(path)
-				if db == nil {
-					return
-				}
-				defer db_release(db, reused)
-				if db.system_setup {
-					return
-				}
-				l := lock(path)
-				l.Lock()
-				if !db.system_setup {
-					db_app_system_setup(db)
-					db.system_setup = true
-					count++
-				}
-				l.Unlock()
-			}()
+		if u.IsDir() {
+			count += db_app_system_upgrade(u.Name())
 		}
 	}
-	debug("App-system sweep: setups run on %d app.db files", count)
+	debug("App-system sweep: %d app.db files checked", count)
 }
 
-// attachment_export_file is the JSON list at the root of an app's file storage
-// holding the attachment rows core's per-app store used to keep, written only
-// where rows existed. Each entry adds "file", the own row's stored filename (""
-// if remote).
-const attachment_export_file = "attachments.json"
-
-// attachment_export_sweep moves each app.db's attachments table out of core at
-// startup, writing attachment_export_file first and keeping the table if it
-// cannot. It runs before any request, so a migration may read "no file" as "no
-// rows" - restore_apply must therefore export a restored user before the
-// account activates.
-func attachment_export_sweep() {
-	users_root := filepath.Join(data_dir, "users")
-	users, err := os.ReadDir(users_root)
-	if err != nil {
-		return
-	}
-	exported, dropped := 0, 0
-	for _, u := range users {
-		if !u.IsDir() {
-			continue
-		}
-		e, d := attachment_export_user(u.Name())
-		exported += e
-		dropped += d
-	}
-	if dropped > 0 {
-		info("Attachment export: %d stores exported, %d tables dropped", exported, dropped)
-	}
-}
-
-// attachment_export_user runs the attachment export-and-drop over one user's
-// stores, returning how many were exported and dropped. See
-// attachment_export_sweep for the semantics of each step.
-func attachment_export_user(uid string) (int, int) {
-	exported, dropped := 0, 0
+// db_app_system_upgrade brings one user's app.db files to their current
+// version, returning how many it looked at: the sweep at startup, and a restore,
+// the one path that adds app.db files to a running server.
+func db_app_system_upgrade(uid string) int {
 	apps, err := os.ReadDir(filepath.Join(data_dir, "users", uid))
 	if err != nil {
-		return 0, 0
+		return 0
 	}
+	count := 0
 	for _, a := range apps {
 		if !a.IsDir() {
 			continue
@@ -782,40 +836,54 @@ func attachment_export_user(uid string) (int, int) {
 		if !file_exists(filepath.Join(data_dir, path)) {
 			continue
 		}
-		// Scoped for the release, as in db_app_system_sweep.
+		// Scoped so the handle is closed on every exit: the sweep walks every
+		// app.db on the host before anything can evict a handle, and each one
+		// left open holds its descriptors.
 		func() {
 			db, _, reused := db_open_work(path)
 			if db == nil {
 				return
 			}
-			defer db_release(db, reused)
-			present, _ := db.exists("select 1 from sqlite_master where type='table' and name='attachments'")
-			if !present {
-				return
-			}
-			files := filepath.Join(data_dir, "users", uid, a.Name(), "files")
-			rows, err := db.rows("select * from attachments order by rowid")
-			if err != nil {
-				warn("Attachment export: unable to read %s: %v", path, err)
-				return
-			}
-			if len(rows) > 0 {
-				if err := attachment_export_write(files, rows); err != nil {
-					warn("Attachment export: unable to write %s: %v", filepath.Join(files, attachment_export_file), err)
-					return
-				}
-				exported++
-			}
-			if err := db.exec_e("drop table if exists attachments"); err != nil {
-				warn("Attachment export: unable to drop the attachments table in %s: %v", path, err)
-				return
-			}
-			os.RemoveAll(filepath.Join(files, "thumbnails"))
-			os.RemoveAll(filepath.Join(files, "previews"))
-			dropped++
+			defer db_discard(db, reused)
+			db_upgrade_file(db, path, db_system_steps)
+			count++
 		}()
 	}
-	return exported, dropped
+	return count
+}
+
+// attachment_export_file is the JSON list at the root of an app's file storage
+// holding the attachment rows core's per-app store used to keep, written only
+// where rows existed. Each entry adds "file", the own row's stored filename (""
+// if remote).
+const attachment_export_file = "attachments.json"
+
+// system_upgrade_2 moves app.db's attachments table out of core: its rows go to
+// attachment_export_file in the app's file storage, then the table is dropped,
+// with the thumbnails and previews core made of them. An export that cannot be
+// written keeps the table and fails the step, to be tried again.
+func system_upgrade_2(db *DB) error {
+	present, _ := db.exists("select 1 from sqlite_master where type='table' and name='attachments'")
+	if !present {
+		return nil
+	}
+	files := filepath.Join(filepath.Dir(db.path), "files")
+	rows, err := db.rows("select * from attachments order by rowid")
+	if err != nil {
+		return fmt.Errorf("reading the attachments: %w", err)
+	}
+	if len(rows) > 0 {
+		if err := attachment_export_write(files, rows); err != nil {
+			return fmt.Errorf("writing %s: %w", filepath.Join(files, attachment_export_file), err)
+		}
+		info("Attachment export: %d rows of %s exported", len(rows), db.path)
+	}
+	if err := db.exec_e("drop table if exists attachments"); err != nil {
+		return fmt.Errorf("dropping the attachments table: %w", err)
+	}
+	os.RemoveAll(filepath.Join(files, "thumbnails"))
+	os.RemoveAll(filepath.Join(files, "previews"))
+	return nil
 }
 
 // attachment_export_write writes the rows of one store as attachment_export_file
@@ -1332,15 +1400,25 @@ func db_open_work(file string, keys ...string) (*DB, bool, bool) {
 // need operator restore.
 var db_transient_dbs = []string{"queue", "sessions", "peers"}
 
+// db_rebuilt_dbs are the core DBs an operator may delete to have them filled
+// again from the network (the directory by republishing and sync, the worlds
+// by their next announcements): a missing one is laid again by db_create.
+var db_rebuilt_dbs = []string{"directory", "world"}
+
 // db_heal_transient deletes a corrupt transient core DB at startup so it
-// rebuilds fresh, and returns true iff one is now missing - the only case in
-// which the caller re-runs db_create. Never on a healthy start.
-func db_heal_transient() bool {
-	rebuild := false
+// rebuilds fresh, and returns the transient and rebuilt DBs now missing, which
+// the caller lays fresh with db_create. None on a healthy start.
+func db_heal_transient() []string {
+	var missing []string
+	for _, name := range db_rebuilt_dbs {
+		if !file_exists(filepath.Join(data_dir, "db", name+".db")) {
+			missing = append(missing, name)
+		}
+	}
 	for _, name := range db_transient_dbs {
 		path := filepath.Join(data_dir, "db", name+".db")
 		if !file_exists(path) {
-			rebuild = true // missing → its schema must be (re)created
+			missing = append(missing, name)
 			continue
 		}
 		if result, ran := db_quick_check(path); ran && result != "ok" {
@@ -1348,30 +1426,39 @@ func db_heal_transient() bool {
 			for _, suffix := range []string{"", "-wal", "-shm"} {
 				_ = os.Remove(path + suffix)
 			}
-			rebuild = true
+			missing = append(missing, name)
 		}
 	}
-	return rebuild
+	return missing
 }
 
 func db_start() bool {
 	fresh := !file_exists(filepath.Join(data_dir, "db", "users.db"))
-	// db_create must NOT run on every start: it would recreate a missing migrated
-	// DB with only its base schema, after which db_upgrade skips its migrations
-	// (the version already reads current) and leaves the schema silently
-	// incomplete.
-	rebuild := db_heal_transient()
+	db_prepare(fresh)
+	go db_manager()
+	return fresh
+}
+
+// db_prepare brings the server-wide databases to the current schema at
+// startup: a new install's laid whole, an existing install's upgraded.
+func db_prepare(fresh bool) {
+	// db_create must NOT run over every database on an existing install: it
+	// would recreate a missing migrated DB with only its base schema, after
+	// which db_upgrade skips its migrations (the version already reads current)
+	// and leaves the schema silently incomplete, and it would meet older tables
+	// with statements for their newer shapes. Only the DBs found missing are
+	// laid, fresh; db_upgrade then brings the rest up, and its steps leave a
+	// freshly laid DB as it is.
+	missing := db_heal_transient()
 	switch {
 	case fresh:
 		db_create()
-	case rebuild:
-		db_create()
+	case len(missing) > 0:
+		db_create(missing...)
 		db_upgrade()
 	default:
 		db_upgrade()
 	}
-	go db_manager()
-	return fresh
 }
 
 func db_upgrade() {
@@ -1421,6 +1508,8 @@ func db_upgrade() {
 			db_upgrade_16()
 		case 17:
 			db_upgrade_17()
+		case 18:
+			db_upgrade_18()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2717,15 +2806,16 @@ func db_upgrade_16() {
 	db_open("db/sessions.db").exec("create table if not exists seen (user text primary key, time integer not null)")
 }
 
-// db_upgrade_17 adds the record of issued certificates to the networks
-// database.
+// db_upgrade_17 added the record of issued certificates to the networks
+// database by opening it, when its opener laid its tables; db_upgrade_18 lays
+// them now.
 func db_upgrade_17() {
-	networks_database()
 }
 
 // db_upgrade_15 adds the other token kinds to users.db tokens - a sign-in by
-// another network's client, a minted password - and the clients registered to
-// sign users in to the networks database.
+// another network's client, a minted password. It added the clients registered
+// to sign users in to the networks database by opening it, when its opener laid
+// its tables; db_upgrade_18 lays them now.
 func db_upgrade_15() {
 	users := db_open("db/users.db")
 	for _, column := range []string{"kind", "client", "account", "network", "jkt", "refresh", "device", "scram"} {
@@ -2734,19 +2824,81 @@ func db_upgrade_15() {
 		}
 	}
 	users.exec("create index if not exists tokens_refresh on tokens(refresh)")
-	networks_database()
 }
 
-// db_upgrade_14 adds Mochi's registrations as a client on other servers and
-// the server's own client keys to the networks database.
+// db_upgrade_14 added Mochi's registrations as a client on other servers and
+// the server's own client keys to the networks database by opening it, when its
+// opener laid its tables; db_upgrade_18 lays them now.
 func db_upgrade_14() {
-	networks_database()
 }
 
-// db_upgrade_13 adds the networks database: the delivery queue, the hosts it
-// has learned about and the owner's domain blocks.
+// db_upgrade_13 added the networks database - the delivery queue, the hosts it
+// has learned about and the owner's domain blocks - by opening it, when its
+// opener laid its tables; db_upgrade_18 lays them now.
 func db_upgrade_13() {
-	networks_database()
+}
+
+// db_upgrade_18 brings the databases that laid their own schema whenever they
+// were opened - networks.db, matrix.db, xmpp.db and world.db - into the version
+// system: their tables as db_create laid them at schema 18, and the changes
+// their openers made each time, made once here. It calls db_create's functions
+// for those databases while they still lay what they laid then;
+// TestVersionedStepsKeepTheirSchema fails the moment one changes, and this step
+// then takes its own copy of the function as it was. It also drops the commit-hook log apps' data
+// databases kept before it moved to app.db, which the hook dropped as it fired.
+func db_upgrade_18() {
+	networks := db_open("db/networks.db")
+	// The Bluesky update stream from before its sequence was AUTOINCREMENT,
+	// moved onto one that is before the table is laid.
+	atproto_stream_rebuild(networks)
+	networks_create(networks)
+	// The actor a delivery is for where its inbox was not known when queued.
+	if exists, _ := networks.exists("select 1 from pragma_table_info('deliveries') where name='address'"); !exists {
+		networks.exec("alter table deliveries add column address text not null default ''")
+	}
+	// The activity ids seen, server-wide, before they were kept per account.
+	networks.exec("drop table if exists received")
+
+	matrix := db_open("db/matrix.db")
+	federation_create(matrix)
+	// The domain each queued row is sent from.
+	if found, _ := matrix.exists("select 1 from pragma_table_info('outbox') where name='origin'"); !found {
+		matrix.exec("alter table outbox add column origin text not null default ''")
+	}
+	// Whether a key change is one the viewer no longer shares a room with.
+	if found, _ := matrix.exists("select 1 from pragma_table_info('changes') where name='gone'"); !found {
+		matrix.exec("alter table changes add column gone integer not null default 0")
+	}
+	// The rooms' timelines and the key store's account data from before the
+	// client interface kept them, taken into its order and settings.
+	matrix.exec("insert or ignore into stream (room, event) select room, id from events where outlier=0 and rejected=0 and not exists (select 1 from stream) order by received, rowid")
+	matrix.exec("insert or ignore into settings (user, room, type, content) select user, '', type, content from data")
+
+	xmpp_tables(db_open("db/xmpp.db"))
+	world_create(db_open("db/world.db"))
+
+	dropped := 0
+	files, _ := filepath.Glob(filepath.Join(data_dir, "users", "*", "*", "db", "*.db"))
+	for _, file := range files {
+		relative, err := filepath.Rel(data_dir, file)
+		if err != nil {
+			continue
+		}
+		func() {
+			db, _, reused := db_open_work(relative)
+			if db == nil {
+				return
+			}
+			defer db_discard(db, reused)
+			if orphan, _ := db.exists("select 1 from sqlite_master where type='table' and name='_commit_log'"); orphan {
+				db.exec("drop table if exists _commit_log")
+				dropped++
+			}
+		}()
+	}
+	if dropped > 0 {
+		info("Schema 18: dropped the old commit-hook log from %d app databases", dropped)
+	}
 }
 
 // db_upgrade_12 adds the handle registry to users.db; db_create carries the

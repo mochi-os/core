@@ -1876,27 +1876,73 @@ const (
 const git_between_slop = 5
 
 // git_between lists the commits head reaches and base does not, newest first,
-// at most git_list_maximum of them. It walks both histories together, newest
-// first, carrying each side's mark down to the parents, and stops once every
-// commit still to visit is base's: it reads the range and the history just
-// past it rather than all of either. Each side's walk stops at
+// at most git_list_maximum of them. It reads the range and the history just
+// past it rather than all of either (git_paint). Each side's walk stops at
 // git_offset_maximum commits, as the two separate walks did; a longer range
-// is answered with its newest commits. As in git's own walk, a commit whose
-// clock was wrong by more than git_between_slop commits can leave base's
-// older history unwalked, and commits there are then listed as head's.
+// is answered with its newest commits.
 func git_between(ctx context.Context, repo *git.Repository, base, head *object.Commit) ([]*object.Commit, error) {
-	marks := map[plumbing.Hash]uint8{}
+	marks, order, loaded, err := git_paint(ctx, repo.CommitObject, []*object.Commit{head}, []*object.Commit{base}, 2*git_offset_maximum)
+	if err != nil {
+		return nil, err
+	}
+
+	// A commit listed before base's walk reached it is base's after all.
+	var commits []*object.Commit
+	for _, hash := range order {
+		if marks[hash] != git_from_head {
+			continue
+		}
+		commits = append(commits, loaded[hash])
+		if len(commits) >= git_list_maximum {
+			break
+		}
+	}
+	return commits, nil
+}
+
+// git_paint walks the histories of heads and bases together, newest first,
+// carrying each side's mark down to the parents, and stops once every commit
+// still to visit is one bases reach. It answers each commit's marks, the
+// commits it walked that only heads had reached when they were walked, in
+// walk order - a mark can arrive later, so a caller reads the commit's mark
+// again - and the commits it loaded. limit, when positive, ends the walk after
+// that many commits. As in git's own walk, a commit whose clock was wrong by
+// more than git_between_slop commits can leave bases' older history
+// unwalked, and commits there are then taken for heads' alone. The other way
+// round never happens: a mark travels only from a commit to its parents, so a
+// commit is marked as bases' only when bases reach it.
+func git_paint(ctx context.Context, load func(plumbing.Hash) (*object.Commit, error), heads, bases []*object.Commit, limit int) (marks map[plumbing.Hash]uint8, order []plumbing.Hash, loaded map[plumbing.Hash]*object.Commit, err error) {
+	marks = map[plumbing.Hash]uint8{}
 	walked := map[plumbing.Hash]bool{}
-	loaded := map[plumbing.Hash]*object.Commit{}
+	loaded = map[plumbing.Hash]*object.Commit{}
 	queue := &git_commit_queue{}
+	// How often each commit is queued, and how many queued entries are of
+	// commits bases do not reach yet. The walk's end is tested after every
+	// commit, and a scan of the queue for it made a fetch offering many haves
+	// cost time quadratic in their number.
+	queued := map[plumbing.Hash]int{}
+	lacking := 0
+	push := func(c *object.Commit) {
+		heap.Push(queue, c)
+		queued[c.Hash]++
+		if marks[c.Hash]&git_from_base == 0 {
+			lacking++
+		}
+	}
+	set := func(hash plumbing.Hash, side uint8) {
+		if side&git_from_base != 0 && marks[hash]&git_from_base == 0 {
+			lacking -= queued[hash]
+		}
+		marks[hash] |= side
+	}
 	mark := func(c *object.Commit, side uint8) {
 		if marks[c.Hash]&side == side {
 			return
 		}
-		marks[c.Hash] |= side
+		set(c.Hash, side)
 		loaded[c.Hash] = c
 		if !walked[c.Hash] {
-			heap.Push(queue, c)
+			push(c)
 			return
 		}
 		// Base reaches a commit already walked for head, a clock out of
@@ -1914,25 +1960,32 @@ func git_between(ctx context.Context, repo *git.Repository, base, head *object.C
 				if parent == nil || marks[hash]&git_from_base != 0 {
 					continue
 				}
-				marks[hash] |= git_from_base
+				set(hash, git_from_base)
 				if walked[hash] {
 					stack = append(stack, parent)
 				} else {
-					heap.Push(queue, parent)
+					push(parent)
 				}
 			}
 		}
 	}
-	mark(head, git_from_head)
-	mark(base, git_from_base)
+	for _, head := range heads {
+		mark(head, git_from_head)
+	}
+	for _, base := range bases {
+		mark(base, git_from_base)
+	}
 
-	var order []plumbing.Hash
 	slop := git_between_slop
-	for visited := 0; queue.Len() > 0 && visited < 2*git_offset_maximum; {
+	for visited := 0; queue.Len() > 0 && (limit <= 0 || visited < limit); {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
 		c := heap.Pop(queue).(*object.Commit)
+		queued[c.Hash]--
+		if marks[c.Hash]&git_from_base == 0 {
+			lacking--
+		}
 		// Queued twice when the second side reached it before it was walked.
 		if walked[c.Hash] {
 			continue
@@ -1946,16 +1999,15 @@ func git_between(ctx context.Context, repo *git.Repository, base, head *object.C
 		for _, hash := range c.ParentHashes {
 			parent, ok := loaded[hash]
 			if !ok {
-				var err error
-				parent, err = repo.CommitObject(hash)
+				parent, err = load(hash)
 				if err != nil {
-					return nil, err
+					return nil, nil, nil, err
 				}
 			}
 			mark(parent, side)
 		}
 
-		if git_all_base(*queue, marks) {
+		if lacking == 0 {
 			slop--
 			if slop == 0 {
 				break
@@ -1964,29 +2016,7 @@ func git_between(ctx context.Context, repo *git.Repository, base, head *object.C
 			slop = git_between_slop
 		}
 	}
-
-	// A commit listed before base's walk reached it is base's after all.
-	var commits []*object.Commit
-	for _, hash := range order {
-		if marks[hash] != git_from_head {
-			continue
-		}
-		commits = append(commits, loaded[hash])
-		if len(commits) >= git_list_maximum {
-			break
-		}
-	}
-	return commits, nil
-}
-
-// git_all_base reports whether every queued commit is one base reaches.
-func git_all_base(queue git_commit_queue, marks map[plumbing.Hash]uint8) bool {
-	for _, c := range queue {
-		if marks[c.Hash]&git_from_base == 0 {
-			return false
-		}
-	}
-	return true
+	return marks, order, loaded, nil
 }
 
 // git_commit_queue holds commits newest first by committer time, as git
@@ -4748,7 +4778,7 @@ func git_v2_fetch(c *gin.Context, storage storer.Storer, repo_path string, argum
 	// haves until it runs out.
 	ready := !request.done && len(known) > 0
 
-	selection, err := git_upload_pack_select(storage, request, known, request.done || ready)
+	selection, err := git_upload_pack_select(c.Request.Context(), storage, request, known, request.done || ready)
 	if err != nil {
 		info("git_v2_fetch: selecting objects for %s failed: %v", repo_path, err)
 		c.String(http.StatusInternalServerError, "Upload pack failed") // i18n-ok: git protocol, read by the client not a person
@@ -4893,7 +4923,7 @@ type git_selection struct {
 // git_upload_pack_select decides what a fetch sends. pack is false for an
 // exploratory negotiation round, which still needs the shallow boundary
 // answered but must not pay for the object walk that would build a packfile.
-func git_upload_pack_select(storage storer.Storer, request *git_request, known []plumbing.Hash, pack bool) (*git_selection, error) {
+func git_upload_pack_select(ctx context.Context, storage storer.Storer, request *git_request, known []plumbing.Hash, pack bool) (*git_selection, error) {
 	selection := &git_selection{
 		known: known,
 		thin:  request.capabilities.Supports(capability.ThinPack),
@@ -4903,41 +4933,42 @@ func git_upload_pack_select(storage storer.Storer, request *git_request, known [
 		if !pack {
 			return selection, nil
 		}
-		// The ordinary case, and the fast one: everything reachable from the
-		// wants, less everything reachable from the haves, with revlist
-		// pruning the walk as it goes.
-		shared, err := revlist.Objects(storage, known, nil)
+		// A clone holds nothing, so everything the wants reach goes, and
+		// revlist walks that directly.
+		if len(known) == 0 {
+			var err error
+			if selection.objects, err = revlist.Objects(storage, request.wants, nil); err != nil {
+				return nil, err
+			}
+			return selection, git_upload_pack_trim(storage, request, selection)
+		}
+		// The ordinary case, walked as git walks it: the commits the wants
+		// reach and the haves do not, then what their trees reach less what
+		// the client holds where its history meets them. Expanding everything
+		// the haves reach instead cost a fetch of one commit the whole
+		// history's objects, read twice.
+		tips, tags, named, err := git_wants(storage, request.wants)
 		if err != nil {
 			return nil, err
 		}
-		if selection.objects, err = revlist.Objects(storage, request.wants, shared); err != nil {
+		wanted, held, err := git_fetch_commits(ctx, storage, tips, known)
+		if err != nil {
+			return nil, err
+		}
+		edge, err := git_edges(storage, wanted, held)
+		if err != nil {
+			return nil, err
+		}
+		if selection.objects, err = git_objects(storage, wanted, edge, tags, named); err != nil {
 			return nil, err
 		}
 		return selection, git_upload_pack_trim(storage, request, selection)
 	}
 
-	// Sort the wants. The walk below is over commits, so a want naming an
-	// annotated tag is peeled and the tag object travels alongside. A want that is
-	// a blob or tree is content to include, not a tip to walk from - that is how a
-	// partial clone comes back for an object, and peeling one fails.
-	var tips, tags, named []plumbing.Hash
-	for _, want := range request.wants {
-		object, err := storage.EncodedObject(plumbing.AnyObject, want)
-		if err != nil {
-			return nil, err
-		}
-		if object.Type() == plumbing.BlobObject || object.Type() == plumbing.TreeObject {
-			named = append(named, want)
-			continue
-		}
-		commit, walked, err := git_peel(storage, want)
-		if err != nil {
-			return nil, err
-		}
-		tips = append(tips, commit)
-		tags = append(tags, walked...)
+	tips, tags, named, err := git_wants(storage, request.wants)
+	if err != nil {
+		return nil, err
 	}
-
 	included, boundary, err := git_upload_pack_history(storage, request, tips)
 	if err != nil {
 		return nil, err
@@ -4968,10 +4999,129 @@ func git_upload_pack_select(storage storer.Storer, request *git_request, known [
 	if !pack {
 		return selection, nil
 	}
-	if selection.objects, err = git_objects(storage, included, held, tags, named); err != nil {
+	edge, err := git_edges(storage, included, git_hash_set(held))
+	if err != nil {
+		return nil, err
+	}
+	// The commits the client offered are edges too, wherever they sit, as
+	// git takes them for a shallow client: it holds each one's whole tree,
+	// and the history a shallow fetch carries need not meet its own at all -
+	// another branch, forked below where the client's history stops, is sent
+	// as just its newest commits.
+	seen := git_hash_set(edge)
+	for _, hash := range known {
+		if !seen[hash] {
+			seen[hash] = true
+			edge = append(edge, hash)
+		}
+	}
+	if selection.objects, err = git_objects(storage, included, edge, tags, named); err != nil {
 		return nil, err
 	}
 	return selection, git_upload_pack_trim(storage, request, selection)
+}
+
+// git_wants sorts a fetch's wants. A commit is a tip to walk history from; a
+// want naming an annotated tag is peeled, however long the chain of tags, and
+// the tag objects walked through travel alongside what they name. A blob or tree is content to include, not
+// a tip to walk from - that is how a partial clone comes back for an object -
+// and so is a blob or tree a tag names.
+func git_wants(storage storer.EncodedObjectStorer, wants []plumbing.Hash) (tips, tags, named []plumbing.Hash, err error) {
+	for _, want := range wants {
+		target, kind, walked, err := git_peel_object(storage, want, 0)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		tags = append(tags, walked...)
+		if kind == plumbing.CommitObject {
+			tips = append(tips, target)
+		} else {
+			named = append(named, target)
+		}
+	}
+	return tips, tags, named, nil
+}
+
+// git_fetch_commits walks what a fetch asks for against what the client says
+// it holds, as git's own walk does (git_paint): it answers the commits the
+// tips reach and the haves do not, and those the walk found the haves reach.
+// A commit a have reaches is one the client holds, with its whole history and
+// every tree, since a client whose history stops short takes the shallow path
+// instead. The walk reads the new history and a little past where it meets
+// the client's, not the client's whole history. Every commit the tips reach
+// that is not among those answered is one the haves reach.
+func git_fetch_commits(ctx context.Context, storage storer.EncodedObjectStorer, tips, haves []plumbing.Hash) (wanted []plumbing.Hash, held map[plumbing.Hash]bool, err error) {
+	load := func(hash plumbing.Hash) (*object.Commit, error) {
+		return object.GetCommit(storage, hash)
+	}
+	commits := func(hashes []plumbing.Hash) ([]*object.Commit, error) {
+		loaded := make([]*object.Commit, 0, len(hashes))
+		for _, hash := range hashes {
+			commit, err := load(hash)
+			if err != nil {
+				return nil, err
+			}
+			loaded = append(loaded, commit)
+		}
+		return loaded, nil
+	}
+	heads, err := commits(tips)
+	if err != nil {
+		return nil, nil, err
+	}
+	bases, err := commits(haves)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// No limit: a walk cut short would leave commits the client lacks out of
+	// the pack.
+	marks, order, _, err := git_paint(ctx, load, heads, bases, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	held = map[plumbing.Hash]bool{}
+	for hash, side := range marks {
+		if side&git_from_base != 0 {
+			held[hash] = true
+		}
+	}
+	for _, hash := range order {
+		if marks[hash] == git_from_head {
+			wanted = append(wanted, hash)
+		}
+	}
+	return wanted, held, nil
+}
+
+// git_edges returns the commits the client holds where the history a pack
+// carries meets its own: any of commits it holds, and their parents it holds.
+// What their trees reach is left out of the pack. An object the client holds
+// only further back in its history is sent again, as git sends it: a pack may
+// carry more than the client lacks, never less.
+func git_edges(storage storer.EncodedObjectStorer, commits []plumbing.Hash, held map[plumbing.Hash]bool) ([]plumbing.Hash, error) {
+	if len(held) == 0 {
+		return nil, nil
+	}
+	var edges []plumbing.Hash
+	seen := map[plumbing.Hash]bool{}
+	add := func(hash plumbing.Hash) {
+		if held[hash] && !seen[hash] {
+			seen[hash] = true
+			edges = append(edges, hash)
+		}
+	}
+	for _, hash := range commits {
+		add(hash)
+		commit, err := object.GetCommit(storage, hash)
+		if err != nil {
+			return nil, err
+		}
+		for _, parent := range commit.ParentHashes {
+			add(parent)
+		}
+	}
+	return edges, nil
 }
 
 // git_upload_pack_trim adds the tags include-tag asked to travel with the pack,
@@ -5168,35 +5318,31 @@ func git_history(
 	return reached, boundary, nil
 }
 
-// git_objects turns two commit sets into the objects to send: what the wanted
-// commits reach and the held ones do not, plus the commits and tag objects.
-// Only trees are walked, never parents - the caller has already decided which
-// commits are in play.
-func git_objects(storage storer.Storer, wanted, held, tags, named []plumbing.Hash) ([]plumbing.Hash, error) {
-	held_trees, err := git_trees(storage, held)
+// git_objects turns the commits a pack carries into the objects to send: what
+// their trees reach and the edge commits' trees do not (git_edges), plus the
+// commits and tag objects. Only trees are walked, never parents - the caller
+// has already decided which commits are in play.
+func git_objects(storage storer.Storer, wanted, edge, tags, named []plumbing.Hash) ([]plumbing.Hash, error) {
+	edge_trees, err := git_trees(storage, edge)
 	if err != nil {
 		return nil, err
 	}
-	// Only trees go in, so revlist's expansion of the ignore set walks trees
-	// and blobs and cannot reach a parent commit the client does not hold.
-	held_objects, err := revlist.Objects(storage, held_trees, nil)
-	if err != nil {
-		return nil, err
-	}
-
 	wanted_trees, err := git_trees(storage, wanted)
 	if err != nil {
 		return nil, err
 	}
-	// Objects named directly by the client are expanded the same way, so a
-	// tree asked for by name brings what it contains.
-	objects, err := revlist.Objects(storage, append(wanted_trees, named...), held_objects)
+	// revlist expands the edge trees into everything they reach, once, and
+	// walks the wanted trees against that. Only trees go in, so neither walk
+	// reaches a parent commit the client does not hold. Objects named
+	// directly by the client are walked the same way, so a tree asked for by
+	// name brings what it contains.
+	objects, err := revlist.Objects(storage, append(wanted_trees, named...), edge_trees)
 	if err != nil {
 		return nil, err
 	}
 
 	// revlist saw only trees, so the commits and tags are not in the list yet.
-	seen := git_hash_set(held)
+	seen := git_hash_set(edge)
 	for _, hash := range append(append([]plumbing.Hash{}, wanted...), tags...) {
 		if !seen[hash] {
 			seen[hash] = true
@@ -5222,33 +5368,53 @@ func git_trees(storage storer.EncodedObjectStorer, commits []plumbing.Hash) ([]p
 // git_peel resolves an object name to the commit it names, returning any tag
 // objects walked through so they can travel in the pack alongside it.
 func git_peel(storage storer.EncodedObjectStorer, hash plumbing.Hash) (plumbing.Hash, []plumbing.Hash, error) {
-	var tags []plumbing.Hash
-	current := hash
 	// A tag pointing at a tag is legal; a chain long enough to matter is not.
-	for depth := 0; depth < 16; depth++ {
+	target, kind, tags, err := git_peel_object(storage, hash, 16)
+	if err != nil {
+		return plumbing.ZeroHash, nil, err
+	}
+	if kind != plumbing.CommitObject {
+		return plumbing.ZeroHash, nil, fmt.Errorf("object %s is a %s, not a commit", target, kind)
+	}
+	return target, tags, nil
+}
+
+// git_peel_object resolves an object name through any annotated tags to the
+// object they name, and its type, returning the tag objects walked through.
+// limit, when positive, is the longest chain of tags it follows.
+func git_peel_object(storage storer.EncodedObjectStorer, hash plumbing.Hash, limit int) (plumbing.Hash, plumbing.ObjectType, []plumbing.Hash, error) {
+	var tags []plumbing.Hash
+	walked := map[plumbing.Hash]bool{}
+	current := hash
+	for limit <= 0 || len(tags) < limit {
 		encoded, err := storage.EncodedObject(plumbing.AnyObject, current)
 		if err != nil {
-			return plumbing.ZeroHash, nil, err
+			return plumbing.ZeroHash, plumbing.InvalidObject, nil, err
 		}
 		switch encoded.Type() {
-		case plumbing.CommitObject:
-			return current, tags, nil
+		case plumbing.CommitObject, plumbing.TreeObject, plumbing.BlobObject:
+			return current, encoded.Type(), tags, nil
 		case plumbing.TagObject:
 			decoded, err := object.DecodeObject(storage, encoded)
 			if err != nil {
-				return plumbing.ZeroHash, nil, err
+				return plumbing.ZeroHash, plumbing.InvalidObject, nil, err
 			}
 			tag, ok := decoded.(*object.Tag)
 			if !ok {
-				return plumbing.ZeroHash, nil, fmt.Errorf("object %s does not decode as a tag", current)
+				return plumbing.ZeroHash, plumbing.InvalidObject, nil, fmt.Errorf("object %s does not decode as a tag", current)
 			}
+			// Only a damaged store can name a tag twice in one chain.
+			if walked[current] {
+				return plumbing.ZeroHash, plumbing.InvalidObject, nil, fmt.Errorf("tag chain from %s returns to %s", hash, current)
+			}
+			walked[current] = true
 			tags = append(tags, current)
 			current = tag.Target
 		default:
-			return plumbing.ZeroHash, nil, fmt.Errorf("object %s is a %s, not a commit", current, encoded.Type())
+			return plumbing.ZeroHash, plumbing.InvalidObject, nil, fmt.Errorf("object %s is a %s, not a commit", current, encoded.Type())
 		}
 	}
-	return plumbing.ZeroHash, nil, fmt.Errorf("tag chain from %s is too long to follow", hash)
+	return plumbing.ZeroHash, plumbing.InvalidObject, nil, fmt.Errorf("tag chain from %s is too long to follow", hash)
 }
 
 // git_hash_set indexes hashes for membership tests.
@@ -5310,7 +5476,7 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 	// The shallow boundary has to be settled even for an exploratory round: a
 	// deepening client reads the shallow list and its flush before it will look at
 	// an acknowledgement. The packfile is another matter, so no object walk here.
-	selection, err := git_upload_pack_select(storage, request, known, request.done)
+	selection, err := git_upload_pack_select(c.Request.Context(), storage, request, known, request.done)
 	if err != nil {
 		info("git_upload_pack: selecting objects for %s failed: %v", repo_path, err)
 		c.String(http.StatusInternalServerError, "Upload pack failed") // i18n-ok: git protocol, read by the client not a person

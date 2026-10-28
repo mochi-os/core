@@ -13,6 +13,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"math/rand"
 	"os"
@@ -154,7 +155,7 @@ func TestGitPackMemoryIsBounded(t *testing.T) {
 	if err := capabilities.Add(capability.ThinPack); err != nil {
 		t.Fatalf("capabilities: %v", err)
 	}
-	selection, err := git_upload_pack_select(storage, &git_request{
+	selection, err := git_upload_pack_select(context.Background(), storage, &git_request{
 		capabilities: capabilities,
 		wants:        []plumbing.Hash{second},
 		done:         true,
@@ -276,7 +277,7 @@ func TestGitPackThinEntries(t *testing.T) {
 	if err := capabilities.Add(capability.ThinPack); err != nil {
 		t.Fatalf("capabilities: %v", err)
 	}
-	objects, err := git_upload_pack_select(storage, &git_request{
+	objects, err := git_upload_pack_select(context.Background(), storage, &git_request{
 		capabilities: capabilities,
 		wants:        []plumbing.Hash{second},
 		done:         true,

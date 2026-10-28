@@ -28,6 +28,7 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/bluesky-social/indigo/events"
 	"github.com/gin-gonic/gin"
+	"github.com/ipld/go-car"
 	sl "go.starlark.net/starlark"
 	"nhooyr.io/websocket"
 )
@@ -179,10 +180,24 @@ func create_atproto_test_env(t *testing.T) (*User, *plc_fake) {
 	atproto_budget_hour, atproto_budget_day = 1500, 10000
 	networks_database().exec("delete from stream")
 	networks_database().exec("delete from identities")
+	// A repair a subscription scheduled is not left to run in another test,
+	// against whatever relay it then names.
+	atproto_repair_cancel()
 	t.Cleanup(func() {
+		atproto_repair_cancel()
 		bluesky_plc, atproto_lookup, atproto_budget_hour, atproto_budget_day, bluesky_relay = saved_plc, saved_lookup, saved_hour, saved_day, saved_relay
 	})
 	return alice, plc
+}
+
+// atproto_repair_cancel stops a scheduled repair.
+func atproto_repair_cancel() {
+	atproto_repair_lock.Lock()
+	defer atproto_repair_lock.Unlock()
+	if atproto_repair_timer != nil {
+		atproto_repair_timer.Stop()
+		atproto_repair_timer = nil
+	}
 }
 
 // atproto_request drives the engine with one request and returns the
@@ -1230,5 +1245,274 @@ func TestAtprotoKeysUnannounced(t *testing.T) {
 	}
 	if _, err := api_account_key_recovery(thread, fn, sl.Tuple{sl.String("b1")}, nil); !refused(err, "errors.recovery_not_listed", "operation refused for this test") {
 		t.Errorf("THE POINT: a recovery key the directory does not list: %v", err)
+	}
+}
+
+// relay_fake is a relay that holds the accounts it is told of, and records the
+// hosts it is asked to crawl and the accounts it is asked after.
+type relay_fake struct {
+	server  *httptest.Server
+	lock    sync.Mutex
+	held    map[string]bool
+	crawled []string
+	asked   int
+	// uncounted: the relay does not answer how many of a host's accounts it
+	// holds.
+	uncounted bool
+}
+
+func create_relay_fake(t *testing.T) *relay_fake {
+	t.Helper()
+	f := &relay_fake{held: map[string]bool{}}
+	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.lock.Lock()
+		defer f.lock.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/xrpc/com.atproto.sync.requestCrawl":
+			var body struct{ Hostname string }
+			json.NewDecoder(r.Body).Decode(&body)
+			f.crawled = append(f.crawled, body.Hostname)
+		case "/xrpc/com.atproto.sync.getHostStatus":
+			if f.uncounted {
+				http.Error(w, `{"error":"InternalServerError"}`, http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"hostname": r.URL.Query().Get("hostname"), "accountCount": len(f.held), "seq": -1, "status": "active"})
+		case "/xrpc/com.atproto.sync.getRepoStatus":
+			f.asked++
+			did := r.URL.Query().Get("did")
+			if f.held[did] {
+				json.NewEncoder(w).Encode(map[string]any{"did": did, "active": true})
+				return
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{"error": "RepoNotFound", "message": "account not found"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(f.server.Close)
+	saved := bluesky_relay
+	bluesky_relay = f.server.URL
+	t.Cleanup(func() { bluesky_relay = saved })
+	return f
+}
+
+// crawls are the hosts the relay was asked to crawl since the last look.
+func (f *relay_fake) crawls() []string {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+	out := f.crawled
+	f.crawled = nil
+	return out
+}
+
+// settle waits until the crawls asked for in the background have all arrived,
+// and forgets them.
+func (f *relay_fake) settle() {
+	quiet := 0
+	for quiet < 10 {
+		time.Sleep(20 * time.Millisecond)
+		if len(f.crawls()) == 0 {
+			quiet++
+		} else {
+			quiet = 0
+		}
+	}
+}
+
+func (f *relay_fake) hold(did string, held bool) {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+	f.held[did] = held
+	if !held {
+		delete(f.held, did)
+	}
+}
+
+// TestAtprotoRelayRepair: an account whose first events went out before the
+// relay was listening is announced again - its identity, that it is active,
+// and its latest commit as a #sync - once a relay is; one the relay holds is
+// not, nor one that is deactivated.
+func TestAtprotoRelayRepair(t *testing.T) {
+	alice, _ := create_atproto_test_env(t)
+	relay := create_relay_fake(t)
+	ctx := context.Background()
+	if err := atproto_account_create(ctx, alice, "b1"); err != nil {
+		t.Fatal(err)
+	}
+	did := atproto_did(account_hosted_get(alice, "b1"))
+	r := repository_get(alice, "b1")
+	// The relay was not listening when the account's events went out.
+	networks_database().exec("delete from stream")
+	relay.settle()
+
+	// No relay listening: it is asked to crawl, and nothing goes out yet.
+	atproto_repair(ctx)
+	if n := len(stream_events(t, 0)); n != 0 {
+		t.Errorf("announced with no relay listening: %d events", n)
+	}
+	if crawled := relay.crawls(); len(crawled) != 1 || crawled[0] != atproto_host("example.com") {
+		t.Errorf("THE POINT: the relay is asked to crawl the host it is short of: %v", crawled)
+	}
+
+	// A relay listening: the account goes out as it stands.
+	listener := stream_subscribe()
+	defer stream_unsubscribe(listener)
+	atproto_repair(ctx)
+	all := stream_events(t, 0)
+	if len(all) != 3 || all[0].RepoIdentity == nil || all[0].RepoIdentity.Did != did || all[1].RepoAccount == nil || !all[1].RepoAccount.Active || all[1].RepoAccount.Did != did || all[2].RepoSync == nil {
+		t.Fatalf("THE POINT: the missed account is announced again: %d events", len(all))
+	}
+	if handle := all[0].RepoIdentity.Handle; handle == nil || *handle != "alice.example.com" {
+		t.Errorf("identity handle = %v", handle)
+	}
+	sync := all[2].RepoSync
+	if sync.Did != did || sync.Rev != r.rev {
+		t.Errorf("#sync did %q rev %q, want %q %q", sync.Did, sync.Rev, did, r.rev)
+	}
+	reader, err := car.NewCarReader(bytes.NewReader(sync.Blocks))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reader.Header.Roots) != 1 || reader.Header.Roots[0].String() != r.head {
+		t.Errorf("the #sync archive is rooted at %v, want the latest commit %s", reader.Header.Roots, r.head)
+	}
+	block, err := reader.Next()
+	if err != nil || block.Cid().String() != r.head {
+		t.Fatalf("the #sync archive does not carry the commit: %v", err)
+	}
+	var commit atrepo.Commit
+	if err := commit.UnmarshalCBOR(bytes.NewReader(block.RawData())); err != nil || commit.DID != did || commit.Rev != r.rev {
+		t.Errorf("the archived commit is not the account's latest: %v %+v", err, commit)
+	}
+
+	// The relay holding it: nothing goes out, and the host's count answers
+	// without asking after each account.
+	relay.hold(did, true)
+	networks_database().exec("delete from stream")
+	relay.lock.Lock()
+	asked := relay.asked
+	relay.lock.Unlock()
+	atproto_repair(ctx)
+	if n := len(stream_events(t, 0)); n != 0 {
+		t.Errorf("an account the relay holds was announced: %d events", n)
+	}
+	if relay.asked != asked {
+		t.Errorf("the relay was asked after accounts it holds: %d questions", relay.asked-asked)
+	}
+	// A relay that does not count is asked after each account, and one it
+	// holds is still not announced.
+	relay.lock.Lock()
+	relay.uncounted = true
+	relay.lock.Unlock()
+	atproto_repair(ctx)
+	if n := len(stream_events(t, 0)); n != 0 || relay.asked != asked+1 {
+		t.Errorf("an uncounting relay: %d events, %d questions", n, relay.asked-asked)
+	}
+	relay.lock.Lock()
+	relay.uncounted = false
+	relay.lock.Unlock()
+
+	// Deactivated: not announced.
+	relay.hold(did, false)
+	db := db_user(alice, "user")
+	data := account_data(account_hosted_get(alice, "b1"))
+	data["deactivated"] = true
+	encoded, _ := json.Marshal(data)
+	db.account_set("b1", map[string]any{"data": string(encoded)})
+	atproto_repair(ctx)
+	if n := len(stream_events(t, 0)); n != 0 {
+		t.Errorf("a deactivated account was announced: %d events", n)
+	}
+}
+
+// TestAtprotoCrawlAll: at startup and when the owner switches Bluesky on, the
+// relay is asked to crawl the server's own domain before any account's events
+// go out; with Bluesky off it is not.
+func TestAtprotoCrawlAll(t *testing.T) {
+	alice, _ := create_atproto_test_env(t)
+	relay := create_relay_fake(t)
+
+	atproto_crawl_all()
+	if crawled := relay.crawls(); len(crawled) != 1 || crawled[0] != atproto_host(server_domain()) {
+		t.Errorf("THE POINT: at startup the relay is asked to crawl the server's domain: %v", crawled)
+	}
+
+	alice.Role = "administrator"
+	app := create_external_app("settings")
+	permission_grant(alice, app.id, "settings/write")
+	thread, fn := create_test_thread(alice, app), sl.NewBuiltin("mochi.setting.set", nil)
+	if _, err := api_setting_set(thread, fn, sl.Tuple{sl.String("bluesky"), sl.String("false")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	atproto_crawl_all()
+	if crawled := relay.crawls(); len(crawled) != 0 {
+		t.Errorf("a crawl was asked with Bluesky off: %v", crawled)
+	}
+	if _, err := api_setting_set(thread, fn, sl.Tuple{sl.String("bluesky"), sl.String("true")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var crawled []string
+	for len(crawled) == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		crawled = relay.crawls()
+	}
+	if len(crawled) != 1 || crawled[0] != atproto_host(server_domain()) {
+		t.Errorf("THE POINT: switching Bluesky on asks the relay to crawl: %v", crawled)
+	}
+}
+
+// TestAtprotoSubscribeRepairs: a relay subscribing from the present has missed
+// what went before, so the accounts it lacks are looked for shortly after and
+// reach it on its subscription.
+func TestAtprotoSubscribeRepairs(t *testing.T) {
+	alice, _ := create_atproto_test_env(t)
+	create_relay_fake(t)
+	saved := atproto_repair_delay
+	atproto_repair_delay = 50 * time.Millisecond
+	t.Cleanup(func() { atproto_repair_delay = saved })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := atproto_account_create(ctx, alice, "b1"); err != nil {
+		t.Fatal(err)
+	}
+	did := atproto_did(account_hosted_get(alice, "b1"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, _ := gin.CreateTestContext(w)
+		c.Request = r
+		atproto_route(c)
+	}))
+	defer server.Close()
+	address := "ws" + strings.TrimPrefix(server.URL, "http") + "/xrpc/com.atproto.sync.subscribeRepos"
+
+	conn, _, err := websocket.Dial(ctx, address, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	var kinds []string
+	for len(kinds) < 3 {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("THE POINT: the missed account never reached the relay: %v (%v)", err, kinds)
+		}
+		var event events.XRPCStreamEvent
+		if err := event.Deserialize(bytes.NewReader(data)); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case event.RepoIdentity != nil && event.RepoIdentity.Did == did:
+			kinds = append(kinds, "#identity")
+		case event.RepoAccount != nil && event.RepoAccount.Did == did:
+			kinds = append(kinds, "#account")
+		case event.RepoSync != nil && event.RepoSync.Did == did:
+			kinds = append(kinds, "#sync")
+		}
+	}
+	if strings.Join(kinds, " ") != "#identity #account #sync" {
+		t.Errorf("events = %v", kinds)
 	}
 }

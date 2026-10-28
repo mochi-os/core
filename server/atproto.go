@@ -481,13 +481,13 @@ func atproto_notify(domain string) {
 // account is made on a domain and as commits are made (atproto_notify). Best effort: a relay that already knows the
 // host, or refuses, costs nothing but a line in the log.
 func atproto_crawl(domain string) {
-	endpoint, err := url.Parse(atproto_endpoint(domain))
-	if err != nil || endpoint.Host == "" {
+	host := atproto_host(domain)
+	if host == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), plc_timeout)
 	defer cancel()
-	body := strings.NewReader(json_encode(map[string]any{"hostname": endpoint.Host}))
+	body := strings.NewReader(json_encode(map[string]any{"hostname": host}))
 	request, err := http.NewRequestWithContext(ctx, "POST", strings.TrimSuffix(bluesky_relay, "/")+"/xrpc/com.atproto.sync.requestCrawl", body)
 	if err != nil {
 		return
@@ -495,12 +495,189 @@ func atproto_crawl(domain string) {
 	request.Header.Set("Content-Type", "application/json")
 	response, err := network_request(ctx, nil, "", request, 0)
 	if err != nil {
-		debug("Relay %s: crawl of %s not requested: %v", bluesky_relay, endpoint.Host, err)
+		debug("Relay %s: crawl of %s not requested: %v", bluesky_relay, host, err)
 		return
 	}
 	defer response.Body.Close()
 	answer, _ := read_limited(response.Body, 4096)
-	debug("Relay %s: crawl of %s requested: %d %s", bluesky_relay, endpoint.Host, response.StatusCode, strings.TrimSpace(string(answer)))
+	debug("Relay %s: crawl of %s requested: %d %s", bluesky_relay, host, response.StatusCode, strings.TrimSpace(string(answer)))
+}
+
+// atproto_host is the host name a relay knows a domain's repositories by, or
+// empty.
+func atproto_host(domain string) string {
+	endpoint, err := url.Parse(atproto_endpoint(domain))
+	if err != nil {
+		return ""
+	}
+	return endpoint.Host
+}
+
+// atproto_crawl_all asks the relay to read every host this server keeps
+// Bluesky repositories on: the server's own domain, where a first account is
+// made, and each domain an account is on. At startup and when the owner
+// switches Bluesky on, so the relay is listening before a first account's
+// events go out rather than asked to after them.
+func atproto_crawl_all() {
+	if !network_enabled("bluesky") {
+		return
+	}
+	domains := map[string]bool{}
+	if domain := server_domain(); domain != "" {
+		domains[domain] = true
+	}
+	for _, a := range atproto_active() {
+		domains[a.domain] = true
+	}
+	for domain := range domains {
+		atproto_crawl(domain)
+	}
+}
+
+// atproto_held is a hosted Bluesky account whose repository this server
+// serves as active.
+type atproto_held struct {
+	did        string
+	domain     string
+	identifier string
+	r          *repository
+}
+
+// atproto_active lists the hosted Bluesky accounts that are active, with a
+// commit made: the ones a relay should hold.
+func atproto_active() []atproto_held {
+	rows, _ := networks_database().rows("select did from identities")
+	var out []atproto_held
+	for _, row := range rows {
+		did := row_string(row, "did")
+		_, account, r := atproto_identity(did)
+		if account == nil || r == nil || r.head == "" || atproto_status(account) != "" {
+			continue
+		}
+		domain, _ := account_data(account)["domain"].(string)
+		out = append(out, atproto_held{did: did, domain: domain, identifier: row_string(account, "identifier"), r: r})
+	}
+	return out
+}
+
+// atproto_repair announces again each active account the relay does not hold.
+// Its first events went out before the relay was listening - a crawl is asked
+// for only once an account is made - or while the relay was away, and nothing
+// after them told it. Asked host by host, so a host whose every account the
+// relay holds costs one request; on a host it is short of, each account is
+// asked after, and the host is asked to be crawled. The announcement goes out
+// only while a relay is listening, since one connecting later starts after it;
+// the next pass announces once it is.
+func atproto_repair(ctx context.Context) {
+	if !network_enabled("bluesky") {
+		return
+	}
+	hosts := map[string][]atproto_held{}
+	for _, a := range atproto_active() {
+		host := atproto_host(a.domain)
+		hosts[host] = append(hosts[host], a)
+	}
+	for host, accounts := range hosts {
+		if atproto_relay_count(ctx, host) >= len(accounts) {
+			continue
+		}
+		atproto_crawl(accounts[0].domain)
+		if !stream_listened() {
+			continue
+		}
+		for _, a := range accounts {
+			if held, known := atproto_relay_holds(ctx, a.did); known && !held {
+				atproto_announce(a)
+			}
+		}
+	}
+}
+
+// atproto_repair_delay is how long after a relay subscribes from the present
+// the accounts it may have missed are looked for: time for it to settle in.
+var atproto_repair_delay = time.Minute
+
+var atproto_repair_timer *time.Timer
+var atproto_repair_lock sync.Mutex
+
+// atproto_repair_soon looks for missed accounts shortly, once however many
+// relays subscribe meanwhile.
+func atproto_repair_soon() {
+	atproto_repair_lock.Lock()
+	defer atproto_repair_lock.Unlock()
+	if atproto_repair_timer != nil {
+		return
+	}
+	atproto_repair_timer = time.AfterFunc(atproto_repair_delay, func() {
+		atproto_repair_lock.Lock()
+		atproto_repair_timer = nil
+		atproto_repair_lock.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		atproto_repair(ctx)
+	})
+}
+
+// atproto_announce puts an account on the stream again as it stands: its
+// identity, that it is active, and its latest commit as a #sync, from which a
+// relay that lacks it reads its repository.
+func atproto_announce(a atproto_held) {
+	blocks, err := repository_head(a.r)
+	if err != nil {
+		debug("Bluesky account %s not announced: %v", a.did, err)
+		return
+	}
+	stream_append(a.did, "#identity", map[string]any{"did": a.did, "handle": a.identifier})
+	stream_append(a.did, "#account", map[string]any{"did": a.did, "active": true})
+	stream_append(a.did, "#sync", map[string]any{"did": a.did, "blocks": atdata.Bytes(blocks), "rev": a.r.rev})
+	info("Bluesky account %s announced again: the relay did not hold it", a.did)
+}
+
+// atproto_relay_get asks the relay one of its sync methods, answering the
+// status and the decoded answer.
+func atproto_relay_get(ctx context.Context, method string, query url.Values) (int, map[string]any, error) {
+	request, err := http.NewRequestWithContext(ctx, "GET", strings.TrimSuffix(bluesky_relay, "/")+"/xrpc/"+method+"?"+query.Encode(), nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	response, err := network_request(ctx, nil, "", request, 0)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer response.Body.Close()
+	data, _ := read_limited(response.Body, 65536)
+	var answer map[string]any
+	json.Unmarshal(data, &answer)
+	return response.StatusCode, answer, nil
+}
+
+// atproto_relay_count is how many of a host's accounts the relay holds, or -1
+// when it does not say.
+func atproto_relay_count(ctx context.Context, host string) int {
+	status, answer, err := atproto_relay_get(ctx, "com.atproto.sync.getHostStatus", url.Values{"hostname": {host}})
+	if err != nil || status != http.StatusOK {
+		return -1
+	}
+	count, ok := answer["accountCount"].(float64)
+	if !ok {
+		return -1
+	}
+	return int(count)
+}
+
+// atproto_relay_holds says whether the relay holds an account, and whether it
+// said either way.
+func atproto_relay_holds(ctx context.Context, did string) (bool, bool) {
+	status, answer, err := atproto_relay_get(ctx, "com.atproto.sync.getRepoStatus", url.Values{"did": {did}})
+	switch {
+	case err != nil:
+		return false, false
+	case status == http.StatusOK:
+		return true, true
+	case answer["error"] == "RepoNotFound":
+		return false, true
+	}
+	return false, false
 }
 
 // === Publishing ===
@@ -752,6 +929,13 @@ func stream_unsubscribe(ch chan struct{}) {
 	stream_lock.Unlock()
 }
 
+// stream_listened says whether a relay is subscribed now.
+func stream_listened() bool {
+	stream_lock.Lock()
+	defer stream_lock.Unlock()
+	return len(stream_subscribers) > 0
+}
+
 // stream_cleanup drops events past the replay window.
 func stream_cleanup() {
 	networks_database().exec("delete from stream where created<?", now()-stream_age)
@@ -788,6 +972,11 @@ func atproto_subscribe(c *gin.Context) {
 	}
 	wake := stream_subscribe()
 	defer stream_unsubscribe(wake)
+	// A relay starting from the present has missed whatever went before: an
+	// account made before it was listening is looked for once it settles.
+	if cursor < 0 {
+		atproto_repair_soon()
+	}
 	// A relay sends nothing; reading tells when it has gone.
 	go func() {
 		for {

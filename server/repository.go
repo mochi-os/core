@@ -115,6 +115,26 @@ func repository_bytes(v any) []byte {
 	return nil
 }
 
+// repository_head is the repository's latest commit alone, as an archive
+// rooted at it: what a #sync event carries, from which a relay reads the
+// repository afresh.
+func repository_head(r *repository) ([]byte, error) {
+	head, err := cid.Decode(r.head)
+	if err != nil {
+		return nil, fmt.Errorf("repository %s has no commit", r.account)
+	}
+	node, _ := db_user(r.user, "user").row("select data from nodes where account=? and cid=?", r.account, r.head)
+	if node == nil {
+		return nil, fmt.Errorf("repository %s does not keep its commit %s", r.account, r.head)
+	}
+	var archive bytes.Buffer
+	if err := car.WriteHeader(&car.CarHeader{Roots: []cid.Cid{head}, Version: 1}, &archive); err != nil {
+		return nil, err
+	}
+	carutil.LdWrite(&archive, head.Bytes(), repository_bytes(node["data"]))
+	return archive.Bytes(), nil
+}
+
 // repository_create makes an account's repository row, with no commit yet.
 func repository_create(user *User, account string, did string) *repository {
 	db := db_user(user, "user")
@@ -774,7 +794,13 @@ func atproto_manager() {
 			}
 		}
 	}()
+	// The relay is asked to listen before any account's events go out, and
+	// each hour the accounts it does not hold are announced again.
+	go atproto_crawl_all()
 	for range time.Tick(time.Hour) {
 		stream_cleanup()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		atproto_repair(ctx)
+		cancel()
 	}
 }

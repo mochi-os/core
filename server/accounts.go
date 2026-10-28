@@ -481,8 +481,9 @@ func account_homed(row map[string]any) bool {
 
 // account_present returns the redacted row with the capabilities it holds,
 // and for an account on a network whether it is hosted or linked, its
-// server, page, name and avatar, a Mastodon server's limits, and for a chat
-// account whether its session is connected and why not.
+// server, page, name and avatar, a Mastodon server's limits, for a chat
+// account whether its session is connected, and for a linked one why it is
+// not working.
 func account_present(user *User, row map[string]any) map[string]any {
 	out := account_redact(row)
 	out["granted"] = account_granted(user, row)
@@ -540,12 +541,24 @@ func account_present(user *User, row map[string]any) map[string]any {
 			out["labelers"] = object_strings(data["labelers"])
 		}
 	}
+	// Why a linked account is not working, for the page to say in the
+	// user's language: a sign-in its server no longer accepts, which is kept
+	// on the account, or why its session is down and when it tries again.
+	// error keeps the text for clients that print it.
+	if failed, _ := data["error"].(string); failed != "" {
+		out["failure"] = map[string]any{"reason": "signed_out"}
+	}
 	if !hosted && linked_held(ptype) {
 		id, _ := row["id"].(string)
-		connected, reason := linked_connected(user.UID, id)
+		connected, outage := linked_connected(user.UID, id)
 		out["connected"] = connected
-		if reason != "" {
-			out["error"] = reason
+		if outage != nil {
+			if outage.err != nil {
+				out["error"] = outage.err.Error()
+			}
+			if out["failure"] == nil {
+				out["failure"] = outage.shape()
+			}
 		}
 	}
 	return out

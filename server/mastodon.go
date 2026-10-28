@@ -456,7 +456,10 @@ func mastodon_run(ctx context.Context, l *linked, s *linked_session) error {
 		if response != nil && (response.StatusCode == 401 || response.StatusCode == 403) {
 			return linked_signed_out
 		}
-		return fmt.Errorf("the stream could not be opened: %v", err)
+		if response != nil && response.StatusCode != http.StatusSwitchingProtocols {
+			return &linked_answer{status: response.StatusCode, message: err.Error()}
+		}
+		return fmt.Errorf("the stream could not be opened: %w", err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	conn.SetReadLimit(linked_body_maximum)
@@ -464,7 +467,7 @@ func mastodon_run(ctx context.Context, l *linked, s *linked_session) error {
 	// not still sends direct messages to the account as mentions.
 	conn.Write(ctx, websocket.MessageText, []byte(`{"type":"subscribe","stream":"direct"}`))
 	s.connected.Store(true)
-	s.reason.Store("")
+	s.outage.Store(nil)
 	mastodon_catchup(ctx, l)
 	for {
 		kind, data, err := conn.Read(ctx)
@@ -472,7 +475,7 @@ func mastodon_run(ctx context.Context, l *linked, s *linked_session) error {
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("the stream ended: %v", err)
+			return fmt.Errorf("%w: %v", linked_closed, err)
 		}
 		if kind != websocket.MessageText {
 			continue

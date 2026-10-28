@@ -422,7 +422,7 @@ func matrix_run(ctx context.Context, l *linked, s *linked_session) error {
 			return linked_failure(code, body)
 		}
 		s.connected.Store(true)
-		s.reason.Store("")
+		s.outage.Store(nil)
 		if device != nil {
 			device.sync(ctx, body, since)
 		}

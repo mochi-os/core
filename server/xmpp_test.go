@@ -245,5 +245,7 @@ func TestXMPPRefusedStopsTheSession(t *testing.T) {
 	}
 	if present := account_present(alice, map[string]any{"id": "x1", "type": "xmpp", "data": json_encode(linked_get(alice, "x1").data)}); present["connected"] != false || present["error"] == nil {
 		t.Errorf("present = %v", present)
+	} else if failure, _ := present["failure"].(map[string]any); failure["reason"] != "signed_out" {
+		t.Errorf("THE POINT: failure = %v", present["failure"])
 	}
 }

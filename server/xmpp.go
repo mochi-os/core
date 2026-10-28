@@ -122,7 +122,7 @@ func xmpp_session(ctx context.Context, address jid.JID, password string) (*xmpp.
 	defer cancel()
 	conn, err := xmpp_dial(ctx, address)
 	if err != nil {
-		return nil, fmt.Errorf("the server could not be reached: %v", err)
+		return nil, fmt.Errorf("%w: %w", linked_unreachable, err)
 	}
 	session, err := xmpp.NewClientSession(ctx, address, conn,
 		xmpp.StartTLS(&tls.Config{ServerName: address.Domainpart()}),
@@ -134,7 +134,7 @@ func xmpp_session(ctx context.Context, address jid.JID, password string) (*xmpp.
 		if xmpp_refused(err) {
 			return nil, linked_signed_out
 		}
-		return nil, fmt.Errorf("the session could not be started: %v", err)
+		return nil, fmt.Errorf("the session could not be started: %w", err)
 	}
 	return session, nil
 }
@@ -577,7 +577,7 @@ func xmpp_run(ctx context.Context, l *linked, s *linked_session) error {
 	s.client.Store(c)
 	defer s.client.Store(nil)
 	s.connected.Store(true)
-	s.reason.Store("")
+	s.outage.Store(nil)
 	started.Go(func() { c.begin(running) })
 	for {
 		select {
@@ -587,9 +587,9 @@ func xmpp_run(ctx context.Context, l *linked, s *linked_session) error {
 				return nil
 			}
 			if err == nil || err == io.EOF {
-				return fmt.Errorf("the server closed the stream")
+				return linked_closed
 			}
-			return err
+			return fmt.Errorf("%w: %v", linked_closed, err)
 		case <-s.presence:
 			c.announce(ctx, false)
 		}

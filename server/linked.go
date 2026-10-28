@@ -29,6 +29,7 @@ import (
 	"io"
 	"math/rand"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -73,6 +74,13 @@ func provider_network(ptype string) bool {
 // linked_signed_out is the error a protocol answers when the server no longer
 // accepts the account's credential: the user links the account again.
 var linked_signed_out = errors.New("the server no longer accepts this account's sign-in; link it again")
+
+// linked_closed is how a session ends when the server closes it, or the
+// connection drops, after it was up.
+var linked_closed = errors.New("the connection ended")
+
+// linked_unreachable is a connection that could not be made at all.
+var linked_unreachable = errors.New("the server could not be reached")
 
 // linked_body_maximum caps what a server may answer with: a page of a
 // timeline runs to a few hundred kilobytes. A variable so tests can lower it.
@@ -923,6 +931,17 @@ func (l *linked) renew(ctx context.Context) error {
 	return linked_signed_out
 }
 
+// A linked_answer is a server's refusal: the status it answered and what it
+// said.
+type linked_answer struct {
+	status  int
+	message string
+}
+
+func (a *linked_answer) Error() string {
+	return fmt.Sprintf("the server answered %d: %s", a.status, a.message)
+}
+
 // failure turns a non-2xx answer into an error naming the status and what the
 // server said, within reason.
 func linked_failure(status int, body []byte) error {
@@ -945,7 +964,7 @@ func linked_failure(status int, body []byte) error {
 			message = answer.Error
 		}
 	}
-	return fmt.Errorf("the server answered %d: %s", status, message)
+	return &linked_answer{status: status, message: message}
 }
 
 // json_decode decodes a server's JSON answer, naming the fault when it is not
@@ -1559,9 +1578,59 @@ type linked_session struct {
 	cancel    context.CancelFunc
 	ended     chan struct{} // closed once the session and what it started end
 	connected atomic.Bool
-	reason    atomic.Value // string: why it is not connected
+	outage    atomic.Pointer[linked_outage] // why it is not connected
 	client    atomic.Pointer[xmpp_client]
 	presence  chan struct{}
+}
+
+// A linked_outage is why an account's session is down, as the account's page
+// says it: a reason the page translates, the status the server answered where
+// it answered one, when the session tries again, and the error itself for the
+// log.
+type linked_outage struct {
+	reason string // unreachable, status, closed, blocked or failed
+	status int
+	retry  time.Time // zero while it is trying
+	err    error
+}
+
+// String is the error behind the outage.
+func (o *linked_outage) String() string {
+	if o == nil || o.err == nil {
+		return ""
+	}
+	return o.err.Error()
+}
+
+// shape is the outage as an account's failure field answers it.
+func (o *linked_outage) shape() map[string]any {
+	out := map[string]any{"reason": o.reason}
+	if o.reason == "status" {
+		out["status"] = o.status
+	}
+	if !o.retry.IsZero() {
+		out["retry"] = o.retry.Unix()
+	}
+	return out
+}
+
+// linked_cause sorts why a session ended into a reason the account's page
+// translates, with the status a server answered where it answered one.
+func linked_cause(err error) (string, int) {
+	var answer *linked_answer
+	var refusal *host_refusal
+	var network net.Error
+	switch {
+	case err == nil, errors.Is(err, linked_closed):
+		return "closed", 0
+	case errors.As(err, &answer):
+		return "status", answer.status
+	case errors.As(err, &refusal):
+		return "blocked", 0
+	case errors.Is(err, linked_unreachable), errors.As(err, &network):
+		return "unreachable", 0
+	}
+	return "failed", 0
 }
 
 var linked_sessions = map[string]*linked_session{}
@@ -1700,16 +1769,19 @@ func linked_refresh(user *User, id string) {
 	linked_start(l)
 }
 
+// linked_retry is how long a session waits before its first retry. A variable
+// so tests can lower it.
+var linked_retry = time.Minute
+
 // linked_connected reports whether an account's session is up, and why not.
-func linked_connected(uid string, id string) (bool, string) {
+func linked_connected(uid string, id string) (bool, *linked_outage) {
 	linked_lock.Lock()
 	s := linked_sessions[linked_session_key(uid, id)]
 	linked_lock.Unlock()
 	if s == nil {
-		return false, ""
+		return false, nil
 	}
-	reason, _ := s.reason.Load().(string)
-	return s.connected.Load(), reason
+	return s.connected.Load(), s.outage.Load()
 }
 
 // linked_run keeps one account's session up: it runs the protocol's session,
@@ -1717,7 +1789,7 @@ func linked_connected(uid string, id string) (bool, string) {
 // doubles from a minute to an hour while the failures continue, reset by a
 // session that lasted. A refused credential ends the loop.
 func linked_run(ctx context.Context, l *linked, s *linked_session) {
-	wait := time.Minute
+	wait := linked_retry
 	for {
 		fresh := linked_get(l.user, l.id)
 		if fresh == nil {
@@ -1739,7 +1811,6 @@ func linked_run(ctx context.Context, l *linked, s *linked_session) {
 			return
 		}
 		if err != nil {
-			s.reason.Store(err.Error())
 			debug("Linked %s account %s: %v", fresh.kind, fresh.id, err)
 		}
 		if errors.Is(err, linked_signed_out) {
@@ -1748,13 +1819,19 @@ func linked_run(ctx context.Context, l *linked, s *linked_session) {
 			return
 		}
 		if time.Since(started) > 5*time.Minute {
-			wait = time.Minute
+			wait = linked_retry
 		}
+		delay := wait + time.Duration(rand.Int63n(int64(wait/4)))
+		reason, status := linked_cause(err)
+		s.outage.Store(&linked_outage{reason: reason, status: status, retry: time.Now().Add(delay), err: err})
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(wait + time.Duration(rand.Int63n(int64(wait/4)))):
+		case <-time.After(delay):
 		}
+		// Trying again: the reason stands until the session is up, with no
+		// time left to wait.
+		s.outage.Store(&linked_outage{reason: reason, status: status, err: err})
 		if wait < time.Hour {
 			wait *= 2
 		}

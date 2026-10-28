@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	sl "go.starlark.net/starlark"
@@ -172,6 +173,99 @@ func TestHandleRegistry(t *testing.T) {
 		if row["addresses"].(map[string]any)["fediverse"] != "@"+w.name+"@example.com" {
 			t.Errorf("row %d lacks its addresses: %v", i, row["addresses"])
 		}
+	}
+}
+
+// TestHandleRegistrySearch: the registry is the owner's table in its order -
+// by domain, a name under a handle after its handle, then by name - searched
+// by a part of the name or of the holder's username or name, and paged, with
+// the count of what the search matches.
+func TestHandleRegistrySearch(t *testing.T) {
+	_, root := create_handles_test_env(t)
+	users := db_open("db/users.db")
+	for _, h := range []handle{
+		{"example.com", "zed", "u-root", "", "handle", 1},
+		{"example.com", "alice_news", "u-alice", "alice", "handle", 2},
+		{"example.com", "bob", "u-root", "", "community", 3},
+		{"example.com", "alice", "u-alice", "", "handle", 4},
+		{"aaa.example", "carol", "u-root", "", "handle", 5},
+		// By name alone alice2 would sit between alice and the name under it.
+		{"example.com", "alice2", "u-alice", "", "handle", 6},
+	} {
+		users.exec("insert into handles (domain, name, user, parent, kind, created) values (?, ?, ?, ?, ?, ?)", h.Domain, h.Name, h.User, h.Parent, h.Kind, h.Created)
+	}
+	// A holder's name that is in none of their handles nor their username,
+	// and a username in mixed case.
+	users.exec("update entities set name='Root Owner' where id='e-root'")
+	users.exec("update users set username='Root@Example.com' where uid='u-root'")
+	app := create_external_app("app1")
+	permission_grant(root, app.id, "server/read")
+	thread := create_test_thread(root, app)
+	registry := sl.NewBuiltin("mochi.handle.registry", api_handle_registry)
+	count := sl.NewBuiltin("mochi.handle.count", api_handle_count)
+	names := func(kwargs ...sl.Tuple) []string {
+		t.Helper()
+		value, err := api_handle_registry(thread, registry, nil, kwargs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, row := range sl_decode(value).([]any) {
+			out = append(out, row.(map[string]any)["name"].(string))
+		}
+		return out
+	}
+	counted := func(search string) int64 {
+		t.Helper()
+		value, err := api_handle_count(thread, count, nil, []sl.Tuple{{sl.String("search"), sl.String(search)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, _ := value.(sl.Int).Int64()
+		return n
+	}
+	search := func(text string) sl.Tuple { return sl.Tuple{sl.String("search"), sl.String(text)} }
+	number := func(key string, n int) sl.Tuple { return sl.Tuple{sl.String(key), sl.MakeInt(n)} }
+
+	if got, want := strings.Join(names(), " "), "carol alice alice_news alice2 bob zed"; got != want {
+		t.Errorf("registry order = %q, want %q", got, want)
+	}
+	for text, want := range map[string]string{
+		"news":     "alice_news",
+		"@zed":     "zed",
+		"root@":    "carol bob zed",
+		"ALI":      "alice alice_news alice2",
+		"owner":    "carol bob zed",
+		"nobody":   "",
+		"  bob  ":  "bob",
+		"Example.": "carol alice alice_news alice2 bob zed",
+	} {
+		if got := strings.Join(names(search(text)), " "); got != want {
+			t.Errorf("search %q = %q, want %q", text, got, want)
+		}
+		if got := counted(text); got != int64(len(strings.Fields(want))) {
+			t.Errorf("count %q = %d, want %d", text, got, len(strings.Fields(want)))
+		}
+	}
+	if got := strings.Join(names(number("limit", 2), number("offset", 1)), " "); got != "alice alice_news" {
+		t.Errorf("page of two from the second = %q", got)
+	}
+	if got := strings.Join(names(number("limit", 2), number("offset", 5)), " "); got != "zed" {
+		t.Errorf("the last page = %q", got)
+	}
+	if got := names(number("offset", 9)); len(got) != 0 {
+		t.Errorf("a page past the end = %v", got)
+	}
+	if got := strings.Join(names(search("ali"), number("limit", 1), number("offset", 1)), " "); got != "alice_news" {
+		t.Errorf("a page of a search = %q", got)
+	}
+	if _, err := api_handle_registry(thread, registry, nil, []sl.Tuple{number("limit", -1)}); err == nil {
+		t.Error("a negative limit was taken")
+	}
+	alice := user_by_uid("u-alice")
+	permission_grant(alice, app.id, "server/read")
+	if _, err := api_handle_count(create_test_thread(alice, app), count, nil, nil); err == nil {
+		t.Error("a user counted the registry")
 	}
 }
 

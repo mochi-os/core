@@ -1553,10 +1553,6 @@ func inbound_process() int {
 
 // === Removal ===
 
-// activitypub_account_remove is the fediverse side of removing a hosted
-// account: a Delete of the actor goes to every follower's server, signed with
-// the key the tombstone keeps, and the id answers gone from now on. The
-// account's own rows go with the account.
 // activitypub_follower_inboxes lists where an account's followers are reached:
 // a server's shared inbox once for all its followers, else each one's own.
 func activitypub_follower_inboxes(user *User, account string) []string {
@@ -1607,6 +1603,10 @@ func activitypub_update_send(user *User, account string) int {
 	return deliver(user, account, "fediverse", inboxes, []byte(json_encode(activity)))
 }
 
+// activitypub_account_remove is the fediverse side of removing a hosted
+// account: a Delete of the actor goes to every follower's server, signed with
+// the key the tombstone keeps, and the id answers gone from now on. The
+// account's own rows go with the account.
 func activitypub_account_remove(user *User, id string) {
 	a := actor_get(id)
 	if a == nil || a.Network != "fediverse" || a.Deleted != 0 {

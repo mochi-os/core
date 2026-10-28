@@ -26,6 +26,7 @@ package main
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -345,6 +346,7 @@ func handle_host_answers(host string) bool {
 
 var api_handle = sls.FromStringDict(sl.String("mochi.handle"), sl.StringDict{
 	"available": sl.NewBuiltin("mochi.handle.available", api_handle_available),
+	"count":     sl.NewBuiltin("mochi.handle.count", api_handle_count),
 	"domains":   sl.NewBuiltin("mochi.handle.domains", api_handle_domains),
 	"list":      sl.NewBuiltin("mochi.handle.list", api_handle_list),
 	"registry":  sl.NewBuiltin("mochi.handle.registry", api_handle_registry),
@@ -452,33 +454,125 @@ func api_handle_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}), nil
 }
 
-// mochi.handle.registry() -> list: Every reservation on the server with its
-// holder's username and name, for the owner's table of handles. Administrators
-// only.
-func api_handle_registry(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+// handle_holder is a reservation's holder as the registry shows them.
+type handle_holder struct {
+	user     *User
+	username string
+	name     string
+}
+
+// handle_holders answers a lookup of reservations' holders that reads each
+// user once.
+func handle_holders() func(string) *handle_holder {
+	seen := map[string]*handle_holder{}
+	return func(uid string) *handle_holder {
+		if h, ok := seen[uid]; ok {
+			return h
+		}
+		h := &handle_holder{}
+		if u := user_by_uid(uid); u != nil {
+			h.user, h.username = u, u.Username
+			if identity := u.identity(); identity != nil {
+				h.name = identity.Name
+			}
+		}
+		seen[uid] = h
+		return h
+	}
+}
+
+// handles_registry answers the reservations a search matches, in the order
+// of the owner's table: by domain, each name under a handle straight after
+// its handle, then by name. Names and domains are lowercase ASCII, so byte
+// order is alphabetical. A search matches a part of the name, or of the
+// holder's username or name, ignoring case; an empty one matches every
+// reservation.
+func handles_registry(search string, holder func(string) *handle_holder) []handle {
+	search = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(search), "@"))
+	var matched []handle
+	for _, h := range handles_all() {
+		if search != "" && !strings.Contains(h.Name, search) {
+			o := holder(h.User)
+			if !strings.Contains(strings.ToLower(o.username), search) && !strings.Contains(strings.ToLower(o.name), search) {
+				continue
+			}
+		}
+		matched = append(matched, h)
+	}
+	group := func(h handle) string {
+		if h.Parent != "" {
+			return h.Parent
+		}
+		return h.Name
+	}
+	sort.SliceStable(matched, func(i, j int) bool {
+		a, b := matched[i], matched[j]
+		if a.Domain != b.Domain {
+			return a.Domain < b.Domain
+		}
+		if group(a) != group(b) {
+			return group(a) < group(b)
+		}
+		// A name under a handle is the handle and a suffix, so it sorts
+		// after it.
+		return a.Name < b.Name
+	})
+	return matched
+}
+
+// handle_registrar is the caller of a registry function, who must be an
+// administrator with server/read.
+func handle_registrar(t *sl.Thread, fn *sl.Builtin) (*User, error) {
 	if err := require_permission(t, fn, "server/read"); err != nil {
-		return sl_error(fn, "%v", err)
+		return nil, err
 	}
 	user := principal_caller(t)
 	if user == nil {
-		return sl_error(fn, "no user")
+		return nil, fmt.Errorf("no user")
 	}
 	if !user.administrator() {
-		return sl_error(fn, "not administrator")
+		return nil, fmt.Errorf("not administrator")
+	}
+	return user, nil
+}
+
+// mochi.handle.registry(search="", limit=0, offset=0) -> list: The
+// reservations on the server a search matches, with each holder's username
+// and name and the hosted accounts on it, for the owner's table of handles:
+// by domain, a name under a handle after its handle, then by name. The search
+// matches a part of the name or of the holder's username or name; limit and
+// offset give a page, and a limit of 0 every match. Administrators only
+func api_handle_registry(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var search string
+	var limit, offset int
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "search?", &search, "limit?", &limit, "offset?", &offset); err != nil {
+		return nil, err
+	}
+	if _, err := handle_registrar(t, fn); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if limit < 0 || offset < 0 {
+		return sl_error(fn, "limit and offset must not be negative")
+	}
+	holder := handle_holders()
+	matched := handles_registry(search, holder)
+	if offset > len(matched) {
+		offset = len(matched)
+	}
+	matched = matched[offset:]
+	if limit > 0 && limit < len(matched) {
+		matched = matched[:limit]
 	}
 	rows := []map[string]any{}
-	for _, h := range handles_all() {
+	for _, h := range matched {
 		row := handle_present(h)
 		row["user"], row["username"], row["holder"] = h.User, "", ""
 		accounts := []map[string]any{}
-		if holder := user_by_uid(h.User); holder != nil {
-			row["username"] = holder.Username
-			if identity := holder.identity(); identity != nil {
-				row["holder"] = identity.Name
-			}
+		if o := holder(h.User); o.user != nil {
+			row["username"], row["holder"] = o.username, o.name
 			// The hosted accounts on the handle, with a Bluesky account's
 			// identifier and whether the owner has taken it down.
-			for _, account := range accounts_hosted(holder, "") {
+			for _, account := range accounts_hosted(o.user, "") {
 				data, _ := account["data"].(map[string]any)
 				if data["domain"] != h.Domain || data["handle"] != h.Name {
 					continue
@@ -495,6 +589,20 @@ func api_handle_registry(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		rows = append(rows, row)
 	}
 	return sl_encode(rows), nil
+}
+
+// mochi.handle.count(search="") -> int: How many reservations on the server a
+// search matches, as mochi.handle.registry matches them, for paging the
+// owner's table. Administrators only
+func api_handle_count(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var search string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "search?", &search); err != nil {
+		return nil, err
+	}
+	if _, err := handle_registrar(t, fn); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	return sl.MakeInt(len(handles_registry(search, handle_holders()))), nil
 }
 
 // mochi.handle.reserve(name, domain="", kind="handle") -> dict: Reserve a name

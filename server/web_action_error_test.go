@@ -7,6 +7,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	sl "go.starlark.net/starlark"
 )
 
 // action_error_response runs one error through the mapping and returns what the
@@ -25,7 +27,7 @@ func action_error_response(err error) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/people/1person/-/avatar", nil)
-	web_action_error(c, "people", err)
+	web_action_error(c, "people", "en", err)
 	return recorder
 }
 
@@ -235,5 +237,105 @@ func TestActionErrorRateLimitDoesNotMailTheOperator(t *testing.T) {
 	}
 	if !strings.Contains(function[storage_start+storage_end:], "warn(") {
 		t.Error("the absent-storage branch sits after the generic warn, so it never answers")
+	}
+}
+
+// refused reports whether err carries a refusal under key, and, where reason is
+// given, whether the other server's reason it passes on contains it.
+func refused(err error, key string, reason string) bool {
+	var refusal *Refusal
+	if !errors.As(err, &refusal) || refusal.Key != key {
+		return false
+	}
+	if reason == "" {
+		return true
+	}
+	given, _ := refusal.Args["reason"].(string)
+	return strings.Contains(given, reason)
+}
+
+// TestActionErrorRefusal: a refusal raised in a builtin reaches the user with
+// its own status and its reason in their language, the network it names in
+// that language too, where it used to be a server error that mailed the
+// administrator.
+func TestActionErrorRefusal(t *testing.T) {
+	load_core_labels()
+	refusal := refuse(http.StatusConflict, "errors.account_exists", nil).named("network", "account.display.bluesky")
+	_, inner := sl_error(sl.NewBuiltin("mochi.account.add", nil), "%v", refusal)
+	err := fmt.Errorf("settings action failed: %w", inner)
+	answer := func(language string) (int, map[string]any) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/settings/-/user/networks/account/create", nil)
+		web_action_error(c, "settings", language, err)
+		var body map[string]any
+		json.Unmarshal(recorder.Body.Bytes(), &body)
+		return recorder.Code, body
+	}
+
+	status, body := answer("en")
+	if status != http.StatusConflict {
+		t.Errorf("THE POINT: status = %d, want %d", status, http.StatusConflict)
+	}
+	if body["error"] != "account_exists" || body["message"] != "This handle already has a Bluesky account" {
+		t.Errorf("THE POINT: the reason reaches the user: %v", body)
+	}
+
+	_, german := answer("de")
+	want := resolve_core_label("de", "errors.account_exists", map[string]any{"network": resolve_core_label("de", "account.display.bluesky", nil)})
+	if german["message"] != want || want == body["message"] || !strings.Contains(want, "Bluesky") {
+		t.Errorf("the reason is in the user's language: %v, want %q", german, want)
+	}
+}
+
+// TestActionErrorRefusalDoesNotMailTheOperator: a refusal is logged at info,
+// since warn mails the administrator and nothing broke.
+func TestActionErrorRefusalDoesNotMailTheOperator(t *testing.T) {
+	source, err := os.ReadFile("web.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(source)
+	start := strings.Index(body, "errors.As(err, &refusal)")
+	if start < 0 {
+		t.Fatal("the refusal branch of web_action_error is gone")
+	}
+	branch := body[start : start+strings.Index(body[start:], "\n\t}\n")]
+	if strings.Contains(branch, "warn(") || !strings.Contains(branch, "info(") {
+		t.Errorf("the refusal branch must log at info and not warn:\n%s", branch)
+	}
+}
+
+// TestRefusalLabelsInEveryLocale: each refusal a network account gets is
+// worded in every locale core carries, read back as written.
+func TestRefusalLabelsInEveryLocale(t *testing.T) {
+	load_core_labels()
+	keys := []string{"errors.network_unavailable", "errors.handle_not_held", "errors.handle_not_community", "errors.account_exists", "errors.host_unresolved", "errors.domain_unresolved", "errors.host_elsewhere", "errors.directory_unreachable", "errors.directory_refused", "errors.linking_unavailable", "errors.link_failed", "errors.move_unresolved", "errors.move_to_itself", "errors.move_not_named", "errors.account_no_keys", "errors.key_not_announced", "errors.recovery_not_listed"}
+	for _, key := range keys {
+		if core_labels["en"][key] == "" {
+			t.Errorf("%s has no English", key)
+		}
+	}
+	if got := core_labels["af"]["errors.move_to_itself"]; !strings.HasPrefix(got, "'n ") {
+		t.Errorf("af errors.move_to_itself read back as %q, its leading 'n lost", got)
+	}
+	// A regional variant inherits from its parent, so each is looked for along
+	// the locale's own chain short of English.
+	for locale := range core_labels {
+		if locale == "en" || strings.HasPrefix(locale, "en-") {
+			continue
+		}
+		for _, key := range keys {
+			found := false
+			for _, tag := range language_fallbacks(locale) {
+				if tag != "en" && core_labels[tag][key] != "" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("%s has no %s", locale, key)
+			}
+		}
 	}
 }

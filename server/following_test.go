@@ -237,9 +237,24 @@ func TestAccountMove(t *testing.T) {
 	signed_post(t, bob, "/~f1/inbox", follow_activity(bob, "https://remote.example/follows/mv"), nil)
 	before := len(delivery_rows(t))
 
-	if _, err := api_account_move(thread, fn, sl.Tuple{sl.String("f1"), sl.String("https://remote.example/u/dave")}, nil); err == nil {
-		t.Error("a move to an account that does not name this one was allowed")
+	if _, err := api_account_move(thread, fn, sl.Tuple{sl.String("f1"), sl.String("https://remote.example/u/dave")}, nil); !refused(err, "errors.move_not_named", "") {
+		t.Errorf("a move to an account that does not name this one was allowed: %v", err)
 	}
+	if _, err := api_account_move(thread, fn, sl.Tuple{sl.String("f1"), sl.String("@nobody@nowhere.invalid")}, nil); !refused(err, "errors.move_unresolved", "") {
+		t.Errorf("a move to an account that cannot be found: %v", err)
+	}
+	// The account's own document, as its server answers it.
+	fetch := resolve_fetch
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		if address == "https://example.com/~f1" {
+			return []byte(`{"id":"https://example.com/~f1","type":"Person","preferredUsername":"alice","inbox":"https://example.com/~f1/inbox","alsoKnownAs":["https://example.com/~f1"]}`), nil
+		}
+		return fetch(ctx, address, accept)
+	}
+	if _, err := api_account_move(thread, fn, sl.Tuple{sl.String("f1"), sl.String("https://example.com/~f1")}, nil); !refused(err, "errors.move_to_itself", "") {
+		t.Errorf("a move to itself: %v", err)
+	}
+	resolve_fetch = fetch
 	if _, err := api_account_move(thread, fn, sl.Tuple{sl.String("f1"), sl.String("@carol@remote.example")}, nil); err != nil {
 		t.Fatal(err)
 	}

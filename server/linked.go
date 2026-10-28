@@ -339,7 +339,7 @@ func api_account_link(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		return sl_error(fn, "unknown provider type %q", kind)
 	}
 	if !networks_development {
-		return sl_error(fn, "linking accounts is not available on this server")
+		return sl_error(fn, "%v", refuse(http.StatusForbidden, "errors.linking_unavailable", nil))
 	}
 	fields := map[string]string{}
 	var target, scheme, challenge string
@@ -382,9 +382,20 @@ func api_account_link(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		profile, data, err = xmpp_link(ctx, user, fields)
 	}
 	if err != nil {
-		return sl_error(fn, "%v", err)
+		return sl_error(fn, "%v", linked_refusal(kind, err))
 	}
 	return sl_encode(account_present(user, linked_store(user, kind, profile, data))), nil
+}
+
+// linked_refusal is a link that did not go through: the user's own server said
+// no, could not be reached or answered something else, and the user is told so
+// with its reason. A limiter's refusal keeps its own answer.
+func linked_refusal(kind string, err error) error {
+	var limit *RateLimitError
+	if errors.As(err, &limit) {
+		return err
+	}
+	return refuse(http.StatusBadGateway, "errors.link_failed", map[string]any{"reason": err.Error()}).named("network", "account.display."+kind)
 }
 
 // linked_oauth_begin starts the consent of a Mastodon or Bluesky server for a
@@ -424,7 +435,7 @@ func linked_oauth_begin(t *sl.Thread, fn *sl.Builtin, user *User, kind string, f
 		err = bluesky_prepare(ctx, user, st, fields["handle"])
 	}
 	if err != nil {
-		return sl_error(fn, "%v", err)
+		return sl_error(fn, "%v", linked_refusal(kind, err))
 	}
 	url, returned, err := oauth_ceremony_begin(action.web, provider, kind, user.UID, state, st)
 	if err != nil {

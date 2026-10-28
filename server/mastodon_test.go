@@ -229,6 +229,11 @@ func TestMastodonLink(t *testing.T) {
 	host := fake_host(fake.server)
 	session := login_create(alice.UID, "", "")
 
+	// A server named wrongly is a refusal for the user, not a server fault.
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("server", "not a server", "target", "/settings/networks")); !refused(err, "errors.link_failed", "invalid server") {
+		t.Errorf("THE POINT: a server named wrongly: %v", err)
+	}
+
 	begun := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("mastodon")}, linked_kwargs("server", "https://"+host+"/", "target", "/settings/networks")))
 	hop, _ := begun["url"].(string)
 	row, _ := db_open("db/networks.db").row("select id, redirect from clients where host=? and network='mastodon'", host)

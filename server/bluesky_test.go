@@ -392,7 +392,7 @@ func TestBlueskyPassword(t *testing.T) {
 	thread := linked_thread(alice)
 	fn := sl.NewBuiltin("test", nil)
 
-	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("bluesky")}, linked_kwargs("handle", fake.handle, "password", "wrong")); err == nil || !strings.Contains(err.Error(), "did not accept") {
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("bluesky")}, linked_kwargs("handle", fake.handle, "password", "wrong")); !refused(err, "errors.link_failed", "did not accept") {
 		t.Errorf("wrong password: %v", err)
 	}
 	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("bluesky")}, linked_kwargs("handle", fake.handle)); err == nil || !strings.Contains(err.Error(), "password") {

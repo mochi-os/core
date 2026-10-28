@@ -135,10 +135,10 @@ func plc_request(ctx context.Context, method string, path string, body any) (int
 func plc_submit(ctx context.Context, did string, op map[string]any) error {
 	status, body, err := plc_request(ctx, "POST", "/"+did, op)
 	if err != nil {
-		return fmt.Errorf("the identity directory could not be reached: %w", err)
+		return refuse(http.StatusBadGateway, "errors.directory_unreachable", map[string]any{"reason": err.Error()})
 	}
 	if status < 200 || status > 299 {
-		return fmt.Errorf("the identity directory refused the operation: %v", linked_failure(status, body))
+		return refuse(http.StatusBadGateway, "errors.directory_refused", map[string]any{"reason": linked_failure(status, body).Error()})
 	}
 	return nil
 }

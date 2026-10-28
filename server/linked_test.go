@@ -8,6 +8,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -423,14 +425,14 @@ func TestLinkedLemmy(t *testing.T) {
 	fn := sl.NewBuiltin("test", nil)
 	host := fake_host(fake.server)
 
-	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("lemmy")}, linked_kwargs("server", host, "username", "alice", "password", "wrong")); err == nil || !strings.Contains(err.Error(), "did not accept") {
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("lemmy")}, linked_kwargs("server", host, "username", "alice", "password", "wrong")); !refused(err, "errors.link_failed", "did not accept") {
 		t.Errorf("wrong password: %v", err)
 	}
 	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("lemmy")}, linked_kwargs("server", host, "username", "alice")); err == nil || !strings.Contains(err.Error(), "required") {
 		t.Errorf("missing password: %v", err)
 	}
 	block_add(db_user(alice, "user"), "127.0.0.1")
-	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("lemmy")}, linked_kwargs("server", host, "username", "alice", "password", "secret")); err == nil || !strings.Contains(err.Error(), "blocked") {
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("lemmy")}, linked_kwargs("server", host, "username", "alice", "password", "secret")); !refused(err, "errors.link_failed", "blocked") {
 		t.Errorf("blocked server: %v", err)
 	}
 	block_remove(db_user(alice, "user"), "127.0.0.1")
@@ -566,7 +568,7 @@ func TestLinkedGuards(t *testing.T) {
 	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("email")}, nil); err == nil || !strings.Contains(err.Error(), "unknown provider") {
 		t.Errorf("link of a non-network provider: %v", err)
 	}
-	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("lemmy")}, linked_kwargs("server", "not a host", "username", "a", "password", "b")); err == nil || !strings.Contains(err.Error(), "invalid server") {
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("lemmy")}, linked_kwargs("server", "not a host", "username", "a", "password", "b")); !refused(err, "errors.link_failed", "invalid server") {
 		t.Errorf("invalid server: %v", err)
 	}
 
@@ -575,7 +577,7 @@ func TestLinkedGuards(t *testing.T) {
 	if _, err := api_account_timeline(thread, fn, sl.Tuple{sl.String("m1")}, nil); err == nil || !strings.Contains(err.Error(), "not available") {
 		t.Errorf("timeline with the switch off: %v", err)
 	}
-	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("lemmy")}, linked_kwargs("server", "x", "username", "a", "password", "b")); err == nil || !strings.Contains(err.Error(), "not available") {
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("lemmy")}, linked_kwargs("server", "x", "username", "a", "password", "b")); !refused(err, "errors.linking_unavailable", "") {
 		t.Errorf("link with the switch off: %v", err)
 	}
 	linked_start(linked_get(alice, "m1"))
@@ -726,10 +728,10 @@ func TestLinkedMatrix(t *testing.T) {
 	fn := sl.NewBuiltin("test", nil)
 	host := fake_host(fake.server)
 
-	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("matrix")}, linked_kwargs("username", "@alice:"+host, "password", "wrong")); err == nil || !strings.Contains(err.Error(), "did not accept") {
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("matrix")}, linked_kwargs("username", "@alice:"+host, "password", "wrong")); !refused(err, "errors.link_failed", "did not accept") {
 		t.Errorf("wrong password: %v", err)
 	}
-	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("matrix")}, linked_kwargs("username", "alice", "password", "secret")); err == nil || !strings.Contains(err.Error(), "server") {
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("matrix")}, linked_kwargs("username", "alice", "password", "secret")); !refused(err, "errors.link_failed", "server") {
 		t.Errorf("bare name without a server: %v", err)
 	}
 	account := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("matrix")}, linked_kwargs("username", "alice", "server", host, "password", "secret")))
@@ -851,5 +853,21 @@ func TestLinkedStopUserWaits(t *testing.T) {
 	case <-ended:
 	default:
 		t.Error("THE POINT: the session ended before its user's stop returned")
+	}
+}
+
+// TestLinkedRefusal: a link that does not go through is a refusal naming the
+// network, with the other server's answer as its reason; a limiter's refusal
+// keeps its own answer, a 429 with its wait.
+func TestLinkedRefusal(t *testing.T) {
+	err := linked_refusal("lemmy", fmt.Errorf("the server answered 401: incorrect_login"))
+	var refusal *Refusal
+	if !refused(err, "errors.link_failed", "incorrect_login") || !errors.As(err, &refusal) || refusal.Status != http.StatusBadGateway || refusal.Names["network"] != "account.display.lemmy" {
+		t.Errorf("THE POINT: a refused link: %#v", err)
+	}
+	limit := &RateLimitError{Retry: 5}
+	var kept *RateLimitError
+	if err := linked_refusal("lemmy", fmt.Errorf("wrapped: %w", limit)); !errors.As(err, &kept) || errors.As(err, &refusal) {
+		t.Errorf("a limiter's refusal keeps its own answer: %#v", err)
 	}
 }

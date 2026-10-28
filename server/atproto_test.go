@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -902,7 +903,7 @@ func TestAtprotoCreateRefused(t *testing.T) {
 		}
 		return []string{"203.0.113.7"}, nil
 	}
-	if _, err := add(); err == nil || !strings.Contains(err.Error(), "does not reach this server") {
+	if _, err := add(); !refused(err, "errors.host_elsewhere", "") {
 		t.Fatalf("a handle that does not reach the server was accepted: %v", err)
 	}
 	if len(accounts_hosted(alice, "bluesky")) != 0 {
@@ -969,6 +970,8 @@ func TestAtprotoReaches(t *testing.T) {
 			return []string{"2001:db8::7"}, nil
 		case "bob.example.com":
 			return []string{"198.51.100.1"}, nil
+		case "dave.nowhere.example":
+			return []string{"198.51.100.2"}, nil
 		}
 		return nil, fmt.Errorf("no such host")
 	}
@@ -976,11 +979,14 @@ func TestAtprotoReaches(t *testing.T) {
 	if err := atproto_reaches(ctx, "alice.example.com", "example.com"); err != nil {
 		t.Errorf("a host sharing an address was refused: %v", err)
 	}
-	if err := atproto_reaches(ctx, "bob.example.com", "example.com"); err == nil {
-		t.Error("a host elsewhere was accepted")
+	if err := atproto_reaches(ctx, "bob.example.com", "example.com"); !refused(err, "errors.host_elsewhere", "") {
+		t.Errorf("a host elsewhere was accepted: %v", err)
 	}
-	if err := atproto_reaches(ctx, "carol.example.com", "example.com"); err == nil {
-		t.Error("a host that does not resolve was accepted")
+	if err := atproto_reaches(ctx, "carol.example.com", "example.com"); !refused(err, "errors.host_unresolved", "") {
+		t.Errorf("a host that does not resolve was accepted: %v", err)
+	}
+	if err := atproto_reaches(ctx, "dave.nowhere.example", "nowhere.example"); !refused(err, "errors.domain_unresolved", "") {
+		t.Errorf("a domain that does not resolve was accepted: %v", err)
 	}
 	if err := atproto_reaches(ctx, "example.com", "example.com"); err != nil {
 		t.Errorf("the domain itself was refused: %v", err)
@@ -1144,5 +1150,85 @@ func TestRestoreHosted(t *testing.T) {
 	}
 	if user, _, _ := atproto_identity(did); user == nil || user.UID != alice.UID {
 		t.Errorf("THE POINT: the carried identity is not found as hers")
+	}
+}
+
+// plc_refusing is an identity directory that answers reads from the fake and
+// refuses every operation, as a directory does that will not take a change.
+func plc_refusing(t *testing.T, plc *plc_fake) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"message":"operation refused for this test"}`))
+			return
+		}
+		response, err := http.Get(plc.server.URL + r.URL.Path)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer response.Body.Close()
+		w.Header().Set("Content-Type", response.Header.Get("Content-Type"))
+		w.WriteHeader(response.StatusCode)
+		io.Copy(w, response.Body)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// TestAtprotoDirectoryRefused: a directory that refuses an account, or cannot
+// be reached, is a refusal naming the directory and passing on its answer,
+// for the user to see rather than a server error.
+func TestAtprotoDirectoryRefused(t *testing.T) {
+	alice, plc := create_atproto_test_env(t)
+	db := db_user(alice, "user")
+	db.exec("delete from accounts where id='b1'")
+	keypairs_delete(db, "b1")
+	networks_database().exec("delete from actors where id='b1'")
+	thread, fn := atproto_thread(alice), sl.NewBuiltin("test", nil)
+	add := func() error {
+		_, err := api_account_add(thread, fn, sl.Tuple{sl.String("bluesky")}, []sl.Tuple{{sl.String("handle"), sl.String("alice")}})
+		return err
+	}
+
+	bluesky_plc = plc_refusing(t, plc).URL
+	if err := add(); !refused(err, "errors.directory_refused", "operation refused for this test") {
+		t.Errorf("THE POINT: a directory that refuses: %v", err)
+	}
+	closed := httptest.NewServer(http.NotFoundHandler())
+	bluesky_plc = closed.URL
+	closed.Close()
+	if err := add(); !refused(err, "errors.directory_unreachable", "") {
+		t.Errorf("THE POINT: a directory that cannot be reached: %v", err)
+	}
+	if len(accounts_hosted(alice, "bluesky")) != 0 {
+		t.Error("a refused account was kept")
+	}
+}
+
+// TestAtprotoKeysUnannounced: a key made while the directory refuses to list
+// it says so, with the directory's own answer and not its framing twice.
+func TestAtprotoKeysUnannounced(t *testing.T) {
+	alice, plc := create_atproto_test_env(t)
+	if err := atproto_account_create(context.Background(), alice, "b1"); err != nil {
+		t.Fatal(err)
+	}
+	thread, fn := atproto_thread(alice), sl.NewBuiltin("test", nil)
+	bluesky_plc = plc_refusing(t, plc).URL
+
+	_, err := api_account_key_replace(thread, fn, sl.Tuple{sl.String("b1")}, nil)
+	if !refused(err, "errors.key_not_announced", "operation refused for this test") {
+		t.Errorf("THE POINT: a replaced key the directory does not take: %v", err)
+	}
+	var refusal *Refusal
+	if errors.As(err, &refusal) {
+		if reason, _ := refusal.Args["reason"].(string); !strings.HasPrefix(reason, "the server answered 400") {
+			t.Errorf("the reason is the directory's answer alone: %q", reason)
+		}
+	}
+	if _, err := api_account_key_recovery(thread, fn, sl.Tuple{sl.String("b1")}, nil); !refused(err, "errors.recovery_not_listed", "operation refused for this test") {
+		t.Errorf("THE POINT: a recovery key the directory does not list: %v", err)
 	}
 }

@@ -152,8 +152,8 @@ func TestAccountKeys(t *testing.T) {
 	if keypair_get(alice, "b1", key_rotation).Public != rotation {
 		t.Error("replacing should keep the rotation key")
 	}
-	if err := keypairs_replace(alice, "nothing"); err == nil {
-		t.Error("an account without keys cannot be replaced")
+	if err := keypairs_replace(alice, "nothing"); !refused(err, "errors.account_no_keys", "") {
+		t.Errorf("an account without keys cannot be replaced: %v", err)
 	}
 
 	public, private, err := keypair_recovery(alice, "b1")

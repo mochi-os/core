@@ -174,10 +174,10 @@ func TestXMPPLink(t *testing.T) {
 	thread := linked_thread(alice)
 	fn := sl.NewBuiltin("test", nil)
 
-	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("xmpp")}, linked_kwargs("address", "alice@example.org", "password", "wrong")); err == nil || !strings.Contains(err.Error(), "did not accept") {
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("xmpp")}, linked_kwargs("address", "alice@example.org", "password", "wrong")); !refused(err, "errors.link_failed", "did not accept") {
 		t.Errorf("wrong password: %v", err)
 	}
-	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("xmpp")}, linked_kwargs("address", "example.org", "password", "secret")); err == nil || !strings.Contains(err.Error(), "invalid address") {
+	if _, err := api_account_link(thread, fn, sl.Tuple{sl.String("xmpp")}, linked_kwargs("address", "example.org", "password", "secret")); !refused(err, "errors.link_failed", "invalid address") {
 		t.Errorf("address without a name: %v", err)
 	}
 	account := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("xmpp")}, linked_kwargs("address", "xmpp:Alice@Example.org", "password", "secret")))

@@ -251,11 +251,11 @@ func atproto_reaches(ctx context.Context, host string, domain string) error {
 	defer cancel()
 	addresses, err := atproto_lookup(ctx, host)
 	if err != nil || len(addresses) == 0 {
-		return fmt.Errorf("%s does not resolve: add a DNS record for it, or a wildcard record under %s", host, domain)
+		return refuse(http.StatusConflict, "errors.host_unresolved", map[string]any{"host": host, "domain": domain})
 	}
 	own, err := atproto_lookup(ctx, domain)
 	if err != nil || len(own) == 0 {
-		return fmt.Errorf("%s does not resolve", domain)
+		return refuse(http.StatusConflict, "errors.domain_unresolved", map[string]any{"domain": domain})
 	}
 	own = domain_addresses(own)
 	for _, a := range addresses {
@@ -265,7 +265,7 @@ func atproto_reaches(ctx context.Context, host string, domain string) error {
 			}
 		}
 	}
-	return fmt.Errorf("%s does not reach this server: it resolves to %s, %s to %s", host, strings.Join(addresses, ", "), domain, strings.Join(own, ", "))
+	return refuse(http.StatusConflict, "errors.host_elsewhere", map[string]any{"host": host, "addresses": strings.Join(addresses, ", "), "domain": domain, "own": strings.Join(own, ", ")})
 }
 
 // === Accounts ===

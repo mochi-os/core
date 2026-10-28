@@ -336,7 +336,7 @@ func keypairs_create(user *User, account string, network string) error {
 func keypairs_replace(user *User, account string) error {
 	key := keypair_get(user, account, key_signing)
 	if key == nil {
-		return fmt.Errorf("account has no signing key")
+		return refuse(http.StatusBadRequest, "errors.account_no_keys", nil)
 	}
 	public, private, err := key_generate(key.Algorithm)
 	if err != nil {
@@ -1315,7 +1315,7 @@ func api_account_key_replace(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	}
 	if row["type"] == "bluesky" {
 		if err := atproto_keys_replaced(thread_context(t), user, row["id"].(string)); err != nil {
-			return sl_error(fn, "the new key is made but not yet announced: %v", err)
+			return sl_error(fn, "%v", refuse(http.StatusBadGateway, "errors.key_not_announced", map[string]any{"reason": refusal_reason(err)}))
 		}
 	}
 	// The fediverse learns the new key from the document, sent to the
@@ -1344,7 +1344,7 @@ func api_account_key_recovery(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	// The identity lists the new key above the server's own, so the user
 	// can act on the account without this server.
 	if err := atproto_recovery_added(thread_context(t), user, row["id"].(string)); err != nil {
-		return sl_error(fn, "the key is made but the identity does not list it yet: %v", err)
+		return sl_error(fn, "%v", refuse(http.StatusBadGateway, "errors.recovery_not_listed", map[string]any{"reason": refusal_reason(err)}))
 	}
 	return sl_encode(map[string]any{"public": public, "private": private}), nil
 }

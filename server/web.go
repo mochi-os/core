@@ -198,7 +198,7 @@ func web_status_deliberate(status int) bool {
 	return status != http.StatusNotFound && status != http.StatusOK
 }
 
-func web_action_error(c *gin.Context, app string, err error) {
+func web_action_error(c *gin.Context, app string, language string, err error) {
 	var permission *PermissionError
 	if errors.As(err, &permission) {
 		// A machine-readable code plus the fields the permission dialog needs,
@@ -228,6 +228,17 @@ func web_action_error(c *gin.Context, app string, err error) {
 		}
 		respond_error(c, http.StatusTooManyRequests,
 			"rate_limit_exceeded_please_try_again_later", "errors.rate_limit_exceeded", nil)
+		return
+	}
+
+	// A refusal the user or the server's owner can act on: its own status and
+	// its reason in the user's language, as a.error.label answers. info, not
+	// warn: nothing broke, and warn would mail the administrator for each one.
+	var refusal *Refusal
+	if errors.As(err, &refusal) {
+		info("web: %s refused: %s", app, path_scrub(refusal.Error()))
+		c.JSON(refusal.Status, gin.H{"error": strings.TrimPrefix(refusal.Key, "errors."), "message": resolve_core_label(language, refusal.Key, refusal.arguments(language))})
+		c.Abort()
 		return
 	}
 
@@ -893,7 +904,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			if c.Writer.Written() {
 				return true
 			}
-			web_action_error(c, a.id, err)
+			web_action_error(c, a.id, request_language(c, user), err)
 			return true
 		}
 		if !c.Writer.Written() {

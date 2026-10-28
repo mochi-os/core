@@ -8,6 +8,7 @@ package main
 
 import (
 	"embed"
+	"errors"
 	"io/fs"
 	"net/http"
 	"sort"
@@ -491,4 +492,63 @@ func respond_error(c *gin.Context, status int, code, key string, args map[string
 	message := resolve_core_label(lang, key, args)
 	c.JSON(status, gin.H{"error": code, "message": message})
 	c.Abort()
+}
+
+// Refusal is a builtin's refusal of what it was asked, for a reason the user or
+// the server's owner can act on: a handle that is not theirs, a DNS record
+// missing, another server saying no. An action that aborts on one answers its
+// status and its label in the reader's language, as a.error.label does, not a
+// server fault that mails the administrator (web_action_error). Names are
+// arguments given as label keys, put in the reader's language as well: a
+// network's own name.
+type Refusal struct {
+	Status int
+	Key    string
+	Args   map[string]any
+	Names  map[string]string
+}
+
+// refuse makes a refusal with its status, label and arguments.
+func refuse(status int, key string, args map[string]any) *Refusal {
+	return &Refusal{Status: status, Key: key, Args: args}
+}
+
+// named adds an argument given as a label key.
+func (r *Refusal) named(argument string, key string) *Refusal {
+	if r.Names == nil {
+		r.Names = map[string]string{}
+	}
+	r.Names[argument] = key
+	return r
+}
+
+// arguments are the refusal's arguments, its names in language.
+func (r *Refusal) arguments(language string) map[string]any {
+	out := map[string]any{}
+	for name, value := range r.Args {
+		out[name] = value
+	}
+	for name, key := range r.Names {
+		out[name] = resolve_core_label(language, key, nil)
+	}
+	return out
+}
+
+// Error is the refusal in English, for the log and for the Starlark error an
+// app sees.
+func (r *Refusal) Error() string {
+	return resolve_core_label("en", r.Key, r.arguments("en"))
+}
+
+// refusal_reason is what went wrong underneath an error: a refusal's own
+// reason where it gives one, so a refusal built on another does not repeat its
+// framing, else the error's text.
+func refusal_reason(err error) string {
+	var refusal *Refusal
+	if errors.As(err, &refusal) {
+		if reason, ok := refusal.Args["reason"].(string); ok {
+			return reason
+		}
+	}
+	return err.Error()
 }

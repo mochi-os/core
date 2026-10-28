@@ -1081,8 +1081,10 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		// A hosted account on another network, on a handle the user holds. The
 		// id generated below is the account's permanent identifier on the
 		// fediverse (/~<id>), so it never carries the handle.
+		// Each refusal is the user's or the owner's to act on, so it reaches
+		// them in their language with its own status (labels.go).
 		if !network_enabled(ptype) {
-			return sl_error(fn, "%s is not available on this server", ptype)
+			return sl_error(fn, "%v", refuse(http.StatusForbidden, "errors.network_unavailable", nil).named("network", "account.display."+ptype))
 		}
 		name, _ := fields["handle"].(string)
 		domain, _ := fields["domain"].(string)
@@ -1092,7 +1094,7 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		}
 		h := handle_lookup(domain, name)
 		if h == nil || h.User != user.UID {
-			return sl_error(fn, "handle %q is not held by this user on %s", name, domain)
+			return sl_error(fn, "%v", refuse(http.StatusForbidden, "errors.handle_not_held", map[string]any{"handle": name, "domain": domain}))
 		}
 		// A group (a forum's community, phase 20) is a fediverse account on a
 		// community name; a person's account is on a handle.
@@ -1100,17 +1102,17 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		switch {
 		case kind == "group" && ptype == "fediverse":
 			if h.Kind != "community" {
-				return sl_error(fn, "%q is not a community name", name)
+				return sl_error(fn, "%v", refuse(http.StatusBadRequest, "errors.handle_not_community", map[string]any{"handle": name}))
 			}
 		case kind == "":
 			if h.Kind != "handle" {
-				return sl_error(fn, "handle %q is not held by this user on %s", name, domain)
+				return sl_error(fn, "%v", refuse(http.StatusForbidden, "errors.handle_not_held", map[string]any{"handle": name, "domain": domain}))
 			}
 		default:
 			return sl_error(fn, "invalid kind %q", kind)
 		}
 		if account_hosted(user, ptype, h.Domain, h.Name) != nil {
-			return sl_error(fn, "an account on %s already exists for this handle", ptype)
+			return sl_error(fn, "%v", refuse(http.StatusConflict, "errors.account_exists", nil).named("network", "account.display."+ptype))
 		}
 		identifier = network_address(ptype, h.Name, h.Domain)
 		data["hosted"] = true

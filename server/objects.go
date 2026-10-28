@@ -605,10 +605,10 @@ func api_account_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	ctx := activitypub_signing(thread_context(t), user, account)
 	r, err := author_resolve(ctx, address)
 	if err != nil || r.Network != "fediverse" || r.ID == "" {
-		return sl_error(fn, "cannot resolve %s", address)
+		return sl_error(fn, "%v", refuse(http.StatusBadRequest, "errors.move_unresolved", map[string]any{"address": address}))
 	}
 	if r.ID == actor {
-		return sl_error(fn, "an account cannot move to itself")
+		return sl_error(fn, "%v", refuse(http.StatusBadRequest, "errors.move_to_itself", nil))
 	}
 	named := false
 	for _, alias := range r.Aliases {
@@ -617,7 +617,7 @@ func api_account_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		}
 	}
 	if !named {
-		return sl_error(fn, "%s does not name this account among its own", r.Address)
+		return sl_error(fn, "%v", refuse(http.StatusBadRequest, "errors.move_not_named", map[string]any{"address": r.Address}))
 	}
 	data := account_data(row)
 	data["moved"] = r.ID

@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -53,10 +54,10 @@ func TestCommunityAccount(t *testing.T) {
 	alice, _, id, thread := create_community_test_env(t)
 	fn := sl.NewBuiltin("test", nil)
 
-	if _, err := api_account_add(thread, fn, sl.Tuple{sl.String("fediverse")}, []sl.Tuple{{sl.String("handle"), sl.String("alice")}, {sl.String("kind"), sl.String("group")}}); err == nil || !strings.Contains(err.Error(), "not a community name") {
+	if _, err := api_account_add(thread, fn, sl.Tuple{sl.String("fediverse")}, []sl.Tuple{{sl.String("handle"), sl.String("alice")}, {sl.String("kind"), sl.String("group")}}); !refused(err, "errors.handle_not_community", "") {
 		t.Errorf("a group on a person's handle: %v", err)
 	}
-	if _, err := api_account_add(thread, fn, sl.Tuple{sl.String("fediverse")}, []sl.Tuple{{sl.String("handle"), sl.String("alice_books")}}); err == nil || !strings.Contains(err.Error(), "not held") {
+	if _, err := api_account_add(thread, fn, sl.Tuple{sl.String("fediverse")}, []sl.Tuple{{sl.String("handle"), sl.String("alice_books")}}); !refused(err, "errors.handle_not_held", "") {
 		t.Errorf("a person's account on a community name: %v", err)
 	}
 	if _, err := api_account_add(thread, fn, sl.Tuple{sl.String("fediverse")}, []sl.Tuple{{sl.String("handle"), sl.String("alice_books")}, {sl.String("kind"), sl.String("club")}}); err == nil || !strings.Contains(err.Error(), "invalid kind") {
@@ -266,4 +267,41 @@ func TestCommunityActivity(t *testing.T) {
 		t.Errorf("THE POINT: the outbox lists the public Lock alone, not the one to followers and a member: %v", outbox)
 	}
 	_ = alice
+}
+
+// TestAccountAddRefused: each reason a hosted account is refused for is a
+// refusal with its own label and status, which the action answers to the user
+// rather than a server error (web_action_error).
+func TestAccountAddRefused(t *testing.T) {
+	_, _, _, thread := create_community_test_env(t)
+	fn := sl.NewBuiltin("test", nil)
+	add := func(pairs ...string) error {
+		var kwargs []sl.Tuple
+		for i := 0; i+1 < len(pairs); i += 2 {
+			kwargs = append(kwargs, sl.Tuple{sl.String(pairs[i]), sl.String(pairs[i+1])})
+		}
+		_, err := api_account_add(thread, fn, sl.Tuple{sl.String("fediverse")}, kwargs)
+		return err
+	}
+	status := func(err error) int {
+		var refusal *Refusal
+		if errors.As(err, &refusal) {
+			return refusal.Status
+		}
+		return 0
+	}
+
+	if err := add("handle", "nobody"); !refused(err, "errors.handle_not_held", "") || status(err) != http.StatusForbidden {
+		t.Errorf("THE POINT: a handle the user does not hold: %v", err)
+	}
+	err := add("handle", "alice_books", "kind", "group")
+	var refusal *Refusal
+	if !refused(err, "errors.account_exists", "") || status(err) != http.StatusConflict || !errors.As(err, &refusal) || refusal.Names["network"] != "account.display.fediverse" {
+		t.Errorf("THE POINT: a second account on the handle, named by its network: %v", err)
+	}
+	setting_set("fediverse", "false")
+	defer setting_set("fediverse", "true")
+	if err := add("handle", "alice"); !refused(err, "errors.network_unavailable", "") || status(err) != http.StatusForbidden {
+		t.Errorf("THE POINT: a network switched off: %v", err)
+	}
 }

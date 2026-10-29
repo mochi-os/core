@@ -673,11 +673,11 @@ func xrpc_upload_blob(c *gin.Context) {
 
 // xrpc_mirror tells the apps that mirror records what a client wrote: a
 // post kept in the home feed, a like or repost of a post a feed holds its
-// reaction or boost, a follow a source of the home feed (decision 42). A
-// post's images go with their bytes.
+// reaction or boost, a follow a source of the home feed (decision 42), the
+// profile's pinned post the post's pin. A post's images go with their bytes.
 func xrpc_mirror(s *xrpc_session, action string, collection string, rkey string, uri string, record map[string]any) {
 	switch collection {
-	case "app.bsky.feed.post", "app.bsky.feed.like", "app.bsky.feed.repost", "app.bsky.graph.follow":
+	case "app.bsky.feed.post", "app.bsky.feed.like", "app.bsky.feed.repost", "app.bsky.graph.follow", "app.bsky.actor.profile":
 	default:
 		return
 	}

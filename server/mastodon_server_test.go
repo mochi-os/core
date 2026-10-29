@@ -311,7 +311,7 @@ func (f *mastodon_feeds) call(s *mastodon_session, a *App, function string, args
 			}
 		}
 		return map[string]any{"error": "No such post"}, nil
-	case "mastodon/react", "mastodon/save":
+	case "mastodon/react", "mastodon/save", "mastodon/pin":
 		id := text("id")
 		if cid, ok := strings.CutPrefix(id, "c:"); ok {
 			for _, c := range f.comments {
@@ -325,9 +325,12 @@ func (f *mastodon_feeds) call(s *mastodon_session, a *App, function string, args
 		if p == nil {
 			return map[string]any{"error": "No such post"}, nil
 		}
-		if function == "mastodon/react" {
+		switch function {
+		case "mastodon/react":
 			p["reaction"] = map[bool]string{true: "like", false: ""}[args["on"] == true]
-		} else {
+		case "mastodon/pin":
+			p["pinned"] = map[bool]int64{true: 1, false: 0}[args["on"] == true]
+		default:
 			p["saved"] = args["on"] == true
 		}
 		return map[string]any{"post": p}, nil
@@ -412,7 +415,7 @@ func create_mastodon_test_env(t *testing.T) (*User, *mastodon_feeds) {
 	mastodon_caller = fake.call
 	t.Cleanup(func() { mastodon_caller, mastodon_notification_rows = saved_caller, saved_rows })
 	functions := map[string]AppFunction{}
-	for _, name := range []string{"posts", "comments", "comment", "create", "edit", "delete", "react", "save", "boost", "hold", "vote", "follow", "lists", "list", "notifications"} {
+	for _, name := range []string{"posts", "comments", "comment", "create", "edit", "delete", "react", "save", "pin", "boost", "hold", "vote", "follow", "lists", "list", "notifications"} {
 		functions["mastodon/"+name] = AppFunction{Function: "function_mastodon_" + name}
 	}
 	direct := map[string]AppFunction{}
@@ -764,6 +767,13 @@ func TestMastodonStatuses(t *testing.T) {
 	if _, bookmarks := mastodon_request(t, token, "GET", "/api/v1/bookmarks", nil); len(mastodon_items(bookmarks)) != 1 {
 		t.Errorf("the bookmarks = %v", bookmarks)
 	}
+	// A pin goes to the app, which pins the post as the user does there.
+	if _, pinned := mastodon_request(t, token, "POST", "/api/v1/statuses/"+first["id"].(string)+"/pin", nil); mastodon_map(pinned)["pinned"] != true || fake.args[len(fake.args)-1]["on"] != true {
+		t.Errorf("THE POINT: the pin = %v, asked %v", pinned, fake.args[len(fake.args)-1])
+	}
+	if _, unpinned := mastodon_request(t, token, "POST", "/api/v1/statuses/"+first["id"].(string)+"/unpin", nil); mastodon_map(unpinned)["pinned"] != false {
+		t.Errorf("THE POINT: the unpin = %v", unpinned)
+	}
 	// A reply is a comment, and the post's context.
 	_, reply := mastodon_request(t, token, "POST", "/api/v1/statuses", map[string]any{"status": "a reply", "in_reply_to_id": first["id"]})
 	if mastodon_map(reply)["in_reply_to_id"] != first["id"] || fake.args[len(fake.args)-1]["reply"] != "p1" {
@@ -772,6 +782,9 @@ func TestMastodonStatuses(t *testing.T) {
 	_, deeper := mastodon_request(t, token, "POST", "/api/v1/statuses", map[string]any{"status": "deeper", "in_reply_to_id": mastodon_map(reply)["id"]})
 	if mastodon_map(deeper)["in_reply_to_id"] != mastodon_map(reply)["id"] {
 		t.Errorf("the reply to the reply = %v", deeper)
+	}
+	if w, _ := mastodon_request(t, token, "POST", "/api/v1/statuses/"+mastodon_map(reply)["id"].(string)+"/pin", nil); w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("THE POINT: pinning a comment = %d, want 422", w.Code)
 	}
 	_, context := mastodon_request(t, token, "GET", "/api/v1/statuses/"+first["id"].(string)+"/context", nil)
 	if descendants := mastodon_items(mastodon_map(context)["descendants"]); len(descendants) != 2 {

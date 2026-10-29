@@ -934,7 +934,13 @@ func mastodon_status_action(c *gin.Context, s *mastodon_session, number string, 
 			return
 		}
 		answer(mastodon_call(s, "mastodon/save", Map{"id": id, "on": action == "bookmark"}))
-	case "POST pin", "POST unpin", "POST mute", "POST unmute", "POST translate":
+	case "POST pin", "POST unpin":
+		if id == "" || item.comment != nil {
+			mastodon_error(c, http.StatusUnprocessableEntity, "Only posts a feed holds can be pinned")
+			return
+		}
+		answer(mastodon_call(s, "mastodon/pin", Map{"id": id, "on": action == "pin"}))
+	case "POST mute", "POST unmute", "POST translate":
 		answer(nil, nil)
 	default:
 		mastodon_error(c, http.StatusNotFound, "Record not found")

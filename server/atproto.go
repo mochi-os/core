@@ -356,9 +356,34 @@ func atproto_profile_media(user *User) map[string]any {
 	return map[string]any{}
 }
 
+// atproto_profile_pinned is the post an account's profile pins, as the
+// reference the record carries: the first of the posts the apps name through
+// atproto/featured, newest pin first, that is a post in the account's own
+// repository. Bluesky pins one post; nil when there is none.
+func atproto_profile_pinned(user *User, id string, did string) map[string]any {
+	prefix := "at://" + did + "/app.bsky.feed.post/"
+	for _, a := range apps_for_function(user, "atproto/featured") {
+		result, err := activitypub_call(user, a, "atproto/featured", Map{"account": id})
+		if err != nil {
+			debug("Bluesky featured from %s: %v", a.id, err)
+			continue
+		}
+		for _, uri := range object_strings(result) {
+			rkey, found := strings.CutPrefix(uri, prefix)
+			if !found {
+				continue
+			}
+			if c, _ := repository_record(user, id, "app.bsky.feed.post", rkey); c != "" {
+				return map[string]any{"uri": uri, "cid": c}
+			}
+		}
+	}
+	return nil
+}
+
 // atproto_profile_record builds an account's profile record from the name it
-// has, the person's profile text and their avatar and banner, stored as
-// blobs of the account.
+// has, the person's profile text, their avatar and banner, stored as blobs of
+// the account, and the post the apps pin.
 func atproto_profile_record(ctx context.Context, user *User, row map[string]any) map[string]any {
 	id, _ := row["id"].(string)
 	profile := activitypub_profile(user, id)
@@ -394,6 +419,9 @@ func atproto_profile_record(ctx context.Context, user *User, row map[string]any)
 			continue
 		}
 		record[slot] = repository_blob_reference(blob, kind, len(data))
+	}
+	if pinned := atproto_profile_pinned(user, id, atproto_did(row)); pinned != nil {
+		record["pinnedPost"] = pinned
 	}
 	return record
 }

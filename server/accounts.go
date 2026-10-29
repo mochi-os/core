@@ -316,6 +316,7 @@ var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"add":           sl.NewBuiltin("mochi.account.add", api_account_add),
 	"announce":      sl.NewBuiltin("mochi.account.announce", api_account_announce),
 	"block":         api_account_block,
+	"featured":      sl.NewBuiltin("mochi.account.featured", api_account_featured),
 	"follow":        sl.NewBuiltin("mochi.account.follow", api_account_follow),
 	"followers":     sl.NewBuiltin("mochi.account.followers", api_account_followers),
 	"directory":     sl.NewBuiltin("mochi.account.directory", api_account_directory),
@@ -1664,6 +1665,28 @@ func api_account_refresh(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "no user")
 	}
 	account_profile_changed(user)
+	return sl.None, nil
+}
+
+// mochi.account.featured(account) -> None: Tell the account's network that the
+// posts it pins have changed. A hosted Bluesky account's profile record is
+// written again, once the changes pause, pinning the newest of the posts the
+// apps name through atproto/featured. A hosted fediverse account's followers
+// learn of a pin from the Add or Remove the app sends, and a linked account's
+// profile is the app's to write, so for those it does nothing. Behind the
+// account permission
+func api_account_featured(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var account string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account); err != nil {
+		return nil, err
+	}
+	user, row, _, err := account_acting(t, fn, account)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if row["type"] == "bluesky" {
+		account_changed(user, account)
+	}
 	return sl.None, nil
 }
 

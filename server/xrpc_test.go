@@ -389,6 +389,14 @@ func TestXrpcRecords(t *testing.T) {
 	if row := following(); row != nil {
 		t.Errorf("following after the follow was deleted = %v", row)
 	}
+	// The profile the app writes, whose pinned post is the post's pin.
+	pin := map[string]any{"uri": "at://" + did + "/app.bsky.feed.post/3pinned", "cid": "bafyreigwtffq5rlqskq6f4xx2t5vakrwrcytiffms7krlk53yxh4gcjok4"}
+	if w, _ := xrpc_call(t, "POST", "com.atproto.repo.putRecord", access, map[string]any{"repo": did, "collection": "app.bsky.actor.profile", "rkey": "self", "record": map[string]any{"$type": "app.bsky.actor.profile", "displayName": "Alice", "pinnedPost": pin}}, nil); w.Code != http.StatusOK {
+		t.Fatalf("writing the profile = %d %s", w.Code, w.Body.String())
+	}
+	if told := feeds.last(t); told["collection"] != "app.bsky.actor.profile" || told["action"] != "update" || json_encode(told["record"].(map[string]any)["pinnedPost"]) != json_encode(pin) {
+		t.Errorf("THE POINT: the profile was not mirrored with its pinned post: %v", told)
+	}
 }
 
 // TestXrpcUpload: a blob an app uploads is kept for the account and answered

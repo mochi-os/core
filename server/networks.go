@@ -83,13 +83,18 @@ func server_public_url() string {
 // what this machine's own lookup of it found. A loopback address there comes
 // from the hosts file naming the machine itself - Debian and Ubuntu map the
 // machine's name to 127.0.1.1 - and stands for the addresses on the machine's
-// interfaces.
+// interfaces. A development instance that reaches private addresses
+// ([development] private) talks to servers on the same machine, which reach
+// it at the loopback address too.
 func domain_addresses(found []string) []string {
 	var out []string
 	local := false
 	for _, address := range found {
 		if ip := net.ParseIP(address); ip != nil && ip.IsLoopback() {
 			local = true
+			if url_allow_private {
+				out = append(out, address)
+			}
 			continue
 		}
 		out = append(out, address)

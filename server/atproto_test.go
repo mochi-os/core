@@ -973,6 +973,117 @@ func TestAtprotoProfileRefresh(t *testing.T) {
 	}
 }
 
+// TestAtprotoProfilePinned: when an app says an account's pins changed, the
+// profile record of the hosted Bluesky account is written again pinning the
+// first post the apps name that is one of its own, by its address and content
+// id, and pinning nothing once none is named; a fediverse account's pins are
+// the app's Add and Remove, so nothing is written for it, and an app without
+// the account's permission is refused.
+func TestAtprotoProfilePinned(t *testing.T) {
+	alice, _ := create_atproto_test_env(t)
+	if err := atproto_account_create(context.Background(), alice, "b1"); err != nil {
+		t.Fatal(err)
+	}
+	did := atproto_did(account_hosted_get(alice, "b1"))
+	prefix := "at://" + did + "/app.bsky.feed.post/"
+	thread, fn := atproto_thread(alice), sl.NewBuiltin("test", nil)
+	permission_grant(alice, "app2", "account:f1")
+	var uris, cids []string
+	for _, text := range []string{"First", "Second"} {
+		value, err := api_account_object_create(thread, fn, sl.Tuple{sl.String("b1"), object_dict("text", text)}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		uri := sl_decode_map(value)["id"].(string)
+		c, _ := repository_record(alice, "b1", "app.bsky.feed.post", strings.TrimPrefix(uri, prefix))
+		uris, cids = append(uris, uri), append(cids, c)
+	}
+
+	var lock sync.Mutex
+	var named []any
+	saved_call := activitypub_call
+	activitypub_call = func(user *User, a *App, function string, args Map) (any, error) {
+		if function != "atproto/featured" || args["account"] != "b1" {
+			t.Errorf("call %s %v", function, args)
+			return nil, nil
+		}
+		lock.Lock()
+		defer lock.Unlock()
+		return named, nil
+	}
+	apps_lock.Lock()
+	apps["pins"] = &App{id: "pins", internal: &AppVersion{Functions: map[string]AppFunction{"atproto/featured": {Function: "featured"}}}}
+	apps_lock.Unlock()
+	saved_delay := account_change_delay
+	t.Cleanup(func() {
+		account_changing_lock.Lock()
+		for _, timer := range account_changing {
+			timer.Stop()
+		}
+		clear(account_changing)
+		account_changing_lock.Unlock()
+		account_change_delay = saved_delay
+		activitypub_call = saved_call
+		apps_lock.Lock()
+		delete(apps, "pins")
+		apps_lock.Unlock()
+	})
+
+	featured := func(thread *sl.Thread, account string) error {
+		_, err := sl.Call(thread, sl.NewBuiltin("mochi.account.featured", api_account_featured), sl.Tuple{sl.String(account)}, nil)
+		return err
+	}
+	pinned := func() map[string]any {
+		_, value := repository_record(alice, "b1", "app.bsky.actor.profile", "self")
+		found, _ := value["pinnedPost"].(map[string]any)
+		return found
+	}
+	pin := func(why string, uris ...any) {
+		t.Helper()
+		lock.Lock()
+		named = uris
+		lock.Unlock()
+		if err := featured(thread, "b1"); err != nil {
+			t.Fatal(err)
+		}
+		before := fmt.Sprint(pinned())
+		wait(t, why, func() bool { return fmt.Sprint(pinned()) != before })
+	}
+
+	account_change_delay = time.Hour
+	if err := featured(thread, "f1"); err != nil {
+		t.Fatal(err)
+	}
+	account_changing_lock.Lock()
+	_, scheduled := account_changing[alice.UID+" f1"]
+	account_changing_lock.Unlock()
+	if scheduled {
+		t.Error("THE POINT: a fediverse account's pins changing sends its document again")
+	}
+	if err := featured(create_test_thread(alice, create_external_app("app3")), "b1"); err == nil {
+		t.Error("THE POINT: an app without the account's permission rewrote its profile")
+	}
+
+	account_change_delay = 20 * time.Millisecond
+	// Another account's post, under a key this one also has; a post this
+	// account does not have; then its own two, the first named first.
+	pin("the first pin", "at://did:plc:other/app.bsky.feed.post/"+strings.TrimPrefix(uris[0], prefix), prefix+"missing", uris[0], uris[1])
+	if found := pinned(); found["uri"] != uris[0] || found["cid"] != cids[0] {
+		t.Errorf("THE POINT: the profile pins %v, want %s %s", found, uris[0], cids[0])
+	}
+	pin("the second pin", uris[1])
+	if found := pinned(); found["uri"] != uris[1] || found["cid"] != cids[1] {
+		t.Errorf("THE POINT: after the pins change the profile pins %v, want %s", found, uris[1])
+	}
+	pin("the unpin")
+	if found := pinned(); found != nil {
+		t.Errorf("THE POINT: with nothing pinned the profile still pins %v", found)
+	}
+	if _, value := repository_record(alice, "b1", "app.bsky.actor.profile", "self"); value["$type"] != "app.bsky.actor.profile" || value["displayName"] == nil {
+		t.Errorf("the profile record lost the rest of itself: %v", value)
+	}
+}
+
 // TestAtprotoReaches: the host check itself.
 func TestAtprotoReaches(t *testing.T) {
 	saved := atproto_lookup
@@ -1010,10 +1121,12 @@ func TestAtprotoReaches(t *testing.T) {
 
 // TestAtprotoReachesHostsFile: a server whose hosts file names its own domain
 // as 127.0.1.1, as Debian and Ubuntu write it, is reached at the addresses on
-// its interfaces, and a host leading to loopback reaches nobody outside.
+// its interfaces, and a host leading to loopback reaches nobody outside,
+// unless the instance is a development one talking to servers beside it.
 func TestAtprotoReachesHostsFile(t *testing.T) {
-	saved, saved_interfaces := atproto_lookup, domain_interfaces
-	defer func() { atproto_lookup, domain_interfaces = saved, saved_interfaces }()
+	saved, saved_interfaces, saved_private := atproto_lookup, domain_interfaces, url_allow_private
+	defer func() { atproto_lookup, domain_interfaces, url_allow_private = saved, saved_interfaces, saved_private }()
+	url_allow_private = false
 	atproto_lookup = func(ctx context.Context, host string) ([]string, error) {
 		switch host {
 		case "self.test":
@@ -1037,6 +1150,15 @@ func TestAtprotoReachesHostsFile(t *testing.T) {
 	}
 	if err := atproto_reaches(ctx, "loop.self.test", "self.test"); err == nil {
 		t.Error("THE POINT: a host leading to loopback was accepted")
+	}
+	// A development instance whose names all lead to loopback, as nip.io
+	// names do, is reached there by the servers beside it.
+	url_allow_private = true
+	if err := atproto_reaches(ctx, "loop.self.test", "self.test"); err != nil {
+		t.Errorf("THE POINT: on a development instance reaching private addresses, a host leading to its own loopback address was refused: %v", err)
+	}
+	if err := atproto_reaches(ctx, "erin.self.test", "self.test"); err == nil {
+		t.Error("on a development instance, a host elsewhere was accepted")
 	}
 }
 

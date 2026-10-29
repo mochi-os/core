@@ -132,8 +132,8 @@ func TestSchema18BringsAnInstallUp(t *testing.T) {
 		t.Error("the commit-hook log survived in a database the walk opened itself")
 	}
 
-	if schema := atoi(setting_get("schema", ""), 0); schema != 18 {
-		t.Fatalf("schema after the upgrade is %d, want 18", schema)
+	if schema := atoi(setting_get("schema", ""), 0); schema != schema_version {
+		t.Fatalf("schema after the upgrade is %d, want %d", schema, schema_version)
 	}
 	if !versioning_column(networks, "deliveries", "address") {
 		t.Error("THE POINT: deliveries did not gain address")
@@ -610,7 +610,11 @@ func actors_plans(t *testing.T) map[string]string {
 	}
 	out := map[string]string{}
 	for name, query := range queries {
-		rows, err := networks_database().internal.Query("explain query plan "+query, "a", "b")
+		values := []any{}
+		for range strings.Count(query, "?") {
+			values = append(values, "a")
+		}
+		rows, err := networks_database().internal.Query("explain query plan "+query, values...)
 		if err != nil {
 			t.Fatal(err)
 		}

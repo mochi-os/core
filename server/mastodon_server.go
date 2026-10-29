@@ -250,7 +250,10 @@ func mastodon_dispatch(c *gin.Context, version string, parts []string) {
 	case "GET v2/instance":
 		c.JSON(http.StatusOK, mastodon_instance_v2(c))
 		return
-	case "GET v1/instance/peers", "GET v1/instance/rules", "GET v1/instance/domain_blocks", "GET v1/custom_emojis", "GET v1/trends", "GET v1/trends/tags", "GET v1/trends/statuses", "GET v1/trends/links", "GET v1/directory", "GET v1/announcements":
+	case "GET v1/instance/rules":
+		c.JSON(http.StatusOK, mastodon_rules(request_language(c, nil)))
+		return
+	case "GET v1/instance/peers", "GET v1/instance/domain_blocks", "GET v1/custom_emojis", "GET v1/trends", "GET v1/trends/tags", "GET v1/trends/statuses", "GET v1/trends/links", "GET v1/directory", "GET v1/announcements":
 		c.JSON(http.StatusOK, []any{})
 		return
 	case "GET v1/instance/activity":
@@ -566,7 +569,7 @@ func mastodon_instance_v2(c *gin.Context) map[string]any {
 		"title":         domain,
 		"version":       mastodon_version + " (compatible; Mochi " + build_version + ")",
 		"source_url":    "https://mochi-os.org",
-		"description":   "",
+		"description":   setting_effective("description"),
 		"usage":         map[string]any{"users": map[string]any{"active_month": 0}},
 		"thumbnail":     map[string]any{"url": "https://" + c.Request.Host + "/favicon.ico"},
 		"icon":          []any{},
@@ -574,8 +577,8 @@ func mastodon_instance_v2(c *gin.Context) map[string]any {
 		"configuration": mastodon_configuration(c),
 		"registrations": map[string]any{"enabled": false, "approval_required": false, "message": nil, "url": nil},
 		"api_versions":  map[string]any{"mastodon": 2},
-		"contact":       map[string]any{"email": "", "account": nil},
-		"rules":         []any{},
+		"contact":       map[string]any{"email": setting_effective("operator_email"), "account": nil},
+		"rules":         mastodon_rules(request_language(c, nil)),
 	}
 }
 
@@ -585,9 +588,9 @@ func mastodon_instance_v1(c *gin.Context) map[string]any {
 	return map[string]any{
 		"uri":               domain,
 		"title":             domain,
-		"short_description": "",
-		"description":       "",
-		"email":             "",
+		"short_description": setting_effective("description"),
+		"description":       setting_effective("description"),
+		"email":             setting_effective("operator_email"),
 		"version":           mastodon_version + " (compatible; Mochi " + build_version + ")",
 		"urls":              map[string]any{"streaming_api": "wss://" + c.Request.Host},
 		"stats":             map[string]any{"user_count": 0, "status_count": 0, "domain_count": 0},
@@ -598,8 +601,46 @@ func mastodon_instance_v1(c *gin.Context) map[string]any {
 		"invites_enabled":   false,
 		"configuration":     mastodon_configuration(c),
 		"contact_account":   nil,
-		"rules":             []any{},
+		"rules":             mastodon_rules(request_language(c, nil)),
 	}
+}
+
+// mastodon_rules is the server's rules as clients list them, in the reader's
+// language: each section of the rules document that is a list of points, its
+// heading the rule and its points the hint. The sections in prose - how to
+// report, how the rules are enforced - are not rules.
+func mastodon_rules(language string) []any {
+	out := []any{}
+	title := ""
+	var points []string
+	end := func() {
+		if title != "" && len(points) > 0 {
+			out = append(out, map[string]any{"id": strconv.Itoa(len(out) + 1), "text": title, "hint": strings.Join(points, "\n")})
+		}
+		title, points = "", nil
+	}
+	for _, line := range strings.Split(document_get("rules", language), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "## "):
+			end()
+			title = mastodon_plain(line[3:])
+		case title != "" && (strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ")):
+			points = append(points, mastodon_plain(line[2:]))
+		}
+	}
+	end()
+	return out
+}
+
+// mastodon_anchor matches a Markdown link, whose text is kept.
+var mastodon_anchor = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
+
+// mastodon_plain is a line of the rules document as plain text, which is how
+// clients show a rule: its emphasis, code marks and link targets dropped.
+func mastodon_plain(text string) string {
+	text = mastodon_anchor.ReplaceAllString(text, "$1")
+	return strings.TrimSpace(strings.NewReplacer("**", "", "__", "", "`", "").Replace(text))
 }
 
 // === Accounts ===

@@ -418,7 +418,8 @@ func networks_database() *DB {
 // learned about, the owner's domain blocks, Mochi's registrations as a client
 // on other servers, the server's own keys as a client, and the clients
 // registered to sign users in with their own tokens. A change here is also a
-// new db_upgrade_N step, and db_upgrade_18 keeps a copy of this as it was.
+// new db_upgrade_N step; db_upgrade_18 lays its own copy of this as it was
+// then (db_upgrade_18_networks).
 func networks_create(db *DB) {
 	db.exec("create table if not exists deliveries (id text not null primary key, user text not null, account text not null, network text not null, inbox text not null, host text not null, body text not null, attempts integer not null default 0, next integer not null, claimed integer not null default 0, created integer not null, address text not null default '')")
 	db.exec("create index if not exists deliveries_next on deliveries(next)")
@@ -439,6 +440,9 @@ func networks_create(db *DB) {
 	// for the apps (activitypub.go).
 	db.exec("create table if not exists actors (id text not null primary key, user text not null, domain text not null, handle text not null, network text not null, created integer not null, deleted integer not null default 0, key text not null default '')")
 	db.exec("create index if not exists actors_user on actors(user)")
+	// By domain and handle, for the lookups of an account by its address
+	// (federation_local, federation_user, xmpp_served, reports).
+	db.exec("create index if not exists actors_domain on actors(domain, handle)")
 	// The activity ids seen by each account.
 	db.exec("create table if not exists seen (id text not null, account text not null, created integer not null, primary key (id, account))")
 	db.exec("create index if not exists seen_created on seen(created)")

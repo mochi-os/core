@@ -554,6 +554,71 @@ func TestMastodonInstance(t *testing.T) {
 	}
 }
 
+// TestMastodonInstanceAbout: the instance carries the owner's description
+// and contact address, and the rules: each section of the rules document that
+// is a list of points, in the reader's language, as plain text.
+func TestMastodonInstanceAbout(t *testing.T) {
+	create_mastodon_test_env(t)
+	// The owner's documents, as documents_test.go lays them, and the core
+	// labels, which are what makes a language one the server speaks.
+	db_open("db/settings.db").exec("create table if not exists documents ( name text not null, language text not null, body text not null, updated integer not null, primary key ( name, language ) )")
+	load_core_labels()
+	setting_set("description", "Wasabi test server")
+	setting_set("operator_email", "admin@example.com")
+	setting_set("operator_jurisdiction", "Estonia")
+	rules := func(value any) []map[string]any {
+		var out []map[string]any
+		list, _ := value.([]any)
+		for _, rule := range list {
+			out = append(out, mastodon_map(rule))
+		}
+		return out
+	}
+
+	_, v2 := mastodon_request(t, "", "GET", "/api/v2/instance", nil)
+	instance := mastodon_map(v2)
+	if instance["description"] != "Wasabi test server" || mastodon_map(instance["contact"])["email"] != "admin@example.com" {
+		t.Errorf("THE POINT: the instance's description %v and contact %v", instance["description"], instance["contact"])
+	}
+	listed := rules(instance["rules"])
+	var titles []string
+	for _, rule := range listed {
+		titles = append(titles, fmt.Sprint(rule["text"]))
+	}
+	if strings.Join(titles, "|") != "Be respectful|Stay legal|Don't spam or deceive|Respect privacy" {
+		t.Errorf("THE POINT: the rules are the document's lists, got %q", titles)
+	}
+	if len(listed) == 4 {
+		legal, _ := listed[1]["hint"].(string)
+		if listed[0]["id"] != "1" || listed[1]["id"] != "2" || !strings.HasPrefix(legal, "No content that is illegal under the law of Estonia.\n") || strings.Contains(legal, "**") || strings.Contains(legal, "- ") {
+			t.Errorf("THE POINT: a rule's points, as plain text = %q (%v)", legal, listed[1]["id"])
+		}
+	}
+
+	_, v1 := mastodon_request(t, "", "GET", "/api/v1/instance", nil)
+	old := mastodon_map(v1)
+	if old["description"] != "Wasabi test server" || old["short_description"] != "Wasabi test server" || old["email"] != "admin@example.com" || len(rules(old["rules"])) != 4 {
+		t.Errorf("THE POINT: the old instance = %v %v %v, %d rules", old["description"], old["short_description"], old["email"], len(rules(old["rules"])))
+	}
+	if _, answer := mastodon_request(t, "", "GET", "/api/v1/instance/rules", nil); len(rules(answer)) != 4 || rules(answer)[2]["text"] != "Don't spam or deceive" {
+		t.Errorf("THE POINT: the rules on their own = %v", answer)
+	}
+
+	german := strings.SplitN(document_get("rules", "de"), "\n## ", 2)[1]
+	german = german[:strings.IndexByte(german, '\n')]
+	if _, answer := mastodon_request(t, "", "GET", "/api/v1/instance/rules", nil, "Accept-Language", "de"); len(rules(answer)) != 4 || rules(answer)[0]["text"] != german {
+		t.Errorf("THE POINT: the rules in German open with %q, got %v", german, answer)
+	}
+
+	if err := document_set("rules", "en", "# Rules\n\nBe kind.\n\n## Be __kind__\n\n- No [spam](https://example.org/spam) at all\n* No `bots`\n\n## Changes\n\nWe may change these."); err != nil {
+		t.Fatal(err)
+	}
+	_, answer := mastodon_request(t, "", "GET", "/api/v1/instance/rules", nil)
+	if listed := rules(answer); len(listed) != 1 || listed[0]["text"] != "Be kind" || listed[0]["hint"] != "No spam at all\nNo bots" {
+		t.Errorf("THE POINT: the owner's own rules = %v", listed)
+	}
+}
+
 // TestMastodonAccounts: the signed-in account shows its followers and those
 // it follows as core keeps them; its name changes; a relationship says who
 // follows whom and what is blocked or muted; and blocking and muting are

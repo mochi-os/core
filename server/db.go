@@ -86,7 +86,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 18
+	schema_version = 19
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -1510,6 +1510,8 @@ func db_upgrade() {
 			db_upgrade_17()
 		case 18:
 			db_upgrade_18()
+		case 19:
+			db_upgrade_19()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2851,7 +2853,7 @@ func db_upgrade_18() {
 	// The Bluesky update stream from before its sequence was AUTOINCREMENT,
 	// moved onto one that is before the table is laid.
 	atproto_stream_rebuild(networks)
-	networks_create(networks)
+	db_upgrade_18_networks(networks)
 	// The actor a delivery is for where its inbox was not known when queued.
 	if exists, _ := networks.exists("select 1 from pragma_table_info('deliveries') where name='address'"); !exists {
 		networks.exec("alter table deliveries add column address text not null default ''")
@@ -2899,6 +2901,65 @@ func db_upgrade_18() {
 	if dropped > 0 {
 		info("Schema 18: dropped the old commit-hook log from %d app databases", dropped)
 	}
+}
+
+// db_upgrade_18_networks is networks_create as step 18 released it, with the
+// tables of atproto.go, websub.go, webmention.go, reports.go and
+// lemmy_server.go it called, so later changes to those leave step 18 as it was.
+func db_upgrade_18_networks(db *DB) {
+	db.exec("create table if not exists deliveries (id text not null primary key, user text not null, account text not null, network text not null, inbox text not null, host text not null, body text not null, attempts integer not null default 0, next integer not null, claimed integer not null default 0, created integer not null, address text not null default '')")
+	db.exec("create index if not exists deliveries_next on deliveries(next)")
+	db.exec("create index if not exists deliveries_host on deliveries(host)")
+	db.exec("create table if not exists hosts (host text not null primary key, failures integer not null default 0, success integer not null default 0, failure integer not null default 0, next integer not null default 0, error text not null default '')")
+	db.exec("create table if not exists blocks (domain text not null primary key, created integer not null)")
+	db.exec("create table if not exists clients (host text not null, network text not null, id text not null, secret text not null, redirect text not null default '', created integer not null, primary key (host, network))")
+	db.exec("create table if not exists keys (name text not null primary key, algorithm text not null, public text not null, private text not null, created integer not null)")
+	// The clients registered to sign users in, and the tokens of their own
+	// (signin.go).
+	db.exec("create table if not exists applications (id text not null primary key, secret text not null default '', name text not null default '', website text not null default '', redirects text not null default '[]', scopes text not null default '', network text not null, created integer not null)")
+	db.exec("create table if not exists tokens (hash text not null primary key, client text not null, scopes text not null default '', created integer not null)")
+	// The certificates issued for new host names, for the week's count.
+	db.exec("create table if not exists certificates (host text not null, issued integer not null)")
+	db.exec("create index if not exists certificates_issued on certificates(issued)")
+	// The hosted accounts by permanent id, for a request that arrives with
+	// no user; the activity ids the inbox has seen; and what the inbox queues
+	// for the apps (activitypub.go).
+	db.exec("create table if not exists actors (id text not null primary key, user text not null, domain text not null, handle text not null, network text not null, created integer not null, deleted integer not null default 0, key text not null default '')")
+	db.exec("create index if not exists actors_user on actors(user)")
+	// The activity ids seen by each account.
+	db.exec("create table if not exists seen (id text not null, account text not null, created integer not null, primary key (id, account))")
+	db.exec("create index if not exists seen_created on seen(created)")
+	db.exec("create table if not exists inbound (id text not null primary key, user text not null, account text not null, actor text not null, type text not null, body text not null, created integer not null)")
+	db.exec("create index if not exists inbound_account on inbound(account, created)")
+	// The Bluesky identities by did and the update stream (atproto.go).
+	db.exec("create table if not exists identities (did text not null primary key, account text not null, user text not null, created integer not null)")
+	// A relay resumes from the last sequence it read, so a number is never
+	// given twice: AUTOINCREMENT keeps the last one even when the replay
+	// window has emptied the table.
+	db.exec("create table if not exists stream (sequence integer not null primary key autoincrement, did text not null, kind text not null, body blob not null, created integer not null)")
+	db.exec("create index if not exists stream_created on stream(created)")
+	// Subscriptions to web feeds and to this server's, and the mentions
+	// waiting (websub.go, webmention.go).
+	db.exec("create table if not exists websub (id text not null primary key, user text not null, app text not null, source text not null, topic text not null, hub text not null, secret text not null, state text not null, expires integer not null default 0, attempts integer not null default 0, asked integer not null default 0, created integer not null, unique (user, app, source))")
+	db.exec("create table if not exists topics (topic text not null primary key, user text not null, app text not null, key text not null, created integer not null)")
+	db.exec("create index if not exists topics_key on topics(user, app, key)")
+	db.exec("create table if not exists subscribers (topic text not null, callback text not null, secret text not null default '', expires integer not null, created integer not null, primary key (topic, callback))")
+	db.exec("create table if not exists webmentions (id integer primary key autoincrement, direction text not null, source text not null, target text not null, user text not null default '', app text not null default '', entity text not null default '', attempts integer not null default 0, next integer not null, created integer not null, unique (direction, source, target))")
+	db.exec("create index if not exists webmentions_next on webmentions(next)")
+	// The reports for the administrators and the people the owner blocks
+	// (reports.go).
+	db.exec("create table if not exists reports (id text not null primary key, network text not null, reporter text not null, person text not null default '', user text not null default '', room text not null default '', objects text not null default '[]', category text not null default '', comment text not null default '', content text not null default '', names text not null default '{}', host text not null default '', created integer not null, resolved integer not null default 0, outcome text not null default '')")
+	db.exec("create index if not exists reports_resolved on reports(resolved, created)")
+	db.exec("create table if not exists blocked (actor text not null primary key, created integer not null)")
+	// The image store's uploads (lemmy_server.go).
+	db.exec("create table if not exists pictrs (file text not null primary key, user text not null, token text not null, type text not null, created integer not null)")
+}
+
+// db_upgrade_19 indexes the hosted accounts by domain and handle, which the
+// Matrix engine looks up for every room member on every event, and XMPP for
+// every stanza.
+func db_upgrade_19() {
+	db_open("db/networks.db").exec("create index if not exists actors_domain on actors(domain, handle)")
 }
 
 // db_upgrade_12 adds the handle registry to users.db; db_create carries the

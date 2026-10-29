@@ -452,6 +452,8 @@ func TestVersionedStepsKeepTheirSchema(t *testing.T) {
 	for _, file := range []string{"networks", "matrix", "xmpp", "world"} {
 		check("db_upgrade_18."+file, versioning_schema(db_open("db/"+file+".db")))
 	}
+	db_upgrade_19()
+	check("db_upgrade_19.networks", versioning_schema(db_open("db/networks.db")))
 
 	for name, steps := range map[string][]func(*DB) error{
 		"user":          db_user_steps["user"],
@@ -594,4 +596,65 @@ func TestRestoreGuardJudgesOnlyAppDatabases(t *testing.T) {
 	if refused, _ := restore_schema_guard(bundle); refused == "" {
 		t.Error("an app database newer than its app was not refused")
 	}
+}
+
+// actors_plans answers how networks.db plans each lookup of a hosted account
+// by its address, keyed by the function that makes it.
+func actors_plans(t *testing.T) map[string]string {
+	t.Helper()
+	queries := map[string]string{
+		"federation_local": "select 1 from actors where network='matrix' and domain=? and deleted=0",
+		"federation_user":  "select * from actors where network='matrix' and domain=? and handle=? and deleted=0",
+		"xmpp_served":      "select 1 from actors where network='xmpp' and domain=? and deleted=0",
+		"reports":          "select 1 from actors where domain=? and deleted=0",
+	}
+	out := map[string]string{}
+	for name, query := range queries {
+		rows, err := networks_database().internal.Query("explain query plan "+query, "a", "b")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var plan []string
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			plan = append(plan, detail)
+		}
+		rows.Close()
+		out[name] = strings.Join(plan, "; ")
+	}
+	return out
+}
+
+// TestActorsAreIndexedByDomain: the Matrix engine looks a hosted account up by
+// domain, and by domain and handle, for every room member on every event, and
+// XMPP for every stanza. Without an index each lookup reads the whole table,
+// which at a few thousand accounts made one event in a 250-member room cost
+// most of a second. A fresh install lays the index, and step 19 adds it to an
+// install made before it.
+func TestActorsAreIndexedByDomain(t *testing.T) {
+	judge := func(how string) {
+		t.Helper()
+		for name, plan := range actors_plans(t) {
+			if !strings.Contains(plan, "USING INDEX actors_domain") {
+				t.Errorf("THE POINT: on %s, %s's lookup of an account by its address does not use the domain index: %s", how, name, plan)
+			}
+		}
+	}
+
+	test_data_directory(t)
+	judge("a fresh install")
+
+	test_bare_directory(t)
+	db_upgrade_18()
+	for _, plan := range actors_plans(t) {
+		if strings.Contains(plan, "actors_domain") {
+			t.Fatalf("step 18 already lays the index, so the upgrade below proves nothing: %s", plan)
+		}
+	}
+	db_upgrade_19()
+	judge("an install brought up by step 19")
 }

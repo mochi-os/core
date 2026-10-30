@@ -625,11 +625,12 @@ func blocks_list(db *DB) []map[string]any {
 	return rows
 }
 
-// block_add adds a domain to a blocks table.
+// block_add adds a domain to a blocks table. What is neither a domain nor a
+// person's address is refused in the user's words, since they typed it.
 func block_add(db *DB, domain string) error {
 	domain = strings.ToLower(strings.TrimSpace(domain))
 	if !block_domain_re.MatchString(domain) {
-		return fmt.Errorf("invalid domain")
+		return refuse(http.StatusBadRequest, "errors.block_invalid", nil)
 	}
 	db.exec("insert or ignore into blocks (domain, created) values (?, ?)", domain, now())
 	return nil

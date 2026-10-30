@@ -196,3 +196,28 @@ func TestTextClean(t *testing.T) {
 		t.Errorf("clean = %q", out)
 	}
 }
+
+// TestBlockRefusesWhatIsNotADomain: a name with no dot is neither a domain nor
+// a person's address, and is refused in the user's words, for the user and
+// for the server alike, where it used to fail the action as a server error.
+func TestBlockRefusesWhatIsNotADomain(t *testing.T) {
+	alice, _ := create_activitypub_test_env(t)
+	fn := sl.NewBuiltin("test", nil)
+	app := create_external_app("app4")
+	thread := create_test_thread(alice, app)
+	permission_grant(alice, app.id, "accounts/write")
+
+	if _, err := api_account_block_add(thread, fn, sl.Tuple{sl.String("foo")}, nil); !refused(err, "errors.block_invalid", "") {
+		t.Errorf("blocking foo should be refused as no domain: %v", err)
+	}
+	if err := block_add(networks_database(), "foo"); !refused(err, "errors.block_invalid", "") {
+		t.Errorf("the server blocking foo should be refused as no domain: %v", err)
+	}
+	if _, err := api_account_block_add(thread, fn, sl.Tuple{sl.String("remote.example")}, nil); err != nil {
+		t.Errorf("a domain should be blocked: %v", err)
+	}
+	load_core_labels()
+	if label := resolve_core_label("en", "errors.block_invalid", nil); label == "" || label == "errors.block_invalid" {
+		t.Errorf("the refusal has no words: %q", label)
+	}
+}

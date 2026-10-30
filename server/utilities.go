@@ -55,8 +55,11 @@ var (
 	// admitted on purpose: valid() applies this to every input and the "text" type
 	// is multi-line. Validators needing no newline exclude it themselves.
 	match_non_controls = regexp.MustCompile("^[\\P{Cc}\\r\\n]*$")
-	regex_cache        = map[string]*regexp.Regexp{}
-	regex_cache_mu     sync.Mutex
+	// The "text" type also admits tab: text pasted or imported from elsewhere
+	// holds tabs, and a post refused for one is lost to every subscriber.
+	match_text     = regexp.MustCompile("^[\\P{Cc}\\t\\r\\n]*$")
+	regex_cache    = map[string]*regexp.Regexp{}
+	regex_cache_mu sync.Mutex
 )
 
 func string_in_slice(s string, slice []string) bool {
@@ -629,6 +632,9 @@ func valid(s string, match string) bool {
 // not a match.
 func valid_with(s string, match string, compile func(string) *regexp.Regexp) bool {
 	//debug("Validating %q (%+v) as %s", s, s, match)
+	if match == "text" {
+		return len(s) <= 1000000 && match_text.MatchString(s)
+	}
 	if !match_non_controls.MatchString(s) {
 		return false
 	}
@@ -717,11 +723,6 @@ func valid_with(s string, match string, compile func(string) *regexp.Regexp) boo
 		}
 		_, err := time.LoadLocation(s)
 		return err == nil
-	case "text":
-		if len(s) > 1000000 {
-			return false
-		}
-		return true
 	case "url":
 		if len(s) > 10000 {
 			return false

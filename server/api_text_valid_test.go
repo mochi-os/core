@@ -154,6 +154,34 @@ func TestTextValidNamedTypesUnchanged(t *testing.T) {
 	}
 }
 
+// TestValidTextAdmitsTab. Text holds tabs where it was pasted or imported, and
+// a feed's subscribers refused every post holding one; the other control
+// characters stay refused, and tab stays refused by every other type.
+func TestValidTextAdmitsTab(t *testing.T) {
+	for _, c := range []struct {
+		value, match string
+		want         bool
+	}{
+		{"one\ttwo", "text", true},
+		{"one\r\ntwo\n", "text", true},
+		{"plain", "text", true},
+		{"", "text", true},
+		{"one\x0btwo", "text", false},
+		{"one\x00two", "text", false},
+		{"one\x1btwo", "text", false},
+		{"one\u0085two", "text", false},
+		{strings.Repeat("a", 1000000), "text", true},
+		{strings.Repeat("a", 1000001), "text", false},
+		{"one\ttwo", "name", false},
+		{"one\ttwo", "line", false},
+		{"one\ttwo", "^.*$", false},
+	} {
+		if got := valid(c.value, c.match); got != c.want {
+			t.Errorf("valid(%.20q, %q) = %v, want %v", c.value, c.match, got, c.want)
+		}
+	}
+}
+
 // TestValidStillUsesTheGlobalCache. Core's own callers pass compile-time
 // constants and are called on every request, so they must keep the permanent
 // cache - the reason the two paths are separate rather than both bounded.

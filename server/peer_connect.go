@@ -256,21 +256,72 @@ func peer_reconnect_manager() {
 				// it are stale (or were never known); ask the mesh for
 				// fresh ones alongside the backoff probe.
 				peer_request_addresses(id)
-				// Backoff: 10s, 20s, 40s, 80s, 160s, 300s (capped).
-				peer_reconnect_lock.Lock()
-				r := peer_reconnects[id]
-				r.Attempts++
-				delay := int64(10) << min(r.Attempts, 5)
-				if delay > 300 {
-					delay = 300
-				}
-				delay += rand.Int64N(delay/4 + 1) // 0-25% jitter
-				r.NextRetry = now() + delay
-				peer_reconnects[id] = r
-				peer_reconnect_lock.Unlock()
+				peer_reconnect_failed(id)
 			}(id)
 		}
 	}
+}
+
+// peer_reconnect_attempts_maximum is how many failed probes, about an hour of
+// them at the capped backoff, a peer gets before it is let go when nothing
+// needs it.
+const peer_reconnect_attempts_maximum = 16
+
+// peer_reconnect_failed backs off a failed probe: 10s, 20s, 40s, 80s, 160s,
+// then 300s. A peer that has failed peer_reconnect_attempts_maximum probes with
+// nothing needing it is let go.
+func peer_reconnect_failed(id string) {
+	peer_reconnect_lock.Lock()
+	r, scheduled := peer_reconnects[id]
+	if !scheduled {
+		// Reconnected, or let go, while this probe was in flight.
+		peer_reconnect_lock.Unlock()
+		return
+	}
+	r.Attempts++
+	delay := int64(10) << min(r.Attempts, 5)
+	if delay > 300 {
+		delay = 300
+	}
+	delay += rand.Int64N(delay/4 + 1) // 0-25% jitter
+	r.NextRetry = now() + delay
+	peer_reconnects[id] = r
+	peer_reconnect_lock.Unlock()
+
+	if r.Attempts >= peer_reconnect_attempts_maximum && !peer_reconnect_needed(id) {
+		peer_reconnect_abandon(id)
+	}
+}
+
+// peer_reconnect_needed reports whether anything still needs a peer: it is a
+// bootstrap peer, its addresses are still held, it hosts directory entries, or
+// deliveries are queued for it. Probing anything else only broadcasts an
+// address request every few minutes for a server that is gone.
+func peer_reconnect_needed(id string) bool {
+	for _, p := range peers_bootstrap {
+		if p.ID == id {
+			return true
+		}
+	}
+	if peer_addresses_count(id) > 0 {
+		return true
+	}
+	if count_rows(db_open("db/directory.db"), "select count(*) from entries where peer=?", id) > 0 {
+		return true
+	}
+	return count_rows(db_open("db/queue.db"), "select count(*) from queue where target=?", id) > 0
+}
+
+// peer_reconnect_abandon stops probing a peer and forgets its send failures,
+// so a delivery queued for it later counts afresh and enrolls it again.
+func peer_reconnect_abandon(id string) {
+	peer_reconnect_lock.Lock()
+	delete(peer_reconnects, id)
+	peer_reconnect_lock.Unlock()
+	peer_reachability_lock.Lock()
+	delete(peer_reachability, id)
+	peer_reachability_lock.Unlock()
+	debug("Peer %q unreachable after %d probes and nothing needs it; no longer probing", id, peer_reconnect_attempts_maximum)
 }
 
 // peers_publish_minimum_interval throttles how often the publish loop

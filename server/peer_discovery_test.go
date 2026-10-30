@@ -161,6 +161,72 @@ func TestPeerConnectRetryEnrollsFailedDial(t *testing.T) {
 	}
 }
 
+// TestPeerReconnectLetsGoWhatNothingNeeds: probing never ended, so a server
+// that had gone was probed every five minutes until restart, each probe
+// broadcasting an address request. A peer is let go after
+// peer_reconnect_attempts_maximum failures only when it is no bootstrap peer,
+// has no addresses held, hosts no directory entries and has nothing queued.
+func TestPeerReconnectLetsGoWhatNothingNeeds(t *testing.T) {
+	setup_peer_discovery_test(t)
+	setup_directory_test_schema()
+	reset_peer_reachability(t)
+
+	gone, _ := test_host(t)
+	early, _ := test_host(t)
+	queued, _ := test_host(t)
+	hosting, _ := test_host(t)
+	addressed, _ := test_host(t)
+	bootstrap, _ := test_host(t)
+
+	db_open("db/queue.db").exec("insert into queue ( id, target, from_entity, to_entity, service, event, next_retry, created ) values ( 'row', ?, 'from', 'to', 'feeds', 'update', 0, 0 )", queued)
+	db_open("db/directory.db").exec("insert into entries ( entity, peer, name, class, created, seen ) values ( 'entity', ?, 'Name', 'person', 0, 0 )", hosting)
+	peer_add_known(addressed, []string{"/ip4/192.0.2.51/tcp/1443/p2p/" + addressed})
+	saved := peers_bootstrap
+	peers_bootstrap = append([]Peer{{ID: bootstrap}}, saved...)
+	defer func() { peers_bootstrap = saved }()
+
+	all := []string{gone, early, queued, hosting, addressed, bootstrap}
+	for _, id := range all {
+		for i := 0; i < peer_silent_failure_threshold; i++ {
+			peer_mark_send_failed(id)
+		}
+		attempts := peer_reconnect_attempts_maximum - 1
+		if id == early {
+			attempts = peer_reconnect_attempts_maximum - 2
+		}
+		peer_reconnect_lock.Lock()
+		peer_reconnects[id] = PeerReconnect{NextRetry: now(), Attempts: attempts}
+		peer_reconnect_lock.Unlock()
+		peer_reconnect_failed(id)
+	}
+
+	scheduled := map[string]bool{}
+	peer_reconnect_lock.Lock()
+	for _, id := range all {
+		_, scheduled[id] = peer_reconnects[id]
+		delete(peer_reconnects, id)
+	}
+	peer_reconnect_lock.Unlock()
+
+	if scheduled[gone] {
+		t.Error("a peer nothing needs is still probed after its last allowed failure")
+	}
+	if peer_is_silent(gone) {
+		t.Error("a peer let go keeps its send failures, so a delivery queued for it later would never enroll it again")
+	}
+	for id, why := range map[string]string{
+		early:     "a peer short of its allowed failures",
+		queued:    "a peer with a delivery queued",
+		hosting:   "a peer hosting directory entries",
+		addressed: "a peer whose addresses are held",
+		bootstrap: "a bootstrap peer",
+	} {
+		if !scheduled[id] {
+			t.Errorf("%s was let go", why)
+		}
+	}
+}
+
 // TestPeerPublishEventDropsSelfRelay: a circuit address that relays
 // through ourselves is dead weight (we reach the peer directly over its
 // reservation), so it is dropped on apply; a third-party relay and a

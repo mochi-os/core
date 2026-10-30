@@ -104,3 +104,49 @@ func TestOpenGraphPageIsCachedPerRequester(t *testing.T) {
 		t.Errorf("ETag = %q, want none", got)
 	}
 }
+
+// A page served to a request with no session says so, and its scripts then
+// skip asking /_/token for an app token that can only be refused. A signed-in
+// requester's page carries no mark: its token is real.
+func TestAnonymousPageIsMarked(t *testing.T) {
+	mark := `<meta name="mochi:anonymous" content="true">`
+
+	if body := opengraph_serve(t, false).Body.String(); !strings.Contains(body, mark) {
+		t.Errorf("THE POINT: the Open Graph path marks an anonymous page:\n%s", body)
+	}
+
+	create_web_test_env(t)
+	gin.SetMode(gin.TestMode)
+	users := db_open("db/users.db")
+	users.exec("alter table users add column methods text not null default ''")
+	users.exec("alter table users add column disabled text not null default ''")
+	users.exec("alter table users add column status text not null default 'active'")
+	n := now()
+	users.exec("insert into users (uid, username, role, created, updated) values ('u1', 'test@example.com', 'user', ?, ?)", n, n)
+	sessions := db_open("db/sessions.db")
+	sessions.exec("create table if not exists sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	sessions.exec("create unique index if not exists sessions_code on sessions(code)")
+	sessions.exec("insert into sessions (user, code, secret, expires, created, address, agent) values ('u1', 'marked-session', 'secret-for-marked-test-123456', ?, ?, '127.0.0.1', 'test')", n+86400, n)
+
+	file := filepath.Join(t.TempDir(), "index.html")
+	if err := os.WriteFile(file, []byte("<!doctype html>\n<html>\n  <head>\n    <title>Page</title>\n  </head>\n  <body></body>\n</html>\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	serve := func(session string) string {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("GET", "/feeds/", nil)
+		if session != "" {
+			c.Request.AddCookie(&http.Cookie{Name: "session", Value: session})
+		}
+		web_serve_html(c, &App{}, &AppVersion{}, &AppAction{File: "index.html"}, nil, file)
+		return w.Body.String()
+	}
+
+	if body := serve(""); !strings.Contains(body, mark) {
+		t.Errorf("THE POINT: an anonymous page is marked:\n%s", body)
+	}
+	if body := serve("marked-session"); strings.Contains(body, "mochi:anonymous") {
+		t.Errorf("a signed-in requester's page is marked anonymous:\n%s", body)
+	}
+}

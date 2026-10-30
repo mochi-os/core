@@ -612,6 +612,28 @@ func shell_token_request(app string) *httptest.ResponseRecorder {
 	return w
 }
 
+// Each mint names who is signed in, for the frame it is minted for: id and
+// name, nothing an app's own token could not read at /_/identity, and current
+// for the session rather than for whenever the shell page loaded.
+func TestShellTokenCarriesIdentity(t *testing.T) {
+	shell_token_test_env(t)
+	w := shell_token_request("feeds")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	identity, ok := resp["identity"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("THE POINT: the mint names who is signed in: %s", w.Body.String())
+	}
+	if identity["id"] != "identity1" || identity["name"] != "Test User" || len(identity) != 2 {
+		t.Errorf("identity = %v, want only id identity1 and name Test User", identity)
+	}
+}
+
 // Test /_/token endpoint JSON response format
 func TestShellTokenResponseFormat(t *testing.T) {
 	shell_token_test_env(t)
@@ -733,6 +755,72 @@ func TestShellInitReturnsTheme(t *testing.T) {
 	}
 	if wanted != "auto" {
 		t.Errorf("appearance for a user with no preference should default to auto, got %v", wanted)
+	}
+}
+
+// The menu draws, and the shell hands each frame, the identity /_/shell
+// reports, so neither waits on /_/identity: the id and name it carries must be
+// the signed-in person's, and nothing an app's token could not read there -
+// the account e-mail goes to the login app alone.
+func TestShellInitReturnsIdentity(t *testing.T) {
+	create_web_test_env(t)
+
+	db_users := db_open("db/users.db")
+	db_users.exec("alter table users add column methods text not null default ''")
+	db_users.exec("alter table users add column disabled text not null default ''")
+	db_users.exec("alter table users add column status text not null default 'active'")
+	n := now()
+	db_users.exec("insert into users (uid, username, role, created, updated) values (?, ?, ?, ?, ?)", "u1", "test@example.com", "user", n, n)
+	db_users.exec("insert into users (uid, username, role, created, updated) values (?, ?, ?, ?, ?)", "u2", "none@example.com", "user", n, n)
+	// The shape identity() reads; the test environment's older one has columns
+	// an Entity cannot hold.
+	db_users.exec("drop table entities")
+	db_users.exec("create table entities (id text not null primary key, private text not null, fingerprint text not null, user text not null, parent text not null default '', class text not null, name text not null, privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+	db_users.exec("insert into entities (id, private, fingerprint, user, class, name, privacy) values (?, 'secret', ?, 'u1', 'person', 'Alice', 'public')", "identity-alice", "alicefp12")
+
+	db_sessions := db_open("db/sessions.db")
+	db_sessions.exec("create table if not exists sessions (user text not null, code text not null, secret text not null default '', expires integer not null, created integer not null default 0, accessed integer not null default 0, address text not null default '', agent text not null default '', primary key (user, code))")
+	db_sessions.exec("create unique index if not exists sessions_code on sessions(code)")
+	db_sessions.exec("insert into sessions (user, code, secret, expires, created, address, agent) values ('u1', 'identity-session', 'secret-for-identity-test-1234', ?, ?, '127.0.0.1', 'test')", n+86400, n)
+	db_sessions.exec("insert into sessions (user, code, secret, expires, created, address, agent) values ('u2', 'nobody-session', 'secret-for-nobody-test-123456', ?, ?, '127.0.0.1', 'test')", n+86400, n)
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/_/shell", web_shell_init)
+	request := func(session string) map[string]interface{} {
+		req := httptest.NewRequest("POST", "/_/shell", nil)
+		req.AddCookie(&http.Cookie{Name: "session", Value: session})
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "example.com") {
+			t.Errorf("/_/shell names the account e-mail: %s", w.Body.String())
+		}
+		var resp map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to parse response JSON: %v", err)
+		}
+		return resp
+	}
+
+	identity, ok := request("identity-session")["identity"].(map[string]interface{})
+	if !ok {
+		t.Fatal("THE POINT: /_/shell carries the signed-in identity")
+	}
+	want := map[string]interface{}{"id": "identity-alice", "fingerprint": "alicefp12", "name": "Alice", "privacy": "public"}
+	for key, value := range want {
+		if identity[key] != value {
+			t.Errorf("identity %s = %v, want %v", key, identity[key], value)
+		}
+	}
+	if len(identity) != len(want) {
+		t.Errorf("identity carries more than %v: %v", want, identity)
+	}
+
+	if _, ok := request("nobody-session")["identity"]; ok {
+		t.Error("an account with no identity yet is given one")
 	}
 }
 

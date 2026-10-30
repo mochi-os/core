@@ -350,12 +350,19 @@ func web_shell_token(c *gin.Context) {
 
 	// The asset token rides along rather than costing a second round trip: the
 	// page needs it for the first image it renders, and the shell refreshes both
-	// on one timer.
-	c.JSON(http.StatusOK, gin.H{
+	// on one timer. So does who is signed in: the shell hands the frame its id
+	// and name so the page need not ask /_/identity, and answering per mint
+	// keeps them the session's own after a rename, or a sign-in as someone else
+	// in another tab.
+	result := gin.H{
 		"token": token,
 		"app":   a.id,
 		"asset": auth_create_asset_token(user.UID, session, a.id),
-	})
+	}
+	if identity := user.Identity; identity != nil {
+		result["identity"] = gin.H{"id": identity.ID, "name": identity.Name}
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 // shell_timezone is the zone a shell reports in its boot request's body,
@@ -451,6 +458,19 @@ func web_shell_init(c *gin.Context) {
 	// open, so the shell needs the preference itself to know whether to keep
 	// re-resolving.
 	result["appearance"] = user_preference_get(user, "appearance", "auto")
+
+	// Who is signed in, as /_/identity answers an app's token: the menu draws
+	// from it and the shell hands each frame its id and name, so neither waits
+	// on a request of its own. No e-mail address: /_/identity gives that only
+	// to the login app.
+	if identity := user.Identity; identity != nil {
+		result["identity"] = gin.H{
+			"id":          identity.ID,
+			"fingerprint": identity.Fingerprint,
+			"name":        identity.Name,
+			"privacy":     identity.Privacy,
+		}
+	}
 
 	// The post-restore banner state is deliberately NOT here: the shell used
 	// to copy it into every app frame's init, and the re-link list names the

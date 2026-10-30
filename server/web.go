@@ -1482,6 +1482,7 @@ func web_serve_file_with_opengraph(c *gin.Context, a *App, av *AppVersion, aa *A
 
 	// Inject routing meta tags
 	content = web_inject_meta_tags(c, e, content)
+	content = web_mark_anonymous(content, user)
 	content = web_apply_user_document_theme(content, user)
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
@@ -1641,6 +1642,18 @@ func web_inject_meta_tags(c *gin.Context, e *Entity, content string) string {
 	return content
 }
 
+// web_mark_anonymous tells a page served to a request with no session that it
+// has none, so its scripts skip asking /_/token for an app token that can
+// only be refused, a round trip before the page asks for any data. A hint, not
+// a credential: the server still authenticates every request the page makes,
+// and a page without the mark asks as before.
+func web_mark_anonymous(content string, user *User) string {
+	if user != nil {
+		return content
+	}
+	return strings.Replace(content, "<head>", "<head>\n    "+`<meta name="mochi:anonymous" content="true">`, 1)
+}
+
 // Serve an HTML file with routing meta tags injected after <head>
 func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *Entity, file string) {
 	// When shell is active and this is an iframe request, serve static HTML
@@ -1695,8 +1708,10 @@ func web_serve_html(c *gin.Context, a *App, av *AppVersion, aa *AppAction, e *En
 		respond_text(c, http.StatusNotFound, "errors.file_not_found", nil)
 		return
 	}
+	user := web_auth(c)
 	content := web_inject_meta_tags(c, e, string(html))
-	content = web_apply_user_document_theme(content, web_auth(c))
+	content = web_mark_anonymous(content, user)
+	content = web_apply_user_document_theme(content, user)
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	// User-specific theme is baked in — prevent shared caches from

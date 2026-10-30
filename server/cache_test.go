@@ -368,3 +368,111 @@ func TestCacheEvictSparesLiveTransfers(t *testing.T) {
 		t.Error("the finished entry survived a zero budget")
 	}
 }
+
+// TestCacheUseKeepsTheWrittenTime. Using an entry - reading it, asking for it,
+// serving it - marks its access time, which eviction orders by, and leaves its
+// modification time the time it was written. Marked in the modification time,
+// every view gave a served image a new ETag and Last-Modified, so no browser
+// cache could revalidate it, and mochi.cache.age restarted on every read of a
+// backoff marker.
+func TestCacheUseKeepsTheWrittenTime(t *testing.T) {
+	thread := cache_read_thread(t)
+	written := time.Now().Add(-time.Hour).Truncate(time.Second)
+	write := func(name string) string {
+		t.Helper()
+		path, err := cache_file(thread, name)
+		if err != nil {
+			t.Fatalf("cache_file: %v", err)
+		}
+		os.MkdirAll(filepath.Dir(path), 0755)
+		if err := os.WriteFile(path, []byte("\xff\xd8\xffpicture"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, written, written); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	check := func(what, path string) {
+		t.Helper()
+		information, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !information.ModTime().Equal(written) {
+			t.Errorf("THE POINT: %s moved the written time to %v", what, information.ModTime())
+		}
+		if since := time.Since(file_accessed(information)); since > time.Minute {
+			t.Errorf("%s did not mark the entry used: last used %v ago", what, since)
+		}
+	}
+
+	path := write("read")
+	api_cache_read(thread, sl.NewBuiltin("mochi.cache.read", api_cache_read), sl.Tuple{sl.String("read")}, nil)
+	check("mochi.cache.read", path)
+
+	path = write("path")
+	api_cache_path(thread, sl.NewBuiltin("mochi.cache.path", api_cache_path), sl.Tuple{sl.String("path")}, nil)
+	check("mochi.cache.path", path)
+	age, _ := api_cache_age(thread, sl.NewBuiltin("mochi.cache.age", api_cache_age), sl.Tuple{sl.String("path")}, nil)
+	if seconds, _ := sl.AsInt32(age); seconds < 3500 {
+		t.Errorf("mochi.cache.age reads %v seconds after a use, not the hour since it was written", age)
+	}
+
+	// Served twice, the entry answers with the same validators, and a browser
+	// revalidating with them is told nothing changed.
+	path = write("served.jpg")
+	// gin writes the status of a response with no body only as its handler
+	// ends, so the status is read from gin, not the recorder.
+	status := 0
+	serve := func(match string) *httptest.ResponseRecorder {
+		t.Helper()
+		web := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(web)
+		defer func() { status = c.Writer.Status() }()
+		c.Request = httptest.NewRequest("GET", "/reader/-/served", nil)
+		if match != "" {
+			c.Request.Header.Set("If-None-Match", match)
+		}
+		action := &Action{web: c}
+		if _, err := action.sl_write_cache(thread, sl.NewBuiltin("a.write.cache", nil), sl.Tuple{sl.String("served.jpg")}, nil); err != nil {
+			t.Fatalf("a.write.cache: %v", err)
+		}
+		return web
+	}
+	first := serve("")
+	check("a.write.cache", path)
+	second := serve("")
+	tag := first.Header().Get("ETag")
+	if tag == "" || second.Header().Get("ETag") != tag {
+		t.Errorf("THE POINT: the entry's ETag moved between views: %q then %q", tag, second.Header().Get("ETag"))
+	}
+	if first.Header().Get("Last-Modified") != second.Header().Get("Last-Modified") {
+		t.Errorf("Last-Modified moved between views: %q then %q", first.Header().Get("Last-Modified"), second.Header().Get("Last-Modified"))
+	}
+	if serve(tag); status != 304 {
+		t.Errorf("a revalidation with the entry's own ETag answered %d, want 304", status)
+	}
+}
+
+// TestCacheEvictByUse: eviction goes by when an entry was last used, not when
+// it was written - an old entry still in use outlives a newer one nobody reads.
+func TestCacheEvictByUse(t *testing.T) {
+	orig_dir, orig_budget := cache_dir, cache_budget
+	cache_dir = t.TempDir()
+	defer func() { cache_dir, cache_budget = orig_dir, orig_budget }()
+
+	now := time.Now()
+	used := cache_test_write(t, "userA", "app", "used", 100, now.Add(-40*time.Minute))
+	idle := cache_test_write(t, "userA", "app", "idle", 100, now.Add(-20*time.Minute))
+	cache_used(used)
+
+	cache_budget = 150
+	cache_evict()
+	if _, err := os.Stat(used); err != nil {
+		t.Error("THE POINT: the entry in use was evicted for being written first")
+	}
+	if _, err := os.Stat(idle); err == nil {
+		t.Error("the idle entry survived")
+	}
+}

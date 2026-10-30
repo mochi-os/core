@@ -399,8 +399,7 @@ func api_cache_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	if err != nil {
 		return sl.None, nil
 	}
-	moment := time.Now()
-	os.Chtimes(path, moment, moment)
+	cache_used(path)
 	return sl_encode(data), nil
 }
 
@@ -417,8 +416,7 @@ func api_cache_path(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	if err != nil || information.IsDir() {
 		return sl.None, nil
 	}
-	moment := time.Now()
-	os.Chtimes(path, moment, moment)
+	cache_used(path)
 	name, _ := sl.AsString(args[0])
 	return sl.String(name), nil
 }
@@ -545,9 +543,21 @@ func cache_serve_file(t *sl.Thread, name string) (string, error) {
 	if err != nil || information.IsDir() {
 		return "", fmt.Errorf("cache miss")
 	}
-	moment := time.Now()
-	os.Chtimes(path, moment, moment)
+	cache_used(path)
 	return path, nil
+}
+
+// cache_used marks an entry used, for eviction's least recently used order,
+// in its access time. Its modification time stays the time it was written:
+// mochi.cache.age reads that, and so do the ETag and Last-Modified a served
+// entry carries, which a browser can revalidate against only while they hold
+// still. Marked in the modification time, every read gave a served image new
+// validators, so no cache could keep it, and a marker read inside its own
+// backoff window restarted the window. The zero time leaves the modification
+// time alone rather than writing back one read earlier, which a replacement
+// landing in between would have taken.
+func cache_used(path string) {
+	os.Chtimes(path, time.Now(), time.Time{})
 }
 
 // cache_tee accumulates a copy of a stream being relayed to a client, so the
@@ -609,10 +619,10 @@ func cache_transient(path string, modified time.Time) bool {
 // Transfers in flight are neither counted nor candidates.
 func cache_evict_to(target int64) int64 {
 	type entry struct {
-		path     string
-		size     int64
-		modified time.Time
-		user     string
+		path string
+		size int64
+		used time.Time
+		user string
 	}
 	root := filepath.Join(cache_dir, "apps")
 	var entries []entry
@@ -627,7 +637,7 @@ func cache_evict_to(target int64) int64 {
 			return nil
 		}
 		u := strings.SplitN(filepath.ToSlash(relative), "/", 2)[0]
-		entries = append(entries, entry{path, information.Size(), information.ModTime(), u})
+		entries = append(entries, entry{path, information.Size(), file_accessed(information), u})
 		total += information.Size()
 		users[u] += information.Size()
 		return nil
@@ -635,7 +645,7 @@ func cache_evict_to(target int64) int64 {
 	if total <= target {
 		return total
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].modified.Before(entries[j].modified) })
+	sort.Slice(entries, func(i, j int) bool { return entries[i].used.Before(entries[j].used) })
 	share := target
 	if len(users) > 0 {
 		share = target / int64(len(users))

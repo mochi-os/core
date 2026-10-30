@@ -17,7 +17,6 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"strings"
 	"testing"
 )
 
@@ -109,32 +108,6 @@ func TestNoDeferReachableTwiceInALoop(t *testing.T) {
 			t.Errorf("%s:%d defers inside a loop; the defer runs when the function returns, not when the iteration ends, so each pass leaks whatever it holds. Close at the end of the iteration",
 				found.file, found.line)
 		}
-	}
-}
-
-// TestLabelFilesAreClosedPerIteration pins the specific fix, so a later edit
-// that reintroduces the defer fails here with the reason rather than only in
-// the general gate.
-func TestLabelFilesAreClosedPerIteration(t *testing.T) {
-	source, err := os.ReadFile("apps.go")
-	if err != nil {
-		t.Fatalf("reading apps.go: %v", err)
-	}
-	text := string(source)
-	at := strings.Index(text, "func (a *App) load_version(")
-	if at < 0 {
-		t.Fatal("apps.go no longer defines load_version")
-	}
-	body := text[at:]
-	if end := strings.Index(body, "\n}\n"); end > 0 {
-		body = body[:end]
-	}
-
-	if strings.Contains(body, "defer f.Close()") {
-		t.Error("load_version defers the label file close again; it opens one file per locale and apps carry 99, so all 99 stay open until the function returns")
-	}
-	if !strings.Contains(body, "f.Close()") {
-		t.Error("load_version no longer closes the label files at all")
 	}
 }
 

@@ -7,13 +7,17 @@
 package main
 
 import (
+	"bufio"
 	"embed"
 	"errors"
 	"io/fs"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gotnospirit/messageformat"
@@ -313,10 +317,7 @@ func negotiate_language(tags []string) string {
 	if len(tags) == 0 {
 		return ""
 	}
-	installed := map[string]struct{}{}
-	for _, tag := range installed_languages() {
-		installed[tag] = struct{}{}
-	}
+	installed := installed_languages().set
 	for _, tag := range tags {
 		for _, candidate := range language_fallbacks(tag) {
 			if _, ok := installed[candidate]; ok {
@@ -327,53 +328,148 @@ func negotiate_language(tags []string) string {
 	return ""
 }
 
+// Languages is the set of language tags installed across core and every app
+// version, as a sorted list and as a set.
+type Languages struct {
+	generation uint64
+	list       []string
+	set        map[string]struct{}
+}
+
+var languages_installed atomic.Pointer[Languages]
+
 // installed_languages returns the union of BCP 47 tags across core_labels and
-// every app version's labels map, so dropping a labels/<lang>.conf file is what
-// adds a language. Locked read of apps_lock; stale results during hot-reload.
-func installed_languages() []string {
-	seen := map[string]struct{}{}
+// every app version's catalogues, so dropping a labels/<lang>.conf file is what
+// adds a language. Every action from a browser asks for it, so it is kept, and
+// rebuilt only once resolution_generation has moved: every change to the
+// installed versions, a dev reload's included, bumps it. Callers must not
+// modify what it returns.
+func installed_languages() *Languages {
+	generation := resolution_generation.Load()
+	if cached := languages_installed.Load(); cached != nil && cached.generation == generation {
+		return cached
+	}
+	set := map[string]struct{}{}
 	for tag := range core_labels {
-		seen[tag] = struct{}{}
+		set[tag] = struct{}{}
 	}
 	apps_lock.Lock()
 	for _, a := range apps {
 		for _, av := range a.versions {
-			for tag := range av.labels {
-				seen[tag] = struct{}{}
+			if labels := av.labels.Load(); labels != nil {
+				for _, tag := range labels.languages {
+					set[tag] = struct{}{}
+				}
 			}
 		}
 	}
 	apps_lock.Unlock()
-	out := make([]string, 0, len(seen))
-	for tag := range seen {
-		out = append(out, tag)
+	list := make([]string, 0, len(set))
+	for tag := range set {
+		list = append(list, tag)
 	}
-	sort.Strings(out)
-	return out
+	sort.Strings(list)
+	result := &Languages{generation: generation, list: list, set: set}
+	languages_installed.Store(result)
+	return result
+}
+
+// Labels is one app version's label catalogues. The languages are listed when
+// the version loads, and each catalogue is read the first time it is asked
+// for: an install keeps every version it has run, and only the ones in use
+// are ever asked, so the rest hold none of their catalogues in memory.
+type Labels struct {
+	directory string
+	// The tags with a catalogue, sorted, and each one's file. Fixed once
+	// listed, so read without the lock.
+	languages []string
+	files     map[string]string
+	lock      sync.Mutex
+	loaded    map[string]map[string]string
+}
+
+// labels_list lists the catalogues in an app version's labels directory,
+// reading none of them.
+func labels_list(directory string) *Labels {
+	labels := &Labels{directory: directory, languages: []string{}, files: map[string]string{}, loaded: map[string]map[string]string{}}
+	files, err := file_list(directory)
+	if err != nil {
+		debug("App %q has no labels dir", directory)
+	}
+	for _, file := range files {
+		language := strings.TrimSuffix(file, ".conf")
+		if !valid(language, "locale") {
+			continue
+		}
+		if _, listed := labels.files[language]; !listed {
+			labels.languages = append(labels.languages, language)
+		}
+		labels.files[language] = file
+	}
+	sort.Strings(labels.languages)
+	return labels
+}
+
+// get returns one language's catalogue, reading its file the first time; nil
+// when the version has no catalogue for the tag. Only a listed tag reaches the
+// disk, so a tag from a request never names a path.
+func (l *Labels) get(language string) map[string]string {
+	l.lock.Lock()
+	defer l.lock.Unlock()
+	if catalogue, ok := l.loaded[language]; ok {
+		return catalogue
+	}
+	file, ok := l.files[language]
+	if !ok {
+		return nil
+	}
+	catalogue := labels_read(l.directory + "/" + file)
+	l.loaded[language] = catalogue
+	return catalogue
+}
+
+// labels_read parses one catalogue: a "key = value" per line. A file that
+// cannot be read gives an empty catalogue, so its labels fall through to the
+// next language; that includes a version removed while a request held it.
+func labels_read(path string) map[string]string {
+	catalogue := map[string]string{}
+	f, err := os.Open(path)
+	if err != nil {
+		info("App unable to read labels file %q: %v", path, err)
+		return catalogue
+	}
+	defer f.Close()
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		parts := strings.SplitN(s.Text(), "=", 2)
+		if len(parts) == 2 {
+			catalogue[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
+	}
+	return catalogue
 }
 
 // web_languages handles GET /_/languages — returns the union of installed
 // language tags across all apps. Public; no auth required so anonymous and
 // pre-login pages can populate their pickers.
 func web_languages(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"languages": installed_languages()})
+	c.JSON(http.StatusOK, gin.H{"languages": installed_languages().list})
 }
 
 // web_serve_labels handles /<app>/-/labels (installed tags) and
 // /<app>/-/labels/<tag> (the {key: format} map). For tooling, not the SPA.
 func web_serve_labels(c *gin.Context, av *AppVersion, suffix string) bool {
-	if av == nil {
+	var labels *Labels
+	if av != nil {
+		labels = av.labels.Load()
+	}
+	if labels == nil {
 		respond_error(c, http.StatusNotFound, "labels_not_loaded", "errors.labels_not_loaded", nil)
 		return true
 	}
 	suffix = strings.TrimPrefix(suffix, "/")
 	if suffix == "" {
-		out := make([]string, 0, len(av.labels))
-		for tag := range av.labels {
-			out = append(out, tag)
-		}
-		sort.Strings(out)
-		c.JSON(http.StatusOK, gin.H{"languages": out})
+		c.JSON(http.StatusOK, gin.H{"languages": labels.languages})
 		return true
 	}
 	tag := strings.ToLower(suffix)
@@ -381,12 +477,12 @@ func web_serve_labels(c *gin.Context, av *AppVersion, suffix string) bool {
 		respond_error(c, http.StatusBadRequest, "invalid_language_tag", "errors.invalid_language_tag", nil)
 		return true
 	}
-	labels := av.labels[tag]
-	if labels == nil {
+	catalogue := labels.get(tag)
+	if catalogue == nil {
 		respond_error(c, http.StatusNotFound, "language_not_installed", "errors.language_not_installed", nil)
 		return true
 	}
-	c.JSON(http.StatusOK, labels)
+	c.JSON(http.StatusOK, catalogue)
 	return true
 }
 
@@ -394,16 +490,20 @@ func web_serve_labels(c *gin.Context, av *AppVersion, suffix string) bool {
 // substituted with args via MessageFormat. Returns the literal key if nothing
 // resolves (developer bug — log it).
 func resolve_label(av *AppVersion, language, key string, args map[string]any) string {
-	if av == nil || av.labels == nil {
+	if av == nil {
+		return key
+	}
+	labels := av.labels.Load()
+	if labels == nil {
 		return key
 	}
 
 	for _, tag := range language_fallbacks(language) {
-		labels := av.labels[tag]
-		if labels == nil {
+		catalogue := labels.get(tag)
+		if catalogue == nil {
 			continue
 		}
-		format := labels[key]
+		format := catalogue[key]
 		if format == "" {
 			continue
 		}

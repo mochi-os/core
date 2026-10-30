@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tailscale/hujson"
@@ -178,13 +179,13 @@ type AppVersion struct {
 		Peer string `json:"peer,omitempty"`
 	} `json:"publisher,omitempty"`
 
-	app              *App                         `json:"-"`
-	base             string                       `json:"-"`
-	labels           map[string]map[string]string `json:"-"`
-	starlark_once    sync.Once                    `json:"-"`
-	starlark_globals sl.StringDict                `json:"-"`
-	starlark_failed  []string                     `json:"-"`
-	app_json_mtime   time.Time                    `json:"-"`
+	app              *App                   `json:"-"`
+	base             string                 `json:"-"`
+	labels           atomic.Pointer[Labels] `json:"-"`
+	starlark_once    sync.Once              `json:"-"`
+	starlark_globals sl.StringDict          `json:"-"`
+	starlark_failed  []string               `json:"-"`
+	app_json_mtime   time.Time              `json:"-"`
 }
 
 type Icon struct {
@@ -2302,33 +2303,7 @@ func (a *App) load_version(av *AppVersion) {
 		av.Execute[i] = av.base + "/" + file
 	}
 
-	av.labels = make(map[string]map[string]string)
-	label_files, err := file_list(av.base + "/labels")
-	if err != nil {
-		debug("App %q has no labels dir", av.base)
-	}
-	for _, file := range label_files {
-		language := strings.TrimSuffix(file, ".conf")
-		if !valid(language, "locale") {
-			continue
-		}
-		av.labels[language] = make(map[string]string)
-
-		path := fmt.Sprintf("%s/labels/%s", av.base, file)
-		f, err := os.Open(path)
-		if err != nil {
-			info("App unable to read labels file %q: %v", path, err)
-			continue
-		}
-		s := bufio.NewScanner(f)
-		for s.Scan() {
-			parts := strings.SplitN(s.Text(), "=", 2)
-			if len(parts) == 2 {
-				av.labels[language][strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-			}
-		}
-		f.Close()
-	}
+	av.labels.Store(labels_list(av.base + "/labels"))
 
 	apps_lock.Lock()
 	av.app = a
@@ -2346,7 +2321,7 @@ func (a *App) load_version(av *AppVersion) {
 	apps_lock.Unlock()
 	resolution_invalidate() // installed version set changed
 
-	debug("App %q, %q version %q loaded", av.labels["en"][av.Label], a.id, av.Version)
+	debug("App %q version %q loaded", a.id, av.Version)
 }
 
 // Register a service for an internal app
@@ -2613,34 +2588,8 @@ func (av *AppVersion) reload() {
 		return
 	}
 
-	// Reload labels
-	labels := make(map[string]map[string]string)
-	label_files, err := file_list(av.base + "/labels")
-	if err != nil {
-		debug("App %q has no labels dir", av.base)
-	}
-	for _, file := range label_files {
-		language := strings.TrimSuffix(file, ".conf")
-		if !valid(language, "locale") {
-			continue
-		}
-		labels[language] = make(map[string]string)
-
-		lpath := fmt.Sprintf("%s/labels/%s", av.base, file)
-		f, err := os.Open(lpath)
-		if err != nil {
-			continue
-		}
-
-		s := bufio.NewScanner(f)
-		for s.Scan() {
-			parts := strings.SplitN(s.Text(), "=", 2)
-			if len(parts) == 2 {
-				labels[language][strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-			}
-		}
-		f.Close()
-	}
+	// Labels are listed again, and each catalogue read afresh when next asked.
+	labels := labels_list(av.base + "/labels")
 
 	// Convert relative execute paths to absolute
 	for i, file := range fresh.Execute {
@@ -2666,7 +2615,7 @@ func (av *AppVersion) reload() {
 	av.Themes = fresh.Themes
 	av.ThemeIcons = fresh.ThemeIcons
 	av.IconSymbolic = fresh.IconSymbolic
-	av.labels = labels
+	av.labels.Store(labels)
 	av.app_json_mtime = mtime
 	apps_lock.Unlock()
 	resolution_invalidate() // declared services / version metadata changed
@@ -2734,7 +2683,7 @@ func api_app_label(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 
 	user := principal_caller(t)
 	av := a.active(user)
-	if av == nil || av.labels == nil {
+	if av == nil || av.labels.Load() == nil {
 		return sl.String(""), nil
 	}
 

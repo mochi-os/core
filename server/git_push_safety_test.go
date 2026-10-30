@@ -20,14 +20,17 @@ import (
 	"io"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/storer"
@@ -611,5 +614,152 @@ func TestGitAuthenticateRefusesInactiveAccounts(t *testing.T) {
 	}
 	if user := authenticate("git-restore"); user != nil {
 		t.Error("an account mid-restore can still clone and push through its API token")
+	}
+}
+
+// push_tag stores an annotated tag on a fresh blob and answers the tag object's
+// hash and the blob's, which is what packed-refs records as the tag's peeled value.
+func push_tag(t *testing.T, user *User, repo, name string) (plumbing.Hash, plumbing.Hash) {
+	t.Helper()
+	target := push_object(t, user, repo, []byte("tagged "+name))
+	tag := &object.Tag{Name: name, Tagger: object.Signature{Name: "Tagger", Email: "tagger@example.com", When: time.Unix(1700000000, 0)},
+		Message: name, TargetType: plumbing.BlobObject, Target: target}
+	store := push_store(t, user, repo)
+	encoded := store.NewEncodedObject()
+	if err := tag.Encode(encoded); err != nil {
+		t.Fatalf("encode tag: %v", err)
+	}
+	hash, err := store.SetEncodedObject(encoded)
+	if err != nil {
+		t.Fatalf("store tag: %v", err)
+	}
+	return hash, target
+}
+
+// TestPushDeletingAPackedTagLeavesPackedRefsWhole. go-git v5 removed a packed
+// annotated tag's own line and kept the "^<peeled>" line beneath it, a line that
+// then belongs to no reference; git refuses such a file, and so the repository.
+func TestPushDeletingAPackedTagLeavesPackedRefsWhole(t *testing.T) {
+	user, _ := create_git_test_env(t)
+	if err := git_init(user, test_app, "tags"); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	push_default(t, user, "tags")
+	first, first_target := push_tag(t, user, "tags", "1.0")
+	second, second_target := push_tag(t, user, "tags", "1.1")
+	path := git_repo_path(user, test_app, "tags")
+	header := "# pack-refs with: peeled fully-peeled sorted \n"
+	packed := header +
+		first.String() + " refs/tags/1.0\n^" + first_target.String() + "\n" +
+		second.String() + " refs/tags/1.1\n^" + second_target.String() + "\n"
+	if err := os.WriteFile(filepath.Join(path, "packed-refs"), []byte(packed), 0600); err != nil {
+		t.Fatalf("write packed-refs: %v", err)
+	}
+
+	name := plumbing.NewTagReferenceName("1.0")
+	status := push_send_pack(t, user, "tags", nil, &packp.Command{Name: name, Old: first, New: plumbing.ZeroHash})
+	if status[name.String()] != "ok" {
+		t.Fatalf("deleting the tag was answered %q, want ok", status[name.String()])
+	}
+
+	data, err := os.ReadFile(filepath.Join(path, "packed-refs"))
+	if err != nil {
+		t.Fatalf("read packed-refs: %v", err)
+	}
+	want := header + second.String() + " refs/tags/1.1\n^" + second_target.String() + "\n"
+	if string(data) != want {
+		t.Errorf("packed-refs after the delete:\n%s\nwant:\n%s", data, want)
+	}
+	if _, err := push_store(t, user, "tags").Reference(plumbing.NewTagReferenceName("1.1")); err != nil {
+		t.Errorf("the other tag is gone after deleting one: %v", err)
+	}
+	if git, err := exec.LookPath("git"); err == nil {
+		if output, err := exec.Command(git, "--git-dir", path, "for-each-ref").CombinedOutput(); err != nil {
+			t.Errorf("git cannot read the repository after the delete: %v\n%s", err, output)
+		}
+	}
+}
+
+// TestGitPackedTidyKeepsEachReferencesOwnPeel. A peeled line survives only
+// directly under a reference; one under the header, under another peeled line
+// or under nothing at all is dropped, and a file with nothing to drop is not
+// rewritten.
+func TestGitPackedTidyKeepsEachReferencesOwnPeel(t *testing.T) {
+	directory := t.TempDir()
+	file := filepath.Join(directory, "packed-refs")
+	a, b, c := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	broken := "# pack-refs with: peeled fully-peeled sorted \n^" + c + "\n" +
+		a + " refs/tags/1.0\n^" + b + "\n^" + c + "\n" +
+		b + " refs/heads/main\n^" + a + "\n" +
+		c + " refs/tags/2.0\n^" + a + "\n"
+	if err := os.WriteFile(file, []byte(broken), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := git_packed_tidy(directory); err != nil {
+		t.Fatalf("git_packed_tidy: %v", err)
+	}
+	data, _ := os.ReadFile(file)
+	want := "# pack-refs with: peeled fully-peeled sorted \n" +
+		a + " refs/tags/1.0\n^" + b + "\n" +
+		b + " refs/heads/main\n^" + a + "\n" +
+		c + " refs/tags/2.0\n^" + a + "\n"
+	if string(data) != want {
+		t.Errorf("tidied packed-refs:\n%s\nwant:\n%s", data, want)
+	}
+	information, _ := os.Stat(file)
+	if information.Mode().Perm() != 0600 {
+		t.Errorf("mode after tidy is %o, want 600", information.Mode().Perm())
+	}
+
+	before := information.ModTime()
+	time.Sleep(10 * time.Millisecond)
+	if err := git_packed_tidy(directory); err != nil {
+		t.Fatalf("git_packed_tidy on a whole file: %v", err)
+	}
+	if after, _ := os.Stat(file); !after.ModTime().Equal(before) {
+		t.Error("a file with nothing to drop was rewritten")
+	}
+	if err := git_packed_tidy(t.TempDir()); err != nil {
+		t.Errorf("a repository with no packed-refs: %v", err)
+	}
+}
+
+// TestGitPackedTidyWaitsForTheLock. go-git rewrites packed-refs holding a lock
+// on it; a tidy that ignored the lock could replace that rewrite with a copy
+// read before it, bringing a removed reference back.
+func TestGitPackedTidyWaitsForTheLock(t *testing.T) {
+	directory := t.TempDir()
+	file := filepath.Join(directory, "packed-refs")
+	a := strings.Repeat("a", 40)
+	if err := os.WriteFile(file, []byte(a+" refs/tags/1.0\n^"+a+"\n^"+a+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	held, err := osfs.New(directory).OpenFile("packed-refs", os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if err := held.Lock(); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- git_packed_tidy(directory) }()
+	select {
+	case err := <-done:
+		t.Fatalf("the tidy ran while another writer held the packed-refs lock (err %v)", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	held.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("git_packed_tidy: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the tidy did not finish once the lock was released")
+	}
+	if data, _ := os.ReadFile(file); string(data) != a+" refs/tags/1.0\n^"+a+"\n" {
+		t.Errorf("packed-refs after the tidy: %q", data)
 	}
 }

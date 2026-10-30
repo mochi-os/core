@@ -114,6 +114,7 @@ func (l *git_loader) Load(ep *transport.Endpoint) (storer.Storer, error) {
 	wrapped := &git_storage{
 		Storer: filesystem.NewStorage(fs, cache.NewObjectLRUDefault()),
 		meter:  git_meter{remaining: l.budget, metered: l.budget > 0},
+		path:   ep.Path,
 	}
 	if l.staging != "" {
 		wrapped.staging = filesystem.NewStorage(osfs.New(l.staging), cache.NewObjectLRUDefault())
@@ -137,6 +138,96 @@ type git_storage struct {
 	storer.Storer
 	staging storer.EncodedObjectStorer // quarantine for this push, when set
 	meter   git_meter
+	path    string // the repository directory, for git_packed_tidy
+}
+
+// RemoveReference removes a reference, and for a packed annotated tag the line
+// go-git leaves behind. go-git v5 rewrites packed-refs without the tag's own
+// line but keeps the "^<peeled>" line under it, which then belongs to no
+// reference; git refuses the whole file ("unexpected line in packed-refs") and
+// with it the repository. go-git fixed this in v6 only.
+func (s *git_storage) RemoveReference(name plumbing.ReferenceName) error {
+	if err := s.Storer.RemoveReference(name); err != nil {
+		return err
+	}
+	// The reference is gone either way; a failed tidy must not report the
+	// delete as failed to the client.
+	if err := git_packed_tidy(s.path); err != nil {
+		warn("git: unable to tidy packed-refs in %q after removing %s: %v", s.path, name, err)
+	}
+	return nil
+}
+
+// git_packed_tidy drops every peeled line ("^<hash>") in a repository's
+// packed-refs that does not directly follow a reference line, so the file is
+// one git reads again. A file with nothing to drop is left as it is. It holds
+// the lock go-git takes on packed-refs while rewriting it, and reads the file
+// under that lock, so a rewrite by another removal is neither lost nor undone.
+func git_packed_tidy(path string) error {
+	if path == "" {
+		return nil
+	}
+	lock, err := osfs.New(path).OpenFile("packed-refs", os.O_RDWR, 0)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := lock.Lock(); err != nil {
+		return err
+	}
+	defer lock.Unlock()
+
+	file := filepath.Join(path, "packed-refs")
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+
+	var kept strings.Builder
+	owned, changed := false, false
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "^") {
+			if !owned {
+				changed = true
+				continue
+			}
+			owned = false
+		} else {
+			owned = !strings.HasPrefix(line, "#")
+		}
+		kept.WriteString(line)
+	}
+	if !changed {
+		return nil
+	}
+
+	information, err := os.Stat(file)
+	if err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(path, ".packed-refs-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temporary.Name())
+	if _, err := temporary.WriteString(kept.String()); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Chmod(information.Mode().Perm()); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporary.Name(), file)
 }
 
 func (s *git_storage) EncodedObject(t plumbing.ObjectType, h plumbing.Hash) (plumbing.EncodedObject, error) {

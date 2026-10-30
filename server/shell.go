@@ -188,7 +188,7 @@ func web_serve_shell(c *gin.Context, app_id string) {
 		respond_text(c, http.StatusInternalServerError, "errors.shell_unavailable", nil)
 		return
 	}
-	shell_js, err := shell_file_load(av.base + "/web/dist/shell.js")
+	shell_js, err := shell_script(av.base, shell_html)
 	if err != nil {
 		info("shell: failed to load shell.js: %v", err)
 		respond_text(c, http.StatusInternalServerError, "errors.shell_unavailable", nil)
@@ -282,6 +282,16 @@ var (
 	shell_menu_script     = regexp.MustCompile(`<script\b[^>]*\bsrc="(?:\./|/menu/)?assets/([A-Za-z0-9_.-]+\.js)"`)
 	shell_menu_stylesheet = regexp.MustCompile(`<link\b[^>]*\brel="stylesheet"[^>]*\bhref="(?:\./|/menu/)?assets/([A-Za-z0-9_.-]+\.css)"`)
 )
+
+// shell_script is the shell.js the page inlines, or "" when the page loads it
+// as a file of its own: a menu built that way has no {{SHELL_JS}} placeholder,
+// while one built before it still inlines the script.
+func shell_script(base string, page string) (string, error) {
+	if !strings.Contains(page, "{{SHELL_JS}}") {
+		return "", nil
+	}
+	return shell_file_load(base + "/web/dist/shell.js")
+}
 
 // shell_menu_entry is the menu's entry script and stylesheet as tags, read
 // from the page its build wrote, which names them: the assets directory may

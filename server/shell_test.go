@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -355,6 +356,31 @@ func TestShellTokenRequiresApp(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest && w.Code != http.StatusUnauthorized {
 		t.Errorf("Expected 400 or 401 without app param, got %d", w.Code)
+	}
+}
+
+// A menu that loads shell.js as its own hashed file has no {{SHELL_JS}}
+// placeholder, and its page is built without reading the script at all; one
+// built before that still has the script inlined.
+func TestShellScriptOnlyWhenInlined(t *testing.T) {
+	base := t.TempDir()
+	dist := filepath.Join(base, "web", "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	external := `<script nonce="{{NONCE}}" src="/menu/assets/shell-AbCd1234.js"></script>`
+	if script, err := shell_script(base, external); err != nil || script != "" {
+		t.Fatalf("a page loading the script itself: %q, %v; want nothing read", script, err)
+	}
+	inline := `<script nonce="{{NONCE}}">{{SHELL_JS}}</script>`
+	if _, err := shell_script(base, inline); err == nil {
+		t.Fatal("an inlining page with no shell.js was not refused")
+	}
+	if err := os.WriteFile(filepath.Join(dist, "shell.js"), []byte("console.log('shell')"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if script, err := shell_script(base, inline); err != nil || script != "console.log('shell')" {
+		t.Fatalf("an inlining page: %q, %v; want the script", script, err)
 	}
 }
 

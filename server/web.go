@@ -16,6 +16,7 @@ import (
 	"html"
 	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -32,8 +33,11 @@ import (
 )
 
 var (
-	match_react = regexp.MustCompile(`assets/.*-[\w-]{8}\.(js|css)$`)
-	web_https   = false
+	// A file under assets/ whose name carries an eight-character content hash,
+	// as Vite writes every file it emits there: its bytes never change under
+	// that name, so the browser may keep it for a year.
+	match_hashed = regexp.MustCompile(`assets/.*-[\w-]{8}\.[0-9A-Za-z]+$`)
+	web_https    = false
 	// Redact credential query values from the access log: ?token=, and the OAuth
 	// callback's ?code= and ?state=. Anchored to a query delimiter so it never
 	// matches a substring such as ?barcode=.
@@ -688,6 +692,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			web_serve_svg_path(c, file)
 			return true
 		}
+		if web_serve_compressed(c, a, av.base, file) {
+			return true
+		}
 		c.File(file)
 		return true
 	}
@@ -706,7 +713,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			}
 			if strings.HasSuffix(strings.ToLower(aa.filepath), ".svg") {
 				web_serve_svg_path(c, file)
-			} else {
+			} else if !web_serve_compressed(c, a, av.base, file) {
 				web_serve_path(c, file)
 			}
 		} else {
@@ -1020,7 +1027,7 @@ func web_cache_static(c *gin.Context, path string, cache string) bool {
 				return true
 			}
 		}
-	} else if match_react.MatchString(path) {
+	} else if match_hashed.MatchString(path) {
 		// debug("Web asking browser to long term cache %q", path)
 		c.Header("Cache-Control", "public, max-age=31536000, immutable")
 	} else {
@@ -2073,6 +2080,23 @@ func web_logout(c *gin.Context) {
 }
 
 // Handle app paths
+// web_login_detour is the /login page an account that may load nothing else is
+// sent to instead of the shell, or "": a closing account to its reactivation
+// page, one mid-restore to the waiting page. Every app action refuses such an
+// account, the shell's own script and the menu's bundle included, so a shell
+// page served to it would be blank.
+func web_login_detour(u *User) string {
+	switch {
+	case u == nil:
+		return ""
+	case u.Status == "closing":
+		return app_login_route("closing")
+	case user_pending(u):
+		return app_login_route("restore")
+	}
+	return ""
+}
+
 func web_path(c *gin.Context) {
 	//debug("Web path %q", c.Request.URL.Path)
 
@@ -2085,14 +2109,14 @@ func web_path(c *gin.Context) {
 		return
 	}
 
-	// A "closing" account may load only the /login reactivation interstitial.
-	// Redirect top-level navigations before the shell renders, or the shell loads
-	// and its gated app fetches bounce it in a loop.
+	// An account that may load only /login is redirected before the shell
+	// renders, or the shell loads and its gated fetches bounce it in a loop or
+	// leave it blank.
 	if web_should_serve_shell(c) {
 		raw := strings.Trim(c.Request.URL.Path, "/")
 		if !app_login_owns(raw) {
-			if u := web_auth(c); u != nil && u.Status == "closing" {
-				c.Redirect(http.StatusFound, app_login_route("closing"))
+			if route := web_login_detour(web_auth(c)); route != "" {
+				c.Redirect(http.StatusFound, route)
 				return
 			}
 		}
@@ -2346,7 +2370,15 @@ func web_sitemap(c *gin.Context) {
 }
 
 // Start the web server
+// web_types registers the types core serves that Go's built-in table lacks, so
+// they do not depend on whether the host has a mime.types file: without one a
+// model is sent as application/octet-stream, which is never compressed.
+func web_types() {
+	mime.AddExtensionType(".glb", "model/gltf-binary")
+}
+
 func web_start() {
+	web_types()
 	listen := ini_string("web", "listen", "")
 	ports := ini_ints_commas("web", "ports")
 	if len(ports) == 0 {

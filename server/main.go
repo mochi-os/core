@@ -225,6 +225,7 @@ func main_serve(ready func()) int {
 		warn("World listener failed to start: %v", err)
 	}
 	go cache_manager()
+	go compressed_manager()
 	go closure_manager()
 	go entities_manager()
 	go directory_manager()

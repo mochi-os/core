@@ -1621,6 +1621,14 @@ func app_install(id string, version string, file string, check_only bool, peer .
 		return nil, err
 	}
 
+	// .compressed holds the copies core makes of a version's files and sends
+	// in their place. A package's own would reach brotli clients with bytes no
+	// one inspected: only core writes there.
+	if err := os.RemoveAll(filepath.Join(tmp, ".compressed")); err != nil {
+		_ = os.RemoveAll(tmp)
+		return nil, err
+	}
+
 	if version != "" && version != av.Version {
 		_ = os.RemoveAll(tmp)
 		return nil, fmt.Errorf("Specified version does not match file version")
@@ -1655,6 +1663,10 @@ func app_install(id string, version string, file string, check_only bool, peer .
 		_ = os.RemoveAll(tmp)
 		return nil, fmt.Errorf("refusing to install %q outside apps directory", av.Version)
 	}
+	// Held while the version directory is removed and replaced, so the copy
+	// worker adds nothing to it meanwhile (see compressed_make).
+	compressed_lock.Lock()
+	defer compressed_lock.Unlock()
 	if file_exists(av.base) {
 		debug("App %q removing old copy of version %q in %q", id, av.Version, av.base)
 		if err := os.RemoveAll(av.base); err != nil {
@@ -3953,7 +3965,10 @@ func apps_cleanup_unused_versions() int {
 		if valid(app_id, "entity") {
 			for _, v := range to_delete {
 				dir := fmt.Sprintf("%s/apps/%s/%s", data_dir, app_id, v)
-				if err := os.RemoveAll(dir); err != nil {
+				compressed_lock.Lock()
+				err := os.RemoveAll(dir)
+				compressed_lock.Unlock()
+				if err != nil {
 					warn("Failed to delete app version directory %s: %v", dir, err)
 				} else {
 					info("Deleted unused app version %s %s", app_id, v)

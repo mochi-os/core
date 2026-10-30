@@ -76,6 +76,32 @@ func TestWebCacheStaticAnswersTheConditionalRequest(t *testing.T) {
 	}
 }
 
+// Every content-hashed file under assets/ is kept for a year, whatever its
+// type: fonts, models, sounds and images are as immutable as the scripts.
+// Unhashed names, and hashed names outside assets/, still revalidate.
+func TestWebCacheStaticHashedAssetsAreImmutable(t *testing.T) {
+	saved := web_cache
+	web_cache = true
+	defer func() { web_cache = saved }()
+	for path, want := range map[string]string{
+		"/v/web/dist/assets/index-D6Js8WGc.js":                                     "public, max-age=31536000, immutable",
+		"/v/web/dist/assets/index-DCQOSfUw.css":                                    "public, max-age=31536000, immutable",
+		"/v/web/dist/assets/atkinson-hyperlegible-latin-400-italic-D-qjh7ci.woff2": "public, max-age=31536000, immutable",
+		"/v/web/dist/assets/nimitz-C0JczneU.glb":                                   "public, max-age=31536000, immutable",
+		"/v/web/dist/assets/flight-CGAAYRr6.wasm":                                  "public, max-age=31536000, immutable",
+		"/v/web/dist/assets/moon-night-C_zo9zQa.png":                               "public, max-age=31536000, immutable",
+		"/v/web/dist/assets/engine-Ab12Cd34.mp3":                                   "public, max-age=31536000, immutable",
+		"/v/web/dist/assets/logo.png":                                              "public, max-age=300",
+		"/v/web/dist/favicon-Ab12Cd34.png":                                         "public, max-age=300",
+	} {
+		c, w := web_static_context(t, "")
+		web_cache_static(c, path, "")
+		if got := w.Header().Get("Cache-Control"); got != want {
+			t.Errorf("%s: Cache-Control %q, want %q", path, got, want)
+		}
+	}
+}
+
 // static_function_source returns one top-level function's text from a Go source file.
 func static_function_source(t *testing.T, text, signature string) string {
 	t.Helper()

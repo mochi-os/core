@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"regexp"
 	rd "runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -509,21 +510,73 @@ var url_blocked_networks = func() []*net.IPNet {
 	return blocks
 }()
 
+// url_dialer dials with the address guard. Its Control hook runs per
+// connection, so the check applies to the initial request and to every
+// redirect hop on the same client.
+var url_dialer = &net.Dialer{
+	Timeout:   10 * time.Second,
+	KeepAlive: 30 * time.Second,
+	Control: func(network string, address string, _ syscall.RawConn) error {
+		return url_address_allowed(address)
+	},
+}
+
+// url_lookup and url_connect are the resolver and the guarded dial under
+// url_dial; variables so tests can give their own.
+var url_lookup = net.DefaultResolver.LookupHost
+var url_connect = url_dialer.DialContext
+
+// url_dial reaches a host of this server's own at the addresses others reach
+// it at. The machine's own lookup of its name may answer loopback, from the
+// hosts file - Debian and Ubuntu map the machine's name to 127.0.1.1 - which
+// the guard refuses, and the server could not then talk to itself: look up an
+// account it hosts, deliver to a community here. Only that answer is
+// replaced; every other host, and a host of its own the lookup gives no
+// loopback answer for, is dialled as named, and every address still passes
+// the guard.
+func url_dial(ctx context.Context, network string, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || net.ParseIP(host) != nil || !url_own(host) {
+		return url_connect(ctx, network, address)
+	}
+	found, err := url_lookup(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	loopback := slices.ContainsFunc(found, func(answer string) bool {
+		ip := net.ParseIP(answer)
+		return ip != nil && ip.IsLoopback()
+	})
+	if !loopback {
+		return url_connect(ctx, network, address)
+	}
+	failure := fmt.Errorf("no address for %s", host)
+	for _, ip := range domain_addresses(found) {
+		connection, err := url_connect(ctx, network, net.JoinHostPort(ip, port))
+		if err == nil {
+			return connection, nil
+		}
+		failure = err
+	}
+	return nil, failure
+}
+
+// url_own says whether a host is one this server answers for: a verified
+// domain of its own, or a name under one that it serves, such as a hosted
+// Bluesky account's handle.
+func url_own(host string) bool {
+	d := domain_certified(strings.TrimSuffix(strings.ToLower(host), "."))
+	return d != nil && d.Verified == 1
+}
+
 // url_transport is the shared outbound transport for every app-driven HTTP
-// request. The dialer's Control hook runs per connection, so the check applies
-// to the initial request and to every redirect hop on the same client.
+// request.
 var url_transport = &http.Transport{
-	// No proxy, deliberately: with one configured the Control hook below sees the
-	// proxy's address rather than the destination, so HTTP_PROXY in the
+	// No proxy, deliberately: with one configured the guard's Control hook sees
+	// the proxy's address rather than the destination, so HTTP_PROXY in the
 	// environment would silently void the guard.
-	Proxy: nil,
-	DialContext: (&net.Dialer{
-		Timeout:   10 * time.Second,
-		KeepAlive: 30 * time.Second,
-		Control: func(network string, address string, _ syscall.RawConn) error {
-			return url_address_allowed(address)
-		},
-	}).DialContext,
+	Proxy:                 nil,
+	DialContext:           url_dial,
 	MaxIdleConns:          100,
 	IdleConnTimeout:       90 * time.Second,
 	TLSHandshakeTimeout:   10 * time.Second,

@@ -8,7 +8,11 @@ package main
 
 import (
 	"archive/zip"
+	"context"
+	"fmt"
+	"net"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -801,6 +805,87 @@ func TestURLAddressBlocked(t *testing.T) {
 		if err := url_address_allowed(address); err != nil {
 			t.Errorf("url_address_allowed(%q) blocked a public destination: %v", address, err)
 		}
+	}
+}
+
+// TestURLDialReachesItself: a host of this server's own whose lookup answers
+// loopback, as the hosts file names the machine on Debian and Ubuntu, is
+// dialled at the machine's interface addresses, where others reach it; any
+// other host, and one of its own the lookup answers publicly, is dialled as
+// named, so a name leading to loopback elsewhere is still the guard's to
+// refuse, and the guard judges every address dialled.
+func TestURLDialReachesItself(t *testing.T) {
+	test_data_directory(t)
+	domains := setup_domains_test_schema()
+	domains.exec("insert into domains (domain, verified, created, updated) values ('self.test', 1, 1, 1), ('*.wild.test', 1, 1, 1), ('cdn.test', 1, 1, 1), ('broken.test', 1, 1, 1), ('pending.test', 0, 1, 1)")
+	saved_lookup, saved_connect, saved_interfaces, saved_private := url_lookup, url_connect, domain_interfaces, url_allow_private
+	t.Cleanup(func() {
+		url_lookup, url_connect, domain_interfaces, url_allow_private = saved_lookup, saved_connect, saved_interfaces, saved_private
+	})
+	url_allow_private = false
+	url_lookup = func(ctx context.Context, host string) ([]string, error) {
+		switch host {
+		case "cdn.test":
+			return []string{"2001:db8::7", "198.51.100.7"}, nil
+		case "broken.test":
+			return nil, fmt.Errorf("no such host")
+		}
+		return []string{"127.0.1.1"}, nil
+	}
+	domain_interfaces = func() []string { return []string{"203.0.113.9", "2001:db8::9"} }
+	var dialled []string
+	url_connect = func(ctx context.Context, network string, address string) (net.Conn, error) {
+		dialled = append(dialled, address)
+		return nil, fmt.Errorf("refused")
+	}
+	dial := func(address string) []string {
+		dialled = nil
+		url_dial(context.Background(), "tcp", address)
+		return dialled
+	}
+
+	want := []string{"203.0.113.9:443", "[2001:db8::9]:443"}
+	if got := dial("self.test:443"); !slices.Equal(got, want) {
+		t.Errorf("THE POINT: the server's own domain dialled %v, want its interface addresses %v", got, want)
+	}
+	if got := dial("Alice.Wild.Test:443"); !slices.Equal(got, want) {
+		t.Errorf("a name under the server's wildcard domain dialled %v, want %v", got, want)
+	}
+	if got := dial("self.test.:8443"); !slices.Equal(got, []string{"203.0.113.9:8443", "[2001:db8::9]:8443"}) {
+		t.Errorf("the server's own domain written with its trailing dot dialled %v", got)
+	}
+	// Dialled as named: elsewhere, unverified, a name under its domain that it
+	// does not serve, an address, and a domain of its own the lookup answers
+	// publicly, which keeps the dialer's own fallback between them.
+	for _, address := range []string{"elsewhere.test:443", "pending.test:443", "alice.self.test:443", "127.0.1.1:443", "cdn.test:443"} {
+		if got := dial(address); !slices.Equal(got, []string{address}) {
+			t.Errorf("THE POINT: %s dialled %v, want it as named", address, got)
+		}
+	}
+	// A lookup that fails dials nothing.
+	if got := dial("broken.test:443"); len(got) != 0 {
+		t.Errorf("a failed lookup dialled %v", got)
+	}
+	// A development instance reaching private addresses keeps the loopback
+	// answer, ahead of the interfaces.
+	url_allow_private = true
+	if got := dial("self.test:443"); !slices.Equal(got, append([]string{"127.0.1.1:443"}, want...)) {
+		t.Errorf("on a development instance the server's own domain dialled %v", got)
+	}
+	url_allow_private = false
+	// A lookup of an account here goes the same way, through the shared
+	// transport.
+	dialled = nil
+	resolve_fetch(context.Background(), "https://self.test/.well-known/webfinger?resource=acct:alice@self.test", "application/jrd+json")
+	if !slices.Equal(dialled, want) {
+		t.Errorf("THE POINT: a lookup of an account here dialled %v, want %v", dialled, want)
+	}
+	// Through the guarded dialer, an interface address that is not public is
+	// refused before any connection is made.
+	url_connect = saved_connect
+	domain_interfaces = func() []string { return []string{"10.0.0.9", "fd00::9"} }
+	if _, err := url_dial(context.Background(), "tcp", "self.test:443"); err == nil || !strings.Contains(err.Error(), "non-public address") {
+		t.Errorf("THE POINT: a private interface address was dialled: %v", err)
 	}
 }
 

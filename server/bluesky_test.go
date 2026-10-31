@@ -37,6 +37,7 @@ type bluesky_fake struct {
 	refused    bool // a refresh is refused, so the app password is used again
 	revokes    int
 	records    []map[string]any
+	put        map[string]any // the record the last putRecord wrote
 }
 
 // dpop_check verifies a DPoP proof against the request and returns its claims
@@ -246,6 +247,16 @@ func create_bluesky_fake(t *testing.T) *bluesky_fake {
 		if !authorized(w, r) {
 			return
 		}
+		if r.URL.Query().Get("collection") == "app.bsky.feed.post" && r.URL.Query().Get("rkey") == "3k" {
+			f.lock.Lock()
+			defer f.lock.Unlock()
+			if len(f.records) == 0 {
+				answer(w, 400, map[string]any{"error": "RecordNotFound"})
+				return
+			}
+			answer(w, 200, map[string]any{"uri": "at://" + f.did + "/app.bsky.feed.post/3k", "value": f.records[0]})
+			return
+		}
 		if r.URL.Query().Get("collection") != "app.bsky.actor.profile" || r.URL.Query().Get("repo") != f.did {
 			answer(w, 400, map[string]any{"error": "InvalidRequest"})
 			return
@@ -272,10 +283,14 @@ func create_bluesky_fake(t *testing.T) *bluesky_fake {
 			return
 		}
 		body := json_body(r)
-		if body["repo"] != f.did || body["collection"] != "app.bsky.feed.post" || body["rkey"] != "3k" {
+		record, _ := body["record"].(map[string]any)
+		if body["repo"] != f.did || body["collection"] != "app.bsky.feed.post" || body["rkey"] != "3k" || record["createdAt"] == nil {
 			answer(w, 400, map[string]any{"error": "InvalidRequest"})
 			return
 		}
+		f.lock.Lock()
+		f.put = record
+		f.lock.Unlock()
 		answer(w, 200, map[string]any{"uri": "at://" + f.did + "/app.bsky.feed.post/3k", "cid": "bafy2"})
 	})
 	mux.HandleFunc("POST /xrpc/com.atproto.repo.deleteRecord", func(w http.ResponseWriter, r *http.Request) {
@@ -423,6 +438,11 @@ func TestBlueskyPassword(t *testing.T) {
 	if updated["data"].(map[string]any)["cid"] != "bafy2" {
 		t.Errorf("update = %v", updated)
 	}
+	fake.lock.Lock()
+	if fake.put["text"] != "Edited" || fake.put["createdAt"] != fake.records[0]["createdAt"] {
+		t.Errorf("the edit wrote %v, want its creation time kept from %v", fake.put, fake.records[0])
+	}
+	fake.lock.Unlock()
 	if value, err := api_account_object_update(thread, fn, sl.Tuple{sl.String(id), sl.String("at://did:plc:other/app.bsky.feed.post/1"), object_dict("text", "x")}, nil); err != nil || value != sl.None {
 		t.Errorf("another account's record was updated: %v, %v", value, err)
 	}

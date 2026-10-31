@@ -817,11 +817,25 @@ func atproto_update(ctx context.Context, user *User, row map[string]any, uri str
 	if _, set := object["$type"]; !set {
 		object["$type"] = collection
 	}
+	if _, set := object["createdAt"]; !set {
+		_, current := repository_record(user, id, collection, rkey)
+		object["createdAt"] = atproto_created(current)
+	}
 	c, committed, err := repository_write(ctx, r, collection, rkey, object, false)
 	if err != nil {
 		return nil, err
 	}
 	return atproto_result(r.did, collection, rkey, c, committed), nil
+}
+
+// atproto_created is the creation time a new version of a record keeps: the
+// current version's, else now. Bluesky requires one of a post, and its view
+// passes over a version without it, so an edit would never show.
+func atproto_created(current map[string]any) any {
+	if created, _ := current["createdAt"].(string); created != "" {
+		return created
+	}
+	return time.Now().UTC().Format(time.RFC3339Nano)
 }
 
 // atproto_delete deletes a record the account holds.

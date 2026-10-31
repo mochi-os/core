@@ -857,6 +857,13 @@ func bluesky_update(ctx context.Context, l *linked, id string, object map[string
 	if _, set := object["$type"]; !set {
 		object["$type"] = collection
 	}
+	if _, set := object["createdAt"]; !set {
+		var current struct {
+			Value map[string]any `json:"value"`
+		}
+		bluesky_xrpc(ctx, l, "GET", "com.atproto.repo.getRecord", map[string]string{"repo": repo, "collection": collection, "rkey": rkey}, nil, "", &current)
+		object["createdAt"] = atproto_created(current.Value)
+	}
 	var answer map[string]any
 	status, body, err := bluesky_xrpc(ctx, l, "POST", "com.atproto.repo.putRecord", nil, map[string]any{"repo": repo, "collection": collection, "rkey": rkey, "record": object}, "", &answer)
 	if err != nil {

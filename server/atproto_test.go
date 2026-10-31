@@ -455,8 +455,8 @@ func TestAtprotoPublish(t *testing.T) {
 	if len(event.Ops) != 1 || event.Ops[0].Action != "update" || event.Ops[0].Prev == nil {
 		t.Errorf("update ops = %+v", event.Ops[0])
 	}
-	if _, v := repository_record(alice, "b1", "app.bsky.feed.post", rkey); v["text"] != "Edited" {
-		t.Errorf("record after the update = %v", v)
+	if _, v := repository_record(alice, "b1", "app.bsky.feed.post", rkey); v["text"] != "Edited" || v["createdAt"] != record["value"].(map[string]any)["createdAt"] {
+		t.Errorf("record after the update = %v, want it edited and its creation time kept", v)
 	}
 	_, listed := atproto_json(t, "/xrpc/com.atproto.repo.listRecords?repo="+did+"&collection=app.bsky.feed.post")
 	if records, _ := listed["records"].([]any); len(records) != 1 {

@@ -453,6 +453,11 @@ func networks_create(db *DB) {
 	db.exec("create index if not exists seen_created on seen(created)")
 	db.exec("create table if not exists inbound (id text not null primary key, user text not null, account text not null, actor text not null, type text not null, body text not null, created integer not null)")
 	db.exec("create index if not exists inbound_account on inbound(account, created)")
+	// The objects the inbox took for an account from someone it does not
+	// follow, whose Delete names only the public (activitypub.go).
+	db.exec("create table if not exists copies (object text not null, account text not null, actor text not null, created integer not null, primary key (object, account, actor))")
+	db.exec("create index if not exists copies_account on copies(account)")
+	db.exec("create index if not exists copies_created on copies(created)")
 	// The Bluesky identities by did and the update stream (atproto.go).
 	atproto_tables(db)
 	// Subscriptions to web feeds and to this server's, and the mentions
@@ -595,6 +600,12 @@ func network_send(ctx context.Context, user *User, network string, key string, r
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
 		if len(via) >= redirects {
 			return fmt.Errorf("too many redirects")
+		}
+		// A signature names its host and who made it: one host's never goes
+		// on to another, which would learn whose request it was.
+		if request.URL.Host != via[0].URL.Host {
+			request.Header.Del("Signature")
+			request.Header.Del("Signature-Input")
 		}
 		return network_target(user, network, request.URL)
 	}

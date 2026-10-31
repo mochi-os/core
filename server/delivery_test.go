@@ -422,6 +422,48 @@ func TestNetworkRequestPolicy(t *testing.T) {
 	}
 }
 
+// TestNetworkRequestRedirectSignature: a signed request redirected keeps its
+// signature on its own host and drops it on the way to another, which would
+// learn whose request it was.
+func TestNetworkRequestRedirectSignature(t *testing.T) {
+	create_delivery_test_env(t)
+	other := map[string]string{}
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		other[r.URL.Path] = r.Header.Get("Signature")
+	}))
+	t.Cleanup(elsewhere.Close)
+	own := map[string]string{}
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		own[r.URL.Path] = r.Header.Get("Signature")
+		switch r.URL.Path {
+		case "/away":
+			http.Redirect(w, r, elsewhere.URL+"/landed", http.StatusFound)
+		case "/along":
+			http.Redirect(w, r, "/landed", http.StatusFound)
+		}
+	}))
+	t.Cleanup(origin.Close)
+
+	for _, path := range []string{"/away", "/along"} {
+		request, _ := http.NewRequest("GET", origin.URL+path, nil)
+		request.Header.Set("Signature", `keyId="https://example.com/~f1#main-key",signature="x"`)
+		response, err := network_request(context.Background(), nil, "", request, 5)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		response.Body.Close()
+	}
+	if own["/away"] == "" || own["/along"] == "" {
+		t.Errorf("the signature did not reach its own host: %v", own)
+	}
+	if own["/landed"] == "" {
+		t.Error("a redirect on the same host dropped the signature")
+	}
+	if found, ok := other["/landed"]; !ok || found != "" {
+		t.Errorf("another host was sent the signature, or never reached: %q %v", found, ok)
+	}
+}
+
 // TestIdentifierHost: the host each identifier form names.
 func TestIdentifierHost(t *testing.T) {
 	cases := map[string]string{

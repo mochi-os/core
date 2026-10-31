@@ -59,7 +59,7 @@ func TestFreshInstallLaysTheNetworkDatabases(t *testing.T) {
 		t.Errorf("a fresh install records schema %d, want %d", schema, schema_version)
 	}
 	networks := networks_database()
-	for _, name := range []string{"deliveries", "actors", "identities", "stream", "websub", "webmentions", "reports", "pictrs"} {
+	for _, name := range []string{"deliveries", "actors", "identities", "stream", "websub", "webmentions", "reports", "pictrs", "copies"} {
 		if !versioning_has(networks, name) {
 			t.Errorf("THE POINT: a fresh networks.db has no %s", name)
 		}
@@ -454,6 +454,8 @@ func TestVersionedStepsKeepTheirSchema(t *testing.T) {
 	}
 	db_upgrade_19()
 	check("db_upgrade_19.networks", versioning_schema(db_open("db/networks.db")))
+	db_upgrade_20()
+	check("db_upgrade_20.networks", versioning_schema(db_open("db/networks.db")))
 
 	for name, steps := range map[string][]func(*DB) error{
 		"user":          db_user_steps["user"],

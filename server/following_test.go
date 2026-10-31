@@ -8,7 +8,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -46,6 +48,241 @@ func following_documents(t *testing.T, bob *remote_person) {
 		return nil, &resolve_refusal{Status: 404}
 	}
 	t.Cleanup(func() { resolve_fetch = saved })
+}
+
+// TestActivityPubInboxSigning: the key of an activity at the shared inbox is
+// fetched signed, as its server may insist: as the first account here with a
+// user that the activity is for, or as the server's own account when it is
+// for nobody here. Every activity is checked alike, so a forged one is refused
+// whether or not anyone follows its sender, and a key on another host than
+// the sender's is refused before anything is fetched.
+func TestActivityPubInboxSigning(t *testing.T) {
+	alice, bob := create_activitypub_test_env(t)
+	following_documents(t, bob)
+	saved := resolve_fetch
+	var fetches []string
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		signer := ""
+		if sign := resolve_signed_by(ctx); sign != nil {
+			r := httptest.NewRequest("GET", address, nil)
+			sign(r)
+			signer = signature_parameters(r.Header.Get("Signature"))["keyid"]
+		}
+		fetches = append(fetches, address+" "+signer)
+		if signer == "" {
+			return nil, &resolve_refusal{Status: http.StatusUnauthorized}
+		}
+		return saved(ctx, address, accept)
+	}
+	t.Cleanup(func() { resolve_fetch = saved })
+	fresh := func() { fetches, signature_keys = nil, map[string]signature_key_entry{} }
+	create := func(id string, cc ...string) map[string]any {
+		return map[string]any{"@context": activitystreams, "id": id, "type": "Create", "actor": bob.id, "to": []string{activitystreams_public}, "cc": cc,
+			"object": map[string]any{"id": id + "/note", "type": "Note", "attributedTo": bob.id, "content": "<p>Hello</p>", "to": []string{activitystreams_public}, "cc": cc}}
+	}
+	queued := func() int64 {
+		n, _ := networks_database().row("select count(*) as n from inbound where account='f1' and type='Create'")
+		return row_int(n, "n")
+	}
+
+	// For nobody here: checked, the key fetched as the server's own account.
+	fresh()
+	if w := signed_post(t, bob, "/~/inbox", create("https://remote.example/creates/9", bob.id+"/followers"), nil); w.Code != http.StatusAccepted {
+		t.Errorf("an activity for nobody here: %d %s", w.Code, w.Body.String())
+	}
+	if len(fetches) == 0 || fetches[0] != bob.id+" https://example.com/~/actor#main-key" {
+		t.Errorf("fetches for an activity for nobody here = %v", fetches)
+	}
+	if queued() != 0 {
+		t.Error("an activity for nobody here was queued")
+	}
+
+	// Forged and for nobody here: refused, as one for someone here is.
+	fresh()
+	forger := *bob
+	forger.private = activitypub_server_private()
+	if w := signed_post(t, &forger, "/~/inbox", create("https://remote.example/creates/10", bob.id+"/followers"), nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("a forged activity for nobody here: %d", w.Code)
+	}
+
+	// A key on another host: refused, nothing fetched from it.
+	fresh()
+	elsewhere := *bob
+	elsewhere.key_id = "https://other.example/keys/1"
+	if w := signed_post(t, &elsewhere, "/~/inbox", create("https://remote.example/creates/11", "https://example.com/~f1"), nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("a key on another host: %d", w.Code)
+	}
+	for _, fetch := range fetches {
+		if strings.Contains(fetch, "other.example") {
+			t.Errorf("a key on another host was fetched: %s", fetch)
+		}
+	}
+
+	// For three accounts here, the first with no user and the second with no
+	// key: the third signs.
+	actor_register(&User{UID: "u9"}, "f2", "fediverse", "example.com", "ghost")
+	db_user(alice, "user").exec(`insert into accounts (id, type, label, identifier, data, created, verified) values ('f3', 'fediverse', '', '@carl@example.com', '{"hosted":true,"handle":"carl","domain":"example.com"}', 1, 1)`)
+	actor_register(alice, "f3", "fediverse", "example.com", "carl")
+	fresh()
+	if w := signed_post(t, bob, "/~/inbox", create("https://remote.example/creates/12", "https://example.com/~f2", "https://example.com/~f3", "https://example.com/~f1"), nil); w.Code != http.StatusAccepted {
+		t.Errorf("an activity for an account here: %d %s", w.Code, w.Body.String())
+	}
+	if len(fetches) == 0 || !strings.HasSuffix(fetches[0], "/~f1#main-key") {
+		t.Errorf("fetches for an activity for an account here = %v", fetches)
+	}
+	if queued() != 1 {
+		t.Errorf("queued %d Creates for the account addressed, want 1", queued())
+	}
+}
+
+// TestActivityPubDeletes: a Delete names only the public. A reply from
+// someone the account does not follow is kept as a copy, on its author's host
+// and of a sensible length, through which the reply's Delete reaches the
+// account; no one else's Delete of it does, nor removes the copy, and two
+// senders' copies of one object stand apart. A followed person's post needs no
+// copy. A follower deleting themselves is forgotten: through their Delete
+// while their key can be read, and once their server, asked as the server's
+// own account, answers that they are gone (410) when it cannot, though what
+// they sent is not handed to the apps unchecked. A 404 is not gone, and a
+// self-Delete that cannot be checked is taken and dropped, forged or not.
+func TestActivityPubDeletes(t *testing.T) {
+	alice, bob := create_activitypub_test_env(t)
+	db := db_user(alice, "user")
+	queue := networks_database()
+	carol := &remote_person{id: "https://remote.example/u/carol", key_id: "https://remote.example/u/carol#main-key", inbox: "https://remote.example/u/carol/inbox", public: bob.public, private: bob.private}
+	saved := resolve_fetch
+	answer := 0
+	asked := ""
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		switch {
+		case address == bob.id && answer != 0:
+			if sign := resolve_signed_by(ctx); sign != nil {
+				r := httptest.NewRequest("GET", address, nil)
+				sign(r)
+				asked = signature_parameters(r.Header.Get("Signature"))["keyid"]
+			}
+			return nil, &resolve_refusal{Status: answer}
+		case address == carol.id:
+			return []byte(`{"id":"` + carol.id + `","type":"Person","preferredUsername":"carol","inbox":"` + carol.inbox + `","publicKey":{"id":"` + carol.key_id + `","owner":"` + carol.id + `","publicKeyPem":` + json_encode(carol.public) + `}}`), nil
+		}
+		return saved(ctx, address, accept)
+	}
+	t.Cleanup(func() { resolve_fetch = saved })
+	queued := func(kind string) int64 {
+		n, _ := queue.row("select count(*) as n from inbound where account='f1' and type=?", kind)
+		return row_int(n, "n")
+	}
+	copies := func(object string) int64 {
+		n, _ := queue.row("select count(*) as n from copies where account='f1' and object=?", object)
+		return row_int(n, "n")
+	}
+	create := func(by *remote_person, id string, object string) map[string]any {
+		return map[string]any{"@context": activitystreams, "id": id, "type": "Create", "actor": by.id, "to": []string{activitystreams_public}, "cc": []string{"https://example.com/~f1"},
+			"object": map[string]any{"id": object, "type": "Note", "attributedTo": by.id, "inReplyTo": "https://example.com/~f1/objects/1", "content": "<p>A reply</p>", "to": []string{activitystreams_public}, "cc": []string{"https://example.com/~f1"}}}
+	}
+	remove := func(by *remote_person, id string, object any, cc ...string) map[string]any {
+		activity := map[string]any{"@context": activitystreams, "id": id, "type": "Delete", "actor": by.id, "to": []string{activitystreams_public}, "object": object}
+		if len(cc) > 0 {
+			activity["cc"] = cc
+		}
+		return activity
+	}
+	post := func(by *remote_person, activity map[string]any) {
+		t.Helper()
+		if w := signed_post(t, by, "/~/inbox", activity, nil); w.Code != http.StatusAccepted {
+			t.Fatalf("%s: %d %s", activity["id"], w.Code, w.Body.String())
+		}
+	}
+
+	note := "https://remote.example/u/bob/notes/7"
+	post(bob, create(bob, note+"/activity", note))
+	if copies(note) != 1 {
+		t.Fatal("no copy kept of a reply from someone not followed")
+	}
+	post(bob, create(bob, note+"/elsewhere/activity", "https://other.example/notes/7"))
+	post(bob, create(bob, note+"/long/activity", note+"/"+strings.Repeat("x", copy_length)))
+	if n, _ := queue.row("select count(*) as n from copies where account='f1'"); row_int(n, "n") != 1 {
+		t.Error("a copy was kept of an object on another host, or with an id past any server's")
+	}
+	tombstone := map[string]any{"id": note, "type": "Tombstone"}
+	post(carol, remove(carol, carol.id+"/deletes/1", tombstone))
+	if queued("Delete") != 0 {
+		t.Error("someone else's Delete of the reply reached the account through its copy")
+	}
+	post(carol, remove(carol, carol.id+"/deletes/2", tombstone, "https://example.com/~f1"))
+	if copies(note) != 1 {
+		t.Error("someone else's Delete of the reply removed its copy")
+	}
+	post(carol, create(carol, carol.id+"/creates/1", note))
+	if copies(note) != 2 {
+		t.Errorf("%d copies of one object from two senders, want 2", copies(note))
+	}
+	deletes := queued("Delete")
+	post(bob, remove(bob, note+"#delete", tombstone))
+	if queued("Delete") != deletes+1 {
+		t.Error("the Delete of a reply from someone not followed did not reach the account")
+	}
+	if found, _ := queue.exists("select 1 from copies where object=? and actor=?", note, bob.id); found {
+		t.Error("the copy outlived its Delete")
+	}
+
+	db.exec("insert into following (account, actor, inbox, activity, accepted, created) values ('f1', ?, ?, 'https://example.com/~f1/follows/y', 1, 1)", bob.id, bob.inbox)
+	post(bob, create(bob, note+"/8/activity", note+"/8"))
+	if copies(note+"/8") != 0 {
+		t.Error("a copy was kept of a followed person's post")
+	}
+	db.exec("delete from following where account='f1'")
+
+	follower := func() bool {
+		found, _ := db.exists("select 1 from followers where account='f1' and actor=?", bob.id)
+		return found
+	}
+	follow := func() {
+		db.exec("insert or replace into followers (account, actor, inbox, shared, created) values ('f1', ?, ?, '', 1)", bob.id, bob.inbox)
+	}
+	follow()
+	db.exec("insert into following (account, actor, inbox, activity, accepted, created) values ('f1', ?, ?, 'https://example.com/~f1/follows/z', 1, 1)", bob.id, bob.inbox)
+	queue.exec("insert into copies (object, account, actor, created) values (?, 'f1', ?, 1)", note+"/9", bob.id)
+	deletes = queued("Delete")
+	post(bob, remove(bob, bob.id+"#delete-1", bob.id))
+	if follower() {
+		t.Error("a follower who deleted themselves is still a follower")
+	}
+	if found, _ := db.exists("select 1 from following where account='f1' and actor=?", bob.id); found || copies(note+"/9") != 0 {
+		t.Error("someone deleted is still followed, or their copies kept")
+	}
+	if queued("Delete") != deletes+1 {
+		t.Error("a follower's checked Delete of themselves was not handed to the apps")
+	}
+
+	// Their key gone with them: a 404 is not proof, a 410 is.
+	forger := *bob
+	forger.private = activitypub_server_private()
+	for _, status := range []int{http.StatusNotFound, http.StatusGone} {
+		follow()
+		signature_keys = map[string]signature_key_entry{}
+		answer, asked = status, ""
+		deletes = queued("Delete")
+		post(&forger, remove(bob, fmt.Sprintf("%s#delete-%d", bob.id, status), bob.id))
+		if follower() != (status == http.StatusNotFound) {
+			t.Errorf("after a self-Delete that cannot be checked and a %d, follower = %v", status, follower())
+		}
+		if asked != "https://example.com/~/actor#main-key" {
+			t.Errorf("asked whether they are gone as %q, want the server's own account", asked)
+		}
+		if queued("Delete") != deletes {
+			t.Error("a Delete that could not be checked was handed to the apps")
+		}
+	}
+
+	// Alive, a forged Delete of them is dropped and they stay.
+	follow()
+	signature_keys = map[string]signature_key_entry{}
+	answer = 0
+	post(&forger, remove(bob, bob.id+"#delete-forged", bob.id))
+	if !follower() {
+		t.Error("a forged Delete removed a follower")
+	}
 }
 
 // TestActivityPubFollowing: a post by someone the account follows reaches the

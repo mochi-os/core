@@ -37,6 +37,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"io"
 	"net"
@@ -88,6 +89,13 @@ var inbound_poll = 10 * time.Second
 // received_age is how long an activity id is remembered, so a replay is
 // dropped.
 var received_age int64 = 7 * 86400
+
+// copy_age is how long the inbox remembers which accounts took an object
+// from someone they do not follow, for the object's Delete to reach them.
+var copy_age int64 = 365 * 86400
+
+// copy_length is the longest object id a copy is kept of.
+const copy_length = 512
 
 // tombstone_age is how long a removed account answers gone, and keeps its key
 // to sign the notice of its own deletion.
@@ -234,11 +242,12 @@ func tombstone_key(id string) (string, string) {
 	return account_url(a.Domain, id), a.Key
 }
 
-// activitypub_cleanup drops old received ids and old tombstones. Called from
-// the delivery manager's hourly pass.
+// activitypub_cleanup drops old received ids, old copies and old tombstones.
+// Called from the delivery manager's hourly pass.
 func activitypub_cleanup() {
 	db := networks_database()
 	db.exec("delete from seen where created<?", now()-received_age)
+	db.exec("delete from copies where created<?", now()-copy_age)
 	db.exec("delete from actors where deleted>0 and deleted<?", now()-tombstone_age)
 }
 
@@ -1159,9 +1168,11 @@ func activitypub_inbox(c *gin.Context, user *User, a *actor) {
 	}
 
 	// The accounts the activity is for: the one whose inbox it is, or for the
-	// shared inbox those it addresses or follows. The first signs the fetches
-	// the checks below make, since the sender's server may give its documents
-	// to signed requests only.
+	// shared inbox those it addresses or follows. The first of them with a user
+	// here signs the fetches the checks below make, since the sender's server
+	// may give its documents to signed requests only; with none, the server's
+	// own account on the domain signs them. An activity for nobody here is
+	// checked all the same, so the answer says nothing of who follows whom.
 	targets := []*actor{}
 	if a != nil {
 		targets = append(targets, a)
@@ -1169,13 +1180,57 @@ func activitypub_inbox(c *gin.Context, user *User, a *actor) {
 		targets = activitypub_targets(remote, activity)
 	}
 	ctx := c.Request.Context()
-	if len(targets) > 0 {
-		if target_user, _ := actor_account(targets[0].ID); target_user != nil {
-			ctx = activitypub_signing(ctx, target_user, targets[0].ID)
+	signer := false
+	for _, target := range targets {
+		if target_user, _ := actor_account(target.ID); target_user != nil {
+			if signing := activitypub_signing(ctx, target_user, target.ID); resolve_signed_by(signing) != nil {
+				ctx, signer = signing, true
+				break
+			}
 		}
 	}
+	if !signer && domain_ours(activitypub_host(c)) {
+		ctx = activitypub_server_signing(ctx, activitypub_host(c))
+	}
 
-	key_id, err := signature_verify(ctx, c.Request, body, signature_key_fetch)
+	// A key on another host than the actor's is refused before it is fetched,
+	// or anyone could have this server fetch any address, signed as the
+	// account following the actor named.
+	fetch := func(ctx context.Context, key_id string, fresh bool) (string, error) {
+		if activitypub_host_of(key_id) != host {
+			return "", fmt.Errorf("key %s is not on %s", key_id, host)
+		}
+		return signature_key_fetch(ctx, key_id, fresh)
+	}
+	key_id, err := signature_verify(ctx, c.Request, body, fetch)
+	if err != nil && kind == "Delete" && activitypub_actor_of(activity["object"]) == remote {
+		// Someone deleted takes their key with them, so their Delete cannot
+		// be checked. Their server answering that they are gone, asked by
+		// the server's own account so the answer is the same for everyone,
+		// is proof enough to forget them, though not to hand the apps what
+		// they sent. Unchecked, it is taken and dropped either way, as one
+		// for an actor nobody here knows is, so the answer says nothing of
+		// who follows whom.
+		if activitypub_deferred(c, err) {
+			return
+		}
+		asking := c.Request.Context()
+		if domain_ours(activitypub_host(c)) {
+			asking = activitypub_server_signing(asking, activitypub_host(c))
+		}
+		if activitypub_gone(asking, remote) {
+			for _, target := range targets {
+				if target_user, _ := actor_account(target.ID); target_user != nil {
+					activitypub_forget(target_user, target.ID, remote)
+				}
+			}
+			debug("ActivityPub inbox took the Delete of %s, gone", remote)
+		} else {
+			debug("ActivityPub inbox dropped the Delete of %s, not checked: %v", remote, err)
+		}
+		c.AbortWithStatus(http.StatusAccepted)
+		return
+	}
 	if err != nil {
 		debug("ActivityPub inbox refused %s from %s: %v", kind, remote, err)
 		if !activitypub_deferred(c, err) {
@@ -1301,13 +1356,35 @@ func activitypub_key_owner(ctx context.Context, key_id string, remote string) bo
 // activitypub_targets finds the accounts a shared-inbox activity is for: those
 // named by its object (a Follow), to, cc or audience, directly or as their
 // followers collection, and those following its actor, to whom a post
-// addressed to the actor's followers is delivered this way.
+// addressed to the actor's followers is delivered this way. A Delete names
+// only the public, so it is also for the accounts holding a copy of its
+// object, or for an actor deleting themselves, those they follow.
 func activitypub_targets(remote string, activity map[string]any) []*actor {
 	seen := map[string]bool{}
 	var targets []*actor
+	add := func(a *actor) {
+		if !seen[a.ID] {
+			seen[a.ID] = true
+			targets = append(targets, a)
+		}
+	}
 	for _, a := range activitypub_followers_of(remote) {
-		seen[a.ID] = true
-		targets = append(targets, a)
+		add(a)
+	}
+	if kind, _ := activity["type"].(string); kind == "Delete" {
+		object := activitypub_actor_of(activity["object"])
+		if object == remote {
+			for _, a := range activitypub_followed_by(remote) {
+				add(a)
+			}
+		} else if object != "" {
+			rows, _ := networks_database().rows("select account from copies where object=? and actor=?", object, remote)
+			for _, row := range rows {
+				if a := actor_get(row_string(row, "account")); a != nil && a.Deleted == 0 && a.Network == "fediverse" {
+					add(a)
+				}
+			}
+		}
 	}
 	consider := func(address string) {
 		u, err := url.Parse(address)
@@ -1343,6 +1420,18 @@ func activitypub_targets(remote string, activity map[string]any) []*actor {
 // activitypub_followers_of lists the live accounts here that follow a remote
 // actor, across users.
 func activitypub_followers_of(remote string) []*actor {
+	return activitypub_related(remote, "select account from following where actor=?")
+}
+
+// activitypub_followed_by lists the live accounts here that a remote actor
+// follows, across users.
+func activitypub_followed_by(remote string) []*actor {
+	return activitypub_related(remote, "select account from followers where actor=?")
+}
+
+// activitypub_related lists the live accounts across users that a query of
+// each user's database names for a remote actor.
+func activitypub_related(remote string, query string) []*actor {
 	var found []*actor
 	rows, _ := networks_database().rows("select distinct user from actors where deleted=0 and network='fediverse'")
 	for _, row := range rows {
@@ -1350,7 +1439,7 @@ func activitypub_followers_of(remote string) []*actor {
 		if u == nil || user_quiet(u) {
 			continue
 		}
-		accounts, _ := db_user(u, "user").rows("select account from following where actor=?", remote)
+		accounts, _ := db_user(u, "user").rows(query, remote)
 		for _, account := range accounts {
 			if a := actor_get(row_string(account, "account")); a != nil && a.Deleted == 0 && a.Network == "fediverse" {
 				found = append(found, a)
@@ -1364,7 +1453,9 @@ func activitypub_followers_of(remote string) []*actor {
 // Follow is accepted, an Undo of a Follow forgets the follower, an Accept or
 // Reject settles a follow the account sent, a Move by someone followed sends
 // the follow on to where they went, a Flag about a person is a report for the
-// administrators, and anything else is queued for the apps.
+// administrators, and anything else is queued for the apps. A post from
+// someone the account does not follow is remembered as a copy, and someone
+// deleting themselves is followed and followed by no more.
 // An error is a failure that may pass, for the sender to send again.
 func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote string, kind string, activity map[string]any, body []byte) error {
 	actor_id := account_url(a.Domain, a.ID)
@@ -1439,10 +1530,46 @@ func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote stri
 			return nil
 		}
 		activitypub_report(ctx, user, a, actor_id, remote, activity)
+	case "Create":
+		// Its Delete will name only the public, and reach the account then
+		// through this copy, or through the account following its author. An
+		// object is its author's server's to name: one on another host, or
+		// with an id longer than any server gives, is kept no copy.
+		if object := activitypub_actor_of(activity["object"]); object != "" && len(object) <= copy_length && activitypub_host_of(object) == activitypub_host_of(remote) {
+			if followed, _ := db.exists("select 1 from following where account=? and actor=?", a.ID, remote); !followed {
+				networks_database().exec("insert or ignore into copies (object, account, actor, created) values (?, ?, ?, ?)", object, a.ID, remote, now())
+			}
+		}
+		inbound_add(user, a.ID, remote, kind, body)
+	case "Delete":
+		if object := activitypub_actor_of(activity["object"]); object == remote {
+			activitypub_forget(user, a.ID, remote)
+		} else {
+			networks_database().exec("delete from copies where object=? and account=? and actor=?", object, a.ID, remote)
+		}
+		inbound_add(user, a.ID, remote, kind, body)
 	default:
 		inbound_add(user, a.ID, remote, kind, body)
 	}
 	return nil
+}
+
+// activitypub_forget drops someone deleted from an account: as a follower, as
+// someone followed, and the copies of what they sent it.
+func activitypub_forget(user *User, account string, remote string) {
+	db := db_user(user, "user")
+	db.exec("delete from followers where account=? and actor=?", account, remote)
+	db.exec("delete from following where account=? and actor=?", account, remote)
+	networks_database().exec("delete from copies where account=? and actor=?", account, remote)
+}
+
+// activitypub_gone says whether a remote actor's server answers that the
+// actor is gone (410). A 404 is not taken for it: a live server answers one
+// in passing, behind a restart or a moved host.
+func activitypub_gone(ctx context.Context, remote string) bool {
+	_, err := resolve_fetch(ctx, remote, "application/activity+json, application/ld+json")
+	var refusal *resolve_refusal
+	return errors.As(err, &refusal) && refusal.Status == http.StatusGone
 }
 
 // activitypub_report keeps a Flag about a hosted account as a report: the
@@ -1644,4 +1771,5 @@ func activitypub_account_remove(user *User, id string) {
 	db.exec("delete from objects where account=?", a.ID)
 	media_remove(user, a.ID)
 	networks_database().exec("delete from inbound where account=?", a.ID)
+	networks_database().exec("delete from copies where account=?", a.ID)
 }

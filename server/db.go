@@ -86,7 +86,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 19
+	schema_version = 20
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -1512,6 +1512,8 @@ func db_upgrade() {
 			db_upgrade_18()
 		case 19:
 			db_upgrade_19()
+		case 20:
+			db_upgrade_20()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2960,6 +2962,16 @@ func db_upgrade_18_networks(db *DB) {
 // every stanza.
 func db_upgrade_19() {
 	db_open("db/networks.db").exec("create index if not exists actors_domain on actors(domain, handle)")
+}
+
+// db_upgrade_20 adds the copies the inbox takes for an account from someone
+// it does not follow, by object id, so that the Delete of one reaches the
+// account holding it; networks_create carries the same table.
+func db_upgrade_20() {
+	networks := db_open("db/networks.db")
+	networks.exec("create table if not exists copies (object text not null, account text not null, actor text not null, created integer not null, primary key (object, account, actor))")
+	networks.exec("create index if not exists copies_account on copies(account)")
+	networks.exec("create index if not exists copies_created on copies(created)")
 }
 
 // db_upgrade_12 adds the handle registry to users.db; db_create carries the

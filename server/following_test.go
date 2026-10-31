@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -218,8 +219,10 @@ func TestAccountMove(t *testing.T) {
 	alice, bob := create_activitypub_test_env(t)
 	following_documents(t, bob)
 	fn := sl.NewBuiltin("test", nil)
-	thread := create_acting_thread(alice)
-	permission_grant(alice, "app1", "accounts/write")
+	// Settings holds accounts/write and no account's publishing permission.
+	thread := create_test_thread(alice, create_external_app("app2"))
+	thread.SetLocal("context", context.Background())
+	permission_grant(alice, "app2", "accounts/write")
 	db := db_user(alice, "user")
 
 	if _, err := api_account_update(thread, fn, sl.Tuple{sl.String("f1")}, []sl.Tuple{{sl.String("aliases"), sl.NewList([]sl.Value{sl.String("@carol@remote.example")})}}); err != nil {
@@ -236,6 +239,27 @@ func TestAccountMove(t *testing.T) {
 	// A follower to tell.
 	signed_post(t, bob, "/~f1/inbox", follow_activity(bob, "https://remote.example/follows/mv"), nil)
 	before := len(delivery_rows(t))
+
+	// An app publishing through the account cannot move it.
+	_, err := api_account_move(create_acting_thread(alice), fn, sl.Tuple{sl.String("f1"), sl.String("@carol@remote.example")}, nil)
+	var permission *PermissionError
+	if !errors.As(err, &permission) || permission.Permission != "accounts/write" {
+		t.Errorf("a move with only the account's publishing permission: %v", err)
+	}
+	// Someone else viewing alice's page, as an OpenGraph render or a context
+	// route has it, with their own grant: the account is looked for among
+	// theirs, not hers.
+	mallory := &User{UID: "u9", Username: "mallory", Role: "user", Preferences: map[string]string{}}
+	viewer := create_test_thread(mallory, create_external_app("app3"))
+	viewer.SetLocal("storage", alice)
+	viewer.SetLocal("context", context.Background())
+	permission_grant(mallory, "app3", "accounts/write")
+	if _, err := api_account_move(viewer, fn, sl.Tuple{sl.String("f1"), sl.String("@carol@remote.example")}, nil); err == nil {
+		t.Error("someone viewing alice's page moved her account")
+	}
+	if moved, _ := account_data(account_hosted_get(alice, "f1"))["moved"].(string); moved != "" {
+		t.Errorf("alice's account moved to %q by another user", moved)
+	}
 
 	if _, err := api_account_move(thread, fn, sl.Tuple{sl.String("f1"), sl.String("https://remote.example/u/dave")}, nil); !refused(err, "errors.move_not_named", "") {
 		t.Errorf("a move to an account that does not name this one was allowed: %v", err)

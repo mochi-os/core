@@ -96,6 +96,13 @@ func account_acting_on(t *sl.Thread, fn *sl.Builtin, id string, networks ...stri
 	if err != nil || user == nil {
 		return nil, nil, "", fmt.Errorf("no user")
 	}
+	return account_held(user, id, networks...)
+}
+
+// account_held is account_acting_on without the account permission, for one
+// of the user's accounts given: moving an account is managing it, as its
+// settings are, and is done to the caller's own.
+func account_held(user *User, id string, networks ...string) (*User, map[string]any, string, error) {
 	if user_quiet(user) {
 		return nil, nil, "", fmt.Errorf("the account is closing")
 	}
@@ -586,13 +593,24 @@ func following_move(ctx context.Context, user *User, account string, from string
 // account elsewhere, by its handle or its id: the other account must already
 // name this one among its own (alsoKnownAs). The account's document names
 // where it went, and its followers' servers are sent a Move so they follow
-// the new account instead. Behind the account permission
+// the new account instead. Behind accounts/write, as the account's other
+// settings are, and only on the signed-in user's own accounts: the account
+// permission an app publishes through is not enough
 func api_account_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, address string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "address", &address); err != nil {
 		return nil, err
 	}
-	user, row, actor, err := account_acting(t, fn, account)
+	if err := require_permission(t, fn, "accounts/write"); err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	// The caller's, as the grant checked is: on a context route or an
+	// OpenGraph render the storage user is the page's owner, not the viewer.
+	caller := principal_caller(t)
+	if caller == nil {
+		return sl_error(fn, "no user")
+	}
+	user, row, actor, err := account_held(caller, account, "fediverse", "bluesky")
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}

@@ -19,9 +19,11 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -359,5 +361,108 @@ func TestCacheImageVariantIsAdmitted(t *testing.T) {
 	if got := cache_total_read(); got != information.Size() {
 		t.Errorf("running total is %d after a %d-byte variant landed in the cache, want %d: mochi.image.variant writes to the cache unaccounted",
 			got, information.Size(), information.Size())
+	}
+}
+
+// cache_tee_fill relays size bytes through a tee for name, as a.write.stream with
+// cache= does, into a browser that takes them all, and finishes it.
+func cache_tee_fill(t *testing.T, name string, size int) string {
+	t.Helper()
+	target := filepath.Join(cache_dir, "apps", "userA", "app", name)
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		t.Fatal(err)
+	}
+	temporary := target + ".test.partial"
+	f, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tee := &cache_tee{file: f, temporary: temporary, target: target}
+	_, complete, err := stream_relay(io.Discard, io.TeeReader(bytes.NewReader(make([]byte, size)), tee.file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tee.finish(complete)
+	return target
+}
+
+// TestCacheRelayIsAdmitted: a relay filling the cache as a side effect is held to
+// the budget when it lands, as every other cache write is. It was counted only by
+// the hourly sweep, so a caller relaying many large assets could fill the disk
+// cache_dir shares with every user in between.
+func TestCacheRelayIsAdmitted(t *testing.T) {
+	cache_admission_setup(t, 1000)
+	old := cache_admission_write(t, "old", 600)
+	time.Sleep(10 * time.Millisecond)
+
+	relayed := cache_tee_fill(t, "relayed", 800)
+
+	if _, err := os.Stat(relayed); err != nil {
+		t.Fatalf("the relayed entry is missing: %v", err)
+	}
+	if _, err := os.Stat(old); err == nil {
+		t.Errorf("the older entry survived a relay that took the cache past its budget")
+	}
+	if got := cache_total_read(); got > 1000 {
+		t.Errorf("running total is %d after the relay, want at most the budget of 1000", got)
+	}
+}
+
+// TestCacheRelayReplacingCountsTheDifference: a relay over an existing entry
+// counts only what it adds.
+func TestCacheRelayReplacingCountsTheDifference(t *testing.T) {
+	cache_admission_setup(t, 100000)
+	cache_admission_write(t, "other", 200)
+	cache_tee_fill(t, "entry", 300)
+	if got, want := cache_total_read(), int64(500); got != want {
+		t.Fatalf("running total is %d after a relay, want %d", got, want)
+	}
+	cache_tee_fill(t, "entry", 100)
+	if got, want := cache_total_read(), int64(300); got != want {
+		t.Errorf("running total is %d after a relay replaced an entry, want %d", got, want)
+	}
+}
+
+// cache_hangup is a browser that takes some of a body and then walks away.
+type cache_hangup struct{ remaining int }
+
+func (h *cache_hangup) Write(p []byte) (int, error) {
+	if len(p) > h.remaining {
+		n := h.remaining
+		h.remaining = 0
+		return n, syscall.EPIPE
+	}
+	h.remaining -= len(p)
+	return len(p), nil
+}
+
+// TestCacheRelayAbandonedIsNotKept: a browser that walks away mid-body leaves
+// the tee holding part of it, which must not become a cache entry.
+func TestCacheRelayAbandonedIsNotKept(t *testing.T) {
+	cache_admission_setup(t, 100000)
+	target := filepath.Join(cache_dir, "apps", "userA", "app", "abandoned")
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		t.Fatal(err)
+	}
+	temporary := target + ".test.partial"
+	f, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tee := &cache_tee{file: f, temporary: temporary, target: target}
+	body := io.TeeReader(io.LimitReader(rand.New(rand.NewSource(1)), 256*1024), tee.file)
+	n, complete, err := stream_relay(&cache_hangup{remaining: 1000}, body)
+	if err != nil {
+		t.Fatalf("a browser walking away is not an error: %v", err)
+	}
+	if complete {
+		t.Errorf("a relay the browser abandoned after %d bytes was reported complete", n)
+	}
+	tee.finish(complete)
+	if _, err := os.Stat(target); err == nil {
+		t.Errorf("a relay the browser abandoned was kept as a cache entry")
+	}
+	if _, err := os.Stat(temporary); err == nil {
+		t.Errorf("the abandoned relay's partial file was left behind")
 	}
 }

@@ -1283,9 +1283,12 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	}
 
 	// Copy stream data directly to HTTP response
-	n, err := io.Copy(a.web.Writer, reader)
-	if err != nil && !is_client_disconnect(err) {
+	n, complete, err := stream_relay(a.web.Writer, reader)
+	if err != nil {
 		return sl_error(fn, "stream copy error: %v", err)
+	}
+	if !complete {
+		return sl.MakeInt64(n), nil
 	}
 	if limited.spent {
 		return a.write_stream_spent(fn, n)
@@ -1298,6 +1301,20 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	// arrived complete, so the tee may be committed to the cache.
 	filled = true
 	return sl.MakeInt64(n), nil
+}
+
+// stream_relay copies a relayed body to the browser. complete is false when the
+// browser walked away mid-body: not an error, but the tee then holds only part of
+// the body, which must never become a cache entry. err is any other failure.
+func stream_relay(w io.Writer, reader io.Reader) (int64, bool, error) {
+	n, err := io.Copy(w, reader)
+	if err != nil {
+		if is_client_disconnect(err) {
+			return n, false, nil
+		}
+		return n, false, err
+	}
+	return n, true, nil
 }
 
 // write_stream_spent reports a relay stopped because the caller's byte budget ran

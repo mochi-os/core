@@ -588,8 +588,16 @@ func cache_tee_start(t *sl.Thread, name string) (*cache_tee, error) {
 
 func (ct *cache_tee) finish(complete bool) {
 	ct.file.Close()
-	if complete && os.Rename(ct.temporary, ct.target) == nil {
-		return
+	if complete {
+		// The entry it replaces, if any, leaves the budget as this one joins it.
+		var previous int64
+		if information, err := os.Stat(ct.target); err == nil {
+			previous = information.Size()
+		}
+		if information, err := os.Stat(ct.temporary); err == nil && os.Rename(ct.temporary, ct.target) == nil {
+			cache_admit(information.Size() - previous)
+			return
+		}
 	}
 	os.Remove(ct.temporary)
 }

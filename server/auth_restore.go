@@ -600,7 +600,7 @@ func restore_bluesky(user *User, row map[string]any, name string) bool {
 	atproto_register(did, id, user)
 	stream_append(did, "#identity", map[string]any{"did": did, "handle": address})
 	stream_append(did, "#account", map[string]any{"did": did, "active": true})
-	go atproto_crawl(domain)
+	atproto_crawl_later(domain)
 	return true
 }
 

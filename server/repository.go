@@ -796,7 +796,7 @@ func atproto_manager() {
 	}()
 	// The relay is asked to listen before any account's events go out, and
 	// each hour the accounts it does not hold are announced again.
-	go atproto_crawl_all()
+	atproto_crawls.Go(atproto_crawl_all)
 	for range time.Tick(time.Hour) {
 		stream_cleanup()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

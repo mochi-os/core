@@ -509,7 +509,7 @@ func api_setting_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	// Bluesky switched on: the relay is asked to listen before a first
 	// account's events go out.
 	if name == "bluesky" && value == "true" {
-		go atproto_crawl_all()
+		atproto_crawls.Go(atproto_crawl_all)
 	}
 	// Never write a credential's value into the audit log.
 	audit_value := value

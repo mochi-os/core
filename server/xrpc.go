@@ -1050,7 +1050,7 @@ func xrpc_activation(c *gin.Context, active bool) {
 			repository_commit(ctx, r, nil)
 		}
 		domain, _ := data["domain"].(string)
-		go atproto_crawl(domain)
+		atproto_crawl_later(domain)
 	} else {
 		stream_append(s.did, "#account", map[string]any{"did": s.did, "active": false, "status": "deactivated"})
 	}

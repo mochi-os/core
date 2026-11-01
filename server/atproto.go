@@ -310,7 +310,7 @@ func atproto_account_create(ctx context.Context, user *User, id string) error {
 	if _, _, err := repository_write(ctx, r, "app.bsky.actor.profile", "self", record, false); err != nil {
 		return err
 	}
-	go atproto_crawl(domain)
+	atproto_crawl_later(domain)
 	return nil
 }
 
@@ -500,8 +500,19 @@ func atproto_notify(domain string) {
 	}
 	atproto_notified_lock.Unlock()
 	if due {
-		go atproto_crawl(domain)
+		atproto_crawl_later(domain)
 	}
+}
+
+// atproto_crawls counts the crawl requests under way away from what asked for
+// them, so a test can let those it started finish before its relay and its
+// data go.
+var atproto_crawls sync.WaitGroup
+
+// atproto_crawl_later asks the relay to read a domain's repositories without
+// waiting for the answer.
+func atproto_crawl_later(domain string) {
+	atproto_crawls.Go(func() { atproto_crawl(domain) })
 }
 
 // atproto_crawl asks the relay to read this server's repositories, once an

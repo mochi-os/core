@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -187,6 +188,9 @@ func create_atproto_test_env(t *testing.T) (*User, *plc_fake) {
 		atproto_repair_cancel()
 		bluesky_plc, atproto_lookup, atproto_budget_hour, atproto_budget_day, bluesky_relay = saved_plc, saved_lookup, saved_hour, saved_day, saved_relay
 	})
+	// Registered last, so it runs first: a crawl the test started finishes
+	// against its relay and its data, before either goes.
+	t.Cleanup(atproto_crawls.Wait)
 	return alice, plc
 }
 
@@ -951,6 +955,36 @@ func TestAtprotoRemoveHeldElsewhere(t *testing.T) {
 				t.Errorf("the directory refused %d operations", plc.refused)
 			}
 		})
+	}
+}
+
+// TestAtprotoCrawlFinishesWithTheTest: the crawl an account's creation asks
+// for runs away from it, and has finished by the time the test's environment
+// is gone; one still running then read the next test's data directory, and a
+// database refused there panicked the whole test binary.
+func TestAtprotoCrawlFinishesWithTheTest(t *testing.T) {
+	var arrived, done atomic.Int32
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrived.Add(1)
+		time.Sleep(300 * time.Millisecond)
+		done.Add(1)
+	}))
+	t.Cleanup(relay.Close)
+
+	t.Run("create", func(t *testing.T) {
+		alice, _ := create_atproto_test_env(t)
+		bluesky_relay = relay.URL
+		if err := atproto_account_create(context.Background(), alice, "b1"); err != nil {
+			t.Fatal(err)
+		}
+		for deadline := time.Now().Add(5 * time.Second); arrived.Load() == 0; time.Sleep(10 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("CONTROL: the account's creation asks the relay to crawl")
+			}
+		}
+	})
+	if arrived.Load() == 0 || done.Load() != arrived.Load() {
+		t.Errorf("THE POINT: %d of %d crawls had finished when the test's environment went", done.Load(), arrived.Load())
 	}
 }
 

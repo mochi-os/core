@@ -148,6 +148,10 @@ func pubsub_validate(ctx context.Context, from p2p_peer.ID, m *p2p_pubsub.Messag
 		return p2p_pubsub.ValidationAccept
 	}
 
+	// Whatever becomes of the message, the peer relaying it has joined the
+	// topic; mesh_forgotten_step compares that with the topic's members.
+	mesh_sender_note(peer)
+
 	f, err := announcement_read(m.Data)
 	if err != nil {
 		pubsub_dropped.Add(1)

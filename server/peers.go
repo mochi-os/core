@@ -13,10 +13,12 @@ package main
 
 import (
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	p2p_network "github.com/libp2p/go-libp2p/core/network"
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	multiaddr "github.com/multiformats/go-multiaddr"
 )
@@ -298,16 +300,29 @@ func mesh_isolation_step(s mesh_isolation_state, peers int, t int64) (next mesh_
 // mesh_isolation_manager watches the GossipSub mesh and, while it is empty,
 // re-dials every bootstrap, resets known-peer reconnect backoffs, and requests
 // fresh addresses. Warns the operator once if isolation outlasts
-// mesh_isolation_alert_after.
+// mesh_isolation_alert_after. Each sample also reconnects the peers whose
+// subscription GossipSub forgot (mesh_forgotten_step), which no re-dial
+// reaches since they are still connected.
 func mesh_isolation_manager() {
 	var state mesh_isolation_state
+	var forgotten mesh_forgotten_state
 	for range time.Tick(mesh_isolation_recheck) {
 		if net_pubsub == nil {
 			continue
 		}
+		members := map[string]bool{}
+		for _, id := range net_pubsub.ListPeers() {
+			members[id.String()] = true
+		}
+		var lost []string
+		forgotten, lost = mesh_forgotten_step(forgotten, mesh_senders_take(), members, now())
+		for _, id := range lost {
+			mesh_forgotten_reconnect(id)
+		}
+
 		previous := state.since
 		var remediate, alert, recovered bool
-		state, remediate, alert, recovered = mesh_isolation_step(state, len(net_pubsub.ListPeers()), now())
+		state, remediate, alert, recovered = mesh_isolation_step(state, len(members), now())
 		if recovered {
 			info("Mesh isolation cleared after %s; broadcast mesh recovered", time.Duration(now()-previous)*time.Second)
 		}
@@ -336,6 +351,94 @@ func mesh_isolation_remediate() {
 	peer_reconnect_lock.Unlock()
 
 	peers_publish_request()
+}
+
+// mesh_forgotten_cooldown is how long a peer reconnected for a forgotten
+// subscription is left before it may be reconnected again, so a peer that
+// relays to the topic without joining it is not reconnected every sample.
+const mesh_forgotten_cooldown = 5 * time.Minute
+
+// mesh_senders holds the peers that relayed a /mochi/2 message to this server
+// since mesh_isolation_manager last took them. A peer relays only to servers
+// it believes joined the topic, and every Mochi server joins it, so each is a
+// member whatever this server's own list of members says.
+var mesh_senders = struct {
+	sync.Mutex
+	peers map[string]bool
+}{peers: map[string]bool{}}
+
+// mesh_sender_note records a peer that relayed a /mochi/2 message.
+func mesh_sender_note(id string) {
+	mesh_senders.Lock()
+	mesh_senders.peers[id] = true
+	mesh_senders.Unlock()
+}
+
+// mesh_senders_take answers the peers noted since the last call, and starts
+// the next set empty.
+func mesh_senders_take() map[string]bool {
+	mesh_senders.Lock()
+	taken := mesh_senders.peers
+	mesh_senders.peers = map[string]bool{}
+	mesh_senders.Unlock()
+	return taken
+}
+
+// mesh_forgotten_state carries mesh_forgotten_step's memory between samples:
+// the peers that relayed a message last sample without being members, and
+// when each recently reconnected peer was reconnected.
+type mesh_forgotten_state struct {
+	suspects map[string]bool
+	reset    map[string]int64
+}
+
+// mesh_forgotten_step finds the peers GossipSub has forgotten joined the
+// topic. When this server's outbound pubsub stream to a peer dies while the
+// connection lives on (a duplicate connection being closed), the library drops
+// the peer from every topic and reopens only its own stream. The peer's stream
+// to us never closes, so it never announces its subscriptions again: it goes on
+// relaying to us while we list it as no member and send it nothing, until the
+// connection itself drops. senders are the peers that relayed a message since
+// the last sample, members the peers the topic lists. A sender missing from
+// members is a suspect; a suspect still missing at the next sample is answered,
+// to be reconnected, unless it was reconnected within mesh_forgotten_cooldown.
+// Pure (no I/O, no clock), so it is unit-testable.
+func mesh_forgotten_step(s mesh_forgotten_state, senders map[string]bool, members map[string]bool, t int64) (mesh_forgotten_state, []string) {
+	next := mesh_forgotten_state{suspects: map[string]bool{}, reset: map[string]int64{}}
+	for id, at := range s.reset {
+		if t-at < int64(mesh_forgotten_cooldown/time.Second) {
+			next.reset[id] = at
+		}
+	}
+	var lost []string
+	for id := range s.suspects {
+		if _, cooling := next.reset[id]; cooling || members[id] {
+			continue
+		}
+		lost = append(lost, id)
+		next.reset[id] = t
+	}
+	for id := range senders {
+		if _, cooling := next.reset[id]; cooling || members[id] {
+			continue
+		}
+		next.suspects[id] = true
+	}
+	slices.Sort(lost)
+	return next, lost
+}
+
+// mesh_forgotten_reconnect closes every connection to a peer whose
+// subscription GossipSub forgot. The disconnect schedules the usual reconnect
+// (peer_disconnected), and the new connection opens fresh pubsub streams on
+// both sides, each announcing its subscriptions.
+func mesh_forgotten_reconnect(id string) {
+	pid, err := p2p_peer.Decode(id)
+	if err != nil || net_me == nil || net_me.Network().Connectedness(pid) != p2p_network.Connected {
+		return
+	}
+	info("Broadcast mesh lost the subscription of peer %q, which still relays to us; reconnecting", id)
+	net_me.Network().ClosePeer(pid)
 }
 
 // peer_addresses_normalise validates operator-supplied multiaddresses and

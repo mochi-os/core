@@ -5,13 +5,24 @@
 // Application Interface Exception - see license.txt and license-exception.md.
 //
 // The in-memory peer-silence fast-fail. The gate lives in peer_protocol_open;
-// these tests drive it directly, keeping the libp2p layer out of the picture.
+// those tests drive it directly, keeping the libp2p layer out of the picture.
+// The broadcast mesh's forgotten-subscription repair runs two real hosts.
 
 package main
 
 import (
+	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
+	"time"
+
+	p2p "github.com/libp2p/go-libp2p"
+	p2p_pubsub "github.com/libp2p/go-libp2p-pubsub"
+	p2p_host "github.com/libp2p/go-libp2p/core/host"
+	p2p_network "github.com/libp2p/go-libp2p/core/network"
+	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
 )
 
 // reset_peer_reachability is a test helper that clears the in-memory
@@ -253,4 +264,201 @@ func TestPeersBootstrapIsolated(t *testing.T) {
 	if len(peers_bootstrap) != 0 {
 		t.Errorf("THE POINT: an isolated server has no bootstrap peers: %v", peers_bootstrap)
 	}
+}
+
+// TestMeshForgottenStep: a peer relaying to the topic while missing from its
+// members is answered for reconnection at the next sample it is still missing,
+// then left alone for the cooldown.
+func TestMeshForgottenStep(t *testing.T) {
+	cooldown := int64(mesh_forgotten_cooldown / time.Second)
+	none := map[string]bool{}
+	var s mesh_forgotten_state
+	var lost []string
+
+	s, lost = mesh_forgotten_step(s, map[string]bool{"a": true, "b": true}, map[string]bool{"b": true}, 100)
+	if len(lost) != 0 {
+		t.Fatalf("a sender is only a suspect at its first sample: %v", lost)
+	}
+	if !s.suspects["a"] || s.suspects["b"] {
+		t.Fatalf("THE POINT: the sender missing from the members is the suspect, the member is not: %v", s.suspects)
+	}
+
+	s, lost = mesh_forgotten_step(s, none, none, 115)
+	if !slices.Equal(lost, []string{"a"}) {
+		t.Fatalf("THE POINT: a suspect still missing at the next sample is answered, sending or not: %v", lost)
+	}
+
+	s, lost = mesh_forgotten_step(s, map[string]bool{"a": true}, none, 130)
+	s, lost = mesh_forgotten_step(s, map[string]bool{"a": true}, none, 145)
+	if len(lost) != 0 || s.suspects["a"] {
+		t.Fatalf("a peer just reconnected is left alone for the cooldown: lost %v, suspects %v", lost, s.suspects)
+	}
+
+	s, _ = mesh_forgotten_step(s, map[string]bool{"a": true}, none, 115+cooldown)
+	s, lost = mesh_forgotten_step(s, none, none, 130+cooldown)
+	if !slices.Equal(lost, []string{"a"}) {
+		t.Fatalf("after the cooldown the peer is answered again: %v", lost)
+	}
+
+	s, _ = mesh_forgotten_step(mesh_forgotten_state{}, map[string]bool{"c": true}, none, 200)
+	s, lost = mesh_forgotten_step(s, none, map[string]bool{"c": true}, 215)
+	if len(lost) != 0 {
+		t.Fatalf("a suspect that has since joined the members is not answered: %v", lost)
+	}
+}
+
+// TestMeshForgottenSubscriptionRecovers reproduces, with two real hosts, the
+// GossipSub state yuzu was found in: a's outbound pubsub stream to b dies with
+// the connection left open, so a drops b from the topic and never hears its
+// subscription again, while b goes on relaying to a. a's broadcasts then reach
+// no one, and dialling b again changes nothing since it is connected. The
+// repair notes b as a sender, answers it at the next sample and closes the
+// connection; the reconnect brings b back as a member and a's broadcasts with
+// it.
+func TestMeshForgottenSubscriptionRecovers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	host := func() p2p_host.Host {
+		h, err := p2p.New(p2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+		if err != nil {
+			t.Fatalf("test host: %v", err)
+		}
+		t.Cleanup(func() { h.Close() })
+		return h
+	}
+	a, b := host(), host()
+
+	saved_me, saved_id := net_me, net_id
+	net_me, net_id = a, a.ID().String()
+	t.Cleanup(func() { net_me, net_id = saved_me, saved_id })
+	mesh_senders_take()
+
+	received := make(chan []byte, 64)
+	join := func(h p2p_host.Host, validate bool, out chan []byte) *p2p_pubsub.Topic {
+		gs, err := p2p_pubsub.NewGossipSub(ctx, h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if validate {
+			if err := gs.RegisterTopicValidator(pubsub_topic, pubsub_validate); err != nil {
+				t.Fatal(err)
+			}
+		}
+		topic, err := gs.Join(pubsub_topic)
+		if err != nil {
+			t.Fatal(err)
+		}
+		subscription, err := topic.Subscribe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			for {
+				m, err := subscription.Next(ctx)
+				if err != nil {
+					return
+				}
+				if out != nil && m.ReceivedFrom != h.ID() {
+					out <- m.Data
+				}
+			}
+		}()
+		return topic
+	}
+	ta := join(a, true, nil)
+	tb := join(b, false, received)
+
+	member := func(topic *p2p_pubsub.Topic, id p2p_peer.ID) bool {
+		return slices.Contains(topic.ListPeers(), id)
+	}
+	wait := func(what string, condition func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			if condition() {
+				return
+			}
+		}
+		t.Fatalf("timed out waiting until %s", what)
+	}
+	reaches := func(message string) bool {
+		for len(received) > 0 {
+			<-received
+		}
+		if err := ta.Publish(ctx, []byte(message)); err != nil {
+			t.Fatalf("a publishes: %v", err)
+		}
+		select {
+		case data := <-received:
+			return string(data) == message
+		case <-time.After(time.Second):
+			return false
+		}
+	}
+	dial := func() {
+		if err := a.Connect(ctx, p2p_peer.AddrInfo{ID: b.ID(), Addrs: b.Addrs()}); err != nil {
+			t.Fatalf("a dials b: %v", err)
+		}
+	}
+
+	dial()
+	wait("each host lists the other", func() bool { return member(ta, b.ID()) && member(tb, a.ID()) })
+	wait("CONTROL: a's broadcast reaches b while each lists the other", func() bool { return reaches("before") })
+
+	// a's outbound pubsub stream to b dies, the connection left open, as
+	// closing a duplicate connection does.
+	for _, c := range a.Network().ConnsToPeer(b.ID()) {
+		for _, s := range c.GetStreams() {
+			if s.Stat().Direction == p2p_network.DirOutbound && strings.HasPrefix(string(s.Protocol()), "/meshsub/") {
+				s.Reset()
+			}
+		}
+	}
+	wait("a drops b from the topic", func() bool { return !member(ta, b.ID()) })
+	mesh_senders_take()
+	wait("b relays to a, which does not list it", func() bool {
+		if err := tb.Publish(ctx, []byte("from b")); err != nil {
+			t.Fatalf("b publishes: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+		return mesh_senders_take()[b.ID().String()]
+	})
+	dial()
+	time.Sleep(time.Second)
+	if member(ta, b.ID()) || !member(tb, a.ID()) || reaches("forgotten") {
+		t.Fatal("CONTROL: with b's subscription forgotten, dialling the connected b leaves a's broadcasts reaching no one")
+	}
+
+	// Two samples of the repair, b relaying before each.
+	members := func() map[string]bool {
+		out := map[string]bool{}
+		for _, id := range ta.ListPeers() {
+			out[id.String()] = true
+		}
+		return out
+	}
+	var state mesh_forgotten_state
+	var lost []string
+	for sample := range 2 {
+		if err := tb.Publish(ctx, []byte("from b")); err != nil {
+			t.Fatalf("b publishes: %v", err)
+		}
+		time.Sleep(200 * time.Millisecond)
+		state, lost = mesh_forgotten_step(state, mesh_senders_take(), members(), now()+int64(sample)*15)
+	}
+	if !slices.Equal(lost, []string{b.ID().String()}) {
+		t.Fatalf("THE POINT: b, relaying to a without being listed, is answered for reconnection: %v", lost)
+	}
+	for _, id := range lost {
+		mesh_forgotten_reconnect(id)
+	}
+	wait("the connection closes and b drops a", func() bool {
+		return a.Network().Connectedness(b.ID()) != p2p_network.Connected && !member(tb, a.ID())
+	})
+
+	// The reconnect peer_disconnected schedules, ten seconds on in a server.
+	time.Sleep(500 * time.Millisecond)
+	dial()
+	wait("THE POINT: a lists b again", func() bool { return member(ta, b.ID()) })
+	wait("THE POINT: a's broadcasts reach b again", func() bool { return reaches("after") })
 }

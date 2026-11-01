@@ -490,6 +490,24 @@ func TestAtprotoPublish(t *testing.T) {
 	if row_int(n, "n") > 4 {
 		t.Errorf("%d blocks kept for a repository of one record", row_int(n, "n"))
 	}
+	// Asked again under its key once deleted, the record is made anew: a
+	// like taken back and given again.
+	anew, err := api_account_object_create(thread, fn, sl.Tuple{sl.String("b1"), object_dict("text", "Hello once more")}, []sl.Tuple{{sl.String("key"), sl.String("post-1")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	made, _ := sl_decode_map(anew)["id"].(string)
+	if made == uri || !strings.HasPrefix(made, "at://"+did+"/app.bsky.feed.post/") {
+		t.Fatalf("the key asked again after the deletion answered %q, want a new record", made)
+	}
+	if event := atproto_commit_event(t); len(event.Ops) != 1 || event.Ops[0].Action != "create" {
+		t.Errorf("ops after asking again = %+v", event.Ops)
+	}
+	if _, _, again, _ := bluesky_uri(made); again != "" {
+		if _, v := repository_record(alice, "b1", "app.bsky.feed.post", again); v["text"] != "Hello once more" {
+			t.Errorf("record made anew = %v", v)
+		}
+	}
 
 	// A blob.
 	upload, err := api_account_upload(thread, fn, sl.Tuple{sl.String("b1"), sl.Bytes("\x89PNG\r\n\x1a\nimage"), sl.String("image/png")}, nil)

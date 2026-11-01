@@ -449,6 +449,14 @@ func TestBlueskyPassword(t *testing.T) {
 	if _, err := api_account_object_delete(thread, fn, sl.Tuple{sl.String(id), sl.String(created["id"].(string))}, nil); err != nil {
 		t.Errorf("delete: %v", err)
 	}
+	// Asked again under its key once deleted, the record is made anew.
+	decoded(t)(api_account_object_create(thread, fn, sl.Tuple{sl.String(id), object_dict("text", "Hello")}, linked_kwargs("key", "p1")))
+	fake.lock.Lock()
+	records = len(fake.records)
+	fake.lock.Unlock()
+	if records != 2 {
+		t.Errorf("%d records once the key was asked again after its record was deleted, want 2", records)
+	}
 	timeline := decoded(t)(api_account_timeline(thread, fn, sl.Tuple{sl.String(id)}, nil))
 	if len(timeline["items"].([]any)) != 1 || timeline["cursor"] != "c1" {
 		t.Errorf("timeline = %v", timeline)

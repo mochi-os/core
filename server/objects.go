@@ -262,7 +262,7 @@ func object_stored_addressing(row map[string]any) (to []string, cc []string) {
 	return stored.To, stored.Cc
 }
 
-// mochi.account.object.create(account, object, key="", sourced=False) -> dict: Publish an object as an account and return {id, url, data}: its id on the network, its page where the network has one, and the object as published. As a hosted fediverse account, the object is an ActivityStreams object the app has already put in the network's form (its type, HTML content, attachments, tags); core gives it its id under the account, attributedTo and published, and sends Create to everyone it addresses, which is the public and the account's followers unless the object says otherwise. As a hosted Bluesky account, the object is a record, with $type naming its collection (a post when absent); core writes it to the account's repository and commits, at once or, for a sourced post (sourced=True), when the relay's budget allows, and data says whether the commit went out. As a linked account, the object is in the network's own form - a Mastodon status, a Bluesky record, a Lemmy post or comment; as a linked XMPP or Matrix account or a hosted Matrix account, a message: its conversation, its content, and the message it replies to or the thread it is in. key makes the post once however often it is asked
+// mochi.account.object.create(account, object, key="", sourced=False) -> dict: Publish an object as an account and return {id, url, data}: its id on the network, its page where the network has one, and the object as published. As a hosted fediverse account, the object is an ActivityStreams object the app has already put in the network's form (its type, HTML content, attachments, tags); core gives it its id under the account, attributedTo and published, and sends Create to everyone it addresses, which is the public and the account's followers unless the object says otherwise. As a hosted Bluesky account, the object is a record, with $type naming its collection (a post when absent); core writes it to the account's repository and commits, at once or, for a sourced post (sourced=True), when the relay's budget allows, and data says whether the commit went out. As a linked account, the object is in the network's own form - a Mastodon status, a Bluesky record, a Lemmy post or comment; as a linked XMPP or Matrix account or a hosted Matrix account, a message: its conversation, its content, and the message it replies to or the thread it is in. key makes the post once however often it is asked while it lasts: once it is deleted, asking again makes it anew
 func api_account_object_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, key string
 	var value sl.Value
@@ -440,6 +440,7 @@ func api_account_object_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		if err := linked_delete(thread_context(t), l, remote, conversation); err != nil {
 			return linked_failed(l, fn, err)
 		}
+		request_forget(user, l.id, remote)
 		return sl.True, nil
 	}
 	if h := matrix_hosted_of(user, found); h != nil {

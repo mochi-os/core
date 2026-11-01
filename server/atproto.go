@@ -734,6 +734,22 @@ func request_remember(user *User, account string, key string, result map[string]
 	db.exec("insert or replace into requests (account, key, result, created) values (?, ?, ?, ?)", account, key, json_encode(result), now())
 }
 
+// request_forget drops the answers that named an object the account has since
+// deleted: a key makes one object while it lasts, so asking again once it is
+// gone makes it anew - a like taken back and given again, a feed published
+// again.
+func request_forget(user *User, account string, object string) {
+	db := db_user(user, "user")
+	rows, _ := db.rows("select key, result from requests where account=?", account)
+	for _, row := range rows {
+		var result map[string]any
+		json.Unmarshal([]byte(row_string(row, "result")), &result)
+		if id, _ := result["id"].(string); id == object {
+			db.exec("delete from requests where account=? and key=?", account, row_string(row, "key"))
+		}
+	}
+}
+
 // atproto_result shapes what a record write answers for an app: the record's
 // URI as its id, its page on Bluesky for a post, its content id, and whether
 // the commit went out or waits for the budget.
@@ -852,8 +868,11 @@ func atproto_delete(ctx context.Context, user *User, row map[string]any, uri str
 	if err != nil {
 		return err
 	}
-	_, err = repository_remove(ctx, r, collection, rkey, false)
-	return err
+	if _, err := repository_remove(ctx, r, collection, rkey, false); err != nil {
+		return err
+	}
+	request_forget(user, id, "at://"+r.did+"/"+collection+"/"+rkey)
+	return nil
 }
 
 // atproto_upload stores a blob for a hosted account and answers the

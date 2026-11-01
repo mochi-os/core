@@ -912,6 +912,48 @@ func TestAtprotoRemove(t *testing.T) {
 	}
 }
 
+// TestAtprotoRemoveHeldElsewhere: removing an account whose identity this
+// server no longer holds leaves the identity alone - moved to another server
+// by a change that kept this server's rotation key, which the directory would
+// let tombstone it, or still naming this server with the user's own key in
+// place of the server's, which the directory would refuse.
+func TestAtprotoRemoveHeldElsewhere(t *testing.T) {
+	cases := []struct {
+		name   string
+		change func(op map[string]any)
+	}{
+		{"moved", func(op map[string]any) {
+			op["services"] = map[string]any{"atproto_pds": map[string]any{"type": "AtprotoPersonalDataServer", "endpoint": "https://other.example"}}
+		}},
+		{"taken", func(op map[string]any) {
+			own, _ := atcrypto.GeneratePrivateKeyK256()
+			public, _ := own.PublicKey()
+			op["rotationKeys"] = []any{public.DIDKey()}
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			alice, plc := create_atproto_test_env(t)
+			ctx := context.Background()
+			if err := atproto_account_create(ctx, alice, "b1"); err != nil {
+				t.Fatal(err)
+			}
+			did := atproto_did(account_hosted_get(alice, "b1"))
+			if err := plc_update(ctx, alice, "b1", did, c.change); err != nil {
+				t.Fatal(err)
+			}
+			changed := plc.last(did)
+			atproto_account_remove(alice, "b1")
+			if last := plc.last(did); last["type"] != "plc_operation" || last["sig"] != changed["sig"] {
+				t.Errorf("THE POINT: the identity held elsewhere is left as it is: %v", last)
+			}
+			if plc.refused != 0 {
+				t.Errorf("the directory refused %d operations", plc.refused)
+			}
+		})
+	}
+}
+
 // TestAtprotoCreateRefused: a handle whose host does not reach this server
 // is refused before anything is registered, and the account is not made;
 // once it reaches, the account is made through the API with its identity.

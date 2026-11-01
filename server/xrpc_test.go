@@ -597,6 +597,17 @@ func TestXrpcMoveOut(t *testing.T) {
 	if w, answer := xrpc_call(t, "GET", "com.atproto.server.getSession", access, nil, nil); answer["active"] != false || answer["status"] != "deactivated" {
 		t.Errorf("getSession of the deactivated account = %d %v", w.Code, answer)
 	}
+
+	// Removed here once it has moved, the account leaves its identity to the
+	// other server: no tombstone, which the directory would refuse anyway.
+	moved := plc.last(did)
+	atproto_account_remove(alice, "b1")
+	if last := plc.last(did); last["type"] != "plc_operation" || last["sig"] != moved["sig"] {
+		t.Errorf("THE POINT: the moved identity is left as it is: %v", last)
+	}
+	if plc.refused != 0 {
+		t.Errorf("THE POINT: removing the moved account sent the directory %d changes it refused", plc.refused)
+	}
 }
 
 // TestXrpcMoveIn: an account arrives from another server - here root's c1,

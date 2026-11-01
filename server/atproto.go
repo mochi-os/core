@@ -315,7 +315,8 @@ func atproto_account_create(ctx context.Context, user *User, id string) error {
 }
 
 // atproto_account_remove ends a hosted Bluesky account: the stream says it is
-// deleted, the identity is tombstoned where the directory answers, and the
+// deleted, the identity is tombstoned where the directory answers and this
+// server still holds it - not once the account has moved away - and the
 // repository goes with its blobs.
 func atproto_account_remove(user *User, id string) {
 	row := account_hosted_get(user, id)
@@ -327,7 +328,8 @@ func atproto_account_remove(user *User, id string) {
 		stream_append(did, "#account", map[string]any{"did": did, "active": false, "status": "deleted"})
 		ctx, cancel := context.WithTimeout(context.Background(), plc_timeout)
 		defer cancel()
-		if err := plc_tombstone(ctx, user, id, did); err != nil {
+		domain, _ := account_data(row)["domain"].(string)
+		if err := plc_tombstone(ctx, user, id, did, atproto_endpoint(domain)); err != nil {
 			warn("Bluesky account %s: identity not tombstoned: %v", did, err)
 		}
 		networks_database().exec("delete from identities where did=?", did)

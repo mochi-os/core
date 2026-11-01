@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -242,20 +243,37 @@ func plc_update(ctx context.Context, user *User, account string, did string, cha
 	return plc_submit(ctx, did, op)
 }
 
-// plc_tombstone ends an identity: a tombstone chained to its last operation,
-// after which nothing can be done with it again.
-func plc_tombstone(ctx context.Context, user *User, account string, did string) error {
-	_, previous, err := plc_last(ctx, did)
+// plc_tombstone ends an identity this server still holds for the account, at
+// endpoint: a tombstone chained to its last operation, after which nothing can
+// be done with it again. An identity moved to another server, or one whose
+// keys no longer list this server's, is the user's elsewhere and is left as it
+// is, whatever keys its move kept.
+func plc_tombstone(ctx context.Context, user *User, account string, did string, endpoint string) error {
+	last, previous, err := plc_last(ctx, did)
 	if err != nil {
 		return err
 	}
-	_, private, err := plc_keys(user, account)
-	if err != nil {
-		return err
+	rotation := keypair_get(user, account, key_rotation)
+	if rotation == nil {
+		return fmt.Errorf("account has no rotation key")
+	}
+	if !plc_holds(last, rotation.Public, endpoint) {
+		info("Bluesky identity %s is held elsewhere; left as it is", did)
+		return nil
 	}
 	op := map[string]any{"type": "plc_tombstone", "prev": previous}
-	if err := plc_sign(op, private); err != nil {
+	if err := plc_sign(op, rotation.Private); err != nil {
 		return err
 	}
 	return plc_submit(ctx, did, op)
+}
+
+// plc_holds says whether an identity's last operation leaves it in this
+// server's hands: naming endpoint as its data server, with rotation among the
+// keys that may change it. A tombstone names no server.
+func plc_holds(op map[string]any, rotation string, endpoint string) bool {
+	services, _ := op["services"].(map[string]any)
+	pds, _ := services["atproto_pds"].(map[string]any)
+	current, _ := pds["endpoint"].(string)
+	return strings.TrimSuffix(current, "/") == endpoint && slices.Contains(object_strings(op["rotationKeys"]), rotation)
 }

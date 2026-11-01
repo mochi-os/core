@@ -1681,6 +1681,56 @@ func TestAtprotoCrawlAll(t *testing.T) {
 	}
 }
 
+// TestAtprotoSubscribeHandshake: a subscription from the present is sent a
+// commit made as its handshake is answered, which the subscriber can count
+// as after the present, and so never looks for again.
+func TestAtprotoSubscribeHandshake(t *testing.T) {
+	alice, _ := create_atproto_test_env(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := atproto_account_create(ctx, alice, "b1"); err != nil {
+		t.Fatal(err)
+	}
+	r := repository_get(alice, "b1")
+	original := atproto_subscribed
+	defer func() { atproto_subscribed = original }()
+	atproto_subscribed = func() {
+		if _, _, err := repository_write(ctx, r, "app.bsky.feed.post", "handshake", map[string]any{"$type": "app.bsky.feed.post", "text": "Handshake", "createdAt": "2026-10-15T00:00:00Z"}, false); err != nil {
+			t.Error(err)
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, _ := gin.CreateTestContext(w)
+		c.Request = r
+		atproto_route(c)
+	}))
+	defer server.Close()
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/xrpc/com.atproto.sync.subscribeRepos", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	// Frames other than the commit, such as the repair's, may come first.
+	wait, stop := context.WithTimeout(ctx, 5*time.Second)
+	defer stop()
+	for {
+		kind, data, err := conn.Read(wait)
+		if err != nil {
+			t.Fatalf("the commit made at the handshake never came: %v", err)
+		}
+		if kind != websocket.MessageBinary {
+			continue
+		}
+		var event events.XRPCStreamEvent
+		if err := event.Deserialize(bytes.NewReader(data)); err != nil {
+			t.Fatal(err)
+		}
+		if event.RepoCommit != nil && len(event.RepoCommit.Ops) == 1 && event.RepoCommit.Ops[0].Path == "app.bsky.feed.post/handshake" {
+			return
+		}
+	}
+}
+
 // TestAtprotoSubscribeRepairs: a relay subscribing from the present has missed
 // what went before, so the accounts it lacks are looked for shortly after and
 // reach it on its subscription.

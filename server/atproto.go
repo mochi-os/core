@@ -1012,6 +1012,11 @@ func stream_cleanup() {
 	networks_database().exec("delete from stream where created<?", now()-stream_age)
 }
 
+// atproto_subscribed, where set, runs once a subscription's handshake is
+// answered: a test commits there, in the window a subscriber from the present
+// must still be sent.
+var atproto_subscribed func()
+
 // atproto_subscribe serves com.atproto.sync.subscribeRepos: the frames after
 // the cursor given, else from now, then each new one as it happens. A cursor
 // ahead of the stream is answered with an error frame, as the protocol says.
@@ -1025,6 +1030,10 @@ func atproto_subscribe(c *gin.Context) {
 		}
 		cursor = value
 	}
+	// The present is fixed before the handshake is answered: once it is, the
+	// subscriber can act, and a commit made then would fall before a present
+	// read after it and never be sent.
+	last := stream_last()
 	ws, err := websocket.Accept(c.Writer, c.Request, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		return
@@ -1032,7 +1041,9 @@ func atproto_subscribe(c *gin.Context) {
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 	defer ws.Close(websocket.StatusNormalClosure, "")
-	last := stream_last()
+	if atproto_subscribed != nil {
+		atproto_subscribed()
+	}
 	if cursor > last {
 		ws.Write(ctx, websocket.MessageBinary, stream_error("FutureCursor", "the cursor is ahead of the stream"))
 		return

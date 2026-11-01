@@ -68,7 +68,7 @@ func TestQueueDeferTargetParksWholeBacklog(t *testing.T) {
 	queue_test_insert_target(db, "live-1", "peer-live", priority_interactive)
 
 	// Both peers due -> one row per peer.
-	if got := len(queue_select(db)); got != 2 {
+	if got := len(queue_test_select(db)); got != 2 {
 		t.Fatalf("before defer: queue_select returned %d, want 2 (one per peer)", got)
 	}
 
@@ -77,7 +77,7 @@ func TestQueueDeferTargetParksWholeBacklog(t *testing.T) {
 
 	// Only the live peer remains; the stuck peer is out of the scan
 	// entirely (no per-tick re-scan of its pile).
-	entries := queue_select(db)
+	entries := queue_test_select(db)
 	if len(entries) != 1 {
 		t.Fatalf("after defer: queue_select returned %d, want 1 (stuck peer parked)", len(entries))
 	}
@@ -87,7 +87,7 @@ func TestQueueDeferTargetParksWholeBacklog(t *testing.T) {
 
 	// Recovery brings the parked backlog back due.
 	queue_resurrect_peer("peer-stuck")
-	if got := len(queue_select(db)); got != 2 {
+	if got := len(queue_test_select(db)); got != 2 {
 		t.Fatalf("after resurrect: queue_select returned %d, want 2", got)
 	}
 }

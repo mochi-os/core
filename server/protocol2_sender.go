@@ -66,6 +66,17 @@ const (
 	sender_ping_timeout     = 90
 )
 
+// sender_proves_maximum is how many prove frames a Sender keeps unbacked by a
+// message at once. The receiver resets the stream past
+// messages_proves_maximum of them, counting each message as backing one, so
+// half leaves room for the messages a proof is about to release.
+const sender_proves_maximum = messages_proves_maximum / 2
+
+// error_sender_proves is write_loop's answer when entities wait for a proof
+// and the stream can ask for no more: its budget is spent on proofs that
+// failed, and no message is left to back them. A fresh stream starts afresh.
+var error_sender_proves = errors.New("sender: prove budget spent")
+
 // peer_stream_open_timeout bounds net_me.NewStream so a stale "Connected" peer
 // cannot hang the open (#47). A var, not a const, so tests can lower it.
 var peer_stream_open_timeout = 10 * time.Second
@@ -103,8 +114,13 @@ type Sender struct {
 	claimed   map[string]bool
 	// proven records entities the far side has shown it holds, for the life of
 	// this connection - per entity, since a messages stream is multiplexed.
+	// proving holds the entities asked and not yet answered; their answers
+	// reach write_loop through proofs.
 	proven       map[string]bool
-	proving      map[string]chan error
+	proving      map[string]bool
+	proofs       chan proof
+	parked       atomic.Int64 // messages write_loop holds for a proof; pull_loop counts them
+	unbacked     int          // write_loop only: proves sent not yet backed by a message
 	closed       atomic.Bool
 	done         chan struct{} // closed by shutdown(); write_loop and peer_send exit on it
 	last_inbound atomic.Int64  // unix ns of last inbound frame; reset by ping_loop
@@ -115,6 +131,23 @@ type Sender struct {
 	rate_count   int   // sends in the current bucket
 }
 
+// proof is the far side's answer to a prove frame: nil when it showed it holds
+// entity.
+type proof struct {
+	entity string
+	err    error
+}
+
+// waiting is write_loop's state for messages whose target is not yet proven:
+// each such entity's messages in order, the entities asked with when their
+// answer is due, and the entities that wait for the prove budget to ask.
+type waiting struct {
+	parked    map[string][]*outbound
+	deadlines map[string]time.Time
+	queued    []string
+	bye       *outbound // held until the messages parked ahead of it are written
+}
+
 // outbound carries the original queue id alongside the wire frame so
 // sender_write can register it in inflight before the write.
 type outbound struct {
@@ -123,8 +156,9 @@ type outbound struct {
 }
 
 var (
-	senders      = map[string]*Sender{}
-	senders_lock sync.Mutex
+	senders         = map[string]*Sender{}
+	senders_opening = map[string]*opening{}
+	senders_lock    sync.Mutex
 )
 
 // senders_has reports whether an open Sender exists for `peer`. queue_process
@@ -158,15 +192,54 @@ func peer_send(peer string, queue string, frame *Frame) error {
 
 // sender_for finds-or-creates the Sender for peer. The open path is
 // gated by senders_lock; the per-Sender state machine runs without it.
+// Callers that find an open already under way wait for it and share its
+// answer: a second dial meets the first one's connect in progress, and
+// peer_connect counts that against the peer as a failure.
 func sender_for(peer string) (*Sender, error) {
 	senders_lock.Lock()
 	s := senders[peer]
-	senders_lock.Unlock()
 	if s != nil && !s.closed.Load() {
+		senders_lock.Unlock()
 		return s, nil
 	}
-	return sender_open(peer)
+	if o := senders_opening[peer]; o != nil {
+		senders_lock.Unlock()
+		<-o.done
+		return o.sender, o.err
+	}
+	o := &opening{done: make(chan struct{})}
+	senders_opening[peer] = o
+	senders_lock.Unlock()
+
+	open := sender_open
+	if sender_opener != nil {
+		open = sender_opener
+	}
+	o.sender, o.err = open(peer)
+	senders_lock.Lock()
+	delete(senders_opening, peer)
+	senders_lock.Unlock()
+	close(o.done)
+	return o.sender, o.err
 }
+
+// senders_opening_has reports whether a Sender open for peer is under way.
+func senders_opening_has(peer string) bool {
+	senders_lock.Lock()
+	defer senders_lock.Unlock()
+	return senders_opening[peer] != nil
+}
+
+// opening is a Sender open under way, which other callers for the same peer
+// wait on.
+type opening struct {
+	done   chan struct{}
+	sender *Sender
+	err    error
+}
+
+// sender_opener, when set, stands in for sender_open in sender_for.
+var sender_opener func(string) (*Sender, error)
 
 // sender_open establishes a new /mochi/2/messages stream to peer,
 // runs the handshake (read hello → write caps), and starts the
@@ -232,7 +305,8 @@ func sender_open(peer string) (*Sender, error) {
 		pings:     map[string]int64{},
 		claimed:   map[string]bool{},
 		proven:    map[string]bool{},
-		proving:   map[string]chan error{},
+		proving:   map[string]bool{},
+		proofs:    make(chan proof, 2*sender_proves_maximum),
 		wake:      make(chan struct{}, 1),
 	}
 
@@ -262,25 +336,203 @@ func sender_open(peer string) (*Sender, error) {
 // pipelines claim before message, writes the framed message. Blocks
 // the producer when len(inflight) >= sender_window_default — local
 // memory cap; wire-level back-pressure rides on libp2p flow control.
+//
+// A message to an entity the far side has not proven waits, with that
+// entity's later messages, while its prove frame is out: messages to proven
+// entities go on meanwhile, so a fresh stream proves its targets together
+// rather than one round trip after another.
 func (s *Sender) write_loop() {
+	w := &waiting{parked: map[string][]*outbound{}, deadlines: map[string]time.Time{}}
+	timer := time.NewTimer(time.Hour)
+	defer timer.Stop()
 	for {
-		var ob *outbound
+		timer.Reset(w.next())
+		var err error
 		select {
-		case ob = <-s.outbox:
+		case ob := <-s.outbox:
+			if s.closed.Load() {
+				s.fail_outbound(ob, "sender closed")
+				continue
+			}
+			err = s.route(w, ob)
+		case p := <-s.proofs:
+			err = s.settle(w, p.entity, p.err)
+		case <-timer.C:
+			err = s.expire(w)
 		case <-s.done:
+			s.release(w, "sender closed")
 			return
 		}
-		if s.closed.Load() {
-			s.fail_outbound(ob, "sender closed")
-			continue
+		if err == nil && w.bye != nil && len(w.parked) == 0 {
+			bye := w.bye
+			w.bye = nil
+			err = s.send(bye)
 		}
-		if err := s.write_one(ob); err != nil {
-			debug("Sender: write failed peer=%q queue=%q: %v",
-				s.peer, ob.queue, err)
-			s.fail_outbound(ob, fmt.Sprintf("stream write: %v", err))
+		if err != nil {
+			debug("Sender: closing peer=%q: %v", s.peer, err)
+			s.release(w, fmt.Sprintf("stream write: %v", err))
 			s.shutdown()
 			return
 		}
+	}
+}
+
+// next is how long until the earliest outstanding proof is due; an hour when
+// none is.
+func (w *waiting) next() time.Duration {
+	wait := time.Hour
+	for _, due := range w.deadlines {
+		if left := time.Until(due); left < wait {
+			wait = left
+		}
+	}
+	if wait < 0 {
+		wait = 0
+	}
+	return wait
+}
+
+// route writes ob, or holds it until its target is proven. A message it holds
+// is the waiting list's to write or fail; one it writes, it fails itself when
+// the write does.
+func (s *Sender) route(w *waiting, ob *outbound) error {
+	f := ob.frame
+	if f.Type == frame_type_bye && len(w.parked) > 0 {
+		// The far side stops reading at bye, so the messages held for proofs go
+		// first, as they would have from the outbox.
+		w.bye = ob
+		return nil
+	}
+	if f.Type != frame_type_message || f.To == "" {
+		return s.send(ob)
+	}
+	s.lock.Lock()
+	proven := s.proven[f.To]
+	s.lock.Unlock()
+	if proven && len(w.parked[f.To]) == 0 {
+		return s.send(ob)
+	}
+	// Nothing more waits behind a bye: the row goes back to the queue for the
+	// next stream. Otherwise a message is always held, never handed back, which
+	// would send it after its target's later messages: pull_loop bounds what is
+	// held by counting it against the window.
+	if w.bye != nil {
+		if ob.queue != "" {
+			queue_unsending(ob.queue)
+		}
+		return nil
+	}
+	_, held := w.parked[f.To]
+	w.parked[f.To] = append(w.parked[f.To], ob)
+	s.parked.Add(1)
+	if held {
+		return nil
+	}
+	if proven {
+		return s.settle(w, f.To, nil)
+	}
+	w.queued = append(w.queued, f.To)
+	return s.ask(w)
+}
+
+// send writes ob, failing it back to the queue when the write does not go
+// through.
+func (s *Sender) send(ob *outbound) error {
+	if err := s.write_one(ob); err != nil {
+		debug("Sender: write failed peer=%q queue=%q: %v", s.peer, ob.queue, err)
+		s.fail_outbound(ob, fmt.Sprintf("stream write: %v", err))
+		return err
+	}
+	return nil
+}
+
+// ask sends prove frames for the entities queued, as far as the budget goes.
+// Outstanding asks are capped too, so every answer fits in proofs: messages to
+// proven entities back proves while earlier ones are still out.
+func (s *Sender) ask(w *waiting) error {
+	for len(w.queued) > 0 && s.unbacked < sender_proves_maximum && len(w.deadlines) < sender_proves_maximum {
+		entity := w.queued[0]
+		w.queued = w.queued[1:]
+		s.lock.Lock()
+		s.proving[entity] = true
+		s.lock.Unlock()
+		if err := frame_write(s.stream, &Frame{Type: frame_type_prove, To: entity}); err != nil {
+			return err
+		}
+		s.unbacked++
+		w.deadlines[entity] = time.Now().Add(sender_send_timeout)
+	}
+	if len(w.queued) > 0 && len(w.deadlines) == 0 {
+		return error_sender_proves
+	}
+	return nil
+}
+
+// settle releases an entity's messages once the far side has answered for
+// it: written in order when it proved the entity, failed back to the queue
+// when it did not. Then it asks for the entities waiting on the budget.
+func (s *Sender) settle(w *waiting, entity string, err error) error {
+	if _, asked := w.deadlines[entity]; !asked && err != nil {
+		return nil
+	}
+	delete(w.deadlines, entity)
+	held := w.parked[entity]
+	delete(w.parked, entity)
+	// Each message stops counting as held only once it is in flight or failed,
+	// so room() never counts it in neither and lets pull_loop claim past the
+	// window.
+	for i, ob := range held {
+		if err != nil {
+			s.parked.Add(-1)
+			s.fail_outbound(ob, fmt.Sprintf("proof: %v", err))
+			continue
+		}
+		write := s.send(ob)
+		s.parked.Add(-1)
+		if write != nil {
+			for _, rest := range held[i+1:] {
+				s.parked.Add(-1)
+				s.fail_outbound(rest, fmt.Sprintf("stream write: %v", write))
+			}
+			return write
+		}
+	}
+	return s.ask(w)
+}
+
+// expire answers, as failures, the proofs that are overdue. One the far side
+// proved in time but write_loop has not yet read, because it was busy writing,
+// is answered as the proof it is.
+func (s *Sender) expire(w *waiting) error {
+	now := time.Now()
+	for entity, due := range w.deadlines {
+		if now.Before(due) {
+			continue
+		}
+		s.lock.Lock()
+		delete(s.proving, entity)
+		proven := s.proven[entity]
+		s.lock.Unlock()
+		var answer error
+		if !proven {
+			answer = fmt.Errorf("peer %q did not prove entity %q", s.peer, entity)
+		}
+		if err := s.settle(w, entity, answer); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// release fails every message held for a proof, as the outbox drain fails
+// what a closed Sender never sent.
+func (s *Sender) release(w *waiting, reason string) {
+	for entity, held := range w.parked {
+		for _, ob := range held {
+			s.fail_outbound(ob, reason)
+		}
+		s.parked.Add(-int64(len(held)))
+		delete(w.parked, entity)
 	}
 }
 
@@ -325,16 +577,11 @@ func (s *Sender) write_one(ob *outbound) error {
 		}
 	}
 
-	// Require the far side to prove it holds the target entity before any
-	// of this message crosses. Routing told us where to send; it did not
-	// establish that whoever is there may act as f.To, and by the time a
-	// message frame is written the content has already left.
-	if f.Type == frame_type_message && f.To != "" {
-		if err := s.ensure_proven(f.To); err != nil {
-			return err
-		}
-	}
-
+	// The far side has proven it holds f.To before any of this message
+	// crosses: route holds a message to an unproven target until it has.
+	// Routing told us where to send; it did not establish that whoever is
+	// there may act as f.To, and by the time a message frame is written the
+	// content has already left.
 	if f.Type == frame_type_message && f.ID != "" {
 		// Window cap: block until inflight drops below peer.window. Back-pressure
 		// path
@@ -370,56 +617,33 @@ func (s *Sender) write_one(ob *outbound) error {
 		}
 		return err
 	}
+	// Each message the far side receives backs one prove it answered. Counted
+	// only for a message naming its sender, the one kind every receiver
+	// credits, so this count never falls below the far side's.
+	if f.Type == frame_type_message && f.From != "" && s.unbacked > 0 {
+		s.unbacked--
+	}
 	return nil
 }
 
-// ensure_proven blocks until the far side has proven it holds `entity`, asking
-// once per entity per connection. Called from write_loop, so it blocks the
-// outbox by design: nothing is written to a peer that has not shown it may act
-// for the target.
-func (s *Sender) ensure_proven(entity string) error {
-	s.lock.Lock()
-	if s.proven[entity] {
-		s.lock.Unlock()
-		return nil
-	}
-	waiter, asked := s.proving[entity]
-	if !asked {
-		waiter = make(chan error, 1)
-		s.proving[entity] = waiter
-	}
-	s.lock.Unlock()
-
-	if !asked {
-		if err := frame_write(s.stream, &Frame{Type: frame_type_prove, To: entity}); err != nil {
-			s.resolve_proof(entity, err)
-			return err
-		}
-	}
-
-	select {
-	case err := <-waiter:
-		return err
-	case <-time.After(sender_send_timeout):
-		s.resolve_proof(entity, fmt.Errorf("timed out awaiting proof of entity %q", entity))
-		return fmt.Errorf("sender: peer %q did not prove entity %q", s.peer, entity)
-	}
-}
-
-// resolve_proof wakes whoever is waiting on `entity` and clears the
-// in-progress marker. A nil error also records the proof for the rest of
-// the connection's life.
+// resolve_proof records the far side's answer for `entity` and hands it to
+// write_loop when it was asked for. A nil error also records the proof for
+// the rest of the connection's life.
 func (s *Sender) resolve_proof(entity string, err error) {
 	s.lock.Lock()
-	waiter := s.proving[entity]
+	asked := s.proving[entity]
 	delete(s.proving, entity)
 	if err == nil {
 		s.proven[entity] = true
 	}
 	s.lock.Unlock()
-	if waiter != nil {
-		waiter <- err
-		close(waiter)
+	if asked && s.proofs != nil {
+		// Never blocks: at most sender_proves_maximum are asked at once, and an
+		// answer lost all the same is settled by its deadline from proven.
+		select {
+		case s.proofs <- proof{entity: entity, err: err}:
+		default:
+		}
 	}
 }
 
@@ -617,11 +841,7 @@ func (s *Sender) pull_loop() {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for !s.closed.Load() {
-		capacity := peer_window()
-		s.lock.Lock()
-		capacity -= len(s.inflight)
-		s.lock.Unlock()
-		capacity -= len(s.outbox)
+		capacity := s.room()
 		if capacity > 0 {
 			rows := queue_claim_for_peer(s.peer, capacity)
 			for _, q := range rows {
@@ -648,6 +868,16 @@ func (s *Sender) pull_loop() {
 		case <-s.wake:
 		}
 	}
+}
+
+// room is how many more rows pull_loop may hand this Sender: its window less
+// what is in flight, in the outbox, and held for a proof.
+func (s *Sender) room() int {
+	capacity := peer_window()
+	s.lock.Lock()
+	capacity -= len(s.inflight)
+	s.lock.Unlock()
+	return capacity - len(s.outbox) - int(s.parked.Load())
 }
 
 // rate_gate enforces peer.rate (messages/second per Sender). 0 =
@@ -825,7 +1055,7 @@ func senders_bye_all(timeout time.Duration) {
 		senders_lock.Lock()
 		for _, s := range senders {
 			s.lock.Lock()
-			if len(s.inflight) > 0 {
+			if len(s.inflight) > 0 || s.parked.Load() > 0 {
 				any_inflight = true
 			}
 			s.lock.Unlock()

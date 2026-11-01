@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -37,6 +38,11 @@ func TestQueuePriority(t *testing.T) {
 func queue_test_table() *DB {
 	db := db_open("db/queue.db")
 	db.exec("create table if not exists queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20, claimed integer not null default 0 )")
+	// The indexes db_create lays, so the picks run on the plans they run on in
+	// a server.
+	db.exec("create index if not exists queue_status_priority_retry on queue (status, priority, next_retry)")
+	db.exec("create index if not exists queue_target on queue (target)")
+	db.exec("create index if not exists queue_status_target_priority_retry on queue (status, target, priority desc, next_retry)")
 	return db
 }
 
@@ -64,7 +70,7 @@ func TestQueueSelectPriorityOrder(t *testing.T) {
 	queue_test_insert(db, "interactive-1", priority_interactive)
 	queue_test_insert(db, "replay-1", priority_replay)
 
-	entries := queue_select(db)
+	entries := queue_test_select(db)
 	if len(entries) != 2 {
 		t.Fatalf("queue_select returned %d entries, want 2 (2 distinct peers)", len(entries))
 	}
@@ -91,7 +97,7 @@ func TestQueueSelectPickByPeerDedupesByTarget(t *testing.T) {
 	// A second peer with a single interactive row.
 	queue_test_insert_target(db, "interactive-B", "peer-B", priority_interactive)
 
-	entries := queue_select(db)
+	entries := queue_test_select(db)
 	if len(entries) != 2 {
 		t.Fatalf("queue_select returned %d entries, want 2 (one per distinct peer)", len(entries))
 	}
@@ -131,7 +137,10 @@ func TestQueueSelectNoLowPriorityStarvation(t *testing.T) {
 	// One lower-priority row for a different peer.
 	queue_test_insert_target(db, "low-lone", "peer-low", priority_interactive)
 
-	entries := queue_select(db)
+	entries := queue_test_select(db)
+	if len(entries) > queue_pick_direct_limit {
+		t.Errorf("picked %d direct rows in one tick, over the limit of %d", len(entries), queue_pick_direct_limit)
+	}
 
 	// The picker takes the top 50 distinct peers by priority then next_retry, so
 	// the replay rows fill this tick and the interactive row waits for the next
@@ -149,7 +158,7 @@ func TestQueueSelectNoLowPriorityStarvation(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		db.exec("delete from queue where id = ?", fmt.Sprintf("replay-%d", i))
 	}
-	entries = queue_select(db)
+	entries = queue_test_select(db)
 	for _, e := range entries {
 		if e.ID == "low-lone" {
 			return
@@ -488,5 +497,302 @@ func TestQueueProcessReturnsCount(t *testing.T) {
 	}
 	if n := queue_process(); n != 3 {
 		t.Errorf("3 expired rows: got %d, want 3", n)
+	}
+}
+
+// queue_test_insert_event adds a due direct row for `target` with `event`.
+func queue_test_insert_event(db *DB, id, target, event string, priority int) {
+	db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, content, next_retry, created, priority)
+		values (?, 'direct', ?, '', '', 'test', ?, 'body', ?, ?, ?)`,
+		id, target, event, now()-1, now()-1, priority)
+}
+
+func queue_test_ids(entries []QueueEntry) map[string]bool {
+	ids := map[string]bool{}
+	for _, e := range entries {
+		ids[e.ID] = true
+	}
+	return ids
+}
+
+// queue_test_select is queue_select's rows to send, for tests that ask only
+// about those.
+func queue_test_select(db *DB) []QueueEntry {
+	rows, _ := queue_select(db)
+	return rows
+}
+
+// TestQueueSelectLeavesSenderTargets pins that the rows of a target with an open
+// Sender are left to its pull_loop, their head returned only for the checks; a
+// file push, which pull_loop does not take, is picked to send.
+func TestQueueSelectLeavesSenderTargets(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	open := new_test_sender(t, "peer-open")
+	defer stash_sender(t, "peer-open", open)()
+	file := new_test_sender(t, "peer-file")
+	defer stash_sender(t, "peer-file", file)()
+
+	queue_test_insert_event(db, "open-message", "peer-open", "msg", priority_interactive)
+	queue_test_insert_event(db, "file-push", "peer-file", "file/push", priority_interactive)
+	queue_test_insert_event(db, "closed-message", "peer-closed", "msg", priority_interactive)
+
+	rows, heads := queue_select(db)
+	ids := queue_test_ids(rows)
+	if ids["open-message"] {
+		t.Error("picked to send a row an open Sender's pull_loop takes")
+	}
+	if !queue_test_ids(heads)["open-message"] {
+		t.Error("left an open Sender's head out of the checks")
+	}
+	if !ids["file-push"] {
+		t.Error("left an open Sender's file push unpicked")
+	}
+	if !ids["closed-message"] {
+		t.Error("left a target with no Sender unpicked")
+	}
+}
+
+// TestQueueSelectLeavesSelfLoop pins the same for this server's own peer,
+// whose rows self_loop_drain takes.
+func TestQueueSelectLeavesSelfLoop(t *testing.T) {
+	setup_replication_test(t)
+	saved := net_id
+	net_id = "peer-self"
+	defer func() { net_id = saved }()
+	db := queue_test_table()
+	queue_test_insert_event(db, "self-message", "peer-self", "msg", priority_interactive)
+
+	rows, heads := queue_select(db)
+	if queue_test_ids(rows)["self-message"] {
+		t.Error("picked to send a self-loop row self_loop_drain takes")
+	}
+	if !queue_test_ids(heads)["self-message"] {
+		t.Error("left the self-loop's head out of the checks")
+	}
+}
+
+// TestQueueProcessScreensSenderTargets pins that a target with an open Sender
+// still has its head checked: a stalled peer's backlog is deferred, and an
+// expired row is deleted, as for a target with no Sender.
+func TestQueueProcessScreensSenderTargets(t *testing.T) {
+	setup_replication_test(t)
+	setup_users_test_schema()
+	db := queue_test_table()
+	const stalled, expiring = "12D3KooWScreenStalled", "12D3KooWScreenExpiring"
+	for _, peer := range []string{stalled, expiring} {
+		s := new_test_sender(t, peer)
+		defer stash_sender(t, peer, s)()
+	}
+	for i := 0; i < peer_stall_threshold; i++ {
+		peer_mark_no_progress(stalled)
+	}
+	queue_test_insert_event(db, "stalled-1", stalled, "msg", priority_interactive)
+	queue_test_insert_event(db, "stalled-2", stalled, "msg", priority_interactive)
+	queue_test_insert_event(db, "expired-1", expiring, "msg", priority_interactive)
+	db.exec("update queue set expires=? where id='expired-1'", now()-1)
+
+	queue_process()
+
+	if n := db.integer("select count(*) from queue where target=? and next_retry<=?", stalled, now()); n != 0 {
+		t.Errorf("a stalled peer with an open Sender keeps %d rows due", n)
+	}
+	if found, _ := db.exists("select 1 from queue where id='expired-1'"); found {
+		t.Error("an expired row at the head of an open Sender's target was kept")
+	}
+}
+
+// TestQueueSelectSkipsDeferredLevels pins that a target's deferred rows at a
+// higher priority neither hide its due rows at a lower one nor are read.
+func TestQueueSelectSkipsDeferredLevels(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	queue_test_insert_event(db, "deferred-1", "peer-levels", "msg", priority_replay)
+	db.exec("update queue set next_retry=? where id='deferred-1'", now()+3600)
+	queue_test_insert_event(db, "due-1", "peer-levels", "msg", priority_interactive)
+	db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created, priority)
+		values ('broadcast-deferred', 'broadcast', 'pubsub', '', '', 'test', 'msg', ?, ?, ?)`, now()+3600, now()-1, priority_replay)
+	db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created, priority)
+		values ('broadcast-due', 'broadcast', 'pubsub', '', '', 'test', 'msg', ?, ?, ?)`, now()-1, now()-1, priority_interactive)
+
+	ids := queue_test_ids(queue_test_select(db))
+	if !ids["due-1"] || ids["deferred-1"] {
+		t.Errorf("picked %v, want the target's due row below its deferred one", ids)
+	}
+	if !ids["broadcast-due"] || ids["broadcast-deferred"] {
+		t.Errorf("picked %v, want the due broadcast below the deferred one", ids)
+	}
+}
+
+// TestQueueSelectOtherRows pins that broadcasts and rows with no target yet
+// are picked together, the most urgent of either first.
+func TestQueueSelectOtherRows(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created, priority)
+		values ('broadcast-1', 'broadcast', 'pubsub', '', '', 'test', 'msg', ?, ?, ?)`, now()-1, now()-1, priority_interactive)
+	queue_test_insert_target(db, "unresolved-1", "", priority_replay)
+
+	entries := queue_test_select(db)
+	if len(entries) != 2 {
+		t.Fatalf("queue_select returned %d entries, want the broadcast and the unresolved row", len(entries))
+	}
+	if entries[0].ID != "unresolved-1" || entries[1].ID != "broadcast-1" {
+		t.Errorf("picked %s then %s, want the more urgent unresolved row first", entries[0].ID, entries[1].ID)
+	}
+}
+
+// TestQueueSelectReadsWholeRows pins that a picked direct row comes back whole,
+// though the pick itself reads only ids and ordering columns.
+func TestQueueSelectReadsWholeRows(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	queue_test_insert_event(db, "whole-1", "peer-whole", "msg", priority_interactive)
+
+	entries := queue_test_select(db)
+	if len(entries) != 1 || entries[0].Target != "peer-whole" || string(entries[0].Content) != "body" || entries[0].Event != "msg" {
+		t.Errorf("queue_select returned %+v, want the whole row", entries)
+	}
+}
+
+// TestQueueSelectSkipsParkedRows pins that rows no longer pending - parked or
+// being sent, their next_retry long past - neither hide a target's pending row
+// nor are picked.
+func TestQueueSelectSkipsParkedRows(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	for i := 0; i < 5; i++ {
+		queue_test_insert_event(db, fmt.Sprintf("parked-%d", i), "peer-mixed", "msg", priority_replay)
+	}
+	db.exec("update queue set status='parked', next_retry=1 where id like 'parked-%'")
+	queue_test_insert_event(db, "sending-1", "peer-mixed", "msg", priority_interactive)
+	db.exec("update queue set status='sending', next_retry=1 where id='sending-1'")
+	queue_test_insert_event(db, "pending-1", "peer-mixed", "msg", priority_interactive)
+	queue_test_insert_event(db, "dead-1", "peer-dead", "msg", priority_interactive)
+	db.exec("update queue set status='parked' where id='dead-1'")
+
+	ids := queue_test_ids(queue_test_select(db))
+	if len(ids) != 1 || !ids["pending-1"] {
+		t.Errorf("picked %v, want only the pending row", ids)
+	}
+}
+
+// TestQueueHeadsSeekPendingRows pins that every step of the head pick seeks the
+// status-led index, so a parked or deferred backlog costs it nothing.
+func TestQueueHeadsSeekPendingRows(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	plan, err := db.rows("explain query plan "+queue_heads_query, now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeks := 0
+	for _, row := range plan {
+		detail, _ := row["detail"].(string)
+		if strings.Contains(detail, "SCAN queue") || strings.Contains(detail, "queue_target_priority_retry") {
+			t.Errorf("the head pick reads queue without the status-led index: %q", detail)
+		}
+		if strings.Contains(detail, "queue_status_target_priority_retry") {
+			seeks++
+		}
+	}
+	if seeks < 5 {
+		t.Errorf("%d steps seek queue_status_target_priority_retry, want all five: %v", seeks, plan)
+	}
+}
+
+// TestQueueHeadsAgree pins that the two ways of finding each target's due
+// rows - reading the few due rows, or stepping target by target - pick the
+// same rows, so which one a tick takes changes only its cost.
+func TestQueueHeadsAgree(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	for i := 0; i < 12; i++ {
+		queue_test_insert_event(db, fmt.Sprintf("agree-%d", i), fmt.Sprintf("peer-%d", i%4), "msg", []int{priority_interactive, priority_replay}[i%2])
+	}
+	db.exec("update queue set next_retry=? where id in ('agree-1', 'agree-6')", now()+3600)
+	db.exec("update queue set status='parked' where id='agree-3'")
+	db.exec("update queue set status='sending' where id='agree-8'")
+	db.exec(`insert into queue (id, type, target, from_entity, to_entity, service, event, next_retry, created, priority)
+		values ('agree-broadcast', 'broadcast', 'pubsub', '', '', 'test', 'msg', ?, ?, ?)`, now()-1, now()-1, priority_replay)
+	queue_test_insert_target(db, "agree-unresolved", "", priority_replay)
+
+	best := func(rows []QueueEntry) map[string]string {
+		picked := map[string]QueueEntry{}
+		for _, q := range rows {
+			if b, ok := picked[q.Target]; !ok || q.Priority > b.Priority {
+				picked[q.Target] = q
+			}
+		}
+		ids := map[string]string{}
+		for target, q := range picked {
+			ids[target] = q.ID
+		}
+		return ids
+	}
+	due, ok := queue_heads_due(db, now())
+	if !ok {
+		t.Fatal("a dozen due rows were too many to read")
+	}
+	var targets []QueueEntry
+	if err := db.scans(&targets, queue_heads_query, now()); err != nil {
+		t.Fatal(err)
+	}
+	if a, b := fmt.Sprint(best(due)), fmt.Sprint(best(targets)); a != b || len(best(due)) != 4 {
+		t.Errorf("the due rows give %s, the targets %s; want the same four", a, b)
+	}
+
+	saved := queue_heads_due_limit
+	queue_heads_due_limit = 3
+	defer func() { queue_heads_due_limit = saved }()
+	if _, ok := queue_heads_due(db, now()); ok {
+		t.Error("read more due rows than the limit allows")
+	}
+	if a, b := fmt.Sprint(best(queue_heads(db, now()))), fmt.Sprint(best(targets)); a != b {
+		t.Errorf("past the limit queue_heads gives %s, want the targets' %s", a, b)
+	}
+}
+
+// TestQueueSelectLeavesOpeningTargets pins that a target whose Sender is still
+// opening is left to it, its head returned only for the checks: a send would
+// wait out the open and hold up the whole tick.
+func TestQueueSelectLeavesOpeningTargets(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	queue_test_insert_event(db, "opening-1", "peer-opening", "msg", priority_interactive)
+	senders_lock.Lock()
+	senders_opening["peer-opening"] = &opening{done: make(chan struct{})}
+	senders_lock.Unlock()
+	defer func() {
+		senders_lock.Lock()
+		delete(senders_opening, "peer-opening")
+		senders_lock.Unlock()
+	}()
+
+	rows, heads := queue_select(db)
+	if queue_test_ids(rows)["opening-1"] {
+		t.Error("picked to send a row whose Sender is still opening")
+	}
+	if !queue_test_ids(heads)["opening-1"] {
+		t.Error("left an opening Sender's head out of the checks")
+	}
+}
+
+// TestQueueClaimComesBackInOrder pins that a claim hands its rows over most
+// urgent first, as it asked for them, not in the order the table holds them.
+func TestQueueClaimComesBackInOrder(t *testing.T) {
+	setup_replication_test(t)
+	db := queue_test_table()
+	queue_test_insert_event(db, "claim-live-1", "peer-claim", "msg", priority_interactive)
+	queue_test_insert_event(db, "claim-live-2", "peer-claim", "msg", priority_interactive)
+	queue_test_insert_event(db, "claim-replay", "peer-claim", "msg", priority_replay)
+
+	rows := queue_claim_for_peer("peer-claim", 10)
+	ids := []string{}
+	for _, q := range rows {
+		ids = append(ids, q.ID)
+	}
+	if fmt.Sprint(ids) != "[claim-replay claim-live-1 claim-live-2]" {
+		t.Errorf("claimed %v, want the replay row first, then the live rows as queued", ids)
 	}
 }

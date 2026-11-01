@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	rd "runtime/debug"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -162,7 +163,21 @@ func queue_claim_for_peer(peer string, limit int) []QueueEntry {
 		info("queue_claim_for_peer error peer=%q: %v", peer, err)
 		return nil
 	}
+	queue_claim_order(rows)
 	return rows
+}
+
+// queue_claim_order sorts claimed rows into the order the claim asked for. An
+// UPDATE's RETURNING comes back in no promised order (in practice the table's),
+// so a replay row claimed with live ones would not go first. Stable, so rows
+// due together keep the order they were queued in.
+func queue_claim_order(rows []QueueEntry) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].Priority != rows[j].Priority {
+			return rows[i].Priority > rows[j].Priority
+		}
+		return rows[i].NextRetry < rows[j].NextRetry
+	})
 }
 
 // queue_claim_for_self is queue_claim_for_peer for target == net_id, claimed by
@@ -190,6 +205,7 @@ func queue_claim_for_self(limit int) []QueueEntry {
 		info("queue_claim_for_self error: %v", err)
 		return nil
 	}
+	queue_claim_order(rows)
 	return rows
 }
 
@@ -1059,54 +1075,227 @@ func queue_send_broadcast(q *QueueEntry) bool {
 // peer (queue_pick_direct_limit), plus broadcasts and empty-target rows by
 // priority (queue_pick_other_limit). Pick-by-peer stops one peer's backlog
 // filling the budget and starving every other peer.
+//
+// It also returns the head of each target that a Sender's pull_loop or
+// self_loop_drain takes, read for queue_process's checks and never sent from
+// there.
 const (
 	queue_pick_direct_limit = 50
 	queue_pick_other_limit  = 20
 )
 
-func queue_select(db *DB) []QueueEntry {
+// queue_heads_query answers the earliest due row at each priority of each
+// target. The targets holding pending rows, and the priorities each holds, are
+// stepped through with one seek apiece on queue_status_target_priority_retry,
+// and each (target, priority) finds its row with a range seek on next_retry, so
+// no target's due, deferred, sending or parked rows are read. Ranking every due
+// row with one window read the whole backlog, content included, on every tick.
+const queue_heads_query = `with recursive
+	targets(target) as (
+		select min(target) from queue where status='pending' and target > ''
+		union all
+		select (select min(target) from queue where status='pending' and target > targets.target) from targets where targets.target is not null
+	),
+	levels(target, priority) as (
+		select target, (select max(priority) from queue where status='pending' and target=targets.target) from targets where target is not null and target != 'pubsub'
+		union all
+		select target, (select max(priority) from queue where status='pending' and target=levels.target and priority < levels.priority) from levels where priority is not null
+	)
+	select q.id, q.type, q.target, q.from_entity, q.event, q.expires, q.priority, q.next_retry
+	from levels l join queue q on q.id = (
+		select id from queue where status='pending' and target=l.target and priority=l.priority and type='direct' and next_retry<=?
+		order by next_retry asc limit 1)
+	where l.priority is not null`
+
+// queue_heads_due_limit is how many due rows queue_heads reads one by one
+// before it looks target by target instead.
+var queue_heads_due_limit = 10000
+
+// queue_heads answers due direct rows, the earliest at each priority of each
+// target among them, at the cost of the smaller of two things: the due rows,
+// or the targets holding pending rows.
+func queue_heads(db *DB, ts int64) []QueueEntry {
+	if heads, ok := queue_heads_due(db, ts); ok {
+		return heads
+	}
+	var found []QueueEntry
+	if err := db.scans(&found, queue_heads_query, ts); err != nil {
+		info("Queue select (direct heads) error: %v", err)
+	}
+	return found
+}
+
+// queue_heads_due reads every due row, priority by priority through
+// queue_status_priority_retry, earliest first, when there are no more than
+// queue_heads_due_limit of them: that costs the due rows alone, however many
+// targets wait deferred. It reports false when there are more.
+func queue_heads_due(db *DB, ts int64) ([]QueueEntry, bool) {
+	due := []QueueEntry{}
+	level, err := db.row("select max(priority) as priority from queue where status='pending'")
+	for err == nil && level != nil && level["priority"] != nil {
+		priority, _ := level["priority"].(int64)
+		var found []QueueEntry
+		if err = db.scans(&found, `select id, type, target, from_entity, event, expires, priority, next_retry from queue
+			where status='pending' and priority=? and next_retry<=?
+			order by next_retry asc limit ?`, priority, ts, queue_heads_due_limit+1-len(due)); err != nil {
+			break
+		}
+		due = append(due, found...)
+		if len(due) > queue_heads_due_limit {
+			return nil, false
+		}
+		level, err = db.row("select max(priority) as priority from queue where status='pending' and priority < ?", priority)
+	}
+	if err != nil {
+		info("Queue select (due rows) error: %v", err)
+		return nil, false
+	}
+	heads := due[:0]
+	for _, q := range due {
+		if q.Type == "direct" && q.Target != "" && q.Target != "pubsub" {
+			heads = append(heads, q)
+		}
+	}
+	return heads, true
+}
+
+func queue_select(db *DB) ([]QueueEntry, []QueueEntry) {
 	ts := now()
 
-	// Direct rows: one row per distinct target peer.
-	var direct []QueueEntry
-	err := db.scans(&direct, `
-		with ranked as (
-			select id, type, target, from_entity, to_entity, service, event,
-				from_app, from_services, content, data, file, expires,
-				status, attempts, next_retry, last_error, created, priority,
-				row_number() over (partition by target order by priority desc, next_retry asc) as rn
-			from queue
-			where status = 'pending' and next_retry <= ?
-				and type = 'direct' and target != ''
-		)
-		select id, type, target, from_entity, to_entity, service, event,
-			from_app, from_services, content, data, file, expires,
-			status, attempts, next_retry, last_error, created, priority
-		from ranked
-		where rn = 1
-		order by priority desc, next_retry asc
-		limit ?`, ts, queue_pick_direct_limit)
-	if err != nil {
-		info("Queue select (direct pick-by-peer) error: %v", err)
+	best := map[string]QueueEntry{}
+	for _, q := range queue_heads(db, ts) {
+		if b, ok := best[q.Target]; !ok || q.Priority > b.Priority {
+			best[q.Target] = q
+		}
+	}
+	picks := []QueueEntry{}
+	heads := []QueueEntry{}
+	for _, q := range best {
+		// A target whose Sender is open, or opening, is drained by that Sender's
+		// pull_loop, and the self-loop by self_loop_drain, but for file pushes,
+		// which neither takes. A send to a Sender still opening would wait out
+		// the open and hold up the whole tick.
+		if q.Event != "file/push" && (q.Target == net_id || senders_has(q.Target) || senders_opening_has(q.Target)) {
+			heads = append(heads, q)
+			continue
+		}
+		picks = append(picks, q)
+	}
+	queue_order(picks)
+	if len(picks) > queue_pick_direct_limit {
+		picks = picks[:queue_pick_direct_limit]
+	}
+	ids := make([]any, len(picks))
+	for i, p := range picks {
+		ids[i] = p.ID
+	}
+	direct := queue_rows(db, ids)
+
+	// Broadcasts (target 'pubsub') and empty-target rows, priority by priority
+	// for the same reason: a filter on type walked every pending row to find
+	// them, and one ordered read walks a target's deferred rows.
+	other := []QueueEntry{}
+	for _, target := range []string{"pubsub", ""} {
+		taken := 0
+		priority, err := db.row("select max(priority) as priority from queue where status='pending' and target=?", target)
+		for err == nil && priority != nil && priority["priority"] != nil && taken < queue_pick_other_limit {
+			level, _ := priority["priority"].(int64)
+			var found []QueueEntry
+			if err := db.scans(&found, `select id, type, target, from_entity, to_entity, service, event,
+					from_app, from_services, content, data, file, expires,
+					status, attempts, next_retry, last_error, created, priority
+				from queue
+				where status='pending' and target=? and priority=? and next_retry<=?
+				order by next_retry asc
+				limit ?`, target, level, ts, queue_pick_other_limit-taken); err != nil {
+				info("Queue select (broadcast/empty-target) error: %v", err)
+			}
+			other = append(other, found...)
+			taken += len(found)
+			priority, err = db.row("select max(priority) as priority from queue where status='pending' and target=? and priority < ?", target, level)
+		}
+		if err != nil {
+			info("Queue select (broadcast/empty-target priorities) error: %v", err)
+		}
+	}
+	queue_order(other)
+	if len(other) > queue_pick_other_limit {
+		other = other[:queue_pick_other_limit]
 	}
 
-	// Broadcasts (target='pubsub') and empty-target rows.
-	var other []QueueEntry
-	if err := db.scans(&other, `select id, type, target, from_entity, to_entity, service, event,
+	return append(direct, other...), heads
+}
+
+// queue_order sorts rows most urgent first: priority, then the longest due, then
+// by target so ties come out the same way every tick.
+func queue_order(rows []QueueEntry) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].Priority != rows[j].Priority {
+			return rows[i].Priority > rows[j].Priority
+		}
+		if rows[i].NextRetry != rows[j].NextRetry {
+			return rows[i].NextRetry < rows[j].NextRetry
+		}
+		return rows[i].Target < rows[j].Target
+	})
+}
+
+// queue_rows reads whole rows by id, in the order of ids.
+func queue_rows(db *DB, ids []any) []QueueEntry {
+	if len(ids) == 0 {
+		return nil
+	}
+	var rows []QueueEntry
+	if err := db.scans(&rows, `select id, type, target, from_entity, to_entity, service, event,
 			from_app, from_services, content, data, file, expires,
 			status, attempts, next_retry, last_error, created, priority
-		from queue
-		where status = 'pending' and next_retry <= ?
-			and (type != 'direct' or target = '')
-		order by priority desc, next_retry asc
-		limit ?`, ts, queue_pick_other_limit); err != nil {
-		info("Queue select (broadcast/empty-target) error: %v", err)
+		from queue where id in (`+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+`)`, ids...); err != nil {
+		info("Queue select (rows by id) error: %v", err)
+		return nil
 	}
+	position := map[string]int{}
+	for i, id := range ids {
+		position[id.(string)] = i
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return position[rows[i].ID] < position[rows[j].ID] })
+	return rows
+}
 
-	if len(other) == 0 {
-		return direct
+// queue_screen reports whether q was dealt with before any send: deleted as
+// expired or as from a deleted entity, or its target's backlog deferred because
+// the peer is silent or stalled.
+func queue_screen(db *DB, udb *DB, q *QueueEntry) bool {
+	if q.Expires > 0 && q.Expires < now() {
+		debug("Queue message %q expired", q.ID)
+		db.exec_bg("queue gc expired delete", "delete from queue where id = ?", q.ID)
+		return true
 	}
-	return append(direct, other...)
+	if q.FromEntity != "" {
+		if exists, _ := udb.exists("select 1 from entities where id=?", q.FromEntity); !exists {
+			info("Queue dropping message %q from deleted entity %q", q.ID, q.FromEntity)
+			db.exec_bg("queue gc deleted-entity delete", "delete from queue where id = ?", q.ID)
+			return true
+		}
+	}
+	// Silent-peer pre-filter: defer rows for a peer known unreachable so they do
+	// not waste bucket slots; peer_connect resurrects them eagerly. Broadcasts
+	// have no specific target, so this applies to direct rows only.
+	if q.Type != "broadcast" && q.Target != "" && peer_is_silent(q.Target) {
+		queue_defer_target(q.Target, now()+queue_silent_defer)
+		return true
+	}
+	// Stalled-peer pre-filter: the target opens a stream but never acks
+	// (peer_progress.go). Park its whole backlog until the trial window reopens,
+	// so the manager and its Sender stop working an undeliverable pile.
+	if q.Type != "broadcast" && q.Target != "" && peer_is_stalled(q.Target) {
+		until := peer_stall_until(q.Target)
+		if until <= now() {
+			until = now() + peer_stall_window
+		}
+		queue_defer_target(q.Target, until)
+		return true
+	}
+	return false
 }
 
 // Process pending queue entries. Returns the count of rows acted on
@@ -1116,48 +1305,25 @@ func queue_select(db *DB) []QueueEntry {
 func queue_process() int {
 	db := db_open("db/queue.db")
 
-	entries := queue_select(db)
+	entries, heads := queue_select(db)
 
 	udb := db_open("db/users.db")
 	processed := 0
 
-	// Pre-filter: drop expired and from-deleted-entity rows serially.
-	// Cheap, no network. The remaining `valid` slice goes through the
-	// parallel send path below.
+	// The head of each target a Sender or the self-loop drains passes the same
+	// checks, so its expired rows and rows from deleted entities are cleared and
+	// a silent or stalled peer's backlog deferred as for any other target.
+	for i := range heads {
+		if queue_screen(db, udb, &heads[i]) {
+			processed++
+		}
+	}
+
+	// Pre-filter: queue_screen's checks, serially. Cheap, no network. The
+	// remaining `valid` slice goes through the parallel send path below.
 	valid := entries[:0]
 	for _, q := range entries {
-		if q.Expires > 0 && q.Expires < now() {
-			debug("Queue message %q expired", q.ID)
-			db.exec_bg("queue gc expired delete", "delete from queue where id = ?", q.ID)
-			processed++
-			continue
-		}
-		if q.FromEntity != "" {
-			if exists, _ := udb.exists("select 1 from entities where id=?", q.FromEntity); !exists {
-				info("Queue dropping message %q from deleted entity %q", q.ID, q.FromEntity)
-				db.exec_bg("queue gc deleted-entity delete", "delete from queue where id = ?", q.ID)
-				processed++
-				continue
-			}
-		}
-		// Silent-peer pre-filter: defer rows for a peer known unreachable so they do
-		// not waste bucket slots; peer_connect resurrects them eagerly. Broadcasts
-		// have no specific target, so this applies to direct rows only.
-		if q.Type != "broadcast" && q.Target != "" && peer_is_silent(q.Target) {
-			queue_defer_target(q.Target, now()+queue_silent_defer)
-			processed++
-			continue
-		}
-		// Stalled-peer pre-filter: the target opens a stream but never
-		// acks (peer_progress.go).
-		// Park its whole backlog until the trial window reopens, so the
-		// manager stops re-scanning an undeliverable pile every tick.
-		if q.Type != "broadcast" && q.Target != "" && peer_is_stalled(q.Target) {
-			until := peer_stall_until(q.Target)
-			if until <= now() {
-				until = now() + peer_stall_window
-			}
-			queue_defer_target(q.Target, until)
+		if queue_screen(db, udb, &q) {
 			processed++
 			continue
 		}

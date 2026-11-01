@@ -456,6 +456,14 @@ func TestVersionedStepsKeepTheirSchema(t *testing.T) {
 	check("db_upgrade_19.networks", versioning_schema(db_open("db/networks.db")))
 	db_upgrade_20()
 	check("db_upgrade_20.networks", versioning_schema(db_open("db/networks.db")))
+	// queue.db as schema 20 left it, for db_upgrade_21 to change.
+	queue := db_open("db/queue.db")
+	queue.exec("create table queue ( id text primary key, type text not null default 'direct', target text not null, from_entity text not null, to_entity text not null, service text not null, event text not null, from_app text not null default '', from_services text not null default '', content blob not null default '', data blob not null default '', file text not null default '', expires integer not null default 0, status text not null default 'pending', attempts integer not null default 0, next_retry integer not null, last_error text not null default '', created integer not null, priority integer not null default 20, claimed integer not null default 0 )")
+	queue.exec("create index queue_status_priority_retry on queue (status, priority, next_retry)")
+	queue.exec("create index queue_target on queue (target)")
+	queue.exec("create index queue_target_priority_retry on queue (target, priority desc, next_retry)")
+	db_upgrade_21()
+	check("db_upgrade_21.queue", versioning_schema(queue))
 
 	for name, steps := range map[string][]func(*DB) error{
 		"user":          db_user_steps["user"],

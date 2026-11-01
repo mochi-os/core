@@ -86,7 +86,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 20
+	schema_version = 21
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -384,7 +384,7 @@ func db_create(names ...string) {
 		// scans it.
 		queue.exec("create index if not exists queue_status_priority_retry on queue (status, priority, next_retry)")
 		queue.exec("create index if not exists queue_target on queue (target)")
-		queue.exec("create index if not exists queue_target_priority_retry on queue (target, priority desc, next_retry)")
+		queue.exec("create index if not exists queue_status_target_priority_retry on queue (status, target, priority desc, next_retry)")
 		// journal_inflight bridges send->ack for the per-peer journal delivery
 		// cursor (#28): one row per shipped journal op, resolved when the
 		// transport ACK lands so journal_delivery can advance. Co-located with
@@ -1514,6 +1514,8 @@ func db_upgrade() {
 			db_upgrade_19()
 		case 20:
 			db_upgrade_20()
+		case 21:
+			db_upgrade_21()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2972,6 +2974,23 @@ func db_upgrade_20() {
 	networks.exec("create table if not exists copies (object text not null, account text not null, actor text not null, created integer not null, primary key (object, account, actor))")
 	networks.exec("create index if not exists copies_account on copies(account)")
 	networks.exec("create index if not exists copies_created on copies(created)")
+}
+
+// db_upgrade_21 replaces queue.db's (target, priority, next_retry) index with
+// one that leads with status: every query that walked it asked for pending rows
+// only, and read past the parked and sending ones to find them.
+// A queue.db with no queue table is laid at the latest shape by db_create.
+func db_upgrade_21() {
+	queue := db_open("db/queue.db")
+	found, err := queue.exists("select 1 from sqlite_master where type='table' and name='queue'")
+	if err != nil {
+		panic(fmt.Sprintf("Schema upgrade 21: queue table lookup: %v", err))
+	}
+	if !found {
+		return
+	}
+	queue.exec("create index if not exists queue_status_target_priority_retry on queue (status, target, priority desc, next_retry)")
+	queue.exec("drop index if exists queue_target_priority_retry")
 }
 
 // db_upgrade_12 adds the handle registry to users.db; db_create carries the

@@ -167,7 +167,8 @@ func TestSenderShutdownReleasesWriteLoop(t *testing.T) {
 		pings:    map[string]int64{},
 		claimed:  map[string]bool{},
 		proven:   map[string]bool{},
-		proving:  map[string]chan error{},
+		proving:  map[string]bool{},
+		proofs:   make(chan proof, 2*sender_proves_maximum),
 	}
 
 	stopped := make(chan struct{})

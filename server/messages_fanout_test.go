@@ -8,6 +8,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 // add_directory_location is a test helper that inserts a (entity, peer)
@@ -168,5 +169,57 @@ func TestQueueSendDirectExpandsEmptyTargetRow(t *testing.T) {
 		if n != 1 {
 			t.Errorf("expansion created no row for peer=%s (got count %d)", peer, n)
 		}
+	}
+}
+
+// inline_send_row waits for a queue row to settle at `status` with
+// `attempts`, returning its next_retry.
+func inline_send_row(t *testing.T, id, status string, attempts int64) int64 {
+	t.Helper()
+	db := db_open("db/queue.db")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		row, _ := db.row("select status, attempts, next_retry from queue where id=?", id)
+		if row != nil && row["status"] == status && row["attempts"] == attempts {
+			return row["next_retry"].(int64)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("row %s is %v, want %s with %d attempts", id, row, status, attempts)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestInlineSendBusySenderLeavesRowDue pins that an inline send meeting a
+// Sender whose outbox stays full leaves the row due, for that Sender's
+// pull_loop to take as the outbox drains, rather than on the retry ladder.
+func TestInlineSendBusySenderLeavesRowDue(t *testing.T) {
+	setup_replication_test(t)
+	const peer = "busy-peer"
+	s := new_test_sender(t, peer)
+	s.outbox = make(chan *outbound) // never read: always full
+	defer stash_sender(t, peer, s)()
+
+	install_queue_row(t, "busy-1")
+	m := message("from-entity", "to-entity", "service", "event")
+	m.ID = "busy-1"
+	message_attempt_send_real(m, peer, nil)
+
+	if next := inline_send_row(t, "busy-1", "pending", 0); next > now() {
+		t.Errorf("a busy Sender's row waits until %d (now %d): it went onto the retry ladder", next, now())
+	}
+}
+
+// TestInlineSendUnreachablePeerBacksOff pins the other side: a peer that
+// cannot be reached at all is still retried with backoff.
+func TestInlineSendUnreachablePeerBacksOff(t *testing.T) {
+	setup_replication_test(t)
+	install_queue_row(t, "gone-1")
+	m := message("from-entity", "to-entity", "service", "event")
+	m.ID = "gone-1"
+	message_attempt_send_real(m, "unreachable-peer", nil)
+
+	if next := inline_send_row(t, "gone-1", "pending", 1); next <= now() {
+		t.Errorf("an unreachable peer's row is due again at once (%d)", next)
 	}
 }

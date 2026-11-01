@@ -268,6 +268,12 @@ func (r *Receiver) handle(f *Frame) bool {
 		return true
 
 	case frame_type_message:
+		// Every message backs one prove, a duplicate or one naming no sender
+		// included: the sending side counts each message it writes and cannot
+		// know which this side has seen.
+		if r.proves > 0 {
+			r.proves--
+		}
 		if !r.ready {
 			r.ready = true
 			r.deadline(time.Now().Add(receiver_idle_timeout()))
@@ -304,15 +310,13 @@ func (r *Receiver) handle(f *Frame) bool {
 	return true
 }
 
-// credit returns one claim and one prove budget once a message shows the peer
-// is doing the work those budgets exist to gate. Floored at zero - they are an
-// allowance for frames the peer has not backed, not a running total.
+// credit returns one claim budget once a message shows the peer is doing the
+// work that budget exists to gate. Floored at zero - it is an allowance for
+// claims the peer has not backed, not a running total. The prove budget comes
+// back for every message, where the frame is read.
 func (r *Receiver) credit() {
 	if r.claims > 0 {
 		r.claims--
-	}
-	if r.proves > 0 {
-		r.proves--
 	}
 }
 

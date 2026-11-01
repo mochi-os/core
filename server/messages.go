@@ -7,6 +7,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 
@@ -296,6 +297,73 @@ func (m *Message) send_work() {
 	}
 }
 
+// messages_fanout_open opens a Sender for a peer a fan-out has queued rows for.
+var messages_fanout_open = sender_for
+
+// messages_fanout queues messages sharing one content, encoded once by the
+// caller, recipient after recipient: each to its pinned peer, or else to every
+// live peer hosting its recipient, then wakes the queue once so each peer's
+// Sender drains its rows. It makes no inline send: in turn, one to a busy
+// Sender would hold every later recipient for the send timeout.
+func messages_fanout(list []*Message, content []byte) {
+	if len(list) == 0 {
+		return
+	}
+	cold := map[string]bool{}
+	for _, m := range list {
+		if m.ID == "" {
+			m.ID = uid()
+		}
+		if m.target != "" {
+			if !message_self_loop_dispatch(m, content) {
+				queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+				if m.target != net_id {
+					cold[m.target] = true
+				}
+			}
+			continue
+		}
+		peers := entity_peers_for(m.From, m.To)
+		if len(peers) == 0 {
+			// Unknown entity: one row with no target, resolved again later.
+			queue_add_direct(m.ID, "", m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+			continue
+		}
+		// The first peer's row carries m.ID, as send_work's does; the rest and
+		// the self-loop rows take fresh ids.
+		id := m.ID
+		for _, peer := range peers {
+			if peer == net_id {
+				local := *m
+				local.ID = uid()
+				local.target = peer
+				if !message_self_loop_dispatch(&local, content) {
+					queue_add_direct(uid(), peer, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+				}
+				continue
+			}
+			queue_add_direct(id, peer, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+			cold[peer] = true
+			id = uid()
+		}
+	}
+	queue_wake()
+
+	// A peer with no Sender open would wait for the queue manager, which opens a
+	// batch of peers at a time and waits for the slowest. Open each here, in
+	// parallel as the inline sends did, so its pull_loop takes the rows at once.
+	for peer := range cold {
+		if senders_has(peer) || senders_opening_has(peer) || peer_is_silent(peer) || peer_is_stalled(peer) {
+			continue
+		}
+		go func(peer string) {
+			if _, err := messages_fanout_open(peer); err != nil {
+				debug("Fan-out: no Sender for peer %q: %v", peer, err)
+			}
+		}(peer)
+	}
+}
+
 // message_attempt_send is the inline send-now path for a single peer. A
 // package-level var so tests can stub out the libp2p reach-through.
 var message_attempt_send = message_attempt_send_real
@@ -312,6 +380,13 @@ func message_attempt_send_real(m *Message, peer string, content []byte) {
 	queue_sending(m.ID)
 	if send_error := peer_send(peer, m.ID, f); send_error != nil {
 		queue_unsending(m.ID)
+		// A Sender that is only busy takes the row itself: its pull_loop
+		// claims the peer's due rows as the outbox drains, so the row stays
+		// due rather than waiting out the retry ladder. A peer that cannot be
+		// reached is retried with backoff.
+		if errors.Is(send_error, error_sender_full) {
+			return
+		}
 		queue_fail(m.ID, fmt.Sprintf("peer_send: %v", send_error))
 	}
 }

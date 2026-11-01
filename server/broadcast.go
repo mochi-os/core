@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"sync"
 	"time"
@@ -815,6 +816,20 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "payload not JSON-encodable: %v", err)
 	}
 
+	// One broadcast of a stream at a time, from taking its sequence to its
+	// fan-out's place in line, so the stream's rows are queued in sequence order
+	// even when two of its broadcasts are sent at once. App code, which may
+	// broadcast in turn, runs only once the lock is released.
+	stream := from + "\x00" + key
+	lock := broadcast_stream_lock(stream)
+	lock.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			lock.Unlock()
+		}
+	}()
+
 	sequence := broadcast_log_append(db, key, net_id, event, body)
 
 	// Attach broadcast metadata to outbound content. _peer is implicit
@@ -869,7 +884,15 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	// record written afterwards would restore what the app just removed.
 	broadcast_subscribed_record(db, key, net_id, recorded)
 
+	// The fan-out is queued from one goroutine, recipient after recipient, with
+	// the content encoded once: one goroutine per recipient contended for
+	// queue.db and churned its connections, so a 1,000-recipient post took up
+	// to 17 s to queue. A recipient pinned to a peer is queued before the call
+	// returns, as send_peer always queued it.
 	services := app_services(app, user)
+	encoded := cbor_encode(content)
+	var pinned, resolved []*Message
+	evictions := []string{}
 	for _, recipient := range targets {
 		// Never enqueue to a recipient owned by the sending user: their DB is the
 		// canonical copy, so delivery is at best a no-op and at worst destructive.
@@ -883,7 +906,7 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		// owning app is told to drop it. Broadcast fan-out only.
 		skip, evict := health_gate(recipient.id)
 		if evict {
-			health_evict_dispatch(user, app, service, recipient.id)
+			evictions = append(evictions, recipient.id)
 			continue
 		}
 		if skip {
@@ -893,13 +916,23 @@ func api_broadcast_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		m.FromApp = app.id
 		m.Services = services
 		m.content = content
+		m.target = recipient.peer
 		if recipient.peer != "" {
-			m.send_peer(recipient.peer)
+			pinned = append(pinned, m)
 		} else {
-			m.send()
+			resolved = append(resolved, m)
 		}
 	}
+	messages_fanout(pinned, encoded)
+	if len(resolved) > 0 {
+		broadcast_fanout(stream, resolved, encoded)
+	}
+	lock.Unlock()
+	locked = false
 
+	for _, recipient := range evictions {
+		health_evict_dispatch(user, app, service, recipient)
+	}
 	return sl.MakeInt64(sequence), nil
 }
 
@@ -1427,4 +1460,48 @@ func broadcast_manager() {
 		broadcast_stall_sweep()
 		broadcast_resync_sweep()
 	}
+}
+
+// broadcast_streams serialises each stream's broadcasts, striped so the locks
+// do not grow with the number of streams.
+var broadcast_streams [64]sync.Mutex
+
+// broadcast_stream_lock is the lock a stream's broadcasts take.
+func broadcast_stream_lock(stream string) *sync.Mutex {
+	hash := fnv.New32a()
+	hash.Write([]byte(stream))
+	return &broadcast_streams[hash.Sum32()%uint32(len(broadcast_streams))]
+}
+
+// broadcast_fanouts holds the latest fan-out started for each stream, which the
+// next one for that stream waits on.
+var (
+	broadcast_fanouts      = map[string]chan struct{}{}
+	broadcast_fanouts_lock sync.Mutex
+)
+
+// broadcast_fanout queues a broadcast's resolved recipients in the background,
+// after every earlier fan-out of the same stream: two broadcasts sent back to
+// back otherwise race, and the later one's rows can be queued, and so
+// delivered, first. Streams fan out in parallel with each other.
+func broadcast_fanout(stream string, list []*Message, content []byte) {
+	done := make(chan struct{})
+	broadcast_fanouts_lock.Lock()
+	previous := broadcast_fanouts[stream]
+	broadcast_fanouts[stream] = done
+	broadcast_fanouts_lock.Unlock()
+	go func() {
+		defer func() {
+			broadcast_fanouts_lock.Lock()
+			if broadcast_fanouts[stream] == done {
+				delete(broadcast_fanouts, stream)
+			}
+			broadcast_fanouts_lock.Unlock()
+			close(done)
+		}()
+		if previous != nil {
+			<-previous
+		}
+		messages_fanout(list, content)
+	}()
 }

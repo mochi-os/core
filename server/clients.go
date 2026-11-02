@@ -145,25 +145,136 @@ func clients_raw(c *gin.Context) (json.RawMessage, bool) {
 
 // === Waking ===
 //
-// A client's sync waits for something new; whatever is new wakes every sync
-// waiting, and each looks again whether it concerns it.
+// A client's sync waits for something new for its user. Something new wakes
+// the syncs of the users it concerns, which look again: an event, typing or a
+// receipt the members of its room, a setting its user, a presence everyone
+// sharing a room with its user. A change whose reach is not worked out wakes
+// every sync. Each rebuild costs its user's every room, so waking everyone for
+// each event cost the server a rebuild per waiting client per event.
 
-var clients_waking = make(chan struct{})
-var clients_waking_lock sync.Mutex
-
-// clients_wake wakes every sync waiting.
-func clients_wake() {
-	clients_waking_lock.Lock()
-	close(clients_waking)
-	clients_waking = make(chan struct{})
-	clients_waking_lock.Unlock()
+// A clients_wait is what a user's syncs wait on: a channel closed to wake
+// them, and how many syncs wait on it, so the last to stop waiting unwoken
+// takes it away rather than leave it to every wake's walk.
+type clients_wait struct {
+	channel chan struct{}
+	waiters int
 }
 
-// clients_waiter is what a sync waits on until the next wake.
-func clients_waiter() chan struct{} {
+// clients_waking holds each waiting user's wait.
+var clients_waking = map[string]*clients_wait{}
+var clients_waking_lock sync.Mutex
+
+// clients_woken, where a test sets it, is told of each user as their syncs
+// are woken, before the waker goes on.
+var clients_woken func(user string)
+
+// clients_rouse wakes one user's syncs; the caller holds clients_waking_lock.
+func clients_rouse(user string, waiting *clients_wait) {
+	close(waiting.channel)
+	delete(clients_waking, user)
+	if clients_woken != nil {
+		clients_woken(user)
+	}
+}
+
+// clients_wake wakes the syncs of the users named, or of every user where
+// none is.
+func clients_wake(users ...string) {
 	clients_waking_lock.Lock()
 	defer clients_waking_lock.Unlock()
-	return clients_waking
+	if len(users) == 0 {
+		for user, waiting := range clients_waking {
+			clients_rouse(user, waiting)
+		}
+		return
+	}
+	for _, user := range users {
+		if waiting := clients_waking[user]; waiting != nil {
+			clients_rouse(user, waiting)
+		}
+	}
+}
+
+// clients_wake_room wakes the syncs of a room's members, whatever their
+// membership, and of the users named: those an event concerns before the
+// room's state names them.
+func clients_wake_room(room string, users ...string) {
+	clients_waking_lock.Lock()
+	idle := len(clients_waking) == 0
+	clients_waking_lock.Unlock()
+	if idle {
+		return
+	}
+	state := rooms_current_view(room)
+	clients_waking_lock.Lock()
+	defer clients_waking_lock.Unlock()
+	for user, waiting := range clients_waking {
+		if _, member := state[rooms_key(spec.MRoomMember, user)]; member || slices.Contains(users, user) {
+			clients_rouse(user, waiting)
+		}
+	}
+}
+
+// clients_wake_sharing wakes the syncs of a user and of everyone here joined
+// to a room the user is joined or invited to: whose syncs show the user's
+// presence and the changes to their devices. The user's rooms are found once,
+// and each waiting sync is looked for in them.
+func clients_wake_sharing(user string) {
+	clients_waking_lock.Lock()
+	waiting := make([]string, 0, len(clients_waking))
+	for other := range clients_waking {
+		if other != user {
+			waiting = append(waiting, other)
+		}
+	}
+	clients_waking_lock.Unlock()
+	concerned := []string{user}
+	joined := func(id string) bool {
+		row, _ := federation_database().row("select membership from events where id=?", id)
+		return row_string(row, "membership") == spec.Join
+	}
+	if len(waiting) > 0 {
+		// The member events of any kind: a room joined over federation keeps
+		// those of the members already there as outliers.
+		var states []rooms_state
+		rows, _ := federation_database().rows("select distinct room from events where type='m.room.member' and key=?", user)
+		for _, row := range rows {
+			room := row_string(row, "room")
+			if membership := rooms_membership(room, user); membership == spec.Join || membership == spec.Invite {
+				states = append(states, rooms_current_view(room))
+			}
+		}
+		for _, other := range waiting {
+			for _, state := range states {
+				if id, member := state[rooms_key(spec.MRoomMember, other)]; member && joined(id) {
+					concerned = append(concerned, other)
+					break
+				}
+			}
+		}
+	}
+	clients_wake(concerned...)
+}
+
+// clients_waiter is what a user's sync waits on until a wake concerns them,
+// and what it calls once it stops waiting.
+func clients_waiter(user string) (chan struct{}, func()) {
+	clients_waking_lock.Lock()
+	defer clients_waking_lock.Unlock()
+	waiting := clients_waking[user]
+	if waiting == nil {
+		waiting = &clients_wait{channel: make(chan struct{})}
+		clients_waking[user] = waiting
+	}
+	waiting.waiters++
+	return waiting.channel, func() {
+		clients_waking_lock.Lock()
+		defer clients_waking_lock.Unlock()
+		waiting.waiters--
+		if waiting.waiters == 0 && clients_waking[user] == waiting {
+			delete(clients_waking, user)
+		}
+	}
 }
 
 // === Sessions ===
@@ -1190,7 +1301,7 @@ func clients_presence_record(user string, presence string, message string, activ
 	// Replaced in one statement, at a new position: two changes at once
 	// must not both delete and insert.
 	db.exec("insert or replace into presences (user, presence, message, active, updated) values (?, ?, ?, ?, ?)", user, presence, message, active, now())
-	clients_wake()
+	clients_wake_sharing(user)
 }
 
 // === Finding people ===
@@ -1307,7 +1418,7 @@ func clients_setting_set(user string, room string, kind string, content json.Raw
 	db := federation_database()
 	db.exec("delete from settings where user=? and room=? and type=?", user, room, kind)
 	db.exec("insert into settings (user, room, type, content) values (?, ?, ?, ?)", user, room, kind, string(content))
-	clients_wake()
+	clients_wake(user)
 }
 
 // clients_tags answers a room's tags for the account, or adds or removes

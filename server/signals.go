@@ -163,7 +163,11 @@ func signals_tell(room string, about string, out *rooms_outbox, event map[string
 		}
 	}
 	sort.Strings(local)
+	domains := rooms_domains{}
 	for _, member := range local {
+		if !domains.local(member) {
+			continue
+		}
 		user, account := federation_user(member)
 		if user == nil {
 			continue
@@ -361,9 +365,36 @@ func typing_set(room string, user string, typing bool, held time.Duration) {
 	if typing != was {
 		typing_count++
 		typing_changes[room] = typing_count
+		typing_woken[room] = typing_count
 	}
 	typing_lock.Unlock()
-	clients_wake()
+	// A renewal changes nothing a sync shows.
+	if typing != was {
+		clients_wake_room(room, user)
+	}
+	if typing {
+		time.AfterFunc(held, func() { typing_expired(room) })
+	}
+}
+
+// typing_woken is, by room, the typing position the room's syncs were last
+// woken for.
+var typing_woken = map[string]int64{}
+
+// typing_expired ends the typing that has run out in a room and wakes the
+// room's syncs to show it, which no one else would: also when a sync's own
+// read of the room ended it first, which shows it to that sync alone.
+func typing_expired(room string) {
+	typing_users(room)
+	typing_lock.Lock()
+	changed := typing_changes[room] > typing_woken[room]
+	if changed {
+		typing_woken[room] = typing_changes[room]
+	}
+	typing_lock.Unlock()
+	if changed {
+		clients_wake_room(room)
+	}
 }
 
 // typing_users is who types in a room now.
@@ -401,5 +432,5 @@ func receipts_set(room string, user string, kind string, thread string, event st
 	db := federation_database()
 	db.exec("delete from receipts where room=? and user=? and type=? and thread=?", room, user, kind, thread)
 	db.exec("insert into receipts (room, user, type, thread, event, ts) values (?, ?, ?, ?, ?, ?)", room, user, kind, thread, event, ts)
-	clients_wake()
+	clients_wake_room(room, user)
 }

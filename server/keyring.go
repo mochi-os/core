@@ -145,6 +145,7 @@ func keyring_changed(user string, device string, keys json.RawMessage, deleted b
 		content["device_display_name"] = name
 	}
 	keyring_tell(user, "m.device_list_update", content)
+	clients_wake_sharing(user)
 }
 
 // keyring_signing_changed records that a user's cross-signing keys changed
@@ -160,6 +161,7 @@ func keyring_signing_changed(user string) {
 		content["self_signing_key"] = self
 	}
 	keyring_tell(user, "m.signing_key_update", content)
+	clients_wake_sharing(user)
 }
 
 // keyring_tell queues an ephemeral event of a user's that must not be lost
@@ -756,7 +758,7 @@ func keyring_sign(user string, body json.RawMessage) keyring_answer {
 		failures[person][target] = map[string]any{"errcode": "M_INVALID_SIGNATURE", "error": message} // i18n-ok: protocol text read by clients
 	}
 	changed := map[string]bool{}
-	signing := false
+	signing, viewed := false, false
 	for person, objects := range request {
 		for target, raw := range objects {
 			var signed struct {
@@ -830,6 +832,7 @@ func keyring_sign(user string, body json.RawMessage) keyring_answer {
 					changed[target] = true
 				} else {
 					db.exec("insert into changes (user, viewer, created) values (?, ?, ?)", person, user, now())
+					viewed = true
 				}
 			}
 		}
@@ -844,6 +847,9 @@ func keyring_sign(user string, body json.RawMessage) keyring_answer {
 	}
 	if signing {
 		keyring_signing_changed(user)
+	}
+	if viewed {
+		clients_wake(user)
 	}
 	return keyring_ok(map[string]any{"failures": failures})
 }
@@ -893,6 +899,7 @@ func keyring_send(user string, device string, kind string, transaction string, b
 // keyring_deliver keeps what a sender sent to devices of a user's here.
 func keyring_deliver(sender string, user string, kind string, devices map[string]json.RawMessage) {
 	db := federation_database()
+	delivered := false
 	for device, content := range devices {
 		var targets []string
 		if device == "*" {
@@ -907,9 +914,13 @@ func keyring_deliver(sender string, user string, kind string, devices map[string
 			db.exec("insert into deliveries (user, device, sender, type, content, created) values (?, ?, ?, ?, ?, ?)", user, target, sender, kind, string(content), now())
 			// The account's own device here takes it at once (encryption.go).
 			encryption_delivered(user, target)
+			delivered = true
 		}
 	}
 	db.exec("delete from deliveries where created<?", now()-keyring_delivered)
+	if delivered {
+		clients_wake(user)
+	}
 }
 
 // === The key backup ===
@@ -1145,8 +1156,12 @@ func keyring_changes(user string, changes int64, first bool) ([]string, []string
 // changed, of people sharing a room with them now, and those no longer
 // sharing any, whether they share one now deciding.
 func keyring_tally(user string, rows []map[string]any) ([]string, []string) {
-	shared := keyring_sharing(user)
 	changed, left := []string{}, []string{}
+	// Nothing to sort is the usual case, and spares walking the user's rooms.
+	if len(rows) == 0 {
+		return changed, left
+	}
+	shared := keyring_sharing(user)
 	for _, row := range rows {
 		person := row_string(row, "user")
 		viewer := row_string(row, "viewer")
@@ -1177,11 +1192,9 @@ func keyring_membership(event gomatrixserverlib.PDU) {
 	member := *event.StateKey()
 	membership, _ := event.Membership()
 	previous := ""
-	if row, _ := federation_database().row("select before from events where id=?", event.EventID()); row != nil {
-		if id := rooms_snapshot(row_int(row, "before"))[rooms_key(spec.MRoomMember, member)]; id != "" {
-			if prior := rooms_event(id); prior != nil {
-				previous, _ = prior.Membership()
-			}
+	if id := rooms_replaced(event); id != "" {
+		if prior := rooms_event(id); prior != nil {
+			previous, _ = prior.Membership()
 		}
 	}
 	joined := membership == spec.Join && previous != spec.Join
@@ -1193,10 +1206,30 @@ func keyring_membership(event gomatrixserverlib.PDU) {
 		keyring_introduce(member, event.RoomID().String())
 	}
 	db := federation_database()
-	current, _ := rooms_current(event.RoomID().String())
+	// Who is an account here, and who shares a room with whom, are asked once
+	// each: asked again for every member, leaving a large room recomputed
+	// everyone's rooms once per member.
+	domains := rooms_domains{}
+	accounts := map[string]bool{}
 	local := func(user string) bool {
-		found, _ := federation_user(user)
-		return found != nil
+		found, asked := accounts[user]
+		if !asked {
+			if domains.local(user) {
+				account, _ := federation_user(user)
+				found = account != nil
+			}
+			accounts[user] = found
+		}
+		return found
+	}
+	sharings := map[string]map[string]bool{}
+	sharing := func(user string) map[string]bool {
+		shared, asked := sharings[user]
+		if !asked {
+			shared = keyring_sharing(user)
+			sharings[user] = shared
+		}
+		return shared
 	}
 	note := func(person string, viewer string, gone bool) {
 		db.exec("insert into changes (user, viewer, gone, created) values (?, ?, ?, ?)", person, viewer, gone, now())
@@ -1205,7 +1238,7 @@ func keyring_membership(event gomatrixserverlib.PDU) {
 		// The joiner is a change for their own other devices too.
 		note(member, member, false)
 	}
-	for other, status := range rooms_members(current) {
+	for other, status := range rooms_members(rooms_current_view(event.RoomID().String())) {
 		if other == member || (status != spec.Join && status != spec.Invite) {
 			continue
 		}
@@ -1218,10 +1251,10 @@ func keyring_membership(event gomatrixserverlib.PDU) {
 			}
 			continue
 		}
-		if local(other) && !keyring_sharing(other)[member] {
+		if local(other) && !sharing(other)[member] {
 			note(member, other, true)
 		}
-		if local(member) && !keyring_sharing(member)[other] {
+		if local(member) && !sharing(member)[other] {
 			note(other, member, true)
 		}
 	}
@@ -1236,8 +1269,15 @@ func keyring_position(since string) (int64, int64) {
 	return delivered, changes
 }
 
+// keyring_sharing_counted, when set, is told of each user keyring_sharing works
+// out the sharing of: each walks every room the user is in.
+var keyring_sharing_counted func(user string)
+
 // keyring_sharing is everyone who shares a room with a user here.
 func keyring_sharing(user string) map[string]bool {
+	if keyring_sharing_counted != nil {
+		keyring_sharing_counted(user)
+	}
 	out := map[string]bool{}
 	for _, room := range signals_rooms(user) {
 		state, _ := rooms_current(room)
@@ -1270,6 +1310,7 @@ func keyring_receive(origin spec.ServerName, kind string, content json.RawMessag
 			return
 		}
 		db.exec("insert into changes (user, created) values (?, ?)", update.User, now())
+		clients_wake_sharing(update.User)
 	case "m.direct_to_device":
 		var message struct {
 			Sender   string                                `json:"sender"`

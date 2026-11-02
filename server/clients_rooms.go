@@ -104,11 +104,7 @@ func clients_events(events []gomatrixserverlib.PDU, viewer string, device string
 
 // clients_previous is the state event a state event replaced, or nil.
 func clients_previous(event gomatrixserverlib.PDU) gomatrixserverlib.PDU {
-	row, _ := federation_database().row("select before from events where id=?", event.EventID())
-	if row == nil || row_int(row, "before") <= 0 {
-		return nil
-	}
-	id := rooms_snapshot(row_int(row, "before"))[rooms_key(event.Type(), *event.StateKey())]
+	id := rooms_replaced(event)
 	if id == "" || id == event.EventID() {
 		return nil
 	}
@@ -188,7 +184,7 @@ func clients_memberships(user string) map[string]string {
 // at a new position, so their syncs are told.
 func clients_pending(room string, user string, kind string, server string, state string) {
 	federation_database().exec("insert or replace into pending (room, user, kind, server, state, created) values (?, ?, ?, ?, ?, ?)", room, user, kind, server, state, now())
-	clients_wake()
+	clients_wake(user)
 }
 
 // clients_leaving is a leave of a room as a user's syncs give it once this

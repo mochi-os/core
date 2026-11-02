@@ -464,6 +464,8 @@ func TestVersionedStepsKeepTheirSchema(t *testing.T) {
 	queue.exec("create index queue_target_priority_retry on queue (target, priority desc, next_retry)")
 	db_upgrade_21()
 	check("db_upgrade_21.queue", versioning_schema(queue))
+	db_upgrade_22()
+	check("db_upgrade_22.matrix", versioning_schema(db_open("db/matrix.db")))
 
 	for name, steps := range map[string][]func(*DB) error{
 		"user":          db_user_steps["user"],

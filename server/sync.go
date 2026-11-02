@@ -270,13 +270,16 @@ func sync_legacy(c *gin.Context, s *clients_session) {
 	from := sync_parse(since)
 	deadline := time.Now().Add(sync_timeout(c))
 	for {
-		waiter := clients_waiter()
+		waiter, done := clients_waiter(s.h.address)
 		answer, empty := sync_build(s, from, since == "", full, filter)
 		if !empty || since == "" || full {
+			done()
 			c.JSON(http.StatusOK, answer)
 			return
 		}
-		if !sync_wait(c.Request.Context(), waiter, deadline) {
+		woken := sync_wait(c.Request.Context(), waiter, deadline)
+		done()
+		if !woken {
 			if c.Request.Context().Err() == nil {
 				c.JSON(http.StatusOK, answer)
 			}
@@ -842,9 +845,11 @@ func sliding_sync(c *gin.Context, s *clients_session) {
 	conn.request = body
 	deadline := time.Now().Add(sync_timeout(c))
 	for {
-		waiter := clients_waiter()
+		waiter, done := clients_waiter(s.h.address)
 		answer, rooms, marks, empty := sliding_build(s, conn, body, position == "")
-		if !empty || position == "" || !sync_wait(c.Request.Context(), waiter, deadline) {
+		woken := empty && position != "" && sync_wait(c.Request.Context(), waiter, deadline)
+		done()
+		if !woken {
 			if c.Request.Context().Err() != nil {
 				return
 			}

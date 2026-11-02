@@ -302,20 +302,15 @@ func rules_count(is string, count int) bool {
 }
 
 // rules_weigh is what an event's first matching rule does for a user, or
-// nil where none matches or it does nothing.
-func rules_weigh(user string, event gomatrixserverlib.PDU, state rooms_state) []any {
+// nil where none matches or it does nothing. joined is how many the room has
+// joined, counted once for every user an event is weighed for.
+func rules_weigh(user string, event gomatrixserverlib.PDU, state rooms_state, joined int) []any {
 	var raw map[string]any
 	json.Unmarshal(event.JSON(), &raw)
 	fields := map[string]any{}
 	rules_flatten("", raw, fields)
 	fields["room_id"] = event.RoomID().String()
-	members := 0
-	for _, membership := range rooms_members(state) {
-		if membership == spec.Join {
-			members++
-		}
-	}
-	rc := &rules_context{fields: fields, name: rooms_names(event.RoomID().String(), state)[event.RoomID().String()+" "+user], members: members, sender: string(event.SenderID())}
+	rc := &rules_context{fields: fields, name: rooms_name(state, user), members: joined, sender: string(event.SenderID())}
 	if id := state[rooms_key(spec.MRoomPowerLevels, "")]; id != "" {
 		if levels := rooms_event(id); levels != nil {
 			json.Unmarshal(levels.Content(), &rc.powers)
@@ -355,18 +350,21 @@ func rules_notifies(actions []any) (bool, bool) {
 
 // notifications_tell weighs an event a room took for each account here in it
 // but its sender, keeping a notification where it notifies and sending it to
-// the account's pushers. Called with the room held, so the pushing waits for
-// nothing.
-func notifications_tell(event gomatrixserverlib.PDU, state rooms_state) {
+// the account's pushers. members is the state's, and domains what is known of
+// which are this server's, both from rooms_tell. Called with the room held,
+// so the pushing waits for nothing.
+func notifications_tell(event gomatrixserverlib.PDU, state rooms_state, members map[string]string, domains rooms_domains) {
 	room := event.RoomID().String()
 	position := clients_position(event.EventID())
 	if position == 0 {
 		return
 	}
 	recipients := map[string]bool{}
-	for member, membership := range rooms_members(state) {
+	joined := 0
+	for member, membership := range members {
 		if membership == spec.Join {
 			recipients[member] = true
+			joined++
 		}
 	}
 	if event.Type() == spec.MRoomMember && event.StateKey() != nil {
@@ -379,14 +377,14 @@ func notifications_tell(event gomatrixserverlib.PDU, state rooms_state) {
 		federation_database().exec("update notifications set read=1 where user=? and room=? and position<=? and read=0", *event.StateKey(), room, position)
 	}
 	for member := range recipients {
-		if member == sender {
+		if member == sender || !domains.local(member) {
 			continue
 		}
 		user, account := federation_user(member)
 		if user == nil || !clients_signed(user, account) {
 			continue
 		}
-		actions := rules_weigh(member, event, state)
+		actions := rules_weigh(member, event, state, joined)
 		notify, highlight := rules_notifies(actions)
 		if !notify {
 			continue
@@ -419,7 +417,7 @@ func notifications_read(user string, room string, position int64) {
 	db := federation_database()
 	db.exec("update notifications set read=1 where user=? and room=? and position<=? and read=0", user, room, position)
 	db.exec("delete from notifications where user=? and read=1 and created<?", user, now()-30*86400)
-	clients_wake()
+	clients_wake(user)
 }
 
 // === Routing ===
@@ -571,7 +569,7 @@ func rules_route(c *gin.Context, s *clients_session, parts []string) {
 		db.exec("delete from rules where user=? and kind=? and id=?", s.h.address, kind, id)
 		db.exec("insert into rules (user, kind, id, body, enabled) values (?, '', ?, '{}', 0)", s.h.address, "\x00removed")
 		db.exec("delete from rules where user=? and kind='' and id=?", s.h.address, "\x00removed")
-		clients_wake()
+		clients_wake(s.h.address)
 		c.JSON(http.StatusOK, map[string]any{})
 	default:
 		clients_error(c, http.StatusNotFound, "M_UNRECOGNIZED", "Unrecognised request")
@@ -614,7 +612,7 @@ func rules_keep(user string, kind string, id string, priority int64, body map[st
 	}
 	db.exec("delete from rules where user=? and kind=? and id=?", user, kind, id)
 	db.exec("insert into rules (user, kind, id, priority, body, enabled) values (?, ?, ?, ?, ?, ?)", user, kind, id, priority, json_encode(body), enabled)
-	clients_wake()
+	clients_wake(user)
 }
 
 // === Pushers ===
@@ -697,7 +695,7 @@ func pushers_send(user *User, address string, event gomatrixserverlib.PDU, state
 			tweaks[name] = value
 		}
 	}
-	names := rooms_names(room, state)
+	author := rooms_name(state, string(event.SenderID()))
 	roomname, _ := clients_state_content(room, "m.room.name", "")["name"].(string)
 	var content any
 	json.Unmarshal(event.Content(), &content)
@@ -727,7 +725,7 @@ func pushers_send(user *User, address string, event gomatrixserverlib.PDU, state
 		if data["format"] != "event_id_only" {
 			notification["type"] = event.Type()
 			notification["sender"] = string(event.SenderID())
-			if name := names[room+" "+string(event.SenderID())]; name != "" {
+			if name := author; name != "" {
 				notification["sender_display_name"] = name
 			}
 			if roomname != "" {

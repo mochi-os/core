@@ -801,7 +801,9 @@ func run_proving_receiver(t *testing.T, stream wire_stream, challenge []byte, de
 				}
 				go func() {
 					time.Sleep(delay)
-					defer r.waiting.Add(-1)
+					// Answered as the answer is written: the Sender reads it
+					// and asks again before the write returns.
+					r.waiting.Add(-1)
 					if refuse[entity] {
 						write(&Frame{Type: frame_type_fail, From: entity, Reason: fail_unproven})
 						return

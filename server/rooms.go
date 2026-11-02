@@ -29,6 +29,7 @@
 package main
 
 import (
+	"container/list"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
@@ -62,9 +63,13 @@ const rooms_history = 50
 // rooms_tables makes the room store in matrix.db.
 func rooms_tables(db *DB) {
 	db.exec("create table if not exists rooms (id text not null primary key, version text not null, state integer not null default 0, created integer not null)")
-	db.exec("create table if not exists events (id text not null primary key, room text not null, type text not null, key text, membership text not null default '', sender text not null, depth integer not null, body text not null, rejected integer not null default 0, outlier integer not null default 0, redacted integer not null default 0, before integer not null default 0, received integer not null)")
+	// replaces is the state event a state event replaced, the one its key held
+	// in the state before it: '' where none, null where not yet known.
+	db.exec("create table if not exists events (id text not null primary key, room text not null, type text not null, key text, membership text not null default '', sender text not null, depth integer not null, body text not null, rejected integer not null default 0, outlier integer not null default 0, redacted integer not null default 0, before integer not null default 0, received integer not null, replaces text)")
 	db.exec("create index if not exists events_room on events(room, depth)")
-	db.exec("create table if not exists snapshots (id integer primary key autoincrement, room text not null, state text not null)")
+	// A snapshot is a full state where base is 0, else the keys that changed
+	// from its base, depth steps from a full one.
+	db.exec("create table if not exists snapshots (id integer primary key autoincrement, room text not null, state text not null, base integer not null default 0, depth integer not null default 0)")
 	db.exec("create table if not exists extremities (room text not null, event text not null, primary key (room, event))")
 	db.exec("create table if not exists invites (room text not null, user text not null, version text not null, sender text not null, body text not null, state text not null, created integer not null, primary key (room, user))")
 	db.exec("create table if not exists directs (user text not null, room text not null, person text not null, primary key (user, room))")
@@ -114,51 +119,355 @@ func rooms_version(room string) gomatrixserverlib.IRoomVersion {
 	return version
 }
 
-// rooms_snapshot loads a stored state.
-func rooms_snapshot(id int64) rooms_state {
-	state := rooms_state{}
+// === Snapshots ===
+//
+// A snapshot is a room's state at one point. Most are stored as the keys that
+// changed from an earlier snapshot of the same room, their base, with a full
+// copy at least every rooms_snapshot_depth steps: a full copy per state change
+// grew a large room's store by its whole state on every join. Snapshots are
+// only ever added, and dropped with their room, so a decoded one is kept and
+// reused: callers get a copy (rooms_snapshot) or, where they only read, the
+// kept map itself (rooms_snapshot_view).
+
+// rooms_snapshot_depth is the most steps a snapshot may be from a full copy.
+const rooms_snapshot_depth = 100
+
+// rooms_snapshot_memory bounds the decoded snapshots kept, in bytes of keys
+// and ids.
+var rooms_snapshot_memory = 64 << 20
+
+// rooms_delta is a snapshot as changes from its base.
+type rooms_delta struct {
+	Set   map[string]string `json:"set,omitempty"`
+	Unset []string          `json:"unset,omitempty"`
+}
+
+// rooms_kept is a decoded snapshot: its state, room and steps from a full
+// copy. The state is shared and never modified.
+type rooms_kept struct {
+	key   rooms_kept_key
+	state rooms_state
+	room  string
+	depth int64
+	size  int
+}
+
+// rooms_kept_key names a snapshot by its database as well as its id: ids start
+// again in every database, and tests open many.
+type rooms_kept_key struct {
+	path string
+	id   int64
+}
+
+var (
+	rooms_kept_entries = map[rooms_kept_key]*list.Element{}
+	rooms_kept_order   = list.New()
+	rooms_kept_size    int
+	rooms_kept_lock    sync.Mutex
+)
+
+// rooms_kept_get is a kept snapshot, or nil, marked as just used.
+func rooms_kept_get(key rooms_kept_key) *rooms_kept {
+	rooms_kept_lock.Lock()
+	defer rooms_kept_lock.Unlock()
+	element := rooms_kept_entries[key]
+	if element == nil {
+		return nil
+	}
+	rooms_kept_order.MoveToFront(element)
+	return element.Value.(*rooms_kept)
+}
+
+// rooms_kept_put keeps a decoded snapshot, dropping the least recently used
+// past rooms_snapshot_memory.
+func rooms_kept_put(kept *rooms_kept) {
+	kept.size = 64
+	for key, id := range kept.state {
+		kept.size += len(key) + len(id) + 32
+	}
+	rooms_kept_lock.Lock()
+	defer rooms_kept_lock.Unlock()
+	if element := rooms_kept_entries[kept.key]; element != nil {
+		rooms_kept_order.MoveToFront(element)
+		return
+	}
+	rooms_kept_entries[kept.key] = rooms_kept_order.PushFront(kept)
+	rooms_kept_size += kept.size
+	for rooms_kept_size > rooms_snapshot_memory && rooms_kept_order.Len() > 1 {
+		oldest := rooms_kept_order.Back()
+		rooms_kept_order.Remove(oldest)
+		dropped := oldest.Value.(*rooms_kept)
+		delete(rooms_kept_entries, dropped.key)
+		rooms_kept_size -= dropped.size
+	}
+}
+
+// rooms_kept_forget drops the kept snapshots of a room whose snapshots are
+// deleted, or of every room where room is "".
+func rooms_kept_forget(room string) {
+	rooms_kept_lock.Lock()
+	defer rooms_kept_lock.Unlock()
+	for element := rooms_kept_order.Front(); element != nil; {
+		next := element.Next()
+		if kept := element.Value.(*rooms_kept); room == "" || kept.room == room {
+			rooms_kept_order.Remove(element)
+			delete(rooms_kept_entries, kept.key)
+			rooms_kept_size -= kept.size
+		}
+		element = next
+	}
+}
+
+// rooms_snapshot_load is a stored snapshot decoded, its base chain followed to
+// a full copy or a kept snapshot; nil where it is not stored or its chain is
+// broken, which callers take as the empty state.
+func rooms_snapshot_load(id int64) *rooms_kept {
 	if id <= 0 {
-		return state
+		return nil
 	}
-	row, _ := federation_database().row("select state from snapshots where id=?", id)
-	if row != nil {
-		json.Unmarshal([]byte(row_string(row, "state")), &state)
+	db := federation_database()
+	if kept := rooms_kept_get(rooms_kept_key{db.path, id}); kept != nil {
+		return kept
 	}
-	return state
+	type link struct {
+		id    int64
+		base  int64
+		depth int64
+		room  string
+		state string
+	}
+	var chain []link
+	var root *rooms_kept
+	for next := id; ; {
+		if len(chain) > rooms_snapshot_depth {
+			warn("Matrix snapshot %d: its chain runs past %d steps", id, rooms_snapshot_depth)
+			return nil
+		}
+		if kept := rooms_kept_get(rooms_kept_key{db.path, next}); kept != nil {
+			root = kept
+			break
+		}
+		row, _ := db.row("select room, base, depth, state from snapshots where id=?", next)
+		if row == nil {
+			if next != id {
+				warn("Matrix snapshot %d: its base %d is not stored", id, next)
+			}
+			return nil
+		}
+		chain = append(chain, link{next, row_int(row, "base"), row_int(row, "depth"), row_string(row, "room"), row_string(row, "state")})
+		if row_int(row, "base") <= 0 {
+			break
+		}
+		next = row_int(row, "base")
+	}
+
+	state := rooms_state{}
+	room := ""
+	last := len(chain) - 1
+	if root != nil {
+		maps.Copy(state, root.state)
+		room = root.room
+	} else {
+		if err := json.Unmarshal([]byte(chain[last].state), &state); err != nil {
+			warn("Matrix snapshot %d: unreadable: %v", chain[last].id, err)
+			return nil
+		}
+		room = chain[last].room
+		last--
+	}
+	for i := last; i >= 0; i-- {
+		// A base is always of the same room: a chain that leaves it was not
+		// written here, and is not trusted.
+		if chain[i].room != room {
+			warn("Matrix snapshot %d: its chain crosses from room %s to %s", id, chain[i].room, room)
+			return nil
+		}
+		var delta rooms_delta
+		if err := json.Unmarshal([]byte(chain[i].state), &delta); err != nil {
+			warn("Matrix snapshot %d: unreadable: %v", chain[i].id, err)
+			return nil
+		}
+		maps.Copy(state, delta.Set)
+		for _, key := range delta.Unset {
+			delete(state, key)
+		}
+	}
+	kept := &rooms_kept{key: rooms_kept_key{db.path, id}, state: state, room: room, depth: chain[0].depth}
+	rooms_kept_put(kept)
+	return kept
+}
+
+// rooms_snapshot loads a stored state, the caller's to change.
+func rooms_snapshot(id int64) rooms_state {
+	if kept := rooms_snapshot_load(id); kept != nil {
+		return maps.Clone(kept.state)
+	}
+	return rooms_state{}
+}
+
+// rooms_snapshot_view is a stored state shared with every other reader: never
+// to be changed.
+func rooms_snapshot_view(id int64) rooms_state {
+	if kept := rooms_snapshot_load(id); kept != nil {
+		return kept.state
+	}
+	return rooms_state{}
 }
 
 // rooms_snapshot_of is a state's snapshot: one of those given where it is the
 // same state, which it is for every event between two state changes, else a
-// new one.
+// new one as changes from the nearest of them.
 func rooms_snapshot_of(room string, state rooms_state, candidates ...int64) int64 {
 	for _, id := range candidates {
-		if id > 0 && maps.Equal(rooms_snapshot(id), state) {
+		if id > 0 && maps.Equal(rooms_snapshot_view(id), state) {
 			return id
 		}
 	}
-	return rooms_snapshot_save(room, state)
+	return rooms_snapshot_save(room, state, candidates...)
 }
 
-// rooms_snapshot_save stores a state and answers its id.
-func rooms_snapshot_save(room string, state rooms_state) int64 {
+// rooms_snapshot_save stores a state and answers its id: as the changes from
+// the nearest of the bases given, or from the room's current state where none
+// is, when that is at most half the state and keeps the chain within
+// rooms_snapshot_depth; else as a full copy.
+func rooms_snapshot_save(room string, state rooms_state, bases ...int64) int64 {
+	if len(bases) == 0 {
+		bases = []int64{rooms_current_id(room)}
+	}
+	var delta *rooms_delta
+	base, depth := int64(0), int64(0)
+	for _, id := range bases {
+		kept := rooms_snapshot_load(id)
+		if kept == nil || kept.room != room || kept.depth >= rooms_snapshot_depth {
+			continue
+		}
+		changes := rooms_diff(kept.state, state)
+		if delta == nil || len(changes.Set)+len(changes.Unset) < len(delta.Set)+len(delta.Unset) {
+			delta, base, depth = &changes, id, kept.depth+1
+		}
+	}
+	body := ""
+	if delta != nil && 2*(len(delta.Set)+len(delta.Unset)) <= len(state) {
+		body = json_encode(delta)
+	} else {
+		base, depth = 0, 0
+		body = json_encode(state)
+	}
 	db := federation_database()
-	result, err := db.internal.Exec("insert into snapshots (room, state) values (?, ?)", room, json_encode(state))
+	// A delta is kept only while its base is: a base the room's forgetting
+	// deleted after it was read leaves the state kept whole instead.
+	result, err := db.internal.Exec("insert into snapshots (room, state, base, depth) select ?, ?, ?, ? where ?=0 or exists (select 1 from snapshots where id=? and room=?)", room, body, base, depth, base, base, room)
+	if err == nil && base != 0 {
+		if inserted, _ := result.RowsAffected(); inserted == 0 {
+			base, depth = 0, 0
+			result, err = db.internal.Exec("insert into snapshots (room, state, base, depth) values (?, ?, 0, 0)", room, json_encode(state))
+		}
+	}
 	if err != nil {
 		warn("Matrix room %s: cannot keep a state: %v", room, err)
 		return 0
 	}
 	id, _ := result.LastInsertId()
+	rooms_kept_put(&rooms_kept{key: rooms_kept_key{db.path, id}, state: maps.Clone(state), room: room, depth: depth})
 	return id
 }
 
-// rooms_current is a room's current state and its snapshot's id.
-func rooms_current(room string) (rooms_state, int64) {
-	row, _ := federation_database().row("select state from rooms where id=?", room)
-	if row == nil {
-		return rooms_state{}, 0
+// rooms_diff is what changes a state from another.
+func rooms_diff(from rooms_state, to rooms_state) rooms_delta {
+	delta := rooms_delta{Set: map[string]string{}}
+	for key, id := range to {
+		if from[key] != id {
+			delta.Set[key] = id
+		}
 	}
-	id := row_int(row, "state")
+	for key := range from {
+		if _, found := to[key]; !found {
+			delta.Unset = append(delta.Unset, key)
+		}
+	}
+	sort.Strings(delta.Unset)
+	return delta
+}
+
+// rooms_current_id is the id of a room's current snapshot, 0 where none.
+func rooms_current_id(room string) int64 {
+	row, _ := federation_database().row("select state from rooms where id=?", room)
+	return row_int(row, "state")
+}
+
+// rooms_current is a room's current state, the caller's to change, and its
+// snapshot's id.
+func rooms_current(room string) (rooms_state, int64) {
+	id := rooms_current_id(room)
 	return rooms_snapshot(id), id
+}
+
+// rooms_current_view is a room's current state shared with every other
+// reader: never to be changed.
+func rooms_current_view(room string) rooms_state {
+	return rooms_snapshot_view(rooms_current_id(room))
+}
+
+// rooms_replaced is the id of the state event a stored state event replaced,
+// "" where it replaced none or the state before it is not known: stored with
+// the event, else read from the snapshot of the state before it.
+func rooms_replaced(event gomatrixserverlib.PDU) string {
+	if event.StateKey() == nil {
+		return ""
+	}
+	row, _ := federation_database().row("select before, replaces from events where id=?", event.EventID())
+	if row == nil || row_int(row, "before") <= 0 {
+		return ""
+	}
+	if replaces, known := row["replaces"].(string); known {
+		return replaces
+	}
+	return rooms_snapshot_view(row_int(row, "before"))[rooms_key(event.Type(), *event.StateKey())]
+}
+
+// rooms_replaces is the state event an event replaces in the state before it,
+// a snapshot.
+func rooms_replaces(event gomatrixserverlib.PDU, before int64) any {
+	if event.StateKey() == nil || before <= 0 {
+		return nil
+	}
+	return rooms_snapshot_view(before)[rooms_key(event.Type(), *event.StateKey())]
+}
+
+// rooms_name is the name a member goes by in a state, read from their member
+// event alone.
+func rooms_name(state rooms_state, user string) string {
+	id := state[rooms_key(spec.MRoomMember, user)]
+	if id == "" {
+		return ""
+	}
+	event := rooms_event(id)
+	if event == nil {
+		return ""
+	}
+	var content struct {
+		Name string `json:"displayname"`
+	}
+	json.Unmarshal(event.Content(), &content)
+	return content.Name
+}
+
+// rooms_domains answers whether users are on one of this server's domains,
+// asking once per domain: per-event loops asked once per member.
+type rooms_domains map[spec.ServerName]bool
+
+func (domains rooms_domains) local(member string) bool {
+	user, err := spec.NewUserID(member, true)
+	if err != nil {
+		return false
+	}
+	domain := user.Domain()
+	if found, asked := domains[domain]; asked {
+		return found
+	}
+	found := federation_local(domain)
+	domains[domain] = found
+	return found
 }
 
 // rooms_events loads stored events by id, those not stored left out.
@@ -474,6 +783,7 @@ func rooms_members(state rooms_state) map[string]string {
 // this one's own domains.
 func rooms_servers(states ...rooms_state) []string {
 	seen := map[string]bool{}
+	domains := rooms_domains{}
 	var out []string
 	for _, state := range states {
 		for member, membership := range rooms_members(state) {
@@ -485,7 +795,7 @@ func rooms_servers(states ...rooms_state) []string {
 				continue
 			}
 			domain := string(user.Domain())
-			if !seen[domain] && !federation_local(user.Domain()) {
+			if !seen[domain] && !domains.local(member) {
 				seen[domain] = true
 				out = append(out, domain)
 			}
@@ -498,13 +808,13 @@ func rooms_servers(states ...rooms_state) []string {
 // rooms_local is a domain of this server's with someone joined to a room:
 // the server name it speaks for the room as, or "".
 func rooms_local(room string) spec.ServerName {
-	state, _ := rooms_current(room)
+	domains := rooms_domains{}
 	var found []string
-	for member, membership := range rooms_members(state) {
+	for member, membership := range rooms_members(rooms_current_view(room)) {
 		if membership != spec.Join {
 			continue
 		}
-		if user, err := spec.NewUserID(member, true); err == nil && federation_local(user.Domain()) {
+		if user, err := spec.NewUserID(member, true); err == nil && domains.local(member) {
 			found = append(found, string(user.Domain()))
 		}
 	}
@@ -544,14 +854,26 @@ func rooms_keep(event gomatrixserverlib.PDU, before int64, rejected bool, outlie
 		}
 	}
 	db := federation_database()
-	db.exec("insert into events (id, room, type, key, membership, sender, depth, body, rejected, outlier, redacted, before, received) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict(id) do update set outlier=excluded.outlier, before=excluded.before, rejected=excluded.rejected where events.outlier=1 and excluded.outlier=0",
-		event.EventID(), event.RoomID().String(), event.Type(), key, membership, string(event.SenderID()), event.Depth(), string(event.JSON()), rejected, outlier, event.Redacted(), before, now())
+	db.exec("insert into events (id, room, type, key, membership, sender, depth, body, rejected, outlier, redacted, before, received, replaces) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict(id) do update set outlier=excluded.outlier, before=excluded.before, rejected=excluded.rejected, replaces=excluded.replaces where events.outlier=1 and excluded.outlier=0",
+		event.EventID(), event.RoomID().String(), event.Type(), key, membership, string(event.SenderID()), event.Depth(), string(event.JSON()), rejected, outlier, event.Redacted(), before, now(), rooms_replaces(event, before))
 	// An event taken into the timeline takes its place in the order the
 	// clients' syncs count in, once.
 	if !outlier && !rejected {
 		db.exec("insert or ignore into stream (room, event) values (?, ?)", event.RoomID().String(), event.EventID())
-		clients_wake()
 	}
+}
+
+// rooms_wake wakes the syncs an event taken into the timeline concerns: the
+// room's members, and its sender and the member it names before the state
+// names them. It runs once the room's state, its members' device changes and
+// their notifications have caught up with the event, since a sync woken
+// before then builds an answer without them, and is not woken for them again.
+func rooms_wake(event gomatrixserverlib.PDU) {
+	concerned := []string{string(event.SenderID())}
+	if key := event.StateKey(); key != nil {
+		concerned = append(concerned, *key)
+	}
+	clients_wake_room(event.RoomID().String(), concerned...)
 }
 
 // rooms_known says whether an event is in a room's timeline, as against
@@ -980,6 +1302,7 @@ func rooms_accept(ctx context.Context, local spec.ServerName, origin spec.Server
 		return nil
 	}
 	rooms_keep(event, snapshot, false, false)
+	defer rooms_wake(event)
 	rooms_advance(event)
 	if err := rooms_settle(version, room); err != nil {
 		return err
@@ -1011,8 +1334,7 @@ func rooms_before(version gomatrixserverlib.IRoomVersion, event gomatrixserverli
 	if err != nil {
 		return nil, 0, err
 	}
-	_, id := rooms_current(room)
-	return before, rooms_snapshot_of(room, before, append(candidates, id)...), nil
+	return before, rooms_snapshot_of(room, before, append(candidates, rooms_current_id(room))...), nil
 }
 
 // rooms_fill asks the server an event came from for the events between the
@@ -1116,7 +1438,7 @@ func rooms_gap(ctx context.Context, local spec.ServerName, origin spec.ServerNam
 	rejected := rooms_authorised(event, auth) != nil || rooms_allowed(event, state) != nil
 	snapshot := rooms_snapshot_save(room, state)
 	rooms_keep(event, snapshot, rejected, true)
-	federation_database().exec("update events set before=? where id=? and before=0", snapshot, previous)
+	federation_database().exec("update events set before=?, replaces=? where id=? and before=0", snapshot, rooms_replaces(event, snapshot), previous)
 	return nil
 }
 
@@ -1245,7 +1567,12 @@ func rooms_conversation(user string, event gomatrixserverlib.PDU, state rooms_st
 		}
 		return nil
 	}
-	reader := &matrix_state{user: user, typing: map[string][]string{}, direct: map[string]bool{room: rooms_direct(user, room)}, names: rooms_names(room, state), download: content_address}
+	// An event that is not state reads only its sender's name.
+	names := map[string]string{}
+	if name := rooms_name(state, e.Sender); name != "" {
+		names[room+" "+e.Sender] = name
+	}
+	reader := &matrix_state{user: user, typing: map[string][]string{}, direct: map[string]bool{room: rooms_direct(user, room)}, names: names, download: content_address}
 	if found, account := federation_user(user); found != nil {
 		reader.decrypt = func(ctx context.Context, room string, e *matrix_event) *matrix_event {
 			device, err := encryption_matrix_of(found, account)
@@ -1290,8 +1617,9 @@ func rooms_tell(event gomatrixserverlib.PDU, out *rooms_outbox) {
 		recipients[*event.StateKey()] = true
 	}
 	sender := string(event.SenderID())
+	domains := rooms_domains{}
 	for member := range recipients {
-		if member == sender {
+		if member == sender || !domains.local(member) {
 			continue
 		}
 		user, account := federation_user(member)
@@ -1300,7 +1628,7 @@ func rooms_tell(event gomatrixserverlib.PDU, out *rooms_outbox) {
 		}
 		out.add(user, account, rooms_conversation(member, event, after)...)
 	}
-	notifications_tell(event, after)
+	notifications_tell(event, after, members, domains)
 	if b := bridge_of(event.RoomID().String()); b != nil {
 		if user := user_by_uid(b.user); user != nil {
 			out.bridge(user, b.room, bridge_events(b, event, after)...)
@@ -1391,6 +1719,7 @@ func rooms_commit(version gomatrixserverlib.IRoomVersion, event gomatrixserverli
 		snapshot = rooms_snapshot_save(room, before)
 	}
 	rooms_keep(event, snapshot, false, false)
+	defer rooms_wake(event)
 	rooms_advance(event)
 	if err := rooms_settle(version, room); err != nil {
 		return err
@@ -1442,8 +1771,7 @@ func rooms_send_redaction(ctx context.Context, room string, sender string, targe
 // rooms_membership is a user's membership of a room as its current state
 // has it, or "".
 func rooms_membership(room string, user string) string {
-	state, _ := rooms_current(room)
-	id := state[rooms_key(spec.MRoomMember, user)]
+	id := rooms_current_view(room)[rooms_key(spec.MRoomMember, user)]
 	if id == "" {
 		return ""
 	}
@@ -1901,6 +2229,7 @@ func rooms_joined(joined *gomatrixserverlib.PerformJoinResponse) error {
 	}
 	before := rooms_snapshot_save(room, state)
 	rooms_keep(event, before, false, false)
+	defer rooms_wake(event)
 	rooms_advance(event)
 	if err := rooms_settle(version, room); err != nil {
 		return err
@@ -2322,6 +2651,7 @@ func rooms_forget(room string) bool {
 	db := federation_database()
 	db.exec("delete from events where room=? and id not in (select body from outbox where kind='pdu')", room)
 	db.exec("delete from snapshots where room=?", room)
+	rooms_kept_forget(room)
 	db.exec("delete from extremities where room=?", room)
 	db.exec("delete from directs where room=?", room)
 	// Marked forgotten until an account here is in it again.

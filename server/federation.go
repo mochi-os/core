@@ -76,11 +76,11 @@ func federation_database() *DB {
 	return db_open("db/matrix.db")
 }
 
-// federation_create lays the engine's database, for db_create and
-// db_upgrade_18: the rooms (rooms.go), the other servers' keys, the queue to
-// each other server - each row with the domain it is sent from - and the
-// transactions already taken. A change here is also a new db_upgrade_N step,
-// and db_upgrade_18 keeps a copy of this as it was.
+// federation_create lays the engine's database, for db_create: the rooms
+// (rooms.go), the other servers' keys, the queue to each other server - each
+// row with the domain it is sent from - and the transactions already taken. A
+// change here is also a new db_upgrade_N step; db_upgrade_18 keeps its own
+// copy as it was (db_upgrade_18_federation).
 func federation_create(db *DB) {
 	db.exec("create table if not exists servers (name text not null, key text not null, public text not null, valid integer not null, expired integer not null default 0, primary key (name, key))")
 	db.exec("create table if not exists outbox (id integer primary key autoincrement, destination text not null, origin text not null default '', kind text not null, body text not null, created integer not null)")

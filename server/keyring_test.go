@@ -367,8 +367,15 @@ func TestKeyringSigning(t *testing.T) {
 	rootmaster := create_olm_key(t)
 	keys_request(t, "m2", "@root:example.com", rd, "POST", "keys/device_signing/upload", map[string]any{"master_key": rootmaster.signing_key("@root:example.com", "master")})
 	theirs := users.sign(t, rootmaster.signing_key("@root:example.com", "master"), "@alice:example.com", "ed25519:"+users.public)
+	waiting, done := clients_waiter("@alice:example.com")
+	defer done()
 	if _, body := keys_request(t, "m1", "@alice:example.com", ad, "POST", "keys/signatures/upload", map[string]any{"@root:example.com": map[string]any{rootmaster.public: theirs}}); len(body["failures"].(map[string]any)) != 0 {
 		t.Fatalf("the user-signing signature: %v", body)
+	}
+	select {
+	case <-waiting:
+	default:
+		t.Error("THE POINT: alice's signature of root's key woke none of her syncs, which show it")
 	}
 	_, seen := keys_request(t, "m1", "@alice:example.com", ad, "POST", "keys/query", map[string]any{"device_keys": map[string]any{"@root:example.com": []any{}}})
 	if !strings.Contains(string(mustjson(seen["master_keys"])), users.public) {

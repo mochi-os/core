@@ -86,7 +86,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 21
+	schema_version = 22
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -1516,6 +1516,8 @@ func db_upgrade() {
 			db_upgrade_20()
 		case 21:
 			db_upgrade_21()
+		case 22:
+			db_upgrade_22()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -2866,7 +2868,7 @@ func db_upgrade_18() {
 	networks.exec("drop table if exists received")
 
 	matrix := db_open("db/matrix.db")
-	federation_create(matrix)
+	db_upgrade_18_federation(matrix)
 	// The domain each queued row is sent from.
 	if found, _ := matrix.exists("select 1 from pragma_table_info('outbox') where name='origin'"); !found {
 		matrix.exec("alter table outbox add column origin text not null default ''")
@@ -2991,6 +2993,83 @@ func db_upgrade_21() {
 	}
 	queue.exec("create index if not exists queue_status_target_priority_retry on queue (status, target, priority desc, next_retry)")
 	queue.exec("drop index if exists queue_target_priority_retry")
+}
+
+// db_upgrade_18_federation is federation_create as it was at schema 18, for
+// db_upgrade_18: the room store has changed since.
+func db_upgrade_18_federation(db *DB) {
+	db.exec("create table if not exists servers (name text not null, key text not null, public text not null, valid integer not null, expired integer not null default 0, primary key (name, key))")
+	db.exec("create table if not exists outbox (id integer primary key autoincrement, destination text not null, origin text not null default '', kind text not null, body text not null, created integer not null)")
+	db.exec("create index if not exists outbox_destination on outbox(destination, id)")
+	db.exec("create table if not exists destinations (name text not null primary key, failures integer not null default 0, retry integer not null default 0)")
+	db.exec("create table if not exists transactions (origin text not null, id text not null, received integer not null, primary key (origin, id))")
+	db.exec("create table if not exists retired (domain text not null, key text not null, public text not null, expired integer not null, primary key (domain, key))")
+	db.exec("create table if not exists rooms (id text not null primary key, version text not null, state integer not null default 0, created integer not null)")
+	db.exec("create table if not exists events (id text not null primary key, room text not null, type text not null, key text, membership text not null default '', sender text not null, depth integer not null, body text not null, rejected integer not null default 0, outlier integer not null default 0, redacted integer not null default 0, before integer not null default 0, received integer not null)")
+	db.exec("create index if not exists events_room on events(room, depth)")
+	db.exec("create table if not exists snapshots (id integer primary key autoincrement, room text not null, state text not null)")
+	db.exec("create table if not exists extremities (room text not null, event text not null, primary key (room, event))")
+	db.exec("create table if not exists invites (room text not null, user text not null, version text not null, sender text not null, body text not null, state text not null, created integer not null, primary key (room, user))")
+	db.exec("create table if not exists directs (user text not null, room text not null, person text not null, primary key (user, room))")
+	db.exec("create table if not exists sent (account text not null, key text not null, event text not null, created integer not null, primary key (account, key))")
+	keyring_tables(db)
+	clients_tables(db)
+	signals_tables(db)
+	content_tables(db)
+	bridge_tables(db)
+	notices_tables(db)
+}
+
+// db_upgrade_22 keeps with each Matrix state event the state event it
+// replaced, filled in here for those already kept from the snapshot of the
+// state before each, and lets a snapshot be the changes from an earlier one;
+// rooms_tables carries both for new installs.
+func db_upgrade_22() {
+	matrix := db_open("db/matrix.db")
+	found, err := matrix.exists("select 1 from sqlite_master where type='table' and name='events'")
+	if err != nil {
+		panic(fmt.Sprintf("Schema upgrade 22: events table lookup: %v", err))
+	}
+	if !found {
+		return
+	}
+	if found, _ := matrix.exists("select 1 from pragma_table_info('events') where name='replaces'"); !found {
+		matrix.exec("alter table events add column replaces text")
+	}
+	if found, _ := matrix.exists("select 1 from pragma_table_info('snapshots') where name='base'"); !found {
+		matrix.exec("alter table snapshots add column base integer not null default 0")
+	}
+	if found, _ := matrix.exists("select 1 from pragma_table_info('snapshots') where name='depth'"); !found {
+		matrix.exec("alter table snapshots add column depth integer not null default 0")
+	}
+	// Paged by rowid, so each batch starts where the last ended rather than
+	// scanning past the rows already filled.
+	last := int64(0)
+	for {
+		rows, err := matrix.rows("select rowid, id, type, key, before from events where rowid>? and replaces is null and key is not null and before>0 order by rowid limit 1000", last)
+		if err != nil {
+			panic(fmt.Sprintf("Schema upgrade 22: reading events: %v", err))
+		}
+		if len(rows) == 0 {
+			return
+		}
+		last = row_int(rows[len(rows)-1], "rowid")
+		tx, err := matrix.internal.Begin()
+		if err != nil {
+			panic(fmt.Sprintf("Schema upgrade 22: %v", err))
+		}
+		for _, row := range rows {
+			key, _ := row["key"].(string)
+			replaces := rooms_snapshot_view(row_int(row, "before"))[rooms_key(row_string(row, "type"), key)]
+			if _, err := tx.Exec("update events set replaces=? where id=?", replaces, row_string(row, "id")); err != nil {
+				tx.Rollback()
+				panic(fmt.Sprintf("Schema upgrade 22: filling events: %v", err))
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			panic(fmt.Sprintf("Schema upgrade 22: %v", err))
+		}
+	}
 }
 
 // db_upgrade_12 adds the handle registry to users.db; db_create carries the

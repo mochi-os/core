@@ -764,6 +764,18 @@ func federation_workers_drain() {
 // remote's and join it.
 func matrix_join(t *testing.T, r *matrix_remote, alice *User, room string) {
 	t.Helper()
+	matrix_invite(t, r, room)
+	thread := linked_thread(alice)
+	joined := decoded(t)(api_account_room_join(thread, sl.NewBuiltin("test", nil), sl.Tuple{sl.String("m1"), sl.String(room)}, nil))
+	if joined["conversation"] != room {
+		t.Fatalf("join = %v", joined)
+	}
+}
+
+// matrix_invite has bob invite alice to a remote room, as matrix_join does
+// before she joins.
+func matrix_invite(t *testing.T, r *matrix_remote, room string) {
+	t.Helper()
 	invitee := "@alice:example.com"
 	invite := r.build(room, r.user("bob"), spec.MRoomMember, &invitee, map[string]any{"membership": "invite"}, r.edge[room], r.state[room])
 	stripped := []gomatrixserverlib.InviteStrippedState{gomatrixserverlib.NewInviteStrippedState(r.events[r.state[room][rooms_key("m.room.name", "")]])}
@@ -785,11 +797,6 @@ func matrix_join(t *testing.T, r *matrix_remote, alice *User, room string) {
 	r.lock.Lock()
 	r.take(signed)
 	r.lock.Unlock()
-	thread := linked_thread(alice)
-	joined := decoded(t)(api_account_room_join(thread, sl.NewBuiltin("test", nil), sl.Tuple{sl.String("m1"), sl.String(room)}, nil))
-	if joined["conversation"] != room {
-		t.Fatalf("join = %v", joined)
-	}
 }
 
 func mustjson(value any) []byte {
@@ -2498,6 +2505,7 @@ func TestMatrixDirectory(t *testing.T) {
 	// Someone in no room with the account, found by address through their
 	// server.
 	federation_database().exec("delete from snapshots")
+	rooms_kept_forget("")
 	federation_database().exec("delete from events")
 	found = sl_decode(must_value(t)(api_account_directory(thread, fn, sl.Tuple{sl.String("m1"), sl.String(r.user("bob"))}, nil)))
 	if fmt.Sprint(found) != fmt.Sprint([]any{map[string]any{"id": r.user("bob"), "name": "Bob"}}) {

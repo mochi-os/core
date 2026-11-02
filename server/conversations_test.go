@@ -896,3 +896,44 @@ func TestXMPPSendCancelled(t *testing.T) {
 		t.Errorf("THE POINT: the session still up: %s", reason)
 	}
 }
+
+// TestXMPPQueryEnded: a query whose context has ended before its request is
+// written - its time spent waiting behind another write, or its caller gone -
+// has mellium put the connection's write deadline in the past no more than a
+// send does, which under TLS fails every write after it. The session keeps
+// sending, and answers a query after.
+func TestXMPPQueryEnded(t *testing.T) {
+	alice := create_linked_test_env(t)
+	fake := create_xmpp_fake(t, "secret")
+	fake.answer = func(text string) []string {
+		if strings.HasPrefix(text, "<iq") {
+			return []string{`<iq xmlns="jabber:client" type="result" id="` + xml_attribute(text, "id") + `"/>`}
+		}
+		return nil
+	}
+	account := decoded(t)(api_account_link(linked_thread(alice), sl.NewBuiltin("test", nil), sl.Tuple{sl.String("xmpp")}, linked_kwargs("address", "alice@example.org", "password", "secret")))
+	id := account["id"].(string)
+	wait(t, "the connection", func() bool { connected, _ := linked_connected(alice.UID, id); return connected })
+	c, err := linked_client(linked_get(alice, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ping := `<iq xmlns="jabber:client" type="get"><ping xmlns="urn:xmpp:ping"/></iq>`
+	for i := range 20 {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		c.query(ctx, ping, &xmpp_head{})
+		if err := c.send(context.Background(), `<message xmlns="jabber:client" to="bob@example.org" type="chat"><body>`+strconv.Itoa(i)+`</body></message>`); err != nil {
+			t.Fatalf("THE POINT: send %d after a query whose context had ended: %v", i, err)
+		}
+	}
+	if err := c.query(context.Background(), ping, &xmpp_head{}); err != nil {
+		t.Errorf("THE POINT: a query after them is answered: %v", err)
+	}
+	fake.lock.Lock()
+	past := fake.past
+	fake.lock.Unlock()
+	if past > 0 {
+		t.Errorf("THE POINT: queries whose context had ended put the connection's write deadline in the past %d times", past)
+	}
+}

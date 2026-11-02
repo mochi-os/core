@@ -515,9 +515,10 @@ type xmpp_headed interface{ head() *xmpp_head }
 // An xmpp_client is a running session and what it keeps while it runs: the
 // rooms joined and the nick in each, the ids it sent to rooms (a room echoes a
 // message to its sender), the last markable message of each conversation, the
-// pauses due after typing, the archive queries waiting for their results and
-// the joins waiting for the room's answer. What it hears goes to the app in
-// order through a queue, so the stream is read while the app works.
+// pauses due after typing, the archive queries waiting for their results,
+// the joins waiting for the room's answer and the requests waiting for
+// theirs. What it hears goes to the app in order through a queue, so the
+// stream is read while the app works.
 type xmpp_client struct {
 	l        *linked
 	session  *xmpp.Session
@@ -528,6 +529,7 @@ type xmpp_client struct {
 	markable map[string]string
 	typing   map[string]*time.Timer
 	queries  map[string]*xmpp_query
+	answers  map[string]chan []byte
 	joins    map[string]chan error
 	services map[string]string
 	queue    chan []map[string]any
@@ -552,7 +554,7 @@ func xmpp_run(ctx context.Context, l *linked, s *linked_session) error {
 	if err != nil {
 		return err
 	}
-	c := &xmpp_client{l: l, session: session, address: address, rooms: map[string]string{}, sent: map[string]int64{}, markable: map[string]string{}, typing: map[string]*time.Timer{}, queries: map[string]*xmpp_query{}, joins: map[string]chan error{}, services: map[string]string{}, queue: make(chan []map[string]any, 256)}
+	c := &xmpp_client{l: l, session: session, address: address, rooms: map[string]string{}, sent: map[string]int64{}, markable: map[string]string{}, typing: map[string]*time.Timer{}, queries: map[string]*xmpp_query{}, answers: map[string]chan []byte{}, joins: map[string]chan error{}, services: map[string]string{}, queue: make(chan []map[string]any, 256)}
 	done := make(chan struct{})
 	// What the session starts runs while it does, and ends before it does.
 	var started sync.WaitGroup
@@ -651,18 +653,42 @@ func (c *xmpp_client) send(ctx context.Context, text string) error {
 }
 
 // query sends a request and reads its answer into into, failing on an error
-// answer.
+// answer. The request goes as send writes, with a context mellium never sees
+// end: a query can spend its time waiting behind another write, and the
+// context it is given ending before its own write is done fails that write,
+// and under TLS every write after it. The answer comes back to handle by the
+// request's id, waited for until the query's own time is up.
 func (c *xmpp_client) query(ctx context.Context, text string, into xmpp_headed) error {
 	ctx, cancel := context.WithTimeout(ctx, xmpp_query_timeout)
 	defer cancel()
-	response, err := c.session.SendIQ(ctx, xmpp_reader(text))
+	r := xmpp_reader(text)
+	token, err := r.Token()
 	if err != nil {
 		return err
 	}
-	defer response.Close()
-	answer, err := xmpp_text(response)
-	if err != nil {
+	start, ok := token.(xml.StartElement)
+	if !ok || start.Name.Local != "iq" {
+		return fmt.Errorf("a request must be an iq")
+	}
+	id := uid()
+	start.Attr = append(slices.DeleteFunc(slices.Clone(start.Attr), func(a xml.Attr) bool { return a.Name.Space == "" && a.Name.Local == "id" }), xml.Attr{Name: xml.Name{Local: "id"}, Value: id})
+	waiting := make(chan []byte, 1)
+	c.lock.Lock()
+	c.answers[id] = waiting
+	c.lock.Unlock()
+	defer func() {
+		c.lock.Lock()
+		delete(c.answers, id)
+		c.lock.Unlock()
+	}()
+	if err := c.session.SendElement(context.WithoutCancel(ctx), xmlstream.Inner(r), start); err != nil {
 		return err
+	}
+	var answer []byte
+	select {
+	case answer = <-waiting:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	if err := xml.Unmarshal(answer, into); err != nil {
 		return err
@@ -695,6 +721,16 @@ func (c *xmpp_client) handle(t xmlstream.TokenReadEncoder, start *xml.StartEleme
 		}
 		c.presence(&p)
 	case "iq":
+		if waiting := c.awaited(start); waiting != nil {
+			if answer, err := xmpp_text(d); err == nil {
+				// Never held up: a second answer to one request is dropped.
+				select {
+				case waiting <- answer:
+				default:
+				}
+			}
+			return nil
+		}
 		var q xmpp_request
 		if err := d.Decode(&q); err != nil && err != io.EOF {
 			return nil
@@ -702,6 +738,28 @@ func (c *xmpp_client) handle(t xmlstream.TokenReadEncoder, start *xml.StartEleme
 		c.answer(t, &q)
 	}
 	return nil
+}
+
+// awaited is where an answer goes: the query waiting on the request it
+// answers, by its id, or nil for a request of the server's own or an answer
+// come after its query stopped waiting.
+func (c *xmpp_client) awaited(start *xml.StartElement) chan []byte {
+	kind, id := "", ""
+	for _, a := range start.Attr {
+		switch {
+		case a.Name.Space != "":
+		case a.Name.Local == "type":
+			kind = a.Value
+		case a.Name.Local == "id":
+			id = a.Value
+		}
+	}
+	if kind != "result" && kind != "error" {
+		return nil
+	}
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	return c.answers[id]
 }
 
 // answer replies to a request: a ping, a question about the client's features,

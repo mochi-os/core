@@ -42,6 +42,34 @@ type xmpp_fake struct {
 	cert     tls.Certificate
 	received []string
 	answer   func(stanza string) []string
+	past     int
+}
+
+// An xmpp_watched is the client's end of a fake connection, counting each
+// deadline set long past: mellium's way to interrupt a write, which under TLS
+// fails every write after it. Closing sets one at the present.
+type xmpp_watched struct {
+	net.Conn
+	fake *xmpp_fake
+}
+
+func (w *xmpp_watched) SetDeadline(t time.Time) error {
+	w.fake.passed(t)
+	return w.Conn.SetDeadline(t)
+}
+
+func (w *xmpp_watched) SetWriteDeadline(t time.Time) error {
+	w.fake.passed(t)
+	return w.Conn.SetWriteDeadline(t)
+}
+
+// passed counts a deadline long gone.
+func (f *xmpp_fake) passed(t time.Time) {
+	if !t.IsZero() && t.Before(time.Now().Add(-time.Minute)) {
+		f.lock.Lock()
+		f.past++
+		f.lock.Unlock()
+	}
 }
 
 func create_xmpp_fake(t *testing.T, password string, send ...string) *xmpp_fake {
@@ -91,7 +119,7 @@ func (f *xmpp_fake) dial(ctx context.Context, address jid.JID) (net.Conn, error)
 	f.dials++
 	f.lock.Unlock()
 	go f.serve(server, tls.Server(server, &tls.Config{Certificates: []tls.Certificate{f.cert}}))
-	return tls.Client(client, &tls.Config{InsecureSkipVerify: true}), nil
+	return tls.Client(&xmpp_watched{Conn: client, fake: f}, &tls.Config{InsecureSkipVerify: true}), nil
 }
 
 // serve runs the server's side of a connection. A failed negotiation closes

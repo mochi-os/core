@@ -106,6 +106,29 @@ def database_create():
 	}
 }
 
+// TestDatabaseFileCreateKeepsExisting: of openers racing to a new database
+// that each found it missing, the one that makes the file says so, and one
+// coming later leaves alone the file another made, which may already hold the
+// database. Emptying it under the first opener's connections locked every
+// opener after out, each failing in turn on its busy timeout.
+func TestDatabaseFileCreateKeepsExisting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "made.db")
+	made, err := db_file_create(path)
+	if err != nil || !made {
+		t.Fatalf("a new file is made: made %v, error %v", made, err)
+	}
+	if err := os.WriteFile(path, []byte("held"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	made, err = db_file_create(path)
+	if err != nil || made {
+		t.Fatalf("THE POINT: a file another opener made is not made again: made %v, error %v", made, err)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "held" {
+		t.Errorf("THE POINT: and keeps what it holds: %q", data)
+	}
+}
+
 // TestAppDatabaseCreateReentrancy: database_create's own mochi.db.* calls must
 // not re-enter db_app, and mochi.db.table must see the transaction's
 // uncommitted DDL.

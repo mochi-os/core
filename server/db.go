@@ -1352,13 +1352,12 @@ func db_open_work(file string, keys ...string) (*DB, bool, bool) {
 			warn("Database unable to create directory for %q: %v", path, err)
 			return db, false, false
 		}
-		f, err := os.Create(path)
+		made, err := db_file_create(path)
 		if err != nil {
 			warn("Database unable to create %q: %v", path, err)
 			return db, false, false
 		}
-		f.Close()
-		created = true
+		created = made
 	}
 
 	//debug("Database opening %q", path)
@@ -1392,6 +1391,22 @@ func db_open_work(file string, keys ...string) (*DB, bool, bool) {
 	databases_lock.Unlock()
 
 	return db, created, false
+}
+
+// db_file_create makes the file for a new database, answering whether this
+// call made it. Openers racing to a new database can each find it missing: a
+// file another made meanwhile is left as it is, since it may already hold the
+// database and emptying it under that opener's connections locks every
+// opener after it out.
+func db_file_create(path string) (bool, error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0644)
+	if errors.Is(err, os.ErrExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, f.Close()
 }
 
 // db_transient_dbs are the host-local core DBs whose contents are re-derived

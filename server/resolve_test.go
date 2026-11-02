@@ -9,6 +9,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -352,5 +354,52 @@ func TestBlueskyPublicPosts(t *testing.T) {
 	}
 	if page, err := bluesky_public_posts(context.Background(), did, "next", 2); err != nil || len(page.Items) != 0 || page.Cursor != "" {
 		t.Errorf("last page = %+v, %v", page, err)
+	}
+}
+
+// TestResolveHandleKept pins what the handle cache keeps: an identity for an
+// hour; a handle whose name lookup failed for a reason that may pass for a
+// minute, though its server has no well-known file; and nothing for a request
+// that gave up.
+func TestResolveHandleKept(t *testing.T) {
+	saved_handles, saved_fetch, saved_lookup := resolve_handles, resolve_fetch, bluesky_lookup
+	resolve_handles = map[string]resolve_entry{}
+	t.Cleanup(func() { resolve_handles, resolve_fetch, bluesky_lookup = saved_handles, saved_fetch, saved_lookup })
+	did := "did:plc:" + strings.Repeat("c", 24)
+	bluesky_lookup = func(ctx context.Context, name string) ([]string, error) {
+		if name == "_atproto.flaky.example" {
+			return nil, &net.DNSError{Err: "server misbehaving", Name: name, IsTemporary: true}
+		}
+		return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+	}
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, &url.Error{Op: "Get", URL: address, Err: err}
+		}
+		if address == network_scheme+"good.example/.well-known/atproto-did" {
+			return []byte(did), nil
+		}
+		return nil, &resolve_refusal{Status: 404}
+	}
+
+	if got, err := resolve_handle_kept(context.Background(), "good.example"); err != nil || got != did {
+		t.Fatalf("good.example = %q %v", got, err)
+	}
+	if entry := resolve_handles["good.example"]; entry.expires.After(time.Now().Add(resolve_handle_success)) || entry.expires.Before(time.Now().Add(resolve_handle_success-time.Minute)) {
+		t.Errorf("THE POINT: an identity is kept until %v, want an hour", entry.expires)
+	}
+	resolve_handle_kept(context.Background(), "flaky.example")
+	if entry, kept := resolve_handles["flaky.example"]; !kept || entry.expires.After(time.Now().Add(resolve_cache_transient)) {
+		t.Errorf("THE POINT: a failed name lookup that may pass is kept until %v, past the transient minute", entry.expires)
+	}
+	resolve_handle_kept(context.Background(), "missing.example")
+	if entry := resolve_handles["missing.example"]; entry.expires.Before(time.Now().Add(resolve_cache_failure - time.Minute)) {
+		t.Errorf("a handle with no identity anywhere is kept only until %v, want an hour", entry.expires)
+	}
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	resolve_handle_kept(ended, "gone.example")
+	if _, kept := resolve_handles["gone.example"]; kept {
+		t.Error("THE POINT: the failure of a request that gave up was kept for everyone")
 	}
 }

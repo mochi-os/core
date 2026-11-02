@@ -280,8 +280,11 @@ func resolve_transient(err error) bool {
 	var limited *RateLimitError
 	var refusal *resolve_refusal
 	var network *url.Error
+	var dns *net.DNSError
 	switch {
 	case errors.As(err, &limited):
+		return true
+	case errors.As(err, &dns) && (dns.IsTemporary || dns.IsTimeout):
 		return true
 	case errors.As(err, &refusal):
 		return refusal.Status >= 500 || refusal.Status == 408 || refusal.Status == 429
@@ -438,7 +441,8 @@ func resolve_webfinger(ctx context.Context, user string, host string) (string, s
 // of the name, else the well-known file on it.
 func resolve_handle(ctx context.Context, handle string) (string, error) {
 	handle = strings.ToLower(strings.TrimSpace(handle))
-	if records, err := bluesky_lookup(ctx, "_atproto."+handle); err == nil {
+	records, lookup := bluesky_lookup(ctx, "_atproto."+handle)
+	if lookup == nil {
 		for _, record := range records {
 			if value, ok := strings.CutPrefix(strings.TrimSpace(record), "did="); ok && resolve_did_re.MatchString(value) {
 				return value, nil
@@ -447,7 +451,13 @@ func resolve_handle(ctx context.Context, handle string) (string, error) {
 	}
 	body, err := resolve_fetch(ctx, network_scheme+handle+"/.well-known/atproto-did", "text/plain")
 	if err != nil {
-		return "", fmt.Errorf("the handle %s does not resolve", handle)
+		// A name lookup that failed for a reason that may pass leaves the
+		// handle unanswered, whatever the well-known file said.
+		var dns *net.DNSError
+		if errors.As(lookup, &dns) && (dns.IsTemporary || dns.IsTimeout) {
+			err = lookup
+		}
+		return "", fmt.Errorf("the handle %s does not resolve: %w", handle, err)
 	}
 	did := strings.TrimSpace(string(body))
 	if !resolve_did_re.MatchString(did) {
@@ -455,6 +465,48 @@ func resolve_handle(ctx context.Context, handle string) (string, error) {
 	}
 	return did, nil
 }
+
+// resolve_handles keeps what handles resolved to, under resolve_lock and for
+// as long as the cache keeps a lookup, for those resolved on behalf of apps.
+var resolve_handles = map[string]resolve_entry{}
+
+// resolve_handle_kept is resolve_handle through the cache: a handle asked for
+// again within the day, or within the hour after it failed, costs no DNS
+// query or fetch.
+func resolve_handle_kept(ctx context.Context, handle string) (string, error) {
+	handle = strings.ToLower(strings.TrimSpace(handle))
+	resolve_lock.Lock()
+	if entry, found := resolve_handles[handle]; found && time.Now().Before(entry.expires) {
+		resolve_lock.Unlock()
+		if entry.value == nil {
+			return "", entry.failure
+		}
+		return entry.value.ID, nil
+	}
+	resolve_lock.Unlock()
+
+	did, err := resolve_handle(ctx, handle)
+
+	resolve_lock.Lock()
+	defer resolve_lock.Unlock()
+	if len(resolve_handles) >= resolve_cache_maximum {
+		resolve_handles = map[string]resolve_entry{}
+	}
+	var limited *RateLimitError
+	if errors.As(err, &limited) || ctx.Err() != nil {
+		// Refused by our own limiter, or the asking request gave up: nothing
+		// was learnt about the handle.
+	} else if err != nil {
+		resolve_handles[handle] = resolve_entry{nil, time.Now().Add(resolve_failure(err)), err}
+	} else {
+		resolve_handles[handle] = resolve_entry{&resolved{Network: "bluesky", ID: did}, time.Now().Add(resolve_handle_success), nil}
+	}
+	return did, err
+}
+
+// resolve_handle_success is how long a handle's identity is kept: a handle
+// can be moved to another identity, so for less than the day a profile is.
+const resolve_handle_success = time.Hour
 
 // The actor types: a document of any other type is an object, not a person.
 var resolve_actor_types = map[string]bool{"person": true, "group": true, "service": true, "application": true, "organization": true}

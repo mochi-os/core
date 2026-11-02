@@ -1214,12 +1214,20 @@ func atproto_resolve_handle(c *gin.Context) {
 		c.JSON(http.StatusOK, map[string]any{"did": atproto_did(row)})
 		return
 	}
-	// A handle elsewhere, as a signed-in app asks of its data server, is
-	// resolved as the network resolves one.
-	if _, raw := xrpc_bearer(c); raw != "" && handle != "" {
-		if did, err := resolve_handle(c.Request.Context(), handle); err == nil && did != "" {
-			c.JSON(http.StatusOK, map[string]any{"did": did})
+	// A handle elsewhere is resolved as the network resolves one, for an app
+	// signed in to an account here, as a data server does for its own
+	// accounts' apps; a token that does not verify is refused, so the app
+	// can sign in again, and anyone else is told the handle is not here.
+	if _, raw := xrpc_bearer(c); raw != "" {
+		session := xrpc_authenticate(c, false)
+		if session == nil {
 			return
+		}
+		if resolve_handle_form(handle) && resolve_allowed(session.user, handle) == nil {
+			if did, err := resolve_handle_kept(c.Request.Context(), handle); err == nil && did != "" {
+				c.JSON(http.StatusOK, map[string]any{"did": did})
+				return
+			}
 		}
 	}
 	atproto_error(c, http.StatusBadRequest, "HandleNotFound")

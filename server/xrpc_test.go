@@ -12,10 +12,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/gin-gonic/gin"
@@ -153,6 +155,84 @@ func xrpc_claims(t *testing.T, token string) map[string]any {
 		t.Fatal(err)
 	}
 	return claims
+}
+
+// TestXrpcResolveHandleElsewhere: a handle elsewhere is resolved for an app
+// signed in to an account here, and kept, so asking again reaches the network
+// no more, after a failure too. Nothing else reaches the network: a token
+// that does not verify is refused, a request without one is told the handle
+// is not found, as is a string not shaped as a handle and a handle on a
+// domain the account's user blocks. A handle here is answered to anyone.
+func TestXrpcResolveHandleElsewhere(t *testing.T) {
+	alice, _, _, _ := create_xrpc_test_env(t)
+	access, _ := xrpc_signin(t, alice)
+	db_user(alice, "user").exec("insert into blocks (domain, created) values ('blocked.example', 1)")
+	bob := "did:plc:" + strings.Repeat("b", 24)
+	saved := resolve_fetch
+	var fetches []string
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		if !strings.HasSuffix(address, "/.well-known/atproto-did") {
+			return saved(ctx, address, accept)
+		}
+		fetches = append(fetches, address)
+		if address == network_scheme+"bob.remote.example/.well-known/atproto-did" || address == network_scheme+"blocked.example/.well-known/atproto-did" {
+			return []byte(bob), nil
+		}
+		if address == network_scheme+"busy.remote.example/.well-known/atproto-did" {
+			return nil, &resolve_refusal{Status: http.StatusServiceUnavailable}
+		}
+		return nil, &resolve_refusal{Status: http.StatusNotFound}
+	}
+	t.Cleanup(func() { resolve_fetch = saved })
+	ask := func(handle string, token string) (int, map[string]any) {
+		w, answer := xrpc_call(t, "GET", "com.atproto.identity.resolveHandle?handle="+url.QueryEscape(handle), token, nil, nil)
+		return w.Code, answer
+	}
+
+	if code, answer := ask("bob.remote.example", ""); code != http.StatusBadRequest || answer["error"] != "HandleNotFound" {
+		t.Errorf("a handle elsewhere without a token = %d %v", code, answer)
+	}
+	if code, answer := ask("bob.remote.example", "junk"); code != http.StatusUnauthorized || answer["error"] != "InvalidToken" {
+		t.Errorf("THE POINT: a handle elsewhere with a token that does not verify = %d %v", code, answer)
+	}
+	if len(fetches) != 0 {
+		t.Fatalf("THE POINT: requests not signed in reached the network: %v", fetches)
+	}
+	for round := 1; round <= 2; round++ {
+		if code, answer := ask("bob.remote.example", access); code != http.StatusOK || answer["did"] != bob {
+			t.Errorf("round %d: a handle elsewhere for a signed-in app = %d %v", round, code, answer)
+		}
+	}
+	if len(fetches) != 1 {
+		t.Errorf("THE POINT: asked twice, the handle was fetched %d times, want once", len(fetches))
+	}
+	for round := 1; round <= 2; round++ {
+		if code, answer := ask("nobody.remote.example", access); code != http.StatusBadRequest || answer["error"] != "HandleNotFound" {
+			t.Errorf("round %d: a handle that does not resolve = %d %v", round, code, answer)
+		}
+	}
+	if len(fetches) != 2 {
+		t.Errorf("THE POINT: a failed handle asked twice made %d fetches in all, want 2: %v", len(fetches), fetches)
+	}
+	if code, _ := ask("busy.remote.example", access); code != http.StatusBadRequest {
+		t.Errorf("a handle whose server is busy = %d", code)
+	}
+	if entry := resolve_handles["busy.remote.example"]; entry.expires.After(time.Now().Add(resolve_cache_transient)) {
+		t.Errorf("THE POINT: a failure that may pass is kept until %v, past the transient minute", entry.expires)
+	}
+	fetches = fetches[:2]
+	for _, handle := range []string{"bob.remote.example/any/path?x=", "bob@remote.example", "blocked.example"} {
+		if code, answer := ask(handle, access); code != http.StatusBadRequest || answer["error"] != "HandleNotFound" {
+			t.Errorf("%q = %d %v", handle, code, answer)
+		}
+	}
+	if len(fetches) != 2 {
+		t.Errorf("THE POINT: a malformed or blocked handle reached the network: %v", fetches)
+	}
+	did := atproto_did(account_hosted_get(alice, "b1"))
+	if code, answer := ask("alice.example.com", ""); code != http.StatusOK || answer["did"] != did {
+		t.Errorf("a handle here without a token = %d %v", code, answer)
+	}
 }
 
 // TestXrpcSession: an app signs in with the account's handle and a minted

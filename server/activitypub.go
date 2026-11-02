@@ -43,6 +43,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -1326,18 +1327,43 @@ func activitypub_known(user *User, a *actor, remote string) bool {
 	}
 	rows, _ := networks_database().rows("select distinct user from actors where deleted=0")
 	for _, row := range rows {
-		u := user_by_uid(row_string(row, "user"))
-		if u == nil || user_quiet(u) {
+		uid := row_string(row, "user")
+		db := activitypub_user_database(uid)
+		if db == nil {
 			continue
 		}
-		db := db_user(u, "user")
 		follower, _ := db.exists("select 1 from followers where actor=?", remote)
 		followed, _ := db.exists("select 1 from following where actor=?", remote)
-		if follower || followed {
+		if (follower || followed) && activitypub_user_live(uid) != nil {
 			return true
 		}
 	}
 	return false
+}
+
+// activitypub_user_database opens a user's database for the loops across
+// users, without loading the user, as most users have nothing to do with a
+// given remote actor: nil for a user with no database, which is not made.
+// The handle is brought to its current version but not bound to the user;
+// whoever goes on to act for the user opens it with db_user.
+func activitypub_user_database(uid string) *DB {
+	path := fmt.Sprintf("users/%s/user.db", uid)
+	if uid == "" || !file_exists(filepath.Join(data_dir, path)) {
+		return nil
+	}
+	db := db_open(path)
+	db_upgrade_file(db, path, db_user_steps["user"])
+	return db
+}
+
+// activitypub_user_live loads a user the loops across users found related to
+// a remote actor, or nil for one gone, suspended or quiet.
+func activitypub_user_live(uid string) *User {
+	u := user_by_uid(uid)
+	if u == nil || user_quiet(u) {
+		return nil
+	}
+	return u
 }
 
 // activitypub_key_owner checks that the actor document a key came from is the
@@ -1435,11 +1461,15 @@ func activitypub_related(remote string, query string) []*actor {
 	var found []*actor
 	rows, _ := networks_database().rows("select distinct user from actors where deleted=0 and network='fediverse'")
 	for _, row := range rows {
-		u := user_by_uid(row_string(row, "user"))
-		if u == nil || user_quiet(u) {
+		uid := row_string(row, "user")
+		db := activitypub_user_database(uid)
+		if db == nil {
 			continue
 		}
-		accounts, _ := db_user(u, "user").rows(query, remote)
+		accounts, _ := db.rows(query, remote)
+		if len(accounts) == 0 || activitypub_user_live(uid) == nil {
+			continue
+		}
 		for _, account := range accounts {
 			if a := actor_get(row_string(account, "account")); a != nil && a.Deleted == 0 && a.Network == "fediverse" {
 				found = append(found, a)

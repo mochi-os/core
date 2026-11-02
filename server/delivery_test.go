@@ -34,12 +34,12 @@ func create_delivery_test_env(t *testing.T) *User {
 		t.Fatal("fediverse is off in the test environment")
 	}
 
-	saved_private, saved_limiter, saved_cache := url_allow_private, rate_limit_host, resolve_cache
+	saved_private, saved_limiter, saved_cache, saved_handles := url_allow_private, rate_limit_host, resolve_cache, resolve_handles
 	url_allow_private = true
 	rate_limit_host = &rate_limiter{entries: make(map[string]*rate_limit_entry), limit: 60, window: 60}
-	resolve_cache = map[string]resolve_entry{}
+	resolve_cache, resolve_handles = map[string]resolve_entry{}, map[string]resolve_entry{}
 	t.Cleanup(func() {
-		url_allow_private, rate_limit_host, resolve_cache = saved_private, saved_limiter, saved_cache
+		url_allow_private, rate_limit_host, resolve_cache, resolve_handles = saved_private, saved_limiter, saved_cache, saved_handles
 	})
 	return alice
 }

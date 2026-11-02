@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -1222,6 +1223,51 @@ func TestActivityPubUserDeleted(t *testing.T) {
 	}
 	if w, _ := activitypub_get(t, "/~f1"); w.Code != http.StatusGone {
 		t.Errorf("THE POINT: the deleted user's actor = %d", w.Code)
+	}
+}
+
+// TestActivityPubAcrossUsers: the loops across users that find who here
+// follows or is followed by a remote actor answer from each user's database,
+// and load a user only once their database names the actor: a user with an
+// account but no database has no file made for them, and a quiet user whose
+// database names the actor is still left out.
+func TestActivityPubAcrossUsers(t *testing.T) {
+	alice, bob := create_activitypub_test_env(t)
+	users := db_open("db/users.db")
+	users.exec("insert into users (uid, username, status) values ('u-quiet', 'quiet@example.com', 'closing'), ('u-empty', 'empty@example.com', 'active')")
+	users.exec("insert into entities (id, fingerprint, user, class, name) values ('e-quiet', 'fp-quiet1', 'u-quiet', 'person', 'Quiet'), ('e-empty', 'fp-empty1', 'u-empty', 'person', 'Empty')")
+	actor_register(&User{UID: "u-quiet"}, "f2", "fediverse", "example.com", "quiet")
+	actor_register(&User{UID: "u-empty"}, "f3", "fediverse", "example.com", "empty")
+	quiet := user_by_uid("u-quiet")
+	if quiet == nil || !user_quiet(quiet) {
+		t.Fatalf("the quiet user = %+v", quiet)
+	}
+	carol := "https://remote.example/u/carol"
+	db_user(alice, "user").exec("insert into following (account, actor, inbox, activity, accepted, created) values ('f1', ?, ?, '', 1, 1)", bob.id, bob.inbox)
+	db_user(quiet, "user").exec("insert into following (account, actor, inbox, activity, accepted, created) values ('f2', ?, ?, '', 1, 1), ('f2', ?, '', '', 1, 1)", bob.id, bob.inbox, carol)
+	empty := filepath.Join(data_dir, "users/u-empty/user.db")
+	if file_exists(empty) {
+		t.Fatal("the user with no database has one before the test")
+	}
+
+	var accounts []string
+	for _, a := range activitypub_followers_of(bob.id) {
+		accounts = append(accounts, a.ID)
+	}
+	if !slices.Equal(accounts, []string{"f1"}) {
+		t.Errorf("THE POINT: the accounts here following bob = %v, want f1 alone (f2's user is quiet)", accounts)
+	}
+	if !activitypub_known(nil, nil, bob.id) {
+		t.Error("bob, followed by alice, is not known here")
+	}
+	if activitypub_known(nil, nil, carol) {
+		t.Error("THE POINT: carol, followed only by a quiet user, is known here")
+	}
+	if activitypub_known(nil, nil, "https://remote.example/u/nobody") {
+		t.Error("an actor nobody here follows is known here")
+	}
+	if file_exists(empty) {
+		t.Error("THE POINT: the loops across users made a database for a user who had none")
 	}
 }
 

@@ -501,6 +501,13 @@ func account_present(user *User, row map[string]any) map[string]any {
 		}
 	}
 	out["profile"], _ = data["profile"].(bool)
+	// A Bluesky account's identifier, hosted or linked: its repository and
+	// records are named by it.
+	if ptype == "bluesky" {
+		if did, _ := data["did"].(string); did != "" {
+			out["did"] = did
+		}
+	}
 	if hosted {
 		out["automated"], _ = data["automated"].(bool)
 		// The feed posts made from other apps land in (decision 42).
@@ -527,11 +534,10 @@ func account_present(user *User, row map[string]any) map[string]any {
 			out["aliases"] = object_strings(data["aliases"])
 			out["moved"], _ = data["moved"].(string)
 		}
-		// A Bluesky account's identifier, its page on Bluesky, and whether
-		// the user has kept a recovery key for it.
+		// A hosted Bluesky account's page on Bluesky, and whether the user
+		// has kept a recovery key for it.
 		if ptype == "bluesky" {
 			if did, _ := data["did"].(string); did != "" {
-				out["did"] = did
 				out["url"] = "https://bsky.app/profile/" + did
 			}
 			if id, _ := row["id"].(string); id != "" {

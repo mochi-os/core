@@ -87,6 +87,23 @@ func TestLinkedFailureShown(t *testing.T) {
 	}
 }
 
+// TestLinkedBlueskyNamesItsIdentifier: a linked Bluesky account answers its
+// did, which names its repository, as a hosted one does; what only a hosted
+// account has stays out.
+func TestLinkedBlueskyNamesItsIdentifier(t *testing.T) {
+	alice := create_linked_test_env(t)
+	did := "did:plc:3wrb42wxzi2jm7sbmaym4upy"
+	present := account_present(alice, map[string]any{"id": "b1", "type": "bluesky", "data": json_encode(map[string]any{"server": "example.org", "did": did, "handle": "alice.example.org"})})
+	if present["did"] != did {
+		t.Errorf("THE POINT: a linked Bluesky account's did = %v, want %s", present["did"], did)
+	}
+	for _, key := range []string{"recovery", "labelers", "automated"} {
+		if _, set := present[key]; set {
+			t.Errorf("a linked Bluesky account answers %s = %v, which only a hosted one has", key, present[key])
+		}
+	}
+}
+
 // TestMastodonOutage: a Mastodon account whose stream the server refuses
 // answers the status and when it tries again, and no time while it tries;
 // once the stream is open it answers no failure, and when the stream ends,

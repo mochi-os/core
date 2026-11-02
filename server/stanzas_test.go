@@ -324,10 +324,26 @@ func (c *xmpp_test_client) silent(t *testing.T, what string, parts ...string) {
 	}
 }
 
-// online sends the client's initial presence.
+// online sends the client's initial presence, and waits for it to be taken.
 func (c *xmpp_test_client) online(t *testing.T) {
 	t.Helper()
 	c.send(t, `<presence xmlns="jabber:client"/>`)
+	xmpp_online(t, c.full.Bare().String(), c.full.Resourcepart())
+}
+
+// xmpp_online waits for a client's initial presence to be taken, so what is
+// sent to the account next finds it online.
+func xmpp_online(t *testing.T, address string, resource string) {
+	t.Helper()
+	wait(t, "the client online", func() bool {
+		r := xmpp_resource_get(address, resource)
+		if r == nil {
+			return false
+		}
+		r.lock.Lock()
+		defer r.lock.Unlock()
+		return r.available
+	})
 }
 
 // TestXMPPSignIn: a client signs in with a minted password by SCRAM-SHA-256,

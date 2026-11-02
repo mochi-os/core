@@ -144,6 +144,7 @@ func TestXMPPHostedRoomCreate(t *testing.T) {
 	fake.allow(env.bob, "alice@example.com")
 	client := env.raw(t, "bob@example.com", env.mint(t, env.bob, "x2", "Phone"), "phone")
 	client.send(`<presence xmlns="jabber:client"/>`)
+	xmpp_online(t, "bob@example.com", "phone")
 	made := sl_decode(xmpp_call(t, env.alice, api_account_room_create, sl.Tuple{sl.String("x1"), sl.NewList([]sl.Value{sl.String("bob@example.com"), sl.String("carol@remote.test")})}, sl.Tuple{sl.String("name"), sl.String("Planning")})).(map[string]any)
 	conversation, _ := made["conversation"].(string)
 	room := strings.TrimPrefix(conversation, "xmpp:")
@@ -161,6 +162,37 @@ func TestXMPPHostedRoomCreate(t *testing.T) {
 	}
 	client.send(`<presence xmlns="jabber:client" to="` + room + `/Bob"><x xmlns="http://jabber.org/protocol/muc"/></presence>`)
 	client.expect(t, "a member joins", `from="`+room+`/Bob"`, `code="110"`)
+}
+
+// TestXMPPInvitationKept: an invitation to a room finding none of the
+// account's clients online, the room's own or a direct one, is kept for the
+// next client to come online, though neither carries a body.
+func TestXMPPInvitationKept(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	fake := env.apps(t)
+	fake.allow(env.bob, "alice@example.com")
+	made := sl_decode(xmpp_call(t, env.alice, api_account_room_create, sl.Tuple{sl.String("x1"), sl.NewList([]sl.Value{sl.String("bob@example.com"), sl.String("carol@remote.test")})}, sl.Tuple{sl.String("name"), sl.String("Planning")})).(map[string]any)
+	conversation, _ := made["conversation"].(string)
+	room := strings.TrimPrefix(conversation, "xmpp:")
+	if made["room"] != true {
+		t.Fatalf("the room made: %v", made)
+	}
+	alice := env.raw(t, "alice@example.com", env.mint(t, env.alice, "x1", "Laptop"), "laptop")
+	alice.send(`<presence xmlns="jabber:client"/>`)
+	xmpp_online(t, "alice@example.com", "laptop")
+	alice.send(`<message xmlns="jabber:client" to="bob@example.com" id="d1"><x xmlns="jabber:x:conference" jid="` + room + `"/></message>`)
+	// A room elsewhere may send its invitation without the direct form
+	// Mochi's rooms add to theirs.
+	alice.send(`<message xmlns="jabber:client" to="bob@example.com" id="m1"><x xmlns="http://jabber.org/protocol/muc#user"><invite from="alice@example.com"/></x></message>`)
+	wait(t, "the invitations kept", func() bool {
+		rows, _ := xmpp_database().rows("select id from offline where account=?", "x2")
+		return len(rows) == 3
+	})
+	client := env.raw(t, "bob@example.com", env.mint(t, env.bob, "x2", "Phone"), "phone")
+	client.send(`<presence xmlns="jabber:client"/>`)
+	client.expect(t, "THE POINT: the room's invitation, kept for the client", `from="`+room+`"`, `<invite from="alice@example.com"`)
+	client.expect(t, "THE POINT: a direct one", `id="d1"`, `jabber:x:conference`, `jid="`+room+`"`)
+	client.expect(t, "THE POINT: and one in the room's form alone", `id="m1"`, `<invite from="alice@example.com"`)
 }
 
 // TestXMPPCondition: an error's condition is the one it names in the

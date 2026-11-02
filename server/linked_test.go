@@ -162,7 +162,7 @@ func (log *inbound_log) find(t *testing.T, kind string, condition func(map[strin
 	return found
 }
 
-// wait polls until the condition holds or two seconds pass.
+// wait polls until the condition holds or three seconds pass.
 func wait(t *testing.T, what string, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

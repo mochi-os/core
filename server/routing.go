@@ -366,7 +366,7 @@ func xmpp_message_in(a *xmpp_account, s *xmpp_stanza, from jid.JID, to jid.JID, 
 	if own || kind == "error" || kind == "headline" || !decoded {
 		return
 	}
-	if !delivered && (strings.TrimSpace(m.Body) != "" || m.encrypted()) {
+	if !delivered && (strings.TrimSpace(m.Body) != "" || m.encrypted() || m.invitation()) {
 		xmpp_offline_keep(a, s)
 	}
 	if archive != "" && !xmpp_live(a) {

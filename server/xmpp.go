@@ -400,6 +400,12 @@ func (m *xmpp_message) encrypted() bool {
 	return m.OMEMO != nil || m.OMEMO2 != nil || m.OpenPGP != nil || m.Legacy != nil
 }
 
+// invitation reports whether a message invites to a room, through the room
+// (XEP-0045) or directly (XEP-0249). Neither carries a body.
+func (m *xmpp_message) invitation() bool {
+	return (m.Invitation != nil && m.Invitation.Invite != nil) || (m.Conference != nil && m.Conference.JID != "")
+}
+
 // archived is the id a service gave the message in its archive: the
 // account's own archive for a conversation, the room's for a room.
 func (m *xmpp_message) archived(by string) string {

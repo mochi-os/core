@@ -255,11 +255,14 @@ func web_action_error(c *gin.Context, app string, language string, err error) {
 		return
 	}
 
-	// The detail goes to the log, not to the caller: err carries the internal
-	// Starlark function name and, when the failure came from the database, the
-	// driver's own message.
-	warn("web: %s action failed: %s", app, path_scrub(err.Error()))
-	respond_error(c, http.StatusInternalServerError, "server_error", "errors.server_error", nil)
+	// The detail goes to the caller as well as the log: an app has no way to
+	// catch a failure and say what it was, so this is the only way the person
+	// who has to act on it learns what went wrong. The data directory is
+	// scrubbed from it.
+	detail := path_scrub(err.Error())
+	warn("web: %s action failed: %s", app, detail)
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error", "message": resolve_core_label(language, "errors.server_error", nil) + ": " + detail}) // i18n-ok: the translated label with the failure's own text relayed as a diagnostic
+	c.Abort()
 }
 
 func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) bool {

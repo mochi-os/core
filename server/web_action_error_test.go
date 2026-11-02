@@ -177,8 +177,27 @@ func TestActionErrorGenericStaysA500(t *testing.T) {
 	if !strings.Contains(body, "server_error") {
 		t.Errorf("the generic branch did not report a server error; body was %s", body)
 	}
-	if strings.Contains(body, "division by zero") {
-		t.Errorf("the generic branch leaked the error detail to the caller; body was %s", body)
+}
+
+// An app cannot catch a failure, so the caller must be told what it was: a
+// bare "Server error" leaves the person who has to act on it nothing to go on.
+func TestActionErrorGenericSaysWhatFailed(t *testing.T) {
+	var answer struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	failure := fmt.Errorf("mochi.file.read() syntax: <file: string>, [maximum: integer] in %s/users/1/feeds/files/a.png", data_dir)
+	if err := json.Unmarshal(action_error_response(failure).Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	if answer.Error != "server_error" {
+		t.Errorf("error = %q, want server_error", answer.Error)
+	}
+	if !strings.Contains(answer.Message, "mochi.file.read() syntax: <file: string>, [maximum: integer]") {
+		t.Errorf("message = %q, which does not say what failed", answer.Message)
+	}
+	if data_dir != "" && strings.Contains(answer.Message, data_dir) {
+		t.Errorf("message = %q, which names the data directory", answer.Message)
 	}
 }
 

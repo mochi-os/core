@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"hash/fnv"
 	"io"
 	"net/http"
@@ -100,9 +101,13 @@ var api_git = sls.FromStringDict(sl.String("mochi.git"), sl.StringDict{
 // budget, when positive, is the number of decoded object bytes the store may
 // take (see git_storage). staging, when set, is a directory objects are written
 // to instead of the repository (see git_quarantine).
+// keep holds each pack file open across reads (git_kept); the caller closes the
+// store with git_close. go-git's own sessions (git_transport) close nothing, so
+// their loader leaves it unset.
 type git_loader struct {
 	budget  int64
 	staging string
+	keep    bool
 }
 
 // Load loads a storer.Storer for the given endpoint path
@@ -112,7 +117,7 @@ func (l *git_loader) Load(ep *transport.Endpoint) (storer.Storer, error) {
 		return nil, transport.ErrRepositoryNotFound
 	}
 	wrapped := &git_storage{
-		Storer: filesystem.NewStorage(fs, cache.NewObjectLRUDefault()),
+		Storer: filesystem.NewStorageWithOptions(fs, cache.NewObjectLRUDefault(), filesystem.Options{KeepDescriptors: l.keep}),
 		meter:  git_meter{remaining: l.budget, metered: l.budget > 0},
 		path:   ep.Path,
 	}
@@ -435,10 +440,84 @@ func git_repo_path(owner *User, app *App, entity string) string {
 	return fmt.Sprintf("%s/users/%s/%s/%s", data_dir, owner.UID, app.id, entity)
 }
 
-// Open a repository
+// git_open opens a repository with its pack files held open across reads
+// (git_kept). The caller closes it with git_close.
 func git_open(owner *User, app *App, entity string) (*git.Repository, error) {
 	path := git_repo_path(owner, app, entity)
-	return git.PlainOpen(path)
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, git.ErrRepositoryNotExists
+		}
+		return nil, err
+	}
+	storage := git_kept(path)
+	repo, err := git.Open(storage, nil)
+	if err != nil {
+		storage.Close()
+		return nil, err
+	}
+	return repo, nil
+}
+
+// git_kept opens a repository's store holding each pack file open once read,
+// to be closed with git_close. go-git's default opens and closes the pack for
+// every object read, resolving its path afresh each time: 40-45% of a history
+// walk, a fetch or a clone. A kept pack is one file position, so the store
+// serves one goroutine at a time (git_serial for the pack encoder's).
+func git_kept(path string) *filesystem.Storage {
+	return filesystem.NewStorageWithOptions(osfs.New(path), cache.NewObjectLRUDefault(), filesystem.Options{KeepDescriptors: true})
+}
+
+// git_close releases the pack files a store opened by git_open, git_kept or a
+// keeping git_loader holds. Each opener's caller defers it: a descriptor left
+// open stays open until the collector finds it.
+func git_close(storage storer.EncodedObjectStorer) {
+	if wrapped, ok := storage.(*git_storage); ok {
+		git_close(wrapped.Storer)
+		if wrapped.staging != nil {
+			git_close(wrapped.staging)
+		}
+		return
+	}
+	if closer, ok := storage.(io.Closer); ok {
+		closer.Close()
+	}
+}
+
+// git_serial serialises the lookups of a store shared by the pack encoder's
+// goroutines: its delta search walks trees and blobs at once, and a kept pack
+// is one file position and one unguarded map. Reading an object's content
+// opens the pack afresh, so only the lookups wait on each other.
+type git_serial struct {
+	storer.Storer
+	lock sync.Mutex
+}
+
+func (s *git_serial) EncodedObject(t plumbing.ObjectType, h plumbing.Hash) (plumbing.EncodedObject, error) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	return s.Storer.EncodedObject(t, h)
+}
+
+func (s *git_serial) DeltaObject(t plumbing.ObjectType, h plumbing.Hash) (plumbing.EncodedObject, error) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if stored, ok := s.Storer.(storer.DeltaObjectStorer); ok {
+		return stored.DeltaObject(t, h)
+	}
+	return s.Storer.EncodedObject(t, h)
+}
+
+func (s *git_serial) HasEncodedObject(h plumbing.Hash) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	return s.Storer.HasEncodedObject(h)
+}
+
+func (s *git_serial) EncodedObjectSize(h plumbing.Hash) (int64, error) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	return s.Storer.EncodedObjectSize(h)
 }
 
 // git_can_write reports whether the thread's authenticated identity holds
@@ -897,6 +976,7 @@ func api_git_refs(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	var refs []map[string]any
 	iter, err := repo.References()
@@ -964,6 +1044,7 @@ func api_git_branches(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	var branches []map[string]any
 	iter, err := repo.Branches()
@@ -1014,6 +1095,7 @@ func api_git_tags(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	var tags []map[string]any
 	iter, err := repo.Tags()
@@ -1084,6 +1166,7 @@ func api_git_branch_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	hash, err := git_resolve_ref(repo, ref)
 	if err != nil {
@@ -1136,6 +1219,7 @@ func api_git_branch_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	branch_ref, err := git_branch_reference(name)
 	if err != nil {
@@ -1177,6 +1261,7 @@ func api_git_branch_default_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	head, err := repo.Head()
 	if err != nil {
@@ -1220,6 +1305,7 @@ func api_git_branch_default_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	// Verify the branch exists
 	branch_name, err := git_branch_reference(name)
@@ -1320,6 +1406,7 @@ func api_git_commit_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	hash, err := git_resolve_ref(repo, ref)
 	if err != nil {
@@ -1635,6 +1722,7 @@ func api_git_commit_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	hash := plumbing.NewHash(sha)
 	commit, err := repo.CommitObject(hash)
@@ -1705,6 +1793,7 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	hash, err := git_resolve_ref(repo, ref)
 	if err != nil {
@@ -1913,6 +2002,7 @@ func api_git_commit_between(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	base_hash, err := git_resolve_ref(repo, base)
 	if err != nil {
@@ -2127,6 +2217,187 @@ func (q *git_commit_queue) Pop() any {
 	return c
 }
 
+// Marks of the merge base walk, as git names them in paint_down_to_common.
+const (
+	git_first  uint8 = 1 // reached from the first commit
+	git_second uint8 = 2 // reached from the others
+	git_stale  uint8 = 4 // below a commit both reach, so no best base lies there
+)
+
+// git_merge_bases answers the best common ancestors of one and other - those
+// no other common ancestor reaches - newest first, as `git merge-base --all`
+// does; empty when the histories never meet. It walks both histories newest
+// first from the two commits and stops once every commit left to visit lies
+// below a common one, so it reads the two branches and the history just under
+// where they meet. go-git's MergeBase indexed every ancestor of one side
+// first: the whole history, on every compare page and merge request check.
+func git_merge_bases(ctx context.Context, load func(plumbing.Hash) (*object.Commit, error), one, other *object.Commit) ([]*object.Commit, error) {
+	if one.Hash == other.Hash {
+		return []*object.Commit{one}, nil
+	}
+	_, bases, err := git_merge_paint(ctx, load, one, []*object.Commit{other})
+	if err != nil {
+		return nil, err
+	}
+	git_newest_first(bases)
+	if len(bases) < 2 {
+		return bases, nil
+	}
+
+	// Drop any base another one reaches, as git's remove_redundant does: a
+	// walk down from each against the rest marks it second when one of them
+	// reaches it, and marks first any of them it reaches itself. Only a clock
+	// out of order finds such a base, one found before the base above it.
+	redundant := make([]bool, len(bases))
+	for i := range bases {
+		if redundant[i] {
+			continue
+		}
+		var others []*object.Commit
+		var index []int
+		for j := range bases {
+			if j != i && !redundant[j] {
+				others = append(others, bases[j])
+				index = append(index, j)
+			}
+		}
+		// Nothing left to compare it with: a walk against no others never
+		// goes stale, and would read the whole history.
+		if len(others) == 0 {
+			continue
+		}
+		marks, _, err := git_merge_paint(ctx, load, bases[i], others)
+		if err != nil {
+			return nil, err
+		}
+		if marks[bases[i].Hash]&git_second != 0 {
+			redundant[i] = true
+		}
+		for k, c := range others {
+			if marks[c.Hash]&git_first != 0 {
+				redundant[index[k]] = true
+			}
+		}
+	}
+	kept := bases[:0]
+	for i, c := range bases {
+		if !redundant[i] {
+			kept = append(kept, c)
+		}
+	}
+	return kept, nil
+}
+
+// git_merge_paint is git's paint_down_to_common: one is marked first and
+// others second, each mark carried down to the parents newest first; a commit
+// both reach is found, and what lies below it marked stale. The walk ends
+// once every commit waiting is stale. It answers every mark it set, and the
+// commits found in the order they were found.
+func git_merge_paint(ctx context.Context, load func(plumbing.Hash) (*object.Commit, error), one *object.Commit, others []*object.Commit) (map[plumbing.Hash]uint8, []*object.Commit, error) {
+	marks := map[plumbing.Hash]uint8{}
+	loaded := map[plumbing.Hash]*object.Commit{}
+	result := map[plumbing.Hash]bool{}
+	var found []*object.Commit
+	queue := &git_merge_queue{}
+	// How often each commit waits in the queue, and how many waiting entries
+	// are not stale, so the end is known without scanning the queue.
+	queued := map[plumbing.Hash]int{}
+	fresh := 0
+	set := func(hash plumbing.Hash, side uint8) {
+		if side&git_stale != 0 && marks[hash]&git_stale == 0 {
+			fresh -= queued[hash]
+		}
+		marks[hash] |= side
+	}
+	push := func(c *object.Commit) {
+		loaded[c.Hash] = c
+		heap.Push(queue, git_merge_entry{commit: c, order: queue.count})
+		queue.count++
+		queued[c.Hash]++
+		if marks[c.Hash]&git_stale == 0 {
+			fresh++
+		}
+	}
+	set(one.Hash, git_first)
+	push(one)
+	for _, c := range others {
+		set(c.Hash, git_second)
+		push(c)
+	}
+
+	for fresh > 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		c := heap.Pop(queue).(git_merge_entry).commit
+		queued[c.Hash]--
+		side := marks[c.Hash] & (git_first | git_second | git_stale)
+		if side&git_stale == 0 {
+			fresh--
+		}
+		if side == git_first|git_second {
+			if !result[c.Hash] {
+				result[c.Hash] = true
+				found = append(found, c)
+			}
+			side |= git_stale
+		}
+		for _, hash := range c.ParentHashes {
+			if marks[hash]&side == side {
+				continue
+			}
+			parent, ok := loaded[hash]
+			if !ok {
+				var err error
+				if parent, err = load(hash); err != nil {
+					return nil, nil, err
+				}
+			}
+			set(hash, side)
+			push(parent)
+		}
+	}
+	return marks, found, nil
+}
+
+// git_merge_queue holds the merge base walk's commits newest first by
+// committer time, and commits of the same time in the order they were queued,
+// as git's own queue does: which of two bases found in the same second comes
+// first decides the tree a merge is made against.
+type git_merge_queue struct {
+	entries []git_merge_entry
+	count   int
+}
+
+type git_merge_entry struct {
+	commit *object.Commit
+	order  int
+}
+
+func (q *git_merge_queue) Len() int { return len(q.entries) }
+func (q *git_merge_queue) Less(i, j int) bool {
+	a, b := q.entries[i], q.entries[j]
+	if !a.commit.Committer.When.Equal(b.commit.Committer.When) {
+		return a.commit.Committer.When.After(b.commit.Committer.When)
+	}
+	return a.order < b.order
+}
+func (q *git_merge_queue) Swap(i, j int) { q.entries[i], q.entries[j] = q.entries[j], q.entries[i] }
+func (q *git_merge_queue) Push(x any)    { q.entries = append(q.entries, x.(git_merge_entry)) }
+func (q *git_merge_queue) Pop() any {
+	last := q.entries[len(q.entries)-1]
+	q.entries = q.entries[:len(q.entries)-1]
+	return last
+}
+
+// git_newest_first orders commits by committer time, newest first, keeping
+// the given order between commits of the same time.
+func git_newest_first(commits []*object.Commit) {
+	sort.SliceStable(commits, func(i, j int) bool {
+		return commits[i].Committer.When.After(commits[j].Committer.When)
+	})
+}
+
 // mochi.git.tree(entity, ref, path) -> list: List directory contents
 func api_git_tree(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	if len(args) < 1 || len(args) > 3 {
@@ -2165,6 +2436,7 @@ func api_git_tree(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	hash, err := git_resolve_ref(repo, ref)
 	if err != nil {
@@ -2207,11 +2479,11 @@ func api_git_tree(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 			"mode": fmt.Sprintf("%o", entry.Mode),
 		}
 
-		// Get size for files
+		// The size from the store's entry header: reading the blob to learn
+		// it inflated every small or delta-stored file in the folder.
 		if entry_type == "file" {
-			blob, err := repo.BlobObject(entry.Hash)
-			if err == nil {
-				e["size"] = blob.Size
+			if size, err := repo.Storer.EncodedObjectSize(entry.Hash); err == nil {
+				e["size"] = size
 			}
 		}
 
@@ -2262,6 +2534,7 @@ func api_git_blob_content(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	hash, err := git_resolve_ref(repo, ref)
 	if err != nil {
@@ -2331,6 +2604,7 @@ func api_git_blob_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	hash, err := git_resolve_ref(repo, ref)
 	if err != nil {
@@ -2580,10 +2854,10 @@ func git_patch(ctx context.Context, changes object.Changes) (string, error) {
 // report: the arguments checked, the caller's read access checked, and the
 // changes from base to head. A base of None or "" is the empty tree, for a
 // first commit, which has no parent.
-func git_diff_changes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple) (object.Changes, error) {
-	failure := func(format string, values ...any) (object.Changes, error) {
+func git_diff_changes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple) (object.Changes, *git.Repository, error) {
+	failure := func(format string, values ...any) (object.Changes, *git.Repository, error) {
 		_, err := sl_error(fn, format, values...)
-		return nil, err
+		return nil, nil, err
 	}
 
 	if len(args) < 3 || len(args) > 4 {
@@ -2630,9 +2904,15 @@ func git_diff_changes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple) (object.Chang
 		return failure("permission denied: repository read required to diff")
 	}
 
+	// The changes read their blobs through the repository after this
+	// returns, so once it is open the caller closes it, error or not.
 	repo, err := git_open(owner, app, entity)
 	if err != nil {
 		return failure("failed to open repository: %v", err)
+	}
+	failure = func(format string, values ...any) (object.Changes, *git.Repository, error) {
+		_, err := sl_error(fn, format, values...)
+		return nil, repo, err
 	}
 
 	var base_tree *object.Tree
@@ -2670,12 +2950,15 @@ func git_diff_changes(t *sl.Thread, fn *sl.Builtin, args sl.Tuple) (object.Chang
 	if err != nil {
 		return failure("failed to compute diff: %v", err)
 	}
-	return changes, nil
+	return changes, repo, nil
 }
 
 // mochi.git.diff(entity, base, head, [path]) -> string: Get unified diff, base None for the empty tree, limited to a file or folder
 func api_git_diff(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	changes, err := git_diff_changes(t, fn, args)
+	changes, repo, err := git_diff_changes(t, fn, args)
+	if repo != nil {
+		defer git_close(repo.Storer)
+	}
 	if err != nil {
 		return sl.None, err
 	}
@@ -2692,7 +2975,10 @@ func api_git_diff(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 func api_git_diff_stats(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	// A call cancelled during the tree walk has compared nothing.
 	truncated := false
-	changes, err := git_diff_changes(t, fn, args)
+	changes, repo, err := git_diff_changes(t, fn, args)
+	if repo != nil {
+		defer git_close(repo.Storer)
+	}
 	if errors.Is(err, object.ErrCanceled) {
 		truncated = true
 	} else if err != nil {
@@ -2799,6 +3085,7 @@ func api_git_merge_base(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	hash1, err := git_resolve_ref(repo, ref1)
 	if err != nil {
@@ -2820,7 +3107,7 @@ func api_git_merge_base(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "failed to get commit2: %v", err)
 	}
 
-	bases, err := commit1.MergeBase(commit2)
+	bases, err := git_merge_bases(starlark_context(t), repo.CommitObject, commit1, commit2)
 	if err != nil {
 		return sl_error(fn, "failed to find merge base: %v", err)
 	}
@@ -2870,6 +3157,7 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	source_hash, err := git_resolve_ref(repo, source)
 	if err != nil {
@@ -2892,7 +3180,7 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 
 	// Find merge base
-	bases, err := source_commit.MergeBase(target_commit)
+	bases, err := git_merge_bases(starlark_context(t), repo.CommitObject, source_commit, target_commit)
 	if err != nil || len(bases) == 0 {
 		return sl_encode(map[string]any{
 			"can_merge": false,
@@ -2942,26 +3230,24 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	source_changes, _ := base_tree.Diff(source_tree)
 	target_changes, _ := base_tree.Diff(target_tree)
 
-	// Check for overlapping changes (potential conflicts)
+	// Check for overlapping changes (potential conflicts). The names come
+	// from the tree diff itself: change.Files() read both sides' blobs whole
+	// to answer them, and dropped any change to a submodule.
 	source_files := make(map[string]bool)
 	for _, change := range source_changes {
-		from, to, _ := change.Files()
-		if from != nil {
-			source_files[from.Name] = true
+		if change.From.Name != "" {
+			source_files[change.From.Name] = true
 		}
-		if to != nil {
-			source_files[to.Name] = true
+		if change.To.Name != "" {
+			source_files[change.To.Name] = true
 		}
 	}
 
 	var conflicts []string
 	for _, change := range target_changes {
-		from, to, _ := change.Files()
-		var name string
-		if from != nil {
-			name = from.Name
-		} else if to != nil {
-			name = to.Name
+		name := change.From.Name
+		if name == "" {
+			name = change.To.Name
 		}
 		if name != "" && source_files[name] {
 			conflicts = append(conflicts, name)
@@ -3042,6 +3328,7 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	source_hash, err := git_resolve_ref(repo, source)
 	if err != nil {
@@ -3064,7 +3351,7 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	// Find merge base
-	bases, err := source_commit.MergeBase(target_commit)
+	bases, err := git_merge_bases(starlark_context(t), repo.CommitObject, source_commit, target_commit)
 	if err != nil || len(bases) == 0 {
 		return sl_error(fn, "no common ancestor between source and target")
 	}
@@ -3130,19 +3417,22 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		hash   plumbing.Hash
 		mode   filemode.FileMode
 	}
+	// Names, hashes and modes come from the tree diff's entries, as in
+	// mochi.git.merge.check: no blob is read, and a submodule's new pointer is
+	// merged like a file's new content rather than dropped.
 	source_file_changes := make(map[string]*file_change)
 	for _, change := range source_changes {
-		from, to, _ := change.Files()
-		if from != nil && to == nil {
+		from, to := change.From, change.To
+		if from.Name != "" && to.Name == "" {
 			source_file_changes[from.Name] = &file_change{action: "delete"}
-		} else if from == nil && to != nil {
-			source_file_changes[to.Name] = &file_change{action: "add", hash: to.Hash, mode: to.Mode}
-		} else if from != nil && to != nil {
+		} else if from.Name == "" && to.Name != "" {
+			source_file_changes[to.Name] = &file_change{action: "add", hash: to.TreeEntry.Hash, mode: to.TreeEntry.Mode}
+		} else if from.Name != "" && to.Name != "" {
 			if from.Name != to.Name {
 				source_file_changes[from.Name] = &file_change{action: "delete"}
-				source_file_changes[to.Name] = &file_change{action: "add", hash: to.Hash, mode: to.Mode}
+				source_file_changes[to.Name] = &file_change{action: "add", hash: to.TreeEntry.Hash, mode: to.TreeEntry.Mode}
 			} else {
-				source_file_changes[to.Name] = &file_change{action: "modify", hash: to.Hash, mode: to.Mode}
+				source_file_changes[to.Name] = &file_change{action: "modify", hash: to.TreeEntry.Hash, mode: to.TreeEntry.Mode}
 			}
 		}
 	}
@@ -3150,12 +3440,11 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	// Build map of target-side changes for conflict detection
 	target_changed_files := make(map[string]bool)
 	for _, change := range target_changes {
-		from, to, _ := change.Files()
-		if from != nil {
-			target_changed_files[from.Name] = true
+		if change.From.Name != "" {
+			target_changed_files[change.From.Name] = true
 		}
-		if to != nil {
-			target_changed_files[to.Name] = true
+		if change.To.Name != "" {
+			target_changed_files[change.To.Name] = true
 		}
 	}
 
@@ -3368,16 +3657,16 @@ func git_merge_rebase(repo *git.Repository, source_commit *object.Commit, base_h
 		git_tree_flatten(base_tree, "", entries)
 
 		for _, change := range changes {
-			from, to, _ := change.Files()
-			if from != nil && to == nil {
+			from, to := change.From, change.To
+			if from.Name != "" && to.Name == "" {
 				delete(entries, from.Name)
-			} else if from == nil && to != nil {
-				entries[to.Name] = object.TreeEntry{Name: to.Name, Mode: to.Mode, Hash: to.Hash}
-			} else if from != nil && to != nil {
+			} else if from.Name == "" && to.Name != "" {
+				entries[to.Name] = object.TreeEntry{Name: to.Name, Mode: to.TreeEntry.Mode, Hash: to.TreeEntry.Hash}
+			} else if from.Name != "" && to.Name != "" {
 				if from.Name != to.Name {
 					delete(entries, from.Name)
 				}
-				entries[to.Name] = object.TreeEntry{Name: to.Name, Mode: to.Mode, Hash: to.Hash}
+				entries[to.Name] = object.TreeEntry{Name: to.Name, Mode: to.TreeEntry.Mode, Hash: to.TreeEntry.Hash}
 			}
 		}
 
@@ -3591,6 +3880,7 @@ func api_git_archive(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	if err != nil {
 		return sl_error(fn, "failed to open repository: %v", err)
 	}
+	defer git_close(repo.Storer)
 
 	hash, err := git_resolve_ref(repo, ref)
 	if err != nil {
@@ -4378,8 +4668,9 @@ func git_info_refs(c *gin.Context, repo_path string, service string) bool {
 		// go-git's advertisement carries no peeled refs, so an annotated tag gives
 		// the client no way to see the commit behind it and `git ls-remote` shows no
 		// "^{}" lines.
-		if storage, err := (&git_loader{}).Load(ep); err == nil {
+		if storage, err := (&git_loader{keep: true}).Load(ep); err == nil {
 			git_advertise_peeled(storage, refs)
+			git_close(storage)
 		}
 	} else {
 		session, err := git_transport.NewReceivePackSession(ep, nil)
@@ -4701,12 +4992,13 @@ func git_v2_decode(reader io.Reader) (*git_v2_command, error) {
 
 // git_v2_serve dispatches one v2 command.
 func git_v2_serve(c *gin.Context, repo_path string, reader io.ReadCloser) bool {
-	storage, err := (&git_loader{}).Load(&transport.Endpoint{Path: repo_path})
+	storage, err := (&git_loader{keep: true}).Load(&transport.Endpoint{Path: repo_path})
 	if err != nil {
 		info("git_v2_serve: cannot load %s: %v", repo_path, err)
 		c.String(http.StatusInternalServerError, "Failed to open repository") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
+	defer git_close(storage)
 
 	command, err := git_v2_decode(reader)
 	if err != nil {
@@ -4920,6 +5212,7 @@ func git_v2_fetch(c *gin.Context, storage storer.Storer, repo_path string, argum
 		band.fail("packfile generation failed")
 	}
 	band.close()
+	git_repack_read(repo_path)
 	return true
 }
 
@@ -5007,7 +5300,7 @@ func git_v2_fetch_request(arguments []string) (*git_request, error) {
 type git_selection struct {
 	objects []plumbing.Hash
 	update  *packp.ShallowUpdate
-	known   []plumbing.Hash // the commits the client offered that this repository holds
+	edges   []plumbing.Hash // the commits the client holds where the pack's history meets its own
 	thin    bool            // the client will resolve deltas against bases the pack does not carry
 }
 
@@ -5016,8 +5309,7 @@ type git_selection struct {
 // answered but must not pay for the object walk that would build a packfile.
 func git_upload_pack_select(ctx context.Context, storage storer.Storer, request *git_request, known []plumbing.Hash, pack bool) (*git_selection, error) {
 	selection := &git_selection{
-		known: known,
-		thin:  request.capabilities.Supports(capability.ThinPack),
+		thin: request.capabilities.Supports(capability.ThinPack),
 	}
 
 	if !request.shallow() {
@@ -5050,6 +5342,7 @@ func git_upload_pack_select(ctx context.Context, storage storer.Storer, request 
 		if err != nil {
 			return nil, err
 		}
+		selection.edges = edge
 		if selection.objects, err = git_objects(storage, wanted, edge, tags, named); err != nil {
 			return nil, err
 		}
@@ -5060,23 +5353,16 @@ func git_upload_pack_select(ctx context.Context, storage storer.Storer, request 
 	if err != nil {
 		return nil, err
 	}
-	included, boundary, err := git_upload_pack_history(storage, request, tips)
-	if err != nil {
-		return nil, err
-	}
-
-	// What the client already holds, its own boundary respected. A walk that
-	// ran past that boundary would conclude it has objects it does not, and
-	// the pack would arrive missing them.
-	held, _, err := git_history(storage, known, git_hash_set(request.shallows), nil)
-	if err != nil {
-		return nil, err
-	}
 
 	// Only a deepening request gets a shallow list. A client that merely
 	// declared its existing boundary is not expecting one and treats the lines
 	// it did not ask for as a protocol error.
+	var included []plumbing.Hash
 	if request.deepening() {
+		var boundary []plumbing.Hash
+		if included, boundary, err = git_upload_pack_history(storage, request, tips); err != nil {
+			return nil, err
+		}
 		edge := git_hash_set(boundary)
 		reached := git_hash_set(included)
 		selection.update = &packp.ShallowUpdate{Shallows: boundary}
@@ -5090,7 +5376,40 @@ func git_upload_pack_select(ctx context.Context, storage storer.Storer, request 
 	if !pack {
 		return selection, nil
 	}
-	edge, err := git_edges(storage, included, git_hash_set(held))
+
+	// What the client already holds, its own boundary respected. A walk that
+	// ran past that boundary would conclude it has objects it does not, and
+	// the pack would arrive missing them.
+	held, _, err := git_history(storage, known, git_hash_set(request.shallows), nil)
+	if err != nil {
+		return nil, err
+	}
+	holds := git_hash_set(held)
+
+	// A client keeping its boundary - a plain fetch in a shallow clone - is
+	// sent what the wants reach short of what it holds, as git's server walks
+	// it: from the wants until the client's history, its shallow commits taken
+	// as having no parents. Walking every commit the wants reach sent one new
+	// commit of a long history with the whole history behind it. A side branch
+	// merged in from below the client's boundary is not held, so its history
+	// is walked and sent, as git sends it.
+	if !request.deepening() {
+		cut := git_hash_set(request.shallows)
+		for _, hash := range held {
+			cut[hash] = true
+		}
+		reached, _, err := git_history(storage, tips, cut, nil)
+		if err != nil {
+			return nil, err
+		}
+		for _, hash := range reached {
+			if !holds[hash] {
+				included = append(included, hash)
+			}
+		}
+	}
+
+	edge, err := git_edges(storage, included, holds)
 	if err != nil {
 		return nil, err
 	}
@@ -5106,6 +5425,7 @@ func git_upload_pack_select(ctx context.Context, storage storer.Storer, request 
 			edge = append(edge, hash)
 		}
 	}
+	selection.edges = edge
 	if selection.objects, err = git_objects(storage, included, edge, tags, named); err != nil {
 		return nil, err
 	}
@@ -5525,12 +5845,13 @@ func git_hash_set(hashes []plumbing.Hash) map[plumbing.Hash]bool {
 func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) bool {
 	ep := &transport.Endpoint{Path: repo_path}
 
-	storage, err := (&git_loader{}).Load(ep)
+	storage, err := (&git_loader{keep: true}).Load(ep)
 	if err != nil {
 		info("git_upload_pack: cannot load %s: %v", repo_path, err)
 		c.String(http.StatusInternalServerError, "Failed to open repository") // i18n-ok: git protocol, read by the client not a person
 		return true
 	}
+	defer git_close(storage)
 
 	// The whole body in one pass - wants and capabilities, shallow and deepen
 	// lines, haves, and the final "done". The negotiation section is not optional:
@@ -5647,6 +5968,7 @@ func git_upload_pack(c *gin.Context, repo_path string, reader io.ReadCloser) boo
 		band.fail("packfile generation failed")
 	}
 	band.close()
+	git_repack_read(repo_path)
 
 	return true
 }
@@ -5694,9 +6016,10 @@ func (c *git_capped) Write(p []byte) (int, error) {
 }
 
 // git_upload_pack_send encodes objects as a packfile and writes it to the band.
-// For a thin pack two candidates are built and the smaller sent: thin deltifies
-// against what the client already holds, the ordinary encoder deltifies within
-// the pack, and neither wins every time. Oversize fetches skip the comparison.
+// For a thin pack the smaller of two candidates is sent: thin deltifies against
+// what the client already holds, the ordinary encoder deltifies within the pack,
+// and neither wins every time (git_upload_pack_candidate). Oversize fetches
+// skip the comparison.
 func git_upload_pack_send(band *git_band, storage storer.Storer, selection *git_selection) error {
 	if whole := git_pack_whole(storage, selection.objects); whole != nil {
 		defer whole.Close()
@@ -5716,16 +6039,21 @@ func git_upload_pack_send(band *git_band, storage storer.Storer, selection *git_
 		return nil
 	}
 
+	// The encoder runs beside the send and reads the store, so the send
+	// waits for it to stop before the request closes the store: a client
+	// gone mid-pack closes the pipe, and the encoder ends at its next write.
 	reader, writer := io.Pipe()
+	stopped := make(chan struct{})
 	go func() {
-		encoder := pack.NewEncoder(writer, storage, false)
-		encoder.Search = git_loose(storage)
+		defer close(stopped)
+		encoder, done := git_encoder(writer, storage)
+		defer done()
 		_, err := encoder.Encode(selection.objects, git_pack_window)
 		writer.CloseWithError(err)
 	}()
-	defer reader.Close()
-
 	written, err := band.send(reader)
+	reader.Close()
+	<-stopped
 	if err != nil {
 		return err
 	}
@@ -5737,9 +6065,21 @@ func git_upload_pack_send(band *git_band, storage storer.Storer, selection *git_
 // building and both candidates fitted in memory to be compared, and nil when
 // the streamed encoder is the answer.
 func git_upload_pack_candidate(storage storer.Storer, selection *git_selection) []byte {
-	thin := git_thin_candidate(storage, selection)
+	thin, compare := git_thin_candidate(storage, selection)
 	if thin == nil {
 		return nil
+	}
+	// The whole pack comes out smaller through deltas between the objects it
+	// carries: for a file or folder the thin pack had to send whole, and for
+	// several new versions of one path, which the thin pack sends each as a
+	// delta against the one copy the client holds - carrying every change
+	// since that copy - where the whole pack keeps the chain of small deltas
+	// between them. Without either, building the whole pack - delta search
+	// and all - to find out cost more than the fetch's every other step
+	// together.
+	if !compare {
+		debug("git_upload_pack_candidate: thin pack chosen, %d bytes, every file and folder a delta of its own base", len(thin))
+		return thin
 	}
 
 	plain, err := git_pack_plain(storage, selection.objects)
@@ -5765,30 +6105,45 @@ func git_upload_pack_candidate(storage storer.Storer, selection *git_selection) 
 	return thin
 }
 
-// git_thin_candidate builds the thin pack for a selection, or returns nil when
-// one is not worth having: the client did not ask, the fetch is too large, no
-// object had a base on the client's side, or the build did not fit or failed.
-// None of those is fatal - the ordinary encoder still has a correct answer.
-func git_thin_candidate(storage storer.Storer, selection *git_selection) []byte {
-	if !selection.thin || len(selection.objects) > git_thin_maximum || len(selection.known) == 0 {
-		return nil
+// git_thin_candidate builds the thin pack for a selection, with whether the
+// whole pack may be the smaller (git_upload_pack_candidate): some file or
+// folder went whole, or one base serves several objects. It returns nil when
+// a thin pack is not worth having: the
+// client did not ask, the fetch is too large, no object had a base on the
+// client's side, or the build did not fit or failed. None of those is fatal -
+// the ordinary encoder still has a correct answer. The bases come from the
+// trees of the commits where the client's history meets the pack's, as git
+// takes them for a thin pack, rather than from every commit the client
+// offered, whose trees cost the search more than the rest of it.
+func git_thin_candidate(storage storer.Storer, selection *git_selection) ([]byte, bool) {
+	if !selection.thin || len(selection.objects) > git_thin_maximum || len(selection.edges) == 0 {
+		return nil, false
 	}
-	bases, err := git_thin_bases(storage, selection.objects, selection.known)
+	bases, err := git_thin_bases(storage, selection.objects, selection.edges)
 	if err != nil || len(bases) == 0 {
 		if err != nil {
 			debug("git_thin_candidate: choosing delta bases failed: %v", err)
 		}
-		return nil
+		return nil, false
 	}
-	pack, deltas, err := git_pack_thin(storage, selection.objects, bases)
+	pack, deltas, whole, err := git_pack_thin(storage, selection.objects, bases)
 	if err != nil {
 		debug("git_thin_candidate: building the thin pack failed: %v", err)
-		return nil
+		return nil, false
 	}
 	if deltas == 0 {
-		return nil
+		return nil, false
 	}
-	return pack
+	served := map[plumbing.Hash]bool{}
+	shared := false
+	for _, base := range bases {
+		if served[base] {
+			shared = true
+			break
+		}
+		served[base] = true
+	}
+	return pack, whole > 0 || shared
 }
 
 // git_pack_whole opens the repository's pack when it is the only one and holds
@@ -5849,12 +6204,293 @@ func git_pack_whole(storage storer.Storer, objects []plumbing.Hash) *os.File {
 // carry.
 func git_pack_plain(storage storer.Storer, objects []plumbing.Hash) ([]byte, error) {
 	capped := &git_capped{limit: git_pack_memory_maximum}
-	encoder := pack.NewEncoder(capped, storage, false)
-	encoder.Search = git_loose(storage)
+	encoder, done := git_encoder(capped, storage)
+	defer done()
 	if _, err := encoder.Encode(objects, git_pack_window); err != nil {
 		return nil, err
 	}
 	return capped.buffer.Bytes(), nil
+}
+
+// git_encoder makes the pack encoder a fetch or clone sends with: its lookups
+// serialised for its goroutines (git_serial), loose objects searched for a
+// delta base (git_loose), and what the repository's packs hold copied as they
+// hold it (git_stored). done releases the packs it opened.
+func git_encoder(writer io.Writer, storage storer.Storer) (encoder *pack.Encoder, done func()) {
+	encoder = pack.NewEncoder(writer, &git_serial{Storer: storage}, false)
+	encoder.Search = git_loose(storage)
+	stored := git_stored_open(storage)
+	if stored == nil {
+		return encoder, func() {}
+	}
+	encoder.Reuse = stored.entry
+	return encoder, stored.close
+}
+
+// git_stored indexes every entry of a repository's packs, so a pack being sent
+// copies an object's compressed bytes as they are stored, as git's own
+// pack-objects does. Without it every object sent was inflated and deflated
+// again: a clone of a repository holding more than one pack - which is every
+// active one, each push being kept as a pack of its own - took two to four
+// times as long as one sent as the single pack it was stored as.
+//
+// Each pack is opened once, so its bytes stay readable for the send though a
+// repack removes it meanwhile. An entry is copied only once the bytes between
+// its offset and the next entry's - the extent the index gives, not a length
+// the pack claims - match the CRC the index records for it.
+type git_stored struct {
+	packs []git_stored_pack
+}
+
+// git_stored_pack is one pack, its index as read, and its entries in the
+// order the pack holds them: for where each ends, and for the object at the
+// offset an offset delta names.
+type git_stored_pack struct {
+	file    *os.File
+	index   *idxfile.MemoryIndex
+	places  []git_stored_place
+	trailer int64 // where the pack's checksum begins
+}
+
+type git_stored_place struct {
+	offset int64
+	hash   plumbing.Hash
+}
+
+// git_stored_open indexes the packs a repository's store holds, or answers nil
+// for a store with none to read from. What it holds is each pack's index as
+// read and its entries' offsets in order, about thirty bytes an object: a map
+// of every object cost each fetch some 390 bytes an object, ten megabytes for
+// core's history.
+func git_stored_open(storage storer.Storer) *git_stored {
+	if wrapped, ok := storage.(*git_storage); ok {
+		storage = wrapped.Storer
+	}
+	store, ok := storage.(*filesystem.Storage)
+	if !ok {
+		return nil
+	}
+	found, err := filepath.Glob(filepath.Join(store.Filesystem().Root(), "objects", "pack", "pack-*.pack"))
+	if err != nil || len(found) == 0 {
+		return nil
+	}
+	stored := &git_stored{}
+	for _, path := range found {
+		pack, err := git_stored_pack_open(path)
+		if err != nil {
+			// A pack removed by a repack since the listing, or unreadable:
+			// its objects are encoded afresh.
+			debug("git_stored_open: %s: %v", path, err)
+			continue
+		}
+		stored.packs = append(stored.packs, pack)
+	}
+	if len(stored.packs) == 0 {
+		return nil
+	}
+	return stored
+}
+
+// git_stored_pack_open opens a pack and reads its index, and orders its
+// entries by offset. The pack's trailing checksum has to be the one its index
+// names.
+func git_stored_pack_open(path string) (pack git_stored_pack, err error) {
+	index, err := os.Open(strings.TrimSuffix(path, ".pack") + ".idx")
+	if err != nil {
+		return pack, err
+	}
+	defer index.Close()
+	decoded := idxfile.NewMemoryIndex()
+	if err := idxfile.NewDecoder(bufio.NewReader(index)).Decode(decoded); err != nil {
+		return pack, err
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return pack, err
+	}
+	defer func() {
+		if err != nil {
+			file.Close()
+		}
+	}()
+	information, err := file.Stat()
+	if err != nil {
+		return pack, err
+	}
+	trailer := information.Size() - 20
+	if trailer < 12 {
+		return pack, fmt.Errorf("pack of %d bytes is too short", information.Size())
+	}
+	var checksum [20]byte
+	if _, err := file.ReadAt(checksum[:], trailer); err != nil {
+		return pack, err
+	}
+	if checksum != decoded.PackfileChecksum {
+		return pack, errors.New("the pack is not the one its index describes")
+	}
+
+	count, err := decoded.Count()
+	if err != nil {
+		return pack, err
+	}
+	entries, err := decoded.Entries()
+	if err != nil {
+		return pack, err
+	}
+	defer entries.Close()
+	places := make([]git_stored_place, 0, count)
+	for {
+		entry, err := entries.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return pack, err
+		}
+		offset := int64(entry.Offset)
+		if offset < 12 || offset >= trailer {
+			return pack, fmt.Errorf("index gives %s an offset of %d", entry.Hash, offset)
+		}
+		places = append(places, git_stored_place{offset: offset, hash: entry.Hash})
+	}
+	sort.Slice(places, func(i, j int) bool { return places[i].offset < places[j].offset })
+	for i := 1; i < len(places); i++ {
+		if places[i].offset == places[i-1].offset {
+			return pack, fmt.Errorf("index gives %s and %s one offset", places[i-1].hash, places[i].hash)
+		}
+	}
+	return git_stored_pack{file: file, index: decoded, places: places, trailer: trailer}, nil
+}
+
+// place answers where an entry at offset sits among the pack's entries.
+func (p *git_stored_pack) place(offset int64) (int, bool) {
+	i := sort.Search(len(p.places), func(i int) bool { return p.places[i].offset >= offset })
+	return i, i < len(p.places) && p.places[i].offset == offset
+}
+
+// entry answers how a pack stores an object, for the encoder to copy (see
+// pack.Entry), or false when none holds it or its entry does not parse.
+func (s *git_stored) entry(hash plumbing.Hash) (pack.Entry, bool) {
+	// The first pack holding it, as the store looks.
+	var held *git_stored_pack
+	var stored struct {
+		offset, end int64
+		checksum    uint32
+	}
+	for i := range s.packs {
+		offset, err := s.packs[i].index.FindOffset(hash)
+		if err != nil {
+			continue
+		}
+		checksum, err := s.packs[i].index.FindCRC32(hash)
+		if err != nil {
+			continue
+		}
+		place, ok := s.packs[i].place(offset)
+		if !ok {
+			continue
+		}
+		held = &s.packs[i]
+		stored.offset, stored.checksum = offset, checksum
+		stored.end = held.trailer
+		if place+1 < len(held.places) {
+			stored.end = held.places[place+1].offset
+		}
+		break
+	}
+	if held == nil {
+		return pack.Entry{}, false
+	}
+
+	// The longest header: a type and size of ten bytes, then a base's offset
+	// of up to ten or its name of twenty.
+	header := make([]byte, min(stored.end-stored.offset, 32))
+	if n, err := held.file.ReadAt(header, stored.offset); n < len(header) && err != nil {
+		return pack.Entry{}, false
+	}
+	kind, size, length, ok := git_stored_header(header)
+	if !ok {
+		return pack.Entry{}, false
+	}
+	entry := pack.Entry{Type: kind, Size: size}
+	switch kind {
+	case plumbing.CommitObject, plumbing.TreeObject, plumbing.BlobObject, plumbing.TagObject:
+	case plumbing.OFSDeltaObject:
+		// The base's distance back, in git's offset encoding: seven bits a
+		// byte, most significant first, each continuation adding one.
+		if length >= len(header) {
+			return pack.Entry{}, false
+		}
+		c := header[length]
+		length++
+		distance := int64(c & 0x7f)
+		for c&0x80 != 0 {
+			if length >= len(header) || distance >= 1<<55 {
+				return pack.Entry{}, false
+			}
+			c = header[length]
+			length++
+			distance = (distance+1)<<7 | int64(c&0x7f)
+		}
+		i, found := held.place(stored.offset - distance)
+		if distance <= 0 || !found {
+			return pack.Entry{}, false
+		}
+		entry.Base = held.places[i].hash
+	case plumbing.REFDeltaObject:
+		if length+20 > len(header) {
+			return pack.Entry{}, false
+		}
+		copy(entry.Base[:], header[length:length+20])
+		length += 20
+	default:
+		return pack.Entry{}, false
+	}
+
+	start := stored.offset + int64(length)
+	entry.Open = func() (io.Reader, error) {
+		sum := crc32.NewIEEE()
+		if _, err := io.Copy(sum, io.NewSectionReader(held.file, stored.offset, stored.end-stored.offset)); err != nil {
+			return nil, err
+		}
+		if sum.Sum32() != stored.checksum {
+			warn("git: the stored entry of %s does not match its pack index, so it is encoded afresh", hash)
+			return nil, fmt.Errorf("entry of %s does not match its index", hash)
+		}
+		return io.NewSectionReader(held.file, start, stored.end-start), nil
+	}
+	return entry, true
+}
+
+// git_stored_header reads an entry's type and size from the start of its
+// header, and answers how many bytes they took.
+func git_stored_header(header []byte) (plumbing.ObjectType, int64, int, bool) {
+	if len(header) == 0 {
+		return plumbing.InvalidObject, 0, 0, false
+	}
+	c := header[0]
+	kind := plumbing.ObjectType(c >> 4 & 7)
+	size := int64(c & 0x0f)
+	shift := uint(4)
+	length := 1
+	for c&0x80 != 0 {
+		if length >= len(header) || shift > 56 {
+			return plumbing.InvalidObject, 0, 0, false
+		}
+		c = header[length]
+		length++
+		size |= int64(c&0x7f) << shift
+		shift += 7
+	}
+	return kind, size, length, true
+}
+
+// close releases the packs git_stored_open opened.
+func (s *git_stored) close() {
+	for _, held := range s.packs {
+		held.file.Close()
+	}
 }
 
 // git_pack_thin writes objects as a packfile, sending any object with a chosen
@@ -5863,8 +6499,9 @@ func git_pack_plain(storage storer.Storer, objects []plumbing.Hash) ([]byte, err
 // entry has to be a REF_DELTA naming the base by hash. An OFS_DELTA names its
 // base by offset within the pack and cannot reach outside it.
 //
-// Returns the pack and how many entries ended up deltified.
-func git_pack_thin(storage storer.Storer, objects []plumbing.Hash, bases map[plumbing.Hash]plumbing.Hash) ([]byte, int, error) {
+// Returns the pack, how many entries ended up deltified, and how many blobs and
+// trees went whole.
+func git_pack_thin(storage storer.Storer, objects []plumbing.Hash, bases map[plumbing.Hash]plumbing.Hash) (pack []byte, deltas int, whole int, err error) {
 	capped := &git_capped{limit: git_pack_memory_maximum}
 	// The trailing checksum covers every byte of the pack, so the digest runs
 	// alongside the buffer rather than over it afterwards.
@@ -5872,21 +6509,20 @@ func git_pack_thin(storage storer.Storer, objects []plumbing.Hash, bases map[plu
 	writer := io.MultiWriter(capped, digest)
 
 	if _, err := writer.Write([]byte("PACK")); err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	if err := binary.Write(writer, binary.BigEndian, uint32(2)); err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	if err := binary.Write(writer, binary.BigEndian, uint32(len(objects))); err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 
-	deltas := 0
 	compressor := zlib.NewWriter(writer)
 	for _, hash := range objects {
 		object, err := storage.EncodedObject(plumbing.AnyObject, hash)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 
 		payload := object
@@ -5898,35 +6534,38 @@ func git_pack_thin(storage storer.Storer, objects []plumbing.Hash, bases map[plu
 				deltas++
 			}
 		}
+		if base.IsZero() && (kind == plumbing.BlobObject || kind == plumbing.TreeObject) {
+			whole++
+		}
 
 		if err := git_pack_entry(writer, kind, payload.Size()); err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 		if !base.IsZero() {
 			if _, err := writer.Write(base[:]); err != nil {
-				return nil, 0, err
+				return nil, 0, 0, err
 			}
 		}
 
 		content, err := payload.Reader()
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 		compressor.Reset(writer)
 		if _, err := io.Copy(compressor, content); err != nil {
 			content.Close()
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 		content.Close()
 		if err := compressor.Close(); err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 	}
 
 	if _, err := capped.Write(digest.Sum(nil)); err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
-	return capped.buffer.Bytes(), deltas, nil
+	return capped.buffer.Bytes(), deltas, whole, nil
 }
 
 // git_thin_delta produces the delta from base to target, or nil when it is not
@@ -6227,7 +6866,8 @@ var git_repack_slot = make(chan struct{}, 1)
 
 // git_repack_consider counts a repository's loose objects and repacks it in the
 // background when there are enough of them. Called after a push has promoted
-// its objects and moved its references, so what it counts is settled.
+// its objects and moved its references, so what it counts is settled, and by
+// git_repack_read.
 func git_repack_consider(repo_path string) {
 	if last, seen := git_repack_attempted.Load(repo_path); seen {
 		if moment, ok := last.(int64); ok && now()-moment < git_repack_interval {
@@ -6270,6 +6910,19 @@ func git_repack_consider(repo_path string) {
 			git_repack_remaining.Store(repo_path, git_loose_count(repo_path))
 		})
 	}()
+}
+
+// git_repack_read repacks, in the background, a repository a clone or fetch has
+// just been sent from, when its packs were made before the path search
+// (git_unsearched): a repository nobody pushes to again otherwise kept its
+// several times larger pack, and its slow clones, for good. It goes through
+// git_repack_consider, so the interval and the one server-wide slot bound it
+// exactly as they bound a push; a repository already searched costs a look at
+// its config.
+func git_repack_read(repo_path string) {
+	if git_unsearched(repo_path) {
+		git_repack_consider(repo_path)
+	}
 }
 
 // git_repack_dispatch is git_repack behind a var, so tests can watch the
@@ -6880,7 +7533,8 @@ func git_index(file *os.File, repo_path string, meter git_meter) (index *idxfile
 	// lacks has to be in the pack, which the parse finds out. A base appended
 	// that the pack carries as well is caught below: the index lists an
 	// object once, and the pack then holds more objects than its index.
-	repository := filesystem.NewStorage(osfs.New(repo_path), cache.NewObjectLRUDefault())
+	repository := git_kept(repo_path)
+	defer repository.Close()
 	var bases []plumbing.Hash
 	var appended int64
 	for _, hash := range candidates {
@@ -6973,10 +7627,11 @@ func (x *git_indexer) OnInflatedObjectHeader(kind plumbing.ObjectType, size int6
 // reads, which fall through to the repository, and the store meters each
 // object it is given.
 func git_loosen(file *os.File, staging, repo_path string, budget int64) error {
-	store, err := (&git_loader{budget: budget, staging: staging}).Load(&transport.Endpoint{Path: repo_path})
+	store, err := (&git_loader{budget: budget, staging: staging, keep: true}).Load(&transport.Endpoint{Path: repo_path})
 	if err != nil {
 		return err
 	}
+	defer git_close(store)
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
@@ -7450,13 +8105,14 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, ow
 		}
 		// Opened after promotion so the object checks below see what just
 		// landed rather than a view cached before it did.
-		store, err := (&git_loader{}).Load(ep)
+		store, err := (&git_loader{keep: true}).Load(ep)
 		if err != nil {
 			warn("git_receive_pack: unable to reopen %s after promotion: %v", repo_path, err)
 			c.String(http.StatusInternalServerError, "Failed to store push") // i18n-ok: git protocol, read by the client not a person
 			return true
 		}
 		applied := git_references_apply(store, commands)
+		git_close(store)
 		if status != nil {
 			status.CommandStatuses = append(status.CommandStatuses, applied...)
 		}

@@ -2,7 +2,8 @@
 // 2018 Sourced Technologies, S.L.; licensed under the Apache License 2.0 in
 // LICENSE beside this file.
 //
-// Changed for Mochi: Names and Search, handed to the delta selector.
+// Changed for Mochi: Names and Search, handed to the delta selector, and Reuse,
+// which copies an entry as a pack on disk stores it.
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -32,12 +33,30 @@ type Encoder struct {
 	Names  map[plumbing.Hash]uint32
 	Search func(plumbing.Hash) bool
 
+	// Changed for Mochi: Reuse answers how a pack on disk stores an object,
+	// when it does. An object written as it is stored - whole when stored
+	// whole, or a delta against the same base - has its compressed bytes
+	// copied rather than inflated and deflated again; only a delta's offset
+	// to its base is written afresh. nil encodes every object.
+	Reuse func(plumbing.Hash) (Entry, bool)
+
 	selector *deltaSelector
 	w        *offsetWriter
 	zw       *zlib.Writer
 	hasher   plumbing.Hasher
 
 	useRefDeltas bool
+}
+
+// Changed for Mochi: Entry is an object as a pack on disk stores it.
+type Entry struct {
+	Type plumbing.ObjectType // the entry's own type: the object's, or a delta type
+	Size int64               // the size its header gives: the object's, or the delta's
+	Base plumbing.Hash       // the base a delta entry names
+	// Open answers the entry's compressed bytes, those after its header,
+	// having checked them against what the pack's index records. An error
+	// leaves the object to be encoded afresh.
+	Open func() (io.Reader, error)
 }
 
 // NewEncoder creates a new packfile encoder using a specific Writer and
@@ -128,8 +147,13 @@ func (e *Encoder) entry(o *ObjectToPack) (err error) {
 
 	o.Offset = e.w.Offset()
 
+	// Changed for Mochi: an object written as it is stored is copied.
+	if reused, err := e.reuse(o); reused || err != nil {
+		return err
+	}
+
 	if o.IsDelta() {
-		if err := e.writeDeltaHeader(o); err != nil {
+		if err := e.writeDeltaHeader(o, o.Object.Size()); err != nil {
 			return err
 		}
 	} else {
@@ -153,6 +177,42 @@ func (e *Encoder) entry(o *ObjectToPack) (err error) {
 	return err
 }
 
+// Changed for Mochi: reuse writes o as Reuse says a pack stores it, when that
+// is how o is to be written, and answers whether it did. Any delta from the
+// same base to the same object serves, so a stored delta stands in for one the
+// search found against that base. Nothing is written until the stored bytes
+// have been checked.
+func (e *Encoder) reuse(o *ObjectToPack) (bool, error) {
+	if e.Reuse == nil {
+		return false, nil
+	}
+	stored, ok := e.Reuse(o.Hash())
+	if !ok {
+		return false, nil
+	}
+	if o.IsDelta() {
+		if !stored.Type.IsDelta() || stored.Base != o.Base.Hash() {
+			return false, nil
+		}
+	} else if stored.Type != o.Type() || stored.Size != o.Size() {
+		return false, nil
+	}
+	data, err := stored.Open()
+	if err != nil {
+		return false, nil
+	}
+	if o.IsDelta() {
+		err = e.writeDeltaHeader(o, stored.Size)
+	} else {
+		err = e.entryHead(stored.Type, stored.Size)
+	}
+	if err != nil {
+		return true, err
+	}
+	_, err = io.Copy(e.w, data)
+	return true, err
+}
+
 func (e *Encoder) writeBaseIfDelta(o *ObjectToPack) error {
 	if o.IsDelta() && !o.Base.IsWritten() {
 		// We must write base first
@@ -162,14 +222,16 @@ func (e *Encoder) writeBaseIfDelta(o *ObjectToPack) error {
 	return nil
 }
 
-func (e *Encoder) writeDeltaHeader(o *ObjectToPack) error {
+// Changed for Mochi: size is the delta's, given rather than read from
+// o.Object, since a copied delta's is the stored one's.
+func (e *Encoder) writeDeltaHeader(o *ObjectToPack, size int64) error {
 	// Write offset deltas by default
 	t := plumbing.OFSDeltaObject
 	if e.useRefDeltas {
 		t = plumbing.REFDeltaObject
 	}
 
-	if err := e.entryHead(t, o.Object.Size()); err != nil {
+	if err := e.entryHead(t, size); err != nil {
 		return err
 	}
 

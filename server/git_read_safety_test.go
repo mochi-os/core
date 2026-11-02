@@ -20,9 +20,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1379,4 +1381,400 @@ func TestGitHandlerServesTheEntityItIsGiven(t *testing.T) {
 	if recorder := serve(nil); recorder.Code != http.StatusNotFound {
 		t.Errorf("info/refs with no entity answered %d, want 404", recorder.Code)
 	}
+}
+
+// read_bases answers git_merge_bases for two commits, as sorted hashes.
+func read_bases(t *testing.T, repo *git.Repository, one, other plumbing.Hash) []string {
+	t.Helper()
+	a, err := repo.CommitObject(one)
+	if err != nil {
+		t.Fatalf("commit %s: %v", one, err)
+	}
+	b, err := repo.CommitObject(other)
+	if err != nil {
+		t.Fatalf("commit %s: %v", other, err)
+	}
+	bases, err := git_merge_bases(context.Background(), repo.CommitObject, a, b)
+	if err != nil {
+		t.Fatalf("merge bases: %v", err)
+	}
+	var out []string
+	for _, c := range bases {
+		out = append(out, c.Hash.String())
+	}
+	sort.Strings(out)
+	return out
+}
+
+// read_git_bases answers `git merge-base --all` for two commits, as sorted
+// hashes.
+func read_git_bases(t *testing.T, path string, one, other plumbing.Hash) []string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", path, "merge-base", "--all", one.String(), other.String())
+	out, err := cmd.Output()
+	if err != nil {
+		// Exit status 1 with no output: the histories never meet.
+		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 && len(out) == 0 {
+			return nil
+		}
+		t.Fatalf("git merge-base: %v", err)
+	}
+	bases := strings.Fields(string(out))
+	sort.Strings(bases)
+	return bases
+}
+
+// TestMergeBasesMatchGit. go-git's MergeBase indexed one side's whole history
+// before walking the other. git_merge_bases is git's own walk, and answers
+// what `git merge-base --all` answers: an ancestor, a fork, a criss-cross
+// merge's two bases, histories that never meet, a commit with itself, a
+// commit dated before its parent, and pairs from a random history of merges.
+func TestMergeBasesMatchGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	_, owner, repo, _ := read_env(t, "bases")
+	path := git_repo_path(owner, test_app, read_id("bases"))
+	tree := read_snapshot(t, repo, map[string]read_file{"a": read_text("a")})
+	commit := func(message string, parents ...plumbing.Hash) plumbing.Hash {
+		return read_commit(t, repo, parents, tree, message)
+	}
+
+	root := commit("root")
+	x := commit("x", root)
+	a1 := commit("a1", x)
+	b1 := commit("b1", x)
+	a2 := commit("a2", a1, b1)
+	b2 := commit("b2", b1, a1)
+	a3 := commit("a3", a2)
+	b3 := commit("b3", b2)
+	m := x
+	for i := 0; i < 30; i++ {
+		m = commit(fmt.Sprintf("main %d", i), m)
+	}
+	f1 := commit("f1", x)
+	f2 := commit("f2", f1)
+	lone := commit("lone")
+	lonely := commit("lonely", lone)
+	// Dated a day before its parent.
+	skew := read_commit_at(t, repo, []plumbing.Hash{m}, tree, "skew", time.Unix(1600000000, 0))
+	after := commit("after", skew)
+
+	// Merges of c1 and of c2, an ancestor of c1 dated after it. Both are found
+	// in common, and the walk stops before c1's mark reaches c2: only
+	// dropping a base another base reaches leaves c1 alone.
+	at := func(message string, offset int64, parents ...plumbing.Hash) plumbing.Hash {
+		return read_commit_at(t, repo, parents, tree, message, time.Unix(1800000000+offset, 0))
+	}
+	r := at("r", 0)
+	c2 := at("c2", 500, r)
+	d := at("d", 100, c2)
+	c1 := at("c1", 200, d)
+	m1 := at("m1", 900, c1, c2)
+	m2 := at("m2", 900, c2, c1)
+
+	pairs := [][2]plumbing.Hash{
+		{m1, m2},      // a base another base reaches
+		{a3, a1},      // an ancestor
+		{f2, m},       // a fork
+		{a3, b3},      // criss-cross: two bases
+		{lonely, m},   // never meet
+		{m, m},        // itself
+		{after, f2},   // through the commit dated before its parent
+		{after, skew}, // the skewed commit itself
+	}
+
+	// A random history of branches and merges, dated in order.
+	random := rand.New(rand.NewSource(42))
+	commits := []plumbing.Hash{commit("random root")}
+	for i := 0; i < 60; i++ {
+		parents := []plumbing.Hash{commits[random.Intn(len(commits))]}
+		if random.Intn(3) == 0 {
+			if other := commits[random.Intn(len(commits))]; other != parents[0] {
+				parents = append(parents, other)
+			}
+		}
+		commits = append(commits, commit(fmt.Sprintf("random %d", i), parents...))
+	}
+	for i := 0; i < 40; i++ {
+		pairs = append(pairs, [2]plumbing.Hash{commits[random.Intn(len(commits))], commits[random.Intn(len(commits))]})
+	}
+
+	for _, pair := range pairs {
+		got := read_bases(t, repo, pair[0], pair[1])
+		want := read_git_bases(t, path, pair[0], pair[1])
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("THE POINT: merge bases of %s and %s are %v, git answers %v", pair[0], pair[1], got, want)
+		}
+	}
+}
+
+// TestMergeBaseReadsOnlyTheBranches. A merge base three commits back on a
+// history of 300 read all 300 for every compare page and merge request check.
+// It reads the two branches and the history just under where they meet.
+func TestMergeBaseReadsOnlyTheBranches(t *testing.T) {
+	_, repo, _ := read_env_repo(t, "basecost")
+	tree := read_snapshot(t, repo, map[string]read_file{"a": read_text("a")})
+	tip := read_commit(t, repo, nil, tree, "root")
+	var chain []plumbing.Hash
+	for i := 0; i < 300; i++ {
+		tip = read_commit(t, repo, []plumbing.Hash{tip}, tree, fmt.Sprintf("c%d", i))
+		chain = append(chain, tip)
+	}
+	feature := chain[290]
+	for i := 0; i < 3; i++ {
+		feature = read_commit(t, repo, []plumbing.Hash{feature}, tree, fmt.Sprintf("f%d", i))
+	}
+
+	counted, counter := read_counted(t, repo)
+	head, _ := counted.CommitObject(feature)
+	main, _ := counted.CommitObject(chain[299])
+	counter.reads = map[plumbing.ObjectType]int{}
+	bases, err := git_merge_bases(context.Background(), counted.CommitObject, head, main)
+	if err != nil {
+		t.Fatalf("merge bases: %v", err)
+	}
+	if len(bases) != 1 || bases[0].Hash != chain[290] {
+		t.Fatalf("merge bases %v, want %s", bases, chain[290])
+	}
+	if reads := counter.reads[plumbing.CommitObject]; reads > 30 {
+		t.Errorf("THE POINT: finding a base 9 and 3 commits back read %d commits of a 300 commit history", reads)
+	}
+
+	// Two bases found, one reaching the other: dropping the one reached reads
+	// down to it, and the base left has nothing to be compared with.
+	at := func(message string, offset int64, parents ...plumbing.Hash) plumbing.Hash {
+		return read_commit_at(t, repo, parents, tree, message, time.Unix(1800000000+offset, 0))
+	}
+	c2 := at("c2", 500, chain[299])
+	d := at("d", 100, c2)
+	c1 := at("c1", 200, d)
+	m1 := at("m1", 900, c1, c2)
+	m2 := at("m2", 900, c2, c1)
+	one, _ := counted.CommitObject(m1)
+	other, _ := counted.CommitObject(m2)
+	counter.reads = map[plumbing.ObjectType]int{}
+	if bases, err = git_merge_bases(context.Background(), counted.CommitObject, one, other); err != nil {
+		t.Fatalf("merge bases: %v", err)
+	}
+	if len(bases) != 1 || bases[0].Hash != c1 {
+		t.Fatalf("merge bases %v, want %s", bases, c1)
+	}
+	if reads := counter.reads[plumbing.CommitObject]; reads > 30 {
+		t.Errorf("THE POINT: two merges of neighbouring commits read %d commits of a 300 commit history", reads)
+	}
+}
+
+// TestTreeSizesComeFromTheHeader. The files page read every file in a folder
+// whole to report its size. The size comes from the store's header for it, so
+// a file whose content cannot be read whole - its end lost here - is still
+// listed with its size.
+func TestTreeSizesComeFromTheHeader(t *testing.T) {
+	id, owner, repo, thread := read_env(t, "sizes")
+	// Random, so the deflated object is as long as its content and the cut
+	// below lands well past the header.
+	large := make([]byte, 64<<10)
+	rand.New(rand.NewSource(7)).Read(large)
+	tree := read_snapshot(t, repo, map[string]read_file{
+		"small.txt": read_text("small"),
+		"large.bin": {mode: filemode.Regular, data: large},
+	})
+	read_branch(t, repo, "main", read_commit(t, repo, nil, tree, "sizes"))
+
+	// The loose object's header stays readable; its content does not.
+	hash := plumbing.ComputeHash(plumbing.BlobObject, large).String()
+	loose := filepath.Join(git_repo_path(owner, test_app, id), "objects", hash[:2], hash[2:])
+	information, err := os.Stat(loose)
+	if err != nil {
+		t.Fatalf("the large blob is not loose: %v", err)
+	}
+	if err := os.Chmod(loose, 0644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if err := os.Truncate(loose, information.Size()/2); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	value, err := read_call(t, thread, api_git_tree, sl.String(id), sl.String("main"))
+	if err != nil {
+		t.Fatalf("tree: %v", err)
+	}
+	sizes := map[string]any{}
+	for _, entry := range read_value(t, value).([]any) {
+		row := entry.(map[string]any)
+		sizes[row["name"].(string)] = row["size"]
+	}
+	if fmt.Sprint(sizes["small.txt"]) != "5" {
+		t.Errorf("small.txt size %v, want 5", sizes["small.txt"])
+	}
+	if fmt.Sprint(sizes["large.bin"]) != fmt.Sprint(len(large)) {
+		t.Errorf("THE POINT: large.bin size %v, want %d from its header - the listing read the file whole", sizes["large.bin"], len(large))
+	}
+}
+
+// read_gitlink stores a tree holding a.txt and a submodule at sub pointing at
+// pointer.
+func read_gitlink(t *testing.T, repo *git.Repository, text string, pointer plumbing.Hash) plumbing.Hash {
+	t.Helper()
+	entries := []object.TreeEntry{
+		{Name: "a.txt", Mode: filemode.Regular, Hash: read_blob(t, repo, []byte(text))},
+		{Name: "sub", Mode: filemode.Submodule, Hash: pointer},
+	}
+	obj := repo.Storer.NewEncodedObject()
+	if err := (&object.Tree{Entries: entries}).Encode(obj); err != nil {
+		t.Fatalf("encode tree: %v", err)
+	}
+	hash, err := repo.Storer.SetEncodedObject(obj)
+	if err != nil {
+		t.Fatalf("store tree: %v", err)
+	}
+	return hash
+}
+
+// TestMergeTakesSubmoduleChanges. The merge check and merge read every
+// changed file whole (change.Files) to learn its name, and Files answers
+// nothing for a submodule: a submodule moved on both sides was no conflict,
+// and a submodule moved on the source branch was dropped from the merge. The
+// names, hashes and modes come from the tree diff.
+func TestMergeTakesSubmoduleChanges(t *testing.T) {
+	id, repo, thread := read_env_repo(t, "gitlink")
+	first := plumbing.NewHash(strings.Repeat("1", 40))
+	second := plumbing.NewHash(strings.Repeat("2", 40))
+	third := plumbing.NewHash(strings.Repeat("3", 40))
+
+	base := read_commit(t, repo, nil, read_gitlink(t, repo, "a", first), "base")
+	moved := read_commit(t, repo, []plumbing.Hash{base}, read_gitlink(t, repo, "a", second), "move the submodule")
+	edited := read_commit(t, repo, []plumbing.Hash{base}, read_gitlink(t, repo, "a edited", first), "edit a.txt")
+	elsewhere := read_commit(t, repo, []plumbing.Hash{base}, read_gitlink(t, repo, "a", third), "move it elsewhere")
+	read_branch(t, repo, "moved", moved)
+	read_branch(t, repo, "edited", edited)
+	read_branch(t, repo, "elsewhere", elsewhere)
+
+	value, err := read_call(t, thread, api_git_merge_check, sl.String(id), sl.String("moved"), sl.String("elsewhere"))
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	result := read_dict(t, value)
+	if fmt.Sprint(result["conflicts"]) != "[sub]" || result["can_merge"] != false {
+		t.Errorf("THE POINT: a submodule moved on both branches checks as %v, want a conflict on sub", result)
+	}
+
+	value, err = read_call(t, thread, api_git_merge_check, sl.String(id), sl.String("moved"), sl.String("edited"))
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if result := read_dict(t, value); result["can_merge"] != true {
+		t.Errorf("branches changing different paths check as %v", result)
+	}
+
+	_, err = read_call(t, thread, api_git_merge_perform,
+		sl.String(id), sl.String("moved"), sl.String("edited"), sl.String("merge"),
+		sl.String("Merger"), sl.String("merger@example.com"))
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	merged, err := repo.CommitObject(*read_resolve(t, repo, "edited"))
+	if err != nil {
+		t.Fatalf("merge commit: %v", err)
+	}
+	tree, err := merged.Tree()
+	if err != nil {
+		t.Fatalf("merge tree: %v", err)
+	}
+	entry, err := tree.FindEntry("sub")
+	if err != nil {
+		t.Fatalf("the merge lost sub: %v", err)
+	}
+	if entry.Hash != second || entry.Mode != filemode.Submodule {
+		t.Errorf("THE POINT: the merge holds sub at %s mode %v, want the source branch's %s", entry.Hash, entry.Mode, second)
+	}
+	text, err := tree.File("a.txt")
+	if err != nil {
+		t.Fatalf("a.txt: %v", err)
+	}
+	if contents, _ := text.Contents(); contents != "a edited" {
+		t.Errorf("the merge holds a.txt %q, want the target's edit", contents)
+	}
+
+	// Moved on both branches, the merge refuses rather than taking one.
+	value, err = read_call(t, thread, api_git_merge_perform,
+		sl.String(id), sl.String("moved"), sl.String("elsewhere"), sl.String("merge"),
+		sl.String("Merger"), sl.String("merger@example.com"))
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if result := read_dict(t, value); fmt.Sprint(result["conflicts"]) != "[sub]" {
+		t.Errorf("THE POINT: merging a submodule moved on both branches answered %v, want a conflict on sub", result)
+	}
+
+	// A rebase replays the move onto the target.
+	read_branch(t, repo, "onto", edited)
+	_, err = read_call(t, thread, api_git_merge_perform,
+		sl.String(id), sl.String("moved"), sl.String("onto"), sl.String("rebase"),
+		sl.String("Merger"), sl.String("merger@example.com"), sl.String("rebase"))
+	if err != nil {
+		t.Fatalf("rebase: %v", err)
+	}
+	rebased, err := repo.CommitObject(*read_resolve(t, repo, "onto"))
+	if err != nil {
+		t.Fatalf("rebased commit: %v", err)
+	}
+	tree, err = rebased.Tree()
+	if err != nil {
+		t.Fatalf("rebased tree: %v", err)
+	}
+	if entry, err := tree.FindEntry("sub"); err != nil || entry.Hash != second {
+		t.Errorf("THE POINT: the rebase holds sub at %v (%v), want the replayed move to %s", entry, err, second)
+	}
+}
+
+// TestMergeBasesInGitsOrder. merge.check and merge.perform take the first
+// base, so which of two bases comes first decides the tree a criss-cross merge
+// is made against. Between commits of the same second the order follows the
+// walk, and the walk takes such commits in the order it queued them, as git's
+// does: the bases come in the order `git merge-base --all` prints them.
+func TestMergeBasesInGitsOrder(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	_, owner, repo, _ := read_env(t, "order")
+	path := git_repo_path(owner, test_app, read_id("order"))
+	tree := read_snapshot(t, repo, map[string]read_file{"a": read_text("a")})
+	random := rand.New(rand.NewSource(17))
+	mismatched, compared := 0, 0
+	for history := 0; history < 40; history++ {
+		// Three seconds between them, so most commits share one.
+		commits := []plumbing.Hash{read_commit_at(t, repo, nil, tree, fmt.Sprintf("root %d", history), time.Unix(1900000000, 0))}
+		for i := 0; i < 24; i++ {
+			parents := []plumbing.Hash{commits[random.Intn(len(commits))]}
+			if random.Intn(2) == 0 {
+				if other := commits[random.Intn(len(commits))]; other != parents[0] {
+					parents = append(parents, other)
+				}
+			}
+			when := time.Unix(1900000000+int64(1+i/8), 0)
+			commits = append(commits, read_commit_at(t, repo, parents, tree, fmt.Sprintf("history %d commit %d", history, i), when))
+		}
+		for pair := 0; pair < 10; pair++ {
+			one, other := commits[random.Intn(len(commits))], commits[random.Intn(len(commits))]
+			a, _ := repo.CommitObject(one)
+			b, _ := repo.CommitObject(other)
+			bases, err := git_merge_bases(context.Background(), repo.CommitObject, a, b)
+			if err != nil {
+				t.Fatalf("merge bases: %v", err)
+			}
+			var got []string
+			for _, c := range bases {
+				got = append(got, c.Hash.String())
+			}
+			out, _ := exec.Command("git", "-C", path, "-c", "core.commitGraph=false", "merge-base", "--all", one.String(), other.String()).Output()
+			want := strings.Fields(string(out))
+			compared++
+			if strings.Join(got, " ") != strings.Join(want, " ") {
+				mismatched++
+				t.Errorf("THE POINT: bases of %s and %s are %v, git answers %v in that order", one, other, got, want)
+			}
+		}
+	}
+	t.Logf("%d of %d pairs in git's order", compared-mismatched, compared)
 }

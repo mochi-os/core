@@ -12,6 +12,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 )
 
@@ -419,4 +421,131 @@ func git_same_hashes(got, want []plumbing.Hash) bool {
 		}
 	}
 	return true
+}
+
+// shallow_received fetches in dir with args and answers how many objects
+// arrived; the client must then pass a strict fsck and still be shallow.
+func shallow_received(t *testing.T, dir string, args ...string) int {
+	t.Helper()
+	before := git_client_objects(t, dir)
+	git_run(t, dir, args...)
+	after := git_client_objects(t, dir)
+	git_run(t, dir, "-C", dir, "fsck", "--strict")
+	if _, shallow := git_clone_state(t, dir); !shallow {
+		t.Error("a plain fetch un-shallowed the repository")
+	}
+	return after - before
+}
+
+// TestGitPlainFetchInShallowClone. A plain `git fetch` in a shallow clone
+// declares the client's boundary and asks for no deepening. Every commit the
+// wants reached was walked and sent: one new commit of a long history came
+// with the whole history behind it. What is sent stops where the client's
+// history begins, as git's own server stops it.
+func TestGitPlainFetchInShallowClone(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	user, _ := create_git_test_env(t)
+
+	for _, version := range git_versions {
+		t.Run("protocol v"+version, func(t *testing.T) {
+			repo_path, _ := git_shallow_repo(t, user, "plainfetch"+version, 12)
+			server := git_negotiation_server(t, repo_path)
+			dir := git_temporary(t, "git_plain_fetch")
+			git_run(t, "", git_protocol(version, "clone", "--quiet", "--depth", "1", server.URL, dir)...)
+
+			work := git_work_open(t, "git_plain_more")
+			work.run("remote", "add", "origin", repo_path)
+			work.run("fetch", "--quiet", "origin", "main")
+			work.run("checkout", "-q", "-b", "main", "origin/main")
+			work.commit("thirteen")
+			work.commit("fourteen")
+			work.run("push", repo_path, "main")
+
+			received := shallow_received(t, dir, git_protocol(version, "-C", dir, "fetch", "--quiet", "origin", "main")...)
+			// Two commits, their two folders and their two files.
+			if received > 6 {
+				t.Errorf("THE POINT: a plain fetch of two new commits in a depth-1 clone received %d objects: the history behind the client's boundary came too", received)
+			}
+		})
+	}
+}
+
+// TestGitPlainShallowFetchOfAMergeMatchesGit. A side branch forked below the
+// client's boundary and merged in reaches history the client does not hold,
+// and that has to be sent: a pack cut at the boundary there would leave the
+// client missing objects. What arrives is what git's own server sends.
+func TestGitPlainShallowFetchOfAMergeMatchesGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	user, _ := create_git_test_env(t)
+
+	for _, version := range git_versions {
+		t.Run("protocol v"+version, func(t *testing.T) {
+			repo_path, hashes := git_shallow_repo(t, user, "plainmerge"+version, 8)
+			server := git_negotiation_server(t, repo_path)
+
+			work := git_work_open(t, "git_plain_side")
+			work.run("remote", "add", "origin", repo_path)
+			work.run("fetch", "--quiet", "origin", "main")
+			work.run("checkout", "-q", "-b", "side", hashes[2].String())
+			work.commit("side one")
+			work.commit("side two")
+			work.commit("side three")
+
+			ours := git_temporary(t, "git_plain_ours")
+			git_run(t, "", git_protocol(version, "clone", "--quiet", "--depth", "1", server.URL, ours)...)
+			theirs := git_temporary(t, "git_plain_theirs")
+			git_run(t, "", git_protocol(version, "clone", "--quiet", "--depth", "1", "file://"+repo_path, theirs)...)
+
+			work.run("checkout", "-q", "-b", "main", "origin/main")
+			work.run("merge", "--quiet", "--no-ff", "-m", "merge side", "side")
+			work.run("push", repo_path, "main")
+
+			mine := shallow_received(t, ours, git_protocol(version, "-C", ours, "fetch", "--quiet", "origin", "main")...)
+			reference := shallow_received(t, theirs, git_protocol(version, "-C", theirs, "fetch", "--quiet", "origin", "main")...)
+			for _, dir := range []string{ours, theirs} {
+				git_run(t, dir, "-C", dir, "rev-parse", "--verify", "origin/main^2~2")
+			}
+			if mine != reference {
+				t.Errorf("THE POINT: the fetch of a merged side branch received %d objects, git's own server sends %d", mine, reference)
+			}
+		})
+	}
+}
+
+// TestGitPlainShallowFetchStopsAtTheBoundary. The commits a client declares
+// shallow are where its history stops, as git's server takes them: a plain
+// fetch walks no further back than one, though no commit the client offers
+// reaches it.
+func TestGitPlainShallowFetchStopsAtTheBoundary(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	user, _ := create_git_test_env(t)
+	repo_path, hashes := git_shallow_repo(t, user, "plainboundary", 6)
+	storage, err := (&git_loader{}).Load(&transport.Endpoint{Path: repo_path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	selection, err := git_upload_pack_select(context.Background(), storage, &git_request{
+		capabilities: capability.NewList(),
+		wants:        []plumbing.Hash{hashes[5]},
+		shallows:     []plumbing.Hash{hashes[3]},
+		done:         true,
+	}, nil, true)
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	sent := git_hash_set(selection.objects)
+	if !sent[hashes[4]] {
+		t.Errorf("the commit between the want and the boundary was not sent")
+	}
+	for _, hash := range hashes[:3] {
+		if sent[hash] {
+			t.Errorf("THE POINT: %s, behind the client's declared boundary, was sent", hash)
+		}
+	}
 }

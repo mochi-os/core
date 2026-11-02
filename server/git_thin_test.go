@@ -25,7 +25,9 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 )
 
@@ -294,7 +296,7 @@ func TestGitPackThinEntries(t *testing.T) {
 		t.Fatal("no delta base was found for a file the client holds an earlier version of")
 	}
 
-	pack, deltas, err := git_pack_thin(storage, objects.objects, bases)
+	pack, deltas, _, err := git_pack_thin(storage, objects.objects, bases)
 	if err != nil {
 		t.Fatalf("pack: %v", err)
 	}
@@ -337,5 +339,216 @@ func TestGitPackThinEntries(t *testing.T) {
 
 	if _, err := scanner.Checksum(); err != nil {
 		t.Errorf("the pack checksum does not verify: %v", err)
+	}
+}
+
+// thin_counter counts what a fetch reads from a store: every object by hash,
+// and how many objects were asked for as stored (DeltaObject), which only the
+// whole pack's encoder asks for.
+type thin_counter struct {
+	storer.Storer
+	reads  map[plumbing.Hash]int
+	stored int
+}
+
+func (s *thin_counter) EncodedObject(kind plumbing.ObjectType, hash plumbing.Hash) (plumbing.EncodedObject, error) {
+	s.reads[hash]++
+	return s.Storer.EncodedObject(kind, hash)
+}
+
+func (s *thin_counter) DeltaObject(kind plumbing.ObjectType, hash plumbing.Hash) (plumbing.EncodedObject, error) {
+	s.stored++
+	if stored, ok := s.Storer.(storer.DeltaObjectStorer); ok {
+		return stored.DeltaObject(kind, hash)
+	}
+	return s.Storer.EncodedObject(kind, hash)
+}
+
+// thin_select chooses what a thin-capable fetch of want sends a client
+// offering haves.
+func thin_select(t *testing.T, storage storer.Storer, want plumbing.Hash, haves []plumbing.Hash) *git_selection {
+	t.Helper()
+	capabilities := capability.NewList()
+	if err := capabilities.Add(capability.ThinPack); err != nil {
+		t.Fatalf("capabilities: %v", err)
+	}
+	selection, err := git_upload_pack_select(context.Background(), storage, &git_request{
+		capabilities: capabilities,
+		wants:        []plumbing.Hash{want},
+		done:         true,
+	}, haves, true)
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	return selection
+}
+
+// TestGitThinBasesComeFromWhereHistoriesMeet. The thin pack's base search
+// walked the tree of every commit the client offered - git offers sixteen at
+// once - to pair what is sent with what the client holds at the same path. It
+// walks the trees of the commits where the client's history meets the pack's.
+func TestGitThinBasesComeFromWhereHistoriesMeet(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	user, _ := create_git_test_env(t)
+	repo_path, commits := git_negotiation_repo(t, user, "thinedges", 20)
+	storage, err := (&git_loader{}).Load(&transport.Endpoint{Path: repo_path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	// The sixteen newest commits the client holds, as git offers them.
+	haves := commits[3:19]
+	selection := thin_select(t, storage, commits[19], haves)
+	if len(selection.edges) != 1 || selection.edges[0] != commits[18] {
+		t.Fatalf("THE POINT: the edges are %v, want only %s, where the histories meet", selection.edges, commits[18])
+	}
+
+	counter := &thin_counter{Storer: storage, reads: map[plumbing.Hash]int{}}
+	if pack, _ := git_thin_candidate(counter, selection); pack == nil {
+		t.Fatal("no thin pack was built for a commit adding a file next to those the client holds")
+	}
+	for _, hash := range haves[:len(haves)-1] {
+		commit, err := object.GetCommit(storage, hash)
+		if err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+		if counter.reads[commit.TreeHash] > 0 {
+			t.Errorf("THE POINT: the base search read the tree of %s, which is not where the histories meet", hash)
+		}
+	}
+}
+
+// TestGitThinPackSkipsTheWholePack. Every thin-capable fetch also built the
+// whole pack, delta search and all, only to compare sizes. When every file and
+// folder in the thin pack is already a delta against the client's copy, the
+// whole pack is not built; when one had to go whole, the comparison still runs,
+// since the whole pack can then be the smaller.
+func TestGitThinPackSkipsTheWholePack(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	user, _ := create_git_test_env(t)
+
+	// A small edit to a large file, and nothing else: the file and the
+	// folder are deltas.
+	if err := git_init(user, test_app, "thinskip"); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	repo_path := git_repo_path(user, test_app, "thinskip")
+	edits := git_work_open(t, "git_thin_skip")
+	payload := git_thin_payload(7, 1<<20)
+	if err := os.WriteFile(filepath.Join(edits.dir, "large.bin"), payload, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	first := edits.commit("first")
+	copy(payload[512<<10:], git_thin_payload(9, 512))
+	if err := os.WriteFile(filepath.Join(edits.dir, "large.bin"), payload, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	edits.run("commit", "-q", "-a", "-m", "edit")
+	second := plumbing.NewHash(edits.run("rev-parse", "HEAD"))
+	edits.run("push", repo_path, "main")
+	storage, err := (&git_loader{}).Load(&transport.Endpoint{Path: repo_path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	counter := &thin_counter{Storer: storage, reads: map[plumbing.Hash]int{}}
+	chosen := git_upload_pack_candidate(counter, thin_select(t, storage, second, []plumbing.Hash{first}))
+	if chosen == nil {
+		t.Fatal("no candidate was chosen")
+	}
+	if _, deltas := store_count(t, chosen); deltas == 0 {
+		t.Error("the chosen pack holds no deltas: it is not the thin one")
+	}
+	if counter.stored > 0 {
+		t.Errorf("THE POINT: the whole pack was built (%d objects asked for as stored) though every file and folder was a delta", counter.stored)
+	}
+
+	// New files beside the old: they go whole in the thin pack, so the
+	// whole pack is built to compare.
+	if err := git_init(user, test_app, "thincompare"); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	compare_path := git_repo_path(user, test_app, "thincompare")
+	work := git_work_open(t, "git_thin_compare")
+	before := work.commit("first")
+	payload = git_thin_payload(11, 64<<10)
+	for i := 0; i < 3; i++ {
+		payload[i*1024] ^= 0xff
+		if err := os.WriteFile(filepath.Join(work.dir, "new"+strconv.Itoa(i)+".bin"), payload, 0644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	after := work.commit("second")
+	work.run("push", compare_path, "main")
+	storage, err = (&git_loader{}).Load(&transport.Endpoint{Path: compare_path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	counter = &thin_counter{Storer: storage, reads: map[plumbing.Hash]int{}}
+	if chosen := git_upload_pack_candidate(counter, thin_select(t, storage, after, []plumbing.Hash{before})); chosen == nil {
+		t.Fatal("no candidate was chosen")
+	}
+	if counter.stored == 0 {
+		t.Error("new files went whole in the thin pack, but the whole pack was never built to compare")
+	}
+}
+
+// TestGitThinPackComparesVersionsOfOnePath. Several new versions of one file
+// each go in the thin pack as a delta against the one copy the client holds,
+// so each carries every change made since; the whole pack keeps the chain of
+// small deltas between them. Every file is a delta then, and still the whole
+// pack can be the smaller, so it is built to compare, and the smaller sent.
+func TestGitThinPackComparesVersionsOfOnePath(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	user, _ := create_git_test_env(t)
+	if err := git_init(user, test_app, "thinversions"); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	repo_path := git_repo_path(user, test_app, "thinversions")
+	work := git_work_open(t, "git_thin_versions")
+	log := []byte(store_lines(5, 200))
+	if err := os.WriteFile(filepath.Join(work.dir, "changes.log"), log, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	first := work.commit("first")
+	for i := 0; i < 120; i++ {
+		log = append(log, []byte(store_lines(int64(1000+i), 1))...)
+		if err := os.WriteFile(filepath.Join(work.dir, "changes.log"), log, 0644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		work.run("commit", "-q", "-a", "-m", "append "+strconv.Itoa(i))
+	}
+	last := plumbing.NewHash(work.run("rev-parse", "HEAD"))
+	work.run("push", repo_path, "main")
+
+	storage, err := (&git_loader{}).Load(&transport.Endpoint{Path: repo_path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	selection := thin_select(t, storage, last, []plumbing.Hash{first})
+	plain, err := git_pack_plain(storage, selection.objects)
+	if err != nil {
+		t.Fatalf("whole pack: %v", err)
+	}
+	thin, _ := git_thin_candidate(storage, selection)
+	if len(thin) <= len(plain) {
+		t.Fatalf("setup: the thin pack is %d bytes and the whole %d; the whole must be the smaller", len(thin), len(plain))
+	}
+	counter := &thin_counter{Storer: storage, reads: map[plumbing.Hash]int{}}
+	chosen := git_upload_pack_candidate(counter, selection)
+	if chosen == nil {
+		t.Fatal("no candidate was chosen")
+	}
+	t.Logf("120 appends to one file: %d bytes sent, the thin pack %d, the whole %d", len(chosen), len(thin), len(plain))
+	if counter.stored == 0 {
+		t.Error("THE POINT: 120 versions of one file went as deltas of one base, and the whole pack was never built to compare")
+	}
+	if len(chosen) > len(plain) {
+		t.Errorf("THE POINT: %d bytes sent where the whole pack is %d", len(chosen), len(plain))
 	}
 }

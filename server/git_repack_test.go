@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	stack "runtime/debug"
 	"strings"
@@ -957,11 +958,11 @@ func TestPackBreaksADeltaCycleAcrossPacks(t *testing.T) {
 	signature := object.Signature{Name: "Test", Email: "test@example.com", When: time.Now()}
 	commit := store(&object.Commit{Author: signature, Committer: signature, Message: "commit\n", TreeHash: tree})
 
-	first, deltas, err := git_pack_thin(build, []plumbing.Hash{commit, tree, b, a}, map[plumbing.Hash]plumbing.Hash{a: b})
+	first, deltas, _, err := git_pack_thin(build, []plumbing.Hash{commit, tree, b, a}, map[plumbing.Hash]plumbing.Hash{a: b})
 	if err != nil || deltas != 1 {
 		t.Fatalf("the first pack: %d deltas, %v", deltas, err)
 	}
-	second, deltas, err := git_pack_thin(build, []plumbing.Hash{a, b}, map[plumbing.Hash]plumbing.Hash{b: a})
+	second, deltas, _, err := git_pack_thin(build, []plumbing.Hash{a, b}, map[plumbing.Hash]plumbing.Hash{b: a})
 	if err != nil || deltas != 1 {
 		t.Fatalf("the second pack: %d deltas, %v", deltas, err)
 	}
@@ -1032,7 +1033,7 @@ func TestPackSweepLeavesAPushArriving(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, _, err := git_pack_thin(build, []plumbing.Hash{blob}, nil)
+	data, _, _, err := git_pack_thin(build, []plumbing.Hash{blob}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1116,4 +1117,87 @@ func TestRepackConsiderRunsOneAcrossRepositories(t *testing.T) {
 	if done != len(paths) {
 		t.Errorf("%d of %d repositories were repacked; a repack waiting its turn must still run", done, len(paths))
 	}
+}
+
+// TestRepackAfterReadingAnUnsearchedRepository. A repository packed before
+// the path search kept its larger pack, and its slow clones, until someone
+// pushed to it again, since only a push considered a repack. A clone or fetch
+// of one now starts it, through either protocol, under the same interval as a
+// push; a clone of a repository already searched starts nothing.
+func TestRepackAfterReadingAnUnsearchedRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	dispatch := git_repack_dispatch
+	defer func() { git_repack_dispatch = dispatch }()
+	done := make(chan string, 8)
+	git_repack_dispatch = func(path string) error {
+		done <- path
+		return nil
+	}
+	repacked := func(path, reason string) {
+		t.Helper()
+		select {
+		case got := <-done:
+			if got != path {
+				t.Errorf("%s: %s was repacked, want %s", reason, got, path)
+			}
+		case <-time.After(5 * time.Second):
+			t.Errorf("THE POINT: no repack ran: %s", reason)
+		}
+	}
+	quiet := func(reason string) {
+		t.Helper()
+		select {
+		case got := <-done:
+			t.Errorf("%s was repacked when it should not have been: %s", got, reason)
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	settled := func(path string) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			if _, running := git_repack_running.Load(path); !running {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the repack never finished")
+			}
+		}
+	}
+
+	user, _ := create_git_test_env(t)
+	searched, _ := git_negotiation_repo(t, user, "readsearched", 3)
+	legacy, _ := git_negotiation_repo(t, user, "readlegacy", 3)
+	// Pushes this small are stored loose; both are packed, the legacy one as
+	// the repack packed before the path search, with no mark.
+	for _, path := range []string{searched, legacy} {
+		git_run(t, "", "-C", path, "repack", "-a", "-d", "-q")
+	}
+	git_run(t, "", "-C", legacy, "config", "--unset", "mochi.deltas")
+	for _, path := range []string{searched, legacy} {
+		git_repack_attempted.Delete(path)
+		defer git_repack_attempted.Delete(path)
+		defer git_repack_remaining.Delete(path)
+	}
+
+	clone := func(path, version string) {
+		t.Helper()
+		server := git_negotiation_server(t, path)
+		git_run(t, "", git_protocol(version, "clone", "--quiet", "--bare", server.URL, t.TempDir())...)
+	}
+
+	clone(searched, "2")
+	quiet("a clone of a repository already searched")
+
+	for _, version := range git_versions {
+		git_repack_attempted.Delete(legacy)
+		clone(legacy, version)
+		repacked(legacy, "a protocol v"+version+" clone of a repository packed before the path search")
+		settled(legacy)
+	}
+
+	// The interval holds a read back as it holds a push.
+	clone(legacy, "2")
+	quiet("the interval since the last repack has not passed")
 }

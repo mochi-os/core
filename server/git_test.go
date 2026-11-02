@@ -1029,3 +1029,95 @@ func TestGitHandlerRefusesWithoutAppDatabase(t *testing.T) {
 			recorder.Body.String())
 	}
 }
+
+// git_held counts the descriptors this process holds open on files in a
+// repository's pack directory.
+func git_held(t *testing.T, path string) int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Skip("no /proc/self/fd to count open files with")
+	}
+	directory := filepath.Join(path, "objects", "pack") + string(filepath.Separator)
+	held := 0
+	for _, entry := range entries {
+		target, err := os.Readlink(filepath.Join("/proc/self/fd", entry.Name()))
+		if err == nil && strings.HasPrefix(target, directory) {
+			held++
+		}
+	}
+	return held
+}
+
+// TestGitOpenKeepsPacksOpenUntilClosed. go-git opened and closed the pack for
+// every object read, resolving its path afresh each time: 40-45% of a history
+// walk, fetch or clone. A repository git_open opens holds each pack open once
+// read, and git_close releases it.
+func TestGitOpenKeepsPacksOpenUntilClosed(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	user, _ := create_git_test_env(t)
+	path, commits := git_negotiation_repo(t, user, "kept", 5)
+	// A push this small is stored loose; packed, it is read from one pack.
+	git_run(t, "", "-C", path, "repack", "-a", "-d", "-q")
+	repo, err := git_open(user, test_app, "kept")
+	if err != nil {
+		t.Fatalf("git_open: %v", err)
+	}
+	for _, hash := range commits {
+		if _, err := repo.CommitObject(hash); err != nil {
+			t.Fatalf("commit %s: %v", hash, err)
+		}
+	}
+	if held := git_held(t, path); held != 1 {
+		t.Errorf("THE POINT: %d pack files held open after five reads from one pack, want 1, kept", held)
+	}
+	git_close(repo.Storer)
+	if held := git_held(t, path); held != 0 {
+		t.Errorf("%d pack files still open after git_close", held)
+	}
+}
+
+// TestGitCallsCloseTheirRepository. Every mochi.git call that opens the
+// repository closes it before it returns, so the packs it held open are not
+// left to the collector: browsing, history, a diff and its stats, and the
+// merge base and check.
+func TestGitCallsCloseTheirRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	id, owner, repo, thread := read_env(t, "closing")
+	base := read_commit(t, repo, nil, read_snapshot(t, repo, map[string]read_file{"a.txt": read_text("a\n")}), "base")
+	head := read_commit(t, repo, []plumbing.Hash{base}, read_snapshot(t, repo, map[string]read_file{"a.txt": read_text("a\nb\n"), "c/d.txt": read_text("d")}), "head")
+	read_branch(t, repo, "main", base)
+	read_branch(t, repo, "feature", head)
+	path := git_repo_path(owner, test_app, id)
+	git_run(t, "", "-C", path, "repack", "-a", "-d", "-q")
+
+	calls := []struct {
+		name  string
+		fn    func(*sl.Thread, *sl.Builtin, sl.Tuple, []sl.Tuple) (sl.Value, error)
+		args  []sl.Value
+		fails bool
+	}{
+		{"tree", api_git_tree, []sl.Value{sl.String(id), sl.String("feature")}, false},
+		{"commit list", api_git_commit_list, []sl.Value{sl.String(id), sl.String("feature")}, false},
+		{"commit get", api_git_commit_get, []sl.Value{sl.String(id), sl.String(head.String())}, false},
+		{"blob content", api_git_blob_content, []sl.Value{sl.String(id), sl.String("feature"), sl.String("a.txt")}, false},
+		{"diff", api_git_diff, []sl.Value{sl.String(id), sl.String("main"), sl.String("feature")}, false},
+		{"diff stats", api_git_diff_stats, []sl.Value{sl.String(id), sl.String("main"), sl.String("feature")}, false},
+		{"merge base", api_git_merge_base, []sl.Value{sl.String(id), sl.String("main"), sl.String("feature")}, false},
+		{"merge check", api_git_merge_check, []sl.Value{sl.String(id), sl.String("feature"), sl.String("main")}, false},
+		{"diff of a missing branch", api_git_diff, []sl.Value{sl.String(id), sl.String("feature"), sl.String("missing")}, true},
+		{"diff stats of a missing branch", api_git_diff_stats, []sl.Value{sl.String(id), sl.String("feature"), sl.String("missing")}, true},
+	}
+	for _, call := range calls {
+		if _, err := call.fn(thread, nil, sl.Tuple(call.args), nil); (err != nil) != call.fails {
+			t.Fatalf("%s: %v", call.name, err)
+		}
+		if held := git_held(t, path); held != 0 {
+			t.Errorf("THE POINT: %s left %d pack files open", call.name, held)
+		}
+	}
+}

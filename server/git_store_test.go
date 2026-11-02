@@ -17,14 +17,18 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"core/third_party/pack"
 
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
@@ -33,7 +37,9 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/format/idxfile"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/revlist"
 	"github.com/go-git/go-git/v5/plumbing/storer"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/go-git/go-git/v5/storage/memory"
 )
@@ -678,7 +684,7 @@ func store_cut(t *testing.T, number int, shape func([]byte) []byte) ([]byte, []p
 	commit := store(&object.Commit{Author: signature, Committer: signature, Message: "commit\n", TreeHash: tree})
 	objects := []plumbing.Hash{commit, tree, hash}
 
-	data, _, err := git_pack_thin(build, objects, nil)
+	data, _, _, err := git_pack_thin(build, objects, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -992,7 +998,7 @@ func store_sliver(t *testing.T) (string, *git.Repository, []byte, plumbing.Hash,
 	both := memory.NewStorage()
 	store_blob(t, both, large)
 	hash := store_blob(t, both, large[:100])
-	data, deltas, err := git_pack_thin(both, []plumbing.Hash{hash}, map[plumbing.Hash]plumbing.Hash{hash: base})
+	data, deltas, _, err := git_pack_thin(both, []plumbing.Hash{hash}, map[plumbing.Hash]plumbing.Hash{hash: base})
 	if err != nil || deltas != 1 {
 		t.Fatalf("setup: %d deltas, %v", deltas, err)
 	}
@@ -1127,7 +1133,7 @@ func store_pair(t *testing.T) []byte {
 	edited := append([]byte{}, text...)
 	copy(edited[500:], "an edit in the middle")
 	second := store_blob(t, build, edited)
-	data, deltas, err := git_pack_thin(build, []plumbing.Hash{first, second}, map[plumbing.Hash]plumbing.Hash{second: first})
+	data, deltas, _, err := git_pack_thin(build, []plumbing.Hash{first, second}, map[plumbing.Hash]plumbing.Hash{second: first})
 	if err != nil || deltas != 1 {
 		t.Fatalf("setup: %d deltas, %v", deltas, err)
 	}
@@ -1168,7 +1174,7 @@ func TestPushHoldingAnObjectTwiceIsNotKept(t *testing.T) {
 		{"sent twice", func(t *testing.T, repo *git.Repository) ([]byte, []plumbing.Hash) {
 			build := memory.NewStorage()
 			hash := store_blob(t, build, []byte("twice\n"))
-			data, _, err := git_pack_thin(build, []plumbing.Hash{hash, hash}, nil)
+			data, _, _, err := git_pack_thin(build, []plumbing.Hash{hash, hash}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1182,7 +1188,7 @@ func TestPushHoldingAnObjectTwiceIsNotKept(t *testing.T) {
 			edited := append([]byte{}, text...)
 			copy(edited[500:], "an edit in the middle")
 			second := store_blob(t, build, edited)
-			data, deltas, err := git_pack_thin(build, []plumbing.Hash{first, second}, map[plumbing.Hash]plumbing.Hash{second: first})
+			data, deltas, _, err := git_pack_thin(build, []plumbing.Hash{first, second}, map[plumbing.Hash]plumbing.Hash{second: first})
 			if err != nil || deltas != 1 {
 				t.Fatalf("setup: %d deltas, %v", deltas, err)
 			}
@@ -1370,4 +1376,324 @@ func TestPushNotRestoredIsRefused(t *testing.T) {
 	if err != nil && strings.Contains(err.Error(), "\n") {
 		t.Errorf("the report to the client runs to more than one line: %q", err.Error())
 	}
+}
+
+// store_layered makes a repository holding three pushes from git, each kept as
+// a pack of its own - the second and third thin, kept with the bases they
+// delta against appended - and a commit Mochi wrote on top, loose. It answers
+// the repository's path and every object its branch reaches.
+func store_layered(t *testing.T, label string) (string, []plumbing.Hash) {
+	t.Helper()
+	user, _ := create_git_test_env(t)
+	if err := git_init(user, test_app, label); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	path := git_repo_path(user, test_app, label)
+	server := git_negotiation_server(t, path)
+	work := t.TempDir()
+	git_run(t, work, "init", "-q", "-b", "main")
+	// Folders large enough that git stores their versions as deltas.
+	for i := 0; i < 60; i++ {
+		if err := os.WriteFile(filepath.Join(work, fmt.Sprintf("other%02d.txt", i)), []byte(store_lines(int64(100+i), 3)), 0644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	git_run(t, work, "add", ".")
+	git_run(t, work, "commit", "-q", "-m", "others")
+	for push := 0; push < 3; push++ {
+		store_edit(t, work, push*10, 10)
+		git_run(t, work, "push", "-q", server.URL, "main")
+	}
+	if packs := store_packs(t, path); len(packs) != 3 {
+		t.Fatalf("setup: %d packs after three pushes, want 3", len(packs))
+	}
+
+	repo, err := git.PlainOpen(path)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	head, err := repo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	if err != nil {
+		t.Fatalf("main: %v", err)
+	}
+	parent, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		t.Fatalf("head commit: %v", err)
+	}
+	text, err := parent.File("file.txt")
+	if err != nil {
+		t.Fatalf("file.txt: %v", err)
+	}
+	contents, _ := text.Contents()
+	// Ten commits Mochi wrote, each a loose file and a loose folder, so the
+	// encoder's delta searches for files and for folders both read the store.
+	previous, err := parent.Tree()
+	if err != nil {
+		t.Fatalf("head tree: %v", err)
+	}
+	written := head.Hash()
+	for i := 0; i < 10; i++ {
+		// The same length as the versions pushed, so they share a search
+		// window with the stored deltas.
+		contents = fmt.Sprintf("written by Mochi %d\n", i) + contents[len(fmt.Sprintf("written by Mochi %d\n", i)):]
+		blob := repack_test_blob(t, repo, contents)
+		entries := append([]object.TreeEntry{}, previous.Entries...)
+		for j := range entries {
+			if entries[j].Name == "file.txt" {
+				entries[j].Hash = blob
+			}
+		}
+		tree := repack_test_store(t, repo, &object.Tree{Entries: entries})
+		signature := object.Signature{Name: "Test", Email: "test@example.com", When: time.Now()}
+		written = repack_test_store(t, repo, &object.Commit{Author: signature, Committer: signature, Message: "written\n", TreeHash: tree, ParentHashes: []plumbing.Hash{written}})
+	}
+	if err := repo.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName("main"), written)); err != nil {
+		t.Fatalf("SetReference: %v", err)
+	}
+	objects, err := revlist.Objects(repo.Storer, []plumbing.Hash{written}, nil)
+	if err != nil {
+		t.Fatalf("revlist: %v", err)
+	}
+	git_sort_hashes(objects)
+	return path, objects
+}
+
+// store_indexed answers how many packs hold each object, by its pack indexes.
+func store_indexed(t *testing.T, path string) map[plumbing.Hash]int {
+	t.Helper()
+	held := map[plumbing.Hash]int{}
+	for _, pack := range store_packs(t, path) {
+		file, err := os.Open(strings.TrimSuffix(pack, ".pack") + ".idx")
+		if err != nil {
+			t.Fatalf("index: %v", err)
+		}
+		index := idxfile.NewMemoryIndex()
+		err = idxfile.NewDecoder(file).Decode(index)
+		file.Close()
+		if err != nil {
+			t.Fatalf("decode index: %v", err)
+		}
+		entries, err := index.Entries()
+		if err != nil {
+			t.Fatalf("entries: %v", err)
+		}
+		for {
+			entry, err := entries.Next()
+			if err != nil {
+				break
+			}
+			held[entry.Hash]++
+		}
+		entries.Close()
+	}
+	return held
+}
+
+// store_encode encodes objects as a clone sends them, through git_encoder, and
+// answers the pack and the objects whose stored entries were copied, by the
+// type of the entry copied.
+func store_encode(t *testing.T, path string, objects []plumbing.Hash) ([]byte, map[plumbing.Hash]plumbing.ObjectType) {
+	t.Helper()
+	storage, err := (&git_loader{keep: true}).Load(&transport.Endpoint{Path: path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	defer git_close(storage)
+	var buffer bytes.Buffer
+	encoder, done := git_encoder(&buffer, storage)
+	defer done()
+	reuse := encoder.Reuse
+	if reuse == nil {
+		t.Fatal("THE POINT: the encoder is given nothing stored to copy")
+	}
+	copied := map[plumbing.Hash]plumbing.ObjectType{}
+	encoder.Reuse = func(hash plumbing.Hash) (pack.Entry, bool) {
+		entry, ok := reuse(hash)
+		if ok {
+			open, kind := entry.Open, entry.Type
+			entry.Open = func() (io.Reader, error) {
+				data, err := open()
+				if err == nil {
+					copied[hash] = kind
+				}
+				return data, err
+			}
+		}
+		return entry, ok
+	}
+	if _, err := encoder.Encode(objects, git_pack_window); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	return buffer.Bytes(), copied
+}
+
+// store_verified indexes data with git's own index-pack, strictly, and checks
+// it holds exactly objects.
+func store_verified(t *testing.T, data []byte, objects []plumbing.Hash) {
+	t.Helper()
+	bare := t.TempDir()
+	git_run(t, "", "init", "-q", "--bare", bare)
+	cmd := exec.Command("git", "-C", bare, "index-pack", "--strict", "--stdin")
+	cmd.Stdin = bytes.NewReader(data)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("THE POINT: git index-pack --strict refuses the pack: %s (%v)", out, err)
+	}
+	listed := strings.Fields(git_run(t, "", "-C", bare, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)"))
+	var want []string
+	for _, hash := range objects {
+		want = append(want, hash.String())
+	}
+	sort.Strings(listed)
+	sort.Strings(want)
+	if strings.Join(listed, " ") != strings.Join(want, " ") {
+		t.Errorf("the pack holds %d objects, want the %d asked for", len(listed), len(want))
+	}
+}
+
+// TestCloneCopiesStoredEntries. A clone of a repository holding more than one
+// pack - every active one - inflated every object and deflated it again: two
+// to four times as long as sending the one pack it was stored as. Every object
+// stored in a pack is copied as stored, a delta keeping its stored delta and
+// a REF delta sent as an offset delta; only what is loose, or stored twice, is
+// encoded. The pack passes git's own strict index-pack, and a clone of it
+// passes fsck.
+func TestCloneCopiesStoredEntries(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	path, objects := store_layered(t, "copies")
+	held := store_indexed(t, path)
+
+	data, copied := store_encode(t, path, objects)
+	store_verified(t, data, objects)
+	kinds := map[plumbing.ObjectType]int{}
+	for _, kind := range copied {
+		kinds[kind]++
+	}
+	for _, hash := range objects {
+		if _, done := copied[hash]; !done && held[hash] == 1 {
+			t.Errorf("THE POINT: %s, stored once, was encoded again rather than copied", hash)
+		}
+	}
+	if kinds[plumbing.OFSDeltaObject] == 0 || kinds[plumbing.REFDeltaObject] == 0 {
+		t.Errorf("copied entries by type %v: want offset and reference deltas among them", kinds)
+	}
+
+	server := git_negotiation_server(t, path)
+	expected := strings.Fields(git_run(t, "", "-C", path, "rev-list", "--objects", "--all"))
+	sort.Strings(expected)
+	for _, version := range git_versions {
+		clone := t.TempDir()
+		git_run(t, clone, append([]string{"-c", "transfer.fsckObjects=true", "-c", "transfer.unpackLimit=1"}, git_protocol(version, "clone", "-q", "--bare", server.URL, ".")...)...)
+		git_run(t, clone, "fsck", "--full", "--strict")
+		received := strings.Fields(git_run(t, clone, "rev-list", "--objects", "--all"))
+		sort.Strings(received)
+		if strings.Join(received, " ") != strings.Join(expected, " ") {
+			t.Errorf("protocol %s: the clone holds %d object names, the repository %d", version, len(received), len(expected))
+		}
+	}
+}
+
+// TestCloneEncodesAnEntryItsIndexDisowns. An entry is copied only once its
+// bytes match the CRC its pack's index records; one that does not is encoded
+// afresh from the object, and the pack is still whole.
+func TestCloneEncodesAnEntryItsIndexDisowns(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	path, objects := store_layered(t, "disowned")
+	held := store_indexed(t, path)
+
+	// Spoil the CRC one index records for an object it alone holds, and seal
+	// the index again so it still reads.
+	pack := store_packs(t, path)[0]
+	index := strings.TrimSuffix(pack, ".pack") + ".idx"
+	raw, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatalf("read index: %v", err)
+	}
+	count := int(binary.BigEndian.Uint32(raw[8+255*4:]))
+	names := 8 + 256*4
+	victim := -1
+	for i := 0; i < count; i++ {
+		var hash plumbing.Hash
+		copy(hash[:], raw[names+i*20:])
+		if held[hash] == 1 {
+			victim = i
+			break
+		}
+	}
+	if victim < 0 {
+		t.Fatal("setup: no object held by one pack alone")
+	}
+	var spoiled plumbing.Hash
+	copy(spoiled[:], raw[names+victim*20:])
+	raw[names+count*20+victim*4] ^= 0xff
+	seal := sha1.Sum(raw[:len(raw)-20])
+	copy(raw[len(raw)-20:], seal[:])
+	if err := os.Chmod(index, 0644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if err := os.WriteFile(index, raw, 0644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	data, copied := store_encode(t, path, objects)
+	if _, done := copied[spoiled]; done {
+		t.Errorf("THE POINT: %s was copied though its bytes do not match the CRC its index records", spoiled)
+	}
+	if len(copied) == 0 {
+		t.Error("nothing was copied at all, so the check was never reached")
+	}
+	store_verified(t, data, objects)
+}
+
+// TestGitSerialSharesAKeptStore. A store holding its packs open keeps one file
+// position per pack and one unguarded map of them, and the pack encoder's
+// delta search reads it from a goroutine per object type. Through git_serial,
+// readers sharing a kept store each get every object whole and right; the race
+// detector, which CI runs, sees no race.
+func TestGitSerialSharesAKeptStore(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	path, objects := store_layered(t, "serial")
+	storage, err := (&git_loader{keep: true}).Load(&transport.Endpoint{Path: path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	defer git_close(storage)
+	shared := &git_serial{Storer: storage}
+
+	var wrong sync.Map
+	var group sync.WaitGroup
+	for reader := 0; reader < 4; reader++ {
+		group.Add(1)
+		go func(reader int) {
+			defer group.Done()
+			for i := range objects {
+				hash := objects[(i+reader*len(objects)/4)%len(objects)]
+				read, err := shared.EncodedObject(plumbing.AnyObject, hash)
+				if err != nil {
+					wrong.Store(hash, err.Error())
+					continue
+				}
+				content, err := read.Reader()
+				if err != nil {
+					wrong.Store(hash, err.Error())
+					continue
+				}
+				data, err := io.ReadAll(content)
+				content.Close()
+				if err != nil || plumbing.ComputeHash(read.Type(), data) != hash {
+					wrong.Store(hash, fmt.Sprintf("read back as something else (%v)", err))
+				}
+			}
+		}(reader)
+	}
+	group.Wait()
+	wrong.Range(func(hash, reason any) bool {
+		t.Errorf("THE POINT: %s: %v", hash, reason)
+		return true
+	})
 }

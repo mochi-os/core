@@ -234,7 +234,7 @@ func mastodon_limits(ctx context.Context, l *linked) map[string]any {
 
 // mastodon_api is the address of a path under the server's /api/.
 func mastodon_api(l *linked, path string, query map[string]string) string {
-	address := network_scheme + l.get("server") + "/api/" + path
+	address := network_base(l.get("server")) + "/api/" + path
 	if len(query) > 0 {
 		values := url.Values{}
 		for key, value := range query {

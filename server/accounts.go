@@ -883,6 +883,11 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	if provider.Flow == "oauth" {
 		return sl_error(fn, "an OAuth account is connected by linking it for sign-in or by mochi.account.grant")
 	}
+	// An account on Mastodon or Lemmy is linked with its sign-in; added here
+	// it would be a row with no credentials, which no call could use.
+	if provider.Flow == "link" {
+		return sl_error(fn, "a %s account is connected by mochi.account.link", ptype)
+	}
 
 	// Extract fields from kwargs
 	fields := make(map[string]any)

@@ -302,6 +302,25 @@ func TestAccountRemoveKeepsTheSignIn(t *testing.T) {
 	}
 }
 
+// TestAccountAddRefusesLinkedOnly: a provider whose accounts are only ever
+// linked is not added by form, and leaves no account behind.
+func TestAccountAddRefusesLinkedOnly(t *testing.T) {
+	oauth_binding_setup(t)
+	user := user_by_uid("u-link")
+	thread := &sl.Thread{}
+	thread.SetLocal("app", &App{id: "internal", internal: &AppVersion{}})
+	thread.SetLocal("user", user)
+	fn := sl.NewBuiltin("mochi.account.add", api_account_add)
+	for _, ptype := range []string{"mastodon", "lemmy"} {
+		if _, err := api_account_add(thread, fn, sl.Tuple{sl.String(ptype)}, nil); err == nil {
+			t.Errorf("THE POINT: a %s account was added by form, with nothing to sign in with", ptype)
+		}
+		if exists, _ := db_user(user, "user").exists("select 1 from accounts where type=?", ptype); exists {
+			t.Errorf("an empty %s account was left behind", ptype)
+		}
+	}
+}
+
 // TestAccountAddCalendarProviders: the two password-backed calendar
 // providers keep their credentials in the data column, iCloud at Apple's
 // fixed address, and an OAuth type is not added by form.

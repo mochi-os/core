@@ -13,11 +13,13 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net"
 	"net/http"
 	"net/textproto"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -1038,6 +1040,33 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		a.web.Header("Cache-Control", "private, must-revalidate")
 	}
 
+	// A gzipped copy kept beside the file goes to a request for the whole file
+	// that accepts gzip. The packages tree keeps one beside each Android build,
+	// half of whose bytes are a translation table stored uncompressed.
+	packed, stored, present := write_file_packed(root, path, information, a.web.Request)
+	if present {
+		a.web.Writer.Header().Add("Vary", "Accept-Encoding")
+	}
+	if packed != nil {
+		defer packed.Close()
+		a.web.Header("Content-Encoding", "gzip")
+		// Typed as the file, as the plain answer is: from the action, else
+		// the extension's registered type, else core's table.
+		if a.web.Writer.Header().Get("Content-Type") == "" {
+			content_type := mime.TypeByExtension(filepath.Ext(path))
+			if content_type == "" {
+				content_type = file_name_type(path)
+			}
+			a.web.Header("Content-Type", content_type)
+		}
+		if a.web.Writer.Header().Get("Etag") == "" {
+			a.web.Header("ETag", fmt.Sprintf(`"%x-%x-gzip"`, information.ModTime().UnixNano(), information.Size()))
+		}
+		starlark_serving_set(t, a.web.Writer)
+		http.ServeContent(a.web.Writer, a.web.Request, path, stored.ModTime(), packed)
+		return sl.None, nil
+	}
+
 	if a.web.Writer.Header().Get("Etag") == "" {
 		a.web.Header("ETag", fmt.Sprintf(`"%x-%x"`, information.ModTime().UnixNano(), information.Size()))
 	}
@@ -1045,6 +1074,29 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	starlark_serving_set(t, a.web.Writer)
 	http.ServeContent(a.web.Writer, a.web.Request, path, information.ModTime(), file)
 	return sl.None, nil
+}
+
+// write_file_packed opens the gzipped copy of path kept beside it when the
+// request may have it instead: the whole file asked for, since a range counts
+// bytes of the file itself, and gzip accepted. The copy must carry the file's
+// own modification time, to the second, or it is of some other version of the
+// file. present says a current copy exists at all, so the answer varies with
+// what the request accepts.
+func write_file_packed(root *os.Root, path string, information os.FileInfo, request *http.Request) (*os.File, os.FileInfo, bool) {
+	packed, err := root.Open(path + ".gz")
+	if err != nil {
+		return nil, nil, false
+	}
+	stored, err := packed.Stat()
+	if err != nil || !stored.Mode().IsRegular() || stored.ModTime().Unix() != information.ModTime().Unix() || stored.Size() >= information.Size() {
+		packed.Close()
+		return nil, nil, false
+	}
+	if request.Header.Get("Range") != "" || accept_encoding_allows(accept_encoding_weights(request.Header.Get("Accept-Encoding")), "gzip") <= 0 {
+		packed.Close()
+		return nil, nil, true
+	}
+	return packed, stored, true
 }
 
 // a.write.cache(name, content_type="") -> bool: Serve a cache entry to the HTTP

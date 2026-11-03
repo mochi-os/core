@@ -21,12 +21,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -1021,4 +1024,110 @@ func api_account_media(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	result.SetKey(sl.String("type"), sl.String(kind))
 	result.SetKey(sl.String("data"), sl.Bytes(data))
 	return result, nil
+}
+
+// download_deadline bounds a download through an account. An export runs to
+// tens of megabytes, longer than the half minute a page is given; a scheduled
+// event's call has five minutes in all.
+const download_deadline = 4 * time.Minute
+
+// mochi.account.download(account, url, file, maximum=0) -> dict: Fetch a file
+// through a linked account into the app's storage, streamed rather than held in
+// memory as media holds it: an export such as a Bluesky repository runs to tens
+// of megabytes. The file is replaced only once the whole answer is in, so a
+// failed download leaves the one before it. Bounded by the user's storage and,
+// where given, maximum bytes. Returns {status, type, size} once a 200 is kept;
+// {status, error} with the start of the server's answer when it answered
+// otherwise; and {status: 0, error} when the request could not be made or its
+// answer not kept: the host blocked or off, its budget spent, no answer, over
+// maximum, or the storage full. A hosted account and a linked Matrix account
+// have no such function. Behind the account permission.
+func api_account_download(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var account, address, file string
+	var maximum int64
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "url", &address, "file", &file, "maximum?", &maximum); err != nil {
+		return nil, err
+	}
+	if !valid(file, "filepath") {
+		return sl_error(fn, "invalid file %q", file)
+	}
+	user, row, _, err := account_acting_on(t, fn, account, "fediverse", "bluesky", "matrix", "xmpp")
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	l := linked_from(user, row)
+	if l == nil || l.kind == "matrix" {
+		return sl_error(fn, "only a linked account other than Matrix downloads")
+	}
+	u, err := url.Parse(address)
+	if err != nil || u.Hostname() == "" {
+		return sl_error(fn, "invalid url")
+	}
+	storage, _ := principal_storage(t)
+	app, _ := t.Local("app").(*App)
+	if storage == nil || app == nil {
+		return sl_error(fn, "no storage")
+	}
+	failed := func(status int, reason string) (sl.Value, error) {
+		debug("Download %s not kept: %s", address, reason)
+		return sl_encode(map[string]any{"status": status, "error": reason}), nil
+	}
+
+	ctx, cancel := context.WithTimeout(thread_context(t), download_deadline)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, "GET", address, nil)
+	if err != nil {
+		return sl_error(fn, "invalid url")
+	}
+	request.Header.Set("Accept", "*/*")
+	response, err := network_send(ctx, l.user, "", strings.ToLower(u.Hostname())+"|"+l.id, request, 5)
+	if err != nil {
+		return failed(0, err.Error())
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		start, _ := io.ReadAll(io.LimitReader(response.Body, 512))
+		return failed(response.StatusCode, strings.TrimSpace(string(start)))
+	}
+
+	base := api_file_base(storage, app)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		return failed(0, "the app's files could not be opened")
+	}
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return failed(0, "the app's files could not be opened")
+	}
+	defer root.Close()
+	owner := storage_owner(root.Name())
+	// The answer is written beside the app's files and moved into place once
+	// it is whole; a listing of the file's directory never shows it half made.
+	partial := ".download-" + random_alphanumeric(16)
+	body := io.Reader(response.Body)
+	if maximum > 0 {
+		body = io.LimitReader(response.Body, maximum+1)
+	}
+	written, err := root_write_file(root, partial, body)
+	if err == nil && maximum > 0 && written > maximum {
+		err = fmt.Errorf("over %d bytes", maximum)
+	}
+	if err == nil {
+		if dir := filepath.Dir(file); dir != "." && dir != "" {
+			err = root_mkdir_all(root, dir)
+		}
+	}
+	previous := storage_size(root, file)
+	if err == nil {
+		err = root.Rename(partial, file)
+	}
+	if err != nil {
+		// A write the quota stopped is already removed and given back.
+		if !errors.Is(err, storage_exceeded) {
+			root.Remove(partial)
+			storage_give(owner, written)
+		}
+		return failed(0, err.Error())
+	}
+	storage_give(owner, previous)
+	return sl_encode(map[string]any{"status": response.StatusCode, "type": response.Header.Get("Content-Type"), "size": written}), nil
 }

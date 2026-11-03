@@ -8,8 +8,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -363,6 +366,111 @@ func TestMedia(t *testing.T) {
 	}
 	if signed.Load() != 2 {
 		t.Errorf("%d fetches reached the server, want 2", signed.Load())
+	}
+}
+
+// TestAccountDownload: a linked account's download streams into the app's
+// storage past media's cap and replaces the file only once it is whole; a
+// refusal, an answer over the caller's maximum or a host that cannot be
+// reached leaves the file before it and says why; the user's storage is
+// charged for the file kept and nothing else.
+func TestAccountDownload(t *testing.T) {
+	alice := create_linked_test_env(t)
+	saved := networks_development
+	networks_development = true
+	t.Cleanup(func() { networks_development = saved })
+	db_user(alice, "user").exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('l1', 'bluesky', 'Alice', 'alice.example', '{\"server\":\"127.0.0.1\",\"did\":\"did:plc:alice\"}', 1, 1)")
+	app := create_external_app("app1")
+	permission_grant(alice, app.id, "account:l1")
+	thread := create_test_thread(alice, app)
+	thread.SetLocal("context", context.Background())
+	fn := sl.NewBuiltin("test", nil)
+
+	first := strings.Repeat("first", 20)
+	second := strings.Repeat("second", 30)
+	body := first
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/refused" {
+			w.WriteHeader(400)
+			w.Write([]byte(`{"error":"RepoNotFound"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.ipld.car")
+		w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+
+	saved_maximum := media_maximum
+	media_maximum = 8
+	t.Cleanup(func() { media_maximum = saved_maximum })
+	if _, err := storage_reserve(storage_request_of(thread), alice, 0); err != nil {
+		t.Fatal(err)
+	}
+	figure := storage_figure_of(alice.UID)
+	if figure.measured.IsZero() {
+		t.Fatal("the user's storage was never measured, so nothing below is charged")
+	}
+	used := func() int64 {
+		figure.lock.Lock()
+		defer figure.lock.Unlock()
+		return figure.used
+	}
+	before := used()
+
+	base := api_file_base(alice, app)
+	kept := func() string {
+		data, _ := os.ReadFile(filepath.Join(base, "backups", "l1", "repository.car"))
+		return string(data)
+	}
+	partials := func() []string {
+		matches, _ := filepath.Glob(filepath.Join(base, ".download-*"))
+		return matches
+	}
+	download := func(address string, kwargs ...sl.Tuple) map[string]any {
+		t.Helper()
+		value, err := api_account_download(thread, fn, sl.Tuple{sl.String("l1"), sl.String(address), sl.String("backups/l1/repository.car")}, kwargs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		answer, _ := sl_decode(value).(map[string]any)
+		return answer
+	}
+
+	answer := download(server.URL + "/repo")
+	if answer["status"] != int64(200) || answer["size"] != int64(len(first)) || answer["type"] != "application/vnd.ipld.car" || kept() != first {
+		t.Errorf("THE POINT: a download past media's cap = %v, kept %q", answer, kept())
+	}
+	if n := used() - before; n != int64(len(first)) {
+		t.Errorf("the download charged %d bytes, want %d", n, len(first))
+	}
+
+	body = second
+	if answer := download(server.URL + "/repo"); answer["size"] != int64(len(second)) || kept() != second {
+		t.Errorf("a second download = %v, kept %q", answer, kept())
+	}
+	if n := used() - before; n != int64(len(second)) {
+		t.Errorf("after replacing the file the user is charged %d bytes, want %d: the file replaced is given back", n, len(second))
+	}
+
+	answer = download(server.URL+"/repo", sl.Tuple{sl.String("maximum"), sl.MakeInt(len(second) - 1)})
+	if answer["status"] != int64(0) || !strings.Contains(fmt.Sprint(answer["error"]), "over") || kept() != second {
+		t.Errorf("a download over the maximum = %v, kept %q: the file before it stays", answer, kept())
+	}
+	answer = download(server.URL + "/refused")
+	if answer["status"] != int64(400) || !strings.Contains(fmt.Sprint(answer["error"]), "RepoNotFound") || kept() != second {
+		t.Errorf("a refused download = %v, kept %q", answer, kept())
+	}
+	closed := httptest.NewServer(http.NotFoundHandler())
+	address := closed.URL
+	closed.Close()
+	if answer := download(address + "/repo"); answer["status"] != int64(0) || answer["error"] == "" || kept() != second {
+		t.Errorf("a download from a host that does not answer = %v", answer)
+	}
+	if n := used() - before; n != int64(len(second)) {
+		t.Errorf("after the failed downloads the user is charged %d bytes, want %d", n, len(second))
+	}
+	if left := partials(); len(left) != 0 {
+		t.Errorf("half-made downloads were left behind: %v", left)
 	}
 }
 

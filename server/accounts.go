@@ -327,6 +327,7 @@ var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"key":           api_account_key,
 	"link":          sl.NewBuiltin("mochi.account.link", api_account_link),
 	"list":          sl.NewBuiltin("mochi.account.list", api_account_list),
+	"download":      sl.NewBuiltin("mochi.account.download", api_account_download),
 	"media":         sl.NewBuiltin("mochi.account.media", api_account_media),
 	"move":          sl.NewBuiltin("mochi.account.move", api_account_move),
 	"mute":          api_account_mute,

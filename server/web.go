@@ -827,6 +827,10 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		action.inputs[e.Class] = e.ID
 	}
 
+	// The request's record of whose storage it has walked, shared by the
+	// multipart check below and the action's writes.
+	measured := &storage_request{}
+
 	// Read the entire multipart body BEFORE running the action: parsing lazily
 	// inside a.file() charges the client's transfer time against the 90s Starlark
 	// timeout. A parse error is left for the handler's own a.file()/form call to
@@ -835,7 +839,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		// Bound the body before parsing it. Content-Length is a hint a client
 		// controls, so it only saves us reading a body we already know is too
 		// big; MaxBytesReader is what actually enforces the ceiling.
-		maximum := web_multipart_maximum(user)
+		maximum := web_multipart_maximum(measured, user)
 		if c.Request.ContentLength > maximum {
 			respond_error(c, http.StatusRequestEntityTooLarge, "body_too_large", "errors.body_too_large", nil)
 			return true
@@ -890,6 +894,9 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 		// which account's data is read, so binding the owner adds only a false claim.
 		s.set("user", user)
 		s.set("owner", owner)
+		// The storage walk the multipart check made, so the action's writes
+		// share it (storage_request).
+		s.set("measured", measured)
 		// A credential that travelled in a URL or was minted for one - an asset
 		// token reads and nothing else, and a link is copied - must not mint or
 		// revoke the credentials that outlive it (mochi.token.create, delete).
@@ -1219,14 +1226,14 @@ func (m *multipart_counter) release() {
 // spools the whole body to os.TempDir(), usually a tmpfs. Gated on the
 // authenticated user, never the owner - an anonymous request to a public action
 // runs as the owner.
-func web_multipart_maximum(user *User) int64 {
+func web_multipart_maximum(request *storage_request, user *User) int64 {
 	// An anonymous caller has no storage quota and nothing holding them
 	// accountable, and so gets no more room for a multipart body than for any
 	// other body.
 	if user == nil {
 		return web_body_maximum + web_multipart_framing
 	}
-	remaining, err := user_storage_remaining(user)
+	remaining, err := storage_remaining(request, user)
 	// Unmeasurable or already at quota: allow a minimal body so the handler
 	// can answer with its own quota error rather than the caller seeing a
 	// truncated upload.

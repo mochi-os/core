@@ -484,7 +484,7 @@ func api_cache_copy(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 
 	// Cache space is quota-exempt and file storage is not, so the copy is
 	// charged even though the bytes already exist on this disk.
-	remaining, err := user_storage_remaining(user)
+	remaining, err := storage_remaining(storage_request_of(t), user)
 	if err != nil {
 		return sl_error(fn, "unable to measure storage: %v", err)
 	}

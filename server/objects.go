@@ -1072,6 +1072,15 @@ func api_account_download(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		debug("Download %s not kept: %s", address, reason)
 		return sl_encode(map[string]any{"status": status, "error": reason}), nil
 	}
+	// Measured before anything is fetched: the writes are held to the figure
+	// this leaves, and a user whose storage was never walked has none.
+	remaining, err := storage_remaining(storage_request_of(t), storage)
+	if err != nil {
+		return failed(0, "the user's storage could not be measured")
+	}
+	if remaining <= 0 {
+		return failed(0, storage_exceeded.Error())
+	}
 
 	ctx, cancel := context.WithTimeout(thread_context(t), download_deadline)
 	defer cancel()
@@ -1116,18 +1125,15 @@ func api_account_download(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 			err = root_mkdir_all(root, dir)
 		}
 	}
-	previous := storage_size(root, file)
 	if err == nil {
-		err = root.Rename(partial, file)
+		err = storage_rename(root, owner, partial, file)
 	}
 	if err != nil {
 		// A write the quota stopped is already removed and given back.
 		if !errors.Is(err, storage_exceeded) {
-			root.Remove(partial)
-			storage_give(owner, written)
+			storage_remove(root, owner, partial)
 		}
 		return failed(0, err.Error())
 	}
-	storage_give(owner, previous)
 	return sl_encode(map[string]any{"status": response.StatusCode, "type": response.Header.Get("Content-Type"), "size": written}), nil
 }

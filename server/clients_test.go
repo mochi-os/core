@@ -630,7 +630,7 @@ func TestClientsCreators(t *testing.T) {
 		why     string
 	}{
 		{spec.MRoomPowerLevels, map[string]any{"users": map[string]any{"@alice:example.com": 100}}, "power levels naming a creator"},
-		{spec.MRoomPowerLevels, map[string]any{"users": map[string]any{"@carol:example.com": 9007199254740992}}, "a power past canonical JSON's integers"},
+		{spec.MRoomPowerLevels, map[string]any{"users": map[string]any{"@carol:example.com": int64(9007199254740992)}}, "a power past canonical JSON's integers"},
 		{spec.MRoomCreate, map[string]any{"room_version": "12", "entropy": 1}, "a new create event"},
 	} {
 		if status, body := clients_request(t, a, "PUT", path+c.kind+"/", c.content); status != 400 || body["errcode"] != "M_BAD_JSON" {

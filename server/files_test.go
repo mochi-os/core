@@ -9,16 +9,23 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 	"unicode"
 
+	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
 )
 
@@ -1087,5 +1094,678 @@ func TestCacheReadBoundSurvivesReplacement(t *testing.T) {
 	// rather than about nothing having happened.
 	if by_path, err := os.Stat(entry); err != nil || by_path.Size() != 4096 {
 		t.Errorf("the replacement did not land; this test would pass vacuously")
+	}
+}
+
+// storage_test_environment sets up file storage as file_api_environment does,
+// with a quota of maximum bytes and the walks of users' storage counted.
+func storage_test_environment(t *testing.T, maximum int64) (string, *sl.Thread, *User, *atomic.Int64) {
+	t.Helper()
+	base, thread := file_api_environment(t)
+	previous := file_maximum_storage
+	file_maximum_storage = maximum
+	walk := storage_walk
+	walks := &atomic.Int64{}
+	storage_walk = func(path string) (int64, error) {
+		walks.Add(1)
+		return dir_size(path)
+	}
+	t.Cleanup(func() {
+		file_maximum_storage = previous
+		storage_walk = walk
+	})
+	user, _ := thread.Local("user").(*User)
+	return base, thread, user, walks
+}
+
+// storage_test_write calls mochi.file.write.
+func storage_test_write(thread *sl.Thread, name string, size int) error {
+	_, err := api_file_write(thread, sl.NewBuiltin("mochi.file.write", nil), sl.Tuple{sl.String(name), sl.String(strings.Repeat("x", size))}, nil)
+	return err
+}
+
+// storage_test_upload writes as a.upload does, through root_write_file.
+func storage_test_upload(t *testing.T, base string, name string, size int) error {
+	t.Helper()
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	_, err = root_write_file(root, name, strings.NewReader(strings.Repeat("u", size)))
+	return err
+}
+
+// storage_test_figure answers the bytes a user's figure holds.
+func storage_test_figure(t *testing.T, uid string) int64 {
+	t.Helper()
+	found, ok := storage_figures.Load(uid)
+	if !ok {
+		t.Fatalf("no storage figure for %s", uid)
+	}
+	figure := found.(*storage_figure)
+	figure.lock.Lock()
+	defer figure.lock.Unlock()
+	return figure.used
+}
+
+// TestStorageFigureFollowsTrackedWrites. The figure stands in for a walk of
+// the user's storage between walks, so after the writes and deletes core makes
+// it must be what a walk would find - having walked once.
+func TestStorageFigureFollowsTrackedWrites(t *testing.T) {
+	base, thread, user, walks := storage_test_environment(t, 1<<20)
+	if err := os.WriteFile(filepath.Join(base, "before"), make([]byte, 777), 0644); err != nil {
+		t.Fatal(err)
+	}
+	call := func(builtin func(*sl.Thread, *sl.Builtin, sl.Tuple, []sl.Tuple) (sl.Value, error), arguments ...string) {
+		t.Helper()
+		values := sl.Tuple{}
+		for _, argument := range arguments {
+			values = append(values, sl.String(argument))
+		}
+		if _, err := builtin(thread, sl.NewBuiltin("mochi.file", nil), values, nil); err != nil {
+			t.Fatalf("%v: %v", arguments, err)
+		}
+	}
+
+	steps := []struct {
+		name string
+		run  func()
+	}{
+		{"a write", func() {
+			if err := storage_test_write(thread, "a", 1000); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a write over a file", func() {
+			if err := storage_test_write(thread, "a", 300); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"an upload", func() {
+			if err := storage_test_upload(t, base, "b", 5000); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"an upload over a file", func() {
+			if err := storage_test_upload(t, base, "b", 4000); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a copy", func() { call(api_file_copy, "b", "c") }},
+		{"a move over a file", func() { call(api_file_move, "c", "a") }},
+		{"a move onto itself", func() { call(api_file_move, "a", "a") }},
+		{"a delete", func() { call(api_file_delete, "b") }},
+		{"a delete of a file walked", func() { call(api_file_delete, "before") }},
+	}
+	if _, err := user_storage_remaining(user); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range steps {
+		step.run()
+		walked, err := dir_size(user_storage_dir(user))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if figure := storage_test_figure(t, user.UID); figure != walked {
+			t.Errorf("THE POINT: after %s the figure is %d bytes and a walk finds %d", step.name, figure, walked)
+		}
+	}
+	if count := walks.Load(); count != 1 {
+		t.Errorf("THE POINT: the writes walked the storage %d times, want once", count)
+	}
+}
+
+// TestStorageQuotaRefusedFromTheFigure. A write past the quota is refused on
+// the figure the writes before it left, without walking again: a write, and
+// an upload, which removes what it wrote and returns the charge.
+func TestStorageQuotaRefusedFromTheFigure(t *testing.T) {
+	base, thread, user, walks := storage_test_environment(t, 10000)
+	if err := storage_test_write(thread, "first", 6000); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage_test_write(thread, "second", 5000); err == nil || !strings.Contains(err.Error(), "storage limit exceeded") {
+		t.Errorf("THE POINT: a write past the quota was not refused: %v", err)
+	}
+	if err := storage_test_upload(t, base, "third", 5000); !errors.Is(err, storage_exceeded) {
+		t.Errorf("THE POINT: an upload past the quota was not refused: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "third")); !os.IsNotExist(err) {
+		t.Errorf("the refused upload's bytes were left: %v", err)
+	}
+	if figure := storage_test_figure(t, user.UID); figure != 6000 {
+		t.Errorf("the figure is %d after refusals, want the 6000 written", figure)
+	}
+	if count := walks.Load(); count != 1 {
+		t.Errorf("THE POINT: the refusals walked the storage %d times, want the one walk", count)
+	}
+}
+
+// TestStorageFigureExpires. What grows outside core's writes - a database, a
+// repository - is counted by the next walk once the figure has expired.
+func TestStorageFigureExpires(t *testing.T) {
+	base, _, user, walks := storage_test_environment(t, 1<<20)
+	before, err := user_storage_remaining(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "database"), make([]byte, 1234), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if remaining, _ := user_storage_remaining(user); remaining != before || walks.Load() != 1 {
+		t.Fatalf("setup: within its lifetime the figure walked again (%d walks, %d remaining)", walks.Load(), remaining)
+	}
+
+	found, _ := storage_figures.Load(user.UID)
+	figure := found.(*storage_figure)
+	figure.lock.Lock()
+	figure.measured = figure.measured.Add(-storage_lifetime)
+	figure.lock.Unlock()
+	remaining, err := user_storage_remaining(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if walks.Load() != 2 || remaining != before-1234 {
+		t.Errorf("THE POINT: an expired figure answered %d remaining after %d walks, want %d after 2", remaining, walks.Load(), before-1234)
+	}
+}
+
+// TestStorageWritesHeldTogether. Writes running at once near the quota cannot
+// both pass on one figure: what one write is charged is gone for the next
+// before a byte of it lands.
+func TestStorageWritesHeldTogether(t *testing.T) {
+	base, thread, user, _ := storage_test_environment(t, 10000)
+	// A write stored before, its bytes charged.
+	if err := storage_test_write(thread, "first", 6000); err != nil {
+		t.Fatalf("setup: writing: %v", err)
+	}
+	if err := storage_test_write(thread, "second", 6000); err == nil {
+		t.Error("THE POINT: a write passed on a figure another write had already charged")
+	}
+	if err := storage_test_upload(t, base, "third", 6000); err == nil {
+		t.Error("THE POINT: an upload passed on a figure another write had already charged")
+	}
+
+	// And truly at once.
+	if _, err := api_file_delete(thread, sl.NewBuiltin("mochi.file.delete", nil), sl.Tuple{sl.String("first")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var passed atomic.Int64
+	var group sync.WaitGroup
+	start := make(chan struct{})
+	for i := range 8 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			name := fmt.Sprintf("racer-%d", i)
+			var err error
+			if i%2 == 0 {
+				err = storage_test_write(thread, name, 6000)
+			} else {
+				err = storage_test_upload(t, base, name, 6000)
+			}
+			if err == nil {
+				passed.Add(1)
+			}
+		}()
+	}
+	close(start)
+	group.Wait()
+	if count := passed.Load(); count != 1 {
+		t.Errorf("THE POINT: %d writes of 6000 bytes passed a quota of 10000 at once, want 1", count)
+	}
+	if walked, _ := dir_size(user_storage_dir(user)); walked > 10000 {
+		t.Errorf("THE POINT: %d bytes stored past a quota of 10000", walked)
+	}
+}
+
+// TestStorageWalkedOncePerRequest. However many writes a request makes, and
+// however long it runs, it walks a user's storage once: the multipart check
+// and the action's writes share the request's walk.
+func TestStorageWalkedOncePerRequest(t *testing.T) {
+	_, thread, user, walks := storage_test_environment(t, 1<<30)
+	lifetime := storage_lifetime
+	storage_lifetime = 0
+	defer func() { storage_lifetime = lifetime }()
+
+	measured := &storage_request{}
+	thread.SetLocal("measured", measured)
+	web_multipart_maximum(measured, user)
+	for i := range 3 {
+		if err := storage_test_write(thread, fmt.Sprintf("file-%d", i), 100); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if count := walks.Load(); count != 1 {
+		t.Errorf("THE POINT: one request walked the storage %d times, want once", count)
+	}
+
+	// Another request walks again: the figure has expired.
+	other := &sl.Thread{Name: "other"}
+	other.SetLocal("user", user)
+	other.SetLocal("app", thread.Local("app"))
+	if err := storage_test_write(other, "other", 100); err != nil {
+		t.Fatal(err)
+	}
+	if count := walks.Load(); count != 2 {
+		t.Errorf("the next request walked %d times in all, want 2", count-1)
+	}
+}
+
+// TestStorageForgottenWithTheUser. A purged user's figure goes with them: the
+// uid may come back, to an account that starts empty.
+func TestStorageForgottenWithTheUser(t *testing.T) {
+	purge_test_env(t, "u-gone")
+	user := &User{UID: "u-gone"}
+	if _, err := user_storage_remaining(user); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := user_purge_local("u-gone"); err != nil {
+		t.Fatal(err)
+	}
+	if _, kept := storage_figures.Load("u-gone"); kept {
+		t.Error("THE POINT: a purged user's storage figure was kept")
+	}
+}
+
+// TestStorageRequestSharedWithTheAction. A multipart request walks the
+// caller's storage to bound its body before the action runs; the action's own
+// writes share that walk rather than making another.
+func TestStorageRequestSharedWithTheAction(t *testing.T) {
+	_, user, session := web_bearer_env(t)
+	if err := os.MkdirAll(user_storage_dir(user), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if starlark_semaphore == nil {
+		starlark_semaphore = make(chan struct{}, 32)
+	}
+	timeout, lifetime, walk := starlark_default_timeout, storage_lifetime, storage_walk
+	walks := &atomic.Int64{}
+	starlark_default_timeout = 30 * time.Second
+	storage_lifetime = 0
+	storage_walk = func(path string) (int64, error) {
+		walks.Add(1)
+		return dir_size(path)
+	}
+	t.Cleanup(func() { starlark_default_timeout, storage_lifetime, storage_walk = timeout, lifetime, walk })
+
+	star := filepath.Join(t.TempDir(), "app.star")
+	source := `
+def action_store(a):
+    for name in ["one", "two", "three"]:
+        mochi.file.write(name, "stored")
+    return {"stored": True}
+`
+	if err := os.WriteFile(star, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	version := &AppVersion{Version: "1.0", Execute: []string{star}, Actions: map[string]AppAction{
+		"-/store": {Function: "action_store"},
+	}}
+	version.Architecture.Engine = "starlark"
+	app := &App{id: "storagetest", internal: version, latest: version, versions: map[string]*AppVersion{"1.0": version}}
+	version.app = app
+	token, err := jwt_app_token(user.UID, app.id, session, "bearer-test-secret-0123456789")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	form.WriteField("note", "stored three ways")
+	form.Close()
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/storagetest/-/store", &body)
+	c.Request.Header.Set("Content-Type", form.FormDataContentType())
+	c.Request.Header.Set("Accept", "application/json")
+	c.Request.Header.Set("Authorization", "Bearer "+token)
+	c.Request.AddCookie(&http.Cookie{Name: "session", Value: session})
+	web_action(c, app, "-/store", nil, routing_class)
+
+	if _, err := os.Stat(filepath.Join(api_file_base(user, app), "three")); err != nil {
+		t.Fatalf("the action did not store its files: %d %s", w.Code, w.Body.String())
+	}
+	if count := walks.Load(); count != 1 {
+		t.Errorf("THE POINT: the request walked the storage %d times, want once", count)
+	}
+}
+
+// TestStorageUploadsShareTheFigure. a.upload stores each file of an
+// attachment; it measures from the figure and charges what it writes, so a
+// request storing several files walks once and leaves the figure true.
+func TestStorageUploadsShareTheFigure(t *testing.T) {
+	user, app := upload_test_setup(t)
+	walk := storage_walk
+	walks := &atomic.Int64{}
+	storage_walk = func(path string) (int64, error) {
+		walks.Add(1)
+		return dir_size(path)
+	}
+	t.Cleanup(func() { storage_walk = walk })
+
+	action, thread := upload_test_action(t, user, user, app, "file", "photo.jpg", strings.Repeat("p", 3000))
+	for _, name := range []string{"first.jpg", "second.jpg"} {
+		if _, err := upload_test_call(action, thread, "file", name); err != nil {
+			t.Fatalf("a.upload: %v", err)
+		}
+	}
+	if count := walks.Load(); count != 1 {
+		t.Errorf("THE POINT: two uploads walked the storage %d times, want once", count)
+	}
+	walked, err := dir_size(user_storage_dir(user))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if figure := storage_test_figure(t, user.UID); figure != walked {
+		t.Errorf("THE POINT: after two uploads the figure is %d bytes and a walk finds %d", figure, walked)
+	}
+}
+
+// TestStorageOwnerThroughALink. A repository's filesystem names its root with
+// links resolved, so a data directory reached through a link must still
+// place a path in its user's storage.
+func TestStorageOwnerThroughALink(t *testing.T) {
+	test_data_directory(t)
+	link := filepath.Join(t.TempDir(), "data")
+	if err := os.Symlink(data_dir, link); err != nil {
+		t.Skipf("no symbolic links here: %v", err)
+	}
+	previous := data_dir
+	data_dir = link
+	t.Cleanup(func() { data_dir = previous })
+	real := filepath.Join(previous, "users", "u-linked", "repositories", "repository")
+	if err := os.MkdirAll(real, 0755); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner := storage_owner(resolved); owner != "u-linked" {
+		t.Errorf("THE POINT: a path through the resolved data directory belongs to %q, want u-linked", owner)
+	}
+	if owner := storage_owner(filepath.Join(link, "users", "u-linked", "files")); owner != "u-linked" {
+		t.Errorf("a path through the link belongs to %q, want u-linked", owner)
+	}
+}
+
+// storage_test_stale ages a user's figure past its lifetime, as a minute
+// passing would, so the next measurement walks.
+func storage_test_stale(t *testing.T, uid string) {
+	t.Helper()
+	found, ok := storage_figures.Load(uid)
+	if !ok {
+		t.Fatal("setup: no figure to age")
+	}
+	figure := found.(*storage_figure)
+	figure.lock.Lock()
+	figure.measured = figure.measured.Add(-storage_lifetime)
+	figure.lock.Unlock()
+}
+
+// storage_test_agree fails the test when a user's figure is not what a walk
+// finds.
+func storage_test_agree(t *testing.T, user *User, what string) {
+	t.Helper()
+	walked, err := dir_size(user_storage_dir(user))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if figure := storage_test_figure(t, user.UID); figure != walked {
+		t.Errorf("THE POINT: after %s the figure is %d bytes and a walk finds %d", what, figure, walked)
+	}
+}
+
+// storage_test_writer is an io.Writer made of a function.
+type storage_test_writer func([]byte) (int, error)
+
+func (w storage_test_writer) Write(data []byte) (int, error) { return w(data) }
+
+// TestStorageChangeDuringAWalkCountedOnce. A delete, an overwrite or a move
+// made while a walk runs, before the walk reaches the file, must not be
+// credited after a walk that never counted the file: the user would be given
+// its bytes twice, once a walk, and could store past the quota by that much
+// again each minute.
+func TestStorageChangeDuringAWalkCountedOnce(t *testing.T) {
+	builtin := sl.NewBuiltin("mochi.file", nil)
+	for _, c := range []struct {
+		name   string
+		change func(thread *sl.Thread, base string) error
+	}{
+		{"a delete", func(thread *sl.Thread, base string) error {
+			_, err := api_file_delete(thread, builtin, sl.Tuple{sl.String("zz-big")}, nil)
+			return err
+		}},
+		{"an upload over a file", func(thread *sl.Thread, base string) error {
+			root, err := os.OpenRoot(base)
+			if err != nil {
+				return err
+			}
+			defer root.Close()
+			_, err = root_write_file(root, "zz-big", strings.NewReader("small"))
+			return err
+		}},
+		{"a move over a file", func(thread *sl.Thread, base string) error {
+			_, err := api_file_move(thread, builtin, sl.Tuple{sl.String("zz-small"), sl.String("zz-big")}, nil)
+			return err
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			base, thread, user, _ := storage_test_environment(t, 1<<30)
+			for name, size := range map[string]int{"keep": 100000, "zz-big": 50000, "zz-small": 7000} {
+				if err := os.WriteFile(filepath.Join(base, name), make([]byte, size), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := user_storage_remaining(user); err != nil {
+				t.Fatal(err)
+			}
+			storage_test_stale(t, user.UID)
+			done := make(chan error, 1)
+			storage_walk = func(path string) (int64, error) {
+				// The change is made once the walk has begun, before it reaches
+				// the file; a change that has to wait for the walk waits.
+				go func() { done <- c.change(thread, base) }()
+				select {
+				case err := <-done:
+					done <- err
+				case <-time.After(200 * time.Millisecond):
+				}
+				return dir_size(path)
+			}
+			if _, err := user_storage_remaining(user); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("the change: %v", err)
+			}
+			storage_test_agree(t, user, c.name+" made while a walk ran")
+		})
+	}
+}
+
+// TestStorageWalkKeepsAWriteUnderWay. A walk that runs while a write is part
+// way through must not lose the write's charge: one charged before the walk
+// and landing after it is missing from both the walk and the figure it sets.
+func TestStorageWalkKeepsAWriteUnderWay(t *testing.T) {
+	base, _, user, _ := storage_test_environment(t, 1<<30)
+	if _, err := user_storage_remaining(user); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Create(filepath.Join(base, "landing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	started := make(chan struct{})
+	walked := make(chan struct{})
+	writer := storage_test_writer(func(data []byte) (int, error) {
+		close(started)
+		select {
+		case <-walked:
+		case <-time.After(200 * time.Millisecond):
+		}
+		return file.Write(data)
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := (&storage_meter{writer: writer, owner: user.UID}).Write(make([]byte, 40000))
+		done <- err
+	}()
+	<-started
+	storage_test_stale(t, user.UID)
+	if _, err := user_storage_remaining(user); err != nil {
+		t.Fatal(err)
+	}
+	close(walked)
+	if err := <-done; err != nil {
+		t.Fatalf("the write: %v", err)
+	}
+	storage_test_agree(t, user, "a write a walk ran beside")
+}
+
+// TestStorageFigureDatedFromTheWalkStart. A file credited only when it is
+// older than the walk (a repository's objects) must be older than the walk's
+// start: one written while the walk ran may be missing from it.
+func TestStorageFigureDatedFromTheWalkStart(t *testing.T) {
+	_, _, user, _ := storage_test_environment(t, 1<<30)
+	var start time.Time
+	storage_walk = func(path string) (int64, error) {
+		start = time.Now()
+		time.Sleep(10 * time.Millisecond)
+		return dir_size(path)
+	}
+	if _, err := user_storage_remaining(user); err != nil {
+		t.Fatal(err)
+	}
+	found, _ := storage_figures.Load(user.UID)
+	figure := found.(*storage_figure)
+	figure.lock.Lock()
+	measured := figure.measured
+	figure.lock.Unlock()
+	if measured.After(start) {
+		t.Errorf("THE POINT: the figure is dated %v, after its walk began at %v", measured, start)
+	}
+}
+
+// TestArchiveRefusedPastTheQuotaLeavesNothing. An archive or an extraction
+// the quota stops is removed whole and given back, and says the storage limit
+// was exceeded: a partial archive the size of all the room left otherwise
+// stayed, filling the account.
+func TestArchiveRefusedPastTheQuotaLeavesNothing(t *testing.T) {
+	refused := func(t *testing.T, err error, what string) {
+		t.Helper()
+		if err == nil || !strings.Contains(err.Error(), "storage limit exceeded") || strings.Contains(err.Error(), "unable to") {
+			t.Errorf("THE POINT: %s past the quota answered %v, want the storage limit exceeded", what, err)
+		}
+	}
+
+	t.Run("write", func(t *testing.T) {
+		base, thread, user, _ := storage_test_environment(t, 20000)
+		if err := os.WriteFile(filepath.Join(base, "source"), push_noise(t, 12000), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := user_storage_remaining(user); err != nil {
+			t.Fatal(err)
+		}
+		entry := sl.NewDict(2)
+		entry.SetKey(sl.String("name"), sl.String("source"))
+		entry.SetKey(sl.String("file"), sl.String("source"))
+		_, err := api_archive_write(thread, sl.NewBuiltin("mochi.archive.write", nil), sl.Tuple{sl.String("out.zip"), sl.NewList([]sl.Value{entry})}, nil)
+		refused(t, err, "an archive")
+		if _, err := os.Stat(filepath.Join(base, "out.zip")); !os.IsNotExist(err) {
+			t.Errorf("THE POINT: the refused archive was left: %v", err)
+		}
+		storage_test_agree(t, user, "a refused archive")
+	})
+
+	t.Run("extract", func(t *testing.T) {
+		base, thread, user, _ := storage_test_environment(t, 25000)
+		var buffer bytes.Buffer
+		writer := zip.NewWriter(&buffer)
+		entry, err := writer.CreateHeader(&zip.FileHeader{Name: "big", Method: zip.Store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		entry.Write(push_noise(t, 15000))
+		writer.Close()
+		if err := os.WriteFile(filepath.Join(base, "bundle.zip"), buffer.Bytes(), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := user_storage_remaining(user); err != nil {
+			t.Fatal(err)
+		}
+		_, err = api_archive_extract(thread, sl.NewBuiltin("mochi.archive.extract", nil), sl.Tuple{sl.String("bundle.zip"), sl.String("big"), sl.String("out/big")}, nil)
+		refused(t, err, "an extraction")
+		if _, err := os.Stat(filepath.Join(base, "out", "big")); !os.IsNotExist(err) {
+			t.Errorf("THE POINT: the refused extraction was left: %v", err)
+		}
+		storage_test_agree(t, user, "a refused extraction")
+	})
+}
+
+// TestStorageUploadSharesTheRequestWalk. a.upload measures on the walk its
+// request already made - the multipart check's, or an earlier upload's - so a
+// request that outlives the figure's lifetime does not walk again per file.
+func TestStorageUploadSharesTheRequestWalk(t *testing.T) {
+	user, app := upload_test_setup(t)
+	lifetime := storage_lifetime
+	storage_lifetime = 0
+	walk := storage_walk
+	walks := &atomic.Int64{}
+	storage_walk = func(path string) (int64, error) {
+		walks.Add(1)
+		return dir_size(path)
+	}
+	t.Cleanup(func() {
+		storage_lifetime = lifetime
+		storage_walk = walk
+	})
+
+	action, thread := upload_test_action(t, user, user, app, "file", "photo.jpg", strings.Repeat("p", 3000))
+	for _, name := range []string{"first.jpg", "second.jpg"} {
+		if _, err := upload_test_call(action, thread, "file", name); err != nil {
+			t.Fatalf("a.upload: %v", err)
+		}
+	}
+	if count := walks.Load(); count != 1 {
+		t.Errorf("THE POINT: two uploads in one request walked the storage %d times, want once", count)
+	}
+}
+
+// TestStorageFigureDroppedOnPromotion. An administrator's storage is exempt
+// and never measured, so the figure kept from before a promotion must go: a
+// write would otherwise be held to the quota the role exempts it from.
+func TestStorageFigureDroppedOnPromotion(t *testing.T) {
+	username_test_setup(t)
+	db_open("db/users.db").exec("insert into users (uid, username, role) values ('u2', 'bob@example.com', 'user')")
+	full := storage_figure_of("u2")
+	full.lock.Lock()
+	full.used, full.measured = file_maximum_storage, time.Now()
+	full.lock.Unlock()
+
+	thread := &sl.Thread{Name: "test"}
+	thread.SetLocal("user", &User{UID: "u1", Username: "alice@example.com", Role: "administrator"})
+	thread.SetLocal("app", &App{id: "settings", internal: &AppVersion{}})
+	if _, err := api_user_update(thread, sl.NewBuiltin("mochi.user.update", nil), sl.Tuple{sl.String("u2"), sl.None, sl.String("administrator")}, nil); err != nil {
+		t.Fatalf("promoting: %v", err)
+	}
+	if _, kept := storage_figures.Load("u2"); kept {
+		t.Error("THE POINT: the figure from before the promotion was kept")
+	}
+	base := filepath.Join(data_dir, "users", "u2", "files")
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if _, err := root_write_file(root, "upload", strings.NewReader("an administrator's upload")); err != nil {
+		t.Errorf("THE POINT: the promoted administrator's write was refused: %v", err)
 	}
 }

@@ -152,6 +152,11 @@ func TestCacheQuotaExempt(t *testing.T) {
 
 	user := &User{UID: "quotauid"}
 	os.MkdirAll(user_storage_dir(user), 0755)
+	// The writes below go straight to disk, which a walk sees and the
+	// storage figure does not: walk on every measurement.
+	lifetime := storage_lifetime
+	storage_lifetime = 0
+	defer func() { storage_lifetime = lifetime }()
 
 	before, err := user_storage_remaining(user)
 	if err != nil {

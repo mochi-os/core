@@ -112,7 +112,7 @@ type git_loader struct {
 
 // Load loads a storer.Storer for the given endpoint path
 func (l *git_loader) Load(ep *transport.Endpoint) (storer.Storer, error) {
-	fs := osfs.New(ep.Path)
+	fs := git_live{Filesystem: osfs.New(ep.Path)}
 	if _, err := fs.Stat("config"); err != nil {
 		return nil, transport.ErrRepositoryNotFound
 	}
@@ -465,7 +465,7 @@ func git_open(owner *User, app *App, entity string) (*git.Repository, error) {
 // walk, a fetch or a clone. A kept pack is one file position, so the store
 // serves one goroutine at a time (git_serial for the pack encoder's).
 func git_kept(path string) *filesystem.Storage {
-	return filesystem.NewStorageWithOptions(osfs.New(path), cache.NewObjectLRUDefault(), filesystem.Options{KeepDescriptors: true})
+	return filesystem.NewStorageWithOptions(git_live{Filesystem: osfs.New(path)}, cache.NewObjectLRUDefault(), filesystem.Options{KeepDescriptors: true})
 }
 
 // git_close releases the pack files a store opened by git_open, git_kept or a
@@ -6159,8 +6159,8 @@ func git_pack_whole(storage storer.Storer, objects []plumbing.Hash) *os.File {
 	if !ok || len(objects) == 0 {
 		return nil
 	}
-	found, err := filepath.Glob(filepath.Join(store.Filesystem().Root(), "objects", "pack", "pack-*.pack"))
-	if err != nil || len(found) != 1 {
+	found := git_packs(store.Filesystem().Root())
+	if len(found) != 1 {
 		return nil
 	}
 	name := strings.TrimSuffix(found[0], ".pack")
@@ -6270,8 +6270,8 @@ func git_stored_open(storage storer.Storer) *git_stored {
 	if !ok {
 		return nil
 	}
-	found, err := filepath.Glob(filepath.Join(store.Filesystem().Root(), "objects", "pack", "pack-*.pack"))
-	if err != nil || len(found) == 0 {
+	found := git_packs(store.Filesystem().Root())
+	if len(found) == 0 {
 		return nil
 	}
 	stored := &git_stored{}
@@ -6869,6 +6869,9 @@ var git_repack_slot = make(chan struct{}, 1)
 // its objects and moved its references, so what it counts is settled, and by
 // git_repack_read.
 func git_repack_consider(repo_path string) {
+	if err := git_retired_sweep(repo_path); err != nil {
+		info("Repository sweep of retired packs failed for %q: %v", repo_path, err)
+	}
 	if last, seen := git_repack_attempted.Load(repo_path); seen {
 		if moment, ok := last.(int64); ok && now()-moment < git_repack_interval {
 			return
@@ -6918,10 +6921,15 @@ func git_repack_consider(repo_path string) {
 // several times larger pack, and its slow clones, for good. It goes through
 // git_repack_consider, so the interval and the one server-wide slot bound it
 // exactly as they bound a push; a repository already searched costs a look at
-// its config.
+// its config. Either way the packs a repack retired are swept once their grace
+// is over (git_retired_sweep).
 func git_repack_read(repo_path string) {
 	if git_unsearched(repo_path) {
 		git_repack_consider(repo_path)
+		return
+	}
+	if err := git_retired_sweep(repo_path); err != nil {
+		info("Repository sweep of retired packs failed for %q: %v", repo_path, err)
 	}
 }
 
@@ -6941,7 +6949,7 @@ var git_repack_dispatch = git_repack
 func git_repack(repo_path string) error {
 	// On a filesystem that flushes what it writes before the repack deletes
 	// what that replaces (git_durable).
-	durable := git_durable{Filesystem: osfs.New(repo_path), root: repo_path}
+	durable := git_durable{Filesystem: git_live{Filesystem: osfs.New(repo_path)}, root: repo_path}
 	repo, err := git.Open(filesystem.NewStorage(durable, cache.NewObjectLRUDefault()), nil)
 	if err != nil {
 		return err
@@ -7149,6 +7157,8 @@ func git_prune(storage storage.Storer, reachable map[plumbing.Hash]struct{}, cut
 	if !ok {
 		return git.ErrLooseObjectsNotSupported
 	}
+	root := git_root(storage)
+	owner := storage_owner(root)
 	return loose.ForEachObjectHash(func(hash plumbing.Hash) error {
 		if _, kept := reachable[hash]; kept {
 			return nil
@@ -7159,13 +7169,29 @@ func git_prune(storage storage.Storer, reachable map[plumbing.Hash]struct{}, cut
 		if err != nil || !written.Before(cutoff) {
 			return nil
 		}
-		return loose.DeleteLooseObject(hash)
+		return storage_delete(owner, git_loose_path(root, hash), func() error { return loose.DeleteLooseObject(hash) })
 	})
 }
 
+// git_root answers the directory a repository's storage lives in, or "" for
+// storage that is not a directory.
+func git_root(storage storage.Storer) string {
+	directory, err := git_filesystem(storage)
+	if err != nil {
+		return ""
+	}
+	return directory.Root()
+}
+
+// git_loose_path answers where a repository keeps an object loose.
+func git_loose_path(root string, hash plumbing.Hash) string {
+	name := hash.String()
+	return filepath.Join(root, "objects", name[:2], name[2:])
+}
+
 // git_pack writes the reachable objects into one packfile, then deletes their
-// loose copies and the packs it replaces, unpacking whatever those hold that
-// is no longer reachable. A delta already stored is kept; names, each object's
+// loose copies and retires the packs it replaces (git_retire), unpacking
+// whatever those hold that is no longer reachable. A delta already stored is kept; names, each object's
 // git_name, sort versions of one file together for the delta search, and
 // search says which objects stored whole to search for a base, nil meaning
 // all of them. The pack is closed - checked, indexed and moved into
@@ -7188,6 +7214,15 @@ func git_pack(storage storage.Storer, reachable map[plumbing.Hash]struct{}, name
 	if !ok {
 		return fmt.Errorf("the repository's storage cannot write a packfile")
 	}
+	directory, err := git_filesystem(storage)
+	if err != nil {
+		return err
+	}
+	root := directory.Root()
+	owner := storage_owner(root)
+	// The pack is written beside the others before it is renamed into place,
+	// where a walk may count it before storage_add does.
+	defer storage_expire(owner, time.Now())
 	previous, err := packed.ObjectPacks()
 	if err != nil {
 		return err
@@ -7213,13 +7248,26 @@ func git_pack(storage storage.Storer, reachable map[plumbing.Hash]struct{}, name
 		writer.Close()
 		return err
 	}
+	// Bytes a repack wrote before carry that pack's name, which may be one
+	// retired since: it is claimed back before the pack lands, so no sweep
+	// deletes it from under the references.
+	if err := git_reinstate(root, written); err != nil {
+		writer.Close()
+		return err
+	}
+	// A pack already there under this name is these bytes, and counted.
+	name := filepath.Join(root, "objects", "pack", "pack-"+written.String())
+	existed := storage_stat(name+".pack") != nil
 	if err := writer.Close(); err != nil {
 		return err
+	}
+	if !existed {
+		storage_add(owner, storage_file(name+".pack")+storage_file(name+".idx"))
 	}
 
 	err = loose.ForEachObjectHash(func(hash plumbing.Hash) error {
 		if _, kept := reachable[hash]; kept {
-			return loose.DeleteLooseObject(hash)
+			return storage_delete(owner, git_loose_path(root, hash), func() error { return loose.DeleteLooseObject(hash) })
 		}
 		return nil
 	})
@@ -7233,9 +7281,12 @@ func git_pack(storage storage.Storer, reachable map[plumbing.Hash]struct{}, name
 		if err := git_unpack(storage, old, reachable); err != nil {
 			return err
 		}
-		if err := packed.DeleteOldObjectPackAndIndex(old, time.Time{}); err != nil {
+		if err := git_retire(root, old); err != nil {
 			return err
 		}
+	}
+	if err := git_retired_sweep(root); err != nil {
+		return err
 	}
 	return git_pack_sweep(storage)
 }
@@ -7260,6 +7311,8 @@ func git_pack_sweep(storage storage.Storer) error {
 	if err != nil {
 		return err
 	}
+	// A retired pack's files are left out of the listing (git_live), so they
+	// are not taken for a missing pack's until git_retired_sweep deletes it.
 	folder := directory.Join("objects", "pack")
 	entries, err := directory.ReadDir(folder)
 	if err != nil {
@@ -7271,6 +7324,7 @@ func git_pack_sweep(storage storage.Storer) error {
 			present[base] = true
 		}
 	}
+	owner := storage_owner(directory.Root())
 	cutoff := time.Now().Add(-git_sweep_age)
 	for _, entry := range entries {
 		name := entry.Name()
@@ -7278,7 +7332,8 @@ func git_pack_sweep(storage storage.Storer) error {
 		if !strings.HasPrefix(base, "pack-") || present[base] || entry.ModTime().After(cutoff) {
 			continue
 		}
-		if err := directory.Remove(directory.Join(folder, name)); err != nil && !os.IsNotExist(err) {
+		path := directory.Join(folder, name)
+		if err := storage_delete(owner, filepath.Join(directory.Root(), path), func() error { return directory.Remove(path) }); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
@@ -7292,6 +7347,181 @@ func git_filesystem(storage storage.Storer) (billy.Filesystem, error) {
 		return nil, fmt.Errorf("the repository's storage is not a directory")
 	}
 	return holder.Filesystem(), nil
+}
+
+// git_pack_grace is how long a pack a repack replaced stays on disk, retired,
+// before a sweep deletes it. go-git reads a pack lazily and opens an object
+// over 16 KB afresh by its path, even in a store holding its packs open, so a
+// fetch reads the packs it found for as long as it runs: deleted at once, they
+// failed a fetch that spanned the repack. A retired pack is left out of every
+// listing (git_live, git_packs), so only a read already under way uses it.
+// The grace bounds that read, it does not track it: a read begun before the
+// repack and still running an hour later - a clone of a large repository over
+// a slow link - fails on the pack swept from under it. A var so tests can
+// change it.
+var git_pack_grace = time.Hour
+
+// git_retire_locks holds a lock for each repository, which git_retired_sweep
+// deletes under and git_reinstate claims a retired pack back under, so a pack
+// stored under a retired name is never deleted from beneath it.
+var git_retire_locks sync.Map
+
+// git_retire_lock answers a repository's lock, by its directory with links
+// resolved, as go-git's filesystem resolves them: one repository is one lock
+// whichever way its path was spelled.
+func git_retire_lock(root string) *sync.Mutex {
+	key := filepath.Clean(root)
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		key = resolved
+	}
+	lock, _ := git_retire_locks.LoadOrStore(key, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+// git_retired_path answers where a pack's retirement mark is kept: beside it,
+// named as it is.
+func git_retired_path(root string, pack plumbing.Hash) string {
+	return filepath.Join(root, "objects", "pack", "pack-"+pack.String()+".retired")
+}
+
+// git_retire records that a repack replaced a pack. The mark is the record and
+// its time is when, so a crash before the sweep leaves nothing a later sweep
+// cannot finish, and a mark a crash lost leaves the pack live for the next
+// repack to replace again.
+func git_retire(root string, pack plumbing.Hash) error {
+	return os.WriteFile(git_retired_path(root, pack), nil, 0644)
+}
+
+// git_reinstate claims back a retired pack whose name a pack being stored
+// carries. Pack names are their bytes' checksum, so the two are one pack, and
+// live again. Under the repository's lock, so a sweep that found the pack
+// retired has finished deleting it, or never will.
+func git_reinstate(root string, pack plumbing.Hash) error {
+	lock := git_retire_lock(root)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := os.Remove(git_retired_path(root, pack)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// git_retired_sweep deletes the packs retired longer ago than git_pack_grace:
+// each pack, then its index, then its mark, so a sweep cut short leaves the
+// mark for the next. What else git writes beside a pack is left to
+// git_pack_sweep, which removes whatever a missing pack leaves. A pack that
+// cannot be deleted - open elsewhere, on a system that refuses that - is
+// tried again by the next sweep.
+func git_retired_sweep(root string) error {
+	lock := git_retire_lock(root)
+	lock.Lock()
+	defer lock.Unlock()
+	folder := filepath.Join(root, "objects", "pack")
+	entries, err := os.ReadDir(folder)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	owner := storage_owner(root)
+	cutoff := time.Now().Add(-git_pack_grace)
+	var failure error
+	for _, entry := range entries {
+		base, found := strings.CutSuffix(entry.Name(), ".retired")
+		if !found || !strings.HasPrefix(base, "pack-") {
+			continue
+		}
+		information, err := entry.Info()
+		if err != nil || information.ModTime().After(cutoff) {
+			continue
+		}
+		for _, extension := range []string{".pack", ".idx", ".retired"} {
+			path := filepath.Join(folder, base+extension)
+			if err := storage_delete(owner, path, func() error { return os.Remove(path) }); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				if failure == nil {
+					failure = err
+				}
+				break
+			}
+		}
+	}
+	return failure
+}
+
+// git_retired answers the names ("pack-<hash>") of the retired packs among the
+// files of a pack folder.
+func git_retired(names []string) map[string]bool {
+	retired := map[string]bool{}
+	for _, name := range names {
+		if base, found := strings.CutSuffix(name, ".retired"); found {
+			retired[base] = true
+		}
+	}
+	return retired
+}
+
+// git_packs answers the paths of a repository's live packs: its pack files,
+// less those a repack retired.
+func git_packs(root string) []string {
+	folder := filepath.Join(root, "objects", "pack")
+	entries, err := os.ReadDir(folder)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, len(entries))
+	for i, entry := range entries {
+		names[i] = entry.Name()
+	}
+	retired := git_retired(names)
+	var live []string
+	for _, name := range names {
+		base, found := strings.CutSuffix(name, ".pack")
+		if found && strings.HasPrefix(base, "pack-") && !retired[base] {
+			live = append(live, filepath.Join(folder, name))
+		}
+	}
+	return live
+}
+
+// git_live is a repository's filesystem whose listing of its packs leaves out
+// those a repack retired, with their files. go-git finds a repository's packs
+// by listing them, so a store opened after a repack reads none of them; a pack
+// is still opened by its path, which is how a read begun before the repack
+// goes on reading the pack it found.
+type git_live struct {
+	billy.Filesystem
+}
+
+// ReadDir lists a folder, the pack folder without its retired packs.
+func (l git_live) ReadDir(path string) ([]os.FileInfo, error) {
+	entries, err := l.Filesystem.ReadDir(path)
+	if err != nil || filepath.Clean(path) != filepath.Join("objects", "pack") {
+		return entries, err
+	}
+	names := make([]string, len(entries))
+	for i, entry := range entries {
+		names[i] = entry.Name()
+	}
+	retired := git_retired(names)
+	live := make([]os.FileInfo, 0, len(entries))
+	for _, entry := range entries {
+		if !retired[strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))] {
+			live = append(live, entry)
+		}
+	}
+	return live, nil
+}
+
+// Chmod passes through, as git_durable's does: embedding hides it.
+func (l git_live) Chmod(name string, mode os.FileMode) error {
+	if changer, ok := l.Filesystem.(billy.Chmod); ok {
+		return changer.Chmod(name, mode)
+	}
+	return nil
 }
 
 // git_unpack writes out loose whatever a pack about to be deleted holds that
@@ -7320,6 +7550,8 @@ func git_unpack(storage storage.Storer, pack plumbing.Hash, reachable map[plumbi
 	}
 	defer entries.Close()
 
+	root := directory.Root()
+	owner := storage_owner(root)
 	for {
 		entry, err := entries.Next()
 		if err == io.EOF {
@@ -7335,16 +7567,22 @@ func git_unpack(storage storage.Storer, pack plumbing.Hash, reachable map[plumbi
 		if err != nil {
 			return err
 		}
+		// Written out loose, the object counts from now; one already loose
+		// was counted already.
+		path := git_loose_path(root, entry.Hash)
+		existed := storage_stat(path) != nil
 		if _, err := storage.SetEncodedObject(found); err != nil {
 			return err
+		}
+		if !existed {
+			storage_add(owner, storage_file(path))
 		}
 	}
 }
 
-// git_pack_count counts a repository's packs.
+// git_pack_count counts a repository's live packs (git_packs).
 func git_pack_count(repo_path string) int {
-	matches, _ := filepath.Glob(filepath.Join(repo_path, "objects", "pack", "pack-*.pack"))
-	return len(matches)
+	return len(git_packs(repo_path))
 }
 
 // git_unsearched reports a repository holding packs that git_searched does not
@@ -7659,7 +7897,13 @@ func git_keep(staging, repo_path string, index *idxfile.MemoryIndex) error {
 
 	// The index goes in first, as go-git writes them: packs are found by their
 	// .pack file, so one is never seen without its index.
-	name := filepath.Join(repo_path, "objects", "pack", "pack-"+plumbing.Hash(index.PackfileChecksum).String())
+	hash := plumbing.Hash(index.PackfileChecksum)
+	name := filepath.Join(repo_path, "objects", "pack", "pack-"+hash.String())
+	// A repack may have retired a pack of these same bytes: claimed back first,
+	// the one already there serves the push and no sweep deletes it later.
+	if err := git_reinstate(repo_path, hash); err != nil {
+		return err
+	}
 	if _, err := os.Stat(name + ".pack"); err == nil {
 		return nil
 	}
@@ -7669,7 +7913,8 @@ func git_keep(staging, repo_path string, index *idxfile.MemoryIndex) error {
 	// An index without its pack is left by a push of the same pack that
 	// stopped between the two. It is read-only, so it is replaced, not
 	// rewritten.
-	if err := os.Remove(name + ".idx"); err != nil && !errors.Is(err, os.ErrNotExist) {
+	owner := storage_owner(repo_path)
+	if err := storage_delete(owner, name+".idx", func() error { return os.Remove(name + ".idx") }); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	encoded, err := os.OpenFile(name+".idx", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0444)
@@ -7703,6 +7948,9 @@ func git_keep(staging, repo_path string, index *idxfile.MemoryIndex) error {
 		os.Remove(name + ".idx")
 		return err
 	}
+	// The push's bytes count from here, so the owner's next push in the
+	// storage figure's lifetime sees them.
+	storage_add(owner, storage_file(name+".pack")+storage_file(name+".idx"))
 	return git_flush(filepath.Dir(name))
 }
 
@@ -7869,6 +8117,10 @@ func git_promote(staging, repo_path string) error {
 		}
 		return err
 	}
+	// What lands counts from here, so the owner's next push in the storage
+	// figure's lifetime sees it - whatever stops the promotion part way.
+	var moved int64
+	defer func() { storage_add(storage_owner(repo_path), moved) }()
 	for _, entry := range entries {
 		// Loose objects live in two-character directories. "info" and "pack"
 		// are the other names git puts here; neither is written by this path.
@@ -7891,6 +8143,7 @@ func git_promote(staging, repo_path string) error {
 			if err := os.Rename(filepath.Join(source, entry.Name(), file.Name()), to); err != nil {
 				return err
 			}
+			moved += storage_file(to)
 		}
 	}
 	return nil
@@ -8022,6 +8275,15 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, ow
 	lock := git_push_lock(account)
 	lock.Lock()
 	defer lock.Unlock()
+	// Measured again under the lock: budget was measured before it, so a push
+	// that waited here behind another would otherwise spend room the other has
+	// just filled. The storage figure carries what each push stored.
+	if owner != nil {
+		budget = min(budget, git_storage_budget(owner))
+		// The push is staged beside the repository, where a walk may count it
+		// before storage_add does when it lands.
+		defer storage_expire(owner.UID, time.Now())
+	}
 
 	// A budget of 0 would read as "unmetered", and a push with no room left
 	// must store nothing at all: meter it at one byte, which every real object

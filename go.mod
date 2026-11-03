@@ -259,3 +259,9 @@ require (
 // state resolution version 2.1 (room version 12, stateresolutionv2.go) and a
 // lenient reading of join rules (eventcontent.go).
 replace github.com/matrix-org/gomatrixserverlib => ./third_party/gomatrixserverlib
+
+// go-webdav at the pinned commit with the collection change tag upstream does
+// not answer, marked "Changed for Mochi:" in third_party/go-webdav: an address
+// book or calendar's Tag is served as CS:getctag and as the collection's
+// DAV:getetag (internal/elements.go, carddav and caldav server.go).
+replace github.com/emersion/go-webdav => ./third_party/go-webdav

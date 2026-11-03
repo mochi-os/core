@@ -666,7 +666,7 @@ func create_matrix_fake(t *testing.T) *matrix_fake {
 		f.lock.Unlock()
 		since := r.URL.Query().Get("since")
 		if since == "" {
-			answer(w, 200, map[string]any{"next_batch": "s1", "rooms": map[string]any{"join": map[string]any{"!room:" + fake_host(f.server): map[string]any{"timeline": map[string]any{"events": []any{map[string]any{"type": "m.room.message", "event_id": "$e1", "sender": "@bob:" + fake_host(f.server), "origin_server_ts": 1700000000000, "content": map[string]any{"msgtype": "m.text", "body": "hi"}}}}}}}})
+			answer(w, 200, map[string]any{"next_batch": "s1", "rooms": map[string]any{"join": map[string]any{"!room:" + fake_host(f.server): map[string]any{"timeline": map[string]any{"events": []any{map[string]any{"type": "m.room.message", "event_id": "$e1", "sender": "@bob:" + fake_host(f.server), "origin_server_ts": int64(1700000000000), "content": map[string]any{"msgtype": "m.text", "body": "hi"}}}}}}}})
 			return
 		}
 		// Nothing new: a long poll that ends quickly here.

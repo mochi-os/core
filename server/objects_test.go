@@ -403,7 +403,7 @@ func TestAccountDownload(t *testing.T) {
 	saved_maximum := media_maximum
 	media_maximum = 8
 	t.Cleanup(func() { media_maximum = saved_maximum })
-	if _, err := storage_reserve(storage_request_of(thread), alice, 0); err != nil {
+	if _, err := storage_remaining(storage_request_of(thread), alice); err != nil {
 		t.Fatal(err)
 	}
 	figure := storage_figure_of(alice.UID)
@@ -470,6 +470,53 @@ func TestAccountDownload(t *testing.T) {
 		t.Errorf("after the failed downloads the user is charged %d bytes, want %d", n, len(second))
 	}
 	if left := partials(); len(left) != 0 {
+		t.Errorf("half-made downloads were left behind: %v", left)
+	}
+}
+
+// TestAccountDownloadHeldToTheQuotaUnmeasured. A download is the one write
+// that comes with no measurement of its own, and a user whose storage has not
+// been walked since the server started has no figure to hold it to: it must
+// measure, or it stores whatever the far end sends for as long as it is let.
+func TestAccountDownloadHeldToTheQuotaUnmeasured(t *testing.T) {
+	alice := create_linked_test_env(t)
+	saved := networks_development
+	networks_development = true
+	t.Cleanup(func() { networks_development = saved })
+	db_user(alice, "user").exec("insert into accounts (id, type, label, identifier, data, created, verified) values ('l1', 'bluesky', 'Alice', 'alice.example', '{\"server\":\"127.0.0.1\",\"did\":\"did:plc:alice\"}', 1, 1)")
+	app := create_external_app("app1")
+	permission_grant(alice, app.id, "account:l1")
+	thread := create_test_thread(alice, app)
+	thread.SetLocal("context", context.Background())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.ipld.car")
+		w.Write(make([]byte, 4000))
+	}))
+	t.Cleanup(server.Close)
+
+	used, err := dir_size(user_storage_dir(alice))
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := file_maximum_storage
+	file_maximum_storage = used + 1000
+	t.Cleanup(func() { file_maximum_storage = previous })
+	// Never measured, as after a restart.
+	storage_forget(alice.UID)
+
+	value, err := api_account_download(thread, sl.NewBuiltin("test", nil), sl.Tuple{sl.String("l1"), sl.String(server.URL + "/repo"), sl.String("backups/l1/repository.car")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer, _ := sl_decode(value).(map[string]any)
+	if answer["status"] != int64(0) || !strings.Contains(fmt.Sprint(answer["error"]), "storage limit exceeded") {
+		t.Errorf("THE POINT: a download past the quota = %v, want refused for the storage limit", answer)
+	}
+	base := api_file_base(alice, app)
+	if _, err := os.Stat(filepath.Join(base, "backups", "l1", "repository.car")); !os.IsNotExist(err) {
+		t.Errorf("THE POINT: the download past the quota was kept: %v", err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(base, ".download-*")); len(left) != 0 {
 		t.Errorf("half-made downloads were left behind: %v", left)
 	}
 }

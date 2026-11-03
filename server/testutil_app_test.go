@@ -102,6 +102,9 @@ func test_bare_directory(t testing.TB) string {
 	t.Helper()
 	previous := data_dir
 	data_dir = t.TempDir()
+	// Storage figures are kept by uid, and tests reuse uids in each fresh
+	// directory.
+	storage_figures.Clear()
 	// A presence change goes out after the request that made it, and must
 	// not outlive the databases it reads.
 	t.Cleanup(func() {

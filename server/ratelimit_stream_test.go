@@ -111,8 +111,8 @@ func TestStreamBytesClearsALargeLegitimateTransfer(t *testing.T) {
 	stream_bytes_reset()
 
 	const chunk = 4 * 1024 * 1024
-	relayed := 0
-	for relayed < int(stream_maximum_default) {
+	var relayed int64
+	for relayed < stream_maximum_default {
 		if stream_bytes_refusal("repositories/198.51.100.7", "repositories") != nil {
 			t.Fatalf("an anonymous archive download was refused after %d of %d bytes; a single maximum-size relay must complete",
 				relayed, int64(stream_maximum_default))

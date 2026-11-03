@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -158,6 +159,7 @@ type dav_collection struct {
 	description string
 	readonly    bool
 	components  []string
+	version     string // the app's change token, "" for a collection it keeps none for
 }
 
 // dav_object is what dav/objects returns per object: a property list for a
@@ -734,6 +736,22 @@ func dav_int64(v any) int64 {
 	return 0
 }
 
+// dav_version answers a collection's version as the tag a client compares:
+// a number as written, or a string as it is, and "" for none.
+func dav_version(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case int:
+		return strconv.Itoa(x)
+	case float64:
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	}
+	return ""
+}
+
 func dav_strings(v any) []string {
 	list, ok := v.([]any)
 	if !ok {
@@ -771,6 +789,7 @@ func (b *dav_backend) collections(slug string) ([]dav_collection, error) {
 			description: dav_string(m["description"]),
 			readonly:    dav_bool(m["readonly"]),
 			components:  dav_strings(m["components"]),
+			version:     dav_version(m["version"]),
 		}
 		if !dav_name_valid(c.slug) {
 			continue
@@ -988,6 +1007,9 @@ func (b *dav_backend) address_book(c *dav_collection) carddav.AddressBook {
 		// Answered as the privilege set, so a client knows before its
 		// first write, which the engine would refuse anyway.
 		ReadOnly: c.readonly,
+		// Answered as CS:getctag and the collection's getetag, which a client
+		// compares before it lists the objects.
+		Tag: c.version,
 	}
 }
 
@@ -1216,6 +1238,7 @@ func (b *dav_backend) calendar(c *dav_collection) caldav.Calendar {
 		MaxResourceSize:       dav_body_maximum,
 		SupportedComponentSet: c.components,
 		ReadOnly:              c.readonly,
+		Tag:                   c.version,
 	}
 }
 

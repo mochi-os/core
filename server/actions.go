@@ -718,8 +718,9 @@ func (a *Action) sl_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "no user")
 	}
 
-	// Check storage limit (10GB per user across all apps; admins exempt)
-	remaining, err := user_storage_remaining(user)
+	// Check storage limit (10GB per user across all apps; admins exempt), on
+	// the walk the request's multipart check made (storage_request).
+	remaining, err := storage_remaining(storage_request_of(t), user)
 	if err != nil {
 		return sl_error(fn, "unable to measure storage: %v", err)
 	}
@@ -1036,6 +1037,7 @@ func (a *Action) sl_write_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	if a.web.Writer.Header().Get("Cache-Control") == "" {
 		a.web.Header("Cache-Control", "private, must-revalidate")
 	}
+
 	if a.web.Writer.Header().Get("Etag") == "" {
 		a.web.Header("ETag", fmt.Sprintf(`"%x-%x"`, information.ModTime().UnixNano(), information.Size()))
 	}
@@ -1202,6 +1204,10 @@ func (r *stream_limit_reader) Read(p []byte) (int, error) {
 //
 // cache names an entry to fill as a side effect: only a complete relay is
 // renamed into place, so a partial body never becomes a cache hit.
+//
+// An ETag the action set with a.header answers a GET or HEAD whose
+// If-None-Match names it with 304 and no body, returning 0 and closing the
+// stream unread.
 func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var stream_value sl.Value
 	maximum := int64(stream_maximum_default)
@@ -1220,6 +1226,29 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 
 	// Mark as file serving so the timeout handler waits for I/O to complete
 	starlark_serving_set(t, a.web.Writer)
+
+	// A revalidation naming the ETag the action set is answered as
+	// http.ServeContent answers one for a.write.file and a.write.cache: 304
+	// with no body. The action set the ETag from the far end's answer, so
+	// every check it made on that answer ran first. The body is never read;
+	// the stream is closed instead. Only for GET and HEAD: another method's
+	// failed precondition is 412 with the method not performed, and by now the
+	// action has performed it, since the tag is known only from what it
+	// fetched. Such a request is answered in full, as if it had named no tag.
+	method := a.web.Request.Method
+	if etag := a.web.Writer.Header().Get("Etag"); etag != "" && (method == http.MethodGet || method == http.MethodHead) && etag_match(a.web.Request.Header.Get("If-None-Match"), etag) {
+		stream.close()
+		// RFC 9110 section 15.4.5: no representation metadata beyond the
+		// validators and what guides the cache.
+		header := a.web.Writer.Header()
+		delete(header, "Content-Type")
+		delete(header, "Content-Length")
+		delete(header, "Content-Encoding")
+		delete(header, "Last-Modified")
+		a.web.Writer.WriteHeader(http.StatusNotModified)
+		a.web.Writer.WriteHeaderNow()
+		return sl.MakeInt64(0), nil
+	}
 
 	// raw_reader is UNWRAPPED - the CBOR limit caps decoded messages, not the byte
 	// body - and every caller relays bytes a remote peer chose, so bound it first.
@@ -1301,6 +1330,62 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	// arrived complete, so the tee may be committed to the cache.
 	filled = true
 	return sl.MakeInt64(n), nil
+}
+
+// etag_match reports whether an If-None-Match header names etag, by the weak
+// comparison RFC 9110 section 13.1.2 prescribes: "*" matches any current
+// representation, and a listed tag matches with or without its W/ prefix. An
+// etag that is not itself a valid entity tag matches nothing.
+func etag_match(header string, etag string) bool {
+	tag, rest := etag_scan(etag)
+	if tag == "" || textproto.TrimString(rest) != "" {
+		return false
+	}
+	for {
+		header = textproto.TrimString(header)
+		if header == "" {
+			return false
+		}
+		if header[0] == ',' {
+			header = header[1:]
+			continue
+		}
+		if header[0] == '*' {
+			return true
+		}
+		candidate, remain := etag_scan(header)
+		if candidate == "" {
+			return false
+		}
+		if strings.TrimPrefix(candidate, "W/") == strings.TrimPrefix(tag, "W/") {
+			return true
+		}
+		header = remain
+	}
+}
+
+// etag_scan reads one entity tag, W/"text" or "text", from the front of s,
+// answering it and what follows, or "" when s does not start with one.
+func etag_scan(s string) (string, string) {
+	s = textproto.TrimString(s)
+	start := 0
+	if strings.HasPrefix(s, "W/") {
+		start = 2
+	}
+	if len(s[start:]) < 2 || s[start] != '"' {
+		return "", ""
+	}
+	for i := start + 1; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '"':
+			return s[:i+1], s[i+1:]
+		case c == 0x21 || c >= 0x23 && c <= 0x7e || c >= 0x80:
+		default:
+			return "", ""
+		}
+	}
+	return "", ""
 }
 
 // stream_relay copies a relayed body to the browser. complete is false when the

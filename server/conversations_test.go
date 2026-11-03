@@ -315,10 +315,10 @@ func create_matrix_room_fake(t *testing.T) *matrix_room_fake {
 			return
 		}
 		state := func(kind string, key string, sender string, content map[string]any) map[string]any {
-			return map[string]any{"type": kind, "state_key": key, "sender": sender, "event_id": "$st" + kind + key, "origin_server_ts": 1700000000000, "content": content}
+			return map[string]any{"type": kind, "state_key": key, "sender": sender, "event_id": "$st" + kind + key, "origin_server_ts": int64(1700000000000), "content": content}
 		}
 		event := func(id string, sender string, content map[string]any) map[string]any {
-			return map[string]any{"type": "m.room.message", "event_id": id, "sender": sender, "origin_server_ts": 1700000001000, "content": content}
+			return map[string]any{"type": "m.room.message", "event_id": id, "sender": sender, "origin_server_ts": int64(1700000001000), "content": content}
 		}
 		bob, me := "@bob:"+host, "@alice:"+host
 		answer(w, 200, map[string]any{
@@ -335,19 +335,19 @@ func create_matrix_room_fake(t *testing.T) *matrix_room_fake {
 							event("$m2", bob, map[string]any{"msgtype": "m.text", "body": "> <@alice> hello\n\nquoted reply", "m.relates_to": map[string]any{"m.in_reply_to": map[string]any{"event_id": "$m1"}}}),
 							event("$m3", bob, map[string]any{"msgtype": "m.text", "body": "* hello there", "m.new_content": map[string]any{"msgtype": "m.text", "body": "hello there"}, "m.relates_to": map[string]any{"rel_type": "m.replace", "event_id": "$m1"}}),
 							event("$m4", bob, map[string]any{"msgtype": "m.image", "body": "cat.png", "url": "mxc://" + host + "/cat", "info": map[string]any{"mimetype": "image/png", "size": 1234}}),
-							map[string]any{"type": "m.room.redaction", "event_id": "$r1", "sender": bob, "redacts": "$m2", "origin_server_ts": 1700000002000, "content": map[string]any{}},
-							map[string]any{"type": "m.room.message", "event_id": "$m5", "sender": me, "origin_server_ts": 1700000003000, "content": map[string]any{"msgtype": "m.text", "body": "from my phone"}},
-							map[string]any{"type": "m.room.message", "event_id": "$m6", "sender": me, "origin_server_ts": 1700000003000, "unsigned": map[string]any{"transaction_id": "mochichat-x"}, "content": map[string]any{"msgtype": "m.text", "body": "sent from here"}},
+							map[string]any{"type": "m.room.redaction", "event_id": "$r1", "sender": bob, "redacts": "$m2", "origin_server_ts": int64(1700000002000), "content": map[string]any{}},
+							map[string]any{"type": "m.room.message", "event_id": "$m5", "sender": me, "origin_server_ts": int64(1700000003000), "content": map[string]any{"msgtype": "m.text", "body": "from my phone"}},
+							map[string]any{"type": "m.room.message", "event_id": "$m6", "sender": me, "origin_server_ts": int64(1700000003000), "unsigned": map[string]any{"transaction_id": "mochichat-x"}, "content": map[string]any{"msgtype": "m.text", "body": "sent from here"}},
 							event("$m7", bob, map[string]any{"msgtype": "m.text", "body": "in a thread", "m.relates_to": map[string]any{"rel_type": "m.thread", "event_id": "$m1"}}),
 						}},
 						"ephemeral": map[string]any{"events": []any{
 							map[string]any{"type": "m.typing", "content": map[string]any{"user_ids": []any{bob}}},
-							map[string]any{"type": "m.receipt", "content": map[string]any{"$m5": map[string]any{"m.read": map[string]any{bob: map[string]any{"ts": 1700000004000}}}}},
+							map[string]any{"type": "m.receipt", "content": map[string]any{"$m5": map[string]any{"m.read": map[string]any{bob: map[string]any{"ts": int64(1700000004000)}}}}},
 						}},
 					},
 					"!secret:" + host: map[string]any{
 						"state":    map[string]any{"events": []any{state("m.room.name", "", bob, map[string]any{"name": "Secrets"}), state("m.room.encryption", "", bob, map[string]any{"algorithm": "m.megolm.v1.aes-sha2"})}},
-						"timeline": map[string]any{"events": []any{map[string]any{"type": "m.room.encrypted", "event_id": "$e1", "sender": bob, "origin_server_ts": 1700000005000, "content": map[string]any{"algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "x"}}}},
+						"timeline": map[string]any{"events": []any{map[string]any{"type": "m.room.encrypted", "event_id": "$e1", "sender": bob, "origin_server_ts": int64(1700000005000), "content": map[string]any{"algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "x"}}}},
 					},
 				},
 				"invite": map[string]any{"!club:" + host: map[string]any{"invite_state": map[string]any{"events": []any{

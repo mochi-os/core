@@ -8,6 +8,7 @@ package main
 
 import (
 	"archive/zip"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	sl "go.starlark.net/starlark"
@@ -43,18 +45,360 @@ var file_maximum_storage int64 = 10 * 1024 * 1024 * 1024
 const cache_age_maximum = 7 * 24 * time.Hour
 
 // user_storage_remaining reports how many more bytes the user may store before
-// reaching the per-user storage quota (file_maximum_storage). Administrators are
-// exempt from the quota and always have effectively unlimited space; returning
-// early also spares them the full-tree dir_size walk on every write.
+// reaching the per-user storage quota (file_maximum_storage), for a caller with
+// no request to share a walk with (storage_remaining).
 func user_storage_remaining(u *User) (int64, error) {
+	return storage_remaining(nil, u)
+}
+
+// storage_lifetime is how long a walk of a user's storage is trusted. Walking
+// the whole tree on every write made a request storing many files walk it once
+// a file. Between walks the writes and deletes core makes keep the figure
+// current (storage_step); what grows another way - a database, a repository -
+// the next walk counts. A var so tests can change it.
+var storage_lifetime = 60 * time.Second
+
+// storage_walk measures a user's storage. A var so tests can count the walks.
+var storage_walk = dir_size
+
+// storage_exceeded refuses a write that would take its user past the quota.
+var storage_exceeded = errors.New("storage limit exceeded")
+
+// storage_piece is the most a metered write puts on disk in one step under the
+// figure's lock (storage_meter.WriteString), so a large write holds neither a
+// copy of itself nor the lock for its whole length.
+const storage_piece = 1 << 20
+
+// storage_figures holds a storage_figure for each user whose storage has been
+// measured, by uid. In memory only: a restart walks again.
+var storage_figures sync.Map
+
+// storage_figure is what a user's storage held when last walked, kept current
+// by the writes and deletes made since. Its lock is held for the whole of a
+// walk and for each change core makes to the user's storage together with the
+// change to the figure (storage_step), so a walk sees every such change with
+// its accounting or without it, never one without the other.
+type storage_figure struct {
+	lock     sync.Mutex
+	used     int64
+	measured time.Time // when the walk the figure stands on began; zero until walked, when it charges and refuses nothing
+	finished time.Time // when that walk ended
+	expired  bool      // what has landed since may have been counted twice (storage_expire): walk at the next measurement
+}
+
+// storage_request records whose storage one request has walked, so it walks
+// each at most once however many writes it makes and however long it runs. It
+// is carried on the request's Starlark thread (storage_request_of).
+type storage_request struct {
+	lock   sync.Mutex
+	walked map[string]bool
+}
+
+// storage_request_of answers the record a thread's request carries, giving a
+// thread whose request set none one of its own.
+func storage_request_of(t *sl.Thread) *storage_request {
+	if t == nil {
+		return nil
+	}
+	if request, ok := t.Local("measured").(*storage_request); ok && request != nil {
+		return request
+	}
+	request := &storage_request{}
+	t.SetLocal("measured", request)
+	return request
+}
+
+// has reports whether the request has walked a user's storage. A nil request
+// is none, and has walked nothing.
+func (r *storage_request) has(uid string) bool {
+	if r == nil {
+		return false
+	}
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	return r.walked[uid]
+}
+
+// add records that the request walked a user's storage.
+func (r *storage_request) add(uid string) {
+	if r == nil {
+		return
+	}
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	if r.walked == nil {
+		r.walked = map[string]bool{}
+	}
+	r.walked[uid] = true
+}
+
+// current walks the user's storage when the figure is older than
+// storage_lifetime and the request has not walked it already, or when it has
+// expired. The caller holds the figure's lock, so writers waiting on it share
+// the one walk. The figure is dated from the walk's start: a file written
+// while the walk ran may be missing from it (storage_delete).
+func (f *storage_figure) current(request *storage_request, uid string) error {
+	if !f.measured.IsZero() && !f.expired && (time.Since(f.measured) < storage_lifetime || request.has(uid)) {
+		return nil
+	}
+	start := time.Now()
+	used, err := storage_walk(user_storage_dir(&User{UID: uid}))
+	if err != nil {
+		return err
+	}
+	f.used, f.measured, f.finished, f.expired = used, start, time.Now(), false
+	request.add(uid)
+	return nil
+}
+
+// credit takes bytes freed off the figure. The caller holds the figure's lock.
+func (f *storage_figure) credit(bytes int64) {
+	f.used = max(f.used-bytes, 0)
+}
+
+// storage_remaining answers how many more bytes u may store, walking u's
+// storage first when the figure is stale. Administrators are exempt from the
+// quota, and their storage is never walked.
+func storage_remaining(request *storage_request, u *User) (int64, error) {
 	if u != nil && u.administrator() {
 		return math.MaxInt64, nil
 	}
-	current, err := dir_size(user_storage_dir(u))
-	if err != nil {
+	figure := storage_figure_of(u.UID)
+	figure.lock.Lock()
+	defer figure.lock.Unlock()
+	if err := figure.current(request, u.UID); err != nil {
 		return 0, err
 	}
-	return file_maximum_storage - current, nil
+	return file_maximum_storage - figure.used, nil
+}
+
+// storage_figure_of answers a user's figure, made unwalked on first use.
+func storage_figure_of(uid string) *storage_figure {
+	figure, _ := storage_figures.LoadOrStore(uid, &storage_figure{})
+	return figure.(*storage_figure)
+}
+
+// storage_step makes a change to a user's storage, and the change to their
+// figure that goes with it, as one step against a walk: under the figure's
+// lock, which a walk holds from start to end. A delete or a write made while a
+// walk ran, and accounted for after it, was either counted twice or credited
+// for bytes the walk never saw. step is handed the figure, or nil for a user
+// with none walked - an administrator's never is - whose change the next walk
+// counts.
+func storage_step(uid string, step func(figure *storage_figure)) {
+	var figure *storage_figure
+	if uid != "" {
+		if found, ok := storage_figures.Load(uid); ok {
+			figure = found.(*storage_figure)
+		}
+	}
+	if figure == nil {
+		step(nil)
+		return
+	}
+	figure.lock.Lock()
+	defer figure.lock.Unlock()
+	if figure.measured.IsZero() {
+		step(nil)
+		return
+	}
+	step(figure)
+}
+
+// storage_create opens name inside root for writing, emptied, and credits what
+// it held: the write that follows is charged as it lands (storage_meter).
+func storage_create(root *os.Root, owner string, name string) (file *os.File, err error) {
+	storage_step(owner, func(figure *storage_figure) {
+		previous := storage_size(root, name)
+		file, err = root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		if err == nil && figure != nil {
+			figure.credit(previous)
+		}
+	})
+	return file, err
+}
+
+// storage_remove removes name inside root and credits what it held.
+func storage_remove(root *os.Root, owner string, name string) (err error) {
+	storage_step(owner, func(figure *storage_figure) {
+		var size int64
+		if information, err := root.Lstat(name); err == nil && information.Mode().IsRegular() {
+			size = information.Size()
+		}
+		err = root.Remove(name)
+		if err == nil && figure != nil {
+			figure.credit(size)
+		}
+	})
+	return err
+}
+
+// storage_rename moves from to to inside root and credits the file the move
+// replaces, unless it is the one being moved.
+func storage_rename(root *os.Root, owner string, from string, to string) (err error) {
+	storage_step(owner, func(figure *storage_figure) {
+		var replaced int64
+		if destination, err := root.Lstat(to); err == nil && destination.Mode().IsRegular() {
+			if source, err := root.Lstat(from); err != nil || !os.SameFile(source, destination) {
+				replaced = destination.Size()
+			}
+		}
+		err = root.Rename(from, to)
+		if err == nil && figure != nil {
+			figure.credit(replaced)
+		}
+	})
+	return err
+}
+
+// storage_delete deletes the file at path with remove, and credits it when it
+// is older than the walk the figure stands on, so the walk counted it. A newer
+// file may have been written where nothing charged it - a repository's
+// objects - and crediting it would leave the figure below what is stored; such
+// a file stays counted until the next walk.
+func storage_delete(uid string, path string, remove func() error) (err error) {
+	storage_step(uid, func(figure *storage_figure) {
+		information, _ := os.Lstat(path)
+		err = remove()
+		if err == nil && figure != nil && information != nil && information.Mode().IsRegular() && information.ModTime().Before(figure.measured) {
+			figure.credit(information.Size())
+		}
+	})
+	return err
+}
+
+// storage_add charges bytes already stored to a user's figure, which there is
+// no refusing: what a push or a repack has written to disk counts from then,
+// so the next write in the figure's lifetime sees it. A walk that ran while
+// they were being written may have counted them already (storage_expire).
+func storage_add(uid string, bytes int64) {
+	if bytes == 0 {
+		return
+	}
+	storage_step(uid, func(figure *storage_figure) {
+		if figure != nil {
+			figure.used += bytes
+		}
+	})
+}
+
+// storage_expire ends a figure's trust when a walk finished after since: what
+// was written beside the user's storage from then - a push's staging, a
+// repack's pack before it is renamed into place - may have been counted by the
+// walk and again by storage_add when it landed, so the next measurement walks.
+func storage_expire(uid string, since time.Time) {
+	storage_step(uid, func(figure *storage_figure) {
+		if figure != nil && figure.finished.After(since) {
+			figure.expired = true
+		}
+	})
+}
+
+// storage_forget drops a user's figure: a user deleted, whose uid may come
+// back, or one whose administrator role changed, whose figure an
+// administrator's measurement never keeps.
+func storage_forget(uid string) {
+	storage_figures.Delete(uid)
+}
+
+// storage_owner answers the uid whose storage holds path, or "" for a path
+// outside every user's.
+func storage_owner(path string) string {
+	users := filepath.Join(data_dir, "users")
+	for _, base := range []string{users, storage_resolved(users)} {
+		relative, err := filepath.Rel(base, path)
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			continue
+		}
+		uid, _, _ := strings.Cut(filepath.ToSlash(relative), "/")
+		return uid
+	}
+	return ""
+}
+
+// storage_resolved answers a path with its links resolved, as a repository's
+// filesystem names its root, or the path itself.
+func storage_resolved(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
+}
+
+// storage_stat answers a file's information, or nil.
+func storage_stat(path string) os.FileInfo {
+	information, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	return information
+}
+
+// storage_file answers the size of a regular file at path, or 0.
+func storage_file(path string) int64 {
+	if information := storage_stat(path); information != nil && information.Mode().IsRegular() {
+		return information.Size()
+	}
+	return 0
+}
+
+// storage_meter charges what is written through it to a user's storage, and
+// refuses the write that would take the user past the quota: writes running at
+// once are held to it together, not each to the figure it began with. Each
+// piece is checked, written and charged as one step (storage_step), so a walk
+// running beside the write counts a piece with its charge or neither.
+type storage_meter struct {
+	writer  io.Writer
+	owner   string
+	written int64
+}
+
+func (m *storage_meter) Write(data []byte) (int, error) {
+	return m.write(len(data), func() (int, error) { return m.writer.Write(data) })
+}
+
+// WriteString writes s a piece at a time (storage_piece), without the copy
+// io.WriteString makes of a string for a writer that takes only bytes.
+func (m *storage_meter) WriteString(s string) (int, error) {
+	total := 0
+	for len(s) > 0 {
+		piece := s[:min(len(s), storage_piece)]
+		n, err := m.write(len(piece), func() (int, error) { return io.WriteString(m.writer, piece) })
+		total += n
+		if err != nil {
+			return total, err
+		}
+		if n < len(piece) {
+			return total, io.ErrShortWrite
+		}
+		s = s[n:]
+	}
+	return total, nil
+}
+
+// write checks, writes and charges size bytes as one step.
+func (m *storage_meter) write(size int, write func() (int, error)) (n int, err error) {
+	storage_step(m.owner, func(figure *storage_figure) {
+		if figure != nil && int64(size) > file_maximum_storage-figure.used {
+			err = storage_exceeded
+			return
+		}
+		n, err = write()
+		if figure != nil {
+			figure.used += int64(n)
+		}
+	})
+	m.written += int64(n)
+	return n, err
+}
+
+// storage_size answers the size of a regular file inside root, or 0.
+func storage_size(root *os.Root, name string) int64 {
+	information, err := root.Stat(name)
+	if err != nil || !information.Mode().IsRegular() {
+		return 0
+	}
+	return information.Size()
 }
 
 var (
@@ -323,14 +667,18 @@ func api_file_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 	defer root.Close()
 
-	root.Remove(file)
+	storage_remove(root, user.UID, file)
 	return sl.None, nil
 }
 
 // root_write_file streams source into name inside root, creating any parent
 // directories, and returns the number of bytes written. The destination is
 // opened through the root so a symlink left in the tree cannot redirect the
-// write outside it, which a plain path join would allow.
+// write outside it, which a plain path join would allow. Inside a user's
+// storage the bytes are charged as they are written (storage_meter), and a
+// write the quota stops is removed and its charge returned. The caller
+// measures the user's storage first (storage_remaining): a user whose storage
+// has not been walked has no figure to hold the write to.
 func root_write_file(root *os.Root, name string, source io.Reader) (int64, error) {
 	dir := filepath.Dir(name)
 	if dir != "." && dir != "" {
@@ -339,13 +687,19 @@ func root_write_file(root *os.Root, name string, source io.Reader) (int64, error
 		}
 	}
 
-	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	owner := storage_owner(root.Name())
+	f, err := storage_create(root, owner, name)
 	if err != nil {
 		return 0, err
 	}
 	defer f.Close()
 
-	return io.Copy(f, source)
+	written, err := io.Copy(&storage_meter{writer: f, owner: owner}, source)
+	if errors.Is(err, storage_exceeded) {
+		f.Close()
+		storage_remove(root, owner, name)
+	}
+	return written, err
 }
 
 // mochi.file.copy(source, destination) -> integer: Copy a file within the app's
@@ -393,7 +747,7 @@ func api_file_copy(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	// A copy adds its own size to the account, so it is checked like a write.
-	remaining, err := user_storage_remaining(user)
+	remaining, err := storage_remaining(storage_request_of(t), user)
 	if err != nil {
 		return sl_error(fn, "unable to measure storage: %v", err)
 	}
@@ -638,8 +992,11 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		return sl_error(fn, "no app")
 	}
 
-	// Check storage limit (10GB per user across all apps; admins exempt)
-	remaining, err := user_storage_remaining(user)
+	// Check storage limit (10GB per user across all apps; admins exempt). The
+	// bytes are charged as they land (storage_meter), so a write running at the
+	// same time is held to what this one leaves, and is refused part way when
+	// the two together do not fit.
+	remaining, err := storage_remaining(storage_request_of(t), user)
 	if err != nil {
 		return sl_error(fn, "unable to measure storage: %v", err)
 	}
@@ -667,7 +1024,7 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 		}
 	}
 
-	f, err := root.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	f, err := storage_create(root, user.UID, file)
 	if err != nil {
 		return sl_error(fn, "unable to write file")
 	}
@@ -676,8 +1033,12 @@ func api_file_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	// []byte() conversion, no duplicate allocation. Important for large
 	// writes: a 5 GiB string via Write([]byte(data)) needs 10 GiB heap
 	// during the write; WriteString stays at 5 GiB.
-	_, err = f.WriteString(data)
+	_, err = (&storage_meter{writer: f, owner: user.UID}).WriteString(data)
 	f.Close()
+	if errors.Is(err, storage_exceeded) {
+		storage_remove(root, user.UID, file)
+		return sl_error(fn, "storage limit exceeded")
+	}
 	if err != nil {
 		return sl_error(fn, "unable to write file")
 	}
@@ -722,7 +1083,8 @@ func api_file_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 		}
 	}
 
-	if err := root.Rename(from, to); err != nil {
+	// A file the move replaces is gone, unless it is the one being moved.
+	if err := storage_rename(root, user.UID, from, to); err != nil {
 		return sl_error(fn, "unable to move file: %v", err)
 	}
 	return sl.None, nil
@@ -839,7 +1201,7 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	// The archive is charged to the account like any other write, and its
 	// contents are already stored, so the budget is checked before building
 	// rather than discovering it part-way through.
-	remaining, err := user_storage_remaining(user)
+	remaining, err := storage_remaining(storage_request_of(t), user)
 	if err != nil {
 		return sl_error(fn, "unable to measure storage: %v", err)
 	}
@@ -848,6 +1210,7 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	// re-obtainable, quota-exempt and evictable, and it resolves for the calling
 	// user - a.write.file would read as the entity owner.
 	var out io.WriteCloser
+	var sink io.Writer
 	var cache_path string
 	var cache_previous int64
 	if cache {
@@ -877,12 +1240,16 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 				return sl_error(fn, "unable to create directory")
 			}
 		}
-		out, err = root.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		out, err = storage_create(root, user.UID, destination)
 		if err != nil {
 			return sl_error(fn, "unable to write archive")
 		}
+		sink = &storage_meter{writer: out, owner: user.UID}
 	}
 	defer out.Close()
+	if sink == nil {
+		sink = out
+	}
 
 	// Account for a cached archive however this returns: a partial archive still
 	// occupies cache, and a running total that never learns of those bytes
@@ -891,14 +1258,33 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	// hold the compressed total, which is what the quota check above needs.
 	if cache_path != "" {
 		defer func() {
+			var size int64
 			if information, err := os.Stat(cache_path); err == nil {
-				cache_admit(information.Size() - cache_previous)
+				size = information.Size()
 			}
+			cache_admit(size - cache_previous)
 		}()
 	}
 
 	counter := &archive_counter{limit: remaining}
-	writer := zip.NewWriter(io.MultiWriter(out, counter))
+	writer := zip.NewWriter(io.MultiWriter(sink, counter))
+
+	// An archive past its bound - the user's storage, metered as it is written,
+	// or the object ceiling of one built in cache - is removed whole, and its
+	// charge returned, rather than left part built.
+	exceeded := func(err error) bool {
+		return counter.exceeded || errors.Is(err, storage_exceeded)
+	}
+	refuse := func() (sl.Value, error) {
+		writer.Close()
+		out.Close()
+		if cache_path != "" {
+			os.Remove(cache_path)
+		} else {
+			storage_remove(root, user.UID, destination)
+		}
+		return sl_error(fn, "storage limit exceeded")
+	}
 
 	for _, item := range list {
 		entry, ok := item.(map[string]any)
@@ -924,10 +1310,16 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 			w, err := writer.Create(name)
 			if err != nil {
 				f.Close()
+				if exceeded(err) {
+					return refuse()
+				}
 				return sl_error(fn, "unable to add %q: %v", name, err)
 			}
 			_, err = io.Copy(w, f)
 			f.Close()
+			if exceeded(err) {
+				return refuse()
+			}
 			if err != nil {
 				return sl_error(fn, "unable to add %q: %v", name, err)
 			}
@@ -947,36 +1339,48 @@ func api_archive_write(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 			w, err := writer.Create(name)
 			if err != nil {
 				f.Close()
+				if exceeded(err) {
+					return refuse()
+				}
 				return sl_error(fn, "unable to add %q: %v", name, err)
 			}
 			_, err = io.Copy(w, f)
 			f.Close()
+			if exceeded(err) {
+				return refuse()
+			}
 			if err != nil {
 				return sl_error(fn, "unable to add %q: %v", name, err)
 			}
 		} else if data, ok := entry["data"].(string); ok {
 			w, err := writer.Create(name)
 			if err != nil {
+				if exceeded(err) {
+					return refuse()
+				}
 				return sl_error(fn, "unable to add %q: %v", name, err)
 			}
 			if _, err := io.WriteString(w, data); err != nil {
+				if exceeded(err) {
+					return refuse()
+				}
 				return sl_error(fn, "unable to add %q: %v", name, err)
 			}
 		}
 
-		if counter.exceeded {
-			writer.Close()
-			root.Remove(destination)
-			return sl_error(fn, "storage limit exceeded")
+		if exceeded(nil) {
+			return refuse()
 		}
 	}
 
 	if err := writer.Close(); err != nil {
+		if exceeded(err) {
+			return refuse()
+		}
 		return sl_error(fn, "unable to finish archive: %v", err)
 	}
-	if counter.exceeded {
-		root.Remove(destination)
-		return sl_error(fn, "storage limit exceeded")
+	if exceeded(nil) {
+		return refuse()
 	}
 
 	return sl.MakeInt64(counter.written), nil
@@ -1135,7 +1539,7 @@ func api_archive_extract(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	}
 	defer reader.Close()
 
-	remaining, err := user_storage_remaining(user)
+	remaining, err := storage_remaining(storage_request_of(t), user)
 	if err != nil {
 		return sl_error(fn, "unable to measure storage: %v", err)
 	}
@@ -1159,12 +1563,16 @@ func api_archive_extract(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		// Bounded by the quota rather than by the entry's declared size: a zip
 		// header can claim any size it likes, and the decompressed stream is
 		// what actually lands on disk.
+		// What the quota stops, root_write_file has removed and given back.
 		written, err := root_write_file(root, destination, io.LimitReader(rc, remaining+1))
+		if errors.Is(err, storage_exceeded) {
+			return sl_error(fn, "storage limit exceeded")
+		}
 		if err != nil {
 			return sl_error(fn, "unable to write file")
 		}
 		if written > remaining {
-			root.Remove(destination)
+			storage_remove(root, user.UID, destination)
 			return sl_error(fn, "storage limit exceeded")
 		}
 		return sl.MakeInt64(written), nil

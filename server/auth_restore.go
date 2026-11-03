@@ -47,7 +47,9 @@ func restore_cleanup_orphans() {
 			continue
 		}
 		info("Restore: deleting orphaned pending-restore placeholder %q (restarted mid-restore)", uid)
-		user_delete(uid)
+		// The placeholder may hold a bundle's files, which are the user's upload;
+		// one whose purge panics must not stop the server at every start.
+		guard("restore cleanup", nil, func() { user_delete(uid) })
 	}
 }
 
@@ -329,9 +331,26 @@ func web_auth_restore(c *gin.Context) {
 	// absent from pre-secrets bundles. Decrypted with the same passphrase;
 	// ignore the error and restore without it when missing.
 	secrets, _ := restore_decrypt_secrets(filepath.Join(bundle, "secrets.age"), passphrase)
-	go restore_apply(uid, bundle, manifest, account, keys, secrets)
+	go restore_run(uid, bundle, manifest, account, keys, secrets)
 
 	c.JSON(http.StatusOK, gin.H{"status": "pending", "uid": uid})
+}
+
+// restore_run applies a restore on its own goroutine. The bundle is the user's
+// upload, so a step it makes panic fails that restore as any other failure
+// does, rather than taking the server down.
+func restore_run(uid, bundle string, manifest export_manifest, account export_account, keys map[string]string, secrets *export_secrets) {
+	guard("restore", func() { restore_fail(uid, "panic") }, func() {
+		restore_apply(uid, bundle, manifest, account, keys, secrets)
+	})
+}
+
+// restore_fail ends a restore that cannot finish: the /restoring page is told,
+// and the placeholder is deleted (which removes users/<uid>/ entirely).
+func restore_fail(uid, reason string) {
+	warn("Restore failed for user %q: %s", uid, reason)
+	restore_progress(uid, "error", 100, reason)
+	user_delete(uid)
 }
 
 // restore_apply does the destructive part: verify file hashes, swap the
@@ -340,9 +359,7 @@ func web_auth_restore(c *gin.Context) {
 // (which removes users/<uid>/ entirely), matching replication cleanup.
 func restore_apply(uid, bundle string, manifest export_manifest, account export_account, keys map[string]string, secrets *export_secrets) {
 	fail := func(reason string) {
-		warn("Restore failed for user %q: %s", uid, reason)
-		restore_progress(uid, "error", 100, reason)
-		user_delete(uid)
+		restore_fail(uid, reason)
 	}
 
 	// Integrity: every file the manifest names must match its hash.

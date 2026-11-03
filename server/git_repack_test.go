@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	stack "runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +34,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/format/idxfile"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/storage"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/go-git/go-git/v5/storage/memory"
@@ -112,14 +114,20 @@ func repack_test_blob(t *testing.T, repo *git.Repository, contents string) plumb
 	return hash
 }
 
-// packs reports how many packfiles a repository holds.
+// packs reports how many live packfiles a repository holds: those a repack
+// retired wait out their grace on disk, read by nothing new (git_packs).
 func packs(t *testing.T, path string) int {
 	t.Helper()
-	entries, err := filepath.Glob(filepath.Join(path, "objects", "pack", "*.pack"))
-	if err != nil {
-		t.Fatalf("globbing packs: %v", err)
-	}
-	return len(entries)
+	return len(git_packs(path))
+}
+
+// repack_test_grace sets how long a retired pack waits before a sweep deletes
+// it, for the length of a test.
+func repack_test_grace(t *testing.T, grace time.Duration) {
+	t.Helper()
+	previous := git_pack_grace
+	git_pack_grace = grace
+	t.Cleanup(func() { git_pack_grace = previous })
 }
 
 // TestRepackPacksAndStillReads - the point of the whole thing: the loose
@@ -253,26 +261,23 @@ func TestRepackKeepsAnOrphanedPackedCommit(t *testing.T) {
 	if err := git_repack(path); err != nil {
 		t.Fatalf("third git_repack: %v", err)
 	}
-	after, err := git.PlainOpen(path)
-	if err != nil {
-		t.Fatalf("PlainOpen: %v", err)
-	}
+	// Read as the server reads: the pack the second repack retired still
+	// holds the orphans until its grace is over, and serves nothing new.
+	after := git_kept(path)
+	defer git_close(after)
 	for _, hash := range orphans {
-		if _, err := after.Storer.EncodedObject(plumbing.AnyObject, hash); err == nil {
+		if _, err := after.EncodedObject(plumbing.AnyObject, hash); err == nil {
 			t.Errorf("orphaned object %s outlived git_prune_age", hash)
 		}
 	}
 }
 
-// repack_test_packs answers the base names - pack-<hash> - of a repository's packs.
+// repack_test_packs answers the base names - pack-<hash> - of a repository's
+// live packs.
 func repack_test_packs(t *testing.T, path string) []string {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(path, "objects", "pack", "pack-*.pack"))
-	if err != nil {
-		t.Fatalf("globbing packs: %v", err)
-	}
 	var names []string
-	for _, match := range matches {
+	for _, match := range git_packs(path) {
 		names = append(names, strings.TrimSuffix(filepath.Base(match), ".pack"))
 	}
 	return names
@@ -297,6 +302,8 @@ func repack_test_siblings(t *testing.T, path, base string) []string {
 // only a replaced pack and its index, so both were left behind for ever - and
 // one repository there already carries a stranded pair.
 func TestRepackSweepsOrphanedPackFiles(t *testing.T) {
+	// The replaced pack goes at once, so what it leaves is swept with it.
+	repack_test_grace(t, 0)
 	path, _ := repack_test_repository(t, 3)
 	if err := git_repack(path); err != nil {
 		t.Fatalf("first git_repack: %v", err)
@@ -1200,4 +1207,445 @@ func TestRepackAfterReadingAnUnsearchedRepository(t *testing.T) {
 	// The interval holds a read back as it holds a push.
 	clone(legacy, "2")
 	quiet("the interval since the last repack has not passed")
+}
+
+// repack_test_retiring packs a repository holding a blob larger than the 16 KB
+// go-git keeps in memory, then tags a loose blob so the next repack replaces
+// that pack. It answers the path, the large blob, its contents and the first
+// pack.
+func repack_test_retiring(t *testing.T) (string, plumbing.Hash, string, plumbing.Hash) {
+	t.Helper()
+	path, repo := repack_test_empty(t)
+	var large strings.Builder
+	for i := 0; large.Len() <= 64*1024; i++ {
+		fmt.Fprintf(&large, "line %d of a file larger than go-git keeps in memory\n", i)
+	}
+	blob := repack_test_blob(t, repo, large.String())
+	repack_test_commit(t, repo, []object.TreeEntry{{Name: "large", Mode: filemode.Regular, Hash: blob}})
+	if err := git_repack(path); err != nil {
+		t.Fatalf("first git_repack: %v", err)
+	}
+	first := repack_test_packs(t, path)
+	if len(first) != 1 {
+		t.Fatalf("setup: %d packs after the first repack, want 1", len(first))
+	}
+	tagged := repack_test_blob(t, repo, "tagged after the first repack\n")
+	if err := repo.Storer.SetReference(plumbing.NewHashReference("refs/tags/new", tagged)); err != nil {
+		t.Fatalf("SetReference: %v", err)
+	}
+	return path, blob, large.String(), plumbing.NewHash(strings.TrimPrefix(first[0], "pack-"))
+}
+
+// repack_test_retired answers the files of a pack, by its hash, with its mark.
+func repack_test_retired(path string, pack plumbing.Hash) []string {
+	base := filepath.Join(path, "objects", "pack", "pack-"+pack.String())
+	return []string{base + ".pack", base + ".idx", base + ".retired"}
+}
+
+// TestRepackLeavesAFetchItsPack. go-git opens a pack lazily, and reads an
+// object over 16 KB by opening the pack afresh by its path, even in a store
+// holding its packs open as a fetch's does. A repack that deleted the packs it
+// replaced at once failed a fetch that spanned it, part way through.
+func TestRepackLeavesAFetchItsPack(t *testing.T) {
+	path, blob, contents, _ := repack_test_retiring(t)
+
+	store, err := (&git_loader{keep: true}).Load(&transport.Endpoint{Path: path})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer git_close(store)
+	found, err := store.EncodedObject(plumbing.BlobObject, blob)
+	if err != nil {
+		t.Fatalf("setup: reading the large blob: %v", err)
+	}
+
+	if err := git_repack(path); err != nil {
+		t.Fatalf("second git_repack: %v", err)
+	}
+	reader, err := found.Reader()
+	if err != nil {
+		t.Fatalf("THE POINT: a fetch begun before a repack could not read its object after it: %v", err)
+	}
+	defer reader.Close()
+	if read, err := io.ReadAll(reader); err != nil || string(read) != contents {
+		t.Errorf("THE POINT: a fetch begun before a repack read %d bytes of %d after it (%v)", len(read), len(contents), err)
+	}
+}
+
+// TestRepackRetiredPackServesNothingNew. The pack a repack replaced stays on
+// disk for the reads begun before it, and nothing begun after reads it: not a
+// fetch's store, not a clone sent whole, not a repository opened to browse, not
+// the next repack. Its files are spoiled here, so whatever reads it fails.
+func TestRepackRetiredPackServesNothingNew(t *testing.T) {
+	path, blob, contents, first := repack_test_retiring(t)
+	if err := git_repack(path); err != nil {
+		t.Fatalf("second git_repack: %v", err)
+	}
+	if count := git_pack_count(path); count != 1 {
+		t.Errorf("THE POINT: the repository counts %d packs, want the live one alone", count)
+	}
+
+	// A fetch or a clone.
+	store, err := (&git_loader{keep: true}).Load(&transport.Endpoint{Path: path})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer git_close(store)
+	if stored := git_stored_open(store); stored == nil || len(stored.packs) != 1 {
+		t.Error("THE POINT: a fetch copies stored entries from other than the one live pack")
+	} else {
+		stored.close()
+	}
+
+	files := repack_test_retired(path, first)
+	for _, file := range files[:2] {
+		if err := os.Chmod(file, 0644); err != nil {
+			t.Fatalf("setup: the retired pack is not on disk for its grace: %v", err)
+		}
+		if err := os.WriteFile(file, []byte("spoiled"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reachable, _, err := git_reachable(store.(*git_storage).Storer.(*filesystem.Storage))
+	if err != nil {
+		t.Fatalf("THE POINT: a fetch's store read the retired pack: %v", err)
+	}
+	var objects []plumbing.Hash
+	for hash := range reachable {
+		objects = append(objects, hash)
+	}
+	if whole := git_pack_whole(store, objects); whole == nil {
+		t.Error("THE POINT: a clone was not sent the one live pack whole")
+	} else {
+		whole.Close()
+	}
+
+	// A repository opened to browse.
+	kept := git_kept(path)
+	defer git_close(kept)
+	found, err := kept.EncodedObject(plumbing.BlobObject, blob)
+	if err != nil {
+		t.Fatalf("THE POINT: a browsing store read the retired pack: %v", err)
+	}
+	reader, err := found.Reader()
+	if err != nil {
+		t.Fatalf("reading the blob: %v", err)
+	}
+	read, _ := io.ReadAll(reader)
+	reader.Close()
+	if string(read) != contents {
+		t.Errorf("THE POINT: a browsing store read %d bytes of the blob, want %d", len(read), len(contents))
+	}
+
+	// The next repack.
+	if err := git_repack(path); err != nil {
+		t.Errorf("THE POINT: the next repack read the retired pack: %v", err)
+	}
+}
+
+// TestRetiredPackSweptAfterItsGrace. A retired pack is deleted once its grace
+// is over and not before, by whichever comes first of a fetch, a push and a
+// repack of its repository: the next repack may be hours away. The record is
+// the mark on disk, so a sweep a crash cut short is finished by the next.
+func TestRetiredPackSweptAfterItsGrace(t *testing.T) {
+	repack_test_grace(t, time.Hour)
+	for _, trigger := range []struct {
+		name  string
+		sweep func(string)
+	}{
+		{"fetch", git_repack_read},
+		{"push", git_repack_consider},
+		{"repack", func(path string) {
+			if err := git_repack(path); err != nil {
+				t.Errorf("git_repack: %v", err)
+			}
+		}},
+	} {
+		t.Run(trigger.name, func(t *testing.T) {
+			path, _, _, first := repack_test_retiring(t)
+			if err := git_repack(path); err != nil {
+				t.Fatalf("second git_repack: %v", err)
+			}
+			git_repack_attempted.Store(path, now())
+			defer git_repack_attempted.Delete(path)
+			files := repack_test_retired(path, first)
+			if _, err := os.Stat(files[0]); err != nil {
+				t.Fatalf("THE POINT: the repack deleted the pack it retired inside its grace: %v", err)
+			}
+			// The pack was written long before its repack retired it, as git's
+			// packs on the production server were: its files are not orphans
+			// for the sweep of what a missing pack leaves.
+			written := time.Now().Add(-git_sweep_age - time.Hour)
+			for _, file := range files[:2] {
+				if err := os.Chtimes(file, written, written); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			trigger.sweep(path)
+			for _, file := range files {
+				if _, err := os.Stat(file); err != nil {
+					t.Errorf("THE POINT: %s went inside its grace: %v", filepath.Base(file), err)
+				}
+			}
+
+			old := time.Now().Add(-time.Hour - time.Minute)
+			if err := os.Chtimes(files[2], old, old); err != nil {
+				t.Fatal(err)
+			}
+			trigger.sweep(path)
+			for _, file := range files {
+				if _, err := os.Stat(file); !os.IsNotExist(err) {
+					t.Errorf("THE POINT: %s outlived its grace past a %s", filepath.Base(file), trigger.name)
+				}
+			}
+			if count := len(git_packs(path)); count != 1 {
+				t.Errorf("the sweep left %d live packs, want 1", count)
+			}
+		})
+	}
+
+	// A sweep that stopped after deleting the pack leaves its index and mark,
+	// which the next deletes.
+	path, _, _, first := repack_test_retiring(t)
+	if err := git_repack(path); err != nil {
+		t.Fatalf("second git_repack: %v", err)
+	}
+	files := repack_test_retired(path, first)
+	old := time.Now().Add(-time.Hour - time.Minute)
+	if err := os.Chtimes(files[2], old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(files[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := git_retired_sweep(path); err != nil {
+		t.Fatalf("git_retired_sweep: %v", err)
+	}
+	for _, file := range files[1:] {
+		if _, err := os.Stat(file); !os.IsNotExist(err) {
+			t.Errorf("THE POINT: %s outlived a sweep cut short", filepath.Base(file))
+		}
+	}
+}
+
+// TestRetiredPackNameClaimedBack. A pack's name is its bytes' checksum, so a
+// push or a repack can store a pack of the name of one retired and waiting out
+// its grace. That pack is live again: reads see it, and no sweep may delete it
+// from under the references that rely on it.
+func TestRetiredPackNameClaimedBack(t *testing.T) {
+	repack_test_grace(t, 0)
+	live := func(t *testing.T, path string, pack plumbing.Hash) {
+		t.Helper()
+		if names := repack_test_packs(t, path); !slices.Contains(names, "pack-"+pack.String()) {
+			t.Errorf("THE POINT: live packs %v, without the one stored again, pack-%s", names, pack)
+		}
+		git_pack_grace = 0
+		if err := git_retired_sweep(path); err != nil {
+			t.Fatalf("git_retired_sweep: %v", err)
+		}
+		files := repack_test_retired(path, pack)
+		for _, file := range files[:2] {
+			if _, err := os.Stat(file); err != nil {
+				t.Errorf("THE POINT: the sweep deleted %s, stored again: %v", filepath.Base(file), err)
+			}
+		}
+	}
+	// A retired pack the sweep has not reached: the grace is long until the
+	// pack is stored again, and over when live sweeps.
+	retire := func(t *testing.T) (string, plumbing.Hash, []byte, *idxfile.MemoryIndex) {
+		t.Helper()
+		git_pack_grace = time.Hour
+		path, _, _, first := repack_test_retiring(t)
+		files := repack_test_retired(path, first)
+		data, err := os.ReadFile(files[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := os.ReadFile(files[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		index := idxfile.NewMemoryIndex()
+		if err := idxfile.NewDecoder(bytes.NewReader(encoded)).Decode(index); err != nil {
+			t.Fatal(err)
+		}
+		if err := git_repack(path); err != nil {
+			t.Fatalf("second git_repack: %v", err)
+		}
+		if _, err := os.Stat(files[2]); err != nil {
+			t.Fatalf("setup: the first pack was not retired: %v", err)
+		}
+		return path, first, data, index
+	}
+	push := func(t *testing.T, path string, data []byte, index *idxfile.MemoryIndex) {
+		t.Helper()
+		staging := t.TempDir()
+		if err := os.WriteFile(filepath.Join(staging, git_push_pack), data, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := git_keep(staging, path, index); err != nil {
+			t.Fatalf("git_keep: %v", err)
+		}
+	}
+
+	t.Run("push", func(t *testing.T) {
+		path, first, data, index := retire(t)
+		push(t, path, data, index)
+		live(t, path, first)
+	})
+
+	// A sweep cut short after the pack and its index, its mark left: the
+	// push lands the pack anew, and the mark must not take it.
+	t.Run("push after a sweep cut short", func(t *testing.T) {
+		path, first, data, index := retire(t)
+		files := repack_test_retired(path, first)
+		for _, file := range files[:2] {
+			if err := os.Remove(file); err != nil {
+				t.Fatal(err)
+			}
+		}
+		push(t, path, data, index)
+		live(t, path, first)
+	})
+
+	// The tag gone, the references reach what the first repack packed, and
+	// the third repack writes those bytes again.
+	t.Run("repack", func(t *testing.T) {
+		path, first, _, _ := retire(t)
+		repo, err := git.PlainOpen(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.Storer.RemoveReference("refs/tags/new"); err != nil {
+			t.Fatal(err)
+		}
+		if err := git_repack(path); err != nil {
+			t.Fatalf("third git_repack: %v", err)
+		}
+		if _, err := os.Stat(repack_test_retired(path, first)[0]); err != nil {
+			t.Fatalf("setup: the third repack did not write the first pack's bytes again: %v", err)
+		}
+		live(t, path, first)
+	})
+}
+
+// TestRepackKeepsTheStorageFigure. The owner's storage is walked at most once
+// a minute, and a repack in that minute writes a pack the size of the
+// repository while the packs it replaced wait out their grace: the figure
+// must count what it writes, or the next push is handed room the repack
+// filled. What it deletes comes off only when the walk counted it, so the
+// figure never falls below what is stored.
+func TestRepackKeepsTheStorageFigure(t *testing.T) {
+	test_data_directory(t)
+	repack_test_grace(t, time.Hour)
+	user := &User{UID: "u-figure"}
+	path := filepath.Join(user_storage_dir(user), "repositories", "repository")
+	repo, err := git.PlainInit(path, true)
+	if err != nil {
+		t.Fatalf("PlainInit: %v", err)
+	}
+	compare := func(what string) {
+		t.Helper()
+		walked, err := dir_size(user_storage_dir(user))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if figure := storage_test_figure(t, user.UID); figure != walked {
+			t.Errorf("THE POINT: after %s the figure is %d bytes and a walk finds %d", what, figure, walked)
+		}
+	}
+
+	// Before the walk: a pack holding an object a tag reached and no longer
+	// does, a reachable object still loose, an unreachable one past the prune
+	// age, and a file a pack that is gone left behind.
+	var entries []object.TreeEntry
+	for i := range 3 {
+		entries = append(entries, object.TreeEntry{Name: fmt.Sprintf("file-%d", i), Mode: filemode.Regular, Hash: repack_test_blob(t, repo, fmt.Sprintf("contents %d\n", i))})
+	}
+	repack_test_commit(t, repo, entries)
+	tagged := repack_test_blob(t, repo, "tagged, then untagged\n")
+	if err := repo.Storer.SetReference(plumbing.NewHashReference("refs/tags/gone", tagged)); err != nil {
+		t.Fatal(err)
+	}
+	if err := git_repack(path); err != nil {
+		t.Fatalf("first git_repack: %v", err)
+	}
+	first := repack_test_packs(t, path)[0]
+	if err := repo.Storer.RemoveReference("refs/tags/gone"); err != nil {
+		t.Fatal(err)
+	}
+	entries = append(entries, object.TreeEntry{Name: "file-3", Mode: filemode.Regular, Hash: repack_test_blob(t, repo, "loose and reachable\n")})
+	repack_test_commit(t, repo, entries)
+	pruned := repack_test_blob(t, repo, "unreachable and old\n")
+	orphan := filepath.Join(path, "objects", "pack", "pack-8585dad0e179053f14ffd5aca38eb6280d15d61b.rev")
+	if err := os.WriteFile(orphan, []byte("left by git"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	walked := time.Now().Add(-time.Second)
+	filepath.Walk(path, func(file string, information os.FileInfo, err error) error {
+		if err == nil && !information.IsDir() {
+			os.Chtimes(file, walked, walked)
+		}
+		return nil
+	})
+	old := time.Now().Add(-git_prune_age - time.Hour)
+	if err := os.Chtimes(git_loose_path(path, pruned), old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(orphan, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := user_storage_remaining(user); err != nil {
+		t.Fatal(err)
+	}
+
+	// The repack writes a pack and an unreachable object loose, deletes the
+	// loose copies it packed, the old unreachable object and the orphan, and
+	// retires the first pack.
+	if err := git_repack(path); err != nil {
+		t.Fatalf("second git_repack: %v", err)
+	}
+	if _, err := os.Stat(git_loose_path(path, tagged)); err != nil {
+		t.Fatalf("setup: the untagged object was not written out loose: %v", err)
+	}
+	if _, err := os.Stat(git_loose_path(path, pruned)); !os.IsNotExist(err) {
+		t.Fatalf("setup: the old unreachable object was not pruned: %v", err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("setup: the orphan was not swept: %v", err)
+	}
+	compare("a repack")
+
+	// An object written since the walk, where nothing charged it, then
+	// packed: deleting its loose copy must not come off the figure.
+	entries = append(entries, object.TreeEntry{Name: "file-4", Mode: filemode.Regular, Hash: repack_test_blob(t, repo, "written since the walk\n")})
+	repack_test_commit(t, repo, entries)
+	if err := git_repack(path); err != nil {
+		t.Fatalf("third git_repack: %v", err)
+	}
+	compare("a repack of what nothing charged")
+
+	// The first pack's grace is over; the second's is not.
+	files := repack_test_retired(path, plumbing.NewHash(strings.TrimPrefix(first, "pack-")))
+	if err := os.Chtimes(files[2], old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := git_retired_sweep(path); err != nil {
+		t.Fatalf("git_retired_sweep: %v", err)
+	}
+	if _, err := os.Stat(files[0]); !os.IsNotExist(err) {
+		t.Fatalf("setup: the first pack was not swept: %v", err)
+	}
+	compare("a sweep")
+}
+
+// TestRetiredPackGraceOutlastsALongClone. A pack a repack replaced is read
+// by a fetch begun before it for as long as the fetch runs, and nothing
+// tracks the fetch: the grace is its bound, and must outlast a clone of a
+// large repository over a slow link.
+func TestRetiredPackGraceOutlastsALongClone(t *testing.T) {
+	if git_pack_grace < time.Hour {
+		t.Errorf("THE POINT: a retired pack is swept after %v, inside a long clone", git_pack_grace)
+	}
 }

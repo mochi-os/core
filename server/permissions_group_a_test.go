@@ -327,8 +327,11 @@ func TestStreamWriterMetersAndRefuses(t *testing.T) {
 		t.Fatalf("Write returned (%d, %v), want (4096, nil)", n, err)
 	}
 
-	// Spend the budget, then the next write must be refused, not short.
-	stream_outbound_charge(app, 11*1024*1024*1024)
+	// Spend the budget, then the next write must be refused, not short. The
+	// charge takes an int, so 11 GiB goes in gibibyte steps to fit 32-bit.
+	for range 11 {
+		stream_outbound_charge(app, 1<<30)
+	}
 	n, err := w.Write([]byte("more"))
 	if err == nil {
 		t.Error("a write past the budget was allowed")

@@ -14,7 +14,7 @@ import (
 // an anonymous request to a public action runs as the entity owner, so the
 // limit must derive from the authenticated user and never from the owner.
 func TestMultipartMaximumAnonymous(t *testing.T) {
-	got := web_multipart_maximum(nil)
+	got := web_multipart_maximum(nil, nil)
 	want := int64(web_body_maximum + web_multipart_framing)
 	if got != want {
 		t.Errorf("anonymous multipart maximum = %d, want %d", got, want)

@@ -281,7 +281,7 @@ func TestMultipartCeilingCountsBytesInFlight(t *testing.T) {
 		t.Fatalf("creating the storage directory: %v", err)
 	}
 
-	baseline := web_multipart_maximum(user)
+	baseline := web_multipart_maximum(nil, user)
 	if baseline <= 0 {
 		t.Fatalf("baseline ceiling = %d, want a positive quota-derived bound", baseline)
 	}
@@ -293,7 +293,7 @@ func TestMultipartCeilingCountsBytesInFlight(t *testing.T) {
 	if total := multipart_inflight_total(user.UID); total != flight {
 		t.Fatalf("in-flight total = %d, want %d", total, flight)
 	}
-	if got := web_multipart_maximum(user); got != baseline-flight {
+	if got := web_multipart_maximum(nil, user); got != baseline-flight {
 		t.Errorf("ceiling with %d bytes in flight = %d, want %d - a second upload was handed the whole quota again",
 			flight, got, baseline-flight)
 	}
@@ -303,7 +303,7 @@ func TestMultipartCeilingCountsBytesInFlight(t *testing.T) {
 	if err := os.MkdirAll(user_storage_dir(other), 0755); err != nil {
 		t.Fatalf("creating the storage directory: %v", err)
 	}
-	if got := web_multipart_maximum(other); got != baseline {
+	if got := web_multipart_maximum(nil, other); got != baseline {
 		t.Errorf("another user's ceiling = %d, want the unreduced %d", got, baseline)
 	}
 }

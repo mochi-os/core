@@ -9,8 +9,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -292,5 +294,95 @@ func TestRestoreIntegrityGuard(t *testing.T) {
 	}
 	if bad != "corrupt.db" {
 		t.Fatalf("corrupt DB not rejected (bad=%q, want corrupt.db)", bad)
+	}
+}
+
+// restore_panic_bundle stages, for uid, what web_auth_restore hands the
+// restore goroutine: a bundle whose user.db is already at version 1 yet has no
+// accounts table, a person entity with its key, and a connected-account secret.
+// The secret's update then meets the missing table and restore_auth panics.
+func restore_panic_bundle(t *testing.T, uid string) (string, export_account, map[string]string, *export_secrets) {
+	t.Helper()
+	directory := purge_test_env(t, uid)
+	// The core tables the purge's entity tombstone writes to.
+	db_open("db/directory.db").exec("create table if not exists entries (entity text not null, peer text not null, primary key (entity, peer))")
+	db_open("db/queue.db").exec("create table if not exists queue (id text primary key, from_entity text not null, to_entity text not null)")
+	bundle := filepath.Join(directory, "restore", "staging")
+	if err := os.MkdirAll(bundle, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite3", filepath.Join(bundle, "user.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{"create table preferences (name text primary key, value text not null)", "pragma user_version=1"} {
+		if _, err := raw.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw.Close()
+
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := base58_encode(public)
+	account := export_account{Entities: []export_entity{{ID: id, Class: "person", Name: "Panic", Privacy: "private"}}}
+	keys := map[string]string{id: base58_encode(private)}
+	secrets := &export_secrets{Accounts: []export_account_secret{{Id: "connected", Data: "{}"}}}
+	return bundle, account, keys, secrets
+}
+
+// TestRestorePanicFailsTheRestore: the restore runs on a goroutine of its own,
+// where a panic nothing recovers ends the process. A bundle that makes a step
+// panic must instead fail its restore and remove the placeholder account, as
+// any other failure does - and the removal must survive the same bundle's
+// user.db, which also lacks the group memberships table.
+func TestRestorePanicFailsTheRestore(t *testing.T) {
+	// The bundle must really reach the panic, or the guard is never exercised.
+	bundle, account, keys, secrets := restore_panic_bundle(t, "u-probe")
+	panicked := func() (fault any) {
+		defer func() { fault = recover() }()
+		restore_apply("u-probe", bundle, export_manifest{}, account, keys, secrets)
+		return nil
+	}()
+	if !strings.Contains(fmt.Sprint(panicked), "no such table: accounts") {
+		t.Fatalf("the crafted bundle no longer makes restore_auth panic (got %v); the test proves nothing", panicked)
+	}
+
+	uid := "u-panic"
+	bundle, account, keys, secrets = restore_panic_bundle(t, uid)
+	restore_run(uid, bundle, export_manifest{}, account, keys, secrets)
+
+	users := db_open("db/users.db")
+	if exists, _ := users.exists("select 1 from users where uid=?", uid); exists {
+		t.Error("the placeholder account survived a restore that panicked")
+	}
+	if exists, _ := users.exists("select 1 from entities where user=?", uid); exists {
+		t.Error("the restored entity survived a restore that panicked")
+	}
+	if _, err := os.Stat(filepath.Join(data_dir, "users", uid)); !os.IsNotExist(err) {
+		t.Errorf("the account's directory survived a restore that panicked: %v", err)
+	}
+}
+
+// TestRestoreCleanupSurvivesAPanickingPurge: the startup sweep removes
+// placeholders a restart left behind, on a goroutine of its own. A placeholder
+// whose purge panics must not end the process at every start, nor keep the
+// placeholders after it from being removed.
+func TestRestoreCleanupSurvivesAPanickingPurge(t *testing.T) {
+	purge_test_env(t, "u-first")
+	users := db_open("db/users.db")
+	users.exec("insert into users (uid, username) values ('u-second', 'u-second@example.com')")
+	users.exec("update users set status='pending-restore'")
+	sessions := db_open("db/sessions.db")
+	sessions.exec("insert into sessions (user) values ('u-first'), ('u-second')")
+	// Every purge now panics part way, after it has ended the sessions.
+	users.exec("drop table totp")
+
+	restore_cleanup_orphans()
+
+	if exists, _ := sessions.exists("select 1 from sessions where user='u-second'"); exists {
+		t.Error("the sweep stopped at the first placeholder whose purge panicked")
 	}
 }

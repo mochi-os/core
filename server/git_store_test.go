@@ -44,13 +44,10 @@ import (
 	"github.com/go-git/go-git/v5/storage/memory"
 )
 
-// store_packs lists a repository's packs.
+// store_packs lists a repository's live packs.
 func store_packs(t *testing.T, path string) []string {
 	t.Helper()
-	found, err := filepath.Glob(filepath.Join(path, "objects", "pack", "pack-*.pack"))
-	if err != nil {
-		t.Fatalf("listing packs: %v", err)
-	}
+	found := git_packs(path)
 	sort.Strings(found)
 	return found
 }

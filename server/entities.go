@@ -212,10 +212,14 @@ func (e *Entity) delete() {
 	queue.exec("delete from queue where from_entity=?", e.ID)
 	queue.exec("delete from queue where to_entity=?", e.ID)
 
-	// Remove from group memberships
+	// Remove from group memberships. The user's database may lack the table:
+	// a restored account's user.db is the user's own upload, and the purge
+	// that removes a failed restore must not stop on it.
 	if e.User != "" {
 		udb := db_open(fmt.Sprintf("users/%s/user.db", e.User))
-		udb.exec("delete from group_members where member=? and type='user'", e.ID)
+		if err := udb.exec_e("delete from group_members where member=? and type='user'", e.ID); err != nil {
+			warn("Entity %q group memberships not removed: %v", e.ID, err)
+		}
 	}
 
 	// Remove the entity row.

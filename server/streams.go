@@ -7,6 +7,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	cbor "github.com/fxamacker/cbor/v2"
 	sl "go.starlark.net/starlark"
@@ -543,7 +544,7 @@ func (s *Stream) sl_read_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	}
 
 	// Check storage limit and calculate remaining space (admins exempt)
-	remaining, err := user_storage_remaining(user)
+	remaining, err := storage_remaining(storage_request_of(t), user)
 	if err != nil {
 		s.close_read()
 		return sl_error(fn, "unable to measure storage: %v", err)
@@ -575,8 +576,9 @@ func (s *Stream) sl_read_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		}
 	}
 
-	// Open file within root for writing
-	f, err := root.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	// Open file within root for writing. The truncation frees what the file
+	// held, and what is written is charged as it lands (storage_meter).
+	f, err := storage_create(root, user.UID, file)
 	if err != nil {
 		s.close_read()
 		return sl_error(fn, "unable to write file")
@@ -592,9 +594,16 @@ func (s *Stream) sl_read_file(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		remaining = int64(maximum) + 1
 	}
 	limited := io.LimitReader(reader, remaining)
-	n, err := io.Copy(f, limited)
+	n, err := io.Copy(&storage_meter{writer: f, owner: user.UID}, limited)
 	f.Close()
 
+	// Another write took the room this one measured: what it stored is removed
+	// and given back.
+	if errors.Is(err, storage_exceeded) {
+		s.close_read()
+		storage_remove(root, user.UID, file)
+		return sl_error(fn, "storage limit exceeded")
+	}
 	if err != nil {
 		s.close_read()
 		return sl_error(fn, "unable to save file %q", file)

@@ -1209,3 +1209,87 @@ func TestDavReadOnlyCollectionsAdvertiseThePrivilegeSet(t *testing.T) {
 		}
 	}
 }
+
+// dav_test_tags reads each response's CS:getctag and DAV:getetag from a
+// multistatus, by href.
+func dav_test_tags(t *testing.T, body []byte) (map[string]string, map[string]string) {
+	t.Helper()
+	var status struct {
+		Responses []struct {
+			Href     string `xml:"DAV: href"`
+			Propstat []struct {
+				Status string `xml:"DAV: status"`
+				Prop   struct {
+					Change *string `xml:"http://calendarserver.org/ns/ getctag"`
+					Entity *string `xml:"DAV: getetag"`
+				} `xml:"DAV: prop"`
+			} `xml:"DAV: propstat"`
+		} `xml:"DAV: response"`
+	}
+	if err := xml.Unmarshal(body, &status); err != nil {
+		t.Fatalf("multistatus: %v\n%s", err, body)
+	}
+	changes, entities := map[string]string{}, map[string]string{}
+	for _, response := range status.Responses {
+		for _, propstat := range response.Propstat {
+			if !strings.Contains(propstat.Status, "200") {
+				continue
+			}
+			if propstat.Prop.Change != nil {
+				changes[response.Href] = *propstat.Prop.Change
+			}
+			if propstat.Prop.Entity != nil {
+				entities[response.Href] = *propstat.Prop.Entity
+			}
+		}
+	}
+	return changes, entities
+}
+
+// TestDavCollectionsAnswerTheirChangeTag: a client compares a collection's
+// tag - CS:getctag, or the collection's own getetag - before it lists the
+// objects, and lists them only when it moved. The tag is the version the app
+// gives; a collection given none, the birthdays calendar, whose events follow
+// another app and the date, answers neither, so a client always lists it.
+func TestDavCollectionsAnswerTheirChangeTag(t *testing.T) {
+	propfind := `<?xml version="1.0"?><D:propfind xmlns:D="DAV:" xmlns:CS="http://calendarserver.org/ns/"><D:prop><CS:getctag/><D:getetag/></D:prop></D:propfind>`
+	for _, route := range []struct{ feature, home string }{
+		{"caldav", "/people/caldav/fp1/calendars/"},
+		{"carddav", "/people/carddav/fp1/books/"},
+	} {
+		fake := new_dav_fake_app("default", "birthdays")
+		fake.collections[0]["version"] = int64(7)
+		server := dav_test_server(t, route.feature, fake)
+		tags := func(depth string, target string) (map[string]string, map[string]string) {
+			t.Helper()
+			r := dav_raw(t, server, "PROPFIND", target, propfind, map[string]string{"Depth": depth, "Content-Type": "application/xml"})
+			body, _ := io.ReadAll(r.Body)
+			if r.StatusCode != http.StatusMultiStatus {
+				t.Fatalf("%s propfind: %d %s", route.feature, r.StatusCode, body)
+			}
+			return dav_test_tags(t, body)
+		}
+
+		changes, entities := tags("1", route.home)
+		if got := changes[route.home+"default/"]; got != "7" {
+			t.Errorf("THE POINT: %s: the collection's getctag is %q, want its version 7", route.feature, got)
+		}
+		if got := entities[route.home+"default/"]; got != `"7"` {
+			t.Errorf("THE POINT: %s: the collection's getetag is %q, want its version quoted", route.feature, got)
+		}
+		if got, found := changes[route.home+"birthdays/"]; found {
+			t.Errorf("THE POINT: %s: a collection with no version answered getctag %q", route.feature, got)
+		}
+		if got, found := entities[route.home+"birthdays/"]; found {
+			t.Errorf("THE POINT: %s: a collection with no version answered getetag %q", route.feature, got)
+		}
+
+		// A write moves the version, and the tag with it, on the collection
+		// itself as well as in its home's listing.
+		fake.collections[0]["version"] = int64(8)
+		changes, _ = tags("0", route.home+"default/")
+		if got := changes[route.home+"default/"]; got != "8" {
+			t.Errorf("THE POINT: %s: after a write the getctag is %q, want 8", route.feature, got)
+		}
+	}
+}

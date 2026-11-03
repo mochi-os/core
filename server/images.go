@@ -14,7 +14,9 @@ import (
 	"github.com/rwcarlsen/goexif/exif"
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
+	_ "golang.org/x/image/webp"
 	"image"
+	"image/draw"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
@@ -49,18 +51,36 @@ func is_image(file string) bool {
 }
 
 // Image variant sizes (longest side, never upscaled). Thumbnails suit small
-// chips and lists; previews suit full-width card and gallery tiles on
+// chips and lists; mediums suit card and gallery tiles, which a 1280 pixel
+// preview oversizes several times over; previews suit full-width views on
 // high-density displays.
 const (
 	thumbnail_size = 250
+	medium_size    = 640
 	preview_size   = 1280
 )
 
+// image_kinds lists the variants mochi.image.variant renders, smallest first.
+var image_kinds = []string{"thumbnail", "medium", "preview"}
+
 func variant_size(variant string) uint {
-	if variant == "preview" {
+	switch variant {
+	case "medium":
+		return medium_size
+	case "preview":
 		return preview_size
 	}
 	return thumbnail_size
+}
+
+// image_kind reports whether kind is a variant mochi.image.variant renders.
+func image_kind(kind string) bool {
+	for _, k := range image_kinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // Bound the memory one variant render can hold: the file cap covers the
@@ -159,7 +179,7 @@ func variant_render(path string, variant string, thumb string) (string, error) {
 		}
 	}
 
-	i, format, err := image.Decode(bytes.NewReader(b))
+	i, _, err := image.Decode(bytes.NewReader(b))
 	if err != nil {
 		// A decode failure reflects the input bytes (corrupt/truncated upload, or
 		// an image-extensioned file in a format the decoder doesn't support), not
@@ -194,15 +214,17 @@ func variant_render(path string, variant string, thumb string) (string, error) {
 		}
 	}
 
-	switch format {
-	case "gif":
+	// The destination's extension chooses the encoder, never the format the
+	// source decoded as: the name is fixed before the render, and serving paths
+	// type the variant by it. A source whose bytes are not what its name says
+	// is re-encoded as the name says.
+	switch strings.ToLower(filepath.Ext(thumb)) {
+	case ".gif":
 		err = gif.Encode(o, t, nil)
-	case "jpeg":
-		err = jpeg.Encode(o, t, &jpeg.Options{Quality: 80})
-	case "png":
+	case ".jpg", ".jpeg":
+		err = jpeg.Encode(o, variant_opaque(t), &jpeg.Options{Quality: 80})
+	case ".png":
 		err = png.Encode(o, t)
-	case "webp":
-		err = imaging.Encode(o, t, imaging.JPEG, imaging.JPEGQuality(80))
 	default:
 		close_and_remove_tmp(true)
 		return "", nil
@@ -229,14 +251,40 @@ func variant_render(path string, variant string, thumb string) (string, error) {
 	return thumb, nil
 }
 
+// variant_opaque composites an image with transparency onto white for an
+// encoder with no alpha channel: JPEG would otherwise write a transparent
+// WebP's clear pixels as black.
+func variant_opaque(i image.Image) image.Image {
+	if o, ok := i.(interface{ Opaque() bool }); ok && o.Opaque() {
+		return i
+	}
+	canvas := image.NewRGBA(i.Bounds())
+	draw.Draw(canvas, canvas.Bounds(), image.White, image.Point{}, draw.Src)
+	draw.Draw(canvas, canvas.Bounds(), i, i.Bounds().Min, draw.Over)
+	return canvas
+}
+
 // api_image is the mochi.image namespace.
 var api_image = sls.FromStringDict(sl.String("mochi.image"), sl.StringDict{
+	"kinds":   sl.NewBuiltin("mochi.image.kinds", api_image_kinds),
 	"variant": sl.NewBuiltin("mochi.image.variant", api_image_variant),
 })
 
+// mochi.image.kinds() -> tuple: The variant kinds mochi.image.variant renders,
+// smallest first. An app asking for a kind a core added later checks for it
+// here, since variant raises for a kind it does not know.
+func api_image_kinds(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs); err != nil {
+		return sl_error(fn, "syntax: kinds()")
+	}
+	return sl_encode(image_kinds), nil
+}
+
 // mochi.image.variant(file, kind) -> name or None: Generate a downscaled
-// variant ("thumbnail" or "preview") of an image in the app's file storage,
-// returning a cache entry name for a.write.cache / e.write.cache. Variants are
+// variant ("thumbnail", "medium" or "preview") of an image in the app's file
+// storage, returning a cache entry name for a.write.cache / e.write.cache. The
+// name ends in the extension of the format the variant is encoded in, which is
+// the source's own except for WebP, whose variants are JPEG. Variants are
 // re-computable, so they live in cache space and may be evicted; the next call
 // regenerates. Returns None for a non-image, a missing source, or a decode
 // failure. The decode is capped against decompression bombs.
@@ -248,8 +296,8 @@ func api_image_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if !valid(file, "filepath") {
 		return sl_error(fn, "invalid file %q", file)
 	}
-	if kind != "thumbnail" && kind != "preview" {
-		return sl_error(fn, "kind must be thumbnail or preview")
+	if !image_kind(kind) {
+		return sl_error(fn, "kind must be one of %s", strings.Join(image_kinds, ", "))
 	}
 	if !is_image(file) {
 		return sl.None, nil
@@ -265,7 +313,8 @@ func api_image_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	source := filepath.Join(api_file_base(user, app), file)
-	if !file_exists(source) {
+	original, err := os.Stat(source)
+	if err != nil || original.IsDir() {
 		return sl.None, nil
 	}
 
@@ -277,23 +326,45 @@ func api_image_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	if file_exists(destination) {
-		return sl.String(name), nil
+	// A variant made before its source was last written is of the image the
+	// source replaced - a contact's photo fetched again into the same name,
+	// in the same format or another whose variants share it (WebP's are JPEG)
+	// - and is made again. A read moves an entry's time on; callers ask for
+	// the variant before they read it.
+	var previous int64
+	if information, err := os.Stat(destination); err == nil {
+		if !information.ModTime().Before(original.ModTime()) {
+			return sl.String(name), nil
+		}
+		previous = information.Size()
 	}
 	if result, err := variant_render(source, kind, destination); err != nil || result == "" {
 		return sl.None, nil
 	}
 	// Adds bytes to the cache without going through cache_write_file, so it
-	// accounts for them itself. The entry is new - an existing one returned above.
+	// accounts for them itself, less the stale entry it replaced.
 	if information, err := os.Stat(destination); err == nil {
-		cache_admit(information.Size())
+		cache_admit(information.Size() - previous)
 	}
 	return sl.String(name), nil
 }
 
+// variant_name is a variant's cache entry name: the source's name with the
+// kind spliced in ahead of the extension of the format the variant is encoded
+// in. lib/starlark/attachments.star derives the same string to invalidate it.
 func variant_name(name string, variant string) string {
 	ext := filepath.Ext(name)
-	return strings.TrimSuffix(name, ext) + "_" + variant + ext
+	return strings.TrimSuffix(name, ext) + "_" + variant + variant_extension(ext)
+}
+
+// variant_extension is the extension a variant of a source with extension ext
+// is encoded under. Every format re-encodes as itself except WebP, which Go can
+// decode but not encode, so its variants are JPEG.
+func variant_extension(ext string) string {
+	if strings.EqualFold(ext, ".webp") {
+		return ".jpg"
+	}
+	return ext
 }
 
 func fix_orientation(img image.Image, orientation int) image.Image {

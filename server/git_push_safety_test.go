@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha1"
 	"io"
 	"net/http/httptest"
@@ -29,12 +30,14 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/go-git/go-git/v5/storage/memory"
 )
 
@@ -761,5 +764,252 @@ func TestGitPackedTidyWaitsForTheLock(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(file); string(data) != a+" refs/tags/1.0\n^"+a+"\n" {
 		t.Errorf("packed-refs after the tidy: %q", data)
+	}
+}
+
+// push_noise answers bytes that do not compress, so a pack of them is as large
+// as they are.
+func push_noise(t *testing.T, size int) []byte {
+	t.Helper()
+	data := make([]byte, size)
+	if _, err := rand.Read(data); err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// push_route sends a push of one new blob on a new branch through the
+// receive-pack route, the budget measured as the route measures it, and
+// answers the branch's status, or the route's refusal.
+func push_route(t *testing.T, user *User, repo string, branch string, body []byte) string {
+	t.Helper()
+	hash, pack := push_blob(t, body)
+	name := plumbing.NewBranchReferenceName(branch)
+	request := packp.NewReferenceUpdateRequest()
+	request.Capabilities.Set(capability.ReportStatus)
+	request.Commands = []*packp.Command{{Name: name, Old: plumbing.ZeroHash, New: hash}}
+	request.Packfile = io.NopCloser(bytes.NewReader(pack))
+	var encoded bytes.Buffer
+	if err := request.Encode(&encoded); err != nil {
+		t.Fatalf("encode push: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest("POST", "/git-receive-pack", &encoded)
+	git_service_rpc(context, git_repo_path(user, test_app, repo), "git-receive-pack", user)
+	report := packp.NewReportStatus()
+	if err := report.Decode(bytes.NewReader(recorder.Body.Bytes())); err != nil {
+		return "refused: " + recorder.Body.String()
+	}
+	for _, status := range report.CommandStatuses {
+		if status.ReferenceName == name {
+			return status.Status
+		}
+	}
+	return "refused: " + report.UnpackStatus
+}
+
+// push_window sets an account up with room for one push of size bytes and
+// not two, and answers its user.
+func push_window(t *testing.T, repo string, size int) *User {
+	t.Helper()
+	user, _ := create_git_test_env(t)
+	if err := git_init(user, test_app, repo); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	used, err := dir_size(user_storage_dir(user))
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := file_maximum_storage
+	file_maximum_storage = used + int64(size)*3/2
+	t.Cleanup(func() { file_maximum_storage = previous })
+	return user
+}
+
+// TestPushSeesTheEarlierPushInItsWindow. The owner's storage is walked at
+// most once a minute, and a push measures its room from that figure. Before
+// the figure, each push walked the storage and saw what the last one stored;
+// the figure must carry it, or every push inside the minute is handed the
+// same room and an account fills its quota once per push.
+func TestPushSeesTheEarlierPushInItsWindow(t *testing.T) {
+	size := 64 << 10
+	user := push_window(t, "window", size)
+	if status := push_route(t, user, "window", "first", push_noise(t, size)); status != "ok" {
+		t.Fatalf("setup: the first push, which fits, was answered %q", status)
+	}
+	if status := push_route(t, user, "window", "second", push_noise(t, size)); status == "ok" {
+		t.Error("THE POINT: a second push inside the window passed on the room the first had filled")
+	}
+	if used, _ := dir_size(user_storage_dir(user)); used > file_maximum_storage {
+		t.Errorf("THE POINT: the account stores %d bytes, past its quota of %d", used, file_maximum_storage)
+	}
+}
+
+// TestPushWaitingBehindAnotherSeesItsBytes. A push's room is measured before
+// it takes the owner's push lock, so a push that waited there behind another
+// carries a measurement from before the other stored. It measures again
+// under the lock.
+func TestPushWaitingBehindAnotherSeesItsBytes(t *testing.T) {
+	size := 64 << 10
+	user := push_window(t, "behind", size)
+	if status := push_route(t, user, "behind", "first", push_noise(t, size)); status != "ok" {
+		t.Fatalf("setup: the first push, which fits, was answered %q", status)
+	}
+	// push_report hands the route a budget of a megabyte: the room measured
+	// before the first push stored.
+	hash, pack := push_blob(t, push_noise(t, size))
+	name := plumbing.NewBranchReferenceName("second")
+	report := push_report(t, user, "behind", pack, &packp.Command{Name: name, Old: plumbing.ZeroHash, New: hash})
+	for _, status := range report.CommandStatuses {
+		if status.ReferenceName == name && status.Status == "ok" {
+			t.Error("THE POINT: a push measured before the lock passed on room the push ahead of it had filled")
+		}
+	}
+}
+
+// TestPushStoredCountsInTheFigure. What a push stores - a pack kept as it
+// came, replacing an index a stopped push left, or objects promoted one by
+// one - counts in the storage figure as a walk would count it.
+func TestPushStoredCountsInTheFigure(t *testing.T) {
+	user, _ := create_git_test_env(t)
+	if err := git_init(user, test_app, "counted"); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	path := git_repo_path(user, test_app, "counted")
+	compare := func(what string) {
+		t.Helper()
+		walked, err := dir_size(user_storage_dir(user))
+		if err != nil {
+			t.Fatal(err)
+		}
+		found, _ := storage_figures.Load(user.UID)
+		figure := found.(*storage_figure)
+		figure.lock.Lock()
+		used := figure.used
+		figure.lock.Unlock()
+		if used != walked {
+			t.Errorf("THE POINT: after %s the figure is %d bytes and a walk finds %d", what, used, walked)
+		}
+	}
+
+	// A kept pack, over the index a push of the same pack left when it stopped.
+	staging := t.TempDir()
+	_, pack := push_blob(t, push_noise(t, 20000))
+	index, err := git_receive(bytes.NewReader(pack), staging, path, 0)
+	if err != nil || index == nil {
+		t.Fatalf("setup: git_receive kept nothing: %v", err)
+	}
+	stale := filepath.Join(path, "objects", "pack", "pack-"+plumbing.Hash(index.PackfileChecksum).String()+".idx")
+	if err := os.MkdirAll(filepath.Dir(stale), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, make([]byte, 3000), 0444); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(stale, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := user_storage_remaining(user); err != nil {
+		t.Fatal(err)
+	}
+	if err := git_store(staging, path, index); err != nil {
+		t.Fatalf("git_store: %v", err)
+	}
+	compare("a kept pack")
+
+	// Objects promoted one by one.
+	staging = t.TempDir()
+	loose := filesystem.NewStorage(osfs.New(staging), cache.NewObjectLRUDefault())
+	for i := range 3 {
+		store_blob(t, loose, push_noise(t, 5000+i))
+	}
+	if err := git_store(staging, path, nil); err != nil {
+		t.Fatalf("git_store: %v", err)
+	}
+	compare("promoted objects")
+}
+
+// push_walking reads a push's body and, once most of it has been read and
+// staged, runs walk: a walk of the owner's storage made by another request
+// while the push is under way.
+type push_walking struct {
+	reader io.Reader
+	at     int
+	read   int
+	walk   func()
+}
+
+func (p *push_walking) Read(data []byte) (int, error) {
+	if p.walk != nil && p.read >= p.at {
+		p.walk()
+		p.walk = nil
+	}
+	n, err := p.reader.Read(data)
+	p.read += n
+	return n, err
+}
+
+// TestPushStagedDuringAWalkCountedOnce. A push is staged beside the
+// repository, inside the owner's storage, where a walk made while it runs
+// counts it; the pack is counted again when it lands. The figure must not keep
+// both: the owner would be refused room they have until the figure expired.
+func TestPushStagedDuringAWalkCountedOnce(t *testing.T) {
+	user, _ := create_git_test_env(t)
+	if err := git_init(user, test_app, "staged"); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	if _, err := user_storage_remaining(user); err != nil {
+		t.Fatal(err)
+	}
+	hash, pack := push_blob(t, push_noise(t, 256<<10))
+	name := plumbing.NewBranchReferenceName("staged")
+	request := packp.NewReferenceUpdateRequest()
+	request.Capabilities.Set(capability.ReportStatus)
+	request.Commands = []*packp.Command{{Name: name, Old: plumbing.ZeroHash, New: hash}}
+	request.Packfile = io.NopCloser(bytes.NewReader(pack))
+	var encoded bytes.Buffer
+	if err := request.Encode(&encoded); err != nil {
+		t.Fatalf("encode push: %v", err)
+	}
+	walked := false
+	body := &push_walking{reader: &encoded, at: encoded.Len() * 3 / 4, walk: func() {
+		found, _ := storage_figures.Load(user.UID)
+		figure := found.(*storage_figure)
+		figure.lock.Lock()
+		figure.measured = figure.measured.Add(-storage_lifetime)
+		figure.lock.Unlock()
+		if _, err := user_storage_remaining(user); err != nil {
+			t.Error(err)
+		}
+		walked = true
+	}}
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest("POST", "/git-receive-pack", body)
+	git_service_rpc(context, git_repo_path(user, test_app, "staged"), "git-receive-pack", user)
+	report := packp.NewReportStatus()
+	if err := report.Decode(bytes.NewReader(recorder.Body.Bytes())); err != nil || len(report.CommandStatuses) != 1 || report.CommandStatuses[0].Status != "ok" {
+		t.Fatalf("setup: the push was not stored: %v %q", err, recorder.Body.String())
+	}
+	if !walked {
+		t.Fatal("setup: no walk ran while the push was staged")
+	}
+
+	if _, err := user_storage_remaining(user); err != nil {
+		t.Fatal(err)
+	}
+	walk, err := dir_size(user_storage_dir(user))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, _ := storage_figures.Load(user.UID)
+	figure := found.(*storage_figure)
+	figure.lock.Lock()
+	used := figure.used
+	figure.lock.Unlock()
+	if used != walk {
+		t.Errorf("THE POINT: after a push a walk ran beside, the figure is %d bytes and a walk finds %d", used, walk)
 	}
 }

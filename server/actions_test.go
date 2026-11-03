@@ -632,3 +632,119 @@ func TestWriteFileUnresolvedRouteOwnerFailsClosed(t *testing.T) {
 		t.Errorf("fell back to the requester's own file: %q", body)
 	}
 }
+
+// write_stream_serve relays body through a.write.stream for a request with
+// the given method and If-None-Match, the action having set etag (none when
+// empty), answering the recorder, the status gin will send and whether the far
+// end's stream was closed.
+func write_stream_serve(t *testing.T, method string, match string, etag string, body string) (*httptest.ResponseRecorder, int, bool) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(method, "/people/entity/-/avatar", nil)
+	if match != "" {
+		c.Request.Header.Set("If-None-Match", match)
+	}
+	a := &Action{web: c}
+	a.web.Header("Content-Type", "image/jpeg")
+	a.web.Header("Last-Modified", "Mon, 02 Nov 2026 10:00:00 GMT")
+	if etag != "" {
+		a.web.Header("ETag", etag)
+	}
+	reader := &write_stream_closer{Reader: strings.NewReader(body)}
+	stream := &Stream{reader: reader}
+	thread := &sl.Thread{Name: "test"}
+	if _, err := a.sl_write_stream(thread, sl.NewBuiltin("write.stream", nil), sl.Tuple{stream}, nil); err != nil {
+		t.Fatalf("a.write.stream: %v", err)
+	}
+	return w, c.Writer.Status(), reader.closed
+}
+
+type write_stream_closer struct {
+	*strings.Reader
+	closed bool
+}
+
+func (c *write_stream_closer) Close() error {
+	c.closed = true
+	return nil
+}
+
+// TestWriteStreamRevalidates: a browser revalidating a relayed avatar with the
+// ETag the action set is told it has not changed, with no body, and the far
+// end's stream is closed unread - as a.write.file and a.write.cache answer
+// through http.ServeContent. Every other request is relayed in full.
+func TestWriteStreamRevalidates(t *testing.T) {
+	const tag = `"1730000000-5"`
+	for _, c := range []struct {
+		name   string
+		method string
+		match  string
+		etag   string
+		status int
+	}{
+		{"matching", "GET", tag, tag, 304},
+		{"weak", "GET", `W/"1730000000-5"`, tag, 304},
+		{"in a list", "GET", `"other", "1730000000-5"`, tag, 304},
+		{"star", "GET", "*", tag, 304},
+		{"head", "HEAD", tag, tag, 304},
+		{"another method, which the action has already performed", "POST", tag, tag, 200},
+		{"not matching", "GET", `"1730000000-6"`, tag, 200},
+		{"no validator sent", "GET", "", tag, 200},
+		{"no ETag set", "GET", tag, "", 200},
+		{"a malformed list", "GET", `1730000000-5`, tag, 200},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w, status, closed := write_stream_serve(t, c.method, c.match, c.etag, "AVATAR")
+			if status != c.status {
+				t.Fatalf("answered %d, want %d", status, c.status)
+			}
+			if c.status == 200 {
+				if w.Body.String() != "AVATAR" {
+					t.Errorf("relayed %q, want the whole body", w.Body.String())
+				}
+				return
+			}
+			if w.Body.Len() != 0 {
+				t.Errorf("THE POINT: a %d carried %d bytes of body", c.status, w.Body.Len())
+			}
+			if !closed {
+				t.Error("the far end's stream was left open")
+			}
+			if c.status == 304 {
+				if w.Header().Get("Content-Type") != "" || w.Header().Get("Last-Modified") != "" {
+					t.Errorf("a 304 carried Content-Type %q and Last-Modified %q", w.Header().Get("Content-Type"), w.Header().Get("Last-Modified"))
+				}
+				if w.Header().Get("ETag") != tag {
+					t.Errorf("a 304 carried ETag %q, want the validator it confirmed", w.Header().Get("ETag"))
+				}
+			}
+		})
+	}
+}
+
+// TestEtagMatch is the comparison by itself, against RFC 9110's examples.
+func TestEtagMatch(t *testing.T) {
+	for _, c := range []struct {
+		header, etag string
+		want         bool
+	}{
+		{`"xyzzy"`, `"xyzzy"`, true},
+		{`W/"xyzzy"`, `"xyzzy"`, true},
+		{`"xyzzy"`, `W/"xyzzy"`, true},
+		{`"r2d2xxxx", "xyzzy", "c3piozzzz"`, `"xyzzy"`, true},
+		{` , "xyzzy"`, `"xyzzy"`, true},
+		{`*`, `"xyzzy"`, true},
+		{`"xyzzy"`, `"xyzzz"`, false},
+		{`"xyzzy`, `"xyzzy"`, false},
+		{`xyzzy`, `"xyzzy"`, false},
+		{``, `"xyzzy"`, false},
+		{`"xyzzy"`, `xyzzy`, false},
+		{`*`, `xyzzy`, false},
+		{`"xyzzy"`, `"xyzzy" trailing`, false},
+	} {
+		if got := etag_match(c.header, c.etag); got != c.want {
+			t.Errorf("etag_match(%q, %q) = %v, want %v", c.header, c.etag, got, c.want)
+		}
+	}
+}

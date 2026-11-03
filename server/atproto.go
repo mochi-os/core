@@ -467,13 +467,20 @@ func atproto_keys_replaced(ctx context.Context, user *User, id string) error {
 }
 
 // atproto_recovery_added puts the recovery key the user has just made above
-// the server's own among the identity's rotation keys.
-func atproto_recovery_added(ctx context.Context, user *User, id string) error {
+// the server's own among the identity's rotation keys, in place of any before
+// it. The key is not kept yet, so it is given here.
+func atproto_recovery_added(ctx context.Context, user *User, id string, recovery string) error {
 	row := account_hosted_get(user, id)
 	if row == nil || atproto_did(row) == "" {
 		return fmt.Errorf("account has no identity")
 	}
-	return plc_update(ctx, user, id, atproto_did(row), func(op map[string]any) {})
+	rotation := keypair_get(user, id, key_rotation)
+	if rotation == nil {
+		return fmt.Errorf("account has no rotation key")
+	}
+	return plc_update(ctx, user, id, atproto_did(row), func(op map[string]any) {
+		op["rotationKeys"] = []any{recovery, rotation.Public}
+	})
 }
 
 // atproto_notified is when a commit on each domain last asked the relays to

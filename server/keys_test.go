@@ -156,10 +156,14 @@ func TestAccountKeys(t *testing.T) {
 		t.Errorf("an account without keys cannot be replaced: %v", err)
 	}
 
-	public, private, err := keypair_recovery(alice, "b1")
+	public, private, err := keypair_recovery()
 	if err != nil {
 		t.Fatal(err)
 	}
+	if keypair_get(alice, "b1", key_recovery) != nil {
+		t.Error("a recovery key is kept before the identity lists it")
+	}
+	keypair_recovery_keep(alice, "b1", public)
 	if !strings.HasPrefix(public, "did:key:z") || len(private) != 64 {
 		t.Errorf("recovery key: public %q, private %d hex characters", public, len(private))
 	}
@@ -167,7 +171,8 @@ func TestAccountKeys(t *testing.T) {
 	if recovery == nil || recovery.Private != "" || recovery.Public != public {
 		t.Errorf("the recovery key is kept public-only: %+v", recovery)
 	}
-	public2, _, _ := keypair_recovery(alice, "b1")
+	public2, _, _ := keypair_recovery()
+	keypair_recovery_keep(alice, "b1", public2)
 	if keypair_get(alice, "b1", key_recovery).Public != public2 || len(keypairs(alice, "b1")) != 3 {
 		t.Error("a new recovery key replaces the last")
 	}

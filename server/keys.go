@@ -347,19 +347,25 @@ func keypairs_replace(user *User, account string) error {
 	return nil
 }
 
-// keypair_recovery makes a recovery key for a Bluesky account: core keeps
-// the public half as a rotation key above its own, and the private half is
-// returned once, as hex, for the user to keep. A new one replaces the last.
-func keypair_recovery(user *User, account string) (string, string, error) {
+// keypair_recovery makes a recovery key for a Bluesky account: the public
+// half, as a did:key, and the private half as hex, for the user to keep. Core
+// keeps nothing of it until the identity lists it (keypair_recovery_keep):
+// every later identity operation lists the key kept, so one kept first would
+// replace, at the next, the key the user holds with one nobody does.
+func keypair_recovery() (string, string, error) {
 	private, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return "", "", err
 	}
-	public := key_did(&private.PublicKey)
+	return key_did(&private.PublicKey), hex.EncodeToString(private.D.FillBytes(make([]byte, 32))), nil
+}
+
+// keypair_recovery_keep keeps the public half of a recovery key the identity
+// now lists, as a rotation key above core's own, in place of the last.
+func keypair_recovery_keep(user *User, account string, public string) {
 	db := db_user(user, "user")
 	db.exec("delete from keys where account=? and kind=?", account, key_recovery)
 	db.exec("insert into keys (account, kind, algorithm, public, private, created) values (?, ?, ?, ?, '', ?)", account, key_recovery, key_p256, public, time.Now().Unix())
-	return public, hex.EncodeToString(private.D.FillBytes(make([]byte, 32))), nil
 }
 
 // keypairs_delete removes an account's keys when the account goes.
@@ -1337,14 +1343,16 @@ func api_account_key_recovery(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 	if row["type"] != "bluesky" {
 		return sl_error(fn, "only a Bluesky account has a recovery key")
 	}
-	public, private, err := keypair_recovery(user, row["id"].(string))
+	public, private, err := keypair_recovery()
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	// The identity lists the new key above the server's own, so the user
-	// can act on the account without this server.
-	if err := atproto_recovery_added(thread_context(t), user, row["id"].(string)); err != nil {
+	// can act on the account without this server; only then is it kept. One
+	// the directory refused leaves the key before it, which it still lists.
+	if err := atproto_recovery_added(thread_context(t), user, row["id"].(string), public); err != nil {
 		return sl_error(fn, "%v", refuse(http.StatusBadGateway, "errors.recovery_not_listed", map[string]any{"reason": refusal_reason(err)}))
 	}
+	keypair_recovery_keep(user, row["id"].(string), public)
 	return sl_encode(map[string]any{"public": public, "private": private}), nil
 }

@@ -45,6 +45,9 @@ type plc_fake struct {
 	lock    sync.Mutex
 	logs    map[string][]map[string]any
 	refused int
+	// down refuses every operation, as a directory that cannot be reached
+	// or is failing does.
+	down bool
 }
 
 func create_plc_fake(t *testing.T) *plc_fake {
@@ -58,6 +61,8 @@ func create_plc_fake(t *testing.T) *plc_fake {
 		defer f.lock.Unlock()
 		log := f.logs[did]
 		switch {
+		case r.Method == "POST" && len(parts) == 1 && f.down:
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 		case r.Method == "POST" && len(parts) == 1:
 			var op map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&op); err != nil {
@@ -864,6 +869,47 @@ func TestAtprotoKeys(t *testing.T) {
 	}
 	if plc.refused != 0 {
 		t.Errorf("the directory refused %d operations", plc.refused)
+	}
+}
+
+// TestAtprotoRecoveryRefused: a recovery key the directory does not take is
+// never kept, so the key the user already holds stays kept, still reads as
+// kept, and is still the one the next identity operation lists.
+func TestAtprotoRecoveryRefused(t *testing.T) {
+	alice, plc := create_atproto_test_env(t)
+	ctx := context.Background()
+	if err := atproto_account_create(ctx, alice, "b1"); err != nil {
+		t.Fatal(err)
+	}
+	did := atproto_did(account_hosted_get(alice, "b1"))
+	thread, fn := atproto_thread(alice), sl.NewBuiltin("test", nil)
+	made, err := api_account_key_recovery(thread, fn, sl.Tuple{sl.String("b1")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := sl_decode_map(made)["public"]
+
+	plc.lock.Lock()
+	plc.down = true
+	plc.lock.Unlock()
+	if _, err := api_account_key_recovery(thread, fn, sl.Tuple{sl.String("b1")}, nil); err == nil {
+		t.Fatal("a recovery key the directory refused was answered as made")
+	}
+	plc.lock.Lock()
+	plc.down = false
+	plc.lock.Unlock()
+	if kept := keypair_get(alice, "b1", key_recovery); kept == nil || kept.Public != held {
+		t.Errorf("THE POINT: after a refused recovery key the key kept is %+v, want the one the user holds, %v", kept, held)
+	}
+	if present := account_present(alice, account_hosted_get(alice, "b1")); present["recovery"] != true {
+		t.Errorf("the account no longer reads as having a recovery key: %v", present["recovery"])
+	}
+
+	if _, err := api_account_key_replace(thread, fn, sl.Tuple{sl.String("b1")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if keys := object_strings(plc.last(did)["rotationKeys"]); len(keys) != 2 || keys[0] != held {
+		t.Errorf("THE POINT: the next identity operation lists rotation keys %v, want the held recovery key %v first", keys, held)
 	}
 }
 

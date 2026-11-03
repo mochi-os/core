@@ -7,7 +7,10 @@
 package main
 
 import (
-	"fmt"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"math/rand"
 	rd "runtime/debug"
 	"slices"
@@ -401,7 +404,12 @@ func health_evict_dispatch(user *User, app *App, service, recipient string) {
 	// recycle a fresh retry ladder with its subscriber row in place.
 	if h.Evicted == 0 {
 		h.Evicted = moment
-		db.exec("update health set evicted=? where recipient=? and evicted=0", moment, recipient)
+		// A stamp queue.db refuses is logged, and the dispatch still goes: the
+		// next one stamps it. A panic would end the caller's loop over its
+		// evictions, skipping every one after it.
+		if err := db.exec_e("update health set evicted=? where recipient=? and evicted=0", moment, recipient); err != nil {
+			info("Queue unable to stamp the eviction of %q: %v", recipient, err)
+		}
 	}
 	if !record.warned && moment-h.Evicted >= health_evict_overdue {
 		record.warned = true
@@ -505,31 +513,97 @@ func queue_watchdog() {
 // (service+event)-derived priority by calling queue_add_direct_priority
 // instead — used by broadcast_resync to ship replies in the priority_replay
 // lane so they overtake the live-broadcast backlog.
-func queue_add_direct(id, target, from_entity, to_entity, service, event, from_app string, services []string, content, data []byte, file string, expires int64) {
-	queue_add_direct_priority(id, target, from_entity, to_entity, service, event, from_app, services, content, data, file, expires, queue_priority(service, event))
+func queue_add_direct(id, target, from_entity, to_entity, service, event, from_app string, services []string, content, data []byte, file string, expires int64) error {
+	return queue_add_direct_priority(id, target, from_entity, to_entity, service, event, from_app, services, content, data, file, expires, queue_priority(service, event))
 }
 
 // queue_add_direct_priority is queue_add_direct with an explicit priority
 // override. Callers that know the message deserves a different tier
 // (currently only broadcast_resync, which marks replies priority_replay)
 // pass it directly; the (service, event) default is bypassed.
-func queue_add_direct_priority(id, target, from_entity, to_entity, service, event, from_app string, services []string, content, data []byte, file string, expires int64, priority int) {
+//
+// The queue_add functions answer the database's error rather than panicking,
+// and give up after queue_add_timeout: a queue.db write normally takes
+// milliseconds, so one that waits longer meets a held lock or a full pool,
+// and the caller is better told at once than after the driver's 60 s busy
+// timeout. Most callers run on goroutines no recover covers.
+func queue_add_direct_priority(id, target, from_entity, to_entity, service, event, from_app string, services []string, content, data []byte, file string, expires int64, priority int) error {
+	return queue_insert("replace", id, "direct", target, from_entity, to_entity, service, event, from_app, strings.Join(services, ","), content, data, file, expires, priority)
+}
+
+// queue_add_timeout bounds one queue_add, the wait for a pooled connection
+// included. A var so tests can shorten it.
+var queue_add_timeout = 5 * time.Second
+
+// error_queue_unavailable is a queue_add on a queue.db that would not open.
+var error_queue_unavailable = errors.New("queue database unavailable")
+
+// queue_add_transient reports whether a queue_add failure may succeed if tried
+// again: the write lock or a pooled connection did not come within
+// queue_add_timeout, or the storage was briefly unwritable.
+func queue_add_transient(err error) bool {
+	return db_error_is_transient(err) || errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "interrupted")
+}
+
+// queue_insert writes one pending row. conflict is "replace" or "ignore", what
+// becomes of a row already queued under the id.
+func queue_insert(conflict, id, kind, target, from_entity, to_entity, service, event, from_app, from_services string, content, data []byte, file string, expires int64, priority int) error {
 	db := db_open("db/queue.db")
-	from_services := strings.Join(services, ",")
-	db.exec(`insert or replace into queue
+	if db == nil {
+		return error_queue_unavailable
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), queue_add_timeout)
+	defer cancel()
+	return db.exec_context(ctx, `insert or `+conflict+` into queue
 		(id, type, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, status, attempts, next_retry, created, priority)
-		values (?, 'direct', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`,
-		id, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, now(), now(), priority)
+		values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`,
+		id, kind, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, now(), now(), priority)
 }
 
 // Add a broadcast message to the queue
-func queue_add_broadcast(id, from_entity, to_entity, service, event, from_app string, services []string, content, data []byte, expires int64) {
-	db := db_open("db/queue.db")
-	from_services := strings.Join(services, ",")
-	db.exec(`insert or replace into queue
-		(id, type, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, status, attempts, next_retry, created, priority)
-		values (?, 'broadcast', 'pubsub', ?, ?, ?, ?, ?, ?, ?, ?, '', ?, 'pending', 0, ?, ?, ?)`,
-		id, from_entity, to_entity, service, event, from_app, from_services, content, data, expires, now(), now(), queue_priority(service, event))
+func queue_add_broadcast(id, from_entity, to_entity, service, event, from_app string, services []string, content, data []byte, expires int64) error {
+	return queue_insert("replace", id, "broadcast", "pubsub", from_entity, to_entity, service, event, from_app, strings.Join(services, ","), content, data, "", expires, queue_priority(service, event))
+}
+
+// queue_stem is what names a message's copies: a copy's id is its message's
+// stem, a hyphen and 16 hex digits (queue_sibling). The stem of a row that is
+// no copy is its own id, digested when longer than a uid so that its copies
+// stay inside id_length_maximum.
+func queue_stem(id string) string {
+	if n := len(id) - 17; n > 0 && id[n] == '-' && queue_hex(id[n+1:]) {
+		return id[:n]
+	}
+	if len(id) > queue_stem_length {
+		sum := sha256.Sum256([]byte(id))
+		return hex.EncodeToString(sum[:queue_stem_length/2])
+	}
+	return id
+}
+
+// queue_stem_length is a uid's length, the longest stem kept as it is.
+const queue_stem_length = 32
+
+func queue_hex(text string) bool {
+	for _, c := range text {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// queue_sibling is the id of a message's copy for a peer, the same whichever of
+// the message's rows it is derived from.
+func queue_sibling(id, peer string) string {
+	stem := queue_stem(id)
+	sum := sha256.Sum256([]byte(stem + "/" + peer))
+	return stem + "-" + hex.EncodeToString(sum[:8])
+}
+
+// queue_add_sibling queues q's copy for peer, leaving one already queued as it
+// is: expanding or retargeting the same row again adds nothing twice.
+func queue_add_sibling(q *QueueEntry, peer string) error {
+	return queue_insert("ignore", queue_sibling(q.ID, peer), "direct", peer, q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp, q.FromServices, q.Content, q.Data, q.File, q.Expires, queue_priority(q.Service, q.Event))
 }
 
 // Mark a message as acknowledged (remove from queue). A successful delivery
@@ -684,6 +758,15 @@ func queue_drain_entity(entity string, wait time.Duration) {
 // "broadcast-gap", already being caught up by resync). queue_fail is the
 // default.
 func queue_drop(id, reason string) {
+	if report := queue_drop_row(id, reason); report != nil {
+		report()
+	}
+}
+
+// queue_drop_row is queue_drop without its report to the sending app, which it
+// returns (nil when there is none) for a caller that runs the app's handler on
+// another goroutine.
+func queue_drop_row(id, reason string) func() {
 	db := db_open("db/queue.db")
 	var q QueueEntry
 	have := db.scan(&q, "select * from queue where id = ?", id)
@@ -692,16 +775,19 @@ func queue_drop(id, reason string) {
 	// Surface a terminal NACK to the sending app — after the delete, so the
 	// handler never runs while the row is being removed. unknown/rejected
 	// map to a code; fail_dedup and unmapped reasons dispatch nothing.
-	if have {
-		if reason == fail_unknown_user {
-			// The recipient's host answered and said they don't exist
-			// there — authoritative evidence for the health record.
-			health_denial(q.ToEntity)
-		}
-		if code, error_reason, ok := error_code_for_nack(reason); ok {
-			queue_error_dispatch(&q, code, error_reason)
-		}
+	if !have {
+		return nil
 	}
+	if reason == fail_unknown_user {
+		// The recipient's host answered and said they don't exist
+		// there — authoritative evidence for the health record.
+		health_denial(q.ToEntity)
+	}
+	code, error_reason, ok := error_code_for_nack(reason)
+	if !ok {
+		return nil
+	}
+	return func() { queue_error_dispatch(&q, code, error_reason) }
 }
 
 // queue_error_dispatch surfaces a terminal send failure as a core error
@@ -865,18 +951,60 @@ func queue_fail(id string, err string) {
 }
 
 // queue_expand_empty_target is the retry-time fan-out: a row with an empty
-// target clones (N-1) siblings for the extra peers entity_peers now finds and
-// returns the first for this attempt. Empty string when there is still no peer.
-func queue_expand_empty_target(q *QueueEntry) string {
+// target is spread over the peers entity_peers now finds, one copy each
+// (queue_spread), and then dropped, since the copies carry its message. A
+// spread cut short by queue.db leaves the row for its next turn, which queues
+// only the copies still missing.
+func queue_expand_empty_target(q *QueueEntry) {
 	peers := entity_peers_for(q.FromEntity, q.ToEntity)
 	if len(peers) == 0 {
-		return ""
+		return
 	}
-	for i := 1; i < len(peers); i++ {
-		queue_add_direct(uid(), peers[i], q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp,
-			strings.Split(q.FromServices, ","), q.Content, q.Data, q.File, q.Expires)
+	db := db_open("db/queue.db")
+	if db == nil {
+		return
 	}
-	return peers[0]
+	if _, err := queue_spread(db, q, peers, false); err != nil {
+		info("Queue unable to expand %q for %q: %v", q.ID, q.ToEntity, err)
+		return
+	}
+	db.exec_bg("queue expand spread", "delete from queue where id = ?", q.ID)
+	queue_wake()
+}
+
+// queue_spread gives q's message a row on each of peers. With move set, q's
+// own row is for the first peer, as long as it is the only row of its message
+// queued; otherwise every peer holding no row of the message gets a copy
+// (queue_add_sibling), and the caller drops q. A message's copy for a peer has
+// the one id whichever row it is spread from, so spreading again - after a
+// partial failure, with the peers in another order, or from another of the
+// message's rows - queues no peer a second row, and a copy queued again after
+// its delivery reaches the receiver as a duplicate it acks. A row is moved to a
+// peer only while it is the message's only row, so no peer holds the message
+// under two ids. Answers the peer q's own row is for ("" when q is to be
+// dropped) and the first queue_add error, after which nothing more is queued.
+func queue_spread(db *DB, q *QueueEntry, peers []string, move bool) (string, error) {
+	stem := queue_stem(q.ID)
+	message := "id != ? and (id = ? or (id > ? and id < ?))"
+	rows := []any{q.ID, stem, stem + "-", stem + "."}
+	own := ""
+	if move && q.ID == stem {
+		if others, err := db.exists("select 1 from queue where "+message, rows...); err == nil && !others {
+			own = peers[0]
+		}
+	}
+	for _, peer := range peers {
+		if peer == own {
+			continue
+		}
+		if held, _ := db.exists("select 1 from queue where target = ? and "+message, append([]any{peer}, rows...)...); held {
+			continue
+		}
+		if err := queue_add_sibling(q, peer); err != nil {
+			return "", err
+		}
+	}
+	return own, nil
 }
 
 // queue_retarget re-resolves a row whose pinned peer is no longer among the
@@ -895,13 +1023,21 @@ func queue_retarget(db *DB, q *QueueEntry) bool {
 	if slices.Contains(peers, q.Target) {
 		return false
 	}
-	for i := 1; i < len(peers); i++ {
-		queue_add_direct(uid(), peers[i], q.FromEntity, q.ToEntity, q.Service, q.Event, q.FromApp,
-			strings.Split(q.FromServices, ","), q.Content, q.Data, q.File, q.Expires)
+	own, err := queue_spread(db, q, peers, true)
+	if err != nil {
+		// Left aimed where it was: the row takes the ordinary failure path and
+		// is retargeted on a later one, which queues only the copies missing.
+		info("Queue unable to retarget %q for %q: %v", q.ID, q.ToEntity, err)
+		return false
+	}
+	if own == "" {
+		db.exec_bg("queue retarget spread", "delete from queue where id = ?", q.ID)
+		info("Queue retargeting %q for %q: peer %q is no longer a route, and its message's copies cover the %d that are", q.ID, q.ToEntity, q.Target, len(peers))
+		return true
 	}
 	db.exec_bg("queue retarget", "update queue set target = ?, status = 'pending', attempts = 0, next_retry = ? where id = ?",
-		peers[0], now(), q.ID)
-	info("Queue retargeting %q for %q: peer %q is no longer a route, %q is", q.ID, q.ToEntity, q.Target, peers[0])
+		own, now(), q.ID)
+	info("Queue retargeting %q for %q: peer %q is no longer a route, %q is", q.ID, q.ToEntity, q.Target, own)
 	return true
 }
 
@@ -952,14 +1088,17 @@ func queue_retarget_parked() {
 	}
 }
 
+// queue_direct is how queue_process sends a direct row: queue_send_direct, a
+// var so tests can stand in for it.
+var queue_direct = queue_send_direct
+
 // Send a queued direct message (reads challenge before sending, waits for ACK).
-// An empty target is expanded to the recipient's live peers first.
+// A row with an empty target is not sent itself: it is spread into a copy per
+// live peer of its recipient, which later passes send.
 func queue_send_direct(q *QueueEntry) bool {
 	peer := q.Target
 	if peer == "" {
-		peer = queue_expand_empty_target(q)
-	}
-	if peer == "" {
+		queue_expand_empty_target(q)
 		return false
 	}
 
@@ -976,7 +1115,7 @@ func queue_send_direct(q *QueueEntry) bool {
 	// owns it; on a stream-open failure it rolls back to pending for a later tick.
 	f, err := frame_for_queue(q)
 	if err != nil {
-		queue_drop(q.ID, fmt.Sprintf("frame build failed: %v", err))
+		frame_drop(q.ID, peer, err)
 		return false
 	}
 	// Mark in-flight BEFORE handing off, so queue_process's post-call
@@ -1390,23 +1529,28 @@ func queue_process() int {
 			defer wg.Done()
 			defer func() { <-semaphore }()
 
-			var ok bool
-			switch {
-			case q.Type == "broadcast":
-				ok = queue_send_broadcast(&q)
-			default:
-				ok = queue_send_direct(&q)
-			}
+			// Guarded per row, like the pass that spawned it: a fault sending
+			// one row costs that row's attempt, and an unguarded panic on this
+			// goroutine ends the process.
+			guard("queue send", nil, func() {
+				var ok bool
+				switch {
+				case q.Type == "broadcast":
+					ok = queue_send_broadcast(&q)
+				default:
+					ok = queue_direct(&q)
+				}
 
-			if ok {
-				db.exec_bg("queue process sent delete", "delete from queue where id = ?", q.ID)
-			} else if !queue_is_inflight(q.ID) {
-				// /mochi/2 paths set status='sending' and return
-				// false; the async resolver (sender_read /
-				// queue_reply) will queue_ack / queue_fail when the
-				// receiver replies. Don't touch in-flight rows here.
-				queue_fail(q.ID, "send failed")
-			}
+				if ok {
+					db.exec_bg("queue process sent delete", "delete from queue where id = ?", q.ID)
+				} else if !queue_is_inflight(q.ID) {
+					// /mochi/2 paths set status='sending' and return
+					// false; the async resolver (sender_read /
+					// queue_reply) will queue_ack / queue_fail when the
+					// receiver replies. Don't touch in-flight rows here.
+					queue_fail(q.ID, "send failed")
+				}
+			})
 		}(q, semaphore)
 	}
 	wg.Wait()
@@ -1552,8 +1696,13 @@ func queue_manager() {
 	defer tick.Stop()
 	go func() {
 		for {
-			n := queue_process()
-			queue_check_ack_timeout()
+			// Guarded per pass, so a fault in one pass costs that pass and the
+			// loop carries on: an unguarded panic here ends the process.
+			n := 0
+			guard("queue process", nil, func() {
+				n = queue_process()
+				queue_check_ack_timeout()
+			})
 			if n > 0 {
 				// Acted on at least one row. Loop straight back in
 				// to pick up the next batch — no tick-interval cap.
@@ -1570,8 +1719,10 @@ func queue_manager() {
 
 	// Cleanup runs less frequently
 	for range time.Tick(time.Hour) {
-		queue_cleanup()
-		queue_retarget_parked()
-		message_seen_cleanup()
+		guard("queue cleanup", nil, func() {
+			queue_cleanup()
+			queue_retarget_parked()
+			message_seen_cleanup()
+		})
 	}
 }

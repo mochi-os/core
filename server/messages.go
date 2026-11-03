@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	sl "go.starlark.net/starlark"
 	sls "go.starlark.net/starlarkstruct"
@@ -173,7 +174,12 @@ func (m *Message) publish(allow_queue bool) {
 	content := cbor_encode(m.content)
 
 	if allow_queue {
-		queue_add_broadcast(m.ID, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, nil, m.expires)
+		// The row is only the retry for when no peers are up: the announcement
+		// still goes out below, and its publishers re-announce on their own
+		// schedule.
+		if err := queue_add_broadcast(m.ID, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, nil, m.expires); err != nil {
+			info("Pubsub unable to queue %q/%q %q for retry: %v", m.Service, m.Event, m.ID, err)
+		}
 	}
 
 	if peers_sufficient() {
@@ -188,40 +194,81 @@ func (m *Message) publish(allow_queue bool) {
 // Send a completed outgoing message
 func (m *Message) send() {
 	m.target = ""
-	go m.send_work()
+	go guard("message send", nil, m.send_work)
+}
+
+// message_enqueue_patience bounds how long send_work keeps trying to queue a
+// row the database refuses, attempts included; each attempt gives up after
+// queue_add_timeout, well inside the driver's busy timeout, so a lock held
+// past one attempt is tried again rather than ending the row. The first pause
+// between attempts is message_enqueue_pause, doubling up to
+// message_enqueue_pause_maximum. vars so tests can shorten them.
+var (
+	message_enqueue_patience      = 5 * time.Minute
+	message_enqueue_pause         = 250 * time.Millisecond
+	message_enqueue_pause_maximum = 8 * time.Second
+)
+
+// enqueue queues one row of m for send_work, which runs after the app's call
+// has returned and so has nobody to hand a failure to. A busy or full database
+// is waited out with growing pauses for up to message_enqueue_patience; any
+// other failure, or one that outlasts it, gives the row up with a warning.
+// Reports whether the row landed.
+func (m *Message) enqueue(id, target string, content []byte) bool {
+	pause := message_enqueue_pause
+	deadline := time.Now().Add(message_enqueue_patience)
+	for {
+		err := queue_add_direct(id, target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+		if err == nil {
+			return true
+		}
+		if !queue_add_transient(err) || time.Now().Add(pause).After(deadline) {
+			warn("Messages unable to queue %s/%s %q from %q to %q via peer %q: %v", m.Service, m.Event, id, m.From, m.To, target, err)
+			return false
+		}
+		time.Sleep(pause)
+		pause = min(2*pause, message_enqueue_pause_maximum)
+	}
 }
 
 // send_peer queues a message for a specified peer and wakes the queue manager
 // rather than sending inline: the manager is serial, so concurrent calls cannot
 // open N streams to one peer and trip its rate limit. Latency is one tick (1s).
-func (m *Message) send_peer(peer string) {
+// An error is the queue.db write's: nothing was queued.
+func (m *Message) send_peer(peer string) error {
 	m.target = peer
 	if m.ID == "" {
 		m.ID = uid()
 	}
 	content := cbor_encode(m.content)
 	if message_self_loop_dispatch(m, content) {
-		return
+		return nil
 	}
-	queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+	if err := queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires); err != nil {
+		return err
+	}
 	queue_wake()
+	return nil
 }
 
 // send_peer_priority is send_peer with an explicit queue priority
 // override. Used by broadcast_resync to ship replay messages in the
 // priority_replay lane so they overtake live broadcast traffic in
 // the outbound queue.
-func (m *Message) send_peer_priority(peer string, priority int) {
+func (m *Message) send_peer_priority(peer string, priority int) error {
 	m.target = peer
 	if m.ID == "" {
 		m.ID = uid()
 	}
 	content := cbor_encode(m.content)
 	if message_self_loop_dispatch(m, content) {
-		return
+		return nil
 	}
-	queue_add_direct_priority(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires, priority)
+	if err := queue_add_direct_priority(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires, priority); err != nil {
+		return err
+	}
 	queue_wake()
+	return nil
 }
 
 // send_work queues the message and, with no peer pinned, fans out one row per
@@ -238,7 +285,9 @@ func (m *Message) send_work() {
 		if message_self_loop_dispatch(m, content) {
 			return
 		}
-		queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+		if !m.enqueue(m.ID, m.target, content) {
+			return
+		}
 		if m.target == net_id {
 			// Never inline-attempt a self-loop row: peer_send(net_id) self-dials and
 			// fails. self_loop_drain owns these; nudge it.
@@ -253,13 +302,16 @@ func (m *Message) send_work() {
 	if len(peers) == 0 {
 		// Unknown entity — queue one row with empty target so the
 		// retry loop can re-resolve later. Same as before.
-		queue_add_direct(m.ID, "", m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+		m.enqueue(m.ID, "", content)
 		return
 	}
 
-	// One peer gets the inline send under m.ID; the rest queue with fresh uids.
-	// m.ID must stay with a row in queue.db, since message_attempt_send drives
-	// queue_sending / queue_ack through it. Self-loop peers divert to dispatch.
+	// One peer gets the inline send under m.ID; each other peer's copy takes
+	// queue_sibling's id, the one a later retarget gives it too, so the two
+	// cannot queue a peer the message twice. m.ID must stay with a row in
+	// queue.db, since message_attempt_send drives queue_sending / queue_ack
+	// through it. Self-loop peers divert to dispatch. The first row queue.db
+	// refuses ends the fan-out: the next would wait out the same failure.
 	primary_peer := ""
 	self_queued := false
 	for _, peer := range peers {
@@ -273,15 +325,19 @@ func (m *Message) send_work() {
 			// Dispatch fell back to queue.db. Queue a self-loop row for
 			// self_loop_drain, but never make net_id the inline primary
 			// — message_attempt_send(net_id) would self-dial and fail.
-			queue_add_direct(uid(), peer, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+			if !m.enqueue(uid(), peer, content) {
+				break
+			}
 			self_queued = true
 			continue
 		}
 		id := m.ID
 		if primary_peer != "" {
-			id = uid()
+			id = queue_sibling(m.ID, peer)
 		}
-		queue_add_direct(id, peer, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+		if !m.enqueue(id, peer, content) {
+			break
+		}
 		if primary_peer == "" {
 			primary_peer = peer
 		}
@@ -305,18 +361,37 @@ var messages_fanout_open = sender_for
 // live peer hosting its recipient, then wakes the queue once so each peer's
 // Sender drains its rows. It makes no inline send: in turn, one to a busy
 // Sender would hold every later recipient for the send timeout.
+//
+// The first row queue.db refuses ends the fan-out, and it is logged rather
+// than retried: every later row would wait out the same failure, with the
+// caller holding its broadcast stream's lock. The fan-out is of a broadcast
+// whose log holds the event, and a subscriber missing it fetches it by resync
+// when it sees the gap.
 func messages_fanout(list []*Message, content []byte) {
 	if len(list) == 0 {
 		return
 	}
 	cold := map[string]bool{}
+	queued := 0
+	var failure error
+	add := func(m *Message, id, target string) bool {
+		if err := queue_add_direct(id, target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires); err != nil {
+			failure = err
+			return false
+		}
+		queued++
+		return true
+	}
+fanout:
 	for _, m := range list {
 		if m.ID == "" {
 			m.ID = uid()
 		}
 		if m.target != "" {
 			if !message_self_loop_dispatch(m, content) {
-				queue_add_direct(m.ID, m.target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+				if !add(m, m.ID, m.target) {
+					break
+				}
 				if m.target != net_id {
 					cold[m.target] = true
 				}
@@ -326,26 +401,38 @@ func messages_fanout(list []*Message, content []byte) {
 		peers := entity_peers_for(m.From, m.To)
 		if len(peers) == 0 {
 			// Unknown entity: one row with no target, resolved again later.
-			queue_add_direct(m.ID, "", m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+			if !add(m, m.ID, "") {
+				break
+			}
 			continue
 		}
-		// The first peer's row carries m.ID, as send_work's does; the rest and
-		// the self-loop rows take fresh ids.
-		id := m.ID
+		// The first peer's row carries m.ID, as send_work's does; the other
+		// peers' take queue_sibling's id, as send_work's do, and the self-loop
+		// rows fresh ones.
+		first := true
 		for _, peer := range peers {
 			if peer == net_id {
 				local := *m
 				local.ID = uid()
 				local.target = peer
-				if !message_self_loop_dispatch(&local, content) {
-					queue_add_direct(uid(), peer, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+				if !message_self_loop_dispatch(&local, content) && !add(m, uid(), peer) {
+					break fanout
 				}
 				continue
 			}
-			queue_add_direct(id, peer, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+			id := m.ID
+			if !first {
+				id = queue_sibling(m.ID, peer)
+			}
+			if !add(m, id, peer) {
+				break fanout
+			}
+			first = false
 			cold[peer] = true
-			id = uid()
 		}
+	}
+	if failure != nil {
+		info("Fan-out stopped after queuing %d rows of %d %s/%s messages: %v", queued, len(list), list[0].Service, list[0].Event, failure)
 	}
 	queue_wake()
 
@@ -356,11 +443,11 @@ func messages_fanout(list []*Message, content []byte) {
 		if senders_has(peer) || senders_opening_has(peer) || peer_is_silent(peer) || peer_is_stalled(peer) {
 			continue
 		}
-		go func(peer string) {
+		go guard("fan-out sender open", nil, func() {
 			if _, err := messages_fanout_open(peer); err != nil {
 				debug("Fan-out: no Sender for peer %q: %v", peer, err)
 			}
-		}(peer)
+		})
 	}
 }
 
@@ -374,7 +461,7 @@ func message_attempt_send_real(m *Message, peer string, content []byte) {
 	// stream-open failure the row stays queued for queue_process to retry.
 	f, err := frame_for_message(m, content)
 	if err != nil {
-		queue_fail(m.ID, fmt.Sprintf("frame build: %v", err))
+		frame_drop(m.ID, peer, err)
 		return
 	}
 	queue_sending(m.ID)
@@ -581,6 +668,8 @@ func api_message_send_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		}
 	}
 
-	m.send_peer(peer)
+	if err := m.send_peer(peer); err != nil {
+		return sl_error(fn, "unable to queue message: %v", err)
+	}
 	return sl.None, nil
 }

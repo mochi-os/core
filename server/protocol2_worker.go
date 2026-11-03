@@ -549,8 +549,12 @@ func (l local_reply) fail(reason string) {
 			// Transient to a LOCAL recipient must not be dropped where the
 			// same reason to a remote one is retried. queue.db is the same
 			// fallback a full inbox already takes.
-			queue_add_direct(l.message, net_id, l.from, l.to, l.service, l.event,
-				l.app, l.services, l.content, l.data, "", l.expires)
+			if err := queue_add_direct(l.message, net_id, l.from, l.to, l.service, l.event,
+				l.app, l.services, l.content, l.data, "", l.expires); err != nil {
+				warn("Self-loop direct dispatch: %s/%s id=%q failed: %s - unable to requeue: %v",
+					l.service, l.event, l.message, reason, err)
+				return
+			}
 			queue_wake()
 			info("Self-loop direct dispatch: %s/%s id=%q failed: %s - requeued",
 				l.service, l.event, l.message, reason)

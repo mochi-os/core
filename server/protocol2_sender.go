@@ -615,6 +615,16 @@ func (s *Sender) write_one(ob *outbound) error {
 			delete(s.inflight, f.ID)
 			s.lock.Unlock()
 		}
+		// A refused message was never written, so the stream carries on and
+		// only the message goes: failing the write would reset the stream and
+		// send every message in flight on it back to the queue. Dropped off this
+		// goroutine, which writes the stream and should not wait on queue.db.
+		if errors.Is(err, frame_refused) && f.Type == frame_type_message {
+			if ob.queue != "" {
+				go frame_drop(ob.queue, s.peer, err)
+			}
+			return nil
+		}
 		return err
 	}
 	// Each message the far side receives backs one prove it answered. Counted
@@ -851,7 +861,7 @@ func (s *Sender) pull_loop() {
 				}
 				f, err := frame_for_queue(&q)
 				if err != nil {
-					queue_drop(q.ID, fmt.Sprintf("frame build failed: %v", err))
+					frame_drop(q.ID, s.peer, err)
 					continue
 				}
 				select {
@@ -1178,6 +1188,8 @@ func is_protocol_not_supported(err error) bool {
 
 // frame_for_queue builds a v2 message Frame from a queue.db row. The row's
 // content is already CBOR; decode it so the frame ships structured Content.
+// An error is a frame no receiver would take (frame_check): the caller drops
+// the row with frame_drop rather than sending it.
 func frame_for_queue(q *QueueEntry) (*Frame, error) {
 	content := map[string]any{}
 	if len(q.Content) > 0 {
@@ -1189,7 +1201,7 @@ func frame_for_queue(q *QueueEntry) (*Frame, error) {
 	if q.FromServices != "" {
 		services = strings.Split(q.FromServices, ",")
 	}
-	return &Frame{
+	return frame_checked(&Frame{
 		Type:     frame_type_message,
 		ID:       q.ID,
 		From:     q.FromEntity,
@@ -1201,11 +1213,11 @@ func frame_for_queue(q *QueueEntry) (*Frame, error) {
 		Priority: frame_priority_for(q.Priority),
 		Content:  content,
 		Data:     q.Data,
-	}, nil
+	})
 }
 
 // frame_for_message builds a v2 message Frame from a *Message. Used
-// by message_attempt_send_real's v2 branch.
+// by message_attempt_send_real's v2 branch. Errors as frame_for_queue.
 func frame_for_message(m *Message, content []byte) (*Frame, error) {
 	content_map := map[string]any{}
 	if len(content) > 0 {
@@ -1213,7 +1225,7 @@ func frame_for_message(m *Message, content []byte) (*Frame, error) {
 			return nil, err
 		}
 	}
-	return &Frame{
+	return frame_checked(&Frame{
 		Type:     frame_type_message,
 		ID:       m.ID,
 		From:     m.From,
@@ -1225,5 +1237,26 @@ func frame_for_message(m *Message, content []byte) (*Frame, error) {
 		Priority: frame_priority_for(queue_priority(m.Service, m.Event)),
 		Content:  content_map,
 		Data:     m.data,
-	}, nil
+	})
+}
+
+// frame_checked answers f, or frame_check's refusal of it.
+func frame_checked(f *Frame) (*Frame, error) {
+	if err := frame_check(f); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// frame_drop gives up a queued message whose frame cannot be sent, as the
+// fail_unsupported its receiver would answer: the row goes at once and the
+// sending app is told it was rejected. The app's handler runs on a goroutine
+// of its own, since the callers are the send paths and a handler can take as
+// long as it likes. Logged, not warned: the cause is the app's message, which
+// the rejection reports to it.
+func frame_drop(id, peer string, err error) {
+	info("Sender: dropping message %q for peer=%q: %v", id, peer, err)
+	if report := queue_drop_row(id, fail_unsupported); report != nil {
+		go guard("message rejection", nil, report)
+	}
 }

@@ -536,7 +536,7 @@ func directory_forget_peer(peer string) {
 	addr_n := count_rows(pdb, "select count(*) from peers where id=?", peer)
 
 	ddb.exec("delete from entries where peer=?", peer)
-	qdb.exec("delete from queue where target=?", peer)
+	qdb.exec_bg("directory forget peer", "delete from queue where target=?", peer)
 	pdb.exec("delete from peers where id=?", peer)
 
 	// In-memory caches.

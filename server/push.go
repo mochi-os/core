@@ -132,12 +132,18 @@ func push_queue_add(p *Push) {
 		return
 	}
 	db := db_open("db/queue.db")
-	db.exec(`insert into pushes (id, user, account, type, identifier, data, app, category,
+	if db == nil {
+		info("Push not queuing %q: %v", p.Account, error_queue_unavailable)
+		return
+	}
+	if err := db.exec_e(`insert into pushes (id, user, account, type, identifier, data, app, category,
 			object, title, body, link, event, attempts, next_retry, created)
 		values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
 		uid(), p.User.UID, p.Account, p.Type, p.Identifier, string(data),
 		p.App, p.Category, p.Object, p.Title, p.Body, p.Link, p.Event,
-		queue_next_retry(0), now())
+		queue_next_retry(0), now()); err != nil {
+		info("Push not queuing %q: %v", p.Account, err)
+	}
 }
 
 // push_queue_batch is how many due rows one pass takes, push_queue_workers how
@@ -153,11 +159,32 @@ const (
 // then apply outcomes: every database write stays on this goroutine.
 func push_queue_process() int {
 	db := db_open("db/queue.db")
+	if db == nil {
+		return 0
+	}
+	// The first write queue.db refuses ends the pass, and with 0, so the
+	// manager waits for its next tick rather than looping straight back onto
+	// rows it could not settle, sending their pushes again each time. Nothing
+	// more is written once one has failed: each would wait out the same lock.
+	failed := false
+	write := func(query string, values ...any) bool {
+		if failed {
+			return false
+		}
+		if err := db.exec_e(query, values...); err != nil {
+			info("Push queue write failed: %v", err)
+			failed = true
+		}
+		return !failed
+	}
 
 	// Expired rows go first: a notification nobody has received in six hours
 	// is not worth a phone buzzing now, and dropping them before the due query
 	// keeps a dead destination from occupying the batch every tick.
-	db.exec("delete from pushes where created < ?", now()-push_expiry)
+	write("delete from pushes where created < ?", now()-push_expiry)
+	if failed {
+		return 0
+	}
 
 	rows, err := db.rows("select * from pushes where next_retry <= ? order by next_retry limit ?", now(), push_queue_batch)
 	if err != nil || len(rows) == 0 {
@@ -183,7 +210,9 @@ func push_queue_process() int {
 		user := user_by_uid(row_string(row, "user"))
 		if user == nil {
 			// The account went away with its user. Nothing to deliver to.
-			db.exec("delete from pushes where id=?", id)
+			if !write("delete from pushes where id=?", id) {
+				return 0
+			}
 			acted++
 			continue
 		}
@@ -193,7 +222,9 @@ func push_queue_process() int {
 		// The account must still exist and still be verified: a user who
 		// removed a destination should not have it retried at them.
 		if have, _ := db_user(user, "user").exists("select 1 from accounts where id=? and verified > 0", account); !have {
-			db.exec("delete from pushes where id=?", id)
+			if !write("delete from pushes where id=?", id) {
+				return 0
+			}
 			acted++
 			continue
 		}
@@ -225,24 +256,31 @@ func push_queue_process() int {
 			defer group.Done()
 			slots <- struct{}{}
 			defer func() { <-slots }()
-			a.success, a.retire, a.handled = account_deliver(a.push)
+			// A provider that panics costs this push an attempt, retried like
+			// any transient failure; unguarded, it would end the process.
+			guard("push delivery", func() { a.handled = true }, func() {
+				a.success, a.retire, a.handled = account_deliver(a.push)
+			})
 		}(a)
 	}
 	group.Wait()
 
 	for _, a := range sending {
+		if failed {
+			break
+		}
 		acted++
 		switch {
 		case a.success:
-			db.exec("delete from pushes where id=?", a.id)
-			db_user(a.user, "user").exec("update accounts set last_delivered=? where id=?", now(), a.push.Account)
+			write("delete from pushes where id=?", a.id)
+			db_user(a.user, "user").exec_bg("push delivered", "update accounts set last_delivered=? where id=?", now(), a.push.Account)
 		case a.retire || !a.handled:
 			// Permanently dead, or a provider this build does not know or
 			// this server has not configured. Retrying any of them forever is
 			// how a queue becomes a leak.
-			db.exec("delete from pushes where id=?", a.id)
+			write("delete from pushes where id=?", a.id)
 			if a.retire {
-				db_user(a.user, "user").exec("delete from accounts where id=?", a.push.Account)
+				db_user(a.user, "user").exec_bg("push retire", "delete from accounts where id=?", a.push.Account)
 			}
 		case a.attempts+1 >= push_attempts_maximum:
 			// The notification is lost, and this is the one moment in the
@@ -252,11 +290,14 @@ func push_queue_process() int {
 			// provider outage costs one mail rather than one per push.
 			warn("Push giving up on %s destination %q after %d attempts",
 				a.push.Type, a.push.Account, a.attempts+1)
-			db.exec("delete from pushes where id=?", a.id)
+			write("delete from pushes where id=?", a.id)
 		default:
-			db.exec("update pushes set attempts=?, next_retry=? where id=?",
+			write("update pushes set attempts=?, next_retry=? where id=?",
 				a.attempts+1, queue_next_retry(a.attempts), a.id)
 		}
+	}
+	if failed {
+		return 0
 	}
 	return acted
 }
@@ -266,8 +307,10 @@ func push_queue_process() int {
 // for minutes.
 func push_manager() {
 	for range time.Tick(30 * time.Second) {
-		for push_queue_process() > 0 {
-		}
+		guard("push queue", nil, func() {
+			for push_queue_process() > 0 {
+			}
+		})
 	}
 }
 

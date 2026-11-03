@@ -1040,7 +1040,9 @@ func (e *Event) broadcast_resync(a *App, av *AppVersion) error {
 		m.FromApp = a.id
 		m.Services = app_services(a, e.user)
 		m.content = map[string]any{"key": key, "peer": peer, "floor": floor}
-		m.send_peer_priority(e.peer, priority_replay)
+		if err := m.send_peer_priority(e.peer, priority_replay); err != nil {
+			return fmt.Errorf("broadcast floor for %q: %w", key, err)
+		}
 	}
 
 	rows, _ := e.db.rows("select sequence, event, data from log where key=? and peer=? and sequence > ? order by sequence limit ?", key, peer, after, broadcast_replay_limit)
@@ -1075,7 +1077,11 @@ func (e *Event) broadcast_resync(a *App, av *AppVersion) error {
 		// Replay messages ride priority_replay so they overtake the live backlog in
 		// the requester's outbound queue bucket; behind it the per-bucket cap=1
 		// drains catch-up at roughly one event per second.
-		m.send_peer_priority(e.peer, priority_replay)
+		// A replay cut short here is asked for again: the requester's next
+		// resync starts after the last event it applied.
+		if err := m.send_peer_priority(e.peer, priority_replay); err != nil {
+			return fmt.Errorf("broadcast replay for %q at %d: %w", key, sequence, err)
+		}
 	}
 	return nil
 }
@@ -1343,7 +1349,10 @@ func broadcast_request_resync(user *User, a *App, from, to, key, peer string, la
 		"peer":  peer,
 		"after": last,
 	}
-	m.send_peer(peer)
+	// The gap stays and is detected again, so a lost request is asked again.
+	if err := m.send_peer(peer); err != nil {
+		info("Broadcast unable to queue resync for %q from peer %q: %v", key, peer, err)
+	}
 }
 
 // broadcast_send_ack delivers a broadcast/acknowledge back to the originating
@@ -1448,7 +1457,9 @@ func broadcast_acknowledge_flush(tag string) {
 		"peer":     pending.peer,
 		"sequence": pending.sequence,
 	}
-	m.send_peer(pending.peer)
+	if err := m.send_peer(pending.peer); err != nil {
+		info("Broadcast unable to queue acknowledgement for %q to peer %q: %v", pending.key, pending.peer, err)
+	}
 }
 
 // broadcast_manager runs the periodic pending GC for unfillable gaps. Hourly:

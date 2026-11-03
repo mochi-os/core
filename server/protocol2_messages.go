@@ -79,9 +79,10 @@ type Receiver struct {
 
 	// Budgets for the frames that cost this host work before the sender has
 	// sent anything. Touched only from the reader goroutine, so unguarded.
-	claims int
-	proves int
-	ready  bool // a message frame has arrived; the read deadline rolls per frame
+	claims      int
+	proves      int
+	undecodable int  // message frames answered for not decoding (refuse)
+	ready       bool // a message frame has arrived; the read deadline rolls per frame
 }
 
 // wire_deadline is the part of a real libp2p stream that bounds a read. The
@@ -176,6 +177,13 @@ func (r *Receiver) read_loop() {
 		if errors.Is(err, io.EOF) {
 			return
 		}
+		var undecodable *frame_undecodable
+		if errors.As(err, &undecodable) && r.refuse(undecodable) {
+			if r.ready {
+				r.deadline(time.Now().Add(receiver_idle_timeout()))
+			}
+			continue
+		}
 		if err != nil {
 			info("Messages: framing error peer=%q session=%s: %v", r.peer, r.session, err)
 			r.stream.Reset()
@@ -212,6 +220,58 @@ func (r *Receiver) read_loop() {
 			return
 		}
 	}
+}
+
+// refuse answers a message frame whose body would not decode with a
+// fail{unsupported} naming it, the reason every sender drops at once, and
+// reports whether the stream carries on. The rest of the stream is unaffected:
+// the frame's length bounded it and it has been read. Only a message is
+// answered, only after caps, and at most messages_undecodable_maximum a
+// stream; anything else resets the stream as any framing error does.
+//
+// Only a body cbor_decode_mode does not hold well formed is refused: one over a
+// cap on array elements, map pairs or nesting, or not CBOR at all. That is
+// what a sender's frame_check stops, so no receiver will ever take it, and the
+// sender may as well drop it now. A body that is well formed but will not
+// decode into a Frame - a field of a type this build does not expect - is
+// version skew, not the message: the stream resets as before, the sender
+// retries, and the message arrives once this side understands it.
+//
+// A refused message is still a message for the per-stream budgets, as handle
+// counts one: the sender backs a prove with every message it writes, and a
+// claim the message used is one the peer did work for.
+func (r *Receiver) refuse(failure *frame_undecodable) bool {
+	if !r.caps_seen.Load() {
+		return false
+	}
+	if cbor_decode_mode.Wellformed(failure.body) == nil {
+		return false
+	}
+	head, ok := frame_identify(failure.body)
+	if !ok || head.Type != frame_type_message || head.ID == "" || !envelope_valid("", "", "", head.ID) {
+		return false
+	}
+	r.undecodable++
+	if r.undecodable > messages_undecodable_maximum {
+		info("Messages: too many undecodable messages peer=%q session=%s — over %d", r.peer, r.session, messages_undecodable_maximum)
+		return false
+	}
+	if r.proves > 0 {
+		r.proves--
+	}
+	if head.From != "" {
+		r.lock.Lock()
+		claimed := r.claimed[head.From]
+		r.lock.Unlock()
+		if claimed {
+			r.credit()
+		}
+	}
+	// The read deadline then rolls to the idle window, in read_loop.
+	r.ready = true
+	info("Messages: refusing undecodable message %q peer=%q session=%s: %v", head.ID, r.peer, r.session, failure)
+	r.reply(&Frame{Type: frame_type_fail, Replies: []string{head.ID}, Reason: fail_unsupported})
+	return true
 }
 
 // handle dispatches one inbound frame. Returns false to terminate the

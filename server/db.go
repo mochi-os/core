@@ -95,6 +95,19 @@ const (
 // later steps.
 const health_schema = "create table if not exists health ( recipient text not null primary key, failures integer not null default 0, denials integer not null default 0, success integer not null default 0, since integer not null default 0, suspended integer not null default 0, probed integer not null default 0, evicted integer not null default 0 )"
 
+// db_connections caps the internal pool of the databases that take bursts of
+// concurrent writes. Without a cap every waiting writer opens a connection of
+// its own, and thousands of them retrying the write lock starve one another:
+// 10,500 concurrent queue.db inserts took 158 s and 86% failed with "database
+// is locked" after the 60 s busy timeout, where a handful of connections land
+// all of them in under a second. A capped pool queues the waiters in
+// database/sql instead, so nothing may hold one of these connections while it
+// makes another call on the same pool. Reads share the cap, so it leaves room
+// for the queue's own scans beside a burst of writes.
+var db_connections = map[string]int{
+	"db/queue.db": 8,
+}
+
 var (
 	databases      = map[string]*DB{}
 	databases_lock sync.Mutex
@@ -1012,9 +1025,19 @@ func (db *DB) vacuum() int64 {
 		}
 		return true
 	}
+	// Reads go through the held connection too: another call on db.internal
+	// would need a second connection, which a capped pool (db_connections) may
+	// not have to give while this one is held.
+	read := func(query string) int {
+		var value int
+		if err := conn.QueryRowContext(context.Background(), query).Scan(&value); err != nil {
+			return 0
+		}
+		return value
+	}
 
 	run("pragma busy_timeout=30000")
-	if db.integer("pragma auto_vacuum") == 2 {
+	if read("pragma auto_vacuum") == 2 {
 		if !run("pragma incremental_vacuum") {
 			return 0
 		}
@@ -1025,7 +1048,7 @@ func (db *DB) vacuum() int64 {
 	}
 	run("pragma wal_checkpoint(truncate)")
 
-	reclaimed := int64(pages*size - db.integer("pragma page_count")*size)
+	reclaimed := int64(pages*size - read("pragma page_count")*size)
 	info("Database vacuum reclaimed %d bytes from %q", reclaimed, db.path)
 	return reclaimed
 }
@@ -1365,6 +1388,10 @@ func db_open_work(file string, keys ...string) (*DB, bool, bool) {
 	if err != nil {
 		warn("Database unable to open %q: %v", path, err)
 		return nil, false, false
+	}
+	if limit, found := db_connections[file]; found {
+		internal_db.SetMaxOpenConns(limit)
+		internal_db.SetMaxIdleConns(limit)
 	}
 	starlark_db, err := sqlitedrv.Open(path, db_setup_conn_starlark)
 	if err != nil {
@@ -1805,22 +1832,28 @@ func (db *DB) holds(name string) bool {
 // error. Used by exec_bg (and any other path that needs to recover rather than
 // die on a DB fault).
 func (db *DB) exec_e(query string, values ...any) error {
+	return db.exec_context(context.Background(), query, values...)
+}
+
+// exec_context is exec_e bounded by ctx: a wait for a pooled connection, and a
+// wait out the busy timeout for the write lock, both end when ctx does.
+func (db *DB) exec_context(ctx context.Context, query string, values ...any) error {
 	// DDL changes the schema, which invalidates cached statements; run it
 	// uncached and flush. (Migrations run DDL through db.exec.)
 	if sql_is_schema(query) {
-		if _, err := db.internal.Exec(query, values...); err != nil {
+		if _, err := db.internal.ExecContext(ctx, query, values...); err != nil {
 			return err
 		}
 		db.stmts_close()
 		return nil
 	}
 	if st := db.prepared(query); st != nil {
-		if _, err := st.Exec(values...); !statement_closed(err) {
+		if _, err := st.ExecContext(ctx, values...); !statement_closed(err) {
 			return err
 		}
 		// cached statement closed by a concurrent cache flush; retry uncached
 	}
-	_, err := db.internal.Exec(query, values...)
+	_, err := db.internal.ExecContext(ctx, query, values...)
 	return err
 }
 

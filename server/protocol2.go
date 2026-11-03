@@ -66,6 +66,11 @@ const (
 	messages_proves_maximum = 64               // unbacked prove frames per stream
 	messages_ready_timeout  = 30 * time.Second // until the first message, cleared after
 
+	// Undecodable messages answered per stream (Receiver.refuse) before it is
+	// reset. Each costs a second, lenient pass over its body; a sender whose
+	// messages keep failing to decode is sending this host work and nothing else.
+	messages_undecodable_maximum = 64
+
 	// Codec byte values (Frame.Codec).
 	codec_none = 0
 	codec_zstd = 1
@@ -218,10 +223,12 @@ func protocol2_init() {
 	})
 }
 
-// frame_read decodes one Frame from r. Returns io.EOF on clean stream
-// close before the first byte of a new frame. Any other error means the
-// caller MUST close the stream — frame boundaries are ambiguous after
-// a partial read or decode failure.
+// frame_read decodes one Frame from r. Returns io.EOF on clean stream close
+// before the first byte of a new frame. A *frame_undecodable is a whole body
+// that would not decode: the length prefix said where it ended and it has been
+// read, so the stream's framing is intact and the caller may answer it and read
+// on. Any other error means the caller MUST close the stream - frame boundaries
+// are ambiguous after a bad length or a partial read.
 // deadline_exceeded reports whether err is a read deadline firing rather than a
 // real protocol or transport failure. The two muxers disagree on the sentinel -
 // QUIC surfaces os.ErrDeadlineExceeded, yamux its own net.Error - so test both.
@@ -256,8 +263,8 @@ func frame_read(r io.Reader) (*Frame, error) {
 		if len(head) > frame_diagnostic_size {
 			head = head[:frame_diagnostic_size]
 		}
-		return nil, fmt.Errorf("frame: cbor decode failed (%d bytes, first %d hex=%x): %w",
-			length, len(head), head, err)
+		return nil, &frame_undecodable{body: body, err: fmt.Errorf("frame: cbor decode failed (%d bytes, first %d hex=%x): %w",
+			length, len(head), head, err)}
 	}
 	if f.Type == "" {
 		return nil, fmt.Errorf("frame: missing Type")
@@ -268,17 +275,82 @@ func frame_read(r io.Reader) (*Frame, error) {
 	return &f, nil
 }
 
+// frame_undecodable is a frame whose whole body arrived and would not decode.
+type frame_undecodable struct {
+	body []byte
+	err  error
+}
+
+func (e *frame_undecodable) Error() string { return e.err.Error() }
+func (e *frame_undecodable) Unwrap() error { return e.err }
+
+// frame_lenient reads what identifies a frame the strict decoder refused. Its
+// caps are the library's ceilings rather than cbor_decode_mode's: the body is
+// already bounded by frame_maximum, and the fields it fills are two strings, so
+// whatever it reads past is skipped, not built.
+var frame_lenient = must(cbor.DecOptions{
+	MaxNestedLevels:  65535,
+	MaxArrayElements: 2147483647,
+	MaxMapPairs:      2147483647,
+	UTF8:             cbor.UTF8DecodeInvalid,
+}.DecMode())
+
+// frame_head is what frame_identify reads of an undecodable frame.
+type frame_head struct {
+	Type string `cbor:"type"`
+	ID   string `cbor:"id"`
+	From string `cbor:"from"`
+}
+
+// frame_identify reads the type, id and sender of an undecodable frame's body,
+// or reports that the body is not a frame at all.
+func frame_identify(body []byte) (frame_head, bool) {
+	var head frame_head
+	if err := frame_lenient.Unmarshal(body, &head); err != nil {
+		return frame_head{}, false
+	}
+	return head, true
+}
+
+// frame_refused marks a frame this host will not send because no receiver
+// would decode it. Nothing of it has been written, so the stream is intact; a
+// refused message is dropped as fail_unsupported, the answer its receiver would
+// give, and the sending app hears it as rejected.
+var frame_refused = errors.New("frame refused")
+
+// frame_check holds an outgoing message frame to what a receiver decodes:
+// cbor_decode_mode's caps on array elements, map pairs and nesting. They are
+// the same constants on every peer and are not negotiated. Checked on the frame
+// as encoded, since the envelope is one level of nesting above the content,
+// but without Data: a byte string counts against none of the caps, and it is
+// the part that can run to megabytes. The size cap depends on compression,
+// which is chosen per stream, so frame_write applies it.
+func frame_check(f *Frame) error {
+	shape := *f
+	shape.Data = nil
+	body, err := cbor.Marshal(&shape)
+	if err != nil {
+		return fmt.Errorf("%w: cbor encode failed: %v", frame_refused, err)
+	}
+	if err := cbor_decode_mode.Wellformed(body); err != nil {
+		return fmt.Errorf("%w: %v", frame_refused, err)
+	}
+	return nil
+}
+
 // frame_write encodes f and writes it to w as a length-prefixed CBOR
 // frame. Buffers the encoded body so the prefix can carry the exact
 // length; returns the buffer to the caller's stream in one Write so a
-// concurrent writer on the same stream can't interleave.
+// concurrent writer on the same stream can't interleave. A frame that will
+// not encode or is over frame_maximum is refused (frame_refused) before
+// anything is written.
 func frame_write(w io.Writer, f *Frame) error {
 	body, err := cbor.Marshal(f)
 	if err != nil {
-		return fmt.Errorf("frame: cbor encode failed: %w", err)
+		return fmt.Errorf("%w: cbor encode failed: %v", frame_refused, err)
 	}
 	if len(body) > frame_maximum {
-		return fmt.Errorf("frame: outbound oversized %d > %d", len(body), frame_maximum)
+		return fmt.Errorf("%w: outbound oversized %d > %d", frame_refused, len(body), frame_maximum)
 	}
 	out := make([]byte, frame_length_size+len(body))
 	binary.BigEndian.PutUint32(out[:frame_length_size], uint32(len(body)))

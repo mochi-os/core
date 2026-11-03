@@ -155,20 +155,20 @@ func TestQueueSendDirectExpandsEmptyTargetRow(t *testing.T) {
 	}
 	// Drive the expansion directly; the rest of queue_send_direct
 	// reaches into libp2p which isn't set up under tests.
-	first := queue_expand_empty_target(q)
-	if first != "peer-1" {
-		t.Errorf("first peer returned for this attempt: want peer-1, got %q", first)
-	}
+	queue_expand_empty_target(q)
 
 	count := db.integer("select count(*) from queue where to_entity=?", entity)
 	if count != 2 {
 		t.Errorf("after expansion: want 2 rows total, got %d", count)
 	}
-	for _, peer := range []string{"peer-2"} {
-		n := db.integer("select count(*) from queue where to_entity=? and target=?", entity, peer)
+	for _, peer := range []string{"peer-1", "peer-2"} {
+		n := db.integer("select count(*) from queue where to_entity=? and target=? and id=?", entity, peer, queue_sibling("row-1", peer))
 		if n != 1 {
-			t.Errorf("expansion created no row for peer=%s (got count %d)", peer, n)
+			t.Errorf("expansion created no copy for peer=%s (got count %d)", peer, n)
 		}
+	}
+	if n := db.integer("select count(*) from queue where id='row-1'"); n != 0 {
+		t.Error("the empty-target row is still queued beside the copies that carry its message")
 	}
 }
 

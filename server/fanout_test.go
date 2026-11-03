@@ -18,12 +18,12 @@ import (
 // TestQueueExpandEmptyTargetFansOutToAllHosts: a row whose target could not be
 // resolved at enqueue time re-resolves on retry into one row per live host -
 // both the fan-out mechanism and the self-heal for a row enqueued before any
-// host known.
+// host known. Each host's row is the message's copy for it, named by
+// queue_sibling, and the empty-target row goes once they are queued.
 func TestQueueExpandEmptyTargetFansOutToAllHosts(t *testing.T) {
 	setup_replication_test(t) // sets net_id = "self", temp data dir
 
-	// Entity ent-1 lives on three remote hosts (none is self). Distinct
-	// seen times so the ordering is deterministic: host-3 most recent.
+	// Entity ent-1 lives on three remote hosts (none is self).
 	udb := db_open("db/users.db")
 	udb.exec("create table if not exists entities ( id text primary key )") // empty: ent-1 is not local
 
@@ -34,37 +34,31 @@ func TestQueueExpandEmptyTargetFansOutToAllHosts(t *testing.T) {
 	ddb.exec("insert into entries (entity, peer, seen) values (?, ?, ?)", "ent-1", "host-3", now()-100)
 
 	qdb := queue_test_table()
+	qdb.exec(`insert into queue (id, target, from_entity, to_entity, service, event, expires, next_retry, created)
+		values ('primary', '', 'from-ent', 'ent-1', 'test', 'msg', ?, 0, ?)`, now()+3600, now())
 
 	q := &QueueEntry{
 		ID: "primary", Target: "", FromEntity: "from-ent", ToEntity: "ent-1",
 		Service: "test", Event: "msg", Expires: now() + 3600,
 	}
-	peer := queue_expand_empty_target(q)
+	queue_expand_empty_target(q)
 
-	// The most-recently-seen host is returned for the caller's in-flight send.
-	if peer != "host-3" {
-		t.Fatalf("expand returned %q, want host-3 (most recently seen)", peer)
+	rows, _ := qdb.rows("select id, target, to_entity from queue order by target")
+	if len(rows) != 3 {
+		t.Fatalf("expand left %d rows, want one per host (host-1, host-2, host-3)", len(rows))
 	}
-
-	// Exactly the other two hosts get an independent sibling row — no row
-	// for host-3 (the caller sends that one on q itself), none left empty.
-	rows, _ := qdb.rows("select target, to_entity from queue order by target")
-	if len(rows) != 2 {
-		t.Fatalf("expand created %d sibling rows, want 2 (host-1, host-2)", len(rows))
-	}
-	got := map[string]bool{}
-	for _, r := range rows {
+	for i, r := range rows {
 		target, _ := r["target"].(string)
-		got[target] = true
-		if to, _ := r["to_entity"].(string); to != "ent-1" {
-			t.Errorf("sibling row to_entity = %q, want ent-1", to)
+		want := "host-" + string(rune('1'+i))
+		if target != want {
+			t.Errorf("row %d targets %q, want %q", i, target, want)
 		}
-	}
-	if !got["host-1"] || !got["host-2"] {
-		t.Errorf("sibling targets = %v, want host-1 and host-2", got)
-	}
-	if got["host-3"] || got[""] {
-		t.Errorf("unexpected sibling target (host-3 or empty) in %v", got)
+		if id, _ := r["id"].(string); id != queue_sibling("primary", want) {
+			t.Errorf("row for %q has id %q, want the message's copy id %q", want, id, queue_sibling("primary", want))
+		}
+		if to, _ := r["to_entity"].(string); to != "ent-1" {
+			t.Errorf("row to_entity = %q, want ent-1", to)
+		}
 	}
 }
 

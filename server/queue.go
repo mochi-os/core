@@ -1062,18 +1062,11 @@ func queue_retarget_parked() {
 			continue
 		}
 		moved++
-		if len(peers) == 1 {
-			// One route, so there are no siblings to clone and queue_retarget's
-			// fan-out loop would do nothing: every row for this destination
-			// moves in a single statement, with no row read at all.
-			db.exec_bg("queue retarget parked", "update queue set target = ?, status = 'pending', attempts = 0, next_retry = ? where status = 'parked' and type = 'direct' and from_entity = ? and to_entity = ? and target = ?",
-				peers[0], now(), from, to, target)
-			info("Queue retargeting parked rows for %q: peer %q is no longer a route, %q is", to, target, peers[0])
-			continue
-		}
-		// Several routes: each row needs a sibling per remaining peer, so this
-		// destination's rows are read and passed through queue_retarget - the
-		// same path queue_fail uses, so the fan-out cannot diverge between them.
+		// Each row is read and passed through queue_retarget - the same path
+		// queue_fail uses - even when one route is left: a row of a message
+		// that already has a copy for that peer must give way to the copy, not
+		// be moved onto the peer beside it under another id the receiver
+		// cannot tell from a new message.
 		var parked []QueueEntry
 		if err := db.scans(&parked, "select * from queue where status = 'parked' and type = 'direct' and from_entity = ? and to_entity = ? and target = ?", from, to, target); err != nil {
 			warn("Database error loading parked queue entries for %q: %v", to, err)

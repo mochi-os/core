@@ -217,8 +217,8 @@ func TestRetargetRevivesAParkedRow(t *testing.T) {
 }
 
 // TestRetargetParkedMovesEveryRowForTheDestination. The sweep decides per
-// destination and moves that destination's rows in one statement, so a backlog
-// of parked rows to one moved entity must not leave all but one behind.
+// destination, so a backlog of parked rows to one moved entity must not leave
+// all but one behind.
 func TestRetargetParkedMovesEveryRowForTheDestination(t *testing.T) {
 	db := retarget_db(t)
 	original := net_id
@@ -240,10 +240,9 @@ func TestRetargetParkedMovesEveryRowForTheDestination(t *testing.T) {
 	}
 }
 
-// TestRetargetParkedFansOutForAMultiPeerDestination covers the other branch.
-// One route moves in a single statement with no row read; several routes need a
-// sibling per peer, so those rows go through queue_retarget itself - the same
-// path queue_fail uses, which is what stops the two fan-outs diverging.
+// TestRetargetParkedFansOutForAMultiPeerDestination: several routes need a
+// copy per peer, and the rows go through queue_retarget itself - the same path
+// queue_fail uses, which is what stops the two fan-outs diverging.
 func TestRetargetParkedFansOutForAMultiPeerDestination(t *testing.T) {
 	db := retarget_db(t)
 	original := net_id
@@ -273,6 +272,47 @@ func TestRetargetParkedFansOutForAMultiPeerDestination(t *testing.T) {
 	}
 	if targets["12D3KooWGONE"] {
 		t.Error("a row still targets the peer that is no longer a route")
+	}
+}
+
+// TestRetargetParkedMovesNoCopyOntoAPeerHoldingOne: a message spread over two
+// peers whose first is no longer a route, and whose copy for the second is
+// still queued. Moving the first copy onto the second peer would deliver the
+// message there twice, under two ids the receiver cannot tell apart from two
+// messages; the parked copy gives way to the one the peer already has.
+func TestRetargetParkedMovesNoCopyOntoAPeerHoldingOne(t *testing.T) {
+	db := retarget_db(t)
+	original := net_id
+	net_id = "12D3KooWSELF"
+	t.Cleanup(func() { net_id = original })
+
+	retarget_route(t, "recipient-entity", "12D3KooWSTAY")
+	parked := queue_sibling("message-one", "12D3KooWGONE")
+	held := queue_sibling("message-one", "12D3KooWSTAY")
+	retarget_row(t, db, parked, "12D3KooWGONE", "recipient-entity", "parked", 50)
+	retarget_row(t, db, held, "12D3KooWSTAY", "recipient-entity", "pending", 3)
+
+	queue_retarget_parked()
+
+	rows, err := db.rows("select id, target from queue where to_entity = ?", "recipient-entity")
+	if err != nil {
+		t.Fatalf("reading rows: %v", err)
+	}
+	staying := 0
+	for _, r := range rows {
+		target, _ := r["target"].(string)
+		switch target {
+		case "12D3KooWSTAY":
+			staying++
+			if id, _ := r["id"].(string); id != held {
+				t.Errorf("the remaining peer holds the message under %q, not its own copy %q", id, held)
+			}
+		case "12D3KooWGONE":
+			t.Error("a row still targets the peer that is no longer a route")
+		}
+	}
+	if staying != 1 {
+		t.Errorf("%d rows of the message target the remaining peer, want its one copy: the parked copy was moved onto a peer that already holds the message", staying)
 	}
 }
 

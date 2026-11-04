@@ -560,6 +560,39 @@ func queue_insert(conflict, id, kind, target, from_entity, to_entity, service, e
 		id, kind, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, now(), now(), priority)
 }
 
+// queue_route is one row of a message to queue: its id and the peer it is for.
+type queue_route struct {
+	id     string
+	target string
+}
+
+// queue_add_routes queues m's rows in one transaction, within timeout, so that
+// either every row lands or none does.
+func queue_add_routes(timeout time.Duration, m *Message, content []byte, routes []queue_route) error {
+	db := db_open("db/queue.db")
+	if db == nil {
+		return error_queue_unavailable
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	tx, err := db.internal.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	services := strings.Join(m.Services, ",")
+	priority := queue_priority(m.Service, m.Event)
+	for _, route := range routes {
+		if _, err := tx.ExecContext(ctx, `insert or replace into queue
+			(id, type, target, from_entity, to_entity, service, event, from_app, from_services, content, data, file, expires, status, attempts, next_retry, created, priority)
+			values (?, 'direct', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`,
+			route.id, route.target, m.From, m.To, m.Service, m.Event, m.FromApp, services, content, m.data, m.file, m.expires, now(), now(), priority); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // Add a broadcast message to the queue
 func queue_add_broadcast(id, from_entity, to_entity, service, event, from_app string, services []string, content, data []byte, expires int64) error {
 	return queue_insert("replace", id, "broadcast", "pubsub", from_entity, to_entity, service, event, from_app, strings.Join(services, ","), content, data, "", expires, queue_priority(service, event))
@@ -568,10 +601,11 @@ func queue_add_broadcast(id, from_entity, to_entity, service, event, from_app st
 // queue_stem is what names a message's copies: a copy's id is its message's
 // stem, a hyphen and 16 hex digits (queue_sibling). The stem of a row that is
 // no copy is its own id, digested when longer than a uid so that its copies
-// stay inside id_length_maximum.
+// stay inside id_length_maximum; such a row's stem differs from its id, so a
+// copy is told by its form (queue_copy), never by its stem.
 func queue_stem(id string) string {
-	if n := len(id) - 17; n > 0 && id[n] == '-' && queue_hex(id[n+1:]) {
-		return id[:n]
+	if queue_copy(id) {
+		return id[:len(id)-17]
 	}
 	if len(id) > queue_stem_length {
 		sum := sha256.Sum256([]byte(id))
@@ -582,6 +616,13 @@ func queue_stem(id string) string {
 
 // queue_stem_length is a uid's length, the longest stem kept as it is.
 const queue_stem_length = 32
+
+// queue_copy reports whether id has a copy's form: a stem, a hyphen and 16
+// hex digits.
+func queue_copy(id string) bool {
+	n := len(id) - 17
+	return n > 0 && id[n] == '-' && queue_hex(id[n+1:])
+}
 
 func queue_hex(text string) bool {
 	for _, c := range text {
@@ -621,7 +662,7 @@ func queue_ack(id string) {
 			}
 		}
 	}
-	db.exec_bg("queue ack delete", "delete from queue where id = ?", id)
+	queue_settle(db, []string{id})
 	//debug("Queue ACK received for %q", id)
 }
 
@@ -729,7 +770,145 @@ func queue_ack_flush(ids []string) {
 	// recipients with no health row (the healthy common case).
 	queue_delivered.Store(now())
 	db.exec_bg("health success flush", "update health set failures=0, denials=0, success=?, suspended=0 where recipient in (select to_entity from queue where id in ("+string(placeholders)+"))", append([]any{now()}, args...)...)
-	db.exec_bg("queue ack flush", "delete from queue where id in ("+string(placeholders)+")", args...)
+	queue_settle(db, ids)
+}
+
+// queue_settle deletes acknowledged rows, and in the same transaction records
+// the peers that acknowledged rows of spread messages reached
+// (delivered_pairs), so no delivery is forgotten with its row: when the record
+// cannot be written the rows stay, to be sent and acknowledged again as
+// duplicates their receivers recognise by id.
+func queue_settle(db *DB, ids []string) {
+	if db == nil || len(ids) == 0 || db_quarantined(db.path) {
+		return
+	}
+	// A corrupt queue.db is quarantined and alerted once, as exec_bg does,
+	// rather than warned about on every flush.
+	failed := func(message string, err error) {
+		if db_error_is_corruption(err) {
+			db_quarantine(db.path, "queue settle", err)
+			return
+		}
+		warn(message, len(ids), err)
+	}
+	pairs, err := delivered_pairs(db, ids)
+	if err != nil {
+		failed("Queue unable to read %d acknowledged rows to record their deliveries; they stay queued: %v", err)
+		return
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	tx, err := db.internal.Begin()
+	if err != nil {
+		failed("Queue unable to settle %d acknowledged rows: %v", err)
+		return
+	}
+	if len(pairs) > 0 {
+		values := strings.TrimSuffix(strings.Repeat("(?, ?, ?),", len(pairs)), ",")
+		record := make([]any, 0, 3*len(pairs))
+		moment := now()
+		for _, pair := range pairs {
+			record = append(record, pair[0], pair[1], moment)
+		}
+		if _, err := tx.Exec("insert or replace into delivered (stem, peer, created) values "+values, record...); err != nil {
+			tx.Rollback()
+			failed("Queue unable to record the deliveries of %d acknowledged rows; they stay queued: %v", err)
+			return
+		}
+	}
+	if _, err := tx.Exec("delete from queue where id in ("+placeholders+")", args...); err != nil {
+		tx.Rollback()
+		failed("Queue unable to delete %d acknowledged rows: %v", err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		failed("Queue unable to settle %d acknowledged rows: %v", err)
+	}
+}
+
+// delivered_pairs answers the (stem, peer) deliveries to record for
+// acknowledged rows: those of spread messages, a copy or a row whose message
+// has copies still queued. The record outlives the row, so a later spread does
+// not queue the message for that peer again (queue_spread), and a row of it
+// that reaches the peer under another id is dropped instead of sent
+// (delivered_drop); the receiver deduplicates by id only. A message that was
+// never spread leaves no record.
+func delivered_pairs(db *DB, ids []string) ([][2]string, error) {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	// Whether an original has copies queued comes with the row: its copies' ids
+	// are its own id, a hyphen and a suffix. Only an id longer than a uid has a
+	// digested stem, which SQL cannot form, and is probed on its own.
+	rows, err := db.rows("select id, target, exists (select 1 from queue copy where copy.id > queue.id || '-' and copy.id < queue.id || '.') as copies from queue where type = 'direct' and target != '' and id in ("+placeholders+")", args...)
+	if err != nil {
+		return nil, err
+	}
+	var pairs [][2]string
+	for _, row := range rows {
+		id := row_string(row, "id")
+		stem := queue_stem(id)
+		if !queue_copy(id) {
+			copies := row_int(row, "copies") > 0
+			if stem != id {
+				copies, err = db.exists("select 1 from queue where id > ? and id < ?", stem+"-", stem+".")
+				if err != nil {
+					return nil, err
+				}
+			}
+			if !copies {
+				continue
+			}
+		}
+		pairs = append(pairs, [2]string{stem, row_string(row, "target")})
+	}
+	return pairs, nil
+}
+
+// delivered_peers answers the peers a message is recorded as delivered to, by
+// its stem. A record that cannot be read is logged and taken as none, which
+// may queue a peer a copy it has.
+func delivered_peers(db *DB, stem string) map[string]bool {
+	peers := map[string]bool{}
+	rows, err := db.rows("select peer from delivered where stem = ?", stem)
+	if err != nil {
+		info("Queue unable to read the deliveries of %q: %v", stem, err)
+		return peers
+	}
+	for _, row := range rows {
+		peers[row_string(row, "peer")] = true
+	}
+	return peers
+}
+
+// delivered_drop drops a row aimed at a peer its message is recorded as
+// delivered to, answering whether it did: the peer has the message under
+// another id, which its deduplication would not match. A record that cannot be
+// read is logged, and the row sent.
+func delivered_drop(q *QueueEntry) bool {
+	if q.Target == "" {
+		return false
+	}
+	db := db_open("db/queue.db")
+	if db == nil {
+		return false
+	}
+	found, err := db.exists("select 1 from delivered where stem = ? and peer = ?", queue_stem(q.ID), q.Target)
+	if err != nil {
+		info("Queue unable to read whether %q was delivered to %q: %v", q.ID, q.Target, err)
+		return false
+	}
+	if !found {
+		return false
+	}
+	db.exec_bg("queue delivered drop", "delete from queue where id = ?", q.ID)
+	info("Queue dropping %q for peer %q: its message was delivered there already", q.ID, q.Target)
+	return true
 }
 
 // queue_drain_entity waits up to `wait` for every queued message from `entity`
@@ -981,20 +1160,28 @@ func queue_expand_empty_target(q *QueueEntry) {
 // message's rows - queues no peer a second row, and a copy queued again after
 // its delivery reaches the receiver as a duplicate it acks. A row is moved to a
 // peer only while it is the message's only row, so no peer holds the message
-// under two ids. Answers the peer q's own row is for ("" when q is to be
-// dropped) and the first queue_add error, after which nothing more is queued.
+// under two ids, and no row, copy or moved, goes to a peer recorded as already
+// delivered the message (delivered_pairs). Answers the peer q's own row
+// is for ("" when q is to be dropped) and the first queue_add error, after
+// which nothing more is queued.
 func queue_spread(db *DB, q *QueueEntry, peers []string, move bool) (string, error) {
 	stem := queue_stem(q.ID)
 	message := "id != ? and (id = ? or (id > ? and id < ?))"
 	rows := []any{q.ID, stem, stem + "-", stem + "."}
+	delivered := delivered_peers(db, stem)
 	own := ""
-	if move && q.ID == stem {
+	if move && !queue_copy(q.ID) {
 		if others, err := db.exists("select 1 from queue where "+message, rows...); err == nil && !others {
-			own = peers[0]
+			for _, peer := range peers {
+				if !delivered[peer] {
+					own = peer
+					break
+				}
+			}
 		}
 	}
 	for _, peer := range peers {
-		if peer == own {
+		if peer == own || delivered[peer] {
 			continue
 		}
 		if held, _ := db.exists("select 1 from queue where target = ? and "+message, append([]any{peer}, rows...)...); held {
@@ -1032,7 +1219,7 @@ func queue_retarget(db *DB, q *QueueEntry) bool {
 	}
 	if own == "" {
 		db.exec_bg("queue retarget spread", "delete from queue where id = ?", q.ID)
-		info("Queue retargeting %q for %q: peer %q is no longer a route, and its message's copies cover the %d that are", q.ID, q.ToEntity, q.Target, len(peers))
+		info("Queue retargeting %q for %q: peer %q is no longer a route, and each of the %d that are holds or was delivered its message", q.ID, q.ToEntity, q.Target, len(peers))
 		return true
 	}
 	db.exec_bg("queue retarget", "update queue set target = ?, status = 'pending', attempts = 0, next_retry = ? where id = ?",
@@ -1093,6 +1280,9 @@ func queue_send_direct(q *QueueEntry) bool {
 	if peer == "" {
 		queue_expand_empty_target(q)
 		return false
+	}
+	if delivered_drop(q) {
+		return true
 	}
 
 	// Self-loop fast path: the wire envelope is wasted when the receiver is this
@@ -1589,6 +1779,10 @@ func queue_cleanup() {
 		return
 	}
 	db.exec_bg("queue cleanup", "delete from queue where "+aged, cutoff)
+	// A delivery record goes once it is past the age and no row of its message
+	// is left to guard: a spread can queue a copy days after the message, and
+	// the copy outlives the age counted from its message.
+	db.exec_bg("queue delivered cleanup", "delete from delivered where created < ? and not exists (select 1 from queue where queue.id = delivered.stem or (queue.id > delivered.stem || '-' and queue.id < delivered.stem || '.'))", cutoff)
 
 	// Surface each aged-out send as message/timeout to its sending app,
 	// deduped per sweep by (from_entity, from_app, to_entity): fan-out makes
@@ -1662,14 +1856,7 @@ func self_loop_drain() {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
-		rows := queue_claim_for_self(self_loop_batch)
-		for i := range rows {
-			// Worker dispatch is blocking; if the worker inbox is full
-			// we wait here. That's the backpressure path — visible as
-			// queue depth growing rather than as an invisible stall.
-			queue_send_self_loop_fast(&rows[i])
-		}
-		if len(rows) >= self_loop_batch {
+		if self_loop_pass() >= self_loop_batch {
 			// Saturated batch — likely more rows are due. Don't sleep,
 			// loop immediately (matches queue_manager's drain shape).
 			continue
@@ -1679,6 +1866,23 @@ func self_loop_drain() {
 		case <-self_loop_wake_ch:
 		}
 	}
+}
+
+// self_loop_pass claims a batch of the rows for this server and hands each to
+// its worker, dropping one whose message was delivered there already. Answers
+// how many it claimed.
+func self_loop_pass() int {
+	rows := queue_claim_for_self(self_loop_batch)
+	for i := range rows {
+		if delivered_drop(&rows[i]) {
+			continue
+		}
+		// Worker dispatch is blocking; if the worker inbox is full
+		// we wait here. That's the backpressure path — visible as
+		// queue depth growing rather than as an invisible stall.
+		queue_send_self_loop_fast(&rows[i])
+	}
+	return len(rows)
 }
 
 // Queue manager goroutine. One processing loop owns every outbound send, so

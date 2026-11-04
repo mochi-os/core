@@ -191,43 +191,153 @@ func (m *Message) publish(allow_queue bool) {
 	}
 }
 
-// Send a completed outgoing message
-func (m *Message) send() {
-	m.target = ""
-	go guard("message send", nil, m.send_work)
+// send queues a completed outgoing message before it returns, for a caller
+// that answers a web request, so the message is held once the request ends,
+// within message_send_budget. An error means none of its rows was queued, and
+// the caller hands the message to send_later. Only the inline send to the
+// primary peer, and the queue's wake-up, run in the background.
+func (m *Message) send() error {
+	content := m.prepare()
+	primary, wake, err := m.queue(content, message_send_budget)
+	if err != nil {
+		return err
+	}
+	m.release(message_attempt_send, primary, wake, content)
+	return nil
 }
 
-// message_enqueue_patience bounds how long send_work keeps trying to queue a
-// row the database refuses, attempts included; each attempt gives up after
-// queue_add_timeout, well inside the driver's busy timeout, so a lock held
-// past one attempt is tried again rather than ending the row. The first pause
-// between attempts is message_enqueue_pause, doubling up to
-// message_enqueue_pause_maximum. vars so tests can shorten them.
+// send_later queues a completed outgoing message in the background: for a
+// caller with no web request to answer (an event handler, a schedule, a service
+// call), and for one whose send found queue.db busy. A failure raised to either
+// would leave its work half done - an event's sender redelivers the whole
+// handler, repeating its writes and its earlier sends, and an action that sends
+// to several recipients has told some and not others - so a busy queue.db is
+// waited out for message_send_patience and a message it still refuses is
+// reported to the administrator.
+func (m *Message) send_later() {
+	content := m.prepare()
+	attempt := message_attempt_send
+	go guard("message send", nil, func() {
+		primary, wake, err := m.queue(content, message_send_patience)
+		if err != nil {
+			warn("Messages unable to queue %s/%s %q from %q to %q: %v", m.Service, m.Event, m.ID, m.From, m.To, err)
+			return
+		}
+		m.release(attempt, primary, wake, content)
+	})
+}
+
+// prepare gives m its id and answers its encoded content.
+func (m *Message) prepare() []byte {
+	m.target = ""
+	if m.ID == "" {
+		m.ID = uid()
+	}
+	return cbor_encode(m.content)
+}
+
+// release starts the inline send to the primary peer and wakes the queue for
+// the rest, in the background. A lone row to a peer needs no wake-up, since
+// the inline send takes it; several rows, or one for this server, do.
+func (m *Message) release(attempt func(*Message, string, []byte), primary string, wake bool, content []byte) {
+	if primary == "" && !wake {
+		return
+	}
+	go guard("message send", nil, func() {
+		if primary != "" {
+			attempt(m, primary, content)
+		}
+		if wake {
+			queue_wake()
+		}
+	})
+}
+
+// message_send_budget bounds how long send waits for queue.db, every attempt
+// included, and message_send_patience how long send_later does; each attempt
+// gives up after queue_add_timeout, or sooner when the bound runs out first.
+// message_send_pause is the first wait between attempts, doubling up to
+// message_send_pause_maximum. vars so tests can shorten them.
 var (
-	message_enqueue_patience      = 5 * time.Minute
-	message_enqueue_pause         = 250 * time.Millisecond
-	message_enqueue_pause_maximum = 8 * time.Second
+	message_send_budget        = 10 * time.Second
+	message_send_patience      = 5 * time.Minute
+	message_send_pause         = 250 * time.Millisecond
+	message_send_pause_maximum = 8 * time.Second
 )
 
-// enqueue queues one row of m for send_work, which runs after the app's call
-// has returned and so has nobody to hand a failure to. A busy or full database
-// is waited out with growing pauses for up to message_enqueue_patience; any
-// other failure, or one that outlasts it, gives the row up with a warning.
-// Reports whether the row landed.
-func (m *Message) enqueue(id, target string, content []byte) bool {
-	pause := message_enqueue_pause
-	deadline := time.Now().Add(message_enqueue_patience)
+// queue resolves m's routes and queues its rows within bound, answering the
+// peer whose row carries m.ID for the inline send ("" when there is none), and
+// whether the queue needs waking for the rest. Each live peer hosting the
+// recipient gets a row, so one peer's outage does not stop the others: m.ID for
+// the first, and for each other the queue_sibling id a later retarget gives the
+// copy too, so the two cannot queue a peer the message twice. With no peer
+// known, one row with no target waits to be resolved again. The rows land in one
+// transaction, all or none.
+//
+// A recipient of this server's own is routed here alone (entity_peers_for), and
+// is handed to its worker directly, with a row only when the worker's inbox is
+// full. This server is one of several routes only by the sender's learned
+// directory, for a recipient that is not its own, which a worker would not
+// take; its row is queued in the same transaction as the others and
+// self_loop_drain settles it, so nothing goes out before every row is sure to
+// be queued. A row for this server is never the inline one, since
+// message_attempt_send to net_id would dial this server.
+func (m *Message) queue(content []byte, bound time.Duration) (string, bool, error) {
+	peers := entity_peers_for(m.From, m.To)
+	if len(peers) == 1 && peers[0] == net_id {
+		local := *m
+		local.ID = uid()
+		local.target = net_id
+		if message_self_loop_dispatch(&local, content) {
+			return "", false, nil
+		}
+		return "", true, m.queue_routes([]queue_route{{id: uid(), target: net_id}}, content, bound)
+	}
+	var routes []queue_route
+	primary := ""
+	wake := false
+	if len(peers) == 0 {
+		routes = append(routes, queue_route{id: m.ID})
+	}
+	for _, peer := range peers {
+		if peer == net_id {
+			routes = append(routes, queue_route{id: uid(), target: peer})
+			wake = true
+			continue
+		}
+		id := m.ID
+		if primary == "" {
+			primary = peer
+		} else {
+			id = queue_sibling(m.ID, peer)
+		}
+		routes = append(routes, queue_route{id: id, target: peer})
+	}
+	if len(routes) > 1 {
+		wake = true
+	}
+	if err := m.queue_routes(routes, content, bound); err != nil {
+		return "", false, err
+	}
+	return primary, wake, nil
+}
+
+// queue_routes queues m's rows in one transaction, trying again after a busy
+// or full queue.db until bound has passed.
+func (m *Message) queue_routes(routes []queue_route, content []byte, bound time.Duration) error {
+	start := time.Now()
+	deadline := start.Add(bound)
+	pause := message_send_pause
 	for {
-		err := queue_add_direct(id, target, m.From, m.To, m.Service, m.Event, m.FromApp, m.Services, content, m.data, m.file, m.expires)
+		err := queue_add_routes(min(queue_add_timeout, time.Until(deadline)), m, content, routes)
 		if err == nil {
-			return true
+			return nil
 		}
 		if !queue_add_transient(err) || time.Now().Add(pause).After(deadline) {
-			warn("Messages unable to queue %s/%s %q from %q to %q via peer %q: %v", m.Service, m.Event, id, m.From, m.To, target, err)
-			return false
+			return fmt.Errorf("queue database after %v: %w", time.Since(start).Round(time.Millisecond), err)
 		}
 		time.Sleep(pause)
-		pause = min(2*pause, message_enqueue_pause_maximum)
+		pause = min(2*pause, message_send_pause_maximum)
 	}
 }
 
@@ -269,88 +379,6 @@ func (m *Message) send_peer_priority(peer string, priority int) error {
 	}
 	queue_wake()
 	return nil
-}
-
-// send_work queues the message and, with no peer pinned, fans out one row per
-// live peer hosting the recipient entity, so one peer's outage does not stop
-// the others. With no peers known, one empty-target row queues for later
-// resolution.
-func (m *Message) send_work() {
-	if m.ID == "" {
-		m.ID = uid()
-	}
-	content := cbor_encode(m.content)
-
-	if m.target != "" {
-		if message_self_loop_dispatch(m, content) {
-			return
-		}
-		if !m.enqueue(m.ID, m.target, content) {
-			return
-		}
-		if m.target == net_id {
-			// Never inline-attempt a self-loop row: peer_send(net_id) self-dials and
-			// fails. self_loop_drain owns these; nudge it.
-			queue_wake()
-			return
-		}
-		message_attempt_send(m, m.target, content)
-		return
-	}
-
-	peers := entity_peers_for(m.From, m.To)
-	if len(peers) == 0 {
-		// Unknown entity — queue one row with empty target so the
-		// retry loop can re-resolve later. Same as before.
-		m.enqueue(m.ID, "", content)
-		return
-	}
-
-	// One peer gets the inline send under m.ID; each other peer's copy takes
-	// queue_sibling's id, the one a later retarget gives it too, so the two
-	// cannot queue a peer the message twice. m.ID must stay with a row in
-	// queue.db, since message_attempt_send drives queue_sending / queue_ack
-	// through it. Self-loop peers divert to dispatch. The first row queue.db
-	// refuses ends the fan-out: the next would wait out the same failure.
-	primary_peer := ""
-	self_queued := false
-	for _, peer := range peers {
-		if peer == net_id {
-			tmp := *m
-			tmp.ID = uid()
-			tmp.target = peer
-			if message_self_loop_dispatch(&tmp, content) {
-				continue
-			}
-			// Dispatch fell back to queue.db. Queue a self-loop row for
-			// self_loop_drain, but never make net_id the inline primary
-			// — message_attempt_send(net_id) would self-dial and fail.
-			if !m.enqueue(uid(), peer, content) {
-				break
-			}
-			self_queued = true
-			continue
-		}
-		id := m.ID
-		if primary_peer != "" {
-			id = queue_sibling(m.ID, peer)
-		}
-		if !m.enqueue(id, peer, content) {
-			break
-		}
-		if primary_peer == "" {
-			primary_peer = peer
-		}
-	}
-	// Try to send the primary (non-self) row immediately; the rest ride
-	// the queue tick. Avoids fanning N goroutines from a single send.
-	if primary_peer != "" {
-		message_attempt_send(m, primary_peer, content)
-	}
-	// Nudge self_loop_drain if a self-loop row was queued as fallback.
-	if self_queued {
-		queue_wake()
-	}
 }
 
 // messages_fanout_open opens a Sender for a peer a fan-out has queued rows for.
@@ -406,9 +434,9 @@ fanout:
 			}
 			continue
 		}
-		// The first peer's row carries m.ID, as send_work's does; the other
-		// peers' take queue_sibling's id, as send_work's do, and the self-loop
-		// rows fresh ones.
+		// The first peer's row carries m.ID, as send's does; the other peers'
+		// take queue_sibling's id, as send's do, and the self-loop rows fresh
+		// ones.
 		first := true
 		for _, peer := range peers {
 			if peer == net_id {
@@ -586,7 +614,22 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 		}
 	}
 
-	m.send()
+	// A web request's action queues the message before it returns, so it is
+	// held once the request ends; anywhere else it is queued in the background
+	// (send_later). A queue failure is never raised: an action that sends to
+	// several recipients would be left having told some, and a machine caller
+	// such as a webhook redelivers, finding its work done and its messages
+	// unsent. A message the action could not queue in time goes to send_later.
+	// A service call counts as anywhere else even inside an action: it runs
+	// another app's function on a thread of its own.
+	if action, _ := t.Local("action").(*Action); action != nil {
+		if err := m.send(); err != nil {
+			info("Messages queueing %s/%s %q from %q to %q later: %v", m.Service, m.Event, m.ID, m.From, m.To, err)
+			m.send_later()
+		}
+		return sl.None, nil
+	}
+	m.send_later()
 	return sl.None, nil
 }
 

@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -75,8 +76,8 @@ func queue_test_held(db *DB, id string) bool {
 	return found
 }
 
-// A burst of concurrent queue.db writes, one goroutine each as send_work queues
-// them, lands every row. Uncapped, each waiting writer opened a connection of
+// A burst of concurrent queue.db writes, one goroutine each as concurrent
+// handlers queue them, lands every row. Uncapped, each waiting writer opened a connection of
 // its own and they starved one another past the busy timeout.
 func TestQueueAddBurstLandsEveryRow(t *testing.T) {
 	test_bare_directory(t)
@@ -109,8 +110,8 @@ func TestQueueAddBurstLandsEveryRow(t *testing.T) {
 
 // A write lock held past queue_add_timeout is an error the caller handles, not
 // a panic, and it comes when the bound runs out rather than after the
-// driver's busy timeout: send_work's goroutine has no recover, and a write
-// waiting a minute for the lock gave it one attempt in its patience.
+// driver's busy timeout: a queue_add on a goroutine without a recover would
+// end the process, and a write waiting a minute leaves no time to try again.
 func TestQueueAddLockedReturnsError(t *testing.T) {
 	test_bare_directory(t)
 	db := setup_queue_test_schema()
@@ -155,71 +156,66 @@ func TestQueueAddLockedReturnsError(t *testing.T) {
 	}
 }
 
-// send_work runs after the app's call returned, so it waits out a held lock
-// across attempts rather than dropping the message at the first refusal; past
-// its patience it gives the row up without a panic.
-func TestMessageSendWaitsOutBusyQueue(t *testing.T) {
-	// The shipped values leave room for retries: each attempt ends well
-	// inside the driver's busy timeout, and the patience spans many attempts.
-	if queue_add_timeout >= time.Minute/2 || message_enqueue_patience < 10*queue_add_timeout {
-		t.Errorf("queue_add_timeout %v against patience %v leaves send_work no second attempt", queue_add_timeout, message_enqueue_patience)
+// send waits out a lock held across a few attempts within its budget, rather
+// than answering the app with an error at the first refusal; past the budget
+// it answers with one, having queued nothing.
+func TestMessageSendRetriesWithinItsBudget(t *testing.T) {
+	// The shipped values leave room for a second attempt: each ends well inside
+	// the driver's busy timeout, and the budget spans more than one.
+	if queue_add_timeout >= time.Minute/2 || message_send_budget <= queue_add_timeout {
+		t.Errorf("queue_add_timeout %v against a budget of %v leaves send no second attempt", queue_add_timeout, message_send_budget)
 	}
 
-	test_bare_directory(t)
-	db := setup_queue_test_schema()
+	db, recipient := queue_test_spread_setup(t)
+	defer stub_message_attempt_send()()
 	queue_test_timeout(t, 300*time.Millisecond)
+	previous_pause, previous_budget := message_send_pause, message_send_budget
+	message_send_pause = 20 * time.Millisecond
+	t.Cleanup(func() { message_send_pause, message_send_budget = previous_pause, previous_budget })
 
-	previous_attempt := message_attempt_send
-	message_attempt_send = func(*Message, string, []byte) {}
-	previous_pause, previous_patience := message_enqueue_pause, message_enqueue_patience
-	message_enqueue_pause = 20 * time.Millisecond
-	t.Cleanup(func() {
-		message_attempt_send = previous_attempt
-		message_enqueue_pause, message_enqueue_patience = previous_pause, previous_patience
-	})
-
-	send := func(id string) {
-		t.Helper()
-		m := message("from", "to", "s", "e")
-		m.ID = id
-		m.target = "peer-elsewhere"
-		defer func() {
-			if fault := recover(); fault != nil {
-				t.Fatalf("send_work panicked on a busy queue.db: %v", fault)
-			}
-		}()
-		m.send_work()
-	}
-
-	// The lock outlasts several attempts but not the patience.
-	message_enqueue_patience = 10 * time.Second
+	// The lock outlasts several attempts but not the budget.
+	message_send_budget = 10 * time.Second
 	release := queue_test_lock(t)
 	go func() {
 		time.Sleep(1500 * time.Millisecond)
 		release()
 	}()
-	send("patient")
-	if !queue_test_held(db, "patient") {
-		t.Error("send_work gave up on a row while queue.db was only briefly locked")
+	m := message("from", recipient, "s", "e")
+	if err := m.send(); err != nil {
+		t.Errorf("send gave up while queue.db was only briefly locked: %v", err)
+	}
+	if !queue_test_held(db, m.ID) {
+		t.Error("send answered without error but its row is not queued")
 	}
 
-	// Control: with no patience the same lock costs the row, so the row above
-	// landed because send_work tried again.
-	message_enqueue_patience = 0
-	queue_test_lock(t)
-	send("impatient")
-	if queue_test_held(db, "impatient") {
-		t.Error("a row landed through a held write lock; the patient case above proves nothing")
+	// Control: a budget longer than one attempt but shorter than the lock is an
+	// error for the lock, so the row above landed because send tried again.
+	message_send_budget = 400 * time.Millisecond
+	release = queue_test_lock(t)
+	go func() {
+		time.Sleep(1500 * time.Millisecond)
+		release()
+	}()
+	late := message("from", recipient, "s", "e")
+	err := late.send()
+	if err == nil {
+		t.Error("send reported success through a held write lock; the case above proves nothing")
+	} else if !queue_add_transient(errors.Unwrap(err)) {
+		t.Errorf("send failed with %q, not for the lock; the control proves nothing", err)
+	}
+	if queue_test_held(db, late.ID) {
+		t.Error("a row landed through a held write lock")
 	}
 }
 
-// send_work runs on a goroutine of its own, outside any recover, so a fault in
-// it took the whole server down; the guard contains it to the one message.
+// send's inline send runs on a goroutine of its own, outside any recover, so a
+// fault in it would take the whole server down; the guard contains it to the
+// one message.
 func TestMessageSendPanicContained(t *testing.T) {
 	test_bare_directory(t)
 	setup_queue_test_schema()
 	setup_users_test_schema()
-	// The recipient is listed at a peer, so send_work reaches its inline send.
+	// The recipient is listed at a peer, so send reaches its inline send.
 	recipient := test_entity_id('r')
 	setup_directory_test_schema().exec("insert into entries (entity, peer, seen) values (?, ?, ?)", recipient, "peer-elsewhere", now())
 
@@ -231,11 +227,13 @@ func TestMessageSendPanicContained(t *testing.T) {
 	}
 	t.Cleanup(func() { message_attempt_send = previous })
 
-	message("from", recipient, "s", "e").send()
+	if err := message("from", recipient, "s", "e").send(); err != nil {
+		t.Fatalf("send: %v", err)
+	}
 	select {
 	case <-reached:
 	case <-time.After(5 * time.Second):
-		t.Fatal("send_work never reached the inline send")
+		t.Fatal("send never reached the inline send")
 	}
 	// An unguarded panic on that goroutine ends this test binary here.
 	time.Sleep(200 * time.Millisecond)
@@ -339,7 +337,7 @@ func TestQueueSpreadQueuesEachPeerOnce(t *testing.T) {
 func TestQueueRetargetQueuesEachPeerOnce(t *testing.T) {
 	db, recipient := queue_test_spread_setup(t)
 	root := uid()
-	// send_work queued the message to a peer that has since gone, and its
+	// send queued the message to a peer that has since gone, and its
 	// copy to peer-b.
 	if err := queue_add_direct(root, "peer-gone", "from", recipient, "s", "e", "", nil, nil, nil, "", 0); err != nil {
 		t.Fatalf("queue_add_direct: %v", err)
@@ -372,21 +370,29 @@ func TestQueueRetargetQueuesEachPeerOnce(t *testing.T) {
 	}
 }
 
-// A send_work fan-out stops at the first row queue.db refuses: every later
-// row would wait out the same failure.
-func TestMessageSendStopsAtTheFirstRefusal(t *testing.T) {
+// send queues a message's rows all or none: one queue.db refuses ends the
+// send with an error and leaves none of the others, so the app can send again
+// without a peer getting the message twice.
+func TestMessageSendQueuesAllOrNone(t *testing.T) {
 	db, recipient := queue_test_spread_setup(t)
 	defer stub_message_attempt_send()()
-	queue_test_refuse(t, db, "before insert on queue when new.target = 'peer-b'")
+	allow := queue_test_refuse(t, db, "before insert on queue when new.target = 'peer-b'")
 
 	m := message("from", recipient, "s", "e")
-	m.send_work()
-
-	if n := db.integer("select count(*) from queue where target='peer-a'"); n != 1 {
-		t.Fatalf("control: %d rows for the peer before the refusal, want 1", n)
+	if err := m.send(); err == nil {
+		t.Error("send reported success with one of its rows refused")
 	}
-	if n := db.integer("select count(*) from queue where target='peer-c'"); n != 0 {
-		t.Error("send_work went on queuing past a refused row")
+	if n := db.integer("select count(*) from queue where to_entity=?", recipient); n != 0 {
+		t.Errorf("%d rows of a send that failed are queued; sending it again would deliver them twice", n)
+	}
+
+	// Control: the same send lands every row once nothing refuses one.
+	allow()
+	if err := m.send(); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if n := db.integer("select count(*) from queue where to_entity=?", recipient); n != 3 {
+		t.Errorf("%d rows queued, want one per peer", n)
 	}
 }
 

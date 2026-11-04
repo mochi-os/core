@@ -43,6 +43,8 @@ func queue_test_table() *DB {
 	db.exec("create index if not exists queue_status_priority_retry on queue (status, priority, next_retry)")
 	db.exec("create index if not exists queue_target on queue (target)")
 	db.exec("create index if not exists queue_status_target_priority_retry on queue (status, target, priority desc, next_retry)")
+	db.exec(delivered_schema)
+	db.exec(delivered_index)
 	return db
 }
 

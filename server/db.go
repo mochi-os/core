@@ -86,7 +86,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 22
+	schema_version = 23
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -94,6 +94,14 @@ const (
 // use it: it reproduces the shape schema 2 shipped, later columns added by
 // later steps.
 const health_schema = "create table if not exists health ( recipient text not null primary key, failures integer not null default 0, denials integer not null default 0, success integer not null default 0, since integer not null default 0, suspended integer not null default 0, probed integer not null default 0, evicted integer not null default 0 )"
+
+// delivered_schema and delivered_index are the current shape of queue.db's
+// delivered table, shared by db_create and the test harness as health_schema
+// is. db_upgrade_23 must not use them: it lays the shape schema 23 shipped.
+const (
+	delivered_schema = "create table if not exists delivered ( stem text not null, peer text not null, created integer not null, primary key ( stem, peer ) )"
+	delivered_index  = "create index if not exists delivered_created on delivered ( created )"
+)
 
 // db_connections caps the internal pool of the databases that take bursts of
 // concurrent writes. Without a cap every waiting writer opens a connection of
@@ -414,6 +422,11 @@ func db_create(names ...string) {
 			link text not null default '', event text not null default '', attempts integer not null default 0,
 			next_retry integer not null, created integer not null )`)
 		queue.exec("create index if not exists pushes_next_retry on pushes(next_retry)")
+		// The peers a message spread over several routes was delivered to, by the
+		// message's stem, so it is not queued for one of them again
+		// (delivered_pairs); reaped by age.
+		queue.exec(delivered_schema)
+		queue.exec(delivered_index)
 	}
 
 	if lay("domains") {
@@ -1560,6 +1573,8 @@ func db_upgrade() {
 			db_upgrade_21()
 		case 22:
 			db_upgrade_22()
+		case 23:
+			db_upgrade_23()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -3118,6 +3133,15 @@ func db_upgrade_22() {
 			panic(fmt.Sprintf("Schema upgrade 22: %v", err))
 		}
 	}
+}
+
+// db_upgrade_23 adds queue.db's delivered table: the peers a message spread
+// over several routes was delivered to, so that no later spread queues it for
+// one of them again. db_create lays the same table for new installs.
+func db_upgrade_23() {
+	queue := db_open("db/queue.db")
+	queue.exec("create table if not exists delivered ( stem text not null, peer text not null, created integer not null, primary key ( stem, peer ) )")
+	queue.exec("create index if not exists delivered_created on delivered ( created )")
 }
 
 // db_upgrade_12 adds the handle registry to users.db; db_create carries the

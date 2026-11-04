@@ -859,6 +859,9 @@ func (s *Sender) pull_loop() {
 					queue_unsending(q.ID)
 					continue
 				}
+				if delivered_drop(&q) {
+					continue
+				}
 				f, err := frame_for_queue(&q)
 				if err != nil {
 					frame_drop(q.ID, s.peer, err)

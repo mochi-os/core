@@ -22,7 +22,7 @@ func add_directory_location(t *testing.T, entity, peer string, seen int64) {
 }
 
 // stub_message_attempt_send replaces the real send path with a no-op so
-// tests can exercise send_work's queue side-effects without reaching
+// tests can exercise send's queue side-effects without reaching
 // libp2p (which isn't set up under in-process tests). Returns a
 // restore function.
 func stub_message_attempt_send() func() {
@@ -31,10 +31,10 @@ func stub_message_attempt_send() func() {
 	return func() { message_attempt_send = orig }
 }
 
-// TestSendWorkFansOutToAllPeers — when an entity has N live directory
-// locations, send_work queues one row per location with each `target`
+// TestMessageSendFansOutToAllPeers — when an entity has N live directory
+// locations, send queues one row per location with each `target`
 // pre-populated. Each replica gets its own direct delivery attempt.
-func TestSendWorkFansOutToAllPeers(t *testing.T) {
+func TestMessageSendFansOutToAllPeers(t *testing.T) {
 	setup_replication_test(t)
 	defer stub_message_attempt_send()()
 	// entity_local errors (no entities table) resolve to nothing rather than
@@ -49,9 +49,11 @@ func TestSendWorkFansOutToAllPeers(t *testing.T) {
 
 	m := message("from-entity", entity, "service", "event")
 	m.set("k", "v")
-	// send_work is the synchronous core; m.send() would spawn a
-	// goroutine that races with cleanup.
-	m.send_work()
+	// The rows are queued before send returns; only the (stubbed) inline
+	// send runs after it.
+	if err := m.send(); err != nil {
+		t.Fatalf("send: %v", err)
+	}
 
 	db := db_open("db/queue.db")
 	count := db.integer("select count(*) from queue where to_entity=? and target<>''", entity)
@@ -68,11 +70,11 @@ func TestSendWorkFansOutToAllPeers(t *testing.T) {
 	}
 }
 
-// TestSendWorkUnknownEntityKeepsRetryRow — when entity_peers returns
-// nothing (no fresh directory entry), send_work falls back to the
+// TestMessageSendUnknownEntityKeepsRetryRow — when entity_peers returns
+// nothing (no fresh directory entry), send falls back to the
 // pre-existing single empty-target row so the queue retry loop can
 // re-resolve later via entity_peer.
-func TestSendWorkUnknownEntityKeepsRetryRow(t *testing.T) {
+func TestMessageSendUnknownEntityKeepsRetryRow(t *testing.T) {
 	setup_replication_test(t)
 	defer stub_message_attempt_send()()
 	// Entity resolution is strict about the ownership check since the
@@ -81,7 +83,9 @@ func TestSendWorkUnknownEntityKeepsRetryRow(t *testing.T) {
 	setup_users_test_schema()
 
 	m := message("from-entity", "uid-unknown-entity", "service", "event")
-	m.send_work()
+	if err := m.send(); err != nil {
+		t.Fatalf("send: %v", err)
+	}
 
 	db := db_open("db/queue.db")
 	count := db.integer("select count(*) from queue where to_entity='uid-unknown-entity'")

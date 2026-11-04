@@ -466,6 +466,8 @@ func TestVersionedStepsKeepTheirSchema(t *testing.T) {
 	check("db_upgrade_21.queue", versioning_schema(queue))
 	db_upgrade_22()
 	check("db_upgrade_22.matrix", versioning_schema(db_open("db/matrix.db")))
+	db_upgrade_23()
+	check("db_upgrade_23.queue", versioning_schema(queue))
 
 	for name, steps := range map[string][]func(*DB) error{
 		"user":          db_user_steps["user"],

@@ -300,6 +300,12 @@ func TestEncryptionMatrixVerification(t *testing.T) {
 	if err := ad.act(ctx, asked.Flow, "confirm"); err != nil {
 		t.Fatal(err)
 	}
+	// THE POINT: the side that confirmed waits on the other, offered no
+	// emoji to compare again, while the other still compares.
+	if v := phase(ad, asked.Flow, "confirmed"); len(v.Emoji) != 0 {
+		t.Fatalf("THE POINT: no emoji to compare once confirmed: %v", v.Emoji)
+	}
+	phase(rd, theirs.Flow, "compare")
 	if err := rd.act(ctx, theirs.Flow, "confirm"); err != nil {
 		t.Fatal(err)
 	}

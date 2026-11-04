@@ -1073,6 +1073,18 @@ func (d *encryption_matrix) act(ctx context.Context, flow string, action string)
 				return err
 			}
 			d.confirmed.Store(flow, true)
+			// The apps stop offering the emoji, and the mismatch that would
+			// cancel what was just confirmed, while the other side has yet to
+			// confirm. Set before its held answer is passed on, which ends
+			// the verification at once where it has already confirmed; and
+			// only while still comparing, since a verification between the
+			// account's own devices, whose answers arrive outside this
+			// worker, can already be done.
+			d.verification(txn, func(v *encryption_verification) {
+				if v.Phase == "compare" {
+					v.Phase, v.Emoji, v.Names = "confirmed", nil, nil
+				}
+			})
 			if mac, held := d.held.LoadAndDelete(flow); held {
 				d.syncer.Dispatch(ctx, mac.(*event.Event))
 			}
@@ -1523,7 +1535,7 @@ func api_account_encryption_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, 
 	return sl_encode(encryption_plain(v)), nil
 }
 
-// mochi.account.encryption.verifications(account) -> list: A Matrix account's verifications under way and those ended in the last minutes, oldest first: [{flow, person, device, room, phase, started, emoji, names, reason, updated}], phase being requested, ready, compare (emoji and their names given), done or cancelled, started whether this side asked. An XMPP account has none. Requires the account's permission
+// mochi.account.encryption.verifications(account) -> list: A Matrix account's verifications under way and those ended in the last minutes, oldest first: [{flow, person, device, room, phase, started, emoji, names, reason, updated}], phase being requested, ready, compare (emoji and their names given), confirmed (this side confirmed the emoji, the other has yet to), done or cancelled, started whether this side asked. An XMPP account has none. Requires the account's permission
 func api_account_encryption_verifications(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account); err != nil {

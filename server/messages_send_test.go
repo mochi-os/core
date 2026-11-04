@@ -172,7 +172,7 @@ func TestMessageSendWakesTheQueueOnlyForMore(t *testing.T) {
 	lone := test_entity_id('o')
 	add_directory_location(t, lone, "peer-a", now())
 	drain()
-	if err := message("from", lone, "s", "e").send(); err != nil {
+	if err := message("from", lone, "s", "e").send(message_send_budget); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	<-attempted
@@ -184,7 +184,7 @@ func TestMessageSendWakesTheQueueOnlyForMore(t *testing.T) {
 	add_directory_location(t, spread, "peer-a", now())
 	add_directory_location(t, spread, "peer-b", now()-100)
 	drain()
-	if err := message("from", spread, "s", "e").send(); err != nil {
+	if err := message("from", spread, "s", "e").send(message_send_budget); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	<-attempted
@@ -217,7 +217,7 @@ func TestMessageSendQueuesTheLocalCopyWithTheRest(t *testing.T) {
 
 	db := db_open("db/queue.db")
 	allow := queue_test_refuse(t, db, "before insert on queue when new.target = 'peer-a'")
-	if err := message(from, recipient, "s", "e").send(); err == nil {
+	if err := message(from, recipient, "s", "e").send(message_send_budget); err == nil {
 		t.Fatal("send reported success with a row refused")
 	}
 	if workers, _ := worker_count(); workers != 0 {
@@ -230,10 +230,71 @@ func TestMessageSendQueuesTheLocalCopyWithTheRest(t *testing.T) {
 	// Control: with nothing refused both rows are queued, this server's for
 	// self_loop_drain.
 	allow()
-	if err := message(from, recipient, "s", "e").send(); err != nil {
+	if err := message(from, recipient, "s", "e").send(message_send_budget); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	if n := db.integer("select count(*) from queue where to_entity=? and target=?", recipient, net_id); n != 1 {
 		t.Errorf("%d rows queued for this server, want 1", n)
+	}
+}
+
+// An action's sends share one budget: on a queue.db that will not take them,
+// five sends cost the action the budget once, not five times, and each message
+// is still queued in the background once the lock goes. A group's creation
+// sends once per member, and the budget per send carried it past the request's
+// own deadline with the later members never sent.
+func TestMessageSendInAnActionSharesOneBudget(t *testing.T) {
+	thread, from := message_send_test_thread(t, true)
+	defer stub_message_attempt_send()()
+	recipients := []string{test_entity_id('1'), test_entity_id('2'), test_entity_id('3'), test_entity_id('4'), test_entity_id('5')}
+	for _, recipient := range recipients {
+		add_directory_location(t, recipient, "peer-a", now())
+	}
+	release := message_send_test_lock(t)
+
+	start := time.Now()
+	for _, recipient := range recipients {
+		if _, err := message_send_test_call(thread, from, recipient); err != nil {
+			t.Fatalf("mochi.message.send raised in an action while queue.db was locked: %v", err)
+		}
+	}
+	if took := time.Since(start); took > message_send_budget+time.Second {
+		t.Errorf("five sends in one action took %v on a locked queue.db; together their budget is %v", took.Round(time.Millisecond), message_send_budget)
+	}
+	release()
+	for _, recipient := range recipients {
+		if !refuse_wait(10*time.Second, func() bool { return message_send_test_rows(recipient) == 1 }) {
+			t.Errorf("%d rows queued for %s after the lock went, want the message's one", message_send_test_rows(recipient), recipient)
+		}
+	}
+}
+
+// The budget an action's sends share is time spent queueing, not time since
+// the first send: an action that sends, works for longer than the budget, and
+// sends again on a briefly busy queue.db still queues the second message
+// before it returns, rather than handing it to the background unasked.
+func TestMessageSendInAnActionKeepsItsBudgetForQueueing(t *testing.T) {
+	thread, from := message_send_test_thread(t, true)
+	defer stub_message_attempt_send()()
+	first, second := test_entity_id('f'), test_entity_id('s')
+	add_directory_location(t, first, "peer-a", now())
+	add_directory_location(t, second, "peer-a", now())
+	queue_test_timeout(t, 300*time.Millisecond)
+	previous_budget, previous_pause := message_send_budget, message_send_pause
+	message_send_budget = time.Second
+	message_send_pause = 50 * time.Millisecond
+	t.Cleanup(func() { message_send_budget, message_send_pause = previous_budget, previous_pause })
+
+	if _, err := message_send_test_call(thread, from, first); err != nil {
+		t.Fatalf("mochi.message.send: %v", err)
+	}
+	time.Sleep(message_send_budget + 200*time.Millisecond)
+	release := queue_test_lock(t)
+	time.AfterFunc(300*time.Millisecond, release)
+	if _, err := message_send_test_call(thread, from, second); err != nil {
+		t.Fatalf("mochi.message.send raised in an action on a briefly busy queue.db: %v", err)
+	}
+	if n := message_send_test_rows(second); n != 1 {
+		t.Errorf("%d rows queued when the second send returned, want its one: time the action spent between its sends was charged to their budget", n)
 	}
 }

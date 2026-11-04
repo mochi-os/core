@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // retarget_db builds queue.db and directory.db in a temporary data directory.
@@ -236,6 +237,52 @@ func TestRetargetParkedMovesEveryRowForTheDestination(t *testing.T) {
 		row := retarget_load(t, db, id)
 		if row.Target != "12D3KooWNEW" || row.Status != "pending" {
 			t.Errorf("%s is still %q at %q; the sweep moves a destination, not a row", id, row.Status, row.Target)
+		}
+	}
+}
+
+// TestRetargetParkedPagesThroughTheDestination pins that the sweep reads a
+// destination's parked rows a page at a time, carries on past the first page,
+// and passes over a row it cannot move: rows b and d stay parked, their copies
+// for the second peer refused, so a cursor that did not advance would read
+// them again for ever and one that advanced wrongly would skip rows.
+func TestRetargetParkedPagesThroughTheDestination(t *testing.T) {
+	db := retarget_db(t)
+	original := net_id
+	net_id = "12D3KooWSELF"
+	t.Cleanup(func() { net_id = original })
+	page := queue_parked_page
+	queue_parked_page = 2
+	t.Cleanup(func() { queue_parked_page = page })
+
+	retarget_route(t, "recipient-entity", "12D3KooWONE")
+	retarget_route(t, "recipient-entity", "12D3KooWTWO")
+	ids := []string{"row-a", "row-b", "row-c", "row-d", "row-e"}
+	for _, id := range ids {
+		retarget_row(t, db, id, "12D3KooWGONE", "recipient-entity", "parked", 50)
+	}
+	queue_test_refuse(t, db, "before insert on queue when new.id like 'row-b-%' or new.id like 'row-d-%'")
+
+	done := make(chan struct{})
+	go func() {
+		queue_retarget_parked()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the sweep did not finish: its cursor reads the rows it could not move again and again")
+	}
+
+	for _, id := range ids {
+		row := retarget_load(t, db, id)
+		moved := row.Target == "12D3KooWONE" && row.Status == "pending"
+		held := id == "row-b" || id == "row-d"
+		if held && (row.Target != "12D3KooWGONE" || row.Status != "parked") {
+			t.Errorf("%s is %q at %q; its copy was refused, so it stays parked where it was", id, row.Status, row.Target)
+		}
+		if !held && !moved {
+			t.Errorf("%s is still %q at %q; the sweep skipped it or stopped before the destination's last page", id, row.Status, row.Target)
 		}
 	}
 }

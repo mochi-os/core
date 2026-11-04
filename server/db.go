@@ -80,9 +80,12 @@ type DB struct {
 
 	// statement_cache holds prepared statements for the internal pool, keyed
 	// by SQL text, populated lazily by prepared(). Guarded by statement_lock.
-	// Closed on eviction (stmts_close).
-	statement_lock  sync.Mutex
-	statement_cache map[string]*sqlx.Stmt
+	// Closed on eviction (stmts_close). statement_generation counts the times
+	// the cache was emptied, so a statement prepared before one is not cached
+	// after it.
+	statement_lock       sync.Mutex
+	statement_cache      map[string]*sqlx.Stmt
+	statement_generation uint64
 }
 
 const (
@@ -1708,15 +1711,20 @@ func db_purge_prefix(dir string) {
 }
 
 // db_statement_cache_maximum bounds the per-DB prepared-statement cache. On
-// overflow the whole cache is flushed (closing a statement is safe even
-// if one is mid-flight — database/sql reference-counts open uses), so
-// dynamically-built SQL can't grow it without bound.
-const db_statement_cache_maximum = 512
+// overflow the whole cache is flushed, so dynamically-built SQL can't grow it
+// without bound. Closing a statement is safe while one of its uses is in
+// flight, but waits for every such use to finish, which on a full pool may be
+// a wait for a connection with no deadline: the flushed statements are closed
+// off the cache's lock (statements_close). A var so tests can shorten it.
+var db_statement_cache_maximum = 512
 
 // prepared returns a cached prepared statement on the internal pool, or nil to
 // fall back to the uncached path. These are pool-level and never used inside a
-// transaction, so they cannot leak a write out of one.
-func (db *DB) prepared(query string) *sqlx.Stmt {
+// transaction, so they cannot leak a write out of one. A statement not yet
+// cached is prepared within ctx and outside statement_lock: preparing waits for
+// a pooled connection, and under the lock a full pool held every caller of the
+// database, those whose statements were cached included, past their deadlines.
+func (db *DB) prepared(ctx context.Context, query string) *sqlx.Stmt {
 	// Never cache while a migration runs, and never cache schema introspection: a
 	// cached statement carries a stale schema view on a pooled connection, which
 	// made a table_info guard miss a present column and re-run its ALTER (#10).
@@ -1724,36 +1732,66 @@ func (db *DB) prepared(query string) *sqlx.Stmt {
 		return nil
 	}
 	db.statement_lock.Lock()
-	defer db.statement_lock.Unlock()
-	if st, ok := db.statement_cache[query]; ok {
+	st, ok := db.statement_cache[query]
+	generation := db.statement_generation
+	db.statement_lock.Unlock()
+	if ok {
 		return st
+	}
+	st, err := db.internal.PreparexContext(ctx, query)
+	if err != nil {
+		return nil // fall back to the uncached path
+	}
+	db.statement_lock.Lock()
+	// The cache was emptied while this was prepared - after DDL, or on
+	// eviction - so the statement may carry the schema from before it: used
+	// once, never kept.
+	if db.statement_generation != generation || db_migrating.Load() > 0 {
+		db.statement_lock.Unlock()
+		st.Close()
+		return nil
+	}
+	// Another caller may have prepared the same statement meanwhile.
+	if held, ok := db.statement_cache[query]; ok {
+		db.statement_lock.Unlock()
+		st.Close()
+		return held
+	}
+	var flushed map[string]*sqlx.Stmt
+	if len(db.statement_cache) >= db_statement_cache_maximum {
+		flushed = db.statement_cache
+		db.statement_cache = nil
+		db.statement_generation++
 	}
 	if db.statement_cache == nil {
 		db.statement_cache = make(map[string]*sqlx.Stmt)
 	}
-	if len(db.statement_cache) >= db_statement_cache_maximum {
-		for _, st := range db.statement_cache {
-			st.Close()
-		}
-		db.statement_cache = make(map[string]*sqlx.Stmt)
-	}
-	st, err := db.internal.Preparex(query)
-	if err != nil {
-		return nil // fall back to the uncached path
-	}
 	db.statement_cache[query] = st
+	db.statement_lock.Unlock()
+	if flushed != nil {
+		go statements_close(flushed)
+	}
 	return st
 }
 
 // stmts_close closes every cached prepared statement. Called from the
-// db_manager eviction path before the pool is closed.
+// db_manager eviction path before the pool is closed, and after DDL. The cache
+// is emptied under its lock and the statements closed off it, so callers of
+// the database are not held while each closing statement waits out its uses.
 func (db *DB) stmts_close() {
 	db.statement_lock.Lock()
-	defer db.statement_lock.Unlock()
-	for _, st := range db.statement_cache {
+	cached := db.statement_cache
+	db.statement_cache = nil
+	db.statement_generation++
+	db.statement_lock.Unlock()
+	statements_close(cached)
+}
+
+// statements_close closes statements no longer in a cache.
+func statements_close(statements map[string]*sqlx.Stmt) {
+	for _, st := range statements {
 		st.Close()
 	}
-	db.statement_cache = nil
 }
 
 // statement_closed reports database/sql's "statement is closed" sentinel, which
@@ -1862,7 +1900,7 @@ func (db *DB) exec_context(ctx context.Context, query string, values ...any) err
 		db.stmts_close()
 		return nil
 	}
-	if st := db.prepared(query); st != nil {
+	if st := db.prepared(ctx, query); st != nil {
 		if _, err := st.ExecContext(ctx, values...); !statement_closed(err) {
 			return err
 		}
@@ -1902,7 +1940,7 @@ func (db *DB) exec_bg(context, query string, values ...any) {
 func (db *DB) exists(query string, values ...any) (bool, error) {
 	var r *sql.Rows
 	var err error
-	if st := db.prepared(query); st != nil {
+	if st := db.prepared(context.Background(), query); st != nil {
 		r, err = st.Query(values...)
 		if statement_closed(err) {
 			// cached statement closed by a concurrent cache flush; retry uncached
@@ -1922,7 +1960,7 @@ func (db *DB) exists(query string, values ...any) (bool, error) {
 func (db *DB) integer(query string, values ...any) int {
 	var result int
 	var err error
-	if st := db.prepared(query); st != nil {
+	if st := db.prepared(context.Background(), query); st != nil {
 		err = st.QueryRow(values...).Scan(&result)
 		if statement_closed(err) {
 			// cached statement closed by a concurrent cache flush; retry uncached
@@ -1945,7 +1983,7 @@ func (db *DB) integer(query string, values ...any) int {
 func (db *DB) integer64(query string, values ...any) int64 {
 	var result int64
 	var err error
-	if st := db.prepared(query); st != nil {
+	if st := db.prepared(context.Background(), query); st != nil {
 		err = st.QueryRow(values...).Scan(&result)
 		if statement_closed(err) {
 			// cached statement closed by a concurrent cache flush; retry uncached
@@ -1963,7 +2001,7 @@ func (db *DB) integer64(query string, values ...any) int64 {
 func (db *DB) row(query string, values ...any) (map[string]any, error) {
 	var r *sqlx.Rows
 	var err error
-	if st := db.prepared(query); st != nil {
+	if st := db.prepared(context.Background(), query); st != nil {
 		r, err = st.Queryx(values...)
 		if statement_closed(err) {
 			// cached statement closed by a concurrent cache flush; retry uncached
@@ -1999,7 +2037,7 @@ func (db *DB) rows(query string, values ...any) ([]map[string]any, error) {
 
 	var r *sqlx.Rows
 	var err error
-	if st := db.prepared(query); st != nil {
+	if st := db.prepared(context.Background(), query); st != nil {
 		r, err = st.Queryx(values...)
 		if statement_closed(err) {
 			// cached statement closed by a concurrent cache flush; retry uncached
@@ -2030,7 +2068,7 @@ func (db *DB) rows(query string, values ...any) ([]map[string]any, error) {
 
 func (db *DB) scan(out any, query string, values ...any) bool {
 	var err error
-	if st := db.prepared(query); st != nil {
+	if st := db.prepared(context.Background(), query); st != nil {
 		err = st.QueryRowx(values...).StructScan(out)
 		if statement_closed(err) {
 			// cached statement closed by a concurrent cache flush; retry uncached
@@ -2050,7 +2088,7 @@ func (db *DB) scan(out any, query string, values ...any) bool {
 }
 
 func (db *DB) scans(out any, query string, values ...any) error {
-	if st := db.prepared(query); st != nil {
+	if st := db.prepared(context.Background(), query); st != nil {
 		if err := st.Select(out, values...); !statement_closed(err) {
 			return err
 		}

@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
@@ -63,6 +64,10 @@ type Action struct {
 	// consult what the app said it was doing rather than infer it from how the
 	// request happened to arrive.
 	definition *AppAction
+	// sending is how long the action's mochi.message.send calls have spent
+	// queueing, which together they keep within one message_send_budget rather
+	// than each waiting it out on a busy queue.db.
+	sending time.Duration
 }
 
 // action_entity is the routed entity as a.entity sees it. A dict, not an

@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"math/rand"
 	rd "runtime/debug"
 	"slices"
@@ -575,9 +576,18 @@ func queue_add_routes(timeout time.Duration, m *Message, content []byte, routes 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	// A deadline that passes mid-transaction rolls it back under the
+	// statement, which then fails as "already rolled back"; it is the
+	// deadline that failed it, and what queue_add_transient tries again.
+	expired := func(err error) error {
+		if err != nil && ctx.Err() != nil {
+			return fmt.Errorf("%w: %v", ctx.Err(), err)
+		}
+		return err
+	}
 	tx, err := db.internal.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return expired(err)
 	}
 	services := strings.Join(m.Services, ",")
 	priority := queue_priority(m.Service, m.Event)
@@ -587,10 +597,10 @@ func queue_add_routes(timeout time.Duration, m *Message, content []byte, routes 
 			values (?, 'direct', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`,
 			route.id, route.target, m.From, m.To, m.Service, m.Event, m.FromApp, services, content, m.data, m.file, m.expires, now(), now(), priority); err != nil {
 			tx.Rollback()
-			return err
+			return expired(err)
 		}
 	}
-	return tx.Commit()
+	return expired(tx.Commit())
 }
 
 // Add a broadcast message to the queue
@@ -1253,20 +1263,37 @@ func queue_retarget_parked() {
 		// queue_fail uses - even when one route is left: a row of a message
 		// that already has a copy for that peer must give way to the copy, not
 		// be moved onto the peer beside it under another id the receiver
-		// cannot tell from a new message.
-		var parked []QueueEntry
-		if err := db.scans(&parked, "select * from queue where status = 'parked' and type = 'direct' and from_entity = ? and to_entity = ? and target = ?", from, to, target); err != nil {
-			warn("Database error loading parked queue entries for %q: %v", to, err)
-			continue
-		}
-		for i := range parked {
-			queue_retarget(db, &parked[i])
+		// cannot tell from a new message. The rows come a page at a time, by
+		// rowid along the target's index so a page reads only its own rows, and
+		// each row's content only as it is retargeted: a destination can hold
+		// days of parked fan-out.
+		after := int64(0)
+		for {
+			page, err := db.rows("select rowid, id from queue where target = ? and status = 'parked' and type = 'direct' and from_entity = ? and to_entity = ? and rowid > ? order by rowid limit ?", target, from, to, after, queue_parked_page)
+			if err != nil {
+				warn("Database error loading parked queue entries for %q: %v", to, err)
+				break
+			}
+			for _, row := range page {
+				var q QueueEntry
+				if db.scan(&q, "select * from queue where id = ? and status = 'parked'", row_string(row, "id")) {
+					queue_retarget(db, &q)
+				}
+			}
+			if len(page) < queue_parked_page {
+				break
+			}
+			after = row_int(page[len(page)-1], "rowid")
 		}
 	}
 	if moved > 0 {
 		queue_wake()
 	}
 }
+
+// queue_parked_page is how many parked rows queue_retarget_parked reads at a
+// time. A var so tests can shorten it.
+var queue_parked_page = 500
 
 // queue_direct is how queue_process sends a direct row: queue_send_direct, a
 // var so tests can stand in for it.

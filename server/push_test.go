@@ -540,3 +540,51 @@ func TestNotifySkipsAnUnconfiguredProvider(t *testing.T) {
 		t.Errorf("notify queued %d row(s) for the unconfigured FCM destination, want 0", len(rows))
 	}
 }
+
+// TestPushQueueHoldsBackABatchItCannotRecord. A pass that delivered its batch
+// stops at the first refused write, and used to leave every later delivered
+// push due, so the next tick, 30 s on, buzzed the same phones again. The batch
+// is claimed before it is sent, so an unrecorded push waits out the claim
+// instead; recorded, it is gone.
+func TestPushQueueHoldsBackABatchItCannotRecord(t *testing.T) {
+	server, hits := push_test_server(http.StatusOK)
+	defer server.Close()
+	push_test_setup(t, server.URL)
+	for _, id := range []string{"p1", "p2", "p3"} {
+		push_test_queue(t, id, server.URL, 1, now()-1, now())
+	}
+	// The claim lands; the first outcome after the deliveries is refused.
+	write := push_write
+	push_write = func(db *DB, query string, values ...any) error {
+		if strings.HasPrefix(query, "delete from pushes where id=") {
+			return fmt.Errorf("database is locked")
+		}
+		return write(db, query, values...)
+	}
+	t.Cleanup(func() { push_write = write })
+
+	if acted := push_queue_process(); acted != 0 {
+		t.Errorf("push_queue_process reported %d rows acted on after failing to record them, want 0 so the manager waits for its next tick", acted)
+	}
+	if got := atomic.LoadInt32(hits); got != 3 {
+		t.Fatalf("the destination saw %d requests, want the batch's 3", got)
+	}
+	for _, id := range []string{"p1", "p2", "p3"} {
+		row := push_test_row(t, id)
+		if row == nil {
+			t.Fatalf("%s is gone though its outcome was never recorded", id)
+		}
+		if due := row_int(row, "next_retry"); due < now()+push_claim-60 {
+			t.Errorf("%s is due again at %d, %d s from now: its delivered push goes out again on the next pass", id, due, due-now())
+		}
+	}
+
+	push_write = write
+	db_open("db/queue.db").exec("update pushes set next_retry=?", now()-1)
+	push_queue_process()
+	for _, id := range []string{"p1", "p2", "p3"} {
+		if push_test_row(t, id) != nil {
+			t.Errorf("%s survived a recorded delivery", id)
+		}
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	sl "go.starlark.net/starlark"
 )
@@ -368,5 +369,141 @@ func TestSystemSweepRunsTheWholeAppSystemSetup(t *testing.T) {
 	row := broadcast_pending_next(db, "p", "k", 1)
 	if row == nil || row.Message != "kept" {
 		t.Fatalf("buffered row after the sweep: %+v, want message %q", row, "kept")
+	}
+}
+
+// TestPreparedStatementsKeepTheirDeadlinesOnAFullPool pins that a query on a
+// pool with no free connection gives up when its deadline passes, whether its
+// statement is cached or still to be prepared, and that one being prepared does
+// not hold up a cached one. Preparing waits for a pooled connection, and it used
+// to wait holding the cache's lock with no deadline of its own, so on queue.db's
+// capped pool every queue write sat behind it past queue_add_timeout.
+func TestPreparedStatementsKeepTheirDeadlinesOnAFullPool(t *testing.T) {
+	db := create_test_db(t)
+	db.exec("create table t (id integer primary key, name text)")
+	cached := "insert into t (id, name) values (?, 'cached')"
+	db.exec(cached, 1)
+	db.internal.SetMaxOpenConns(1)
+	conn, err := db.internal.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Freed in the end however the code behaves, so a regression fails the
+	// timing checks below rather than hanging the suite.
+	release := time.AfterFunc(3*time.Second, func() { conn.Close() })
+	t.Cleanup(func() {
+		if release.Stop() {
+			conn.Close()
+		}
+	})
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = db.exec_context(ctx, "insert into t (id, name) values (?, 'waiting')", 2)
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	for _, query := range []string{cached, "insert into t (id, name) values (?, 'uncached')"} {
+		start := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		err := db.exec_context(ctx, query, 3)
+		cancel()
+		if err == nil {
+			t.Errorf("%q ran though the pool's only connection was held", query)
+		}
+		if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+			t.Errorf("%q waited %v for a connection, past its 200 ms deadline, behind a statement being prepared", query, elapsed.Round(time.Millisecond))
+		}
+	}
+}
+
+// TestStatementCacheFlushHoldsNoCaller pins that flushing the full statement
+// cache does not hold the database's other callers. Closing a statement waits
+// for its uses in flight to finish - here a slow query - and the flush used to
+// close them under the cache's lock, so every caller, its deadline unstarted,
+// waited out that use.
+func TestStatementCacheFlushHoldsNoCaller(t *testing.T) {
+	db := create_test_db(t)
+	db.exec("create table t (id integer primary key, name text)")
+	maximum := db_statement_cache_maximum
+	db_statement_cache_maximum = 2
+	t.Cleanup(func() { db_statement_cache_maximum = maximum })
+	slow := "with recursive c(x) as (select 1 union all select x+1 from c where x<?) select count(*) from c"
+	later := "update t set name='later' where id=?"
+	db.exec(slow, 1)
+	db.exec("insert into t (id, name) values (1, 'first')")
+	db.exec(later, 1)
+	db.internal.SetMaxOpenConns(3)
+
+	used := make(chan struct{})
+	go func() {
+		_ = db.exec_context(context.Background(), slow, 6000000)
+		close(used)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	go func() { _, _ = db.exists("select 1 from t where id=?", 1) }()
+	time.Sleep(100 * time.Millisecond)
+
+	select {
+	case <-used:
+		t.Fatal("the slow query finished before the caller ran, so nothing was in flight for the flush to wait on")
+	default:
+	}
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	err := db.exec_context(ctx, later, 1)
+	cancel()
+	elapsed := time.Since(start)
+	<-used
+	db.statement_lock.Lock()
+	_, kept := db.statement_cache[slow]
+	db.statement_lock.Unlock()
+	if kept {
+		t.Fatal("the cache was not flushed, so the test measured nothing")
+	}
+	if err != nil {
+		t.Errorf("the update failed: %v", err)
+	}
+	if elapsed > 1500*time.Millisecond {
+		t.Errorf("a caller waited %v behind the cache's flush, which waited for a slow query to finish", elapsed.Round(time.Millisecond))
+	}
+}
+
+// TestStatementPreparedAcrossAFlushIsNotKept pins that a statement prepared
+// while the cache was emptied - after DDL, as stmts_close is - is used once and
+// not cached, so it cannot outlive the schema it was prepared against.
+func TestStatementPreparedAcrossAFlushIsNotKept(t *testing.T) {
+	db := create_test_db(t)
+	db.exec("create table t (id integer primary key, name text)")
+	db.internal.SetMaxOpenConns(1)
+	conn, err := db.internal.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := "insert into t (id, name) values (?, 'across')"
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		done <- db.exec_context(ctx, query, 1)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	db.stmts_close()
+	conn.Close()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the insert failed: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the insert never finished")
+	}
+	db.statement_lock.Lock()
+	_, kept := db.statement_cache[query]
+	db.statement_lock.Unlock()
+	if kept {
+		t.Error("a statement prepared before the cache was emptied was cached after it")
 	}
 }

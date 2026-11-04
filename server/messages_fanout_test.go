@@ -51,7 +51,7 @@ func TestMessageSendFansOutToAllPeers(t *testing.T) {
 	m.set("k", "v")
 	// The rows are queued before send returns; only the (stubbed) inline
 	// send runs after it.
-	if err := m.send(); err != nil {
+	if err := m.send(message_send_budget); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 
@@ -83,7 +83,7 @@ func TestMessageSendUnknownEntityKeepsRetryRow(t *testing.T) {
 	setup_users_test_schema()
 
 	m := message("from-entity", "uid-unknown-entity", "service", "event")
-	if err := m.send(); err != nil {
+	if err := m.send(message_send_budget); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 

@@ -154,6 +154,12 @@ const (
 	push_queue_workers = 8
 )
 
+// push_claim is how far a pass moves its batch's retry time on before sending,
+// in seconds: past any batch's sending time, so a pass that cannot record what
+// it delivered sends those pushes again only once this has passed, not on the
+// next tick.
+const push_claim = 15 * 60
+
 // push_queue_process makes one pass over the due rows and reports how many it
 // acted on, so the manager can loop straight back in. Read, send concurrently,
 // then apply outcomes: every database write stays on this goroutine.
@@ -171,7 +177,7 @@ func push_queue_process() int {
 		if failed {
 			return false
 		}
-		if err := db.exec_e(query, values...); err != nil {
+		if err := push_write(db, query, values...); err != nil {
 			info("Push queue write failed: %v", err)
 			failed = true
 		}
@@ -248,6 +254,22 @@ func push_queue_process() int {
 		})
 	}
 
+	// Claimed before anything is sent: an outcome the loop below cannot record,
+	// once a write has been refused, leaves its push not due again until the
+	// claim runs out, rather than on the next tick.
+	// One statement's text for any batch size, as the cache keeps a statement
+	// per text.
+	if len(sending) > 0 {
+		ids := make([]string, len(sending))
+		for i, a := range sending {
+			ids[i] = a.id
+		}
+		claimed, _ := json.Marshal(ids)
+		if !write("update pushes set next_retry=? where id in (select value from json_each(?))", now()+push_claim, string(claimed)) {
+			return 0
+		}
+	}
+
 	var group sync.WaitGroup
 	slots := make(chan struct{}, push_queue_workers)
 	for _, a := range sending {
@@ -300,6 +322,11 @@ func push_queue_process() int {
 		return 0
 	}
 	return acted
+}
+
+// push_write is how a pass writes to queue.db. A var so tests can refuse it.
+var push_write = func(db *DB, query string, values ...any) error {
+	return db.exec_e(query, values...)
 }
 
 // push_manager retries queued pushes. Separate from queue_manager because the

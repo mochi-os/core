@@ -129,11 +129,11 @@ func TestPreparedStatementCacheMigrationSafety(t *testing.T) {
 	// Part 2: while a migration runs, prepared() returns nil even for an
 	// ordinary cacheable query; caching resumes once the window closes.
 	db_migrating.Add(1)
-	if st := db.prepared("select id from t where id=?"); st != nil {
+	if st := db.prepared(context.Background(), "select id from t where id=?"); st != nil {
 		t.Error("prepared() must return nil while db_migrating > 0 (#10 part 2)")
 	}
 	db_migrating.Add(-1)
-	if st := db.prepared("select id from t where id=?"); st == nil {
+	if st := db.prepared(context.Background(), "select id from t where id=?"); st == nil {
 		t.Error("prepared() should cache again after the migration window closes")
 	}
 }

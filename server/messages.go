@@ -193,12 +193,13 @@ func (m *Message) publish(allow_queue bool) {
 
 // send queues a completed outgoing message before it returns, for a caller
 // that answers a web request, so the message is held once the request ends,
-// within message_send_budget. An error means none of its rows was queued, and
-// the caller hands the message to send_later. Only the inline send to the
-// primary peer, and the queue's wake-up, run in the background.
-func (m *Message) send() error {
+// within bound: what is left of the action's message_send_budget. An error
+// means none of its rows was queued, and the caller hands the message to
+// send_later. Only the inline send to the primary peer, and the queue's
+// wake-up, run in the background.
+func (m *Message) send(bound time.Duration) error {
 	content := m.prepare()
-	primary, wake, err := m.queue(content, message_send_budget)
+	primary, wake, err := m.queue(content, bound)
 	if err != nil {
 		return err
 	}
@@ -621,9 +622,20 @@ func api_message_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	// such as a webhook redelivers, finding its work done and its messages
 	// unsent. A message the action could not queue in time goes to send_later.
 	// A service call counts as anywhere else even inside an action: it runs
-	// another app's function on a thread of its own.
+	// another app's function on a thread of its own. The action's sends share
+	// one budget of time spent queueing, and once it is spent the rest go to
+	// send_later: a busy queue.db would otherwise cost a group's creation the
+	// budget once per member, past the request's own deadline.
 	if action, _ := t.Local("action").(*Action); action != nil {
-		if err := m.send(); err != nil {
+		left := message_send_budget - action.sending
+		if left <= 0 {
+			m.send_later()
+			return sl.None, nil
+		}
+		start := time.Now()
+		err := m.send(left)
+		action.sending += time.Since(start)
+		if err != nil {
 			info("Messages queueing %s/%s %q from %q to %q later: %v", m.Service, m.Event, m.ID, m.From, m.To, err)
 			m.send_later()
 		}

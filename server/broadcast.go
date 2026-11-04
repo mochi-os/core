@@ -1513,6 +1513,11 @@ func broadcast_fanout(stream string, list []*Message, content []byte) {
 		if previous != nil {
 			<-previous
 		}
-		messages_fanout(list, content)
+		// Off the broadcasting call's thread, so a panic here has no recover
+		// above it but this one; the deferred close still lets the stream's
+		// next fan-out run.
+		guard("broadcast fan-out", nil, func() {
+			messages_fanout(list, content)
+		})
 	}()
 }

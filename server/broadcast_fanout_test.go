@@ -326,3 +326,23 @@ func TestBroadcastEvictionRunsOutsideTheStreamLock(t *testing.T) {
 		t.Error("the eviction's handler ran while its broadcast held the stream's lock")
 	}
 }
+
+// TestBroadcastFanoutSurvivesAPanic pins that a panic in a broadcast's
+// background fan-out is contained on its own goroutine, which nothing else
+// recovers, and that the stream's next fan-out, waiting on it, still runs.
+func TestBroadcastFanoutSurvivesAPanic(t *testing.T) {
+	setup_replication_test(t)
+	recipient := withdraw_test_entity(t)
+	broadcast_fanout("fanout-panic", []*Message{nil}, []byte("x"))
+	m := &Message{From: withdraw_test_entity(t), To: recipient, Service: "feeds", Event: "post/create", target: fanout_test_peer}
+	broadcast_fanout("fanout-panic", []*Message{m}, []byte("x"))
+
+	queue := db_open("db/queue.db")
+	deadline := time.Now().Add(10 * time.Second)
+	for queue.integer("select count(*) from queue where to_entity=?", recipient) < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("the broadcast after the one that panicked was never queued")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

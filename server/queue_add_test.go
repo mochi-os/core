@@ -181,7 +181,7 @@ func TestMessageSendRetriesWithinItsBudget(t *testing.T) {
 		release()
 	}()
 	m := message("from", recipient, "s", "e")
-	if err := m.send(); err != nil {
+	if err := m.send(message_send_budget); err != nil {
 		t.Errorf("send gave up while queue.db was only briefly locked: %v", err)
 	}
 	if !queue_test_held(db, m.ID) {
@@ -197,7 +197,7 @@ func TestMessageSendRetriesWithinItsBudget(t *testing.T) {
 		release()
 	}()
 	late := message("from", recipient, "s", "e")
-	err := late.send()
+	err := late.send(message_send_budget)
 	if err == nil {
 		t.Error("send reported success through a held write lock; the case above proves nothing")
 	} else if !queue_add_transient(errors.Unwrap(err)) {
@@ -227,7 +227,7 @@ func TestMessageSendPanicContained(t *testing.T) {
 	}
 	t.Cleanup(func() { message_attempt_send = previous })
 
-	if err := message("from", recipient, "s", "e").send(); err != nil {
+	if err := message("from", recipient, "s", "e").send(message_send_budget); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	select {
@@ -379,7 +379,7 @@ func TestMessageSendQueuesAllOrNone(t *testing.T) {
 	allow := queue_test_refuse(t, db, "before insert on queue when new.target = 'peer-b'")
 
 	m := message("from", recipient, "s", "e")
-	if err := m.send(); err == nil {
+	if err := m.send(message_send_budget); err == nil {
 		t.Error("send reported success with one of its rows refused")
 	}
 	if n := db.integer("select count(*) from queue where to_entity=?", recipient); n != 0 {
@@ -388,7 +388,7 @@ func TestMessageSendQueuesAllOrNone(t *testing.T) {
 
 	// Control: the same send lands every row once nothing refuses one.
 	allow()
-	if err := m.send(); err != nil {
+	if err := m.send(message_send_budget); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	if n := db.integer("select count(*) from queue where to_entity=?", recipient); n != 3 {

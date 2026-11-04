@@ -36,6 +36,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"html"
@@ -579,6 +580,13 @@ func activitypub_handle_route(c *gin.Context) {
 	}
 	a := actor_by_handle(activitypub_host(c), name)
 	if a == nil {
+		// /@<handle>.rss is the account's web feed, at the address Mastodon
+		// gives one: a reader, or a feed app with no account to follow it
+		// by, takes the person's posts from it.
+		if handle, rss := strings.CutSuffix(name, ".rss"); rss {
+			activitypub_rss(c, handle)
+			return
+		}
 		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
 		return
 	}
@@ -593,6 +601,90 @@ func activitypub_handle_route(c *gin.Context) {
 	}
 	_, row := actor_account(a.ID)
 	c.Redirect(http.StatusFound, activitypub_browser_url(user, row))
+}
+
+// An activitypub_feed is an account's posts as an RSS 2.0 document.
+type activitypub_feed struct {
+	XMLName xml.Name              `xml:"rss"`
+	Version string                `xml:"version,attr"`
+	Channel activitypub_feed_list `xml:"channel"`
+}
+
+type activitypub_feed_list struct {
+	Title       string                  `xml:"title"`
+	Link        string                  `xml:"link"`
+	Description string                  `xml:"description"`
+	Items       []activitypub_feed_item `xml:"item"`
+}
+
+type activitypub_feed_item struct {
+	Guid        string `xml:"guid"`
+	Link        string `xml:"link"`
+	Published   string `xml:"pubDate"`
+	Description string `xml:"description"`
+}
+
+// activitypub_rss answers /@<handle>.rss: the account's latest public posts,
+// newest first, those its outbox lists save the boosts, each with its page,
+// date and content, a content warning ahead of the content as Mastodon's own
+// feed gives it.
+func activitypub_rss(c *gin.Context, handle string) {
+	a := actor_by_handle(activitypub_host(c), handle)
+	if a == nil {
+		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
+		return
+	}
+	user, row := actor_account(a.ID)
+	if user == nil {
+		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
+		return
+	}
+	document := activitypub_actor(user, a, row)
+	page, _ := document["url"].(string)
+	title, _ := document["name"].(string)
+	if title == "" {
+		title = "@" + a.Handle
+	}
+	summary, _ := document["summary"].(string)
+	feed := activitypub_feed{Version: "2.0", Channel: activitypub_feed_list{Title: title, Link: page, Description: summary}}
+	public := "%" + json_encode(activitystreams_public) + "%"
+	rows, _ := db_user(user, "user").rows("select id, app, type, addressing, created, updated, deleted from objects where account=? and deleted=0 and type!='Announce' and addressing like ? order by created desc limit ?", a.ID, public, activitypub_page)
+	for _, object_row := range rows {
+		// An activity the account sent whole is a post only where it made
+		// one; any other object is its app's.
+		var object map[string]any
+		if activity := object_activity(object_row); activity != nil {
+			if activity["type"] == "Create" {
+				object, _ = activity["object"].(map[string]any)
+			}
+		} else {
+			object = activitypub_object_document(user, a, row, object_row)
+		}
+		if object == nil {
+			continue
+		}
+		id, _ := object["id"].(string)
+		link, _ := object["url"].(string)
+		if link == "" {
+			link = id
+		}
+		content, _ := object["content"].(string)
+		if warning, _ := object["summary"].(string); warning != "" {
+			content = "<p>" + html.EscapeString(warning) + "</p><hr />" + content
+		}
+		feed.Channel.Items = append(feed.Channel.Items, activitypub_feed_item{
+			Guid:        id,
+			Link:        link,
+			Published:   time.Unix(row_int(object_row, "created"), 0).UTC().Format(time.RFC1123Z),
+			Description: content,
+		})
+	}
+	body, err := xml.Marshal(feed)
+	if err != nil {
+		respond_error(c, http.StatusInternalServerError, "server_error", "errors.server_error", nil)
+		return
+	}
+	c.Data(http.StatusOK, "application/rss+xml; charset=utf-8", append([]byte(xml.Header), body...))
 }
 
 // activitypub_browser_url is where a browser is sent for an actor: a group's

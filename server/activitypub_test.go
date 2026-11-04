@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mmcdole/gofeed"
 	sl "go.starlark.net/starlark"
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
@@ -1331,5 +1332,78 @@ func TestServerActor(t *testing.T) {
 	delivery_process()
 	if signed != "https://example.com/~/actor#main-key" {
 		t.Errorf("THE POINT: the delivery was not signed as the server's account: %q", signed)
+	}
+}
+
+// TestActivityPubRSS: /@<handle>.rss is the account's web feed, as Mastodon
+// gives one: its public posts newest first, each with its page, date and
+// content and a content warning ahead of it, read back as mochi.rss.fetch
+// reads feeds; nothing addressed to followers alone, no boost, nothing deleted;
+// and an unknown handle still answers not found.
+func TestActivityPubRSS(t *testing.T) {
+	alice, _ := create_activitypub_test_env(t)
+	db := db_user(alice, "user")
+	public := json_encode(map[string]any{"to": []string{activitystreams_public}, "cc": []string{"https://example.com/~f1/followers"}})
+	db.exec("insert into objects (id, account, app, type, addressing, created) values ('o1', 'f1', 'feeds', 'Note', ?, 1000)", public)
+	db.exec("insert into objects (id, account, app, type, addressing, created) values ('o2', 'f1', 'feeds', 'Note', ?, 1001)", public)
+	db.exec("insert into objects (id, account, app, type, addressing, created) values ('o3', 'f1', 'feeds', 'Note', ?, 1002)", json_encode(map[string]any{"to": []string{"https://example.com/~f1/followers"}, "cc": []string{}}))
+	db.exec("insert into objects (id, account, app, type, addressing, created) values ('o4', 'f1', 'feeds', 'Note', ?, 1003)", public)
+	db.exec("update objects set deleted=2000 where id='o4'")
+	db.exec("insert into objects (id, account, app, type, addressing, created) values ('o5', 'f1', 'feeds', 'Announce', ?, 1004)", json_encode(map[string]any{"to": []string{activitystreams_public}, "cc": []string{}, "object": "https://remote.example/n/1"}))
+	// Activities the account sent whole: a post it made, and a like, no post.
+	db.exec("insert into objects (id, account, app, type, addressing, created) values ('o6', 'f1', 'feeds', 'Create', ?, 1005)", json_encode(map[string]any{"to": []string{activitystreams_public}, "cc": []string{}, "activity": map[string]any{"type": "Create", "object": map[string]any{"id": "https://example.com/~f1/o6", "url": "https://example.com/feeds/abc/o6", "content": "<p>Whole</p>"}}}))
+	db.exec("insert into objects (id, account, app, type, addressing, created) values ('o7', 'f1', 'feeds', 'Like', ?, 1006)", json_encode(map[string]any{"to": []string{activitystreams_public}, "cc": []string{}, "activity": map[string]any{"type": "Like", "object": "https://remote.example/n/2"}}))
+	saved_call := activitypub_call
+	activitypub_call = func(user *User, a *App, function string, args Map) (any, error) {
+		if function != "activitypub/object" {
+			return nil, nil
+		}
+		id, _ := args["id"].(string)
+		object := map[string]any{"type": "Note", "content": "<p>Post " + strings.TrimPrefix(id, "https://example.com/~f1/") + "</p>", "url": "https://example.com/feeds/abc/" + strings.TrimPrefix(id, "https://example.com/~f1/")}
+		if strings.HasSuffix(id, "/o2") {
+			object["summary"] = "Spoilers"
+		}
+		return object, nil
+	}
+	t.Cleanup(func() { activitypub_call = saved_call })
+	apps_lock.Lock()
+	saved_apps := apps
+	apps = map[string]*App{"feeds": {id: "feeds", internal: &AppVersion{}}}
+	apps_lock.Unlock()
+	t.Cleanup(func() {
+		apps_lock.Lock()
+		apps = saved_apps
+		apps_lock.Unlock()
+	})
+
+	w := activitypub_request(t, httptest.NewRequest("GET", "https://example.com/@alice.rss", nil))
+	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "application/rss+xml") {
+		t.Fatalf("THE POINT: the account's web feed: %d %s %s", w.Code, w.Header().Get("Content-Type"), w.Body.String())
+	}
+	feed, err := gofeed.NewParser().ParseString(w.Body.String())
+	if err != nil {
+		t.Fatalf("the feed as mochi.rss.fetch reads it: %v", err)
+	}
+	if feed.Link != "https://example.com/@alice" {
+		t.Errorf("the feed's page = %q", feed.Link)
+	}
+	if len(feed.Items) != 3 {
+		t.Fatalf("THE POINT: only the public posts still there, no boost or like: %d %v", len(feed.Items), feed.Items)
+	}
+	if whole := feed.Items[0]; whole.Link != "https://example.com/feeds/abc/o6" || whole.Description != "<p>Whole</p>" {
+		t.Errorf("a post sent whole = %+v", whole)
+	}
+	newest, oldest := feed.Items[1], feed.Items[2]
+	if newest.Link != "https://example.com/feeds/abc/o2" || newest.GUID != "https://example.com/~f1/o2" || newest.PublishedParsed == nil || newest.PublishedParsed.Unix() != 1001 {
+		t.Errorf("the newest post = %+v", newest)
+	}
+	if !strings.HasPrefix(newest.Description, "<p>Spoilers</p><hr />") || !strings.Contains(newest.Description, "<p>Post o2</p>") {
+		t.Errorf("THE POINT: the content warning ahead of the content: %q", newest.Description)
+	}
+	if oldest.Link != "https://example.com/feeds/abc/o1" || oldest.Description != "<p>Post o1</p>" {
+		t.Errorf("the oldest post = %+v", oldest)
+	}
+	if w := activitypub_request(t, httptest.NewRequest("GET", "https://example.com/@carol.rss", nil)); w.Code != http.StatusNotFound {
+		t.Errorf("an unknown handle's web feed: %d", w.Code)
 	}
 }

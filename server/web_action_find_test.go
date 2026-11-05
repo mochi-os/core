@@ -5,7 +5,14 @@
 
 package main
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+)
 
 // The feeds layout: a catch-all page, a class-level RSS action, a per-feed RSS
 // action on a plain segment, the SPA page routes, a post view on the API side
@@ -53,11 +60,8 @@ func TestActionFindDomainEntity(t *testing.T) {
 		// ":feed/-/:post" matches "rss" by parameter, and used to win.
 		{"reader rss", "rss", false, ":feed/rss"},
 		{"browser rss", "rss", true, ":feed/rss"},
-		// A -/ API path resolves against the entity whatever the client, and
-		// one the entity has no action for stays on the catch-all rather than
-		// reaching a class-level action through the entity's domain.
+		// A -/ API path resolves against the entity whatever the client.
 		{"api path", "-/information", false, ":feed/-/information"},
-		{"missing api path", "-/rss/token", false, ""},
 		// A bare name a -/ action declares exactly: the API action for a
 		// non-browser, the page for a browser, so a page whose slug is an
 		// action name still opens.
@@ -73,6 +77,11 @@ func TestActionFindDomainEntity(t *testing.T) {
 	}
 	for _, tt := range cases {
 		web_action_find_check(t, av, e, tt.name, tt.path, tt.prefer_html, tt.want)
+	}
+	// One the entity has no action for is a miss: neither the page nor a
+	// class-level action reached through the entity's domain.
+	if aa := web_action_find(av, "-/rss/token", e, false); aa != nil {
+		t.Errorf("missing api path resolved to %q; want a miss", aa.name)
 	}
 }
 
@@ -130,5 +139,65 @@ func TestActionFindWithoutCatchAll(t *testing.T) {
 	}
 	if aa := web_action_find(av, "missing/path/here", nil, false); aa != nil {
 		t.Errorf("unmatched path resolved to %q; want nothing", aa.name)
+	}
+}
+
+// TestActionFindSeparator: the - segment separates an entity or class from its
+// action, so a path holding it asks for an action. A parameter never takes it
+// as a value, and a path no action matches is a miss, never the app's page,
+// which a client asking for data would read as a web page with no reason. A
+// page path without it still falls to the page, and a route that names the
+// separator itself still matches.
+func TestActionFindSeparator(t *testing.T) {
+	av := web_action_find_version()
+	for _, path := range []string{
+		"-/nosuchaction",                 // ":feed/:post" would take "-" as the feed
+		"https:/lemmy.ml/c/test/-/posts", // a community's address in the path, as #217 sent
+		"-",
+	} {
+		if aa := av.find_action(path); aa != nil {
+			t.Errorf("THE POINT: %q resolved to %q; want a miss", path, aa.name)
+		}
+	}
+	web_action_find_check(t, av, nil, "page path", "no/such/page", false, "")
+	web_action_find_check(t, av, nil, "post page", "somefeed/somepost", false, ":feed/:post")
+	web_action_find_check(t, av, nil, "declared separator", "somefeed/-/somepost", false, ":feed/-/:post")
+	delete(av.Actions, ":feed/-/:post")
+	if aa := av.find_action("somefeed/-/nosuchaction"); aa != nil {
+		t.Errorf("THE POINT: an entity action path no route declares resolved to %q; want a miss", aa.name)
+	}
+
+	// A file route by its parameter, and a parameter after a wildcard, refuse
+	// the separator as well.
+	av.Actions[":feed/assets"] = AppAction{Files: "web/dist/assets"}
+	av.Actions["docs/*path/:page"] = AppAction{Function: "action_docs"}
+	web_action_find_check(t, av, nil, "feed asset", "somefeed/assets/app.js", false, ":feed/assets")
+	web_action_find_check(t, av, nil, "document page", "docs/a/b/intro", false, "docs/*path/:page")
+	for _, path := range []string{"-/assets/app.js", "docs/a/b/-"} {
+		if aa := av.find_action(path); aa != nil {
+			t.Errorf("THE POINT: %q resolved to %q; want a miss", path, aa.name)
+		}
+	}
+}
+
+// TestWebActionMissAnswers: a route with nowhere else to go answers a path no
+// action matches as a miss, in JSON naming the path, rather than leaving the
+// router's bare 404 or the app's page.
+func TestWebActionMissAnswers(t *testing.T) {
+	load_core_labels()
+	gin.SetMode(gin.TestMode)
+	av := web_action_find_version()
+	a := &App{id: "findtest", internal: av}
+	av.app = a
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "http://example.com/feeds/-/nosuchaction", nil)
+	c.Request.Header.Set("Accept", "application/json")
+	web_action_answer(c, a, "-/nosuchaction", nil, routing_class)
+	if w.Code != http.StatusNotFound || !strings.HasPrefix(w.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("THE POINT: a missed action answered %d %q: %s", w.Code, w.Header().Get("Content-Type"), w.Body.String())
+	}
+	if body := w.Body.String(); !strings.Contains(body, `"action_not_found"`) || !strings.Contains(body, "No action answers /feeds/-/nosuchaction") {
+		t.Errorf("THE POINT: the miss does not name the path: %s", body)
 	}
 }

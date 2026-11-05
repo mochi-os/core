@@ -852,13 +852,16 @@ func TestDavFeatureRouteMatchesItsRoot(t *testing.T) {
 		{"carddav", "carddav/*path", ""},
 		{"carddav/fp1/books/x/", "carddav/*path", "fp1/books/x/"},
 		{"-/files/a/b", "-/files/*path", "a/b"},
-		// A plain wildcard still needs a segment: the catch-all answers.
-		{"-/files", "", ""},
 	} {
 		aa := av.find_action(c.name)
 		if aa == nil || aa.name != c.want || aa.parameters["path"] != c.path {
 			t.Errorf("find_action(%q) = %+v, want %q with path %q", c.name, aa, c.want, c.path)
 		}
+	}
+	// A plain wildcard still needs a segment, and an action path that matches
+	// nothing is a miss rather than the page.
+	if aa := av.find_action("-/files"); aa != nil {
+		t.Errorf("find_action(%q) = %q, want a miss", "-/files", aa.name)
 	}
 }
 

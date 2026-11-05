@@ -2345,6 +2345,11 @@ func (av *AppVersion) event(name string) (AppEvent, bool) {
 	return ae, found
 }
 
+// find_action resolves a path to one of the version's actions: an exact name,
+// a file or feature route by its prefix, a pattern by its parameters, then the
+// catch-all "" page. The - segment separates an entity or class from its
+// action, so a parameter never takes it as a value and a path holding it never
+// falls to the page.
 func (av *AppVersion) find_action(name string) *AppAction {
 	var candidates []AppAction
 
@@ -2412,7 +2417,7 @@ func (av *AppVersion) find_action(name string) *AppAction {
 				for i := 0; i < len(key_segments); i++ {
 					ks := key_segments[i]
 					vs := value_segments[i]
-					if strings.HasPrefix(ks, ":") {
+					if strings.HasPrefix(ks, ":") && vs != "-" {
 						pname := ks[1:]
 						aa.parameters[pname] = vs
 					} else if ks != vs {
@@ -2473,7 +2478,7 @@ func (av *AppVersion) find_action(name string) *AppAction {
 		for i := 0; i < prefix_end; i++ {
 			ks := key_segments[i]
 			vs := value_segments[i]
-			if strings.HasPrefix(ks, ":") {
+			if strings.HasPrefix(ks, ":") && vs != "-" {
 				aa.parameters[ks[1:]] = vs
 			} else if ks != vs {
 				ok = false
@@ -2488,7 +2493,7 @@ func (av *AppVersion) find_action(name string) *AppAction {
 		for i := 0; i < suffix_len; i++ {
 			ks := key_segments[len(key_segments)-1-i]
 			vs := value_segments[len(value_segments)-1-i]
-			if strings.HasPrefix(ks, ":") {
+			if strings.HasPrefix(ks, ":") && vs != "-" {
 				aa.parameters[ks[1:]] = vs
 			} else if ks != vs {
 				ok = false
@@ -2509,7 +2514,17 @@ func (av *AppVersion) find_action(name string) *AppAction {
 		return &aa
 	}
 
-	// Fall back to empty action name as catch-all
+	// Fall back to empty action name as catch-all: the app's page, for a path
+	// that is one of its pages. A path holding the - separator asks for an
+	// action (/<app>/<entity>/-/<action>, /<app>/-/<action>), and one no
+	// action matches is a miss, never the page, or the client reads a web page
+	// where it wanted data and cannot say why.
+	for _, segment := range name_segments {
+		if segment == "-" {
+			info("App %q version %q has no action matching %q", av.app.id, av.Version, name)
+			return nil
+		}
+	}
 	for _, aa := range candidates {
 		if aa.name == "" {
 			//debug("App found fallback action %q with function %q via catch-all", name, aa.Function)

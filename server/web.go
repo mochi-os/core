@@ -2122,6 +2122,16 @@ func web_login_detour(u *User) string {
 	return ""
 }
 
+// web_action_answer is web_action where a route has nowhere else to go: a path
+// none of the app's actions matches is answered as a miss, in JSON and naming
+// the path, rather than left for the router's bare 404 or taken for the app's
+// page, so a client asking for data at a wrong address can say which.
+func web_action_answer(c *gin.Context, a *App, name string, e *Entity, routing string) {
+	if !web_action(c, a, name, e, routing) && !c.Writer.Written() {
+		respond_error(c, http.StatusNotFound, "action_not_found", "errors.action_not_found", map[string]any{"path": c.Request.URL.Path})
+	}
+}
+
 func web_path(c *gin.Context) {
 	//debug("Web path %q", c.Request.URL.Path)
 
@@ -2197,7 +2207,7 @@ func web_path(c *gin.Context) {
 				c.Redirect(http.StatusMovedPermanently, c.Request.URL.Path+"/")
 				return
 			}
-			web_action(c, a, action, nil, routing_hosted)
+			web_action_answer(c, a, action, nil, routing_hosted)
 			return
 
 		case "redirect":
@@ -2225,7 +2235,7 @@ func web_path(c *gin.Context) {
 			// Same reason as the direct-entity branch below: the app is known
 			// here but absent from the URL, so publish it for the SPA.
 			c.Set("mochi_app_path", a.url_path(owner))
-			web_action(c, a, action, e, routing_domain)
+			web_action_answer(c, a, action, e, routing_domain)
 			return
 
 		default:
@@ -2303,7 +2313,7 @@ func web_path(c *gin.Context) {
 		// Route on /<app>/<action...>
 		class_action := strings.Join(segments[1:], "/")
 
-		web_action(c, a, class_action, nil, routing_class)
+		web_action_answer(c, a, class_action, nil, routing_class)
 		return
 	}
 
@@ -2328,13 +2338,13 @@ func web_path(c *gin.Context) {
 			action = e.Fingerprint + "/" + strings.Join(segments[1:], "/")
 		}
 
-		web_action(c, a, action, e, routing_direct)
+		web_action_answer(c, a, action, e, routing_direct)
 		return
 	}
 
 	// Unknown path - route to root app if available
 	if a := app_by_root(user); a != nil {
-		web_action(c, a, raw, nil, routing_class)
+		web_action_answer(c, a, raw, nil, routing_class)
 		return
 	}
 	respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)

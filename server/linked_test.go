@@ -281,6 +281,8 @@ type lemmy_fake struct {
 	posts   []map[string]any
 	revoked bool
 	uploads int
+	refusal int           // the status the image store answers instead of the file
+	stall   time.Duration // how long the image store waits before answering
 }
 
 func create_lemmy_fake(t *testing.T) *lemmy_fake {
@@ -375,6 +377,14 @@ func create_lemmy_fake(t *testing.T) *lemmy_fake {
 			answer(w, 401, map[string]any{"error": "no cookie"})
 			return
 		}
+		f.lock.Lock()
+		refusal, stall := f.refusal, f.stall
+		f.lock.Unlock()
+		time.Sleep(stall)
+		if refusal != 0 {
+			answer(w, refusal, map[string]any{"error": "too_large"})
+			return
+		}
 		r.ParseMultipartForm(1 << 20)
 		file, header, err := r.FormFile("images[]")
 		if err != nil {
@@ -417,6 +427,57 @@ func TestLemmyAddress(t *testing.T) {
 	}
 	if got := lemmy_api(l, "v4/account/settings/export", map[string]string{"page": "1"}); got != "https://lemmy.example/api/v4/account/settings/export?page=1" {
 		t.Errorf("1.0 path = %s", got)
+	}
+}
+
+// TestLinkedUploadFailure: an upload through a linked account that fails
+// answers why, for the app to tell the user rather than go on without the
+// file: the status a server refused it with, or that it did not answer within
+// the upload's own deadline, which is longer than an ordinary request's.
+func TestLinkedUploadFailure(t *testing.T) {
+	load_core_labels()
+	alice := create_linked_test_env(t)
+	fake := create_lemmy_fake(t)
+	thread := linked_thread(alice)
+	fn := sl.NewBuiltin("test", nil)
+	host := fake_host(fake.server)
+	account := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("lemmy")}, linked_kwargs("server", host, "username", "alice", "password", "secret", "code", "123456")))
+	id, _ := account["id"].(string)
+	upload := func() map[string]any {
+		return decoded(t)(api_account_upload(thread, fn, sl.Tuple{sl.String(id), sl.Bytes("PNG"), sl.String("image/png")}, linked_kwargs("name", "cat.png")))
+	}
+	failure := func(result map[string]any) map[string]any {
+		failed, _ := result["error"].(map[string]any)
+		return failed
+	}
+
+	fake.lock.Lock()
+	fake.refusal = 413
+	fake.lock.Unlock()
+	if failed := failure(upload()); failed == nil || failed["reason"] != "status" || fmt.Sprint(failed["status"]) != "413" || failed["server"] != host {
+		t.Errorf("THE POINT: a refused upload answered %v", failed)
+	} else if failed["message"] != host+" answered with error 413." {
+		t.Errorf("THE POINT: a refused upload says %q", failed["message"])
+	}
+
+	saved := linked_upload_timeout
+	t.Cleanup(func() { linked_upload_timeout = saved })
+	fake.lock.Lock()
+	fake.refusal, fake.stall = 0, 300*time.Millisecond
+	fake.lock.Unlock()
+	linked_upload_timeout = 50 * time.Millisecond
+	if failed := failure(upload()); failed == nil || failed["reason"] != "timeout" || failed["server"] != host {
+		t.Errorf("THE POINT: an upload past its deadline answered %v", failed)
+	} else if failed["message"] != host+" did not answer in time." {
+		t.Errorf("THE POINT: an upload past its deadline says %q", failed["message"])
+	}
+	// Within the deadline the same slow store takes the file.
+	linked_upload_timeout = 5 * time.Second
+	if result := upload(); result["id"] != "abc.png" || result["error"] != nil {
+		t.Errorf("an upload within its deadline = %v", result)
+	}
+	if linked_upload_timeout = saved; linked_upload_timeout <= network_timeout {
+		t.Errorf("THE POINT: an upload's deadline %v is no longer than an ordinary request's %v", linked_upload_timeout, network_timeout)
 	}
 }
 

@@ -1429,7 +1429,7 @@ func api_account_notifications(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	return linked_page_encode(page), nil
 }
 
-// mochi.account.upload(account, data, type, name="", description="", conversation="") -> dict: Upload a file through an account for a post to carry, and return the reference the post names it by: {id, url, data} with the network's own answer in data - a Mastodon media attachment, a Bluesky blob, a Lemmy image; for a hosted fediverse account the file is kept here and served under the account, data being the Document an object may list it as; for a hosted Matrix account {url, name, type, size} with url its mxc address, and for a hosted XMPP account the same with url the address the upload service serves it at. description is the alternative text where the network takes one at upload. conversation names the conversation the file is for: one encrypted gets it encrypted, its key sent with the message. Behind the account permission
+// mochi.account.upload(account, data, type, name="", description="", conversation="") -> dict: Upload a file through an account for a post to carry, and return the reference the post names it by: {id, url, data} with the network's own answer in data - a Mastodon media attachment, a Bluesky blob, a Lemmy image; for a hosted fediverse account the file is kept here and served under the account, data being the Document an object may list it as; for a hosted Matrix account {url, name, type, size} with url its mxc address, and for a hosted XMPP account the same with url the address the upload service serves it at. description is the alternative text where the network takes one at upload. conversation names the conversation the file is for: one encrypted gets it encrypted, its key sent with the message. A linked account's upload that fails answers {error: {reason, status, server, message}} for the app to say why: reason is timeout, status (with the status the server answered), unreachable, blocked, closed or failed; server the host it went to; message the reason as a sentence in the user's language. Behind the account permission
 func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, kind, name, description, conversation string
 	var content sl.Value
@@ -1529,11 +1529,51 @@ func api_account_upload(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	if name == "" {
 		name = "file"
 	}
-	result, err := linked_upload(thread_context(t), l, data, kind, name, description)
+	// A file is far more to carry than an ordinary request, so its upload has
+	// a deadline of its own rather than network_timeout's.
+	ctx, cancel := context.WithTimeout(thread_context(t), linked_upload_timeout)
+	defer cancel()
+	result, err := linked_upload(ctx, l, data, kind, name, description)
 	if err != nil {
-		return linked_failed(l, fn, err)
+		return linked_upload_failed(t, l, fn, err)
 	}
 	return sl_encode(kept(result)), nil
+}
+
+// linked_upload_timeout bounds a linked account's upload.
+var linked_upload_timeout = 2 * time.Minute
+
+// linked_upload_failed answers a failed upload with why, for the app to tell
+// the user rather than go on without the file: a reason the account's page
+// also translates (linked_cause), or timeout where the server did not answer
+// in time; the status a server answered; the server; and message, the reason
+// as a sentence in the caller's language for the app to put after its own.
+func linked_upload_failed(t *sl.Thread, l *linked, fn *sl.Builtin, err error) (sl.Value, error) {
+	info("Linked %s account %s: %s: %v", l.kind, l.id, fn.Name(), err)
+	reason, status := linked_cause(err)
+	var network net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &network) && network.Timeout()) {
+		reason = "timeout"
+	}
+	server := l.get("server")
+	failure := map[string]any{"reason": reason, "server": server}
+	if reason == "status" {
+		failure["status"] = status
+	}
+	key := "upload." + reason
+	switch reason {
+	case "timeout", "status", "unreachable", "blocked":
+	default:
+		key = "upload.failed"
+	}
+	language := "en"
+	if user := principal_caller(t); user != nil {
+		language = user_language(user)
+	} else if given, ok := t.Local("language").(string); ok && given != "" {
+		language = given
+	}
+	failure["message"] = resolve_core_label(language, key, map[string]any{"server": server, "status": status})
+	return sl_encode(map[string]any{"error": failure}), nil
 }
 
 // mochi.account.request(account, method, path, body=None, query=None) -> dict: A request of the app's own through an account, on its server's interface: a path under /api/ on Mastodon ("v1/bookmarks"), under /api/v3/ on Lemmy ("community/list", or under /api/ for Lemmy 1.0's own routes: "v4/account/settings/export"), under /_matrix/ on Matrix ("client/v3/joined_rooms"), or an XRPC method name on Bluesky ("app.bsky.graph.getFollows"); for a hosted Bluesky account the index's methods (app.bsky.*, chat.bsky.*) are forwarded to Bluesky's index as the account. query is a dict of query parameters, body a dict sent as JSON. Returns {status, data} with the answer decoded. Behind the account permission

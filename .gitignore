@@ -11,6 +11,10 @@ server/server
 # Binaries staged into the Docker build context by `make docker-stage`
 build/docker/bin/
 
+# Worktrees Claude Code's agents check out inside the repository: each is a
+# repository of its own, and `git add -A` records it as a gitlink.
+.claude/worktrees/
+
 # Test-runtime DB files created when go test opens a relative path
 # (e.g. db/replication.db from tests that don't set data_dir to a tmpdir
 # before opening). Harmless on disk but clutters `git status`.

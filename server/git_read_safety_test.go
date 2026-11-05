@@ -18,6 +18,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -26,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -1777,4 +1779,211 @@ func TestMergeBasesInGitsOrder(t *testing.T) {
 		}
 	}
 	t.Logf("%d of %d pairs in git's order", compared-mismatched, compared)
+}
+
+// read_chain stores n commits each on the one before, the first with no
+// parent, and answers the last.
+func read_chain(t *testing.T, repo *git.Repository, tree plumbing.Hash, label string, n int) plumbing.Hash {
+	t.Helper()
+	var tip plumbing.Hash
+	for i := 0; i < n; i++ {
+		var parents []plumbing.Hash
+		if i > 0 {
+			parents = []plumbing.Hash{tip}
+		}
+		tip = read_commit(t, repo, parents, tree, fmt.Sprintf("%s %d", label, i))
+	}
+	return tip
+}
+
+// read_walk_limit sets git_walk_maximum for the test.
+func read_walk_limit(t *testing.T, limit int) {
+	t.Helper()
+	previous := git_walk_maximum
+	git_walk_maximum = limit
+	t.Cleanup(func() { git_walk_maximum = previous })
+}
+
+// TestMergeBaseGivesUpPastTheWalkLimit. Two histories that never meet were
+// walked whole for each comparison - an anonymous visitor's compare page on a
+// public repository, its default mode - holding every commit read. Past
+// git_walk_maximum the walk gives up with an error, not a claim that the two
+// share nothing.
+func TestMergeBaseGivesUpPastTheWalkLimit(t *testing.T) {
+	id, repo, thread := read_env_repo(t, "mergebase")
+	tree := read_snapshot(t, repo, map[string]read_file{"a.txt": read_text("a")})
+	read_branch(t, repo, "main", read_chain(t, repo, tree, "main", 20))
+	read_branch(t, repo, "pages", read_chain(t, repo, tree, "pages", 20))
+
+	value, err := read_call(t, thread, api_git_merge_base, sl.String(id), sl.String("main"), sl.String("pages"))
+	if err != nil || value != sl.None {
+		t.Fatalf("CONTROL: two unrelated histories within the limit = %v, %v; want None", value, err)
+	}
+	read_walk_limit(t, 25)
+	value, err = read_call(t, thread, api_git_merge_base, sl.String(id), sl.String("main"), sl.String("pages"))
+	var refusal *Refusal
+	if !errors.As(err, &refusal) || refusal.Key != "errors.histories_too_long" {
+		t.Errorf("THE POINT: past the walk limit the merge base = %v, %v; want the walk to give up, refused in the reader's language", value, err)
+	}
+}
+
+// TestMergeCheckReportsAFailedWalk. The merge check folded the merge base
+// walk's failure - a cancellation, a damaged object, the walk limit - into a
+// successful answer that the branches share no history.
+func TestMergeCheckReportsAFailedWalk(t *testing.T) {
+	id, repo, thread := read_env_repo(t, "mergecheck")
+	tree := read_snapshot(t, repo, map[string]read_file{"a.txt": read_text("a")})
+	read_branch(t, repo, "main", read_chain(t, repo, tree, "main", 10))
+	read_branch(t, repo, "feature", read_chain(t, repo, tree, "feature", 10))
+
+	value, err := read_call(t, thread, api_git_merge_check, sl.String(id), sl.String("feature"), sl.String("main"))
+	if err != nil {
+		t.Fatalf("CONTROL: merge check = %v", err)
+	}
+	if answer := read_value(t, value).(map[string]any); answer["error"] != "no common ancestor" {
+		t.Fatalf("CONTROL: two unrelated histories checked = %v, want no common ancestor", answer)
+	}
+	read_walk_limit(t, 5)
+	value, err = read_call(t, thread, api_git_merge_check, sl.String(id), sl.String("feature"), sl.String("main"))
+	var refusal *Refusal
+	if !errors.As(err, &refusal) || refusal.Key != "errors.histories_too_long" {
+		t.Errorf("THE POINT: a walk that gave up answered %v, %v, as if the branches shared no history", value, err)
+	}
+}
+
+// TestCommitLogStopsAtTheWalkLimit. A path the history rarely touches was
+// read for through every commit, up to the request's deadline; past
+// git_walk_maximum commits the log answers what it found.
+func TestCommitLogStopsAtTheWalkLimit(t *testing.T) {
+	id, repo, thread := read_env_repo(t, "loglimit")
+	first := read_commit(t, repo, nil, read_snapshot(t, repo, map[string]read_file{"old.txt": read_text("old")}), "add old")
+	tip := first
+	for i := 0; i < 10; i++ {
+		tip = read_commit(t, repo, []plumbing.Hash{tip}, read_snapshot(t, repo, map[string]read_file{
+			"old.txt": read_text("old"), "new.txt": read_text(fmt.Sprintf("new %d", i)),
+		}), fmt.Sprintf("touch new %d", i))
+	}
+	read_branch(t, repo, "main", tip)
+	count := func() int {
+		value, err := read_call(t, thread, api_git_commit_log, sl.String(id), sl.String("main"), sl.String("old.txt"), sl.None)
+		if err != nil {
+			t.Fatalf("log: %v", err)
+		}
+		return len(read_value(t, value).([]any))
+	}
+	if got := count(); got != 1 {
+		t.Fatalf("CONTROL: the log for old.txt holds %d commits, want the one that added it", got)
+	}
+	read_walk_limit(t, 5)
+	if got := count(); got != 0 {
+		t.Errorf("THE POINT: with a walk limit of 5 the log read %d commits deep for old.txt, past the limit", got)
+	}
+}
+
+// TestTagsAnswerAPage. A paged tag list read and sorted every tag, opening
+// each annotation, for each part; asked for a page, the list is in name order
+// from the cursor on, and only the page is read.
+func TestTagsAnswerAPage(t *testing.T) {
+	id, repo, thread := read_env_repo(t, "tags")
+	commit := read_commit(t, repo, nil, read_snapshot(t, repo, map[string]read_file{"a.txt": read_text("a")}), "tagged")
+	for _, name := range []string{"t5", "t1", "t4", "t2"} {
+		if err := repo.Storer.SetReference(plumbing.NewHashReference(plumbing.NewTagReferenceName(name), commit)); err != nil {
+			t.Fatalf("tag %s: %v", name, err)
+		}
+	}
+	// t3 is annotated: a page still carries what its annotation says.
+	if _, err := repo.CreateTag("t3", commit, &git.CreateTagOptions{Tagger: &object.Signature{Name: "Tagger", Email: "tagger@example.com", When: time.Unix(1700000500, 0)}, Message: "release three"}); err != nil {
+		t.Fatalf("annotated tag: %v", err)
+	}
+	names := func(kwargs []sl.Tuple) []string {
+		value, err := api_git_tags(thread, nil, sl.Tuple{sl.String(id)}, kwargs)
+		if err != nil {
+			t.Fatalf("tags: %v", err)
+		}
+		var out []string
+		for _, item := range read_value(t, value).([]any) {
+			out = append(out, item.(map[string]any)["name"].(string))
+		}
+		return out
+	}
+	if got := names(nil); len(got) != 5 {
+		t.Errorf("CONTROL: every tag = %v, want 5", got)
+	}
+	if got := names([]sl.Tuple{{sl.String("after"), sl.String("t2")}, {sl.String("limit"), sl.MakeInt(2)}}); !slices.Equal(got, []string{"t3", "t4"}) {
+		t.Errorf("THE POINT: the page after t2 of 2 = %v, want [t3 t4]", got)
+	}
+	if got := names([]sl.Tuple{{sl.String("limit"), sl.MakeInt(2)}}); !slices.Equal(got, []string{"t1", "t2"}) {
+		t.Errorf("the first page of 2 = %v, want [t1 t2]", got)
+	}
+	if got := names([]sl.Tuple{{sl.String("after"), sl.String("t3")}}); !slices.Equal(got, []string{"t4", "t5"}) {
+		t.Errorf("every tag after t3 = %v, want [t4 t5]", got)
+	}
+	if got := names([]sl.Tuple{{sl.String("after"), sl.String("t9")}}); len(got) != 0 {
+		t.Errorf("the tags after the last = %v, want none", got)
+	}
+	value, err := api_git_tags(thread, nil, sl.Tuple{sl.String(id)}, []sl.Tuple{{sl.String("after"), sl.String("t2")}, {sl.String("limit"), sl.MakeInt(1)}})
+	if err != nil {
+		t.Fatalf("tags: %v", err)
+	}
+	page := read_value(t, value).([]any)
+	if len(page) != 1 || page[0].(map[string]any)["message"] != "release three" || page[0].(map[string]any)["tagger"] != "Tagger" {
+		t.Errorf("the annotated tag on its page = %v, want its message and tagger", page)
+	}
+}
+
+// TestMergeBasesShareOneBudget. Each walk of a merge base search - the one
+// that finds the bases and those that drop any another reaches - had a budget
+// of its own, so a search with several bases read several times the limit;
+// and a redundancy walk that ran out failed a search that had already found
+// its bases. A criss-cross history has two bases, each a parent of both tips.
+func TestMergeBasesShareOneBudget(t *testing.T) {
+	_, repo, _ := read_env_repo(t, "crisscross")
+	tree := read_snapshot(t, repo, map[string]read_file{"a.txt": read_text("a")})
+	root := read_commit(t, repo, nil, tree, "root")
+	before := read_commit(t, repo, []plumbing.Hash{root}, tree, "before")
+	left := read_commit(t, repo, []plumbing.Hash{before}, tree, "left")
+	right := read_commit(t, repo, []plumbing.Hash{before}, tree, "right")
+	one := read_commit(t, repo, []plumbing.Hash{left, right}, tree, "merge one")
+	other := read_commit(t, repo, []plumbing.Hash{right, left}, tree, "merge other")
+	commit := func(hash plumbing.Hash) *object.Commit {
+		c, err := repo.CommitObject(hash)
+		if err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+		return c
+	}
+	loads := 0
+	load := func(hash plumbing.Hash) (*object.Commit, error) {
+		loads++
+		return repo.CommitObject(hash)
+	}
+	bases, err := git_merge_bases(context.Background(), load, commit(one), commit(other))
+	if err != nil || len(bases) != 2 {
+		t.Fatalf("CONTROL: the criss-cross's merge bases = %v, %v; want left and right", bases, err)
+	}
+	whole := loads
+	budget := git_walk_maximum
+	loads = 0
+	if _, _, err := git_merge_paint(context.Background(), load, commit(one), []*object.Commit{commit(other)}, &budget); err != nil {
+		t.Fatalf("the finding walk: %v", err)
+	}
+	finding := git_walk_maximum - budget
+	if whole <= loads {
+		t.Fatalf("CONTROL: the search read %d commits, the finding walk alone %d: the redundancy walks read none, so this test measures nothing", whole, loads)
+	}
+
+	// Enough for the finding walk, short of the redundancy walks.
+	read_walk_limit(t, finding)
+	loads = 0
+	bases, err = git_merge_bases(context.Background(), load, commit(one), commit(other))
+	if err != nil {
+		t.Errorf("THE POINT: a search whose redundancy walks ran out after its bases were found failed: %v", err)
+	}
+	if len(bases) == 0 {
+		t.Errorf("THE POINT: out of budget, the search answered no bases; the ones found answer it")
+	}
+	// Besides its walks the search reads each base it found once more.
+	if loads > finding+len(bases) {
+		t.Errorf("THE POINT: the search read %d commits on a budget of %d and %d bases: its walks each spent a budget of their own", loads, finding, len(bases))
+	}
 }

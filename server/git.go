@@ -1067,16 +1067,23 @@ func api_git_branches(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	return sl_encode(branches), nil
 }
 
-// mochi.git.tags(entity) -> list: List tags
+// mochi.git.tags(entity, after?, limit?) -> list: List tags. With after or
+// limit, the tags are in name order, those named after after only, at most
+// limit of them (at most git_offset_maximum): a page, for which only the
+// page's annotated tags are read, rather than every tag's.
 func api_git_tags(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
-	if len(args) != 1 {
-		return sl_error(fn, "syntax: <entity: string>")
+	var entity, after string
+	limit := 0
+	if err := sl.UnpackArgs("mochi.git.tags", args, kwargs, "entity", &entity, "after?", &after, "limit?", &limit); err != nil {
+		return sl_error(fn, "syntax: <entity: string>, [after: string], [limit: int]")
 	}
-
-	entity, ok := sl.AsString(args[0])
-	if !ok || !valid(entity, "entity") {
+	if !valid(entity, "entity") {
 		return sl_error(fn, "invalid entity")
 	}
+	if limit < 0 {
+		return sl_error(fn, "invalid limit")
+	}
+	limit = min(limit, git_offset_maximum)
 
 	owner := principal_owner(t)
 	app := principal_app(t)
@@ -1097,13 +1104,31 @@ func api_git_tags(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 	defer git_close(repo.Storer)
 
-	var tags []map[string]any
 	iter, err := repo.Tags()
 	if err != nil {
 		return sl_error(fn, "failed to list tags: %v", err)
 	}
+	var refs []*plumbing.Reference
+	if err := iter.ForEach(func(ref *plumbing.Reference) error {
+		refs = append(refs, ref)
+		return nil
+	}); err != nil {
+		return sl_error(fn, "failed to iterate tags: %v", err)
+	}
+	if after != "" || limit > 0 {
+		// By the whole reference name, which orders as the short name does,
+		// every tag's sharing refs/tags/: Short parses each name it is given.
+		sort.Slice(refs, func(i, j int) bool { return refs[i].Name() < refs[j].Name() })
+		cursor := plumbing.NewTagReferenceName(after)
+		start := sort.Search(len(refs), func(i int) bool { return refs[i].Name() > cursor })
+		refs = refs[start:]
+		if limit > 0 && len(refs) > limit {
+			refs = refs[:limit]
+		}
+	}
 
-	err = iter.ForEach(func(ref *plumbing.Reference) error {
+	var tags []map[string]any
+	for _, ref := range refs {
 		tag := map[string]any{
 			"name": ref.Name().Short(),
 			"sha":  ref.Hash().String(),
@@ -1118,11 +1143,6 @@ func api_git_tags(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 		}
 
 		tags = append(tags, tag)
-		return nil
-	})
-
-	if err != nil {
-		return sl_error(fn, "failed to iterate tags: %v", err)
 	}
 
 	return sl_encode(tags), nil
@@ -1812,12 +1832,19 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return parents, err
 	})
 	var commits []map[string]any
+	// A path the history rarely or never touches is answered with what the
+	// newest git_walk_maximum commits hold, not read for in all of it.
+	visited := 0
 	err = iter.ForEach(func(c *object.Commit) error {
 		if len(commits) >= limit {
 			return io.EOF
 		}
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		visited++
+		if visited > git_walk_maximum {
+			return io.EOF
 		}
 		touched, _, err := paths.touched(c)
 		if err != nil {
@@ -2235,9 +2262,23 @@ func git_merge_bases(ctx context.Context, load func(plumbing.Hash) (*object.Comm
 	if one.Hash == other.Hash {
 		return []*object.Commit{one}, nil
 	}
-	_, bases, err := git_merge_paint(ctx, load, one, []*object.Commit{other})
+	// One budget for the whole search, the redundancy walks below included.
+	budget := git_walk_maximum
+	_, found, err := git_merge_paint(ctx, load, one, []*object.Commit{other}, &budget)
 	if err != nil {
 		return nil, err
+	}
+	var bases []*object.Commit
+	for _, hash := range found {
+		c := one
+		if hash == other.Hash {
+			c = other
+		} else if hash != one.Hash {
+			if c, err = load(hash); err != nil {
+				return nil, err
+			}
+		}
+		bases = append(bases, c)
 	}
 	git_newest_first(bases)
 	if len(bases) < 2 {
@@ -2266,7 +2307,12 @@ func git_merge_bases(ctx context.Context, load func(plumbing.Hash) (*object.Comm
 		if len(others) == 0 {
 			continue
 		}
-		marks, _, err := git_merge_paint(ctx, load, bases[i], others)
+		marks, _, err := git_merge_paint(ctx, load, bases[i], others, &budget)
+		if errors.Is(err, error_git_walk_exceeded) {
+			// Every caller reads the newest base, which the bases found
+			// already hold: out of budget, they are answered unreduced.
+			return bases, nil
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -2292,12 +2338,16 @@ func git_merge_bases(ctx context.Context, load func(plumbing.Hash) (*object.Comm
 // others second, each mark carried down to the parents newest first; a commit
 // both reach is found, and what lies below it marked stale. The walk ends
 // once every commit waiting is stale. It answers every mark it set, and the
-// commits found in the order they were found.
-func git_merge_paint(ctx context.Context, load func(plumbing.Hash) (*object.Commit, error), one *object.Commit, others []*object.Commit) (map[plumbing.Hash]uint8, []*object.Commit, error) {
+// commits found in the order they were found. A commit is held as its hash,
+// time and parents only, and each commit the walk reads spends one of budget:
+// with none left it gives up with error_git_walk_exceeded, as histories that
+// never meet, or meet only far down, are otherwise read whole for each
+// request.
+func git_merge_paint(ctx context.Context, load func(plumbing.Hash) (*object.Commit, error), one *object.Commit, others []*object.Commit, budget *int) (map[plumbing.Hash]uint8, []plumbing.Hash, error) {
 	marks := map[plumbing.Hash]uint8{}
-	loaded := map[plumbing.Hash]*object.Commit{}
+	loaded := map[plumbing.Hash]*git_merge_node{}
 	result := map[plumbing.Hash]bool{}
-	var found []*object.Commit
+	var found []plumbing.Hash
 	queue := &git_merge_queue{}
 	// How often each commit waits in the queue, and how many waiting entries
 	// are not stale, so the end is known without scanning the queue.
@@ -2309,49 +2359,58 @@ func git_merge_paint(ctx context.Context, load func(plumbing.Hash) (*object.Comm
 		}
 		marks[hash] |= side
 	}
-	push := func(c *object.Commit) {
-		loaded[c.Hash] = c
-		heap.Push(queue, git_merge_entry{commit: c, order: queue.count})
+	node := func(c *object.Commit) *git_merge_node {
+		n := &git_merge_node{hash: c.Hash, when: c.Committer.When.Unix(), parents: c.ParentHashes}
+		loaded[c.Hash] = n
+		return n
+	}
+	push := func(n *git_merge_node) {
+		heap.Push(queue, git_merge_entry{node: n, order: queue.count})
 		queue.count++
-		queued[c.Hash]++
-		if marks[c.Hash]&git_stale == 0 {
+		queued[n.hash]++
+		if marks[n.hash]&git_stale == 0 {
 			fresh++
 		}
 	}
 	set(one.Hash, git_first)
-	push(one)
+	push(node(one))
 	for _, c := range others {
 		set(c.Hash, git_second)
-		push(c)
+		push(node(c))
 	}
 
 	for fresh > 0 {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
-		c := heap.Pop(queue).(git_merge_entry).commit
-		queued[c.Hash]--
-		side := marks[c.Hash] & (git_first | git_second | git_stale)
+		n := heap.Pop(queue).(git_merge_entry).node
+		queued[n.hash]--
+		side := marks[n.hash] & (git_first | git_second | git_stale)
 		if side&git_stale == 0 {
 			fresh--
 		}
 		if side == git_first|git_second {
-			if !result[c.Hash] {
-				result[c.Hash] = true
-				found = append(found, c)
+			if !result[n.hash] {
+				result[n.hash] = true
+				found = append(found, n.hash)
 			}
 			side |= git_stale
 		}
-		for _, hash := range c.ParentHashes {
+		for _, hash := range n.parents {
 			if marks[hash]&side == side {
 				continue
 			}
 			parent, ok := loaded[hash]
 			if !ok {
-				var err error
-				if parent, err = load(hash); err != nil {
+				if *budget <= 0 {
+					return nil, nil, error_git_walk_exceeded
+				}
+				*budget--
+				c, err := load(hash)
+				if err != nil {
 					return nil, nil, err
 				}
+				parent = node(c)
 			}
 			set(hash, side)
 			push(parent)
@@ -2359,6 +2418,25 @@ func git_merge_paint(ctx context.Context, load func(plumbing.Hash) (*object.Comm
 	}
 	return marks, found, nil
 }
+
+// git_merge_node is a commit as the merge base walk holds it: what it orders
+// and follows the commit by, and no message, tree or signature. git's times
+// are whole seconds.
+type git_merge_node struct {
+	hash    plumbing.Hash
+	when    int64
+	parents []plumbing.Hash
+}
+
+// git_walk_maximum bounds the commits a walk with no end of its own - a merge
+// base search, a file's history - reads for one answer. A var so tests can
+// shorten it.
+var git_walk_maximum = 100000
+
+// error_git_walk_exceeded is a merge base search that read git_walk_maximum
+// commits without finding where two histories meet, or that they never do:
+// answered to the reader in their language, not as a fault of the server.
+var error_git_walk_exceeded = refuse(422, "errors.histories_too_long", nil)
 
 // git_merge_queue holds the merge base walk's commits newest first by
 // committer time, and commits of the same time in the order they were queued,
@@ -2370,15 +2448,15 @@ type git_merge_queue struct {
 }
 
 type git_merge_entry struct {
-	commit *object.Commit
-	order  int
+	node  *git_merge_node
+	order int
 }
 
 func (q *git_merge_queue) Len() int { return len(q.entries) }
 func (q *git_merge_queue) Less(i, j int) bool {
 	a, b := q.entries[i], q.entries[j]
-	if !a.commit.Committer.When.Equal(b.commit.Committer.When) {
-		return a.commit.Committer.When.After(b.commit.Committer.When)
+	if a.node.when != b.node.when {
+		return a.node.when > b.node.when
 	}
 	return a.order < b.order
 }
@@ -3181,7 +3259,10 @@ func api_git_merge_check(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 
 	// Find merge base
 	bases, err := git_merge_bases(starlark_context(t), repo.CommitObject, source_commit, target_commit)
-	if err != nil || len(bases) == 0 {
+	if err != nil {
+		return sl_error(fn, "failed to find merge base: %v", err)
+	}
+	if len(bases) == 0 {
 		return sl_encode(map[string]any{
 			"can_merge": false,
 			"conflicts": []string{},
@@ -3352,7 +3433,10 @@ func api_git_merge_perform(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 
 	// Find merge base
 	bases, err := git_merge_bases(starlark_context(t), repo.CommitObject, source_commit, target_commit)
-	if err != nil || len(bases) == 0 {
+	if err != nil {
+		return sl_error(fn, "failed to find merge base: %v", err)
+	}
+	if len(bases) == 0 {
 		return sl_error(fn, "no common ancestor between source and target")
 	}
 	base_commit := bases[0]

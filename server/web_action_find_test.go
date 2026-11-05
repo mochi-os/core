@@ -79,10 +79,20 @@ func TestActionFindDomainEntity(t *testing.T) {
 		web_action_find_check(t, av, e, tt.name, tt.path, tt.prefer_html, tt.want)
 	}
 	// One the entity has no action for is a miss: neither the page nor a
-	// class-level action reached through the entity's domain.
+	// class-level action reached through the entity's domain, which would run
+	// against the owner's storage outside the entity's access rules.
 	if aa := web_action_find(av, "-/rss/token", e, false); aa != nil {
 		t.Errorf("missing api path resolved to %q; want a miss", aa.name)
 	}
+	// Without the post view that takes any -/ name as a post, a class-level
+	// action of the name is the only other match, and it must not be reached.
+	delete(av.Actions, ":feed/-/:post")
+	av.Actions["-/list"] = AppAction{Function: "action_list"}
+	if aa := web_action_find(av, "-/list", e, false); aa != nil {
+		t.Errorf("THE POINT: the class-level %q was reached through the entity's domain; want a miss", aa.name)
+	}
+	// Off the domain the class-level action is reached as itself.
+	web_action_find_check(t, av, nil, "class list", "-/list", false, "-/list")
 }
 
 // Without the parameterised post view, a bare name that only the page side

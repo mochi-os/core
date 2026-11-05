@@ -1539,8 +1539,9 @@ func opengraph_links(value any) string {
 // web_action_find_bare weighs as a page or an API action. Main-site paths
 // already carry the fingerprint ("abc123/-/information"), and a path that is
 // the entity's own fingerprint is its root, so both resolve as given. A miss
-// on an entity pattern comes back as the app's catch-all page when it has
-// one, and only an app without one falls through to the path as given.
+// on a bare name or the root comes back as the app's catch-all page when it
+// has one; a miss on an entity's -/ path is a miss, never the class-level
+// action of the same name.
 func web_action_find(av *AppVersion, name string, e *Entity, prefer_html bool) *AppAction {
 	if e != nil && e.Class != "" && name != e.Fingerprint {
 		var aa *AppAction
@@ -1548,7 +1549,12 @@ func web_action_find(av *AppVersion, name string, e *Entity, prefer_html bool) *
 		case name == "":
 			aa = av.find_action(":" + e.Class)
 		case strings.HasPrefix(name, "-/"):
-			aa = av.find_action(":" + e.Class + "/" + name)
+			// An entity's own domain answers its own actions only. A miss is
+			// a miss: falling through to the class-level action of the same
+			// name would run it against the owner's storage, outside the
+			// entity's access rules (a class-level list would hand a stranger
+			// every project the owner has).
+			return av.find_action(":" + e.Class + "/" + name)
 		case !strings.Contains(name, "/"):
 			aa = web_action_find_bare(av, e.Class, name, prefer_html)
 		}

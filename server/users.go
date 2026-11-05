@@ -69,8 +69,12 @@ func user_pending(u *User) bool {
 // federation plan, "Closing an account"); cancelling the closure brings them
 // back.
 func user_quiet(u *User) bool {
-	return user_pending(u) || (u != nil && u.Status == "closing")
+	return u != nil && slices.Contains(user_quiet_statuses, u.Status)
 }
+
+// user_quiet_statuses are the statuses user_quiet answers true for, for a
+// query that finds quiet users without loading each one.
+var user_quiet_statuses = []string{"pending-restore", "closing"}
 
 var api_user = sls.FromStringDict(sl.String("mochi.user"), sl.StringDict{
 	"activate": sl.NewBuiltin("mochi.user.activate", api_user_activate),

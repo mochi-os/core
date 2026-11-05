@@ -1418,8 +1418,12 @@ func activitypub_known(user *User, a *actor, remote string) bool {
 		return follower || followed
 	}
 	rows, _ := networks_database().rows("select distinct user from actors where deleted=0")
+	quiet := activitypub_quiet()
 	for _, row := range rows {
 		uid := row_string(row, "user")
+		if quiet[uid] {
+			continue
+		}
 		db := activitypub_user_database(uid)
 		if db == nil {
 			continue
@@ -1446,6 +1450,26 @@ func activitypub_user_database(uid string) *DB {
 	db := db_open(path)
 	db_upgrade_file(db, path, db_user_steps["user"])
 	return db
+}
+
+// activitypub_quiet is the quiet users (user_quiet), which the loops across
+// users pass over before opening their databases rather than after: a closing
+// user's database is not opened, nor brought to its current version, for an
+// actor whose answer would leave them out anyway. A restoring user cannot meet
+// these loops before their files are in place, as their accounts on other
+// networks are registered only after the swap.
+func activitypub_quiet() map[string]bool {
+	quiet := map[string]bool{}
+	marks := strings.TrimSuffix(strings.Repeat("?, ", len(user_quiet_statuses)), ", ")
+	statuses := make([]any, len(user_quiet_statuses))
+	for i, status := range user_quiet_statuses {
+		statuses[i] = status
+	}
+	rows, _ := db_open("db/users.db").rows("select uid from users where status in ("+marks+")", statuses...)
+	for _, row := range rows {
+		quiet[row_string(row, "uid")] = true
+	}
+	return quiet
 }
 
 // activitypub_user_live loads a user the loops across users found related to
@@ -1552,8 +1576,12 @@ func activitypub_followed_by(remote string) []*actor {
 func activitypub_related(remote string, query string) []*actor {
 	var found []*actor
 	rows, _ := networks_database().rows("select distinct user from actors where deleted=0 and network='fediverse'")
+	quiet := activitypub_quiet()
 	for _, row := range rows {
 		uid := row_string(row, "user")
+		if quiet[uid] {
+			continue
+		}
 		db := activitypub_user_database(uid)
 		if db == nil {
 			continue

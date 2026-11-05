@@ -102,17 +102,39 @@ func linked_presence(l *linked) (string, string) {
 	return status, message
 }
 
+// presence_signals and presence_chat, when a test sets them, stand in for
+// what linked_presence_notify tells - signals_presence_notify and
+// xmpp_mochi_update - so the test can make one panic.
+var (
+	presence_signals func(string)
+	presence_chat    func(string)
+)
+
 // linked_presence_notify tells a user's sessions that their presence, or what
-// they share of it, may have changed.
+// they share of it, may have changed. Each telling runs on a goroutine of its
+// own and reads rooms' snapshots, so each is guarded: nothing above them would
+// recover a panic, and one would end the server.
 func linked_presence_notify(uid string) {
 	presence_pending.Add(2)
 	go func() {
 		defer presence_pending.Done()
-		signals_presence_notify(uid)
+		guard("presence signals", nil, func() {
+			if presence_signals != nil {
+				presence_signals(uid)
+				return
+			}
+			signals_presence_notify(uid)
+		})
 	}()
 	go func() {
 		defer presence_pending.Done()
-		xmpp_mochi_update(uid)
+		guard("presence chat", nil, func() {
+			if presence_chat != nil {
+				presence_chat(uid)
+				return
+			}
+			xmpp_mochi_update(uid)
+		})
 	}()
 	linked_lock.Lock()
 	defer linked_lock.Unlock()

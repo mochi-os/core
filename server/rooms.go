@@ -226,9 +226,6 @@ func rooms_snapshot_load(id int64) *rooms_kept {
 		return nil
 	}
 	db := federation_database()
-	if kept := rooms_kept_get(rooms_kept_key{db.path, id}); kept != nil {
-		return kept
-	}
 	type link struct {
 		id    int64
 		base  int64
@@ -243,7 +240,12 @@ func rooms_snapshot_load(id int64) *rooms_kept {
 			warn("Matrix snapshot %d: its chain runs past %d steps", id, rooms_snapshot_depth)
 			return nil
 		}
+		// The first pass asks for the snapshot itself, kept already when
+		// another load put it there.
 		if kept := rooms_kept_get(rooms_kept_key{db.path, next}); kept != nil {
+			if len(chain) == 0 {
+				return kept
+			}
 			root = kept
 			break
 		}

@@ -1250,6 +1250,12 @@ func TestActivityPubAcrossUsers(t *testing.T) {
 	if file_exists(empty) {
 		t.Fatal("the user with no database has one before the test")
 	}
+	// Shut, as a restore leaves it: the loops must not open it again.
+	quiet_database := filepath.Join(data_dir, "users/u-quiet/user.db")
+	db_purge_prefix("users/u-quiet")
+	if db_cached(quiet_database) {
+		t.Fatal("the quiet user's database is still open before the lookups")
+	}
 
 	var accounts []string
 	for _, a := range activitypub_followers_of(bob.id) {
@@ -1269,6 +1275,9 @@ func TestActivityPubAcrossUsers(t *testing.T) {
 	}
 	if file_exists(empty) {
 		t.Error("THE POINT: the loops across users made a database for a user who had none")
+	}
+	if db_cached(quiet_database) {
+		t.Error("THE POINT: the loops across users opened a quiet user's database, though they leave the user out")
 	}
 }
 

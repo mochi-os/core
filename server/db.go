@@ -3146,6 +3146,7 @@ func db_upgrade_22() {
 	// Paged by rowid, so each batch starts where the last ended rather than
 	// scanning past the rows already filled.
 	last := int64(0)
+	var read db_upgrade_22_snapshot
 	for {
 		rows, err := matrix.rows("select rowid, id, type, key, before from events where rowid>? and replaces is null and key is not null and before>0 order by rowid limit 1000", last)
 		if err != nil {
@@ -3161,7 +3162,7 @@ func db_upgrade_22() {
 		}
 		for _, row := range rows {
 			key, _ := row["key"].(string)
-			replaces := rooms_snapshot_view(row_int(row, "before"))[rooms_key(row_string(row, "type"), key)]
+			replaces := db_upgrade_22_state(matrix, row_int(row, "before"), &read)[row_string(row, "type")+"\x00"+key]
 			if _, err := tx.Exec("update events set replaces=? where id=?", replaces, row_string(row, "id")); err != nil {
 				tx.Rollback()
 				panic(fmt.Sprintf("Schema upgrade 22: filling events: %v", err))
@@ -3171,6 +3172,34 @@ func db_upgrade_22() {
 			panic(fmt.Sprintf("Schema upgrade 22: %v", err))
 		}
 	}
+}
+
+// db_upgrade_22_state is the state a snapshot holds, as step 22 reads it:
+// every snapshot is whole when the step runs, as the columns that make one a
+// set of changes arrive with it, and one missing or unreadable reads as empty,
+// as it did when the step was released. Step 22's own copy of the read, so a
+// later change to how snapshots are kept or decoded leaves the released step
+// as it was. The last snapshot read is kept, as events in a row share one
+// until the next state change, and only that one: a large room's whole
+// snapshots run to megabytes each.
+func db_upgrade_22_state(matrix *DB, id int64, last *db_upgrade_22_snapshot) map[string]string {
+	if last.state != nil && last.id == id {
+		return last.state
+	}
+	state := map[string]string{}
+	if row, _ := matrix.row("select state from snapshots where id=?", id); row != nil {
+		if json.Unmarshal([]byte(row_string(row, "state")), &state) != nil || state == nil {
+			state = map[string]string{}
+		}
+	}
+	last.id, last.state = id, state
+	return state
+}
+
+// db_upgrade_22_snapshot is the snapshot step 22 read last.
+type db_upgrade_22_snapshot struct {
+	id    int64
+	state map[string]string
 }
 
 // db_upgrade_23 adds queue.db's delivered table: the peers a message spread

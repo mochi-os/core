@@ -471,8 +471,9 @@ func resolve_handle(ctx context.Context, handle string) (string, error) {
 var resolve_handles = map[string]resolve_entry{}
 
 // resolve_handle_kept is resolve_handle through the cache: a handle asked for
-// again within the day, or within the hour after it failed, costs no DNS
-// query or fetch.
+// again within the hour (resolve_handle_success), or after it failed within
+// the hour, or the minute if the failure may pass (resolve_failure), costs no
+// DNS query or fetch.
 func resolve_handle_kept(ctx context.Context, handle string) (string, error) {
 	handle = strings.ToLower(strings.TrimSpace(handle))
 	resolve_lock.Lock()

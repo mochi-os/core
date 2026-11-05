@@ -165,6 +165,24 @@ func TestRoomsSnapshotsHandOutCopies(t *testing.T) {
 	}
 }
 
+// TestRoomsSnapshotsLoadAKeptOne pins that a load finding the snapshot kept on
+// its loop's first pass answers it. Two loads of one snapshot at once reached
+// that pass with no chain to apply - the other had kept it between the load's
+// two lookups - and indexed the empty chain: a panic, which on a presence
+// goroutine ended the server. The loop's lookup is now the only one, so every
+// kept snapshot goes that way.
+func TestRoomsSnapshotsLoadAKeptOne(t *testing.T) {
+	snapshots_test_store(t)
+	id := rooms_snapshot_save("!kept:example.org", snapshots_test_state(4))
+	if rooms_snapshot_load(id) == nil {
+		t.Fatal("the snapshot did not load")
+	}
+	kept := rooms_snapshot_load(id)
+	if kept == nil || len(kept.state) != 4 {
+		t.Fatalf("the kept snapshot loaded as %v, want its 4 keys", kept)
+	}
+}
+
 // TestRoomsSnapshotsKeptPerDatabase pins that a kept snapshot belongs to its
 // database: ids start again in each.
 func TestRoomsSnapshotsKeptPerDatabase(t *testing.T) {
@@ -314,6 +332,12 @@ func TestSchema22FillsReplaced(t *testing.T) {
 	insert("$second", "m.room.topic", "", 1)
 	insert("$first", "m.room.topic", "", 2)
 	insert("$message", "m.room.message", nil, 1)
+	// A snapshot missing, unreadable or null reads as empty, as the live view
+	// read it when the step was released.
+	matrix.exec("insert into snapshots (room, state) values (?, 'not json'), (?, 'null')", room, room)
+	insert("$missing", "m.room.topic", "", 99)
+	insert("$unreadable", "m.room.topic", "", 3)
+	insert("$null", "m.room.topic", "", 4)
 	// More than one batch of them, so every batch is filled.
 	tx, _ := matrix.internal.Begin()
 	for i := 0; i < 2500; i++ {
@@ -322,7 +346,13 @@ func TestSchema22FillsReplaced(t *testing.T) {
 	tx.Commit()
 
 	db_upgrade_22()
-	for id, want := range map[string]any{"$second": "$first", "$first": "", "$message": nil} {
+	rooms_kept_lock.Lock()
+	kept := len(rooms_kept_entries)
+	rooms_kept_lock.Unlock()
+	if kept != 0 {
+		t.Errorf("THE POINT: the step left %d snapshots in the server's cache: it read them through the live loader, so a later change to that would change the released step", kept)
+	}
+	for id, want := range map[string]any{"$second": "$first", "$first": "", "$message": nil, "$missing": "", "$unreadable": "", "$null": ""} {
 		row, _ := matrix.row("select replaces from events where id=?", id)
 		if got := row["replaces"]; fmt.Sprint(got) != fmt.Sprint(want) {
 			t.Errorf("event %s replaces %v after the upgrade, want %v", id, got, want)
@@ -768,5 +798,23 @@ func TestClientsPushNamesSenderAndCounts(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the message was not pushed")
+	}
+}
+
+// TestLinkedPresenceContainsAPanic pins that what a presence change tells -
+// the signals and chat updates, which read rooms' snapshots, as a snapshot
+// load once panicked - runs guarded: each runs on a goroutine of its own, so a
+// panic in either would otherwise end the server.
+func TestLinkedPresenceContainsAPanic(t *testing.T) {
+	t.Cleanup(func() { presence_signals, presence_chat = nil, nil })
+	for _, name := range []string{"signals", "chat"} {
+		presence_signals, presence_chat = func(string) {}, func(string) {}
+		if name == "signals" {
+			presence_signals = func(string) { panic("presence signals") }
+		} else {
+			presence_chat = func(string) { panic("presence chat") }
+		}
+		linked_presence_notify("u-panic")
+		presence_pending.Wait()
 	}
 }

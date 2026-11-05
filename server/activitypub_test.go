@@ -755,6 +755,12 @@ func TestRestoreFediverseMove(t *testing.T) {
 	db := db_user(alice, "user")
 	db.exec("insert into followers (account, actor, inbox, shared, created) values ('f1', 'https://remote.example/u/bob', ?, ?, 1)", box.URL+"/u/bob/inbox", box.URL+"/inbox")
 	db.exec("insert into following (account, actor, inbox, activity, accepted, created) values ('f1', 'https://remote.example/u/carol', ?, 'https://old.example/~f1/follows/1', 5, 1)", box.URL+"/u/carol/inbox")
+	// One the server blocked while the restore ran, after it last removed the
+	// blocked from what the user brought.
+	db.exec("insert into following (account, actor, inbox, activity, accepted, created) values ('f1', 'https://remote.example/u/dave', ?, 'https://old.example/~f1/follows/2', 5, 1)", box.URL+"/u/dave/inbox")
+	networks_database().exec("insert or ignore into blocked (actor, created) values ('https://remote.example/u/dave', 1)")
+	db.exec("insert into followers (account, actor, inbox, shared, created) values ('f1', 'https://blocked.example/u/erin', ?, '', 1)", box.URL+"/u/erin/inbox")
+	networks_database().exec("insert or ignore into blocked (actor, created) values ('https://blocked.example/u/erin', 1)")
 
 	// The bundle came from old.example, which served the account; none of
 	// her handles came with her.
@@ -824,6 +830,17 @@ func TestRestoreFediverseMove(t *testing.T) {
 	}
 	if follow == nil || follow.path != "/u/carol/inbox" || follow.key != "https://example.com/~f1#main-key" {
 		t.Errorf("THE POINT: the follow sent again = %+v, want one signed as the new address", follow)
+	}
+	for _, r := range received {
+		if r.path == "/u/dave/inbox" {
+			t.Errorf("THE POINT: a person the server blocks was followed again: %s", r.body)
+		}
+		if r.path == "/u/erin/inbox" {
+			t.Errorf("THE POINT: a follower the server blocks was told of the move: %s", r.body)
+		}
+	}
+	if found, _ := db.exists("select 1 from following where actor='https://remote.example/u/dave'"); found {
+		t.Error("THE POINT: the restored account still follows a person the server blocks")
 	}
 
 	// A name already hers is shared, not taken again; one another holds is

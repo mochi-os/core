@@ -100,3 +100,33 @@ func TestReauthentication(t *testing.T) {
 		t.Error("carol's own token rejected after the cross-user attempt")
 	}
 }
+
+// Two step-ups in one session before either is spent - two tabs, or two
+// gated actions in parallel - were answered the same proof, as it is also the
+// row a step-up accrues on, so the second to spend it was refused as failed
+// or expired. A complete proof starts the next step-up afresh; an incomplete
+// one is still where a second factor accrues.
+func TestReauthenticationProofsInOneSessionAreTheirOwn(t *testing.T) {
+	create_test_sessions_db(t)
+	admin := &User{UID: "u-admin", Username: "admin@example.com", Methods: "email"}
+	first, _ := reauthentication_advance(admin, "s-1", "email")
+	second, _ := reauthentication_advance(admin, "s-1", "email")
+	if first == "" || second == "" {
+		t.Fatalf("advance answered %q and %q, want two proofs", first, second)
+	}
+	if first == second {
+		t.Error("THE POINT: two step-ups in one session were answered the same proof")
+	}
+	if !reauthentication_consume(admin, "s-1", first) || !reauthentication_consume(admin, "s-1", second) {
+		t.Error("THE POINT: of two step-ups in one session, one could not spend its proof")
+	}
+
+	// CONTROL: two factors still accrue on one proof.
+	bob := &User{UID: "u-bob", Username: "bob@example.com", Methods: "email,totp"}
+	if token, _ := reauthentication_advance(bob, "s-1", "email"); token != "" {
+		t.Fatalf("one of two factors answered a proof %q", token)
+	}
+	if token, _ := reauthentication_advance(bob, "s-1", "totp"); token == "" || !reauthentication_consume(bob, "s-1", token) {
+		t.Error("CONTROL: the second factor did not complete the proof the first began")
+	}
+}

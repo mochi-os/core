@@ -276,8 +276,10 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	var jwt_purpose string
 	var has_bearer bool
 	// A credential read from the URL: an RSS token, or the JWT a page puts in
-	// an image address. Either travels in copied links and logs.
+	// an image address. Either travels in copied links and logs. queried is
+	// the first of them, the API token.
 	var carried bool
+	var queried bool
 
 	// Check query parameter token first (for RSS feeds, attachments in sandboxed iframes, etc.)
 	// This takes priority over cookies so RSS tokens work in logged-in browsers
@@ -292,6 +294,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 					api_token = nil
 				} else {
 					carried = true
+					queried = true
 				}
 			}
 		} else if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead {
@@ -417,8 +420,7 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	// cookie, if any, says.
 	if foreign_token_ignored(jwt_app, has_bearer, api_token, a, aa, c.Request.Method) {
 		debug("foreign app token ignored: token app=%s app=%s action=%s method=%s", jwt_app, a.id, name, c.Request.Method)
-		user = web_auth(c)
-		jwt_purpose, carried = "", false
+		user, jwt_app, jwt_purpose, has_bearer, carried = web_set_aside(c)
 	}
 
 	// Git clients send /info/refs, /git-upload-pack and /git-receive-pack
@@ -443,12 +445,13 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 	// query ran any of them.
 	if asset_token_ignored(jwt_purpose, aa, shell_static) {
 		debug("asset token ignored: app=%s action=%s method=%s", a.id, name, c.Request.Method)
-		user = web_auth(c)
-		jwt_app, jwt_purpose, has_bearer = "", "", false
+		user, jwt_app, jwt_purpose, has_bearer, carried = web_set_aside(c)
 		// An API token sent beside it named the token's user, not the cookie's.
 		if api_token != nil && (user == nil || api_token.User != user.UID) {
 			api_token = nil
 		}
+		// One kept that came in the URL still travelled in a link.
+		carried = api_token != nil && queried
 	}
 
 	// A set-aside goes on as the cookie says, so the version chosen and the
@@ -1326,6 +1329,15 @@ func same_user(a *User, b *User) bool {
 		return a == b
 	}
 	return a.UID == b.UID
+}
+
+// web_set_aside answers what a request goes on with once the token it carried
+// is set aside: the user its cookie, if any, names, and nothing the token
+// claimed - its app, its purpose, that it was a bearer, that it came in the
+// URL. Every set-aside drops all of them, so a check reading any one of them
+// later judges the cookie's request and not the token's.
+func web_set_aside(c *gin.Context) (user *User, app string, purpose string, bearer bool, carried bool) {
+	return web_auth(c), "", "", false, false
 }
 
 // asset_token_ignored reports whether a credential minted for URL-borne use is

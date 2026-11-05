@@ -906,7 +906,7 @@ func TestCommitBetweenReadsOnlyTheRange(t *testing.T) {
 	head, _ := counted.CommitObject(chain[299])
 	counter.reads = map[plumbing.ObjectType]int{}
 
-	commits, err := git_between(context.Background(), counted, base, head)
+	commits, _, err := git_between(context.Background(), counted, base, head)
 	if err != nil {
 		t.Fatalf("between: %v", err)
 	}
@@ -916,6 +916,76 @@ func TestCommitBetweenReadsOnlyTheRange(t *testing.T) {
 	// THE POINT: three commits apart is a few reads, not two walks of 300.
 	if reads := counter.reads[plumbing.CommitObject]; reads > 3+git_between_slop+3 {
 		t.Errorf("between read %d commits for a range of 3", reads)
+	}
+}
+
+// TestCommitRangeSaysWhenItIsCut. A comparison's commits stop at
+// git_list_maximum and at the commits the walk reads, and the list said
+// nothing of it: a range cut by the walk read as the whole range, and the
+// compare page could tell a cut only at exactly 1,000. mochi.git.commit.range
+// answers partial when the list holds only the newest commits.
+func TestCommitRangeSaysWhenItIsCut(t *testing.T) {
+	_, repo, _ := read_env_repo(t, "cut")
+	tree := read_snapshot(t, repo, map[string]read_file{"a": read_text("a")})
+	root := read_commit(t, repo, nil, tree, "root")
+	chain := []plumbing.Hash{root}
+	for i := 0; i < git_list_maximum+1; i++ {
+		chain = append(chain, read_commit(t, repo, []plumbing.Hash{chain[len(chain)-1]}, tree, fmt.Sprintf("c%d", i)))
+	}
+	between := func(from, to int) ([]*object.Commit, bool) {
+		t.Helper()
+		base, _ := repo.CommitObject(chain[from])
+		head, _ := repo.CommitObject(chain[to])
+		commits, partial, err := git_between(context.Background(), repo, base, head)
+		if err != nil {
+			t.Fatalf("between: %v", err)
+		}
+		return commits, partial
+	}
+
+	if commits, partial := between(0, git_list_maximum); len(commits) != git_list_maximum || partial {
+		t.Errorf("CONTROL: a range of exactly %d listed %d, partial %v; want all, not partial", git_list_maximum, len(commits), partial)
+	}
+	if commits, partial := between(0, git_list_maximum+1); len(commits) != git_list_maximum || !partial {
+		t.Errorf("THE POINT: a range of %d listed %d, partial %v; want the newest %d, partial", git_list_maximum+1, len(commits), partial, git_list_maximum)
+	}
+
+	previous := git_between_maximum
+	git_between_maximum = 50
+	t.Cleanup(func() { git_between_maximum = previous })
+	if commits, partial := between(0, 200); !partial {
+		t.Errorf("THE POINT: a range of 200 walked 50 deep listed %d, partial %v; want partial", len(commits), partial)
+	}
+	if commits, partial := between(190, 200); len(commits) != 10 || partial {
+		t.Errorf("CONTROL: a range of 10 walked 50 deep listed %d, partial %v; want all 10, not partial", len(commits), partial)
+	}
+}
+
+// TestCommitHistorySaysWhenItIsCut. File history stops at git_walk_maximum
+// commits, and the list said nothing of it: a path last touched further back
+// read as never touched since. mochi.git.commit.history answers partial.
+func TestCommitHistorySaysWhenItIsCut(t *testing.T) {
+	_, repo, _ := read_env_repo(t, "history")
+	files := map[string]read_file{"kept.txt": read_text("kept")}
+	tip := read_commit(t, repo, nil, read_snapshot(t, repo, files), "add kept")
+	for i := 0; i < 30; i++ {
+		files[fmt.Sprintf("other%d.txt", i)] = read_text(fmt.Sprint(i))
+		tip = read_commit(t, repo, []plumbing.Hash{tip}, read_snapshot(t, repo, files), fmt.Sprintf("other %d", i))
+	}
+	start, err := repo.CommitObject(tip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commits, partial, err := git_path_history(context.Background(), repo, start, "kept.txt", 50)
+	if err != nil || len(commits) != 1 || partial {
+		t.Fatalf("CONTROL: the whole history found %d commits, partial %v, %v; want the one, not partial", len(commits), partial, err)
+	}
+	previous := git_walk_maximum
+	git_walk_maximum = 10
+	t.Cleanup(func() { git_walk_maximum = previous })
+	commits, partial, err = git_path_history(context.Background(), repo, start, "kept.txt", 50)
+	if err != nil || len(commits) != 0 || !partial {
+		t.Errorf("THE POINT: a walk stopped 10 deep found %d commits, partial %v, %v; want none, partial", len(commits), partial, err)
 	}
 }
 

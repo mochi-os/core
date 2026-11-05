@@ -92,6 +92,12 @@ func reauthentication_advance(user *User, session string, factor string) (string
 	// browser session (an app token) accrues under the empty string, which is its
 	// own bucket and never merges with a browser's.
 	have := sessions.scan(&r, "select id, user, session, methods, expires from reauthentication where user=? and session=? and expires>=? order by expires desc limit 1", user.UID, session, now())
+	// A proof already complete and not yet spent is another step-up's: this
+	// one starts its own, or the first to spend the shared proof leaves the
+	// other's spend refused.
+	if have && len(reauthentication_remaining(user, r.Methods)) == 0 {
+		have = false
+	}
 	id := ""
 	methods := ""
 	if have {

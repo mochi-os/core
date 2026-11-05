@@ -83,7 +83,9 @@ var api_git = sls.FromStringDict(sl.String("mochi.git"), sl.StringDict{
 		"list":    sl.NewBuiltin("mochi.git.commit.list", api_git_commit_list),
 		"get":     sl.NewBuiltin("mochi.git.commit.get", api_git_commit_get),
 		"log":     sl.NewBuiltin("mochi.git.commit.log", api_git_commit_log),
+		"history": sl.NewBuiltin("mochi.git.commit.history", api_git_commit_history),
 		"between": sl.NewBuiltin("mochi.git.commit.between", api_git_commit_between),
+		"range":   sl.NewBuiltin("mochi.git.commit.range", api_git_commit_range),
 	}),
 	"blob": sls.FromStringDict(sl.String("mochi.git.blob"), sl.StringDict{
 		"content": sl.NewBuiltin("mochi.git.blob.content", api_git_blob_content),
@@ -1768,13 +1770,37 @@ func api_git_commit_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 // mochi.git.commit.log(entity, ref, path, limit) -> list: Commits affecting a path
 func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	commits, _, found, err := git_commit_history(t, fn, args)
+	if err != nil || !found {
+		return sl.None, err
+	}
+	return sl_encode(commits), nil
+}
+
+// mochi.git.commit.history(entity, ref, path, limit) -> dict or None: The commits affecting a path, newest first, as {commits, partial}: partial when the walk stopped at git_walk_maximum commits, so older history was not searched. None for a ref not found.
+func api_git_commit_history(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	commits, partial, found, err := git_commit_history(t, fn, args)
+	if err != nil || !found {
+		return sl.None, err
+	}
+	return sl_encode(map[string]any{"commits": commits, "partial": partial}), nil
+}
+
+// git_commit_history answers mochi.git.commit.log and history: the commits of
+// ref affecting path, newest first, at most limit; whether the walk stopped at
+// git_walk_maximum before it found them all; and false for a ref not found.
+func git_commit_history(t *sl.Thread, fn *sl.Builtin, args sl.Tuple) ([]map[string]any, bool, bool, error) {
+	failed := func(format string, values ...any) ([]map[string]any, bool, bool, error) {
+		_, err := sl_error(fn, format, values...)
+		return nil, false, false, err
+	}
 	if len(args) < 3 || len(args) > 4 {
-		return sl_error(fn, "syntax: <entity: string>, <ref: string>, <path: string>, [limit: int]")
+		return failed("syntax: <entity: string>, <ref: string>, <path: string>, [limit: int]")
 	}
 
 	entity, ok := sl.AsString(args[0])
 	if !ok || !valid(entity, "entity") {
-		return sl_error(fn, "invalid entity")
+		return failed("invalid entity")
 	}
 
 	ref, ok := sl.AsString(args[1])
@@ -1784,7 +1810,7 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	path, ok := sl.AsString(args[2])
 	if !ok {
-		return sl_error(fn, "invalid path")
+		return failed("invalid path")
 	}
 
 	limit := 50
@@ -1793,49 +1819,60 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 	offset := 0
 	if err := git_page(&limit, &offset); err != nil {
-		return sl_error(fn, "%v", err)
+		return failed("%v", err)
 	}
 
 	owner := principal_owner(t)
 	app := principal_app(t)
 	if owner == nil {
-		return sl_error(fn, "no owner")
+		return failed("no owner")
 	}
 	if app == nil {
-		return sl_error(fn, "no app")
+		return failed("no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
-		return sl_error(fn, "permission denied: repository read required to read the commit log")
+		return failed("permission denied: repository read required to read the commit log")
 	}
 
 	repo, err := git_open(owner, app, entity)
 	if err != nil {
-		return sl_error(fn, "failed to open repository: %v", err)
+		return failed("failed to open repository: %v", err)
 	}
 	defer git_close(repo.Storer)
 
 	hash, err := git_resolve_ref(repo, ref)
 	if err != nil {
-		return sl.None, nil // ref not found
+		return nil, false, false, nil // ref not found
 	}
 
 	tip, err := repo.CommitObject(*hash)
 	if err != nil {
-		return sl.None, nil // log not found
+		return nil, false, false, nil // log not found
 	}
 
-	ctx := starlark_context(t)
+	commits, partial, err := git_path_history(starlark_context(t), repo, tip, path, limit)
+	if err != nil {
+		return failed("failed to iterate commits: %v", err)
+	}
+	return commits, partial, true, nil
+}
+
+// git_path_history walks the history from tip for the commits affecting path,
+// newest first, at most limit, and says whether it stopped at
+// git_walk_maximum commits before finding them all: a path the history rarely
+// or never touches is answered with what the newest commits hold, not read for
+// in all of it.
+func git_path_history(ctx context.Context, repo *git.Repository, tip *object.Commit, path string, limit int) ([]map[string]any, bool, error) {
 	paths := git_path_walker(repo, path)
 	iter := git_log_start(repo, tip, func(c *object.Commit) ([]plumbing.Hash, error) {
 		_, parents, err := paths.touched(c)
 		return parents, err
 	})
-	var commits []map[string]any
-	// A path the history rarely or never touches is answered with what the
-	// newest git_walk_maximum commits hold, not read for in all of it.
+	commits := []map[string]any{}
 	visited := 0
-	err = iter.ForEach(func(c *object.Commit) error {
+	partial := false
+	err := iter.ForEach(func(c *object.Commit) error {
 		if len(commits) >= limit {
 			return io.EOF
 		}
@@ -1844,6 +1881,7 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		}
 		visited++
 		if visited > git_walk_maximum {
+			partial = true
 			return io.EOF
 		}
 		touched, _, err := paths.touched(c)
@@ -1860,12 +1898,10 @@ func api_git_commit_log(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		}
 		return nil
 	})
-
 	if err != nil && err != io.EOF {
-		return sl_error(fn, "failed to iterate commits: %v", err)
+		return nil, false, err
 	}
-
-	return sl_encode(commits), nil
+	return commits, partial, nil
 }
 
 // git_path_entry is what a tree holds at a path: the object and its mode, or
@@ -1993,68 +2029,91 @@ func (w *git_paths) lookup(depth int, tree plumbing.Hash) (git_path_entry, error
 
 // mochi.git.commit.between(entity, base, head) -> list: Commits between refs
 func api_git_commit_between(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	commits, _, found, err := git_commit_range(t, fn, args)
+	if err != nil || !found {
+		return sl.None, err
+	}
+	return sl_encode(commits), nil
+}
+
+// mochi.git.commit.range(entity, base, head) -> dict or None: The commits head reaches and base does not, oldest first, as {commits, partial}: partial when the list holds only the newest of them - past git_list_maximum, or past the commits the walk reads. None for a ref or commit not found.
+func api_git_commit_range(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	commits, partial, found, err := git_commit_range(t, fn, args)
+	if err != nil || !found {
+		return sl.None, err
+	}
+	return sl_encode(map[string]any{"commits": commits, "partial": partial}), nil
+}
+
+// git_commit_range answers mochi.git.commit.between and range: the commits
+// head reaches and base does not, oldest first; whether the list was cut
+// short; and false for a ref or commit not found.
+func git_commit_range(t *sl.Thread, fn *sl.Builtin, args sl.Tuple) ([]map[string]any, bool, bool, error) {
+	failed := func(format string, values ...any) ([]map[string]any, bool, bool, error) {
+		_, err := sl_error(fn, format, values...)
+		return nil, false, false, err
+	}
 	if len(args) != 3 {
-		return sl_error(fn, "syntax: <entity: string>, <base: string>, <head: string>")
+		return failed("syntax: <entity: string>, <base: string>, <head: string>")
 	}
 
 	entity, ok := sl.AsString(args[0])
 	if !ok || !valid(entity, "entity") {
-		return sl_error(fn, "invalid entity")
+		return failed("invalid entity")
 	}
 
 	base, ok := sl.AsString(args[1])
 	if !ok || base == "" {
-		return sl_error(fn, "invalid base")
+		return failed("invalid base")
 	}
 
 	head, ok := sl.AsString(args[2])
 	if !ok || head == "" {
-		return sl_error(fn, "invalid head")
+		return failed("invalid head")
 	}
 
 	owner := principal_owner(t)
 	app := principal_app(t)
 	if owner == nil {
-		return sl_error(fn, "no owner")
+		return failed("no owner")
 	}
 	if app == nil {
-		return sl_error(fn, "no app")
+		return failed("no app")
 	}
 
 	if !git_can_read(t, owner, app, entity) {
-		return sl_error(fn, "permission denied: repository read required to list commits")
+		return failed("permission denied: repository read required to list commits")
 	}
 
 	repo, err := git_open(owner, app, entity)
 	if err != nil {
-		return sl_error(fn, "failed to open repository: %v", err)
+		return failed("failed to open repository: %v", err)
 	}
 	defer git_close(repo.Storer)
 
 	base_hash, err := git_resolve_ref(repo, base)
 	if err != nil {
-		return sl.None, nil // base ref not found
+		return nil, false, false, nil // base ref not found
 	}
 
 	head_hash, err := git_resolve_ref(repo, head)
 	if err != nil {
-		return sl.None, nil // head ref not found
+		return nil, false, false, nil // head ref not found
 	}
 
-	// Get commits reachable from head
 	head_commit, err := repo.CommitObject(*head_hash)
 	if err != nil {
-		return sl.None, nil // head commit not found
+		return nil, false, false, nil // head commit not found
 	}
 
 	base_commit, err := repo.CommitObject(*base_hash)
 	if err != nil {
-		return sl.None, nil // base commit not found
+		return nil, false, false, nil // base commit not found
 	}
 
-	between, err := git_between(starlark_context(t), repo, base_commit, head_commit)
+	between, partial, err := git_between(starlark_context(t), repo, base_commit, head_commit)
 	if err != nil {
-		return sl_error(fn, "failed to list commits: %v", err)
+		return failed("failed to list commits: %v", err)
 	}
 
 	// Oldest first.
@@ -2069,7 +2128,7 @@ func api_git_commit_between(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		})
 	}
 
-	return sl_encode(commits), nil
+	return commits, partial, true, nil
 }
 
 // Which side of a comparison reaches a commit.
@@ -2083,15 +2142,19 @@ const (
 // set behind its parent's.
 const git_between_slop = 5
 
+// git_between_maximum is how many commits git_between walks, both sides
+// together: git_offset_maximum each, as the two separate walks did.
+var git_between_maximum = 2 * git_offset_maximum
+
 // git_between lists the commits head reaches and base does not, newest first,
-// at most git_list_maximum of them. It reads the range and the history just
-// past it rather than all of either (git_paint). Each side's walk stops at
-// git_offset_maximum commits, as the two separate walks did; a longer range
-// is answered with its newest commits.
-func git_between(ctx context.Context, repo *git.Repository, base, head *object.Commit) ([]*object.Commit, error) {
-	marks, order, loaded, err := git_paint(ctx, repo.CommitObject, []*object.Commit{head}, []*object.Commit{base}, 2*git_offset_maximum)
+// at most git_list_maximum of them, and whether there are more: past that
+// many, or past the git_between_maximum commits the walk reads. It reads the
+// range and the history just past it rather than all of either (git_paint);
+// a longer range is answered with its newest commits.
+func git_between(ctx context.Context, repo *git.Repository, base, head *object.Commit) ([]*object.Commit, bool, error) {
+	marks, order, loaded, cut, err := git_paint(ctx, repo.CommitObject, []*object.Commit{head}, []*object.Commit{base}, git_between_maximum)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	// A commit listed before base's walk reached it is base's after all.
@@ -2100,12 +2163,12 @@ func git_between(ctx context.Context, repo *git.Repository, base, head *object.C
 		if marks[hash] != git_from_head {
 			continue
 		}
-		commits = append(commits, loaded[hash])
-		if len(commits) >= git_list_maximum {
-			break
+		if len(commits) == git_list_maximum {
+			return commits, true, nil
 		}
+		commits = append(commits, loaded[hash])
 	}
-	return commits, nil
+	return commits, cut, nil
 }
 
 // git_paint walks the histories of heads and bases together, newest first,
@@ -2114,12 +2177,13 @@ func git_between(ctx context.Context, repo *git.Repository, base, head *object.C
 // commits it walked that only heads had reached when they were walked, in
 // walk order - a mark can arrive later, so a caller reads the commit's mark
 // again - and the commits it loaded. limit, when positive, ends the walk after
-// that many commits. As in git's own walk, a commit whose clock was wrong by
+// that many commits, and cut says it did so with commits only heads reach
+// still to visit. As in git's own walk, a commit whose clock was wrong by
 // more than git_between_slop commits can leave bases' older history
 // unwalked, and commits there are then taken for heads' alone. The other way
 // round never happens: a mark travels only from a commit to its parents, so a
 // commit is marked as bases' only when bases reach it.
-func git_paint(ctx context.Context, load func(plumbing.Hash) (*object.Commit, error), heads, bases []*object.Commit, limit int) (marks map[plumbing.Hash]uint8, order []plumbing.Hash, loaded map[plumbing.Hash]*object.Commit, err error) {
+func git_paint(ctx context.Context, load func(plumbing.Hash) (*object.Commit, error), heads, bases []*object.Commit, limit int) (marks map[plumbing.Hash]uint8, order []plumbing.Hash, loaded map[plumbing.Hash]*object.Commit, cut bool, err error) {
 	marks = map[plumbing.Hash]uint8{}
 	walked := map[plumbing.Hash]bool{}
 	loaded = map[plumbing.Hash]*object.Commit{}
@@ -2187,7 +2251,7 @@ func git_paint(ctx context.Context, load func(plumbing.Hash) (*object.Commit, er
 	slop := git_between_slop
 	for visited := 0; queue.Len() > 0 && (limit <= 0 || visited < limit); {
 		if err := ctx.Err(); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, false, err
 		}
 		c := heap.Pop(queue).(*object.Commit)
 		queued[c.Hash]--
@@ -2209,7 +2273,7 @@ func git_paint(ctx context.Context, load func(plumbing.Hash) (*object.Commit, er
 			if !ok {
 				parent, err = load(hash)
 				if err != nil {
-					return nil, nil, nil, err
+					return nil, nil, nil, false, err
 				}
 			}
 			mark(parent, side)
@@ -2224,7 +2288,7 @@ func git_paint(ctx context.Context, load func(plumbing.Hash) (*object.Commit, er
 			slop = git_between_slop
 		}
 	}
-	return marks, order, loaded, nil
+	return marks, order, loaded, limit > 0 && queue.Len() > 0 && lacking > 0, nil
 }
 
 // git_commit_queue holds commits newest first by committer time, as git
@@ -5571,7 +5635,7 @@ func git_fetch_commits(ctx context.Context, storage storer.EncodedObjectStorer, 
 
 	// No limit: a walk cut short would leave commits the client lacks out of
 	// the pack.
-	marks, order, _, err := git_paint(ctx, load, heads, bases, 0)
+	marks, order, _, _, err := git_paint(ctx, load, heads, bases, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -8233,6 +8297,434 @@ func git_promote(staging, repo_path string) error {
 	return nil
 }
 
+// git_pushed reads what a push staged before it is stored: its pack, through
+// the index git_receive built, or the objects git_loosen stored one by one.
+type git_pushed interface {
+	HasEncodedObject(plumbing.Hash) error
+	EncodedObject(plumbing.ObjectType, plumbing.Hash) (plumbing.EncodedObject, error)
+}
+
+// git_pushed_pack reads a push's pack, kept in its staging directory, through
+// its index. Thin bases were appended to it, so every delta it holds resolves
+// within it.
+type git_pushed_pack struct {
+	index *idxfile.MemoryIndex
+	pack  *packfile.Packfile
+}
+
+func (p *git_pushed_pack) HasEncodedObject(hash plumbing.Hash) error {
+	if held, err := p.index.Contains(hash); err != nil || !held {
+		return plumbing.ErrObjectNotFound
+	}
+	return nil
+}
+
+func (p *git_pushed_pack) EncodedObject(_ plumbing.ObjectType, hash plumbing.Hash) (plumbing.EncodedObject, error) {
+	return p.pack.Get(hash)
+}
+
+// git_pushed_open opens what a push staged in staging, for git_unconnected:
+// the pack index names, or with no index the objects stored one by one, of
+// which a push carrying no objects has none. The function answered closes it.
+func git_pushed_open(staging string, index *idxfile.MemoryIndex) (git_pushed, func(), error) {
+	fs := osfs.New(staging)
+	if index == nil {
+		store := filesystem.NewStorage(fs, cache.NewObjectLRUDefault())
+		return store, func() { git_close(store) }, nil
+	}
+	file, err := fs.Open(git_push_pack)
+	if err != nil {
+		return nil, nil, err
+	}
+	pack := packfile.NewPackfile(index, fs, file, 0)
+	return &git_pushed_pack{index: index, pack: pack}, func() { pack.Close() }, nil
+}
+
+// git_unconnected answers the commands, but deletes, whose new tip reaches an
+// object neither the push nor the repository holds, as git's receive-pack
+// checks before a reference moves: a reference on a commit whose history has
+// a gap fails every later clone and every repack.
+//
+// As git's rev-list --objects --not --all, the walk trusts only what the
+// repository's references reach: those objects were checked on their way in.
+// An object the repository holds and no reference reaches is not trusted. A
+// push whose other commands went ahead stores what a refused command carried,
+// a push may carry objects no command names, and a prune takes an unreachable
+// commit's older tree before the commit, so such an object may name one the
+// repository lacks. The walk reads it like one the push carries.
+//
+// Commits are judged first. Those the push carries are walked down to the
+// commits the repository holds, and each of those is whole when the
+// references reach it (git_paint). One they do not is refused: a client sends
+// everything the references it was shown do not reach, so it carried any such
+// commit it built on. Then the trees: everything the trees of the commits
+// pushed onto reach is whole, so a new commit's tree is walked only where it
+// differs from its parent's. Blobs are only looked up, never read. A tag's
+// target is followed as whatever it is, not as the type the tag declares, and
+// each object is settled once for every command that reaches it.
+func git_unconnected(commands []*packp.Command, pushed git_pushed, repository storer.Storer) (map[plumbing.ReferenceName]bool, error) {
+	carried := func(hash plumbing.Hash) bool {
+		return pushed.HasEncodedObject(hash) == nil
+	}
+	read := func(hash plumbing.Hash) (plumbing.EncodedObject, error) {
+		if carried(hash) {
+			return pushed.EncodedObject(plumbing.AnyObject, hash)
+		}
+		return repository.EncodedObject(plumbing.AnyObject, hash)
+	}
+
+	// What the references name, and the tags they name peeled down to the
+	// commits under them: the commits the trusted walk starts from.
+	referenced := map[plumbing.Hash]bool{}
+	var bases []*object.Commit
+	references, err := repository.IterReferences()
+	if err != nil {
+		return nil, err
+	}
+	err = references.ForEach(func(reference *plumbing.Reference) error {
+		if reference.Type() != plumbing.HashReference {
+			return nil
+		}
+		for hash := reference.Hash(); !referenced[hash]; {
+			referenced[hash] = true
+			stored, err := repository.EncodedObject(plumbing.AnyObject, hash)
+			if err != nil {
+				return nil // a reference to nothing reaches nothing
+			}
+			switch stored.Type() {
+			case plumbing.CommitObject:
+				commit, err := object.DecodeCommit(repository, stored)
+				if err == nil {
+					bases = append(bases, commit)
+				}
+				return nil
+			case plumbing.TagObject:
+				tag, err := object.DecodeTag(repository, stored)
+				if err != nil {
+					return nil
+				}
+				hash = tag.Target
+			default:
+				return nil
+			}
+		}
+		return nil
+	})
+	references.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	// The commits and tags the commands reach through what the push carries,
+	// down to the commits the repository holds: those are the candidates, and
+	// the ones a carried commit names as a parent are what it was pushed onto.
+	candidates := map[plumbing.Hash]*object.Commit{}
+	onto := map[plumbing.Hash]bool{}
+	seen := map[plumbing.Hash]bool{}
+	type step struct {
+		hash   plumbing.Hash
+		parent bool
+	}
+	var steps []step
+	for _, command := range commands {
+		if command.Action() != packp.Delete {
+			steps = append(steps, step{hash: command.New})
+		}
+	}
+	for len(steps) > 0 {
+		s := steps[len(steps)-1]
+		steps = steps[:len(steps)-1]
+		if seen[s.hash] {
+			if s.parent && candidates[s.hash] != nil {
+				onto[s.hash] = true
+			}
+			continue
+		}
+		seen[s.hash] = true
+		stored, err := read(s.hash)
+		if err != nil {
+			continue // missing: the whole walk below refuses what reaches it
+		}
+		switch stored.Type() {
+		case plumbing.CommitObject:
+			if !carried(s.hash) {
+				commit, err := object.DecodeCommit(repository, stored)
+				if err != nil {
+					return nil, err
+				}
+				candidates[s.hash] = commit
+				if s.parent {
+					onto[s.hash] = true
+				}
+				continue
+			}
+			commit, err := object.DecodeCommit(nil, stored)
+			if err != nil {
+				return nil, err
+			}
+			for _, parent := range commit.ParentHashes {
+				steps = append(steps, step{hash: parent, parent: true})
+			}
+		case plumbing.TagObject:
+			if referenced[s.hash] && !carried(s.hash) {
+				continue
+			}
+			tag, err := object.DecodeTag(nil, stored)
+			if err != nil {
+				return nil, err
+			}
+			steps = append(steps, step{hash: tag.Target})
+		}
+	}
+
+	// A candidate is whole when a reference reaches it.
+	trusted := map[plumbing.Hash]bool{}
+	var heads []*object.Commit
+	for hash, commit := range candidates {
+		if referenced[hash] {
+			trusted[hash] = true
+		} else {
+			heads = append(heads, commit)
+		}
+	}
+	if len(heads) > 0 && len(bases) > 0 {
+		load := func(hash plumbing.Hash) (*object.Commit, error) {
+			return object.GetCommit(repository, hash)
+		}
+		marks, _, _, _, err := git_paint(context.Background(), load, heads, bases, git_walk_maximum)
+		if err != nil {
+			return nil, err
+		}
+		for _, head := range heads {
+			if marks[head.Hash]&git_from_base != 0 {
+				trusted[head.Hash] = true
+			}
+		}
+	}
+
+	// Everything the trees of the commits pushed onto reach is whole.
+	kept := map[plumbing.Hash]bool{}
+	for hash := range onto {
+		if !trusted[hash] {
+			continue
+		}
+		trees := []plumbing.Hash{candidates[hash].TreeHash}
+		for len(trees) > 0 {
+			tree := trees[len(trees)-1]
+			trees = trees[:len(trees)-1]
+			if kept[tree] {
+				continue
+			}
+			kept[tree] = true
+			// As git's own marking, a tree the history lacks marks nothing
+			// under it; whatever names it is still walked.
+			stored, err := repository.EncodedObject(plumbing.TreeObject, tree)
+			if err != nil {
+				delete(kept, tree)
+				continue
+			}
+			decoded, err := object.DecodeTree(repository, stored)
+			if err != nil {
+				delete(kept, tree)
+				continue
+			}
+			for _, entry := range decoded.Entries {
+				if entry.Mode == filemode.Dir {
+					trees = append(trees, entry.Hash)
+				}
+			}
+		}
+	}
+
+	// whole records an object settled: true when it and everything it names
+	// are held, false when something is missing.
+	whole := map[plumbing.Hash]bool{}
+	// named reads what an object names: a commit's tree and parents, a tree's
+	// entries but its submodules, a tag's target as whatever it is. Each comes
+	// with the type it must have, so a blob is looked up and not read.
+	type name struct {
+		hash plumbing.Hash
+		kind plumbing.ObjectType
+	}
+	named := func(stored plumbing.EncodedObject) ([]name, error) {
+		var names []name
+		switch stored.Type() {
+		case plumbing.CommitObject:
+			commit, err := object.DecodeCommit(nil, stored)
+			if err != nil {
+				return nil, err
+			}
+			names = append(names, name{commit.TreeHash, plumbing.TreeObject})
+			for _, parent := range commit.ParentHashes {
+				names = append(names, name{parent, plumbing.CommitObject})
+			}
+		case plumbing.TreeObject:
+			tree, err := object.DecodeTree(nil, stored)
+			if err != nil {
+				return nil, err
+			}
+			for _, entry := range tree.Entries {
+				switch entry.Mode {
+				case filemode.Submodule:
+				case filemode.Dir:
+					names = append(names, name{entry.Hash, plumbing.TreeObject})
+				default:
+					names = append(names, name{entry.Hash, plumbing.BlobObject})
+				}
+			}
+		case plumbing.TagObject:
+			tag, err := object.DecodeTag(nil, stored)
+			if err != nil {
+				return nil, err
+			}
+			names = append(names, name{tag.Target, plumbing.AnyObject})
+		}
+		return names, nil
+	}
+	// settle answers whether an object is whole as far as is known without
+	// reading it, or else the object, whose names must be settled first.
+	settle := func(item name) (bool, plumbing.EncodedObject, error) {
+		if done, ok := whole[item.hash]; ok {
+			return done, nil, nil
+		}
+		if item.kind == plumbing.BlobObject {
+			// A blob names nothing: held or carried is whole.
+			whole[item.hash] = carried(item.hash) || repository.HasEncodedObject(item.hash) == nil
+			return whole[item.hash], nil, nil
+		}
+		if kept[item.hash] {
+			whole[item.hash] = true
+			return true, nil, nil
+		}
+		stored, err := read(item.hash)
+		if err != nil {
+			whole[item.hash] = false
+			return false, nil, nil
+		}
+		if carried(item.hash) {
+			return false, stored, nil
+		}
+		switch stored.Type() {
+		case plumbing.CommitObject:
+			whole[item.hash] = trusted[item.hash]
+			return whole[item.hash], nil, nil
+		case plumbing.TagObject:
+			if referenced[item.hash] {
+				whole[item.hash] = true
+				return true, nil, nil
+			}
+		case plumbing.BlobObject:
+			whole[item.hash] = true
+			return true, nil, nil
+		}
+		return false, stored, nil
+	}
+
+	type frame struct {
+		hash  plumbing.Hash
+		names []name
+		next  int
+	}
+	refused := map[plumbing.ReferenceName]bool{}
+	for _, command := range commands {
+		if command.Action() == packp.Delete {
+			continue
+		}
+		done, open, err := settle(name{command.New, plumbing.AnyObject})
+		if err != nil {
+			return nil, err
+		}
+		if open != nil {
+			// Depth first, without recursion: a pushed history may be a long
+			// chain of parents. An object is whole when everything it names
+			// is, and the first missing name settles it and every object
+			// above it on the stack as not whole.
+			names, err := named(open)
+			if err != nil {
+				return nil, err
+			}
+			stack := []frame{{hash: command.New, names: names}}
+			for len(stack) > 0 {
+				top := &stack[len(stack)-1]
+				if top.next == len(top.names) {
+					whole[top.hash] = true
+					stack = stack[:len(stack)-1]
+					continue
+				}
+				item := top.names[top.next]
+				top.next++
+				ok, open, err := settle(item)
+				if err != nil {
+					return nil, err
+				}
+				if open != nil {
+					names, err := named(open)
+					if err != nil {
+						return nil, err
+					}
+					stack = append(stack, frame{hash: item.hash, names: names})
+					continue
+				}
+				if !ok {
+					for _, f := range stack {
+						whole[f.hash] = false
+					}
+					stack = nil
+				}
+			}
+			done = whole[command.New]
+		}
+		if !done {
+			refused[command.Name] = true
+		}
+	}
+	return refused, nil
+}
+
+// git_push_refused answers the commands git_unconnected refuses, reading what
+// the push staged and the repository as it was before the push. On an error
+// every command but a delete is refused, as nothing it reaches is known whole.
+func git_push_refused(ep *transport.Endpoint, staging string, index *idxfile.MemoryIndex, commands []*packp.Command) (map[plumbing.ReferenceName]bool, error) {
+	refused, err := func() (map[plumbing.ReferenceName]bool, error) {
+		pushed, done, err := git_pushed_open(staging, index)
+		if err != nil {
+			return nil, err
+		}
+		defer done()
+		repository, err := (&git_loader{keep: true}).Load(ep)
+		if err != nil {
+			return nil, err
+		}
+		defer git_close(repository)
+		return git_unconnected(commands, pushed, repository)
+	}()
+	if err != nil {
+		refused = map[plumbing.ReferenceName]bool{}
+		for _, command := range commands {
+			if command.Action() != packp.Delete {
+				refused[command.Name] = true
+			}
+		}
+	}
+	return refused, err
+}
+
+// git_commands_refused reports the commands refused names as refused for
+// reason, and answers the rest, which go ahead.
+func git_commands_refused(commands []*packp.Command, status *packp.ReportStatus, refused map[plumbing.ReferenceName]bool, reason string) []*packp.Command {
+	var rest []*packp.Command
+	for _, command := range commands {
+		if !refused[command.Name] {
+			rest = append(rest, command)
+			continue
+		}
+		if status != nil {
+			status.CommandStatuses = append(status.CommandStatuses, &packp.CommandStatus{ReferenceName: command.Name, Status: reason})
+		}
+	}
+	return rest
+}
+
 // git_references_apply performs the reference updates a push asked for.
 //
 // go-git's own updateReferences compares nothing against cmd.Old, so a push
@@ -8444,12 +8936,31 @@ func git_receive_pack(c *gin.Context, repo_path string, reader io.ReadCloser, ow
 		// touched.
 		info("git_receive_pack: %s: %v", repo_path, err)
 	} else {
-		if err := git_store(staging, repo_path, index); err != nil {
-			warn("git_receive_pack: unable to promote staged objects for %s: %v", repo_path, err)
-			c.String(http.StatusInternalServerError, "Failed to store push") // i18n-ok: git protocol, read by the client not a person
-			return true
+		// What each new tip reaches must be held - in the push or already
+		// here - before it is stored or any reference moves onto it, as git's
+		// receive-pack checks. A command refused so goes no further, and a
+		// push with nothing left to store stores nothing.
+		refused, err := git_push_refused(ep, staging, index, commands)
+		if err != nil {
+			info("git_receive_pack: %s: unable to check what the push reaches: %v", repo_path, err)
 		}
-		// Opened after promotion so the object checks below see what just
+		for name := range refused {
+			info("git_receive_pack: %s: %s names an object neither the push nor the repository holds", repo_path, name)
+		}
+		commands = git_commands_refused(commands, status, refused, "missing necessary objects")
+		// A push whose every update was refused stores nothing.
+		storing := false
+		for _, command := range commands {
+			storing = storing || command.Action() != packp.Delete
+		}
+		if storing {
+			if err := git_store(staging, repo_path, index); err != nil {
+				warn("git_receive_pack: unable to promote staged objects for %s: %v", repo_path, err)
+				c.String(http.StatusInternalServerError, "Failed to store push") // i18n-ok: git protocol, read by the client not a person
+				return true
+			}
+		}
+		// Opened after promotion so the reference updates below see what just
 		// landed rather than a view cached before it did.
 		store, err := (&git_loader{keep: true}).Load(ep)
 		if err != nil {

@@ -31,6 +31,7 @@ import (
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
@@ -1011,5 +1012,197 @@ func TestPushStagedDuringAWalkCountedOnce(t *testing.T) {
 	figure.lock.Unlock()
 	if used != walk {
 		t.Errorf("THE POINT: after a push a walk ran beside, the figure is %d bytes and a walk finds %d", used, walk)
+	}
+}
+
+// push_encode stores obj in store and answers its hash.
+func push_encode(t *testing.T, store *memory.Storage, obj interface {
+	Encode(plumbing.EncodedObject) error
+}) plumbing.Hash {
+	t.Helper()
+	encoded := store.NewEncodedObject()
+	if err := obj.Encode(encoded); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	hash, err := store.SetEncodedObject(encoded)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	return hash
+}
+
+// TestPushRefusesAPackMissingAnObject. A push was checked only for its new
+// tip, so a pack carrying a commit and its tree but not a blob the tree names
+// was answered ok: every later clone failed on the gap, and so did every
+// repack. What each new tip reaches must be held before it is stored or a
+// reference moves onto it, as git's receive-pack checks - on every path a
+// push is stored by, and for each command on its own.
+func TestPushRefusesAPackMissingAnObject(t *testing.T) {
+	user, _ := create_git_test_env(t)
+	if err := git_init(user, test_app, "gap"); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	store := memory.NewStorage()
+	blob := func(body string) plumbing.Hash {
+		encoded := store.NewEncodedObject()
+		encoded.SetType(plumbing.BlobObject)
+		writer, _ := encoded.Writer()
+		writer.Write([]byte(body))
+		writer.Close()
+		hash, err := store.SetEncodedObject(encoded)
+		if err != nil {
+			t.Fatalf("store blob: %v", err)
+		}
+		return hash
+	}
+	signature := object.Signature{Name: "Pusher", Email: "pusher@example.com", When: time.Unix(1700000000, 0)}
+	commit := func(message string, content plumbing.Hash) (plumbing.Hash, plumbing.Hash) {
+		tree := push_encode(t, store, &object.Tree{Entries: []object.TreeEntry{{Name: "a.txt", Mode: filemode.Regular, Hash: content}}})
+		return push_encode(t, store, &object.Commit{Author: signature, Committer: signature, Message: message, TreeHash: tree}), tree
+	}
+	pack := func(hashes ...plumbing.Hash) []byte {
+		var out bytes.Buffer
+		if _, err := packfile.NewEncoder(&out, store, false).Encode(hashes, 0); err != nil {
+			t.Fatalf("encode pack: %v", err)
+		}
+		return out.Bytes()
+	}
+	missing := blob("missing")
+	gap, gap_tree := commit("gap", missing)
+	kept := blob("kept")
+	whole, whole_tree := commit("whole", kept)
+	main := plumbing.NewBranchReferenceName("main")
+	side := plumbing.NewBranchReferenceName("side")
+	loose := plumbing.NewBranchReferenceName("loose")
+	later := plumbing.NewBranchReferenceName("later")
+
+	status := push_send_pack(t, user, "gap", pack(gap, gap_tree), &packp.Command{Name: main, Old: plumbing.ZeroHash, New: gap})
+	if status[main.String()] != "missing necessary objects" {
+		t.Errorf("THE POINT: a pack missing the blob its tree names was answered %q, want a refusal", status[main.String()])
+	}
+	if _, err := push_store(t, user, "gap").Reference(main); err == nil {
+		t.Error("THE POINT: the branch was created on a commit whose tree the repository cannot read whole")
+	}
+	if push_store(t, user, "gap").HasEncodedObject(gap) == nil {
+		t.Error("THE POINT: a refused push stored its objects, where a later push could name them")
+	}
+
+	// A push of no objects naming the commit refused above: what it reaches
+	// is no more whole for having been pushed before.
+	status = push_send(t, user, "gap", &packp.Command{Name: later, Old: plumbing.ZeroHash, New: gap})
+	if status[later.String()] == "ok" {
+		t.Error("THE POINT: a later push created a branch on the commit a refused push carried")
+	}
+
+	// A byte past the pack's checksum keeps it from being kept as it came,
+	// so its objects are stored one by one: checked the same.
+	status = push_send_pack(t, user, "gap", append(pack(gap, gap_tree), 0), &packp.Command{Name: loose, Old: plumbing.ZeroHash, New: gap})
+	if status[loose.String()] != "missing necessary objects" {
+		t.Errorf("THE POINT: a pack stored object by object missing a blob was answered %q, want a refusal", status[loose.String()])
+	}
+
+	// Each command on its own: the whole one goes ahead beside the refused one.
+	status = push_send_pack(t, user, "gap", pack(gap, gap_tree, whole, whole_tree, kept),
+		&packp.Command{Name: main, Old: plumbing.ZeroHash, New: gap},
+		&packp.Command{Name: side, Old: plumbing.ZeroHash, New: whole})
+	if status[main.String()] != "missing necessary objects" || status[side.String()] != "ok" {
+		t.Errorf("THE POINT: a push of one whole branch and one with a gap was answered %q and %q, want the gap alone refused", status[side.String()], status[main.String()])
+	}
+
+	// The push above stored what it carried for the command it refused, and
+	// no reference reaches it: held is not whole.
+	status = push_send(t, user, "gap", &packp.Command{Name: later, Old: plumbing.ZeroHash, New: gap})
+	if status[later.String()] == "ok" {
+		t.Error("THE POINT: a later push created a branch on the commit a partly refused push stored")
+	}
+
+	status = push_send_pack(t, user, "gap", pack(gap, gap_tree, missing), &packp.Command{Name: main, Old: plumbing.ZeroHash, New: gap})
+	if status[main.String()] != "ok" {
+		t.Errorf("CONTROL: the whole pack was answered %q, want ok", status[main.String()])
+	}
+}
+
+// TestPushTrustsOnlyWhatReferencesReach. The connectivity walk ended at any
+// object the repository held, but a push stores objects no command names,
+// so a commit with a gap could be stored beside a whole branch and a later
+// push could put a branch on it. Only what the references reach is whole, as
+// in git's rev-list --not --all; a tag's target is what it is, whatever type
+// the tag declares; and a push building on a branch is still answered ok.
+func TestPushTrustsOnlyWhatReferencesReach(t *testing.T) {
+	user, _ := create_git_test_env(t)
+	if err := git_init(user, test_app, "trust"); err != nil {
+		t.Fatalf("git_init: %v", err)
+	}
+	store := memory.NewStorage()
+	blob := func(body string) plumbing.Hash {
+		encoded := store.NewEncodedObject()
+		encoded.SetType(plumbing.BlobObject)
+		writer, _ := encoded.Writer()
+		writer.Write([]byte(body))
+		writer.Close()
+		hash, err := store.SetEncodedObject(encoded)
+		if err != nil {
+			t.Fatalf("store blob: %v", err)
+		}
+		return hash
+	}
+	signature := object.Signature{Name: "Pusher", Email: "pusher@example.com", When: time.Unix(1700000000, 0)}
+	commit := func(message string, content plumbing.Hash, parents ...plumbing.Hash) (plumbing.Hash, plumbing.Hash) {
+		inner := push_encode(t, store, &object.Tree{Entries: []object.TreeEntry{{Name: "b.txt", Mode: filemode.Regular, Hash: blob("shared")}}})
+		tree := push_encode(t, store, &object.Tree{Entries: []object.TreeEntry{
+			{Name: "a.txt", Mode: filemode.Regular, Hash: content},
+			{Name: "d", Mode: filemode.Dir, Hash: inner},
+		}})
+		signature.When = signature.When.Add(time.Minute)
+		return push_encode(t, store, &object.Commit{Author: signature, Committer: signature, Message: message, TreeHash: tree, ParentHashes: parents}), tree
+	}
+	pack := func(hashes ...plumbing.Hash) []byte {
+		var out bytes.Buffer
+		if _, err := packfile.NewEncoder(&out, store, false).Encode(hashes, 0); err != nil {
+			t.Fatalf("encode pack: %v", err)
+		}
+		return out.Bytes()
+	}
+	inner := push_encode(t, store, &object.Tree{Entries: []object.TreeEntry{{Name: "b.txt", Mode: filemode.Regular, Hash: blob("shared")}}})
+	shared := blob("shared")
+	missing := blob("missing")
+	gap, gap_tree := commit("gap", missing)
+	kept := blob("kept")
+	whole, whole_tree := commit("whole", kept)
+	main := plumbing.NewBranchReferenceName("main")
+	evil := plumbing.NewBranchReferenceName("evil")
+	tagged := plumbing.NewTagReferenceName("mislabelled")
+
+	// A whole branch, carrying beside it a commit no command names whose blob
+	// is missing.
+	status := push_send_pack(t, user, "trust", pack(whole, whole_tree, inner, shared, kept, gap, gap_tree),
+		&packp.Command{Name: main, Old: plumbing.ZeroHash, New: whole})
+	if status[main.String()] != "ok" {
+		t.Fatalf("CONTROL: the whole branch was answered %q, want ok", status[main.String()])
+	}
+	status = push_send(t, user, "trust", &packp.Command{Name: evil, Old: plumbing.ZeroHash, New: gap})
+	if status[evil.String()] == "ok" {
+		t.Error("THE POINT: a push of no objects put a branch on a stored commit no reference reached, whose blob is missing")
+	}
+
+	// A tag that calls the commit under it a blob.
+	tag := push_encode(t, store, &object.Tag{Name: "mislabelled", Tagger: signature, Message: "m", TargetType: plumbing.BlobObject, Target: gap})
+	status = push_send_pack(t, user, "trust", pack(tag, gap, gap_tree), &packp.Command{Name: tagged, Old: plumbing.ZeroHash, New: tag})
+	if status[tagged.String()] == "ok" {
+		t.Error("THE POINT: a tag declaring its target a blob carried a commit whose blob is missing past the walk")
+	}
+
+	// Building on the branch: the new commit's tree shares a subtree with its
+	// parent's, which the references reach, and a branch on a commit they
+	// reach needs no objects at all.
+	next, next_tree := commit("next", blob("next"), whole)
+	status = push_send_pack(t, user, "trust", pack(next, next_tree, blob("next")), &packp.Command{Name: main, Old: whole, New: next})
+	if status[main.String()] != "ok" {
+		t.Errorf("CONTROL: a commit building on the branch was answered %q, want ok", status[main.String()])
+	}
+	again := plumbing.NewBranchReferenceName("again")
+	status = push_send(t, user, "trust", &packp.Command{Name: again, Old: plumbing.ZeroHash, New: whole})
+	if status[again.String()] != "ok" {
+		t.Errorf("CONTROL: a branch on a commit the references reach was answered %q, want ok", status[again.String()])
 	}
 }

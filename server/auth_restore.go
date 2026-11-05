@@ -409,6 +409,11 @@ func restore_apply(uid, bundle string, manifest export_manifest, account export_
 	udb := db_open("db/users.db")
 	udb.exec("update users set status='active' where uid=? and status='pending-restore'", uid)
 	db_purge_prefix(filepath.Join("users", uid))
+	// A block made while the user was restoring passed them over; now active,
+	// any later block reaches them itself (server_blocked_add).
+	if user := user_by_uid(uid); user != nil {
+		server_blocked_apply(user)
+	}
 
 	// Restore is single-shot. On a replication-paired destination a follow
 	// up bulk-bootstrap would push the freshly-restored user to the pair in
@@ -533,6 +538,12 @@ func restore_finish_account(uid string, manifest export_manifest, bundle string)
 			udb.exec("replace into relinks (user, service, identifier, linked) values (?, ?, ?, ?)",
 				uid, l.Service, l.Identifier, l.Linked)
 		}
+	}
+	// The people this server blocks leave what the user brought before
+	// anything is sent to those it holds: restore_hosted follows again
+	// whoever the restored accounts follow.
+	if user := user_by_uid(uid); user != nil {
+		server_blocked_apply(user)
 	}
 	restore_handles(uid, bundle)
 	restore_hosted(uid)
@@ -666,8 +677,13 @@ func restore_fediverse(user *User, row map[string]any, name string) bool {
 	db := db_user(user, "user")
 	inboxes := []string{}
 	seen := map[string]bool{}
-	followers, _ := db.rows("select inbox, shared from followers where account=?", id)
+	// A person the server blocked after the restore last removed them is still
+	// held here: told nothing and followed by no one (server_blocked_apply).
+	followers, _ := db.rows("select actor, inbox, shared from followers where account=?", id)
 	for _, follower := range followers {
+		if server_blocked(row_string(follower, "actor")) {
+			continue
+		}
 		inbox := row_string(follower, "shared")
 		if inbox == "" {
 			inbox = row_string(follower, "inbox")
@@ -700,6 +716,10 @@ func restore_fediverse(user *User, row map[string]any, name string) bool {
 	}
 	following, _ := db.rows("select actor, inbox from following where account=?", id)
 	for _, f := range following {
+		if server_blocked(row_string(f, "actor")) {
+			db.exec("delete from following where account=? and actor=?", id, row_string(f, "actor"))
+			continue
+		}
 		activity := actor + "/follows/" + uid()
 		db.exec("update following set activity=?, accepted=0 where account=? and actor=?", activity, id, row_string(f, "actor"))
 		if inbox := row_string(f, "inbox"); inbox != "" {

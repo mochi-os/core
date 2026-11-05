@@ -192,3 +192,52 @@ func TestUploadLandsWhereFileReadLooks(t *testing.T) {
 		t.Errorf("read back %q, want %q", got, "round trip")
 	}
 }
+
+// TestFileHeadReadsOnlyTheStart. An attachment's type was found by reading the
+// whole file, up to 32 MB, to look at its first 4 KB, and one larger was never
+// looked at. mochi.file.head reads what it is asked for and no more.
+func TestFileHeadReadsOnlyTheStart(t *testing.T) {
+	user, app := upload_test_setup(t)
+	_, thread := upload_test_action(t, user, user, app, "f", "unused.txt", "")
+	base := api_file_base(user, app)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "short.txt"), []byte("short"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// A file past what mochi.file.read will take, sparse so it costs nothing.
+	large, err := os.Create(filepath.Join(base, "large.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	large.Write([]byte("\xff\xd8\xff\xe0signature"))
+	large.Truncate(40 << 20)
+	large.Close()
+
+	head := sl.NewBuiltin("mochi.file.head", api_file_head)
+	call := func(file string, length int) (sl.Value, error) {
+		return api_file_head(thread, head, sl.Tuple{sl.String(file), sl.MakeInt(length)}, nil)
+	}
+	value, err := call("large.bin", 4096)
+	if err != nil {
+		t.Fatalf("THE POINT: the head of a 40 MB file could not be read: %v", err)
+	}
+	if got := []byte(value.(sl.Bytes)); len(got) != 4096 || string(got[:13]) != "\xff\xd8\xff\xe0signature" {
+		t.Errorf("THE POINT: the head of a large file was %d bytes starting %q, want 4096 starting with its signature", len(got), got[:min(len(got), 13)])
+	}
+	value, err = call("short.txt", 4096)
+	if err != nil || string(value.(sl.Bytes)) != "short" {
+		t.Errorf("the head of a file shorter than asked = %v, %v; want the whole file", value, err)
+	}
+	for _, length := range []int{0, -1, file_head_maximum + 1} {
+		if _, err := call("short.txt", length); err == nil {
+			t.Errorf("a head of %d bytes was answered, want a refusal", length)
+		}
+	}
+	for _, file := range []string{"../escape.txt", "missing.txt"} {
+		if _, err := call(file, 16); err == nil {
+			t.Errorf("the head of %q was answered, want a refusal", file)
+		}
+	}
+}

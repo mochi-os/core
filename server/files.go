@@ -409,6 +409,7 @@ var (
 		"maximum": sl.NewBuiltin("mochi.file.maximum", api_file_maximum),
 		"delete":  sl.NewBuiltin("mochi.file.delete", api_file_delete),
 		"exists":  sl.NewBuiltin("mochi.file.exists", api_file_exists),
+		"head":    sl.NewBuiltin("mochi.file.head", api_file_head),
 		"list":    sl.NewBuiltin("mochi.file.list", api_file_list),
 		"move":    sl.NewBuiltin("mochi.file.move", api_file_move),
 		"read":    sl.NewBuiltin("mochi.file.read", api_file_read),
@@ -904,6 +905,40 @@ func api_file_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	return sl_encode(files), nil
 }
 
+// api_file_open opens a file of the caller's app storage, for the readers
+// below, answering it and a function closing it, or the error to answer.
+func api_file_open(t *sl.Thread, fn *sl.Builtin, file string) (*os.File, func(), error) {
+	if !valid(file, "filepath") {
+		_, err := sl_error(fn, "invalid file %q", file)
+		return nil, nil, err
+	}
+
+	user, _ := principal_storage(t)
+	if user == nil {
+		_, err := sl_error(fn, "no user")
+		return nil, nil, err
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		_, err := sl_error(fn, "no app")
+		return nil, nil, err
+	}
+
+	root, err := os.OpenRoot(api_file_base(user, app))
+	if err != nil {
+		_, err := sl_error(fn, "file not found")
+		return nil, nil, err
+	}
+	f, err := root.Open(file)
+	if err != nil {
+		root.Close()
+		_, err := sl_error(fn, "file not found")
+		return nil, nil, err
+	}
+	return f, func() { f.Close(); root.Close() }, nil
+}
+
 // mochi.file.read(file, maximum=0) -> bytes or None: Read a file into memory.
 // maximum refuses a larger file, answering None so the caller can fall back to
 // a streaming path; zero, the default, is unbounded. The bound is checked
@@ -915,32 +950,11 @@ func api_file_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "file", &file, "maximum?", &maximum); err != nil {
 		return sl_error(fn, "syntax: <file: string>, [maximum: integer]")
 	}
-	if !valid(file, "filepath") {
-		return sl_error(fn, "invalid file %q", file)
-	}
-
-	user, _ := principal_storage(t)
-	if user == nil {
-		return sl_error(fn, "no user")
-	}
-
-	app, ok := t.Local("app").(*App)
-	if !ok || app == nil {
-		return sl_error(fn, "no app")
-	}
-
-	base := api_file_base(user, app)
-	root, err := os.OpenRoot(base)
+	f, done, err := api_file_open(t, fn, file)
 	if err != nil {
-		return sl_error(fn, "file not found")
+		return nil, err
 	}
-	defer root.Close()
-
-	f, err := root.Open(file)
-	if err != nil {
-		return sl_error(fn, "file not found")
-	}
-	defer f.Close()
+	defer done()
 
 	if maximum > 0 {
 		information, err := f.Stat()
@@ -959,6 +973,35 @@ func api_file_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	return sl_encode(data), nil
+}
+
+// file_head_maximum is the most mochi.file.head reads.
+const file_head_maximum = 1 << 20
+
+// mochi.file.head(file, length) -> bytes: The first length bytes of a file, or
+// the whole of a shorter one, read without the rest: what a file is - its
+// signature - from a file of any size. length is 1 to 1 MiB.
+func api_file_head(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var file string
+	var length int
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "file", &file, "length", &length); err != nil {
+		return sl_error(fn, "syntax: <file: string>, <length: integer>")
+	}
+	if length < 1 || length > file_head_maximum {
+		return sl_error(fn, "invalid length %d: from 1 to %d", length, file_head_maximum)
+	}
+	f, done, err := api_file_open(t, fn, file)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+
+	buffer := make([]byte, length)
+	read, err := io.ReadFull(f, buffer)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return sl_error(fn, "unable to read file")
+	}
+	return sl_encode(buffer[:read]), nil
 }
 
 // mochi.file.write(file, data) -> None: Write a file from memory

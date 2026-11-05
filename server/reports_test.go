@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -338,6 +340,44 @@ func TestReportsMatrixClient(t *testing.T) {
 	rows = reports_rows(t)
 	if len(rows) != 3 || row_string(rows[1], "person") != "" || row_string(rows[1], "room") != room.String() || row_string(rows[2], "person") != "@spammer:remote.example" || row_string(rows[2], "user") != "" {
 		t.Errorf("THE POINT: the room and person reports = %v", rows)
+	}
+}
+
+// TestServerBlockPassesOverARestoringUser. A block opened every user's
+// user.db, one mid-restore too, whose files were being swapped for the ones
+// they brought: an open spanning the rename read a database the rename had
+// half replaced. A restoring user is passed over, and the restore applies the
+// blocks to what it brought.
+func TestServerBlockPassesOverARestoringUser(t *testing.T) {
+	alice, bob := create_activitypub_test_env(t)
+	db_open("db/users.db").exec("insert into users (uid, username, role, status) values ('u-restoring', 'restoring@example.com', 'user', 'pending-restore')")
+	followers := db_user(alice, "user")
+	followers.exec("insert into followers (account, actor, inbox, created) values ('f1', ?, ?, 1)", bob.id, bob.inbox)
+	if err := server_blocked_add(bob.id); err != nil {
+		t.Fatal(err)
+	}
+	if found, _ := followers.exists("select 1 from followers where actor=?", bob.id); found {
+		t.Error("CONTROL: the blocked person still follows an active user")
+	}
+	if _, err := os.Stat(filepath.Join(data_dir, "users", "u-restoring", "user.db")); err == nil {
+		t.Error("THE POINT: a block opened the user.db of a user mid-restore")
+	}
+}
+
+// A server block passes over a suspended user, whom user_by_uid answers as no
+// one, so a blocked person stayed among their followers once they were made
+// active again.
+func TestServerBlockReachesAUserReactivated(t *testing.T) {
+	alice, bob := create_activitypub_test_env(t)
+	followers := db_user(alice, "user")
+	followers.exec("insert into followers (account, actor, inbox, created) values ('f1', ?, ?, 1)", bob.id, bob.inbox)
+	db_open("db/users.db").exec("update users set status='suspended' where uid=?", alice.UID)
+	if err := server_blocked_add(bob.id); err != nil {
+		t.Fatal(err)
+	}
+	user_activate(alice.UID)
+	if found, _ := followers.exists("select 1 from followers where actor=?", bob.id); found {
+		t.Error("THE POINT: a person the server blocked while the user was suspended still follows them once active")
 	}
 }
 

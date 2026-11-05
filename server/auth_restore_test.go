@@ -72,6 +72,15 @@ func TestUserRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
+	// The source follows and is followed by two people, one of whom this
+	// server blocks once the bundle is made: the bundle never saw the block.
+	networks_create(networks_database())
+	followed := db_user(user_by_uid(src), "user")
+	for _, actor := range []string{"https://remote.example/u/blocked", "https://remote.example/u/kept"} {
+		followed.exec("insert into followers (account, actor, inbox, created) values ('f1', ?, ?, 1)", actor, actor+"/inbox")
+		followed.exec("insert into following (account, actor, activity, created) values ('f1', ?, ?, 1)", actor, actor+"#follow")
+	}
+
 	passphrase := "correct horse battery staple"
 	rel, err := user_export(src, "settings", passphrase, "")
 	if err != nil {
@@ -115,6 +124,8 @@ func TestUserRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("schema guard refused unexpectedly: %q", app)
 	}
 
+	networks_database().exec("insert into blocked (actor, created) values ('https://remote.example/u/blocked', 1)")
+
 	dst := "u-dst"
 	db.exec("insert into users (uid, username) values (?, ?)", dst, "dst@example.com")
 	if err := restore_swap(dst, bundle); err != nil {
@@ -126,6 +137,15 @@ func TestUserRestoreRoundTrip(t *testing.T) {
 	restore_finish_account(dst, manifest, bundle)
 
 	// ---- Assertions on the destination ----
+	restored := db_user(user_by_uid(dst), "user")
+	for _, table := range []string{"followers", "following"} {
+		if found, _ := restored.exists("select 1 from " + table + " where actor='https://remote.example/u/blocked'"); found {
+			t.Errorf("THE POINT: the restored %s still hold a person this server blocks", table)
+		}
+		if found, _ := restored.exists("select 1 from " + table + " where actor='https://remote.example/u/kept'"); !found {
+			t.Errorf("CONTROL: the restored %s lost a person this server does not block", table)
+		}
+	}
 	var got Entity
 	if !db.scan(&got, "select * from entities where id=?", id) {
 		t.Fatal("entity not restored")

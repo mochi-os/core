@@ -335,15 +335,22 @@ func server_blocked(actor string) bool {
 // server_blocked_add blocks a person for the whole server: they are no longer
 // a follower of any account here, nor followed by one. A person of this
 // server's own is not blocked but suspended.
+//
+// A user mid-restore is passed over: their user.db is being swapped for the
+// one they brought, and opening it then spans the rename. The restore applies
+// every block to what it brought instead (server_blocked_apply), once after
+// the swap and again once the user is active: the block is written before the
+// users are read, and the restore marks the user active before reading the
+// blocks, so one of the two always sees the other.
 func server_blocked_add(actor string) error {
 	if person_ours(actor) {
 		return fmt.Errorf("a person on this server is suspended, not blocked")
 	}
 	networks_database().exec("insert or ignore into blocked (actor, created) values (?, ?)", actor, now())
-	rows, _ := db_open("db/users.db").rows("select uid from users")
+	rows, _ := db_open("db/users.db").rows("select uid from users where status!='pending-restore'")
 	for _, row := range rows {
 		user := user_by_uid(row_string(row, "uid"))
-		if user == nil {
+		if user == nil || user_pending(user) {
 			continue
 		}
 		db := db_user(user, "user")
@@ -351,6 +358,22 @@ func server_blocked_add(actor string) error {
 		db.exec("delete from following where actor=?", actor)
 	}
 	return nil
+}
+
+// server_blocked_apply removes every person the owner blocks from a user's
+// followers and following, for a user.db that never saw the blocks: one a
+// restore brought from another server.
+func server_blocked_apply(user *User) {
+	rows, _ := networks_database().rows("select actor from blocked")
+	if len(rows) == 0 {
+		return
+	}
+	db := db_user(user, "user")
+	for _, row := range rows {
+		actor := row_string(row, "actor")
+		db.exec("delete from followers where actor=?", actor)
+		db.exec("delete from following where actor=?", actor)
+	}
 }
 
 // === The API ===

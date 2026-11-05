@@ -243,6 +243,9 @@ def action_write(a):
 def action_logout(a):
     a.logout()
     return {"done": True}
+
+def action_mint(a):
+    return {"minted": mochi.token.create("probe") != None}
 `
 	if err := os.WriteFile(star, []byte(source), 0o600); err != nil {
 		t.Fatalf("writing the test app: %v", err)
@@ -256,6 +259,7 @@ def action_logout(a):
 		"-/storage": {Function: "action_storage", Public: true},
 		"-/write":   {Function: "action_write", Public: true},
 		"-/logout":  {Function: "action_logout"},
+		"-/mint":    {Function: "action_mint"},
 	}}
 	av.Architecture.Engine = "starlark"
 	app := &App{id: "bearertest", internal: av}
@@ -665,6 +669,13 @@ func TestBearerGateVersionFollowsTheSetAside(t *testing.T) {
 	if status != 204 {
 		t.Errorf("OPTIONS with another app's token, set aside, on a DAV route only in its user's version got %d %s; want the 204 preflight", status, body)
 	}
+	// The token in the URL, beside another user's cookie: set aside, the
+	// request is that user's, and it carries no token of its own. The app-token
+	// gate must judge it so, not on the app the discarded token named.
+	status, body = web_bearer_target(t, app, "other-session", "", "GET", "-/gated?token="+victim["elsewhere"])
+	if status != 403 || !strings.Contains(body, "app_token_required") {
+		t.Errorf("THE POINT: another app's token in the URL, set aside beside a cookie, on a private action got %d %s; want 403 app_token_required", status, body)
+	}
 }
 
 // web_bearer_repository gives the victim a private repository in the test app,
@@ -836,5 +847,22 @@ func TestPeopleEmbeddedRoutesAreShared(t *testing.T) {
 		if !action.Public || !action.Asset || !action.Shared {
 			t.Errorf("%s is public=%v asset=%v shared=%v; other apps embed it, so it must be all three", route, action.Public, action.Asset, action.Shared)
 		}
+	}
+}
+
+// An asset token in the header is set aside on an action that serves no
+// asset, but an API token sent in the URL beside it, of the cookie's own
+// user, is kept: it still travelled in a link, so it still may not mint or
+// revoke the credentials that outlive it.
+func TestBearerGateKeepsAURLTokenCarried(t *testing.T) {
+	app, session, victim, _ := web_bearer_two_users(t)
+	status, body := web_bearer_target(t, app, session, "Bearer "+victim["asset"], "GET", "-/mint?token="+victim["api"])
+	if status == 200 || !strings.Contains(body, "carried in a URL") {
+		t.Errorf("THE POINT: an API token in the URL, kept beside a set-aside asset token, minted a token: %d %s", status, body)
+	}
+	// CONTROL: the same request with the API token in no URL mints one.
+	status, body = web_bearer_target(t, app, session, "Bearer "+victim["app"], "GET", "-/mint")
+	if status != 200 || !strings.Contains(body, `"minted":true`) {
+		t.Errorf("CONTROL: an app token in the header could not mint a token: %d %s", status, body)
 	}
 }

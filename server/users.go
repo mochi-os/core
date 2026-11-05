@@ -1574,8 +1574,18 @@ func api_user_activate(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "user not found")
 	}
 
-	db.exec("update users set status='active' where uid=?", id)
+	user_activate(id)
 	return sl.True, nil
+}
+
+// user_activate makes a suspended user active again. A server block made
+// while they were suspended passed them over, as user_by_uid answers no one
+// for a suspended user, so it reaches them now (server_blocked_apply).
+func user_activate(id string) {
+	db_open("db/users.db").exec("update users set status='active' where uid=?", id)
+	if user := user_by_uid(id); user != nil {
+		server_blocked_apply(user)
+	}
 }
 
 // mochi.user.session.list(user?) -> list: List active sessions for current user or specified user (admin)

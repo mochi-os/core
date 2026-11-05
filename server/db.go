@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -89,7 +90,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 23
+	schema_version = 24
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -1578,6 +1579,8 @@ func db_upgrade() {
 			db_upgrade_22()
 		case 23:
 			db_upgrade_23()
+		case 24:
+			db_upgrade_24()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -3209,6 +3212,80 @@ func db_upgrade_23() {
 	queue := db_open("db/queue.db")
 	queue.exec("create table if not exists delivered ( stem text not null, peer text not null, created integer not null, primary key ( stem, peer ) )")
 	queue.exec("create index if not exists delivered_created on delivered ( created )")
+}
+
+// db_upgrade_24 makes every linked Mastodon and Bluesky account a way to sign
+// in, as linking one has been since this version (linked_signin): one linked
+// before would otherwise become one only when linked again. A hosted account is
+// not a linked one, a Mastodon account whose address is not on the server it
+// was linked at is not trusted, and an identity another user signs in with
+// stays theirs. The step reads the accounts as they are kept at this version.
+func db_upgrade_24() {
+	users := db_open("db/users.db")
+	// An install with no users table has no accounts to make ways to sign in.
+	found, err := users.exists("select 1 from sqlite_master where type='table' and name='users'")
+	if err != nil {
+		panic(fmt.Sprintf("Schema upgrade 24: users table lookup: %v", err))
+	}
+	if !found {
+		return
+	}
+	rows, err := users.rows("select uid, username from users")
+	if err != nil {
+		panic(fmt.Sprintf("Schema upgrade 24: listing users: %v", err))
+	}
+	added := 0
+	for _, row := range rows {
+		user := row_string(row, "uid")
+		path := filepath.Join("users", user, "user.db")
+		if !file_exists(filepath.Join(data_dir, path)) {
+			continue
+		}
+		var accounts []map[string]any
+		func() {
+			db, _, reused := db_open_work(path)
+			if db == nil {
+				return
+			}
+			defer db_discard(db, reused)
+			accounts, _ = db.rows("select type, label, data from accounts where type in ('mastodon', 'bluesky')")
+		}()
+		for _, account := range accounts {
+			var data map[string]any
+			json.Unmarshal([]byte(row_string(account, "data")), &data)
+			if hosted, _ := data["hosted"].(bool); hosted {
+				continue
+			}
+			subject, _ := data["id"].(string)
+			if subject == "" {
+				continue
+			}
+			name, _ := data["name"].(string)
+			if name == "" {
+				name = row_string(account, "label")
+			}
+			kind := row_string(account, "type")
+			// A Mastodon account is known by its address, which must lie on
+			// the server it was linked at: one naming an account elsewhere
+			// would sign in as whoever that account belongs to.
+			if kind == "mastodon" {
+				server, _ := data["server"].(string)
+				u, err := url.Parse(subject)
+				if err != nil || server == "" || !strings.EqualFold(u.Host, server) {
+					continue
+				}
+			}
+			if held, _ := users.exists("select 1 from oauth where provider=? and subject=?", kind, subject); held {
+				continue
+			}
+			users.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, 1, ?, ?)",
+				user, kind, subject, row_string(row, "username"), name, now())
+			added++
+		}
+	}
+	if added > 0 {
+		info("Schema 24: made %d linked account(s) a way to sign in", added)
+	}
 }
 
 // db_upgrade_12 adds the handle registry to users.db; db_create carries the

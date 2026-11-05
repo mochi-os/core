@@ -41,14 +41,16 @@ const mastodon_scopes = "read write"
 var mastodon_host_re = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]+)?$`)
 
 // mastodon_host reads the server a user named, as a host: with any scheme or
-// path they pasted removed.
+// path they pasted removed, or from the handle of an account on it.
 func mastodon_host(server string) (string, error) {
 	server = strings.ToLower(strings.TrimSpace(server))
 	server = strings.TrimPrefix(strings.TrimPrefix(server, "https://"), "http://")
 	if i := strings.IndexAny(server, "/?#"); i >= 0 {
 		server = server[:i]
 	}
-	server = strings.TrimPrefix(server, "@")
+	if i := strings.LastIndex(server, "@"); i >= 0 {
+		server = server[i+1:]
+	}
 	if !mastodon_host_re.MatchString(server) {
 		return "", fmt.Errorf("invalid server")
 	}
@@ -162,6 +164,13 @@ func mastodon_address(acct string, host string) string {
 	return "@" + acct
 }
 
+// mastodon_owned reports whether an account's address lies on the server, the
+// host Mochi reached it at.
+func mastodon_owned(address string, server string) bool {
+	u, err := url.Parse(address)
+	return err == nil && server != "" && (u.Scheme == "https" || u.Scheme == "http") && strings.EqualFold(u.Host, server)
+}
+
 // mastodon_profile reads the account behind the token.
 func mastodon_profile(ctx context.Context, l *linked) (*linked_profile, error) {
 	var account struct {
@@ -180,6 +189,12 @@ func mastodon_profile(ctx context.Context, l *linked) (*linked_profile, error) {
 	}
 	if status < 200 || status > 299 || account.URL == "" {
 		return nil, fmt.Errorf("the account could not be read: %v", linked_failure(status, body))
+	}
+	// The account's address is its identity here, the one a sign-in with it is
+	// known by, so a server may name only an account of its own: one naming
+	// an account elsewhere would sign in as whoever that account belongs to.
+	if !mastodon_owned(account.URL, l.get("server")) {
+		return nil, fmt.Errorf("the server named an account on another server: %s", account.URL)
 	}
 	l.set("account", account.ID)
 	if account.Name == "" {

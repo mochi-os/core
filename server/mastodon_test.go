@@ -30,6 +30,7 @@ type mastodon_fake struct {
 	challenge     string
 	keys          []string
 	polls         int
+	address       string // the account address verify_credentials answers, when not its own
 }
 
 func create_mastodon_fake(t *testing.T) *mastodon_fake {
@@ -71,7 +72,13 @@ func create_mastodon_fake(t *testing.T) *mastodon_fake {
 		if !authorized(w, r) {
 			return
 		}
-		answer(w, 200, map[string]any{"id": "1", "username": "alice", "acct": "alice", "display_name": "Alice", "url": f.server.URL + "/@alice", "avatar": f.server.URL + "/a.png"})
+		f.lock.Lock()
+		address := f.address
+		f.lock.Unlock()
+		if address == "" {
+			address = f.server.URL + "/@alice"
+		}
+		answer(w, 200, map[string]any{"id": "1", "username": "alice", "acct": "alice", "display_name": "Alice", "url": address, "avatar": f.server.URL + "/a.png"})
 	})
 	mux.HandleFunc("GET /api/v2/instance", func(w http.ResponseWriter, r *http.Request) {
 		answer(w, 200, map[string]any{"domain": fake_host(f.server), "configuration": map[string]any{
@@ -213,6 +220,35 @@ func link_return(provider string, query string, session string) (int, string) {
 	c.Params = gin.Params{{Key: "provider", Value: provider}}
 	web_oauth_callback(c)
 	return w.Code, w.Header().Get("Location")
+}
+
+// TestMastodonHost: the server is read from a host, a pasted address, or an
+// account's handle, and anything else is refused.
+func TestMastodonHost(t *testing.T) {
+	for server, want := range map[string]string{
+		"mastodon.social":                      "mastodon.social",
+		" Mastodon.Social ":                    "mastodon.social",
+		"https://mastodon.social/@alice":       "mastodon.social",
+		"@alice@mastodon.social":               "mastodon.social",
+		"alice@mastodon.social":                "mastodon.social",
+		"@mastodon.social":                     "mastodon.social",
+		"https://mastodon.social/@alice@other": "mastodon.social",
+		"localhost:8080":                       "",
+		"@alice":                               "",
+		"alice@":                               "",
+		"":                                     "",
+	} {
+		host, err := mastodon_host(server)
+		if want == "" {
+			if err == nil {
+				t.Errorf("mastodon_host(%q) = %q, want a refusal", server, host)
+			}
+			continue
+		}
+		if err != nil || host != want {
+			t.Errorf("mastodon_host(%q) = %q, %v; want %q", server, host, err, want)
+		}
+	}
 }
 
 // TestMastodonLink: a Mastodon account links by the server's consent after

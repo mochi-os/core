@@ -289,7 +289,30 @@ func linked_store(user *User, kind string, profile *linked_profile, data map[str
 		linked_stop(user.UID, id)
 		linked_start(l)
 	}
+	linked_signin(user, kind, profile)
 	return row
+}
+
+// linked_signin makes a linked Mastodon or Bluesky account a way to sign in to
+// Mochi, as a sign-in with one is also a link (linked_login): the link's
+// consent proves the account as a sign-in's does. An identity another user
+// already signs in with stays theirs, and a user's own is left as it is. It is
+// removed where the user's sign-in methods are listed, with the guard against
+// removing the last.
+func linked_signin(user *User, kind string, profile *linked_profile) {
+	if kind != "mastodon" && kind != "bluesky" {
+		return
+	}
+	subject := linked_subject(kind, profile)
+	if subject == "" {
+		return
+	}
+	users := db_open("db/users.db")
+	if held, _ := users.exists("select 1 from oauth where provider=? and subject=?", kind, subject); held {
+		return
+	}
+	users.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, 1, ?, ?)",
+		user.UID, kind, subject, user.Username, profile.Name, now())
 }
 
 // linked_forget ends a linked account: the server is told where the protocol
@@ -728,12 +751,11 @@ func network_login_apply(c *gin.Context, user *User) {
 	if err := json.Unmarshal([]byte(row_string(row, "data")), &pending); err != nil || !linked_kind(pending.Kind) || pending.Subject == "" || pending.Profile.ID == "" || pending.Data == nil {
 		return
 	}
-	users := db_open("db/users.db")
-	if taken, _ := users.exists("select 1 from oauth where provider=? and subject=?", pending.Kind, pending.Subject); taken {
+	// An identity another user took meanwhile joins nobody; otherwise the
+	// store links the account and makes it a way to sign in (linked_signin).
+	if taken, _ := db_open("db/users.db").exists("select 1 from oauth where provider=? and subject=?", pending.Kind, pending.Subject); taken {
 		return
 	}
-	users.exec("insert into oauth (user, provider, subject, email, verified, name, created) values (?, ?, ?, ?, 1, ?, ?)",
-		user.UID, pending.Kind, pending.Subject, user.Username, pending.Profile.Name, now())
 	linked_store(user, pending.Kind, &pending.Profile, pending.Data)
 }
 

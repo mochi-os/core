@@ -34,6 +34,9 @@ func create_linked_test_env(t *testing.T) *User {
 	sessions := db_open("db/sessions.db")
 	sessions.exec("create table if not exists sessions (user text not null, code text not null primary key, secret text not null, expires integer not null, created integer not null, accessed integer not null, address text not null default '', agent text not null default '')")
 	sessions.exec("create table if not exists ceremonies (id text primary key, type text not null, user text not null default '', challenge blob not null, data text not null default '', expires integer not null)")
+	// A linked Mastodon or Bluesky account is also a way to sign in
+	// (linked_signin), kept where every server keeps its sign-ins.
+	db_open("db/users.db").exec("create table if not exists oauth (id integer primary key, user text not null, provider text not null, subject text not null, email text not null default '', verified integer not null default 0, name text not null default '', created integer not null, unique(provider, subject))")
 
 	saved_scheme, saved_sessions, saved_servers, saved_nonces, saved_inbound := network_scheme, linked_sessions, bluesky_servers, bluesky_nonces, linked_inbound
 	network_scheme = "http://"

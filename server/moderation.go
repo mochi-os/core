@@ -178,6 +178,37 @@ func api_account_followers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	return sl_encode(rows), nil
 }
 
+var api_account_follower = sls.FromStringDict(sl.String("mochi.account.follower"), sl.StringDict{
+	"remove": sl.NewBuiltin("mochi.account.follower.remove", api_account_follower_remove),
+})
+
+// mochi.account.follower.remove(account, actor) -> bool: Stop counting someone
+// as a follower of a hosted account, as a community does with a person it
+// bans, so nothing more is delivered to them; True when they followed. Their
+// server is not told, as Lemmy tells no one when it unsubscribes a person it
+// bans. Behind the account permission
+func api_account_follower_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var account, actor string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "actor", &actor); err != nil {
+		return nil, err
+	}
+	user, _, id, err := account_acting(t, fn, account)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	if id == "" {
+		return sl_error(fn, "a linked account's followers are kept by its own server")
+	}
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		return sl_error(fn, "actor is required")
+	}
+	db := db_user(user, "user")
+	found, _ := db.exists("select 1 from followers where account=? and actor=?", account, actor)
+	db.exec("delete from followers where account=? and actor=?", account, actor)
+	return sl.Bool(found), nil
+}
+
 // mochi.account.following(account, actor="") -> list: The people a hosted
 // account follows, each with their id, when the follow was sent and when
 // their server accepted it (0 while it waits, as a locked account's does);

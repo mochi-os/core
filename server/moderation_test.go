@@ -127,6 +127,44 @@ func TestAccountFollowers(t *testing.T) {
 	}
 }
 
+// TestAccountFollowerRemove: a community drops a person it bans from its
+// followers, as Lemmy unsubscribes them, so nothing more goes to them; the
+// answer says whether they followed, and the call is behind the account
+// permission.
+func TestAccountFollowerRemove(t *testing.T) {
+	alice, bob := create_activitypub_test_env(t)
+	fn := sl.NewBuiltin("test", nil)
+	signed_post(t, bob, "/~f1/inbox", follow_activity(bob, "https://remote.example/follows/l1"), nil)
+	db := db_user(alice, "user")
+	if found, _ := db.exists("select 1 from followers where account='f1' and actor=?", bob.id); !found {
+		t.Fatal("prelude: bob does not follow")
+	}
+
+	plain := create_test_thread(alice, create_external_app("app5"))
+	if _, err := api_account_follower_remove(plain, fn, sl.Tuple{sl.String("f1"), sl.String(bob.id)}, nil); err == nil {
+		t.Error("a follower removed without the account permission")
+	}
+	if found, _ := db.exists("select 1 from followers where account='f1' and actor=?", bob.id); !found {
+		t.Fatal("a refused call removed the follower")
+	}
+
+	thread := create_acting_thread(alice)
+	value, err := api_account_follower_remove(thread, fn, sl.Tuple{sl.String("f1"), sl.String(bob.id)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != sl.True {
+		t.Errorf("removing a follower answered %v, want True", value)
+	}
+	// THE POINT: he is no longer a follower, so the account's activities stop going to him.
+	if found, _ := db.exists("select 1 from followers where account='f1' and actor=?", bob.id); found {
+		t.Error("the follower is still listed")
+	}
+	if value, _ := api_account_follower_remove(thread, fn, sl.Tuple{sl.String("f1"), sl.String(bob.id)}, nil); value != sl.False {
+		t.Errorf("removing someone who does not follow answered %v, want False", value)
+	}
+}
+
 // TestAccountReport: a report goes out as a Flag to the person's shared
 // inbox, naming them and the objects complained of, from the server's own
 // account on the reporting account's domain and queued as that account, so

@@ -224,7 +224,8 @@ func TestResolveXMPPAndFailure(t *testing.T) {
 
 // TestResolveSecureMode: a server that gives its actor documents to signed
 // requests only still resolves a handle from WebFinger - the address, the
-// username and the profile page - while an actor URL alone does not.
+// username and the profile page - while an actor URL its WebFinger says
+// nothing of does not.
 func TestResolveSecureMode(t *testing.T) {
 	d := resolve_test_install(t, map[string]string{
 		"https://mastodon.social/.well-known/webfinger?resource=acct%3AMastodon%40mastodon.social": `{"links":[{"rel":"http://webfinger.net/rel/profile-page","type":"text/html","href":"https://mastodon.social/@Mastodon"},{"rel":"self","type":"application/activity+json","href":"https://mastodon.social/users/Mastodon"}]}`,
@@ -234,17 +235,141 @@ func TestResolveSecureMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Network != "fediverse" || r.Type != "person" || r.Address != "@Mastodon@mastodon.social" || r.Username != "Mastodon" || r.Host != "mastodon.social" || r.URL != "https://mastodon.social/@Mastodon" || r.ID != "https://mastodon.social/users/Mastodon" || r.Name != "Mastodon" {
+	if r.Network != "fediverse" || r.Type != "person" || r.Address != "@Mastodon@mastodon.social" || r.Username != "Mastodon" || r.Host != "mastodon.social" || r.URL != "https://mastodon.social/@Mastodon" || r.ID != "https://mastodon.social/users/Mastodon" || r.Name != "Mastodon" || r.Avatar != "" {
 		t.Errorf("resolved = %+v", r)
 	}
-	if d.fetches != 2 {
-		t.Errorf("fetches = %d, want WebFinger and the refused actor", d.fetches)
+	if d.fetches != 3 {
+		t.Errorf("fetches = %d, want WebFinger, the refused actor and the account details", d.fetches)
 	}
 	if _, err := author_resolve(context.Background(), "https://mastodon.social/users/Mastodon"); err == nil {
 		t.Error("an actor URL with no WebFinger to fall back on resolved")
 	}
 	if !resolve_signed(&resolve_refusal{Status: 403}) || resolve_signed(&resolve_refusal{Status: 404}) || resolve_signed(fmt.Errorf("status 401")) {
 		t.Error("resolve_signed reads the status of a refusal alone")
+	}
+}
+
+// TestResolveSecureModeAccount: on a server in secure mode, an account's URL,
+// which a follow sends, resolves from what the server's WebFinger says of
+// the URL, and a handle and a URL both take the name and avatar from the
+// server's public account details. The server must name the URL as the
+// account's own, an address on another domain must say so of itself, and
+// details naming another account are not taken.
+func TestResolveSecureModeAccount(t *testing.T) {
+	const actor = "https://mastodon.social/users/Mastodon"
+	finger := "https://mastodon.social/.well-known/webfinger?resource=" + url.QueryEscape(actor)
+	answer := `{"subject":"acct:Mastodon@mastodon.social","links":[{"rel":"http://webfinger.net/rel/profile-page","type":"text/html","href":"https://mastodon.social/@Mastodon"},{"rel":"self","type":"application/activity+json","href":"https://mastodon.social/users/Mastodon"},{"rel":"http://ostatus.org/schema/1.0/subscribe","template":"https://mastodon.social/authorize_interaction?uri={uri}"}]}`
+	lookup := "https://mastodon.social/api/v1/accounts/lookup?acct=Mastodon"
+	details := `{"uri":"https://mastodon.social/users/Mastodon","display_name":"Mastodon project","avatar":"https://files.mastodon.social/avatars/mastodon.png","locked":true,"note":"<p>The project</p>"}`
+	documents := func(extra map[string]string) map[string]string {
+		m := map[string]string{actor: "401", finger: answer, lookup: details}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+
+	resolve_test_install(t, documents(nil))
+	r, err := author_resolve(context.Background(), actor)
+	if err != nil {
+		t.Fatalf("THE POINT: the account URL from a server in secure mode did not resolve: %v", err)
+	}
+	if r.Network != "fediverse" || r.Type != "person" || r.Address != "@Mastodon@mastodon.social" || r.Username != "Mastodon" || r.Host != "mastodon.social" || r.URL != "https://mastodon.social/@Mastodon" || r.ID != actor || r.Template != "https://mastodon.social/authorize_interaction?uri={uri}" {
+		t.Errorf("resolved = %+v", r)
+	}
+	if r.Name != "Mastodon project" || r.Avatar != "https://files.mastodon.social/avatars/mastodon.png" || !r.Locked || r.Summary != "<p>The project</p>" {
+		t.Errorf("the account details were not taken: %+v", r)
+	}
+
+	// A handle takes the same details.
+	resolve_test_install(t, documents(map[string]string{
+		"https://mastodon.social/.well-known/webfinger?resource=acct%3AMastodon%40mastodon.social": answer,
+	}))
+	if r, err := author_resolve(context.Background(), "@Mastodon@mastodon.social"); err != nil || r.Name != "Mastodon project" || r.Avatar != "https://files.mastodon.social/avatars/mastodon.png" {
+		t.Errorf("a handle did not take the account details: %+v, %v", r, err)
+	}
+
+	// Details naming another account are not taken.
+	resolve_test_install(t, documents(map[string]string{
+		lookup: `{"uri":"https://mastodon.social/users/Other","display_name":"Someone else","avatar":"https://files.mastodon.social/avatars/other.png"}`,
+	}))
+	if r, err := author_resolve(context.Background(), actor); err != nil || r.Name != "Mastodon" || r.Avatar != "" || r.Locked {
+		t.Errorf("another account's details were taken: %+v, %v", r, err)
+	}
+
+	// No account details at all: WebFinger's answer alone.
+	resolve_test_install(t, map[string]string{actor: "401", finger: answer})
+	if r, err := author_resolve(context.Background(), actor); err != nil || r.Name != "Mastodon" || r.Address != "@Mastodon@mastodon.social" {
+		t.Errorf("without account details: %+v, %v", r, err)
+	}
+
+	// A WebFinger that names another URL as the account's own does not
+	// vouch for this one.
+	resolve_test_install(t, documents(map[string]string{
+		finger: strings.Replace(answer, `"href":"https://mastodon.social/users/Mastodon"`, `"href":"https://mastodon.social/users/Other"`, 1),
+	}))
+	if _, err := author_resolve(context.Background(), actor); err == nil {
+		t.Error("a WebFinger naming another URL vouched for the account")
+	}
+
+	// An address on another domain must say the same of itself.
+	elsewhere := strings.Replace(answer, "acct:Mastodon@mastodon.social", "acct:alice@example.org", 1)
+	resolve_test_install(t, documents(map[string]string{finger: elsewhere}))
+	if _, err := author_resolve(context.Background(), actor); err == nil {
+		t.Error("an address on another domain was taken without that domain's word")
+	}
+	resolve_test_install(t, documents(map[string]string{
+		finger: elsewhere,
+		"https://example.org/.well-known/webfinger?resource=acct%3Aalice%40example.org": `{"links":[{"rel":"self","type":"application/activity+json","href":"https://mastodon.social/users/Mastodon"}]}`,
+	}))
+	if r, err := author_resolve(context.Background(), actor); err != nil || r.Address != "@alice@example.org" || r.Host != "example.org" || r.ID != actor {
+		t.Errorf("an address its own domain confirms: %+v, %v", r, err)
+	}
+
+	// The subject is an address of a handle's form. A host carrying an @
+	// would be confirmed by the server after it, the account's own, while
+	// the address reads as one on the domain before it; a port makes an
+	// address no handle can be.
+	self := `{"links":[{"rel":"self","type":"application/activity+json","href":"https://mastodon.social/users/Mastodon"}]}`
+	for _, host := range []string{"known.example@mastodon.social", "example.org:8443"} {
+		resolve_test_install(t, documents(map[string]string{
+			finger: strings.Replace(answer, "acct:Mastodon@mastodon.social", "acct:alice@"+host, 1),
+			network_base(host) + "/.well-known/webfinger?resource=" + url.QueryEscape("acct:alice@"+host): self,
+		}))
+		if r, err := author_resolve(context.Background(), actor); err == nil {
+			t.Errorf("THE POINT: a subject whose host %q is not a name was taken: %+v", host, r)
+		}
+	}
+
+	// A handle whose WebFinger names an account on another host, which
+	// refuses unsigned fetches, is that host's to vouch for: else a domain
+	// could give itself someone else's account, name and avatar.
+	handle := "https://example.org/.well-known/webfinger?resource=acct%3Aalice%40example.org"
+	resolve_test_install(t, documents(map[string]string{handle: self}))
+	if r, err := author_resolve(context.Background(), "@alice@example.org"); err == nil {
+		t.Errorf("THE POINT: another host's account was taken for a handle it does not vouch for: %+v", r)
+	}
+	resolve_test_install(t, documents(map[string]string{handle: self, finger: elsewhere}))
+	if r, err := author_resolve(context.Background(), "@alice@example.org"); err != nil || r.Address != "@alice@example.org" || r.ID != actor {
+		t.Errorf("a handle its account's host vouches for: %+v, %v", r, err)
+	}
+
+	// A WebFinger naming no profile page: the account's URL is its page, by
+	// either path.
+	bare := `{"subject":"acct:Mastodon@mastodon.social","links":[{"rel":"self","type":"application/activity+json","href":"https://mastodon.social/users/Mastodon"}]}`
+	resolve_test_install(t, documents(map[string]string{finger: bare}))
+	if r, err := author_resolve(context.Background(), actor); err != nil || r.URL != actor {
+		t.Errorf("an account URL with no profile page: %+v, %v", r, err)
+	}
+	resolve_test_install(t, documents(map[string]string{"https://mastodon.social/.well-known/webfinger?resource=acct%3AMastodon%40mastodon.social": bare}))
+	if r, err := author_resolve(context.Background(), "@Mastodon@mastodon.social"); err != nil || r.URL != actor {
+		t.Errorf("a handle with no profile page: %+v, %v", r, err)
+	}
+
+	// A refusal that is not for want of a signature is no reason to ask.
+	d := resolve_test_install(t, map[string]string{finger: answer, lookup: details})
+	if _, err := author_resolve(context.Background(), actor); err == nil || d.fetches != 1 {
+		t.Errorf("a missing actor resolved, or WebFinger was asked: %v, fetches %d", err, d.fetches)
 	}
 }
 

@@ -363,8 +363,27 @@ func resolve_network(ctx context.Context, identifier string) (*resolved, error) 
 			// requests only, which come with the hosted accounts of a later
 			// phase. WebFinger has answered the address, the username and the
 			// profile page, which is what following the person's web feed
-			// needs, so the person resolves from that alone, as a person.
-			return &resolved{Network: "fediverse", Type: "person", Address: "@" + m[1] + "@" + strings.ToLower(m[2]), Username: m[1], Host: strings.ToLower(m[2]), Name: m[1], URL: page, ID: actor, Template: template}, nil
+			// needs, so the person resolves from that alone, as a person,
+			// with the name and avatar the server's public account details
+			// give.
+			// An account served on another host than the address names is
+			// that host's to vouch for, as an account URL is, so a domain
+			// cannot give itself someone else's account and with it their
+			// name and avatar.
+			host := strings.ToLower(m[2])
+			if u, failed := url.Parse(actor); failed != nil || !strings.EqualFold(u.Host, host) {
+				refused := resolve_refused(ctx, actor)
+				if refused == nil || !strings.EqualFold(refused.Address, "@"+m[1]+"@"+host) {
+					return nil, err
+				}
+				return refused, nil
+			}
+			if page == "" {
+				page = actor
+			}
+			r := &resolved{Network: "fediverse", Type: "person", Address: "@" + m[1] + "@" + host, Username: m[1], Host: host, Name: m[1], URL: page, ID: actor, Template: template}
+			resolve_profile(ctx, r)
+			return r, nil
 		}
 		if r != nil {
 			r.Template = template
@@ -379,7 +398,16 @@ func resolve_network(ctx context.Context, identifier string) (*resolved, error) 
 	}
 	switch author_network(identifier) {
 	case "fediverse":
-		return resolve_activitypub(ctx, identifier)
+		r, err := resolve_activitypub(ctx, identifier)
+		if resolve_signed(err) {
+			// The account's URL, as a follow sends it, from a server in
+			// secure mode: what its WebFinger says of the URL stands in for
+			// the document, as it does for a handle.
+			if refused := resolve_refused(ctx, identifier); refused != nil {
+				return refused, nil
+			}
+		}
+		return r, err
 	case "bluesky":
 		return resolve_bluesky(ctx, identifier)
 	case "matrix":
@@ -403,17 +431,30 @@ func resolve_json(ctx context.Context, address string, accept string, into any) 
 // the account's profile page where the host names one, and the host's
 // subscribe template where it publishes one.
 func resolve_webfinger(ctx context.Context, user string, host string) (string, string, string, error) {
+	_, actor, page, template, err := resolve_finger(ctx, network_base(host), "acct:"+user+"@"+host)
+	if err != nil {
+		return "", "", "", err
+	}
+	return actor, page, template, nil
+}
+
+// resolve_finger asks the server at base, by WebFinger, about a resource - an
+// acct: address or an account URL - for the account's acct: subject, its URL,
+// its profile page where the server names one, and the server's subscribe
+// template where it publishes one.
+func resolve_finger(ctx context.Context, base string, resource string) (string, string, string, string, error) {
 	var document struct {
-		Links []struct {
+		Subject string `json:"subject"`
+		Links   []struct {
 			Rel      string `json:"rel"`
 			Type     string `json:"type"`
 			Href     string `json:"href"`
 			Template string `json:"template"`
 		} `json:"links"`
 	}
-	address := network_base(host) + "/.well-known/webfinger?resource=" + url.QueryEscape("acct:"+user+"@"+host)
+	address := base + "/.well-known/webfinger?resource=" + url.QueryEscape(resource)
 	if err := resolve_json(ctx, address, "application/jrd+json, application/json", &document); err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	actor, page, template := "", "", ""
 	for _, link := range document.Links {
@@ -432,9 +473,77 @@ func resolve_webfinger(ctx context.Context, user string, host string) (string, s
 		}
 	}
 	if actor == "" {
-		return "", "", "", fmt.Errorf("no account at %s@%s", user, host)
+		return "", "", "", "", fmt.Errorf("no account at %s", resource)
 	}
-	return actor, page, template, nil
+	return document.Subject, actor, page, template, nil
+}
+
+// resolve_refused resolves an account whose server would not give its actor
+// document to an unsigned request, as mastodon.social will not: from what
+// the server's WebFinger says of the account's URL, and its public account
+// details where it publishes them. The server must name the URL as the
+// account's own, and an address on another domain must say the same of
+// itself, so nobody claims an account they do not serve. nil when the server
+// will not say.
+func resolve_refused(ctx context.Context, actor string) *resolved {
+	u, err := url.Parse(actor)
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	subject, self, page, template, err := resolve_finger(ctx, u.Scheme+"://"+u.Host, actor)
+	if err != nil || self != actor {
+		return nil
+	}
+	// The subject is an address of the form a handle takes, so its host is a
+	// name and nothing more: a host carrying an @, a path or a port would send
+	// the confirmation below to another server than the one the address names.
+	rest, prefixed := strings.CutPrefix(subject, "acct:")
+	m := resolve_acct_re.FindStringSubmatch(rest)
+	if !prefixed || m == nil || strings.HasPrefix(rest, "@") {
+		return nil
+	}
+	user, host := m[1], strings.ToLower(m[2])
+	if page == "" {
+		page = actor
+	}
+	if host != strings.ToLower(u.Host) {
+		if confirmed, _, _, err := resolve_webfinger(ctx, user, host); err != nil || confirmed != actor {
+			return nil
+		}
+	}
+	r := &resolved{Network: "fediverse", Type: "person", Address: "@" + user + "@" + host, Username: user, Host: host, Name: user, URL: page, ID: actor, Template: template}
+	resolve_profile(ctx, r)
+	return r
+}
+
+// resolve_profile fills in a person's name, avatar, approval of followers and
+// description from the public account details their server publishes as
+// Mastodon does, which a server refusing unsigned actor fetches still gives
+// anyone. The details are taken only for the account whose URL they name.
+func resolve_profile(ctx context.Context, r *resolved) {
+	u, err := url.Parse(r.ID)
+	if err != nil || u.Host == "" || r.Username == "" {
+		return
+	}
+	var account struct {
+		URI    string `json:"uri"`
+		Name   string `json:"display_name"`
+		Avatar string `json:"avatar"`
+		Locked bool   `json:"locked"`
+		Note   string `json:"note"`
+	}
+	address := u.Scheme + "://" + u.Host + "/api/v1/accounts/lookup?acct=" + url.QueryEscape(r.Username)
+	if resolve_json(ctx, address, "application/json", &account) != nil || account.URI != r.ID {
+		return
+	}
+	if account.Name != "" {
+		r.Name = account.Name
+	}
+	if strings.HasPrefix(account.Avatar, "https://") {
+		r.Avatar = account.Avatar
+	}
+	r.Locked = account.Locked
+	r.Summary = account.Note
 }
 
 // resolve_handle turns a Bluesky handle into its DID: the _atproto TXT record

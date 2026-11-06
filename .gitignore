@@ -19,6 +19,7 @@ build/docker/bin/
 # (e.g. db/replication.db from tests that don't set data_dir to a tmpdir
 # before opening). Harmless on disk but clutters `git status`.
 server/db/
+server/users/
 
 # Dependencies
 node_modules/

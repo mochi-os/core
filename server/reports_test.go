@@ -137,6 +137,40 @@ func TestReportsFlagCommunity(t *testing.T) {
 	}
 }
 
+// TestReportsFlagCommunityShared: a Flag sent as Lemmy sends one, to the
+// shared inbox, addressed to the community and naming a member's post, is the
+// community's alone: the post's author here is not reported to the
+// administrators as well. The same Flag with no community is a report.
+func TestReportsFlagCommunityShared(t *testing.T) {
+	alice, bob, id, _ := create_community_test_env(t)
+	report_capture(t, alice)
+	community := "https://example.com/~" + id
+	flag := func(name string, addressed bool) map[string]any {
+		// Lemmy names the reported post or comment alone, not in a list.
+		activity := map[string]any{"@context": activitystreams, "id": bob.id + "#flags/" + name, "type": "Flag", "actor": bob.id, "object": "https://example.com/~f1/notes/1", "content": "Off topic"}
+		if addressed {
+			activity["to"] = []any{community}
+			activity["audience"] = community
+		}
+		return activity
+	}
+	if w := signed_post(t, bob, "/~/inbox", flag("s1", true), nil); w.Code != http.StatusAccepted {
+		t.Fatalf("flag answered %d", w.Code)
+	}
+	if queued, _ := networks_database().exists("select 1 from inbound where type='Flag' and account=?", id); !queued {
+		t.Error("the community's Flag was not queued for its app")
+	}
+	if rows := reports_rows(t); len(rows) != 0 {
+		t.Errorf("THE POINT: a Flag to the community also reported the post's author to the administrators: %v", rows)
+	}
+	if w := signed_post(t, bob, "/~/inbox", flag("s2", false), nil); w.Code != http.StatusAccepted {
+		t.Fatalf("second flag answered %d", w.Code)
+	}
+	if rows := reports_rows(t); len(rows) != 1 {
+		t.Errorf("a Flag of the person's post to no community made %d reports, want 1", len(rows))
+	}
+}
+
 // TestReportsBlockPerson: a person the owner blocks is no follower of anyone
 // here, what they send the inbox is dropped and they are not looked up; the
 // block is the owner's, added, listed and lifted through the API; and a

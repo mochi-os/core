@@ -1673,10 +1673,15 @@ func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote stri
 		}
 	case "Flag":
 		// A report to a community is its moderators', in the app that keeps
-		// it; one about a person goes to the administrators, never to the
-		// person's own apps.
+		// it, and theirs alone: the author of what it names, a target only
+		// because the object is theirs, is not reported to the administrators
+		// as well. One about a person goes to the administrators, never to
+		// the person's own apps.
 		if account_group(account_hosted_get(user, a.ID)) {
 			inbound_add(user, a.ID, remote, kind, body)
+			return nil
+		}
+		if activitypub_community_flagged(activity) {
 			return nil
 		}
 		activitypub_report(ctx, user, a, actor_id, remote, activity)
@@ -1720,6 +1725,29 @@ func activitypub_gone(ctx context.Context, remote string) bool {
 	_, err := resolve_fetch(ctx, remote, "application/activity+json, application/ld+json")
 	var refusal *resolve_refusal
 	return errors.As(err, &refusal) && refusal.Status == http.StatusGone
+}
+
+// activitypub_community_flagged says whether a Flag is addressed to a
+// community hosted here, as Lemmy addresses a report to the community it was
+// made in.
+func activitypub_community_flagged(activity map[string]any) bool {
+	for _, key := range []string{"to", "cc", "audience"} {
+		for _, address := range object_strings(activity[key]) {
+			u, err := url.Parse(address)
+			if err != nil || !strings.HasPrefix(u.Path, "/~") {
+				continue
+			}
+			id, _, _ := strings.Cut(strings.TrimPrefix(u.Path, "/~"), "/")
+			a := actor_get(id)
+			if a == nil || a.Deleted != 0 || a.Network != "fediverse" || a.Domain != strings.ToLower(u.Hostname()) {
+				continue
+			}
+			if owner := user_by_uid(a.User); owner != nil && account_group(account_hosted_get(owner, a.ID)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // activitypub_report keeps a Flag about a hosted account as a report: the

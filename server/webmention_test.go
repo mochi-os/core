@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -361,5 +362,50 @@ func TestWebmentionDelay(t *testing.T) {
 	webmention_work()
 	if len(sites.received()) != 1 {
 		t.Errorf("THE POINT: the mention did not go out after the delay: %d", len(sites.received()))
+	}
+}
+
+// webmention_hostile is a page of the most a fetch reads, beginning with
+// lead and filled with text broken by stray end tags, each of which the parser
+// joins onto the text before it.
+func webmention_hostile(lead string) string {
+	return lead + strings.Repeat("a</x>", (webmention_page_maximum-len(lead))/5)
+}
+
+// webmention_allocated answers the bytes the heap hands out while run runs.
+func webmention_allocated(run func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	run()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// TestWebmentionHostile: a source or target page built so that parsing it
+// copies its text once per piece costs no more to read than its size, both
+// checking a mention received and finding the endpoint to send one to.
+func TestWebmentionHostile(t *testing.T) {
+	alice, a, calls := create_webmention_test_env(t)
+	sites := create_webmention_pages(t)
+	target := "https://example.com/feeds/wmfp00001/post1"
+	sites.set("/source", webmention_page{body: webmention_hostile(`<a href="` + target + `">x</a>`)})
+	sites.set("/target", webmention_page{body: webmention_hostile(`<link rel="webmention" href="/endpoint">`)})
+	const limit = 64 << 20
+
+	webmention_mention(sites.server.URL+"/source", target)
+	if grown := webmention_allocated(webmention_work); grown > limit {
+		t.Errorf("THE POINT: checking a hostile source allocated %d bytes for a page of %d", grown, webmention_page_maximum)
+	}
+	if got := calls.last("webmention/receive"); got["deleted"] != false {
+		t.Errorf("the hostile source's mention did not arrive: %v", got)
+	}
+
+	api_webmention_send(create_test_thread(alice, a), sl.NewBuiltin("mochi.webmention.send", nil), sl.Tuple{sl.String(target), sl.NewList([]sl.Value{sl.String(sites.server.URL + "/target")})}, nil)
+	if grown := webmention_allocated(webmention_work); grown > limit {
+		t.Errorf("THE POINT: finding a hostile target's endpoint allocated %d bytes for a page of %d", grown, webmention_page_maximum)
+	}
+	if told := sites.received(); len(told) != 1 || told[0].Get("endpoint") != "/endpoint" {
+		t.Errorf("the hostile target was not told at its endpoint: %v", told)
 	}
 }

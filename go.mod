@@ -37,7 +37,7 @@ require (
 	github.com/ipfs/go-cid v0.6.2
 	github.com/ipld/go-car v0.6.1-0.20230509095817-92d28eb23ba4
 	github.com/jmoiron/sqlx v1.3.5
-	github.com/klauspost/compress v1.18.7
+	github.com/klauspost/compress v1.20.3
 	github.com/libp2p/go-libp2p v0.48.0
 	github.com/libp2p/go-libp2p-pubsub v0.14.2
 	github.com/matrix-org/gomatrixserverlib v0.0.0-20260716140101-4fe595dc7f58
@@ -60,7 +60,7 @@ require (
 	go.starlark.net v0.0.0-20250906160240-bf296ed553ea
 	golang.org/x/crypto v0.58.0
 	golang.org/x/image v0.45.0
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/text v0.43.0

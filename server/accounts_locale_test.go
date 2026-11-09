@@ -174,7 +174,7 @@ func Test_provider_placeholder_resolves_only_keys(t *testing.T) {
 
 	// An example value is returned as written - looking it up would miss on
 	// every request and log the miss.
-	for _, literal := range []string{"sk-ant-...", "sk-...", "you@example.com",
+	for _, literal := range []string{"sk-ant-", "sk-", "you@example.com",
 		"https://mcp.example.com", "https://ntfy.sh", "my-notifications", ""} {
 		if got := provider_placeholder("de", literal); got != literal {
 			t.Errorf("provider_placeholder(de, %q) = %q, want it unchanged", literal, got)

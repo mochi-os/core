@@ -139,7 +139,7 @@ var providers = []Provider{
 		Capabilities: []string{"ai"},
 		Flow:         "form",
 		Fields: []ProviderField{
-			{Name: "api_key", Label: "accounts.field.key", Type: "password", Required: true, Placeholder: "sk-ant-..."},
+			{Name: "api_key", Label: "accounts.field.key", Type: "password", Required: true, Placeholder: "sk-ant-"},
 			{Name: "model", Label: "accounts.field.model", Type: "text", Required: false, Placeholder: "accounts.placeholder.default"},
 			{Name: "label", Label: "accounts.field.name", Type: "text", Required: false, Placeholder: ""},
 		},
@@ -248,7 +248,7 @@ var providers = []Provider{
 		Capabilities: []string{"ai"},
 		Flow:         "form",
 		Fields: []ProviderField{
-			{Name: "api_key", Label: "accounts.field.key", Type: "password", Required: true, Placeholder: "sk-..."},
+			{Name: "api_key", Label: "accounts.field.key", Type: "password", Required: true, Placeholder: "sk-"},
 			{Name: "model", Label: "accounts.field.model", Type: "text", Required: false, Placeholder: "accounts.placeholder.default"},
 			{Name: "label", Label: "accounts.field.name", Type: "text", Required: false, Placeholder: ""},
 		},

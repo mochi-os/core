@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -121,11 +122,6 @@ func image_render_acquire() (func(), error) {
 // decode is guarded against decompression bombs. Returns "" without error for
 // a format it does not re-encode.
 func variant_render(path string, variant string, thumb string) (string, error) {
-	tmp := thumb + ".tmp"
-
-	// Clean up any leftover temp file from a previous failed attempt
-	_ = os.Remove(tmp)
-
 	f, err := os.Open(path)
 	if err != nil {
 		warn("Unable to open image file %q to create %s variant: %v", path, variant, err)
@@ -201,11 +197,18 @@ func variant_render(path string, variant string, thumb string) (string, error) {
 		return "", err
 	}
 
-	o, err := os.Create(tmp)
+	// A temporary of its own: two renders of one destination at once used to
+	// share one name, so the second deleted the first's and the first moved
+	// the second's half-written file into place. Named .partial so the cache
+	// counts it as a write in flight, and a crash's leftover ages out.
+	o, err := os.CreateTemp(filepath.Dir(thumb), filepath.Base(thumb)+".*.partial")
 	if err != nil {
-		warn("Unable to create temp %s variant file %q: %v", variant, tmp, err)
+		warn("Unable to create temp %s variant file for %q: %v", variant, thumb, err)
 		return "", err
 	}
+	tmp := o.Name()
+	// The mode os.Create gave the variant before; a temporary is made 0600.
+	_ = o.Chmod(0o644)
 	// ensure tmp is closed and removed on error
 	close_and_remove_tmp := func(remove bool) {
 		_ = o.Close()
@@ -331,22 +334,69 @@ func api_image_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	// in the same format or another whose variants share it (WebP's are JPEG)
 	// - and is made again. A read moves an entry's time on; callers ask for
 	// the variant before they read it.
+	if information, err := os.Stat(destination); err == nil && !information.ModTime().Before(original.ModTime()) {
+		return sl.String(name), nil
+	}
+	if !variant_made(source, kind, destination, original.ModTime()) {
+		return sl.None, nil
+	}
+	return sl.String(name), nil
+}
+
+// variant_flight is a render of one destination in flight, which later callers
+// for the same destination wait on instead of rendering it again.
+type variant_flight struct {
+	done chan struct{}
+	made bool
+}
+
+var (
+	variant_flights      = map[string]*variant_flight{}
+	variant_flights_lock sync.Mutex
+)
+
+// variant_made renders the variant of source at destination, once however many
+// callers ask for it together: the first renders it and the rest wait and share
+// its outcome. The first viewers of a new photo, a gallery and its lightbox, or
+// subscribers' servers pulling the variant ask at the same moment, and each used
+// to render it again. A destination already newer than modified is made.
+func variant_made(source string, kind string, destination string, modified time.Time) bool {
+	variant_flights_lock.Lock()
+	if flight, ok := variant_flights[destination]; ok {
+		variant_flights_lock.Unlock()
+		<-flight.done
+		return flight.made
+	}
+	flight := &variant_flight{done: make(chan struct{})}
+	variant_flights[destination] = flight
+	variant_flights_lock.Unlock()
+	defer func() {
+		variant_flights_lock.Lock()
+		delete(variant_flights, destination)
+		variant_flights_lock.Unlock()
+		close(flight.done)
+	}()
+
+	// A render that finished between the caller's look and this one's turn.
 	var previous int64
 	if information, err := os.Stat(destination); err == nil {
-		if !information.ModTime().Before(original.ModTime()) {
-			return sl.String(name), nil
+		if !information.ModTime().Before(modified) {
+			flight.made = true
+			return true
 		}
 		previous = information.Size()
 	}
 	if result, err := variant_render(source, kind, destination); err != nil || result == "" {
-		return sl.None, nil
+		return false
 	}
 	// Adds bytes to the cache without going through cache_write_file, so it
-	// accounts for them itself, less the stale entry it replaced.
+	// accounts for them itself, less the stale entry it replaced. Once, by the
+	// render that wrote them, not by each caller that waited on it.
 	if information, err := os.Stat(destination); err == nil {
 		cache_admit(information.Size() - previous)
 	}
-	return sl.String(name), nil
+	flight.made = true
+	return true
 }
 
 // variant_name is a variant's cache entry name: the source's name with the

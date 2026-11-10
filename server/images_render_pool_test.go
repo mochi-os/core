@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"image/png"
@@ -234,4 +235,207 @@ func TestRenderPoolIsSharedByBothCallers(t *testing.T) {
 
 	release := render_pool_fill(t)
 	release()
+}
+
+// variant_render_shared_test_image writes a PNG large enough that encoding its
+// preview takes a while, so a second render can start inside the first's.
+func variant_render_shared_test_image(t *testing.T, directory string) string {
+	t.Helper()
+	picture := image.NewRGBA(image.Rect(0, 0, 2000, 1500))
+	for y := 0; y < 1500; y++ {
+		for x := 0; x < 2000; x++ {
+			picture.Set(x, y, color.RGBA{uint8(x * y), uint8(x ^ y), uint8(x + y), 255})
+		}
+	}
+	path := filepath.Join(directory, "photo.png")
+	handle, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.Close()
+	if err := png.Encode(handle, picture); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// variant_render_decodes reports whether the file at path is a whole image.
+func variant_render_decodes(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	_, _, err = image.Decode(bytes.NewReader(data))
+	return err
+}
+
+// TestVariantRenderTemporaryIsItsOwn: two renders of one destination, the
+// second starting while the first writes. They shared one temporary name, and
+// the second began by deleting it, so the first moved the second's
+// half-written file into place (served truncated) or found nothing to move,
+// and the loser served the original in the variant's place.
+func TestVariantRenderTemporaryIsItsOwn(t *testing.T) {
+	directory := t.TempDir()
+	source := variant_render_shared_test_image(t, directory)
+	destination := filepath.Join(directory, "variants", "photo_preview.png")
+
+	type outcome struct {
+		result string
+		err    error
+		whole  error
+	}
+	render := func(out chan<- outcome) {
+		result, err := variant_render(source, "preview", destination)
+		var whole error
+		if err == nil && result != "" {
+			whole = variant_render_decodes(result)
+		}
+		out <- outcome{result, err, whole}
+	}
+
+	first := make(chan outcome, 1)
+	go render(first)
+	// The first is writing once its temporary exists beside the destination.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		names, _ := filepath.Glob(destination + ".*")
+		if len(names) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first render never began writing")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	second := make(chan outcome, 1)
+	go render(second)
+
+	for name, out := range map[string]chan outcome{"first": first, "second": second} {
+		got := <-out
+		if got.err != nil || got.result != destination {
+			t.Errorf("THE POINT: the %s render failed beside another: %q, %v", name, got.result, got.err)
+		} else if got.whole != nil {
+			t.Errorf("THE POINT: the %s render's file does not decode when it returns: %v", name, got.whole)
+		}
+	}
+	if left, _ := filepath.Glob(destination + ".*"); len(left) > 0 {
+		t.Errorf("temporaries left behind: %v", left)
+	}
+}
+
+// variant_made_cache counts cache admissions for the test: a budget no render
+// reaches, and a running total from zero.
+func variant_made_cache(t *testing.T) {
+	t.Helper()
+	original_dir, original_budget, original_total := cache_dir, cache_budget, cache_total
+	cache_dir, cache_budget, cache_total = t.TempDir(), 1<<40, 0
+	t.Cleanup(func() {
+		cache_dir, cache_budget = original_dir, original_budget
+		cache_total_set(original_total)
+	})
+}
+
+// TestVariantMadeOnceForCallersTogether: four callers ask for one variant at
+// once, as a new photo's first viewers, a gallery and its lightbox, or
+// subscribers' servers do. Each rendered it again (four decodes, about 300 ms
+// of CPU each) and counted its bytes into the cache again.
+func TestVariantMadeOnceForCallersTogether(t *testing.T) {
+	variant_made_cache(t)
+	directory := t.TempDir()
+	source := render_test_image(t, directory, "photo.png", 900)
+	destination := filepath.Join(cache_dir, "apps", "user", "app", "variants", "photo_preview.png")
+
+	// Every slot held, so all four are asking before any render can start.
+	release := render_pool_fill(t)
+	var group sync.WaitGroup
+	made := make([]bool, 4)
+	for i := range made {
+		group.Add(1)
+		go func(i int) {
+			defer group.Done()
+			made[i] = variant_made(source, "preview", destination, time.Now().Add(-time.Hour))
+		}(i)
+	}
+	time.Sleep(200 * time.Millisecond)
+	release()
+	group.Wait()
+
+	for i, ok := range made {
+		if !ok {
+			t.Errorf("caller %d was told the variant could not be made", i)
+		}
+	}
+	if err := variant_render_decodes(destination); err != nil {
+		t.Fatalf("the variant does not decode: %v", err)
+	}
+	information, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache_total_lock.Lock()
+	total := cache_total
+	cache_total_lock.Unlock()
+	if total != information.Size() {
+		t.Errorf("THE POINT: four callers together rendered and counted the variant %.1f times (%d bytes counted for a %d-byte file); want once", float64(total)/float64(information.Size()), total, information.Size())
+	}
+}
+
+// TestVariantMadeWaitersShareAFailure: callers waiting on a render that fails
+// are told it failed, and fall back as the caller that rendered does.
+func TestVariantMadeWaitersShareAFailure(t *testing.T) {
+	variant_made_cache(t)
+	directory := t.TempDir()
+	source := filepath.Join(directory, "broken.png")
+	if err := os.WriteFile(source, []byte("not a picture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(cache_dir, "apps", "user", "app", "variants", "broken_preview.png")
+
+	release := render_pool_fill(t)
+	var group sync.WaitGroup
+	made := make([]bool, 3)
+	for i := range made {
+		group.Add(1)
+		go func(i int) {
+			defer group.Done()
+			made[i] = variant_made(source, "preview", destination, time.Now().Add(-time.Hour))
+		}(i)
+	}
+	time.Sleep(200 * time.Millisecond)
+	release()
+	group.Wait()
+	for i, ok := range made {
+		if ok {
+			t.Errorf("caller %d was told a variant of an undecodable file was made", i)
+		}
+	}
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Errorf("a failed render left a file at the destination: %v", err)
+	}
+}
+
+// TestVariantMadeKeepsAFreshVariant: a caller that looked before another's
+// render finished finds the variant made when its turn comes, and keeps it
+// rather than rendering it again.
+func TestVariantMadeKeepsAFreshVariant(t *testing.T) {
+	variant_made_cache(t)
+	directory := t.TempDir()
+	source := render_test_image(t, directory, "photo.png", 900)
+	destination := filepath.Join(cache_dir, "apps", "user", "app", "variants", "photo_preview.png")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("made a moment ago"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !variant_made(source, "preview", destination, time.Now().Add(-time.Hour)) {
+		t.Fatal("a variant newer than its source was reported as not made")
+	}
+	data, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "made a moment ago" {
+		t.Errorf("THE POINT: a variant made since the caller looked was rendered again")
+	}
 }

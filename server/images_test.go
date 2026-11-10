@@ -313,9 +313,8 @@ func TestVariantRender(t *testing.T) {
 		}
 
 		// Verify no temp file left behind
-		tmp_file := thumb_path + ".tmp"
-		if _, err := os.Stat(tmp_file); !os.IsNotExist(err) {
-			t.Errorf("Temp file %q should not exist", tmp_file)
+		if left, _ := filepath.Glob(thumb_path + ".*"); len(left) > 0 {
+			t.Errorf("Temp files %v should not exist", left)
 		}
 	}
 }

@@ -1048,25 +1048,108 @@ func api_git_branches(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 	defer git_close(repo.Storer)
 
-	var branches []map[string]any
-	iter, err := repo.Branches()
+	storage, ok := repo.Storer.(*filesystem.Storage)
+	if !ok {
+		return sl_error(fn, "failed to list branches: unexpected storage")
+	}
+	heads, err := git_heads(storage.Filesystem())
 	if err != nil {
 		return sl_error(fn, "failed to list branches: %v", err)
 	}
 
-	err = iter.ForEach(func(ref *plumbing.Reference) error {
+	var branches []map[string]any
+	for _, ref := range heads {
 		branches = append(branches, map[string]any{
 			"name": ref.Name().Short(),
 			"sha":  ref.Hash().String(),
 		})
-		return nil
-	})
-
-	if err != nil {
-		return sl_error(fn, "failed to iterate branches: %v", err)
 	}
 
 	return sl_encode(branches), nil
+}
+
+// git_heads lists a repository's branches: the files under refs/heads, then
+// the refs/heads lines of packed-refs, a file winning over its packed line as
+// in git, in the order go-git's Branches gives. Branches reads every ref and
+// keeps the heads, so a repository with thousands of pushed tags opened a file
+// per tag on every listing. A branch file caught empty mid-write gives way to
+// its packed line, or is left out until the write lands, where go-git's walk
+// fails the whole listing.
+func git_heads(fs billy.Filesystem) ([]*plumbing.Reference, error) {
+	var heads []*plumbing.Reference
+	seen := map[plumbing.ReferenceName]bool{}
+
+	var walk func(parts []string) error
+	walk = func(parts []string) error {
+		entries, err := fs.ReadDir(fs.Join(parts...))
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			path := append(append([]string(nil), parts...), entry.Name())
+			if entry.IsDir() {
+				if err := walk(path); err != nil {
+					return err
+				}
+				continue
+			}
+			file, err := fs.Open(fs.Join(path...))
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			content, err := io.ReadAll(file)
+			file.Close()
+			if err != nil {
+				return err
+			}
+			line := strings.TrimSpace(string(content))
+			if line == "" {
+				continue
+			}
+			ref := plumbing.NewReferenceFromStrings(strings.Join(path, "/"), line)
+			heads = append(heads, ref)
+			seen[ref.Name()] = true
+		}
+		return nil
+	}
+	if err := walk([]string{"refs", "heads"}); err != nil {
+		return nil, err
+	}
+
+	packed, err := fs.Open("packed-refs")
+	if os.IsNotExist(err) {
+		return heads, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer packed.Close()
+	scanner := bufio.NewScanner(packed)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" || line[0] == '#' || line[0] == '^' {
+			continue
+		}
+		fields := strings.Split(line, " ")
+		if len(fields) != 2 {
+			return nil, fmt.Errorf("malformed packed-refs line %q", line)
+		}
+		ref := plumbing.NewReferenceFromStrings(fields[1], fields[0])
+		if ref.Name().IsBranch() && !seen[ref.Name()] {
+			heads = append(heads, ref)
+			seen[ref.Name()] = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return heads, nil
 }
 
 // mochi.git.tags(entity, after?, limit?) -> list: List tags. With after or

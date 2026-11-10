@@ -302,6 +302,43 @@ func TestSigninMatrixClient(t *testing.T) {
 	}
 }
 
+// TestSigninFragment: a client asking to be answered in the fragment, as
+// Element Web does, gets its code there, and its refusal, since it reads
+// nowhere else; one asking for a mode the server does not offer is refused.
+func TestSigninFragment(t *testing.T) {
+	alice := create_signin_test_env(t)
+	_, registered := signin_call("POST", "/oauth/register", `{"client_name":"Element","client_uri":"https://element.example","redirect_uris":["https://element.example/cb"],"token_endpoint_auth_method":"none","grant_types":["authorization_code"],"response_types":["code"]}`, nil)
+	client := registered["client_id"].(string)
+	verifier := strings.Repeat("f", 43)
+	authorize := "/oauth/authorize?client_id=" + client + "&redirect_uri=https%3A%2F%2Felement.example%2Fcb&response_type=code&scope=urn%3Amatrix%3Aorg.matrix.msc2967.client%3Aapi%3A*&state=f1&code_challenge=" + oauth_challenge(verifier) + "&code_challenge_method=S256"
+	fn := sl.NewBuiltin("test", nil)
+
+	w, _ := signin_call("GET", authorize+"&response_mode=fragment", "", nil)
+	_, location := approve(t, alice, consent_id(t, w), "m1", "")
+	answer, err := url.ParseQuery(location.Fragment)
+	if err != nil || answer.Get("code") == "" || answer.Get("state") != "f1" || location.RawQuery != "" {
+		t.Fatalf("THE POINT: the code in the fragment, nothing in the query: %v", location)
+	}
+	if w, token := signin_call("POST", "/oauth/token", "grant_type=authorization_code&code="+answer.Get("code")+"&redirect_uri=https%3A%2F%2Felement.example%2Fcb&client_id="+client+"&code_verifier="+verifier, nil); w.Code != 200 || token["access_token"] == nil {
+		t.Errorf("the fragment's code exchanges for a token: %d %v", w.Code, token)
+	}
+
+	w, _ = signin_call("GET", authorize+"&response_mode=fragment", "", nil)
+	refused := decoded(t)(api_oauth_refuse(login_thread(alice), fn, sl.Tuple{sl.String(consent_id(t, w))}, nil))
+	if !strings.HasPrefix(refused["url"].(string), "https://element.example/cb#error=access_denied") {
+		t.Errorf("a refusal answers in the fragment too: %v", refused)
+	}
+
+	w, _ = signin_call("GET", authorize+"&response_mode=query", "", nil)
+	if code, location := approve(t, alice, consent_id(t, w), "m1", ""); code == "" || location.Fragment != "" {
+		t.Errorf("a client asking for the query gets it there: %v", location)
+	}
+
+	if w, _ := signin_call("GET", authorize+"&response_mode=form_post", "", nil); w.Code != 302 || !strings.Contains(w.Header().Get("Location"), "error=invalid_request") {
+		t.Errorf("a mode the server does not offer: %d %q", w.Code, w.Header().Get("Location"))
+	}
+}
+
 // bluesky_client_fake serves an AT Protocol client's document and makes its
 // proofs.
 type bluesky_client_fake struct {

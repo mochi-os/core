@@ -108,6 +108,7 @@ type signin_request struct {
 	Issuer    string `json:"issuer"`
 	Key       string `json:"key"`   // the DPoP key's thumbprint the tokens bind to
 	Nonce     string `json:"nonce"` // an OpenID nonce, echoed where asked
+	Mode      string `json:"mode"`  // "fragment" to answer in the redirect's fragment, else its query
 	Pushed    bool   `json:"pushed"`
 }
 
@@ -800,6 +801,10 @@ func request_build(c *gin.Context, cl *signin_client, values url.Values) (*signi
 	if len(challenge) > 128 || len(values.Get("state")) > 512 || len(values.Get("scope")) > 1024 || len(values.Get("login_hint")) > 255 {
 		return nil, "a parameter is too long"
 	}
+	mode, ok := signin_mode(values)
+	if !ok {
+		return nil, "response_mode must be query or fragment"
+	}
 	return &signin_request{
 		ID:        random_alphanumeric(32),
 		Client:    cl.ID,
@@ -812,7 +817,21 @@ func request_build(c *gin.Context, cl *signin_client, values url.Values) (*signi
 		Issuer:    signin_issuer(c),
 		Key:       values.Get("dpop_jkt"),
 		Nonce:     values.Get("nonce"),
+		Mode:      mode,
 	}, ""
+}
+
+// signin_mode reads where a request asks to be answered: "fragment", or ""
+// for the query. The server document offers these two; a client asking for
+// the fragment, as Element does, reads the code nowhere else.
+func signin_mode(values url.Values) (string, bool) {
+	switch values.Get("response_mode") {
+	case "", "query":
+		return "", true
+	case "fragment":
+		return "fragment", true
+	}
+	return "", false
 }
 
 // signin_push takes a pushed authorisation request (PAR): the client
@@ -887,7 +906,8 @@ func signin_authorize(c *gin.Context) {
 				signin_fail(c, http.StatusBadRequest, "invalid_request", fault)
 				return
 			}
-			c.Redirect(http.StatusFound, signin_redirect(values.Get("redirect_uri"), map[string]string{"error": "invalid_request", "error_description": fault, "state": values.Get("state"), "iss": signin_issuer(c)}))
+			mode, _ := signin_mode(values)
+			c.Redirect(http.StatusFound, signin_redirect(values.Get("redirect_uri"), mode, map[string]string{"error": "invalid_request", "error_description": fault, "state": values.Get("state"), "iss": signin_issuer(c)}))
 			return
 		}
 	}
@@ -897,7 +917,7 @@ func signin_authorize(c *gin.Context) {
 
 // signin_redirect adds parameters to a client's redirect: in the fragment for
 // a redirect that asks for it, else the query.
-func signin_redirect(redirect string, parameters map[string]string) string {
+func signin_redirect(redirect string, mode string, parameters map[string]string) string {
 	values := url.Values{}
 	for key, value := range parameters {
 		if value != "" {
@@ -906,6 +926,9 @@ func signin_redirect(redirect string, parameters map[string]string) string {
 	}
 	if redirect == "urn:ietf:wg:oauth:2.0:oob" {
 		return redirect + "?" + values.Encode()
+	}
+	if mode == "fragment" {
+		return redirect + "#" + values.Encode()
 	}
 	sep := "?"
 	if strings.Contains(redirect, "?") {
@@ -1038,7 +1061,7 @@ func api_oauth_approve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	request_take("signin_consent", id)
 	code := &signin_request{ID: random_alphanumeric(40), Client: r.Client, Redirect: r.Redirect, Scope: r.Scope, State: r.State, Challenge: r.Challenge, Network: r.Network, Issuer: r.Issuer, Key: r.Key, Nonce: r.Nonce, Hint: user.UID + "/" + account}
 	request_store("signin_code", code, signin_code_lifetime)
-	return sl_encode(map[string]any{"url": signin_redirect(r.Redirect, map[string]string{"code": code.ID, "state": r.State, "iss": r.Issuer})}), nil
+	return sl_encode(map[string]any{"url": signin_redirect(r.Redirect, r.Mode, map[string]string{"code": code.ID, "state": r.State, "iss": r.Issuer})}), nil
 }
 
 // mochi.oauth.refuse(id) -> dict: Refuse a sign-in. Returns {url}, the client's redirect carrying the refusal. Only the login app holds the permission
@@ -1054,7 +1077,7 @@ func api_oauth_refuse(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	if r == nil {
 		return sl_error(fn, "no such request")
 	}
-	return sl_encode(map[string]any{"url": signin_redirect(r.Redirect, map[string]string{"error": "access_denied", "state": r.State, "iss": r.Issuer})}), nil
+	return sl_encode(map[string]any{"url": signin_redirect(r.Redirect, r.Mode, map[string]string{"error": "access_denied", "state": r.State, "iss": r.Issuer})}), nil
 }
 
 // === Tokens ===

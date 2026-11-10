@@ -28,6 +28,15 @@ import (
 // with 304.
 func opengraph_serve(t *testing.T, validator bool) *httptest.ResponseRecorder {
 	t.Helper()
+	source := "def opengraph_page(parameters):\n    return {\"title\": \"Stamped\"}\n"
+	page := "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta property=\"og:title\" content=\"Original\" />\n    <meta property=\"og:type\" content=\"website\" />\n  </head>\n  <body></body>\n</html>\n"
+	return opengraph_serve_page(t, validator, source, page)
+}
+
+// opengraph_serve_page is opengraph_serve with the app's Starlark source,
+// which defines opengraph_page, and its index.html given.
+func opengraph_serve_page(t *testing.T, validator bool, source string, page string) *httptest.ResponseRecorder {
+	t.Helper()
 	create_web_test_env(t)
 	gin.SetMode(gin.TestMode)
 	if starlark_semaphore == nil {
@@ -39,11 +48,10 @@ func opengraph_serve(t *testing.T, validator bool) *httptest.ResponseRecorder {
 
 	base := t.TempDir()
 	star := filepath.Join(base, "app.star")
-	if err := os.WriteFile(star, []byte("def opengraph_page(parameters):\n    return {\"title\": \"Stamped\"}\n"), 0o600); err != nil {
+	if err := os.WriteFile(star, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	file := filepath.Join(base, "index.html")
-	page := "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta property=\"og:title\" content=\"Original\" />\n    <meta property=\"og:type\" content=\"website\" />\n  </head>\n  <body></body>\n</html>\n"
 	if err := os.WriteFile(file, []byte(page), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -67,6 +75,25 @@ func opengraph_serve(t *testing.T, validator bool) *httptest.ResponseRecorder {
 }
 
 var themed_html = regexp.MustCompile(`<html[^>]*\sstyle="[^"]*--background-image: radial-gradient`)
+
+// TestOpenGraphEntryLeavesTheRootEmpty: a page whose Open Graph function
+// returns an entry, as a feed post's does, is served with the app's root
+// still empty and the entry beside it. Every app mounts only into an empty
+// root, so an entry inside it left the post's page as bare text.
+func TestOpenGraphEntryLeavesTheRootEmpty(t *testing.T) {
+	source := "def opengraph_page(parameters):\n    return {\"title\": \"Post\", \"entry\": {\"content\": \"<p>Hello there</p>\", \"author\": \"Notes\"}}\n"
+	page := "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta property=\"og:title\" content=\"Original\" />\n    <meta property=\"og:type\" content=\"website\" />\n  </head>\n  <body>\n    <div id=\"root\"></div>\n  </body>\n</html>\n"
+	body := opengraph_serve_page(t, false, source, page).Body.String()
+	if !strings.Contains(body, `content="Post"`) {
+		t.Fatalf("the Open Graph function did not run:\n%s", body)
+	}
+	if !strings.Contains(body, `<div id="root"></div>`) {
+		t.Errorf("THE POINT: the app's root is not empty, so the app never mounts:\n%s", body)
+	}
+	if !strings.Contains(body, `<div hidden><article class="h-entry">`) || !strings.Contains(body, "Hello there") {
+		t.Errorf("the entry is not on the page beside the root:\n%s", body)
+	}
+}
 
 // TestOpenGraphPageCarriesTheRequestersTheme is the finding: the landing page
 // moved onto this path and lost the gradient, font and hue for every

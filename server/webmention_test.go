@@ -19,6 +19,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
+	xhtml "golang.org/x/net/html"
 )
 
 // create_webmention_test_env is the WebSub environment with a feed entity of
@@ -295,6 +296,34 @@ func TestOpengraphEntry(t *testing.T) {
 	opengraph_headers(c, []any{map[string]any{"rel": "webmention", "href": "https://example.com/webmention/e1"}, map[string]any{"rel": "me", "href": "javascript:alert(1)"}})
 	if got := w.Header().Values("Link"); len(got) != 1 || got[0] != `<https://example.com/webmention/e1>; rel="webmention"` {
 		t.Errorf("THE POINT: the Link headers = %v", got)
+	}
+}
+
+// TestOpengraphPlace: a page's entry goes beside the app's root, hidden, and
+// the root stays empty - an app mounts only into an empty root, so an entry
+// inside it kept a feed post's page from starting. Core's own Webmention
+// receiver still reads the entry where it now sits.
+func TestOpengraphPlace(t *testing.T) {
+	page := `<html><head><title>Notes</title></head><body><div id="root"></div><script src="./assets/index.js"></script></body></html>`
+	entry := opengraph_entry(map[string]any{"content": `<p>See <a href="https://blog.example/">this</a></p>`, "author": "Alice", "url": "https://example.com/feeds/x/p1"})
+	got := opengraph_place(page, entry)
+	if !strings.Contains(got, `<div id="root"></div>`) {
+		t.Fatalf("THE POINT: the app's root is not empty: %s", got)
+	}
+	if !strings.Contains(got, `<div hidden>`+entry+`</div><div id="root"></div>`) {
+		t.Errorf("the entry is not hidden beside the root: %s", got)
+	}
+	document, err := xhtml.Parse(strings.NewReader(got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, _ := url.Parse("https://example.com/feeds/x/p1")
+	read := webmention_entry(document, base, "https://example.com/feeds/x/p1", "https://blog.example/")
+	if read["content"] != "See this" || read["author"].(map[string]any)["name"] != "Alice" {
+		t.Errorf("the receiver no longer reads the entry: %v", read)
+	}
+	if opengraph_place(page, "") != page {
+		t.Error("a page with no entry was changed")
 	}
 }
 

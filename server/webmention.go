@@ -819,6 +819,18 @@ func opengraph_entry(value any) string {
 	return b.String()
 }
 
+// opengraph_place puts a page's entry beside the app's root, hidden, never
+// inside it: an app mounts only into an empty root, so an entry there kept
+// the app from starting. Hidden, it is not drawn for a reader in the browser,
+// and anything parsing the page's microformats still finds it, core's own
+// Webmention receiver included.
+func opengraph_place(content string, entry string) string {
+	if entry == "" {
+		return content
+	}
+	return strings.Replace(content, `<div id="root"></div>`, `<div hidden>`+entry+`</div><div id="root"></div>`, 1)
+}
+
 // text_links are the web addresses a markdown text links to, in order and
 // each once: the anchors of its rendered HTML, bare addresses included as the
 // renderer links them.

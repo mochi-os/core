@@ -1650,6 +1650,7 @@ func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote stri
 			return nil
 		}
 		db.exec("insert into followers (account, actor, inbox, shared, created) values (?, ?, ?, ?, ?) on conflict(account, actor) do update set inbox=excluded.inbox, shared=excluded.shared", a.ID, remote, r.Inbox, r.Shared, now())
+		mastodon_keep(user, a, r)
 		follow := map[string]any{"id": activity["id"], "type": "Follow", "actor": remote, "object": actor_id}
 		accept := map[string]any{
 			"@context": activitystreams,
@@ -1669,6 +1670,7 @@ func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote stri
 		}
 		if object["type"] == "Follow" && activitypub_actor_of(object["actor"]) == remote && activitypub_actor_of(object["object"]) == actor_id {
 			db.exec("delete from followers where account=? and actor=?", a.ID, remote)
+			mastodon_forget(user, remote)
 			return nil
 		}
 		inbound_add(user, a.ID, remote, kind, body)
@@ -1743,6 +1745,7 @@ func activitypub_forget(user *User, account string, remote string) {
 	db.exec("delete from followers where account=? and actor=?", account, remote)
 	db.exec("delete from following where account=? and actor=?", account, remote)
 	networks_database().exec("delete from copies where account=? and actor=?", account, remote)
+	mastodon_forget(user, remote)
 }
 
 // activitypub_gone says whether a remote actor's server answers that the

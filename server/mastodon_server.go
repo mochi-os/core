@@ -20,14 +20,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
 	"net/http"
 	"net/url"
 	"regexp"
+	rd "runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -758,8 +761,47 @@ type mastodon_figure struct {
 	created  int64
 }
 
-// mastodon_account is a person as clients see an account.
+// mastodon_account is a person as clients see an account, kept as given.
 func mastodon_account(s *mastodon_session, p mastodon_figure) map[string]any {
+	if p.key == s.actor {
+		return mastodon_own(s, false)
+	}
+	out := mastodon_shown(s, p)
+	mastodon_snapshot(s.user, "account", p.key, out)
+	return out
+}
+
+// mastodon_keep keeps how clients would see someone who has just followed a
+// hosted account, or whom it has just followed, from the lookup that recorded
+// the follow, so the account's lists need not ask their server when a
+// Mastodon app first opens them. Kept only for a user some Mastodon app is
+// signed in for.
+func mastodon_keep(user *User, a *actor, r *resolved) {
+	if user == nil || a == nil || r == nil || r.ID == "" || r.Network != "fediverse" || r.ID == account_url(a.Domain, a.ID) {
+		return
+	}
+	if signed, _ := db_open("db/users.db").exists("select 1 from tokens where user=? and network='fediverse' and kind=?", user.UID, token_signin); !signed {
+		return
+	}
+	mastodon_account(&mastodon_session{user: user, account: a.ID, domain: strings.ToLower(a.Domain), actor: account_url(a.Domain, a.ID)}, mastodon_resolved(r))
+}
+
+// mastodon_forget drops what was kept of someone who has stopped following a
+// hosted account or been deleted, once no account of the user's follows them
+// or is followed by them, so another server's follows and their undoing leave
+// nothing behind. They are kept again when next shown.
+func mastodon_forget(user *User, person string) {
+	db := db_user(user, "user")
+	defer db.close()
+	if found, _ := db.exists("select 1 from followers where actor=? union all select 1 from following where actor=?", person, person); found {
+		return
+	}
+	db.exec("delete from snapshots where kind='account' and key=?", person)
+}
+
+// mastodon_shown is a person as clients see an account, not kept: for
+// someone known only by their address until their server describes them.
+func mastodon_shown(s *mastodon_session, p mastodon_figure) map[string]any {
 	if p.key == s.actor {
 		return mastodon_own(s, false)
 	}
@@ -811,7 +853,6 @@ func mastodon_account(s *mastodon_session, p mastodon_figure) map[string]any {
 		"emojis":          []any{},
 		"fields":          []any{},
 	}
-	mastodon_snapshot(s.user, "account", p.key, out)
 	return out
 }
 
@@ -822,7 +863,12 @@ func mastodon_resolved(r *resolved) mastodon_figure {
 
 // mastodon_resolve finds someone by an address or an id, as the account.
 func mastodon_resolve(c *gin.Context, s *mastodon_session, address string) *resolved {
-	ctx := activitypub_signing(c.Request.Context(), s.user, s.account)
+	return mastodon_lookup(c.Request.Context(), s, address)
+}
+
+// mastodon_lookup is mastodon_resolve within a context of the caller's.
+func mastodon_lookup(ctx context.Context, s *mastodon_session, address string) *resolved {
+	ctx = activitypub_signing(ctx, s.user, s.account)
 	r, err := author_resolve(ctx, address)
 	if err != nil || r == nil || r.ID == "" || r.Network != "fediverse" {
 		return nil
@@ -1090,7 +1136,11 @@ func mastodon_people_search(c *gin.Context, s *mastodon_session, query string, r
 
 // mastodon_account_people answers who follows an account, or whom it
 // follows: the signed-in account's own, which core keeps; someone else's are
-// theirs to say, and are left empty.
+// theirs to say, and are left empty. The list runs newest first by when each
+// follow was recorded, read a page's worth of rows at a time from the index on
+// that order (mastodon_people_query): the next page's cursor is the last row
+// used, so nobody is skipped or repeated whatever numbers people were given
+// elsewhere. People on a host the user or the server blocks are left out.
 func mastodon_account_people(c *gin.Context, s *mastodon_session, key string, which string) {
 	out := []any{}
 	if key != s.actor {
@@ -1103,37 +1153,234 @@ func mastodon_account_people(c *gin.Context, s *mastodon_session, key string, wh
 	if which == "following" {
 		table = "following"
 	}
-	before := int64(1 << 62)
+	bounded := false
+	var created, row int64
 	if maximum := in.text("max_id"); maximum != "" {
-		before, _ = strconv.ParseInt(maximum, 10, 64)
+		place, _ := strconv.ParseInt(maximum, 10, 64)
+		bounded, created, row = true, place>>mastodon_place_bits, place&(1<<mastodon_place_bits-1)
 	}
-	rows, _ := db_user_brief(s.user, "user").rows("select actor, created from "+table+" where account=? order by created desc", s.account)
-	last := ""
-	for _, row := range rows {
-		person := row_string(row, "actor")
-		number := mastodon_number(s.user, "account", person, row_int(row, "created"))
-		if n, _ := strconv.ParseInt(number, 10, 64); n >= before {
-			continue
+	db := db_user(s.user, "user")
+	defer db.close()
+	allowed := map[string]bool{}
+	var people []string
+	for len(people) < limit {
+		var rows []map[string]any
+		if bounded {
+			rows, _ = db.rows(mastodon_people_query(table, true), s.account, created, created, row, limit)
+		} else {
+			rows, _ = db.rows(mastodon_people_query(table, false), s.account, limit)
 		}
-		var account map[string]any
-		if held := mastodon_snapshot_get(s.user, "account", person); held != nil {
-			account = held
-		} else if r := mastodon_resolve(c, s, person); r != nil {
-			account = mastodon_account(s, mastodon_resolved(r))
+		for _, r := range rows {
+			bounded, created, row = true, row_int(r, "created"), row_int(r, "rowid")
+			person := row_string(r, "actor")
+			host := identifier_host(person)
+			permitted, known := allowed[host]
+			if !known {
+				permitted = host_allowed(s.user, "fediverse", host) == nil
+				allowed[host] = permitted
+			}
+			if permitted {
+				people = append(people, person)
+				if len(people) == limit {
+					break
+				}
+			}
 		}
-		if account == nil {
-			continue
-		}
-		out = append(out, account)
-		last = number
-		if len(out) == limit {
+		if len(rows) < limit {
 			break
 		}
 	}
-	if len(out) == limit {
-		mastodon_link(c, "", last)
+	for _, account := range mastodon_people(c, s, people) {
+		out = append(out, account)
+	}
+	if len(people) == limit {
+		mastodon_link(c, "", strconv.FormatInt(created<<mastodon_place_bits|row, 10))
 	}
 	c.JSON(http.StatusOK, out)
+}
+
+// mastodon_people_query reads a batch of a followers or following table, newest
+// follow first, after the place given when bounded: a range on the index
+// user_upgrade_2 lays, so a page costs its own rows however long the list.
+func mastodon_people_query(table string, bounded bool) string {
+	query := "select rowid, actor, created from " + table + " where account=?"
+	if bounded {
+		query += " and created<=? and (created<? or rowid<?)"
+	}
+	return query + " order by created desc, rowid desc limit ?"
+}
+
+// mastodon_place_bits is how much of a follower or following list's cursor
+// holds the row's id; the rest holds when the follow was recorded. A user's
+// rows are numbered from one and stay far below two thousand million.
+const mastodon_place_bits = 31
+
+// mastodon_people_deadline bounds how long a page of people waits for the
+// servers of those clients were never given; mastodon_people_concurrency is
+// how many of those servers a page asks at once. Variables so tests can
+// shorten the wait.
+var mastodon_people_deadline = 5 * time.Second
+
+const mastodon_people_concurrency = 8
+
+// mastodon_lookups are the lookups pages have sent and not yet had answered,
+// by user and address: one at a time for each person however many pages ask
+// for them, at most mastodon_lookups_maximum across the server, and each ended
+// after mastodon_lookup_timeout though the page that sent it has stopped
+// waiting. Variables so tests can lower them.
+var mastodon_lookups = map[string]*mastodon_pending{}
+var mastodon_lookups_lock sync.Mutex
+var mastodon_lookups_maximum = 64
+var mastodon_lookup_timeout = 30 * time.Second
+
+// A mastodon_pending is a lookup under way: done closes once value is set.
+type mastodon_pending struct {
+	done  chan struct{}
+	value *resolved
+}
+
+// mastodon_people is each person as clients see an account, in the order
+// given: as clients were last given them, else as their server describes
+// them. Someone whose server has not answered within the page's deadline, or
+// whom the limiter on requests to their host holds back, is given by their
+// address alone and not kept, so a later page asks again: nobody is left out
+// for want of an answer.
+func mastodon_people(c *gin.Context, s *mastodon_session, people []string) []map[string]any {
+	out := make([]map[string]any, len(people))
+	var missing []int
+	for i, person := range people {
+		if held := mastodon_snapshot_get(s.user, "account", person); held != nil {
+			out[i] = held
+		} else {
+			missing = append(missing, i)
+		}
+	}
+	found := mastodon_described(c, s, people, missing)
+	for _, i := range missing {
+		if r := found[i]; r != nil {
+			out[i] = mastodon_account(s, mastodon_resolved(r))
+		} else {
+			out[i] = mastodon_shown(s, mastodon_figure{key: people[i], username: mastodon_address_name(people[i]), host: identifier_host(people[i]), url: people[i]})
+		}
+	}
+	return out
+}
+
+// mastodon_described asks the servers of the people at the indexes given how
+// they describe them, mastodon_people_concurrency at a time, and answers what
+// came back within mastodon_people_deadline by index. A lookup already sent
+// when the page stops waiting runs on to its own end (mastodon_shared), so its
+// answer is cached for the next page; one not yet sent is not sent.
+func mastodon_described(c *gin.Context, s *mastodon_session, people []string, indexes []int) map[int]*resolved {
+	found := map[int]*resolved{}
+	if len(indexes) == 0 {
+		return found
+	}
+	type answer struct {
+		index int
+		value *resolved
+	}
+	work := make(chan int, len(indexes))
+	for _, i := range indexes {
+		work <- i
+	}
+	close(work)
+	answers := make(chan answer, len(indexes))
+	finished := make(chan struct{})
+	defer close(finished)
+	ctx := context.WithoutCancel(c.Request.Context())
+	for range min(mastodon_people_concurrency, len(indexes)) {
+		go func() {
+			for i := range work {
+				select {
+				case <-finished:
+					return
+				default:
+				}
+				answers <- answer{i, mastodon_shared(ctx, s, people[i], finished)}
+			}
+		}()
+	}
+	deadline := time.NewTimer(mastodon_people_deadline)
+	defer deadline.Stop()
+	for range indexes {
+		select {
+		case a := <-answers:
+			found[a.index] = a.value
+		case <-deadline.C:
+			return found
+		case <-c.Request.Context().Done():
+			return found
+		}
+	}
+	return found
+}
+
+// mastodon_shared looks someone up for a page, or waits for the lookup of them
+// already under way for the same user, until the page stops waiting. With
+// mastodon_lookups_maximum under way it answers nothing at once. A lookup it
+// sends runs within mastodon_lookup_timeout of its own, not the page's, so its
+// answer reaches the cache once the page has gone.
+func mastodon_shared(ctx context.Context, s *mastodon_session, address string, finished chan struct{}) *resolved {
+	key := s.user.UID + " " + address
+	mastodon_lookups_lock.Lock()
+	pending, busy := mastodon_lookups[key]
+	if !busy {
+		if len(mastodon_lookups) >= mastodon_lookups_maximum {
+			mastodon_lookups_lock.Unlock()
+			return nil
+		}
+		pending = &mastodon_pending{done: make(chan struct{})}
+		mastodon_lookups[key] = pending
+	}
+	mastodon_lookups_lock.Unlock()
+	if busy {
+		select {
+		case <-pending.done:
+			return pending.value
+		case <-finished:
+			return nil
+		}
+	}
+	lookup, cancel := context.WithTimeout(ctx, mastodon_lookup_timeout)
+	pending.value = mastodon_lookup_safe(lookup, s, address)
+	cancel()
+	mastodon_lookups_lock.Lock()
+	delete(mastodon_lookups, key)
+	mastodon_lookups_lock.Unlock()
+	close(pending.done)
+	return pending.value
+}
+
+// mastodon_address_name is the name an actor's address most likely gives
+// them, its last path segment as Mastodon, Pleroma, Lemmy and others write
+// actor addresses, or "" when that is no name: what a person is called until
+// their server describes them.
+func mastodon_address_name(address string) string {
+	u, err := url.Parse(address)
+	if err != nil {
+		return ""
+	}
+	name := strings.TrimPrefix(u.Path[strings.LastIndexByte(u.Path, '/')+1:], "@")
+	if !mastodon_address_name_pattern.MatchString(name) {
+		return ""
+	}
+	return name
+}
+
+var mastodon_address_name_pattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$`)
+
+// mastodon_lookup_safe is mastodon_lookup on a goroutine of its own, where a
+// panic over a hostile document answers nothing rather than ending the
+// server.
+func mastodon_lookup_safe(ctx context.Context, s *mastodon_session, address string) (r *resolved) {
+	defer func() {
+		if failure := recover(); failure != nil {
+			warn("Mastodon lookup of %s panicked: %v\n%s", address, failure, rd.Stack())
+			r = nil
+		}
+	}()
+	return mastodon_lookup(ctx, s, address)
 }
 
 // mastodon_follow follows someone, or stops, through the home feed: a

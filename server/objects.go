@@ -560,6 +560,7 @@ func account_follow(user *User, account string, actor string, r *resolved) strin
 		activity = row["activity"].(string)
 	}
 	db.exec("insert into following (account, actor, inbox, activity, accepted, created) values (?, ?, ?, ?, 0, ?) on conflict(account, actor) do update set inbox=excluded.inbox", account, r.ID, r.Inbox, activity, now())
+	mastodon_keep(user, actor_get(account), r)
 	body := map[string]any{"@context": activitystreams, "id": activity, "type": "Follow", "actor": actor, "object": r.ID}
 	deliver(user, account, "fediverse", []string{r.Inbox}, []byte(json_encode(body)))
 	return activity

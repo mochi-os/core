@@ -540,7 +540,7 @@ func db_count(db *DB) {
 // db_user_steps are the versioned steps of each per-user database, by name. A
 // name with none is a file core keeps no tables in.
 var db_user_steps = map[string][]func(*DB) error{
-	"user":          {user_upgrade_1},
+	"user":          {user_upgrade_1, user_upgrade_2},
 	"notifications": {notifications_upgrade_1},
 }
 
@@ -592,6 +592,15 @@ func user_upgrade_1(db *DB) error {
 
 	// Per-user app state (permission setup tracking)
 	db.apps_setup()
+	return nil
+}
+
+// user_upgrade_2 indexes each hosted account's followers and the people it
+// follows by when each follow was recorded, so a page of the Mastodon
+// interface's lists of them reads its own rows alone.
+func user_upgrade_2(db *DB) error {
+	db.exec("create index if not exists followers_created on followers (account, created)")
+	db.exec("create index if not exists following_created on following (account, created)")
 	return nil
 }
 

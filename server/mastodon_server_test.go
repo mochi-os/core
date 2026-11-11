@@ -20,10 +20,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1245,5 +1247,749 @@ func TestMastodonReports(t *testing.T) {
 	self := mastodon_number(alice, "account", "identity:e-alice", 0)
 	if w, refused := mastodon_request(t, token, "POST", "/api/v1/reports", map[string]any{"account_id": self, "comment": "x"}); w.Code != http.StatusUnprocessableEntity || mastodon_map(refused)["error"] != "Validation failed: You cannot report yourself" {
 		t.Errorf("reporting oneself = %d %v", w.Code, refused)
+	}
+}
+
+// mastodon_walk walks the signed-in account's followers or following page by
+// page, by the cursor each page's Link header gives, answering the pages.
+func mastodon_walk(t *testing.T, token string, which string, limit int) [][]map[string]any {
+	t.Helper()
+	_, me := mastodon_request(t, token, "GET", "/api/v1/accounts/verify_credentials", nil)
+	path := fmt.Sprintf("/api/v1/accounts/%v/%s?limit=%d", mastodon_map(me)["id"], which, limit)
+	next := regexp.MustCompile(`[?&]max_id=(\d+)[^>]*>; rel="next"`)
+	var pages [][]map[string]any
+	for cursor := ""; len(pages) < 1000; {
+		address := path
+		if cursor != "" {
+			address += "&max_id=" + cursor
+		}
+		w, body := mastodon_request(t, token, "GET", address, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s = %d %s", address, w.Code, w.Body.String())
+		}
+		pages = append(pages, mastodon_items(body))
+		m := next.FindStringSubmatch(w.Header().Get("Link"))
+		if m == nil {
+			break
+		}
+		cursor = m[1]
+	}
+	return pages
+}
+
+// mastodon_people_add records people as following alice's account, or as
+// followed by it, at the times given, in the order given.
+func mastodon_people_add(alice *User, which string, actors []string, created []int64) {
+	db := db_user(alice, "user")
+	defer db.close()
+	for i, actor := range actors {
+		if which == "followers" {
+			db.exec("insert into followers (account, actor, inbox, created) values ('f1', ?, ?, ?)", actor, actor+"/inbox", created[i])
+		} else {
+			db.exec("insert into following (account, actor, inbox, activity, accepted, created) values ('f1', ?, ?, ?, 1, ?)", actor, actor+"/inbox", actor+"/follow", created[i])
+		}
+	}
+}
+
+// mastodon_people_stub has resolve_fetch describe the people asked for by
+// answer, which says what to do with each address; the cache starts empty and
+// so does the record of lookups under way.
+func mastodon_people_stub(t *testing.T, answer func(address string) error) {
+	t.Helper()
+	saved_fetch, saved_cache := resolve_fetch, resolve_cache
+	resolve_lock.Lock()
+	resolve_cache = map[string]resolve_entry{}
+	resolve_lock.Unlock()
+	mastodon_lookups_lock.Lock()
+	mastodon_lookups = map[string]*mastodon_pending{}
+	mastodon_lookups_lock.Unlock()
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		if err := answer(address); err != nil {
+			return nil, err
+		}
+		return mastodon_people_document(address), nil
+	}
+	t.Cleanup(func() {
+		resolve_lock.Lock()
+		resolve_fetch, resolve_cache = saved_fetch, saved_cache
+		resolve_lock.Unlock()
+	})
+}
+
+// mastodon_people_document is the actor document a person's server gives in
+// these tests: named "Described <name>", so an account their server described
+// is told apart from one given by its address alone, whose name is the
+// address's last segment.
+func mastodon_people_document(address string) []byte {
+	name := address[strings.LastIndexByte(address, '/')+1:]
+	return []byte(`{"id":"` + address + `","type":"Person","preferredUsername":"` + name + `","name":"Described ` + name + `","inbox":"` + address + `/inbox"}`)
+}
+
+// TestMastodonPeopleListEachPersonOnce: walking the followers or following
+// list page by page answers everyone exactly once, newest follow first, though
+// a fifth of them were numbered earlier from elsewhere and seven follows share
+// each second, so pages end inside a second.
+func TestMastodonPeopleListEachPersonOnce(t *testing.T) {
+	for _, which := range []string{"followers", "following"} {
+		t.Run(which, func(t *testing.T) {
+			alice, _ := create_mastodon_test_env(t)
+			token := mastodon_token(t, alice, "read")
+			const n = 200
+			var actors []string
+			var created []int64
+			for i := 0; i < n; i++ {
+				// Recorded out of time order, so the row ids do not follow it.
+				j := i * 73 % n
+				actors = append(actors, fmt.Sprintf("https://remote.example/users/u%d", j))
+				created = append(created, 1_000_000+int64(j/7))
+			}
+			mastodon_people_add(alice, which, actors, created)
+			for i, actor := range actors {
+				mastodon_snapshot(alice, "account", actor, map[string]any{"id": "x", "url": actor, "acct": fmt.Sprintf("u%d@remote.example", i)})
+				if i%5 == 0 {
+					// Seen in a status first, from another time.
+					mastodon_number(alice, "account", actor, 1_000_000+int64(i*31%n))
+				}
+			}
+			// The expected order: newest follow first, and of follows in one
+			// second the one recorded last.
+			expected := make([]int, n)
+			for i := range expected {
+				expected[i] = i
+			}
+			sort.SliceStable(expected, func(a, b int) bool {
+				if created[expected[a]] != created[expected[b]] {
+					return created[expected[a]] > created[expected[b]]
+				}
+				return expected[a] > expected[b]
+			})
+			var got []string
+			for _, page := range mastodon_walk(t, token, which, 40) {
+				for _, item := range page {
+					got = append(got, fmt.Sprint(item["url"]))
+				}
+			}
+			if len(got) != n {
+				t.Fatalf("THE POINT: a walk answered %d items for %d people", len(got), n)
+			}
+			for i, index := range expected {
+				if got[i] != actors[index] {
+					t.Fatalf("THE POINT: item %d is %s where %s is next by follow time", i, got[i], actors[index])
+				}
+			}
+		})
+	}
+}
+
+// TestMastodonPeoplePageReadsOnlyItsRows: a page reads and numbers only its
+// own rows, not every row before the cursor.
+func TestMastodonPeoplePageReadsOnlyItsRows(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read")
+	var actors []string
+	var created []int64
+	for i := 0; i < 200; i++ {
+		actors = append(actors, fmt.Sprintf("https://remote.example/users/u%d", i))
+		created = append(created, 2_000_000-int64(i))
+	}
+	mastodon_people_add(alice, "followers", actors, created)
+	for _, actor := range actors {
+		mastodon_snapshot(alice, "account", actor, map[string]any{"id": "x", "url": actor})
+	}
+	pages := mastodon_walk(t, token, "followers", 40)
+	if len(pages) < 3 {
+		t.Fatalf("a walk of 200 at 40 a page gave %d pages", len(pages))
+	}
+	// The third page again, with every number forgotten: only its own people
+	// may be numbered again.
+	_, me := mastodon_request(t, token, "GET", "/api/v1/accounts/verify_credentials", nil)
+	self := fmt.Sprint(mastodon_map(me)["id"])
+	w, _ := mastodon_request(t, token, "GET", "/api/v1/accounts/"+self+"/followers?limit=40", nil)
+	w, _ = mastodon_request(t, token, "GET", "/api/v1/accounts/"+self+"/followers?limit=40&max_id="+regexp.MustCompile(`max_id=(\d+)`).FindStringSubmatch(w.Header().Get("Link"))[1], nil)
+	cursor := regexp.MustCompile(`max_id=(\d+)`).FindStringSubmatch(w.Header().Get("Link"))[1]
+	db := db_user(alice, "user")
+	defer db.close()
+	db.exec("delete from snowflakes where kind='account' and key like 'https://remote.example/%'")
+	w, body := mastodon_request(t, token, "GET", "/api/v1/accounts/"+self+"/followers?limit=40&max_id="+cursor, nil)
+	if items := mastodon_items(body); w.Code != http.StatusOK || len(items) != 40 || items[0]["url"] != actors[80] {
+		t.Fatalf("the third page = %d, %d items", w.Code, len(items))
+	}
+	for _, actor := range actors[:80] {
+		if found, _ := db.exists("select 1 from snowflakes where kind='account' and key=?", actor); found {
+			t.Fatalf("THE POINT: the third page numbered %s, on an earlier page", actor)
+		}
+	}
+}
+
+// TestMastodonPeopleNeverLeftOut: a follower whose lookup the limiter refuses
+// is listed by their address, and not kept so, so the next page asks again
+// and lists them as their server describes them.
+func TestMastodonPeopleNeverLeftOut(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read")
+	var actors []string
+	var created []int64
+	for i := 0; i < 10; i++ {
+		actors = append(actors, fmt.Sprintf("https://remote.example/users/u%d", i))
+		created = append(created, 3_000_000-int64(i))
+	}
+	mastodon_people_add(alice, "followers", actors, created)
+	var refuse atomic.Bool
+	refuse.Store(true)
+	mastodon_people_stub(t, func(address string) error {
+		if refuse.Load() && strings.HasSuffix(address, "1") || refuse.Load() && strings.HasSuffix(address, "3") {
+			return &RateLimitError{Retry: 60}
+		}
+		return nil
+	})
+	pages := mastodon_walk(t, token, "followers", 40)
+	if len(pages) != 1 || len(pages[0]) != 10 {
+		t.Fatalf("THE POINT: the list holds %v for 10 followers", pages)
+	}
+	for i, item := range pages[0] {
+		refused := i == 1 || i == 3
+		if item["uri"] != actors[i] || item["id"] == nil || item["id"] == "" {
+			t.Errorf("item %d = %v", i, item)
+		}
+		if item["username"] != fmt.Sprintf("u%d", i) || item["acct"] != fmt.Sprintf("u%d@remote.example", i) {
+			t.Errorf("THE POINT: item %d is named %v, %v", i, item["username"], item["acct"])
+		}
+		if refused && item["display_name"] != fmt.Sprintf("u%d", i) {
+			t.Errorf("item %d, refused, = %v", i, item["display_name"])
+		}
+		if !refused && item["display_name"] != fmt.Sprintf("Described u%d", i) {
+			t.Errorf("item %d, described, = %v", i, item["display_name"])
+		}
+		if held := mastodon_snapshot_get(alice, "account", actors[i]); (held != nil) == refused {
+			t.Errorf("THE POINT: item %d, refused %v, kept %v", i, refused, held)
+		}
+	}
+	refuse.Store(false)
+	pages = mastodon_walk(t, token, "followers", 40)
+	for _, i := range []int{1, 3} {
+		if pages[0][i]["display_name"] != fmt.Sprintf("Described u%d", i) {
+			t.Errorf("THE POINT: once their server answers, item %d = %v", i, pages[0][i]["display_name"])
+		}
+	}
+}
+
+// TestMastodonPeopleAskedTogether: the servers of a page's people with nothing
+// kept are asked several at a time, never more than the bound.
+func TestMastodonPeopleAskedTogether(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read")
+	var actors []string
+	var created []int64
+	for i := 0; i < 24; i++ {
+		actors = append(actors, fmt.Sprintf("https://remote.example/users/u%d", i))
+		created = append(created, 4_000_000-int64(i))
+	}
+	mastodon_people_add(alice, "followers", actors, created)
+	var open, most atomic.Int64
+	mastodon_people_stub(t, func(address string) error {
+		now := open.Add(1)
+		for {
+			seen := most.Load()
+			if now <= seen || most.CompareAndSwap(seen, now) {
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+		open.Add(-1)
+		return nil
+	})
+	pages := mastodon_walk(t, token, "followers", 40)
+	if len(pages[0]) != 24 {
+		t.Fatalf("the list holds %d of 24", len(pages[0]))
+	}
+	for i, item := range pages[0] {
+		if item["display_name"] != fmt.Sprintf("Described u%d", i) {
+			t.Errorf("item %d = %v", i, item["display_name"])
+		}
+	}
+	if most.Load() < 2 {
+		t.Errorf("THE POINT: the servers were asked one at a time")
+	}
+	if most.Load() > mastodon_people_concurrency {
+		t.Errorf("THE POINT: %d servers asked at once, past the bound of %d", most.Load(), mastodon_people_concurrency)
+	}
+}
+
+// TestMastodonPeopleDeadline: a page waits for its people's servers only until
+// its deadline, giving the rest by address; lookups already sent run on and
+// their answers serve the next page, and those not yet sent are not sent.
+func TestMastodonPeopleDeadline(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read")
+	saved := mastodon_people_deadline
+	mastodon_people_deadline = time.Second
+	t.Cleanup(func() { mastodon_people_deadline = saved })
+	n := mastodon_people_concurrency + 4
+	var actors []string
+	var created []int64
+	for i := 0; i < n; i++ {
+		actors = append(actors, fmt.Sprintf("https://remote.example/users/u%d", i))
+		created = append(created, 5_000_000-int64(i))
+	}
+	mastodon_people_add(alice, "followers", actors, created)
+	release := make(chan struct{})
+	var sent, done atomic.Int64
+	saved_fetch, saved_cache := resolve_fetch, resolve_cache
+	resolve_lock.Lock()
+	resolve_cache = map[string]resolve_entry{}
+	resolve_lock.Unlock()
+	mastodon_lookups_lock.Lock()
+	mastodon_lookups = map[string]*mastodon_pending{}
+	mastodon_lookups_lock.Unlock()
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		sent.Add(1)
+		defer done.Add(1)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return mastodon_people_document(address), nil
+	}
+	t.Cleanup(func() {
+		resolve_lock.Lock()
+		resolve_fetch, resolve_cache = saved_fetch, saved_cache
+		resolve_lock.Unlock()
+	})
+	// The first page's request ends when its answer is written, as one
+	// net/http serves does.
+	_, me := mastodon_request(t, token, "GET", "/api/v1/accounts/verify_credentials", nil)
+	ended, end := context.WithCancel(context.Background())
+	request := httptest.NewRequest("GET", fmt.Sprintf("http://example.com/api/v1/accounts/%v/followers?limit=40", mastodon_map(me)["id"]), nil).WithContext(ended)
+	request.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = request
+	start := time.Now()
+	mastodon_route(c)
+	end()
+	if waited := time.Since(start); waited > 4*time.Second {
+		t.Errorf("THE POINT: the page waited %s for servers that did not answer", waited)
+	}
+	var first any
+	json.Unmarshal(w.Body.Bytes(), &first)
+	pages := [][]map[string]any{mastodon_items(first)}
+	if len(pages[0]) != n {
+		t.Fatalf("THE POINT: the list holds %d of %d", len(pages[0]), n)
+	}
+	for i, item := range pages[0] {
+		if item["display_name"] != fmt.Sprintf("u%d", i) || item["uri"] != actors[i] {
+			t.Errorf("item %d = %v", i, item)
+		}
+	}
+	close(release)
+	for wait := time.Now(); done.Load() < int64(mastodon_people_concurrency) && time.Since(wait) < 5*time.Second; {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if sent.Load() != int64(mastodon_people_concurrency) {
+		t.Errorf("THE POINT: %d lookups were sent; only the %d under way when the page stopped waiting should be", sent.Load(), mastodon_people_concurrency)
+	}
+	pages = mastodon_walk(t, token, "followers", 40)
+	for i, item := range pages[0] {
+		if item["display_name"] != fmt.Sprintf("Described u%d", i) {
+			t.Errorf("THE POINT: on the next page item %d = %v", i, item["display_name"])
+		}
+	}
+	if sent.Load() != int64(n) {
+		t.Errorf("THE POINT: the next page sent %d lookups in all; the answers of those under way were not kept", sent.Load())
+	}
+}
+
+// TestMastodonPeopleLeaveOutBlockedHosts: people on a host the user blocks
+// are left out of the list whether or not they were kept, and every page but
+// the last is still full.
+func TestMastodonPeopleLeaveOutBlockedHosts(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read")
+	var actors []string
+	var created []int64
+	for i := 0; i < 50; i++ {
+		host := "remote.example"
+		if i%5 == 2 {
+			host = "blocked.example"
+		}
+		actors = append(actors, fmt.Sprintf("https://%s/users/u%d", host, i))
+		created = append(created, 6_000_000-int64(i))
+	}
+	mastodon_people_add(alice, "followers", actors, created)
+	for _, actor := range actors {
+		mastodon_snapshot(alice, "account", actor, map[string]any{"id": "x", "url": actor})
+	}
+	db_user_brief(alice, "user").exec("insert into blocks (domain, created) values ('blocked.example', 1)")
+	pages := mastodon_walk(t, token, "followers", 20)
+	total := 0
+	for p, page := range pages {
+		for _, item := range page {
+			if strings.Contains(fmt.Sprint(item["url"]), "blocked.example") {
+				t.Errorf("THE POINT: %v, on a blocked host, is listed", item["url"])
+			}
+		}
+		if p < len(pages)-1 && len(page) != 20 {
+			t.Errorf("THE POINT: page %d holds %d of 20", p, len(page))
+		}
+		total += len(page)
+	}
+	if total != 40 {
+		t.Errorf("THE POINT: the walk listed %d of the 40 people on allowed hosts", total)
+	}
+}
+
+// TestMastodonFollowKeptForTheLists: someone who follows a hosted account, or
+// whom it follows, is kept as clients would see them when the follow is
+// recorded, for a user a Mastodon app is signed in for, so the lists ask no
+// server; for a user with no Mastodon app nothing is kept.
+func TestMastodonFollowKeptForTheLists(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	carol := "https://remote.example/users/carol"
+	dave := "https://remote.example/users/dave"
+	erin := "https://remote.example/users/erin"
+	var asked atomic.Int64
+	mastodon_people_stub(t, func(address string) error {
+		asked.Add(1)
+		return nil
+	})
+	followed := func(person string) {
+		t.Helper()
+		activity := map[string]any{"id": person + "/follows/1", "type": "Follow", "actor": person, "object": "https://example.com/~f1"}
+		if err := activitypub_dispatch(context.Background(), alice, actor_get("f1"), person, "Follow", activity, []byte(json_encode(activity))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	follows := func(person string) {
+		t.Helper()
+		r, err := author_resolve(context.Background(), person)
+		if err != nil {
+			t.Fatal(err)
+		}
+		account_follow(alice, "f1", "https://example.com/~f1", r)
+	}
+	// Dave follows and is followed before any Mastodon app is signed in.
+	followed(dave)
+	follows(dave)
+	if held := mastodon_snapshot_get(alice, "account", dave); held != nil {
+		t.Errorf("THE POINT: kept for a user with no Mastodon app: %v", held)
+	}
+	token := mastodon_token(t, alice, "read")
+	followed(carol)
+	follows(erin)
+	for _, person := range []string{carol, erin} {
+		name := person[strings.LastIndexByte(person, '/')+1:]
+		if held := mastodon_snapshot_get(alice, "account", person); held == nil || held["username"] != name || held["acct"] != name+"@remote.example" || held["uri"] != person {
+			t.Errorf("THE POINT: %s as kept = %v", name, held)
+		}
+	}
+	resolve_lock.Lock()
+	resolve_cache = map[string]resolve_entry{}
+	resolve_lock.Unlock()
+	asked.Store(0)
+	for which, person := range map[string]string{"followers": carol, "following": erin} {
+		found := false
+		for _, item := range mastodon_walk(t, token, which, 40)[0] {
+			found = found || item["uri"] == person
+		}
+		if !found {
+			t.Errorf("%s does not list %s", which, person)
+		}
+	}
+	// Only dave is asked about, once: the first list keeps him for the other.
+	if asked.Load() != 1 {
+		t.Errorf("THE POINT: the lists asked %d times; only dave's server, once, should be", asked.Load())
+	}
+}
+
+// TestMastodonPeopleLookupPanic: a lookup that panics over what a server sent
+// leaves that person given by their address, and the page and the server
+// answer on.
+func TestMastodonPeopleLookupPanic(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read")
+	actors := []string{"https://remote.example/users/u0", "https://remote.example/users/u1"}
+	mastodon_people_add(alice, "followers", actors, []int64{7_000_001, 7_000_000})
+	mastodon_people_stub(t, func(address string) error {
+		if strings.HasSuffix(address, "u0") {
+			panic("a hostile document")
+		}
+		return nil
+	})
+	pages := mastodon_walk(t, token, "followers", 40)
+	if len(pages[0]) != 2 || pages[0][0]["display_name"] != "u0" || pages[0][1]["display_name"] != "Described u1" {
+		t.Fatalf("THE POINT: the page = %v", pages[0])
+	}
+}
+
+// mastodon_people_blocking has resolve_fetch hold every lookup until release
+// is called or the lookup's context ends, counting those sent and those under
+// way. At the test's end it releases them and waits for every lookup under way
+// to finish, so none outlives the test into the next.
+func mastodon_people_blocking(t *testing.T) (release func(), sent *atomic.Int64, open *atomic.Int64) {
+	t.Helper()
+	released := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(released) }) }
+	sent, open = &atomic.Int64{}, &atomic.Int64{}
+	mastodon_people_stub(t, func(address string) error { return nil })
+	stubbed := resolve_fetch
+	resolve_fetch = func(ctx context.Context, address string, accept string) ([]byte, error) {
+		sent.Add(1)
+		open.Add(1)
+		defer open.Add(-1)
+		select {
+		case <-released:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return stubbed(ctx, address, accept)
+	}
+	t.Cleanup(func() {
+		release()
+		for wait := time.Now(); time.Since(wait) < 5*time.Second; time.Sleep(10 * time.Millisecond) {
+			mastodon_lookups_lock.Lock()
+			left := len(mastodon_lookups)
+			mastodon_lookups_lock.Unlock()
+			if left == 0 && open.Load() == 0 {
+				return
+			}
+		}
+		t.Error("lookups were still under way at the test's end")
+	})
+	return
+}
+
+// mastodon_people_followers records n followers at remote.example with
+// nothing kept of them, newest first.
+func mastodon_people_followers(alice *User, n int, base int64) []string {
+	var actors []string
+	var created []int64
+	for i := 0; i < n; i++ {
+		actors = append(actors, fmt.Sprintf("https://remote.example/users/u%d", i))
+		created = append(created, base-int64(i))
+	}
+	mastodon_people_add(alice, "followers", actors, created)
+	return actors
+}
+
+// TestMastodonPeopleLookupsShared: a page asking for people whose lookups an
+// earlier page left under way waits for those, and sends none of its own.
+func TestMastodonPeopleLookupsShared(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read")
+	saved := mastodon_people_deadline
+	mastodon_people_deadline = 300 * time.Millisecond
+	t.Cleanup(func() { mastodon_people_deadline = saved })
+	mastodon_people_followers(alice, mastodon_people_concurrency, 8_000_000)
+	_, sent, _ := mastodon_people_blocking(t)
+	mastodon_walk(t, token, "followers", 40)
+	first := sent.Load()
+	mastodon_walk(t, token, "followers", 40)
+	mastodon_walk(t, token, "followers", 40)
+	if first != int64(mastodon_people_concurrency) || sent.Load() != first {
+		t.Errorf("THE POINT: three pages sent %d lookups for %d people, the first %d", sent.Load(), mastodon_people_concurrency, first)
+	}
+}
+
+// TestMastodonPeopleLookupsBounded: with the server's bound of lookups under
+// way reached, a page sends no more, and gives the rest by their address.
+func TestMastodonPeopleLookupsBounded(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read")
+	saved_deadline, saved_maximum := mastodon_people_deadline, mastodon_lookups_maximum
+	mastodon_people_deadline, mastodon_lookups_maximum = 300*time.Millisecond, 3
+	t.Cleanup(func() { mastodon_people_deadline, mastodon_lookups_maximum = saved_deadline, saved_maximum })
+	actors := mastodon_people_followers(alice, 8, 8_100_000)
+	_, sent, _ := mastodon_people_blocking(t)
+	pages := mastodon_walk(t, token, "followers", 40)
+	if len(pages[0]) != len(actors) {
+		t.Fatalf("the list holds %d of %d", len(pages[0]), len(actors))
+	}
+	if sent.Load() != 3 {
+		t.Errorf("THE POINT: %d lookups sent with a bound of 3", sent.Load())
+	}
+}
+
+// TestMastodonPeopleLookupsEnd: a lookup the page stopped waiting for ends at
+// its own timeout when the server never answers, and leaves nothing under
+// way.
+func TestMastodonPeopleLookupsEnd(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read")
+	saved_deadline, saved_timeout := mastodon_people_deadline, mastodon_lookup_timeout
+	mastodon_people_deadline, mastodon_lookup_timeout = 100*time.Millisecond, 400*time.Millisecond
+	t.Cleanup(func() { mastodon_people_deadline, mastodon_lookup_timeout = saved_deadline, saved_timeout })
+	mastodon_people_followers(alice, 4, 8_200_000)
+	_, sent, open := mastodon_people_blocking(t)
+	mastodon_walk(t, token, "followers", 40)
+	if sent.Load() != 4 {
+		t.Fatalf("%d lookups sent for 4 people", sent.Load())
+	}
+	for wait := time.Now(); open.Load() > 0 && time.Since(wait) < 5*time.Second; {
+		time.Sleep(10 * time.Millisecond)
+	}
+	mastodon_lookups_lock.Lock()
+	left := len(mastodon_lookups)
+	mastodon_lookups_lock.Unlock()
+	if open.Load() != 0 || left != 0 {
+		t.Errorf("THE POINT: %d lookups still waiting on a silent server, %d recorded as under way, after their timeout", open.Load(), left)
+	}
+}
+
+// TestMastodonPeopleQueryUsesTheIndex: a page of the followers or following
+// list reads a range of the index on when each follow was recorded, sorting
+// nothing, so its cost does not grow with the list.
+func TestMastodonPeopleQueryUsesTheIndex(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	db := db_user(alice, "user")
+	defer db.close()
+	for _, table := range []string{"followers", "following"} {
+		for _, bounded := range []bool{false, true} {
+			args := []any{"f1", 40}
+			want := table + " USING INDEX " + table + "_created (account=?)"
+			if bounded {
+				args = []any{"f1", 100, 100, 5, 40}
+				want = table + " USING INDEX " + table + "_created (account=? AND created<?)"
+			}
+			rows, err := db.rows("explain query plan "+mastodon_people_query(table, bounded), args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var plan []string
+			for _, row := range rows {
+				plan = append(plan, row_string(row, "detail"))
+			}
+			joined := strings.Join(plan, "\n")
+			if !strings.Contains(joined, want) || strings.Contains(joined, "TEMP B-TREE") {
+				t.Errorf("THE POINT: %s, bounded %v, is not read as a range of its index:\n%s", table, bounded, joined)
+			}
+		}
+	}
+}
+
+// TestMastodonPeopleAcrossABlockedRun: a page that meets a run of people on a
+// blocked host longer than a page reads past it to a full page, and the next
+// page goes on from where the first ended.
+func TestMastodonPeopleAcrossABlockedRun(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read")
+	var actors []string
+	var created []int64
+	for i := 0; i < 300; i++ {
+		host := "remote.example"
+		// The run ends inside a batch, so the page fills part-way through one.
+		if i >= 15 && i < 211 {
+			host = "blocked.example"
+		}
+		actors = append(actors, fmt.Sprintf("https://%s/users/u%d", host, i))
+		created = append(created, 9_000_000-int64(i))
+	}
+	mastodon_people_add(alice, "followers", actors, created)
+	for _, actor := range actors {
+		mastodon_snapshot(alice, "account", actor, map[string]any{"id": "x", "url": actor})
+	}
+	db_user_brief(alice, "user").exec("insert into blocks (domain, created) values ('blocked.example', 1)")
+	var got []string
+	pages := mastodon_walk(t, token, "followers", 40)
+	for p, page := range pages {
+		if p < len(pages)-1 && len(page) != 40 {
+			t.Errorf("THE POINT: page %d holds %d of 40", p, len(page))
+		}
+		for _, item := range page {
+			got = append(got, fmt.Sprint(item["url"]))
+		}
+	}
+	var want []string
+	for _, actor := range actors {
+		if !strings.Contains(actor, "blocked.example") {
+			want = append(want, actor)
+		}
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("THE POINT: the walk listed %d people, %d expected, or out of order", len(got), len(want))
+	}
+}
+
+// TestMastodonKeepNotTheAccountItself: a follow of the account's own address
+// keeps nothing over the account's own form.
+func TestMastodonKeepNotTheAccountItself(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read")
+	_, me := mastodon_request(t, token, "GET", "/api/v1/accounts/verify_credentials", nil)
+	own := account_url("example.com", "f1")
+	before := mastodon_snapshot_get(alice, "account", own)
+	if before == nil || before["username"] != "alice" {
+		t.Fatalf("the account's own form = %v (%v)", before, me)
+	}
+	mastodon_keep(alice, actor_get("f1"), &resolved{Network: "fediverse", ID: own, Host: "example.com"})
+	if after := mastodon_snapshot_get(alice, "account", own); after == nil || after["username"] != "alice" || after["acct"] != "alice" {
+		t.Errorf("THE POINT: the account's own form, after a follow of itself, = %v", after)
+	}
+}
+
+// TestMastodonAddressName: someone given by their address alone is named by
+// its last segment where that is a name, and not otherwise.
+func TestMastodonAddressName(t *testing.T) {
+	for address, want := range map[string]string{
+		"https://mastodon.example/users/alice":    "alice",
+		"https://lemmy.example/u/bob":             "bob",
+		"https://peertube.example/accounts/carol": "carol",
+		"https://akkoma.example/@dave":            "dave",
+		"https://pleroma.example/users/e.f-g_h":   "e.f-g_h",
+		"https://misskey.example/users/9abc123":   "9abc123",
+		"https://remote.example/":                 "",
+		"https://remote.example/users/a%20b":      "",
+		"https://remote.example/users/":           "",
+		"not an address":                          "",
+	} {
+		if got := mastodon_address_name(address); got != want {
+			t.Errorf("THE POINT: %s is named %q, want %q", address, got, want)
+		}
+	}
+}
+
+// TestMastodonForgetOnUndo: a follower who undoes their follow, or is deleted,
+// leaves nothing kept of them, unless an account of the user's still follows
+// them.
+func TestMastodonForgetOnUndo(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	mastodon_token(t, alice, "read")
+	mastodon_people_stub(t, func(address string) error { return nil })
+	undo := func(person string) {
+		t.Helper()
+		follow := map[string]any{"id": person + "/follows/1", "type": "Follow", "actor": person, "object": "https://example.com/~f1"}
+		if err := activitypub_dispatch(context.Background(), alice, actor_get("f1"), person, "Follow", follow, []byte(json_encode(follow))); err != nil {
+			t.Fatal(err)
+		}
+		activity := map[string]any{"id": person + "/undo/1", "type": "Undo", "actor": person, "object": follow}
+		if err := activitypub_dispatch(context.Background(), alice, actor_get("f1"), person, "Undo", activity, []byte(json_encode(activity))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gone := "https://remote.example/users/gone"
+	undo(gone)
+	if held := mastodon_snapshot_get(alice, "account", gone); held != nil {
+		t.Errorf("THE POINT: an undone follower is still kept: %v", held)
+	}
+	// Followed by the account as well: kept.
+	followed := "https://remote.example/users/followed"
+	r, err := author_resolve(context.Background(), followed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account_follow(alice, "f1", "https://example.com/~f1", r)
+	undo(followed)
+	if mastodon_snapshot_get(alice, "account", followed) == nil {
+		t.Error("THE POINT: someone the account follows was forgotten when they stopped following it")
+	}
+	// Deleted: forgotten with the follow.
+	deleted := "https://remote.example/users/deleted"
+	follow := map[string]any{"id": deleted + "/follows/1", "type": "Follow", "actor": deleted, "object": "https://example.com/~f1"}
+	activitypub_dispatch(context.Background(), alice, actor_get("f1"), deleted, "Follow", follow, []byte(json_encode(follow)))
+	activitypub_forget(alice, "f1", deleted)
+	if held := mastodon_snapshot_get(alice, "account", deleted); held != nil {
+		t.Errorf("THE POINT: a deleted follower is still kept: %v", held)
 	}
 }

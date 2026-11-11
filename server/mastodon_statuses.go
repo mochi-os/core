@@ -952,6 +952,7 @@ func mastodon_status_action(c *gin.Context, s *mastodon_session, number string, 
 // Undo of the one sent before (decision 42).
 func mastodon_like(c *gin.Context, s *mastodon_session, remote string, author string, on bool) error {
 	db := db_user(s.user, "user")
+	defer db.close()
 	var held map[string]any
 	previous := ""
 	rows, _ := db.rows("select id, addressing from objects where account=? and type='Like' and deleted=0", s.account)
@@ -1483,7 +1484,7 @@ func mastodon_media_upload(c *gin.Context, s *mastodon_session) {
 		return
 	}
 	// Uploads no status took within a day are let go.
-	rows, _ := db_user(s.user, "user").rows("select key from snapshots where kind='upload' and updated<?", now()-86400)
+	rows, _ := db_user_brief(s.user, "user").rows("select key from snapshots where kind='upload' and updated<?", now()-86400)
 	for _, row := range rows {
 		mastodon_upload_remove(s.user, row_string(row, "key"))
 	}
@@ -1514,7 +1515,7 @@ func mastodon_upload_remove(user *User, id string) {
 		return
 	}
 	os.Remove(mastodon_upload_path(user, id))
-	db_user(user, "user").exec("delete from snapshots where kind='upload' and key=?", id)
+	db_user_brief(user, "user").exec("delete from snapshots where kind='upload' and key=?", id)
 }
 
 // mastodon_upload_json is an upload as clients see media.

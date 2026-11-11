@@ -227,7 +227,7 @@ func push_queue_process() int {
 
 		// The account must still exist and still be verified: a user who
 		// removed a destination should not have it retried at them.
-		if have, _ := db_user(user, "user").exists("select 1 from accounts where id=? and verified > 0", account); !have {
+		if have, _ := db_user_brief(user, "user").exists("select 1 from accounts where id=? and verified > 0", account); !have {
 			if !write("delete from pushes where id=?", id) {
 				return 0
 			}
@@ -295,14 +295,14 @@ func push_queue_process() int {
 		switch {
 		case a.success:
 			write("delete from pushes where id=?", a.id)
-			db_user(a.user, "user").exec_bg("push delivered", "update accounts set last_delivered=? where id=?", now(), a.push.Account)
+			db_user_brief(a.user, "user").exec_bg("push delivered", "update accounts set last_delivered=? where id=?", now(), a.push.Account)
 		case a.retire || !a.handled:
 			// Permanently dead, or a provider this build does not know or
 			// this server has not configured. Retrying any of them forever is
 			// how a queue becomes a leak.
 			write("delete from pushes where id=?", a.id)
 			if a.retire {
-				db_user(a.user, "user").exec_bg("push retire", "delete from accounts where id=?", a.push.Account)
+				db_user_brief(a.user, "user").exec_bg("push retire", "delete from accounts where id=?", a.push.Account)
 			}
 		case a.attempts+1 >= push_attempts_maximum:
 			// The notification is lost, and this is the one moment in the
@@ -422,7 +422,7 @@ func account_sync_signal(user *User, kind string) {
 // and UnifiedPush accounts: the Mochi app's own. A signal that fails is not
 // retried; the device's scheduled sync catches up.
 func account_sync_send(user *User, kind string) {
-	rows, err := db_user(user, "user").rows("select id, type, data from accounts where verified>0 and type in ('fcm', 'unifiedpush')")
+	rows, err := db_user_brief(user, "user").rows("select id, type, data from accounts where verified>0 and type in ('fcm', 'unifiedpush')")
 	if err != nil {
 		return
 	}

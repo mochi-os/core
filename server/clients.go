@@ -1158,7 +1158,7 @@ func clients_profile_set(c *gin.Context, s *clients_session, person string, fiel
 			clients_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "Invalid name")
 			return
 		}
-		db_user(s.user, "user").account_set(s.h.id, map[string]any{"label": strings.TrimSpace(value)})
+		db_user_brief(s.user, "user").account_set(s.h.id, map[string]any{"label": strings.TrimSpace(value)})
 	case "avatar_url":
 		if value != "" && !strings.HasPrefix(value, "mxc://") {
 			clients_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "The picture must be an mxc address")
@@ -1166,7 +1166,7 @@ func clients_profile_set(c *gin.Context, s *clients_session, person string, fiel
 		}
 		data := account_data(account_hosted_get(s.user, s.h.id))
 		data["avatar"] = value
-		db_user(s.user, "user").account_set(s.h.id, map[string]any{"data": json_encode(data)})
+		db_user_brief(s.user, "user").account_set(s.h.id, map[string]any{"data": json_encode(data)})
 	default:
 		clients_error(c, http.StatusNotFound, "M_NOT_FOUND", "No such field")
 		return

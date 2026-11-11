@@ -1056,7 +1056,7 @@ func api_oauth_approve(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 			return sl_error(fn, "invalid feed")
 		}
 		data["home"] = feed
-		db_user(user, "user").account_set(account, map[string]any{"data": json_encode(data)})
+		db_user_brief(user, "user").account_set(account, map[string]any{"data": json_encode(data)})
 	}
 	request_take("signin_consent", id)
 	code := &signin_request{ID: random_alphanumeric(40), Client: r.Client, Redirect: r.Redirect, Scope: r.Scope, State: r.State, Challenge: r.Challenge, Network: r.Network, Issuer: r.Issuer, Key: r.Key, Nonce: r.Nonce, Hint: user.UID + "/" + account}
@@ -1563,6 +1563,7 @@ func numbers_table(db *DB) {
 // pair would still spend a number.
 func number_for(user *User, kind string, id string) int64 {
 	db := db_user(user, "user")
+	defer db.close()
 	row, _ := db.row("select number from numbers where kind=? and id=?", kind, id)
 	if row == nil {
 		db.exec("insert or ignore into numbers (kind, id, created) values (?, ?, ?)", kind, id, now())
@@ -1578,7 +1579,7 @@ func number_for(user *User, kind string, id string) int64 {
 // number_identifier answers the item a number names for a user, of the kind
 // expected, or empty.
 func number_identifier(user *User, kind string, number int64) string {
-	row, _ := db_user(user, "user").row("select id from numbers where kind=? and number=?", kind, number)
+	row, _ := db_user_brief(user, "user").row("select id from numbers where kind=? and number=?", kind, number)
 	if row == nil {
 		return ""
 	}

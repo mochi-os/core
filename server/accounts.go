@@ -582,6 +582,7 @@ func account_oauth_linked(user_id string, provider string, p *oauth_profile) {
 		return
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	label := p.Email
 	if label == "" {
 		label = p.Name
@@ -601,6 +602,7 @@ func account_oauth_linked(user_id string, provider string, p *oauth_profile) {
 // on the connected accounts page.
 func account_oauth_unlinked(user *User, provider string) {
 	db := db_user(user, "user")
+	defer db.close()
 	rows, _ := db.rows("select id, data from accounts where type=?", provider)
 	for _, row := range rows {
 		var data struct {
@@ -798,6 +800,7 @@ func api_account_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 
 	var capability string
 	if len(args) > 0 && args[0] != sl.None {
@@ -846,6 +849,7 @@ func api_account_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 	row, err := db.row("select id, type, label, identifier, data, created, verified, enabled, \"default\", device from accounts where id=?", id)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
@@ -909,6 +913,7 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 	now := time.Now().Unix()
 
 	// A per-device account may name the device it belongs to (devices.go). The
@@ -1236,6 +1241,7 @@ func api_account_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // identity the directory must hold first. Answers the account's id.
 func account_hosted_add(user *User, ptype string, h *handle) (string, error) {
 	db := db_user(user, "user")
+	defer db.close()
 	id := uid()
 	data := json_encode(map[string]any{"hosted": true, "handle": h.Name, "domain": h.Domain})
 	if _, err := db.internal.Exec("insert into accounts (id, type, label, identifier, data, created, verified, device) values (?, ?, '', ?, ?, ?, ?, '')",
@@ -1258,7 +1264,7 @@ func api_account_profile(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
-	rows, _ := db_user(user, "user").rows("select id, type, label, identifier, data from accounts where enabled=1 order by created")
+	rows, _ := db_user_brief(user, "user").rows("select id, type, label, identifier, data from accounts where enabled=1 order by created")
 	shown := []any{}
 	for _, row := range rows {
 		ptype := row_string(row, "type")
@@ -1305,6 +1311,7 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 
 	// Check account exists
 	exists, _ := db.exists("select 1 from accounts where id=?", id)
@@ -1724,6 +1731,7 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 
 	// Check the account exists; the caller distinguishes "no such account" from
 	// "removed" by the return value.
@@ -1807,7 +1815,7 @@ func api_account_grant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 	hint := ""
 	if account != "" {
-		row, _ := db_user(user, "user").row("select id, type, identifier from accounts where id=?", account)
+		row, _ := db_user_brief(user, "user").row("select id, type, identifier from accounts where id=?", account)
 		if row == nil || row_string(row, "type") != name {
 			return sl_error(fn, "unknown account")
 		}
@@ -1872,6 +1880,7 @@ func api_account_verify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 
 	// Get account with data
 	row, err := db.row("select id, type, identifier, data, verified from accounts where id=?", id)
@@ -2100,6 +2109,7 @@ func api_account_test(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 
 	// Get account with data
 	row, err := db.row("select id, type, identifier, label, data from accounts where id=?", id)
@@ -2631,6 +2641,7 @@ func api_account_notify(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 
 	// Opportunistic TTL: drop unifiedpush rows undelivered for 366 days (a year
 	// plus leap drift, so a once-a-year push never trips it). last_delivered > 0

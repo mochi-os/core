@@ -289,3 +289,95 @@ func TestEveryAppSystemHandleIsReleased(t *testing.T) {
 			len(unreleased), strings.Join(unreleased, "\n  "))
 	}
 }
+
+// handle_kept says whether a call's arguments, from just past its opening
+// parenthesis, are the end of what is assigned: the handle itself is kept,
+// rather than what a method called on it answers.
+func handle_kept(rest string) bool {
+	depth := 1
+	for i, c := range rest {
+		switch c {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return !strings.HasPrefix(rest[i+1:], ".")
+			}
+		}
+	}
+	return true
+}
+
+// TestEveryUserHandleIsReleased. A user's files stayed open for the life of
+// the process, since no caller of db_user ever let go: the start-up seed alone
+// held every active account's open. Each open is now matched by a close() in
+// the same function, made with db_user_brief for one call at once, or marked
+// `// handle-ok: <reason>` where the handle outlives the call. The same holds
+// for activitypub_user_database, whose loops across users held one more open
+// of each user's file per activity, and for a raw open of a user's file.
+func TestEveryUserHandleIsReleased(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package directory: %v", err)
+	}
+	open := regexp.MustCompile(`(\w+)\s*(?::=|=)\s*(?:db_user|activitypub_user_database)\(`)
+	call := regexp.MustCompile(`\b(?:db_user|activitypub_user_database)\(`)
+	raw := regexp.MustCompile(`(\w+)(?:,\s*\w+)*\s*(?::=|=)\s*db_open(?:_work)?\(.*"users/[^"]*\.db`)
+	kept := regexp.MustCompile(`\w+\s*(?::=|=)\s*db_user_brief\(`)
+	allowed := regexp.MustCompile(`// handle-ok: \S`)
+	unreleased := []string{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		body, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		lines := strings.Split(string(body), "\n")
+		// rest is the function from line i on.
+		rest := func(i int) string {
+			end := len(lines)
+			for j := i + 1; j < len(lines); j++ {
+				if lines[j] == "}" {
+					end = j
+					break
+				}
+			}
+			return strings.Join(lines[i:end], "\n")
+		}
+		for i, line := range lines {
+			if strings.HasPrefix(strings.TrimSpace(line), "//") || allowed.MatchString(line) {
+				continue
+			}
+			if at := kept.FindStringIndex(line); at != nil && handle_kept(line[at[1]:]) {
+				unreleased = append(unreleased, fmt.Sprintf("%s:%d (a brief handle kept: db_user, then close)", name, i+1))
+				continue
+			}
+			if match := raw.FindStringSubmatch(line); match != nil {
+				body := rest(i)
+				if !strings.Contains(body, match[1]+".close()") && !strings.Contains(body, "db_discard("+match[1]) && !strings.Contains(body, "db_release("+match[1]) {
+					unreleased = append(unreleased, fmt.Sprintf("%s:%d (%s, opened raw)", name, i+1, match[1]))
+				}
+				continue
+			}
+			if !call.MatchString(line) || strings.Contains(line, "func db_user") || strings.Contains(line, "func activitypub_user_database") {
+				continue
+			}
+			match := open.FindStringSubmatch(line)
+			if match == nil {
+				unreleased = append(unreleased, fmt.Sprintf("%s:%d (used in place: db_user_brief)", name, i+1))
+				continue
+			}
+			if !strings.Contains(rest(i), match[1]+".close()") {
+				unreleased = append(unreleased, fmt.Sprintf("%s:%d (%s)", name, i+1, match[1]))
+			}
+		}
+	}
+	if len(unreleased) > 0 {
+		t.Errorf("%d opens of a user's file are never released, so it stays open for good:\n  %s",
+			len(unreleased), strings.Join(unreleased, "\n  "))
+	}
+}

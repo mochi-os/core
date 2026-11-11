@@ -142,6 +142,7 @@ func mastodon_authenticate(c *gin.Context, scope string) *mastodon_session {
 // The same item has the same number each time.
 func mastodon_number(user *User, kind string, key string, created int64) string {
 	db := db_user(user, "user")
+	defer db.close()
 	if row, _ := db.row("select number from snowflakes where kind=? and key=?", kind, key); row != nil {
 		return strconv.FormatInt(row_int(row, "number"), 10)
 	}
@@ -165,7 +166,7 @@ func mastodon_key(user *User, kind string, number string) string {
 	if err != nil {
 		return ""
 	}
-	row, _ := db_user(user, "user").row("select key from snowflakes where kind=? and number=?", kind, n)
+	row, _ := db_user_brief(user, "user").row("select key from snowflakes where kind=? and number=?", kind, n)
 	return row_string(row, "key")
 }
 
@@ -187,13 +188,13 @@ func mastodon_parse(value string) int64 {
 // mastodon_snapshot keeps the form of an item clients were given, so a later
 // request by its number alone can be answered.
 func mastodon_snapshot(user *User, kind string, key string, document map[string]any) {
-	db_user(user, "user").exec("insert into snapshots (kind, key, document, created, updated) values (?, ?, ?, ?, ?) on conflict(kind, key) do update set document=excluded.document, updated=excluded.updated", kind, key, json_encode(document), now(), now())
+	db_user_brief(user, "user").exec("insert into snapshots (kind, key, document, created, updated) values (?, ?, ?, ?, ?) on conflict(kind, key) do update set document=excluded.document, updated=excluded.updated", kind, key, json_encode(document), now(), now())
 }
 
 // mastodon_snapshot_get is the form of an item clients were last given, or
 // nil.
 func mastodon_snapshot_get(user *User, kind string, key string) map[string]any {
-	row, _ := db_user(user, "user").row("select document from snapshots where kind=? and key=?", kind, key)
+	row, _ := db_user_brief(user, "user").row("select document from snapshots where kind=? and key=?", kind, key)
 	if row == nil {
 		return nil
 	}
@@ -659,6 +660,7 @@ func mastodon_own(s *mastodon_session, source bool) map[string]any {
 	}
 	document := activitypub_actor(s.user, a, s.row)
 	db := db_user(s.user, "user")
+	defer db.close()
 	count := func(sql string, args ...any) int64 {
 		row, _ := db.row(sql, args...)
 		return row_int(row, "n")
@@ -908,7 +910,7 @@ func mastodon_accounts_dispatch(c *gin.Context, s *mastodon_session, version str
 			table = "muted"
 		}
 		out := []any{}
-		for _, row := range actor_list(db_user(s.user, "user"), table) {
+		for _, row := range actor_list(db_user_brief(s.user, "user"), table) {
 			key := row_string(row, "actor")
 			if !strings.HasPrefix(key, "https://") {
 				continue
@@ -922,7 +924,7 @@ func mastodon_accounts_dispatch(c *gin.Context, s *mastodon_session, version str
 		c.JSON(http.StatusOK, out)
 		return true
 	case "GET v1/domain_blocks":
-		rows, _ := db_user(s.user, "user").rows("select domain from blocks order by created")
+		rows, _ := db_user_brief(s.user, "user").rows("select domain from blocks order by created")
 		out := []string{}
 		for _, row := range rows {
 			out = append(out, row_string(row, "domain"))
@@ -936,9 +938,9 @@ func mastodon_accounts_dispatch(c *gin.Context, s *mastodon_session, version str
 			return true
 		}
 		if method == "POST" {
-			db_user(s.user, "user").exec("insert or ignore into blocks (domain, created) values (?, ?)", domain, now())
+			db_user_brief(s.user, "user").exec("insert or ignore into blocks (domain, created) values (?, ?)", domain, now())
 		} else {
-			db_user(s.user, "user").exec("delete from blocks where domain=?", domain)
+			db_user_brief(s.user, "user").exec("delete from blocks where domain=?", domain)
 		}
 		c.JSON(http.StatusOK, map[string]any{})
 		return true
@@ -1006,7 +1008,7 @@ func mastodon_update_credentials(c *gin.Context, s *mastodon_session) {
 			mastodon_error(c, http.StatusUnprocessableEntity, "Validation failed: Display name is too long")
 			return
 		}
-		db_user(s.user, "user").account_set(s.account, map[string]any{"label": name})
+		db_user_brief(s.user, "user").account_set(s.account, map[string]any{"label": name})
 		s.row = account_hosted_get(s.user, s.account)
 	}
 	c.JSON(http.StatusOK, mastodon_own(s, true))
@@ -1015,6 +1017,7 @@ func mastodon_update_credentials(c *gin.Context, s *mastodon_session) {
 // mastodon_relationship is the account's standing with someone.
 func mastodon_relationship(s *mastodon_session, number string, key string) map[string]any {
 	db := db_user(s.user, "user")
+	defer db.close()
 	following, _ := db.row("select accepted from following where account=? and actor=?", s.account, key)
 	followed, _ := db.exists("select 1 from followers where account=? and actor=?", s.account, key)
 	host := identifier_host(key)
@@ -1072,6 +1075,7 @@ func mastodon_people_search(c *gin.Context, s *mastodon_session, query string, r
 	}
 	words := strings.ToLower(query)
 	db := db_user(s.user, "user")
+	defer db.close()
 	rows, _ := db.rows("select key, document from snapshots where kind='account' order by updated desc limit 500")
 	for _, row := range rows {
 		var account map[string]any
@@ -1103,7 +1107,7 @@ func mastodon_account_people(c *gin.Context, s *mastodon_session, key string, wh
 	if maximum := in.text("max_id"); maximum != "" {
 		before, _ = strconv.ParseInt(maximum, 10, 64)
 	}
-	rows, _ := db_user(s.user, "user").rows("select actor, created from "+table+" where account=? order by created desc", s.account)
+	rows, _ := db_user_brief(s.user, "user").rows("select actor, created from "+table+" where account=? order by created desc", s.account)
 	last := ""
 	for _, row := range rows {
 		person := row_string(row, "actor")

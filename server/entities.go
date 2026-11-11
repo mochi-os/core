@@ -220,6 +220,7 @@ func (e *Entity) delete() {
 		if err := udb.exec_e("delete from group_members where member=? and type='user'", e.ID); err != nil {
 			warn("Entity %q group memberships not removed: %v", e.ID, err)
 		}
+		udb.close()
 	}
 
 	// Remove the entity row.

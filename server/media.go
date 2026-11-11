@@ -48,7 +48,7 @@ func media_store(user *User, row map[string]any, data []byte, kind string, name 
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return nil, err
 	}
-	db_user(user, "user").exec("insert into media (id, account, type, name, description, size, created) values (?, ?, ?, ?, ?, ?, ?)", id, account, kind, name, description, len(data), now())
+	db_user_brief(user, "user").exec("insert into media (id, account, type, name, description, size, created) values (?, ?, ?, ?, ?, ?, ?)", id, account, kind, name, description, len(data), now())
 	url := actor + "/media/" + id
 	document := map[string]any{"type": media_document_type(kind), "mediaType": kind, "url": url}
 	if description != "" {
@@ -76,7 +76,7 @@ func media_serve(c *gin.Context, user *User, account string, id string) {
 		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
 		return
 	}
-	row, _ := db_user(user, "user").row("select type from media where id=? and account=?", id, account)
+	row, _ := db_user_brief(user, "user").row("select type from media where id=? and account=?", id, account)
 	if row == nil {
 		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
 		return
@@ -94,6 +94,7 @@ func media_serve(c *gin.Context, user *User, account string, id string) {
 // media_remove drops an account's files with the account.
 func media_remove(user *User, account string) {
 	db := db_user(user, "user")
+	defer db.close()
 	rows, _ := db.rows("select id from media where account=?", account)
 	for _, row := range rows {
 		os.Remove(media_path(user, row_string(row, "id")))

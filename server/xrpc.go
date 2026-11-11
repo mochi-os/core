@@ -487,6 +487,7 @@ func xrpc_check(w *xrpc_write) error {
 // records, and answers each result.
 func xrpc_apply(ctx context.Context, s *xrpc_session, r *repository, writes []*xrpc_write) ([]map[string]any, error) {
 	db := db_user(s.user, "user")
+	defer db.close()
 	var ops []repository_operation
 	var results []map[string]any
 	var deleted []map[string]any
@@ -705,6 +706,7 @@ func xrpc_following(s *xrpc_session, action string, uri string, record map[strin
 		return
 	}
 	db := db_user(s.user, "user")
+	defer db.close()
 	if action == "delete" {
 		db.exec("delete from following where account=? and actor=? and activity=?", s.id, did, uri)
 		return
@@ -900,6 +902,7 @@ func xrpc_account_status(c *gin.Context) {
 		return
 	}
 	db := db_user(s.user, "user")
+	defer db.close()
 	count := func(sql string) int64 {
 		row, _ := db.row(sql, s.id)
 		return row_int(row, "n")
@@ -928,6 +931,7 @@ func xrpc_account_status(c *gin.Context) {
 // xrpc_referenced is every blob the account's records name.
 func xrpc_referenced(s *xrpc_session) map[string]string {
 	db := db_user(s.user, "user")
+	defer db.close()
 	rows, _ := db.rows("select r.collection, r.rkey, n.data from records r join nodes n on n.account=r.account and n.cid=r.cid where r.account=?", s.id)
 	out := map[string]string{}
 	for _, row := range rows {
@@ -986,6 +990,7 @@ func xrpc_missing_blobs(c *gin.Context) {
 		return
 	}
 	db := db_user(s.user, "user")
+	defer db.close()
 	blobs := []any{}
 	limit := atproto_limit(c, 500, 1000)
 	cursor := c.Query("cursor")
@@ -1041,7 +1046,7 @@ func xrpc_activation(c *gin.Context, active bool) {
 	} else {
 		data["deactivated"] = true
 	}
-	db_user(s.user, "user").account_set(s.id, map[string]any{"data": json_encode(data)})
+	db_user_brief(s.user, "user").account_set(s.id, map[string]any{"data": json_encode(data)})
 	if active {
 		stream_append(s.did, "#identity", map[string]any{"did": s.did, "handle": row_string(s.row, "identifier")})
 		stream_append(s.did, "#account", map[string]any{"did": s.did, "active": true})
@@ -1170,7 +1175,7 @@ func xrpc_plc_sign(c *gin.Context) {
 		xrpc_fail(c, http.StatusBadRequest, "InvalidRequest", err.Error())
 		return
 	}
-	db_user(s.user, "user").exec("delete from snapshots where kind='plc' and key=?", s.id)
+	db_user_brief(s.user, "user").exec("delete from snapshots where kind='plc' and key=?", s.id)
 	c.JSON(http.StatusOK, map[string]any{"operation": op})
 }
 
@@ -1244,7 +1249,7 @@ func xrpc_create_account(c *gin.Context) {
 	id, _ := row["id"].(string)
 	data["did"] = body.DID
 	data["deactivated"] = true
-	db_user(user, "user").account_set(id, map[string]any{"data": json_encode(data)})
+	db_user_brief(user, "user").account_set(id, map[string]any{"data": json_encode(data)})
 	atproto_register(body.DID, id, user)
 	repository_create(user, id, body.DID)
 	row = account_hosted_get(user, id)
@@ -1324,6 +1329,7 @@ func xrpc_import(c *gin.Context) {
 		return
 	}
 	db := db_user(s.user, "user")
+	defer db.close()
 	var ops []repository_operation
 	walked := imported.MST.Walk(func(key []byte, value cid.Cid) error {
 		block, err := imported.RecordStore.Get(ctx, value)

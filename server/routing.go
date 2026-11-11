@@ -644,13 +644,14 @@ func xmpp_blocked(user *User, other jid.JID) bool {
 			return true
 		}
 	}
-	return blocked_by(db_user(user, "user"), strings.ToLower(other.Domainpart()))
+	return blocked_by(db_user_brief(user, "user"), strings.ToLower(other.Domainpart()))
 }
 
 // xmpp_blocklist lists what the user blocks, as XMPP addresses: people on
 // XMPP, and domains.
 func xmpp_blocklist(user *User) []string {
 	db := db_user(user, "user")
+	defer db.close()
 	var out []string
 	rows, _ := db.rows("select actor from blocked where actor like 'xmpp:%' order by created")
 	for _, row := range rows {
@@ -716,6 +717,7 @@ func xmpp_blocking_iq(a *xmpp_account, s *xmpp_stanza, name string) *xmpp_stanza
 		return xmpp_failure(s, "bad-request", "modify", "")
 	}
 	db := db_user(a.user, "user")
+	defer db.close()
 	if name == "unblock" && len(addresses) == 0 {
 		for _, address := range xmpp_blocklist(a.user) {
 			if parsed, err := jid.Parse(address); err == nil {
@@ -1651,6 +1653,7 @@ func xmpp_hosted_read(a *xmpp_account, conversation string, id string) error {
 // shows its contacts what that now makes it.
 func xmpp_hosted_share(a *xmpp_account, shared bool) {
 	db := db_user(a.user, "user")
+	defer db.close()
 	if row := account_hosted_get(a.user, a.id); row != nil {
 		data, _ := row["data"].(map[string]any)
 		if data == nil {

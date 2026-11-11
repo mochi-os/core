@@ -915,6 +915,7 @@ func oauth_grant_store(user_id, provider string, p *oauth_profile, refresh strin
 		return "", "provider_error"
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	row, _ := db.row("select id, data from accounts where type=? and identifier=?", provider, p.Subject)
 	held := []string{}
 	id := ""

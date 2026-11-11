@@ -78,6 +78,15 @@ type DB struct {
 	// databases_lock - same primitive that guards the cache map this
 	// DB lives in, so no new synchronisation primitive is introduced.
 	closed int64
+	// holders counts the opens of this handle not yet matched by a close().
+	// counted marks a per-user file (db_count), which is idle only once
+	// holders reaches zero: a caller keeping a user's handle (a linked
+	// session, an export) is never closed under, and the WAL and integrity
+	// watchdogs, which pass over idle handles, keep watching it. Other
+	// handles keep the rule of the last close, since mochi.db's builtins look
+	// theirs up per call. Both guarded by databases_lock.
+	holders int64
+	counted bool
 
 	// statement_cache holds prepared statements for the internal pool, keyed
 	// by SQL text, populated lazily by prepared(). Guarded by statement_lock.
@@ -487,14 +496,45 @@ func apps_create(db *DB) {
 
 // db_user opens a database in the user's directory, brought to its current
 // version (db_user_steps).
+//
+// Each open is matched by a close() when the caller is done, so db_manager
+// can close the file a minute after its last holder lets go; a caller that
+// keeps the handle beyond its own call marks the open `// handle-ok: <reason>`
+// and holds the file open until the process ends, as every caller once did.
+// A caller making one call at once uses db_user_brief.
 func db_user(u *User, name string) *DB {
 	path := fmt.Sprintf("users/%s/%s.db", u.UID, name)
 	db := db_open(path)
+	if db == nil {
+		return nil
+	}
 	// Bind under databases_lock via db_bind: these fields live on the shared
 	// cached handle, so assigning them directly races any concurrent opener.
 	db_bind(db, u, nil)
+	db_count(db)
 	db_upgrade_file(db, path, db_user_steps[name])
 	return db
+}
+
+// db_user_brief is db_user for one call made at once, as in
+// db_user_brief(u, "user").exec(...): the open is released before the handle
+// is returned. A holder elsewhere keeps the file open; with none, db_manager
+// closes it no sooner than a minute later, and a query already started when
+// it does still finishes.
+func db_user_brief(u *User, name string) *DB {
+	db := db_user(u, name)
+	db.close()
+	return db
+}
+
+// db_count marks a per-user file's handle as counted, by its caller who has
+// just opened it and so holds it: in use, though a close by an opener before
+// the mark, under the old rule, set it idle.
+func db_count(db *DB) {
+	databases_lock.Lock()
+	db.counted = true
+	db.closed = 0
+	databases_lock.Unlock()
 }
 
 // db_user_steps are the versioned steps of each per-user database, by name. A
@@ -640,12 +680,23 @@ func db_upgrade_step(db *DB, step func(*DB) error, version int) (err error) {
 
 // db_discard closes a handle this caller opened and nothing else holds, so a
 // walk over many files keeps no descriptors open behind it. A handle that was
-// already cached when opened is left as it was.
+// already cached when opened is left open, as is a counted one another opener
+// has found since: released, so db_manager closes it once its holders let go.
 func db_discard(db *DB, reused bool) {
-	if db == nil || reused {
+	if db == nil {
 		return
 	}
 	databases_lock.Lock()
+	if db.holders > 0 {
+		db.holders--
+	}
+	if db.counted && db.holders == 0 {
+		db.closed = now()
+	}
+	if reused || (db.counted && db.holders > 0) {
+		databases_lock.Unlock()
+		return
+	}
 	if databases[db.key] == db {
 		delete(databases, db.key)
 	}
@@ -1070,18 +1121,25 @@ func (db *DB) vacuum() int64 {
 	return reclaimed
 }
 
-// db_vacuum_all vacuums every currently-open database now, returning the count
-// and bytes freed. Snapshots the open set under the lock, then vacuums outside
-// it.
-func db_vacuum_all() (int, int64) {
+// db_in_use is every cached handle not marked idle, as the vacuum and the WAL
+// and integrity watchdogs see them: a counted handle while anyone holds it.
+func db_in_use() []*DB {
 	databases_lock.Lock()
+	defer databases_lock.Unlock()
 	open := make([]*DB, 0, len(databases))
 	for _, db := range databases {
 		if db.closed == 0 {
 			open = append(open, db)
 		}
 	}
-	databases_lock.Unlock()
+	return open
+}
+
+// db_vacuum_all vacuums every currently-open database now, returning the count
+// and bytes freed. Snapshots the open set under the lock, then vacuums outside
+// it.
+func db_vacuum_all() (int, int64) {
+	open := db_in_use()
 
 	count := 0
 	var total int64
@@ -1110,14 +1168,7 @@ var db_wal_strikes sync.Map // db.path -> consecutive over-threshold checks
 // db_wal_warn_strikes ticks. Best-effort: a reader can block the truncate,
 // which the strikes surface.
 func db_wal_watchdog() {
-	databases_lock.Lock()
-	open := make([]*DB, 0, len(databases))
-	for _, db := range databases {
-		if db.closed == 0 {
-			open = append(open, db)
-		}
-	}
-	databases_lock.Unlock()
+	open := db_in_use()
 
 	for _, db := range open {
 		if st, err := os.Stat(db.path + "-wal"); err != nil || st.Size() < db_wal_warn_bytes {
@@ -1236,14 +1287,7 @@ func db_error_is_transient(err error) bool {
 // moment one is corrupt. The check is read-only, and a transient open/lock miss
 // (ran=false) is ignored rather than read as corruption.
 func db_integrity_watchdog() {
-	databases_lock.Lock()
-	open := make([]*DB, 0, len(databases))
-	for _, db := range databases {
-		if db.closed == 0 {
-			open = append(open, db)
-		}
-	}
-	databases_lock.Unlock()
+	open := db_in_use()
 
 	checked := 0
 	for _, db := range open {
@@ -1280,34 +1324,11 @@ func db_manager() {
 		queue_watchdog()
 		qid_prune_due(now)
 		pass := now-db_vacuum_last >= db_vacuum_period
-
-		// Collect under the lock, but vacuum and close outside it: both
-		// can hold a write lock on the file, and must not block every
-		// other db_open while they run.
-		var evicting, live []*DB
-		databases_lock.Lock()
-		for _, db := range databases {
-			if db.closed > 0 && db.closed < now-60 {
-				evicting = append(evicting, db)
-				delete(databases, db.key)
-			} else if pass {
-				live = append(live, db)
-			}
-		}
-		databases_lock.Unlock()
-
-		// 2b: reclaim each idle database at the zero-contention moment
-		// just before its handles close.
-		for _, db := range evicting {
-			db.vacuum()
-			db.stmts_close()
-			db.internal.Close()
-			db.starlark.Close()
-		}
+		live := db_evict(now, pass)
 
 		// 2a (primary): reclaim the still-open databases in place. Core
 		// DBs and busy user DBs never go idle, so this periodic pass -
-		// not the eviction path above - is what keeps them compact.
+		// not the eviction in db_evict - is what keeps them compact.
 		if pass {
 			for _, db := range live {
 				db.vacuum()
@@ -1315,6 +1336,42 @@ func db_manager() {
 			db_vacuum_last = now
 		}
 	}
+}
+
+// db_evict closes every idle handle (db_idle) and, when pass asks, returns the
+// others for the vacuum pass.
+func db_evict(now int64, pass bool) []*DB {
+	// Collect under the lock, but vacuum and close outside it: both can hold a
+	// write lock on the file, and must not block every other db_open while
+	// they run.
+	var evicting, live []*DB
+	databases_lock.Lock()
+	for _, db := range databases {
+		if db_idle(db, now) {
+			evicting = append(evicting, db)
+			delete(databases, db.key)
+		} else if pass {
+			live = append(live, db)
+		}
+	}
+	databases_lock.Unlock()
+
+	// 2b: reclaim each idle database at the zero-contention moment just before
+	// its handles close.
+	for _, db := range evicting {
+		db.vacuum()
+		db.stmts_close()
+		db.internal.Close()
+		db.starlark.Close()
+	}
+	return live
+}
+
+// db_idle reports whether db_manager may close a handle: marked idle over a
+// minute ago and, for a counted handle, held by no one. Called under
+// databases_lock.
+func db_idle(db *DB, now int64) bool {
+	return db.closed > 0 && db.closed < now-60 && !(db.counted && db.holders > 0)
 }
 
 // db_release marks a handle idle when this caller is the one that opened it, so
@@ -1378,6 +1435,7 @@ func db_open_work(file string, keys ...string) (*DB, bool, bool) {
 		// Touch back to in-use while still under the lock the
 		// pruning loop reads `closed` under.
 		db.closed = 0
+		db.holders++
 	}
 	databases_lock.Unlock()
 	if found {
@@ -1426,11 +1484,13 @@ func db_open_work(file string, keys ...string) (*DB, bool, bool) {
 	databases_lock.Lock()
 	if existing, found := databases[key]; found {
 		existing.closed = 0
+		existing.holders++
 		databases_lock.Unlock()
 		db.internal.Close()
 		db.starlark.Close()
 		return existing, false, true
 	}
+	db.holders = 1
 	databases[key] = db
 	databases_lock.Unlock()
 
@@ -1659,7 +1719,12 @@ func (db *DB) close() {
 		return
 	}
 	databases_lock.Lock()
-	db.closed = now()
+	if db.holders > 0 {
+		db.holders--
+	}
+	if !db.counted || db.holders == 0 {
+		db.closed = now()
+	}
 	databases_lock.Unlock()
 }
 

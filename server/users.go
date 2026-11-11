@@ -529,6 +529,7 @@ var (
 // class_app returns the user's preferred app for a class, or empty string if not set
 func (u *User) class_app(class string) string {
 	db := db_user(u, "user")
+	defer db.close()
 	row, _ := db.row("select app from classes where class = ?", class)
 	if row == nil {
 		return ""
@@ -539,6 +540,7 @@ func (u *User) class_app(class string) string {
 // set_class_app sets the user's preferred app for a class.
 func (u *User) set_class_app(class, app string) {
 	db := db_user(u, "user")
+	defer db.close()
 	if app == "" {
 		db.row_remove(reg_classes, map[string]any{"class": class})
 	} else {
@@ -551,6 +553,7 @@ func (u *User) set_class_app(class, app string) {
 // service_app returns the user's preferred app for a service, or empty string if not set
 func (u *User) service_app(service string) string {
 	db := db_user(u, "user")
+	defer db.close()
 	row, _ := db.row("select app from services where service = ?", service)
 	if row == nil {
 		return ""
@@ -561,6 +564,7 @@ func (u *User) service_app(service string) string {
 // set_service_app sets the user's preferred app for a service.
 func (u *User) set_service_app(service, app string) {
 	db := db_user(u, "user")
+	defer db.close()
 	if app == "" {
 		db.row_remove(reg_services, map[string]any{"service": service})
 	} else {
@@ -573,6 +577,7 @@ func (u *User) set_service_app(service, app string) {
 // path_app returns the user's preferred app for a path, or empty string if not set
 func (u *User) path_app(path string) string {
 	db := db_user(u, "user")
+	defer db.close()
 	row, _ := db.row("select app from paths where path = ?", path)
 	if row == nil {
 		return ""
@@ -583,6 +588,7 @@ func (u *User) path_app(path string) string {
 // set_path_app sets the user's preferred app for a path.
 func (u *User) set_path_app(path, app string) {
 	db := db_user(u, "user")
+	defer db.close()
 	if app == "" {
 		db.row_remove(reg_paths, map[string]any{"path": path})
 	} else {
@@ -595,6 +601,7 @@ func (u *User) set_path_app(path, app string) {
 // app_version returns the user's preferred version and track for an app
 func (u *User) app_version(app string) (version, track string) {
 	db := db_user(u, "user")
+	defer db.close()
 	row, _ := db.row("select version, track from versions where app = ?", app)
 	if row == nil {
 		return "", ""
@@ -605,6 +612,7 @@ func (u *User) app_version(app string) (version, track string) {
 // set_app_version sets the user's preferred version or track for an app.
 func (u *User) set_app_version(app, version, track string) {
 	db := db_user(u, "user")
+	defer db.close()
 	if version == "" && track == "" {
 		db.row_remove(reg_versions, map[string]any{"app": app})
 	} else {
@@ -1446,6 +1454,7 @@ func user_is_fresh(uid string) bool {
 	// later change that sources a name from elsewhere would turn the interpolated
 	// form into an injection with no visible edit here.
 	udb := db_user(u, "user")
+	defer udb.close()
 	for _, query := range []string{
 		"select 1 from accounts limit 1",
 		"select 1 from groups limit 1",
@@ -2022,6 +2031,7 @@ func (p *UserAppClass) list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		return sl_error(fn, "%v", err)
 	}
 	db := db_user(p.user, "user")
+	defer db.close()
 	rows, _ := db.rows("select class, app from classes")
 	result := sl.NewDict(len(rows))
 	for _, row := range rows {
@@ -2108,6 +2118,7 @@ func (p *UserAppService) list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "%v", err)
 	}
 	db := db_user(p.user, "user")
+	defer db.close()
 	rows, _ := db.rows("select service, app from services")
 	result := sl.NewDict(len(rows))
 	for _, row := range rows {
@@ -2194,6 +2205,7 @@ func (p *UserAppPath) list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "%v", err)
 	}
 	db := db_user(p.user, "user")
+	defer db.close()
 	rows, _ := db.rows("select path, app from paths")
 	result := sl.NewDict(len(rows))
 	for _, row := range rows {

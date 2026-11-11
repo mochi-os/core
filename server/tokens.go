@@ -438,6 +438,7 @@ func token_list_kind(user *User, kind string) []map[string]any {
 	rows, _ := db_open("db/users.db").rows("select hash, name, created, expires, kind, client, account, network, device from tokens where user=? and kind=?", user.UID, kind)
 	useds := token_useds(user.UID)
 	accounts := db_user(user, "user")
+	defer accounts.close()
 	results := []map[string]any{}
 	for _, row := range rows {
 		hash := row_string(row, "hash")

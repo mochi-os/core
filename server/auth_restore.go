@@ -569,6 +569,7 @@ func restore_hosted(uid string) {
 		held[h.Domain+"\x00"+h.Name] = true
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	for _, row := range accounts_hosted(user, "") {
 		data, _ := row["data"].(map[string]any)
 		domain, _ := data["domain"].(string)
@@ -623,7 +624,7 @@ func restore_bluesky(user *User, row map[string]any, name string) bool {
 	data["domain"], data["handle"] = domain, name
 	delete(data, "apex")
 	encoded, _ := json.Marshal(data)
-	db_user(user, "user").account_set(id, map[string]any{"data": string(encoded), "identifier": address})
+	db_user_brief(user, "user").account_set(id, map[string]any{"data": string(encoded), "identifier": address})
 	actor_register(user, id, "bluesky", domain, name)
 	atproto_register(did, id, user)
 	stream_append(did, "#identity", map[string]any{"did": did, "handle": address})
@@ -675,6 +676,7 @@ func restore_fediverse(user *User, row map[string]any, name string) bool {
 		return false
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	inboxes := []string{}
 	seen := map[string]bool{}
 	// A person the server blocked after the restore last removed them is still
@@ -930,6 +932,7 @@ func restore_auth(uid string, account export_account, secrets *export_secrets) {
 			user := user_by_uid(uid)
 			if user != nil {
 				if db := db_user(user, "user"); db != nil {
+					defer db.close()
 					for _, a := range secrets.Accounts {
 						if a.Id == "" {
 							continue

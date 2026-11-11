@@ -1422,7 +1422,7 @@ func lemmy_person(c *gin.Context, s *lemmy_session, in *lemmy_input) {
 
 // lemmy_blocked_people are the people the user has blocked on the fediverse.
 func lemmy_blocked_people(s *lemmy_session) []string {
-	rows, _ := db_user(s.user, "user").rows("select actor from blocked where actor!='' order by created")
+	rows, _ := db_user_brief(s.user, "user").rows("select actor from blocked where actor!='' order by created")
 	out := []string{}
 	for _, row := range rows {
 		out = append(out, row_string(row, "actor"))

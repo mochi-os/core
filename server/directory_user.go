@@ -59,6 +59,7 @@ func directory_user_learn(user *User, entity string, peer string) {
 		return
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	if db == nil {
 		return
 	}
@@ -98,6 +99,7 @@ func directory_user_confirm(user *User, entity string, peer string) {
 		return
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	if db == nil {
 		return
 	}
@@ -120,6 +122,7 @@ func directory_user_forget(user *User, entity string, peer string) {
 		return
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	if db == nil {
 		return
 	}
@@ -135,6 +138,7 @@ func directory_user_peers(user *User, entity string) []map[string]any {
 		return nil
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	if db == nil {
 		return nil
 	}

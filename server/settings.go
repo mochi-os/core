@@ -576,6 +576,7 @@ var reg_preferences = upsert_def{"preferences", []string{"name"}, []string{"valu
 func user_preferences_load(u *User) map[string]string {
 	prefs := map[string]string{}
 	db := db_user(u, "user")
+	defer db.close()
 	rows, err := db.rows("select * from preferences")
 	if err != nil {
 		return prefs
@@ -694,6 +695,7 @@ func preference_validate(u *User, name, value string) error {
 // user_preference_set sets a user preference.
 func user_preference_set(u *User, name, value string) {
 	db := db_user(u, "user")
+	defer db.close()
 	db.row_write(reg_preferences, map[string]any{"name": name, "value": value})
 	if u.Preferences == nil {
 		u.Preferences = map[string]string{}
@@ -707,6 +709,7 @@ func user_preference_delete(u *User, name string) bool {
 		return false
 	}
 	db := db_user(u, "user")
+	defer db.close()
 	db.row_remove(reg_preferences, map[string]any{"name": name})
 	delete(u.Preferences, name)
 	return true

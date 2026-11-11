@@ -322,6 +322,7 @@ func account_network_get(user *User, id string) map[string]any {
 // every network: the handle is being released or freed.
 func accounts_hosted_remove(user *User, domain string, name string) {
 	db := db_user(user, "user")
+	defer db.close()
 	for _, row := range accounts_hosted(user, "") {
 		data, _ := row["data"].(map[string]any)
 		if data["domain"] == domain && data["handle"] == name {
@@ -518,7 +519,7 @@ func host_allowed(user *User, network string, host string) error {
 	if blocked_by(db_open("db/networks.db"), host) {
 		return &host_refusal{Host: host, Reason: host + " is blocked on this server"}
 	}
-	if user != nil && blocked_by(db_user(user, "user"), host) {
+	if user != nil && blocked_by(db_user_brief(user, "user"), host) {
 		return &host_refusal{Host: host, Reason: host + " is blocked"}
 	}
 	return nil
@@ -689,6 +690,7 @@ func api_account_block_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 		return sl_error(fn, "%v", err)
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	return sl_encode(append(blocks_list(db), actor_list(db, "blocked")...)), nil
 }
 
@@ -703,7 +705,7 @@ func api_account_block_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		blocked_add(user, actor)
 		return sl.None, nil
 	}
-	if err := block_add(db_user(user, "user"), target); err != nil {
+	if err := block_add(db_user_brief(user, "user"), target); err != nil {
 		return sl_error(fn, "%v", err)
 	}
 	return sl.None, nil
@@ -717,6 +719,7 @@ func api_account_block_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwarg
 		return sl_error(fn, "%v", err)
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	if actor, ok := actor_target(target); ok {
 		blocked_remove(user, actor)
 		return sl.None, nil

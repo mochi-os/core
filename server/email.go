@@ -54,9 +54,10 @@ func email_send_dedup(u *User, event_id, to, subject, body string) {
 }
 
 // email_dedup_db opens the per-user notifications DB (shared with
-// webpush_delivered) and lazily creates the email_delivered table.
+// webpush_delivered) and lazily creates the email_delivered table. The caller
+// closes it.
 func email_dedup_db(u *User) *DB {
-	return db_user(u, "notifications")
+	return db_user(u, "notifications") // handle-ok: returned to the caller, which closes it
 }
 
 // email_already_delivered consults the per-user dedup table. Returns
@@ -64,6 +65,7 @@ func email_dedup_db(u *User) *DB {
 // (address, event_id) inside the TTL window.
 func email_already_delivered(u *User, address, event_id string) bool {
 	db := email_dedup_db(u)
+	defer db.close()
 	exists, _ := db.exists("select 1 from email_delivered where address=? and event_id=? and ts > ?", address, event_id, now()-email_dedup_ttl)
 	return exists
 }
@@ -73,6 +75,7 @@ func email_already_delivered(u *User, address, event_id string) bool {
 func email_mark_delivered(u *User, address, event_id string) {
 	ts := now()
 	db := email_dedup_db(u)
+	defer db.close()
 	db.exec("insert or ignore into email_delivered (address, event_id, ts) values (?, ?, ?)", address, event_id, ts)
 	db.exec("delete from email_delivered where ts < ?", ts-email_dedup_ttl)
 }

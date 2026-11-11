@@ -187,7 +187,7 @@ func encryption_matrix_of(user *User, account string) (*encryption_matrix, error
 	if d != nil {
 		return d, nil
 	}
-	row, _ := db_user(user, "user").row("select * from accounts where id=?", account)
+	row, _ := db_user_brief(user, "user").row("select * from accounts where id=?", account)
 	d = &encryption_matrix{user: user, account: account}
 	if h := matrix_hosted_of(user, row); h != nil {
 		d.hosted, d.address = h, h.address
@@ -932,7 +932,7 @@ func encryption_seal(ctx context.Context, user *User, account string, room strin
 // encrypted, without its device: from the engine's state, or the account's
 // server.
 func encryption_room_encrypted(ctx context.Context, user *User, account string, room string) bool {
-	row, _ := db_user(user, "user").row("select * from accounts where id=?", account)
+	row, _ := db_user_brief(user, "user").row("select * from accounts where id=?", account)
 	if matrix_hosted_of(user, row) != nil {
 		return encryption_room_state(room, "m.room.encryption") != nil
 	}

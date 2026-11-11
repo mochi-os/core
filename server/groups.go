@@ -232,6 +232,7 @@ func api_group_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_user(owner, "user")
+	defer db.close()
 	db.row_write(reg_groups, map[string]any{"id": id, "name": name, "description": description, "created": now()})
 
 	return sl_encode(map[string]any{"id": id, "name": name, "description": description}), nil
@@ -254,6 +255,7 @@ func api_group_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	db := db_user(owner, "user")
+	defer db.close()
 	row, err := db.row("select * from groups where id=?", id)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
@@ -281,6 +283,7 @@ func api_group_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 
 	db := db_user(owner, "user")
+	defer db.close()
 	// No ORDER BY name: SQL collation gets accents and locale wrong, and the
 	// consumer sorts with naturalCompare. Order by an intrinsic column so the
 	// result is at least stable.
@@ -313,6 +316,7 @@ func api_group_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_user(owner, "user")
+	defer db.close()
 
 	// Whole-row read-modify-write: row_write writes every payload column, so the
 	// columns this call is not changing have to be read back first or they would
@@ -358,6 +362,7 @@ func api_group_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_user(owner, "user")
+	defer db.close()
 
 	db.row_remove(reg_groups, map[string]any{"id": id})
 	db.group_members_remove("parent=?", id)
@@ -398,6 +403,7 @@ func api_group_add(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	db := db_user(owner, "user")
+	defer db.close()
 
 	// A group inside itself is the caller's mistake, not a fault: answer False
 	// so the app can refuse it in its own words, rather than abort the action.
@@ -437,6 +443,7 @@ func api_group_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	}
 
 	db := db_user(owner, "user")
+	defer db.close()
 	db.row_remove(reg_members, map[string]any{"parent": group, "member": member})
 
 	return sl.None, nil
@@ -469,6 +476,7 @@ func api_group_members(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	db := db_user(owner, "user")
+	defer db.close()
 	return sl_encode(db.group_members(group, recursive)), nil
 }
 
@@ -495,5 +503,6 @@ func api_group_memberships(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	db := db_user(owner, "user")
+	defer db.close()
 	return sl_encode(db.group_memberships(user)), nil
 }

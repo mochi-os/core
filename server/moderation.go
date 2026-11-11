@@ -51,13 +51,13 @@ func actor_target(target string) (string, bool) {
 
 // actor_blocked says whether the user has blocked a person.
 func actor_blocked(user *User, actor string) bool {
-	found, _ := db_user(user, "user").exists("select 1 from blocked where actor=?", actor)
+	found, _ := db_user_brief(user, "user").exists("select 1 from blocked where actor=?", actor)
 	return found
 }
 
 // actor_muted says whether the user has muted a person.
 func actor_muted(user *User, actor string) bool {
-	found, _ := db_user(user, "user").exists("select 1 from muted where actor=?", actor)
+	found, _ := db_user_brief(user, "user").exists("select 1 from muted where actor=?", actor)
 	return found
 }
 
@@ -75,6 +75,7 @@ func actor_list(db *DB, table string) []map[string]any {
 // Bluesky is blocked by a record of each of the user's accounts there.
 func blocked_add(user *User, actor string) {
 	db := db_user(user, "user")
+	defer db.close()
 	db.exec("insert or ignore into blocked (actor, created) values (?, ?)", actor, now())
 	db.exec("delete from followers where actor=?", actor)
 	db.exec("delete from following where actor=?", actor)
@@ -85,7 +86,7 @@ func blocked_add(user *User, actor string) {
 
 // blocked_remove lifts a block on a person, and the records that made it.
 func blocked_remove(user *User, actor string) {
-	db_user(user, "user").exec("delete from blocked where actor=?", actor)
+	db_user_brief(user, "user").exec("delete from blocked where actor=?", actor)
 	if strings.HasPrefix(actor, "did:") {
 		atproto_block(context.Background(), user, actor, false)
 	}
@@ -95,6 +96,7 @@ func blocked_remove(user *User, actor string) {
 // for each of the user's accounts there, which keeps mutes for an account.
 func muted_set(ctx context.Context, user *User, actor string, on bool) {
 	db := db_user(user, "user")
+	defer db.close()
 	if on {
 		db.exec("insert or ignore into muted (actor, created) values (?, ?)", actor, now())
 	} else {
@@ -121,7 +123,7 @@ func api_account_mute_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	return sl_encode(actor_list(db_user(user, "user"), "muted")), nil
+	return sl_encode(actor_list(db_user_brief(user, "user"), "muted")), nil
 }
 
 // mochi.account.mute.add(actor) -> None: Mute a person, by their id on their
@@ -166,6 +168,7 @@ func api_account_followers(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "a linked account's followers are read through mochi.account.request")
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	var rows []map[string]any
 	if actor != "" {
 		rows, _ = db.rows("select actor, inbox, created from followers where account=? and actor=?", account, actor)
@@ -204,6 +207,7 @@ func api_account_follower_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 		return sl_error(fn, "actor is required")
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	found, _ := db.exists("select 1 from followers where account=? and actor=?", account, actor)
 	db.exec("delete from followers where account=? and actor=?", account, actor)
 	return sl.Bool(found), nil
@@ -226,6 +230,7 @@ func api_account_following(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		return sl_error(fn, "a linked account's follows are read through mochi.account.request")
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	var rows []map[string]any
 	if actor != "" {
 		rows, _ = db.rows("select actor, accepted, created from following where account=? and actor=?", account, actor)

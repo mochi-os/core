@@ -207,6 +207,7 @@ func object_recipients(ctx context.Context, user *User, account string, actor st
 		}
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	for _, address := range addresses {
 		switch {
 		case address == activitystreams_public:
@@ -326,6 +327,7 @@ func api_account_object_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		app_id = app.id
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	db.exec("insert into objects (id, account, app, type, addressing, created) values (?, ?, ?, ?, ?, ?)", id, account, app_id, kind, json_encode(map[string]any{"to": to, "cc": cc}), now())
 
 	activity := map[string]any{
@@ -387,6 +389,7 @@ func api_account_object_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		return sl_encode(result), nil
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	id, row := object_get(db, actor, account, remote)
 	if row == nil || row["deleted"].(int64) != 0 {
 		return sl_error(fn, "no such object")
@@ -459,6 +462,7 @@ func api_account_object_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 		return sl.True, nil
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	id, row := object_get(db, actor, account, remote)
 	if row == nil {
 		return sl_error(fn, "no such object")
@@ -541,7 +545,7 @@ func api_account_follow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		return sl_error(fn, "%v", err)
 	}
 	account_follow(user, account, actor, r)
-	following, _ := db_user(user, "user").row("select accepted from following where account=? and actor=?", account, r.ID)
+	following, _ := db_user_brief(user, "user").row("select accepted from following where account=? and actor=?", account, r.ID)
 	return sl_encode(map[string]any{"id": r.ID, "locked": r.Locked, "accepted": following != nil && row_int(following, "accepted") > 0}), nil
 }
 
@@ -550,6 +554,7 @@ func api_account_follow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 // one was sent before, so a repeated follow never makes a second.
 func account_follow(user *User, account string, actor string, r *resolved) string {
 	db := db_user(user, "user")
+	defer db.close()
 	activity := actor + "/follows/" + uid()
 	if row, _ := db.row("select activity from following where account=? and actor=?", account, r.ID); row != nil {
 		activity = row["activity"].(string)
@@ -567,6 +572,7 @@ func account_follow(user *User, account string, actor string, r *resolved) strin
 // check out.
 func following_move(ctx context.Context, user *User, account string, from string, to string) bool {
 	db := db_user(user, "user")
+	defer db.close()
 	if found, _ := db.exists("select 1 from following where account=? and actor=?", account, from); !found {
 		return false
 	}
@@ -645,6 +651,7 @@ func api_account_move(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	data["moved"] = r.ID
 	encoded, _ := json.Marshal(data)
 	db := db_user(user, "user")
+	defer db.close()
 	db.account_set(account, map[string]any{"data": string(encoded)})
 
 	inboxes := []string{}
@@ -728,6 +735,7 @@ func api_account_announce(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	id := uid()
 	announce := actor + "/" + id
 	db := db_user(user, "user")
+	defer db.close()
 	db.exec("insert into objects (id, account, app, type, addressing, created) values (?, ?, ?, 'Announce', ?, ?)", id, account, thread_app_id(t), json_encode(map[string]any{"to": to, "cc": cc, "object": remote}), now())
 	activity := map[string]any{
 		"@context":  activitystreams,
@@ -787,6 +795,7 @@ func api_account_activity(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 	to, cc := object_addressing(activity, actor)
 	db := db_user(user, "user")
+	defer db.close()
 	db.exec("insert into objects (id, account, app, type, addressing, created) values (?, ?, ?, ?, ?, ?)", id, account, thread_app_id(t), kind, json_encode(map[string]any{"to": to, "cc": cc, "activity": activity}), now())
 	body := map[string]any{"@context": activitystreams}
 	for key, item := range activity {
@@ -896,6 +905,7 @@ func api_account_unfollow(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 		return sl_error(fn, "%v", err)
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	row, _ := db.row("select actor, inbox, activity from following where account=? and actor=?", account, address)
 	if row == nil {
 		if r, err := author_resolve(thread_context(t), address); err == nil && r.ID != "" {

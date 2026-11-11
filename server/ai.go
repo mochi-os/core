@@ -149,6 +149,7 @@ func api_ai_prompt(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tupl
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 
 	provider, api_key, model := ai_account(db, account_id)
 	if api_key == "" {

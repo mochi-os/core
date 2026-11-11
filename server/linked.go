@@ -161,6 +161,7 @@ func account_hosted_flag(row map[string]any) bool {
 // decoded: every network type when kinds is empty, else those named.
 func accounts_network(user *User, kinds ...string) []map[string]any {
 	db := db_user(user, "user")
+	defer db.close()
 	rows, _ := db.rows("select id, type, label, identifier, data, created, verified, enabled from accounts order by created")
 	var out []map[string]any
 	for _, row := range rows {
@@ -193,7 +194,7 @@ func linked_from(user *User, row map[string]any) *linked {
 
 // linked_get loads a user's linked account by id, or nil.
 func linked_get(user *User, id string) *linked {
-	row, _ := db_user(user, "user").row("select id, type, label, identifier, data from accounts where id=?", id)
+	row, _ := db_user_brief(user, "user").row("select id, type, label, identifier, data from accounts where id=?", id)
 	return linked_from(user, row)
 }
 
@@ -250,7 +251,7 @@ func (l *linked) save() {
 	if len(set) > 0 {
 		expression = "json_set(" + expression + strings.Repeat(", ?, json(?)", len(set)/2) + ")"
 	}
-	db_user(l.user, "user").exec("update accounts set data="+expression+" where id=?", append(append(removed, set...), l.id)...)
+	db_user_brief(l.user, "user").exec("update accounts set data="+expression+" where id=?", append(append(removed, set...), l.id)...)
 }
 
 // store changes one key and writes it.
@@ -265,6 +266,7 @@ func (l *linked) store(key string, value any) {
 // chat manager is started for a chat account. Returns the row, decoded.
 func linked_store(user *User, kind string, profile *linked_profile, data map[string]any) map[string]any {
 	db := db_user(user, "user")
+	defer db.close()
 	data["id"] = profile.ID
 	data["url"] = profile.URL
 	data["name"] = profile.Name
@@ -1821,7 +1823,7 @@ func linked_end(sessions []*linked_session, limit time.Duration) {
 // linked_refresh starts or stops an account's session after its row changed:
 // an enabled chat account has one, any other has none.
 func linked_refresh(user *User, id string) {
-	row, _ := db_user(user, "user").row("select id, type, label, identifier, data, enabled from accounts where id=?", id)
+	row, _ := db_user_brief(user, "user").row("select id, type, label, identifier, data, enabled from accounts where id=?", id)
 	l := linked_from(user, row)
 	enabled, _ := row["enabled"].(int64)
 	if l == nil || !linked_held(l.kind) || enabled == 0 {

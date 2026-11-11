@@ -293,6 +293,7 @@ func key_verify_p256(did string, data []byte, signature []byte) error {
 // keypairs lists an account's keys.
 func keypairs(user *User, account string) []keypair {
 	db := db_user(user, "user")
+	defer db.close()
 	var keys []keypair
 	db.scans(&keys, "select * from keys where account=? order by kind", account)
 	return keys
@@ -301,6 +302,7 @@ func keypairs(user *User, account string) []keypair {
 // keypair_get returns one key of an account, or nil.
 func keypair_get(user *User, account string, kind string) *keypair {
 	db := db_user(user, "user")
+	defer db.close()
 	var key keypair
 	if !db.scan(&key, "select * from keys where account=? and kind=?", account, kind) {
 		return nil
@@ -312,6 +314,7 @@ func keypair_get(user *User, account string, kind string) *keypair {
 // with. An existing key of a kind is kept.
 func keypairs_create(user *User, account string, network string) error {
 	db := db_user(user, "user")
+	defer db.close()
 	now := time.Now().Unix()
 	for _, pair := range network_keys(network) {
 		kind, algorithm := pair[0], pair[1]
@@ -343,6 +346,7 @@ func keypairs_replace(user *User, account string) error {
 		return err
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	db.exec("update keys set public=?, private=?, created=? where account=? and kind=?", public, private, time.Now().Unix(), account, key_signing)
 	return nil
 }
@@ -364,6 +368,7 @@ func keypair_recovery() (string, string, error) {
 // now lists, as a rotation key above core's own, in place of the last.
 func keypair_recovery_keep(user *User, account string, public string) {
 	db := db_user(user, "user")
+	defer db.close()
 	db.exec("delete from keys where account=? and kind=?", account, key_recovery)
 	db.exec("insert into keys (account, kind, algorithm, public, private, created) values (?, ?, ?, ?, '', ?)", account, key_recovery, key_p256, public, time.Now().Unix())
 }

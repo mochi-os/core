@@ -276,6 +276,7 @@ func permission_name(u *User, language, permission string) string {
 func account_address(u *User, id string) string {
 	if u != nil && id != "" {
 		db := db_user(u, "user")
+		defer db.close()
 		if row, _ := db.row("select identifier, label from accounts where id=?", id); row != nil {
 			if identifier, _ := row["identifier"].(string); identifier != "" {
 				return identifier
@@ -377,6 +378,7 @@ func permission_granted(u *User, app_id string, permission string) bool {
 	name, object := permission_split(permission)
 
 	db := db_user(u, "user")
+	defer db.close()
 
 	// A permission naming an object is granted by a row for that object or for
 	// the wildcard; a url permission also by a row for a parent domain.
@@ -438,6 +440,7 @@ func permission_grant(u *User, app_id string, permission string) {
 	name, object := permission_split(permission)
 
 	db := db_user(u, "user")
+	defer db.close()
 	db.permissions_upsert(app_id, name, object, 1)
 }
 
@@ -450,6 +453,7 @@ func permission_revoke(u *User, app_id string, permission string) {
 	name, object := permission_split(permission)
 
 	db := db_user(u, "user")
+	defer db.close()
 	// granted=0 rather than a row delete, and the difference matters: the row's
 	// presence is the whole reason the revoke sticks. permissions_default is
 	// insert-or-ignore, so a later setup pass finds this key already present and
@@ -464,6 +468,7 @@ func permissions_list(u *User, app_id, language string) []map[string]any {
 	}
 
 	db := db_user(u, "user")
+	defer db.close()
 
 	rows, err := db.rows("select permission, object, granted from permissions where app=?", app_id)
 	if err != nil {
@@ -529,6 +534,7 @@ func app_user_setup(u *User, app_id string) {
 	}
 
 	db := db_user(u, "user")
+	defer db.close()
 
 	defaults := apps_default_get(app_id)
 	expected := len(defaults) + 1
@@ -644,6 +650,7 @@ func permission_url_domains(t *sl.Thread, app *App) []string {
 		return nil
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	rows, _ := db.rows("select object from permissions where app=? and permission='url' and granted=1", app.id)
 	var domains []string
 	for _, row := range rows {

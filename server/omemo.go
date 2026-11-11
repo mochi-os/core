@@ -147,7 +147,7 @@ func omemo_device_of(user *User, account string) (*omemo_device, error) {
 	if d != nil {
 		return d, nil
 	}
-	row, _ := db_user(user, "user").row("select * from accounts where id=?", account)
+	row, _ := db_user_brief(user, "user").row("select * from accounts where id=?", account)
 	d = &omemo_device{user: user, account: account}
 	if a := xmpp_hosted_of(user, row); a != nil {
 		d.hosted, d.address = a, a.address
@@ -1507,7 +1507,7 @@ func omemo_room(user *User, account string, to jid.JID) bool {
 	if to.Resourcepart() != "" {
 		return false
 	}
-	row, _ := db_user(user, "user").row("select * from accounts where id=?", account)
+	row, _ := db_user_brief(user, "user").row("select * from accounts where id=?", account)
 	if a := xmpp_hosted_of(user, row); a != nil {
 		return xmpp_joined_of(a, to.Bare().String()) != nil
 	}

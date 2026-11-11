@@ -299,6 +299,7 @@ func atproto_account_create(ctx context.Context, user *User, id string) error {
 	}
 	encoded, _ := json.Marshal(data)
 	db := db_user(user, "user")
+	defer db.close()
 	db.account_set(id, map[string]any{"data": string(encoded), "identifier": address})
 	atproto_register(did, id, user)
 	r := repository_create(user, id, did)
@@ -734,7 +735,7 @@ func request_remembered(user *User, account string, key string) map[string]any {
 	if key == "" {
 		return nil
 	}
-	row, _ := db_user(user, "user").row("select result from requests where account=? and key=?", account, key)
+	row, _ := db_user_brief(user, "user").row("select result from requests where account=? and key=?", account, key)
 	if row == nil {
 		return nil
 	}
@@ -750,6 +751,7 @@ func request_remember(user *User, account string, key string, result map[string]
 		return
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	db.exec("delete from requests where created<?", now()-86400)
 	db.exec("insert or replace into requests (account, key, result, created) values (?, ?, ?, ?)", account, key, json_encode(result), now())
 }
@@ -760,6 +762,7 @@ func request_remember(user *User, account string, key string, result map[string]
 // again.
 func request_forget(user *User, account string, object string) {
 	db := db_user(user, "user")
+	defer db.close()
 	rows, _ := db.rows("select key, result from requests where account=?", account)
 	for _, row := range rows {
 		var result map[string]any
@@ -1266,7 +1269,7 @@ func atproto_describe_repo(c *gin.Context) {
 		return
 	}
 	collections := []string{}
-	rows, _ := db_user(user, "user").rows("select distinct collection from records where account=? order by collection", r.account)
+	rows, _ := db_user_brief(user, "user").rows("select distinct collection from records where account=? order by collection", r.account)
 	for _, item := range rows {
 		collections = append(collections, row_string(item, "collection"))
 	}
@@ -1448,7 +1451,7 @@ func atproto_sync_blobs(c *gin.Context) {
 	}
 	query += " order by cid limit ?"
 	args = append(args, limit+1)
-	rows, _ := db_user(user, "user").rows(query, args...)
+	rows, _ := db_user_brief(user, "user").rows(query, args...)
 	ids := []string{}
 	answer := map[string]any{}
 	for i, row := range rows {
@@ -1530,7 +1533,7 @@ func atproto_follow(ctx context.Context, user *User, row map[string]any, did str
 		// A record an app wrote (xrpc.go) has its row already; one from
 		// before is given it.
 		uri := "at://" + r.did + "/app.bsky.graph.follow/" + rkey
-		db_user(user, "user").exec("insert or ignore into following (account, actor, inbox, activity, accepted, created) values (?, ?, '', ?, ?, ?)", id, did, uri, now(), now())
+		db_user_brief(user, "user").exec("insert or ignore into following (account, actor, inbox, activity, accepted, created) values (?, ?, '', ?, ?, ?)", id, did, uri, now(), now())
 		return uri, nil
 	}
 	rkey := repository_clock.Next().String()
@@ -1539,7 +1542,7 @@ func atproto_follow(ctx context.Context, user *User, row map[string]any, did str
 		return "", err
 	}
 	uri := "at://" + r.did + "/app.bsky.graph.follow/" + rkey
-	db_user(user, "user").exec("insert into following (account, actor, inbox, activity, accepted, created) values (?, ?, '', ?, ?, ?) on conflict(account, actor) do update set activity=excluded.activity, accepted=excluded.accepted", id, did, uri, now(), now())
+	db_user_brief(user, "user").exec("insert into following (account, actor, inbox, activity, accepted, created) values (?, ?, '', ?, ?, ?) on conflict(account, actor) do update set activity=excluded.activity, accepted=excluded.accepted", id, did, uri, now(), now())
 	return uri, nil
 }
 
@@ -1550,7 +1553,7 @@ func atproto_unfollow(ctx context.Context, user *User, row map[string]any, did s
 	if r == nil {
 		return fmt.Errorf("account has no repository")
 	}
-	db_user(user, "user").exec("delete from following where account=? and actor=?", id, did)
+	db_user_brief(user, "user").exec("delete from following where account=? and actor=?", id, did)
 	rkey := atproto_graph(user, id, "app.bsky.graph.follow", did)
 	if rkey == "" {
 		return nil
@@ -1642,7 +1645,7 @@ func atproto_takedown(user *User, row map[string]any, down bool) {
 		delete(data, "status")
 	}
 	encoded, _ := json.Marshal(data)
-	db_user(user, "user").account_set(id, map[string]any{"data": string(encoded)})
+	db_user_brief(user, "user").account_set(id, map[string]any{"data": string(encoded)})
 	if did == "" {
 		return
 	}

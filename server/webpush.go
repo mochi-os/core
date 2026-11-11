@@ -163,6 +163,7 @@ func api_webpush_send(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 // for this (endpoint, event_id) in the TTL window.
 func webpush_already_delivered(u *User, endpoint, event_id string) bool {
 	db := webpush_dedup_db(u)
+	defer db.close()
 	exists, _ := db.exists("select 1 from webpush_delivered where endpoint=? and event_id=? and ts > ?", endpoint, event_id, now()-webpush_dedup_ttl)
 	return exists
 }
@@ -172,6 +173,7 @@ func webpush_already_delivered(u *User, endpoint, event_id string) bool {
 func webpush_mark_delivered(u *User, endpoint, event_id string) {
 	ts := now()
 	db := webpush_dedup_db(u)
+	defer db.close()
 	db.exec("insert or ignore into webpush_delivered (endpoint, event_id, ts) values (?, ?, ?)", endpoint, event_id, ts)
 	db.exec("delete from webpush_delivered where ts < ?", ts-webpush_dedup_ttl)
 }
@@ -179,7 +181,7 @@ func webpush_mark_delivered(u *User, endpoint, event_id string) {
 // webpush_dedup_db opens the per-user notifications DB and lazily
 // creates the webpush_delivered table.
 func webpush_dedup_db(u *User) *DB {
-	return db_user(u, "notifications")
+	return db_user(u, "notifications") // handle-ok: returned to the caller, which closes it
 }
 
 // Dedup TTL — long enough that a retry or a restart still sees the previous

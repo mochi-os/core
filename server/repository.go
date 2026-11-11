@@ -123,7 +123,7 @@ func repository_head(r *repository) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("repository %s has no commit", r.account)
 	}
-	node, _ := db_user(r.user, "user").row("select data from nodes where account=? and cid=?", r.account, r.head)
+	node, _ := db_user_brief(r.user, "user").row("select data from nodes where account=? and cid=?", r.account, r.head)
 	if node == nil {
 		return nil, fmt.Errorf("repository %s does not keep its commit %s", r.account, r.head)
 	}
@@ -138,13 +138,14 @@ func repository_head(r *repository) ([]byte, error) {
 // repository_create makes an account's repository row, with no commit yet.
 func repository_create(user *User, account string, did string) *repository {
 	db := db_user(user, "user")
+	defer db.close()
 	db.exec("insert or ignore into repositories (account, did, created) values (?, ?, ?)", account, did, now())
 	return repository_get(user, account)
 }
 
 // repository_get reads an account's repository, or nil before it is made.
 func repository_get(user *User, account string) *repository {
-	row, _ := db_user(user, "user").row("select account, did, root, head, rev from repositories where account=?", account)
+	row, _ := db_user_brief(user, "user").row("select account, did, root, head, rev from repositories where account=?", account)
 	if row == nil {
 		return nil
 	}
@@ -155,6 +156,7 @@ func repository_get(user *User, account string) *repository {
 // blobs and waiting operations.
 func repository_delete(user *User, account string) {
 	db := db_user(user, "user")
+	defer db.close()
 	rows, _ := db.rows("select cid from blobs where account=?", account)
 	for _, row := range rows {
 		os.Remove(repository_blob_path(user, row_string(row, "cid")))
@@ -255,7 +257,10 @@ func (r *repository) tree(ctx context.Context) (*mst.Tree, error) {
 	if err != nil {
 		return nil, err
 	}
-	return mst.LoadTreeFromStore(ctx, &repository_source{db_user(r.user, "user"), r.account}, root)
+	// The tree is read whole before it returns, and keeps no source.
+	db := db_user(r.user, "user")
+	defer db.close()
+	return mst.LoadTreeFromStore(ctx, &repository_source{db, r.account}, root)
 }
 
 // repository_nodes lists the content ids of every node of a tree, computing
@@ -310,6 +315,7 @@ func repository_encode(record map[string]any) (map[string]any, []byte, cid.Cid, 
 // waiting: its content id and its value, or empty when there is none.
 func repository_record(user *User, account string, collection string, rkey string) (string, map[string]any) {
 	db := db_user(user, "user")
+	defer db.close()
 	row, _ := db.row("select n.cid, n.data from records r join nodes n on n.account=r.account and n.cid=r.cid where r.account=? and r.collection=? and r.rkey=?", account, collection, rkey)
 	if row == nil {
 		return "", nil
@@ -326,6 +332,7 @@ func repository_record(user *User, account string, collection string, rkey strin
 // limit of them; the cursor is the record key to continue from.
 func repository_records(user *User, account string, collection string, limit int, cursor string, reverse bool) ([]map[string]any, string) {
 	db := db_user(user, "user")
+	defer db.close()
 	order, compare := "desc", "<"
 	if reverse {
 		order, compare = "asc", ">"
@@ -366,6 +373,7 @@ func repository_write(ctx context.Context, r *repository, collection string, rke
 		return "", false, err
 	}
 	db := db_user(r.user, "user")
+	defer db.close()
 	db.exec("insert or ignore into nodes (account, cid, data) values (?, ?, ?)", r.account, c.String(), data)
 	db.exec("insert into records (account, collection, rkey, cid, created, updated) values (?, ?, ?, ?, ?, 0) on conflict(account, collection, rkey) do update set cid=excluded.cid, updated=?", r.account, collection, rkey, c.String(), now(), now())
 	path := collection + "/" + rkey
@@ -381,6 +389,7 @@ func repository_write(ctx context.Context, r *repository, collection string, rke
 // repository_write does.
 func repository_remove(ctx context.Context, r *repository, collection string, rkey string, sourced bool) (bool, error) {
 	db := db_user(r.user, "user")
+	defer db.close()
 	// A record that is not there is gone already: deleting it again would
 	// commit the deletion of nothing, which relays refuse.
 	if held, _ := db.exists("select 1 from records where account=? and collection=? and rkey=?", r.account, collection, rkey); !held {
@@ -402,6 +411,7 @@ func repository_remove(ctx context.Context, r *repository, collection string, rk
 // rows: they go in the commit being made.
 func repository_waiting(r *repository) []repository_operation {
 	db := db_user(r.user, "user")
+	defer db.close()
 	rows, _ := db.rows("select id, path, cid from waiting where account=? order by created", r.account)
 	latest := map[string]repository_operation{}
 	var order []string
@@ -482,6 +492,7 @@ func repository_commit(ctx context.Context, r *repository, ops []repository_oper
 	// The blocks, in the database and in the event's archive: the commit
 	// first as its root, then the nodes changed, then the records written.
 	db := db_user(r.user, "user")
+	defer db.close()
 	db.exec("insert or ignore into nodes (account, cid, data) values (?, ?, ?)", r.account, head.String(), encoded.Bytes())
 	var archive bytes.Buffer
 	if err := car.WriteHeader(&car.CarHeader{Roots: []cid.Cid{head}, Version: 1}, &archive); err != nil {
@@ -581,6 +592,7 @@ func repository_prune(r *repository, tree *mst.Tree) {
 		return nil
 	})
 	db := db_user(r.user, "user")
+	defer db.close()
 	rows, _ := db.rows("select cid from records where account=? union select cid from waiting where account=? and cid!=''", r.account, r.account)
 	for _, row := range rows {
 		live[row_string(row, "cid")] = true
@@ -616,7 +628,9 @@ func repository_archive(ctx context.Context, r *repository) ([]byte, error) {
 		ids = append(ids, value)
 		return nil
 	})
-	source := &repository_source{db_user(r.user, "user"), r.account}
+	db := db_user(r.user, "user")
+	defer db.close()
+	source := &repository_source{db, r.account}
 	var archive bytes.Buffer
 	if err := car.WriteHeader(&car.CarHeader{Roots: []cid.Cid{head}, Version: 1}, &archive); err != nil {
 		return nil, err
@@ -663,13 +677,13 @@ func repository_blob_store(user *User, account string, data []byte, kind string)
 	if kind == "" {
 		kind = "application/octet-stream"
 	}
-	db_user(user, "user").exec("insert or ignore into blobs (account, cid, type, size, created) values (?, ?, ?, ?, ?)", account, id, kind, len(data), now())
+	db_user_brief(user, "user").exec("insert or ignore into blobs (account, cid, type, size, created) values (?, ?, ?, ?, ?)", account, id, kind, len(data), now())
 	return id, nil
 }
 
 // repository_blob reads a blob of an account: its type and bytes, or false.
 func repository_blob(user *User, account string, id string) (string, []byte, bool) {
-	row, _ := db_user(user, "user").row("select type from blobs where account=? and cid=?", account, id)
+	row, _ := db_user_brief(user, "user").row("select type from blobs where account=? and cid=?", account, id)
 	if row == nil || strings.ContainsAny(id, "/\\") {
 		return "", nil, false
 	}
@@ -738,7 +752,7 @@ func atproto_drain(ctx context.Context) int {
 		}
 		r := repository_get(user, account)
 		if r == nil {
-			db_user(user, "user").exec("delete from waiting where account=?", account)
+			db_user_brief(user, "user").exec("delete from waiting where account=?", account)
 			continue
 		}
 		ops := repository_waiting(r)
@@ -766,7 +780,7 @@ func atproto_waiting_accounts() []map[string]any {
 		if user == nil {
 			continue
 		}
-		waits, _ := db_user(user, "user").rows("select account, max(case when sourced=0 then 1 else 0 end) as own, min(created) as oldest from waiting group by account")
+		waits, _ := db_user_brief(user, "user").rows("select account, max(case when sourced=0 then 1 else 0 end) as own, min(created) as oldest from waiting group by account")
 		for _, wait := range waits {
 			wait["user"] = user.UID
 			out = append(out, wait)

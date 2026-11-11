@@ -356,6 +356,7 @@ func server_blocked_add(actor string) error {
 		db := db_user(user, "user")
 		db.exec("delete from followers where actor=?", actor)
 		db.exec("delete from following where actor=?", actor)
+		db.close()
 	}
 	return nil
 }
@@ -369,6 +370,7 @@ func server_blocked_apply(user *User) {
 		return
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	for _, row := range rows {
 		actor := row_string(row, "actor")
 		db.exec("delete from followers where actor=?", actor)

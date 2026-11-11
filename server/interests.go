@@ -74,8 +74,12 @@ func interests_regenerate(user *User, db *DB) bool {
 	if _, running := interests_regenerating.LoadOrStore(user.UID, true); running {
 		return false
 	}
+	// The rebuild outlives its caller, which releases its own open: this one
+	// keeps the file open until the rebuild is written.
+	held := db_user(user, "user")
 	go func() {
 		defer interests_regenerating.Delete(user.UID)
+		defer held.close()
 		summary := interests_generate_summary(user, db)
 		db.exec("replace into settings (key, text, number) values ('interest_summary', ?, ?)", summary, now())
 	}()
@@ -94,6 +98,7 @@ func api_interests_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 	rows, err := db.rows("select qid, weight, updated from interests order by weight desc")
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
@@ -139,6 +144,7 @@ func api_interests_set(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 	db.row_write(reg_interests, map[string]any{"qid": qid, "weight": weight, "updated": now()})
 
 	return sl.None, nil
@@ -165,6 +171,7 @@ func api_interests_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 	db.row_remove(reg_interests, map[string]any{"qid": qid})
 
 	return sl.None, nil
@@ -227,6 +234,7 @@ func api_interests_adjust(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 	ts := now()
 
 	for _, qid := range qids {
@@ -279,6 +287,7 @@ func api_interests_top(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 	rows, err := db.rows("select qid, weight from interests where weight > 0 order by weight desc limit ?", n)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
@@ -311,6 +320,7 @@ func api_interests_bottom(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 	rows, err := db.rows("select qid, weight from interests where weight < 0 order by weight asc limit ?", n)
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
@@ -339,6 +349,7 @@ func api_interests_summary(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	}
 
 	db := db_user(user, "user")
+	defer db.close()
 
 	// A forced regeneration runs the AI synchronously, so it carries a minimum
 	// interval of its own: without one, any caller wired to a button spends

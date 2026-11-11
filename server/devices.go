@@ -93,6 +93,7 @@ func api_device_register(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 		return sl_error(fn, "label too long")
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	at := now()
 	if device_get(db, id) == nil {
 		db.exec("insert into devices (id, label, created, seen) values (?, ?, ?, ?)", id, label, at, at)
@@ -115,7 +116,7 @@ func api_device_get(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
-	row := device_get(db_user(user, "user"), id)
+	row := device_get(db_user_brief(user, "user"), id)
 	if row == nil {
 		return sl.None, nil
 	}
@@ -131,7 +132,7 @@ func api_device_list(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	if user == nil {
 		return sl_error(fn, "no user")
 	}
-	rows, err := db_user(user, "user").rows("select id, label, created, seen from devices order by created")
+	rows, err := db_user_brief(user, "user").rows("select id, label, created, seen from devices order by created")
 	if err != nil {
 		return sl_error(fn, "database error: %v", err)
 	}
@@ -154,6 +155,7 @@ func api_device_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		return sl_error(fn, "no user")
 	}
 	db := db_user(user, "user")
+	defer db.close()
 	if device_get(db, id) == nil {
 		return sl.False, nil
 	}

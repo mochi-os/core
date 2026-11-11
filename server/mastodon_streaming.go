@@ -93,7 +93,7 @@ func mastodon_alert_record(s *mastodon_session, row map[string]any, answer map[s
 	if answer == nil || mastodon_string(answer, "type") == "" {
 		return false
 	}
-	result, err := db_user(s.user, "user").internal.Exec("insert or ignore into alerts (account, row, event, answer, created) values (?, ?, ?, ?, ?)", s.account, row_string(row, "id"), row_string(row, "event"), json_encode(answer), row_int(row, "created"))
+	result, err := db_user_brief(s.user, "user").internal.Exec("insert or ignore into alerts (account, row, event, answer, created) values (?, ?, ?, ?, ?)", s.account, row_string(row, "id"), row_string(row, "event"), json_encode(answer), row_int(row, "created"))
 	if err != nil {
 		return false
 	}
@@ -105,6 +105,7 @@ func mastodon_alert_record(s *mastodon_session, row map[string]any, answer map[s
 // the account's first client asks, so its list does not start empty.
 func mastodon_alerts_backfill(s *mastodon_session) {
 	db := db_user(s.user, "user")
+	defer db.close()
 	if found, _ := db.exists("select 1 from alerts where account=?", s.account); found {
 		return
 	}
@@ -175,7 +176,7 @@ func mastodon_alert(c *gin.Context, s *mastodon_session, row map[string]any) map
 // first.
 func mastodon_notifications_of(c *gin.Context, s *mastodon_session) []map[string]any {
 	mastodon_alerts_backfill(s)
-	rows, _ := db_user(s.user, "user").rows("select * from alerts where account=? order by created desc, id desc limit 400", s.account)
+	rows, _ := db_user_brief(s.user, "user").rows("select * from alerts where account=? order by created desc, id desc limit 400", s.account)
 	var out []map[string]any
 	for _, row := range rows {
 		if n := mastodon_alert(c, s, row); n != nil {
@@ -280,6 +281,7 @@ func mastodon_notifications_page(c *gin.Context, s *mastodon_session, grouped bo
 // records it.
 func mastodon_markers(c *gin.Context, s *mastodon_session) {
 	db := db_user(s.user, "user")
+	defer db.close()
 	in := mastodon_read(c)
 	if c.Request.Method == "POST" {
 		for _, timeline := range []string{"home", "notifications"} {
@@ -328,7 +330,7 @@ func mastodon_filter(row map[string]any) map[string]any {
 
 // mastodon_filters are the account's filters in force.
 func mastodon_filters(s *mastodon_session) []map[string]any {
-	rows, _ := db_user(s.user, "user").rows("select * from filters where account=? and (expires=0 or expires>?) order by id", s.account, now())
+	rows, _ := db_user_brief(s.user, "user").rows("select * from filters where account=? and (expires=0 or expires>?) order by id", s.account, now())
 	out := []map[string]any{}
 	for _, row := range rows {
 		out = append(out, mastodon_filter(row))
@@ -385,6 +387,7 @@ func mastodon_hidden(status map[string]any) bool {
 func mastodon_filter_write(c *gin.Context, s *mastodon_session, id int64) {
 	in := mastodon_read(c)
 	db := db_user(s.user, "user")
+	defer db.close()
 	var held map[string]any
 	if id > 0 {
 		held, _ = db.row("select * from filters where id=? and account=?", id, s.account)
@@ -504,6 +507,7 @@ func mastodon_other_dispatch(c *gin.Context, s *mastodon_session, version string
 	method := c.Request.Method
 	route := method + " " + version + "/" + strings.Join(parts, "/")
 	db := db_user(s.user, "user")
+	defer db.close()
 	switch route {
 	case "GET v1/notifications":
 		mastodon_notifications_page(c, s, false)
@@ -966,6 +970,7 @@ var mastodon_alerts = []string{"mention", "status", "reblog", "follow", "follow_
 // changes or ends it.
 func mastodon_subscription(c *gin.Context, s *mastodon_session) {
 	db := db_user(s.user, "user")
+	defer db.close()
 	hash := s.token.Hash
 	in := mastodon_read(c)
 	switch c.Request.Method {
@@ -1059,7 +1064,7 @@ func (g mastodon_guarded) Do(request *http.Request) (*http.Response, error) {
 // subscription's keys and signed with the server's key, telling the app the
 // notification to fetch.
 func mastodon_push(s *mastodon_session, notification map[string]any) {
-	rows, _ := db_user(s.user, "user").rows("select * from subscriptions where account=?", s.account)
+	rows, _ := db_user_brief(s.user, "user").rows("select * from subscriptions where account=?", s.account)
 	if len(rows) == 0 {
 		return
 	}
@@ -1086,7 +1091,7 @@ func mastodon_push(s *mastodon_session, notification map[string]any) {
 		hash := row_string(row, "token")
 		var t Token
 		if !db_open("db/users.db").scan(&t, "select hash, kind from tokens where hash=?", hash) {
-			db_user(s.user, "user").exec("delete from subscriptions where token=?", hash)
+			db_user_brief(s.user, "user").exec("delete from subscriptions where token=?", hash)
 			continue
 		}
 		payload := map[string]any{
@@ -1114,7 +1119,7 @@ func mastodon_push(s *mastodon_session, notification map[string]any) {
 		}
 		response.Body.Close()
 		if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone {
-			db_user(s.user, "user").exec("delete from subscriptions where token=?", hash)
+			db_user_brief(s.user, "user").exec("delete from subscriptions where token=?", hash)
 		}
 	}
 }
@@ -1402,7 +1407,7 @@ func mastodon_heard_notification(user *User, id string) {
 		if !mastodon_alert_record(s, row, answer) {
 			continue
 		}
-		kept, _ := db_user(user, "user").row("select * from alerts where account=? and row=? and event=?", s.account, row_string(row, "id"), row_string(row, "event"))
+		kept, _ := db_user_brief(user, "user").row("select * from alerts where account=? and row=? and event=?", s.account, row_string(row, "id"), row_string(row, "event"))
 		n := mastodon_alert(nil, s, kept)
 		if kept == nil || n == nil {
 			continue
@@ -1462,7 +1467,7 @@ func mastodon_heard_post(streams []*mastodon_stream, kind string, id string) {
 // mastodon_known is an item's number where it has one, without giving it
 // one.
 func mastodon_known(user *User, kind string, key string) string {
-	row, _ := db_user(user, "user").row("select number from snowflakes where kind=? and key=?", kind, key)
+	row, _ := db_user_brief(user, "user").row("select number from snowflakes where kind=? and key=?", kind, key)
 	if row == nil {
 		return ""
 	}

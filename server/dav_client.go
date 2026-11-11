@@ -750,7 +750,7 @@ func caldav_account(t *sl.Thread, fn *sl.Builtin, args sl.Tuple) (*dav_client, s
 	if !ok {
 		return nil, nil, errors.New("invalid account")
 	}
-	row, err := db_user(user, "user").row("select id, type, label, identifier, data from accounts where id=?", id)
+	row, err := db_user_brief(user, "user").row("select id, type, label, identifier, data from accounts where id=?", id)
 	if err != nil {
 		return nil, nil, fmt.Errorf("database error: %v", err)
 	}

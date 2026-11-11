@@ -120,6 +120,7 @@ func (db *DB) access_check_any(owner *User, user string, role string, resource s
 		// Look up group memberships from the owner's user.db
 		if owner != nil {
 			user_db := db_user(owner, "user")
+			defer user_db.close()
 			for _, g := range user_db.group_memberships(user) {
 				subjects = append(subjects, "@"+g)
 			}

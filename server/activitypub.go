@@ -648,7 +648,7 @@ func activitypub_rss(c *gin.Context, handle string) {
 	summary, _ := document["summary"].(string)
 	feed := activitypub_feed{Version: "2.0", Channel: activitypub_feed_list{Title: title, Link: page, Description: summary}}
 	public := "%" + json_encode(activitystreams_public) + "%"
-	rows, _ := db_user(user, "user").rows("select id, app, type, addressing, created, updated, deleted from objects where account=? and deleted=0 and type!='Announce' and addressing like ? order by created desc limit ?", a.ID, public, activitypub_page)
+	rows, _ := db_user_brief(user, "user").rows("select id, app, type, addressing, created, updated, deleted from objects where account=? and deleted=0 and type!='Announce' and addressing like ? order by created desc limit ?", a.ID, public, activitypub_page)
 	for _, object_row := range rows {
 		// An activity the account sent whole is a post only where it made
 		// one; any other object is its app's.
@@ -773,10 +773,10 @@ func activitypub_actor_route(c *gin.Context) {
 	case tail == "outbox" && method == "GET":
 		activitypub_outbox(c, user, a, row)
 	case tail == "followers" && method == "GET":
-		n, _ := db_user(user, "user").row("select count(*) as n from followers where account=?", a.ID)
+		n, _ := db_user_brief(user, "user").row("select count(*) as n from followers where account=?", a.ID)
 		activitypub_json(c, http.StatusOK, map[string]any{"@context": activitystreams, "id": actor_id + "/followers", "type": "OrderedCollection", "totalItems": row_int(n, "n")})
 	case tail == "following" && method == "GET":
-		n, _ := db_user(user, "user").row("select count(*) as n from following where account=? and accepted>0", a.ID)
+		n, _ := db_user_brief(user, "user").row("select count(*) as n from following where account=? and accepted>0", a.ID)
 		activitypub_json(c, http.StatusOK, map[string]any{"@context": activitystreams, "id": actor_id + "/following", "type": "OrderedCollection", "totalItems": row_int(n, "n")})
 	case tail == "featured" && method == "GET":
 		activitypub_featured(c, user, a, row)
@@ -800,6 +800,7 @@ func activitypub_actor_route(c *gin.Context) {
 // object.
 func activitypub_create(c *gin.Context, user *User, a *actor, row map[string]any, id string) {
 	db := db_user(user, "user")
+	defer db.close()
 	object_row, _ := db.row("select id, app, type, addressing, created, updated, deleted from objects where id=? and account=?", id, a.ID)
 	if object_row == nil || row_int(object_row, "deleted") != 0 || object_activity(object_row) != nil || row_string(object_row, "type") == "Announce" {
 		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
@@ -1016,6 +1017,7 @@ func activitypub_announce(actor_id string, object_row map[string]any) map[string
 // page for a browser.
 func activitypub_object(c *gin.Context, user *User, a *actor, row map[string]any, id string) {
 	db := db_user(user, "user")
+	defer db.close()
 	object_row, _ := db.row("select id, app, type, addressing, created, updated, deleted from objects where id=? and account=?", id, a.ID)
 	if object_row == nil {
 		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
@@ -1059,6 +1061,7 @@ func activitypub_object(c *gin.Context, user *User, a *actor, row map[string]any
 // them.
 func activitypub_featured(c *gin.Context, user *User, a *actor, row map[string]any) {
 	db := db_user(user, "user")
+	defer db.close()
 	actor_id := account_url(a.Domain, a.ID)
 	items := []any{}
 	apps_rows, _ := db.rows("select distinct app from objects where account=? and deleted=0 and app!=''", a.ID)
@@ -1099,6 +1102,7 @@ func activitypub_featured(c *gin.Context, user *User, a *actor, row map[string]a
 // as the apps give them now, newest first.
 func activitypub_outbox(c *gin.Context, user *User, a *actor, row map[string]any) {
 	db := db_user(user, "user")
+	defer db.close()
 	actor_id := account_url(a.Domain, a.ID)
 	outbox := actor_id + "/outbox"
 	// The outbox shows what the account published for everyone, as
@@ -1413,6 +1417,7 @@ func activitypub_following(kind string, activity map[string]any) bool {
 func activitypub_known(user *User, a *actor, remote string) bool {
 	if a != nil && user != nil {
 		db := db_user(user, "user")
+		defer db.close()
 		follower, _ := db.exists("select 1 from followers where account=? and actor=?", a.ID, remote)
 		followed, _ := db.exists("select 1 from following where account=? and actor=?", a.ID, remote)
 		return follower || followed
@@ -1424,30 +1429,42 @@ func activitypub_known(user *User, a *actor, remote string) bool {
 		if quiet[uid] {
 			continue
 		}
-		db := activitypub_user_database(uid)
-		if db == nil {
-			continue
-		}
-		follower, _ := db.exists("select 1 from followers where actor=?", remote)
-		followed, _ := db.exists("select 1 from following where actor=?", remote)
-		if (follower || followed) && activitypub_user_live(uid) != nil {
+		if activitypub_user_knows(uid, remote) && activitypub_user_live(uid) != nil {
 			return true
 		}
 	}
 	return false
 }
 
+// activitypub_user_knows says whether a remote actor follows, or is followed
+// by, any of a user's accounts.
+func activitypub_user_knows(uid string, remote string) bool {
+	db := activitypub_user_database(uid)
+	if db == nil {
+		return false
+	}
+	defer db.close()
+	follower, _ := db.exists("select 1 from followers where actor=?", remote)
+	followed, _ := db.exists("select 1 from following where actor=?", remote)
+	return follower || followed
+}
+
 // activitypub_user_database opens a user's database for the loops across
 // users, without loading the user, as most users have nothing to do with a
 // given remote actor: nil for a user with no database, which is not made.
 // The handle is brought to its current version but not bound to the user;
-// whoever goes on to act for the user opens it with db_user.
+// whoever goes on to act for the user opens it with db_user. The caller
+// closes it, as for db_user, before going on to the next user.
 func activitypub_user_database(uid string) *DB {
 	path := fmt.Sprintf("users/%s/user.db", uid)
 	if uid == "" || !file_exists(filepath.Join(data_dir, path)) {
 		return nil
 	}
-	db := db_open(path)
+	db := db_open(path) // handle-ok: returned to the caller, which closes it
+	if db == nil {
+		return nil
+	}
+	db_count(db)
 	db_upgrade_file(db, path, db_user_steps["user"])
 	return db
 }
@@ -1582,11 +1599,7 @@ func activitypub_related(remote string, query string) []*actor {
 		if quiet[uid] {
 			continue
 		}
-		db := activitypub_user_database(uid)
-		if db == nil {
-			continue
-		}
-		accounts, _ := db.rows(query, remote)
+		accounts := activitypub_user_rows(uid, query, remote)
 		if len(accounts) == 0 || activitypub_user_live(uid) == nil {
 			continue
 		}
@@ -1597,6 +1610,18 @@ func activitypub_related(remote string, query string) []*actor {
 		}
 	}
 	return found
+}
+
+// activitypub_user_rows is a query of a user's database for a remote actor:
+// none for a user with no database.
+func activitypub_user_rows(uid string, query string, remote string) []map[string]any {
+	db := activitypub_user_database(uid)
+	if db == nil {
+		return nil
+	}
+	defer db.close()
+	rows, _ := db.rows(query, remote)
+	return rows
 }
 
 // activitypub_dispatch acts on one verified activity for one account: a
@@ -1610,6 +1635,7 @@ func activitypub_related(remote string, query string) []*actor {
 func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote string, kind string, activity map[string]any, body []byte) error {
 	actor_id := account_url(a.Domain, a.ID)
 	db := db_user(user, "user")
+	defer db.close()
 	switch kind {
 	case "Follow":
 		if activitypub_actor_of(activity["object"]) != actor_id {
@@ -1713,6 +1739,7 @@ func activitypub_dispatch(ctx context.Context, user *User, a *actor, remote stri
 // someone followed, and the copies of what they sent it.
 func activitypub_forget(user *User, account string, remote string) {
 	db := db_user(user, "user")
+	defer db.close()
 	db.exec("delete from followers where account=? and actor=?", account, remote)
 	db.exec("delete from following where account=? and actor=?", account, remote)
 	networks_database().exec("delete from copies where account=? and actor=?", account, remote)
@@ -1863,7 +1890,7 @@ func inbound_process() int {
 func activitypub_follower_inboxes(user *User, account string) []string {
 	inboxes := []string{}
 	seen := map[string]bool{}
-	rows, _ := db_user(user, "user").rows("select inbox, shared from followers where account=?", account)
+	rows, _ := db_user_brief(user, "user").rows("select inbox, shared from followers where account=?", account)
 	for _, row := range rows {
 		inbox := row_string(row, "shared")
 		if inbox == "" {
@@ -1919,6 +1946,7 @@ func activitypub_account_remove(user *User, id string) {
 	}
 	actor_id := account_url(a.Domain, a.ID)
 	db := db_user(user, "user")
+	defer db.close()
 	inboxes := []string{}
 	seen := map[string]bool{}
 	rows, _ := db.rows("select inbox, shared from followers where account=?", a.ID)

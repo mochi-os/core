@@ -7,12 +7,13 @@
 //
 // The queue of requests to other servers' inboxes, server-wide in networks.db so
 // it survives a restart. A row names the user and account it is sent as, the
-// inbox, the body and the network. The manager claims the rows that are due and
-// sends each under the host policy and the limiter per host, signing every
-// attempt afresh with the account's key - Lemmy refuses a signature over an
-// hour old, Mastodon over twelve - and backs off on failure. A host that keeps
-// failing is dead: its rows wait for one probe at a time, at a growing interval,
-// so a server that stops answering costs nothing but queue rows.
+// inbox, the body and the network. The manager runs a worker for each host with
+// rows due, which claims them and sends each in turn under the host policy and
+// the limiter per host, signing every attempt afresh with the account's key -
+// Lemmy refuses a signature over an hour old, Mastodon over twelve - and backs
+// off on failure. A host that keeps failing is dead: its rows wait for one probe
+// at a time, at a growing interval, so a server that stops answering costs
+// nothing but queue rows, and holds up no other host's.
 
 package main
 
@@ -45,11 +46,12 @@ type delivery struct {
 	Address  string `db:"address"`
 }
 
-// delivery_batch is how many rows one pass claims; delivery_claim_timeout frees
-// a claim a crashed pass left; delivery_attempts_maximum and delivery_age_maximum
-// are where a row is given up; delivery_dead_failures is the failures in a row
-// after which a host is dead, delivery_probe_maximum the longest wait between
-// probes of one; delivery_poll is how often the manager looks unprompted.
+// delivery_batch is how many of a host's rows one claim takes;
+// delivery_claim_timeout frees a claim a crashed worker left;
+// delivery_attempts_maximum and delivery_age_maximum are where a row is given
+// up; delivery_dead_failures is the failures in a row after which a host is
+// dead, delivery_probe_maximum the longest wait between probes of one;
+// delivery_poll is how often the manager looks unprompted.
 // Variables so tests can lower them.
 var delivery_batch = 100
 var delivery_claim_timeout int64 = 600
@@ -89,7 +91,7 @@ func deliver(user *User, account string, network string, inboxes []string, body 
 			debug("Delivery to %s not queued: %v", inbox, err)
 			continue
 		}
-		db.exec("insert into deliveries (id, user, account, network, inbox, host, body, next, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?)", uid(), user.UID, account, network, inbox, host, string(body), now(), now())
+		db.exec("insert into deliveries (id, user, account, network, inbox, host, body, next, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?)", uid(), user.UID, account, network, inbox, host, string(body), delivery_held(db, host), now())
 		queued++
 	}
 	if queued > 0 {
@@ -114,7 +116,7 @@ func deliver_unresolved(user *User, account string, network string, addresses []
 			debug("Delivery to %s not queued: %v", address, err)
 			continue
 		}
-		db.exec("insert into deliveries (id, user, account, network, inbox, host, body, next, created, address) values (?, ?, ?, ?, '', ?, ?, ?, ?, ?)", uid(), user.UID, account, network, host, string(body), now(), now(), address)
+		db.exec("insert into deliveries (id, user, account, network, inbox, host, body, next, created, address) values (?, ?, ?, ?, '', ?, ?, ?, ?, ?)", uid(), user.UID, account, network, host, string(body), delivery_held(db, host), now(), address)
 		queued++
 	}
 	if queued > 0 {
@@ -164,14 +166,13 @@ func delivery_resolve(db *DB, d *delivery, user *User) (string, delivery_outcome
 	return r.Inbox, delivery_success
 }
 
-// delivery_manager sends what is due, woken by an enqueue or every
-// delivery_poll, and drops what is too old once an hour.
+// delivery_manager starts a worker for each host with rows due, woken by an
+// enqueue or every delivery_poll, and drops what is too old once an hour.
 func delivery_manager() {
+	delivery_park_all()
 	go func() {
 		for {
-			if delivery_process() > 0 {
-				continue
-			}
+			delivery_start()
 			select {
 			case <-time.After(delivery_poll):
 			case <-delivery_wake_ch:
@@ -183,57 +184,179 @@ func delivery_manager() {
 	}
 }
 
-// delivery_claim takes up to delivery_batch rows that are due, on hosts not
-// waiting for a probe, and returns them grouped by host.
-func delivery_claim() map[string][]delivery {
-	db := db_open("db/networks.db")
-	var rows []delivery
-	err := db.scans(&rows, `update deliveries set claimed=? where id in (
-		select d.id from deliveries d left join hosts h on h.host=d.host
-		where d.next<=? and d.claimed<? and (h.host is null or h.next<=?)
-		order by d.next limit ?)
-		returning id, user, account, network, inbox, host, body, attempts, next, created, address`,
-		now(), now(), now()-delivery_claim_timeout, now(), delivery_batch)
+// delivery_workers is how many hosts are sent to at once. Each host has one
+// worker, which sends its rows in turn, so a host that stops answering holds
+// up only its own rows.
+var delivery_workers = 64
+
+// delivery_running is each host's worker, by host, with the channel that tells
+// it more was queued; delivery_waiting says a host was refused a place since,
+// so the next worker to end wakes the manager to give it one. Both guarded by
+// delivery_running_lock. Only the manager looks for due hosts.
+var delivery_running = map[string]chan struct{}{}
+var delivery_waiting bool
+var delivery_running_lock sync.Mutex
+
+// delivery_live counts the running workers, so a test can wait for them.
+var delivery_live atomic.Int64
+
+// delivery_start runs a worker for each host with rows due, earliest first,
+// while fewer than delivery_workers run. With every place taken it does not
+// look: the next worker to end wakes the manager, and a running host's worker
+// claims what was queued for it before it ends.
+func delivery_start() {
+	delivery_running_lock.Lock()
+	running := len(delivery_running)
+	if running >= delivery_workers {
+		delivery_waiting = true
+		delivery_running_lock.Unlock()
+		return
+	}
+	delivery_running_lock.Unlock()
+	for _, host := range delivery_due(delivery_workers + running) {
+		if !delivery_worker_start(host) {
+			return
+		}
+	}
+}
+
+// delivery_due_query lists hosts with rows due and not waiting for a probe,
+// the earliest due first. The due rows are read by their time alone, so a dead
+// host's rows, parked until its probe, are never read.
+const delivery_due_query = `with due as materialized (select host, next from deliveries where next<=? and claimed<?)
+	select due.host from due left join hosts h on h.host=due.host
+	where h.host is null or h.next<=?
+	group by due.host order by min(due.next) limit ?`
+
+// delivery_due lists up to limit hosts with rows due.
+func delivery_due(limit int) []string {
+	rows, err := db_open("db/networks.db").rows(delivery_due_query, now(), now()-delivery_claim_timeout, now(), limit)
 	if err != nil {
-		info("delivery_claim: %v", err)
+		info("delivery_due: %v", err)
 		return nil
 	}
-	hosts := map[string][]delivery{}
+	hosts := make([]string, 0, len(rows))
 	for _, row := range rows {
-		hosts[row.Host] = append(hosts[row.Host], row)
+		hosts = append(hosts, row_string(row, "host"))
 	}
 	return hosts
 }
 
-// delivery_process sends one claimed batch, hosts in parallel and each host's
-// rows in turn, and returns how many rows it acted on. A dead host gets one row
-// as a probe; the rest wait for the outcome.
-func delivery_process() int {
-	hosts := delivery_claim()
-	var group sync.WaitGroup
-	var acted atomic.Int64
-	for host, rows := range hosts {
-		group.Add(1)
-		go func(host string, rows []delivery) {
-			defer group.Done()
-			dead := delivery_host_dead(host)
-			for i := range rows {
-				outcome := delivery_attempt(&rows[i])
-				acted.Add(1)
-				if outcome == delivery_failure && dead {
-					for _, rest := range rows[i+1:] {
-						delivery_release(rest.ID)
-					}
-					return
-				}
-				if outcome == delivery_success {
-					dead = false
-				}
-			}
-		}(host, rows)
+// delivery_worker_start runs a host's worker, or tells the running one there is
+// more, and answers false when the host has none and no more may start.
+func delivery_worker_start(host string) bool {
+	delivery_running_lock.Lock()
+	wake, running := delivery_running[host]
+	if !running {
+		if len(delivery_running) >= delivery_workers {
+			delivery_waiting = true
+			delivery_running_lock.Unlock()
+			return false
+		}
+		wake = make(chan struct{}, 1)
+		delivery_running[host] = wake
+		delivery_live.Add(1)
 	}
-	group.Wait()
-	return int(acted.Load())
+	delivery_running_lock.Unlock()
+	if running {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+		return true
+	}
+	go delivery_worker(host, wake)
+	return true
+}
+
+// delivery_worker sends a host's due rows until none is left. When the queue
+// cannot be claimed from it ends at once, and the manager's poll tries again.
+func delivery_worker(host string, wake chan struct{}) {
+	defer delivery_live.Add(-1)
+	for {
+		tried := delivery_host(host)
+		if tried > 0 {
+			continue
+		}
+		if tried < 0 {
+			delivery_running_lock.Lock()
+			delete(delivery_running, host)
+			delivery_running_lock.Unlock()
+			return
+		}
+		if delivery_worker_done(host, wake) {
+			return
+		}
+	}
+}
+
+// delivery_worker_done ends a host's worker where nothing was queued since it
+// last looked, and answers whether it ended. A host refused a place meanwhile
+// has the manager woken to give it this one.
+func delivery_worker_done(host string, wake chan struct{}) bool {
+	delivery_running_lock.Lock()
+	select {
+	case <-wake:
+		delivery_running_lock.Unlock()
+		return false
+	default:
+	}
+	delete(delivery_running, host)
+	waiting := delivery_waiting
+	delivery_waiting = false
+	delivery_running_lock.Unlock()
+	if waiting {
+		delivery_wake()
+	}
+	return true
+}
+
+// delivery_claim takes up to delivery_batch of a host's rows that are due,
+// unless the host is waiting for a probe, and answers false when it cannot.
+func delivery_claim(host string) ([]delivery, bool) {
+	db := db_open("db/networks.db")
+	var rows []delivery
+	err := db.scans(&rows, `update deliveries set claimed=? where id in (
+		select d.id from deliveries d left join hosts h on h.host=d.host
+		where d.host=? and d.next<=? and d.claimed<? and (h.host is null or h.next<=?)
+		order by d.next limit ?)
+		returning id, user, account, network, inbox, host, body, attempts, next, created, address`,
+		now(), host, now(), now()-delivery_claim_timeout, now(), delivery_batch)
+	if err != nil {
+		info("delivery_claim: %v", err)
+		return nil, false
+	}
+	return rows, true
+}
+
+// delivery_host sends one claim of a host's rows in turn and returns how many
+// it tried, or -1 when it could claim none. A dead host gets one row as a
+// probe; the rest wait for the outcome, as do the rest of a host's rows once a
+// failure makes it dead.
+func delivery_host(host string) int {
+	rows, claimed := delivery_claim(host)
+	if !claimed {
+		return -1
+	}
+	dead := delivery_host_dead(host)
+	for i := range rows {
+		switch delivery_attempt(&rows[i]) {
+		case delivery_success:
+			dead = false
+		case delivery_failure, delivery_abandoned:
+			if !dead {
+				dead = delivery_host_dead(host)
+			}
+			if dead {
+				for _, rest := range rows[i+1:] {
+					delivery_release(rest.ID)
+				}
+				delivery_park(host)
+				return i + 1
+			}
+		}
+	}
+	return len(rows)
 }
 
 type delivery_outcome int
@@ -241,6 +364,8 @@ type delivery_outcome int
 const (
 	delivery_success delivery_outcome = iota
 	delivery_failure
+	// delivery_abandoned is a failure after which the row was given up.
+	delivery_abandoned
 	delivery_dropped
 	delivery_deferred
 )
@@ -356,7 +481,7 @@ func delivery_failed_attempt(db *DB, d *delivery, reason string) delivery_outcom
 	if attempts >= delivery_attempts_maximum || now()-d.Created > delivery_age_maximum {
 		info("Delivery to %s given up after %d attempts: %s", d.Inbox, attempts, reason)
 		db.exec("delete from deliveries where id=?", d.ID)
-		return delivery_dropped
+		return delivery_abandoned
 	}
 	db.exec("update deliveries set attempts=?, next=?, claimed=0 where id=?", attempts, queue_next_retry(attempts), d.ID)
 	return delivery_failure
@@ -372,12 +497,38 @@ func delivery_release(id string) {
 	db_open("db/networks.db").exec("update deliveries set claimed=0 where id=?", id)
 }
 
+// delivery_held is when a row queued now for a host is due: at once, or at
+// the probe time of a dead host.
+func delivery_held(db *DB, host string) int64 {
+	if row, _ := db.row("select next from hosts where host=?", host); row != nil && row_int(row, "next") > now() {
+		return row_int(row, "next")
+	}
+	return now()
+}
+
+// delivery_park holds a dead host's due rows until its probe time, as its
+// claims would anyway, so the manager's look for due hosts never reads them.
+func delivery_park(host string) {
+	db := db_open("db/networks.db")
+	if until := delivery_held(db, host); until > now() {
+		db.exec("update deliveries set next=? where host=? and next<?", until, host, until)
+	}
+}
+
+// delivery_park_all holds every dead host's rows until its probe time: at
+// start, for rows queued before rows were parked, and hourly, for a row queued
+// while its host was being found dead.
+func delivery_park_all() {
+	db_open("db/networks.db").exec("update deliveries set next=h.next from hosts h where h.host=deliveries.host and h.next>? and deliveries.next<h.next", now())
+}
+
 // delivery_cleanup drops rows past delivery_age_maximum, however they got
 // there, and forgets hosts not heard from in a month.
 func delivery_cleanup() {
 	db := db_open("db/networks.db")
 	db.exec("delete from deliveries where created<?", now()-delivery_age_maximum)
 	db.exec("delete from hosts where success<? and failure<?", now()-30*86400, now()-30*86400)
+	delivery_park_all()
 	activitypub_cleanup()
 }
 

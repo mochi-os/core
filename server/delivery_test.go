@@ -9,13 +9,33 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
+
+// delivery_process sends one claim of each due host's rows, hosts in parallel,
+// and waits for them: the workers' pass, made at once so a test can look at
+// what it did. Answers how many rows were tried.
+func delivery_process() int {
+	var group sync.WaitGroup
+	var tried atomic.Int64
+	for _, host := range delivery_due(delivery_workers) {
+		group.Add(1)
+		go func(host string) {
+			defer group.Done()
+			tried.Add(int64(delivery_host(host)))
+		}(host)
+	}
+	group.Wait()
+	return int(tried.Load())
+}
 
 // create_delivery_test_env is create_handles_test_env with the networks
 // database, a hosted fediverse account f1 for alice with its keys, private
@@ -551,4 +571,373 @@ func TestDeliveryResolvesLater(t *testing.T) {
 	if len(rows) != 1 || rows[0]["attempts"].(int64) != 1 || rows[0]["next"].(int64) <= now() {
 		t.Errorf("row after a failed lookup = %v, want one backed off", rows)
 	}
+}
+
+// TestDeliveryStopsOnceTheHostIsDead. Whether a host was dead was read once,
+// before its rows, so a server that had just stopped answering had every one
+// of its rows tried, 30 s each, though it was dead after the first few.
+func TestDeliveryStopsOnceTheHostIsDead(t *testing.T) {
+	alice := create_delivery_test_env(t)
+	box := create_inbox(t, alice)
+	box.set(500)
+	saved := delivery_dead_failures
+	delivery_dead_failures = 2
+	t.Cleanup(func() { delivery_dead_failures = saved })
+
+	deliver(alice, "f1", "fediverse", []string{box.server.URL + "/a", box.server.URL + "/b", box.server.URL + "/c"}, []byte(`{}`))
+	delivery_process()
+	if box.count() != 2 {
+		t.Errorf("THE POINT: %d requests to a host dead after its second failure, want 2", box.count())
+	}
+	probe := host_row(inbox_host(box))["next"].(int64)
+	if probe <= now() {
+		t.Fatalf("the host has no probe time: %d", probe)
+	}
+	untouched := 0
+	for _, row := range delivery_rows(t) {
+		if row["attempts"].(int64) == 0 && row["claimed"].(int64) == 0 {
+			untouched++
+		}
+		if row["next"].(int64) != probe {
+			t.Errorf("THE POINT: a dead host's row is not held to its probe time %d, so every look for due hosts reads it: %v", probe, row)
+		}
+	}
+	if untouched != 1 {
+		t.Errorf("rows left for the probe: %d, want 1 released untouched: %v", untouched, delivery_rows(t))
+	}
+
+	// A row queued for the dead host meanwhile waits for the same probe.
+	db_open("db/networks.db").exec("delete from deliveries")
+	deliver(alice, "f1", "fediverse", []string{box.server.URL + "/d"}, []byte(`{}`))
+	if rows := delivery_rows(t); len(rows) != 1 || rows[0]["next"].(int64) != probe {
+		t.Errorf("THE POINT: a row queued for a dead host is due before its probe time %d: %v", probe, rows)
+	}
+}
+
+// TestDeliveryGivenUpCountsTowardDead: a failure on a row's last attempt is a
+// failure of its host as much as any other.
+func TestDeliveryGivenUpCountsTowardDead(t *testing.T) {
+	alice := create_delivery_test_env(t)
+	box := create_inbox(t, alice)
+	box.set(500)
+	saved_dead, saved_attempts := delivery_dead_failures, delivery_attempts_maximum
+	delivery_dead_failures, delivery_attempts_maximum = 2, 1
+	t.Cleanup(func() { delivery_dead_failures, delivery_attempts_maximum = saved_dead, saved_attempts })
+
+	deliver(alice, "f1", "fediverse", []string{box.server.URL + "/a", box.server.URL + "/b", box.server.URL + "/c"}, []byte(`{}`))
+	delivery_process()
+	if box.count() != 2 {
+		t.Errorf("THE POINT: %d requests to a host dead after two rows were given up, want 2", box.count())
+	}
+}
+
+// TestDeliveryDueReadsOnlyDueRows. The look for due hosts walked the whole
+// queue by host, dead hosts' parked rows included, on every call.
+func TestDeliveryDueReadsOnlyDueRows(t *testing.T) {
+	create_delivery_test_env(t)
+	rows, err := db_open("db/networks.db").rows("explain query plan "+delivery_due_query, now(), now(), now(), 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan []string
+	for _, row := range rows {
+		plan = append(plan, row_string(row, "detail"))
+	}
+	joined := strings.Join(plan, "\n")
+	if !strings.Contains(joined, "deliveries USING INDEX deliveries_next (next<?)") || strings.Contains(joined, "deliveries_host") {
+		t.Errorf("THE POINT: the look for due hosts does not read by due time:\n%s", joined)
+	}
+}
+
+// silent is an inbox on its own loopback address, so another host to the
+// queue, that holds every request until released and then answers 500.
+type silent struct {
+	server   *httptest.Server
+	hits     atomic.Int64
+	open     atomic.Int64
+	most     atomic.Int64
+	hit      chan struct{}
+	released chan struct{}
+	once     sync.Once
+}
+
+func (s *silent) release() { s.once.Do(func() { close(s.released) }) }
+
+func create_silent(t *testing.T) *silent {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.2:0")
+	if err != nil {
+		t.Skipf("no second loopback address: %v", err)
+	}
+	s := &silent{hit: make(chan struct{}, 100), released: make(chan struct{})}
+	s.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		s.hits.Add(1)
+		open := s.open.Add(1)
+		for {
+			most := s.most.Load()
+			if open <= most || s.most.CompareAndSwap(most, open) {
+				break
+			}
+		}
+		s.hit <- struct{}{}
+		<-s.released
+		s.open.Add(-1)
+		w.WriteHeader(500)
+	}))
+	s.server.Listener = listener
+	s.server.Start()
+	// Run last to first: release, wait for the workers, then close.
+	t.Cleanup(s.server.Close)
+	t.Cleanup(func() { delivery_idle(t) })
+	t.Cleanup(s.release)
+	return s
+}
+
+// delivery_running_count is how many hosts have a worker.
+func delivery_running_count() int {
+	delivery_running_lock.Lock()
+	defer delivery_running_lock.Unlock()
+	return len(delivery_running)
+}
+
+// delivery_within waits up to a deadline for a condition.
+func delivery_within(limit time.Duration, condition func() bool) bool {
+	deadline := time.Now().Add(limit)
+	for !condition() {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return true
+}
+
+// delivery_idle waits for every worker to end.
+func delivery_idle(t *testing.T) {
+	if !delivery_within(10*time.Second, func() bool { return delivery_live.Load() == 0 }) {
+		t.Errorf("%d delivery workers still running", delivery_live.Load())
+	}
+}
+
+// delivery_woken takes the manager's wake-up, answering whether there was one.
+func delivery_woken() bool {
+	select {
+	case <-delivery_wake_ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// delivery_silent_first queues rows for the silent host due before anything
+// else, so it is the first host the workers take.
+func delivery_silent_first(alice *User, s *silent, rows int) {
+	var inboxes []string
+	for i := 0; i < rows; i++ {
+		inboxes = append(inboxes, s.server.URL+"/inbox")
+	}
+	deliver(alice, "f1", "fediverse", inboxes, []byte(`{}`))
+	db_open("db/networks.db").exec("update deliveries set next=? where host='127.0.0.2'", now()-10)
+}
+
+// TestDeliveryHostsDoNotWaitForASilentOne. A batch waited for its slowest host
+// before the next was claimed, so a server that stopped answering held every
+// other server's deliveries for 30 s per row it had queued.
+func TestDeliveryHostsDoNotWaitForASilentOne(t *testing.T) {
+	alice := create_delivery_test_env(t)
+	box := create_inbox(t, alice)
+	quiet := create_silent(t)
+	delivery_silent_first(alice, quiet, 3)
+	deliver(alice, "f1", "fediverse", []string{box.server.URL + "/inbox"}, []byte(`{}`))
+
+	go delivery_start()
+	select {
+	case <-quiet.hit:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the silent host was never tried")
+	}
+	if !delivery_within(3*time.Second, func() bool { return box.count() == 1 }) {
+		t.Fatalf("THE POINT: the live host waited for the silent one: %d requests while it held", box.count())
+	}
+	quiet.release()
+	delivery_idle(t)
+	if quiet.hits.Load() != 3 {
+		t.Errorf("the silent host had %d of its 3 rows tried", quiet.hits.Load())
+	}
+}
+
+// TestDeliveryWorkersAreBounded: past delivery_workers a host waits for a
+// place, and the manager is woken to give it the one a finishing worker frees.
+func TestDeliveryWorkersAreBounded(t *testing.T) {
+	alice := create_delivery_test_env(t)
+	box := create_inbox(t, alice)
+	saved := delivery_workers
+	delivery_workers = 2
+	t.Cleanup(func() { delivery_workers = saved })
+	quiet := create_silent(t)
+	listener, err := net.Listen("tcp", "127.0.0.3:0")
+	if err != nil {
+		t.Skipf("no third loopback address: %v", err)
+	}
+	var other atomic.Int64
+	third := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		other.Add(1)
+		w.WriteHeader(202)
+	}))
+	third.Listener = listener
+	third.Start()
+	t.Cleanup(third.Close)
+
+	delivery_silent_first(alice, quiet, 1)
+	delivery_start()
+	select {
+	case <-quiet.hit:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the silent host was never tried")
+	}
+	// One place left, two hosts due.
+	deliver(alice, "f1", "fediverse", []string{box.server.URL + "/inbox", third.URL + "/inbox"}, []byte(`{}`))
+	delivery_woken()
+	delivery_start()
+	if !delivery_within(3*time.Second, func() bool { return int64(box.count())+other.Load() >= 1 && delivery_running_count() == 1 }) {
+		t.Fatal("the host given the free place was not sent to")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if sent := int64(box.count()) + other.Load(); sent != 1 {
+		t.Fatalf("THE POINT: %d hosts ran in the one free place", sent)
+	}
+	if !delivery_woken() {
+		t.Fatal("THE POINT: the place a worker freed was not offered to the host waiting for one")
+	}
+	delivery_start() // as the manager does when woken
+	if !delivery_within(3*time.Second, func() bool { return int64(box.count())+other.Load() == 2 }) {
+		t.Fatalf("the waiting host was not sent to: %d and %d requests", box.count(), other.Load())
+	}
+	quiet.release()
+	delivery_idle(t)
+}
+
+// TestDeliveryClaimFailureWaitsForThePoll. A claim that failed while reads
+// still worked ended the worker, whose own look for due hosts found the same
+// host and started it again at once: thousands of failed claims a second.
+func TestDeliveryClaimFailureWaitsForThePoll(t *testing.T) {
+	alice := create_delivery_test_env(t)
+	box := create_inbox(t, alice)
+	deliver(alice, "f1", "fediverse", []string{box.server.URL + "/inbox"}, []byte(`{}`))
+	db := db_open("db/networks.db")
+	db.exec("create trigger refuse before update on deliveries begin select raise(fail, 'refused'); end")
+	t.Cleanup(func() { db.exec("drop trigger if exists refuse") })
+
+	if tried := delivery_host(inbox_host(box)); tried != -1 {
+		t.Errorf("a failed claim answered %d, want -1", tried)
+	}
+	delivery_running_lock.Lock()
+	delivery_waiting = true
+	delivery_running_lock.Unlock()
+	t.Cleanup(func() {
+		delivery_running_lock.Lock()
+		delivery_waiting = false
+		delivery_running_lock.Unlock()
+	})
+	delivery_woken()
+	delivery_worker_start(inbox_host(box))
+	delivery_idle(t)
+	if delivery_woken() {
+		t.Error("THE POINT: a worker that could not claim woke the manager to look again at once")
+	}
+	if box.count() != 0 {
+		t.Errorf("%d requests with the queue refusing claims", box.count())
+	}
+}
+
+// TestDeliveryOneWorkerPerHost: a host's rows go one at a time, in turn,
+// however often it is woken.
+func TestDeliveryOneWorkerPerHost(t *testing.T) {
+	alice := create_delivery_test_env(t)
+	saved := delivery_batch
+	delivery_batch = 1
+	t.Cleanup(func() { delivery_batch = saved })
+	quiet := create_silent(t)
+	delivery_silent_first(alice, quiet, 3)
+
+	delivery_start()
+	select {
+	case <-quiet.hit:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the silent host was never tried")
+	}
+	delivery_start()
+	delivery_start()
+	time.Sleep(300 * time.Millisecond)
+	if most := quiet.most.Load(); most != 1 {
+		t.Errorf("THE POINT: %d of the host's rows were sent at once, want 1", most)
+	}
+	quiet.release()
+	delivery_idle(t)
+	if quiet.hits.Load() != 3 {
+		t.Errorf("the host had %d of its 3 rows tried", quiet.hits.Load())
+	}
+}
+
+// TestDeliveryParksDeadHostsAtStart: rows queued for a host before it was
+// found dead, under a core that did not park them, wait for its probe once the
+// manager starts.
+func TestDeliveryParksDeadHostsAtStart(t *testing.T) {
+	alice := create_delivery_test_env(t)
+	box := create_inbox(t, alice)
+	deliver(alice, "f1", "fediverse", []string{box.server.URL + "/a", "https://alive.example/inbox"}, []byte(`{}`))
+	db := db_open("db/networks.db")
+	probe := now() + 3600
+	db.exec("insert into hosts (host, failures, failure, next) values (?, 5, ?, ?)", inbox_host(box), now(), probe)
+
+	delivery_park_all()
+	for _, row := range delivery_rows(t) {
+		want := now()
+		if row["host"] == inbox_host(box) {
+			want = probe
+		}
+		if next := row["next"].(int64); next < want-1 || next > want {
+			t.Errorf("THE POINT: row for %v due at %d, want %d", row["host"], next, want)
+		}
+	}
+}
+
+// TestDeliveryFullPlacesSkipTheScan: with every place taken the manager does
+// not read the queue; it marks a host waiting, for the next worker to end.
+func TestDeliveryFullPlacesSkipTheScan(t *testing.T) {
+	alice := create_delivery_test_env(t)
+	saved := delivery_workers
+	delivery_workers = 1
+	t.Cleanup(func() { delivery_workers = saved })
+	quiet := create_silent(t)
+	delivery_silent_first(alice, quiet, 1)
+
+	delivery_start()
+	select {
+	case <-quiet.hit:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the silent host was never tried")
+	}
+	// A row for the running host, which its worker claims before it ends.
+	deliver(alice, "f1", "fediverse", []string{quiet.server.URL + "/inbox"}, []byte(`{}`))
+	delivery_start()
+	delivery_running_lock.Lock()
+	woken, waiting := len(delivery_running["127.0.0.2"]), delivery_waiting
+	delivery_running_lock.Unlock()
+	if woken != 0 {
+		t.Error("THE POINT: with every place taken the manager read the queue and woke the running host")
+	}
+	if !waiting {
+		t.Error("with every place taken no host was marked waiting")
+	}
+	quiet.release()
+	delivery_idle(t)
+	if quiet.hits.Load() != 2 {
+		t.Errorf("the running host had %d of its 2 rows tried", quiet.hits.Load())
+	}
+	delivery_running_lock.Lock()
+	delivery_waiting = false
+	delivery_running_lock.Unlock()
 }

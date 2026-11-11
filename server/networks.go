@@ -307,6 +307,63 @@ func accounts_hosted(user *User, network string) []map[string]any {
 	return hosted
 }
 
+// friends_hosted is the user's friends' accounts on a network hosted on this
+// server, by address in lower case with the friend's name. People's friends
+// list, which core also builds the XMPP roster from, names the friends.
+func friends_hosted(user *User, network string) map[string]string {
+	out := map[string]string{}
+	if user == nil {
+		return out
+	}
+	identity := user.identity()
+	if identity == nil {
+		return out
+	}
+	for _, app := range apps_for_function(user, "xmpp/friends") {
+		result, err := activitypub_call(user, app, "xmpp/friends", Map{"identity": identity.ID})
+		if err != nil {
+			info("Friends of %s: %s: %v", user.UID, app.id, err)
+			continue
+		}
+		list, _ := result.([]any)
+		for _, entry := range list {
+			friend, _ := entry.(map[string]any)
+			person, _ := friend["person"].(string)
+			name, _ := friend["name"].(string)
+			local := user_by_identity(person)
+			if person == "" || local == nil || local.UID == user.UID {
+				continue
+			}
+			for _, row := range accounts_hosted(local, network) {
+				if address := strings.ToLower(row_string(row, "identifier")); address != "" {
+					out[address] = name
+				}
+			}
+		}
+	}
+	return out
+}
+
+// invitations_mark marks each invitation among a hosted account's events
+// that one of the user's friends sent, by the addresses friends gives, so
+// chat takes it as from someone the user knows whatever their policy. The
+// friends are asked for only where there is an invitation.
+func invitations_mark(events []map[string]any, friends func() map[string]string) {
+	var known map[string]string
+	for _, event := range events {
+		from, _ := event["from"].(string)
+		if event["kind"] != "invite" || from == "" {
+			continue
+		}
+		if known == nil {
+			known = friends()
+		}
+		if _, found := known[strings.ToLower(strings.TrimPrefix(from, "xmpp:"))]; found {
+			event["friend"] = true
+		}
+	}
+}
+
 // account_network_get returns a user's account on a network by its id, hosted
 // or linked, with its data decoded, or nil.
 func account_network_get(user *User, id string) map[string]any {

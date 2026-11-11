@@ -981,6 +981,13 @@ func (o *rooms_outbox) bridge(user *User, room string, events ...map[string]any)
 	o.bridges = append(o.bridges, rooms_bridged{user: user, room: room, events: events})
 }
 
+// rooms_inbound hands a hosted account's events to the apps declaring
+// linked/receive, an invitation from a friend's account here marked as one.
+func rooms_inbound(user *User, account string, events []map[string]any) {
+	invitations_mark(events, func() map[string]string { return friends_hosted(user, "matrix") })
+	linked_inbound(user, account, "matrix", events)
+}
+
 func (o *rooms_outbox) add(user *User, account string, events ...map[string]any) {
 	if len(events) == 0 {
 		return
@@ -998,7 +1005,7 @@ func (o *rooms_outbox) add(user *User, account string, events ...map[string]any)
 
 func (o *rooms_outbox) flush() {
 	for _, account := range o.order {
-		linked_inbound(o.users[account], account, "matrix", o.events[account])
+		rooms_inbound(o.users[account], account, o.events[account])
 	}
 	for _, b := range o.bridges {
 		bridge_inbound(b.user, b.room, b.events)
@@ -3390,7 +3397,7 @@ func rooms_invite_received(c *gin.Context, r *fclient.FederationRequest, room st
 			invite["to"] = row_string(standin, "entity")
 			bridge_inbound(user, room, []map[string]any{invite})
 		} else {
-			linked_inbound(user, account, "matrix", []map[string]any{invite})
+			rooms_inbound(user, account, []map[string]any{invite})
 		}
 	}
 	c.JSON(http.StatusOK, map[string]any{"event": json.RawMessage(signed.JSON())})

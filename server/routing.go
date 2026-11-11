@@ -537,13 +537,14 @@ var (
 )
 
 // xmpp_tell hands events of an account to the apps declaring linked/receive,
-// in order.
+// in order, an invitation from a friend marked as one.
 func xmpp_tell(a *xmpp_account, events []map[string]any) {
 	if len(events) == 0 {
 		return
 	}
 	user, account := a.user, a.id
 	xmpp_queue(user, func() {
+		invitations_mark(events, func() map[string]string { return xmpp_friends(a) })
 		linked_inbound(user, account, "xmpp", events)
 	})
 }

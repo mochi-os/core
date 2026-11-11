@@ -195,6 +195,58 @@ func TestXMPPInvitationKept(t *testing.T) {
 	client.expect(t, "THE POINT: and one in the room's form alone", `id="m1"`, `<invite from="alice@example.com"`)
 }
 
+// TestXMPPFriendInvitation: a room's invitation from a friend's account on
+// this server reaches chat marked as a friend's, which chat takes whatever
+// the user's policy; one from someone else does not.
+func TestXMPPFriendInvitation(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	fake := env.apps(t)
+	fake.friends["u-bob"] = []any{map[string]any{"person": "e-alice", "name": "Alice", "addresses": []any{}}}
+	invite := func(name string) map[string]any {
+		made := sl_decode(xmpp_call(t, env.alice, api_account_room_create, sl.Tuple{sl.String("x1"), sl.NewList([]sl.Value{sl.String("bob@example.com"), sl.String("carol@remote.test")})}, sl.Tuple{sl.String("name"), sl.String(name)})).(map[string]any)
+		conversation, _ := made["conversation"].(string)
+		return env.log.find(t, "invite", func(e map[string]any) bool { return e["account"] == "x2" && e["conversation"] == conversation })
+	}
+	if got := invite("Planning"); got["friend"] != true || got["from"] != "xmpp:alice@example.com" {
+		t.Errorf("THE POINT: a friend's invitation not marked as one: %v", got)
+	}
+
+	fake.lock.Lock()
+	fake.friends["u-bob"] = nil
+	fake.lock.Unlock()
+	xmpp_friends_changed(env.bob)
+	fake.allow(env.bob, "alice@example.com")
+	if got := invite("Later"); got["friend"] != nil {
+		t.Errorf("THE POINT: someone else's invitation marked as a friend's: %v", got)
+	}
+}
+
+// TestRoomsFriendInvitation: a hosted Matrix account's invitation from a
+// friend's Matrix account on this server reaches chat marked as a friend's;
+// one from anyone else, and the room's other events, do not.
+func TestRoomsFriendInvitation(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	fake := env.apps(t)
+	fake.friends["u-bob"] = []any{map[string]any{"person": "e-alice", "name": "Alice", "addresses": []any{}}}
+	var out rooms_outbox
+	out.add(env.bob, "m2",
+		map[string]any{"kind": "invite", "conversation": "!a:example.com", "from": "@alice:example.com"},
+		map[string]any{"kind": "invite", "conversation": "!b:example.com", "from": "@mallory:example.com"},
+		map[string]any{"kind": "member", "conversation": "!a:example.com", "id": "@alice:example.com", "from": "@alice:example.com"})
+	out.flush()
+	friend := env.log.find(t, "invite", func(e map[string]any) bool { return e["conversation"] == "!a:example.com" })
+	if friend["friend"] != true {
+		t.Errorf("THE POINT: a friend's invitation not marked as one: %v", friend)
+	}
+	stranger := env.log.find(t, "invite", func(e map[string]any) bool { return e["conversation"] == "!b:example.com" })
+	if stranger["friend"] != nil {
+		t.Errorf("THE POINT: a stranger's invitation marked as a friend's: %v", stranger)
+	}
+	if member := env.log.find(t, "member", nil); member["friend"] != nil {
+		t.Errorf("an event other than an invitation marked: %v", member)
+	}
+}
+
 // TestXMPPCondition: an error's condition is the one it names in the
 // stanzas' namespace.
 func TestXMPPCondition(t *testing.T) {

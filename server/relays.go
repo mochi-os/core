@@ -307,7 +307,7 @@ func relay_delete(user *User, room string, entity string, id string) error {
 	if err != nil {
 		return err
 	}
-	inner := `<retract xmlns="urn:xmpp:message-retract:1" id="` + xmpp_escape(id) + `"/><store xmlns="urn:xmpp:hints"/>`
+	inner := `<retract xmlns="urn:xmpp:message-retract:1" id="`+xmpp_escape(id)+`"/><store xmlns="urn:xmpp:hints"/>`
 	if message, found := strings.CutPrefix(id, xmpp_reaction_prefix); found {
 		inner = xmpp_reactions(message, "")
 	}

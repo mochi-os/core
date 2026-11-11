@@ -440,7 +440,7 @@ func TestXMPPHostedConversation(t *testing.T) {
 	call(api_account_object_update, sl.Tuple{sl.String("x1"), sl.String("chat|k1"), object("conversation", "xmpp:bob@example.com", "content", "From Mochi, corrected")})
 	b.expect(t, "the correction", `urn:xmpp:message-correct:0`, "corrected")
 	call(api_account_object_delete, sl.Tuple{sl.String("x1"), sl.String("chat|k1")}, sl.Tuple{sl.String("conversation"), conversation})
-	b.expect(t, "the withdrawal", "urn:xmpp:message-retract:1", `id="chat|k1"`)
+	b.expect(t, "the withdrawal, with the text for clients that cannot apply it", "urn:xmpp:message-retract:1", `id="chat|k1"`, "urn:xmpp:fallback:0", `for="urn:xmpp:message-retract:1"`, "retracted a previous message")
 
 	call(api_account_typing, sl.Tuple{sl.String("x1"), conversation})
 	b.expect(t, "typing", "<composing")

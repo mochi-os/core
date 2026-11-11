@@ -2524,6 +2524,25 @@ func TestMatrixDirectory(t *testing.T) {
 	if fmt.Sprint(found) != fmt.Sprint([]any{map[string]any{"id": r.user("bob"), "name": "Bob"}}) {
 		t.Errorf("by address = %v", found)
 	}
+
+	// An address whose server never answers ends at the search's deadline,
+	// with the people found without it.
+	release := make(chan struct{})
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(func() { close(release); silent.Close() })
+	saved := matrix_directory_timeout
+	matrix_directory_timeout = 300 * time.Millisecond
+	t.Cleanup(func() { matrix_directory_timeout = saved })
+	start := time.Now()
+	found = sl_decode(must_value(t)(api_account_directory(thread, fn, sl.Tuple{sl.String("m1"), sl.String("@bob:" + fake_host(silent))}, nil)))
+	if list, _ := found.([]any); len(list) != 0 || time.Since(start) > 3*time.Second {
+		t.Errorf("THE POINT: an address whose server never answers = %v after %s", found, time.Since(start))
+	}
 }
 
 func must_value(t *testing.T) func(sl.Value, error) sl.Value {

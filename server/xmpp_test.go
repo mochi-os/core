@@ -277,3 +277,43 @@ func TestXMPPRefusedStopsTheSession(t *testing.T) {
 		t.Errorf("THE POINT: failure = %v", present["failure"])
 	}
 }
+
+// TestXMPPRetractionFallback: a withdrawal carries the text a client that
+// cannot apply it shows, marked as that (XEP-0424), from a linked account as
+// from a hosted one or a relay; and Mochi reading one applies it rather than
+// showing the text.
+func TestXMPPRetractionFallback(t *testing.T) {
+	s, err := xmpp_parse(`<message xmlns="jabber:client" type="chat" id="r1" from="bob@example.org/phone">` + xmpp_retraction("m1") + `</message>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m xmpp_message
+	if err := s.decode(&m); err != nil {
+		t.Fatal(err)
+	}
+	from, _ := jid.Parse("bob@example.org/phone")
+	events := xmpp_events(&m, nil, from, "xmpp:bob@example.org", "xmpp:bob@example.org", "", "", false)
+	if len(events) != 1 || events[0]["kind"] != "delete" || events[0]["id"] != "m1" {
+		t.Errorf("THE POINT: Mochi applies the withdrawal, not its text: %v", events)
+	}
+
+	alice := create_linked_test_env(t)
+	fake := create_xmpp_fake(t, "secret")
+	fake.answer = func(text string) []string {
+		if strings.HasPrefix(text, "<iq") {
+			return []string{`<iq xmlns="jabber:client" type="result" id="` + xml_attribute(text, "id") + `"/>`}
+		}
+		return nil
+	}
+	log := &inbound_log{}
+	log.install(t)
+	thread := linked_thread(alice)
+	fn := sl.NewBuiltin("test", nil)
+	account := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("xmpp")}, linked_kwargs("address", "alice@example.org", "password", "secret")))
+	id := account["id"].(string)
+	wait(t, "the connection", func() bool { connected, _ := linked_connected(alice.UID, id); return connected })
+	if _, err := api_account_object_delete(thread, fn, sl.Tuple{sl.String(id), sl.String("k1")}, []sl.Tuple{{sl.String("conversation"), sl.String("xmpp:bob@example.org")}}); err != nil {
+		t.Fatal(err)
+	}
+	fake.await(t, "THE POINT: the linked account's withdrawal, with the text", "message-retract:1", `id="k1"`, "urn:xmpp:fallback:0", `for="urn:xmpp:message-retract:1"`, "retracted a previous message")
+}

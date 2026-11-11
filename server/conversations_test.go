@@ -862,6 +862,46 @@ func TestLinkedSessionBudget(t *testing.T) {
 	}
 }
 
+// TestMatrixDirectoryDeadline: a linked account's server that never answers a
+// directory search ends the search at its own deadline with nothing found,
+// not at the client's 30 s; one that answers in time is listed.
+func TestMatrixDirectoryDeadline(t *testing.T) {
+	alice := create_linked_test_env(t)
+	release := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /_matrix/client/v3/user_directory/search", func(w http.ResponseWriter, r *http.Request) {
+		if json_body(r)["search_term"] == "slow" {
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[{"user_id":"@bob:` + r.Host + `","display_name":"Bob"}]}`))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(func() { close(release); server.Close() })
+	host := fake_host(server)
+	saved := matrix_directory_timeout
+	matrix_directory_timeout = 300 * time.Millisecond
+	t.Cleanup(func() { matrix_directory_timeout = saved })
+	db := db_user(alice, "user")
+	db.exec("insert into accounts (id, type, label, identifier, data, created, verified, enabled) values ('m1', 'matrix', 'Alice', ?, ?, 1, 1, 1)", "@alice:"+host, json_encode(map[string]any{"id": "@alice:" + host, "server": host, "base": server.URL, "token": "mt1"}))
+	thread := linked_thread(alice)
+	fn := sl.NewBuiltin("test", nil)
+
+	found, _ := sl_decode(must_value(t)(api_account_directory(thread, fn, sl.Tuple{sl.String("m1"), sl.String("bo")}, nil))).([]any)
+	if len(found) != 1 || found[0].(map[string]any)["id"] != "@bob:"+host || found[0].(map[string]any)["name"] != "Bob" {
+		t.Fatalf("a server answering in time = %v", found)
+	}
+	start := time.Now()
+	value := must_value(t)(api_account_directory(thread, fn, sl.Tuple{sl.String("m1"), sl.String("slow")}, nil))
+	if elapsed := time.Since(start); value != sl.None || elapsed > 3*time.Second {
+		t.Errorf("THE POINT: a server that never answers = %v after %s", value, elapsed)
+	}
+}
+
 // TestXMPPSendCancelled: sends whose contexts are cancelled the moment each
 // returns, as an action's is when it ends, leave the session up and each
 // send after them sent. mellium watches the context a send is given, and

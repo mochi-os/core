@@ -1594,7 +1594,7 @@ func xmpp_hosted_retract(a *xmpp_account, conversation string, id string) error 
 	if err != nil {
 		return err
 	}
-	xmpp_hosted_route(a, t, xmpp_make("message", `<retract xmlns="urn:xmpp:message-retract:1" id="`+xmpp_escape(id)+`"/><store xmlns="urn:xmpp:hints"/>`, "type", t.kind(), "id", uid()))
+	xmpp_hosted_route(a, t, xmpp_make("message", xmpp_retraction(id), "type", t.kind(), "id", uid()))
 	return nil
 }
 

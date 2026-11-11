@@ -91,7 +91,7 @@ func TestXMPPRelays(t *testing.T) {
 	call(api_bridge_update, sl.Tuple{sl.String(relayed), sl.String("1CaroLEntityForTheRelayTestXXXXXXXXXXXXXXXXXXXXXXX"), sl.String(id), xmpp_object("content", "Hello again")})
 	bob.expect(t, "THE POINT: a member's correction", "urn:xmpp:message-correct:0", `id="`+id+`"`, "Hello again")
 	call(api_bridge_delete, sl.Tuple{sl.String(relayed), sl.String("1CaroLEntityForTheRelayTestXXXXXXXXXXXXXXXXXXXXXXX"), sl.String(id)})
-	bob.expect(t, "THE POINT: a member's withdrawal", "urn:xmpp:message-retract:1", `id="`+id+`"`)
+	bob.expect(t, "THE POINT: a member's withdrawal", "urn:xmpp:message-retract:1", `id="`+id+`"`, "urn:xmpp:fallback:0", `for="urn:xmpp:message-retract:1"`, "retracted a previous message")
 	reaction := sl_decode(call(api_bridge_send, sl.Tuple{sl.String(relayed), sl.String("1CaroLEntityForTheRelayTestXXXXXXXXXXXXXXXXXXXXXXX"), xmpp_object("reaction", "😂", "message", "x1")})).(map[string]any)
 	if reaction["id"] != "reaction|x1" {
 		t.Errorf("a member's reaction's id: %v", reaction)

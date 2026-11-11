@@ -1734,6 +1734,17 @@ func xmpp_message_text(to string, kind string, id string, body string, file stri
 	return b.String()
 }
 
+// The text a withdrawal carries for clients that cannot apply one.
+const xmpp_withdrawn = "/me retracted a previous message, but it's unsupported by your client." // i18n-ok: protocol text other clients show, not Mochi's
+
+// xmpp_retraction is what withdraws a message (XEP-0424): the retraction
+// naming it, the text a client that cannot apply it shows instead, marked as
+// that so one that can shows nothing, and the hint that keeps it in archives
+// that do not know it.
+func xmpp_retraction(id string) string {
+	return `<retract xmlns="urn:xmpp:message-retract:1" id="` + xmpp_escape(id) + `"/><fallback xmlns="urn:xmpp:fallback:0" for="urn:xmpp:message-retract:1"/><body>` + xmpp_escape(xmpp_withdrawn) + `</body><store xmlns="urn:xmpp:hints"/>`
+}
+
 // retract withdraws a message the account sent, by the id it has in the
 // conversation: the room's for a room.
 func (c *xmpp_client) retract(ctx context.Context, conversation string, id string) error {
@@ -1744,7 +1755,7 @@ func (c *xmpp_client) retract(ctx context.Context, conversation string, id strin
 	if err != nil {
 		return err
 	}
-	return c.send(ctx, `<message xmlns="jabber:client" to="`+xmpp_escape(to.String())+`" type="`+c.kind(to)+`" id="`+xmpp_escape(uid())+`"><retract xmlns="urn:xmpp:message-retract:1" id="`+xmpp_escape(id)+`"/><store xmlns="urn:xmpp:hints"/></message>`)
+	return c.send(ctx, `<message xmlns="jabber:client" to="`+xmpp_escape(to.String())+`" type="`+c.kind(to)+`" id="`+xmpp_escape(uid())+`">`+xmpp_retraction(id)+`</message>`)
 }
 
 // react sends the user's reaction to a message, replacing the one before; an

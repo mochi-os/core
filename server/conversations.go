@@ -50,6 +50,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/matrix-org/gomatrixserverlib/spec"
 	sl "go.starlark.net/starlark"
@@ -634,7 +635,13 @@ func api_account_room_leave(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs 
 	return sl.None, nil
 }
 
-// mochi.account.directory(account, query) -> list | None: People on the network of a linked or hosted Matrix account whose name or address holds the query, each as {id, name}: a linked account's server's user directory, or for a hosted account the people in its rooms and whoever an address names. Empty for an XMPP account, which has no directory; None where the server would not answer. Requires the account's permission
+// matrix_directory_timeout bounds one directory search. A search is asked
+// again as the person types, so a later answer is for a query already typed
+// past; without it a server that never answers holds the search, and the
+// app's results behind it, for the whole of its client's timeout.
+var matrix_directory_timeout = 5 * time.Second
+
+// mochi.account.directory(account, query) -> list | None: People on the network of a linked or hosted Matrix account whose name or address holds the query, each as {id, name}: a linked account's server's user directory, or for a hosted account the people in its rooms and whoever an address names. Empty for an XMPP account, which has no directory; None where the server would not answer within five seconds. Requires the account's permission
 func api_account_directory(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, query string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "query", &query); err != nil {
@@ -650,7 +657,8 @@ func api_account_directory(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if query == "" || len(query) > 200 || c.x != nil {
 		return sl_encode(people), nil
 	}
-	ctx := thread_context(t)
+	ctx, cancel := context.WithTimeout(thread_context(t), matrix_directory_timeout)
+	defer cancel()
 	switch {
 	case h != nil:
 		people = rooms_directory(ctx, h, query)

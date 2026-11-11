@@ -47,10 +47,43 @@ func web_compress_middleware(c *gin.Context) {
 		return
 	}
 
-	w := &compress_writer{ResponseWriter: c.Writer, encoding: encoding}
+	w := &compress_writer{ResponseWriter: c.Writer, encoding: encoding, head: c.Request.Method == http.MethodHead}
 	c.Writer = w
 	c.Next()
 	w.close()
+}
+
+// compress_planned reports whether this request's answer, a body of type
+// kind, will be encoded by the middleware as it is written. A handler that
+// sends validators reads it before its first header, because a 304 has no
+// type for the middleware to judge and carries only what the handler set.
+func compress_planned(c *gin.Context, kind string) bool {
+	var writer http.ResponseWriter = c.Writer
+	for writer != nil {
+		if _, ok := writer.(*compress_writer); ok {
+			return c.Writer.Header().Get("Content-Encoding") == "" && compressible(kind)
+		}
+		inner, ok := writer.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return false
+		}
+		writer = inner.Unwrap()
+	}
+	return false
+}
+
+// compress_varies reports whether a header's Vary already names
+// Accept-Encoding, or everything.
+func compress_varies(header http.Header) bool {
+	for _, value := range header.Values("Vary") {
+		for _, name := range strings.Split(value, ",") {
+			name = strings.TrimSpace(name)
+			if name == "*" || strings.EqualFold(name, "Accept-Encoding") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // accept_encoding_weights parses an Accept-Encoding header into per-coding
@@ -137,6 +170,7 @@ type compress_writer struct {
 	decided  bool
 	compress bool
 	written  bool
+	head     bool
 }
 
 // Unwrap hands the ResponseController the writer underneath. Without it the
@@ -177,9 +211,14 @@ func (w *compress_writer) decide() {
 	}
 	w.compress = true
 	w.Header().Set("Content-Encoding", w.encoding)
-	w.Header().Add("Vary", "Accept-Encoding")
+	if !compress_varies(w.Header()) {
+		w.Header().Add("Vary", "Accept-Encoding")
+	}
 	// Length is unknown once compressed; let Go use chunked encoding.
 	w.Header().Del("Content-Length")
+	// An encoded body has no byte ranges to offer: a range is answered from
+	// the stored bytes, which are not these.
+	w.Header().Del("Accept-Ranges")
 }
 
 func (w *compress_writer) WriteHeader(code int) {
@@ -215,9 +254,19 @@ func (w *compress_writer) Flush() {
 	w.ResponseWriter.Flush()
 }
 
+// close ends the encoded stream. An answer that wrote no body, such as a 412
+// or an empty file, is not labelled with a coding it never used, while its
+// header is still unsent; a HEAD keeps the labels its GET would carry.
 func (w *compress_writer) close() {
-	if w.compress && w.w != nil {
+	if !w.compress {
+		return
+	}
+	if w.w != nil {
 		w.w.Close()
+		return
+	}
+	if !w.head && !w.ResponseWriter.Written() {
+		w.Header().Del("Content-Encoding")
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -81,14 +82,65 @@ func media_serve(c *gin.Context, user *User, account string, id string) {
 		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
 		return
 	}
-	data, err := os.ReadFile(media_path(user, id))
-	if err != nil {
+	file, information := media_open(media_path(user, id))
+	if file == nil {
 		respond_error(c, http.StatusNotFound, "not_found", "errors.not_found", nil)
 		return
 	}
+	defer file.Close()
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Cache-Control", "public, max-age=86400")
-	c.Data(http.StatusOK, row_string(row, "type"), data)
+	media_send(c, file, information, row_string(row, "type"), "")
+}
+
+// media_open opens a stored file to serve, or answers nil where there is none.
+// It opens through a root because there, unlike os.Open, Windows lets the
+// file be removed or replaced while it is open, as Unix does: a file is held
+// for the whole of a download, and the account's removal or a cache eviction
+// must not fail behind it.
+func media_open(path string) (*os.File, os.FileInfo) {
+	file, err := os.OpenInRoot(filepath.Dir(path), filepath.Base(path))
+	if err != nil {
+		return nil, nil
+	}
+	information, err := file.Stat()
+	if err != nil || !information.Mode().IsRegular() {
+		file.Close()
+		return nil, nil
+	}
+	return file, information
+}
+
+// media_send answers a request with an opened file of the type given, read
+// from its descriptor as it is sent, so a fetch holds a small buffer rather
+// than the whole file; a range, a HEAD and a revalidation are answered as
+// http.ServeContent answers them. The validators are the file's time and size
+// unless the caller gives a tag, which it does where the file's time says
+// nothing of its bytes, so that time is then not sent at all.
+func media_send(c *gin.Context, file *os.File, information os.FileInfo, kind string, tag string) {
+	if kind == "" {
+		kind = "application/octet-stream"
+	}
+	modified := time.Time{}
+	if tag == "" {
+		tag = fmt.Sprintf(`"%x-%x"`, information.ModTime().UnixNano(), information.Size())
+		modified = information.ModTime()
+	}
+	if compress_planned(c, kind) {
+		// An encoded body's bytes are not the file's, so its tag only says the
+		// content is the same (RFC 9110 8.8.3) and no time is sent: a
+		// revalidation still gets its 304, and nothing lets a resumed download
+		// join the file's bytes to encoded ones. Set here, before any header,
+		// the 304 carries the same tag and Vary as the 200.
+		tag = "W/" + tag
+		modified = time.Time{}
+		if !compress_varies(c.Writer.Header()) {
+			c.Writer.Header().Add("Vary", "Accept-Encoding")
+		}
+	}
+	c.Header("Content-Type", kind)
+	c.Header("ETag", tag)
+	http.ServeContent(c.Writer, c.Request, "", modified, file)
 }
 
 // media_remove drops an account's files with the account.

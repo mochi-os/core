@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,24 +81,34 @@ func content_serve(c *gin.Context, r *fclient.FederationRequest, id string) {
 		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such file")
 		return
 	}
-	data, err := os.ReadFile(media_path(user, id))
-	if err != nil {
+	file, information := media_open(media_path(user, id))
+	if file == nil {
 		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such file")
 		return
 	}
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
+	defer file.Close()
+	// The parts before and after the file's bytes are made first, so the
+	// answer's length is known and the file is copied between them from its
+	// descriptor rather than held whole.
+	var around bytes.Buffer
+	writer := multipart.NewWriter(&around)
 	metadata, _ := writer.CreatePart(textproto.MIMEHeader{"Content-Type": {"application/json"}})
 	metadata.Write([]byte("{}"))
 	header := textproto.MIMEHeader{"Content-Type": {row_string(row, "type")}}
 	if name := row_string(row, "name"); name != "" {
 		header.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
 	}
-	part, _ := writer.CreatePart(header)
-	part.Write(data)
+	writer.CreatePart(header)
+	before := bytes.Clone(around.Bytes())
+	around.Reset()
 	writer.Close()
 	c.Header("X-Content-Type-Options", "nosniff")
-	c.Data(http.StatusOK, "multipart/mixed; boundary="+writer.Boundary(), body.Bytes())
+	c.Header("Content-Type", "multipart/mixed; boundary="+writer.Boundary())
+	c.Header("Content-Length", strconv.FormatInt(int64(len(before))+information.Size()+int64(around.Len()), 10))
+	c.Status(http.StatusOK)
+	c.Writer.Write(before)
+	io.CopyN(c.Writer, file, information.Size())
+	c.Writer.Write(around.Bytes())
 }
 
 // content_address is where an app fetches a file another server's user
@@ -144,15 +155,10 @@ func content_disposition(value string) string {
 // content_fetch fetches a file another server's user sent, as a hosted
 // account, from the cache where it is there: its status, type and bytes.
 func content_fetch(ctx context.Context, h *matrix_hosted, address string) (int, string, []byte, error) {
-	u, err := url.Parse(address)
+	server, id, err := content_parse(address)
 	if err != nil {
 		return 0, "", nil, err
 	}
-	id, ok := strings.CutPrefix(u.Path, "/_matrix/federation/v1/media/download/")
-	if !ok || !content_id_re.MatchString(id) || u.Host == "" {
-		return 0, "", nil, fmt.Errorf("not a Matrix file")
-	}
-	server := u.Host
 	path := content_cached(h.user, server, id)
 	if data, err := os.ReadFile(path); err == nil {
 		kind, _ := os.ReadFile(path + ".type")
@@ -207,6 +213,52 @@ func content_fetch(ctx context.Context, h *matrix_hosted, address string) (int, 
 		}
 	}
 	return 200, kind, data, nil
+}
+
+// content_parse reads a Matrix file's address as content_address writes it:
+// its server and its id. A server named "." or ".." is no server, and would
+// name a directory above the cache's own for it.
+func content_parse(address string) (string, string, error) {
+	u, err := url.Parse(address)
+	if err != nil {
+		return "", "", err
+	}
+	id, ok := strings.CutPrefix(u.Path, "/_matrix/federation/v1/media/download/")
+	if !ok || !content_id_re.MatchString(id) || u.Host == "" || u.Host == "." || u.Host == ".." {
+		return "", "", fmt.Errorf("not a Matrix file")
+	}
+	return u.Host, id, nil
+}
+
+// content_open opens a file another server's user sent where this server
+// holds it already, for a hosted account to be sent it from the descriptor:
+// in the account's cache of fetched files, or this server's own. It answers
+// nil where it holds neither, for content_fetch to fetch.
+func content_open(h *matrix_hosted, address string) (*os.File, os.FileInfo, string) {
+	server, id, err := content_parse(address)
+	if err != nil {
+		return nil, nil, ""
+	}
+	path := content_cached(h.user, server, id)
+	if file, information := media_open(path); file != nil {
+		kind, _ := os.ReadFile(path + ".type")
+		touched := time.Now()
+		os.Chtimes(path, touched, touched)
+		return file, information, string(kind)
+	}
+	if !federation_local(spec.ServerName(server)) {
+		return nil, nil, ""
+	}
+	row, _ := federation_database().row("select user, type from media where id=? and domain=?", id, server)
+	owner := user_by_uid(row_string(row, "user"))
+	if row == nil || owner == nil {
+		return nil, nil, ""
+	}
+	file, information := media_open(media_path(owner, id))
+	if file == nil {
+		return nil, nil, ""
+	}
+	return file, information, row_string(row, "type")
 }
 
 // content_legacy asks a server for one of its files at its unauthenticated

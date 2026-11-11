@@ -152,11 +152,12 @@ func xmpp_upload_serve(c *gin.Context) {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
-		data, err := os.ReadFile(media_path(user, id))
-		if err != nil {
+		file, information := media_open(media_path(user, id))
+		if file == nil {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
+		defer file.Close()
 		kind := row_string(row, "type")
 		disposition := "attachment"
 		for _, inline := range xmpp_upload_inline {
@@ -168,13 +169,7 @@ func xmpp_upload_serve(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("Content-Security-Policy", "sandbox; default-src 'none'")
 		c.Header("Cache-Control", "public, max-age=31536000, immutable")
-		if c.Request.Method == http.MethodHead {
-			c.Header("Content-Type", kind)
-			c.Header("Content-Length", strconv.Itoa(len(data)))
-			c.Status(http.StatusOK)
-			return
-		}
-		c.Data(http.StatusOK, kind, data)
+		media_send(c, file, information, kind, "")
 	default:
 		c.AbortWithStatus(http.StatusMethodNotAllowed)
 	}

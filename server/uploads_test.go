@@ -86,6 +86,31 @@ func TestXMPPUploads(t *testing.T) {
 	if status != http.StatusOK || body != "png bytes" || header.Get("Content-Type") != "image/png" || !strings.HasPrefix(header.Get("Content-Disposition"), "inline") || header.Get("X-Content-Type-Options") != "nosniff" {
 		t.Errorf("THE POINT: the file fetched: %d %q %v", status, body, header)
 	}
+	// Sent from the file: a range, a HEAD and a revalidation answered as asked.
+	ranged := func(method string, headers map[string]string) (int, string, http.Header) {
+		t.Helper()
+		request, _ := http.NewRequest(method, web+address[strings.Index(address, "/xmpp/"):], nil)
+		request.Host = "example.com"
+		for key, value := range headers {
+			request.Header.Set(key, value)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		data, _ := io.ReadAll(response.Body)
+		return response.StatusCode, string(data), response.Header
+	}
+	if status, body, header := ranged("GET", map[string]string{"Range": "bytes=0-2"}); status != http.StatusPartialContent || body != "png" || header.Get("Content-Range") != "bytes 0-2/9" {
+		t.Errorf("THE POINT: a range of the file: %d %q %v", status, body, header)
+	}
+	if status, body, _ := ranged("GET", map[string]string{"If-None-Match": header.Get("ETag")}); header.Get("ETag") == "" || status != http.StatusNotModified || body != "" {
+		t.Errorf("THE POINT: a revalidation of the file: %d %q, tag %q", status, body, header.Get("ETag"))
+	}
+	if status, body, header := ranged("HEAD", nil); status != http.StatusOK || body != "" || header.Get("Content-Length") != "9" || header.Get("Content-Type") != "image/png" {
+		t.Errorf("a HEAD of the file: %d %q %v", status, body, header)
+	}
 	if status, _, _ := xmpp_web_request(t, web, "GET", address, "elsewhere.test", "", "", ""); status != http.StatusNotFound {
 		t.Errorf("a file fetched on another host: %d", status)
 	}

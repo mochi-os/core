@@ -2396,6 +2396,19 @@ func TestMatrixMedia(t *testing.T) {
 	if w.Code != 200 || !strings.HasPrefix(w.Header().Get("Content-Type"), "multipart/mixed") || !strings.Contains(w.Body.String(), "picture bytes") || !strings.Contains(w.Body.String(), "image/png") {
 		t.Errorf("served = %d %s %q", w.Code, w.Header().Get("Content-Type"), w.Body.String())
 	}
+	// The answer is byte for byte the multipart body the specification's form
+	// gives, with its length.
+	var want bytes.Buffer
+	form := multipart.NewWriter(&want)
+	form.SetBoundary(strings.TrimPrefix(w.Header().Get("Content-Type"), "multipart/mixed; boundary="))
+	metadata, _ := form.CreatePart(textproto.MIMEHeader{"Content-Type": {"application/json"}})
+	metadata.Write([]byte("{}"))
+	part, _ := form.CreatePart(textproto.MIMEHeader{"Content-Type": {"image/png"}, "Content-Disposition": {mime.FormatMediaType("attachment", map[string]string{"filename": "cat.png"})}})
+	part.Write([]byte("picture bytes"))
+	form.Close()
+	if !bytes.Equal(w.Body.Bytes(), want.Bytes()) || w.Header().Get("Content-Length") != strconv.Itoa(want.Len()) {
+		t.Errorf("THE POINT: the answer = %q, length %q; want %q, %d", w.Body.String(), w.Header().Get("Content-Length"), want.String(), want.Len())
+	}
 	if status, _ := r.call(t, "GET", "/_matrix/federation/v1/media/download/nothing", nil); status != 404 {
 		t.Errorf("no such file = %d", status)
 	}
@@ -2901,5 +2914,37 @@ func TestMatrixNotices(t *testing.T) {
 	}
 	if invitations() != 1 {
 		t.Errorf("invited again after leaving: %d", invitations())
+	}
+}
+
+// TestMatrixMediaServedFromTheFile: another server fetching one of this
+// server's files is sent it from the descriptor, not from a copy of the whole
+// file in memory, twice over as the multipart answer once held it.
+func TestMatrixMediaServedFromTheFile(t *testing.T) {
+	alice, _ := create_matrix_test_env(t)
+	saved := cache_dir
+	cache_dir = t.TempDir()
+	defer func() { cache_dir = saved }()
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	video := bytes.Repeat([]byte("abcdefgh"), media_maximum/8-1)
+	uploaded := decoded(t)(api_account_upload(linked_thread(alice), sl.NewBuiltin("test", nil), sl.Tuple{sl.String("m1"), sl.Bytes(video), sl.String("video/mp4")}, nil))
+	address, _ := uploaded["url"].(string)
+	id := strings.TrimPrefix(address, "mxc://example.com/")
+	request := fclient.NewFederationRequest("GET", r.name, "example.com", "/_matrix/federation/v1/media/download/"+id)
+	request.Sign(r.name, r.key, r.private)
+	serve := func() {
+		built, _ := request.HTTPRequest()
+		built.Host, built.URL.Scheme, built.URL.Host, built.Body = "example.com", "http", "example.com", http.NoBody
+		d := &discard{header: http.Header{}}
+		c, _ := gin.CreateTestContext(d)
+		c.Request = built
+		federation_route(c)
+		if d.code != http.StatusOK || d.size <= int64(len(video)) || d.header.Get("Content-Length") != strconv.FormatInt(d.size, 10) {
+			t.Fatalf("a fetch = %d, %d bytes, length %q", d.code, d.size, d.header.Get("Content-Length"))
+		}
+	}
+	serve()
+	if allocated := media_allocated(3, serve); allocated > 3<<20 {
+		t.Errorf("THE POINT: three fetches of a %d byte file allocated %d bytes", len(video), allocated)
 	}
 }

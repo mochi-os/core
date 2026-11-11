@@ -68,7 +68,8 @@ func create_activitypub_test_env(t *testing.T) (*User, *remote_person) {
 }
 
 // activitypub_request drives the engine with one request and returns the
-// recorder.
+// recorder. A status set and not yet sent is sent once the engine returns, as
+// gin sends it after the handler (a 304 carries no body to send it).
 func activitypub_request(t *testing.T, r *http.Request) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()
@@ -77,6 +78,7 @@ func activitypub_request(t *testing.T, r *http.Request) *httptest.ResponseRecord
 	if !activitypub_route(c) {
 		t.Fatal("activitypub_route did not answer")
 	}
+	c.Writer.WriteHeaderNow()
 	return w
 }
 

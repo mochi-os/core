@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/matrix-org/gomatrixserverlib/spec"
+	sl "go.starlark.net/starlark"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -44,6 +46,8 @@ func (clients_transport) RoundTrip(request *http.Request) (*http.Response, error
 	if !clients_route(c) {
 		return nil, fmt.Errorf("the client engine did not answer %s", request.URL.Path)
 	}
+	// A status set and not yet sent is sent as gin sends it after the handler.
+	c.Writer.WriteHeaderNow()
 	return w.Result(), nil
 }
 
@@ -163,6 +167,68 @@ func TestClientsMedia(t *testing.T) {
 	status, disposition, data = fetch("/_matrix/client/v1/media/download/" + string(r.name) + "/older")
 	if status != 200 || data != "an older server's file" || !strings.Contains(disposition, "older.txt") {
 		t.Errorf("THE POINT: a file from a server without federation media = %d %q %q", status, data, disposition)
+	}
+
+	// A file held already, fetched before or this server's own, is sent from
+	// the file: a range and a revalidation answered as asked, and the cache's
+	// copy marked as read.
+	ask := func(path string, headers ...string) (*http.Response, string) {
+		t.Helper()
+		request := httptest.NewRequest("GET", "http://example.com"+path, http.NoBody)
+		request.Header.Set("Authorization", "Bearer "+cli.AccessToken)
+		for i := 0; i+1 < len(headers); i += 2 {
+			request.Header.Set(headers[i], headers[i+1])
+		}
+		response, err := clients_transport{}.RoundTrip(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(response.Body)
+		return response, string(data)
+	}
+	named := "/_matrix/client/v1/media/download/" + string(r.name) + "/named"
+	cached := content_cached(alice, string(r.name), "named")
+	earlier := time.Now().Add(-time.Hour)
+	os.Chtimes(cached, earlier, earlier)
+	response, body := ask(named, "Range", "bytes=0-1")
+	if response.StatusCode != http.StatusPartialContent || body != "a " || response.Header.Get("Content-Range") != "bytes 0-1/16" {
+		t.Errorf("THE POINT: a range of a fetched file = %d %q %q", response.StatusCode, body, response.Header.Get("Content-Range"))
+	}
+	if information, err := os.Stat(cached); err != nil || !information.ModTime().After(earlier) {
+		t.Errorf("THE POINT: the cache's copy was not marked as read")
+	}
+	tag := response.Header.Get("ETag")
+	if tag != `"`+string(r.name)+`/named"` {
+		t.Errorf("THE POINT: a fetched file's validator = %q", tag)
+	}
+	// The copy's time is its last read, so it is no validator: a range
+	// conditioned on the time it was last sent is not refused.
+	if response.Header.Get("Last-Modified") != "" {
+		t.Errorf("THE POINT: a fetched file's last read sent as its time, %q", response.Header.Get("Last-Modified"))
+	}
+	if response, body := ask(named, "Range", "bytes=0-1", "If-Unmodified-Since", earlier.UTC().Format(http.TimeFormat)); response.StatusCode != http.StatusPartialContent || body != "a " {
+		t.Errorf("THE POINT: a range conditioned on the copy's time = %d %q", response.StatusCode, body)
+	}
+	if response, body := ask(named, "If-None-Match", tag); response.StatusCode != http.StatusNotModified || body != "" {
+		t.Errorf("THE POINT: a revalidation of a fetched file = %d %q", response.StatusCode, body)
+	}
+	own := decoded(t)(api_account_upload(linked_thread(alice), sl.NewBuiltin("test", nil), sl.Tuple{sl.String("m1"), sl.Bytes("our own file"), sl.String("text/plain")}, nil))
+	address, _ := own["url"].(string)
+	if response, body := ask("/_matrix/client/v1/media/download/example.com/"+strings.TrimPrefix(address, "mxc://example.com/"), "Range", "bytes=0-2"); response.StatusCode != http.StatusPartialContent || body != "our" {
+		t.Errorf("THE POINT: a range of this server's own file = %d %q", response.StatusCode, body)
+	}
+}
+
+// TestContentParseRefusesDotServers: a file's address naming "." or ".." as
+// its server names no server, and never a directory above the cache's own.
+func TestContentParseRefusesDotServers(t *testing.T) {
+	for _, server := range []string{".", ".."} {
+		if _, _, err := content_parse("https://" + server + "/_matrix/federation/v1/media/download/abc"); err == nil {
+			t.Errorf("THE POINT: %q taken as a server", server)
+		}
+	}
+	if server, id, err := content_parse(content_address("mxc://remote.example/abc")); err != nil || server != "remote.example" || id != "abc" {
+		t.Errorf("a file's address = %q %q %v", server, id, err)
 	}
 }
 

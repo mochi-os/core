@@ -1552,12 +1552,22 @@ func clients_media(c *gin.Context, parts []string) {
 			clients_error(c, http.StatusNotFound, "M_NOT_FOUND", "No such file")
 			return
 		}
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
-		defer cancel()
-		status, kind, data, err := content_fetch(ctx, s.h, content_address("mxc://"+server+"/"+id))
-		if err != nil || status != 200 {
-			clients_error(c, http.StatusNotFound, "M_NOT_FOUND", "The file could not be fetched")
-			return
+		// A file this server holds is sent from its descriptor; one it does
+		// not is fetched, kept and sent from the bytes fetched.
+		address := content_address("mxc://" + server + "/" + id)
+		file, information, kind := content_open(s.h, address)
+		var data []byte
+		if file != nil {
+			defer file.Close()
+		} else {
+			ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+			defer cancel()
+			status, fetched, body, err := content_fetch(ctx, s.h, address)
+			if err != nil || status != 200 {
+				clients_error(c, http.StatusNotFound, "M_NOT_FOUND", "The file could not be fetched")
+				return
+			}
+			kind, data = fetched, body
 		}
 		if kind == "" {
 			kind = "application/octet-stream"
@@ -1578,6 +1588,12 @@ func clients_media(c *gin.Context, parts []string) {
 			c.Header("Content-Disposition", disposition+"; filename*=utf-8''"+url.PathEscape(name))
 		} else {
 			c.Header("Content-Disposition", disposition)
+		}
+		if file != nil {
+			// A file's id names its bytes for good, so the id is its
+			// validator; the cache's copy is touched on every read.
+			media_send(c, file, information, kind, `"`+server+"/"+id+`"`)
+			return
 		}
 		c.Data(http.StatusOK, kind, data)
 		return

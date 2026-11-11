@@ -1274,7 +1274,7 @@ func xmpp_iq_in(a *xmpp_account, s *xmpp_stanza, from jid.JID, to jid.JID) {
 func xmpp_account_info(s *xmpp_stanza, own bool) *xmpp_stanza {
 	features := []string{xmpp_ns_info}
 	if own {
-		features = append(features, xmpp_ns_archive, xmpp_ns_push, "http://jabber.org/protocol/pubsub#publish", "http://jabber.org/protocol/pubsub#publish-options", "http://jabber.org/protocol/pubsub#retract-items", "http://jabber.org/protocol/pubsub#delete-nodes", "urn:xmpp:bookmarks:1#compat")
+		features = append(features, xmpp_ns_archive, xmpp_ns_push, "http://jabber.org/protocol/pubsub#publish", "http://jabber.org/protocol/pubsub#publish-options", "http://jabber.org/protocol/pubsub#config-node-max", "http://jabber.org/protocol/pubsub#retract-items", "http://jabber.org/protocol/pubsub#delete-nodes", "urn:xmpp:bookmarks:1#compat")
 	}
 	var text strings.Builder
 	text.WriteString(`<query xmlns="` + xmpp_ns_info + `"><identity category="account" type="registered"/><identity category="pubsub" type="pep"/>`)

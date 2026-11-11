@@ -392,6 +392,10 @@ func TestXMPPAnswers(t *testing.T) {
 	}
 	b.send(t, `<iq xmlns="jabber:client" type="get" id="d2" to="alice@example.com"><query xmlns="http://jabber.org/protocol/disco#info"/></iq>`)
 	b.expect(t, "the account", `id="d2"`, `category="account"`)
+	// What Conversations needs before it reads the account's bookmarks
+	// rather than private storage, which Mochi does not keep.
+	a.send(t, `<iq xmlns="jabber:client" type="get" id="d4" to="alice@example.com"><query xmlns="http://jabber.org/protocol/disco#info"/></iq>`)
+	a.expect(t, "THE POINT: the account to its own clients", `id="d4"`, `"http://jabber.org/protocol/pubsub#publish-options"`, `"http://jabber.org/protocol/pubsub#config-node-max"`, `"urn:xmpp:bookmarks:1#compat"`)
 	b.send(t, `<iq xmlns="jabber:client" type="get" id="d3" to="alice@example.com/mochi"><query xmlns="http://jabber.org/protocol/disco#info"/></iq>`)
 	b.expect(t, "Mochi's own sessions as a client", `id="d3"`, "urn:xmpp:chat-markers:0")
 	a.send(t, `<iq xmlns="jabber:client" type="get" id="p1" to="example.com"><ping xmlns="urn:xmpp:ping"/></iq>`)

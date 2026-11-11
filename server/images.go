@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"github.com/disintegration/imaging"
 	"github.com/nfnt/resize"
@@ -117,6 +118,18 @@ func image_render_acquire() (func(), error) {
 	}
 }
 
+// image_decode decodes an image. A JPEG with no end marker, its data running
+// straight into a trailer some phone cameras append, is decoded as if the
+// marker were there: browsers show it whole, where the decoder alone reads on
+// through the trailer and fails.
+func image_decode(b []byte) (image.Image, error) {
+	i, format, err := image.Decode(bytes.NewReader(b))
+	if errors.Is(err, io.ErrUnexpectedEOF) && format == "jpeg" {
+		i, _, err = image.Decode(io.MultiReader(bytes.NewReader(b), bytes.NewReader([]byte{0xff, 0xd9})))
+	}
+	return i, err
+}
+
 // variant_render decodes the image at source, downscales it for the named
 // variant, and writes it to destination (atomically, via a temporary). The
 // decode is guarded against decompression bombs. Returns "" without error for
@@ -175,7 +188,7 @@ func variant_render(path string, variant string, thumb string) (string, error) {
 		}
 	}
 
-	i, _, err := image.Decode(bytes.NewReader(b))
+	i, err := image_decode(b)
 	if err != nil {
 		// A decode failure reflects the input bytes (corrupt/truncated upload, or
 		// an image-extensioned file in a format the decoder doesn't support), not

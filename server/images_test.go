@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/jpeg"
 	"image/png"
 	"os"
@@ -572,5 +573,48 @@ func TestImageVariantFollowsItsSource(t *testing.T) {
 	image_variant_later(t, user, app, "photos/d/source.webp")
 	if _, _, decoded := image_variant_call(t, thread, "photos/d/source.webp", "thumbnail"); centre(decoded).B < 180 || centre(decoded).R > 60 {
 		t.Errorf("THE POINT: the thumbnail of a WebP that replaced a JPEG is %v, want the WebP's blue", centre(decoded))
+	}
+}
+
+// TestVariantRenderJPEGWithoutEndMarker: a JPEG whose data runs straight into
+// a camera's trailer with no end marker, which browsers show whole, gets its
+// variant, decoded whole rather than refused.
+func TestVariantRenderJPEGWithoutEndMarker(t *testing.T) {
+	directory := t.TempDir()
+	source := image.NewRGBA(image.Rect(0, 0, 1500, 900))
+	draw.Draw(source, source.Bounds(), &image.Uniform{color.RGBA{200, 30, 40, 255}}, image.Point{}, draw.Src)
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, source, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+	b := encoded.Bytes()
+	if !bytes.HasSuffix(b, []byte{0xff, 0xd9}) {
+		t.Fatalf("the encoded JPEG does not end with its end marker")
+	}
+	b = append(b[:len(b)-2:len(b)-2], []byte("\x00\x00Photo_Info\x00SEFH\x01\x00\x00\x00SEFT")...)
+	path := filepath.Join(directory, "camera.jpg")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	expected := filepath.Join(directory, "variants", variant_name("camera.jpg", "preview"))
+	made, err := variant_render(path, "preview", expected)
+	if err != nil || made != expected {
+		t.Fatalf("THE POINT: variant_render = %q, %v; want %q", made, err, expected)
+	}
+	f, err := os.Open(made)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	variant, _, err := image.Decode(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The last row is the source's colour, not the grey of data run out.
+	bounds := variant.Bounds()
+	r, g, _, _ := variant.At(bounds.Max.X/2, bounds.Max.Y-1).RGBA()
+	if r>>8 < 150 || g>>8 > 80 {
+		t.Errorf("the variant's last row = %d,%d; want the source's red", r>>8, g>>8)
 	}
 }

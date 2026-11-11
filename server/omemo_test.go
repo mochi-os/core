@@ -126,6 +126,44 @@ func TestOmemoHosted(t *testing.T) {
 	}
 }
 
+// TestOmemoHostedUnlisted: a message from a hosted account to someone on
+// another server that keeps no device list for them goes in the clear, the
+// server answering as ejabberd does, with its text before its condition.
+func TestOmemoHostedUnlisted(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	remote := env.remote(t, "remote.test")
+	x, answer := remote.link(t, false)
+	if answer != "valid" {
+		t.Fatalf("the remote's link refused: %s", answer)
+	}
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		answered := map[string]bool{}
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+			for _, text := range remote.heard("<iq ", `type="get"`, `to="carol@remote.test"`) {
+				id := xml_attribute(text, "id")
+				if answered[id] {
+					continue
+				}
+				answered[id] = true
+				x.write(`<iq xmlns="jabber:server" type="error" id="` + id + `" from="carol@remote.test" to="` + xml_attribute(text, "from") + `"><error type="cancel"><text xmlns="urn:ietf:params:xml:ns:xmpp-stanzas" xml:lang="en">Node not found</text><item-not-found xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></iq>`)
+			}
+		}
+	}()
+
+	sent, _ := sl_decode(xmpp_call(t, env.alice, api_account_object_create, sl.Tuple{sl.String("x1"), xmpp_object("conversation", "xmpp:carol@remote.test", "content", "In the clear")}, sl.Tuple{sl.String("key"), sl.String("chat|u1")})).(map[string]any)
+	if sent == nil || sent["encrypted"] == true {
+		t.Fatalf("THE POINT: the message sent, in the clear: %v", sent)
+	}
+	wait(t, "THE POINT: the message at carol's server in the clear", func() bool { return len(remote.heard(">In the clear</body>")) == 1 })
+}
+
 // TestOmemoTrust: a person's devices are used blindly until one of theirs is
 // verified, then only those verified; a distrusted device is neither
 // encrypted to nor read, and a message only for it is refused.
@@ -521,6 +559,8 @@ func TestOmemoLinkedLists(t *testing.T) {
 			return []string{`<iq xmlns="jabber:client" type="error" id="` + id + `"><error type="cancel"><feature-not-implemented xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></iq>`}
 		case strings.Contains(text, `to="gina@example.org"`):
 			return []string{`<iq xmlns="jabber:client" type="error" id="` + id + `"><error type="cancel"><not-allowed xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></iq>`}
+		case strings.Contains(text, `to="hana@example.org"`):
+			return []string{`<iq xmlns="jabber:client" type="error" id="` + id + `"><error type="cancel"><text xmlns="urn:ietf:params:xml:ns:xmpp-stanzas" xml:lang="en">Node not found</text><item-not-found xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></iq>`}
 		case strings.Contains(text, "<items ") && strings.Contains(text, `node="urn:xmpp:omemo:2:devices"`):
 			return []string{`<iq xmlns="jabber:client" type="result" id="` + id + `"><pubsub xmlns="http://jabber.org/protocol/pubsub"><items node="urn:xmpp:omemo:2:devices"><item id="current"><devices xmlns="urn:xmpp:omemo:2"><device id="77"/></devices></item></items></pubsub></iq>`}
 		case strings.Contains(text, "<items ") && strings.Contains(text, `node="eu.siacs.conversations.axolotl.devicelist"`):
@@ -559,11 +599,15 @@ func TestOmemoLinkedLists(t *testing.T) {
 	if asked := fake.heard(`to="dave@example.org"`); len(asked) != 1 {
 		t.Errorf("THE POINT: the refusal kept, not asked again: %d", len(asked))
 	}
-	// Frank's server publishes nothing; Gina's does not allow it read.
-	for _, person := range []string{"frank@example.org", "gina@example.org"} {
+	// Frank's server publishes nothing; Gina's does not allow it read; Hana's
+	// has no list for her, saying so as ejabberd does, its text first.
+	for _, person := range []string{"frank@example.org", "gina@example.org", "hana@example.org"} {
 		if listed, err := d.listed(context.Background(), jid.MustParse(person), omemo_current, true); len(listed) != 0 || err != nil {
 			t.Errorf("THE POINT: %s lists nothing to encrypt to: %v %v", person, listed, err)
 		}
+	}
+	if sealed, err := omemo_seal_message(context.Background(), alice, id, jid.MustParse("hana@example.org"), false, "Hello", ""); sealed != "" || err != nil {
+		t.Errorf("THE POINT: a message to hana goes in the clear: %q %v", sealed, err)
 	}
 	// Erin's server does not answer, and her lists were never read: nothing
 	// goes to her in the clear, and a file for her goes encrypted.
@@ -583,6 +627,41 @@ func TestOmemoLinkedLists(t *testing.T) {
 	}
 	if _, err := d.listed(context.Background(), jid.MustParse("bob@example.org"), omemo_current, true); err == nil {
 		t.Error("THE POINT: a list read now fails while it cannot be read")
+	}
+}
+
+// TestOmemoLinkedPrecondition: a linked account's server whose bundles node
+// is set up otherwise than the publication asks refuses it with pubsub's
+// precondition-not-met; the node is opened and the bundle published again.
+func TestOmemoLinkedPrecondition(t *testing.T) {
+	alice := create_linked_test_env(t)
+	fake := create_xmpp_fake(t, "secret")
+	var configured atomic.Bool
+	fake.answer = func(text string) []string {
+		if !strings.HasPrefix(text, "<iq") {
+			return nil
+		}
+		id := xml_attribute(text, "id")
+		if strings.Contains(text, "<configure ") {
+			configured.Store(true)
+		} else if strings.Contains(text, "<publish ") && strings.Contains(text, `node="urn:xmpp:omemo:2:bundles"`) && !configured.Load() {
+			return []string{`<iq xmlns="jabber:client" type="error" id="` + id + `"><error type="cancel"><conflict xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/><precondition-not-met xmlns="http://jabber.org/protocol/pubsub#errors"/></error></iq>`}
+		}
+		return []string{`<iq xmlns="jabber:client" type="result" id="` + id + `"/>`}
+	}
+	account := decoded(t)(api_account_link(linked_thread(alice), sl.NewBuiltin("test", nil), sl.Tuple{sl.String("xmpp")}, linked_kwargs("address", "alice@example.org", "password", "secret")))
+	id := account["id"].(string)
+	wait(t, "the connection", func() bool { connected, _ := linked_connected(alice.UID, id); return connected })
+	d, err := omemo_device_of(alice, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait(t, "the device published", func() bool { return d.published.Load() })
+	if configure := fake.heard("<configure ", `node="urn:xmpp:omemo:2:bundles"`, "pubsub#node_config", "pubsub#access_model"); len(configure) == 0 {
+		t.Error("THE POINT: the refused node opened")
+	}
+	if published := fake.heard("<publish ", `node="urn:xmpp:omemo:2:bundles"`); len(published) < 2 {
+		t.Errorf("THE POINT: the bundle published again once opened: %d", len(published))
 	}
 }
 

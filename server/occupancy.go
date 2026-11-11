@@ -80,7 +80,7 @@ func xmpp_ask(a *xmpp_account, to jid.JID, kind string, inner string) (*xmpp_sta
 	select {
 	case s := <-answer:
 		if s.get("type") == "error" {
-			return s, fmt.Errorf("%s answered %s", to, xmpp_condition(s))
+			return s, fmt.Errorf("%s answered %s", to, xmpp_refusal(xmpp_named(s)))
 		}
 		return s, nil
 	case <-time.After(xmpp_query_timeout):
@@ -103,21 +103,52 @@ func xmpp_answered(s *xmpp_stanza) {
 
 // xmpp_condition is the condition an error stanza names, or "error".
 func xmpp_condition(s *xmpp_stanza) string {
+	defined, _ := xmpp_conditions(xmpp_named(s))
+	return defined
+}
+
+// xmpp_named is the names of the elements an error stanza's error holds.
+func xmpp_named(s *xmpp_stanza) []xml.Name {
 	var e struct {
 		Error *struct {
-			Conditions []struct {
-				XMLName xml.Name
-			} `xml:",any"`
+			Names []xml.Name `xml:",any"`
 		} `xml:"error"`
 	}
-	if s.decode(&e) == nil && e.Error != nil {
-		for _, c := range e.Error.Conditions {
-			if c.XMLName.Space == xmpp_ns_stanzas {
-				return c.XMLName.Local
+	if s.decode(&e) != nil || e.Error == nil {
+		return nil
+	}
+	return e.Error.Names
+}
+
+// xmpp_conditions reads an error's elements: its defined condition, the
+// first in the stanzas' namespace but the text that may stand before it, or
+// "error"; and the condition of the protocol's own after it, such as
+// pubsub's precondition-not-met, or "".
+func xmpp_conditions(names []xml.Name) (string, string) {
+	defined, specific := "", ""
+	for _, name := range names {
+		if name.Space == xmpp_ns_stanzas {
+			if defined == "" && name.Local != "text" {
+				defined = name.Local
 			}
+		} else if specific == "" {
+			specific = name.Local
 		}
 	}
-	return "error"
+	if defined == "" {
+		defined = "error"
+	}
+	return defined, specific
+}
+
+// xmpp_refusal is an error's conditions as an error says them: the
+// defined one, and the protocol's own beside it.
+func xmpp_refusal(names []xml.Name) string {
+	defined, specific := xmpp_conditions(names)
+	if specific != "" {
+		return defined + " (" + specific + ")"
+	}
+	return defined
 }
 
 // === What Mochi sent ===

@@ -206,6 +206,16 @@ func TestXMPPCondition(t *testing.T) {
 	if condition := xmpp_condition(s); condition != "error" {
 		t.Errorf("an error naming none: %q", condition)
 	}
+	// ejabberd puts the text first.
+	s, _ = xmpp_parse(`<iq xmlns="jabber:client" id="x" type="error"><error type="cancel"><text xmlns="urn:ietf:params:xml:ns:xmpp-stanzas" xml:lang="en">Node not found</text><item-not-found xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></iq>`)
+	if condition := xmpp_condition(s); condition != "item-not-found" {
+		t.Errorf("THE POINT: the condition read past the text before it: %q", condition)
+	}
+	// An error says the protocol's own condition beside the defined one.
+	s, _ = xmpp_parse(`<iq xmlns="jabber:client" id="x" type="error"><error type="cancel"><conflict xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/><precondition-not-met xmlns="http://jabber.org/protocol/pubsub#errors"/></error></iq>`)
+	if said := xmpp_refusal(xmpp_named(s)); said != "conflict (precondition-not-met)" {
+		t.Errorf("THE POINT: both conditions said: %q", said)
+	}
 }
 
 // TestXMPPRoomErrorRejoin: a room's error saying the account is not in it

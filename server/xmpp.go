@@ -694,11 +694,11 @@ func (c *xmpp_client) query(ctx context.Context, text string, into xmpp_headed) 
 		return err
 	}
 	if head := into.head(); head.Type == "error" {
-		condition := "error"
-		if head.Error != nil && len(head.Error.Conditions) > 0 {
-			condition = head.Error.Conditions[0].Local
+		var names []xml.Name
+		if head.Error != nil {
+			names = head.Error.Conditions
 		}
-		return fmt.Errorf("the server answered %s", condition)
+		return fmt.Errorf("the server answered %s", xmpp_refusal(names))
 	}
 	return nil
 }

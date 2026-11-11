@@ -237,9 +237,20 @@ func user_export(uid, app, passphrase, host string) (string, error) {
 		}
 		// Lift the connected-account credentials out of the staged copy and into
 		// secrets.age. Done on the copy, never the live database.
-		staged := db_open(filepath.Join("users", uid, "export", "staging", bundle, "user.db"))
+		staged, _, reused := db_open_work(filepath.Join("users", uid, "export", "staging", bundle, "user.db"))
+		if staged == nil {
+			return "", fmt.Errorf("open the copy of user.db")
+		}
 		account_secrets = export_accounts_extract(staged)
 		key_secrets = export_keys_extract(staged)
+		// The blanking sits in the copy's log until its last connection
+		// closes, and the old values stay in freed space until the file is
+		// rewritten: rewrite it, and close it, before the tree is read.
+		err := staged.exec_e("vacuum")
+		db_discard(staged, reused)
+		if err != nil {
+			return "", fmt.Errorf("rewrite the copy of user.db: %w", err)
+		}
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil && !os.IsNotExist(err) {

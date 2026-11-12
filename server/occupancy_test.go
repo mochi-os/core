@@ -185,7 +185,7 @@ func TestXMPPInvitationKept(t *testing.T) {
 	// Mochi's rooms add to theirs.
 	alice.send(`<message xmlns="jabber:client" to="bob@example.com" id="m1"><x xmlns="http://jabber.org/protocol/muc#user"><invite from="alice@example.com"/></x></message>`)
 	wait(t, "the invitations kept", func() bool {
-		rows, _ := xmpp_database().rows("select id from offline where account=?", "x2")
+		rows, _ := db_user_brief(env.bob, "networks").rows("select id from offline where account=?", "x2")
 		return len(rows) == 3
 	})
 	client := env.raw(t, "bob@example.com", env.mint(t, env.bob, "x2", "Phone"), "phone")
@@ -197,7 +197,8 @@ func TestXMPPInvitationKept(t *testing.T) {
 
 // TestXMPPFriendInvitation: a room's invitation from a friend's account on
 // this server reaches chat marked as a friend's, which chat takes whatever
-// the user's policy; one from someone else does not.
+// the user's policy; one from someone else does not. Each is named as the
+// room names itself, not by its address.
 func TestXMPPFriendInvitation(t *testing.T) {
 	env := create_xmpp_server_env(t)
 	fake := env.apps(t)
@@ -207,8 +208,12 @@ func TestXMPPFriendInvitation(t *testing.T) {
 		conversation, _ := made["conversation"].(string)
 		return env.log.find(t, "invite", func(e map[string]any) bool { return e["account"] == "x2" && e["conversation"] == conversation })
 	}
-	if got := invite("Planning"); got["friend"] != true || got["from"] != "xmpp:alice@example.com" {
+	got := invite("Planning")
+	if got["friend"] != true || got["from"] != "xmpp:alice@example.com" {
 		t.Errorf("THE POINT: a friend's invitation not marked as one: %v", got)
+	}
+	if got["name"] != "Planning" {
+		t.Errorf("THE POINT: the invitation named other than as the room names itself: %v", got["name"])
 	}
 
 	fake.lock.Lock()

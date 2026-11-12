@@ -469,8 +469,11 @@ const network_timeout = 30 * time.Second
 // more.
 var block_domain_re = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
-// networks_database opens the server-wide networks database, whose tables
-// networks_create lays.
+// networks_database opens the server-wide networks database: what every
+// network keeps that is looked up across users, the queues, and the server's
+// own state, which networks_create lays with federation_create's tables and
+// xmpp_tables'. What belongs to one user is in their own networks.db,
+// db_user(user, "networks"), which networks_upgrade_1 lays.
 func networks_database() *DB {
 	return db_open("db/networks.db")
 }
@@ -499,16 +502,13 @@ func networks_create(db *DB) {
 	db.exec("create table if not exists certificates (host text not null, issued integer not null)")
 	db.exec("create index if not exists certificates_issued on certificates(issued)")
 	// The hosted accounts by permanent id, for a request that arrives with
-	// no user; the activity ids the inbox has seen; and what the inbox queues
+	// no user; and what the inbox queues
 	// for the apps (activitypub.go).
 	db.exec("create table if not exists actors (id text not null primary key, user text not null, domain text not null, handle text not null, network text not null, created integer not null, deleted integer not null default 0, key text not null default '')")
 	db.exec("create index if not exists actors_user on actors(user)")
 	// By domain and handle, for the lookups of an account by its address
 	// (federation_local, federation_user, xmpp_served, reports).
 	db.exec("create index if not exists actors_domain on actors(domain, handle)")
-	// The activity ids seen by each account.
-	db.exec("create table if not exists seen (id text not null, account text not null, created integer not null, primary key (id, account))")
-	db.exec("create index if not exists seen_created on seen(created)")
 	db.exec("create table if not exists inbound (id text not null primary key, user text not null, account text not null, actor text not null, type text not null, body text not null, created integer not null)")
 	db.exec("create index if not exists inbound_account on inbound(account, created)")
 	// The objects the inbox took for an account from someone it does not

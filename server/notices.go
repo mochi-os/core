@@ -39,7 +39,7 @@ func notices_tables(db *DB) {
 // notices_sender is the notices account on a domain, made on first use.
 func notices_sender(domain string) string {
 	id := "@notices:" + domain
-	federation_database().exec("insert or ignore into standins (id, domain, entity, name, user, created) values (?, ?, '', ?, '', ?)", id, domain, notices_name, now())
+	networks_database().exec("insert or ignore into standins (id, domain, entity, name, user, created) values (?, ?, '', ?, '', ?)", id, domain, notices_name, now())
 	return id
 }
 
@@ -53,7 +53,7 @@ func notices_send(user *User, account string, address string, title string, body
 	sender := notices_sender(domain)
 	ctx, cancel := context.WithTimeout(context.Background(), federation_timeout)
 	defer cancel()
-	db := federation_database()
+	db := networks_database()
 	room := ""
 	if row, _ := db.row("select room from notices where user=? and account=?", user.UID, account); row != nil {
 		room = row_string(row, "room")
@@ -143,7 +143,7 @@ func notices_heard(event map[string]any) bool {
 		}
 	}
 	if strings.HasPrefix(conversation, "!") {
-		found, _ := federation_database().exists("select 1 from notices where room=?", conversation)
+		found, _ := networks_database().exists("select 1 from notices where room=?", conversation)
 		return found
 	}
 	return false

@@ -98,7 +98,7 @@ func rules_defaults(user string) map[string][]rules_rule {
 // override defaults; the defaults with the user's changes to them.
 func rules_rules(user string) map[string][]rules_rule {
 	defaults := rules_defaults(user)
-	rows, _ := federation_database().rows("select kind, id, priority, body, enabled from rules where user=? order by kind, priority desc, position", user)
+	rows, _ := networks_database().rows("select kind, id, priority, body, enabled from rules where user=? order by kind, priority desc, position", user)
 	changed := map[string]map[string]any{}
 	own := map[string][]rules_rule{}
 	for _, row := range rows {
@@ -374,7 +374,7 @@ func notifications_tell(event gomatrixserverlib.PDU, state rooms_state, members 
 	// A user's joining counts as their receipt: what came before it, an
 	// invitation among it, is read.
 	if membership, _ := event.Membership(); event.Type() == spec.MRoomMember && membership == spec.Join && event.StateKey() != nil {
-		federation_database().exec("update notifications set read=1 where user=? and room=? and position<=? and read=0", *event.StateKey(), room, position)
+		networks_database().exec("update notifications set read=1 where user=? and room=? and position<=? and read=0", *event.StateKey(), room, position)
 	}
 	for member := range recipients {
 		if member == sender || !domains.local(member) {
@@ -389,7 +389,7 @@ func notifications_tell(event gomatrixserverlib.PDU, state rooms_state, members 
 		if !notify {
 			continue
 		}
-		federation_database().exec("insert or ignore into notifications (user, room, event, position, actions, highlight, created) values (?, ?, ?, ?, ?, ?, ?)", member, room, event.EventID(), position, json_encode(actions), highlight, now())
+		networks_database().exec("insert or ignore into notifications (user, room, event, position, actions, highlight, created) values (?, ?, ?, ?, ?, ?, ?)", member, room, event.EventID(), position, json_encode(actions), highlight, now())
 		pushers_send(user, member, event, state, actions)
 	}
 }
@@ -404,7 +404,7 @@ func clients_signed(user *User, account string) bool {
 // notifications_counts is a room's unread notifications for a user, and
 // those that highlight.
 func notifications_counts(user string, room string) (int64, int64) {
-	row, _ := federation_database().row("select count(*) as n, coalesce(sum(highlight), 0) as h from notifications where user=? and room=? and read=0", user, room)
+	row, _ := networks_database().row("select count(*) as n, coalesce(sum(highlight), 0) as h from notifications where user=? and room=? and read=0", user, room)
 	return row_int(row, "n"), row_int(row, "h")
 }
 
@@ -414,7 +414,7 @@ func notifications_read(user string, room string, position int64) {
 	if position <= 0 {
 		return
 	}
-	db := federation_database()
+	db := networks_database()
 	db.exec("update notifications set read=1 where user=? and room=? and position<=? and read=0", user, room, position)
 	db.exec("delete from notifications where user=? and read=1 and created<?", user, now()-30*86400)
 	clients_wake(user)
@@ -483,7 +483,7 @@ func rules_route(c *gin.Context, s *clients_session, parts []string) {
 			found = &rules[kind][i]
 		}
 	}
-	db := federation_database()
+	db := networks_database()
 	attribute := ""
 	if len(parts) == 4 {
 		attribute = parts[3]
@@ -579,7 +579,7 @@ func rules_route(c *gin.Context, s *clients_session, parts []string) {
 // rules_priority is where a new rule goes among the user's own of its kind:
 // before or after one named, else first.
 func rules_priority(rules []rules_rule, before string, after string) int64 {
-	db := federation_database()
+	db := networks_database()
 	priority := func(id string) (int64, bool) {
 		for _, rule := range rules {
 			if rule.ID == id && !rule.Default {
@@ -605,7 +605,7 @@ func rules_priority(rules []rules_rule, before string, after string) int64 {
 // rules_keep keeps a rule of the user's, or their change to a default one, at
 // a new position, so their syncs are given their rules again.
 func rules_keep(user string, kind string, id string, priority int64, body map[string]any, enabled bool) {
-	db := federation_database()
+	db := networks_database()
 	row, _ := db.row("select priority from rules where user=? and kind=? and id=?", user, kind, id)
 	if row != nil && priority == 0 {
 		priority = row_int(row, "priority")
@@ -619,7 +619,7 @@ func rules_keep(user string, kind string, id string, priority int64, body map[st
 
 // pushers_list answers the account's pushers.
 func pushers_list(c *gin.Context, s *clients_session) {
-	rows, _ := federation_database().rows("select body from pushers where user=? order by created", s.h.address)
+	rows, _ := networks_database().rows("select body from pushers where user=? order by created", s.h.address)
 	pushers := []any{}
 	for _, row := range rows {
 		var pusher map[string]any
@@ -644,7 +644,7 @@ func pushers_set(c *gin.Context, s *clients_session) {
 		clients_error(c, http.StatusBadRequest, "M_MISSING_PARAM", "pushkey and app_id are required")
 		return
 	}
-	db := federation_database()
+	db := networks_database()
 	if body["kind"] == nil {
 		db.exec("delete from pushers where app=? and key=? and user=?", app, key, s.h.address)
 		c.JSON(http.StatusOK, map[string]any{})
@@ -673,13 +673,13 @@ func pushers_set(c *gin.Context, s *clients_session) {
 // from the room it came in; a gateway that refuses a key has that pusher
 // removed.
 func pushers_send(user *User, address string, event gomatrixserverlib.PDU, state rooms_state, actions []any) {
-	rows, _ := federation_database().rows("select app, key, body from pushers where user=?", address)
+	rows, _ := networks_database().rows("select app, key, body from pushers where user=?", address)
 	if len(rows) == 0 {
 		return
 	}
 	room := event.RoomID().String()
 	unread := int64(0)
-	row, _ := federation_database().row("select count(*) as n from notifications where user=? and read=0", address)
+	row, _ := networks_database().row("select count(*) as n from notifications where user=? and read=0", address)
 	unread = row_int(row, "n")
 	var tweaks map[string]any
 	for _, action := range actions {
@@ -760,7 +760,7 @@ func pushers_post(user *User, gateway string, address string, app string, key st
 		Rejected []string `json:"rejected"`
 	}
 	if json.Unmarshal(answer, &refused) == nil && slices.Contains(refused.Rejected, key) {
-		federation_database().exec("delete from pushers where user=? and app=? and key=?", address, app, key)
+		networks_database().exec("delete from pushers where user=? and app=? and key=?", address, app, key)
 	}
 }
 
@@ -777,7 +777,7 @@ func notifications_list(c *gin.Context, s *clients_session) {
 	if c.Query("only") == "highlight" {
 		only = " and highlight=1"
 	}
-	rows, _ := federation_database().rows("select id, room, event, actions, read, created from notifications where user=? and id<?"+only+" order by id desc limit ?", s.h.address, from, limit)
+	rows, _ := networks_database().rows("select id, room, event, actions, read, created from notifications where user=? and id<?"+only+" order by id desc limit ?", s.h.address, from, limit)
 	notifications := []any{}
 	last := int64(0)
 	for _, row := range rows {

@@ -38,10 +38,10 @@ import (
 	"github.com/matrix-org/gomatrixserverlib/spec"
 )
 
-// keyring_tables lays the key store in matrix.db, part of federation_create.
+// keyring_tables lays the key store in networks.db, part of federation_create.
 func keyring_tables(db *DB) {
 	// A device of an account here: its name and its uploaded keys.
-	db.exec("create table if not exists clients (user text not null, device text not null, name text not null default '', keys text not null default '', created integer not null, seen integer not null default 0, primary key (user, device))")
+	db.exec("create table if not exists devices (user text not null, device text not null, name text not null default '', keys text not null default '', created integer not null, seen integer not null default 0, primary key (user, device))")
 	db.exec("create table if not exists onetime (user text not null, device text not null, id text not null, key text not null, primary key (user, device, id))")
 	db.exec("create table if not exists fallbacks (user text not null, device text not null, algorithm text not null, id text not null, key text not null, used integer not null default 0, primary key (user, device, algorithm))")
 	// An account's cross-signing keys, by purpose: master, self_signing,
@@ -51,8 +51,8 @@ func keyring_tables(db *DB) {
 	// cross-signing key, by its public key.
 	db.exec("create table if not exists signatures (user text not null, target text not null, signer text not null, id text not null, value text not null, primary key (user, target, signer, id))")
 	// What another device sent one of an account's devices.
-	db.exec("create table if not exists deliveries (id integer primary key autoincrement, user text not null, device text not null, sender text not null, type text not null, content text not null, created integer not null)")
-	db.exec("create index if not exists deliveries_device on deliveries(user, device, id)")
+	db.exec("create table if not exists messages (id integer primary key autoincrement, user text not null, device text not null, sender text not null, type text not null, content text not null, created integer not null)")
+	db.exec("create index if not exists messages_device on messages(user, device, id)")
 	// Whose devices or cross-signing keys changed, in order; a change seen
 	// only by viewer where one is named (a signature of theirs on someone
 	// else's key, someone joining a room with them). Gone where the user no
@@ -93,13 +93,13 @@ func keyring_ok(body any) keyring_answer {
 
 // keyring_device makes a device of a user's, named, and answers its id.
 func keyring_device(user string, name string) string {
-	db := federation_database()
+	db := networks_database()
 	for {
 		id := strings.ToUpper(random_alphanumeric(10))
-		if exists, _ := db.exists("select 1 from clients where user=? and device=?", user, id); exists {
+		if exists, _ := db.exists("select 1 from devices where user=? and device=?", user, id); exists {
 			continue
 		}
-		db.exec("insert into clients (user, device, name, created, seen) values (?, ?, ?, ?, ?)", user, id, name, now(), now())
+		db.exec("insert into devices (user, device, name, created, seen) values (?, ?, ?, ?, ?)", user, id, name, now(), now())
 		return id
 	}
 }
@@ -107,18 +107,18 @@ func keyring_device(user string, name string) string {
 // keyring_known reports whether a device of a user's is one this server
 // keeps.
 func keyring_known(user string, device string) bool {
-	exists, _ := federation_database().exists("select 1 from clients where user=? and device=?", user, device)
+	exists, _ := networks_database().exists("select 1 from devices where user=? and device=?", user, device)
 	return exists
 }
 
 // keyring_delete forgets a device of a user's with its keys and what waited
 // for it, and tells those who share a room with the user.
 func keyring_delete(user string, device string) {
-	db := federation_database()
+	db := networks_database()
 	if !keyring_known(user, device) {
 		return
 	}
-	for _, table := range []string{"clients", "onetime", "fallbacks", "deliveries"} {
+	for _, table := range []string{"devices", "onetime", "fallbacks", "messages"} {
 		db.exec("delete from "+table+" where user=? and device=?", user, device)
 	}
 	db.exec("delete from signatures where user=? and target=?", user, device)
@@ -128,7 +128,7 @@ func keyring_delete(user string, device string) {
 // keyring_changed records that a user's devices changed and tells the other
 // servers they share a room with: one device's keys, or its deletion.
 func keyring_changed(user string, device string, keys json.RawMessage, deleted bool) {
-	db := federation_database()
+	db := networks_database()
 	previous, _ := db.row("select max(id) as id from changes where user=? and viewer=''", user)
 	db.exec("insert into changes (user, created) values (?, ?)", user, now())
 	row, _ := db.row("select max(id) as id from changes where user=?", user)
@@ -151,7 +151,7 @@ func keyring_changed(user string, device string, keys json.RawMessage, deleted b
 // keyring_signing_changed records that a user's cross-signing keys changed
 // and tells the other servers they share a room with.
 func keyring_signing_changed(user string) {
-	db := federation_database()
+	db := networks_database()
 	db.exec("insert into changes (user, created) values (?, ?)", user, now())
 	content := map[string]any{"user_id": user}
 	if master := keyring_signing_key(user, "master"); master != nil {
@@ -213,9 +213,9 @@ func keyring_introduce(user string, room string) {
 	if len(servers) == 0 {
 		return
 	}
-	db := federation_database()
+	db := networks_database()
 	position, _ := db.row("select max(id) as id from changes where user=? and viewer=''", user)
-	rows, _ := db.rows("select device, name, keys from clients where user=? order by device", user)
+	rows, _ := db.rows("select device, name, keys from devices where user=? order by device", user)
 	for _, row := range rows {
 		device := row_string(row, "device")
 		content := map[string]any{"user_id": user, "device_id": device, "stream_id": row_int(position, "id"), "prev_id": []int64{}, "deleted": false}
@@ -231,7 +231,7 @@ func keyring_introduce(user string, room string) {
 
 // keyring_name is a device's name.
 func keyring_name(user string, device string) string {
-	row, _ := federation_database().row("select name from clients where user=? and device=?", user, device)
+	row, _ := networks_database().row("select name from devices where user=? and device=?", user, device)
 	return row_string(row, "name")
 }
 
@@ -264,7 +264,7 @@ func keyring_request(ctx context.Context, account string, user string, device st
 	if len(body) > keyring_body_maximum {
 		return keyring_error(http.StatusRequestEntityTooLarge, "M_TOO_LARGE", "The request is too large")
 	}
-	federation_database().exec("update clients set seen=? where user=? and device=?", now(), user, device)
+	networks_database().exec("update devices set seen=? where user=? and device=?", now(), user, device)
 	route := method + " " + strings.Join(parts, "/")
 	switch {
 	case route == "POST keys/upload":
@@ -311,7 +311,7 @@ func keyring_upload(user string, device string, body json.RawMessage) keyring_an
 	if json.Unmarshal(body, &request) != nil {
 		return keyring_error(http.StatusBadRequest, "M_NOT_JSON", "Invalid keys")
 	}
-	db := federation_database()
+	db := networks_database()
 	if len(request.Device) > 0 && string(request.Device) != "null" {
 		var keys struct {
 			User   string            `json:"user_id"`
@@ -325,7 +325,7 @@ func keyring_upload(user string, device string, body json.RawMessage) keyring_an
 		if signing == "" || !keyring_verify(request.Device, user, "ed25519:"+device, signing) {
 			return keyring_error(http.StatusBadRequest, "M_INVALID_SIGNATURE", "The keys are not signed by the device")
 		}
-		row, _ := db.row("select keys from clients where user=? and device=?", user, device)
+		row, _ := db.row("select keys from devices where user=? and device=?", user, device)
 		stored := row_string(row, "keys")
 		if stored != "" && keyring_stripped(stored) != keyring_stripped(string(request.Device)) {
 			// A device's keys are its identity: others would see a device
@@ -333,7 +333,7 @@ func keyring_upload(user string, device string, body json.RawMessage) keyring_an
 			return keyring_error(http.StatusBadRequest, "M_INVALID_PARAM", "The device's keys cannot change")
 		}
 		if stored == "" {
-			db.exec("update clients set keys=? where user=? and device=?", string(keyring_strip(request.Device)), user, device)
+			db.exec("update devices set keys=? where user=? and device=?", string(keyring_strip(request.Device)), user, device)
 			keyring_changed(user, device, keyring_strip(request.Device), false)
 		}
 	}
@@ -356,7 +356,7 @@ func keyring_upload(user string, device string, body json.RawMessage) keyring_an
 // keyring_counts is how many one-time keys a device has of each algorithm.
 func keyring_counts(user string, device string) map[string]any {
 	counts := map[string]int64{"signed_curve25519": 0}
-	rows, _ := federation_database().rows("select id from onetime where user=? and device=?", user, device)
+	rows, _ := networks_database().rows("select id from onetime where user=? and device=?", user, device)
 	for _, row := range rows {
 		algorithm, _, _ := strings.Cut(row_string(row, "id"), ":")
 		counts[algorithm]++
@@ -371,7 +371,7 @@ func keyring_counts(user string, device string) map[string]any {
 // keyring_unused is the algorithms of a device's fallback keys no one has
 // claimed.
 func keyring_unused(user string, device string) []string {
-	rows, _ := federation_database().rows("select algorithm from fallbacks where user=? and device=? and used=0", user, device)
+	rows, _ := networks_database().rows("select algorithm from fallbacks where user=? and device=? and used=0", user, device)
 	out := []string{}
 	for _, row := range rows {
 		out = append(out, row_string(row, "algorithm"))
@@ -437,7 +437,7 @@ func keyring_local(user string) bool {
 // each with the signatures on it and its name; for whom asked.
 func keyring_devices(user string, devices []string) map[string]json.RawMessage {
 	out := map[string]json.RawMessage{}
-	rows, _ := federation_database().rows("select device, name, keys from clients where user=? and keys!=''", user)
+	rows, _ := networks_database().rows("select device, name, keys from devices where user=? and keys!=''", user)
 	for _, row := range rows {
 		device := row_string(row, "device")
 		if len(devices) > 0 && !slices.Contains(devices, device) {
@@ -463,7 +463,7 @@ func keyring_signing_key(user string, purpose string) json.RawMessage {
 // keyring_signing_for is keyring_signing_key as seen by viewer: a signature
 // of theirs on the user's master key, which only they are shown.
 func keyring_signing_for(user string, purpose string, viewer string) json.RawMessage {
-	row, _ := federation_database().row("select key from signing where user=? and purpose=?", user, purpose)
+	row, _ := networks_database().row("select key from signing where user=? and purpose=?", user, purpose)
 	if row == nil {
 		return nil
 	}
@@ -494,7 +494,7 @@ func keyring_signed(user string, target string, raw string, viewer string) json.
 	if signatures == nil {
 		signatures = map[string]any{}
 	}
-	rows, _ := federation_database().rows("select signer, id, value from signatures where user=? and target=?", user, target)
+	rows, _ := networks_database().rows("select signer, id, value from signatures where user=? and target=?", user, target)
 	for _, row := range rows {
 		signer := row_string(row, "signer")
 		if signer != user && signer != viewer {
@@ -668,7 +668,7 @@ func keyring_claim(ctx context.Context, user string, body json.RawMessage) keyri
 // keyring_take claims a key of each of a user's devices named, by algorithm:
 // a one-time key, used once, else the device's fallback key.
 func keyring_take(user string, wanted map[string]string) map[string]map[string]json.RawMessage {
-	db := federation_database()
+	db := networks_database()
 	out := map[string]map[string]json.RawMessage{}
 	for device, algorithm := range wanted {
 		row, _ := db.row("select id, key from onetime where user=? and device=? and id like ? order by id limit 1", user, device, algorithm+":%")
@@ -695,7 +695,7 @@ func keyring_signing_upload(user string, body json.RawMessage) keyring_answer {
 	if json.Unmarshal(body, &request) != nil {
 		return keyring_error(http.StatusBadRequest, "M_NOT_JSON", "Invalid keys")
 	}
-	db := federation_database()
+	db := networks_database()
 	type uploaded struct {
 		User  string            `json:"user_id"`
 		Usage []string          `json:"usage"`
@@ -749,7 +749,7 @@ func keyring_sign(user string, body json.RawMessage) keyring_answer {
 	if json.Unmarshal(body, &request) != nil {
 		return keyring_error(http.StatusBadRequest, "M_NOT_JSON", "Invalid signatures")
 	}
-	db := federation_database()
+	db := networks_database()
 	failures := map[string]map[string]any{}
 	fail := func(person string, target string, message string) {
 		if failures[person] == nil {
@@ -775,7 +775,7 @@ func keyring_sign(user string, body json.RawMessage) keyring_answer {
 			}
 			// The object must be the key it names, as kept here.
 			kept := ""
-			if row, _ := db.row("select keys from clients where user=? and device=?", person, target); row != nil && person == user {
+			if row, _ := db.row("select keys from devices where user=? and device=?", person, target); row != nil && person == user {
 				kept = row_string(row, "keys")
 			} else if master := keyring_signing_key(person, "master"); master != nil && keyring_public(string(master)) == target {
 				kept = string(master)
@@ -809,7 +809,7 @@ func keyring_sign(user string, body json.RawMessage) keyring_answer {
 					allowed = self != nil && keyring_public(string(self)) == public
 				case person == user:
 					// The account's master key, signed by one of its devices.
-					row, _ := db.row("select keys from clients where user=? and device=?", user, public)
+					row, _ := db.row("select keys from devices where user=? and device=?", user, public)
 					var keys struct {
 						Keys map[string]string `json:"keys"`
 					}
@@ -839,7 +839,7 @@ func keyring_sign(user string, body json.RawMessage) keyring_answer {
 	}
 	for target := range changed {
 		if keyring_known(user, target) {
-			row, _ := db.row("select keys from clients where user=? and device=?", user, target)
+			row, _ := db.row("select keys from devices where user=? and device=?", user, target)
 			keyring_changed(user, target, keyring_signed(user, target, row_string(row, "keys"), ""), false)
 		} else {
 			signing = true
@@ -866,7 +866,7 @@ func keyring_send(user string, device string, kind string, transaction string, b
 	if json.Unmarshal(body, &request) != nil {
 		return keyring_error(http.StatusBadRequest, "M_NOT_JSON", "Invalid messages")
 	}
-	db := federation_database()
+	db := networks_database()
 	key := "todevice|" + device + "|" + transaction
 	if taken, _ := db.exists("select 1 from sent where account=? and key=?", user, key); taken {
 		return keyring_ok(map[string]any{})
@@ -898,12 +898,12 @@ func keyring_send(user string, device string, kind string, transaction string, b
 
 // keyring_deliver keeps what a sender sent to devices of a user's here.
 func keyring_deliver(sender string, user string, kind string, devices map[string]json.RawMessage) {
-	db := federation_database()
+	db := networks_database()
 	delivered := false
 	for device, content := range devices {
 		var targets []string
 		if device == "*" {
-			rows, _ := db.rows("select device from clients where user=?", user)
+			rows, _ := db.rows("select device from devices where user=?", user)
 			for _, row := range rows {
 				targets = append(targets, row_string(row, "device"))
 			}
@@ -911,13 +911,13 @@ func keyring_deliver(sender string, user string, kind string, devices map[string
 			targets = []string{device}
 		}
 		for _, target := range targets {
-			db.exec("insert into deliveries (user, device, sender, type, content, created) values (?, ?, ?, ?, ?, ?)", user, target, sender, kind, string(content), now())
+			db.exec("insert into messages (user, device, sender, type, content, created) values (?, ?, ?, ?, ?, ?)", user, target, sender, kind, string(content), now())
 			// The account's own device here takes it at once (encryption.go).
 			encryption_delivered(user, target)
 			delivered = true
 		}
 	}
-	db.exec("delete from deliveries where created<?", now()-keyring_delivered)
+	db.exec("delete from messages where created<?", now()-keyring_delivered)
 	if delivered {
 		clients_wake(user)
 	}
@@ -929,7 +929,7 @@ func keyring_deliver(sender string, user string, kind string, devices map[string
 // reading, changing and deleting a version, and putting, reading and
 // deleting the room keys of the current one.
 func keyring_backup(user string, method string, parts []string, query url.Values, body json.RawMessage) keyring_answer {
-	db := federation_database()
+	db := networks_database()
 	current := func() map[string]any {
 		row, _ := db.row("select version, algorithm, auth, etag from backups where user=? and deleted=0 order by version desc limit 1", user)
 		return row
@@ -1065,7 +1065,7 @@ func keyring_better(user string, version string, room string, session string, da
 		Forwards int64 `json:"forwarded_count"`
 		Verified bool  `json:"is_verified"`
 	}
-	row, _ := federation_database().row("select data from sessions where user=? and version=? and room=? and session=?", user, version, room, session)
+	row, _ := networks_database().row("select data from sessions where user=? and version=? and room=? and session=?", user, version, room, session)
 	if row == nil {
 		return true
 	}
@@ -1119,12 +1119,12 @@ func keyring_sync(user string, device string, since string) map[string]any {
 // keyring_deliveries is what was sent a device since a delivery it was
 // given, at most a hundred, and the last given; those before are let go.
 func keyring_deliveries(user string, device string, delivered int64) ([]map[string]any, int64) {
-	db := federation_database()
+	db := networks_database()
 	if delivered > 0 {
-		db.exec("delete from deliveries where user=? and device=? and id<=?", user, device, delivered)
+		db.exec("delete from messages where user=? and device=? and id<=?", user, device, delivered)
 	}
 	events := []map[string]any{}
-	rows, _ := db.rows("select id, sender, type, content from deliveries where user=? and device=? and id>? order by id limit 100", user, device, delivered)
+	rows, _ := db.rows("select id, sender, type, content from messages where user=? and device=? and id>? order by id limit 100", user, device, delivered)
 	for _, row := range rows {
 		var content any
 		json.Unmarshal([]byte(row_string(row, "content")), &content)
@@ -1139,7 +1139,7 @@ func keyring_deliveries(user string, device string, delivered int64) ([]map[stri
 // last change; a first sync starts from now, since the device asks for what
 // it needs.
 func keyring_changes(user string, changes int64, first bool) ([]string, []string, int64) {
-	db := federation_database()
+	db := networks_database()
 	if first {
 		row, _ := db.row("select max(id) as id from changes")
 		return []string{}, []string{}, row_int(row, "id")
@@ -1205,7 +1205,7 @@ func keyring_membership(event gomatrixserverlib.PDU) {
 	if joined {
 		keyring_introduce(member, event.RoomID().String())
 	}
-	db := federation_database()
+	db := networks_database()
 	// Who is an account here, and who shares a room with whom, are asked once
 	// each: asked again for every member, leaving a large room recomputed
 	// everyone's rooms once per member.
@@ -1300,7 +1300,7 @@ func keyring_receive(origin spec.ServerName, kind string, content json.RawMessag
 		id, err := spec.NewUserID(user, true)
 		return err == nil && id.Domain() == origin
 	}
-	db := federation_database()
+	db := networks_database()
 	switch kind {
 	case "m.device_list_update", "m.signing_key_update":
 		var update struct {
@@ -1342,7 +1342,7 @@ func keyring_serve_devices(c *gin.Context, user string) {
 		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "Not a user of this server")
 		return
 	}
-	db := federation_database()
+	db := networks_database()
 	row, _ := db.row("select max(id) as id from changes where user=? and viewer=''", user)
 	devices := []map[string]any{}
 	for device, keys := range keyring_devices(user, nil) {
@@ -1414,8 +1414,8 @@ func keyring_serve_claim(c *gin.Context, r *fclient.FederationRequest) {
 // keyring_prune drops what waited past its time for a device and the
 // changes every device has been given long since.
 func keyring_prune() {
-	db := federation_database()
-	db.exec("delete from deliveries where created<?", now()-keyring_delivered)
+	db := networks_database()
+	db.exec("delete from messages where created<?", now()-keyring_delivered)
 	db.exec("delete from changes where created<? and id<(select max(id) from changes)", now()-keyring_delivered)
 	db.exec("delete from sent where key like 'todevice|%' and created<?", now()-int64(7*24*time.Hour/time.Second))
 }

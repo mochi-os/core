@@ -1175,7 +1175,7 @@ func xrpc_plc_sign(c *gin.Context) {
 		xrpc_fail(c, http.StatusBadRequest, "InvalidRequest", err.Error())
 		return
 	}
-	db_user_brief(s.user, "user").exec("delete from snapshots where kind='plc' and key=?", s.id)
+	db_user_brief(s.user, "networks").exec("delete from snapshots where kind='plc' and key=?", s.id)
 	c.JSON(http.StatusOK, map[string]any{"operation": op})
 }
 

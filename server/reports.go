@@ -491,7 +491,7 @@ func hosts_health() map[string]any {
 
 	matrix := []any{}
 	if network_enabled("matrix") {
-		federation := federation_database()
+		federation := networks_database()
 		outbox := map[string]int64{}
 		counts, _ := federation.rows("select destination, count(*) as count from outbox group by destination")
 		for _, row := range counts {

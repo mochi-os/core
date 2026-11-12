@@ -42,7 +42,7 @@ import (
 var clients_api_scopes = []string{"urn:matrix:client:api:*", "urn:matrix:org.matrix.msc2967.client:api:*"}
 
 // clients_tables lays, as part of federation_create, what the client interface
-// keeps in matrix.db beside the engine's rooms: the order events entered the
+// keeps in networks.db beside the engine's rooms: the order events entered the
 // rooms' timelines, which sync's positions count in; read receipts; the
 // accounts' data, global and per room; filters; push rules, pushers and the
 // notifications they made; room aliases and the room directory.
@@ -230,14 +230,14 @@ func clients_wake_sharing(user string) {
 	clients_waking_lock.Unlock()
 	concerned := []string{user}
 	joined := func(id string) bool {
-		row, _ := federation_database().row("select membership from events where id=?", id)
+		row, _ := networks_database().row("select membership from events where id=?", id)
 		return row_string(row, "membership") == spec.Join
 	}
 	if len(waiting) > 0 {
 		// The member events of any kind: a room joined over federation keeps
 		// those of the members already there as outliers.
 		var states []rooms_state
-		rows, _ := federation_database().rows("select distinct room from events where type='m.room.member' and key=?", user)
+		rows, _ := networks_database().rows("select distinct room from events where type='m.room.member' and key=?", user)
 		for _, row := range rows {
 			room := row_string(row, "room")
 			if membership := rooms_membership(room, user); membership == spec.Join || membership == spec.Invite {
@@ -337,9 +337,9 @@ func clients_authenticate(c *gin.Context) *clients_session {
 		return refuse(false)
 	}
 	db_open("db/sessions.db").exec("insert into accesses (hash, user, used) values (?, ?, ?) on conflict(hash) do update set used=excluded.used", t.Hash, t.User, now())
-	db := federation_database()
-	db.exec("insert or ignore into clients (user, device, name, created) values (?, ?, ?, ?)", h.address, t.Device, t.Name, now())
-	db.exec("update clients set seen=? where user=? and device=?", now(), h.address, t.Device)
+	db := networks_database()
+	db.exec("insert or ignore into devices (user, device, name, created) values (?, ?, ?, ?)", h.address, t.Device, t.Name, now())
+	db.exec("update devices set seen=? where user=? and device=?", now(), h.address, t.Device)
 	return &clients_session{token: t, user: user, h: h, device: t.Device}
 }
 
@@ -971,7 +971,7 @@ func clients_interactive(c *gin.Context, s *clients_session, raw json.RawMessage
 // clients_devices answers the account's devices: each client signed in, and
 // Mochi's own.
 func clients_devices(c *gin.Context, s *clients_session) {
-	rows, _ := federation_database().rows("select device, name, seen from clients where user=? order by created", s.h.address)
+	rows, _ := networks_database().rows("select device, name, seen from devices where user=? order by created", s.h.address)
 	devices := []map[string]any{}
 	for _, row := range rows {
 		devices = append(devices, clients_device_json(row))
@@ -991,8 +991,8 @@ func clients_device_json(row map[string]any) map[string]any {
 // clients_device answers one device: reading it, renaming it, or removing it
 // with the user's password.
 func clients_device(c *gin.Context, s *clients_session, device string) {
-	db := federation_database()
-	row, _ := db.row("select device, name, seen from clients where user=? and device=?", s.h.address, device)
+	db := networks_database()
+	row, _ := db.row("select device, name, seen from devices where user=? and device=?", s.h.address, device)
 	if row == nil {
 		clients_error(c, http.StatusNotFound, "M_NOT_FOUND", "No such device")
 		return
@@ -1012,8 +1012,8 @@ func clients_device(c *gin.Context, s *clients_session, device string) {
 				clients_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "The name is too long")
 				return
 			}
-			db.exec("update clients set name=? where user=? and device=?", *body.Name, s.h.address, device)
-			keys, _ := db.row("select keys from clients where user=? and device=?", s.h.address, device)
+			db.exec("update devices set name=? where user=? and device=?", *body.Name, s.h.address, device)
+			keys, _ := db.row("select keys from devices where user=? and device=?", s.h.address, device)
 			var held json.RawMessage
 			if raw := row_string(keys, "keys"); raw != "" {
 				held = json.RawMessage(raw)
@@ -1062,7 +1062,7 @@ func clients_device_delete(s *clients_session, device string) bool {
 	for _, row := range rows {
 		token_delete(row_string(row, "hash"))
 	}
-	federation_database().exec("delete from pushers where user=? and device=?", s.h.address, device)
+	networks_database().exec("delete from pushers where user=? and device=?", s.h.address, device)
 	keyring_delete(s.h.address, device)
 	clients_wake()
 	return true
@@ -1072,7 +1072,7 @@ func clients_device_delete(s *clients_session, device string) bool {
 // positions, of those the user shares a room with.
 func clients_key_changes(c *gin.Context, s *clients_session) {
 	from, to := sync_parse(c.Query("from")), sync_parse(c.Query("to"))
-	rows, _ := federation_database().rows("select user, viewer, gone from changes where id>? and id<=? order by id", from.changes, to.changes)
+	rows, _ := networks_database().rows("select user, viewer, gone from changes where id>? and id<=? order by id", from.changes, to.changes)
 	changed, left := keyring_tally(s.h.address, rows)
 	c.JSON(http.StatusOK, map[string]any{"changed": changed, "left": left})
 }
@@ -1206,7 +1206,7 @@ func clients_presence(c *gin.Context, s *clients_session, person string) {
 		return
 	}
 	answer := map[string]any{"presence": "offline"}
-	if row, _ := federation_database().row("select presence, message, active from presences where user=?", person); row != nil && federation_user_absent(person) {
+	if row, _ := networks_database().row("select presence, message, active from presences where user=?", person); row != nil && federation_user_absent(person) {
 		answer["presence"] = row_string(row, "presence")
 		if message := row_string(row, "message"); message != "" {
 			answer["status_msg"] = message
@@ -1215,7 +1215,7 @@ func clients_presence(c *gin.Context, s *clients_session, person string) {
 			answer["currently_active"] = true
 		}
 	} else if user, account := federation_user(person); user != nil {
-		row, _ := federation_database().row("select hidden from presence where account=?", account)
+		row, _ := networks_database().row("select hidden from presence where account=?", account)
 		if row_int(row, "hidden") == 0 {
 			status, _, connections := presence_user(user.UID)
 			switch status {
@@ -1294,7 +1294,7 @@ func clients_presence_lapse() {
 // clients_presence_record keeps the presence clients are shown of a user, at
 // a new position, where it changed.
 func clients_presence_record(user string, presence string, message string, active bool) {
-	db := federation_database()
+	db := networks_database()
 	if row, _ := db.row("select presence, message, active from presences where user=?", user); row != nil && row_string(row, "presence") == presence && row_string(row, "message") == message && (row_int(row, "active") == 1) == active {
 		return
 	}
@@ -1405,7 +1405,7 @@ func clients_data(c *gin.Context, s *clients_session, person string, room string
 
 // clients_setting is a piece of an account's data, or nil.
 func clients_setting(user string, room string, kind string) json.RawMessage {
-	row, _ := federation_database().row("select content from settings where user=? and room=? and type=?", user, room, kind)
+	row, _ := networks_database().row("select content from settings where user=? and room=? and type=?", user, room, kind)
 	if row == nil {
 		return nil
 	}
@@ -1415,7 +1415,7 @@ func clients_setting(user string, room string, kind string) json.RawMessage {
 // clients_setting_set keeps a piece of an account's data at a new position,
 // so the account's syncs are given it.
 func clients_setting_set(user string, room string, kind string, content json.RawMessage) {
-	db := federation_database()
+	db := networks_database()
 	db.exec("delete from settings where user=? and room=? and type=?", user, room, kind)
 	db.exec("insert into settings (user, room, type, content) values (?, ?, ?, ?)", user, room, kind, string(content))
 	clients_wake(user)
@@ -1478,7 +1478,7 @@ func clients_filter_create(c *gin.Context, s *clients_session, person string) {
 		clients_error(c, http.StatusBadRequest, "M_NOT_JSON", "The filter is not JSON")
 		return
 	}
-	result, err := federation_database().internal.Exec("insert into filters (user, body) values (?, ?)", s.h.address, string(raw))
+	result, err := networks_database().internal.Exec("insert into filters (user, body) values (?, ?)", s.h.address, string(raw))
 	if err != nil {
 		clients_error(c, http.StatusInternalServerError, "M_UNKNOWN", "The filter could not be kept")
 		return
@@ -1489,7 +1489,7 @@ func clients_filter_create(c *gin.Context, s *clients_session, person string) {
 
 // clients_filter_get answers a filter the account kept.
 func clients_filter_get(c *gin.Context, s *clients_session, person string, id string) {
-	row, _ := federation_database().row("select body from filters where id=? and user=?", id, s.h.address)
+	row, _ := networks_database().row("select body from filters where id=? and user=?", id, s.h.address)
 	if row == nil || person != s.h.address {
 		clients_error(c, http.StatusNotFound, "M_NOT_FOUND", "No such filter")
 		return

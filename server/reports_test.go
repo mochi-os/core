@@ -598,8 +598,8 @@ func TestReportsHosts(t *testing.T) {
 		rate_limit_host.allow("busy.example")
 		rate_limit_host.allow("slow.example")
 	}
-	federation_database().exec("insert into destinations (name, failures, retry) values ('matrix.example', 2, 40)")
-	federation_database().exec("insert into outbox (destination, kind, body, created) values ('matrix.example', 'pdu', '{}', 1)")
+	networks_database().exec("insert into destinations (name, failures, retry) values ('matrix.example', 2, 40)")
+	networks_database().exec("insert into outbox (destination, kind, body, created) values ('matrix.example', 'pdu', '{}', 1)")
 	peer := xmpp_peer_of("example.com", "chat.example")
 	peer.lock.Lock()
 	peer.failures = 1

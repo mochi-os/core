@@ -252,6 +252,15 @@ func user_export(uid, app, passphrase, host string) (string, error) {
 			return "", fmt.Errorf("rewrite the copy of user.db: %w", err)
 		}
 	}
+	// What is the user's on the other networks - their client interfaces'
+	// filters, push subscriptions and the ids their clients were given, their
+	// XMPP accounts' rosters and rooms - goes with the user, for a restore to
+	// put back.
+	if file_exists(filepath.Join(root, "networks.db")) {
+		if _, err := snapshot_copy_db(filepath.Join(root, "networks.db"), filepath.Join(tree, "networks.db")); err != nil {
+			return "", fmt.Errorf("copy networks.db: %w", err)
+		}
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil && !os.IsNotExist(err) {
 		return "", fmt.Errorf("read user directory: %w", err)

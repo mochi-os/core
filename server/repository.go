@@ -713,8 +713,8 @@ var atproto_budget_day int64 = 10000
 // atproto_budget_used counts the events of the last hour and the last day.
 func atproto_budget_used() (int64, int64) {
 	db := networks_database()
-	hour, _ := db.row("select count(*) as n from stream where created>?", now()-3600)
-	day, _ := db.row("select count(*) as n from stream where created>?", now()-86400)
+	hour, _ := db.row("select count(*) as n from firehose where created>?", now()-3600)
+	day, _ := db.row("select count(*) as n from firehose where created>?", now()-86400)
 	return row_int(hour, "n"), row_int(day, "n")
 }
 

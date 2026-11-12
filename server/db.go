@@ -388,19 +388,15 @@ func db_create(names ...string) {
 	}
 
 	if lay("networks") {
-		// Delivery to other servers' inboxes, the hosts reached and the owner's
-		// domain blocks
-		networks_create(db_open("db/networks.db"))
-	}
-
-	if lay("matrix") {
-		// The Matrix engine's rooms, keys and queues for every user together
-		federation_create(db_open("db/matrix.db"))
-	}
-
-	if lay("xmpp") {
-		// The XMPP engine's rosters, queues and rooms
-		xmpp_tables(db_open("db/xmpp.db"))
+		// What every network keeps that is looked up across users, the
+		// queues, and the server's own state: delivery to other servers'
+		// inboxes, the hosts reached and the owner's domain blocks; the
+		// Matrix engine's rooms, keys and queues; the XMPP engine's uploads
+		// and rooms. Each user's own is in their networks.db.
+		networks := db_open("db/networks.db")
+		networks_create(networks)
+		federation_create(networks)
+		xmpp_tables(networks)
 	}
 
 	if lay("world") {
@@ -542,6 +538,7 @@ func db_count(db *DB) {
 var db_user_steps = map[string][]func(*DB) error{
 	"user":          {user_upgrade_1, user_upgrade_2},
 	"notifications": {notifications_upgrade_1},
+	"networks":      {networks_upgrade_1},
 }
 
 // user_upgrade_1 lays user.db as it was when it gained a version, and makes
@@ -578,8 +575,6 @@ func user_upgrade_1(db *DB) error {
 	// Keys of hosted accounts on other networks (keys.go).
 	keys_table(db)
 	networks_tables(db)
-	numbers_table(db)
-	statuses_tables(db)
 
 	// User interest profiles for personalised ranking
 	db.exec("create table if not exists interests (qid text not null primary key, weight integer not null default 100, updated integer not null default 0)")
@@ -601,6 +596,41 @@ func user_upgrade_1(db *DB) error {
 func user_upgrade_2(db *DB) error {
 	db.exec("create index if not exists followers_created on followers (account, created)")
 	db.exec("create index if not exists following_created on following (account, created)")
+	return nil
+}
+
+// networks_upgrade_1 lays a user's own networks.db: what is theirs on the
+// other networks, written as their accounts and their clients work, so it
+// stays out of user.db and the data there that must never be lost; what is
+// looked up across users stays in the server's networks.db.
+//
+// Mastodon's client interface: each item's time-ordered number, the last form
+// of each account and status clients were given, the read positions clients
+// keep, the filters, the push subscriptions, and the notifications as they
+// arrived, each with its number and kind indexed for paging. Lemmy's numbers.
+// ActivityPub: the activities each account has taken, so one is taken once.
+// XMPP: each hosted account's roster, the messages waiting for its clients,
+// their push registrations, what it publishes and the rooms Mochi's own
+// sessions are in.
+func networks_upgrade_1(db *DB) error {
+	db.exec("create table if not exists snowflakes (number integer primary key, kind text not null, key text not null, unique (kind, key))")
+	db.exec("create table if not exists snapshots (kind text not null, key text not null, document text not null, created integer not null, updated integer not null, primary key (kind, key))")
+	db.exec("create table if not exists markers (account text not null, timeline text not null, position text not null, version integer not null default 0, updated integer not null, primary key (account, timeline))")
+	db.exec("create table if not exists filters (id integer primary key autoincrement, account text not null, title text not null, context text not null, action text not null default 'warn', keywords text not null default '[]', expires integer not null default 0, created integer not null)")
+	db.exec("create table if not exists subscriptions (token text not null primary key, account text not null, endpoint text not null, auth text not null, key text not null, alerts text not null default '{}', policy text not null default 'all', standard integer not null default 0, created integer not null)")
+	db.exec("create table if not exists alerts (id integer primary key autoincrement, account text not null, row text not null, event text not null default '', answer text not null, created integer not null, number integer, type text not null default '', unique (account, row, event))")
+	db.exec("create index if not exists alerts_number on alerts (account, number, type)")
+	db.exec("create index if not exists alerts_type on alerts (account, type, number)")
+	db.exec("create table if not exists numbers (number integer primary key autoincrement, kind text not null, id text not null, created integer not null, unique (kind, id))")
+	db.exec("create table if not exists seen (id text not null, account text not null, created integer not null, primary key (id, account))")
+	db.exec("create index if not exists seen_created on seen(created)")
+	db.exec("create table if not exists roster (account text not null, address text not null, name text not null default '', subscription text not null default 'none', ask integer not null default 0, pending integer not null default 0, listed integer not null default 0, created integer not null, updated integer not null, primary key (account, address))")
+	db.exec("create table if not exists offline (id integer primary key autoincrement, account text not null, stanza text not null, created integer not null)")
+	db.exec("create index if not exists offline_account on offline(account, id)")
+	db.exec("create table if not exists pushes (account text not null, service text not null, node text not null, options text not null default '', created integer not null, primary key (account, service, node))")
+	db.exec("create table if not exists nodes (account text not null, node text not null, access text not null default 'presence', maximum integer not null default 1, created integer not null, primary key (account, node))")
+	db.exec("create table if not exists items (account text not null, node text not null, item text not null, payload text not null, updated integer not null, primary key (account, node, item))")
+	db.exec("create table if not exists joined (account text not null, address text not null, room text not null, nick text not null, name text not null default '', seen integer not null default 0, created integer not null, primary key (account, room))")
 	return nil
 }
 
@@ -3025,9 +3055,9 @@ func db_upgrade_13() {
 }
 
 // db_upgrade_18 brings the databases that laid their own schema whenever they
-// were opened - networks.db, matrix.db, xmpp.db and world.db - into the version
-// system: their tables as db_create laid them at schema 18, and the changes
-// their openers made each time, made once here. It calls db_create's functions
+// were opened - networks.db, with the Matrix and XMPP engines' tables, and
+// world.db - into the version system: their tables as db_create laid them at
+// schema 18, and the changes their openers made each time, made once here. It calls db_create's functions
 // for those databases while they still lay what they laid then;
 // TestVersionedStepsKeepTheirSchema fails the moment one changes, and this step
 // then takes its own copy of the function as it was. It also drops the commit-hook log apps' data
@@ -3036,7 +3066,7 @@ func db_upgrade_18() {
 	networks := db_open("db/networks.db")
 	// The Bluesky update stream from before its sequence was AUTOINCREMENT,
 	// moved onto one that is before the table is laid.
-	atproto_stream_rebuild(networks)
+	atproto_firehose_rebuild(networks)
 	db_upgrade_18_networks(networks)
 	// The actor a delivery is for where its inbox was not known when queued.
 	if exists, _ := networks.exists("select 1 from pragma_table_info('deliveries') where name='address'"); !exists {
@@ -3045,22 +3075,23 @@ func db_upgrade_18() {
 	// The activity ids seen, server-wide, before they were kept per account.
 	networks.exec("drop table if exists received")
 
-	matrix := db_open("db/matrix.db")
-	db_upgrade_18_federation(matrix)
+	// The Matrix engine's tables.
+	db_upgrade_18_federation(networks)
 	// The domain each queued row is sent from.
-	if found, _ := matrix.exists("select 1 from pragma_table_info('outbox') where name='origin'"); !found {
-		matrix.exec("alter table outbox add column origin text not null default ''")
+	if found, _ := networks.exists("select 1 from pragma_table_info('outbox') where name='origin'"); !found {
+		networks.exec("alter table outbox add column origin text not null default ''")
 	}
 	// Whether a key change is one the viewer no longer shares a room with.
-	if found, _ := matrix.exists("select 1 from pragma_table_info('changes') where name='gone'"); !found {
-		matrix.exec("alter table changes add column gone integer not null default 0")
+	if found, _ := networks.exists("select 1 from pragma_table_info('changes') where name='gone'"); !found {
+		networks.exec("alter table changes add column gone integer not null default 0")
 	}
 	// The rooms' timelines and the key store's account data from before the
 	// client interface kept them, taken into its order and settings.
-	matrix.exec("insert or ignore into stream (room, event) select room, id from events where outlier=0 and rejected=0 and not exists (select 1 from stream) order by received, rowid")
-	matrix.exec("insert or ignore into settings (user, room, type, content) select user, '', type, content from data")
+	networks.exec("insert or ignore into stream (room, event) select room, id from events where outlier=0 and rejected=0 and not exists (select 1 from stream) order by received, rowid")
+	networks.exec("insert or ignore into settings (user, room, type, content) select user, '', type, content from data")
 
-	xmpp_tables(db_open("db/xmpp.db"))
+	// The XMPP engine's tables.
+	xmpp_tables(networks)
 	world_create(db_open("db/world.db"))
 
 	dropped := 0
@@ -3106,13 +3137,10 @@ func db_upgrade_18_networks(db *DB) {
 	db.exec("create table if not exists certificates (host text not null, issued integer not null)")
 	db.exec("create index if not exists certificates_issued on certificates(issued)")
 	// The hosted accounts by permanent id, for a request that arrives with
-	// no user; the activity ids the inbox has seen; and what the inbox queues
+	// no user; and what the inbox queues
 	// for the apps (activitypub.go).
 	db.exec("create table if not exists actors (id text not null primary key, user text not null, domain text not null, handle text not null, network text not null, created integer not null, deleted integer not null default 0, key text not null default '')")
 	db.exec("create index if not exists actors_user on actors(user)")
-	// The activity ids seen by each account.
-	db.exec("create table if not exists seen (id text not null, account text not null, created integer not null, primary key (id, account))")
-	db.exec("create index if not exists seen_created on seen(created)")
 	db.exec("create table if not exists inbound (id text not null primary key, user text not null, account text not null, actor text not null, type text not null, body text not null, created integer not null)")
 	db.exec("create index if not exists inbound_account on inbound(account, created)")
 	// The Bluesky identities by did and the update stream (atproto.go).
@@ -3120,8 +3148,8 @@ func db_upgrade_18_networks(db *DB) {
 	// A relay resumes from the last sequence it read, so a number is never
 	// given twice: AUTOINCREMENT keeps the last one even when the replay
 	// window has emptied the table.
-	db.exec("create table if not exists stream (sequence integer not null primary key autoincrement, did text not null, kind text not null, body blob not null, created integer not null)")
-	db.exec("create index if not exists stream_created on stream(created)")
+	db.exec("create table if not exists firehose (sequence integer not null primary key autoincrement, did text not null, kind text not null, body blob not null, created integer not null)")
+	db.exec("create index if not exists firehose_created on firehose(created)")
 	// Subscriptions to web feeds and to this server's, and the mentions
 	// waiting (websub.go, webmention.go).
 	db.exec("create table if not exists websub (id text not null primary key, user text not null, app text not null, source text not null, topic text not null, hub text not null, secret text not null, state text not null, expires integer not null default 0, attempts integer not null default 0, asked integer not null default 0, created integer not null, unique (user, app, source))")
@@ -3203,7 +3231,7 @@ func db_upgrade_18_federation(db *DB) {
 // state before each, and lets a snapshot be the changes from an earlier one;
 // rooms_tables carries both for new installs.
 func db_upgrade_22() {
-	matrix := db_open("db/matrix.db")
+	matrix := db_open("db/networks.db")
 	found, err := matrix.exists("select 1 from sqlite_master where type='table' and name='events'")
 	if err != nil {
 		panic(fmt.Sprintf("Schema upgrade 22: events table lookup: %v", err))

@@ -158,7 +158,7 @@ func TestXMPPMessages(t *testing.T) {
 	wait(t, "bob's client to go", func() bool { return xmpp_resource_get("bob@example.com", b.full.Resourcepart()) == nil })
 	a.send(t, `<message xmlns="jabber:client" to="bob@example.com" type="chat" id="m3"><body>While away</body></message>`)
 	wait(t, "the message kept", func() bool {
-		found, _ := xmpp_database().exists("select 1 from offline where account='x2'")
+		found, _ := db_user_brief(env.bob, "networks").exists("select 1 from offline where account='x2'")
 		return found
 	})
 	c, err := env.connect(t, "bob@example.com", env.mint(t, env.bob, "x2", "Laptop"), "")
@@ -171,7 +171,7 @@ func TestXMPPMessages(t *testing.T) {
 	if !strings.Contains(kept, "urn:xmpp:delay") {
 		t.Errorf("kept message carries no delay: %s", kept)
 	}
-	if found, _ := xmpp_database().exists("select 1 from offline where account='x2'"); found {
+	if found, _ := db_user_brief(env.bob, "networks").exists("select 1 from offline where account='x2'"); found {
 		t.Error("the kept message was kept after it was handed over")
 	}
 

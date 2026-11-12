@@ -116,12 +116,12 @@ func test_bare_directory(t testing.TB) string {
 
 // test_network_databases lays the server-wide databases whose openers lay
 // nothing, as db_create does on a fresh install: the network engines'
-// networks.db, matrix.db, xmpp.db and world.db, and apps.db.
+// networks.db and world.db, and apps.db.
 func test_network_databases() {
 	apps_create(db_apps())
 	networks_create(networks_database())
-	federation_create(federation_database())
-	xmpp_tables(xmpp_database())
+	federation_create(networks_database())
+	xmpp_tables(networks_database())
 	world_create(db_open("db/world.db"))
 }
 

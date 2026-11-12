@@ -128,7 +128,7 @@ func TestXMPPUploads(t *testing.T) {
 	slot = c.expect(t, "a third slot", `id="s3"`, "<slot")
 	address = regexp.MustCompile(`<put url="([^"]+)">`).FindStringSubmatch(slot)[1]
 	token = regexp.MustCompile(`Bearer ([A-Za-z0-9]+)`).FindStringSubmatch(slot)
-	xmpp_database().exec("update uploads set created=created-3600 where name='late.txt'")
+	networks_database().exec("update uploads set created=created-3600 where name='late.txt'")
 	if status, _, _ := xmpp_web_request(t, web, "PUT", address, "example.com", token[1], "late", "text/plain"); status != http.StatusGone {
 		t.Errorf("THE POINT: a slot used past its lifetime: %d", status)
 	}

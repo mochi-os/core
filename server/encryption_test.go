@@ -136,19 +136,19 @@ func TestEncryptionMatrixLate(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The key waits on the way to root's device.
-	db := federation_database()
-	held, _ := db.rows("select * from deliveries where user='@root:example.com' and device=?", rd.device)
+	db := networks_database()
+	held, _ := db.rows("select * from messages where user='@root:example.com' and device=?", rd.device)
 	if len(held) == 0 {
 		t.Fatal("no room key on its way to root's device")
 	}
-	db.exec("delete from deliveries where user='@root:example.com' and device=?", rd.device)
+	db.exec("delete from messages where user='@root:example.com' and device=?", rd.device)
 	sent := encryption_sent(t, ad.user, "m1", map[string]any{"conversation": room, "content": "Late"}, "chat|l1")
 	waiting := log.find(t, "message", func(e map[string]any) bool { return e["account"] == "m2" && e["id"] == sent["id"] })
 	if waiting["body"] != "" || waiting["encrypted"] != true {
 		t.Fatalf("THE POINT: the message shown waiting for its key: %v", waiting)
 	}
 	for _, row := range held {
-		db.exec("insert into deliveries (user, device, sender, type, content, created) values (?, ?, ?, ?, ?, ?)", row["user"], row["device"], row["sender"], row["type"], row["content"], row["created"])
+		db.exec("insert into messages (user, device, sender, type, content, created) values (?, ?, ?, ?, ?, ?)", row["user"], row["device"], row["sender"], row["type"], row["content"], row["created"])
 	}
 	encryption_database(root).exec("insert into devices (account, device, created) values ('m2', ?, 1)", rd.device)
 	encryption_delivered("@root:example.com", rd.device)
@@ -207,7 +207,7 @@ func TestEncryptionMatrixRecovery(t *testing.T) {
 	}
 	version := ad.machine.KeyBackupVersion()
 	held, _ := encryption_database(ad.user).row("select count(*) as n from crypto_megolm_inbound_session where account_id=?", ad.account)
-	backed, _ := federation_database().row("select count(*) as n from sessions where user='@alice:example.com' and version=?", version.String())
+	backed, _ := networks_database().row("select count(*) as n from sessions where user='@alice:example.com' and version=?", version.String())
 	if held["n"] != int64(2) || backed["n"] != held["n"] {
 		t.Errorf("THE POINT: each of the room's keys in the backup: %v held, %v backed up", held["n"], backed["n"])
 	}
@@ -528,7 +528,7 @@ func TestEncryptionOpenedTogether(t *testing.T) {
 			t.Fatal("THE POINT: one device for each that opened it")
 		}
 	}
-	if made, _ := federation_database().row("select count(*) as n from clients where user='@other:example.com'"); made["n"] != int64(1) {
+	if made, _ := networks_database().row("select count(*) as n from devices where user='@other:example.com'"); made["n"] != int64(1) {
 		t.Errorf("THE POINT: one device made in the key store: %v", made["n"])
 	}
 }

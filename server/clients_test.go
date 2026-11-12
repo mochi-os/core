@@ -1885,7 +1885,7 @@ func TestClientsInvites(t *testing.T) {
 	if result, _ := r.push(t, "forged", forged)[forged.EventID()].(map[string]any); result["error"] == nil {
 		t.Errorf("THE POINT: an invitation withdrawn by someone other than its inviter = %v", result)
 	}
-	if found, _ := federation_database().exists("select 1 from invites where room=? and user=?", withdrawn, invitee); !found {
+	if found, _ := networks_database().exists("select 1 from invites where room=? and user=?", withdrawn, invitee); !found {
 		t.Fatal("THE POINT: someone other than its inviter withdrew the invitation")
 	}
 	kick := r.event(withdrawn, bob, spec.MRoomMember, &invitee, map[string]any{"membership": "leave"})
@@ -1896,7 +1896,7 @@ func TestClientsInvites(t *testing.T) {
 	if !left(gone, withdrawn) || gone.Rooms.Invite[id.RoomID(withdrawn)] != nil {
 		t.Errorf("THE POINT: the withdrawn invitation = %+v", gone.Rooms)
 	}
-	if found, _ := federation_database().exists("select 1 from invites where room=? and user=?", withdrawn, invitee); found {
+	if found, _ := networks_database().exists("select 1 from invites where room=? and user=?", withdrawn, invitee); found {
 		t.Error("THE POINT: the withdrawn invitation is kept")
 	}
 	log.find(t, "room", func(e map[string]any) bool { return e["conversation"] == withdrawn && e["left"] == true })
@@ -1955,7 +1955,7 @@ func TestClientsInvites(t *testing.T) {
 	if declined := sync(pending.NextBatch); !left(declined, vanished) || declined.Rooms.Invite[id.RoomID(vanished)] != nil {
 		t.Errorf("THE POINT: the invitation declined here = %+v", declined.Rooms)
 	}
-	if found, _ := federation_database().exists("select 1 from invites where room=?", vanished); found {
+	if found, _ := networks_database().exists("select 1 from invites where room=?", vanished); found {
 		t.Error("the declined invitation is kept")
 	}
 }
@@ -2409,7 +2409,7 @@ func TestClientsNotificationsKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	kept := func() int64 {
-		row, _ := federation_database().row("select count(*) as n from notifications where user='@root:example.com'")
+		row, _ := networks_database().row("select count(*) as n from notifications where user='@root:example.com'")
 		return row_int(row, "n")
 	}
 	if _, err := a.SendText(ctx, made.RoomID, "before"); err != nil {
@@ -2438,7 +2438,7 @@ func TestClientsPositions(t *testing.T) {
 	if before < 2 {
 		t.Fatalf("invites position = %d after two invitations", before)
 	}
-	federation_database().exec("delete from pending")
+	networks_database().exec("delete from pending")
 	if after := sync_latest().invites; after != before {
 		t.Errorf("invites position went from %d to %d when the rows went", before, after)
 	}
@@ -2453,7 +2453,7 @@ func TestClientsPositions(t *testing.T) {
 // fails, as a delete and an insert racing did, taking the server down.
 func TestClientsPresenceConcurrent(t *testing.T) {
 	create_clients_test_env(t)
-	before := sync_last(federation_database(), "presences")
+	before := sync_last(networks_database(), "presences")
 	var group sync.WaitGroup
 	for i := range 50 {
 		group.Add(1)
@@ -2463,10 +2463,10 @@ func TestClientsPresenceConcurrent(t *testing.T) {
 		}()
 	}
 	group.Wait()
-	if row, _ := federation_database().row("select count(*) as count from presences where user='@alice:example.com'"); row_int(row, "count") != 1 {
+	if row, _ := networks_database().row("select count(*) as count from presences where user='@alice:example.com'"); row_int(row, "count") != 1 {
 		t.Errorf("THE POINT: rows for one user = %v", row)
 	}
-	if sync_last(federation_database(), "presences") <= before {
+	if sync_last(networks_database(), "presences") <= before {
 		t.Error("THE POINT: the changes took no new position")
 	}
 }

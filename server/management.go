@@ -625,7 +625,8 @@ func xmpp_push_iq(a *xmpp_account, s *xmpp_stanza, name string) *xmpp_stanza {
 	if s.decode(&request) != nil {
 		return xmpp_failure(s, "bad-request", "modify", "")
 	}
-	db := xmpp_database()
+	db := db_user(a.user, "networks")
+	defer db.close()
 	switch {
 	case name == "enable" && request.Enable != nil:
 		service, err := jid.Parse(request.Enable.JID)
@@ -664,7 +665,7 @@ func xmpp_push_iq(a *xmpp_account, s *xmpp_stanza, name string) *xmpp_stanza {
 // none of which has a connection: a notification with no content but that a
 // message came, from the account's own address to each service.
 func xmpp_push_wake(a *xmpp_account) {
-	rows, _ := xmpp_database().rows("select service, node, options from pushes where account=?", a.id)
+	rows, _ := db_user_brief(a.user, "networks").rows("select service, node, options from pushes where account=?", a.id)
 	for _, row := range rows {
 		p := xmpp_push{account: a.id, service: row_string(row, "service"), node: row_string(row, "node")}
 		key := p.account + " " + p.service + " " + p.node
@@ -704,7 +705,7 @@ func xmpp_push_answered(a *xmpp_account, s *xmpp_stanza) bool {
 	}
 	if s.get("type") == "error" {
 		info("XMPP push to %s for %s refused; stopping it", p.service, a.address)
-		xmpp_database().exec("delete from pushes where account=? and service=? and node=?", p.account, p.service, p.node)
+		db_user_brief(a.user, "networks").exec("delete from pushes where account=? and service=? and node=?", p.account, p.service, p.node)
 	}
 	return true
 }

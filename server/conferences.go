@@ -12,8 +12,8 @@
 // or takes it as it is - or by chat, for a conversation of a hosted account
 // with several people and for a group with people from XMPP (relays.go). Its
 // owners, admins, members and outcasts, its configuration and its history are
-// kept in xmpp.db; who is in it is kept in memory, each occupant by their nick
-// with their sessions and their role.
+// kept in networks.db; who is in it is kept in memory, each occupant by their
+// nick with their sessions and their role.
 //
 // A room is persistent or goes once empty, open or members only, moderated or
 // not, shows its occupants' addresses to everyone or to moderators alone, and
@@ -226,8 +226,8 @@ func conference_of(address string) *conference {
 	if c := conferences[address]; c != nil {
 		return c
 	}
-	db := xmpp_database()
-	row, _ := db.row("select * from rooms where address=?", address)
+	db := networks_database()
+	row, _ := db.row("select * from conferences where address=?", address)
 	if row == nil {
 		return nil
 	}
@@ -276,13 +276,13 @@ func (c *conference) save() {
 		return 0
 	}
 	g := c.config
-	xmpp_database().exec("insert into rooms (address, name, description, subject, subjector, persistent, members, public, moderated, open, invite, whois, history, locked, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict(address) do update set name=excluded.name, description=excluded.description, subject=excluded.subject, subjector=excluded.subjector, persistent=excluded.persistent, members=excluded.members, public=excluded.public, moderated=excluded.moderated, open=excluded.open, invite=excluded.invite, whois=excluded.whois, history=excluded.history, locked=excluded.locked, updated=excluded.updated", c.address, g.name, g.description, g.subject, g.subjector, flag(g.persistent), flag(g.members), flag(g.public), flag(g.moderated), flag(g.open), flag(g.invite), g.whois, g.history, flag(g.locked), now(), now())
+	networks_database().exec("insert into conferences (address, name, description, subject, subjector, persistent, members, public, moderated, open, invite, whois, history, locked, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict(address) do update set name=excluded.name, description=excluded.description, subject=excluded.subject, subjector=excluded.subjector, persistent=excluded.persistent, members=excluded.members, public=excluded.public, moderated=excluded.moderated, open=excluded.open, invite=excluded.invite, whois=excluded.whois, history=excluded.history, locked=excluded.locked, updated=excluded.updated", c.address, g.name, g.description, g.subject, g.subjector, flag(g.persistent), flag(g.members), flag(g.public), flag(g.moderated), flag(g.open), flag(g.invite), g.whois, g.history, flag(g.locked), now(), now())
 }
 
 // affiliate gives someone an affiliation with the room, or "none" to take it
 // away, keeping the nick they reserve.
 func (c *conference) affiliate(who string, affiliation string, nick string) {
-	db := xmpp_database()
+	db := networks_database()
 	if affiliation == "none" || affiliation == "" {
 		delete(c.affiliations, who)
 		delete(c.nicks, who)
@@ -395,8 +395,8 @@ func conference_invite(address string, inviter jid.JID, person jid.JID, reason s
 // forget drops a room that has gone: its configuration, affiliations and
 // history.
 func (c *conference) forget() {
-	db := xmpp_database()
-	db.exec("delete from rooms where address=?", c.address)
+	db := networks_database()
+	db.exec("delete from conferences where address=?", c.address)
 	db.exec("delete from affiliations where room=?", c.address)
 	db.exec("delete from chatlog where room=?", c.address)
 	conferences_lock.Lock()
@@ -712,7 +712,7 @@ func (c *conference) history_send(s *xmpp_stanza, to string, out *conference_out
 	if limit <= 0 {
 		return
 	}
-	rows, _ := xmpp_database().rows("select nick, stanza, created from chatlog where room=? and created>=? order by id desc limit ?", c.address, since, limit)
+	rows, _ := networks_database().rows("select nick, stanza, created from chatlog where room=? and created>=? order by id desc limit ?", c.address, since, limit)
 	for i := len(rows) - 1; i >= 0; i-- {
 		message, err := xmpp_parse(row_string(rows[i], "stanza"))
 		if err != nil {
@@ -858,7 +858,7 @@ func (c *conference) say(o *conference_occupant, s *xmpp_stanza, m *xmpp_message
 	message.set("to", "")
 	xmpp_stanza_id(message, c.address, archive)
 	if conference_keeps(m) {
-		db := xmpp_database()
+		db := networks_database()
 		db.exec("insert into chatlog (room, archive, nick, sender, stanza, created) values (?, ?, ?, ?, ?, ?)", c.address, archive, o.nick, o.bare, message.text(xmpp_ns_client), now())
 		db.exec("delete from chatlog where room=? and id<=(select id from chatlog where room=? order by id desc limit 1 offset ?)", c.address, c.address, conference_kept)
 	}
@@ -1070,7 +1070,7 @@ func conference_service_iq(s *xmpp_stanza, to jid.JID) *xmpp_stanza {
 	case space == xmpp_ns_info && name == "query" && kind == "get":
 		return xmpp_result(s, `<query xmlns="`+xmpp_ns_info+`"><identity category="conference" type="text" name="Rooms"/><feature var="`+xmpp_ns_info+`"/><feature var="`+xmpp_ns_items+`"/><feature var="`+xmpp_ns_muc+`"/><feature var="`+xmpp_ns_muc_unique+`"/></query>`)
 	case space == xmpp_ns_items && name == "query" && kind == "get":
-		rows, _ := xmpp_database().rows("select address, name from rooms where public=1 and persistent=1 and locked=0 and address like ? order by created", "%@"+service)
+		rows, _ := networks_database().rows("select address, name from conferences where public=1 and persistent=1 and locked=0 and address like ? order by created", "%@"+service)
 		var items strings.Builder
 		for _, row := range rows {
 			items.WriteString(`<item jid="` + xmpp_escape(row_string(row, "address")) + `" name="` + xmpp_escape(row_string(row, "name")) + `"/>`)
@@ -1398,7 +1398,7 @@ func (c *conference) archive_iq(s *xmpp_stanza, from jid.JID, o *conference_occu
 	if !ok {
 		return xmpp_failure(s, "bad-request", "modify", "")
 	}
-	db := xmpp_database()
+	db := networks_database()
 	where := "room=?"
 	args := []any{c.address}
 	if q.start > 0 {
@@ -1514,7 +1514,7 @@ func (c *conference) speak(member string, inner string, out *conference_outbox) 
 	message := s.copy()
 	xmpp_stanza_id(message, c.address, archive)
 	if conference_keeps(&m) {
-		xmpp_database().exec("insert into chatlog (room, archive, nick, sender, stanza, created) values (?, ?, ?, ?, ?, ?)", c.address, archive, o.nick, "", message.text(xmpp_ns_client), now())
+		networks_database().exec("insert into chatlog (room, archive, nick, sender, stanza, created) values (?, ?, ?, ?, ?, ?)", c.address, archive, o.nick, "", message.text(xmpp_ns_client), now())
 	}
 	for _, other := range c.occupants {
 		for session := range other.sessions {

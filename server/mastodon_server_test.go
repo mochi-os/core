@@ -863,6 +863,326 @@ func TestMastodonNotifications(t *testing.T) {
 	}
 }
 
+// mastodon_alert_add keeps a notification for alice's account with no number
+// or kind on its row, as one copied from where they were kept before, or one
+// whose recording stopped before it was numbered: answering its row id.
+func mastodon_alert_add(t *testing.T, alice *User, row string, created int64, answer map[string]any) string {
+	t.Helper()
+	db := db_user(alice, "networks")
+	defer db.close()
+	db.exec("insert into alerts (account, row, event, answer, created) values ('f1', ?, 'e', ?, ?)", row, json_encode(answer), created)
+	kept, _ := db.row("select id from alerts where account='f1' and row=?", row)
+	return strconv.FormatInt(row_int(kept, "id"), 10)
+}
+
+// mastodon_follow_alert is a follow by u<i>@remote.example.
+func mastodon_follow_alert(i int) map[string]any {
+	return map[string]any{"type": "follow", "person": map[string]any{"id": fmt.Sprintf("https://remote.example/users/u%d", i), "address": fmt.Sprintf("@u%d@remote.example", i), "name": fmt.Sprintf("U%d", i)}}
+}
+
+// mastodon_notifications_walk pages through the notifications a path asks
+// for by each page's Link, answering who each one is from, in order.
+func mastodon_notifications_walk(t *testing.T, token string, path string) []string {
+	t.Helper()
+	next := regexp.MustCompile(`[?&]max_id=(\d+)[^>]*>; rel="next"`)
+	var names []string
+	for cursor, pages := "", 0; pages < 1000; pages++ {
+		address := path
+		if cursor != "" {
+			address += "&max_id=" + cursor
+		}
+		w, body := mastodon_request(t, token, "GET", address, nil)
+		items := mastodon_items(body)
+		for _, item := range items {
+			names = append(names, strings.TrimSuffix(fmt.Sprint(mastodon_map(item["account"])["acct"]), "@remote.example"))
+		}
+		m := next.FindStringSubmatch(w.Header().Get("Link"))
+		if m == nil || len(items) == 0 {
+			break
+		}
+		cursor = m[1]
+	}
+	return names
+}
+
+// TestMastodonNotificationsWalk: paging through notifications lists each one
+// once, in the order of their numbers, the numbers clients page by: those
+// arriving in one second newest first, and those numbered before in whatever
+// order they were given. min_id pages from the oldest side, since_id from the
+// newest.
+func TestMastodonNotificationsWalk(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read write")
+	for i := 0; i < 10; i++ {
+		mastodon_alert_add(t, alice, fmt.Sprintf("r%d", i), 1_700_000_000+int64(i/5), mastodon_follow_alert(i))
+	}
+	// Two numbered by an earlier server, the newer one first.
+	ten := mastodon_alert_add(t, alice, "r10", 1_700_000_002, mastodon_follow_alert(10))
+	eleven := mastodon_alert_add(t, alice, "r11", 1_700_000_002, mastodon_follow_alert(11))
+	mastodon_number(alice, "notification", "alert:"+eleven, 1_700_000_002)
+	numbered := mastodon_number(alice, "notification", "alert:"+ten, 1_700_000_002)
+	// Asked for by its number before any list has read it: the row is given
+	// the number its client holds.
+	if _, one := mastodon_request(t, token, "GET", "/api/v1/notifications/"+numbered, nil); mastodon_map(one)["id"] != numbered || mastodon_map(mastodon_map(one)["account"])["acct"] != "u10@remote.example" {
+		t.Errorf("THE POINT: the notification asked for by its number = %v", one)
+	}
+
+	want := "u10 u11 u9 u8 u7 u6 u5 u4 u3 u2 u1 u0"
+	if got := strings.Join(mastodon_notifications_walk(t, token, "/api/v1/notifications?limit=3"), " "); got != want {
+		t.Errorf("THE POINT: a walk of 12 notifications = %s, want %s", got, want)
+	}
+	_, all := mastodon_request(t, token, "GET", "/api/v1/notifications?limit=40", nil)
+	items := mastodon_items(all)
+	if len(items) != 12 {
+		t.Fatalf("the notifications = %v", items)
+	}
+	numbers := map[string]string{}
+	for _, item := range items {
+		numbers[strings.TrimSuffix(fmt.Sprint(mastodon_map(item["account"])["acct"]), "@remote.example")] = item["id"].(string)
+	}
+	names := func(body any) string {
+		var out []string
+		for _, item := range mastodon_items(body) {
+			out = append(out, strings.TrimSuffix(fmt.Sprint(mastodon_map(item["account"])["acct"]), "@remote.example"))
+		}
+		return strings.Join(out, " ")
+	}
+	if _, newer := mastodon_request(t, token, "GET", "/api/v1/notifications?limit=3&min_id="+numbers["u3"], nil); names(newer) != "u6 u5 u4" {
+		t.Errorf("THE POINT: the three just newer than u3 = %s", names(newer))
+	}
+	if _, newest := mastodon_request(t, token, "GET", "/api/v1/notifications?limit=3&since_id="+numbers["u3"], nil); names(newest) != "u10 u11 u9" {
+		t.Errorf("THE POINT: the newest three since u3 = %s", names(newest))
+	}
+	who := mastodon_map(items[4]["account"])["id"].(string)
+	if _, from := mastodon_request(t, token, "GET", "/api/v1/notifications?account_id="+who, nil); names(from) != "u7" {
+		t.Errorf("THE POINT: the notifications from u7 = %s", names(from))
+	}
+
+	// One recorded as it comes, after those kept before were numbered, is
+	// numbered then and listed first.
+	if !mastodon_alert_record(mastodon_session_for(alice, account_hosted_get(alice, "f1")), map[string]any{"id": "r12", "event": "e", "created": int64(1_700_000_003)}, mastodon_follow_alert(12)) {
+		t.Fatal("the new notification was not kept")
+	}
+	if _, newest := mastodon_request(t, token, "GET", "/api/v1/notifications?limit=2", nil); names(newest) != "u12 u10" {
+		t.Errorf("THE POINT: the newest two after one more came = %s", names(newest))
+	}
+	// One whose recording stopped between keeping and numbering it is
+	// numbered by the next request and listed.
+	mastodon_alert_add(t, alice, "r13", 1_700_000_004, mastodon_follow_alert(13))
+	if _, newest := mastodon_request(t, token, "GET", "/api/v1/notifications?limit=2", nil); names(newest) != "u13 u12" {
+		t.Errorf("THE POINT: the newest two after one kept without its number = %s", names(newest))
+	}
+	// Two in one second, the later told to a streaming client before any
+	// list reads them: numbered as they came, so the later is the newer.
+	session := mastodon_session_for(alice, account_hosted_get(alice, "f1"))
+	mastodon_alert_record(session, map[string]any{"id": "r14", "event": "e", "created": int64(1_700_000_005)}, mastodon_follow_alert(14))
+	mastodon_alert_record(session, map[string]any{"id": "r15", "event": "e", "created": int64(1_700_000_005)}, mastodon_follow_alert(15))
+	told, _ := db_user(alice, "networks").row("select * from alerts where row='r15'")
+	mastodon_alert(nil, session, told)
+	if _, newest := mastodon_request(t, token, "GET", "/api/v1/notifications?limit=2", nil); names(newest) != "u15 u14" {
+		t.Errorf("THE POINT: two of one second, the later told first = %s", names(newest))
+	}
+}
+
+// TestMastodonNotificationsQueryReadsTheNumbers: a page is read as a range of
+// the account's index of numbers - or of kinds and numbers, for one kind -
+// never by sorting all the account keeps.
+func TestMastodonNotificationsQueryReadsTheNumbers(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	db := db_user(alice, "networks")
+	defer db.close()
+	plan := func(w mastodon_wanted, maximum int64, minimum int64) string {
+		query, args := mastodon_alerts_query("f1", w, maximum, minimum, 20)
+		rows, err := db.rows("explain query plan "+query, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var details []string
+		for _, row := range rows {
+			details = append(details, row_string(row, "detail"))
+		}
+		return strings.Join(details, "\n")
+	}
+	for _, c := range []struct {
+		name             string
+		w                mastodon_wanted
+		maximum, minimum int64
+		index            string
+	}{
+		{"every kind", mastodon_wanted{limit: 20}, 0, 0, "alerts_number"},
+		{"every kind below a number", mastodon_wanted{limit: 20}, 1 << 60, 0, "alerts_number"},
+		{"every kind from the oldest side", mastodon_wanted{limit: 20, oldest: true}, 0, 1 << 50, "alerts_number"},
+		{"all but follows", mastodon_wanted{limit: 20, excluded: []string{"follow"}}, 1 << 60, 0, "alerts_number"},
+		{"one person's", mastodon_wanted{limit: 20, key: "https://remote.example/users/bob"}, 1 << 60, 0, "alerts_number"},
+		{"mentions", mastodon_wanted{limit: 20, types: []string{"mention"}}, 1 << 60, 0, "alerts_type"},
+	} {
+		if got := plan(c.w, c.maximum, c.minimum); !strings.HasPrefix(got, "SEARCH alerts USING INDEX "+c.index+" (account=? AND") || strings.Contains(got, "TEMP B-TREE") {
+			t.Errorf("THE POINT: a page of %s is not read as a range of %s:\n%s", c.name, c.index, got)
+		}
+	}
+}
+
+// TestMastodonNotificationsPageReadsItsRows: a page renders the rows it
+// shows, not every row kept - none of the older ones, whose statuses this
+// server has nothing of and would fetch - and fills past rows that render
+// nothing and rows of kinds not asked for.
+func TestMastodonNotificationsPageReadsItsRows(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read write")
+	var fetched atomic.Int64
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetched.Add(1)
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(remote.Close)
+	saved_private, saved_cache := url_allow_private, resolve_cache
+	url_allow_private, resolve_cache = true, map[string]resolve_entry{}
+	t.Cleanup(func() { url_allow_private, resolve_cache = saved_private, saved_cache })
+
+	for i := 0; i < 50; i++ {
+		mastodon_alert_add(t, alice, fmt.Sprintf("old%d", i), 1_600_000_000+int64(i), map[string]any{"type": "favourite", "remote": fmt.Sprintf("%s/notes/%d", remote.URL, i), "person": mastodon_follow_alert(i)["person"]})
+	}
+	held := remote.URL + "/notes/held"
+	mastodon_snapshot(alice, "status", "note:"+held, map[string]any{"id": "1", "uri": held, "content": "held"})
+	mastodon_alert_add(t, alice, "mention", 1_650_000_000, map[string]any{"type": "mention", "remote": held, "person": mastodon_follow_alert(99)["person"]})
+	for i := 0; i < 10; i++ {
+		mastodon_alert_add(t, alice, fmt.Sprintf("follow%d", i), 1_700_000_000+int64(i), mastodon_follow_alert(i))
+	}
+	// Newest of all, three that name nothing and render as nothing.
+	for i := 0; i < 3; i++ {
+		mastodon_alert_add(t, alice, fmt.Sprintf("gone%d", i), 1_800_000_000+int64(i), map[string]any{"type": "mention"})
+	}
+
+	_, page := mastodon_request(t, token, "GET", "/api/v1/notifications?limit=5", nil)
+	if items := mastodon_items(page); len(items) != 5 || items[0]["type"] != "follow" {
+		t.Errorf("THE POINT: a page under three that render nothing = %v", page)
+	}
+	if fetched.Load() != 0 {
+		t.Errorf("THE POINT: a page of five fetched %d statuses of older notifications", fetched.Load())
+	}
+	if _, mentions := mastodon_request(t, token, "GET", "/api/v1/notifications?limit=1&types[]=mention", nil); len(mastodon_items(mentions)) != 1 || mastodon_items(mentions)[0]["type"] != "mention" {
+		t.Errorf("THE POINT: the mentions under ten follows = %v", mentions)
+	}
+	if _, others := mastodon_request(t, token, "GET", "/api/v1/notifications?limit=1&exclude_types[]=follow", nil); len(mastodon_items(others)) != 1 || mastodon_items(others)[0]["type"] != "mention" {
+		t.Errorf("THE POINT: the first that is not a follow = %v", others)
+	}
+	if fetched.Load() != 0 {
+		t.Errorf("THE POINT: pages of one fetched %d statuses of older notifications", fetched.Load())
+	}
+	// From one person: the rows naming others are not read.
+	_, mentions := mastodon_request(t, token, "GET", "/api/v1/notifications?limit=1&types[]=mention", nil)
+	person := mastodon_map(mastodon_items(mentions)[0]["account"])["id"].(string)
+	if _, from := mastodon_request(t, token, "GET", "/api/v1/notifications?account_id="+person, nil); len(mastodon_items(from)) != 1 || mastodon_items(from)[0]["type"] != "mention" {
+		t.Errorf("THE POINT: the notifications from the one who mentioned = %v", from)
+	}
+	if fetched.Load() != 0 {
+		t.Errorf("THE POINT: the notifications from one person fetched %d statuses of others'", fetched.Load())
+	}
+	if _, nobody := mastodon_request(t, token, "GET", "/api/v1/notifications?account_id=12345", nil); len(mastodon_items(nobody)) != 0 || fetched.Load() != 0 {
+		t.Errorf("THE POINT: the notifications from no one known = %v, after %d fetches", nobody, fetched.Load())
+	}
+}
+
+// TestMastodonNotificationsReadingLimit: one request reads at most so many
+// kept notifications - each rendered, and a mention naming no person, as the
+// feeds app keeps them, must be rendered to learn whom it is from, fetching a
+// post its server no longer answers for every time - and its Link goes on
+// from the last it read, so the next request reads the next.
+func TestMastodonNotificationsReadingLimit(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read write")
+	var fetched atomic.Int64
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetched.Add(1)
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(remote.Close)
+	saved_private, saved_cache, saved_reading := url_allow_private, resolve_cache, mastodon_alerts_reading
+	url_allow_private, resolve_cache, mastodon_alerts_reading = true, map[string]resolve_entry{}, 30
+	t.Cleanup(func() {
+		url_allow_private, resolve_cache, mastodon_alerts_reading = saved_private, saved_cache, saved_reading
+	})
+
+	mastodon_alert_add(t, alice, "follow", 1_600_000_000, mastodon_follow_alert(1))
+	for i := 0; i < 50; i++ {
+		mastodon_alert_add(t, alice, fmt.Sprintf("mention%d", i), 1_700_000_000+int64(i), map[string]any{"type": "mention", "remote": fmt.Sprintf("%s/notes/%d", remote.URL, i)})
+	}
+	_, follows := mastodon_request(t, token, "GET", "/api/v1/notifications?types[]=follow", nil)
+	if items := mastodon_items(follows); len(items) != 1 || fetched.Load() != 0 {
+		t.Fatalf("the follows = %v, after %d fetches", follows, fetched.Load())
+	}
+	person := mastodon_map(mastodon_items(follows)[0]["account"])["id"].(string)
+
+	next := regexp.MustCompile(`[?&]max_id=(\d+)[^>]*>; rel="next"`)
+	w, body := mastodon_request(t, token, "GET", "/api/v1/notifications?account_id="+person, nil)
+	m := next.FindStringSubmatch(w.Header().Get("Link"))
+	if len(mastodon_items(body)) != 0 || fetched.Load() != 30 || m == nil {
+		t.Fatalf("THE POINT: a request over 50 mentions naming no one = %d items, %d fetches, Link %q", len(mastodon_items(body)), fetched.Load(), w.Header().Get("Link"))
+	}
+	w, body = mastodon_request(t, token, "GET", "/api/v1/notifications?account_id="+person+"&max_id="+m[1], nil)
+	if items := mastodon_items(body); len(items) != 1 || items[0]["type"] != "follow" || fetched.Load() != 50 {
+		t.Errorf("THE POINT: the request going on from the last read = %v, after %d fetches", body, fetched.Load())
+	}
+}
+
+// TestMastodonNumberUnderConcurrency: items numbered at once, many in one
+// second, each get a number of their own, never "0" - a notification without
+// one is never listed.
+func TestMastodonNumberUnderConcurrency(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	var wg sync.WaitGroup
+	numbers := make([][]string, 8)
+	for g := range numbers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				numbers[g] = append(numbers[g], mastodon_number(alice, "notification", fmt.Sprintf("alert:%d", g*1000+i), 1_700_000_000))
+			}
+		}()
+	}
+	wg.Wait()
+	seen, lost := map[string]bool{}, 0
+	for _, list := range numbers {
+		for _, n := range list {
+			if n == "0" {
+				lost++
+			}
+			seen[n] = true
+		}
+	}
+	if lost > 0 || len(seen) != 400 {
+		t.Errorf("THE POINT: 400 items numbered at once: %d given no number, %d different numbers", lost, len(seen))
+	}
+}
+
+// TestMastodonNotificationsAllReachable: every kept notification can be paged
+// to, past the newest 400, and the unread count counts to the limit Mastodon
+// takes, 100 unless asked, of the 400 one request reads.
+func TestMastodonNotificationsAllReachable(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read write")
+	for i := 0; i < 1005; i++ {
+		mastodon_alert_add(t, alice, fmt.Sprintf("r%d", i), 1_700_000_000+int64(i), mastodon_follow_alert(i))
+	}
+	names := mastodon_notifications_walk(t, token, "/api/v1/notifications?limit=40")
+	seen := map[string]bool{}
+	for _, name := range names {
+		seen[name] = true
+	}
+	if len(names) != 1005 || len(seen) != 1005 {
+		t.Errorf("THE POINT: a walk of 1,005 notifications listed %d, %d of them different", len(names), len(seen))
+	}
+	for _, c := range []struct {
+		query string
+		want  string
+	}{{"", "100"}, {"?limit=300", "300"}, {"?limit=5000", "400"}} {
+		if _, count := mastodon_request(t, token, "GET", "/api/v1/notifications/unread_count"+c.query, nil); fmt.Sprint(mastodon_map(count)["count"]) != c.want {
+			t.Errorf("THE POINT: the unread count%s = %v, want %s", c.query, count, c.want)
+		}
+	}
+}
+
 // TestMastodonFilters: a filter's keyword marks the statuses that hold it,
 // and one that hides keeps them out of the timeline.
 func TestMastodonFilters(t *testing.T) {
@@ -951,7 +1271,7 @@ func TestMastodonPush(t *testing.T) {
 		t.Errorf("the subscription read back = %v", read)
 	}
 	// The push service is the test server.
-	db_user(alice, "user").exec("update subscriptions set endpoint=?", endpoint.URL+"/send/abc")
+	db_user(alice, "networks").exec("update subscriptions set endpoint=?", endpoint.URL+"/send/abc")
 	mastodon_request(t, token, "POST", "/api/v1/statuses", map[string]any{"status": "mine"})
 	mastodon_request(t, token, "POST", "/api/v1/statuses", map[string]any{"status": "a reply", "in_reply_to_id": mastodon_number(alice, "status", "post:p1", 0)})
 	rows := []map[string]any{{"id": "n1", "app": "feeds1", "topic": "comment/mine", "object": "feed1", "created": now(), "event": "feeds1:comment/mine:" + fake.comments[0]["id"].(string), "read": int64(0)}}
@@ -999,7 +1319,7 @@ func TestMastodonPush(t *testing.T) {
 	rows = []map[string]any{{"id": "n1", "app": "feeds1", "topic": "comment/mine", "object": "feed1", "created": now() + 1, "event": "feeds1:comment/mine:" + fake.comments[1]["id"].(string), "read": int64(0)}}
 	mastodon_heard_notification(alice, "n1")
 	<-pushed
-	if found, _ := db_user(alice, "user").exists("select 1 from subscriptions"); found {
+	if found, _ := db_user(alice, "networks").exists("select 1 from subscriptions"); found {
 		t.Error("THE POINT: the forgotten subscription stayed")
 	}
 }
@@ -1407,7 +1727,7 @@ func TestMastodonPeoplePageReadsOnlyItsRows(t *testing.T) {
 	w, _ := mastodon_request(t, token, "GET", "/api/v1/accounts/"+self+"/followers?limit=40", nil)
 	w, _ = mastodon_request(t, token, "GET", "/api/v1/accounts/"+self+"/followers?limit=40&max_id="+regexp.MustCompile(`max_id=(\d+)`).FindStringSubmatch(w.Header().Get("Link"))[1], nil)
 	cursor := regexp.MustCompile(`max_id=(\d+)`).FindStringSubmatch(w.Header().Get("Link"))[1]
-	db := db_user(alice, "user")
+	db := db_user(alice, "networks")
 	defer db.close()
 	db.exec("delete from snowflakes where kind='account' and key like 'https://remote.example/%'")
 	w, body := mastodon_request(t, token, "GET", "/api/v1/accounts/"+self+"/followers?limit=40&max_id="+cursor, nil)

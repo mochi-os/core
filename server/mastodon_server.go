@@ -46,19 +46,6 @@ const mastodon_characters = 5000
 // clients read to know what they may ask.
 const mastodon_version = "4.3.0"
 
-// statuses_tables makes the tables the interface keeps in a user database:
-// each item's time-ordered number, the last form of each account and status
-// clients were given, the read positions clients keep, the filters, the
-// push subscriptions, and the notifications as they arrived.
-func statuses_tables(db *DB) {
-	db.exec("create table if not exists snowflakes (number integer primary key, kind text not null, key text not null, unique (kind, key))")
-	db.exec("create table if not exists snapshots (kind text not null, key text not null, document text not null, created integer not null, updated integer not null, primary key (kind, key))")
-	db.exec("create table if not exists markers (account text not null, timeline text not null, position text not null, version integer not null default 0, updated integer not null, primary key (account, timeline))")
-	db.exec("create table if not exists filters (id integer primary key autoincrement, account text not null, title text not null, context text not null, action text not null default 'warn', keywords text not null default '[]', expires integer not null default 0, created integer not null)")
-	db.exec("create table if not exists subscriptions (token text not null primary key, account text not null, endpoint text not null, auth text not null, key text not null, alerts text not null default '{}', policy text not null default 'all', standard integer not null default 0, created integer not null)")
-	db.exec("create table if not exists alerts (id integer primary key autoincrement, account text not null, row text not null, event text not null default '', answer text not null, created integer not null, unique (account, row, event))")
-}
-
 // mastodon_engine is the engine answering Mastodon clients.
 func mastodon_engine() *engine {
 	return &engine{
@@ -144,7 +131,7 @@ func mastodon_authenticate(c *gin.Context, scope string) *mastodon_session {
 // count within the millisecond, so numbers sort as the items were made.
 // The same item has the same number each time.
 func mastodon_number(user *User, kind string, key string, created int64) string {
-	db := db_user(user, "user")
+	db := db_user(user, "networks")
 	defer db.close()
 	if row, _ := db.row("select number from snowflakes where kind=? and key=?", kind, key); row != nil {
 		return strconv.FormatInt(row_int(row, "number"), 10)
@@ -153,14 +140,21 @@ func mastodon_number(user *User, kind string, key string, created int64) string 
 		created = now()
 	}
 	base := created * 1000 << 16
-	row, _ := db.row("select max(number) as number from snowflakes where number>=? and number<?", base, base+65536)
-	number := base
-	if found := row_int(row, "number"); found >= base {
-		number = found + 1
+	// Another request numbering an item of the same second can take the
+	// number picked between the read and the write, and then this item has
+	// none: pick again until it has one.
+	for range 64 {
+		row, _ := db.row("select max(number) as number from snowflakes where number>=? and number<?", base, base+65536)
+		number := base
+		if found := row_int(row, "number"); found >= base {
+			number = found + 1
+		}
+		db.exec("insert or ignore into snowflakes (number, kind, key) values (?, ?, ?)", number, kind, key)
+		if row, _ := db.row("select number from snowflakes where kind=? and key=?", kind, key); row != nil {
+			return strconv.FormatInt(row_int(row, "number"), 10)
+		}
 	}
-	db.exec("insert or ignore into snowflakes (number, kind, key) values (?, ?, ?)", number, kind, key)
-	row, _ = db.row("select number from snowflakes where kind=? and key=?", kind, key)
-	return strconv.FormatInt(row_int(row, "number"), 10)
+	return "0"
 }
 
 // mastodon_key is the item a number names, of the kind asked, or "".
@@ -169,7 +163,7 @@ func mastodon_key(user *User, kind string, number string) string {
 	if err != nil {
 		return ""
 	}
-	row, _ := db_user_brief(user, "user").row("select key from snowflakes where kind=? and number=?", kind, n)
+	row, _ := db_user_brief(user, "networks").row("select key from snowflakes where kind=? and number=?", kind, n)
 	return row_string(row, "key")
 }
 
@@ -191,13 +185,13 @@ func mastodon_parse(value string) int64 {
 // mastodon_snapshot keeps the form of an item clients were given, so a later
 // request by its number alone can be answered.
 func mastodon_snapshot(user *User, kind string, key string, document map[string]any) {
-	db_user_brief(user, "user").exec("insert into snapshots (kind, key, document, created, updated) values (?, ?, ?, ?, ?) on conflict(kind, key) do update set document=excluded.document, updated=excluded.updated", kind, key, json_encode(document), now(), now())
+	db_user_brief(user, "networks").exec("insert into snapshots (kind, key, document, created, updated) values (?, ?, ?, ?, ?) on conflict(kind, key) do update set document=excluded.document, updated=excluded.updated", kind, key, json_encode(document), now(), now())
 }
 
 // mastodon_snapshot_get is the form of an item clients were last given, or
 // nil.
 func mastodon_snapshot_get(user *User, kind string, key string) map[string]any {
-	row, _ := db_user_brief(user, "user").row("select document from snapshots where kind=? and key=?", kind, key)
+	row, _ := db_user_brief(user, "networks").row("select document from snapshots where kind=? and key=?", kind, key)
 	if row == nil {
 		return nil
 	}
@@ -796,7 +790,7 @@ func mastodon_forget(user *User, person string) {
 	if found, _ := db.exists("select 1 from followers where actor=? union all select 1 from following where actor=?", person, person); found {
 		return
 	}
-	db.exec("delete from snapshots where kind='account' and key=?", person)
+	db_user_brief(user, "networks").exec("delete from snapshots where kind='account' and key=?", person)
 }
 
 // mastodon_shown is a person as clients see an account, not kept: for
@@ -1120,9 +1114,7 @@ func mastodon_people_search(c *gin.Context, s *mastodon_session, query string, r
 		}
 	}
 	words := strings.ToLower(query)
-	db := db_user(s.user, "user")
-	defer db.close()
-	rows, _ := db.rows("select key, document from snapshots where kind='account' order by updated desc limit 500")
+	rows, _ := db_user_brief(s.user, "networks").rows("select key, document from snapshots where kind='account' order by updated desc limit 500")
 	for _, row := range rows {
 		var account map[string]any
 		json.Unmarshal([]byte(row_string(row, "document")), &account)

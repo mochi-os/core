@@ -505,7 +505,8 @@ func xmpp_carbons_iq(r *xmpp_resource, s *xmpp_stanza, name string) *xmpp_stanza
 func xmpp_offline_keep(a *xmpp_account, s *xmpp_stanza) {
 	kept := s.copy()
 	kept.inner += `<delay xmlns="urn:xmpp:delay" from="` + xmpp_escape(a.address.Domainpart()) + `" stamp="` + time.Now().UTC().Format(time.RFC3339) + `"/>`
-	db := xmpp_database()
+	db := db_user(a.user, "networks")
+	defer db.close()
 	db.exec("insert into offline (account, stanza, created) values (?, ?, ?)", a.id, kept.text(xmpp_ns_client), now())
 	db.exec("delete from offline where account=? and id not in (select id from offline where account=? order by id desc limit ?)", a.id, a.id, xmpp_offline_maximum)
 }
@@ -513,7 +514,8 @@ func xmpp_offline_keep(a *xmpp_account, s *xmpp_stanza) {
 // xmpp_offline_send gives a client that has come online the messages kept
 // for the account.
 func xmpp_offline_send(a *xmpp_account, r *xmpp_resource) {
-	db := xmpp_database()
+	db := db_user(a.user, "networks")
+	defer db.close()
 	rows, _ := db.rows("select id, stanza from offline where account=? order by id", a.id)
 	for _, row := range rows {
 		r.send(row_string(row, "stanza"))
@@ -537,13 +539,20 @@ var (
 )
 
 // xmpp_tell hands events of an account to the apps declaring linked/receive,
-// in order, an invitation from a friend marked as one.
+// in order: an invitation named as its room names itself, and one from a
+// friend marked as one.
 func xmpp_tell(a *xmpp_account, events []map[string]any) {
 	if len(events) == 0 {
 		return
 	}
 	user, account := a.user, a.id
 	xmpp_queue(user, func() {
+		invitations_name(events, func(room jid.JID) string {
+			if name, found, err := xmpp_room_name(a, room); err == nil && found {
+				return name
+			}
+			return ""
+		})
 		invitations_mark(events, func() map[string]string { return xmpp_friends(a) })
 		linked_inbound(user, account, "xmpp", events)
 	})
@@ -940,7 +949,7 @@ func xmpp_arrived(a *xmpp_account, r *xmpp_resource) {
 	if inner, shown := xmpp_mochi_presence(a); shown {
 		r.send(xmpp_make("presence", inner, "from", a.mochi().String(), "to", r.full.String()).text(xmpp_ns_client))
 	}
-	rows, _ := xmpp_database().rows("select address from roster where account=? and pending=1", a.id)
+	rows, _ := db_user_brief(a.user, "networks").rows("select address from roster where account=? and pending=1", a.id)
 	for _, row := range rows {
 		r.send(xmpp_make("presence", "", "type", "subscribe", "from", row_string(row, "address"), "to", a.address.String()).text(xmpp_ns_client))
 	}

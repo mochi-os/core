@@ -6,9 +6,9 @@
 // Mochi server: what a hosted XMPP account publishes
 //
 // A hosted account's own publishing service (XEP-0163, the federation plan,
-// phase 26): nodes of items it publishes, kept in xmpp.db, each saying who may
-// read it - the account alone, its contacts, or anyone - and how many items it
-// keeps. The account's clients are told of each item published or withdrawn.
+// phase 26): nodes of items it publishes, kept in the user's networks.db, each
+// saying who may read it - the account alone, its contacts, or anyone - and
+// how many items it keeps. The account's clients are told of each item published or withdrawn.
 // Its bookmarks (XEP-0402) are one such node: the rooms the account keeps,
 // which Mochi's own sessions keep too, joining a room its clients bookmark to
 // be joined and leaving one whose bookmark they withdraw.
@@ -44,7 +44,7 @@ type xmpp_node_config struct {
 
 // xmpp_node_of is a node's configuration, or nil where the account has none.
 func xmpp_node_of(a *xmpp_account, node string) *xmpp_node_config {
-	row, _ := xmpp_database().row("select access, maximum from nodes where account=? and node=?", a.id, node)
+	row, _ := db_user_brief(a.user, "networks").row("select access, maximum from nodes where account=? and node=?", a.id, node)
 	if row == nil {
 		return nil
 	}
@@ -69,7 +69,8 @@ func xmpp_pep_options(fields map[string]string, config *xmpp_node_config) {
 // node keeps stay.
 func xmpp_pep_publish(a *xmpp_account, node string, item string, payload string, fields map[string]string) {
 	config := xmpp_node_of(a, node)
-	db := xmpp_database()
+	db := db_user(a.user, "networks")
+	defer db.close()
 	if config == nil {
 		config = &xmpp_node_config{access: "presence", maximum: 1}
 		xmpp_pep_options(fields, config)
@@ -91,7 +92,8 @@ func xmpp_pep_publish(a *xmpp_account, node string, item string, payload string,
 // xmpp_pep_retract withdraws an item of a node and tells the account's
 // clients.
 func xmpp_pep_retract(a *xmpp_account, node string, item string) bool {
-	db := xmpp_database()
+	db := db_user(a.user, "networks")
+	defer db.close()
 	found, _ := db.exists("select 1 from items where account=? and node=? and item=?", a.id, node, item)
 	if !found {
 		return false
@@ -191,7 +193,8 @@ func xmpp_pep_iq(a *xmpp_account, s *xmpp_stanza, own bool) *xmpp_stanza {
 		return xmpp_failure(s, "bad-request", "modify", "")
 	}
 	kind := s.get("type")
-	db := xmpp_database()
+	db := db_user(a.user, "networks")
+	defer db.close()
 	switch {
 	case request.Pubsub != nil && request.Pubsub.Publish != nil && kind == "set":
 		p := request.Pubsub.Publish
@@ -273,7 +276,8 @@ func xmpp_pep_items_answer(a *xmpp_account, s *xmpp_stanza, node string, maximum
 	if xmpp_node_of(a, node) == nil {
 		return xmpp_failure(s, "item-not-found", "cancel", "")
 	}
-	db := xmpp_database()
+	db := db_user(a.user, "networks")
+	defer db.close()
 	var rows []map[string]any
 	if len(named) > 0 {
 		for _, item := range named {
@@ -386,6 +390,6 @@ func xmpp_bookmark_withdrawn(a *xmpp_account, item string) {
 	if full, err := jid.Parse(j.room + "/" + j.nick); err == nil {
 		xmpp_route(xmpp_make("presence", "", "type", "unavailable"), a.mochi(), full)
 	}
-	xmpp_database().exec("delete from joined where account=? and room=?", a.id, j.room)
+	db_user_brief(a.user, "networks").exec("delete from joined where account=? and room=?", a.id, j.room)
 	xmpp_tell(a, []map[string]any{{"kind": "room", "conversation": "xmpp:" + j.room, "left": true}})
 }

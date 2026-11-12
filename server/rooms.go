@@ -6,7 +6,7 @@
 // Mochi server: Matrix rooms
 //
 // The rooms this server's hosted Matrix accounts are in, kept for all of them
-// together in matrix.db (the federation plan, phase 24). A room has its
+// together in networks.db (the federation plan, phase 24). A room has its
 // version and its current state; each of its events is kept with the state
 // before it, a snapshot shared by every event between two state changes; and
 // the events at its edge, its forward extremities, are what the next event
@@ -60,7 +60,7 @@ var rooms_version_default = gomatrixserverlib.RoomVersionV10
 // rooms_history is how many events of a room's past are fetched on joining it.
 const rooms_history = 50
 
-// rooms_tables makes the room store in matrix.db.
+// rooms_tables makes the room store in networks.db.
 func rooms_tables(db *DB) {
 	db.exec("create table if not exists rooms (id text not null primary key, version text not null, state integer not null default 0, created integer not null)")
 	// replaces is the state event a state event replaced, the one its key held
@@ -108,7 +108,7 @@ func rooms_hold(room string, f func()) {
 // rooms_version is a room's version as the store has it, or nil for a room
 // this server is not in.
 func rooms_version(room string) gomatrixserverlib.IRoomVersion {
-	row, _ := federation_database().row("select version from rooms where id=?", room)
+	row, _ := networks_database().row("select version from rooms where id=?", room)
 	if row == nil {
 		return nil
 	}
@@ -225,7 +225,7 @@ func rooms_snapshot_load(id int64) *rooms_kept {
 	if id <= 0 {
 		return nil
 	}
-	db := federation_database()
+	db := networks_database()
 	type link struct {
 		id    int64
 		base  int64
@@ -355,7 +355,7 @@ func rooms_snapshot_save(room string, state rooms_state, bases ...int64) int64 {
 		base, depth = 0, 0
 		body = json_encode(state)
 	}
-	db := federation_database()
+	db := networks_database()
 	// A delta is kept only while its base is: a base the room's forgetting
 	// deleted after it was read leaves the state kept whole instead.
 	result, err := db.internal.Exec("insert into snapshots (room, state, base, depth) select ?, ?, ?, ? where ?=0 or exists (select 1 from snapshots where id=? and room=?)", room, body, base, depth, base, base, room)
@@ -393,7 +393,7 @@ func rooms_diff(from rooms_state, to rooms_state) rooms_delta {
 
 // rooms_current_id is the id of a room's current snapshot, 0 where none.
 func rooms_current_id(room string) int64 {
-	row, _ := federation_database().row("select state from rooms where id=?", room)
+	row, _ := networks_database().row("select state from rooms where id=?", room)
 	return row_int(row, "state")
 }
 
@@ -417,7 +417,7 @@ func rooms_replaced(event gomatrixserverlib.PDU) string {
 	if event.StateKey() == nil {
 		return ""
 	}
-	row, _ := federation_database().row("select before, replaces from events where id=?", event.EventID())
+	row, _ := networks_database().row("select before, replaces from events where id=?", event.EventID())
 	if row == nil || row_int(row, "before") <= 0 {
 		return ""
 	}
@@ -475,7 +475,7 @@ func (domains rooms_domains) local(member string) bool {
 // rooms_events loads stored events by id, those not stored left out.
 func rooms_events(ids []string) map[string]gomatrixserverlib.PDU {
 	out := map[string]gomatrixserverlib.PDU{}
-	db := federation_database()
+	db := networks_database()
 	for start := 0; start < len(ids); start += 500 {
 		batch := ids[start:min(start+500, len(ids))]
 		values := make([]any, len(batch))
@@ -520,14 +520,14 @@ func rooms_list(state rooms_state) []gomatrixserverlib.PDU {
 
 // rooms_rejected says whether a stored event was rejected.
 func rooms_rejected(id string) bool {
-	found, _ := federation_database().exists("select 1 from events where id=? and rejected=1", id)
+	found, _ := networks_database().exists("select 1 from events where id=? and rejected=1", id)
 	return found
 }
 
 // rooms_after is the state after a stored event, or false where the state
 // before it is not known.
 func rooms_after(id string) (rooms_state, bool) {
-	row, _ := federation_database().row("select type, key, rejected, before from events where id=?", id)
+	row, _ := networks_database().row("select type, key, rejected, before from events where id=?", id)
 	if row == nil || row_int(row, "before") <= 0 {
 		return nil, false
 	}
@@ -770,7 +770,7 @@ func rooms_members(state rooms_state) map[string]string {
 		}
 	}
 	out := map[string]string{}
-	db := federation_database()
+	db := networks_database()
 	for start := 0; start < len(ids); start += 500 {
 		batch := ids[start:min(start+500, len(ids))]
 		rows, _ := db.rows("select key, membership from events where id in ("+strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")+")", batch...)
@@ -830,7 +830,7 @@ func rooms_local(room string) spec.ServerName {
 // rooms_edge is where a room's next event goes: the events it follows, and
 // its depth.
 func rooms_edge(room string) ([]string, int64) {
-	rows, _ := federation_database().rows("select x.event, e.depth from extremities x join events e on e.id=x.event where x.room=? order by e.depth desc limit 20", room)
+	rows, _ := networks_database().rows("select x.event, e.depth from extremities x join events e on e.id=x.event where x.room=? order by e.depth desc limit 20", room)
 	var prevs []string
 	depth := int64(0)
 	for _, row := range rows {
@@ -855,7 +855,7 @@ func rooms_keep(event gomatrixserverlib.PDU, before int64, rejected bool, outlie
 			membership, _ = event.Membership()
 		}
 	}
-	db := federation_database()
+	db := networks_database()
 	db.exec("insert into events (id, room, type, key, membership, sender, depth, body, rejected, outlier, redacted, before, received, replaces) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict(id) do update set outlier=excluded.outlier, before=excluded.before, rejected=excluded.rejected, replaces=excluded.replaces where events.outlier=1 and excluded.outlier=0",
 		event.EventID(), event.RoomID().String(), event.Type(), key, membership, string(event.SenderID()), event.Depth(), string(event.JSON()), rejected, outlier, event.Redacted(), before, now(), rooms_replaces(event, before))
 	// An event taken into the timeline takes its place in the order the
@@ -881,20 +881,20 @@ func rooms_wake(event gomatrixserverlib.PDU) {
 // rooms_known says whether an event is in a room's timeline, as against
 // unknown or kept only as an outlier.
 func rooms_known(id string) bool {
-	found, _ := federation_database().exists("select 1 from events where id=? and outlier=0", id)
+	found, _ := networks_database().exists("select 1 from events where id=? and outlier=0", id)
 	return found
 }
 
 // rooms_point says whether the state after an event is known, so an event
 // can follow from it.
 func rooms_point(id string) bool {
-	found, _ := federation_database().exists("select 1 from events where id=? and before>0", id)
+	found, _ := networks_database().exists("select 1 from events where id=? and before>0", id)
 	return found
 }
 
 // rooms_settle moves a room's current state to what its edge comes to.
 func rooms_settle(version gomatrixserverlib.IRoomVersion, room string) error {
-	rows, _ := federation_database().rows("select event from extremities where room=?", room)
+	rows, _ := networks_database().rows("select event from extremities where room=?", room)
 	var sets []rooms_state
 	for _, row := range rows {
 		if after, ok := rooms_after(row_string(row, "event")); ok {
@@ -909,13 +909,13 @@ func rooms_settle(version gomatrixserverlib.IRoomVersion, room string) error {
 	if !maps.Equal(state, current) || id == 0 {
 		id = rooms_snapshot_save(room, state)
 	}
-	federation_database().exec("update rooms set state=? where id=?", id, room)
+	networks_database().exec("update rooms set state=? where id=?", id, room)
 	return nil
 }
 
 // rooms_advance makes an event the room's edge in place of those it follows.
 func rooms_advance(event gomatrixserverlib.PDU) {
-	db := federation_database()
+	db := networks_database()
 	room := event.RoomID().String()
 	for _, prev := range event.PrevEventIDs() {
 		db.exec("delete from extremities where room=? and event=?", room, prev)
@@ -942,7 +942,7 @@ func rooms_redact(version gomatrixserverlib.IRoomVersion, redaction gomatrixserv
 	if err != nil {
 		return
 	}
-	federation_database().exec("update events set body=?, redacted=1 where id=?", string(redacted), target)
+	networks_database().exec("update events set body=?, redacted=1 where id=?", string(redacted), target)
 }
 
 // === Receiving ===
@@ -1104,7 +1104,7 @@ func rooms_withdrawn(ctx context.Context, room string, raw json.RawMessage) (str
 		return "", false, nil
 	}
 	user := *head.Key
-	row, _ := federation_database().row("select version, sender from invites where room=? and user=?", room, user)
+	row, _ := networks_database().row("select version, sender from invites where room=? and user=?", room, user)
 	if row == nil {
 		return "", false, nil
 	}
@@ -1125,7 +1125,7 @@ func rooms_withdrawn(ctx context.Context, room string, raw json.RawMessage) (str
 	if err := gomatrixserverlib.VerifyEventSignatures(ctx, event, federation_keyring(), federation_sender); err != nil {
 		return event.EventID(), true, fmt.Errorf("signature: %w", err)
 	}
-	federation_database().exec("delete from invites where room=? and user=?", room, user)
+	networks_database().exec("delete from invites where room=? and user=?", room, user)
 	clients_pending(room, user, spec.Leave, "", clients_leaving(event, user))
 	if found, account := federation_user(user); found != nil {
 		linked_inbound(found, account, "matrix", []map[string]any{{"kind": "room", "conversation": room, "left": true}})
@@ -1335,7 +1335,7 @@ func rooms_before(version gomatrixserverlib.IRoomVersion, event gomatrixserverli
 		if after, ok := rooms_after(prev); ok {
 			sets = append(sets, after)
 		}
-		if row, _ := federation_database().row("select before from events where id=?", prev); row != nil {
+		if row, _ := networks_database().row("select before from events where id=?", prev); row != nil {
 			candidates = append(candidates, row_int(row, "before"))
 		}
 	}
@@ -1447,7 +1447,7 @@ func rooms_gap(ctx context.Context, local spec.ServerName, origin spec.ServerNam
 	rejected := rooms_authorised(event, auth) != nil || rooms_allowed(event, state) != nil
 	snapshot := rooms_snapshot_save(room, state)
 	rooms_keep(event, snapshot, rejected, true)
-	federation_database().exec("update events set before=?, replaces=? where id=? and before=0", snapshot, rooms_replaces(event, snapshot), previous)
+	networks_database().exec("update events set before=?, replaces=? where id=? and before=0", snapshot, rooms_replaces(event, snapshot), previous)
 	return nil
 }
 
@@ -1455,20 +1455,20 @@ func rooms_gap(ctx context.Context, local spec.ServerName, origin spec.ServerNam
 
 // rooms_direct says whether a room is a user's one-to-one conversation.
 func rooms_direct(user string, room string) bool {
-	found, _ := federation_database().exists("select 1 from directs where user=? and room=?", user, room)
+	found, _ := networks_database().exists("select 1 from directs where user=? and room=?", user, room)
 	return found
 }
 
 // rooms_direct_add marks a room as a user's one-to-one conversation with a
 // person.
 func rooms_direct_add(user string, room string, person string) {
-	federation_database().exec("insert or ignore into directs (user, room, person) values (?, ?, ?)", user, room, person)
+	networks_database().exec("insert or ignore into directs (user, room, person) values (?, ?, ?)", user, room, person)
 }
 
 // rooms_direct_remove takes away a room's mark as a user's one-to-one
 // conversation.
 func rooms_direct_remove(user string, room string) {
-	federation_database().exec("delete from directs where user=? and room=?", user, room)
+	networks_database().exec("delete from directs where user=? and room=?", user, room)
 }
 
 // rooms_matrix_event is an event as the sync reader reads one.
@@ -1784,7 +1784,7 @@ func rooms_membership(room string, user string) string {
 	if id == "" {
 		return ""
 	}
-	row, _ := federation_database().row("select membership from events where id=?", id)
+	row, _ := networks_database().row("select membership from events where id=?", id)
 	return row_string(row, "membership")
 }
 
@@ -1885,7 +1885,7 @@ func rooms_create(ctx context.Context, creator string, people []string, name str
 	// The create event comes first: a room without domains takes its id from
 	// it.
 	if room != "" {
-		federation_database().exec("insert into rooms (id, version, state, created) values (?, ?, 0, ?)", room, string(version.Version()), now())
+		networks_database().exec("insert into rooms (id, version, state, created) values (?, ?, 0, ?)", room, string(version.Version()), now())
 	}
 	event, err := rooms_build(version, room, creator, spec.MRoomCreate, &empty, create)
 	if err != nil {
@@ -1893,7 +1893,7 @@ func rooms_create(ctx context.Context, creator string, people []string, name str
 	}
 	if room == "" {
 		room = "!" + strings.TrimPrefix(event.EventID(), "$")
-		federation_database().exec("insert into rooms (id, version, state, created) values (?, ?, 0, ?)", room, string(version.Version()), now())
+		networks_database().exec("insert into rooms (id, version, state, created) values (?, ?, 0, ?)", room, string(version.Version()), now())
 	}
 	unlock := rooms_lock(room)
 	defer unlock()
@@ -2022,7 +2022,7 @@ func rooms_join(ctx context.Context, user string, address string, via ...spec.Se
 			return "", fmt.Errorf("not a room")
 		}
 		if federation_local(domain) {
-			row, _ := federation_database().row("select room from aliases where alias=?", address)
+			row, _ := networks_database().row("select room from aliases where alias=?", address)
 			if row == nil {
 				return "", fmt.Errorf("no such room")
 			}
@@ -2064,14 +2064,14 @@ func rooms_join(ctx context.Context, user string, address string, via ...spec.Se
 			if err != nil {
 				return "", err
 			}
-			federation_database().exec("delete from invites where room=? and user=?", room, user)
-			federation_database().exec("delete from pending where room=? and user=?", room, user)
+			networks_database().exec("delete from invites where room=? and user=?", room, user)
+			networks_database().exec("delete from pending where room=? and user=?", room, user)
 			rooms_welcome(user, room, rooms_recent(user, room, event))
 			return room, nil
 		}
 		servers = through
 	}
-	if row, _ := federation_database().row("select sender from invites where room=? and user=?", room, user); row != nil {
+	if row, _ := networks_database().row("select sender from invites where room=? and user=?", room, user); row != nil {
 		if inviter, err := spec.NewUserID(row_string(row, "sender"), true); err == nil {
 			servers = append([]spec.ServerName{inviter.Domain()}, servers...)
 		}
@@ -2117,8 +2117,8 @@ func rooms_join(ctx context.Context, user string, address string, via ...spec.Se
 		if err := rooms_joined(joined); err != nil {
 			return "", err
 		}
-		federation_database().exec("delete from invites where room=? and user=?", room, user)
-		federation_database().exec("delete from pending where room=? and user=?", room, user)
+		networks_database().exec("delete from invites where room=? and user=?", room, user)
+		networks_database().exec("delete from pending where room=? and user=?", room, user)
 		rooms_welcome(user, room, rooms_backfill(ctx, local, server, room, user, joined.JoinEvent))
 		return room, nil
 	}
@@ -2218,7 +2218,7 @@ func rooms_joined(joined *gomatrixserverlib.PerformJoinResponse) error {
 	if err != nil {
 		return err
 	}
-	federation_database().exec("insert into rooms (id, version, state, created) values (?, ?, 0, ?) on conflict(id) do update set version=excluded.version", room, string(version.Version()), now())
+	networks_database().exec("insert into rooms (id, version, state, created) values (?, ?, 0, ?) on conflict(id) do update set version=excluded.version", room, string(version.Version()), now())
 	unlock := rooms_lock(room)
 	defer unlock()
 	snapshot := gomatrixserverlib.LineariseStateResponse(version.Version(), joined.StateSnapshot)
@@ -2303,7 +2303,7 @@ func rooms_recent(user string, room string, join gomatrixserverlib.PDU) []map[st
 	if join == nil || !rooms_shared(room) {
 		return nil
 	}
-	rows, _ := federation_database().rows("select id from events where room=? and outlier=0 and rejected=0 and key is null and depth<? order by depth desc, rowid desc limit ?", room, join.Depth(), rooms_history)
+	rows, _ := networks_database().rows("select id from events where room=? and outlier=0 and rejected=0 and key is null and depth<? order by depth desc, rowid desc limit ?", room, join.Depth(), rooms_history)
 	var ids []string
 	for _, row := range rows {
 		ids = append(ids, row_string(row, "id"))
@@ -2407,7 +2407,7 @@ var rooms_below_lock sync.Mutex
 // order clients' syncs count in: at positions under the lowest, so a client
 // paging back comes to it and no sync counts it as new.
 func rooms_below(room string, events []string) {
-	db := federation_database()
+	db := networks_database()
 	var fresh []string
 	for _, id := range events {
 		if held, _ := db.exists("select 1 from stream where event=?", id); !held {
@@ -2431,7 +2431,7 @@ func rooms_below(room string, events []string) {
 // all of it here, from the events the earliest here follows, through each
 // server in the room until one gives some. It says whether any came.
 func rooms_earlier(ctx context.Context, room string, user string) bool {
-	db := federation_database()
+	db := networks_database()
 	row, _ := db.row("select event from stream where room=? order by position limit 1", room)
 	oldest := rooms_event(row_string(row, "event"))
 	local := rooms_local(room)
@@ -2499,13 +2499,13 @@ func rooms_leave(ctx context.Context, user string, room string) error {
 	// An invitation is declined through the server it came from, a knock
 	// withdrawn through the server it went through.
 	var server spec.ServerName
-	if row, _ := federation_database().row("select sender from invites where room=? and user=?", room, user); row != nil {
+	if row, _ := networks_database().row("select sender from invites where room=? and user=?", room, user); row != nil {
 		inviter, err := spec.NewUserID(row_string(row, "sender"), true)
 		if err != nil {
 			return err
 		}
 		server = inviter.Domain()
-	} else if row, _ := federation_database().row("select server from pending where room=? and user=? and kind='knock'", room, user); row != nil {
+	} else if row, _ := networks_database().row("select server from pending where room=? and user=? and kind='knock'", room, user); row != nil {
 		server = spec.ServerName(row_string(row, "server"))
 	} else {
 		return nil
@@ -2521,7 +2521,7 @@ func rooms_leave(ctx context.Context, user string, room string) error {
 	if event != nil {
 		shown = clients_leaving(event, user)
 	}
-	federation_database().exec("delete from invites where room=? and user=?", room, user)
+	networks_database().exec("delete from invites where room=? and user=?", room, user)
 	clients_pending(room, user, spec.Leave, "", shown)
 	return nil
 }
@@ -2578,7 +2578,7 @@ func rooms_outofband(user string, room string, content map[string]any) gomatrixs
 	}
 	version := rooms_version(room)
 	proto := gomatrixserverlib.ProtoEvent{SenderID: user, RoomID: room, Type: spec.MRoomMember, StateKey: &user, PrevEvents: []string{}, AuthEvents: []string{}, Depth: 1}
-	if row, _ := federation_database().row("select version, body from invites where room=? and user=?", room, user); row != nil {
+	if row, _ := networks_database().row("select version, body from invites where room=? and user=?", room, user); row != nil {
 		if invited, err := gomatrixserverlib.GetRoomVersion(gomatrixserverlib.RoomVersion(row_string(row, "version"))); err == nil {
 			version = invited
 			// The first two versions name events by reference, which an
@@ -2657,7 +2657,7 @@ func rooms_forget(room string) bool {
 			return false
 		}
 	}
-	db := federation_database()
+	db := networks_database()
 	db.exec("delete from events where room=? and id not in (select body from outbox where kind='pdu')", room)
 	db.exec("delete from snapshots where room=?", room)
 	rooms_kept_forget(room)
@@ -2670,7 +2670,7 @@ func rooms_forget(room string) bool {
 
 // rooms_message sends a message event to a room as a user, once per key.
 func rooms_message(ctx context.Context, account string, user string, room string, kind string, content map[string]any, key string) (string, error) {
-	db := federation_database()
+	db := networks_database()
 	if key != "" {
 		if row, _ := db.row("select event from sent where account=? and key=?", account, key); row != nil {
 			return row_string(row, "event"), nil
@@ -2942,7 +2942,7 @@ func rooms_send_join(c *gin.Context, r *fclient.FederationRequest, room string, 
 			return
 		}
 	}
-	row, _ := federation_database().row("select before from events where id=?", event.EventID())
+	row, _ := networks_database().row("select before from events where id=?", event.EventID())
 	state := rooms_list(rooms_snapshot(row_int(row, "before")))
 	chain := rooms_chain(append(slices.Clone(state), event))
 	before := rooms_snapshot(row_int(row, "before"))
@@ -3135,7 +3135,7 @@ func rooms_send_knock(c *gin.Context, r *fclient.FederationRequest, room string,
 // rooms_serve_alias answers another server what room one of this server's
 // aliases names, and the servers in it.
 func rooms_serve_alias(c *gin.Context, alias string) {
-	row, _ := federation_database().row("select room from aliases where alias=?", alias)
+	row, _ := networks_database().row("select room from aliases where alias=?", alias)
 	if row == nil {
 		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such room alias here")
 		return
@@ -3372,7 +3372,7 @@ func rooms_invite_received(c *gin.Context, r *fclient.FederationRequest, room st
 		Direct bool `json:"is_direct"`
 	}
 	json.Unmarshal(event.Content(), &content)
-	federation_database().exec("insert into invites (room, user, version, sender, body, state, created) values (?, ?, ?, ?, ?, ?, ?) on conflict(room, user) do update set version=excluded.version, sender=excluded.sender, body=excluded.body, state=excluded.state, created=excluded.created",
+	networks_database().exec("insert into invites (room, user, version, sender, body, state, created) values (?, ?, ?, ?, ?, ?, ?) on conflict(room, user) do update set version=excluded.version, sender=excluded.sender, body=excluded.body, state=excluded.state, created=excluded.created",
 		room, invited, string(request.RoomVersion()), string(event.SenderID()), string(signed.JSON()), json_encode(stripped), now())
 	clients_pending(room, invited, spec.Invite, string(r.Origin()), "")
 	if content.Direct {
@@ -3487,7 +3487,7 @@ func rooms_serve_state(c *gin.Context, r *fclient.FederationRequest, room string
 		return
 	}
 	event := rooms_event(id)
-	row, _ := federation_database().row("select before from events where id=? and room=?", id, room)
+	row, _ := networks_database().row("select before from events where id=? and room=?", id, room)
 	if event == nil || row == nil || row_int(row, "before") <= 0 {
 		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such event")
 		return

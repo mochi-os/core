@@ -140,7 +140,7 @@ func signals_receive(origin spec.ServerName, raw json.RawMessage, out *rooms_out
 // of those holding a membership event of theirs, the ones where the current
 // state has them joined.
 func signals_rooms(user string) []string {
-	rows, _ := federation_database().rows("select distinct room as id from events where type='m.room.member' and key=?", user)
+	rows, _ := networks_database().rows("select distinct room as id from events where type='m.room.member' and key=?", user)
 	var out []string
 	for _, row := range rows {
 		if room := row_string(row, "id"); rooms_membership(room, user) == spec.Join {
@@ -252,7 +252,7 @@ func signals_share(h *matrix_hosted, shared bool) {
 	if !shared {
 		hidden = 1
 	}
-	federation_database().exec("insert into presence (account, hidden) values (?, ?) on conflict(account) do update set hidden=excluded.hidden", h.id, hidden)
+	networks_database().exec("insert into presence (account, hidden) values (?, ?) on conflict(account) do update set hidden=excluded.hidden", h.id, hidden)
 	signals_presence(h, signals_changed)
 }
 
@@ -269,7 +269,7 @@ const (
 // the presence it shows: the user's status in Mochi and its text, or offline
 // where they do not share it.
 func signals_presence(h *matrix_hosted, when int) {
-	db := federation_database()
+	db := networks_database()
 	row, _ := db.row("select hidden, shown, told from presence where account=?", h.id)
 	status, message := "offline", ""
 	if row_int(row, "hidden") == 0 {
@@ -429,7 +429,7 @@ func receipts_set(room string, user string, kind string, thread string, event st
 	if ts <= 0 {
 		ts = time.Now().UnixMilli()
 	}
-	db := federation_database()
+	db := networks_database()
 	db.exec("delete from receipts where room=? and user=? and type=? and thread=?", room, user, kind, thread)
 	db.exec("insert into receipts (room, user, type, thread, event, ts) values (?, ?, ?, ?, ?, ?)", room, user, kind, thread, event, ts)
 	clients_wake_room(room, user)

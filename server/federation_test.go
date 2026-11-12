@@ -741,7 +741,7 @@ func create_matrix_test_env(t *testing.T) (*User, *inbound_log) {
 // databases go: a worker ends only once its queue is empty, so one backing off
 // from a remote the test has closed would otherwise wake in a later test.
 func federation_workers_drain() {
-	db := federation_database()
+	db := networks_database()
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		db.exec("delete from outbox")
 		db.exec("delete from destinations")
@@ -973,7 +973,7 @@ func TestMatrixJoin(t *testing.T) {
 			}
 			// Messages share the state before them.
 			count := func() int64 {
-				row, _ := federation_database().row("select count(*) as n from snapshots where room=?", room)
+				row, _ := networks_database().row("select count(*) as n from snapshots where room=?", room)
 				return row_int(row, "n")
 			}
 			snapshots := count()
@@ -1227,7 +1227,7 @@ func TestMatrixTransactions(t *testing.T) {
 		t.Errorf("resolved name = %s, want the later branch's %s", current[rooms_key("m.room.name", "")], beta.EventID())
 	}
 	for _, branch := range []string{alpha.EventID(), beta.EventID()} {
-		if found, _ := federation_database().exists("select 1 from extremities where room=? and event=?", room, branch); !found {
+		if found, _ := networks_database().exists("select 1 from extremities where room=? and event=?", room, branch); !found {
 			t.Errorf("branch %s is not at the room's edge", branch)
 		}
 	}
@@ -1260,7 +1260,7 @@ func TestMatrixTransactions(t *testing.T) {
 	if shown("from before the ban") || rooms_known(late.EventID()) || rooms_rejected(late.EventID()) {
 		t.Error("a message the room has moved past was shown or taken into the timeline")
 	}
-	if found, _ := federation_database().exists("select 1 from extremities where event=?", late.EventID()); found {
+	if found, _ := networks_database().exists("select 1 from extremities where event=?", late.EventID()); found {
 		t.Error("a soft-failed event is built on")
 	}
 	if rooms_event(late.EventID()) == nil {
@@ -1387,7 +1387,7 @@ func TestMatrixAuthEvents(t *testing.T) {
 	r.most = 1
 	r.push(t, "seized-state", r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "beyond the seized state"}))
 	r.most = 0
-	row, _ := federation_database().row("select before from events where id=?", unseen.EventID())
+	row, _ := networks_database().row("select before from events where id=?", unseen.EventID())
 	if row == nil || row_int(row, "before") <= 0 {
 		t.Fatal("CONTROL: the gap was not kept with the state at it")
 	}
@@ -1670,7 +1670,7 @@ func TestMatrixRoomVersions(t *testing.T) {
 				t.Errorf("resolved name = %s, want the deeper, later branch's %s", current[rooms_key("m.room.name", "")], beta.EventID())
 			}
 			for _, branch := range []string{alpha.EventID(), beta.EventID()} {
-				if found, _ := federation_database().exists("select 1 from extremities where room=? and event=?", room, branch); !found {
+				if found, _ := networks_database().exists("select 1 from extremities where room=? and event=?", room, branch); !found {
 					t.Errorf("branch %s is not at the room's edge", branch)
 				}
 			}
@@ -1804,7 +1804,7 @@ func TestMatrixOutbound(t *testing.T) {
 	r.lock.Unlock()
 	object.SetKey(sl.String("content"), sl.String("while down"))
 	decoded(t)(api_account_object_create(thread, fn, sl.Tuple{sl.String("m1"), object}, nil))
-	db := federation_database()
+	db := networks_database()
 	wait(t, "the backoff", func() bool {
 		row, _ := db.row("select failures, retry from destinations where name=?", string(r.name))
 		return row != nil && row_int(row, "failures") == 1 && row_int(row, "retry") > now()
@@ -1991,7 +1991,7 @@ func TestMatrixGroup(t *testing.T) {
 	if answer, err := api_account_room_create(thread, fn, sl.Tuple{sl.String("m1"), people}, []sl.Tuple{{sl.String("name"), sl.String("Group")}}); err != nil || answer != sl.None {
 		t.Errorf("an address no one is at = %v %v, want None", answer, err)
 	}
-	rows, _ := federation_database().rows("select id from rooms")
+	rows, _ := networks_database().rows("select id from rooms")
 	if len(rows) != 1 {
 		t.Errorf("rooms = %d, want only the first", len(rows))
 	}
@@ -2054,7 +2054,7 @@ func TestMatrixDecline(t *testing.T) {
 	if membership, _ := leaves[0].Membership(); membership != spec.Leave {
 		t.Errorf("membership = %s", membership)
 	}
-	if found, _ := federation_database().exists("select 1 from invites where room=?", room); found {
+	if found, _ := networks_database().exists("select 1 from invites where room=?", room); found {
 		t.Error("the declined invitation is kept")
 	}
 	// An invitation from a server the user blocks is refused.
@@ -2106,7 +2106,7 @@ func TestMatrixRedactionVersions(t *testing.T) {
 	object.SetKey(sl.String("content"), sl.String("soon gone"))
 	sent := decoded(t)(api_account_object_create(thread, fn, sl.Tuple{sl.String("m1"), object}, nil))
 	api_account_object_delete(thread, fn, sl.Tuple{sl.String("m1"), sl.String(sent["id"].(string))}, []sl.Tuple{{sl.String("conversation"), sl.String(room)}})
-	rows, _ := federation_database().rows("select body from events where room=? and type='m.room.redaction'", room)
+	rows, _ := networks_database().rows("select body from events where room=? and type='m.room.redaction'", room)
 	if len(rows) != 1 {
 		t.Fatalf("redactions = %d", len(rows))
 	}
@@ -2412,11 +2412,11 @@ func TestMatrixMedia(t *testing.T) {
 	if status, _ := r.call(t, "GET", "/_matrix/federation/v1/media/download/nothing", nil); status != 404 {
 		t.Errorf("no such file = %d", status)
 	}
-	federation_database().exec("update media set domain='other.example' where id=?", id)
+	networks_database().exec("update media set domain='other.example' where id=?", id)
 	if status, _ := r.call(t, "GET", "/_matrix/federation/v1/media/download/"+id, nil); status != 404 {
 		t.Errorf("a file another domain sent, asked of this one = %d", status)
 	}
-	federation_database().exec("update media set domain='example.com' where id=?", id)
+	networks_database().exec("update media set domain='example.com' where id=?", id)
 
 	r.lock.Lock()
 	r.media["remote1"] = []byte("their picture")
@@ -2476,7 +2476,7 @@ func TestMatrixForget(t *testing.T) {
 	if _, err := api_account_room_leave(linked_thread(alice), sl.NewBuiltin("test", nil), sl.Tuple{sl.String("m1"), sl.String(room)}, nil); err != nil {
 		t.Fatal(err)
 	}
-	db := federation_database()
+	db := networks_database()
 	wait(t, "the leave sent and the history gone", func() bool {
 		row, _ := db.row("select count(*) as n from events where room=?", room)
 		return row_int(row, "n") == 0 && len(r.received_of(spec.MRoomMember, "@alice:example.com")) == 1
@@ -2517,9 +2517,9 @@ func TestMatrixDirectory(t *testing.T) {
 	}
 	// Someone in no room with the account, found by address through their
 	// server.
-	federation_database().exec("delete from snapshots")
+	networks_database().exec("delete from snapshots")
 	rooms_kept_forget("")
-	federation_database().exec("delete from events")
+	networks_database().exec("delete from events")
 	found = sl_decode(must_value(t)(api_account_directory(thread, fn, sl.Tuple{sl.String("m1"), sl.String(r.user("bob"))}, nil)))
 	if fmt.Sprint(found) != fmt.Sprint([]any{map[string]any{"id": r.user("bob"), "name": "Bob"}}) {
 		t.Errorf("by address = %v", found)
@@ -2651,7 +2651,7 @@ func TestMatrixBridge(t *testing.T) {
 	// queue from a domain this server does not speak for holds it up not at
 	// all. Then bob writes, and a member writes back.
 	matrix_remote_join(t, r, room, bob)
-	federation_database().exec("insert into outbox (destination, origin, kind, body, created) values (?, 'stale.example', 'edu', '{}', ?)", string(r.name), now())
+	networks_database().exec("insert into outbox (destination, origin, kind, body, created) values (?, 'stale.example', 'edu', '{}', ?)", string(r.name), now())
 	matrix_remote_join(t, elsewhere, room, carol)
 	wait(t, "carol's join passed on to bob's server", func() bool { return len(r.received_of(spec.MRoomMember, carol)) == 1 })
 	hello := r.event(room, bob, "m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "hello group"})
@@ -2785,7 +2785,7 @@ func TestMatrixKeyReplace(t *testing.T) {
 	// Nothing in flight: a request signed with the old key and checked once
 	// it has expired is refused, and waits out a backoff before it goes again.
 	wait(t, "the queue empty", func() bool {
-		row, _ := federation_database().row("select count(*) as n from outbox")
+		row, _ := networks_database().row("select count(*) as n from outbox")
 		return row_int(row, "n") == 0
 	})
 

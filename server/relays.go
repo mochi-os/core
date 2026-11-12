@@ -93,7 +93,7 @@ func relay_create(user *User, chat string, name string, people []string, members
 	}
 	address := strings.ToLower(uid()) + "@rooms." + relay_domain(user)
 	room := "xmpp:" + address
-	federation_database().exec("insert into bridges (room, user, standin, chat, created) values (?, ?, '', ?, ?) on conflict(room) do update set user=excluded.user, chat=excluded.chat", room, user.UID, chat, now())
+	networks_database().exec("insert into bridges (room, user, standin, chat, created) values (?, ?, '', ?, ?) on conflict(room) do update set user=excluded.user, chat=excluded.chat", room, user.UID, chat, now())
 	c := conference_make(address, name, jid.JID{})
 	out := &conference_outbox{}
 	c.lock.Lock()
@@ -364,6 +364,6 @@ func relay_close(user *User, room string) error {
 	c.destroy("", out)
 	c.lock.Unlock()
 	out.flush()
-	federation_database().exec("delete from bridges where room=?", room)
+	networks_database().exec("delete from bridges where room=?", room)
 	return nil
 }

@@ -291,7 +291,7 @@ func TestKeyringDevices(t *testing.T) {
 	if after := keys_sync(t, "@alice:example.com", ad, fmt.Sprint(got["next"]))["events"].([]any); len(after) != 0 {
 		t.Errorf("THE POINT: what the device said it has is let go: %v", after)
 	}
-	if kept, _ := federation_database().exists("select 1 from deliveries where user=? and device=?", "@alice:example.com", ad); kept {
+	if kept, _ := networks_database().exists("select 1 from messages where user=? and device=?", "@alice:example.com", ad); kept {
 		t.Error("THE POINT: what the device said it has is still kept")
 	}
 

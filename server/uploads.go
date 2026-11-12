@@ -79,7 +79,7 @@ func xmpp_upload_request(s *xmpp_stanza) *xmpp_stanza {
 	}
 	id := uid()
 	token := random_alphanumeric(32)
-	xmpp_database().exec("insert into uploads (id, user, account, domain, name, type, size, token, created, stored) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)", id, a.user.UID, a.id, domain, name, kind, size, token, now())
+	networks_database().exec("insert into uploads (id, user, account, domain, name, type, size, token, created, stored) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)", id, a.user.UID, a.id, domain, name, kind, size, token, now())
 	address := xmpp_upload_address(domain, id, name)
 	return xmpp_result(s, `<slot xmlns="`+xmpp_ns_upload+`"><put url="`+xmpp_escape(address)+`"><header name="Authorization">Bearer `+token+`</header></put><get url="`+xmpp_escape(address)+`"/></slot>`)
 }
@@ -117,7 +117,7 @@ func xmpp_upload_store(user *User, account string, domain string, data []byte, k
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return nil, err
 	}
-	xmpp_database().exec("insert into uploads (id, user, account, domain, name, type, size, token, created, stored) values (?, ?, ?, ?, ?, ?, ?, '', ?, 1)", id, user.UID, account, strings.ToLower(domain), name, kind, len(data), now())
+	networks_database().exec("insert into uploads (id, user, account, domain, name, type, size, token, created, stored) values (?, ?, ?, ?, ?, ?, ?, '', ?, 1)", id, user.UID, account, strings.ToLower(domain), name, kind, len(data), now())
 	return map[string]any{"url": xmpp_upload_address(domain, id, name), "name": name, "type": kind, "size": len(data)}, nil
 }
 
@@ -134,7 +134,7 @@ func xmpp_upload_serve(c *gin.Context) {
 		c.AbortWithStatus(http.StatusNoContent)
 		return
 	}
-	row, _ := xmpp_database().row("select * from uploads where id=?", id)
+	row, _ := networks_database().row("select * from uploads where id=?", id)
 	if row == nil || !strings.EqualFold(row_string(row, "domain"), activitypub_host(c)) {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
@@ -199,7 +199,7 @@ func xmpp_upload_put(c *gin.Context, user *User, row map[string]any) {
 		return
 	}
 	id := row_string(row, "id")
-	db := xmpp_database()
+	db := networks_database()
 	// Only one put takes the slot, and the file is there before it is
 	// fetched.
 	xmpp_uploads_lock.Lock()
@@ -226,5 +226,5 @@ var xmpp_uploads_lock sync.Mutex
 
 // xmpp_uploads_prune drops the slots never used.
 func xmpp_uploads_prune() {
-	xmpp_database().exec("delete from uploads where stored=0 and created<?", now()-int64(xmpp_slot_lifetime/time.Second))
+	networks_database().exec("delete from uploads where stored=0 and created<?", now()-int64(xmpp_slot_lifetime/time.Second))
 }

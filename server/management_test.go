@@ -284,7 +284,7 @@ func TestXMPPPush(t *testing.T) {
 	id := regexp.MustCompile(` id="([^"]+)"`).FindStringSubmatch(push)[1]
 	link.write(`<iq xmlns="jabber:server" type="error" id="` + id + `" from="push.remote.test" to="alice@example.com"><error type="cancel"><item-not-found xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></iq>`)
 	wait(t, "THE POINT: a refused push's registration dropped", func() bool {
-		found, _ := xmpp_database().exists("select 1 from pushes where account='x1'")
+		found, _ := db_user_brief(env.alice, "networks").exists("select 1 from pushes where account='x1'")
 		return !found
 	})
 }

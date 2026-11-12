@@ -184,7 +184,7 @@ func create_atproto_test_env(t *testing.T) (*User, *plc_fake) {
 	bluesky_plc, bluesky_relay = plc.server.URL, relay.URL
 	atproto_lookup = func(ctx context.Context, host string) ([]string, error) { return []string{"203.0.113.7"}, nil }
 	atproto_budget_hour, atproto_budget_day = 1500, 10000
-	networks_database().exec("delete from stream")
+	networks_database().exec("delete from firehose")
 	networks_database().exec("delete from identities")
 	// A repair a subscription scheduled is not left to run in another test,
 	// against whatever relay it then names.
@@ -735,8 +735,8 @@ func TestAtprotoStreamRestored(t *testing.T) {
 	}
 	// Later, restored from a backup that held none of them.
 	clock = 5000
-	networks_database().exec("delete from stream")
-	networks_database().exec("update sqlite_sequence set seq=0 where name='stream'")
+	networks_database().exec("delete from firehose")
+	networks_database().exec("update sqlite_sequence set seq=0 where name='firehose'")
 	if restored := stream_append(did, "#identity", map[string]any{"did": did}); restored != 5000 {
 		t.Errorf("THE POINT: restored, the stream numbers its next event %d, want 5000, past the 1001 it gave before", restored)
 	}
@@ -1318,34 +1318,34 @@ func TestAtprotoStreamSequence(t *testing.T) {
 	for range 3 {
 		last = stream_append("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa", "#identity", map[string]any{"did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"})
 	}
-	db.exec("delete from stream")
+	db.exec("delete from firehose")
 	if next := stream_append("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa", "#identity", map[string]any{"did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"}); next != last+1 {
 		t.Errorf("after the window emptied the stream, the next event is %d, want %d", next, last+1)
 	}
 
-	db.exec("drop table stream")
-	db.exec("create table stream (sequence integer not null primary key, did text not null, kind text not null, body blob not null, created integer not null)")
-	db.exec("insert into stream (sequence, did, kind, body, created) values (40, 'did:plc:aaaaaaaaaaaaaaaaaaaaaaaa', '#identity', x'00', 1), (41, 'did:plc:aaaaaaaaaaaaaaaaaaaaaaaa', '#identity', x'00', 2)")
-	db.exec("delete from sqlite_sequence where name='stream'")
-	atproto_stream_rebuild(db)
-	row, _ := db.row("select sql from sqlite_master where type='table' and name='stream'")
+	db.exec("drop table firehose")
+	db.exec("create table firehose (sequence integer not null primary key, did text not null, kind text not null, body blob not null, created integer not null)")
+	db.exec("insert into firehose (sequence, did, kind, body, created) values (40, 'did:plc:aaaaaaaaaaaaaaaaaaaaaaaa', '#identity', x'00', 1), (41, 'did:plc:aaaaaaaaaaaaaaaaaaaaaaaa', '#identity', x'00', 2)")
+	db.exec("delete from sqlite_sequence where name='firehose'")
+	atproto_firehose_rebuild(db)
+	row, _ := db.row("select sql from sqlite_master where type='table' and name='firehose'")
 	if !strings.Contains(strings.ToLower(row_string(row, "sql")), "autoincrement") {
 		t.Fatalf("the stream table was not rebuilt: %v", row)
 	}
-	if n, _ := db.row("select count(*) as n from stream"); row_int(n, "n") != 2 {
+	if n, _ := db.row("select count(*) as n from firehose"); row_int(n, "n") != 2 {
 		t.Errorf("%d events kept, want 2", row_int(n, "n"))
 	}
-	if held, _ := db.exists("select 1 from sqlite_master where type='index' and name='stream_created'"); !held {
+	if held, _ := db.exists("select 1 from sqlite_master where type='index' and name='firehose_created'"); !held {
 		t.Error("the rebuilt table has no index on created")
 	}
-	db.exec("delete from stream")
+	db.exec("delete from firehose")
 	if next := stream_append("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa", "#identity", map[string]any{"did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"}); next != 42 {
 		t.Errorf("after the rebuild and an empty window, the next event is %d, want 42", next)
 	}
 	// Rebuilt again once the window has emptied it, the table would lose the
 	// last number it gave.
-	db.exec("delete from stream")
-	atproto_stream_rebuild(db)
+	db.exec("delete from firehose")
+	atproto_firehose_rebuild(db)
 	if next := stream_append("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa", "#identity", map[string]any{"did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"}); next != 43 {
 		t.Errorf("an AUTOINCREMENT stream table was rebuilt again: the next event is %d, want 43", next)
 	}
@@ -1607,7 +1607,7 @@ func TestAtprotoRelayRepair(t *testing.T) {
 	did := atproto_did(account_hosted_get(alice, "b1"))
 	r := repository_get(alice, "b1")
 	// The relay was not listening when the account's events went out.
-	networks_database().exec("delete from stream")
+	networks_database().exec("delete from firehose")
 	relay.settle()
 
 	// No relay listening: it is asked to crawl, and nothing goes out yet.
@@ -1653,7 +1653,7 @@ func TestAtprotoRelayRepair(t *testing.T) {
 	// The relay holding it: nothing goes out, and the host's count answers
 	// without asking after each account.
 	relay.hold(did, true)
-	networks_database().exec("delete from stream")
+	networks_database().exec("delete from firehose")
 	relay.lock.Lock()
 	asked := relay.asked
 	relay.lock.Unlock()

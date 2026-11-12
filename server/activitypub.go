@@ -248,7 +248,12 @@ func tombstone_key(id string) (string, string) {
 // Called from the delivery manager's hourly pass.
 func activitypub_cleanup() {
 	db := networks_database()
-	db.exec("delete from seen where created<?", now()-received_age)
+	users, _ := db.rows("select distinct user from actors where network='fediverse'")
+	for _, row := range users {
+		if user := user_by_uid(row_string(row, "user")); user != nil {
+			db_user_brief(user, "networks").exec("delete from seen where created<?", now()-received_age)
+		}
+	}
 	db.exec("delete from copies where created<?", now()-copy_age)
 	db.exec("delete from actors where deleted>0 and deleted<?", now()-tombstone_age)
 }
@@ -1209,9 +1214,10 @@ func activitypub_host_of(id string) string {
 // whether that account saw it before. An activity reaches the server once per
 // inbox it is sent to - an account's own, and the shared inbox of each domain
 // the server's accounts are on - so it is a duplicate only for an account it
-// was already given to.
-func activitypub_received(id string, account string) bool {
-	db := networks_database()
+// was already given to. The ids are the user's, kept in their networks.db.
+func activitypub_received(user *User, id string, account string) bool {
+	db := db_user(user, "networks")
+	defer db.close()
 	if seen, _ := db.exists("select 1 from seen where id=? and account=?", id, account); seen {
 		return true
 	}
@@ -1345,11 +1351,11 @@ func activitypub_inbox(c *gin.Context, user *User, a *actor) {
 
 	var later error
 	for _, target := range targets {
-		if id != "" && activitypub_received(id, target.ID) {
-			continue
-		}
 		target_user, _ := actor_account(target.ID)
 		if target_user == nil {
+			continue
+		}
+		if id != "" && activitypub_received(target_user, id, target.ID) {
 			continue
 		}
 		if err := host_allowed(target_user, "fediverse", host); err != nil {
@@ -1364,7 +1370,7 @@ func activitypub_inbox(c *gin.Context, user *User, a *actor) {
 		if err := activitypub_dispatch(activitypub_signing(c.Request.Context(), target_user, target.ID), target_user, target, remote, kind, activity, body); err != nil {
 			// Not taken for this account for now: forgotten as seen, so
 			// the activity sent again is.
-			networks_database().exec("delete from seen where id=? and account=?", id, target.ID)
+			db_user_brief(target_user, "networks").exec("delete from seen where id=? and account=?", id, target.ID)
 			later = err
 		}
 	}

@@ -113,7 +113,7 @@ func clients_previous(event gomatrixserverlib.PDU) gomatrixserverlib.PDU {
 
 // clients_redaction is the event that redacted one, or nil.
 func clients_redaction(event gomatrixserverlib.PDU) gomatrixserverlib.PDU {
-	rows, _ := federation_database().rows("select id from events where room=? and type=? and body like ? limit 5", event.RoomID().String(), spec.MRoomRedaction, "%"+event.EventID()+"%")
+	rows, _ := networks_database().rows("select id from events where room=? and type=? and body like ? limit 5", event.RoomID().String(), spec.MRoomRedaction, "%"+event.EventID()+"%")
 	for _, row := range rows {
 		if redaction := rooms_event(row_string(row, "id")); redaction != nil && clients_redacts(redaction) == event.EventID() {
 			return redaction
@@ -137,7 +137,7 @@ func clients_redacts(redaction gomatrixserverlib.PDU) string {
 
 // clients_transaction is the transaction a device sent an event by, or "".
 func clients_transaction(event string, device string) string {
-	row, _ := federation_database().row("select key from sent where event=? and key like ?", event, "client|"+device+"|%")
+	row, _ := networks_database().row("select key from sent where event=? and key like ?", event, "client|"+device+"|%")
 	return strings.TrimPrefix(row_string(row, "key"), "client|"+device+"|")
 }
 
@@ -147,14 +147,14 @@ func clients_transaction(event string, device string) string {
 // engine holds it, and the invitations other servers sent.
 func clients_memberships(user string) map[string]string {
 	out := map[string]string{}
-	rows, _ := federation_database().rows("select distinct room from events where type='m.room.member' and key=? and outlier=0", user)
+	rows, _ := networks_database().rows("select distinct room from events where type='m.room.member' and key=? and outlier=0", user)
 	for _, row := range rows {
 		room := row_string(row, "room")
 		if membership := rooms_membership(room, user); membership != "" {
 			out[room] = membership
 		}
 	}
-	invites, _ := federation_database().rows("select room from invites where user=?", user)
+	invites, _ := networks_database().rows("select room from invites where user=?", user)
 	for _, row := range invites {
 		if room := row_string(row, "room"); out[room] == "" || out[room] == spec.Leave {
 			out[room] = spec.Invite
@@ -162,7 +162,7 @@ func clients_memberships(user string) map[string]string {
 	}
 	// A knock through another server waits there; an invitation declined
 	// or a knock withdrawn there leaves the room left.
-	pending, _ := federation_database().rows("select room, kind from pending where user=? and kind in ('knock', 'leave')", user)
+	pending, _ := networks_database().rows("select room, kind from pending where user=? and kind in ('knock', 'leave')", user)
 	for _, row := range pending {
 		room := row_string(row, "room")
 		switch row_string(row, "kind") {
@@ -183,7 +183,7 @@ func clients_memberships(user string) map[string]string {
 // not in - invited to it, knocking on it, or having declined or withdrawn -
 // at a new position, so their syncs are told.
 func clients_pending(room string, user string, kind string, server string, state string) {
-	federation_database().exec("insert or replace into pending (room, user, kind, server, state, created) values (?, ?, ?, ?, ?, ?)", room, user, kind, server, state, now())
+	networks_database().exec("insert or replace into pending (room, user, kind, server, state, created) values (?, ?, ?, ?, ?, ?)", room, user, kind, server, state, now())
 	clients_wake(user)
 }
 
@@ -198,7 +198,7 @@ func clients_leaving(event gomatrixserverlib.PDU, user string) string {
 // first invitation or join, as its visibility says; to their leaving where
 // they have left.
 func clients_window(room string, user string) (int64, int64) {
-	db := federation_database()
+	db := networks_database()
 	rows, _ := db.rows("select s.position, e.membership from stream s join events e on e.id=s.event where s.room=? and e.type='m.room.member' and e.key=? order by s.position", room, user)
 	// From the start, history fetched from other servers below it included,
 	// where the room shares its history.
@@ -264,7 +264,7 @@ func clients_timeline(room string, after int64, before int64, limit int, backwar
 	if backwards {
 		order = "desc"
 	}
-	rows, _ := federation_database().rows("select position, event from stream where room=? and position>? and position<? order by position "+order+" limit ?", room, after, before, limit)
+	rows, _ := networks_database().rows("select position, event from stream where room=? and position>? and position<? order by position "+order+" limit ?", room, after, before, limit)
 	ids := make([]string, 0, len(rows))
 	for _, row := range rows {
 		ids = append(ids, row_string(row, "event"))
@@ -281,7 +281,7 @@ func clients_timeline(room string, after int64, before int64, limit int, backwar
 
 // clients_position is an event's position in the timeline, or 0.
 func clients_position(event string) int64 {
-	row, _ := federation_database().row("select position from stream where event=?", event)
+	row, _ := networks_database().row("select position from stream where event=?", event)
 	return row_int(row, "position")
 }
 
@@ -430,7 +430,7 @@ func clients_rooms_dispatch(c *gin.Context, s *clients_session, parts []string) 
 		if !clients_member(c, s, room) {
 			return true
 		}
-		rows, _ := federation_database().rows("select alias from aliases where room=? order by alias", room)
+		rows, _ := networks_database().rows("select alias from aliases where room=? order by alias", room)
 		aliases := []string{}
 		for _, row := range rows {
 			aliases = append(aliases, row_string(row, "alias"))
@@ -588,7 +588,7 @@ func clients_make(ctx context.Context, creator string, body clients_creation, pr
 		if strings.ContainsAny(body.Alias, ":# ") || len(alias) > 255 {
 			return "", &clients_refusal{http.StatusBadRequest, "M_INVALID_PARAM", "Invalid alias"}
 		}
-		if taken, _ := federation_database().exists("select 1 from aliases where alias=?", alias); taken {
+		if taken, _ := networks_database().exists("select 1 from aliases where alias=?", alias); taken {
 			return "", &clients_refusal{http.StatusBadRequest, "M_ROOM_IN_USE", "That alias is taken"}
 		}
 	}
@@ -640,7 +640,7 @@ func clients_make(ctx context.Context, creator string, body clients_creation, pr
 	var out rooms_outbox
 	defer out.flush()
 	if room != "" {
-		federation_database().exec("insert into rooms (id, version, state, created) values (?, ?, 0, ?)", room, string(version.Version()), now())
+		networks_database().exec("insert into rooms (id, version, state, created) values (?, ?, 0, ?)", room, string(version.Version()), now())
 	}
 	empty := ""
 	event, err := rooms_build(version, room, creator, spec.MRoomCreate, &empty, create)
@@ -649,7 +649,7 @@ func clients_make(ctx context.Context, creator string, body clients_creation, pr
 	}
 	if room == "" {
 		room = "!" + strings.TrimPrefix(event.EventID(), "$")
-		federation_database().exec("insert into rooms (id, version, state, created) values (?, ?, 0, ?)", room, string(version.Version()), now())
+		networks_database().exec("insert into rooms (id, version, state, created) values (?, ?, 0, ?)", room, string(version.Version()), now())
 	}
 	unlock := rooms_lock(room)
 	defer unlock()
@@ -743,10 +743,10 @@ func clients_make(ctx context.Context, creator string, body clients_creation, pr
 		}
 	}
 	if alias != "" {
-		federation_database().exec("insert or ignore into aliases (alias, room, creator, created) values (?, ?, ?, ?)", alias, room, creator, now())
+		networks_database().exec("insert or ignore into aliases (alias, room, creator, created) values (?, ?, ?, ?)", alias, room, creator, now())
 	}
 	if body.Visibility == "public" {
-		federation_database().exec("insert or ignore into published (room, created) values (?, ?)", room, now())
+		networks_database().exec("insert or ignore into published (room, created) values (?, ?)", room, now())
 	}
 	if body.Direct && len(body.Invite) > 0 {
 		rooms_direct_add(creator, room, body.Invite[0])
@@ -808,7 +808,7 @@ func clients_knock(c *gin.Context, s *clients_session, address string) {
 		servers = append(servers, spec.ServerName(server))
 	}
 	if strings.HasPrefix(address, "#") {
-		row, _ := federation_database().row("select room from aliases where alias=?", address)
+		row, _ := networks_database().row("select room from aliases where alias=?", address)
 		if row == nil {
 			clients_error(c, http.StatusNotFound, "M_NOT_FOUND", "No such room")
 			return
@@ -1089,7 +1089,7 @@ func clients_aliases_held(room string, content map[string]any) bool {
 			return false
 		}
 		if federation_local(domain) {
-			row, _ := federation_database().row("select room from aliases where alias=?", alias)
+			row, _ := networks_database().row("select room from aliases where alias=?", alias)
 			if row_string(row, "room") != room {
 				return false
 			}
@@ -1108,7 +1108,7 @@ func clients_send(c *gin.Context, s *clients_session, room string, kind string, 
 		return
 	}
 	key := "client|" + s.device + "|" + transaction
-	if row, _ := federation_database().row("select event from sent where account=? and key=?", s.h.id, key); row != nil {
+	if row, _ := networks_database().row("select event from sent where account=? and key=?", s.h.id, key); row != nil {
 		c.JSON(http.StatusOK, map[string]any{"event_id": row_string(row, "event")})
 		return
 	}
@@ -1121,7 +1121,7 @@ func clients_send(c *gin.Context, s *clients_session, room string, kind string, 
 		clients_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
 		return
 	}
-	federation_database().exec("insert or ignore into sent (account, key, event, created) values (?, ?, ?, ?)", s.h.id, key, event.EventID(), now())
+	networks_database().exec("insert or ignore into sent (account, key, event, created) values (?, ?, ?, ?)", s.h.id, key, event.EventID(), now())
 	clients_told(s, event)
 	c.JSON(http.StatusOK, map[string]any{"event_id": event.EventID()})
 }
@@ -1136,7 +1136,7 @@ func clients_redact(c *gin.Context, s *clients_session, room string, target stri
 		return
 	}
 	key := "client|" + s.device + "|" + transaction
-	if row, _ := federation_database().row("select event from sent where account=? and key=?", s.h.id, key); row != nil {
+	if row, _ := networks_database().row("select event from sent where account=? and key=?", s.h.id, key); row != nil {
 		c.JSON(http.StatusOK, map[string]any{"event_id": row_string(row, "event")})
 		return
 	}
@@ -1149,7 +1149,7 @@ func clients_redact(c *gin.Context, s *clients_session, room string, target stri
 		clients_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
 		return
 	}
-	federation_database().exec("insert or ignore into sent (account, key, event, created) values (?, ?, ?, ?)", s.h.id, key, event.EventID(), now())
+	networks_database().exec("insert or ignore into sent (account, key, event, created) values (?, ?, ?, ?)", s.h.id, key, event.EventID(), now())
 	clients_told(s, event)
 	c.JSON(http.StatusOK, map[string]any{"event_id": event.EventID()})
 }
@@ -1343,7 +1343,7 @@ func clients_relations(c *gin.Context, s *clients_session, room string, rest []s
 	if from := c.Query("from"); from != "" {
 		position = clients_token(from)
 	}
-	rows, _ := federation_database().rows("select s.position, s.event from stream s join events e on e.id=s.event where s.room=? and s.position>? and s.position<? and e.body like ? order by s.position desc limit 500", room, floor-1, min(position, ceiling+1), "%"+target+"%")
+	rows, _ := networks_database().rows("select s.position, s.event from stream s join events e on e.id=s.event where s.room=? and s.position>? and s.position<? and e.body like ? order by s.position desc limit 500", room, floor-1, min(position, ceiling+1), "%"+target+"%")
 	chunk := []map[string]any{}
 	last := int64(0)
 	for _, row := range rows {
@@ -1381,7 +1381,7 @@ func clients_threads(c *gin.Context, s *clients_session, room string) {
 		return
 	}
 	floor, ceiling := clients_window(room, s.h.address)
-	rows, _ := federation_database().rows("select s.event from stream s join events e on e.id=s.event where s.room=? and s.position>? and s.position<? and e.body like ? order by s.position desc limit 500", room, floor-1, ceiling+1, `%"m.thread"%`)
+	rows, _ := networks_database().rows("select s.event from stream s join events e on e.id=s.event where s.room=? and s.position>? and s.position<? and e.body like ? order by s.position desc limit 500", room, floor-1, ceiling+1, `%"m.thread"%`)
 	seen := map[string]bool{}
 	chunk := []map[string]any{}
 	for _, row := range rows {
@@ -1544,7 +1544,7 @@ func clients_alias(c *gin.Context, s *clients_session, alias string) {
 		clients_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "Invalid alias")
 		return
 	}
-	db := federation_database()
+	db := networks_database()
 	switch c.Request.Method {
 	case "GET":
 		if federation_local(domain) {
@@ -1638,7 +1638,7 @@ func clients_powerful(room string, user string, kind string) bool {
 // clients_listing answers whether a room is in this server's directory, or
 // lists or unlists it, by its moderators.
 func clients_listing(c *gin.Context, s *clients_session, room string) {
-	db := federation_database()
+	db := networks_database()
 	switch c.Request.Method {
 	case "GET":
 		visibility := "private"
@@ -1715,7 +1715,7 @@ func rooms_published(term string, limit int, since string) map[string]any {
 		limit = 30
 	}
 	offset, _ := strconv.Atoi(since)
-	rows, _ := federation_database().rows("select room from published order by created")
+	rows, _ := networks_database().rows("select room from published order by created")
 	var chunk []map[string]any
 	for _, row := range rows {
 		room := row_string(row, "room")
@@ -1864,7 +1864,7 @@ func clients_upgrade(c *gin.Context, s *clients_session, room string) {
 		clients_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
 		return
 	}
-	db := federation_database()
+	db := networks_database()
 	db.exec("update aliases set room=? where room=?", replacement, room)
 	if listed, _ := db.exists("select 1 from published where room=?", room); listed {
 		db.exec("delete from published where room=?", room)
@@ -1936,7 +1936,7 @@ func clients_search(c *gin.Context, s *clients_session) {
 		}
 		rooms = append(rooms, room)
 		floor, ceiling := clients_window(room, s.h.address)
-		rows, _ := federation_database().rows("select s.position, s.event from stream s join events e on e.id=s.event where s.room=? and s.position>? and s.position<? and e.redacted=0 and e.type in ('m.room.message', 'm.room.name', 'm.room.topic') and lower(e.body) like ? order by s.position desc limit 200", room, floor-1, min(before, ceiling+1), "%"+words[0]+"%")
+		rows, _ := networks_database().rows("select s.position, s.event from stream s join events e on e.id=s.event where s.room=? and s.position>? and s.position<? and e.redacted=0 and e.type in ('m.room.message', 'm.room.name', 'm.room.topic') and lower(e.body) like ? order by s.position desc limit 200", room, floor-1, min(before, ceiling+1), "%"+words[0]+"%")
 		for _, row := range rows {
 			event := rooms_event(row_string(row, "event"))
 			if event == nil || !asked.Filter.allows(event) {
@@ -2172,7 +2172,7 @@ func clients_accessible(room string, user string, entry map[string]any) bool {
 	if membership := rooms_membership(room, user); membership == spec.Join || membership == spec.Invite {
 		return true
 	}
-	if invited, _ := federation_database().exists("select 1 from invites where room=? and user=?", room, user); invited {
+	if invited, _ := networks_database().exists("select 1 from invites where room=? and user=?", room, user); invited {
 		return true
 	}
 	for _, other := range clients_strings(entry["allowed_room_ids"]) {
@@ -2215,7 +2215,7 @@ func clients_summary(c *gin.Context, s *clients_session, address string) {
 			return
 		}
 		if federation_local(domain) {
-			row, _ := federation_database().row("select room from aliases where alias=?", address)
+			row, _ := networks_database().row("select room from aliases where alias=?", address)
 			room = row_string(row, "room")
 		} else if found, err := federation_client().LookupRoomAlias(c.Request.Context(), mine.Domain(), domain, address); err == nil {
 			room = found.RoomID
@@ -2243,7 +2243,7 @@ func clients_summary(c *gin.Context, s *clients_session, address string) {
 		return
 	}
 	membership := rooms_membership(room, s.h.address)
-	if invited, _ := federation_database().exists("select 1 from invites where room=? and user=?", room, s.h.address); membership == "" && invited {
+	if invited, _ := networks_database().exists("select 1 from invites where room=? and user=?", room, s.h.address); membership == "" && invited {
 		membership = spec.Invite
 	}
 	if membership == "" {

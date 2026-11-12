@@ -43,7 +43,7 @@ type xmpp_item struct {
 
 // xmpp_rows reads an account's stored contacts.
 func xmpp_rows(a *xmpp_account) map[string]*xmpp_item {
-	rows, _ := xmpp_database().rows("select * from roster where account=?", a.id)
+	rows, _ := db_user_brief(a.user, "networks").rows("select * from roster where account=?", a.id)
 	out := map[string]*xmpp_item{}
 	for _, row := range rows {
 		out[row_string(row, "address")] = &xmpp_item{
@@ -96,7 +96,8 @@ func xmpp_roster_item(a *xmpp_account, address string) *xmpp_item {
 // xmpp_roster_save stores a contact, or forgets it once nothing is left
 // between them and it is not on the roster.
 func xmpp_roster_save(a *xmpp_account, item *xmpp_item) {
-	db := xmpp_database()
+	db := db_user(a.user, "networks")
+	defer db.close()
 	if item.subscription == "none" && !item.ask && !item.pending && !item.listed {
 		db.exec("delete from roster where account=? and address=?", a.id, item.address)
 		return
@@ -213,7 +214,7 @@ func xmpp_roster_remove(a *xmpp_account, contact jid.JID) {
 		xmpp_route(xmpp_make("presence", "", "type", "unsubscribed"), a.address, contact)
 		xmpp_presence_withdraw(a, contact)
 	}
-	xmpp_database().exec("delete from roster where account=? and address=?", a.id, address)
+	db_user_brief(a.user, "networks").exec("delete from roster where account=? and address=?", a.id, address)
 	xmpp_roster_push(a, address)
 	xmpp_people(a, address, "remove")
 }

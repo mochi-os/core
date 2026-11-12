@@ -40,8 +40,6 @@ func TestOpenersLayNothing(t *testing.T) {
 	test_bare_directory(t)
 	for name, db := range map[string]*DB{
 		"networks.db": networks_database(),
-		"matrix.db":   federation_database(),
-		"xmpp.db":     xmpp_database(),
 		"apps.db":     db_apps(),
 	} {
 		if count := db.integer("select count(*) from sqlite_master"); count != 0 {
@@ -59,7 +57,7 @@ func TestFreshInstallLaysTheNetworkDatabases(t *testing.T) {
 		t.Errorf("a fresh install records schema %d, want %d", schema, schema_version)
 	}
 	networks := networks_database()
-	for _, name := range []string{"deliveries", "actors", "identities", "stream", "websub", "webmentions", "reports", "pictrs", "copies"} {
+	for _, name := range []string{"deliveries", "actors", "identities", "firehose", "websub", "webmentions", "reports", "pictrs", "copies"} {
 		if !versioning_has(networks, name) {
 			t.Errorf("THE POINT: a fresh networks.db has no %s", name)
 		}
@@ -67,17 +65,30 @@ func TestFreshInstallLaysTheNetworkDatabases(t *testing.T) {
 	if !versioning_column(networks, "deliveries", "address") {
 		t.Error("a fresh deliveries table has no address")
 	}
-	matrix := federation_database()
-	for _, name := range []string{"outbox", "rooms", "events", "clients", "changes", "stream", "settings", "presence", "media", "standins", "notices"} {
-		if !versioning_has(matrix, name) {
-			t.Errorf("THE POINT: a fresh matrix.db has no %s", name)
+	// The Matrix and XMPP engines' tables are networks.db's, and neither has
+	// a file of its own.
+	for _, name := range []string{"outbox", "rooms", "events", "devices", "messages", "changes", "stream", "settings", "presence", "media", "standins", "notices"} {
+		if !versioning_has(networks, name) {
+			t.Errorf("THE POINT: a fresh networks.db has no Matrix %s", name)
 		}
 	}
-	if !versioning_column(matrix, "outbox", "origin") || !versioning_column(matrix, "changes", "gone") {
-		t.Error("a fresh matrix.db lacks outbox.origin or changes.gone")
+	if !versioning_column(networks, "outbox", "origin") || !versioning_column(networks, "changes", "gone") {
+		t.Error("a fresh networks.db lacks outbox.origin or changes.gone")
 	}
-	if !versioning_has(xmpp_database(), "roster") || !versioning_has(xmpp_database(), "chatlog_archive") {
-		t.Error("THE POINT: a fresh xmpp.db has no roster or chatlog index")
+	for _, name := range []string{"conferences", "uploads", "chatlog_archive"} {
+		if !versioning_has(networks, name) {
+			t.Errorf("THE POINT: a fresh networks.db has no XMPP %s", name)
+		}
+	}
+	for _, name := range []string{"roster", "offline", "seen"} {
+		if versioning_has(networks, name) {
+			t.Errorf("THE POINT: a fresh networks.db lays %s, which is each user's own", name)
+		}
+	}
+	for _, name := range []string{"matrix.db", "xmpp.db"} {
+		if file_exists(filepath.Join(data_dir, "db", name)) {
+			t.Errorf("THE POINT: a fresh install lays %s", name)
+		}
 	}
 	if !versioning_has(db_open("db/world.db"), "worlds") {
 		t.Error("THE POINT: a fresh world.db has no worlds table")
@@ -100,11 +111,11 @@ func TestSchema18BringsAnInstallUp(t *testing.T) {
 
 	networks := networks_database()
 	networks.exec("create table deliveries (id text not null primary key, user text not null, account text not null, network text not null, inbox text not null, host text not null, body text not null, attempts integer not null default 0, next integer not null, claimed integer not null default 0, created integer not null)")
-	networks.exec("create table stream (sequence integer primary key, did text not null, kind text not null, body blob not null, created integer not null)")
-	networks.exec("insert into stream (sequence, did, kind, body, created) values (7, 'did:plc:a', 'commit', x'00', 1)")
+	networks.exec("create table firehose (sequence integer primary key, did text not null, kind text not null, body blob not null, created integer not null)")
+	networks.exec("insert into firehose (sequence, did, kind, body, created) values (7, 'did:plc:a', 'commit', x'00', 1)")
 	networks.exec("create table received (id text not null primary key, created integer not null)")
 
-	matrix := federation_database()
+	matrix := networks
 	matrix.exec("create table outbox (id integer primary key autoincrement, destination text not null, kind text not null, body text not null, created integer not null)")
 	matrix.exec("create table changes (id integer primary key autoincrement, user text not null, viewer text not null default '', created integer not null)")
 	rooms_tables(matrix)
@@ -141,18 +152,18 @@ func TestSchema18BringsAnInstallUp(t *testing.T) {
 	if versioning_has(networks, "received") {
 		t.Error("the server-wide received table survived")
 	}
-	row, _ := networks.row("select sql from sqlite_master where name='stream'")
+	row, _ := networks.row("select sql from sqlite_master where name='firehose'")
 	if !strings.Contains(strings.ToLower(row_string(row, "sql")), "autoincrement") {
 		t.Error("THE POINT: the stream table was not rebuilt with AUTOINCREMENT")
 	}
-	if networks.integer("select count(*) from stream where sequence=7") != 1 {
+	if networks.integer("select count(*) from firehose where sequence=7") != 1 {
 		t.Error("the rebuild lost the stream's events")
 	}
 	if !versioning_has(networks, "actors") || !versioning_has(networks, "pictrs") {
 		t.Error("THE POINT: networks.db's newer tables were not laid")
 	}
 	if !versioning_column(matrix, "outbox", "origin") || !versioning_column(matrix, "changes", "gone") {
-		t.Error("THE POINT: matrix.db did not gain outbox.origin and changes.gone")
+		t.Error("THE POINT: the Matrix tables did not gain outbox.origin and changes.gone")
 	}
 	if matrix.integer("select count(*) from stream where event='$a'") != 1 {
 		t.Error("THE POINT: the rooms' timelines were not taken into the client order")
@@ -160,8 +171,8 @@ func TestSchema18BringsAnInstallUp(t *testing.T) {
 	if matrix.integer("select count(*) from settings where user='@a:b' and type='m.secret'") != 1 {
 		t.Error("THE POINT: the key store's account data was not copied into settings")
 	}
-	if !versioning_has(xmpp_database(), "roster") || !versioning_has(db_open("db/world.db"), "worlds") {
-		t.Error("THE POINT: xmpp.db and world.db were not laid")
+	if !versioning_has(networks, "conferences") || !versioning_has(db_open("db/world.db"), "worlds") {
+		t.Error("THE POINT: the XMPP tables and world.db were not laid")
 	}
 	if versioning_has(data, "_commit_log") {
 		t.Error("THE POINT: the old commit-hook log survived in the app's data database")
@@ -195,10 +206,27 @@ func TestUserDatabaseIsVersioned(t *testing.T) {
 	if identifier, _ := db.row("select identifier from accounts where id='3'"); row_string(identifier, "identifier") != "@alice@example.com" {
 		t.Errorf("the hosted address became %q, want @alice@example.com", row_string(identifier, "identifier"))
 	}
-	for _, name := range []string{"preferences", "permissions", "groups", "keys", "objects", "repositories", "numbers", "snowflakes", "directory", "apps"} {
+	for _, name := range []string{"preferences", "permissions", "groups", "keys", "objects", "repositories", "directory", "apps"} {
 		if !versioning_has(db, name) {
 			t.Errorf("user.db has no %s", name)
 		}
+	}
+	// What is the user's on the other networks - the client interfaces'
+	// tables, written on nearly every request a client makes, the activities
+	// each account has taken, and the XMPP accounts' rosters, queues and
+	// rooms - is their networks.db's, never user.db's.
+	networks := db_user(alice, "networks")
+	for _, name := range []string{"snowflakes", "snapshots", "markers", "filters", "subscriptions", "alerts", "numbers", "seen", "roster", "offline", "pushes", "nodes", "items", "joined"} {
+		// user.db's nodes are its Bluesky repository's (repository.go).
+		if name != "nodes" && versioning_has(db, name) {
+			t.Errorf("THE POINT: user.db lays %s", name)
+		}
+		if !versioning_has(networks, name) {
+			t.Errorf("THE POINT: the user's networks.db has no %s", name)
+		}
+	}
+	if networks.integer("pragma user_version") != len(db_user_steps["networks"]) {
+		t.Error("the user's networks.db was not versioned")
 	}
 
 	// Written after the file reached its version: a later open must not
@@ -449,7 +477,7 @@ func TestVersionedStepsKeepTheirSchema(t *testing.T) {
 
 	test_bare_directory(t)
 	db_upgrade_18()
-	for _, file := range []string{"networks", "matrix", "xmpp", "world"} {
+	for _, file := range []string{"networks", "world"} {
 		check("db_upgrade_18."+file, versioning_schema(db_open("db/"+file+".db")))
 	}
 	db_upgrade_19()
@@ -465,13 +493,14 @@ func TestVersionedStepsKeepTheirSchema(t *testing.T) {
 	db_upgrade_21()
 	check("db_upgrade_21.queue", versioning_schema(queue))
 	db_upgrade_22()
-	check("db_upgrade_22.matrix", versioning_schema(db_open("db/matrix.db")))
+	check("db_upgrade_22.networks", versioning_schema(db_open("db/networks.db")))
 	db_upgrade_23()
 	check("db_upgrade_23.queue", versioning_schema(queue))
 
 	for name, steps := range map[string][]func(*DB) error{
 		"user":          db_user_steps["user"],
 		"notifications": db_user_steps["notifications"],
+		"networks":      db_user_steps["networks"],
 		"encryption":    encryption_steps,
 		"system":        db_system_steps,
 	} {

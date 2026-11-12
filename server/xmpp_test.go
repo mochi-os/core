@@ -282,6 +282,33 @@ func TestXMPPRefusedStopsTheSession(t *testing.T) {
 // cannot apply it shows, marked as that (XEP-0424), from a linked account as
 // from a hosted one or a relay; and Mochi reading one applies it rather than
 // showing the text.
+// TestXMPPInvitationNamed: an invitation a linked account hears reaches chat
+// named as the room names itself, which the invitation does not carry, not
+// by the local part of its address.
+func TestXMPPInvitationNamed(t *testing.T) {
+	alice := create_linked_test_env(t)
+	fake := create_xmpp_fake(t, "secret",
+		`<message xmlns="jabber:client" id="i1" from="0a1b2c@rooms.example.org" to="alice@example.org"><x xmlns="http://jabber.org/protocol/muc#user"><invite from="bob@example.org/phone"/></x></message>`)
+	fake.answer = func(text string) []string {
+		if !strings.HasPrefix(text, "<iq") {
+			return nil
+		}
+		if strings.Contains(text, "disco#info") && strings.Contains(text, "0a1b2c@rooms.example.org") {
+			return []string{`<iq xmlns="jabber:client" type="result" from="0a1b2c@rooms.example.org" id="` + xml_attribute(text, "id") + `"><query xmlns="http://jabber.org/protocol/disco#info"><identity category="conference" type="text" name="Book club"/></query></iq>`}
+		}
+		return []string{`<iq xmlns="jabber:client" type="result" id="` + xml_attribute(text, "id") + `"/>`}
+	}
+	log := &inbound_log{}
+	log.install(t)
+	thread := linked_thread(alice)
+	fn := sl.NewBuiltin("test", nil)
+	decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("xmpp")}, linked_kwargs("address", "alice@example.org", "password", "secret")))
+	invite := log.find(t, "invite", nil)
+	if invite["conversation"] != "xmpp:0a1b2c@rooms.example.org" || invite["name"] != "Book club" {
+		t.Errorf("THE POINT: the invitation as chat hears it: %v", invite)
+	}
+}
+
 func TestXMPPRetractionFallback(t *testing.T) {
 	s, err := xmpp_parse(`<message xmlns="jabber:client" type="chat" id="r1" from="bob@example.org/phone">` + xmpp_retraction("m1") + `</message>`)
 	if err != nil {

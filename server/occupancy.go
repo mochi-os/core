@@ -48,7 +48,7 @@ type xmpp_joined struct {
 
 // xmpp_joined_of is a room Mochi's own sessions on an account are in, or nil.
 func xmpp_joined_of(a *xmpp_account, room string) *xmpp_joined {
-	row, _ := xmpp_database().row("select room, nick, name, seen from joined where account=? and room=?", a.id, strings.ToLower(room))
+	row, _ := db_user_brief(a.user, "networks").row("select room, nick, name, seen from joined where account=? and room=?", a.id, strings.ToLower(room))
 	if row == nil {
 		return nil
 	}
@@ -283,7 +283,7 @@ func xmpp_room_enter(a *xmpp_account, room jid.JID, nick string, name string, si
 			seen = max(seen, as_int64(event["created"]))
 		}
 	}
-	xmpp_database().exec("insert into joined (account, address, room, nick, name, seen, created) values (?, ?, ?, ?, ?, ?, ?) on conflict(account, room) do update set nick=excluded.nick, name=excluded.name, seen=max(seen, excluded.seen)", a.id, a.address.String(), room.String(), nick, name, seen, now())
+	db_user_brief(a.user, "networks").exec("insert into joined (account, address, room, nick, name, seen, created) values (?, ?, ?, ?, ?, ?, ?) on conflict(account, room) do update set nick=excluded.nick, name=excluded.name, seen=max(seen, excluded.seen)", a.id, a.address.String(), room.String(), nick, name, seen, now())
 	batch := append([]map[string]any{{"kind": "room", "conversation": "xmpp:" + room.String(), "room": true, "name": name}}, events...)
 	told := make(chan struct{})
 	user, account := a.user, a.id
@@ -363,7 +363,7 @@ func xmpp_room_leave(a *xmpp_account, room string) {
 	if j == nil {
 		return
 	}
-	xmpp_database().exec("delete from joined where account=? and room=?", a.id, j.room)
+	db_user_brief(a.user, "networks").exec("delete from joined where account=? and room=?", a.id, j.room)
 	xmpp_bookmark_drop(a, j.room)
 	if full, err := jid.Parse(j.room + "/" + j.nick); err == nil {
 		xmpp_route(xmpp_make("presence", "", "type", "unavailable"), a.mochi(), full)
@@ -475,7 +475,7 @@ func xmpp_room_in(a *xmpp_account, s *xmpp_stanza, from jid.JID) {
 	}
 	for _, event := range events {
 		if event["kind"] == "message" {
-			xmpp_database().exec("update joined set seen=max(seen, ?) where account=? and room=?", as_int64(event["created"]), a.id, room)
+			db_user_brief(a.user, "networks").exec("update joined set seen=max(seen, ?) where account=? and room=?", as_int64(event["created"]), a.id, room)
 		}
 	}
 	xmpp_tell(a, events)
@@ -518,7 +518,7 @@ func xmpp_room_heard(a *xmpp_account, s *xmpp_stanza, from jid.JID) bool {
 		if codes["303"] {
 			return true
 		}
-		xmpp_database().exec("delete from joined where account=? and room=?", a.id, room)
+		db_user_brief(a.user, "networks").exec("delete from joined where account=? and room=?", a.id, room)
 		xmpp_bookmark_drop(a, room)
 		xmpp_tell(a, []map[string]any{{"kind": "room", "conversation": conversation, "left": true}})
 	case self:
@@ -567,7 +567,7 @@ func xmpp_room_rejoin(a *xmpp_account, j *xmpp_joined) {
 	if err := xmpp_room_enter(a, room, j.nick, j.name, j.seen, false); err != nil {
 		debug("XMPP account %s: room %s not joined again: %v", a.address, j.room, err)
 		if strings.Contains(err.Error(), "refused") {
-			xmpp_database().exec("delete from joined where account=? and room=?", a.id, j.room)
+			db_user_brief(a.user, "networks").exec("delete from joined where account=? and room=?", a.id, j.room)
 			xmpp_tell(a, []map[string]any{{"kind": "room", "conversation": "xmpp:" + j.room, "left": true}})
 		}
 	}
@@ -592,27 +592,21 @@ func xmpp_rooms_check(start bool) {
 	if !network_enabled("xmpp") {
 		return
 	}
-	rows, _ := xmpp_database().rows("select account, address, room, nick, name, seen from joined order by created")
-	for _, row := range rows {
-		address, err := jid.Parse(row_string(row, "address"))
-		if err != nil {
-			continue
-		}
-		a := xmpp_account_of(address)
-		if a == nil || a.id != row_string(row, "account") {
-			continue
-		}
-		j := &xmpp_joined{room: row_string(row, "room"), nick: row_string(row, "nick"), name: row_string(row, "name"), seen: row_int(row, "seen")}
-		if start {
-			xmpp_room_rejoin(a, j)
-			continue
-		}
-		full, err := jid.Parse(j.room + "/" + j.nick)
-		if err != nil {
-			continue
-		}
-		if _, err := xmpp_ask(a, full, "get", `<ping xmlns="`+xmpp_ns_ping+`"/>`); err != nil {
-			xmpp_room_rejoin(a, j)
+	for _, a := range xmpp_hosted() {
+		rows, _ := db_user_brief(a.user, "networks").rows("select room, nick, name, seen from joined where account=? order by created", a.id)
+		for _, row := range rows {
+			j := &xmpp_joined{room: row_string(row, "room"), nick: row_string(row, "nick"), name: row_string(row, "name"), seen: row_int(row, "seen")}
+			if start {
+				xmpp_room_rejoin(a, j)
+				continue
+			}
+			full, err := jid.Parse(j.room + "/" + j.nick)
+			if err != nil {
+				continue
+			}
+			if _, err := xmpp_ask(a, full, "get", `<ping xmlns="`+xmpp_ns_ping+`"/>`); err != nil {
+				xmpp_room_rejoin(a, j)
+			}
 		}
 	}
 }
@@ -620,7 +614,7 @@ func xmpp_rooms_check(start bool) {
 // xmpp_rooms_announce shows each room Mochi's own sessions on an account are
 // in the presence they now have.
 func xmpp_rooms_announce(a *xmpp_account) {
-	rows, _ := xmpp_database().rows("select room, nick from joined where account=?", a.id)
+	rows, _ := db_user_brief(a.user, "networks").rows("select room, nick from joined where account=?", a.id)
 	inner := xmpp_room_presence(a)
 	for _, row := range rows {
 		if full, err := jid.Parse(row_string(row, "room") + "/" + row_string(row, "nick")); err == nil {

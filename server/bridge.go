@@ -57,7 +57,7 @@ type bridge struct {
 
 // bridge_of is the bridge a room is, or nil.
 func bridge_of(room string) *bridge {
-	row, _ := federation_database().row("select room, user, standin, chat from bridges where room=?", room)
+	row, _ := networks_database().row("select room, user, standin, chat from bridges where room=?", room)
 	if row == nil {
 		return nil
 	}
@@ -67,7 +67,7 @@ func bridge_of(room string) *bridge {
 // bridge_standin_of is a stand-in by its Matrix id: the member it stands for,
 // the name and avatar it goes by, and the user whose server keeps it.
 func bridge_standin_of(id string) map[string]any {
-	row, _ := federation_database().row("select id, domain, entity, name, avatar, user from standins where id=?", id)
+	row, _ := networks_database().row("select id, domain, entity, name, avatar, user from standins where id=?", id)
 	return row
 }
 
@@ -84,7 +84,7 @@ func bridge_domain(user *User) string {
 // bridge_standin is a member's stand-in on a domain, made on first use with
 // their avatar, and renamed where their name changed.
 func bridge_standin(user *User, domain string, entity string, name string) string {
-	db := federation_database()
+	db := networks_database()
 	if row, _ := db.row("select id, name from standins where domain=? and entity=?", domain, entity); row != nil {
 		if name != "" && name != row_string(row, "name") {
 			db.exec("update standins set name=? where id=?", name, row_string(row, "id"))
@@ -372,7 +372,7 @@ func api_bridge_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	if err != nil {
 		return bridge_failed(fn, chat, err)
 	}
-	federation_database().exec("insert into bridges (room, user, standin, chat, created) values (?, ?, ?, ?, ?) on conflict(room) do update set user=excluded.user, standin=excluded.standin, chat=excluded.chat", room, user.UID, creator, chat, now())
+	networks_database().exec("insert into bridges (room, user, standin, chat, created) values (?, ?, ?, ?, ?) on conflict(room) do update set user=excluded.user, standin=excluded.standin, chat=excluded.chat", room, user.UID, creator, chat, now())
 	r := bridge_of(room)
 	for _, member := range seated {
 		if _, err := bridge_seat(ctx, user, r, domain, member[0], member[1]); err != nil {
@@ -468,7 +468,7 @@ func api_bridge_member(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 // it is in the room is the room's to say, as for any of its users.
 func bridge_speaker(r *bridge, entity string) (string, error) {
 	mine, _ := spec.NewUserID(r.standin, true)
-	row, _ := federation_database().row("select id from standins where domain=? and entity=?", string(mine.Domain()), entity)
+	row, _ := networks_database().row("select id from standins where domain=? and entity=?", string(mine.Domain()), entity)
 	if row == nil {
 		return "", fmt.Errorf("the member has no stand-in")
 	}
@@ -754,14 +754,14 @@ func api_bridge_join(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	row, _ := federation_database().row("select s.id from standins s join invites i on i.user=s.id where i.room=? and s.entity=? and s.user=?", room, entity, user.UID)
+	row, _ := networks_database().row("select s.id from standins s join invites i on i.user=s.id where i.room=? and s.entity=? and s.user=?", room, entity, user.UID)
 	if row == nil {
 		return bridge_failed(fn, room, fmt.Errorf("no such invitation"))
 	}
 	standin := row_string(row, "id")
-	federation_database().exec("insert into bridges (room, user, standin, chat, created) values (?, ?, ?, ?, ?) on conflict(room) do update set user=excluded.user, standin=excluded.standin, chat=excluded.chat", room, user.UID, standin, chat, now())
+	networks_database().exec("insert into bridges (room, user, standin, chat, created) values (?, ?, ?, ?, ?) on conflict(room) do update set user=excluded.user, standin=excluded.standin, chat=excluded.chat", room, user.UID, standin, chat, now())
 	if _, err := rooms_join(thread_context(t), standin, room); err != nil {
-		federation_database().exec("delete from bridges where room=?", room)
+		networks_database().exec("delete from bridges where room=?", room)
 		return bridge_failed(fn, room, err)
 	}
 	return sl_encode(map[string]any{"room": room}), nil
@@ -803,7 +803,7 @@ func api_bridge_close(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 			}
 		}
 	}
-	federation_database().exec("delete from bridges where room=?", room)
+	networks_database().exec("delete from bridges where room=?", room)
 	rooms_hold(room, func() { rooms_forget(room) })
 	return sl.None, nil
 }

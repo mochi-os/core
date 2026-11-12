@@ -37,6 +37,10 @@ func TestUserExportRoundTrip(t *testing.T) {
 	db.exec("insert into entities (id, private, fingerprint, user, parent, class, name, privacy, data, published) values (?, ?, ?, ?, '', 'person', 'Alice', 'public', '', 0)",
 		id, private, fingerprint(id), uid)
 	sched.exec("insert into schedule (user, app, due, event, data, interval, created) values (?, 'chat', 100, 'remind', '{}', 0, 1)", uid)
+	// A filter a Mastodon client made, kept in the user's networks.db.
+	networks := db_user(&User{UID: uid}, "networks")
+	networks.exec("insert into filters (account, title, context, created) values ('f1', 'No spoilers please', '[]', 1)")
+	networks.close()
 
 	passphrase := "correct horse battery staple"
 	rel, err := user_export(uid, "settings", passphrase, "")
@@ -76,6 +80,9 @@ func TestUserExportRoundTrip(t *testing.T) {
 		if _, ok := files[want]; !ok {
 			t.Errorf("bundle missing %s", want)
 		}
+	}
+	if !bytes.Contains(files["networks.db"], []byte("No spoilers please")) {
+		t.Errorf("THE POINT: the bundle carries no networks.db with the user's filter (%d bytes)", len(files["networks.db"]))
 	}
 
 	var manifest export_manifest

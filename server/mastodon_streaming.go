@@ -88,23 +88,53 @@ func mastodon_resolve_rows(s *mastodon_session, rows []map[string]any) []map[str
 }
 
 // mastodon_alert_record keeps a notification the feeds app accounted for,
-// once for each row and event, and says whether it is new.
+// once for each row and event, and says whether it is new. A new one is kept
+// with its kind and given its number at once, in the order notifications
+// come, which is the order pages read them by.
 func mastodon_alert_record(s *mastodon_session, row map[string]any, answer map[string]any) bool {
-	if answer == nil || mastodon_string(answer, "type") == "" {
+	kind := mastodon_string(answer, "type")
+	if answer == nil || kind == "" {
 		return false
 	}
-	result, err := db_user_brief(s.user, "user").internal.Exec("insert or ignore into alerts (account, row, event, answer, created) values (?, ?, ?, ?, ?)", s.account, row_string(row, "id"), row_string(row, "event"), json_encode(answer), row_int(row, "created"))
+	result, err := db_user_brief(s.user, "networks").internal.Exec("insert or ignore into alerts (account, row, event, answer, created, type) values (?, ?, ?, ?, ?, ?)", s.account, row_string(row, "id"), row_string(row, "event"), json_encode(answer), row_int(row, "created"), kind)
 	if err != nil {
 		return false
 	}
-	added, _ := result.RowsAffected()
-	return added > 0
+	if added, _ := result.RowsAffected(); added == 0 {
+		return false
+	}
+	if id, err := result.LastInsertId(); err == nil {
+		mastodon_alert_number(s.user, id, row_int(row, "created"))
+	}
+	return true
+}
+
+// mastodon_alert_number gives a kept notification its number and writes it
+// on the notification's row, where a page's index reads it, with the kind
+// its answer names if the row has none.
+func mastodon_alert_number(user *User, id int64, created int64) {
+	number, _ := strconv.ParseInt(mastodon_number(user, "notification", "alert:"+strconv.FormatInt(id, 10), created), 10, 64)
+	if number > 0 {
+		db_user_brief(user, "networks").exec("update alerts set number=?, type=coalesce(nullif(type, ''), json_extract(answer, '$.type'), '') where id=?", number, id)
+	}
+}
+
+// mastodon_alerts_numbered numbers the account's kept notifications that have
+// no number on their row, oldest first: one whose recording stopped between
+// keeping it and numbering it, and those copied from where they were kept
+// before, whose numbers are found again. With none, it is one probe of the
+// index.
+func mastodon_alerts_numbered(s *mastodon_session) {
+	rows, _ := db_user_brief(s.user, "networks").rows("select id, created from alerts where account=? and number is null order by created, id", s.account)
+	for _, row := range rows {
+		mastodon_alert_number(s.user, row_int(row, "id"), row_int(row, "created"))
+	}
 }
 
 // mastodon_alerts_backfill records the notifications already there when
 // the account's first client asks, so its list does not start empty.
 func mastodon_alerts_backfill(s *mastodon_session) {
-	db := db_user(s.user, "user")
+	db := db_user(s.user, "networks")
 	defer db.close()
 	if found, _ := db.exists("select 1 from alerts where account=?", s.account); found {
 		return
@@ -126,8 +156,15 @@ func mastodon_alert(c *gin.Context, s *mastodon_session, row map[string]any) map
 	var answer map[string]any
 	json.Unmarshal([]byte(row_string(row, "answer")), &answer)
 	created := row_int(row, "created")
+	if row_int(row, "number") == 0 {
+		mastodon_alert_number(s.user, row_int(row, "id"), created)
+		row, _ = db_user_brief(s.user, "networks").row("select * from alerts where id=?", row_int(row, "id"))
+		if row_int(row, "number") == 0 {
+			return nil
+		}
+	}
 	notification := map[string]any{
-		"id":         mastodon_number(s.user, "notification", "alert:"+strconv.FormatInt(row_int(row, "id"), 10), created),
+		"id":         strconv.FormatInt(row_int(row, "number"), 10),
 		"type":       mastodon_string(answer, "type"),
 		"created_at": mastodon_time(created),
 		"group_key":  "ungrouped-" + strconv.FormatInt(row_int(row, "id"), 10),
@@ -172,18 +209,118 @@ func mastodon_alert(c *gin.Context, s *mastodon_session, row map[string]any) map
 	return notification
 }
 
-// mastodon_notifications_of are the account's kept notifications, newest
-// first.
-func mastodon_notifications_of(c *gin.Context, s *mastodon_session) []map[string]any {
-	mastodon_alerts_backfill(s)
-	rows, _ := db_user_brief(s.user, "user").rows("select * from alerts where account=? order by created desc, id desc limit 400", s.account)
-	var out []map[string]any
-	for _, row := range rows {
-		if n := mastodon_alert(c, s, row); n != nil {
-			out = append(out, n)
+// mastodon_wanted is which of the account's notifications a request asks
+// for: those numbered between maximum and minimum (0 for no bound), of the
+// types asked and none excluded, from the person asked, at most limit; the
+// oldest of them where oldest is set, as min_id asks.
+type mastodon_wanted struct {
+	maximum  int64
+	minimum  int64
+	oldest   bool
+	types    []string
+	excluded []string
+	person   string
+	limit    int
+	key      string // the person's key, found from their number
+}
+
+// mastodon_alerts_reading is how many kept notifications one request reads at
+// most, each rendered, as the newest 400 once were for every request; past it
+// a page stops short and its Link goes on from the last read. A variable so
+// tests can lower it.
+var mastodon_alerts_reading = 400
+
+// mastodon_alerts_query reads a batch of an account's notifications in number
+// order between the bounds given (0 for none), size of them, from the
+// account's index of numbers, or of kinds and numbers where kinds are asked,
+// so each batch reads the range after the last. A row naming no person is
+// kept for a person asked for, since its status names who it is from.
+func mastodon_alerts_query(account string, w mastodon_wanted, maximum int64, minimum int64, size int) (string, []any) {
+	query := "select * from alerts where account=? and number is not null"
+	args := []any{account}
+	if len(w.types) > 0 {
+		query += " and type in (" + strings.TrimSuffix(strings.Repeat("?,", len(w.types)), ",") + ")"
+		for _, kind := range w.types {
+			args = append(args, kind)
 		}
 	}
-	return out
+	if len(w.excluded) > 0 {
+		query += " and type not in (" + strings.TrimSuffix(strings.Repeat("?,", len(w.excluded)), ",") + ")"
+		for _, kind := range w.excluded {
+			args = append(args, kind)
+		}
+	}
+	if w.key != "" {
+		query += " and (json_extract(answer, '$.person') is null or coalesce(nullif(json_extract(answer, '$.person.id'), ''), 'identity:'||coalesce(json_extract(answer, '$.person.identity'), ''))=?)"
+		args = append(args, w.key)
+	}
+	if maximum > 0 {
+		query += " and number<?"
+		args = append(args, maximum)
+	}
+	if minimum > 0 {
+		query += " and number>?"
+		args = append(args, minimum)
+	}
+	if w.oldest {
+		query += " order by number limit ?"
+	} else {
+		query += " order by number desc limit ?"
+	}
+	return query, append(args, size)
+}
+
+// mastodon_notifications_of are the account's kept notifications a request
+// asks for, newest first, read in number order - the order clients page by -
+// a batch at a time, so a page renders about the rows it shows rather than
+// every row kept. Where the reading limit ends the reading first, the number
+// of the last row read is answered too, for the page's Link to go on from.
+func mastodon_notifications_of(c *gin.Context, s *mastodon_session, w mastodon_wanted) ([]map[string]any, int64) {
+	mastodon_alerts_backfill(s)
+	mastodon_alerts_numbered(s)
+	if w.person != "" {
+		if w.key = mastodon_key(s.user, "account", w.person); w.key == "" {
+			return nil, 0
+		}
+	}
+	maximum, minimum := w.maximum, w.minimum
+	var out []map[string]any
+	read := 0
+	for len(out) < w.limit {
+		if read >= mastodon_alerts_reading {
+			if w.oldest {
+				slices.Reverse(out)
+				return out, minimum
+			}
+			return out, maximum
+		}
+		size := min(w.limit, mastodon_alerts_reading-read)
+		query, args := mastodon_alerts_query(s.account, w, maximum, minimum, size)
+		rows, _ := db_user_brief(s.user, "networks").rows(query, args...)
+		for _, row := range rows {
+			read++
+			if w.oldest {
+				minimum = row_int(row, "number")
+			} else {
+				maximum = row_int(row, "number")
+			}
+			n := mastodon_alert(c, s, row)
+			if who, _ := n["account"].(map[string]any); n == nil || (w.person != "" && mastodon_string(who, "id") != w.person) {
+				continue
+			}
+			out = append(out, n)
+			if len(out) == w.limit {
+				break
+			}
+		}
+		if len(rows) < size {
+			break
+		}
+	}
+	if w.oldest {
+		slices.Reverse(out)
+	}
+	return out, 0
 }
 
 // mastodon_notification_rows are the notifications app's rows; a test
@@ -204,37 +341,21 @@ var mastodon_notification_rows = func(s *mastodon_session) []map[string]any {
 // asked, between the positions given.
 func mastodon_notifications_page(c *gin.Context, s *mastodon_session, grouped bool) {
 	in := mastodon_read(c)
-	limit := mastodon_limit(in, 20)
-	types := in.list("types")
-	excluded := in.list("exclude_types")
 	maximum, _ := strconv.ParseInt(in.text("max_id"), 10, 64)
 	since, _ := strconv.ParseInt(in.text("since_id"), 10, 64)
 	least, _ := strconv.ParseInt(in.text("min_id"), 10, 64)
-	account := in.text("account_id")
-	all := mastodon_notifications_of(c, s)
-	var page []map[string]any
-	for _, n := range all {
-		id, _ := strconv.ParseInt(mastodon_string(n, "id"), 10, 64)
-		kind := mastodon_string(n, "type")
-		if (maximum > 0 && id >= maximum) || (since > 0 && id <= since) || (least > 0 && id <= least) {
-			continue
-		}
-		if (len(types) > 0 && !slices.Contains(types, kind)) || slices.Contains(excluded, kind) {
-			continue
-		}
-		if who, _ := n["account"].(map[string]any); account != "" && mastodon_string(who, "id") != account {
-			continue
-		}
-		page = append(page, n)
-	}
-	if least > 0 && len(page) > limit {
-		page = page[len(page)-limit:]
-	} else if len(page) > limit {
-		page = page[:limit]
-	}
+	page, reached := mastodon_notifications_of(c, s, mastodon_wanted{maximum: maximum, minimum: max(since, least), oldest: least > 0, types: in.list("types"), excluded: in.list("exclude_types"), person: in.text("account_id"), limit: mastodon_limit(in, 20)})
+	first, last := "", ""
 	if len(page) > 0 {
-		mastodon_link(c, mastodon_string(page[0], "id"), mastodon_string(page[len(page)-1], "id"))
+		first, last = mastodon_string(page[0], "id"), mastodon_string(page[len(page)-1], "id")
 	}
+	// A page the reading limit cut short goes on from the last row read.
+	if reached > 0 && least > 0 {
+		first = strconv.FormatInt(reached, 10)
+	} else if reached > 0 {
+		last = strconv.FormatInt(reached, 10)
+	}
+	mastodon_link(c, first, last)
 	if !grouped {
 		out := make([]any, 0, len(page))
 		for _, n := range page {
@@ -280,7 +401,7 @@ func mastodon_notifications_page(c *gin.Context, s *mastodon_session, grouped bo
 // mastodon_markers answers how far the account has read its timelines, or
 // records it.
 func mastodon_markers(c *gin.Context, s *mastodon_session) {
-	db := db_user(s.user, "user")
+	db := db_user(s.user, "networks")
 	defer db.close()
 	in := mastodon_read(c)
 	if c.Request.Method == "POST" {
@@ -330,7 +451,7 @@ func mastodon_filter(row map[string]any) map[string]any {
 
 // mastodon_filters are the account's filters in force.
 func mastodon_filters(s *mastodon_session) []map[string]any {
-	rows, _ := db_user_brief(s.user, "user").rows("select * from filters where account=? and (expires=0 or expires>?) order by id", s.account, now())
+	rows, _ := db_user_brief(s.user, "networks").rows("select * from filters where account=? and (expires=0 or expires>?) order by id", s.account, now())
 	out := []map[string]any{}
 	for _, row := range rows {
 		out = append(out, mastodon_filter(row))
@@ -386,7 +507,7 @@ func mastodon_hidden(status map[string]any) bool {
 // mastodon_filter_write makes or changes a filter from a request.
 func mastodon_filter_write(c *gin.Context, s *mastodon_session, id int64) {
 	in := mastodon_read(c)
-	db := db_user(s.user, "user")
+	db := db_user(s.user, "networks")
 	defer db.close()
 	var held map[string]any
 	if id > 0 {
@@ -506,7 +627,7 @@ func mastodon_keyword_apply(keywords []map[string]any, k map[string]any) []map[s
 func mastodon_other_dispatch(c *gin.Context, s *mastodon_session, version string, parts []string) bool {
 	method := c.Request.Method
 	route := method + " " + version + "/" + strings.Join(parts, "/")
-	db := db_user(s.user, "user")
+	db := db_user(s.user, "networks")
 	defer db.close()
 	switch route {
 	case "GET v1/notifications":
@@ -518,13 +639,14 @@ func mastodon_other_dispatch(c *gin.Context, s *mastodon_session, version string
 	case "GET v1/notifications/unread_count", "GET v2/notifications/unread_count":
 		marker, _ := db.row("select position from markers where account=? and timeline='notifications'", s.account)
 		after, _ := strconv.ParseInt(row_string(marker, "position"), 10, 64)
-		count := 0
-		for _, n := range mastodon_notifications_of(c, s) {
-			if id, _ := strconv.ParseInt(mastodon_string(n, "id"), 10, 64); id > after {
-				count++
-			}
+		// Counted up to the limit Mastodon takes, 100 unless asked, of those
+		// one request reads.
+		limit, err := strconv.Atoi(mastodon_read(c).text("limit"))
+		if err != nil || limit <= 0 {
+			limit = 100
 		}
-		c.JSON(http.StatusOK, map[string]any{"count": count})
+		unread, _ := mastodon_notifications_of(c, s, mastodon_wanted{minimum: after, limit: min(limit, 1000)})
+		c.JSON(http.StatusOK, map[string]any{"count": len(unread)})
 		return true
 	case "POST v1/notifications/clear":
 		db.exec("delete from alerts where account=?", s.account)
@@ -969,7 +1091,7 @@ var mastodon_alerts = []string{"mention", "status", "reblog", "follow", "follow_
 // mastodon_subscription answers the token's push subscription, or makes,
 // changes or ends it.
 func mastodon_subscription(c *gin.Context, s *mastodon_session) {
-	db := db_user(s.user, "user")
+	db := db_user(s.user, "networks")
 	defer db.close()
 	hash := s.token.Hash
 	in := mastodon_read(c)
@@ -1064,7 +1186,7 @@ func (g mastodon_guarded) Do(request *http.Request) (*http.Response, error) {
 // subscription's keys and signed with the server's key, telling the app the
 // notification to fetch.
 func mastodon_push(s *mastodon_session, notification map[string]any) {
-	rows, _ := db_user_brief(s.user, "user").rows("select * from subscriptions where account=?", s.account)
+	rows, _ := db_user_brief(s.user, "networks").rows("select * from subscriptions where account=?", s.account)
 	if len(rows) == 0 {
 		return
 	}
@@ -1091,7 +1213,7 @@ func mastodon_push(s *mastodon_session, notification map[string]any) {
 		hash := row_string(row, "token")
 		var t Token
 		if !db_open("db/users.db").scan(&t, "select hash, kind from tokens where hash=?", hash) {
-			db_user_brief(s.user, "user").exec("delete from subscriptions where token=?", hash)
+			db_user_brief(s.user, "networks").exec("delete from subscriptions where token=?", hash)
 			continue
 		}
 		payload := map[string]any{
@@ -1119,7 +1241,7 @@ func mastodon_push(s *mastodon_session, notification map[string]any) {
 		}
 		response.Body.Close()
 		if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone {
-			db_user_brief(s.user, "user").exec("delete from subscriptions where token=?", hash)
+			db_user_brief(s.user, "networks").exec("delete from subscriptions where token=?", hash)
 		}
 	}
 }
@@ -1407,7 +1529,7 @@ func mastodon_heard_notification(user *User, id string) {
 		if !mastodon_alert_record(s, row, answer) {
 			continue
 		}
-		kept, _ := db_user_brief(user, "user").row("select * from alerts where account=? and row=? and event=?", s.account, row_string(row, "id"), row_string(row, "event"))
+		kept, _ := db_user_brief(user, "networks").row("select * from alerts where account=? and row=? and event=?", s.account, row_string(row, "id"), row_string(row, "event"))
 		n := mastodon_alert(nil, s, kept)
 		if kept == nil || n == nil {
 			continue
@@ -1467,7 +1589,7 @@ func mastodon_heard_post(streams []*mastodon_stream, kind string, id string) {
 // mastodon_known is an item's number where it has one, without giving it
 // one.
 func mastodon_known(user *User, kind string, key string) string {
-	row, _ := db_user_brief(user, "user").row("select number from snowflakes where kind=? and key=?", kind, key)
+	row, _ := db_user_brief(user, "networks").row("select number from snowflakes where kind=? and key=?", kind, key)
 	if row == nil {
 		return ""
 	}

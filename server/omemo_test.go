@@ -379,7 +379,7 @@ func TestOmemoFilesHosted(t *testing.T) {
 	fn := sl.NewBuiltin("test", nil)
 	uploaded := decoded(t)(api_account_upload(linked_thread(env.bob), fn, sl.Tuple{sl.String("x2"), sl.Bytes("a picture"), sl.String("image/png")}, []sl.Tuple{{sl.String("name"), sl.String("p.png")}, {sl.String("conversation"), sl.String("xmpp:alice@example.com")}}))
 	address := uploaded["url"].(string)
-	row, _ := xmpp_database().row("select id from uploads where user='u-bob' order by created desc limit 1")
+	row, _ := networks_database().row("select id from uploads where user='u-bob' order by created desc limit 1")
 	stored, _ := os.ReadFile(media_path(env.bob, row_string(row, "id")))
 	if bytes.Contains(stored, []byte("a picture")) || uploaded["type"] != "image/png" || encryption_shared(env.bob, "x2", address) == "" {
 		t.Fatalf("THE POINT: the file uploaded encrypted, its key kept: %v %q", uploaded, stored)

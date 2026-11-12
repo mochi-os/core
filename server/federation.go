@@ -70,17 +70,11 @@ var federation_timeout = 30 * time.Second
 // specification requires. A variable so tests can serve from plain servers.
 var federation_scheme = "https"
 
-// federation_database opens the database the engine keeps for every user
-// together, whose tables federation_create lays.
-func federation_database() *DB {
-	return db_open("db/matrix.db")
-}
-
-// federation_create lays the engine's database, for db_create: the rooms
-// (rooms.go), the other servers' keys, the queue to each other server - each
-// row with the domain it is sent from - and the transactions already taken. A
-// change here is also a new db_upgrade_N step; db_upgrade_18 keeps its own
-// copy as it was (db_upgrade_18_federation).
+// federation_create lays the engine's tables in networks.db, for db_create:
+// the rooms (rooms.go), the other servers' keys, the queue to each other server
+// - each row with the domain it is sent from - and the transactions already
+// taken. A change here is also a new db_upgrade_N step; db_upgrade_18 keeps
+// its own copy as it was (db_upgrade_18_federation).
 func federation_create(db *DB) {
 	db.exec("create table if not exists servers (name text not null, key text not null, public text not null, valid integer not null, expired integer not null default 0, primary key (name, key))")
 	db.exec("create table if not exists outbox (id integer primary key autoincrement, destination text not null, origin text not null default '', kind text not null, body text not null, created integer not null)")
@@ -140,7 +134,7 @@ func federation_local(name spec.ServerName) bool {
 	found, _ := networks_database().exists("select 1 from actors where network='matrix' and domain=? and deleted=0", domain)
 	if !found {
 		// A domain the server keeps a group's stand-ins on (bridge.go).
-		found, _ = federation_database().exists("select 1 from standins where domain=?", domain)
+		found, _ = networks_database().exists("select 1 from standins where domain=?", domain)
 	}
 	return found
 }
@@ -178,7 +172,7 @@ func federation_identity_of(name spec.ServerName) *federation_identity {
 // its accounts and those it keeps stand-ins on, each once.
 func federation_domains() []spec.ServerName {
 	rows, _ := networks_database().rows("select distinct domain from actors where network='matrix' and deleted=0")
-	standins, _ := federation_database().rows("select distinct domain from standins")
+	standins, _ := networks_database().rows("select distinct domain from standins")
 	seen := map[string]bool{}
 	var out []spec.ServerName
 	// The domain registrations are taken on, in development, before anyone
@@ -218,7 +212,7 @@ func federation_key_replace(name string) (gomatrixserverlib.KeyID, error) {
 	if old == nil {
 		return "", fmt.Errorf("not a Matrix domain of this server")
 	}
-	federation_database().exec("insert or ignore into retired (domain, key, public, expired) values (?, ?, ?, ?)", string(domain), string(old.key), base64.RawStdEncoding.EncodeToString(old.public), time.Now().UnixMilli())
+	networks_database().exec("insert or ignore into retired (domain, key, public, expired) values (?, ?, ?, ?)", string(domain), string(old.key), base64.RawStdEncoding.EncodeToString(old.public), time.Now().UnixMilli())
 	federation_identities_lock.Lock()
 	networks_keys_lock.Lock()
 	db_open("db/networks.db").exec("delete from keys where name=?", "matrix "+string(domain))
@@ -540,11 +534,11 @@ var federation_client = func() fclient.FederationClient {
 // answering this server's own keys itself.
 type federation_keys struct{}
 
-func (federation_keys) FetcherName() string { return "matrix.db" }
+func (federation_keys) FetcherName() string { return "networks.db" }
 
 func (federation_keys) FetchKeys(ctx context.Context, requests map[gomatrixserverlib.PublicKeyLookupRequest]spec.Timestamp) (map[gomatrixserverlib.PublicKeyLookupRequest]gomatrixserverlib.PublicKeyLookupResult, error) {
 	out := map[gomatrixserverlib.PublicKeyLookupRequest]gomatrixserverlib.PublicKeyLookupResult{}
-	db := federation_database()
+	db := networks_database()
 	for request := range requests {
 		if id := federation_identity_of(request.ServerName); id != nil {
 			if request.KeyID == id.key {
@@ -582,7 +576,7 @@ func (federation_keys) FetchKeys(ctx context.Context, requests map[gomatrixserve
 }
 
 func (federation_keys) StoreKeys(ctx context.Context, results map[gomatrixserverlib.PublicKeyLookupRequest]gomatrixserverlib.PublicKeyLookupResult) error {
-	db := federation_database()
+	db := networks_database()
 	for request, result := range results {
 		if federation_local(request.ServerName) {
 			continue
@@ -606,7 +600,7 @@ func federation_keyring() *gomatrixserverlib.KeyRing {
 // them: each with when it stopped signing.
 func federation_keys_retired(domain spec.ServerName) map[string]any {
 	out := map[string]any{}
-	rows, _ := federation_database().rows("select key, public, expired from retired where domain=?", string(domain))
+	rows, _ := networks_database().rows("select key, public, expired from retired where domain=?", string(domain))
 	for _, row := range rows {
 		out[row_string(row, "key")] = map[string]any{"key": row_string(row, "public"), "expired_ts": row_int(row, "expired")}
 	}
@@ -800,7 +794,7 @@ func federation_dispatch(c *gin.Context, method string, parts []string, r *fclie
 // one (signals.go). A transaction already taken is answered at once.
 func federation_receive_transaction(c *gin.Context, r *fclient.FederationRequest, id string) {
 	origin := string(r.Origin())
-	db := federation_database()
+	db := networks_database()
 	if seen, _ := db.exists("select 1 from transactions where origin=? and id=?", origin, id); seen {
 		c.JSON(http.StatusOK, map[string]any{"pdus": map[string]any{}})
 		return
@@ -915,7 +909,7 @@ func federation_queue(destinations []string, origin string, kind string, body st
 	if origin == "" {
 		return
 	}
-	db := federation_database()
+	db := networks_database()
 	for _, destination := range destinations {
 		if destination == "" || federation_local(spec.ServerName(destination)) {
 			continue
@@ -975,7 +969,7 @@ func federation_backoff(failures int64) int64 {
 // queued meanwhile has it look again, but not before its backoff ends. What
 // has waited a week for a server that never answers is dropped.
 func federation_worker(destination string, wake chan struct{}) {
-	db := federation_database()
+	db := networks_database()
 	for {
 		db.exec("delete from outbox where destination=? and (created<? or (kind='edu' and created<?) or origin='')", destination, now()-7*86400, now()-600)
 		if row, _ := db.row("select retry from destinations where name=?", destination); row != nil {
@@ -1074,7 +1068,7 @@ func federation_manager() {
 	if !networks_development {
 		return
 	}
-	rows, _ := federation_database().rows("select distinct destination from outbox")
+	rows, _ := networks_database().rows("select distinct destination from outbox")
 	for _, row := range rows {
 		federation_worker_start(row_string(row, "destination"))
 	}

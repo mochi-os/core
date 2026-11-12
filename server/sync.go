@@ -86,13 +86,13 @@ func sync_last(db *DB, table string) int64 {
 
 // sync_maximum is the room timelines' latest position.
 func sync_maximum() int64 {
-	return sync_last(federation_database(), "stream")
+	return sync_last(networks_database(), "stream")
 }
 
 // sync_latest is the latest position of each order but the key store's,
 // which a device's own sync moves on.
 func sync_latest() sync_position {
-	db := federation_database()
+	db := networks_database()
 	return sync_position{
 		stream:   sync_maximum(),
 		receipts: sync_last(db, "receipts"),
@@ -177,7 +177,7 @@ func sync_filter_read(s *clients_session, value string) *sync_filter {
 	case strings.HasPrefix(value, "{"):
 		json.Unmarshal([]byte(value), filter)
 	default:
-		row, _ := federation_database().row("select body from filters where id=? and user=?", value, s.h.address)
+		row, _ := networks_database().row("select body from filters where id=? and user=?", value, s.h.address)
 		if row != nil {
 			json.Unmarshal([]byte(row_string(row, "body")), filter)
 		}
@@ -352,7 +352,7 @@ func sync_presence(user string, since int64, initial bool) []any {
 	if initial {
 		since = 0
 	}
-	db := federation_database()
+	db := networks_database()
 	rows, _ := db.rows("select user, presence, message, active, updated from presences where position>? order by position", since)
 	shown := []any{}
 	if len(rows) == 0 {
@@ -398,7 +398,7 @@ func sync_data(user string, room string, since int64, initial bool) []map[string
 	if initial {
 		since = 0
 	}
-	rows, _ := federation_database().rows("select type, content from settings where user=? and room=? and position>? order by position", user, room, since)
+	rows, _ := networks_database().rows("select type, content from settings where user=? and room=? and position>? order by position", user, room, since)
 	events := []map[string]any{}
 	for _, row := range rows {
 		if strings.HasPrefix(row_string(row, "type"), "org.mochi.") {
@@ -507,7 +507,7 @@ func sync_joined(s *clients_session, room string, from sync_position, next sync_
 // clients_join_position is the position of a user's latest joining a room,
 // or 0.
 func clients_join_position(room string, user string) int64 {
-	row, _ := federation_database().row("select max(s.position) as position from stream s join events e on e.id=s.event where s.room=? and e.type='m.room.member' and e.key=? and e.membership='join'", room, user)
+	row, _ := networks_database().row("select max(s.position) as position from stream s join events e on e.id=s.event where s.room=? and e.type='m.room.member' and e.key=? and e.membership='join'", room, user)
 	return row_int(row, "position")
 }
 
@@ -532,7 +532,7 @@ func sync_ephemeral(room string, user string, from sync_position, whole bool) []
 // receipts_content is a room's receipts kept since a position, as an
 // m.receipt event's content; a private one only for the user it is theirs.
 func receipts_content(room string, user string, since int64) map[string]any {
-	rows, _ := federation_database().rows("select user, type, thread, event, ts from receipts where room=? and position>? order by position", room, since)
+	rows, _ := networks_database().rows("select user, type, thread, event, ts from receipts where room=? and position>? order by position", room, since)
 	content := map[string]any{}
 	for _, row := range rows {
 		kind := row_string(row, "type")
@@ -591,7 +591,7 @@ func sync_summary(room string, user string) map[string]any {
 // sync_invited is an invitation's part of a sync where it is new: the
 // invitation and the state it shows of the room.
 func sync_invited(s *clients_session, room string, from sync_position, next sync_position, initial bool) map[string]any {
-	db := federation_database()
+	db := networks_database()
 	if row, _ := db.row("select i.body, i.state, coalesce(p.position, 0) as position from invites i left join pending p on p.room=i.room and p.user=i.user where i.room=? and i.user=?", room, s.h.address); row != nil {
 		if !initial && row_int(row, "position") <= from.invites {
 			return nil
@@ -628,7 +628,7 @@ func sync_invited(s *clients_session, room string, from sync_position, next sync
 // room's stripped state and the knock, from the room here, or as the server
 // knocked through answered it.
 func sync_knocked(s *clients_session, room string, from sync_position, initial bool) []any {
-	if row, _ := federation_database().row("select position, state from pending where room=? and user=? and kind='knock'", room, s.h.address); row != nil {
+	if row, _ := networks_database().row("select position, state from pending where room=? and user=? and kind='knock'", room, s.h.address); row != nil {
 		if !initial && row_int(row, "position") <= from.invites {
 			return nil
 		}
@@ -652,7 +652,7 @@ func sync_knocked(s *clients_session, room string, from sync_position, initial b
 // sync_left is a room left since the position: its timeline up to the
 // leaving, or nothing but the leaving of a room this server is not in.
 func sync_left(s *clients_session, room string, from sync_position, next sync_position, limit int) map[string]any {
-	if row, _ := federation_database().row("select position, state from pending where room=? and user=? and kind='leave'", room, s.h.address); row != nil && rooms_membership(room, s.h.address) == "" {
+	if row, _ := networks_database().row("select position, state from pending where room=? and user=? and kind='leave'", room, s.h.address); row != nil && rooms_membership(room, s.h.address) == "" {
 		if row_int(row, "position") <= from.invites {
 			return nil
 		}
@@ -866,7 +866,7 @@ func sliding_sync(c *gin.Context, s *clients_session) {
 // sliding_bump is a room's latest activity: the position of its latest
 // event that moves a room up a list.
 func sliding_bump(room string) int64 {
-	row, _ := federation_database().row("select max(s.position) as position from stream s join events e on e.id=s.event where s.room=? and e.type in ('m.room.message','m.room.encrypted','m.sticker','m.call.invite','m.poll.start','m.room.create','m.room.member')", room)
+	row, _ := networks_database().row("select max(s.position) as position from stream s join events e on e.id=s.event where s.room=? and e.type in ('m.room.message','m.room.encrypted','m.sticker','m.call.invite','m.poll.start','m.room.create','m.room.member')", room)
 	return row_int(row, "position")
 }
 

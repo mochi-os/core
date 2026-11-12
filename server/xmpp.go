@@ -604,11 +604,17 @@ func xmpp_run(ctx context.Context, l *linked, s *linked_session) error {
 	}
 }
 
-// deliver hands the session's events to the app in the order they came.
+// deliver hands the session's events to the app in the order they came, an
+// invitation named as its room names itself.
 func (c *xmpp_client) deliver(done chan struct{}) {
 	for {
 		select {
 		case events := <-c.queue:
+			invitations_name(events, func(room jid.JID) string {
+				ctx, cancel := context.WithTimeout(context.Background(), xmpp_query_timeout)
+				defer cancel()
+				return c.room_name(ctx, room.String())
+			})
 			linked_inbound(c.l.user, c.l.id, "xmpp", events)
 		case <-done:
 			return
@@ -968,6 +974,25 @@ func (c *xmpp_client) read(m *xmpp_message, delay *xmpp_delay, sent bool) []map[
 		c.seen(bare, event["created"].(int64))
 	}
 	return events
+}
+
+// invitations_name names each invitation to a room as the room gives its
+// name, which neither form of invitation carries; where the room gives none,
+// it keeps the local part of its address.
+func invitations_name(events []map[string]any, named func(room jid.JID) string) {
+	for _, event := range events {
+		conversation, _ := event["conversation"].(string)
+		if event["kind"] != "invite" || !strings.HasPrefix(conversation, "xmpp:") {
+			continue
+		}
+		room, err := jid.Parse(strings.TrimPrefix(conversation, "xmpp:"))
+		if err != nil {
+			continue
+		}
+		if name := strings.TrimSpace(named(room)); name != "" {
+			event["name"] = name
+		}
+	}
 }
 
 // xmpp_events turns a message into the conversation events it carries, once

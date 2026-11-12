@@ -1190,7 +1190,7 @@ func signin_mint(user *User, client string, name string, network string, account
 	// among its devices before it makes a request.
 	if network == "matrix" {
 		if h := matrix_hosted_of(user, account_hosted_get(user, account)); h != nil {
-			federation_database().exec("insert or ignore into clients (user, device, name, created) values (?, ?, ?, ?)", h.address, m.device, name, now())
+			networks_database().exec("insert or ignore into devices (user, device, name, created) values (?, ?, ?, ?)", h.address, m.device, name, now())
 		}
 	}
 	return m
@@ -1550,19 +1550,14 @@ func password_scram(network string, address string, algorithm string) []password
 //
 // Lemmy apps expect a whole number for every post, comment, community, person
 // and message and send those numbers back. Each user's Lemmy engine numbers
-// the items that user's apps see, in the user's own database, and translates
+// the items that user's apps see, in the user's networks.db, and translates
 // both ways (decision 8).
-
-// numbers_table makes the numbering table in a user database.
-func numbers_table(db *DB) {
-	db.exec("create table if not exists numbers (number integer primary key autoincrement, kind text not null, id text not null, created integer not null, unique (kind, id))")
-}
 
 // number_for gives an item its number for a user, the same one each time. The
 // row is looked for before it is made, since an insert refused for the unique
 // pair would still spend a number.
 func number_for(user *User, kind string, id string) int64 {
-	db := db_user(user, "user")
+	db := db_user(user, "networks")
 	defer db.close()
 	row, _ := db.row("select number from numbers where kind=? and id=?", kind, id)
 	if row == nil {
@@ -1579,7 +1574,7 @@ func number_for(user *User, kind string, id string) int64 {
 // number_identifier answers the item a number names for a user, of the kind
 // expected, or empty.
 func number_identifier(user *User, kind string, number int64) string {
-	row, _ := db_user_brief(user, "user").row("select id from numbers where kind=? and number=?", kind, number)
+	row, _ := db_user_brief(user, "networks").row("select id from numbers where kind=? and number=?", kind, number)
 	if row == nil {
 		return ""
 	}

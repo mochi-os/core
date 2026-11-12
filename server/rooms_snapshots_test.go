@@ -27,11 +27,11 @@ import (
 	"maunium.net/go/mautrix/id"
 )
 
-// snapshots_test_store lays matrix.db in a fresh directory.
+// snapshots_test_store lays the Matrix room store in a fresh directory.
 func snapshots_test_store(t *testing.T) {
 	t.Helper()
 	test_bare_directory(t)
-	federation_create(federation_database())
+	federation_create(networks_database())
 	rooms_kept_forget("")
 	t.Cleanup(func() { rooms_kept_forget("") })
 }
@@ -48,7 +48,7 @@ func snapshots_test_state(n int) rooms_state {
 // snapshots_test_row is a stored snapshot's base, depth and stored length.
 func snapshots_test_row(t *testing.T, id int64) (int64, int64, int) {
 	t.Helper()
-	row, _ := federation_database().row("select base, depth, length(state) as size from snapshots where id=?", id)
+	row, _ := networks_database().row("select base, depth, length(state) as size from snapshots where id=?", id)
 	if row == nil {
 		t.Fatalf("snapshot %d not stored", id)
 	}
@@ -138,7 +138,7 @@ func TestRoomsSnapshotsStayInTheirRoom(t *testing.T) {
 		t.Errorf("a snapshot of one room was stored as changes from another's (%d)", base)
 	}
 
-	db := federation_database()
+	db := networks_database()
 	result, err := db.internal.Exec("insert into snapshots (room, state, base, depth) values (?, ?, ?, 1)", "!two:example.org", `{"set":{"m.room.topic\u0000":"$x"}}`, id)
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +189,7 @@ func TestRoomsSnapshotsKeptPerDatabase(t *testing.T) {
 	snapshots_test_store(t)
 	first := rooms_snapshot_save("!a:example.org", snapshots_test_state(3))
 	test_bare_directory(t)
-	federation_create(federation_database())
+	federation_create(networks_database())
 	second := rooms_snapshot_save("!a:example.org", snapshots_test_state(7))
 	if first != second {
 		t.Skipf("ids %d and %d differ, so this run cannot tell", first, second)
@@ -213,7 +213,7 @@ func TestRoomsSnapshotsKeptBounded(t *testing.T) {
 	}
 	rooms_kept_lock.Lock()
 	size := rooms_kept_size
-	_, first := rooms_kept_entries[rooms_kept_key{federation_database().path, ids[0]}]
+	_, first := rooms_kept_entries[rooms_kept_key{networks_database().path, ids[0]}]
 	rooms_kept_lock.Unlock()
 	if size > rooms_snapshot_memory {
 		t.Errorf("%d bytes kept, over the bound of %d", size, rooms_snapshot_memory)
@@ -233,7 +233,7 @@ func TestRoomsKeptForgetsOneRoom(t *testing.T) {
 	gone := rooms_snapshot_save("!gone:example.org", snapshots_test_state(3))
 	kept := rooms_snapshot_save("!kept:example.org", snapshots_test_state(3))
 	rooms_kept_forget("!gone:example.org")
-	path := federation_database().path
+	path := networks_database().path
 	if rooms_kept_get(rooms_kept_key{path, gone}) != nil {
 		t.Error("the forgotten room's snapshot is still kept")
 	}
@@ -271,7 +271,7 @@ func replaced_test_room(t *testing.T) (string, *matrix_remote) {
 // reading that snapshot answers, and that clients are shown it from there.
 func TestRoomsReplacedStoredWithEvents(t *testing.T) {
 	room, r := replaced_test_room(t)
-	rows, _ := federation_database().rows("select id, type, key, before, replaces from events where room=? and key is not null and before>0", room)
+	rows, _ := networks_database().rows("select id, type, key, before, replaces from events where room=? and key is not null and before>0", room)
 	if len(rows) < 8 {
 		t.Fatalf("only %d state events kept", len(rows))
 	}
@@ -307,7 +307,7 @@ func TestRoomsReplacedStoredWithEvents(t *testing.T) {
 	}
 
 	// A row kept before the column was filled reads from its snapshot.
-	federation_database().exec("update events set replaces=null where id=?", rename.EventID())
+	networks_database().exec("update events set replaces=null where id=?", rename.EventID())
 	if got := rooms_replaced(rename); got != previous.EventID() {
 		t.Errorf("a row with nothing stored reads as replacing %q, want %q", got, previous.EventID())
 	}
@@ -320,7 +320,7 @@ func TestSchema22FillsReplaced(t *testing.T) {
 	test_bare_directory(t)
 	rooms_kept_forget("")
 	t.Cleanup(func() { rooms_kept_forget("") })
-	matrix := db_open("db/matrix.db")
+	matrix := db_open("db/networks.db")
 	db_upgrade_18_federation(matrix)
 	const room = "!old:example.org"
 	key := rooms_key("m.room.topic", "")
@@ -392,7 +392,7 @@ func TestKeyringLeaveAsksSharingOnce(t *testing.T) {
 	if n := asked["@alice:example.com"]; n > 2 {
 		t.Errorf("leaving a room of 30 worked out alice's sharing %d times", n)
 	}
-	row, _ := federation_database().row("select count(*) as n from changes where gone=0")
+	row, _ := networks_database().row("select count(*) as n from changes where gone=0")
 	if row_int(row, "n") == 0 {
 		t.Error("leaving noted no device-list change")
 	}
@@ -436,7 +436,7 @@ func TestRulesWeighNamesAndCounts(t *testing.T) {
 // of the membership given.
 func wake_test_room(t *testing.T, room string, members map[string]string) {
 	t.Helper()
-	db := federation_database()
+	db := networks_database()
 	state := rooms_state{}
 	for member, membership := range members {
 		id := "$" + room + member
@@ -482,7 +482,7 @@ func TestClientsWakeOnlyThoseConcerned(t *testing.T) {
 	const amy, ben, cat, zed = "@amy:example.com", "@ben:example.com", "@cat:example.com", "@zed:example.org"
 	wake_test_room(t, "!shared:example.com", map[string]string{amy: spec.Join, ben: spec.Join, zed: spec.Join})
 	wake_test_room(t, "!apart:example.com", map[string]string{cat: spec.Join})
-	federation_database().exec("insert into clients (user, device, created) values (?, 'AMY1', 1)", amy)
+	networks_database().exec("insert into devices (user, device, created) values (?, 'AMY1', 1)", amy)
 	wake := wake_test_waiters(amy, ben, cat)
 	t.Cleanup(func() { typing_set("!shared:example.com", amy, false, 0) })
 
@@ -702,7 +702,7 @@ func TestRoomsSnapshotsBaseGone(t *testing.T) {
 	const room = "!gone:example.com"
 	first := snapshots_test_state(50)
 	id := rooms_snapshot_save(room, first)
-	federation_database().exec("delete from snapshots where id=?", id)
+	networks_database().exec("delete from snapshots where id=?", id)
 	second := maps.Clone(first)
 	second[rooms_key("m.room.topic", "")] = "$topic"
 	next := rooms_snapshot_save(room, second, id)
@@ -737,12 +737,12 @@ func TestRoomsReplacedSetOnPromotion(t *testing.T) {
 	empty := ""
 	topic := r.event(room, r.user("bob"), "m.room.topic", &empty, map[string]any{"topic": "third"})
 	rooms_keep(topic, 0, false, true)
-	if row, _ := federation_database().row("select replaces from events where id=?", topic.EventID()); row["replaces"] != nil {
+	if row, _ := networks_database().row("select replaces from events where id=?", topic.EventID()); row["replaces"] != nil {
 		t.Fatalf("an outlier was kept as replacing %v", row["replaces"])
 	}
 	before := rooms_current_id(room)
 	rooms_keep(topic, before, false, false)
-	row, _ := federation_database().row("select replaces from events where id=?", topic.EventID())
+	row, _ := networks_database().row("select replaces from events where id=?", topic.EventID())
 	want := rooms_snapshot_view(before)[rooms_key("m.room.topic", "")]
 	if got, _ := row["replaces"].(string); got == "" || got != want {
 		t.Errorf("the promoted event replaces %v, want %q", row["replaces"], want)

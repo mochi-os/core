@@ -63,7 +63,7 @@ func content_store(user *User, domain string, data []byte, kind string, name str
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return nil, err
 	}
-	federation_database().exec("insert into media (id, domain, user, type, name, size, created) values (?, ?, ?, ?, ?, ?, ?)", id, domain, user.UID, kind, name, len(data), now())
+	networks_database().exec("insert into media (id, domain, user, type, name, size, created) values (?, ?, ?, ?, ?, ?, ?)", id, domain, user.UID, kind, name, len(data), now())
 	return map[string]any{"url": "mxc://" + domain + "/" + id, "name": name, "type": kind, "size": len(data)}, nil
 }
 
@@ -71,7 +71,7 @@ func content_store(user *User, domain string, data []byte, kind string, name str
 // files: the metadata, empty, and the bytes, as the specification's
 // multipart answer. A thumbnail is answered with the file itself.
 func content_serve(c *gin.Context, r *fclient.FederationRequest, id string) {
-	row, _ := federation_database().row("select domain, user, type, name from media where id=?", id)
+	row, _ := networks_database().row("select domain, user, type, name from media where id=?", id)
 	if row == nil || !strings.EqualFold(row_string(row, "domain"), string(r.Destination())) {
 		federation_error(c, http.StatusNotFound, "M_NOT_FOUND", "no such file")
 		return
@@ -135,7 +135,7 @@ func content_cached(user *User, server string, id string) string {
 // content_name is a file's name: this server's own as it was uploaded, or
 // another server's as that server gave it when fetched, or empty.
 func content_name(user *User, server string, id string) string {
-	if row, _ := federation_database().row("select name from media where id=? and domain=?", id, server); row != nil {
+	if row, _ := networks_database().row("select name from media where id=? and domain=?", id, server); row != nil {
 		return row_string(row, "name")
 	}
 	name, _ := os.ReadFile(content_cached(user, server, id) + ".name")
@@ -173,7 +173,7 @@ func content_fetch(ctx context.Context, h *matrix_hosted, address string) (int, 
 	var kind, name string
 	var data []byte
 	if federation_local(spec.ServerName(server)) {
-		row, _ := federation_database().row("select user, type from media where id=? and domain=?", id, server)
+		row, _ := networks_database().row("select user, type from media where id=? and domain=?", id, server)
 		owner := user_by_uid(row_string(row, "user"))
 		if row == nil || owner == nil {
 			return 404, "", nil, nil
@@ -249,7 +249,7 @@ func content_open(h *matrix_hosted, address string) (*os.File, os.FileInfo, stri
 	if !federation_local(spec.ServerName(server)) {
 		return nil, nil, ""
 	}
-	row, _ := federation_database().row("select user, type from media where id=? and domain=?", id, server)
+	row, _ := networks_database().row("select user, type from media where id=? and domain=?", id, server)
 	owner := user_by_uid(row_string(row, "user"))
 	if row == nil || owner == nil {
 		return nil, nil, ""

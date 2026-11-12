@@ -128,6 +128,34 @@ func TestXMPPRooms(t *testing.T) {
 	other.expect(t, "THE POINT: the archive answers its owner, with no client in the room", `queryid="R3"`, "Hello room")
 }
 
+// TestXMPPRoomKept: a room that persists is kept, and one no longer held in
+// memory - as after a restart - is read back as it was: its name, that it is
+// for members, and who its members are.
+func TestXMPPRoomKept(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	env.apps(t)
+	alice := env.raw(t, "alice@example.com", env.mint(t, env.alice, "x1", "Phone"), "phone")
+	room := "kept@rooms.example.com"
+	alice.send(`<presence xmlns="jabber:client" to="` + room + `/Alice"><x xmlns="http://jabber.org/protocol/muc"/></presence>`)
+	alice.expect(t, "the room made", `code="201"`)
+	xmpp_configure(t, alice, room, "c1", "muc#roomconfig_roomname", "Kept", "muc#roomconfig_persistentroom", "1", "muc#roomconfig_membersonly", "1")
+	xmpp_affiliate(t, alice, room, "m1", `<item affiliation="member" jid="bob@example.com"/>`)
+
+	conferences_lock.Lock()
+	delete(conferences, room)
+	conferences_lock.Unlock()
+	c := conference_of(room)
+	if c == nil {
+		t.Fatal("THE POINT: a room that persists was not read back")
+	}
+	c.lock.Lock()
+	name, members, member := c.config.name, c.config.members, c.affiliation("bob@example.com")
+	c.lock.Unlock()
+	if name != "Kept" || !members || member != "member" {
+		t.Errorf("THE POINT: the room read back as name %q, members only %v, bob %q", name, members, member)
+	}
+}
+
 // TestXMPPRoomPeople: a room for members only puts out those who are not,
 // and refuses them until made members; a moderator puts someone out, who may
 // come back, and an owner bans them, who may not; members of a room for

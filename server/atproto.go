@@ -78,24 +78,24 @@ func atproto_tables(db *DB) {
 	// A relay resumes from the last sequence it read, so a number is never
 	// given twice: AUTOINCREMENT keeps the last one even when the replay
 	// window has emptied the table.
-	db.exec("create table if not exists stream (sequence integer not null primary key autoincrement, did text not null, kind text not null, body blob not null, created integer not null)")
-	db.exec("create index if not exists stream_created on stream(created)")
+	db.exec("create table if not exists firehose (sequence integer not null primary key autoincrement, did text not null, kind text not null, body blob not null, created integer not null)")
+	db.exec("create index if not exists firehose_created on firehose(created)")
 }
 
-// atproto_stream_rebuild moves a stream table made before its sequence was
-// AUTOINCREMENT onto one that is, keeping its events; their highest number
-// becomes the last given. Run once, by db_upgrade_18.
-func atproto_stream_rebuild(db *DB) {
-	row, _ := db.row("select sql from sqlite_master where type='table' and name='stream'")
+// atproto_firehose_rebuild moves an update stream table made before its
+// sequence was AUTOINCREMENT onto one that is, keeping its events; their
+// highest number becomes the last given. Run once, by db_upgrade_18.
+func atproto_firehose_rebuild(db *DB) {
+	row, _ := db.row("select sql from sqlite_master where type='table' and name='firehose'")
 	if row == nil || strings.Contains(strings.ToLower(row_string(row, "sql")), "autoincrement") {
 		return
 	}
-	db.exec("drop table if exists stream_rebuilt")
-	db.exec("create table stream_rebuilt (sequence integer not null primary key autoincrement, did text not null, kind text not null, body blob not null, created integer not null)")
-	db.exec("insert into stream_rebuilt (sequence, did, kind, body, created) select sequence, did, kind, body, created from stream")
-	db.exec("drop table stream")
-	db.exec("alter table stream_rebuilt rename to stream")
-	db.exec("create index if not exists stream_created on stream(created)")
+	db.exec("drop table if exists firehose_rebuilt")
+	db.exec("create table firehose_rebuilt (sequence integer not null primary key autoincrement, did text not null, kind text not null, body blob not null, created integer not null)")
+	db.exec("insert into firehose_rebuilt (sequence, did, kind, body, created) select sequence, did, kind, body, created from firehose")
+	db.exec("drop table firehose")
+	db.exec("alter table firehose_rebuilt rename to firehose")
+	db.exec("create index if not exists firehose_created on firehose(created)")
 }
 
 // atproto_endpoint is the address other services reach an account's
@@ -957,7 +957,7 @@ func stream_append(did string, kind string, body map[string]any) int64 {
 	// again, which a relay holding a cursor past them would never read; the
 	// relay then finds each repository's commits no longer follow on from
 	// the one it holds, and reads the repository afresh.
-	last, _ := db.row("select max(coalesce((select max(sequence) from stream), 0), coalesce((select seq from sqlite_sequence where name='stream'), 0)) as last")
+	last, _ := db.row("select max(coalesce((select max(sequence) from firehose), 0), coalesce((select seq from sqlite_sequence where name='firehose'), 0)) as last")
 	sequence := max(row_int(last, "last")+1, stream_clock())
 	body["seq"] = sequence
 	if _, set := body["time"]; !set {
@@ -968,7 +968,7 @@ func stream_append(did string, kind string, body map[string]any) int64 {
 		warn("Stream event %s not encoded: %v", kind, err)
 		return 0
 	}
-	db.exec("insert into stream (sequence, did, kind, body, created) values (?, ?, ?, ?, ?)", sequence, did, kind, frame, now())
+	db.exec("insert into firehose (sequence, did, kind, body, created) values (?, ?, ?, ?, ?)", sequence, did, kind, frame, now())
 	for ch := range stream_subscribers {
 		select {
 		case ch <- struct{}{}:
@@ -984,13 +984,13 @@ var stream_clock = func() int64 { return time.Now().UnixMilli() }
 
 // stream_last is the sequence of the last event, zero before any.
 func stream_last() int64 {
-	row, _ := networks_database().row("select coalesce(max(sequence), 0) as last from stream")
+	row, _ := networks_database().row("select coalesce(max(sequence), 0) as last from firehose")
 	return row_int(row, "last")
 }
 
 // stream_after reads up to limit frames after a sequence, in order.
 func stream_after(sequence int64, limit int) []map[string]any {
-	rows, _ := networks_database().rows("select sequence, body from stream where sequence>? order by sequence limit ?", sequence, limit)
+	rows, _ := networks_database().rows("select sequence, body from firehose where sequence>? order by sequence limit ?", sequence, limit)
 	return rows
 }
 
@@ -1019,7 +1019,7 @@ func stream_listened() bool {
 
 // stream_cleanup drops events past the replay window.
 func stream_cleanup() {
-	networks_database().exec("delete from stream where created<?", now()-stream_age)
+	networks_database().exec("delete from firehose where created<?", now()-stream_age)
 }
 
 // atproto_subscribed, where set, runs once a subscription's handshake is

@@ -231,6 +231,24 @@ func (s *Stream) close() {
 	}
 }
 
+// idle bounds the wait for a raw read of a stream's body, as read_within bounds
+// a segment's: a relay reads the body in many pieces, and each may wait the
+// stream's read timeout for its bytes, no longer. Without it a relay whose far
+// end stalls holds its goroutine for as long as the far end keeps the stream
+// open, past the call that started it.
+func (s *Stream) idle() {
+	if s == nil || s.reader == nil {
+		return
+	}
+	timeout := time.Duration(s.timeout.read) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if r, ok := s.reader.(interface{ SetReadDeadline(time.Time) error }); ok {
+		_ = r.SetReadDeadline(time.Now().Add(timeout))
+	}
+}
+
 // Read a CBOR encoded segment from a stream
 func (s *Stream) read(v any) error {
 	return s.read_within(v, 0)

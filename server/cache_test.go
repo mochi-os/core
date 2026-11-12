@@ -9,9 +9,11 @@ package main
 import (
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -457,6 +459,150 @@ func TestCacheUseKeepsTheWrittenTime(t *testing.T) {
 	}
 	if serve(tag); status != 304 {
 		t.Errorf("a revalidation with the entry's own ETag answered %d, want 304", status)
+	}
+}
+
+// TestCacheServesAnSVGRevalidation: a kept SVG is sanitised rather than served
+// by http.ServeContent, and is answered 304 on a revalidation all the same -
+// with its own validator, or with the one the action set from the far end's.
+func TestCacheServesAnSVGRevalidation(t *testing.T) {
+	thread := cache_read_thread(t)
+	path, err := cache_file(thread, "face.svg")
+	if err != nil {
+		t.Fatalf("cache_file: %v", err)
+	}
+	os.MkdirAll(filepath.Dir(path), 0755)
+	if err := os.WriteFile(path, []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	serve := func(set, match string) (*httptest.ResponseRecorder, int) {
+		t.Helper()
+		web := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(web)
+		c.Request = httptest.NewRequest("GET", "/reader/-/face", nil)
+		if match != "" {
+			c.Request.Header.Set("If-None-Match", match)
+		}
+		action := &Action{web: c}
+		if set != "" {
+			action.web.Header("ETag", set)
+		}
+		if _, err := action.sl_write_cache(thread, sl.NewBuiltin("a.write.cache", nil), sl.Tuple{sl.String("face.svg")}, nil); err != nil {
+			t.Fatalf("a.write.cache: %v", err)
+		}
+		return web, c.Writer.Status()
+	}
+	first, status := serve("", "")
+	tag := first.Header().Get("ETag")
+	if status != 200 || tag == "" || !strings.Contains(first.Body.String(), "<svg") {
+		t.Fatalf("CONTROL: the SVG answered %d with ETag %q and %d bytes", status, tag, first.Body.Len())
+	}
+	if revalidated, status := serve("", tag); status != 304 || revalidated.Body.Len() != 0 {
+		t.Errorf("THE POINT: a revalidation with the entry's ETag answered %d with %d bytes", status, revalidated.Body.Len())
+	}
+	if revalidated, status := serve(`"1730000000-5"`, `"1730000000-5"`); status != 304 || revalidated.Body.Len() != 0 {
+		t.Errorf("THE POINT: a revalidation with the far end's ETag answered %d with %d bytes", status, revalidated.Body.Len())
+	}
+	if _, status := serve(`"1730000000-5"`, `"1730000000-6"`); status != 200 {
+		t.Errorf("CONTROL: a validator that does not match answered %d", status)
+	}
+}
+
+// TestWriteStreamKeepsOnARevalidation: a relay asked to keep the body and met
+// by a revalidation it answers 304 - the client holds the bytes - keeps them all
+// the same, so the next revalidation is answered from the entry rather than by
+// the far end; a body short of its declared size is not kept.
+func TestWriteStreamKeepsOnARevalidation(t *testing.T) {
+	thread := cache_read_thread(t)
+	for _, c := range []struct {
+		name string
+		body string
+		kept bool
+	}{
+		{"whole", "AVATAR", true},
+		{"short of its declared size", "AVA", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			stream_bytes_reset()
+			web := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(web)
+			ctx.Request = httptest.NewRequest("GET", "/people/entity/-/avatar", nil)
+			ctx.Request.Header.Set("If-None-Match", `"1730000000-6"`)
+			action := &Action{web: ctx}
+			action.web.Header("ETag", `"1730000000-6"`)
+			entry := "revalidated-" + strings.ReplaceAll(c.name, " ", "-")
+			kwargs := []sl.Tuple{{sl.String("cache"), sl.String(entry)}, {sl.String("size"), sl.MakeInt(6)}}
+			reader := &write_stream_closer{Reader: strings.NewReader(c.body)}
+			if _, err := action.sl_write_stream(thread, sl.NewBuiltin("write.stream", nil), sl.Tuple{&Stream{reader: reader}}, kwargs); err != nil {
+				t.Fatalf("a.write.stream: %v", err)
+			}
+			if status := ctx.Writer.Status(); status != 304 || web.Body.Len() != 0 {
+				t.Fatalf("CONTROL: the revalidation answered %d with %d bytes", status, web.Body.Len())
+			}
+			path, err := cache_file(thread, entry)
+			if err != nil {
+				t.Fatalf("cache_file: %v", err)
+			}
+			data, err := os.ReadFile(path)
+			if c.kept && (err != nil || string(data) != c.body) {
+				t.Errorf("THE POINT: the body was not kept for the next revalidation (%q, %v)", data, err)
+			}
+			if !c.kept && err == nil {
+				t.Errorf("THE POINT: a body short of its declared size was kept: %q", data)
+			}
+		})
+	}
+}
+
+// write_stream_held yields its body only once released: a far end still
+// sending when the client already has its answer.
+type write_stream_held struct {
+	body    *strings.Reader
+	release chan struct{}
+}
+
+func (r *write_stream_held) Read(p []byte) (int, error) {
+	<-r.release
+	return r.body.Read(p)
+}
+
+func (r *write_stream_held) Close() error { return nil }
+
+// TestRevalidationIsAnsweredBeforeTheKeep: a revalidation that keeps the body
+// is answered 304 at once, not after the far end's whole body has arrived to
+// be kept; the body is kept all the same.
+func TestRevalidationIsAnsweredBeforeTheKeep(t *testing.T) {
+	thread := cache_read_thread(t)
+	stream_bytes_reset()
+	reader := &write_stream_held{body: strings.NewReader("AVATAR"), release: make(chan struct{})}
+	done := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		ctx, _ := gin.CreateTestContext(w)
+		ctx.Request = r
+		action := &Action{web: ctx}
+		action.web.Header("ETag", `"1730000000-6"`)
+		kwargs := []sl.Tuple{{sl.String("cache"), sl.String("answered-first")}, {sl.String("size"), sl.MakeInt(6)}}
+		if _, err := action.sl_write_stream(thread, sl.NewBuiltin("write.stream", nil), sl.Tuple{&Stream{reader: reader}}, kwargs); err != nil {
+			t.Errorf("a.write.stream: %v", err)
+		}
+	}))
+	defer server.Close()
+	request, _ := http.NewRequest("GET", server.URL, nil)
+	request.Header.Set("If-None-Match", `"1730000000-6"`)
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
+	close(reader.release)
+	if err != nil {
+		t.Fatalf("THE POINT: the revalidation was not answered while the far end was still sending: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNotModified {
+		t.Errorf("the revalidation answered %d, want 304", response.StatusCode)
+	}
+	<-done
+	path, _ := cache_file(thread, "answered-first")
+	if data, err := os.ReadFile(path); err != nil || string(data) != "AVATAR" {
+		t.Errorf("the body was not kept after the answer (%q, %v)", data, err)
 	}
 }
 

@@ -9,10 +9,20 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
@@ -720,6 +730,473 @@ func TestWriteStreamRevalidates(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// write_stream_failing yields its body and then fails with failure, as a
+// peer's stream does when its connection drops part way through a relay.
+type write_stream_failing struct {
+	body    string
+	failure string
+	sent    bool
+}
+
+func (f *write_stream_failing) Read(p []byte) (int, error) {
+	if !f.sent {
+		f.sent = true
+		return copy(p, f.body), nil
+	}
+	if f.failure == "" {
+		return 0, errors.New("stream reset")
+	}
+	return 0, errors.New(f.failure)
+}
+
+func (f *write_stream_failing) Close() error { return nil }
+
+// write_stream_spending yields its body and spends the caller's whole byte
+// budget as it does, as the caller's other relays at the same moment would;
+// with last, that read is the stream's last.
+type write_stream_spending struct {
+	body   string
+	client string
+	last   bool
+	sent   bool
+}
+
+func (f *write_stream_spending) Read(p []byte) (int, error) {
+	if f.sent {
+		if f.last {
+			return 0, io.EOF
+		}
+		return copy(p, f.body), nil
+	}
+	f.sent = true
+	stream_bytes_charge(f.client, "", rate_limit_stream_client.limit*1024+1)
+	return copy(p, f.body), nil
+}
+
+func (f *write_stream_spending) Close() error { return nil }
+
+// write_stream_refusing is a response the client has walked away from.
+type write_stream_refusing struct {
+	*httptest.ResponseRecorder
+}
+
+func (w *write_stream_refusing) Write([]byte) (int, error) { return 0, syscall.EPIPE }
+
+// write_stream_relay relays reader through a.write.stream on c as content (an
+// image when empty), with maximum and the declared size when positive,
+// answering the action and the error the relay returned.
+func write_stream_relay(t *testing.T, c *gin.Context, reader io.ReadCloser, content string, maximum, size int) (*Action, error) {
+	t.Helper()
+	a := &Action{web: c}
+	if content == "" {
+		content = "image/png"
+	}
+	a.web.Header("Content-Type", content)
+	a.web.Header("ETag", `"1730000000-65536"`)
+	var kwargs []sl.Tuple
+	if maximum > 0 {
+		kwargs = append(kwargs, sl.Tuple{sl.String("maximum"), sl.MakeInt(maximum)})
+	}
+	if size >= 0 {
+		kwargs = append(kwargs, sl.Tuple{sl.String("size"), sl.MakeInt(size)})
+	}
+	_, err := a.sl_write_stream(&sl.Thread{Name: "test"}, sl.NewBuiltin("write.stream", nil), sl.Tuple{&Stream{reader: reader}}, kwargs)
+	return a, err
+}
+
+// write_stream_broken is write_stream_relay on a fresh request answered to w.
+func write_stream_broken(t *testing.T, w http.ResponseWriter, reader io.ReadCloser, content string, maximum, size int) (*Action, error) {
+	t.Helper()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/people/entity/-/avatar", nil)
+	return write_stream_relay(t, c, reader, content, maximum, size)
+}
+
+// TestWriteStreamMarksABrokenRelay: each way a relay can stop part way - the
+// far end's stream failing, sending past the caller's cap or past the size it
+// declared, or ending short of that size, or the caller's budget running out -
+// marks the action broken, so web_action_written aborts the response; a whole
+// relay does not, nor does a client walking away.
+func TestWriteStreamMarksABrokenRelay(t *testing.T) {
+	stream_bytes_reset()
+	t.Cleanup(stream_bytes_reset)
+	probe, _ := gin.CreateTestContext(httptest.NewRecorder())
+	probe.Request = httptest.NewRequest("GET", "/people/entity/-/avatar", nil)
+	client := "/" + rate_limit_client_ip(probe)
+	svg := `<svg xmlns="http://www.w3.org/2000/svg"></svg>`
+	closer := func(body string) io.ReadCloser { return &write_stream_closer{Reader: strings.NewReader(body)} }
+	reset := "stream reset: connection closed: read tcp 192.0.2.1:4001->192.0.2.2:4001: read: connection reset by peer"
+	for _, c := range []struct {
+		name    string
+		reader  io.ReadCloser
+		content string
+		maximum int
+		size    int
+		broken  bool
+	}{
+		{"the far end's stream fails part way", &write_stream_failing{body: "AVA"}, "", 0, -1, true},
+		{"the far end's connection is reset part way, which reads as a reset too", &write_stream_failing{body: "AVA", failure: reset}, "", 0, -1, true},
+		{"the far end sends past the cap", closer("AVATAR"), "", 3, -1, true},
+		{"the far end ends short of the size it declared", closer("AVA"), "", 0, 6, true},
+		{"the far end sends past the size it declared", closer("AVATAR"), "", 0, 3, true},
+		{"the caller's byte budget runs out part way", &write_stream_spending{body: "AVA", client: client}, "", 0, -1, true},
+		{"an SVG whose stream fails part way", &write_stream_failing{body: "<svg"}, "image/svg+xml", 0, -1, true},
+		{"an SVG past the cap", closer(svg), "image/svg+xml", 10, -1, true},
+		{"an SVG short of the size declared", closer(svg), "image/svg+xml", 0, len(svg) + 5, true},
+		{"an SVG whose budget runs out part way", &write_stream_spending{body: "<svg", client: client}, "image/svg+xml", 0, -1, true},
+		{"CONTROL: a whole relay", closer("AVATAR"), "", 0, -1, false},
+		{"CONTROL: a relay of exactly the size declared", closer("AVATAR"), "", 0, 6, false},
+		{"CONTROL: a whole relay whose last read spends the budget", &write_stream_spending{body: "AVA", client: client, last: true}, "", 0, -1, false},
+		{"CONTROL: a whole SVG", closer(svg), "image/svg+xml", 0, -1, false},
+		{"CONTROL: an SVG of exactly the size declared", closer(svg), "image/svg+xml", 0, len(svg), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			stream_bytes_reset()
+			w := httptest.NewRecorder()
+			a, err := write_stream_broken(t, w, c.reader, c.content, c.maximum, c.size)
+			if (err != nil) != c.broken {
+				t.Fatalf("a.write.stream returned %v, want an error: %v", err, c.broken)
+			}
+			if a.broken.Load() != c.broken {
+				t.Errorf("THE POINT: the action is marked broken: %v, want %v", a.broken.Load(), c.broken)
+			}
+			if c.size >= 0 && c.content == "" && w.Header().Get("Content-Length") != strconv.Itoa(c.size) {
+				t.Errorf("THE POINT: the response declares Content-Length %q, want the %d declared", w.Header().Get("Content-Length"), c.size)
+			}
+		})
+	}
+
+	// The client walking away ends the relay quietly: nothing reached it to be
+	// mistaken for the whole.
+	a, err := write_stream_broken(t, &write_stream_refusing{httptest.NewRecorder()}, closer("AVATAR"), "", 0, -1)
+	if err != nil || a.broken.Load() {
+		t.Errorf("CONTROL: a client that walked away marked the relay broken (%v, %v)", err, a.broken.Load())
+	}
+
+	// CONTROL: a HEAD is answered whole with its headers, net/http discarding
+	// the body, and is not a relay cut short.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, _ := gin.CreateTestContext(w)
+		c.Request = r
+		a, err := write_stream_relay(t, c, closer("AVATAR"), "", 0, 6)
+		if err != nil || a.broken.Load() {
+			t.Errorf("THE POINT: a HEAD marked the relay broken (%v, %v)", err, a.broken.Load())
+		}
+	}))
+	defer server.Close()
+	if response, err := http.Head(server.URL); err != nil || response.StatusCode != 200 {
+		t.Errorf("CONTROL: a HEAD answered %v, %v", response, err)
+	}
+
+	// A declared size past the cap is refused before anything is written.
+	w := httptest.NewRecorder()
+	if _, err := write_stream_broken(t, w, closer("AVATAR"), "", 3, 6); err == nil || w.Body.Len() != 0 {
+		t.Errorf("a size past the cap answered %v with %d bytes written", err, w.Body.Len())
+	}
+}
+
+// web_relay_engine serves /relay through the router's own recovery: a relay
+// of the reader made for each request, ended as web_action ends one, and
+// /panic, a handler that fails.
+func web_relay_engine(t *testing.T, reader func() io.ReadCloser) *httptest.Server {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.Use(web_recovery())
+	engine.GET("/relay", func(c *gin.Context) {
+		a, err := write_stream_relay(t, c, reader(), "", 0, -1)
+		if err != nil && c.Writer.Written() {
+			web_action_written(a)
+		}
+	})
+	engine.GET("/panic", func(c *gin.Context) { panic("a handler fault") })
+	server := httptest.NewServer(engine)
+	t.Cleanup(server.Close)
+	return server
+}
+
+// TestBrokenRelayReachesTheClientAsAFailure: over a real connection and through
+// the router's recovery, a relay that stops part way after its 200 and some of
+// the body are on the wire is seen by the client as a failed transfer, not as
+// a complete image it would keep under the validator it came with. A whole
+// relay arrives whole, and any other fault is still answered 500.
+func TestBrokenRelayReachesTheClientAsAFailure(t *testing.T) {
+	body := strings.Repeat("A", 64*1024)
+	for _, c := range []struct {
+		name   string
+		reader func() io.ReadCloser
+		failed bool
+	}{
+		{"broken part way", func() io.ReadCloser { return &write_stream_failing{body: body} }, true},
+		{"CONTROL: whole", func() io.ReadCloser { return &write_stream_closer{Reader: strings.NewReader(body)} }, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			server := web_relay_engine(t, c.reader)
+			response, err := http.Get(server.URL + "/relay")
+			if err == nil {
+				var received []byte
+				received, err = io.ReadAll(response.Body)
+				response.Body.Close()
+				if err == nil && string(received) != body {
+					t.Fatalf("received %d bytes with no error, want the %d sent", len(received), len(body))
+				}
+			}
+			if (err != nil) != c.failed {
+				t.Errorf("THE POINT: the client's transfer failed: %v (%v), want %v", err != nil, err, c.failed)
+			}
+		})
+	}
+
+	server := web_relay_engine(t, func() io.ReadCloser { return nil })
+	for range 2 {
+		response, err := http.Get(server.URL + "/panic")
+		if err != nil {
+			t.Fatalf("CONTROL: a handler fault reached the client as %v, want a 500", err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusInternalServerError {
+			t.Errorf("CONTROL: a handler fault answered %d, want 500", response.StatusCode)
+		}
+	}
+}
+
+// TestWebActionAbortsABrokenRelay: web_action hands an action that failed after
+// writing to web_action_written, and the router recovers with web_recovery,
+// which lets the abort through, not with gin's, which swallows it.
+func TestWebActionAbortsABrokenRelay(t *testing.T) {
+	source, err := os.ReadFile("web.go")
+	if err != nil {
+		t.Fatalf("reading web.go: %v", err)
+	}
+	function := function_source(t, string(source), "web_action")
+	branch := regexp.MustCompile(`if c\.Writer\.Written\(\) \{\s*web_action_written\(&action\)\s*return true`)
+	if !branch.MatchString(function) {
+		t.Error("THE POINT: web_action ends an action that failed after writing without web_action_written(&action)")
+	}
+	if !strings.Contains(string(source), "r.Use(web_recovery())") || strings.Contains(string(source), "gin.Recovery()") {
+		t.Error("THE POINT: the router does not recover through web_recovery, so the abort is swallowed")
+	}
+}
+
+// TestErrorAnswersCarryNoRepresentation: an action that set an image's type,
+// validator and freshness and then fails answers its error without them, so a
+// browser does not keep the error as the image.
+func TestErrorAnswersCarryNoRepresentation(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		accept string
+		fail   func(a *Action)
+	}{
+		{"a.error as JSON", "application/json", func(a *Action) { a.error(404, "gone") }},
+		{"a.error as a page", "text/html", func(a *Action) { a.error(404, "gone") }},
+		{"a failed action", "application/json", func(a *Action) { web_action_error(a.web, "people", "en", errors.New("failed")) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			web, _ := gin.CreateTestContext(w)
+			web.Request = httptest.NewRequest("GET", "/people/entity/-/avatar", nil)
+			web.Request.Header.Set("Accept", c.accept)
+			a := &Action{web: web}
+			a.web.Header("Content-Type", "image/png")
+			a.web.Header("ETag", `"1730000000-5"`)
+			a.web.Header("Last-Modified", "Mon, 02 Nov 2026 10:00:00 GMT")
+			a.web.Header("Cache-Control", "private, max-age=300")
+			a.web.Header("Content-Disposition", "attachment")
+			c.fail(a)
+			for _, name := range []string{"ETag", "Last-Modified", "Cache-Control", "Content-Disposition"} {
+				if value := w.Header().Get(name); value != "" {
+					t.Errorf("THE POINT: the error carries %s %q", name, value)
+				}
+			}
+			if kind := w.Header().Get("Content-Type"); strings.HasPrefix(kind, "image/") {
+				t.Errorf("THE POINT: the error is sent as %q", kind)
+			}
+		})
+	}
+}
+
+// TestStarlarkMarksAnAbandonedCall: a call that does not stop when its time is
+// up - stuck in a builtin that does not check for cancellation - is given up on
+// with an error that says so, since what it holds stays in use; a call that
+// ends in time, or stops when cancelled, is not.
+func TestStarlarkMarksAnAbandonedCall(t *testing.T) {
+	// The runtime state the server sets up at startup, set together as every
+	// test that needs it does: a test that finds the semaphore made takes the
+	// timeout as made too.
+	if starlark_semaphore == nil {
+		starlark_semaphore = make(chan struct{}, 32)
+		starlark_default_timeout = 90 * time.Second
+	}
+	original := starlark_cancel_grace
+	starlark_cancel_grace = 20 * time.Millisecond
+	t.Cleanup(func() { starlark_cancel_grace = original })
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	stuck := sl.NewBuiltin("stuck", func(*sl.Thread, *sl.Builtin, sl.Tuple, []sl.Tuple) (sl.Value, error) {
+		<-release
+		return sl.None, nil
+	})
+	prompt := sl.NewBuiltin("prompt", func(*sl.Thread, *sl.Builtin, sl.Tuple, []sl.Tuple) (sl.Value, error) {
+		return sl.None, nil
+	})
+	// A builtin that honours the call's context, as a query in SQLite or a
+	// relay tied to it does: it stops when the context goes.
+	attentive := sl.NewBuiltin("attentive", func(thread *sl.Thread, _ *sl.Builtin, _ sl.Tuple, _ []sl.Tuple) (sl.Value, error) {
+		<-starlark_context(thread).Done()
+		return nil, errors.New("stopped by its context")
+	})
+	s := &Starlark{thread: &sl.Thread{Name: "test"}, globals: sl.StringDict{"stuck": stuck, "prompt": prompt, "attentive": attentive}, timeout: 50 * time.Millisecond}
+	if _, err := s.call("stuck", nil); !errors.Is(err, starlark_abandoned) {
+		t.Errorf("THE POINT: a call stuck past its time answered %v, not that it was abandoned", err)
+	}
+	if _, err := s.call("prompt", nil); err != nil {
+		t.Errorf("CONTROL: a call that ended in time answered %v", err)
+	}
+	if _, err := s.call("attentive", nil); err == nil || errors.Is(err, starlark_abandoned) {
+		t.Errorf("THE POINT: a call its context stops within the grace answered %v, as though abandoned", err)
+	}
+}
+
+// TestWebActionAbortsAnAbandonedCall: a request whose action was abandoned is
+// aborted, so gin never puts its context back for another request to be
+// written into by the call still running; any other failure is answered as
+// before. web_action checks before anything else it does with the failure.
+func TestWebActionAbortsAnAbandonedCall(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	guard := &action_writer{ResponseWriter: c.Writer}
+	aborted := func(err error) (stopped bool) {
+		defer func() {
+			if failure := recover(); failure != nil {
+				if failure != http.ErrAbortHandler {
+					t.Fatalf("panicked with %v, want http.ErrAbortHandler", failure)
+				}
+				stopped = true
+			}
+		}()
+		web_action_abandoned("people", guard, err)
+		return false
+	}
+	if aborted(errors.New("starlark: a script error")) {
+		t.Error("CONTROL: an ordinary failure was aborted")
+	}
+	if _, err := guard.Write([]byte("mine")); err != nil {
+		t.Fatalf("CONTROL: a write after an ordinary failure was refused: %v", err)
+	}
+	if !aborted(fmt.Errorf("starlark: timeout after 30s: %w", starlark_abandoned)) {
+		t.Error("THE POINT: an abandoned call's response was not aborted")
+	}
+	if _, err := guard.Write([]byte("late")); err == nil {
+		t.Error("THE POINT: the abandoned call can still write to the aborted response")
+	}
+	guard.Header().Set("Late", "yes")
+	if w.Body.String() != "mine" || w.Header().Get("Late") != "" {
+		t.Errorf("THE POINT: the aborted response gained %q and header %q", strings.TrimPrefix(w.Body.String(), "mine"), w.Header().Get("Late"))
+	}
+	if guard.Unwrap() != c.Writer {
+		t.Error("Unwrap does not reach the writer beneath, so write deadlines cannot be set")
+	}
+
+	source, err := os.ReadFile("web.go")
+	if err != nil {
+		t.Fatalf("reading web.go: %v", err)
+	}
+	function := function_source(t, string(source), "web_action")
+	first := regexp.MustCompile(`guard := &action_writer\{ResponseWriter: c\.Writer\}\s*c\.Writer = guard\s*result, err := s\.call\(aa\.Function, sl\.Tuple\{&action\}\)\s*if err != nil \{\s*web_action_abandoned\(a\.id, guard, err\)\s*\}\s*c\.Writer = guard\.ResponseWriter`)
+	if !first.MatchString(function) {
+		t.Error("THE POINT: web_action does not run the call through a writer it closes on abandonment, ask first, and set its own back")
+	}
+	if !regexp.MustCompile(`defer func\(\) \{\s*if c\.Request\.MultipartForm != nil \{\s*_ = c\.Request\.MultipartForm\.RemoveAll\(\)\s*\}\s*\}\(\)\s*if err := c\.Request\.ParseMultipartForm`).MatchString(function) {
+		t.Error("THE POINT: web_action leaves an upload's temporary files to net/http, which an aborted response skips")
+	}
+
+	api, err := os.ReadFile("api.go")
+	if err != nil {
+		t.Fatalf("reading api.go: %v", err)
+	}
+	if !regexp.MustCompile(`if errors\.Is\(err, starlark_abandoned\) \{\s*err = fmt\.Errorf\("mochi\.service\.call: %s: %v", f\.Function, err\)`).Match(api) {
+		t.Error("THE POINT: a service call's abandonment is passed to its caller as the caller's own")
+	}
+}
+
+// write_stream_waiting yields nothing until it is closed, as a far end that
+// has stopped sending.
+type write_stream_waiting struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (r *write_stream_waiting) Read([]byte) (int, error) {
+	<-r.closed
+	return 0, errors.New("stream closed")
+}
+
+func (r *write_stream_waiting) Close() error {
+	r.once.Do(func() { close(r.closed) })
+	return nil
+}
+
+// TestRelayEndsWithItsCall: a relay whose call is given up on stops, its stream
+// closed, rather than copying for as long as the far end keeps it open.
+func TestRelayEndsWithItsCall(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/people/entity/-/avatar", nil)
+	a := &Action{web: c}
+	a.web.Header("Content-Type", "image/png")
+	ctx, cancel := context.WithCancel(context.Background())
+	thread := &sl.Thread{Name: "test"}
+	thread.SetLocal("context", ctx)
+	reader := &write_stream_waiting{closed: make(chan struct{})}
+	finished := make(chan error, 1)
+	go func() {
+		_, err := a.sl_write_stream(thread, sl.NewBuiltin("write.stream", nil), sl.Tuple{&Stream{reader: reader}}, nil)
+		finished <- err
+	}()
+	cancel()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		reader.Close()
+		t.Fatal("THE POINT: the relay ran on after its call's context ended")
+	}
+}
+
+// write_stream_deadlined records the read deadlines set on it.
+type write_stream_deadlined struct {
+	*strings.Reader
+	deadlines []time.Time
+}
+
+func (r *write_stream_deadlined) SetReadDeadline(at time.Time) error {
+	r.deadlines = append(r.deadlines, at)
+	return nil
+}
+
+func (r *write_stream_deadlined) Close() error { return nil }
+
+// TestRelayReadsWaitTheStreamTimeout: every read of a relay's body is bounded
+// by the stream's read timeout, so a relay whose far end stalls ends rather
+// than holding its goroutine past the call that started it.
+func TestRelayReadsWaitTheStreamTimeout(t *testing.T) {
+	reader := &write_stream_deadlined{Reader: strings.NewReader("AVATAR")}
+	stream := &Stream{reader: reader}
+	stream.timeout.read = 7
+	limited := &stream_limit_reader{reader: reader, remaining: 64, stream: stream}
+	before := time.Now()
+	if _, err := io.ReadAll(limited); err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if len(reader.deadlines) == 0 {
+		t.Fatal("THE POINT: no read of the body was bounded")
+	}
+	for _, at := range reader.deadlines {
+		if wait := at.Sub(before); wait < 6*time.Second || wait > 8*time.Second {
+			t.Errorf("a read was bounded at %v, want the stream's 7 s", wait)
+		}
 	}
 }
 

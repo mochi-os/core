@@ -27,7 +27,7 @@ import (
 const starlark_steps_maximum = 1000000000 // 1 billion steps
 
 // How long to wait for a cancelled call to actually stop before abandoning it.
-const starlark_cancel_grace = 5 * time.Second
+var starlark_cancel_grace = 5 * time.Second
 
 // How long a call may wait for a concurrency slot before giving up. Generous,
 // so a burst queues rather than failing, but finite so saturation surfaces as
@@ -728,12 +728,29 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 			case out := <-done:
 				return out.value, out.err
 			case <-time.After(starlark_file_timeout):
+				// Cancelled as the compute bound cancels, the context too, so a
+				// relay tied to it stops, and given the same grace to.
 				s.thread.Cancel("timeout")
+				cancel()
+				select {
+				case out := <-done:
+					return out.value, out.err
+				case <-time.After(starlark_cancel_grace):
+				}
+				select {
+				case out := <-done:
+					return out.value, out.err
+				default:
+				}
 				debug("Starlark %s() file serving timed out after %s", function, starlark_file_timeout)
-				return nil, fmt.Errorf("starlark: file serving timeout after %s", starlark_file_timeout)
+				return nil, fmt.Errorf("starlark: file serving timeout after %s: %w", starlark_file_timeout, starlark_abandoned)
 			}
 		}
+		// The context goes with the thread, so a builtin that honours it - a
+		// query inside SQLite, a relay tied to it - stops within the grace and
+		// the call ends, rather than being abandoned while it winds down.
 		s.thread.Cancel("timeout")
+		cancel()
 		// Give the interpreter a moment to observe the cancel, so the caller
 		// gets the specific cancellation error rather than a bare timeout. The
 		// outcome arrives over the channel: reading it from shared variables
@@ -743,14 +760,26 @@ func (s *Starlark) call(function string, args sl.Tuple, kwargs ...[]sl.Tuple) (s
 			return out.value, out.err
 		case <-time.After(starlark_cancel_grace):
 		}
+		// A call that ended as the grace ran out is not abandoned.
+		select {
+		case out := <-done:
+			return out.value, out.err
+		default:
+		}
 		// The call did not stop — it is stuck in a built-in that does not check
 		// for cancellation. Abandon it. The goroutine runs its own cleanup and
 		// frees its semaphore slot when it eventually exits; touching the
 		// thread, its streams or its transaction from here would race with it.
 		debug("Starlark %s() timed out after %s", function, deadline)
-		return nil, fmt.Errorf("starlark: timeout after %s", deadline)
+		return nil, fmt.Errorf("starlark: timeout after %s: %w", deadline, starlark_abandoned)
 	}
 }
+
+// starlark_abandoned marks the error of a call given up on while it still runs,
+// inside a built-in that does not check for cancellation. Whatever it holds
+// stays in use after the caller returns: an HTTP handler must then not hand
+// its request's context back for reuse (see web_action_abandoned).
+var starlark_abandoned = errors.New("the call was abandoned while still running")
 
 // Set a Starlark thread variable
 func (s *Starlark) set(key string, value any) {

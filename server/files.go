@@ -404,6 +404,7 @@ func storage_size(root *os.Root, name string) int64 {
 var (
 	api_file = sls.FromStringDict(sl.String("mochi.file"), sl.StringDict{
 		"age":     sl.NewBuiltin("mochi.file.age", api_file_age),
+		"size":    sl.NewBuiltin("mochi.file.size", api_file_size),
 		"clean":   sl.NewBuiltin("mochi.file.clean", api_file_clean),
 		"copy":    sl.NewBuiltin("mochi.file.copy", api_file_copy),
 		"maximum": sl.NewBuiltin("mochi.file.maximum", api_file_maximum),
@@ -807,6 +808,42 @@ func api_file_age(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple
 	}
 
 	return sl.MakeInt64(int64(time.Since(information.ModTime()).Seconds())), nil
+}
+
+// mochi.file.size(file) -> integer or None: A file's size in bytes, or None if it
+// does not exist or is a directory - the size to declare for bytes about to be
+// streamed from it, which a relay is held to.
+func api_file_size(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	if len(args) != 1 {
+		return sl_error(fn, "syntax: <file: string>")
+	}
+
+	file, ok := sl.AsString(args[0])
+	if !ok || !valid(file, "filepath") {
+		return sl_error(fn, "invalid file %q", file)
+	}
+
+	user, _ := principal_storage(t)
+	if user == nil {
+		return sl_error(fn, "no user")
+	}
+
+	app, ok := t.Local("app").(*App)
+	if !ok || app == nil {
+		return sl_error(fn, "no app")
+	}
+
+	root, err := os.OpenRoot(api_file_base(user, app))
+	if err != nil {
+		return sl.None, nil
+	}
+	defer root.Close()
+
+	information, err := root.Stat(file)
+	if err != nil || information.IsDir() {
+		return sl.None, nil
+	}
+	return sl.MakeInt64(information.Size()), nil
 }
 
 // mochi.file.exists(file) -> bool: Check whether a file exists

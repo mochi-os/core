@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -68,6 +69,91 @@ type Action struct {
 	// queueing, which together they keep within one message_send_budget rather
 	// than each waiting it out on a busy queue.db.
 	sending time.Duration
+	// broken is set when a relay through a.write.stream stopped part way, so
+	// web_action_written aborts the response rather than end it as though the
+	// body were whole. Atomic: the handler reads it after Starlark.call, which
+	// may have abandoned the call at its timeout while it still runs.
+	broken atomic.Bool
+}
+
+// action_writer is the response writer an action writes through. web_action
+// closes it when it gives up on a call still running (web_action_abandoned):
+// the call may be inside a builtin that writes to the response, and once the
+// response is aborted net/http hands the connection's buffers to other
+// connections, so a late write must fail here instead of reaching them. A
+// call that ended needs no closing, and the writer it wrote through is set
+// back for whatever answers after it.
+type action_writer struct {
+	gin.ResponseWriter
+	lock   sync.Mutex
+	closed bool
+}
+
+func (w *action_writer) Header() http.Header {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	if w.closed {
+		return http.Header{}
+	}
+	return w.ResponseWriter.Header()
+}
+
+func (w *action_writer) Write(data []byte) (int, error) {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	if w.closed {
+		return 0, net.ErrClosed
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *action_writer) WriteString(text string) (int, error) {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	if w.closed {
+		return 0, net.ErrClosed
+	}
+	return w.ResponseWriter.WriteString(text)
+}
+
+func (w *action_writer) WriteHeader(code int) {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	if !w.closed {
+		w.ResponseWriter.WriteHeader(code)
+	}
+}
+
+func (w *action_writer) WriteHeaderNow() {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	if !w.closed {
+		w.ResponseWriter.WriteHeaderNow()
+	}
+}
+
+func (w *action_writer) Flush() {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	if !w.closed {
+		w.ResponseWriter.Flush()
+	}
+}
+
+// Unwrap lets http.ResponseController reach the connection, for the write
+// deadlines set through it.
+func (w *action_writer) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+// close refuses every later write. A write in progress may be blocked on a
+// client that has stopped reading, so the deadline goes first: the write
+// returns, and the lock with it.
+func (w *action_writer) close() {
+	_ = http.NewResponseController(w.ResponseWriter).SetWriteDeadline(time.Now())
+	w.lock.Lock()
+	w.closed = true
+	w.lock.Unlock()
 }
 
 // action_entity is the routed entity as a.entity sees it. A dict, not an
@@ -234,9 +320,20 @@ func (a *Action) error_label(code int, key string) {
 	a.error(code, "%s", resolve_core_label(request_language(a.web, a.user), key, nil))
 }
 
+// response_unset drops what describes a success's representation from a
+// response about to answer an error. An error sent under an image's type,
+// validator and freshness is kept by a browser as that image, and a later 304
+// against the validator refreshes the error as it.
+func response_unset(header http.Header) {
+	for _, name := range []string{"Content-Type", "Content-Length", "Content-Disposition", "Etag", "Last-Modified", "Cache-Control"} {
+		header.Del(name)
+	}
+}
+
 // Display an error as a simple HTML page
 func (a *Action) error(code int, format string, values ...any) {
 	message := fmt.Sprintf(format, values...)
+	response_unset(a.web.Writer.Header())
 
 	// Return JSON for API requests, HTML for browser requests
 	if strings.Contains(a.web.GetHeader("Accept"), "application/json") ||
@@ -1134,8 +1231,24 @@ func (a *Action) sl_write_cache(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 		return sl.False, nil
 	}
 
+	if a.web.Writer.Header().Get("Cache-Control") == "" {
+		a.web.Header("Cache-Control", "private, must-revalidate")
+	}
+	if a.web.Writer.Header().Get("Etag") == "" {
+		a.web.Header("ETag", fmt.Sprintf(`"%x-%x"`, information.ModTime().UnixNano(), information.Size()))
+	}
+
+	// An SVG is sanitised rather than served by http.ServeContent, so its
+	// revalidation is answered here: 304, no body, as ServeContent answers
+	// every other type's.
 	if base == "image/svg+xml" {
 		starlark_serving_set(t, a.web.Writer)
+		method := a.web.Request.Method
+		if (method == http.MethodGet || method == http.MethodHead) && etag_match(a.web.Request.Header.Get("If-None-Match"), a.web.Writer.Header().Get("Etag")) {
+			a.web.Writer.WriteHeader(http.StatusNotModified)
+			a.web.Writer.WriteHeaderNow()
+			return sl.True, nil
+		}
 		web_serve_svg(a.web, file)
 		return sl.True, nil
 	}
@@ -1145,12 +1258,6 @@ func (a *Action) sl_write_cache(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwa
 	}
 	if !content_type_inline(base) && a.web.Writer.Header().Get("Content-Disposition") == "" {
 		a.web.Header("Content-Disposition", "attachment")
-	}
-	if a.web.Writer.Header().Get("Cache-Control") == "" {
-		a.web.Header("Cache-Control", "private, must-revalidate")
-	}
-	if a.web.Writer.Header().Get("Etag") == "" {
-		a.web.Header("ETag", fmt.Sprintf(`"%x-%x"`, information.ModTime().UnixNano(), information.Size()))
 	}
 
 	starlark_serving_set(t, a.web.Writer)
@@ -1214,7 +1321,9 @@ const stream_maximum_default = object_maximum
 type stream_limit_reader struct {
 	reader    io.Reader
 	remaining int64
-	exceeded  bool
+	// stream, when set, bounds each read's wait (Stream.idle).
+	stream   *Stream
+	exceeded bool
 	// client and app key the byte budgets this relay is charged against. Empty
 	// client disables metering, for relays with no HTTP caller to attribute.
 	client string
@@ -1232,6 +1341,7 @@ func (r *stream_limit_reader) Read(p []byte) (int, error) {
 		// "had more to give", which is the difference between a complete asset
 		// and a truncated one.
 		var probe [1]byte
+		r.stream.idle()
 		if n, _ := r.reader.Read(probe[:]); n > 0 {
 			r.exceeded = true
 		}
@@ -1242,12 +1352,20 @@ func (r *stream_limit_reader) Read(p []byte) (int, error) {
 	// Stopping here is what makes the budget a bound on traffic rather than a
 	// bound on how many relays may BEGIN.
 	if r.client != "" && stream_bytes_refusal(r.client, r.app) != nil {
+		// A stream that has already ended is whole, not cut short: the read
+		// that spent the budget may have been its last.
+		var probe [1]byte
+		r.stream.idle()
+		if n, err := r.reader.Read(probe[:]); n == 0 && err == io.EOF {
+			return 0, io.EOF
+		}
 		r.spent = true
 		return 0, io.EOF
 	}
 	if int64(len(p)) > r.remaining {
 		p = p[:r.remaining]
 	}
+	r.stream.idle()
 	n, err := r.reader.Read(p)
 	r.remaining -= int64(n)
 	if r.client != "" && n > 0 {
@@ -1269,12 +1387,24 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	var stream_value sl.Value
 	maximum := int64(stream_maximum_default)
 	cache := ""
-	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "stream", &stream_value, "maximum?", &maximum, "cache?", &cache); err != nil {
-		return sl_error(fn, "syntax: write.stream(stream, maximum=bytes, cache=name)")
+	size := int64(-1)
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "stream", &stream_value, "maximum?", &maximum, "cache?", &cache, "size?", &size); err != nil {
+		return sl_error(fn, "syntax: write.stream(stream, maximum=bytes, cache=name, size=bytes)")
 	}
 	if maximum <= 0 || maximum > stream_maximum_default {
 		return sl_error(fn, "maximum must be between 1 and %d", int64(stream_maximum_default))
 	}
+	// size is what the far end declared the body to be. The relay must then be
+	// exactly that: fewer bytes is a body cut short, and more is a far end
+	// sending past what it said.
+	if size < -1 || size > maximum {
+		return sl_error(fn, "size must be between 0 and maximum")
+	}
+	app_id := ""
+	if a.app != nil {
+		app_id = a.app.id
+	}
+	client := app_id + "/" + rate_limit_client_ip(a.web)
 
 	stream, ok := stream_value.(*Stream)
 	if !ok {
@@ -1283,6 +1413,12 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 
 	// Mark as file serving so the timeout handler waits for I/O to complete
 	starlark_serving_set(t, a.web.Writer)
+
+	// The relay ends with its call: given up on at the time limit, its stream
+	// is closed and the copy stops, rather than running on for as long as the
+	// far end keeps trickling bytes.
+	stop := context.AfterFunc(starlark_context(t), stream.close)
+	defer stop()
 
 	// A revalidation naming the ETag the action set is answered as
 	// http.ServeContent answers one for a.write.file and a.write.cache: 304
@@ -1294,7 +1430,6 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	// fetched. Such a request is answered in full, as if it had named no tag.
 	method := a.web.Request.Method
 	if etag := a.web.Writer.Header().Get("Etag"); etag != "" && (method == http.MethodGet || method == http.MethodHead) && etag_match(a.web.Request.Header.Get("If-None-Match"), etag) {
-		stream.close()
 		// RFC 9110 section 15.4.5: no representation metadata beyond the
 		// validators and what guides the cache.
 		header := a.web.Writer.Header()
@@ -1304,17 +1439,21 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 		delete(header, "Last-Modified")
 		a.web.Writer.WriteHeader(http.StatusNotModified)
 		a.web.Writer.WriteHeaderNow()
+		// Asked to keep the body, the relay keeps it all the same: the client
+		// holds the bytes, but closing the stream unread would leave every later
+		// revalidation to pay the relay again. The 304 goes out first, so the
+		// client does not wait on the whole body for an answer with none.
+		if cache != "" {
+			a.web.Writer.Flush()
+			stream_keep(t, stream, cache, maximum, size, client, app_id)
+		}
+		stream.close()
 		return sl.MakeInt64(0), nil
 	}
 
 	// raw_reader is UNWRAPPED - the CBOR limit caps decoded messages, not the byte
 	// body - and every caller relays bytes a remote peer chose, so bound it first.
 	// Refuse an exhausted budget before writing: the status cannot be retracted.
-	app_id := ""
-	if a.app != nil {
-		app_id = a.app.id
-	}
-	client := app_id + "/" + rate_limit_client_ip(a.web)
 	if refusal := stream_bytes_refusal(client, app_id); refusal != nil {
 		return sl_error(fn, refusal)
 	}
@@ -1322,6 +1461,7 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	limited := &stream_limit_reader{
 		reader:    stream.raw_reader(),
 		remaining: maximum,
+		stream:    stream,
 		client:    client,
 		app:       app_id,
 	}
@@ -1348,13 +1488,25 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 	if content_type == "image/svg+xml" {
 		written, err := a.write_stream_svg(fn, reader)
 		if err != nil {
+			a.broken.Store(true)
 			return written, err
 		}
-		// Same overrun check as the plain path below: an SVG larger than the
-		// caller allowed must not be reported as a complete document either.
+		// Same budget, overrun and size checks as the plain path below: an SVG
+		// cut short must not be reported as a complete document either. The
+		// sanitised document is not the far end's bytes, so the size is checked
+		// against what was read.
+		n, _ := sl.AsInt32(written)
+		if limited.spent {
+			a.broken.Store(true)
+			return a.write_stream_spent(fn, int64(n))
+		}
 		if limited.exceeded {
-			n, _ := sl.AsInt32(written)
+			a.broken.Store(true)
 			return a.write_stream_curtailed(fn, maximum, int64(n))
+		}
+		if read := maximum - limited.remaining; size >= 0 && read != size {
+			a.broken.Store(true)
+			return a.write_stream_short(fn, read, size)
 		}
 		filled = true
 		return written, nil
@@ -1363,30 +1515,72 @@ func (a *Action) sl_write_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kw
 		a.web.Header("Content-Disposition", "attachment")
 	}
 
+	// A declared size is the response's length too: a body cut short then
+	// reaches the client as a failed transfer, whatever happens here.
+	if size >= 0 {
+		a.web.Header("Content-Length", strconv.FormatInt(size, 10))
+	}
+
 	// Set status 200 on first write (matches a.print() pattern)
 	if !a.web.Writer.Written() {
 		a.web.Status(200)
 	}
 
 	// Copy stream data directly to HTTP response
+	// Each way the relay can stop part way marks the action broken: the 200
+	// and some of the body may already be on the wire, and web_action_written
+	// then aborts the response so the client does not take them for the whole.
 	n, complete, err := stream_relay(a.web.Writer, reader)
 	if err != nil {
+		a.broken.Store(true)
 		return sl_error(fn, "stream copy error: %v", err)
 	}
 	if !complete {
 		return sl.MakeInt64(n), nil
 	}
 	if limited.spent {
+		a.broken.Store(true)
 		return a.write_stream_spent(fn, n)
 	}
 	if limited.exceeded {
+		a.broken.Store(true)
 		return a.write_stream_curtailed(fn, maximum, n)
+	}
+	if size >= 0 && n != size {
+		a.broken.Store(true)
+		return a.write_stream_short(fn, n, size)
 	}
 
 	// A clean copy error already returned above; reaching here means the body
 	// arrived complete, so the tee may be committed to the cache.
 	filled = true
 	return sl.MakeInt64(n), nil
+}
+
+// write_stream_short reports a relay that ended before the size its far end
+// declared, as a far end does when its handler fails part way and it closes
+// the stream behind an error segment. It errors, as the cap does, so the
+// caller cannot cache or announce a truncated asset as complete.
+func (a *Action) write_stream_short(fn *sl.Builtin, written, size int64) (sl.Value, error) {
+	return sl_error(fn, "stream ended at %d of the %d bytes declared", written, size)
+}
+
+// stream_keep fills a cache entry from a stream whose client was answered 304:
+// bounded and metered as a relay is, committed only whole, and best effort, as
+// the tee a full relay fills is.
+func stream_keep(t *sl.Thread, stream *Stream, cache string, maximum, size int64, client, app string) {
+	if stream_bytes_refusal(client, app) != nil {
+		return
+	}
+	tee, err := cache_tee_start(t, cache)
+	if err != nil {
+		return
+	}
+	stop := context.AfterFunc(starlark_context(t), stream.close)
+	defer stop()
+	limited := &stream_limit_reader{reader: stream.raw_reader(), remaining: maximum, stream: stream, client: client, app: app}
+	n, err := io.Copy(tee.file, limited)
+	tee.finish(err == nil && !limited.exceeded && !limited.spent && (size < 0 || n == size))
 }
 
 // etag_match reports whether an If-None-Match header names etag, by the weak
@@ -1449,14 +1643,34 @@ func etag_scan(s string) (string, string) {
 // browser walked away mid-body: not an error, but the tee then holds only part of
 // the body, which must never become a cache entry. err is any other failure.
 func stream_relay(w io.Writer, reader io.Reader) (int64, bool, error) {
-	n, err := io.Copy(w, reader)
+	writer := &relay_writer{writer: w}
+	n, err := io.Copy(writer, reader)
 	if err != nil {
-		if is_client_disconnect(err) {
+		// Only the client going away ends a relay quietly, and only a write
+		// says so. A read failing is the far end's stream breaking: a peer's
+		// reset reads "connection reset" too, of a connection the client never
+		// saw, and the body is cut short.
+		if writer.failure != nil && is_client_disconnect(writer.failure) {
 			return n, false, nil
 		}
 		return n, false, err
 	}
 	return n, true, nil
+}
+
+// relay_writer remembers why a write failed, so a relay can tell the client
+// leaving from the far end's stream breaking.
+type relay_writer struct {
+	writer  io.Writer
+	failure error
+}
+
+func (w *relay_writer) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	if err != nil {
+		w.failure = err
+	}
+	return n, err
 }
 
 // write_stream_spent reports a relay stopped because the caller's byte budget ran
@@ -1499,8 +1713,9 @@ const stream_svg_maximum = 2 * 1024 * 1024
 // svg_content_policy. Sanitizing needs the whole document, so unlike the plain
 // copy path this cannot stream straight through.
 func (a *Action) write_stream_svg(fn *sl.Builtin, reader io.Reader) (sl.Value, error) {
+	// Only the far end is read here, so any failure is its stream breaking.
 	buffer, err := io.ReadAll(io.LimitReader(reader, stream_svg_maximum+1))
-	if err != nil && !is_client_disconnect(err) {
+	if err != nil {
 		return sl_error(fn, "stream read error: %v", err)
 	}
 
@@ -1515,8 +1730,8 @@ func (a *Action) write_stream_svg(fn *sl.Builtin, reader io.Reader) (sl.Value, e
 		if err != nil && !is_client_disconnect(err) {
 			return sl_error(fn, "stream copy error: %v", err)
 		}
-		n, err := io.Copy(a.web.Writer, reader)
-		if err != nil && !is_client_disconnect(err) {
+		n, _, err := stream_relay(a.web.Writer, reader)
+		if err != nil {
 			return sl_error(fn, "stream copy error: %v", err)
 		}
 		// reader is the caller's limited reader, so this copy is bounded too; the

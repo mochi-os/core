@@ -447,6 +447,12 @@ func api_service_call(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.T
 	result, err = s.call(f.Function, call_args, kwargs)
 	if err != nil {
 		info("mochi.service.call() error: %v", err)
+		// The service's call was abandoned, not the caller's: the nested
+		// thread holds no request, so the caller fails as for any other
+		// error rather than having its own response aborted.
+		if errors.Is(err, starlark_abandoned) {
+			err = fmt.Errorf("mochi.service.call: %s: %v", f.Function, err)
+		}
 	}
 
 	return result, err

@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	rd "runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -203,6 +204,7 @@ func web_status_deliberate(status int) bool {
 }
 
 func web_action_error(c *gin.Context, app string, language string, err error) {
+	response_unset(c.Writer.Header())
 	var permission *PermissionError
 	if errors.As(err, &permission) {
 		// A machine-readable code plus the fields the permission dialog needs,
@@ -263,6 +265,71 @@ func web_action_error(c *gin.Context, app string, language string, err error) {
 	warn("web: %s action failed: %s", app, detail)
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error", "message": resolve_core_label(language, "errors.server_error", nil) + ": " + detail}) // i18n-ok: the translated label with the failure's own text relayed as a diagnostic
 	c.Abort()
+}
+
+// web_recovery answers a panic in a handler as gin's recovery did - logged
+// with its stack, and 500 when nothing has been written - except for
+// http.ErrAbortHandler, which a handler raises to abort a response it has begun
+// (web_action_written). That goes on to net/http, which drops the connection or
+// resets the HTTP/2 stream and logs nothing: recovered, as gin's own middleware
+// recovers it, the handler would return and the response end as though whole.
+// The request's headers are not logged, as gin's were: they carry the session
+// cookie.
+func web_recovery() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		defer func() {
+			failure := recover()
+			if failure == nil {
+				return
+			}
+			if failure == http.ErrAbortHandler {
+				// gin's logger, outside this, has no defer and is skipped by
+				// the panic, so the request is logged here.
+				info("Web %d %s %s %q aborted", c.Writer.Status(), c.ClientIP(), c.Request.Method, web_log_redact(c.Request.URL.Path))
+				panic(failure)
+			}
+			if err, ok := failure.(error); ok && is_client_disconnect(err) {
+				c.Abort()
+				return
+			}
+			warn("web: panic serving %s %q: %v\n%s", c.Request.Method, web_log_redact(c.Request.URL.Path), failure, rd.Stack())
+			c.AbortWithStatus(http.StatusInternalServerError)
+		}()
+		c.Next()
+	}
+}
+
+// web_action_written ends a request whose action failed after its response had
+// begun, when no error response can be sent. A relay that stopped part way has
+// sent its 200 and some of the body: ending the response normally would present
+// those bytes as the whole of it, and a client keeps them under the validator
+// they came with, revalidating to a broken image for as long as the validator
+// stands. So the response is aborted, and the client sees the transfer fail:
+// net/http drops the connection, or resets the HTTP/2 stream, and logs nothing
+// for this panic. Raised here, in the handler, since Starlark.call runs the
+// action on a goroutine that turns a panic into an error. A failure after a
+// response that was sent whole ends it as before.
+func web_action_written(a *Action) {
+	if a.broken.Load() {
+		panic(http.ErrAbortHandler)
+	}
+}
+
+// web_action_abandoned ends a request whose action Starlark.call gave up on
+// while it still runs, inside a built-in such as a relay copying from a far end
+// that stalls. That call keeps the request's context: a builtin reads a.web
+// afresh as it goes, and once the handler returns normally gin puts the
+// context back in its pool for the next request, which may be another user's,
+// to have the late bytes, headers or status written into it. So the response
+// is aborted instead, which also keeps the context out of the pool for good,
+// and the client sees the request fail. The writer the call writes through is
+// closed first, since net/http reuses the aborted connection's buffers.
+func web_action_abandoned(app string, guard *action_writer, err error) {
+	if errors.Is(err, starlark_abandoned) {
+		warn("web: %s action abandoned, its response aborted: %v", app, err)
+		guard.close()
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) bool {
@@ -856,6 +923,13 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			c.Request.Body = counter
 		}
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maximum)
+		// The parsed form's files are removed here, not left to net/http: an
+		// aborted response skips the clean-up it does when a handler returns.
+		defer func() {
+			if c.Request.MultipartForm != nil {
+				_ = c.Request.MultipartForm.RemoveAll()
+			}
+		}()
 		if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
 			// Only the size failure is answered here. Every other parse error
 			// is still left for the handler's own a.file()/form call to
@@ -917,11 +991,20 @@ func web_action(c *gin.Context, a *App, name string, e *Entity, routing string) 
 			s.set("route_entity", e.ID)
 		}
 
+		// The action writes through a writer web_action can close on it (see
+		// action_writer), set back once the call is done.
+		guard := &action_writer{ResponseWriter: c.Writer}
+		c.Writer = guard
 		result, err := s.call(aa.Function, sl.Tuple{&action})
+		if err != nil {
+			web_action_abandoned(a.id, guard, err)
+		}
+		c.Writer = guard.ResponseWriter
 		if err != nil {
 			// If the response has already been written (e.g. file serving),
 			// we can't send an error response
 			if c.Writer.Written() {
+				web_action_written(&action)
 				return true
 			}
 			web_action_error(c, a.id, request_language(c, user), err)
@@ -2473,7 +2556,7 @@ func web_start() {
 			param.Latency,
 		)
 	}))
-	r.Use(gin.Recovery())
+	r.Use(web_recovery())
 	r.Use(web_security_headers)
 	// After the security headers, so the guard's CSP is set on a response that
 	// already carries the standard ones, and before anything that can produce a

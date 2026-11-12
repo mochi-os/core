@@ -428,13 +428,20 @@ func TestEndToEndStreamDeathQueueFailsInflight(t *testing.T) {
 	}
 
 	// Wait for the sender to detect stream death and drain inflight.
-	// Detection happens via read_loop's frame_read returning EOF.
+	// Detection happens via read_loop's frame_read returning EOF. death-1's
+	// write can fail first and be rolled back on its own path, so both rows
+	// are waited for, not only death-2.
 	deadline := time.Now().Add(2 * time.Second)
 	db := db_open("db/queue.db")
 	for time.Now().Before(deadline) {
-		row, _ := db.row("select status from queue where id=?", "death-2")
-		st, _ := row["status"].(string)
-		if st == "pending" {
+		pending := 0
+		for _, mid := range []string{"death-1", "death-2"} {
+			row, _ := db.row("select status from queue where id=?", mid)
+			if st, _ := row["status"].(string); st == "pending" {
+				pending++
+			}
+		}
+		if pending == 2 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)

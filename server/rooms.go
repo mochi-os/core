@@ -2658,13 +2658,17 @@ func rooms_forget(room string) bool {
 		}
 	}
 	db := networks_database()
+	// Marked forgotten until an account here is in it again, before its
+	// events go: what is kept to be sent, the leave among it, is the
+	// federation worker's to delete once sent (federation_forgotten), and a
+	// send ending between the two would otherwise find the room not yet
+	// forgotten and leave the event for good.
+	db.exec("update rooms set state=-1 where id=?", room)
 	db.exec("delete from events where room=? and id not in (select body from outbox where kind='pdu')", room)
 	db.exec("delete from snapshots where room=?", room)
 	rooms_kept_forget(room)
 	db.exec("delete from extremities where room=?", room)
 	db.exec("delete from directs where room=?", room)
-	// Marked forgotten until an account here is in it again.
-	db.exec("update rooms set state=-1 where id=?", room)
 	return true
 }
 

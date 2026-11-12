@@ -1045,11 +1045,13 @@ func federation_worker(destination string, wake chan struct{}) {
 		}
 		db.exec("delete from destinations where name=?", destination)
 		db.exec("delete from outbox where id in ("+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+")", ids...)
-		// An event kept only to be sent, of a room no one here is in any
-		// longer, goes once every server has it (rooms_forget).
-		db.exec("delete from events where room in (select id from rooms where state=-1) and id not in (select body from outbox where kind='pdu')")
+		db.exec(federation_forgotten)
 	}
 }
+
+// federation_forgotten deletes the events kept only to be sent of rooms no one
+// here is in any longer, once every server has them (rooms_forget).
+const federation_forgotten = "delete from events where room in (select id from rooms where state=-1) and id not in (select body from outbox where kind='pdu')"
 
 // federation_log carries the library's warnings to the debug log.
 type federation_log struct{}

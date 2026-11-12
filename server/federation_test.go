@@ -2498,6 +2498,33 @@ func TestMatrixForget(t *testing.T) {
 	}
 }
 
+// TestMatrixForgetWhileTheLeaveIsSent: the leave's transaction ending while
+// the room is being forgotten - the worker's clean-up run between the
+// forgetting's steps - leaves none of the room's events behind. The leave is
+// kept while it waits to be sent, and the clean-up after the send takes it
+// only from a room already marked forgotten.
+func TestMatrixForgetWhileTheLeaveIsSent(t *testing.T) {
+	alice, _ := create_matrix_test_env(t)
+	r := create_matrix_remote(t, gomatrixserverlib.RoomVersionV10)
+	room := r.room("Forget", "invite")
+	matrix_join(t, r, alice, room)
+	db := networks_database()
+	// The worker waits out a backoff, so the send ends only where the trigger
+	// puts it: inside the forgetting, at the first of the room's events it
+	// deletes.
+	db.exec("insert into destinations (name, failures, retry) values (?, 1, ?) on conflict(name) do update set retry=excluded.retry", string(r.name), now()+3600)
+	db.exec("create trigger sent after delete on events when old.room='" + strings.ReplaceAll(room, "'", "''") + "' begin delete from outbox where kind='pdu'; " + federation_forgotten + "; end")
+	if _, err := api_account_room_leave(linked_thread(alice), sl.NewBuiltin("test", nil), sl.Tuple{sl.String("m1"), sl.String(room)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if row, _ := db.row("select count(*) as n from events where room=?", room); row_int(row, "n") != 0 {
+		t.Errorf("THE POINT: %d of the room's events outlived its forgetting and the leave's send", row_int(row, "n"))
+	}
+	if row, _ := db.row("select state from rooms where id=?", room); row_int(row, "state") != -1 {
+		t.Errorf("room state = %v, want it marked forgotten", row)
+	}
+}
+
 // TestMatrixDirectory: the people a hosted account knows of are found by
 // name or address, and an address names someone through their server.
 func TestMatrixDirectory(t *testing.T) {

@@ -66,6 +66,30 @@ func clients_tables(db *DB) {
 	db.exec("create table if not exists pending (position integer primary key autoincrement, room text not null, user text not null, kind text not null, server text not null default '', state text not null default '', created integer not null, unique (room, user))")
 }
 
+// clients_forget forgets what a hosted Matrix account kept as it goes, by its
+// address, its id or its user's: its account data, push rules, pushers and
+// notifications, filters, rooms marked direct, knocks and leaves waiting, the
+// presence it showed, the transactions it sent, its notices room, and every
+// device it had with their keys, its cross-signing keys and its key backup.
+// A released handle is free for anyone, and an account made later at the same
+// address would otherwise take them over: its messages pushed to the earlier
+// owner's devices. The receipts it left in rooms stay with the rooms, and its
+// device list's change stream stays so the address's stream numbers go on
+// rising for the servers that follow it.
+func clients_forget(user *User, id string, address string) {
+	db := networks_database()
+	devices, _ := db.rows("select device from devices where user=?", address)
+	for _, row := range devices {
+		keyring_delete(address, row_string(row, "device"))
+	}
+	for _, table := range []string{"settings", "rules", "pushers", "notifications", "filters", "directs", "pending", "presences", "onetime", "fallbacks", "messages", "signing", "signatures", "backups", "sessions", "data"} {
+		db.exec("delete from "+table+" where user=?", address)
+	}
+	db.exec("delete from sent where account=? or account=?", id, address)
+	db.exec("delete from presence where account=?", id)
+	db.exec("delete from notices where user=? and account=?", user.UID, id)
+}
+
 // clients_upload_maximum bounds a file a client uploads, as mochi.account.upload
 // bounds one an app does.
 func clients_upload_maximum() int64 {

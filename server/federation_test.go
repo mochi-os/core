@@ -2525,6 +2525,89 @@ func TestMatrixForgetWhileTheLeaveIsSent(t *testing.T) {
 	}
 }
 
+// TestMatrixAccountGoneForgetsItsAddress: a hosted Matrix account that goes
+// takes with it everything kept here by its address, its id or its user's -
+// pushers, account data, push rules, notifications, filters, directs, knocks,
+// presence, sent transactions, its notices room, its devices and their keys,
+// its cross-signing keys and key backup - so an account made later at the
+// same address, once its released handle is taken by someone else, starts
+// with none of it. Another address's rows stay, as do the receipts it left in
+// rooms, and its devices' going is told on the device list's stream.
+func TestMatrixAccountGoneForgetsItsAddress(t *testing.T) {
+	alice, _ := create_matrix_test_env(t)
+	db := networks_database()
+	seeds := map[string]string{
+		"settings":      "insert into settings (user, type, content) values (?, 'm.direct', '{}')",
+		"rules":         "insert into rules (user, kind, id, body) values (?, 'override', 'mine', '{}')",
+		"pushers":       "insert into pushers (user, app, key, kind, body, created) values (?, 'org.example', 'phone', 'http', '{}', 1)",
+		"notifications": "insert into notifications (user, room, event, position, actions, created) values (?, '!r:example.com', '$e', 1, '[]', 1)",
+		"filters":       "insert into filters (user, body) values (?, '{}')",
+		"directs":       "insert into directs (user, room, person) values (?, '!r:example.com', '@carol:remote.example')",
+		"pending":       "insert into pending (room, user, kind, created) values ('!r:example.com', ?, 'knock', 1)",
+		"presences":     "insert into presences (user, presence, updated) values (?, 'online', 1)",
+		"devices":       "insert into devices (user, device, created) values (?, 'PHONE', 1)",
+		"onetime":       "insert into onetime (user, device, id, key) values (?, 'PHONE', 'k1', 'x')",
+		"fallbacks":     "insert into fallbacks (user, device, algorithm, id, key) values (?, 'PHONE', 'signed_curve25519', 'f1', 'x')",
+		"messages":      "insert into messages (user, device, sender, type, content, created) values (?, 'PHONE', '@carol:remote.example', 'm.room_key', '{}', 1)",
+		"signing":       "insert into signing (user, purpose, key) values (?, 'master', '{}')",
+		"signatures":    "insert into signatures (user, target, signer, id, value) values (?, 'PHONE', '@alice:example.com', 'ed25519:PHONE', 'x')",
+		"backups":       "insert into backups (user, version, algorithm, auth) values (?, 1, 'm.megolm_backup.v1.curve25519-aes-sha2', '{}')",
+		"sessions":      "insert into sessions (user, version, room, session, data) values (?, 1, '!r:example.com', 's1', '{}')",
+		"data":          "insert into data (user, type, content) values (?, 'm.secret_storage.default_key', '{}')",
+		"receipts":      "insert into receipts (room, user, type, event, ts) values ('!r:example.com', ?, 'm.read', '$e', 1)",
+	}
+	for _, address := range []string{"@alice:example.com", "@bob:example.com"} {
+		for table, query := range seeds {
+			if _, err := db.internal.Exec(query, address); err != nil {
+				t.Fatalf("seed %s: %v", table, err)
+			}
+		}
+	}
+	for _, account := range []string{"m1", "@alice:example.com", "m2", "@bob:example.com"} {
+		db.exec("insert into sent (account, key, event, created) values (?, 'client|PHONE|t1', '$s', 1)", account)
+	}
+	db.exec("insert into presence (account, hidden) values ('m1', 1), ('m2', 1)")
+	db.exec("insert into notices (user, account, room, created) values (?, 'm1', '!n:example.com', 1), (?, 'm2', '!o:example.com', 1)", alice.UID, alice.UID)
+	before, _ := db.row("select count(*) as n from changes where user='@alice:example.com'")
+
+	account_hosted_gone(alice, account_hosted_get(alice, "m1"))
+
+	count := func(query string, args ...any) int64 {
+		row, _ := db.row(query, args...)
+		return row_int(row, "n")
+	}
+	for table := range seeds {
+		left := count("select count(*) as n from " + table + " where user='@alice:example.com'")
+		if table == "receipts" {
+			if left != 1 {
+				t.Errorf("the account's receipt in its room went with it: %d left", left)
+			}
+			continue
+		}
+		if left != 0 {
+			t.Errorf("THE POINT: %d of the gone account's %s rows were kept, for a later account at its address to take over", left, table)
+		}
+		if count("select count(*) as n from "+table+" where user='@bob:example.com'") != 1 {
+			t.Errorf("another address's %s row went too", table)
+		}
+	}
+	if n := count("select count(*) as n from sent where account in ('m1', '@alice:example.com')"); n != 0 {
+		t.Errorf("THE POINT: %d of the gone account's sent rows were kept", n)
+	}
+	if n := count("select count(*) as n from sent where account in ('m2', '@bob:example.com')"); n != 2 {
+		t.Errorf("another account's sent rows went too: %d left of 2", n)
+	}
+	if count("select count(*) as n from presence where account='m1'") != 0 || count("select count(*) as n from presence where account='m2'") != 1 {
+		t.Error("THE POINT: the gone account's presence setting was kept, or another's went")
+	}
+	if count("select count(*) as n from notices where user=? and account='m1'", alice.UID) != 0 || count("select count(*) as n from notices where user=? and account='m2'", alice.UID) != 1 {
+		t.Error("THE POINT: the gone account's notices room was kept, or another account's went")
+	}
+	if after := count("select count(*) as n from changes where user='@alice:example.com'"); after <= row_int(before, "n") {
+		t.Error("its device's going was not told on the device list's stream")
+	}
+}
+
 // TestMatrixDirectory: the people a hosted account knows of are found by
 // name or address, and an address names someone through their server.
 func TestMatrixDirectory(t *testing.T) {

@@ -397,7 +397,8 @@ func accounts_hosted_remove(user *User, domain string, name string) {
 // account_hosted_gone tells a hosted account's network it is gone, which
 // cannot be taken back: the fediverse by a Delete of the actor to its
 // followers' servers, Bluesky by tombstoning its identity, Matrix by its
-// leaving every room it is in.
+// leaving every room it is in; what Matrix kept of it here goes with it
+// (clients_forget).
 func account_hosted_gone(user *User, row map[string]any) {
 	id := row_string(row, "id")
 	activitypub_account_remove(user, id)
@@ -413,6 +414,7 @@ func account_hosted_gone(user *User, row map[string]any) {
 			}
 			cancel()
 		}
+		clients_forget(user, id, address)
 	}
 }
 

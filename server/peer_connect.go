@@ -11,6 +11,7 @@
 package main
 
 import (
+	"context"
 	"math/rand/v2"
 	"strings"
 	"sync"
@@ -64,6 +65,45 @@ func peer_register_disconnect_hook(fn func(string)) {
 	peer_disconnect_hooks = append(peer_disconnect_hooks, fn)
 }
 
+// peer_dials holds, for each peer being dialled, a channel closed when that
+// dial ends, so peer_connect_waiting can wait on it. Guarded by peers_lock.
+var peer_dials = map[string]chan struct{}{}
+
+// peer_dial makes peer_connect's dial; a variable so tests can hold a dial open.
+var peer_dial = net_connect
+
+// peer_dial_wait bounds how long peer_connect_waiting waits on a dial another
+// caller started; libp2p bounds the dial itself.
+var peer_dial_wait = 30 * time.Second
+
+// peer_connect_waiting is peer_connect for a caller that would rather wait on
+// a dial already in flight than be told no at once. Streams a script opens
+// together to one server's entities find all but one of them mid-dial, and
+// told no, each fell into remote_reach's wait for addresses the peer already
+// had: a broadcast for nothing, and a failed open whenever the dial took
+// longer than that wait.
+// Stops waiting, and answers what the peer's state is then, once ctx ends.
+func peer_connect_waiting(ctx context.Context, id string) bool {
+	if peer_connect(id) {
+		return true
+	}
+	peers_lock.Lock()
+	dialed, dialing := peer_dials[id]
+	peers_lock.Unlock()
+	if dialing {
+		timer := time.NewTimer(peer_dial_wait)
+		defer timer.Stop()
+		select {
+		case <-dialed:
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+	}
+	peers_lock.Lock()
+	defer peers_lock.Unlock()
+	return peers[id].state == peer_state_connected
+}
+
 // Connect to a peer if possible. Call peer_add_known(), peer_discovered() or
 // peer_discovered_address() first. Returns false at once if a connect is
 // already in flight, so a caller needing "wait for the connect" must loop and
@@ -89,19 +129,30 @@ func peer_connect(id string) bool {
 	}
 	p.state = peer_state_connecting
 	peers[id] = p
+	dialed := make(chan struct{})
+	peer_dials[id] = dialed
 	addrs := peer_address_strings(p.addresses)
 	peers_lock.Unlock()
 
-	ok := net_connect(id, addrs)
+	ok := peer_dial(id, addrs)
 
 	peers_lock.Lock()
+	// A peer reset mid-dial (a disconnect, a prune) can have a second dial under
+	// way. That dial owns the peer's state and its entry, so its waiters keep
+	// waiting on it; this one only marks a connection it made.
 	p = peers[id]
-	if ok {
+	if peer_dials[id] == dialed {
+		if ok {
+			p.state = peer_state_connected
+		} else {
+			p.state = peer_state_disconnected
+		}
+		delete(peer_dials, id)
+	} else if ok {
 		p.state = peer_state_connected
-	} else {
-		p.state = peer_state_disconnected
 	}
 	peers[id] = p
+	close(dialed)
 	peers_lock.Unlock()
 
 	if !ok {

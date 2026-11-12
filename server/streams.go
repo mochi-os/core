@@ -208,7 +208,7 @@ func (s *Stream) close_write() {
 
 // Close only the read direction of a stream (if supported), otherwise close entirely
 func (s *Stream) close_read() {
-	if s.reader == nil {
+	if s == nil || s.reader == nil {
 		return
 	}
 	if cr, ok := s.reader.(interface{ CloseRead() error }); ok {
@@ -233,16 +233,26 @@ func (s *Stream) close() {
 
 // Read a CBOR encoded segment from a stream
 func (s *Stream) read(v any) error {
+	return s.read_within(v, 0)
+}
+
+// read_within is read with its wait shortened to limit, when limit is positive
+// and shorter than the stream's own: a script may shorten a read, never
+// lengthen it.
+func (s *Stream) read_within(v any, limit time.Duration) error {
 	if s == nil || s.reader == nil {
 		return fmt.Errorf("stream not open for reading")
 	}
 
-	timeout := s.timeout.read
+	timeout := time.Duration(s.timeout.read) * time.Second
 	if timeout <= 0 {
-		timeout = 30
+		timeout = 30 * time.Second
+	}
+	if limit > 0 && limit < timeout {
+		timeout = limit
 	}
 
-	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+	deadline := time.Now().Add(timeout)
 	if r, ok := s.reader.(interface{ SetReadDeadline(time.Time) error }); ok {
 		_ = r.SetReadDeadline(deadline)
 		defer r.SetReadDeadline(time.Time{})
@@ -430,7 +440,7 @@ func (sr *StreamRead) Truth() sl.Bool        { return true }
 func (sr *StreamRead) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: stream.read") }
 func (sr *StreamRead) Name() string          { return "read" }
 
-// Callable: s.read() -> dict | None: Read the next decoded segment
+// Callable: s.read(timeout) -> dict | None: Read the next decoded segment, waiting at most timeout seconds (at most 30, the default)
 func (sr *StreamRead) CallInternal(t *sl.Thread, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	return sr.stream.sl_read(t, nil, args, kwargs)
 }
@@ -502,10 +512,29 @@ func (s *Stream) Type() string {
 }
 
 // s.read() -> any: Read and decode the next segment from the stream
+// s.read(timeout) -> any | None: the next segment, or None when none came
+// within timeout seconds, the stream ended or a segment would not decode. A
+// read that fails ends the stream for reading, so every stream reads the same
+// way after one: on a local loop the read cut off by its deadline leaves its
+// reader still taking the bytes that follow, which a later read would never
+// see whole, and closing the read side also lets that reader go. An event
+// with no stream answers None, as before.
 func (s *Stream) sl_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var timeout sl.Value = sl.None
+	if err := sl.UnpackArgs("read", args, kwargs, "timeout?", &timeout); err != nil {
+		return nil, err
+	}
+	var limit time.Duration
+	if timeout != sl.None {
+		seconds, ok := sl.AsFloat(timeout)
+		if !ok || !(seconds > 0) {
+			return nil, fmt.Errorf("read: timeout must be a positive number of seconds")
+		}
+		limit = max(time.Duration(min(seconds, 30)*float64(time.Second)), time.Nanosecond)
+	}
 	var v any
-	err := s.read(&v)
-	if err != nil {
+	if err := s.read_within(&v, limit); err != nil {
+		s.close_read()
 		return sl.None, nil
 	}
 	return sl_encode(v), nil

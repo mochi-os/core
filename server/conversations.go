@@ -50,6 +50,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/matrix-org/gomatrixserverlib/spec"
@@ -651,25 +652,103 @@ func api_account_directory(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if err != nil {
 		return sl_error(fn, "%v", err)
 	}
-	l, h := c.l, c.h
-	query = strings.TrimSpace(query)
-	people := []map[string]any{}
-	if query == "" || len(query) > 200 || c.x != nil {
-		return sl_encode(people), nil
-	}
 	ctx, cancel := context.WithTimeout(thread_context(t), matrix_directory_timeout)
 	defer cancel()
-	switch {
-	case h != nil:
-		people = rooms_directory(ctx, h, query)
-	case l.kind == "matrix":
-		found, err := matrix_directory(ctx, l, query)
-		if err != nil {
-			return linked_failed(l, fn, err)
-		}
-		people = found
+	people, err := account_search(ctx, c, strings.TrimSpace(query))
+	if err != nil {
+		return linked_failed(c.l, fn, err)
 	}
 	return sl_encode(people), nil
+}
+
+// account_search is one account's directory search for mochi.account.directory
+// and mochi.account.directories: nobody for an XMPP account, which has no
+// directory, or for a query that is empty or too long.
+func account_search(ctx context.Context, c *conversant, query string) ([]map[string]any, error) {
+	switch {
+	case query == "" || len(query) > 200 || c.x != nil:
+	case c.h != nil:
+		return rooms_directory(ctx, c.h, query), nil
+	case c.l.kind == "matrix":
+		return matrix_directory(ctx, c.l, query)
+	}
+	return []map[string]any{}, nil
+}
+
+// account_directories_maximum is the most accounts one
+// mochi.account.directories call searches.
+const account_directories_maximum = 32
+
+// mochi.account.directories(accounts, query) -> list: mochi.account.directory for several accounts at once: each account's people, in the order asked, or None where its server would not answer within five seconds, all searched together under one deadline, so a call costs about as long as its slowest account rather than the sum of them. At most 32 accounts. Requires each account's permission
+func api_account_directories(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var accounts sl.Indexable
+	var query string
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "accounts", &accounts, "query", &query); err != nil {
+		return nil, err
+	}
+	if accounts.Len() > account_directories_maximum {
+		return sl_error(fn, "at most %d accounts", account_directories_maximum)
+	}
+	// Each account is found, and its permission checked, on the script's own
+	// thread; only the searches run beside one another. An account named
+	// twice is searched once.
+	conversants := make([]*conversant, accounts.Len())
+	first := map[string]int{}
+	for i := range conversants {
+		account, ok := sl.AsString(accounts.Index(i))
+		if !ok {
+			return sl_error(fn, "account %d is not a string", i)
+		}
+		c, err := conversing(t, fn, account, "xmpp", "matrix")
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		conversants[i] = c
+		if _, found := first[account]; !found {
+			first[account] = i
+		}
+	}
+
+	query = strings.TrimSpace(query)
+	ctx, cancel := context.WithTimeout(thread_context(t), matrix_directory_timeout)
+	defer cancel()
+	type answer struct {
+		people []map[string]any
+		err    error
+	}
+	answers := make([]answer, len(conversants))
+	var wait sync.WaitGroup
+	for i, c := range conversants {
+		account, _ := sl.AsString(accounts.Index(i))
+		if first[account] != i {
+			continue
+		}
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			answers[i].err = fmt.Errorf("the search failed")
+			guard("mochi.account.directories", nil, func() {
+				answers[i].people, answers[i].err = account_search(ctx, c, query)
+			})
+		}()
+	}
+	wait.Wait()
+
+	out := make([]sl.Value, len(conversants))
+	for i, c := range conversants {
+		account, _ := sl.AsString(accounts.Index(i))
+		a := answers[first[account]]
+		if a.err != nil {
+			out[i] = sl.None
+			// Logged once for an account named twice.
+			if c.l != nil && first[account] == i {
+				linked_failed(c.l, fn, a.err)
+			}
+			continue
+		}
+		out[i] = sl_encode(a.people)
+	}
+	return sl.NewList(out), nil
 }
 
 // conversing_failed is a failure of any kind of account as the app sees it.

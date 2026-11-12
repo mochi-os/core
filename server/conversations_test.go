@@ -902,6 +902,117 @@ func TestMatrixDirectoryDeadline(t *testing.T) {
 	}
 }
 
+// TestMatrixDirectoriesAskedTogether: mochi.account.directories searches
+// several accounts at once, so a call costs about its slowest account rather
+// than the sum; answers each in the order asked, None for one whose server
+// never answers by the shared deadline while the others' people still come;
+// searches an account named twice once; and refuses what directory refuses.
+func TestMatrixDirectoriesAskedTogether(t *testing.T) {
+	alice := create_linked_test_env(t)
+	var lock sync.Mutex
+	asked := map[string]int{}
+	fast := http.NewServeMux()
+	fast.HandleFunc("POST /_matrix/client/v3/user_directory/search", func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		lock.Lock()
+		asked[token]++
+		lock.Unlock()
+		time.Sleep(400 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[{"user_id":"@` + token + `:` + r.Host + `","display_name":"` + token + `"}]}`))
+	})
+	quick := httptest.NewServer(fast)
+	t.Cleanup(quick.Close)
+	release := make(chan struct{})
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(func() { close(release); dead.Close() })
+	saved := matrix_directory_timeout
+	matrix_directory_timeout = time.Second
+	t.Cleanup(func() { matrix_directory_timeout = saved })
+
+	db := db_user(alice, "user")
+	for _, account := range []struct {
+		id, token string
+		server    *httptest.Server
+	}{{"m1", "one", quick}, {"m2", "two", quick}, {"m3", "three", quick}, {"m4", "four", dead}} {
+		host := fake_host(account.server)
+		db.exec("insert into accounts (id, type, label, identifier, data, created, verified, enabled) values (?, 'matrix', 'Alice', ?, ?, 1, 1, 1)", account.id, "@alice:"+host, json_encode(map[string]any{"id": "@alice:" + host, "server": host, "base": account.server.URL, "token": account.token}))
+	}
+	thread := linked_thread(alice)
+	fn := sl.NewBuiltin("mochi.account.directories", api_account_directories)
+	list := func(ids ...string) *sl.List {
+		values := make([]sl.Value, len(ids))
+		for i, id := range ids {
+			values[i] = sl.String(id)
+		}
+		return sl.NewList(values)
+	}
+	named := func(v sl.Value) string {
+		found, _ := sl_decode(v).([]any)
+		if len(found) != 1 {
+			return ""
+		}
+		name, _ := found[0].(map[string]any)["name"].(string)
+		return name
+	}
+
+	start := time.Now()
+	value, err := api_account_directories(thread, fn, sl.Tuple{list("m2", "m1", "m3"), sl.String("a")}, nil)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers := value.(*sl.List)
+	if elapsed > 900*time.Millisecond {
+		t.Errorf("THE POINT: three searches of 400 ms took %s", elapsed)
+	}
+	if answers.Len() != 3 || named(answers.Index(0)) != "two" || named(answers.Index(1)) != "one" || named(answers.Index(2)) != "three" {
+		t.Errorf("THE POINT: answers not in the order asked: %v", answers)
+	}
+
+	start = time.Now()
+	value, err = api_account_directories(thread, fn, sl.Tuple{list("m4", "m1"), sl.String("a")}, nil)
+	if elapsed := time.Since(start); err != nil || elapsed > 3*time.Second {
+		t.Fatalf("a dead server held the call %s (%v)", elapsed, err)
+	}
+	if answers := value.(*sl.List); answers.Index(0) != sl.None || named(answers.Index(1)) != "one" {
+		t.Errorf("THE POINT: with one server dead = %v", answers)
+	}
+
+	lock.Lock()
+	before := asked["one"]
+	lock.Unlock()
+	value, err = api_account_directories(thread, fn, sl.Tuple{list("m1", "m1"), sl.String("a")}, nil)
+	lock.Lock()
+	twice := asked["one"] - before
+	lock.Unlock()
+	if answers, _ := value.(*sl.List); err != nil || twice != 1 || answers.Len() != 2 || named(answers.Index(0)) != "one" || named(answers.Index(1)) != "one" {
+		t.Errorf("an account named twice was searched %d times: %v, %v", twice, value, err)
+	}
+
+	if value, err := api_account_directories(thread, fn, sl.Tuple{list("m1"), sl.String(" ")}, nil); err != nil || len(sl_decode(value.(*sl.List).Index(0)).([]any)) != 0 {
+		t.Errorf("an empty query = %v, %v", value, err)
+	}
+	many := make([]string, account_directories_maximum+1)
+	for i := range many {
+		many[i] = "m1"
+	}
+	if _, err := api_account_directories(thread, fn, sl.Tuple{list(many...), sl.String("a")}, nil); err == nil {
+		t.Error("THE POINT: more accounts than the maximum were searched")
+	}
+	if _, err := api_account_directories(thread, fn, sl.Tuple{list("m1", "nobody"), sl.String("a")}, nil); err == nil {
+		t.Error("THE POINT: an account that is not the user's was searched")
+	}
+	if _, err := api_account_directories(thread, fn, sl.Tuple{sl.NewList([]sl.Value{sl.MakeInt(1)}), sl.String("a")}, nil); err == nil {
+		t.Error("an account that is not a string was searched")
+	}
+}
+
 // TestXMPPSendCancelled: sends whose contexts are cancelled the moment each
 // returns, as an action's is when it ends, leave the session up and each
 // send after them sent. mellium watches the context a send is given, and

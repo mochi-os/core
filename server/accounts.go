@@ -321,6 +321,7 @@ var api_account = sls.FromStringDict(sl.String("mochi.account"), sl.StringDict{
 	"follower":      api_account_follower,
 	"followers":     sl.NewBuiltin("mochi.account.followers", api_account_followers),
 	"directory":     sl.NewBuiltin("mochi.account.directory", api_account_directory),
+	"directories":   sl.NewBuiltin("mochi.account.directories", api_account_directories),
 	"encryption":    api_account_encryption,
 	"following":     sl.NewBuiltin("mochi.account.following", api_account_following),
 	"get":           sl.NewBuiltin("mochi.account.get", api_account_get),

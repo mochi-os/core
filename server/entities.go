@@ -676,10 +676,23 @@ func api_entity_delete(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		}
 	}
 
+	// What the entity sent just before - an app's farewell to its subscribers
+	// - is still on its way: let its fan-out reach the queue and the queue
+	// send it, as deleting a user does, since the delete takes the entity's
+	// queued messages and the key that signs them.
+	deadline := time.Now().Add(entity_farewell_wait)
+	broadcast_fanouts_wait(e.ID, deadline)
+	queue_drain_entity(e.ID, time.Until(deadline))
+
 	// Delete the entity
 	e.delete()
 	return sl.True, nil
 }
+
+// entity_farewell_wait is how long deleting an entity waits for what it sent
+// just before to leave the queue; past it a recipient that cannot be reached
+// misses the message. A variable so tests can shorten it.
+var entity_farewell_wait = 2 * time.Second
 
 // mochi.entity.fingerprint(id) -> string: Get the 9-character fingerprint of an
 // entity. Returns the bare form. For display, slice and join with hyphens at the

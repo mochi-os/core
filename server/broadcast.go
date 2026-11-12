@@ -1491,6 +1491,28 @@ var (
 	broadcast_fanouts_lock sync.Mutex
 )
 
+// broadcast_fanouts_wait waits, until the deadline, for the fan-outs in
+// progress on every stream an entity broadcasts on, so what it broadcast just
+// before is in the queue by the time its deletion drains it.
+func broadcast_fanouts_wait(entity string, deadline time.Time) {
+	prefix := entity + "\x00"
+	broadcast_fanouts_lock.Lock()
+	var pending []chan struct{}
+	for stream, done := range broadcast_fanouts {
+		if strings.HasPrefix(stream, prefix) {
+			pending = append(pending, done)
+		}
+	}
+	broadcast_fanouts_lock.Unlock()
+	for _, done := range pending {
+		select {
+		case <-done:
+		case <-time.After(time.Until(deadline)):
+			return
+		}
+	}
+}
+
 // broadcast_fanout queues a broadcast's resolved recipients in the background,
 // after every earlier fan-out of the same stream: two broadcasts sent back to
 // back otherwise race, and the later one's rows can be queued, and so

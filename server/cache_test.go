@@ -7,13 +7,16 @@
 package main
 
 import (
+	"context"
 	"github.com/gin-gonic/gin"
 	sl "go.starlark.net/starlark"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -342,10 +345,10 @@ func TestCacheReadIsBoundedByDefault(t *testing.T) {
 	}
 }
 
-// TestCacheEvictSparesLiveTransfers. A .partial or .lock inside cache_grace is
-// a transfer in flight: not counted and not a candidate, however old the
-// entries around it. Past the grace it is abandoned and reclaimed, since
-// nothing else ever removes one.
+// TestCacheEvictSparesLiveTransfers. A .partial inside cache_grace is a
+// transfer in flight: not counted and not a candidate, however old the entries
+// around it. Past the grace it is abandoned and reclaimed, since nothing else
+// ever removes one.
 func TestCacheEvictSparesLiveTransfers(t *testing.T) {
 	orig_dir, orig_budget := cache_dir, cache_budget
 	cache_dir = t.TempDir()
@@ -353,7 +356,6 @@ func TestCacheEvictSparesLiveTransfers(t *testing.T) {
 
 	moment := time.Now()
 	live := cache_test_write(t, "u", "app", "big.abc.partial", 100, moment.Add(-10*time.Minute))
-	lock := cache_test_write(t, "u", "app", "log.lock", 1, moment.Add(-10*time.Minute))
 	stale := cache_test_write(t, "u", "app", "old.def.partial", 100, moment.Add(-2*time.Hour))
 	entry := cache_test_write(t, "u", "app", "entry", 100, moment.Add(-time.Minute))
 	cache_budget = 0
@@ -364,9 +366,6 @@ func TestCacheEvictSparesLiveTransfers(t *testing.T) {
 	cache_evict()
 	if !file_exists(live) {
 		t.Error("a partial ten minutes old was evicted from under its transfer")
-	}
-	if !file_exists(lock) {
-		t.Error("a live append lock was evicted, letting a second appender past it")
 	}
 	if file_exists(stale) {
 		t.Error("a partial two hours old was not reclaimed")
@@ -606,6 +605,153 @@ func TestRevalidationIsAnsweredBeforeTheKeep(t *testing.T) {
 	}
 }
 
+// cache_test_hold takes path as a transfer would, answering the function that
+// releases it, or false when a transfer already holds it.
+func cache_test_hold(path string) (func(), bool) {
+	running, taken := cache_hold_take(path)
+	if !taken {
+		return nil, false
+	}
+	return func() { cache_hold_release(path, running) }, true
+}
+
+// TestCacheWaitFollowsTheTransferInFlight: a request that finds another
+// transfer filling the entry it wants waits for that transfer and is told the
+// entry is there, rather than failing on its hold; it is told the transfer is
+// still running when its time runs out, or when as many requests already wait
+// on it as may; and that nothing is filling the entry when no running append
+// holds it - a lock file on disk included - so it fetches the entry itself.
+func TestCacheWaitFollowsTheTransferInFlight(t *testing.T) {
+	directory := t.TempDir()
+	entry := filepath.Join(directory, "original")
+	partial := filepath.Join(directory, "original.partial")
+	reset := func() {
+		os.Remove(entry)
+		os.Remove(partial)
+		os.Remove(partial + ".lock")
+	}
+	ctx := context.Background()
+	hold := func() func() {
+		release, held := cache_test_hold(partial)
+		if !held {
+			t.Fatal("CONTROL: the partial was still held by an earlier section's transfer")
+		}
+		return release
+	}
+
+	// The transfer in flight finishes: its append ends, then its caller moves
+	// the partial into place a moment later.
+	reset()
+	release := hold()
+	go func(release func()) {
+		time.Sleep(150 * time.Millisecond)
+		os.WriteFile(partial, []byte("AVATAR"), 0644)
+		release()
+		time.Sleep(150 * time.Millisecond)
+		os.Rename(partial, entry)
+	}(release)
+	if got := cache_wait(ctx, entry, partial, 5*time.Second); got != sl.True {
+		t.Errorf("THE POINT: waiting on a transfer that finished answered %v, not that the entry is there", got)
+	}
+
+	// The transfer is still running when the time runs out.
+	reset()
+	release = hold()
+	started := time.Now()
+	if got := cache_wait(ctx, entry, partial, 200*time.Millisecond); got != sl.None {
+		t.Errorf("THE POINT: a transfer still running answered %v, not that it is still running", got)
+	}
+	if waited := time.Since(started); waited < 200*time.Millisecond || waited > 2*time.Second {
+		t.Errorf("the wait for a running transfer took %v, not the time given", waited)
+	}
+
+	// As many requests as may already wait on it: the next is told at once.
+	done := make(chan struct{})
+	for range cache_wait_waiters {
+		go func() {
+			cache_wait(ctx, entry, partial, 5*time.Second)
+			done <- struct{}{}
+		}()
+	}
+	for {
+		cache_holds.Lock()
+		waiting := cache_holds.running[partial].waiting
+		cache_holds.Unlock()
+		if waiting == cache_wait_waiters {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	started = time.Now()
+	if got := cache_wait(ctx, entry, partial, 5*time.Second); got != sl.None || time.Since(started) > time.Second {
+		t.Errorf("THE POINT: a request past the waiters allowed answered %v after %v, not at once", got, time.Since(started))
+	}
+	release()
+	for range cache_wait_waiters {
+		<-done
+	}
+
+	// Nothing fills the entry: answered at once, so the caller fetches it.
+	reset()
+	started = time.Now()
+	if got := cache_wait(ctx, entry, partial, 5*time.Second); got != sl.False || time.Since(started) > time.Second {
+		t.Errorf("CONTROL: nothing filling the entry answered %v after %v", got, time.Since(started))
+	}
+
+	// A lock file on disk - left by a crash, a restart or an older core -
+	// holds nothing.
+	reset()
+	if err := os.WriteFile(partial+".lock", nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := cache_wait(ctx, entry, partial, 5*time.Second); got != sl.False {
+		t.Errorf("THE POINT: a lock file on disk was waited on, answering %v", got)
+	}
+
+	// A transfer cut short ends without its entry, leaving its partial for the
+	// next attempt: it is waited on for the moment allowed for the move, and no
+	// longer.
+	reset()
+	os.WriteFile(partial, []byte("AVA"), 0644)
+	release = hold()
+	go func(release func()) {
+		time.Sleep(100 * time.Millisecond)
+		release()
+	}(release)
+	started = time.Now()
+	if got, waited := cache_wait(ctx, entry, partial, 30*time.Second), time.Since(started); got != sl.False || waited < cache_wait_settle || waited > cache_wait_settle+time.Second {
+		t.Errorf("a transfer cut short answered %v after %v, not False after the %v allowed for its move", got, waited, cache_wait_settle)
+	}
+
+	// A transfer whose partial is gone and whose entry is not there - the
+	// entry moved away again at once, as an attachment adopted into the app's
+	// own storage is, or the partial judged bad - is not waited on past the
+	// partial's going: the waiter looks again for itself rather than waiting
+	// out the settling time.
+	reset()
+	os.WriteFile(partial, []byte("AVATAR"), 0644)
+	release = hold()
+	go func(release func()) {
+		time.Sleep(100 * time.Millisecond)
+		os.Remove(partial)
+		release()
+	}(release)
+	started = time.Now()
+	if got := cache_wait(ctx, entry, partial, 30*time.Second); got != sl.False || time.Since(started) > cache_wait_settle/2 {
+		t.Errorf("THE POINT: a transfer whose entry was taken away again answered %v after %v, not at once", got, time.Since(started))
+	}
+
+	// The entry already there is answered at once, held or not.
+	reset()
+	release = hold()
+	os.WriteFile(entry, []byte("AVATAR"), 0644)
+	if got := cache_wait(ctx, entry, partial, 5*time.Second); got != sl.True {
+		t.Errorf("CONTROL: an entry already there answered %v", got)
+	}
+	release()
+	reset()
+}
+
 // TestCacheEvictByUse: eviction goes by when an entry was last used, not when
 // it was written - an old entry still in use outlives a newer one nobody reads.
 func TestCacheEvictByUse(t *testing.T) {
@@ -625,5 +771,144 @@ func TestCacheEvictByUse(t *testing.T) {
 	}
 	if _, err := os.Stat(idle); err == nil {
 		t.Error("the idle entry survived")
+	}
+}
+
+// TestCacheEvictSparesHeldPartials. A partial an append is filling is a
+// transfer in flight: never evicted, however old, since deleting it would break
+// the transfer writing it, and not counted, or one larger than the budget would
+// have every admission evict everything else. One no transfer holds is an
+// ordinary entry, so a broken transfer's bytes cannot sit outside the budget.
+// A file a transfer takes after the walk began is judged again as it is
+// removed.
+func TestCacheEvictSparesHeldPartials(t *testing.T) {
+	orig_dir, orig_budget := cache_dir, cache_budget
+	cache_dir = t.TempDir()
+	defer func() { cache_dir, cache_budget = orig_dir, orig_budget }()
+
+	old := time.Now().Add(-2 * time.Hour)
+	filling := cache_test_write(t, "u", "app", "filling", 100, old)
+	abandoned := cache_test_write(t, "u", "app", "abandoned", 100, old)
+	release, _ := cache_test_hold(filling)
+
+	remaining := cache_evict_to(0)
+	if !file_exists(filling) {
+		t.Error("THE POINT: a partial an append is filling was evicted from under it")
+	}
+	if file_exists(abandoned) {
+		t.Error("THE POINT: a partial no transfer holds was spared, outside the budget")
+	}
+	defer release()
+	if remaining != 0 {
+		t.Errorf("THE POINT: eviction left %d bytes counted, want none: the held partial is in flight", remaining)
+	}
+	if measured := cache_measure(); measured != 0 {
+		t.Errorf("measurement counted %d bytes, want none: the held partial is in flight", measured)
+	}
+
+	later := cache_test_write(t, "u", "app", "later", 100, old)
+	release, _ = cache_test_hold(later)
+	if cache_remove_unheld(later) || !file_exists(later) {
+		t.Error("THE POINT: a file a transfer took after the walk began was removed from under it")
+	}
+	release()
+	if !cache_remove_unheld(later) || file_exists(later) {
+		t.Error("CONTROL: a file no transfer holds was not removed")
+	}
+}
+
+// TestCacheCopyIsSharedAndWhole. A copy is written under a name of its own
+// and moved over its destination, so the file a reader has open is never
+// rewritten under it, and no temporary is left. A copy into a destination
+// another copy is still writing waits for that copy and answers its size,
+// writing nothing itself.
+func TestCacheCopyIsSharedAndWhole(t *testing.T) {
+	thread := cache_read_thread(t)
+	source, err := cache_file(thread, "remote/original")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Dir(source), 0755)
+	if err := os.WriteFile(source, []byte("ORIGINAL"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	user := thread.Local("user").(*User)
+	base := api_file_base(user, principal_app(thread))
+	os.MkdirAll(base, 0755)
+	builtin := sl.NewBuiltin("mochi.cache.copy", api_cache_copy)
+	copy := func(destination string) (sl.Value, error) {
+		return api_cache_copy(thread, builtin, sl.Tuple{sl.String("remote/original"), sl.String(destination)}, nil)
+	}
+
+	if err := os.WriteFile(filepath.Join(base, "adopted.jpg"), []byte("OLD"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := os.Open(filepath.Join(base, "adopted.jpg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	if value, err := copy("adopted.jpg"); err != nil || value != sl.MakeInt64(8) {
+		t.Fatalf("a copy = (%v, %v), want (8, nil)", value, err)
+	}
+	if data, _ := io.ReadAll(reader); string(data) != "OLD" {
+		t.Errorf("THE POINT: the file a reader had open was rewritten under it, reading %q", data)
+	}
+	if data, _ := os.ReadFile(filepath.Join(base, "adopted.jpg")); string(data) != "ORIGINAL" {
+		t.Errorf("the destination holds %q, want the copy", data)
+	}
+	if left, _ := filepath.Glob(filepath.Join(base, "*_copy")); len(left) != 0 {
+		t.Errorf("the copy left its temporary behind: %v", left)
+	}
+
+	target := filepath.Join(base, "shared.jpg")
+	running, _ := cache_hold_take(target)
+	result := make(chan sl.Value, 1)
+	go func() {
+		value, _ := copy("shared.jpg")
+		result <- value
+	}()
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case value := <-result:
+		t.Fatalf("THE POINT: a copy into a destination another copy is writing did not wait for it, answering %v", value)
+	default:
+	}
+	running.size, running.ok = 42, true
+	cache_hold_release(target, running)
+	if value := <-result; value != sl.MakeInt64(42) {
+		t.Errorf("a shared copy answered %v, not the size of the copy it waited for", value)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Error("a shared copy wrote the destination itself")
+	}
+}
+
+// TestCacheWaitTakesTheTransferBoundOnlyToWait. Waiting on a transfer moves
+// the call to the transfer bound, as the transfer itself does; a wait on
+// nothing does not, or any call could lift its own time limit.
+func TestCacheWaitTakesTheTransferBoundOnlyToWait(t *testing.T) {
+	thread := cache_read_thread(t)
+	serving := new(atomic.Bool)
+	thread.SetLocal("file_serving", serving)
+	builtin := sl.NewBuiltin("mochi.cache.wait", api_cache_wait)
+	wait := func() sl.Value {
+		value, err := api_cache_wait(thread, builtin, sl.Tuple{sl.String("remote/x"), sl.String("partial/x")}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	if got := wait(); got != sl.False || serving.Load() {
+		t.Errorf("THE POINT: a wait on nothing answered %v and took the transfer bound %v", got, serving.Load())
+	}
+	partial, err := cache_file(thread, "partial/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, _ := cache_test_hold(partial)
+	defer release()
+	if got := wait(); got != sl.None || !serving.Load() {
+		t.Errorf("CONTROL: a wait on a running transfer answered %v and took the transfer bound %v", got, serving.Load())
 	}
 }

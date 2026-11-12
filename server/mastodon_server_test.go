@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -984,15 +985,17 @@ func TestMastodonNotificationsWalk(t *testing.T) {
 	}
 }
 
-// TestMastodonNotificationsQueryReadsTheNumbers: a page is read as a range of
-// the account's index of numbers - or of kinds and numbers, for one kind -
-// never by sorting all the account keeps.
+// TestMastodonNotificationsQueryReadsTheNumbers: a page is read as ranges of
+// indexes that hold only the rows it wants - the account's index of numbers;
+// of kinds and numbers, one range per kind asked; of persons, for one
+// person's and those naming no one - never by sorting or passing over all the
+// account keeps. Kinds excluded are read as the kinds kept, found by the
+// index of kinds one at a time.
 func TestMastodonNotificationsQueryReadsTheNumbers(t *testing.T) {
 	alice, _ := create_mastodon_test_env(t)
 	db := db_user(alice, "networks")
 	defer db.close()
-	plan := func(w mastodon_wanted, maximum int64, minimum int64) string {
-		query, args := mastodon_alerts_query("f1", w, maximum, minimum, 20)
+	plan := func(query string, args ...any) []string {
 		rows, err := db.rows("explain query plan "+query, args...)
 		if err != nil {
 			t.Fatal(err)
@@ -1001,23 +1004,47 @@ func TestMastodonNotificationsQueryReadsTheNumbers(t *testing.T) {
 		for _, row := range rows {
 			details = append(details, row_string(row, "detail"))
 		}
-		return strings.Join(details, "\n")
+		return details
 	}
 	for _, c := range []struct {
 		name             string
 		w                mastodon_wanted
 		maximum, minimum int64
 		index            string
+		ranges           int
 	}{
-		{"every kind", mastodon_wanted{limit: 20}, 0, 0, "alerts_number"},
-		{"every kind below a number", mastodon_wanted{limit: 20}, 1 << 60, 0, "alerts_number"},
-		{"every kind from the oldest side", mastodon_wanted{limit: 20, oldest: true}, 0, 1 << 50, "alerts_number"},
-		{"all but follows", mastodon_wanted{limit: 20, excluded: []string{"follow"}}, 1 << 60, 0, "alerts_number"},
-		{"one person's", mastodon_wanted{limit: 20, key: "https://remote.example/users/bob"}, 1 << 60, 0, "alerts_number"},
-		{"mentions", mastodon_wanted{limit: 20, types: []string{"mention"}}, 1 << 60, 0, "alerts_type"},
+		{"every kind", mastodon_wanted{limit: 20}, 0, 0, "alerts_number", 1},
+		{"every kind below a number", mastodon_wanted{limit: 20}, 1 << 60, 0, "alerts_number", 1},
+		{"every kind from the oldest side", mastodon_wanted{limit: 20, oldest: true}, 0, 1 << 50, "alerts_number", 1},
+		{"one person's", mastodon_wanted{limit: 20, key: "https://remote.example/users/bob"}, 1 << 60, 0, "alerts_person", 2},
+		{"one person's mentions but not follows", mastodon_wanted{limit: 20, key: "https://remote.example/users/bob", types: []string{"mention"}, excluded: []string{"follow"}}, 1 << 60, 0, "alerts_person", 2},
+		{"mentions", mastodon_wanted{limit: 20, types: []string{"mention"}}, 1 << 60, 0, "alerts_type", 1},
+		{"mentions and follows", mastodon_wanted{limit: 20, types: []string{"mention", "follow"}}, 1 << 60, 0, "alerts_type", 2},
 	} {
-		if got := plan(c.w, c.maximum, c.minimum); !strings.HasPrefix(got, "SEARCH alerts USING INDEX "+c.index+" (account=? AND") || strings.Contains(got, "TEMP B-TREE") {
-			t.Errorf("THE POINT: a page of %s is not read as a range of %s:\n%s", c.name, c.index, got)
+		query, args := mastodon_alerts_query("f1", c.w, c.maximum, c.minimum, 20)
+		details := plan(query, args...)
+		searches := 0
+		for _, d := range details {
+			if strings.HasPrefix(d, "SCAN alerts") {
+				t.Errorf("THE POINT: a page of %s passes over the account's notifications:\n%s", c.name, strings.Join(details, "\n"))
+			}
+			if strings.HasPrefix(d, "SEARCH alerts") {
+				searches++
+				if !strings.HasPrefix(d, "SEARCH alerts USING INDEX "+c.index+" (account=? AND") {
+					t.Errorf("THE POINT: a page of %s reads a range not of %s:\n%s", c.name, c.index, strings.Join(details, "\n"))
+				}
+			}
+			if c.ranges == 1 && strings.Contains(d, "TEMP B-TREE") {
+				t.Errorf("THE POINT: a page of %s sorts what it reads:\n%s", c.name, strings.Join(details, "\n"))
+			}
+		}
+		if searches != c.ranges {
+			t.Errorf("THE POINT: a page of %s reads %d ranges, want %d:\n%s", c.name, searches, c.ranges, strings.Join(details, "\n"))
+		}
+	}
+	for _, d := range plan(mastodon_alerts_kinds_query, "f1", "f1") {
+		if strings.HasPrefix(d, "SCAN alerts") || (strings.HasPrefix(d, "SEARCH alerts") && !strings.Contains(d, "INDEX alerts_type (account=?")) {
+			t.Errorf("THE POINT: the kinds kept are not found by the index of kinds: %s", d)
 		}
 	}
 }
@@ -1122,6 +1149,61 @@ func TestMastodonNotificationsReadingLimit(t *testing.T) {
 	w, body = mastodon_request(t, token, "GET", "/api/v1/notifications?account_id="+person+"&max_id="+m[1], nil)
 	if items := mastodon_items(body); len(items) != 1 || items[0]["type"] != "follow" || fetched.Load() != 50 {
 		t.Errorf("THE POINT: the request going on from the last read = %v, after %d fetches", body, fetched.Load())
+	}
+}
+
+// TestMastodonNotificationsKindsAndPersons: excluding kinds lists exactly the
+// kinds kept, newest first, however many of the excluded lie between them;
+// several kinds come merged in number order; and one person's notifications
+// are on the first page however many of others' are newer - never an empty
+// page before them, which clients take for the end.
+func TestMastodonNotificationsKindsAndPersons(t *testing.T) {
+	alice, _ := create_mastodon_test_env(t)
+	token := mastodon_token(t, alice, "read write")
+	// Under the 63 kept, so a page reads only what its ranges hold: a person's
+	// notifications not known by their person would each be read to learn it.
+	saved := mastodon_alerts_reading
+	mastodon_alerts_reading = 10
+	t.Cleanup(func() { mastodon_alerts_reading = saved })
+	held := "https://remote.example/notes/held"
+	mastodon_snapshot(alice, "status", "note:"+held, map[string]any{"id": "1", "uri": held, "content": "held"})
+	mastodon_alert_add(t, alice, "mention", 1_600_000_000, map[string]any{"type": "mention", "remote": held, "person": mastodon_follow_alert(1)["person"]})
+	mastodon_alert_add(t, alice, "follow-one", 1_600_000_001, mastodon_follow_alert(1))
+	for i := 0; i < 60; i++ {
+		mastodon_alert_add(t, alice, fmt.Sprintf("follow%d", i), 1_700_000_000+int64(i), mastodon_follow_alert(100+i))
+		if i == 30 {
+			mastodon_alert_add(t, alice, "favourite", 1_700_000_100, map[string]any{"type": "favourite", "remote": held, "person": mastodon_follow_alert(2)["person"]})
+		}
+	}
+	kinds := func(path string) []string {
+		_, body := mastodon_request(t, token, "GET", path, nil)
+		var out []string
+		for _, item := range mastodon_items(body) {
+			out = append(out, fmt.Sprint(item["type"]))
+		}
+		return out
+	}
+	for _, c := range []struct {
+		path string
+		want []string
+	}{
+		{"/api/v1/notifications?exclude_types[]=follow", []string{"favourite", "mention"}},
+		{"/api/v1/notifications?exclude_types[]=follow&exclude_types[]=favourite", []string{"mention"}},
+		{"/api/v1/notifications?types[]=mention&types[]=favourite", []string{"favourite", "mention"}},
+		{"/api/v1/notifications?types[]=follow&types[]=mention&exclude_types[]=follow", []string{"mention"}},
+		{"/api/v1/notifications?exclude_types[]=follow&exclude_types[]=favourite&exclude_types[]=mention", nil},
+	} {
+		if got := kinds(c.path); !slices.Equal(got, c.want) {
+			t.Errorf("THE POINT: %s = %v, want %v", c.path, got, c.want)
+		}
+	}
+	_, mentions := mastodon_request(t, token, "GET", "/api/v1/notifications?types[]=mention", nil)
+	person := mastodon_map(mastodon_items(mentions)[0]["account"])["id"].(string)
+	if got := kinds("/api/v1/notifications?limit=5&account_id=" + person); !slices.Equal(got, []string{"follow", "mention"}) {
+		t.Errorf("THE POINT: one person's notifications under 61 newer of others' = %v, want [follow mention]", got)
+	}
+	if got := kinds("/api/v1/notifications?account_id=" + person + "&exclude_types[]=follow"); !slices.Equal(got, []string{"mention"}) {
+		t.Errorf("THE POINT: one person's but their follow = %v, want [mention]", got)
 	}
 }
 

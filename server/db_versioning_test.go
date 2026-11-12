@@ -248,6 +248,103 @@ func TestUserDatabaseIsVersioned(t *testing.T) {
 	}
 }
 
+// TestUserDatabaseGivesUpClientTables: a user.db laid by a 2.0.12-2.0.16
+// core, as an export of one restores it, still holds the other networks'
+// client tables; its next open moves their rows to the user's networks.db,
+// with their ids and counters, and drops them from user.db.
+func TestUserDatabaseGivesUpClientTables(t *testing.T) {
+	test_data_directory(t)
+	alice := &User{UID: "alice"}
+	old := db_open("users/alice/user.db")
+	if err := user_upgrade_1(old); err != nil {
+		t.Fatal(err)
+	}
+	// As 2.0.16 laid them, at user.db version 1.
+	for _, table := range []string{
+		"create table alerts (id integer primary key autoincrement, account text not null, row text not null, event text not null default '', answer text not null, created integer not null, unique (account, row, event))",
+		"create table filters (id integer primary key autoincrement, account text not null, title text not null, context text not null, action text not null default 'warn', keywords text not null default '[]', expires integer not null default 0, created integer not null)",
+		"create table markers (account text not null, timeline text not null, position text not null, version integer not null default 0, updated integer not null, primary key (account, timeline))",
+		"create table numbers (number integer primary key autoincrement, kind text not null, id text not null, created integer not null, unique (kind, id))",
+		"create table snapshots (kind text not null, key text not null, document text not null, created integer not null, updated integer not null, primary key (kind, key))",
+		"create table snowflakes (number integer primary key, kind text not null, key text not null, unique (kind, key))",
+		"create table subscriptions (token text not null primary key, account text not null, endpoint text not null, auth text not null, key text not null, alerts text not null default '{}', policy text not null default 'all', standard integer not null default 0, created integer not null)",
+	} {
+		old.exec(table)
+	}
+	old.exec("insert into alerts (id, account, row, event, answer, created) values (5, 'f1', 'r5', 'e', '{\"type\":\"follow\"}', 10), (9, 'f1', 'r9', 'e', '{\"type\":\"mention\"}', 20), (12, 'f1', 'r12', 'e', '{}', 30)")
+	old.exec("delete from alerts where id=12")
+	old.exec("insert into filters (id, account, title, context, created) values (3, 'f1', 'No spoilers', '[\"home\"]', 1)")
+	old.exec("insert into markers (account, timeline, position, updated) values ('f1', 'home', '42', 1)")
+	old.exec("insert into numbers (number, kind, id, created) values (7, 'notification', 'alert:5', 10)")
+	old.exec("insert into snapshots (kind, key, document, created, updated) values ('status', 'note:x', '{}', 1, 1)")
+	old.exec("insert into snowflakes (number, kind, key) values (99, 'status', 'x')")
+	old.exec("insert into subscriptions (token, account, endpoint, auth, key, created) values ('t', 'f1', 'https://push.example', 'a', 'k', 1)")
+	old.exec("pragma user_version=1")
+	db_purge_prefix(filepath.Join("users", "alice"))
+
+	db := db_user(alice, "user")
+	if version := db.integer("pragma user_version"); version != len(db_user_steps["user"]) {
+		t.Fatalf("THE POINT: user.db is at version %d, want %d", version, len(db_user_steps["user"]))
+	}
+	networks := db_user(alice, "networks")
+	for table, want := range map[string]int{"alerts": 2, "filters": 1, "markers": 1, "numbers": 1, "snapshots": 1, "snowflakes": 1, "subscriptions": 1} {
+		if versioning_has(db, table) {
+			t.Errorf("THE POINT: user.db still holds %s", table)
+		}
+		if got := networks.integer("select count(*) from " + table); got != want {
+			t.Errorf("THE POINT: the user's networks.db holds %d rows of %s, want %d", got, table, want)
+		}
+	}
+	if found, _ := networks.exists("select 1 from alerts where id=9 and row='r9' and answer like '%mention%'"); !found {
+		t.Error("THE POINT: a notification did not keep its id")
+	}
+	if found, _ := networks.exists("select 1 from filters where id=3 and title='No spoilers'"); !found {
+		t.Error("THE POINT: a filter did not keep its id")
+	}
+	// The counter past the removed row: a new notification is never given an
+	// id a client already saw.
+	networks.exec("insert into alerts (account, row, event, answer, created) values ('f1', 'new', 'e', '{}', 40)")
+	if id, _ := networks.row("select id from alerts where row='new'"); row_int(id, "id") != 13 {
+		t.Errorf("THE POINT: a new notification after the move is %d, want 13", row_int(id, "id"))
+	}
+
+	// A user.db laid as now is left as it is.
+	fresh := db_user(&User{UID: "bob"}, "user")
+	if fresh.integer("pragma user_version") != len(db_user_steps["user"]) || versioning_has(fresh, "alerts") {
+		t.Error("a new user's user.db was not laid as now")
+	}
+}
+
+// TestNotificationsKnowTheirPerson: a user's networks.db laid before the
+// notifications kept whom they are from has each one filled in on its next
+// open, as the client interface keys the person: by id, else by identity, and
+// none for a notification naming no one.
+func TestNotificationsKnowTheirPerson(t *testing.T) {
+	test_data_directory(t)
+	alice := &User{UID: "alice"}
+	old := db_open("users/alice/networks.db")
+	if err := networks_upgrade_1(old); err != nil {
+		t.Fatal(err)
+	}
+	old.exec("pragma user_version=1")
+	old.exec("insert into alerts (account, row, event, answer, created, number, type) values ('f1', 'a', 'e', '{\"type\":\"follow\",\"person\":{\"id\":\"https://remote.example/users/bob\"}}', 1, 1, 'follow'), ('f1', 'b', 'e', '{\"type\":\"mention\",\"person\":{\"id\":\"\",\"identity\":\"abc\"}}', 2, 2, 'mention'), ('f1', 'c', 'e', '{\"type\":\"mention\"}', 3, 3, 'mention')")
+	db_purge_prefix(filepath.Join("users", "alice"))
+
+	networks := db_user(alice, "networks")
+	if version := networks.integer("pragma user_version"); version != len(db_user_steps["networks"]) {
+		t.Fatalf("THE POINT: the user's networks.db is at version %d, want %d", version, len(db_user_steps["networks"]))
+	}
+	for row, want := range map[string]any{"a": "https://remote.example/users/bob", "b": "identity:abc", "c": nil} {
+		kept, _ := networks.row("select person from alerts where row=?", row)
+		if got := kept["person"]; fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("THE POINT: notification %s is from %v, want %v", row, got, want)
+		}
+	}
+	if found, _ := networks.exists("select 1 from sqlite_master where type='index' and name='alerts_person'"); !found {
+		t.Error("THE POINT: the notifications have no index of persons")
+	}
+}
+
 // TestSystemDatabaseIsVersioned: an app.db is laid whole when new, and one
 // laid before the columns it gained since is brought up to date.
 func TestSystemDatabaseIsVersioned(t *testing.T) {

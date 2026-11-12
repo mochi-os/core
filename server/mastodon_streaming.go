@@ -115,7 +115,7 @@ func mastodon_alert_record(s *mastodon_session, row map[string]any, answer map[s
 func mastodon_alert_number(user *User, id int64, created int64) {
 	number, _ := strconv.ParseInt(mastodon_number(user, "notification", "alert:"+strconv.FormatInt(id, 10), created), 10, 64)
 	if number > 0 {
-		db_user_brief(user, "networks").exec("update alerts set number=?, type=coalesce(nullif(type, ''), json_extract(answer, '$.type'), '') where id=?", number, id)
+		db_user_brief(user, "networks").exec("update alerts set number=?, type=coalesce(nullif(type, ''), json_extract(answer, '$.type'), ''), person=coalesce(person, iif(json_extract(answer, '$.person') is null, null, coalesce(nullif(json_extract(answer, '$.person.id'), ''), 'identity:'||coalesce(json_extract(answer, '$.person.identity'), '')))) where id=?", number, id)
 	}
 }
 
@@ -230,44 +230,93 @@ type mastodon_wanted struct {
 // tests can lower it.
 var mastodon_alerts_reading = 400
 
-// mastodon_alerts_query reads a batch of an account's notifications in number
-// order between the bounds given (0 for none), size of them, from the
-// account's index of numbers, or of kinds and numbers where kinds are asked,
-// so each batch reads the range after the last. A row naming no person is
-// kept for a person asked for, since its status names who it is from.
+// mastodon_alerts_query reads the next size of an account's notifications a
+// request asks for, in number order between the bounds given (0 for none),
+// each from a range of an index that holds only rows it wants, the ranges
+// merged: one person's from the index of persons, with that person's and the
+// rows naming no one (whose status says whom they are from), of the kinds
+// asked and not excluded; else each kind's asked from the index of kinds;
+// else every kind from the index of numbers. So a query reads about the rows
+// it answers, however few of the account's are wanted. Kinds to exclude with
+// no person asked come as the kinds kept (mastodon_alerts_kinds).
 func mastodon_alerts_query(account string, w mastodon_wanted, maximum int64, minimum int64, size int) (string, []any) {
-	query := "select * from alerts where account=? and number is not null"
-	args := []any{account}
-	if len(w.types) > 0 {
-		query += " and type in (" + strings.TrimSuffix(strings.Repeat("?,", len(w.types)), ",") + ")"
-		for _, kind := range w.types {
-			args = append(args, kind)
-		}
+	order := " order by number desc limit ?"
+	if w.oldest {
+		order = " order by number limit ?"
 	}
-	if len(w.excluded) > 0 {
-		query += " and type not in (" + strings.TrimSuffix(strings.Repeat("?,", len(w.excluded)), ",") + ")"
-		for _, kind := range w.excluded {
-			args = append(args, kind)
-		}
-	}
-	if w.key != "" {
-		query += " and (json_extract(answer, '$.person') is null or coalesce(nullif(json_extract(answer, '$.person.id'), ''), 'identity:'||coalesce(json_extract(answer, '$.person.identity'), ''))=?)"
-		args = append(args, w.key)
-	}
+	bounds, limits := "", []any{}
 	if maximum > 0 {
-		query += " and number<?"
-		args = append(args, maximum)
+		bounds += " and number<?"
+		limits = append(limits, maximum)
 	}
 	if minimum > 0 {
-		query += " and number>?"
-		args = append(args, minimum)
+		bounds += " and number>?"
+		limits = append(limits, minimum)
 	}
-	if w.oldest {
-		query += " order by number limit ?"
+	marks := func(n int) string {
+		return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+	}
+	var ranges []string
+	var args []any
+	if w.key != "" {
+		kinds, kept := "", []any{}
+		if len(w.types) > 0 {
+			kinds += " and type in (" + marks(len(w.types)) + ")"
+			for _, kind := range w.types {
+				kept = append(kept, kind)
+			}
+		}
+		if len(w.excluded) > 0 {
+			kinds += " and type not in (" + marks(len(w.excluded)) + ")"
+			for _, kind := range w.excluded {
+				kept = append(kept, kind)
+			}
+		}
+		for _, person := range []string{"person=?", "person is null"} {
+			ranges = append(ranges, "select * from (select * from alerts indexed by alerts_person where account=? and "+person+" and number is not null"+kinds+bounds+order+")")
+			args = append(args, account)
+			if person == "person=?" {
+				args = append(args, w.key)
+			}
+			args = append(append(append(args, kept...), limits...), size)
+		}
 	} else {
-		query += " order by number desc limit ?"
+		kinds := w.types
+		if len(kinds) == 0 {
+			kinds = []string{""}
+		}
+		for _, kind := range kinds {
+			part := "select * from (select * from alerts where account=? and number is not null"
+			args = append(args, account)
+			if kind != "" {
+				part += " and type=?"
+				args = append(args, kind)
+			}
+			ranges = append(ranges, part+bounds+order+")")
+			args = append(append(args, limits...), size)
+		}
 	}
-	return query, append(args, size)
+	return "select * from (" + strings.Join(ranges, " union all ") + ")" + order, append(args, size)
+}
+
+// mastodon_alerts_kinds_query finds the kinds of an account's notifications,
+// each the least kind past the last, by the index of kinds.
+const mastodon_alerts_kinds_query = "with recursive kinds(type) as (select min(type) from alerts where account=? union all select (select min(type) from alerts where account=? and type>kinds.type) from kinds where kinds.type is not null) select type from kinds where type is not null"
+
+// mastodon_alerts_kinds are the kinds of the account's notifications kept
+// but those excluded: a request excluding kinds reads those it keeps, each
+// from its range of the index of kinds, rather than the whole range of the
+// index of numbers passing over the excluded. Found one kind at a time by
+// that index, however many notifications each holds.
+func mastodon_alerts_kinds(s *mastodon_session, excluded []string) []string {
+	rows, _ := db_user_brief(s.user, "networks").rows(mastodon_alerts_kinds_query, s.account, s.account)
+	var kept []string
+	for _, row := range rows {
+		if kind := row_string(row, "type"); !slices.Contains(excluded, kind) {
+			kept = append(kept, kind)
+		}
+	}
+	return kept
 }
 
 // mastodon_notifications_of are the account's kept notifications a request
@@ -280,6 +329,17 @@ func mastodon_notifications_of(c *gin.Context, s *mastodon_session, w mastodon_w
 	mastodon_alerts_numbered(s)
 	if w.person != "" {
 		if w.key = mastodon_key(s.user, "account", w.person); w.key == "" {
+			return nil, 0
+		}
+	}
+	if w.key == "" && len(w.excluded) > 0 {
+		if len(w.types) > 0 {
+			w.types = slices.DeleteFunc(slices.Clone(w.types), func(kind string) bool { return slices.Contains(w.excluded, kind) })
+		} else {
+			w.types = mastodon_alerts_kinds(s, w.excluded)
+		}
+		w.excluded = nil
+		if len(w.types) == 0 {
 			return nil, 0
 		}
 	}

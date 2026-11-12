@@ -499,6 +499,13 @@ func apps_create(db *DB) {
 // and holds the file open until the process ends, as every caller once did.
 // A caller making one call at once uses db_user_brief.
 func db_user(u *User, name string) *DB {
+	return db_user_file(u, name, db_user_steps[name])
+}
+
+// db_user_file is db_user with the file's steps given, for a step of one
+// per-user file that opens another, which db_user_steps cannot name without
+// referring to itself.
+func db_user_file(u *User, name string, steps []func(*DB) error) *DB {
 	path := fmt.Sprintf("users/%s/%s.db", u.UID, name)
 	db := db_open(path)
 	if db == nil {
@@ -508,7 +515,7 @@ func db_user(u *User, name string) *DB {
 	// cached handle, so assigning them directly races any concurrent opener.
 	db_bind(db, u, nil)
 	db_count(db)
-	db_upgrade_file(db, path, db_user_steps[name])
+	db_upgrade_file(db, path, steps)
 	return db
 }
 
@@ -536,10 +543,14 @@ func db_count(db *DB) {
 // db_user_steps are the versioned steps of each per-user database, by name. A
 // name with none is a file core keeps no tables in.
 var db_user_steps = map[string][]func(*DB) error{
-	"user":          {user_upgrade_1, user_upgrade_2},
+	"user":          {user_upgrade_1, user_upgrade_2, user_upgrade_3},
 	"notifications": {notifications_upgrade_1},
-	"networks":      {networks_upgrade_1},
+	"networks":      networks_steps,
 }
+
+// networks_steps are the per-user networks.db's, named apart for
+// user_upgrade_3, which opens that file.
+var networks_steps = []func(*DB) error{networks_upgrade_1, networks_upgrade_2}
 
 // user_upgrade_1 lays user.db as it was when it gained a version, and makes
 // once the changes it used to make on every open: the column additions, the
@@ -599,6 +610,79 @@ func user_upgrade_2(db *DB) error {
 	return nil
 }
 
+// user_upgrade_3 takes the other networks' client tables out of a user.db
+// laid by a 2.0.12-2.0.16 core, as a backup exported by one brings them back:
+// their rows go to the user's networks.db with their ids and counters, and the
+// tables are dropped. A user.db without them is left as it is.
+func user_upgrade_3(db *DB) error {
+	var held []string
+	for _, table := range []string{"snowflakes", "snapshots", "markers", "filters", "subscriptions", "alerts", "numbers"} {
+		found, err := db.exists("select 1 from sqlite_master where type='table' and name=?", table)
+		if err != nil {
+			return err
+		}
+		if found {
+			held = append(held, table)
+		}
+	}
+	if len(held) == 0 {
+		return nil
+	}
+	if db.user == nil {
+		return fmt.Errorf("user.db holds the other networks' tables but names no user")
+	}
+	networks := db_user_file(db.user, "networks", networks_steps)
+	if networks == nil {
+		return fmt.Errorf("the user's networks.db could not be opened")
+	}
+	defer networks.close()
+	for _, table := range held {
+		columns, err := networks.rows("select name from pragma_table_info(?)", table)
+		if err != nil {
+			return err
+		}
+		wanted := map[string]bool{}
+		for _, column := range columns {
+			wanted[row_string(column, "name")] = true
+		}
+		rows, err := db.rows("select * from " + table)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			var names []string
+			var values []any
+			for name, value := range row {
+				if wanted[name] {
+					names = append(names, name)
+					values = append(values, value)
+				}
+			}
+			if err := networks.exec_e("insert or ignore into "+table+" ("+strings.Join(names, ", ")+") values ("+strings.TrimSuffix(strings.Repeat("?, ", len(names)), ", ")+")", values...); err != nil {
+				return err
+			}
+		}
+		if kept, _ := db.row("select seq from sqlite_sequence where name=?", table); kept != nil {
+			if current, _ := networks.row("select seq from sqlite_sequence where name=?", table); current == nil {
+				if err := networks.exec_e("insert into sqlite_sequence (name, seq) values (?, ?)", table, row_int(kept, "seq")); err != nil {
+					return err
+				}
+			} else if row_int(current, "seq") < row_int(kept, "seq") {
+				if err := networks.exec_e("update sqlite_sequence set seq=? where name=?", row_int(kept, "seq"), table); err != nil {
+					return err
+				}
+			}
+		}
+		if moved := networks.integer("select count(*) from " + table); moved < len(rows) {
+			return fmt.Errorf("%s: %d rows in user.db, %d in networks.db", table, len(rows), moved)
+		}
+		if err := db.exec_e("drop table " + table); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // networks_upgrade_1 lays a user's own networks.db: what is theirs on the
 // other networks, written as their accounts and their clients work, so it
 // stays out of user.db and the data there that must never be lost; what is
@@ -632,6 +716,26 @@ func networks_upgrade_1(db *DB) error {
 	db.exec("create table if not exists items (account text not null, node text not null, item text not null, payload text not null, updated integer not null, primary key (account, node, item))")
 	db.exec("create table if not exists joined (account text not null, address text not null, room text not null, nick text not null, name text not null default '', seen integer not null default 0, created integer not null, primary key (account, room))")
 	return nil
+}
+
+// networks_upgrade_2 keeps on each Mastodon notification whom it is from,
+// indexed, so a page of one person's notifications reads that person's alone:
+// the key the client interface gives the person its answer names, or null for
+// a notification naming no one, whose status says whom it is from.
+func networks_upgrade_2(db *DB) error {
+	found, err := db.exists("select 1 from pragma_table_info('alerts') where name='person'")
+	if err != nil {
+		return err
+	}
+	if !found {
+		if err := db.exec_e("alter table alerts add column person text"); err != nil {
+			return err
+		}
+	}
+	if err := db.exec_e("update alerts set person=coalesce(nullif(json_extract(answer, '$.person.id'), ''), 'identity:'||coalesce(json_extract(answer, '$.person.identity'), '')) where person is null and json_extract(answer, '$.person') is not null"); err != nil {
+		return err
+	}
+	return db.exec_e("create index if not exists alerts_person on alerts (account, person, number)")
 }
 
 // notifications_upgrade_1 lays the per-user notification-delivery dedup (email

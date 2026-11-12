@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	sl "go.starlark.net/starlark"
 	"golang.org/x/crypto/acme/autocert"
@@ -230,6 +231,99 @@ func TestAccountProfile(t *testing.T) {
 	if shown := profile(); len(shown) != 0 {
 		t.Errorf("after hiding: %v", shown)
 	}
+}
+
+// TestAccountProfileChat: a hosted XMPP or Matrix account shown on the
+// profile is linked by the address its network's clients open a chat with,
+// and every change to what the profile shows - an account shown or hidden,
+// a shown account switched off or removed - asks the app that keeps the
+// person's friends told (People) to tell them; a change to an account that
+// is not shown asks nothing.
+func TestAccountProfileChat(t *testing.T) {
+	alice, _ := create_handles_test_env(t)
+	db := db_user(alice, "user")
+	db.exec("create table if not exists accounts (id text not null primary key, type text not null, label text not null default '', identifier text not null default '', data text not null default '', created integer not null, verified integer not null default 0, enabled integer not null default 1, \"default\" text not null default '', last_delivered integer not null default 0, device text not null default '')")
+	db.exec("insert into accounts (id, type, label, identifier, data, created) values ('x1', 'xmpp', '', 'alice@example.com', '{\"hosted\":true,\"handle\":\"alice\",\"domain\":\"example.com\"}', 1)")
+	db.exec("insert into accounts (id, type, label, identifier, data, created) values ('m1', 'matrix', '', '@alice:example.com', '{\"hosted\":true,\"handle\":\"alice\",\"domain\":\"example.com\"}', 2)")
+	db.exec("insert into accounts (id, type, label, identifier, data, created) values ('n1', 'xmpp', '', 'alice_news@example.com', '{\"hosted\":true,\"handle\":\"alice_news\",\"domain\":\"example.com\"}', 3)")
+	told := make(chan string, 16)
+	saved_call := activitypub_call
+	activitypub_call = func(user *User, a *App, function string, args Map) (any, error) {
+		if function == "profile/accounts" {
+			told <- user.UID + " " + args["identity"].(string)
+		}
+		return nil, nil
+	}
+	t.Cleanup(func() { activitypub_call = saved_call })
+	apps_lock.Lock()
+	saved_apps := apps
+	apps = map[string]*App{"people": {id: "people", internal: &AppVersion{Functions: map[string]AppFunction{"profile/accounts": {Function: "function_profile_accounts"}}}}}
+	apps_lock.Unlock()
+	t.Cleanup(func() {
+		apps_lock.Lock()
+		apps = saved_apps
+		apps_lock.Unlock()
+	})
+	app := create_external_app("app1")
+	for _, permission := range []string{"accounts/read", "accounts/write"} {
+		permission_grant(alice, app.id, permission)
+	}
+	thread := create_test_thread(alice, app)
+	update := sl.NewBuiltin("mochi.account.update", api_account_update)
+	set := func(id string, key string, value sl.Value) {
+		t.Helper()
+		if _, err := api_account_update(thread, update, sl.Tuple{sl.String(id)}, []sl.Tuple{{sl.String(key), value}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expect := func(what string, want bool) {
+		t.Helper()
+		select {
+		case got := <-told:
+			if !want {
+				t.Errorf("THE POINT: %s told the friends (%s), though nothing shown changed", what, got)
+			} else if got != "u-alice e-alice" {
+				t.Errorf("%s told %q, want alice's identity", what, got)
+			}
+		case <-time.After(2 * time.Second):
+			if want {
+				t.Errorf("THE POINT: %s did not tell the friends", what)
+			}
+		}
+	}
+	set("x1", "profile", sl.True)
+	expect("showing the XMPP account", true)
+	set("m1", "profile", sl.True)
+	expect("showing the Matrix account", true)
+	value, err := api_account_profile(thread, sl.NewBuiltin("mochi.account.profile", api_account_profile), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := map[string]string{}
+	for _, entry := range sl_decode(value).([]any) {
+		account := entry.(map[string]any)
+		links[account["type"].(string)] = account["url"].(string)
+	}
+	if links["xmpp"] != "xmpp:alice@example.com" || links["matrix"] != "https://matrix.to/#/@alice:example.com" || len(links) != 2 {
+		t.Errorf("THE POINT: the profile links %v, want the XMPP account at xmpp:alice@example.com and the Matrix one at https://matrix.to/#/@alice:example.com", links)
+	}
+	set("n1", "enabled", sl.False)
+	expect("switching off an account not shown", false)
+	set("x1", "enabled", sl.False)
+	expect("switching off a shown account", true)
+	set("m1", "profile", sl.False)
+	expect("hiding the Matrix account", true)
+	set("m1", "profile", sl.True)
+	expect("showing the Matrix account again", true)
+	remove := sl.NewBuiltin("mochi.account.remove", api_account_remove)
+	if _, err := api_account_remove(thread, remove, sl.Tuple{sl.String("n1")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	expect("removing an account not shown", false)
+	if _, err := api_account_remove(thread, remove, sl.Tuple{sl.String("m1")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	expect("removing a shown account", true)
 }
 
 // TestAccountAddressMigration: a hosted fediverse account made with the

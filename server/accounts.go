@@ -1281,10 +1281,18 @@ func api_account_profile(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []s
 			name = row_string(row, "label")
 		}
 		address, _ := data["url"].(string)
-		// A hosted fediverse account's page is its permanent id, which
-		// answers a browser with the person's profile.
-		if address == "" && account_hosted_flag(row) && ptype == "fediverse" {
-			address = account_actor(user, row_string(row, "id"))
+		// A hosted account's page: a fediverse account's permanent id, which
+		// answers a browser with the person's profile, and the address an
+		// XMPP or Matrix client opens a chat with.
+		if address == "" && account_hosted_flag(row) {
+			switch ptype {
+			case "fediverse":
+				address = account_actor(user, row_string(row, "id"))
+			case "xmpp":
+				address = "xmpp:" + row_string(row, "identifier")
+			case "matrix":
+				address = "https://matrix.to/#/" + row_string(row, "identifier")
+			}
 		}
 		shown = append(shown, map[string]any{"type": ptype, "identifier": row["identifier"], "name": name, "url": address})
 	}
@@ -1400,6 +1408,10 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 			db.account_set(id, map[string]any{"enabled": val})
 			// A linked chat account's session follows the switch.
 			linked_refresh(user, id)
+			// Only an enabled account is shown on the profile.
+			if account_profile_flag(db, id) {
+				shown = true
+			}
 
 		case "default":
 			val, _ := sl.AsString(kv[1])
@@ -1601,15 +1613,58 @@ func api_account_update(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 		}
 	}
 	if shown {
-		for _, row := range accounts_hosted(user, "fediverse") {
-			if !account_group(row) {
-				account_changed(user, row_string(row, "id"))
-			}
-		}
+		accounts_shown_changed(user)
 	}
 
 	return sl.True, nil
 }
+
+// account_profile_flag is whether the user has chosen to show an account on
+// their profile, enabled or not.
+func account_profile_flag(db *DB, id string) bool {
+	row, _ := db.row("select data from accounts where id=?", id)
+	if row == nil {
+		return false
+	}
+	on, _ := account_data(row)["profile"].(bool)
+	return on
+}
+
+// accounts_shown_changed follows a change to the accounts the user shows on
+// their profile: every hosted fediverse account's document links them, and
+// each app that keeps the user's friends told of them (People, which gives
+// friends' servers the XMPP and Matrix addresses among them) is asked to tell
+// them, after the change and apart from the caller.
+func accounts_shown_changed(user *User) {
+	for _, row := range accounts_hosted(user, "fediverse") {
+		if !account_group(row) {
+			account_changed(user, row_string(row, "id"))
+		}
+	}
+	identity := user.identity()
+	if identity == nil {
+		return
+	}
+	found := apps_for_function(user, "profile/accounts")
+	if len(found) == 0 {
+		return
+	}
+	go func() {
+		// One call at a time, so a later call reads what the profile shows
+		// later: each app versions what it sends as it reads, and a friend
+		// keeps the newest.
+		accounts_shown_lock.Lock()
+		defer accounts_shown_lock.Unlock()
+		for _, app := range found {
+			if _, err := activitypub_call(user, app, "profile/accounts", Map{"identity": identity.ID}); err != nil {
+				info("Profile accounts of %s: %s: %v", user.UID, app.id, err)
+			}
+		}
+	}()
+}
+
+// accounts_shown_lock holds the apps' profile/accounts calls to one at a time.
+var accounts_shown_lock sync.Mutex
 
 // account_changing are the hosted accounts whose copy on other networks is
 // out of date, each sent once its changes have paused (account_change_delay),
@@ -1736,9 +1791,13 @@ func api_account_remove(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	// Check the account exists; the caller distinguishes "no such account" from
 	// "removed" by the return value.
-	row, _ := db.row("select id, type, identifier, data from accounts where id=?", id)
+	row, _ := db.row("select id, type, identifier, data, enabled from accounts where id=?", id)
 	if row == nil {
 		return sl.False, nil
+	}
+	// An account shown on the profile leaves it either way below.
+	if on, _ := account_data(row)["profile"].(bool); on && row_int(row, "enabled") == 1 {
+		defer accounts_shown_changed(user)
 	}
 	// An OAuth account is also the identity the user signs in with. Removing
 	// it here revokes the grants it holds; the sign-in link is unlinked on

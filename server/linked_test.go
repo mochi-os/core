@@ -283,6 +283,25 @@ type lemmy_fake struct {
 	uploads int
 	refusal int           // the status the image store answers instead of the file
 	stall   time.Duration // how long the image store waits before answering
+	outage  int           // the status every route answers with a proxy's error page, as a server behind a down gateway does
+}
+
+// outage_page is a gateway's own error page, as Bluesky's index answered
+// through its proxy on wasabi.
+const outage_page = "<!doctype html>\n<html lang=\"en-us\">\n\t<head>\n\t\t<meta charset=\"utf-8\">\n\t\t<title>Service Unavailable | Path</title>\n\t</head>\n\t<body><h1>Service Unavailable</h1></body>\n</html>\n"
+
+// answer_outage answers a set outage with its page, and reports whether it did.
+func answer_outage(w http.ResponseWriter, lock *sync.Mutex, outage *int) bool {
+	lock.Lock()
+	status := *outage
+	lock.Unlock()
+	if status == 0 {
+		return false
+	}
+	w.Header().Set("Content-Type", "text/html")
+	w.WriteHeader(status)
+	io.WriteString(w, outage_page)
+	return true
 }
 
 func create_lemmy_fake(t *testing.T) *lemmy_fake {
@@ -401,7 +420,11 @@ func create_lemmy_fake(t *testing.T) *lemmy_fake {
 		f.lock.Unlock()
 		answer(w, 201, map[string]any{"files": []any{map[string]any{"file": "abc.png", "delete_token": "d"}}})
 	})
-	f.server = httptest.NewServer(mux)
+	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !answer_outage(w, &f.lock, &f.outage) {
+			mux.ServeHTTP(w, r)
+		}
+	}))
 	t.Cleanup(f.server.Close)
 	return f
 }
@@ -590,8 +613,67 @@ func TestLinkedLemmy(t *testing.T) {
 	if message, _ := tested["message"].(string); tested["success"] != false || !strings.Contains(strings.ToLower(message), "authentication") {
 		t.Errorf("test after revocation = %v", tested)
 	}
-	if _, err := api_account_timeline(thread, fn, sl.Tuple{sl.String(id)}, nil); err == nil {
-		t.Error("timeline after revocation succeeded")
+	if value, err := api_account_timeline(thread, fn, sl.Tuple{sl.String(id)}, nil); err != nil || value != sl.None {
+		t.Errorf("timeline after revocation = %v, %v; want None", value, err)
+	}
+}
+
+// TestLinkedOutage: a linked account's server that answers with a gateway's
+// error page gives no timeline, posts or notifications, and each answers None
+// rather than ending the caller, so a scheduled poll of many accounts goes on
+// past it; once the server is back the pages return. The error names the
+// status, not the page's markup.
+func TestLinkedOutage(t *testing.T) {
+	alice := create_linked_test_env(t)
+	fake := create_lemmy_fake(t)
+	thread := linked_thread(alice)
+	fn := sl.NewBuiltin("test", nil)
+	host := fake_host(fake.server)
+	account := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("lemmy")}, linked_kwargs("server", host, "username", "alice", "password", "secret")))
+	id, _ := account["id"].(string)
+	reads := map[string]func(*sl.Thread, *sl.Builtin, sl.Tuple, []sl.Tuple) (sl.Value, error){
+		"timeline":      api_account_timeline,
+		"posts":         api_account_posts,
+		"notifications": api_account_notifications,
+	}
+
+	fake.lock.Lock()
+	fake.outage = http.StatusGatewayTimeout
+	fake.lock.Unlock()
+	for name, read := range reads {
+		if value, err := read(thread, fn, sl.Tuple{sl.String(id)}, nil); err != nil || value != sl.None {
+			t.Errorf("THE POINT: %s during an outage = %v, %v; want None", name, value, err)
+		}
+	}
+
+	fake.lock.Lock()
+	fake.outage = 0
+	fake.lock.Unlock()
+	for name, read := range reads {
+		if page := decoded(t)(read(thread, fn, sl.Tuple{sl.String(id)}, nil)); len(page["items"].([]any)) == 0 {
+			t.Errorf("%s after the outage = %v", name, page)
+		}
+	}
+}
+
+// TestLinkedFailureMessage: a refusal names what the server said, from its
+// JSON where it gives some, its text where it does not, and the status's name
+// in place of a page of markup.
+func TestLinkedFailureMessage(t *testing.T) {
+	for _, c := range []struct {
+		status int
+		body   string
+		want   string
+	}{
+		{504, outage_page, "the server answered 504: Gateway Timeout"},
+		{502, "  <html><body>Bad gateway</body></html>", "the server answered 502: Bad Gateway"},
+		{429, "Too many requests, slow down", "the server answered 429: Too many requests, slow down"},
+		{400, `{"error":"incorrect_login"}`, "the server answered 400: incorrect_login"},
+		{401, `{"error":"invalid_token","error_description":"The token expired"}`, "the server answered 401: The token expired"},
+	} {
+		if got := linked_failure(c.status, []byte(c.body)).Error(); got != c.want {
+			t.Errorf("THE POINT: %d %q reads %q, want %q", c.status, c.body, got, c.want)
+		}
 	}
 }
 

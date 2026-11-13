@@ -967,9 +967,13 @@ func (a *linked_answer) Error() string {
 }
 
 // failure turns a non-2xx answer into an error naming the status and what the
-// server said, within reason.
+// server said, within reason. A page of markup, such as a proxy's own error
+// page, says nothing its status does not, so the status's name stands in.
 func linked_failure(status int, body []byte) error {
 	message := strings.TrimSpace(string(body))
+	if strings.HasPrefix(message, "<") {
+		message = http.StatusText(status)
+	}
 	if len(message) > 200 {
 		message = message[:200]
 	}
@@ -1048,6 +1052,20 @@ func (l *linked) remember(key string, result map[string]any) {
 // published to.
 func linked_failed(l *linked, fn *sl.Builtin, err error) (sl.Value, error) {
 	info("Linked %s account %s: %s: %v", l.kind, l.id, fn.Name(), err)
+	return sl.None, nil
+}
+
+// account_unread notes a page a social account's server, or Bluesky's index
+// for a hosted account, would not give and answers None, so that a scheduled
+// poll of many accounts goes on past the one whose server is down or has
+// signed it out, rather than ending there on every run until that server
+// recovers. The limiter's own refusal keeps its answer.
+func account_unread(account string, fn *sl.Builtin, err error) (sl.Value, error) {
+	var limit *RateLimitError
+	if errors.As(err, &limit) {
+		return sl_error(fn, "%v", err)
+	}
+	info("Account %s: %s: %v", account, fn.Name(), err)
 	return sl.None, nil
 }
 
@@ -1305,7 +1323,7 @@ func hosted_bluesky(row map[string]any) map[string]any {
 	return nil
 }
 
-// mochi.account.timeline(account, cursor="", limit=40) -> dict: A page of a social account's home timeline, {items, cursor}: the items in the network's own form (Mastodon statuses, Bluesky feed items, Lemmy post views), newest first, and the cursor for the next page, empty at the end; a hosted Bluesky account's from Bluesky's index. Behind the account permission
+// mochi.account.timeline(account, cursor="", limit=40) -> dict: A page of a social account's home timeline, {items, cursor}: the items in the network's own form (Mastodon statuses, Bluesky feed items, Lemmy post views), newest first, and the cursor for the next page, empty at the end; a hosted Bluesky account's from Bluesky's index. Behind the account permission; None when the server does not give it
 func api_account_timeline(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	account, cursor, limit, _, err := linked_page_arguments(fn, args, kwargs)
 	if err != nil {
@@ -1318,7 +1336,7 @@ func api_account_timeline(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	if hosted := hosted_bluesky(row); hosted != nil {
 		page, err := appview_page(thread_context(t), user, hosted, "app.bsky.feed.getTimeline", map[string]string{}, "feed", cursor, limit)
 		if err != nil {
-			return sl_error(fn, "%v", err)
+			return account_unread(account, fn, err)
 		}
 		return linked_page_encode(page), nil
 	}
@@ -1328,7 +1346,7 @@ func api_account_timeline(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []
 	}
 	page, err := linked_timeline(thread_context(t), l, cursor, limit)
 	if err != nil {
-		return sl_error(fn, "%v", err)
+		return account_unread(account, fn, err)
 	}
 	return linked_page_encode(page), nil
 }
@@ -1392,12 +1410,12 @@ func api_account_posts(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 	}
 	page, err := linked_posts(thread_context(t), l, cursor, limit)
 	if err != nil {
-		return sl_error(fn, "%v", err)
+		return account_unread(account, fn, err)
 	}
 	return linked_page_encode(page), nil
 }
 
-// mochi.account.notifications(account, cursor="", limit=40) -> dict: A page of a social account's notifications, {items, cursor}, in the network's own form, newest first; on Lemmy each item carries kind, "reply" or "mention"; a hosted Bluesky account's from Bluesky's index, without those from anyone the owner blocks. Behind the account permission
+// mochi.account.notifications(account, cursor="", limit=40) -> dict: A page of a social account's notifications, {items, cursor}, in the network's own form, newest first; on Lemmy each item carries kind, "reply" or "mention"; a hosted Bluesky account's from Bluesky's index, without those from anyone the owner blocks. Behind the account permission; None when the server does not give it
 func api_account_notifications(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	account, cursor, limit, _, err := linked_page_arguments(fn, args, kwargs)
 	if err != nil {
@@ -1410,7 +1428,7 @@ func api_account_notifications(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	if hosted := hosted_bluesky(row); hosted != nil {
 		page, err := appview_page(thread_context(t), user, hosted, "app.bsky.notification.listNotifications", map[string]string{}, "notifications", cursor, limit)
 		if err != nil {
-			return sl_error(fn, "%v", err)
+			return account_unread(account, fn, err)
 		}
 		page.Items = slices.DeleteFunc(page.Items, func(item any) bool {
 			entry, _ := item.(map[string]any)
@@ -1426,7 +1444,7 @@ func api_account_notifications(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwar
 	}
 	page, err := linked_notifications(thread_context(t), l, cursor, limit)
 	if err != nil {
-		return sl_error(fn, "%v", err)
+		return account_unread(account, fn, err)
 	}
 	return linked_page_encode(page), nil
 }

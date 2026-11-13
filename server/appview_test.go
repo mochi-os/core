@@ -33,6 +33,7 @@ type appview_fake struct {
 	calls    []map[string]any
 	refused  int
 	labelers []string
+	outage   int // the status every method answers with a gateway's error page
 }
 
 func create_appview_fake(t *testing.T) *appview_fake {
@@ -40,6 +41,9 @@ func create_appview_fake(t *testing.T) *appview_fake {
 	f := &appview_fake{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/xrpc/", func(w http.ResponseWriter, r *http.Request) {
+		if answer_outage(w, &f.lock, &f.outage) {
+			return
+		}
 		method := strings.TrimPrefix(r.URL.Path, "/xrpc/")
 		f.lock.Lock()
 		defer f.lock.Unlock()
@@ -227,6 +231,41 @@ func TestAppviewForwarding(t *testing.T) {
 	api_account_posts(thread, fn, sl.Tuple{sl.String("b1")}, nil)
 	if len(f.calls) != calls {
 		t.Error("reading the account's own posts asked the index")
+	}
+}
+
+// TestAppviewOutage: while Bluesky's index answers with its gateway's error
+// page, a hosted account's notifications and timeline are None rather than an
+// error that ends the scheduled poll reading them; once it is back they
+// return.
+func TestAppviewOutage(t *testing.T) {
+	alice, f, _ := create_appview_test_env(t)
+	thread, fn := atproto_thread(alice), sl.NewBuiltin("test", nil)
+	reads := map[string]func(*sl.Thread, *sl.Builtin, sl.Tuple, []sl.Tuple) (sl.Value, error){
+		"timeline":      api_account_timeline,
+		"notifications": api_account_notifications,
+	}
+
+	f.lock.Lock()
+	f.outage = http.StatusGatewayTimeout
+	f.lock.Unlock()
+	for name, read := range reads {
+		if value, err := read(thread, fn, sl.Tuple{sl.String("b1")}, nil); err != nil || value != sl.None {
+			t.Errorf("THE POINT: %s while the index is down = %v, %v; want None", name, value, err)
+		}
+	}
+
+	f.lock.Lock()
+	f.outage = 0
+	f.lock.Unlock()
+	for name, read := range reads {
+		value, err := read(thread, fn, sl.Tuple{sl.String("b1")}, nil)
+		if err != nil {
+			t.Fatalf("%s after the outage: %v", name, err)
+		}
+		if items, _ := sl_decode_map(value)["items"].([]any); len(items) != 1 {
+			t.Errorf("%s after the outage = %v", name, sl_decode_map(value))
+		}
 	}
 }
 

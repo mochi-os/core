@@ -27,17 +27,17 @@ import (
 // TestVariantNameKeepsTheDirectory is the regression, at the level the defect
 // lives: two images that differ only in directory must not produce one name.
 func TestVariantNameKeepsTheDirectory(t *testing.T) {
-	first := variant_name("photos/a/cat.jpg", "thumbnail")
-	second := variant_name("photos/b/cat.jpg", "thumbnail")
+	first := variant_names("photos/a/cat.jpg", "thumbnail")[0]
+	second := variant_names("photos/b/cat.jpg", "thumbnail")[0]
 
 	if first == second {
 		t.Fatalf("both directories produced %q; the second image would be served the first one's render", first)
 	}
 	if first != "photos/a/cat_thumbnail.jpg" {
-		t.Errorf("variant_name(photos/a/cat.jpg) = %q, want photos/a/cat_thumbnail.jpg", first)
+		t.Errorf("variant_names(photos/a/cat.jpg)[0] = %q, want photos/a/cat_thumbnail.jpg", first)
 	}
 	if second != "photos/b/cat_thumbnail.jpg" {
-		t.Errorf("variant_name(photos/b/cat.jpg) = %q, want photos/b/cat_thumbnail.jpg", second)
+		t.Errorf("variant_names(photos/b/cat.jpg)[0] = %q, want photos/b/cat_thumbnail.jpg", second)
 	}
 }
 
@@ -52,8 +52,8 @@ func TestVariantNameIsUnchangedForAFlatName(t *testing.T) {
 		{"file.name.png", "thumbnail", "file.name_thumbnail.png"},
 		{"README", "thumbnail", "README_thumbnail"},
 	} {
-		if got := variant_name(c.input, c.kind); got != c.want {
-			t.Errorf("variant_name(%q, %q) = %q, want %q - a flat name must key exactly as it did before", c.input, c.kind, got, c.want)
+		if got := variant_names(c.input, c.kind)[0]; got != c.want {
+			t.Errorf("variant_names(%q, %q)[0] = %q, want %q - a flat name must key exactly as it did before", c.input, c.kind, got, c.want)
 		}
 	}
 }
@@ -68,8 +68,8 @@ func TestVariantNameDoesNotMistakeADirectoryForAnExtension(t *testing.T) {
 		{"photos/a.b/cat", "photos/a.b/cat_thumbnail"},
 		{"v1.2/img.png", "v1.2/img_thumbnail.png"},
 	} {
-		if got := variant_name(c.input, "thumbnail"); got != c.want {
-			t.Errorf("variant_name(%q) = %q, want %q", c.input, got, c.want)
+		if got := variant_names(c.input, "thumbnail")[0]; got != c.want {
+			t.Errorf("variant_names(%q)[0] = %q, want %q", c.input, got, c.want)
 		}
 	}
 }
@@ -79,7 +79,7 @@ func TestVariantNameDoesNotMistakeADirectoryForAnExtension(t *testing.T) {
 // to survive that, and a traversal attempt has to keep being refused.
 func TestVariantEntryNameIsAValidCacheName(t *testing.T) {
 	for _, file := range []string{"cat.jpg", "photos/cat.jpg", "photos/a/b/cat.jpg"} {
-		name := "variants/" + variant_name(file, "thumbnail")
+		name := "variants/" + variant_names(file, "thumbnail")[0]
 		if !valid(name, "filepath") {
 			t.Errorf("the entry name %q for source %q is not a valid cache name, so cache_file would refuse it", name, file)
 		}
@@ -105,7 +105,7 @@ func TestDifferentDirectoriesGetDifferentCacheFiles(t *testing.T) {
 		"entity-two/logo.png",
 		"cat.jpg",
 	} {
-		name := "variants/" + variant_name(file, "thumbnail")
+		name := "variants/" + variant_names(file, "thumbnail")[0]
 		if other, clash := seen[name]; clash {
 			t.Errorf("%q and %q both key to %q", other, file, name)
 			continue
@@ -143,7 +143,7 @@ func TestVariantKeyIsNotTheBasename(t *testing.T) {
 	if strings.Contains(body, "filepath.Base(file)") {
 		t.Error("api_image_variant keys the cache entry on the base name again; two images with the same name in different directories share an entry, and the existing-entry short-circuit serves whichever was rendered first")
 	}
-	if !strings.Contains(body, `"variants/" + variant_name(file, kind)`) {
+	if !strings.Contains(body, `variant_names(file, kind)`) {
 		t.Error("the entry name is no longer the whole source path; that name is the only record of which image a variant came from")
 	}
 }

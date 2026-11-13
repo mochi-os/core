@@ -353,7 +353,7 @@ func TestVariantMadeOnceForCallersTogether(t *testing.T) {
 		group.Add(1)
 		go func(i int) {
 			defer group.Done()
-			made[i] = variant_made(source, "preview", destination, time.Now().Add(-time.Hour))
+			made[i] = variant_made(source, "preview", []string{destination}, time.Now().Add(-time.Hour)) >= 0
 		}(i)
 	}
 	time.Sleep(200 * time.Millisecond)
@@ -380,6 +380,40 @@ func TestVariantMadeOnceForCallersTogether(t *testing.T) {
 	}
 }
 
+// TestVariantMadeWaitersShareTheChoice: callers waiting on a render that keeps
+// the variant under its second name are told that name's index, as the one
+// that rendered is.
+func TestVariantMadeWaitersShareTheChoice(t *testing.T) {
+	variant_made_cache(t)
+	directory := t.TempDir()
+	source := filepath.Join(directory, "photo.png")
+	if err := os.WriteFile(source, variant_choice_image(t, "photo", 1500, 900), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	destinations := []string{
+		filepath.Join(cache_dir, "apps", "user", "app", "variants", "photo_preview.png"),
+		filepath.Join(cache_dir, "apps", "user", "app", "variants", "photo_preview.png.jpg"),
+	}
+	release := render_pool_fill(t)
+	var group sync.WaitGroup
+	made := make([]int, 4)
+	for i := range made {
+		group.Add(1)
+		go func(i int) {
+			defer group.Done()
+			made[i] = variant_made(source, "preview", destinations, time.Now().Add(-time.Hour))
+		}(i)
+	}
+	time.Sleep(200 * time.Millisecond)
+	release()
+	group.Wait()
+	for i, index := range made {
+		if index != 1 {
+			t.Errorf("THE POINT: caller %d was told destination %d, want 1 (the JPEG)", i, index)
+		}
+	}
+}
+
 // TestVariantMadeWaitersShareAFailure: callers waiting on a render that fails
 // are told it failed, and fall back as the caller that rendered does.
 func TestVariantMadeWaitersShareAFailure(t *testing.T) {
@@ -398,7 +432,7 @@ func TestVariantMadeWaitersShareAFailure(t *testing.T) {
 		group.Add(1)
 		go func(i int) {
 			defer group.Done()
-			made[i] = variant_made(source, "preview", destination, time.Now().Add(-time.Hour))
+			made[i] = variant_made(source, "preview", []string{destination}, time.Now().Add(-time.Hour)) >= 0
 		}(i)
 	}
 	time.Sleep(200 * time.Millisecond)
@@ -428,7 +462,7 @@ func TestVariantMadeKeepsAFreshVariant(t *testing.T) {
 	if err := os.WriteFile(destination, []byte("made a moment ago"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if !variant_made(source, "preview", destination, time.Now().Add(-time.Hour)) {
+	if variant_made(source, "preview", []string{destination}, time.Now().Add(-time.Hour)) < 0 {
 		t.Fatal("a variant newer than its source was reported as not made")
 	}
 	data, err := os.ReadFile(destination)

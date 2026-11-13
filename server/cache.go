@@ -73,6 +73,7 @@ var api_cache = sls.FromStringDict(sl.String("mochi.cache"), sl.StringDict{
 	"size":   sl.NewBuiltin("mochi.cache.size", api_cache_size),
 	"rename": sl.NewBuiltin("mochi.cache.rename", api_cache_rename),
 	"read":   sl.NewBuiltin("mochi.cache.read", api_cache_read),
+	"head":   sl.NewBuiltin("mochi.cache.head", api_cache_head),
 	"path":   sl.NewBuiltin("mochi.cache.path", api_cache_path),
 	"age":    sl.NewBuiltin("mochi.cache.age", api_cache_age),
 	"copy":   sl.NewBuiltin("mochi.cache.copy", api_cache_copy),
@@ -702,6 +703,39 @@ func api_cache_read(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tup
 	}
 	cache_used(path)
 	return sl_encode(data), nil
+}
+
+// mochi.cache.head(name, length) -> bytes or None: The first length bytes of a
+// cache entry (from 1 to 1 MB), fewer where it is shorter, or None where there
+// is no such entry; for telling what an entry holds without reading it whole.
+// It does not mark the entry used: the read that serves it does.
+func api_cache_head(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
+	var name string
+	var length int
+	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "name", &name, "length", &length); err != nil {
+		return sl_error(fn, "syntax: <name: string>, <length: integer>")
+	}
+	if length < 1 || length > file_head_maximum {
+		return sl_error(fn, "invalid length %d: from 1 to %d", length, file_head_maximum)
+	}
+	path, err := cache_file(t, name)
+	if err != nil {
+		return sl_error(fn, "%v", err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return sl.None, nil
+	}
+	defer f.Close()
+	if information, err := f.Stat(); err != nil || information.IsDir() {
+		return sl.None, nil
+	}
+	buffer := make([]byte, length)
+	read, err := io.ReadFull(f, buffer)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return sl.None, nil
+	}
+	return sl_encode(buffer[:read]), nil
 }
 
 // mochi.cache.path(name) -> string or None: Report whether an entry is present, marking it used; returns the name

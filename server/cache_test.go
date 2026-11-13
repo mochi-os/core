@@ -912,3 +912,47 @@ func TestCacheWaitTakesTheTransferBoundOnlyToWait(t *testing.T) {
 		t.Errorf("CONTROL: a wait on a running transfer answered %v and took the transfer bound %v", got, serving.Load())
 	}
 }
+
+// TestCacheHeadReadsOnlyTheStart: mochi.cache.head answers an entry's first
+// bytes, however large the entry - past the bound a whole read refuses - fewer
+// for a shorter one, and None for a missing one; a length out of range is
+// refused.
+func TestCacheHeadReadsOnlyTheStart(t *testing.T) {
+	thread := cache_read_thread(t)
+	saved := cache_read_maximum
+	cache_read_maximum = 1024
+	defer func() { cache_read_maximum = saved }()
+	head := func(name string, length int) (sl.Value, error) {
+		return api_cache_head(thread, sl.NewBuiltin("mochi.cache.head", api_cache_head), sl.Tuple{sl.String(name), sl.MakeInt(length)}, nil)
+	}
+	path, err := cache_file(thread, "large")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Dir(path), 0755)
+	data := append([]byte{0xff, 0xd8, 0xff, 0xe0}, make([]byte, 4096)...)
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	value, err := head("large", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := value.(sl.Bytes); !ok || string(got) != string(data[:4]) {
+		t.Errorf("THE POINT: the head of a %d-byte entry, past the %d a read takes, is %v", len(data), cache_read_maximum, value)
+	}
+	if value, _ := head("large", 10000); value == nil {
+		t.Error("a head longer than the entry answered nothing")
+	} else if got, ok := value.(sl.Bytes); !ok || len(got) != len(data) {
+		t.Errorf("a head longer than the entry answered %s, want its %d bytes", value.Type(), len(data))
+	}
+	if value, err := head("missing", 4); err != nil || value != sl.None {
+		t.Errorf("a missing entry's head answered %v, %v; want None", value, err)
+	}
+	if _, err := head("large", 0); err == nil {
+		t.Error("a length of 0 was not refused")
+	}
+	if _, err := head("large", file_head_maximum+1); err == nil {
+		t.Error("a length past the maximum was not refused")
+	}
+}

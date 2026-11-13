@@ -131,10 +131,14 @@ func image_decode(b []byte) (image.Image, error) {
 }
 
 // variant_render decodes the image at source, downscales it for the named
-// variant, and writes it to destination (atomically, via a temporary). The
-// decode is guarded against decompression bombs. Returns "" without error for
-// a format it does not re-encode.
-func variant_render(path string, variant string, thumb string) (string, error) {
+// variant, and writes it to one of destinations (atomically, via a temporary),
+// returning which. The first destination's extension chooses the encoder; an
+// opaque PNG given a second, JPEG, destination is kept there instead when JPEG
+// encodes it smaller (variant_names). The decode is guarded against
+// decompression bombs. Returns "" without error for a format it does not
+// re-encode.
+func variant_render(path string, variant string, destinations ...string) (string, error) {
+	thumb := destinations[0]
 	f, err := os.Open(path)
 	if err != nil {
 		warn("Unable to open image file %q to create %s variant: %v", path, variant, err)
@@ -222,40 +226,50 @@ func variant_render(path string, variant string, thumb string) (string, error) {
 	tmp := o.Name()
 	// The mode os.Create gave the variant before; a temporary is made 0600.
 	_ = o.Chmod(0o644)
-	// ensure tmp is closed and removed on error
-	close_and_remove_tmp := func(remove bool) {
-		_ = o.Close()
-		if remove {
-			_ = os.Remove(tmp)
-		}
-	}
 
 	// The destination's extension chooses the encoder, never the format the
-	// source decoded as: the name is fixed before the render, and serving paths
-	// type the variant by it. A source whose bytes are not what its name says
-	// is re-encoded as the name says.
+	// source decoded as: the names are fixed before the render, and serving
+	// paths type the variant by the one it is kept under. A source whose bytes
+	// are not what its name says is re-encoded as the name says.
+	counted := &variant_counter{writer: o}
 	switch strings.ToLower(filepath.Ext(thumb)) {
 	case ".gif":
-		err = gif.Encode(o, t, nil)
+		err = gif.Encode(counted, t, nil)
 	case ".jpg", ".jpeg":
-		err = jpeg.Encode(o, variant_opaque(t), &jpeg.Options{Quality: 80})
+		err = jpeg.Encode(counted, variant_opaque(t), &jpeg.Options{Quality: 80})
 	case ".png":
-		err = png.Encode(o, t)
+		err = png.Encode(counted, t)
 	default:
-		close_and_remove_tmp(true)
+		_ = o.Close()
+		_ = os.Remove(tmp)
 		return "", nil
 	}
-
+	if err == nil {
+		err = o.Close()
+	} else {
+		_ = o.Close()
+	}
 	if err != nil {
-		close_and_remove_tmp(true)
+		_ = os.Remove(tmp)
 		info("Unable to encode image file %q to create %s variant: %v", path, variant, err)
 		return "", err
 	}
 
-	if err := o.Close(); err != nil {
-		_ = os.Remove(tmp)
-		info("Unable to close %s variant file %q: %v", variant, tmp, err)
-		return "", err
+	// An opaque PNG may instead be kept as a JPEG under its second name: a
+	// photograph's JPEG is a tenth of its PNG, while flat graphics and text are
+	// smaller, and crisper, as PNG. JPEG wins only by a clear margin, since Go's
+	// encoder subsamples colour and smears coloured text and edges.
+	// Transparency stays PNG.
+	if len(destinations) > 1 && strings.EqualFold(filepath.Ext(thumb), ".png") && variant_is_opaque(t) {
+		var lossy bytes.Buffer
+		if jpeg.Encode(&lossy, t, &jpeg.Options{Quality: 80}) == nil && variant_lossy_worth(counted.written, int64(lossy.Len())) {
+			if other, err := variant_temporary(destinations[1], lossy.Bytes()); err == nil {
+				_ = os.Remove(tmp)
+				tmp, thumb = other, destinations[1]
+			} else {
+				info("Unable to write %s variant file for %q: %v", variant, destinations[1], err)
+			}
+		}
 	}
 
 	if err := os.Rename(tmp, thumb); err != nil {
@@ -267,11 +281,56 @@ func variant_render(path string, variant string, thumb string) (string, error) {
 	return thumb, nil
 }
 
+// variant_counter counts the bytes an encoder writes through it.
+type variant_counter struct {
+	writer  io.Writer
+	written int64
+}
+
+func (c *variant_counter) Write(p []byte) (int, error) {
+	n, err := c.writer.Write(p)
+	c.written += int64(n)
+	return n, err
+}
+
+// variant_lossy_worth reports whether a JPEG of lossy bytes saves enough over a
+// PNG of lossless bytes to be kept instead: at most three quarters of it.
+func variant_lossy_worth(lossless int64, lossy int64) bool {
+	return lossy*4 <= lossless*3
+}
+
+// variant_temporary writes data to a temporary of its own beside destination,
+// returning its path.
+func variant_temporary(destination string, data []byte) (string, error) {
+	o, err := os.CreateTemp(filepath.Dir(destination), filepath.Base(destination)+".*.partial")
+	if err != nil {
+		return "", err
+	}
+	_ = o.Chmod(0o644)
+	if _, err := o.Write(data); err != nil {
+		_ = o.Close()
+		_ = os.Remove(o.Name())
+		return "", err
+	}
+	if err := o.Close(); err != nil {
+		_ = os.Remove(o.Name())
+		return "", err
+	}
+	return o.Name(), nil
+}
+
+// variant_is_opaque reports whether an image has no transparent pixel, so a
+// format without an alpha channel loses nothing of it.
+func variant_is_opaque(i image.Image) bool {
+	o, ok := i.(interface{ Opaque() bool })
+	return ok && o.Opaque()
+}
+
 // variant_opaque composites an image with transparency onto white for an
 // encoder with no alpha channel: JPEG would otherwise write a transparent
 // WebP's clear pixels as black.
 func variant_opaque(i image.Image) image.Image {
-	if o, ok := i.(interface{ Opaque() bool }); ok && o.Opaque() {
+	if variant_is_opaque(i) {
 		return i
 	}
 	canvas := image.NewRGBA(i.Bounds())
@@ -299,11 +358,12 @@ func api_image_kinds(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 // mochi.image.variant(file, kind) -> name or None: Generate a downscaled
 // variant ("thumbnail", "medium" or "preview") of an image in the app's file
 // storage, returning a cache entry name for a.write.cache / e.write.cache. The
-// name ends in the extension of the format the variant is encoded in, which is
-// the source's own except for WebP, whose variants are JPEG. Variants are
-// re-computable, so they live in cache space and may be evicted; the next call
-// regenerates. Returns None for a non-image, a missing source, or a decode
-// failure. The decode is capped against decompression bombs.
+// name ends in the extension of the format the variant is encoded in: the
+// source's own, except that a WebP's variants are JPEG and an opaque PNG's are
+// JPEG where that is clearly smaller. Variants are re-computable, so they
+// live in cache space and may be evicted; the next call regenerates. Returns
+// None for a non-image, a missing source, or a decode failure. The decode is
+// capped against decompression bombs.
 func api_image_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var file, kind string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "file", &file, "kind", &kind); err != nil {
@@ -336,31 +396,48 @@ func api_image_variant(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 
 	// The whole relative path, not its base: two images with the same file name in
 	// different directories are different images. lib/starlark/attachments.star
-	// derives this same name to invalidate the entry, so it must not move.
-	name := "variants/" + variant_name(file, kind)
-	destination, err := cache_file(t, name)
-	if err != nil {
-		return sl_error(fn, "%v", err)
+	// derives these same names to invalidate the entry, so they must not move.
+	names := variant_names(file, kind)
+	destinations := make([]string, len(names))
+	for i, name := range names {
+		destination, err := cache_file(t, "variants/"+name)
+		if err != nil {
+			return sl_error(fn, "%v", err)
+		}
+		destinations[i] = destination
 	}
 	// A variant made before its source was last written is of the image the
 	// source replaced - a contact's photo fetched again into the same name,
 	// in the same format or another whose variants share it (WebP's are JPEG)
 	// - and is made again. A read moves an entry's time on; callers ask for
 	// the variant before they read it.
-	if information, err := os.Stat(destination); err == nil && !information.ModTime().Before(original.ModTime()) {
-		return sl.String(name), nil
+	if index := variant_fresh(destinations, original.ModTime()); index >= 0 {
+		return sl.String("variants/" + names[index]), nil
 	}
-	if !variant_made(source, kind, destination, original.ModTime()) {
+	index := variant_made(source, kind, destinations, original.ModTime())
+	if index < 0 {
 		return sl.None, nil
 	}
-	return sl.String(name), nil
+	return sl.String("variants/" + names[index]), nil
 }
 
-// variant_flight is a render of one destination in flight, which later callers
-// for the same destination wait on instead of rendering it again.
+// variant_fresh is the index of the first of destinations holding a variant
+// made no earlier than its source was last written, or -1.
+func variant_fresh(destinations []string, modified time.Time) int {
+	for i, destination := range destinations {
+		if information, err := os.Stat(destination); err == nil && !information.ModTime().Before(modified) {
+			return i
+		}
+	}
+	return -1
+}
+
+// variant_flight is a render of one variant in flight, which later callers for
+// the same variant wait on instead of rendering it again: the index of the
+// destination it was kept under, or -1.
 type variant_flight struct {
 	done chan struct{}
-	made bool
+	made int
 }
 
 var (
@@ -368,66 +445,84 @@ var (
 	variant_flights_lock sync.Mutex
 )
 
-// variant_made renders the variant of source at destination, once however many
-// callers ask for it together: the first renders it and the rest wait and share
-// its outcome. The first viewers of a new photo, a gallery and its lightbox, or
-// subscribers' servers pulling the variant ask at the same moment, and each used
-// to render it again. A destination already newer than modified is made.
-func variant_made(source string, kind string, destination string, modified time.Time) bool {
+// variant_made renders the variant of source at one of destinations, once
+// however many callers ask for it together: the first renders it and the rest
+// wait and share its outcome, the index of the destination it was kept under,
+// or -1. The first viewers of a new photo, a gallery and its lightbox, or
+// subscribers' servers pulling the variant ask at the same moment, and each
+// used to render it again. A destination already newer than modified is made.
+// The render removes what the other destinations hold, so a stale variant in a
+// format it did not choose is never found again.
+func variant_made(source string, kind string, destinations []string, modified time.Time) int {
+	key := destinations[0]
 	variant_flights_lock.Lock()
-	if flight, ok := variant_flights[destination]; ok {
+	if flight, ok := variant_flights[key]; ok {
 		variant_flights_lock.Unlock()
 		<-flight.done
 		return flight.made
 	}
-	flight := &variant_flight{done: make(chan struct{})}
-	variant_flights[destination] = flight
+	flight := &variant_flight{done: make(chan struct{}), made: -1}
+	variant_flights[key] = flight
 	variant_flights_lock.Unlock()
 	defer func() {
 		variant_flights_lock.Lock()
-		delete(variant_flights, destination)
+		delete(variant_flights, key)
 		variant_flights_lock.Unlock()
 		close(flight.done)
 	}()
 
 	// A render that finished between the caller's look and this one's turn.
-	var previous int64
-	if information, err := os.Stat(destination); err == nil {
-		if !information.ModTime().Before(modified) {
-			flight.made = true
-			return true
-		}
-		previous = information.Size()
+	if index := variant_fresh(destinations, modified); index >= 0 {
+		flight.made = index
+		return index
 	}
-	if result, err := variant_render(source, kind, destination); err != nil || result == "" {
-		return false
+	var previous int64
+	for _, destination := range destinations {
+		if information, err := os.Stat(destination); err == nil {
+			previous += information.Size()
+		}
+	}
+	result, err := variant_render(source, kind, destinations...)
+	if err != nil || result == "" {
+		return -1
+	}
+	index := -1
+	for i, destination := range destinations {
+		if destination == result {
+			index = i
+		} else {
+			_ = os.Remove(destination)
+		}
 	}
 	// Adds bytes to the cache without going through cache_write_file, so it
-	// accounts for them itself, less the stale entry it replaced. Once, by the
+	// accounts for them itself, less the stale entries it replaced. Once, by the
 	// render that wrote them, not by each caller that waited on it.
-	if information, err := os.Stat(destination); err == nil {
+	if information, err := os.Stat(result); err == nil {
 		cache_admit(information.Size() - previous)
 	}
-	flight.made = true
-	return true
+	flight.made = index
+	return index
 }
 
-// variant_name is a variant's cache entry name: the source's name with the
-// kind spliced in ahead of the extension of the format the variant is encoded
-// in. lib/starlark/attachments.star derives the same string to invalidate it.
-func variant_name(name string, variant string) string {
+// variant_names are the cache entry names a variant of the source name may be
+// kept under, the one it takes when it has no choice first: the source's name
+// with the kind spliced in ahead of its extension, followed by ".jpg" where the
+// variant is a JPEG of another format. Every format re-encodes as itself
+// except WebP, which Go can decode but not encode, so its variants are JPEG;
+// an opaque PNG's are kept as a JPEG where that is clearly smaller. Keeping
+// the source's extension in a converted name means no two sources in one
+// directory - a.png and a.jpg, a.webp and a.jpg - ever share an entry.
+// lib/starlark/attachments.star derives the same strings to invalidate them.
+func variant_names(name string, variant string) []string {
 	ext := filepath.Ext(name)
-	return strings.TrimSuffix(name, ext) + "_" + variant + variant_extension(ext)
-}
-
-// variant_extension is the extension a variant of a source with extension ext
-// is encoded under. Every format re-encodes as itself except WebP, which Go can
-// decode but not encode, so its variants are JPEG.
-func variant_extension(ext string) string {
-	if strings.EqualFold(ext, ".webp") {
-		return ".jpg"
+	stem := strings.TrimSuffix(name, ext) + "_" + variant
+	switch strings.ToLower(ext) {
+	case ".webp":
+		return []string{stem + ext + ".jpg"}
+	case ".png":
+		return []string{stem + ext, stem + ext + ".jpg"}
 	}
-	return ext
+	return []string{stem + ext}
 }
 
 func fix_orientation(img image.Image, orientation int) image.Image {

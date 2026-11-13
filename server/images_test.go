@@ -14,8 +14,10 @@ import (
 	"image/draw"
 	"image/jpeg"
 	"image/png"
+	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,17 +97,17 @@ func TestVariantName(t *testing.T) {
 		{"medium jpg", "photo.jpg", "medium", "photo_medium.jpg"},
 
 		// A WebP source's variants are JPEG, and named for it.
-		{"webp thumbnail", "photo.webp", "thumbnail", "photo_thumbnail.jpg"},
-		{"webp medium", "photo.webp", "medium", "photo_medium.jpg"},
-		{"webp preview", "photo.webp", "preview", "photo_preview.jpg"},
-		{"uppercase webp", "PHOTO.WEBP", "preview", "PHOTO_preview.jpg"},
+		{"webp thumbnail", "photo.webp", "thumbnail", "photo_thumbnail.webp.jpg"},
+		{"webp medium", "photo.webp", "medium", "photo_medium.webp.jpg"},
+		{"webp preview", "photo.webp", "preview", "photo_preview.webp.jpg"},
+		{"uppercase webp", "PHOTO.WEBP", "preview", "PHOTO_preview.WEBP.jpg"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := variant_name(tt.input, tt.variant)
+			result := variant_names(tt.input, tt.variant)[0]
 			if result != tt.expected {
-				t.Errorf("variant_name(%q, %q) = %q, want %q", tt.input, tt.variant, result, tt.expected)
+				t.Errorf("variant_names(%q, %q)[0] = %q, want %q", tt.input, tt.variant, result, tt.expected)
 			}
 		})
 	}
@@ -272,7 +274,7 @@ func TestVariantRender(t *testing.T) {
 		{"medium", 640},
 		{"preview", 1280},
 	} {
-		expected := filepath.Join(tmp_dir, "variants", variant_name("test_image.png", tt.variant))
+		expected := filepath.Join(tmp_dir, "variants", variant_names("test_image.png", tt.variant)[0])
 		thumb_path, err := variant_render(img_path, tt.variant, expected)
 		if err != nil {
 			t.Fatalf("variant_render(%s) failed: %v", tt.variant, err)
@@ -330,7 +332,7 @@ func BenchmarkVariantName(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		variant_name(inputs[i%len(inputs)], "thumbnail")
+		variant_names(inputs[i%len(inputs)], "thumbnail")
 	}
 }
 
@@ -411,14 +413,18 @@ func image_variant_solid(t *testing.T, format string) []byte {
 }
 
 // TestImageMediumKeepsTheSourceFormat: the medium kind is 640 pixels on its
-// longest side, and a PNG's stays a PNG and a JPEG's a JPEG, named for it.
+// longest side, and a flat PNG's stays a PNG and a JPEG's a JPEG, named for it.
 func TestImageMediumKeepsTheSourceFormat(t *testing.T) {
 	thread, user, app := image_variant_thread(t)
 	for _, c := range []struct{ file, format, name string }{
 		{"listing.png", "png", "variants/listing_medium.png"},
 		{"listing.jpg", "jpeg", "variants/listing_medium.jpg"},
 	} {
-		image_variant_source(t, user, app, c.file, image_variant_solid(t, c.format))
+		data := image_variant_solid(t, c.format)
+		if c.format == "png" {
+			data = variant_choice_image(t, "flat", 1500, 900)
+		}
+		image_variant_source(t, user, app, c.file, data)
 		name, format, decoded := image_variant_call(t, thread, c.file, "medium")
 		if name != c.name {
 			t.Errorf("the medium of %s is named %q, want %q", c.file, name, c.name)
@@ -452,8 +458,8 @@ func TestImageWebpVariantIsAJpegNamedForIt(t *testing.T) {
 	image_variant_source(t, user, app, "sticker.webp", data)
 
 	name, format, decoded := image_variant_call(t, thread, "sticker.webp", "thumbnail")
-	if name != "variants/sticker_thumbnail.jpg" {
-		t.Errorf("THE POINT: the variant of a WebP is named %q, want variants/sticker_thumbnail.jpg", name)
+	if name != "variants/sticker_thumbnail.webp.jpg" {
+		t.Errorf("THE POINT: the variant of a WebP is named %q, want variants/sticker_thumbnail.webp.jpg", name)
 	}
 	if format != "jpeg" {
 		t.Errorf("the variant of a WebP is %s, want jpeg", format)
@@ -474,14 +480,22 @@ func TestImageWebpVariantIsAJpegNamedForIt(t *testing.T) {
 }
 
 // TestImageVariantEncodesAsItsName: bytes that are not what their name says
-// are re-encoded as the name says, so the entry's name and its bytes agree. A
-// JPEG uploaded as photo.png renders a PNG preview.
+// are re-encoded as a name the source's allows, so the entry's name and its
+// bytes agree. A JPEG uploaded as photo.png renders a preview named for PNG or
+// JPEG, holding that format; a JPEG uploaded as photo.gif renders a GIF.
 func TestImageVariantEncodesAsItsName(t *testing.T) {
 	thread, user, app := image_variant_thread(t)
-	image_variant_source(t, user, app, "photo.png", image_variant_solid(t, "jpeg"))
-	name, format, _ := image_variant_call(t, thread, "photo.png", "preview")
-	if name != "variants/photo_preview.png" || format != "png" {
-		t.Errorf("JPEG bytes named photo.png rendered %s as %s, want a PNG", name, format)
+	for _, c := range []struct{ file string }{{"photo.png"}, {"photo.gif"}} {
+		image_variant_source(t, user, app, c.file, image_variant_solid(t, "jpeg"))
+		name, format, _ := image_variant_call(t, thread, c.file, "preview")
+		named := map[string]string{".png": "png", ".jpg": "jpeg", ".gif": "gif"}[filepath.Ext(name)]
+		allowed := false
+		for _, candidate := range variant_names(c.file, "preview") {
+			allowed = allowed || "variants/"+candidate == name
+		}
+		if !allowed || format != named {
+			t.Errorf("JPEG bytes named %s rendered %s as %s, want the format its name says", c.file, name, format)
+		}
 	}
 }
 
@@ -597,7 +611,7 @@ func TestVariantRenderJPEGWithoutEndMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expected := filepath.Join(directory, "variants", variant_name("camera.jpg", "preview"))
+	expected := filepath.Join(directory, "variants", variant_names("camera.jpg", "preview")[0])
 	made, err := variant_render(path, "preview", expected)
 	if err != nil || made != expected {
 		t.Fatalf("THE POINT: variant_render = %q, %v; want %q", made, err, expected)
@@ -616,5 +630,286 @@ func TestVariantRenderJPEGWithoutEndMarker(t *testing.T) {
 	r, g, _, _ := variant.At(bounds.Max.X/2, bounds.Max.Y-1).RGBA()
 	if r>>8 < 150 || g>>8 > 80 {
 		t.Errorf("the variant's last row = %d,%d; want the source's red", r>>8, g>>8)
+	}
+}
+
+// variant_choice_image encodes a width x height PNG of one of three kinds:
+// "photo", a gradient with grain, which JPEG encodes far smaller; "flat", solid
+// blocks with thin lines, as a screenshot or diagram is, which PNG encodes
+// smaller; "clear", the photo with a translucent corner.
+func variant_choice_image(t *testing.T, kind string, width int, height int) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, width, height))
+	grain := rand.New(rand.NewSource(86))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			switch kind {
+			case "flat":
+				shade := color.NRGBA{240, 240, 240, 255}
+				if x < width/2 && y < height/2 {
+					shade = color.NRGBA{30, 90, 200, 255}
+				} else if x >= width/2 && y >= height/2 {
+					shade = color.NRGBA{250, 200, 40, 255}
+				}
+				if y%40 < 3 && x%300 < 220 {
+					shade = color.NRGBA{20, 20, 20, 255}
+				}
+				img.SetNRGBA(x, y, shade)
+			default:
+				noise := func(v int) uint8 { return uint8(max(0, min(255, v+grain.Intn(49)-24))) }
+				alpha := uint8(255)
+				if kind == "clear" && x < width/3 && y < height/3 {
+					alpha = 128
+				}
+				img.SetNRGBA(x, y, color.NRGBA{noise(x * 255 / width), noise(y * 255 / height), noise(128), alpha})
+			}
+		}
+	}
+	buffer := &bytes.Buffer{}
+	if err := png.Encode(buffer, img); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
+}
+
+// TestVariantNamesGiveAnOpaquePngAChoice: a PNG's variant may be kept as a PNG
+// or a JPEG, named for whichever it is; every other format has one name, a
+// WebP's JPEG. A converted name keeps the source's extension, so it is no
+// other source's.
+func TestVariantNamesGiveAnOpaquePngAChoice(t *testing.T) {
+	for _, c := range []struct {
+		input string
+		want  []string
+	}{
+		{"photos/cat.png", []string{"photos/cat_medium.png", "photos/cat_medium.png.jpg"}},
+		{"CAT.PNG", []string{"CAT_medium.PNG", "CAT_medium.PNG.jpg"}},
+		{"cat.jpg", []string{"cat_medium.jpg"}},
+		{"cat.webp", []string{"cat_medium.webp.jpg"}},
+		{"cat.gif", []string{"cat_medium.gif"}},
+	} {
+		if got := variant_names(c.input, "medium"); strings.Join(got, " ") != strings.Join(c.want, " ") {
+			t.Errorf("THE POINT: variant_names(%q) = %v, want %v", c.input, got, c.want)
+		}
+	}
+}
+
+// TestVariantRenderKeepsTheSmaller: an opaque PNG's variant is kept as
+// whichever of PNG and JPEG is smaller - a photograph as a JPEG, a flat
+// graphic as a PNG - and one with transparency stays a PNG whatever the sizes.
+func TestVariantRenderKeepsTheSmaller(t *testing.T) {
+	directory := t.TempDir()
+	size := func(path string) int64 {
+		information, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return information.Size()
+	}
+	for _, c := range []struct {
+		kind, format string
+	}{
+		{"photo", "jpeg"},
+		{"flat", "png"},
+		{"clear", "png"},
+	} {
+		source := filepath.Join(directory, c.kind+".png")
+		if err := os.WriteFile(source, variant_choice_image(t, c.kind, 1500, 900), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		choice := []string{filepath.Join(directory, "choice", c.kind+"_medium.png"), filepath.Join(directory, "choice", c.kind+"_medium.jpg")}
+		result, err := variant_render(source, "medium", choice...)
+		if err != nil || result == "" {
+			t.Fatalf("rendering %s: %q, %v", c.kind, result, err)
+		}
+		data, err := os.ReadFile(result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, format, err := image.Decode(bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if format != c.format || filepath.Ext(result) != map[string]string{"jpeg": ".jpg", "png": ".png"}[c.format] {
+			t.Errorf("THE POINT: the %s's medium was kept as %s at %s, want %s", c.kind, format, result, c.format)
+		}
+		// Each format alone, to show the choice took the smaller where it had one.
+		png_only, err := variant_render(source, "medium", filepath.Join(directory, "png", c.kind+"_medium.png"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		jpeg_only, err := variant_render(source, "medium", filepath.Join(directory, "jpeg", c.kind+"_medium.jpg"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		as_png, as_jpeg := size(png_only), size(jpeg_only)
+		switch c.kind {
+		case "photo":
+			if size(result) != as_jpeg || as_jpeg >= as_png {
+				t.Errorf("the photo's medium is %d bytes; as PNG %d, as JPEG %d", size(result), as_png, as_jpeg)
+			}
+		case "flat":
+			if size(result) != as_png || as_png >= as_jpeg {
+				t.Errorf("the flat graphic's medium is %d bytes; as PNG %d, as JPEG %d", size(result), as_png, as_jpeg)
+			}
+		case "clear":
+			if as_jpeg >= as_png {
+				t.Errorf("the translucent photo is smaller as PNG (%d against %d), so its staying PNG proves nothing", as_png, as_jpeg)
+			}
+		}
+	}
+}
+
+// TestImageVariantFollowsItsSourceAcrossFormats drives mochi.image.variant: a
+// photograph's medium is a JPEG named for it, and when the source is replaced
+// by a flat graphic the medium becomes a PNG and the JPEG goes, so no stale
+// entry is ever found under the other name.
+func TestImageVariantFollowsItsSourceAcrossFormats(t *testing.T) {
+	thread, user, app := image_variant_thread(t)
+	image_variant_source(t, user, app, "listing.png", variant_choice_image(t, "photo", 1500, 900))
+	name, format, _ := image_variant_call(t, thread, "listing.png", "medium")
+	if name != "variants/listing_medium.png.jpg" || format != "jpeg" {
+		t.Errorf("THE POINT: the photograph's medium is %s at %q, want jpeg at variants/listing_medium.png.jpg", format, name)
+	}
+	if got := file_name_type(name); got != "image/jpeg" {
+		t.Errorf("the photograph's medium would be served as %s", got)
+	}
+	// Asked again, it is found under the name it was kept under, not rendered
+	// again.
+	kept, err := cache_file(thread, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, _, _ := image_variant_call(t, thread, "listing.png", "medium"); again != name {
+		t.Errorf("asked again, the medium is %q, want %q", again, name)
+	}
+	if after, err := os.Stat(kept); err != nil || !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("THE POINT: a medium kept under its second name was rendered again on the next ask")
+	}
+
+	source := filepath.Join(api_file_base(user, app), "listing.png")
+	image_variant_source(t, user, app, "listing.png", variant_choice_image(t, "flat", 1500, 900))
+	later := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(source, later, later); err != nil {
+		t.Fatal(err)
+	}
+	name, format, _ = image_variant_call(t, thread, "listing.png", "medium")
+	if name != "variants/listing_medium.png" || format != "png" {
+		t.Errorf("THE POINT: the replacing graphic's medium is %s at %q, want png at variants/listing_medium.png", format, name)
+	}
+	stale, err := cache_file(thread, "variants/listing_medium.png.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("THE POINT: the photograph's JPEG medium outlived its source: %v", err)
+	}
+}
+
+// TestVariantMadeCountsWhatItReplaced: a render that keeps a variant under the
+// other name removes the stale entry and takes its bytes off the cache total.
+func TestVariantMadeCountsWhatItReplaced(t *testing.T) {
+	variant_made_cache(t)
+	directory := t.TempDir()
+	source := filepath.Join(directory, "photo.png")
+	if err := os.WriteFile(source, variant_choice_image(t, "photo", 1500, 900), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	destinations := []string{
+		filepath.Join(cache_dir, "apps", "user", "app", "variants", "photo_medium.png"),
+		filepath.Join(cache_dir, "apps", "user", "app", "variants", "photo_medium.jpg"),
+	}
+	if err := os.MkdirAll(filepath.Dir(destinations[0]), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := bytes.Repeat([]byte{1}, 50000)
+	if err := os.WriteFile(destinations[0], stale, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	earlier := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(destinations[0], earlier, earlier); err != nil {
+		t.Fatal(err)
+	}
+	cache_total_set(int64(len(stale)))
+
+	if index := variant_made(source, "medium", destinations, time.Now().Add(-time.Hour)); index != 1 {
+		t.Fatalf("the photograph's medium was kept under destination %d, want 1 (JPEG)", index)
+	}
+	if _, err := os.Stat(destinations[0]); !os.IsNotExist(err) {
+		t.Errorf("THE POINT: the stale PNG entry was left beside the new JPEG: %v", err)
+	}
+	information, err := os.Stat(destinations[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache_total_lock.Lock()
+	total := cache_total
+	cache_total_lock.Unlock()
+	if total != information.Size() {
+		t.Errorf("THE POINT: the cache counts %d bytes for a %d-byte variant that replaced a %d-byte entry", total, information.Size(), len(stale))
+	}
+}
+
+// TestVariantLossyWorth: a JPEG is kept over a PNG only when it is at most
+// three quarters of the PNG's size.
+func TestVariantLossyWorth(t *testing.T) {
+	for _, c := range []struct {
+		lossless, lossy int64
+		want            bool
+	}{
+		{1000, 750, true},
+		{1000, 751, false},
+		{1000, 999, false},
+		{1000, 100, true},
+	} {
+		if got := variant_lossy_worth(c.lossless, c.lossy); got != c.want {
+			t.Errorf("THE POINT: a %d-byte JPEG over a %d-byte PNG kept=%v, want %v", c.lossy, c.lossless, got, c.want)
+		}
+	}
+}
+
+// TestVariantsOfOneStemStayApart: a PNG and a JPEG (or a WebP and a JPEG) of
+// one name in one directory are two images, and each is served its own
+// variants, whichever is asked first.
+func TestVariantsOfOneStemStayApart(t *testing.T) {
+	thread, user, app := image_variant_thread(t)
+	red, blue := color.RGBA{220, 20, 20, 255}, color.RGBA{20, 20, 220, 255}
+	centre := func(decoded image.Image) color.RGBA {
+		bounds := decoded.Bounds()
+		return color.RGBAModel.Convert(decoded.At(bounds.Dx()/2, bounds.Dy()/2)).(color.RGBA)
+	}
+	grain := func(shade color.RGBA) []byte {
+		img := image.NewNRGBA(image.Rect(0, 0, 1500, 900))
+		noise := rand.New(rand.NewSource(59))
+		for y := 0; y < 900; y++ {
+			for x := 0; x < 1500; x++ {
+				vary := func(v uint8) uint8 { return uint8(max(0, min(255, int(v)+noise.Intn(17)-8))) }
+				img.SetNRGBA(x, y, color.NRGBA{vary(shade.R), vary(shade.G), vary(shade.B), 255})
+			}
+		}
+		buffer := &bytes.Buffer{}
+		if err := png.Encode(buffer, img); err != nil {
+			t.Fatal(err)
+		}
+		return buffer.Bytes()
+	}
+	image_variant_source(t, user, app, "photos/a.png", grain(red))
+	image_variant_source(t, user, app, "photos/a.jpg", image_variant_colour(t, "jpeg", blue))
+	png_name, png_format, png_decoded := image_variant_call(t, thread, "photos/a.png", "medium")
+	if png_format != "jpeg" {
+		t.Fatalf("setup: the grainy PNG's medium is %s at %q, want a JPEG", png_format, png_name)
+	}
+	jpg_name, _, jpg_decoded := image_variant_call(t, thread, "photos/a.jpg", "medium")
+	if png_name == jpg_name {
+		t.Errorf("THE POINT: a.png and a.jpg share the variant entry %q", png_name)
+	}
+	if c := centre(jpg_decoded); c.B < 180 || c.R > 60 {
+		t.Errorf("THE POINT: a.jpg's medium is %v, want its own blue", c)
+	}
+	if _, _, again := image_variant_call(t, thread, "photos/a.png", "medium"); centre(again).R < 180 || centre(png_decoded).R < 180 {
+		t.Errorf("THE POINT: a.png's medium is %v, want its own red", centre(again))
 	}
 }

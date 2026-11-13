@@ -324,17 +324,11 @@ func api_remote_request(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 
 	// Create stream
 	from := user.Identity.ID
-	s, err := stream_to_peer(peer, from, entity_id, service, event, from_app, services)
+	s, err := stream_to_peer(context.Background(), peer, from, entity_id, service, event, from_app, services, stream_content(sl_decode(payload)))
 	if err != nil {
 		return sl_encode(map[string]any{"error": err.Error(), "code": 502, "transport": true}), nil
 	}
 	defer s.close()
-
-	// Send payload
-	err = s.write(sl_decode(payload))
-	if err != nil {
-		return sl_encode(map[string]any{"error": fmt.Sprintf("failed to send: %v", err), "code": 502, "transport": true}), nil
-	}
 
 	// Read response
 	var response any
@@ -406,7 +400,7 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 		caller = user.Identity.ID
 	}
 
-	s, err := remote_open(context.Background(), caller, entity_id, peer, service, event, from_app, services, sl_decode(payload))
+	s, err := remote_open(context.Background(), caller, entity_id, peer, service, event, from_app, services, sl_decode(payload), false)
 	if err != nil {
 		return sl.None, nil
 	}
@@ -421,19 +415,20 @@ func api_remote_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.
 // remote_open connects to an entity's peer, opens a stream to it as the
 // caller - an empty identity for an anonymous one - and sends the payload: the
 // work of mochi.remote.stream, which waits on the stream's handshake. Once ctx
-// ends it sends nothing more: not the open, and not the payload, without which
-// the far end runs no handler, so a request its caller has given up on is
-// never delivered. A variable so tests can stand in an open that takes its
-// time.
-var remote_open = func(ctx context.Context, caller string, entity_id string, peer string, service string, event string, from_app string, services []string, payload any) (*Stream, error) {
+// ends it sends nothing more. A held payload waits for the far side's ack, so a
+// request whose call gave up before its stream was open is never delivered;
+// otherwise the payload may go with the open (stream_open), and such a request
+// may be delivered though its call no longer waits for the answer. A variable
+// so tests can stand in an open that takes its time.
+var remote_open = func(ctx context.Context, caller string, entity_id string, peer string, service string, event string, from_app string, services []string, payload any, held bool) (*Stream, error) {
 	peer, err := remote_dial(ctx, caller, entity_id, peer)
 	if err != nil {
 		return nil, err
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	if !held {
+		return stream_to_peer(ctx, peer, caller, entity_id, service, event, from_app, services, stream_content(payload))
 	}
-	s, err := stream_to_peer(peer, caller, entity_id, service, event, from_app, services)
+	s, err := stream_to_peer(ctx, peer, caller, entity_id, service, event, from_app, services, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -441,7 +436,7 @@ var remote_open = func(ctx context.Context, caller string, entity_id string, pee
 		s.close()
 		return nil, err
 	}
-	if err := s.write(payload); err != nil {
+	if err := s.write(stream_content(payload)); err != nil {
 		s.close()
 		return nil, err
 	}
@@ -466,6 +461,8 @@ type remote_ask struct {
 	entity, service, event, peer string
 	payload                      any
 	refused                      bool
+	// held keeps the payload for the far side's ack (remote_open).
+	held bool
 }
 
 // remote_asks reads and checks a call's requests, each as mochi.remote.stream
@@ -569,7 +566,7 @@ func remote_together(t *sl.Thread, asks []remote_ask, limit time.Duration, use f
 			defer wait.Done()
 			var result any
 			guard("remote_together", nil, func() {
-				if s, err := remote_open(ctx, caller, r.entity, r.peer, r.service, r.event, from_app, services, r.payload); err == nil {
+				if s, err := remote_open(ctx, caller, r.entity, r.peer, r.service, r.event, from_app, services, r.payload, r.held); err == nil {
 					result = use(ctx, s)
 				}
 			})
@@ -621,6 +618,11 @@ func api_remote_streams(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl
 	asks, err := remote_asks(t, fn, list)
 	if err != nil {
 		return sl_error(fn, err)
+	}
+	// A stream comes back to be written on, so a request not open in time must
+	// not have gone: each payload waits for its stream's ack.
+	for i := range asks {
+		asks[i].held = true
 	}
 	results := remote_together(t, asks, limit,
 		func(ctx context.Context, s *Stream) any { return s },
@@ -674,7 +676,7 @@ func remote_answer(ctx context.Context, s *Stream, segments int, deadline time.T
 	return answer
 }
 
-// mochi.remote.requests(requests, timeout, segments) -> list: Send several requests to remote entities at once and collect their answers. Each request is a dict of entity, service, event and payload, and optionally peer, as mochi.remote.stream takes them. For each, in the order asked: the list of the first segments its far end answered, up to segments (default 1, at most 16) and fewer where its answer ended sooner, or None where it could not be opened, was refused by the remote call budget, or did not answer in full within timeout seconds when one is given. The requests are sent and their answers read together, so a call costs about as long as its slowest answer. At most 32 requests a call.
+// mochi.remote.requests(requests, timeout, segments) -> list: Send several requests to remote entities at once and collect their answers. Each request is a dict of entity, service, event and payload, and optionally peer, as mochi.remote.stream takes them. For each, in the order asked: the list of the first segments its far end answered, up to segments (default 1, at most 16) and fewer where its answer ended sooner, or None where it could not be opened, was refused by the remote call budget, or did not answer in full within timeout seconds when one is given. Nothing is sent once timeout has passed, but a request whose open was still under way then may yet run on the far side, its answer not waited for. The requests are sent and their answers read together, so a call costs about as long as its slowest answer. At most 32 requests a call.
 func api_remote_requests(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var list sl.Indexable
 	var timeout sl.Value = sl.None

@@ -10,6 +10,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -938,19 +939,17 @@ func app_check_install(id string) bool {
 // Check all track versions of an app on the remote server
 // Returns: tracks map (track->version), default track name, default version, success
 func app_check_version(id string) (map[string]string, string, string, bool) {
-	s, err := stream("", id, "publisher", "version", "", nil)
+	// Empty content: no track lets the publisher use its default_track.
+	s, err := stream("", id, "publisher", "version", "", nil, map[string]any{})
 	if err != nil {
 		// debug("App %q using fallback to default publisher", id)
-		s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "version", "", nil)
+		s, err = stream_to_peer(context.Background(), peer_default_publisher, "", id, "publisher", "version", "", nil, map[string]any{})
 	}
 	if err != nil {
 		// debug("App %q version check failed: %v", id, err)
 		return nil, "", "", false
 	}
 	defer s.close()
-
-	// Empty track lets publisher use its default_track
-	s.write_content()
 
 	resp, err := s.read_content()
 	if err != nil {
@@ -1014,6 +1013,7 @@ func app_download_version(id, version string, peer ...string) bool {
 
 	var s *Stream
 	var err error
+	request := map[string]any{"version": version}
 	if len(peer) > 0 && peer[0] != "" {
 		target := peer[0]
 		if valid(target, "entity") {
@@ -1023,15 +1023,15 @@ func app_download_version(id, version string, peer ...string) bool {
 				return false
 			}
 		}
-		s, err = stream_to_peer(target, "", id, "publisher", "get", "", nil)
+		s, err = stream_to_peer(context.Background(), target, "", id, "publisher", "get", "", nil, request)
 	} else {
-		s, err = stream("", id, "publisher", "get", "", nil)
+		s, err = stream("", id, "publisher", "get", "", nil, request)
 		if err != nil {
 			// Cold-start fallback: a freshly installed server has no
 			// directory yet, so it asks the project's publisher for the
 			// apps it needs. Safe for the same reason the override is —
 			// that host can only answer for entities it holds.
-			s, err = stream_to_peer(peer_default_publisher, "", id, "publisher", "get", "", nil)
+			s, err = stream_to_peer(context.Background(), peer_default_publisher, "", id, "publisher", "get", "", nil, request)
 		}
 	}
 	if err != nil {
@@ -1039,11 +1039,6 @@ func app_download_version(id, version string, peer ...string) bool {
 		return false
 	}
 	defer s.close()
-
-	err = s.write_content("version", version)
-	if err != nil {
-		return false
-	}
 
 	response, err := s.read_content()
 	if err != nil {

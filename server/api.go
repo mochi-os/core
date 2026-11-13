@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -875,7 +876,7 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 		return sl_error(fn, err)
 	}
 
-	s, err := stream(headers["from"], headers["to"], headers["service"], headers["event"], from_app, services)
+	s, err := stream(headers["from"], headers["to"], headers["service"], headers["event"], from_app, services, stream_content(sl_decode(args[1])))
 	if err != nil {
 		// An unreachable peer is a runtime condition, not a caller mistake, and
 		// Starlark cannot catch an error, so the dial reports by value. Validation
@@ -883,7 +884,6 @@ func api_stream(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) 
 		debug("mochi.stream to %q failed: %v", headers["to"], err)
 		return sl.None, nil
 	}
-	s.write(sl_decode(args[1]))
 
 	// Register stream for cleanup when script returns
 	streams, _ := t.Local("streams").([]*Stream)
@@ -914,7 +914,7 @@ func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		return sl_error(fn, err)
 	}
 
-	s, err := stream_to_peer(peer, headers["from"], headers["to"], headers["service"], headers["event"], from_app, services)
+	s, err := stream_to_peer(context.Background(), peer, headers["from"], headers["to"], headers["service"], headers["event"], from_app, services, stream_content(sl_decode(args[2])))
 	if err != nil {
 		// Same contract as mochi.stream: the dial reports by value, because a
 		// raised error is uncatchable in Starlark and an unreachable peer is
@@ -922,7 +922,6 @@ func api_stream_peer(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tu
 		debug("mochi.stream.peer to %q failed: %v", peer, err)
 		return sl.None, nil
 	}
-	s.write(sl_decode(args[2]))
 
 	// Register stream for cleanup when script returns
 	streams, _ := t.Local("streams").([]*Stream)

@@ -12,6 +12,7 @@
 package main
 
 import (
+	"context"
 	"sort"
 	"time"
 
@@ -333,7 +334,7 @@ func directory_push_to_peer(peer string) {
 	if len(rows) == 0 {
 		return
 	}
-	s, err := stream_open_or_self(peer, "", "", "directory", "push", "", nil, map[string]any{"version": build_version})
+	s, err := stream_open_or_self(context.Background(), peer, "", "", "directory", "push", "", nil, map[string]any{"version": build_version})
 	if err != nil || s == nil {
 		debug("Directory push stream unable to open to peer %q: %v", peer, err)
 		return
@@ -400,7 +401,7 @@ func directory_sync_from_peer(peer string) bool {
 		"start":   i64toa(start),
 		"version": build_version,
 	}
-	s, err := stream_open_or_self(peer, "", "", "directory", "sync", "", nil, content)
+	s, err := stream_open_or_self(context.Background(), peer, "", "", "directory", "sync", "", nil, content)
 	if err != nil || s == nil {
 		debug("Directory stream unable to open to peer %q: %v", peer, err)
 		return false

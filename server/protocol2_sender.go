@@ -275,6 +275,9 @@ func sender_open(peer string) (*Sender, error) {
 	// Compute effective codec / feature sets.
 	codecs := codec_intersect(receiver_codecs(), hello.Codecs)
 	features := features_intersect(receiver_features(), hello.Features)
+	// The connection's challenge serves its /mochi/2/stream opens too, which
+	// can then skip their own hello.
+	connection_learn(stream.Conn(), hello)
 
 	// Every caps frame carries a challenge so the two /mochi/2 protocols share one
 	// handshake. /mochi/2/stream consumes it at the ack; on the messages path the

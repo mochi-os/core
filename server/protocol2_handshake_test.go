@@ -110,8 +110,9 @@ func TestHelloVersionMismatchRejected(t *testing.T) {
 }
 
 func TestHelloChallengeFresh(t *testing.T) {
-	// Plan: "No reuse. One challenge per stream, never regenerated."
-	// Two calls to hello_challenge MUST yield distinct values.
+	// The opener's caps challenge, which the far side signs to prove the
+	// entity addressed, is fresh per stream: two calls MUST yield distinct
+	// values, or a proof from one stream would serve another.
 	a, err := hello_challenge()
 	if err != nil {
 		t.Fatalf("hello_challenge a: %v", err)
@@ -256,9 +257,10 @@ func TestClaimVerifyRejectsForgedSignature(t *testing.T) {
 }
 
 func TestClaimVerifyRejectsCrossStreamReplay(t *testing.T) {
-	// Plan: "A captured claim from stream A cannot be replayed on
-	// stream B because the signed input binds the per-stream
-	// challenge, which is fresh per stream."
+	// A claim binds the challenge it was signed over, so it verifies on no
+	// stream whose receiver gave another: a stream on another connection
+	// (TestStreamRefusesAClaimOverAnotherConnectionsChallenge), or one from
+	// an old receiver, whose challenge is fresh per stream.
 	setup_replication_test(t)
 	setup_users_test_schema()
 	id, _ := new_entity_keys(t)

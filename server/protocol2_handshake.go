@@ -3,13 +3,13 @@
 // /mochi/2/messages and /mochi/2/stream both begin with the same
 // sequence:
 //
-//   1. Receiver writes a `hello` frame with a fresh per-stream
-//      challenge, the protocol version, a session ID for log
+//   1. Receiver writes a `hello` frame with its challenge for the
+//      connection, the protocol version, a session ID for log
 //      correlation, and its supported codecs + features.
 //   2. Sender writes a `caps` frame with its own codecs + features.
 //   3. Sender writes one or more `claim` frames — one per local entity
-//      that will send on the stream. Receiver verifies the per-(stream,
-//      entity) signature and caches `claimed[From]=true`.
+//      that will send on the stream. Receiver verifies each signature
+//      over its challenge and caches `claimed[From]=true`.
 //
 // After step 3 the two protocols diverge: /mochi/2/messages enters the
 // multiplexed dispatch loop; /mochi/2/stream waits for an `open` frame
@@ -23,10 +23,17 @@
 package main
 
 import (
+	"bytes"
+	"crypto/hmac"
 	crand "crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"sync"
+
+	p2p_network "github.com/libp2p/go-libp2p/core/network"
 )
 
 // session_id returns a fresh 8-byte hex log-correlation token, logged on both
@@ -41,15 +48,179 @@ func session_id() string {
 	return hex.EncodeToString(b[:])
 }
 
-// hello_challenge fills a fresh challenge_size_v2 buffer from the OS
-// entropy pool. See claude/plans/protocol2.md Hello handshake → Challenge
-// generation for the hard rules (no derivation, no reuse, no logging).
+// hello_challenge fills a fresh challenge_size_v2 buffer from the OS entropy
+// pool: the challenge an opener's caps gives the far side to sign, one per
+// stream.
 func hello_challenge() ([]byte, error) {
 	b := make([]byte, challenge_size_v2)
 	if _, err := crand.Read(b); err != nil {
 		return nil, fmt.Errorf("hello: challenge entropy failed: %w", err)
 	}
 	return b, nil
+}
+
+// feature_connection is the hello feature of a receiver whose challenge is one
+// value per libp2p connection, so an opener may sign over a challenge it read
+// from an earlier hello on the same connection.
+const feature_connection = "connection"
+
+// hello_connection_domain separates the connection challenge's input from any
+// other use of the secret; a change to that input MUST change it.
+const hello_connection_domain = "mochi/2/hello/connection/1"
+
+// hello_secret keys every connection challenge this process makes. Drawn on
+// first use; a restart draws another, and no connection outlives its process.
+var hello_secret struct {
+	once sync.Once
+	key  []byte
+	err  error
+}
+
+// hello_connection_challenge is a receiver's challenge for every stream of conn,
+// on either protocol: HMAC-SHA256 under this process's secret over the two
+// peers and the connection's ID, which the swarm never gives two connections.
+// Nobody without the secret can compute it, and a claim over it verifies on no
+// other connection; only the peer at the far end can send on this one. See
+// claude/plans/protocol2.md Hello handshake → Challenge generation.
+func hello_connection_challenge(conn p2p_network.Conn) ([]byte, error) {
+	hello_secret.once.Do(func() {
+		key := make([]byte, 32)
+		if _, err := crand.Read(key); err != nil {
+			hello_secret.err = err
+			return
+		}
+		hello_secret.key = key
+	})
+	if hello_secret.err != nil {
+		return nil, fmt.Errorf("hello: secret entropy failed: %w", hello_secret.err)
+	}
+	if conn == nil {
+		return nil, fmt.Errorf("hello: no connection")
+	}
+	mac := hmac.New(sha256.New, hello_secret.key)
+	// Each part length-prefixed, so no two sequences of parts hash alike.
+	for _, part := range []string{hello_connection_domain, conn.LocalPeer().String(), conn.RemotePeer().String(), conn.ID()} {
+		var size [4]byte
+		binary.BigEndian.PutUint32(size[:], uint32(len(part)))
+		mac.Write(size[:])
+		mac.Write([]byte(part))
+	}
+	return mac.Sum(nil), nil
+}
+
+// connection_record is what an opener knows of one libp2p connection to a
+// receiver whose hello listed feature_connection: that hello's challenge, the
+// codecs and features both sides share, and the entities the receiver has
+// proved on the connection over /mochi/2/stream.
+type connection_record struct {
+	challenge []byte
+	codecs    []string
+	features  []string
+	proven    map[string]bool
+}
+
+// connection_records is keyed by the connection itself, so a record can never
+// match a later connection. net_watch_connections drops each record as libp2p
+// reports its connection closed.
+var (
+	connection_records_lock = &sync.Mutex{}
+	connection_records      = map[p2p_network.Conn]*connection_record{}
+)
+
+const (
+	// connection_records_maximum bounds the records kept; past it, records of
+	// closed connections are swept, and a new one is not kept if none was.
+	connection_records_maximum = 4096
+	// connection_proven_maximum bounds the entities one record holds as proven;
+	// past it a new target takes the two-round-trip path.
+	connection_proven_maximum = 256
+)
+
+// connection_learn records the hello read on a stream of conn, when its
+// receiver announced feature_connection. A hello whose challenge differs from
+// the one recorded for its connection breaks that promise, and the record goes.
+func connection_learn(conn p2p_network.Conn, hello *Frame) {
+	if conn == nil || hello == nil || !contains_string(hello.Features, feature_connection) {
+		return
+	}
+	connection_records_lock.Lock()
+	defer connection_records_lock.Unlock()
+	if existing := connection_records[conn]; existing != nil {
+		if !bytes.Equal(existing.challenge, hello.Challenge) {
+			delete(connection_records, conn)
+		}
+		return
+	}
+	if conn.IsClosed() {
+		return
+	}
+	if len(connection_records) >= connection_records_maximum {
+		for c := range connection_records {
+			if c.IsClosed() {
+				delete(connection_records, c)
+			}
+		}
+		if len(connection_records) >= connection_records_maximum {
+			return
+		}
+	}
+	connection_records[conn] = &connection_record{
+		challenge: bytes.Clone(hello.Challenge),
+		codecs:    codec_intersect(receiver_codecs(), hello.Codecs),
+		features:  features_intersect(receiver_features(), hello.Features),
+		proven:    map[string]bool{},
+	}
+}
+
+// connection_recall returns a copy of conn's record, without its proven set,
+// and whether the receiver has proved `to` on it.
+func connection_recall(conn p2p_network.Conn, to string) (connection_record, bool, bool) {
+	connection_records_lock.Lock()
+	defer connection_records_lock.Unlock()
+	record := connection_records[conn]
+	if record == nil {
+		return connection_record{}, false, false
+	}
+	return connection_record{challenge: record.challenge, codecs: record.codecs, features: record.features}, record.proven[to], true
+}
+
+// connection_prove notes that the receiver at the far end of conn proved it
+// holds `to` there.
+func connection_prove(conn p2p_network.Conn, to string) {
+	connection_records_lock.Lock()
+	defer connection_records_lock.Unlock()
+	record := connection_records[conn]
+	if record == nil || to == "" || len(record.proven) >= connection_proven_maximum {
+		return
+	}
+	record.proven[to] = true
+}
+
+// connection_doubt takes `to` out of conn's proven set: the receiver failed to
+// prove it, or answered for it with a fail.
+func connection_doubt(conn p2p_network.Conn, to string) {
+	connection_records_lock.Lock()
+	defer connection_records_lock.Unlock()
+	if record := connection_records[conn]; record != nil {
+		delete(record.proven, to)
+	}
+}
+
+// connection_forget drops conn's record.
+func connection_forget(conn p2p_network.Conn) {
+	connection_records_lock.Lock()
+	defer connection_records_lock.Unlock()
+	delete(connection_records, conn)
+}
+
+// net_watch_connections drops each connection's record as libp2p reports the
+// connection closed. Called once per host, from net_start.
+func net_watch_connections(network p2p_network.Network) {
+	network.Notify(&p2p_network.NotifyBundle{
+		DisconnectedF: func(_ p2p_network.Network, conn p2p_network.Conn) {
+			connection_forget(conn)
+		},
+	})
 }
 
 func hello_write(w io.Writer, version int, session string, challenge []byte,

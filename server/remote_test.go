@@ -316,6 +316,7 @@ type remote_stub struct {
 	ended    map[string]bool
 	answers  map[string][]any
 	silent   map[string]bool
+	held     map[string]bool
 	active   int
 	most     int
 }
@@ -339,9 +340,9 @@ func (remote_buffer) Close() error { return nil }
 
 func remote_stub_install(t *testing.T, delay time.Duration, fail map[string]bool) *remote_stub {
 	t.Helper()
-	stub := &remote_stub{streams: map[string]*Stream{}, payloads: map[string]any{}, slow: map[string]time.Duration{}, panics: map[string]bool{}, closed: map[string]int{}, ended: map[string]bool{}, answers: map[string][]any{}, silent: map[string]bool{}}
+	stub := &remote_stub{streams: map[string]*Stream{}, payloads: map[string]any{}, slow: map[string]time.Duration{}, panics: map[string]bool{}, closed: map[string]int{}, ended: map[string]bool{}, answers: map[string][]any{}, silent: map[string]bool{}, held: map[string]bool{}}
 	saved := remote_open
-	remote_open = func(ctx context.Context, caller string, entity_id string, peer string, service string, event string, from_app string, services []string, payload any) (*Stream, error) {
+	remote_open = func(ctx context.Context, caller string, entity_id string, peer string, service string, event string, from_app string, services []string, payload any, held bool) (*Stream, error) {
 		stub.lock.Lock()
 		stub.active++
 		stub.most = max(stub.most, stub.active)
@@ -380,6 +381,7 @@ func remote_stub_install(t *testing.T, delay time.Duration, fail map[string]bool
 		s := stream_rw(reader, remote_discard{stub: stub, entity: entity_id})
 		stub.streams[entity_id] = s
 		stub.payloads[entity_id] = payload
+		stub.held[entity_id] = held
 		return s, nil
 	}
 	t.Cleanup(func() { remote_open = saved })
@@ -722,7 +724,7 @@ func TestRemoteOpenStopsWithItsContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	start := time.Now()
-	s, err := remote_open(ctx, "", strings.Repeat("a", 50), "12D3KooWnobody0nobody0nobody0nobody0nobody0nobo", "publisher", "version", "apps", nil, map[string]any{})
+	s, err := remote_open(ctx, "", strings.Repeat("a", 50), "12D3KooWnobody0nobody0nobody0nobody0nobody0nobo", "publisher", "version", "apps", nil, map[string]any{}, false)
 	if s != nil || err == nil || time.Since(start) > time.Second {
 		t.Errorf("THE POINT: an open with its context ended took %s and answered %v, %v", time.Since(start), s, err)
 	}
@@ -883,5 +885,30 @@ func TestRemoteAnswerCutOff(t *testing.T) {
 	start = time.Now()
 	if answer := remote_answer(ctx, s, 1, time.Time{}); answer != nil || time.Since(start) > 2*time.Second {
 		t.Errorf("THE POINT: a call that gave up waited %s for %v", time.Since(start), answer)
+	}
+}
+
+// TestRemoteStreamsHoldTheirPayloads: mochi.remote.streams holds each payload
+// for its stream's ack, since a request not open in time must not have gone;
+// mochi.remote.requests may send its payloads with their opens.
+func TestRemoteStreamsHoldTheirPayloads(t *testing.T) {
+	entities := remote_entities(3)
+	stub := remote_stub_install(t, 0, nil)
+	thread := &sl.Thread{Name: "test"}
+	if _, err := api_remote_streams(thread, sl.NewBuiltin("mochi.remote.streams", api_remote_streams), sl.Tuple{remote_requests(entities)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, entity := range entities {
+		if !stub.held[entity] {
+			t.Errorf("THE POINT: mochi.remote.streams sent %s's payload with its open", entity)
+		}
+	}
+	if _, err := api_remote_requests(thread, sl.NewBuiltin("mochi.remote.requests", api_remote_requests), sl.Tuple{remote_requests(entities)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, entity := range entities {
+		if stub.held[entity] {
+			t.Errorf("mochi.remote.requests held %s's payload", entity)
+		}
 	}
 }

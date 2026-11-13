@@ -21,6 +21,7 @@ import (
 
 	p2p_network "github.com/libp2p/go-libp2p/core/network"
 	p2p_peer "github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 )
 
 // feed is a one-writer one-reader byte channel that honours a read deadline,
@@ -65,16 +66,29 @@ func (f *feed) read(p []byte, deadline time.Time) (int, error) {
 	return n, nil
 }
 
-// claims_conn answers the one question receive_stream_guarded asks of the
-// connection.
-type claims_conn struct{ p2p_network.Conn }
+// claims_local is the receiving host of every claims_conn: the receiver a claim
+// to it binds.
+var claims_local = p2p_peer.ID("12D3KooWClaimsLocalTestPeer")
+
+// claims_conn answers what receive_stream_guarded asks of the connection: who
+// is at either end, and which connection it is, for its challenge.
+type claims_conn struct {
+	p2p_network.Conn
+	id string
+}
 
 func (c *claims_conn) RemotePeer() p2p_peer.ID { return p2p_peer.ID("12D3KooWClaimsFloodTestPeer") }
+func (c *claims_conn) LocalPeer() p2p_peer.ID  { return claims_local }
+func (c *claims_conn) ID() string              { return c.id }
+func (c *claims_conn) RemoteMultiaddr() multiaddr.Multiaddr {
+	return multiaddr.StringCast("/ip4/192.0.2.1/tcp/1443")
+}
 
 // claims_stream is the far side of a /mochi/2/stream handshake: the handler
 // reads what the opener writes, and the opener reads what the handler writes.
 type claims_stream struct {
 	p2p_network.Stream
+	conn *claims_conn
 
 	inbound  *feed // opener -> handler
 	outbound *feed // handler -> opener
@@ -86,10 +100,15 @@ type claims_stream struct {
 }
 
 func new_claims_stream() *claims_stream {
-	return &claims_stream{inbound: new_feed(), outbound: new_feed()}
+	return new_claims_stream_on("12D3KooWCl-1")
 }
 
-func (s *claims_stream) Conn() p2p_network.Conn { return &claims_conn{} }
+// new_claims_stream_on is a stream on the connection with this ID.
+func new_claims_stream_on(connection string) *claims_stream {
+	return &claims_stream{conn: &claims_conn{id: connection}, inbound: new_feed(), outbound: new_feed()}
+}
+
+func (s *claims_stream) Conn() p2p_network.Conn { return s.conn }
 
 func (s *claims_stream) Read(p []byte) (int, error) {
 	s.lock.Lock()
@@ -187,7 +206,7 @@ func claims_signed(t *testing.T, challenge []byte) *Frame {
 		t.Fatalf("keygen: %v", err)
 	}
 	entity := base58_encode(public)
-	signable, err := claim_signable(challenge, entity, net_id, protocol_stream)
+	signable, err := claim_signable(challenge, entity, claims_local.String(), protocol_stream)
 	if err != nil {
 		t.Fatalf("claim_signable: %v", err)
 	}
@@ -227,6 +246,8 @@ func TestStreamCapsClaimsBeforeOpen(t *testing.T) {
 // tight that an ordinary opener - a few claims, then open - trips it, or the
 // test above would pass for the wrong reason.
 func TestStreamAcceptsALegitimateOpener(t *testing.T) {
+	// Past the ack the handler records the opener's address.
+	setup_peer_discovery_test(t)
 	s := new_claims_stream()
 
 	finished := make(chan struct{})
@@ -239,16 +260,34 @@ func TestStreamAcceptsALegitimateOpener(t *testing.T) {
 	claims_caps(t, s)
 	claim := claims_signed(t, challenge)
 	claims_send(t, s, claim)
-	// An open naming the claimed entity: past the claim loop, into resolution.
+	// An open naming the claimed entity: past the claim loop, into resolution,
+	// and acknowledged - an empty To is a host-to-host stream.
 	claims_send(t, s, &Frame{Type: frame_type_open, ID: "open-1", From: claim.From, To: ""})
 
+	replies := make(chan *Frame, 1)
+	go func() {
+		if f, err := frame_read(&opener_reader{f: s.outbound}); err == nil {
+			replies <- f
+		}
+	}()
+	select {
+	case f := <-replies:
+		if f.Type != frame_type_ack {
+			t.Errorf("a legitimate opener was answered %q, not an ack", f.Type)
+		}
+	case <-finished:
+		t.Fatal("a legitimate opener was not served: one claim then open must pass the cap")
+	case <-time.After(20 * time.Second):
+		t.Fatal("a legitimate opener was not answered")
+	}
+	// The handler now waits for the request; end it.
+	close(s.inbound.expire)
 	select {
 	case <-finished:
 	case <-time.After(20 * time.Second):
-		t.Fatal("a legitimate opener was not served: one claim then open must pass the cap")
+		t.Fatal("the handler did not end when its read deadline fired")
 	}
-	// It gets past the claim loop; where it lands after that is stream
-	// resolution's business, not this bound's.
+	close(s.outbound.chunks)
 	if !s.done() {
 		t.Error("the handler left the stream neither reset nor closed")
 	}

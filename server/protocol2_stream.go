@@ -18,6 +18,9 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -29,11 +32,16 @@ import (
 // net_start.
 //
 // Wire sequence (after libp2p accepts the protocol):
-//  1. Write hello with a fresh challenge.
+//  1. Write hello with the connection's challenge.
 //  2. Read caps (first sender frame).
-//  3. Read one or more claim frames; verify per-(stream, entity) signatures
-//     and cache claimed[From] = true.
+//  3. Read one or more claim frames; verify each signature over the
+//     connection's challenge and cache claimed[From] = true.
 //  4. Read open: dispatch to the app handler with the raw stream as e.stream.
+//
+// The hello is written before anything is read, and the content is read, if at
+// all, only after the ack, so an opener that knows the connection may send its
+// caps, claims, open and content at once. Both bindings of the peers come from
+// the authenticated connection.
 //
 // Guarded: libp2p runs each handler on its own goroutine, and the dispatch
 // below routes broadcast events outside run_handler's recover.
@@ -50,9 +58,9 @@ func receive_stream_guarded(s p2p_network.Stream) {
 		return
 	}
 
-	challenge, err := hello_challenge()
+	challenge, err := hello_connection_challenge(s.Conn())
 	if err != nil {
-		warn("Stream: challenge entropy failed peer %q: %v", peer, err)
+		warn("Stream: challenge failed peer %q: %v", peer, err)
 		s.Reset()
 		return
 	}
@@ -104,7 +112,7 @@ func receive_stream_guarded(s p2p_network.Stream) {
 		case frame_type_claim:
 			// A claim that does not verify is not a retry, it is a peer
 			// spending our signature checks on nothing. It used to continue.
-			if err := claim_verify(f.From, challenge, f.Signature, net_id, protocol_stream); err != nil {
+			if err := claim_verify(f.From, challenge, f.Signature, s.Conn().LocalPeer().String(), protocol_stream); err != nil {
 				info("Stream: claim verify failed peer=%q entity=%q: %v", peer, f.From, err)
 				s.Reset()
 				return
@@ -308,11 +316,29 @@ func stream_self_loop(from, to, service, event, from_app string, services []stri
 	return near
 }
 
-// stream_open is the sender side of /mochi/2/stream: handshake, open frame,
-// ack, then the raw stream wrapped in a *Stream. Also returns the session id.
-func stream_open(peer, from, to, service, event, from_app string,
-	services []string, content map[string]any) (*Stream, string, error) {
+// error_stream_sent marks a failed open whose request had already gone with
+// the open: the far side may have run it, so it must not be sent again
+// elsewhere.
+var error_stream_sent = errors.New("stream: the request may have been delivered")
 
+// stream_open is the sender side of /mochi/2/stream: handshake, open frame,
+// ack, then the raw stream wrapped in a *Stream, with content (when not nil)
+// already sent as its first segment. Also returns the session id.
+//
+// On a connection recorded by connection_learn the hello is not waited for: the
+// claim is signed over the challenge the connection's earlier hello gave, and
+// caps, claim and open go at once. The content goes with them when the far side
+// has already proved `to` on this connection, or there is no `to`; otherwise
+// only once this stream's ack has proved it. Once ctx ends nothing more is
+// sent and no stream is returned; an error wrapping error_stream_sent means
+// the request had already gone. See claude/plans/protocol2.md App streams →
+// Connection reuse.
+func stream_open(ctx context.Context, peer, from, to, service, event, from_app string,
+	services []string, content any) (*Stream, string, error) {
+
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 	rawstream, err := peer_protocol_open(peer, protocol_stream)
 	if err != nil {
 		return nil, "", err
@@ -327,36 +353,44 @@ func stream_open(peer, from, to, service, event, from_app string,
 	// app stream is long-lived by design.
 	_ = rawstream.SetReadDeadline(time.Now().Add(stream_open_timeout))
 
-	hello, err := hello_read(rawstream, 2)
-	if err != nil {
-		rawstream.Reset()
-		// A silent peer is unreachable, not a hard failure.
-		if deadline_exceeded(err) {
-			return nil, "", error_sender_unreachable
+	conn := rawstream.Conn()
+	record, proven, known := connection_recall(conn, to)
+
+	var hello *Frame
+	if !known {
+		hello, err = stream_hello(rawstream, peer)
+		if err != nil {
+			return nil, "", err
 		}
-		return nil, "", fmt.Errorf("stream: hello read failed peer=%q: %w", peer, err)
+		connection_learn(conn, hello)
+		record = connection_record{
+			challenge: hello.Challenge,
+			codecs:    codec_intersect(receiver_codecs(), hello.Codecs),
+			features:  features_intersect(receiver_features(), hello.Features),
+		}
 	}
 
-	codecs := codec_intersect(receiver_codecs(), hello.Codecs)
-	features := features_intersect(receiver_features(), hello.Features)
-
-	// Our own challenge, for the far side to sign with the key of the
-	// entity we are addressing. Fresh per stream, exactly as the hello
-	// challenge is: a reused one would let a proof from an earlier
-	// stream be replayed on this one.
+	// Our own challenge, for the far side to sign with the key of the entity we
+	// are addressing. Fresh per stream: a reused one would let a proof from an
+	// earlier stream be replayed on this one.
 	challenge, err := hello_challenge()
 	if err != nil {
 		rawstream.Reset()
 		return nil, "", fmt.Errorf("stream: challenge entropy failed peer=%q: %w", peer, err)
 	}
 
-	if err := caps_write(rawstream, codecs, features, challenge); err != nil {
+	if err := ctx.Err(); err != nil {
+		rawstream.Reset()
+		return nil, "", err
+	}
+
+	if err := caps_write(rawstream, record.codecs, record.features, challenge); err != nil {
 		rawstream.Reset()
 		return nil, "", fmt.Errorf("stream: caps write failed peer=%q: %w", peer, err)
 	}
 
 	if from != "" {
-		if err := claim_write(rawstream, from, hello.Challenge, peer, protocol_stream); err != nil {
+		if err := claim_write(rawstream, from, record.challenge, peer, protocol_stream); err != nil {
 			rawstream.Reset()
 			return nil, "", fmt.Errorf("stream: claim write failed peer=%q: %w", peer, err)
 		}
@@ -364,8 +398,9 @@ func stream_open(peer, from, to, service, event, from_app string,
 
 	id := uid()
 	// The open frame carries routing only; per-call content ships as the FIRST
-	// post-ack CBOR segment, which is what the receiver reads as e.content. A
-	// caller passing nil writes its own first segment.
+	// segment after it, which is what the receiver reads as e.content, and the
+	// receiver reads it only after its ack. A caller passing nil writes its own
+	// first segment.
 	open := &Frame{
 		Type:     frame_type_open,
 		ID:       id,
@@ -381,13 +416,60 @@ func stream_open(peer, from, to, service, event, from_app string,
 		return nil, "", fmt.Errorf("stream: open write failed peer=%q: %w", peer, err)
 	}
 
+	// Raw bytes from here on; metered before the content, which is the app's.
+	st := stream_rw(io.ReadCloser(rawstream), io.WriteCloser(rawstream))
+	st.meter(from_app)
+
+	// The content may leave before this stream's proof only for a peer that
+	// already proved `to` on this connection, or when nothing is addressed: an
+	// empty To is a host-to-host stream libp2p has already authenticated. It is
+	// written beside the reads below, not before them: a receiver that fails the
+	// open reads none of it, and over yamux a first segment larger than the
+	// stream's window would otherwise hold this call until its write deadline.
+	early := content != nil && (to == "" || proven)
+	var sent chan error
+	if early {
+		sent = make(chan error, 1)
+		go func() {
+			err := errors.New("stream: content write panicked")
+			defer func() { sent <- err }()
+			guard("stream_open", nil, func() { err = st.write(content) })
+		}()
+	}
+	// end gives up on the stream. Once the content has gone with the open the
+	// far side may have run the request, and the error says so: a caller must
+	// not send it again elsewhere.
+	end := func(session string, err error) (*Stream, string, error) {
+		rawstream.Reset()
+		if sent != nil {
+			<-sent
+			err = fmt.Errorf("%w: %w", error_stream_sent, err)
+		}
+		return nil, session, err
+	}
+
+	if hello == nil {
+		hello, err = hello_read(rawstream, 2)
+		if err != nil {
+			if deadline_exceeded(err) {
+				return end("", error_sender_unreachable)
+			}
+			return end("", fmt.Errorf("stream: hello read failed peer=%q: %w", peer, err))
+		}
+		// The claim went over the challenge recorded for this connection; a
+		// receiver that gives another has broken the promise its feature made.
+		if !bytes.Equal(hello.Challenge, record.challenge) || !contains_string(hello.Features, feature_connection) {
+			connection_forget(conn)
+			return end(hello.Session, fmt.Errorf("stream: peer=%q changed its connection challenge", peer))
+		}
+	}
+
 	reply, err := frame_read(rawstream)
 	if err != nil {
-		rawstream.Reset()
 		if deadline_exceeded(err) {
-			return nil, hello.Session, error_sender_unreachable
+			return end(hello.Session, error_sender_unreachable)
 		}
-		return nil, "", fmt.Errorf("stream: reply read failed peer=%q: %w", peer, err)
+		return end("", fmt.Errorf("stream: reply read failed peer=%q: %w", peer, err))
 	}
 	// The handshake is over either way; what follows is the app's own traffic,
 	// which sets its own deadlines.
@@ -404,24 +486,34 @@ func stream_open(peer, from, to, service, event, from_app string,
 			// We may have addressed a fingerprint; the proof is over the
 			// full id, so bind the two before trusting the id it named.
 			if resolved != to && fingerprint(resolved) != to {
-				rawstream.Reset()
-				return nil, hello.Session,
-					fmt.Errorf("stream: peer=%q answered for entity %q, not %q", peer, resolved, to)
+				connection_doubt(conn, to)
+				return end(hello.Session, fmt.Errorf("stream: peer=%q answered for entity %q, not %q", peer, resolved, to))
 			}
-			if err := responder_verify(resolved, challenge, reply.Signature, net_id, protocol_stream); err != nil {
-				rawstream.Reset()
-				return nil, hello.Session,
-					fmt.Errorf("stream: peer=%q failed to prove entity %q: %w", peer, resolved, err)
+			if err := responder_verify(resolved, challenge, reply.Signature, conn.LocalPeer().String(), protocol_stream); err != nil {
+				connection_doubt(conn, to)
+				return end(hello.Session, fmt.Errorf("stream: peer=%q failed to prove entity %q: %w", peer, resolved, err))
 			}
+			connection_prove(conn, to)
 		}
 
-		// Handshake complete; raw bytes from here on.
-		st := stream_rw(io.ReadCloser(rawstream), io.WriteCloser(rawstream))
-		// If the caller passed a content map, ship it as the first
-		// post-ack segment so receive_stream's read picks it up as
-		// e.content. nil-content callers (stream_to_peer) write their
-		// own first segment after the call returns.
-		if content != nil {
+		if sent != nil {
+			// A write that failed sent no whole segment, which the far side
+			// cannot read as a request.
+			if err := <-sent; err != nil {
+				st.close()
+				return nil, hello.Session, fmt.Errorf("stream: content write failed peer=%q: %w", peer, err)
+			}
+		}
+		// A caller that has given up gets no stream, and content held for the
+		// proof is not sent: without it the far end runs no handler.
+		if err := ctx.Err(); err != nil {
+			st.close()
+			if early {
+				err = fmt.Errorf("%w: %w", error_stream_sent, err)
+			}
+			return nil, hello.Session, err
+		}
+		if content != nil && !early {
 			if err := st.write(content); err != nil {
 				st.close()
 				return nil, hello.Session,
@@ -430,29 +522,57 @@ func stream_open(peer, from, to, service, event, from_app string,
 		}
 		return st, hello.Session, nil
 	case frame_type_fail:
-		rawstream.Close()
+		// A receiver fails an open before it reads any content, so nothing was
+		// delivered. Reset rather than close when content is still being
+		// written: the receiver reads none of it.
+		connection_doubt(conn, to)
+		if sent != nil {
+			rawstream.Reset()
+			<-sent
+		} else {
+			rawstream.Close()
+		}
 		return nil, hello.Session,
 			fmt.Errorf("stream: dispatch failed peer=%q reason=%q", peer, reply.Reason)
 	}
-	rawstream.Reset()
-	return nil, hello.Session,
-		fmt.Errorf("stream: unexpected reply type %q peer=%q", reply.Type, peer)
+	connection_doubt(conn, to)
+	return end(hello.Session, fmt.Errorf("stream: unexpected reply type %q peer=%q", reply.Type, peer))
+}
+
+// stream_hello reads the receiver's hello, resetting the stream if it fails.
+func stream_hello(rawstream p2p_network.Stream, peer string) (*Frame, error) {
+	hello, err := hello_read(rawstream, 2)
+	if err != nil {
+		rawstream.Reset()
+		// A silent peer is unreachable, not a hard failure.
+		if deadline_exceeded(err) {
+			return nil, error_sender_unreachable
+		}
+		return nil, fmt.Errorf("stream: hello read failed peer=%q: %w", peer, err)
+	}
+	return hello, nil
 }
 
 // stream_open_or_self opens a /mochi/2/stream to peer, routing peer == net_id
 // to the in-process loopback (libp2p refuses to dial self). The returned stream
 // is raw: the open frame and any `content` are already shipped and acked.
-func stream_open_or_self(peer, from, to, service, event, from_app string,
-	services []string, content map[string]any) (*Stream, error) {
+func stream_open_or_self(ctx context.Context, peer, from, to, service, event, from_app string,
+	services []string, content any) (*Stream, error) {
 
 	if peer == net_id {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		s := stream_self_loop(from, to, service, event, from_app, services)
 		s.meter(from_app)
+		if content != nil {
+			if err := s.write(content); err != nil {
+				s.close()
+				return nil, err
+			}
+		}
 		return s, nil
 	}
-	s, _, err := stream_open(peer, from, to, service, event, from_app, services, content)
-	if err == nil {
-		s.meter(from_app)
-	}
+	s, _, err := stream_open(ctx, peer, from, to, service, event, from_app, services, content)
 	return s, err
 }

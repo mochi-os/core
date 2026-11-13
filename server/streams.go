@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	cbor "github.com/fxamacker/cbor/v2"
@@ -99,19 +100,32 @@ var (
 )
 
 // Create a new stream over /mochi/2/stream (authenticated handshake via claim +
-// open). When the recipient entity has several known locations, each is tried
-// in entity_peers_failover order until one completes the handshake.
-func stream(from string, to string, service string, event string, from_app string, services []string) (*Stream, error) {
+// open), with content as its first segment. When the recipient entity has
+// several known locations, each is tried in entity_peers_failover order until
+// one completes the handshake.
+func stream(from string, to string, service string, event string, from_app string, services []string, content any) (*Stream, error) {
 	peers := entity_peers_failover_for(from, to)
 	if len(peers) == 0 {
 		return nil, fmt.Errorf("stream unable to determine location of entity %q", to)
 	}
 
+	return stream_failover(peers, func(peer string) (*Stream, error) {
+		return stream_to_peer(context.Background(), peer, from, to, service, event, from_app, services, content)
+	})
+}
+
+// stream_failover opens a stream at each of peers in turn until one opens. It
+// stops at an open whose request may have run (error_stream_sent): another
+// location would run it twice.
+func stream_failover(peers []string, open func(string) (*Stream, error)) (*Stream, error) {
 	var last_error error
 	for _, peer := range peers {
-		s, err := stream_to_peer(peer, from, to, service, event, from_app, services)
+		s, err := open(peer)
 		if err == nil {
 			return s, nil
+		}
+		if errors.Is(err, error_stream_sent) {
+			return nil, err
 		}
 		last_error = err
 	}
@@ -120,9 +134,12 @@ func stream(from string, to string, service string, event string, from_app strin
 
 // Create a stream to a specific peer, without entity lookup; a self-target
 // routes to the in-process loopback. The stream is in raw mode - the open frame
-// is already shipped and acked, so the caller reads and writes bytes directly.
-func stream_to_peer(peer string, from string, to string, service string, event string, from_app string, services []string) (*Stream, error) {
-	s, err := stream_open_or_self(peer, from, to, service, event, from_app, services, nil)
+// and content, the request's first segment, are already shipped and acked, so
+// the caller reads and writes bytes directly. Passing content rather than
+// writing it afterwards lets it travel with the open (stream_open); once ctx
+// ends nothing more is sent.
+func stream_to_peer(ctx context.Context, peer string, from string, to string, service string, event string, from_app string, services []string, content any) (*Stream, error) {
+	s, err := stream_open_or_self(ctx, peer, from, to, service, event, from_app, services, content)
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +147,17 @@ func stream_to_peer(peer string, from string, to string, service string, event s
 		return nil, fmt.Errorf("stream unable to open to peer %q", peer)
 	}
 	return s, nil
+}
+
+// stream_content is a request's first segment as passed to stream_to_peer: an
+// empty map for none, which the far end reads as e.content as it would the
+// null a script's None encodes to. Only nil, to stream_to_peer, means the
+// caller writes its own first segment.
+func stream_content(v any) any {
+	if v == nil {
+		return map[string]any{}
+	}
+	return v
 }
 
 // Get next stream ID
@@ -365,21 +393,6 @@ func (s *Stream) write(v any) error {
 	}
 
 	return nil
-}
-
-// Write field/value pairs to a stream as a CBOR encoded segment
-func (s *Stream) write_content(in ...string) error {
-	content := map[string]string{}
-
-	for {
-		if len(in) < 2 {
-			break
-		}
-		content[in[0]] = in[1]
-		in = in[2:]
-	}
-
-	return s.write(content)
 }
 
 // Write a file to a stream as raw bytes, returns bytes written

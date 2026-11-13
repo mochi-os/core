@@ -45,9 +45,8 @@ func receiver_codecs() []string {
 }
 
 // receiver_features returns the capability flags this build supports.
-// Empty for now; future features get added here.
 func receiver_features() []string {
-	return nil
+	return []string{feature_connection}
 }
 
 // wire_stream is the subset of p2p_network.Stream the /mochi/2
@@ -118,9 +117,11 @@ func receive_messages_guarded(s p2p_network.Stream) {
 		return
 	}
 
-	challenge, err := hello_challenge()
+	// The connection's challenge, the one its /mochi/2/stream receiver gives
+	// too: a claim binds the protocol, so it cannot move between the two.
+	challenge, err := hello_connection_challenge(s.Conn())
 	if err != nil {
-		warn("Messages: challenge entropy failed for peer %q: %v", peer, err)
+		warn("Messages: challenge failed for peer %q: %v", peer, err)
 		s.Reset()
 		return
 	}

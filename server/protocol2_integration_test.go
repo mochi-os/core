@@ -10,6 +10,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"sync"
@@ -554,7 +555,7 @@ func TestStreamOpenSelfLoopUsesV2Native(t *testing.T) {
 	setup_replication_test(t) // sets net_id = "self"
 	setup_users_test_schema() // so the far-end stream_resolve query has a table
 
-	s, err := stream_open_or_self(net_id, "", "to-entity", "market", "search", "market", nil, nil)
+	s, err := stream_open_or_self(context.Background(), net_id, "", "to-entity", "market", "search", "market", nil, nil)
 	if err != nil {
 		t.Fatalf("self-loop stream_open_or_self returned error: %v (market/staff → local Comptroller would 502)", err)
 	}

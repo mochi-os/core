@@ -111,14 +111,11 @@ var bridge_avatar = func(user *User, entity string) ([]byte, string) {
 	if err != nil {
 		return nil, ""
 	}
-	s, err := stream_to_peer(peer, from, entity, "people", "avatar", "", nil)
+	s, err := stream_to_peer(context.Background(), peer, from, entity, "people", "avatar", "", nil, map[string]any{})
 	if err != nil {
 		return nil, ""
 	}
 	defer s.close()
-	if s.write(map[string]any{}) != nil {
-		return nil, ""
-	}
 	header, err := s.read_content()
 	if err != nil || fmt.Sprint(header["status"]) != "200" {
 		return nil, ""

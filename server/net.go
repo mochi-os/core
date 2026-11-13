@@ -222,6 +222,9 @@ func net_start() {
 	net_id = net_me.ID().String()
 	info("Net listening on port %d with id %q", port, net_id)
 
+	// Before any dial, so no connection's record outlives it.
+	net_watch_connections(net_me.Network())
+
 	// Record the loopback WebSocket port for the web server's 443 bridge.
 	fallback_capture()
 

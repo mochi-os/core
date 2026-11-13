@@ -42,14 +42,16 @@ func xml_attribute(text string, name string) string {
 func (f *xmpp_fake) push(t *testing.T, text string) {
 	t.Helper()
 	f.lock.Lock()
-	session := f.sessions[len(f.sessions)-1]
+	n := len(f.sessions)
+	session := f.sessions[n-1]
 	f.lock.Unlock()
+	xmpp_fake_log("session %d sends %s", n, xmpp_fake_summary(text))
 	// A context never cancelled: mellium watches the one a send is given,
 	// and seeing it cancelled just after the send returns, puts the
 	// connection's write deadline in the past for a moment, failing a write
 	// under way.
 	if err := session.Send(context.Background(), xml.NewDecoder(strings.NewReader(text))); err != nil {
-		t.Fatalf("push: %v", err)
+		t.Fatalf("push to session %d, the latest: %v", n, err)
 	}
 }
 
@@ -65,6 +67,7 @@ func (f *xmpp_fake) await(t *testing.T, what string, parts ...string) string {
 		}
 		return false
 	})
+	xmpp_fake_log("awaited %s: %s", what, xmpp_fake_summary(found))
 	return found
 }
 

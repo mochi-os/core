@@ -16,8 +16,10 @@ import (
 	"crypto/x509/pkix"
 	"encoding/xml"
 	"errors"
+	"log"
 	"math/big"
 	"net"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -142,32 +144,69 @@ func (f *xmpp_fake) serve(raw net.Conn, conn net.Conn) {
 	}
 	f.lock.Lock()
 	f.sessions = append(f.sessions, session)
+	n := len(f.sessions)
 	f.lock.Unlock()
+	xmpp_fake_log("session %d began, from %s", n, raw.RemoteAddr())
 	// The pipe is synchronous, so the stream is read before anything is sent
 	// on it; each stanza goes as its own element.
-	go session.Serve(xmpp.HandlerFunc(func(t xmlstream.TokenReadEncoder, start *xml.StartElement) error {
-		var b bytes.Buffer
-		e := xml.NewEncoder(&b)
-		e.EncodeToken(start.Copy())
-		xmlstream.Copy(e, t)
-		e.Flush()
-		text := b.String()
-		f.lock.Lock()
-		f.received = append(f.received, text)
-		answer := f.answer
-		f.lock.Unlock()
-		if answer != nil {
-			for _, reply := range answer(text) {
-				xmpp_write(t, reply)
+	go func() {
+		err := session.Serve(xmpp.HandlerFunc(func(t xmlstream.TokenReadEncoder, start *xml.StartElement) error {
+			var b bytes.Buffer
+			e := xml.NewEncoder(&b)
+			e.EncodeToken(start.Copy())
+			xmlstream.Copy(e, t)
+			e.Flush()
+			text := b.String()
+			xmpp_fake_log("session %d heard %s", n, xmpp_fake_summary(text))
+			f.lock.Lock()
+			f.received = append(f.received, text)
+			answer := f.answer
+			f.lock.Unlock()
+			if answer != nil {
+				for _, reply := range answer(text) {
+					xmpp_fake_log("session %d answers %s", n, xmpp_fake_summary(reply))
+					xmpp_write(t, reply)
+				}
 			}
-		}
-		return nil
-	}))
+			return nil
+		}))
+		xmpp_fake_log("session %d ended: %v", n, err)
+	}()
 	for _, element := range f.send {
 		if err := session.Send(ctx, xml.NewDecoder(strings.NewReader(element))); err != nil {
 			return
 		}
 	}
+}
+
+// xmpp_fake_log notes what a fake server did, timed beside the server's own
+// log: when each session began and ended, and what each heard, answered and
+// was sent. A test's output is shown where it fails, which is when it is read.
+func xmpp_fake_log(format string, values ...any) {
+	log.Printf("XMPP fake "+format, values...)
+}
+
+// xmpp_fake_elements are the names of a stanza's elements, in order.
+var xmpp_fake_elements = regexp.MustCompile(`<([A-Za-z][\w:.-]*)`)
+
+// xmpp_fake_summary names a stanza for the fake's log without its content:
+// its element, type, id and first child.
+func xmpp_fake_summary(text string) string {
+	names := xmpp_fake_elements.FindAllStringSubmatch(text, 2)
+	summary := ""
+	if len(names) > 0 {
+		summary = names[0][1]
+	}
+	if kind := xml_attribute(text, "type"); kind != "" {
+		summary += " type=" + kind
+	}
+	if id := xml_attribute(text, "id"); id != "" {
+		summary += " id=" + id
+	}
+	if len(names) > 1 {
+		summary += " <" + names[1][1] + ">"
+	}
+	return summary
 }
 
 // heard answers the stanzas the fake has received that contain every part

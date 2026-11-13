@@ -381,17 +381,25 @@ func xmpp_room_join(a *xmpp_account, address string) (string, string, error) {
 	if !conference {
 		return "", "", xmpp_unknown{"not a room"}
 	}
-	var nick string
-	for _, nick = range xmpp_nicks(a.address.Localpart()) {
-		if err = xmpp_room_enter(a, room, nick, name, 0, true); !xmpp_taken(err) {
-			break
-		}
-	}
+	nick, err := xmpp_room_seat(a, room, a.address.Localpart(), name, 0, true)
 	if err != nil {
 		return "", "", err
 	}
 	xmpp_bookmark_keep(a, room.String(), name, nick)
 	return "xmpp:" + room.String(), name, nil
+}
+
+// xmpp_room_seat enters a room under a nickname, or under it with a number
+// after it where someone there already goes by it (xmpp_nicks), and answers
+// the one it took.
+func xmpp_room_seat(a *xmpp_account, room jid.JID, nick string, name string, since int64, wait bool) (string, error) {
+	var err error
+	for _, candidate := range xmpp_nicks(nick) {
+		if err = xmpp_room_enter(a, room, candidate, name, since, wait); !xmpp_taken(err) {
+			return candidate, err
+		}
+	}
+	return "", err
 }
 
 // xmpp_room_leave leaves a room and stops keeping it, in the bookmarks too.
@@ -603,7 +611,7 @@ func xmpp_room_rejoin(a *xmpp_account, j *xmpp_joined) {
 	if err != nil {
 		return
 	}
-	if err := xmpp_room_enter(a, room, j.nick, j.name, j.seen, false); err != nil {
+	if _, err := xmpp_room_seat(a, room, j.nick, j.name, j.seen, false); err != nil {
 		debug("XMPP account %s: room %s not joined again: %v", a.address, j.room, err)
 		if strings.Contains(err.Error(), "refused") {
 			db_user_brief(a.user, "networks").exec("delete from joined where account=? and room=?", a.id, j.room)

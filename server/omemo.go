@@ -36,6 +36,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	mathrand "math/rand/v2"
 	"net/url"
@@ -995,7 +996,7 @@ func (d *omemo_device) open_version(version string, sender jid.JID, room string,
 		}
 	}
 	if text == "" {
-		return nil, nil, fmt.Errorf("the message is not encrypted for this device")
+		return nil, nil, omemo_missed
 	}
 	if d.trusted(sender, sid) == "distrusted" {
 		return nil, nil, fmt.Errorf("the user distrusts the sending device")
@@ -1278,6 +1279,14 @@ func omemo_read(user *User, account string, m *xmpp_message, sender jid.JID, roo
 	opened, err := d.open(sender.Bare(), room, m.OMEMO2, m.OMEMO)
 	if err != nil {
 		debug("OMEMO %s: message from %s not decrypted: %v", d.address, sender, err)
+		// One sent for the account's devices of the time can be read by none
+		// made since (xmpp_events).
+		if errors.Is(err, omemo_missed) {
+			if db := omemo_database(user); db != nil {
+				row, _ := db.row("select created from omemo where account=?", account)
+				m.made = row_int(row, "created")
+			}
+		}
 		// A device not in their lists is news of the lists changed.
 		encryption_running.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), xmpp_query_timeout)

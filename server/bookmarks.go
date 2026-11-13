@@ -374,7 +374,7 @@ func xmpp_bookmark_published(a *xmpp_account, item string, payload string) {
 	xmpp_running.Add(1)
 	go func() {
 		defer xmpp_running.Done()
-		if err := xmpp_room_enter(a, room, nick, name, 0, false); err != nil {
+		if _, err := xmpp_room_seat(a, room, nick, name, 0, false); err != nil {
 			debug("XMPP account %s: bookmarked room %s not joined: %v", a.address, room, err)
 		}
 	}()

@@ -169,6 +169,49 @@ func TestXMPPHostedRoomNickTaken(t *testing.T) {
 	}
 }
 
+// TestXMPPHostedRejoinNickTaken: a room the account is joined to again, or
+// joins from a client's bookmark, where someone has meanwhile taken its
+// nickname, is entered under the nickname with a number after it, and not
+// left.
+func TestXMPPHostedRejoinNickTaken(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	env.apps(t)
+	alice := env.raw(t, "alice@example.com", env.mint(t, env.alice, "x1", "Phone"), "phone")
+	tablet := env.raw(t, "alice@example.com", env.mint(t, env.alice, "x1", "Tablet"), "tablet")
+	client := env.raw(t, "bob@example.com", env.mint(t, env.bob, "x2", "Phone"), "phone")
+	client.send(`<presence xmlns="jabber:client"/>`)
+	room := "club@rooms.example.com"
+	alice.send(`<presence xmlns="jabber:client" to="` + room + `/Alice"><x xmlns="http://jabber.org/protocol/muc"/></presence>`)
+	alice.expect(t, "the room made", `code="201"`)
+	xmpp_configure(t, alice, room, "c1", "muc#roomconfig_roomname", "Club", "muc#roomconfig_persistentroom", "1")
+	xmpp_call(t, env.bob, api_account_room_join, sl.Tuple{sl.String("x2"), sl.String(room)})
+	alice.expect(t, "bob in the room", `from="`+room+`/bob"`)
+
+	// The room forgets Mochi's sessions, and someone takes the name meanwhile.
+	c := conference_of(room)
+	c.lock.Lock()
+	delete(c.occupants, "bob")
+	c.lock.Unlock()
+	tablet.send(`<presence xmlns="jabber:client" to="` + room + `/bob"><x xmlns="http://jabber.org/protocol/muc"/></presence>`)
+	tablet.expect(t, "the name taken", `from="`+room+`/bob"`, `code="110"`)
+	alice.received = nil
+	xmpp_rooms_check(false)
+	alice.expect(t, "THE POINT: joined again under the name with a number after it", `from="`+room+`/bob2"`)
+	if j := xmpp_joined_of(xmpp_account_of(mustjid("bob@example.com")), room); j == nil || j.nick != "bob2" {
+		t.Errorf("THE POINT: the room kept, under the name it took: %+v", j)
+	}
+
+	// A client's bookmark of a room where its nickname is taken.
+	den := "den@rooms.example.com"
+	alice.send(`<presence xmlns="jabber:client" to="` + den + `/Alice"><x xmlns="http://jabber.org/protocol/muc"/></presence>`)
+	alice.expect(t, "a second room", `from="`+den+`/Alice"`, `code="201"`)
+	xmpp_configure(t, alice, den, "c2", "muc#roomconfig_roomname", "Den", "muc#roomconfig_persistentroom", "1")
+	tablet.send(`<presence xmlns="jabber:client" to="` + den + `/bobby"><x xmlns="http://jabber.org/protocol/muc"/></presence>`)
+	tablet.expect(t, "the bookmark's name taken", `from="`+den+`/bobby"`, `code="110"`)
+	client.send(`<iq xmlns="jabber:client" type="set" id="b1"><pubsub xmlns="http://jabber.org/protocol/pubsub"><publish node="urn:xmpp:bookmarks:1"><item id="` + den + `"><conference xmlns="urn:xmpp:bookmarks:1" name="Den" autojoin="true"><nick>bobby</nick></conference></item></publish></pubsub></iq>`)
+	alice.expect(t, "THE POINT: a bookmark joined under its name with a number after it", `from="`+den+`/bobby2"`)
+}
+
 // TestXMPPHostedRoomCreate: chat starting a conversation with several
 // people through a hosted account makes a room for members on the account's
 // domain's room service, the account its owner and each person a member

@@ -11,6 +11,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
+	"encoding/xml"
 	"os"
 	"regexp"
 	"strconv"
@@ -776,5 +777,45 @@ func TestOmemoOpenedTogether(t *testing.T) {
 		if d == nil || d != devices[0] {
 			t.Fatal("THE POINT: one device, made once, for each that opened it")
 		}
+	}
+}
+
+// TestOmemoUnreadableHistory: a message encrypted for the account's other
+// devices only can never be read by its device here. One sent before the
+// device was made, the history of every account newly added, is told apart
+// from one sent since, and a message the device fails to open is neither.
+func TestOmemoUnreadableHistory(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	env.both()
+	d, err := omemo_device_of(env.bob, "x2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	made := now() - 1000
+	omemo_database(env.bob).exec("update omemo set created=? where account='x2'", made)
+	mine := strconv.FormatUint(uint64(d.id), 10)
+	other := strconv.FormatUint(uint64(d.id)+1, 10)
+	heard := func(rid string, sent int64) map[string]any {
+		var m xmpp_message
+		raw := `<message from="alice@example.com/phone" to="bob@example.com" type="chat" id="m` + strconv.FormatInt(sent, 10) + `"><body>fallback</body><encrypted xmlns="urn:xmpp:omemo:2"><header sid="77"><keys jid="bob@example.com"><key rid="` + rid + `">AAAA</key></keys></header><payload>AAAA</payload></encrypted></message>`
+		if err := xml.Unmarshal([]byte(raw), &m); err != nil {
+			t.Fatal(err)
+		}
+		omemo_read(env.bob, "x2", &m, jid.MustParse("alice@example.com"), "")
+		delay := &xmpp_delay{Stamp: time.Unix(sent, 0).UTC().Format(time.RFC3339)}
+		events := xmpp_events(&m, delay, jid.MustParse("alice@example.com/phone"), "xmpp:alice@example.com", "xmpp:alice@example.com", "", "", false)
+		if len(events) != 1 || events[0]["encrypted"] != true || events[0]["body"] != "" {
+			t.Fatalf("an encrypted message the device could not read: %v", events)
+		}
+		return events[0]
+	}
+	if e := heard(other, made-100); e["unreadable"] != "before" {
+		t.Errorf("THE POINT: one sent for other devices before the device was made: %v", e)
+	}
+	if e := heard(other, made+100); e["unreadable"] != "excluded" {
+		t.Errorf("THE POINT: one sent for other devices since the device was made: %v", e)
+	}
+	if e := heard(mine, made-100); e["unreadable"] != nil {
+		t.Errorf("THE POINT: one sent for the device that it failed to open: %v", e)
 	}
 }

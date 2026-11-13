@@ -63,6 +63,10 @@ const omemo_version = 0x33
 
 var omemo_refused = errors.New("the message could not be decrypted")
 
+// omemo_missed is a message encrypted for the sender's chosen devices, of
+// which the account's device is not one.
+var omemo_missed = errors.New("the message is not encrypted for this device")
+
 // === Keys ===
 
 // An omemo_pair is a Curve25519 key pair.

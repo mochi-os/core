@@ -414,6 +414,46 @@ func (f *matrix_room_fake) sent(method string, path string) (map[string]any, boo
 	return body, found
 }
 
+// TestXMPPLinkedRejoinNickTaken: a linked account's bookmarked room, where
+// someone already goes by the bookmark's nickname, is joined under it with a
+// number after it, not passed over.
+func TestXMPPLinkedRejoinNickTaken(t *testing.T) {
+	alice := create_linked_test_env(t)
+	room := "taken@rooms.example.org"
+	fake := create_xmpp_fake(t, "secret")
+	fake.answer = func(text string) []string {
+		id := xml_attribute(text, "id")
+		switch {
+		case strings.HasPrefix(text, "<iq") && strings.Contains(text, "urn:xmpp:bookmarks:1") && strings.Contains(text, `type="get"`):
+			return []string{`<iq xmlns="jabber:client" type="result" id="` + id + `"><pubsub xmlns="http://jabber.org/protocol/pubsub"><items node="urn:xmpp:bookmarks:1"><item id="` + room + `"><conference xmlns="urn:xmpp:bookmarks:1" name="Taken" autojoin="true"><nick>alice</nick></conference></item></items></pubsub></iq>`}
+		case strings.HasPrefix(text, "<iq"):
+			return []string{`<iq xmlns="jabber:client" type="result" id="` + id + `"/>`}
+		case strings.HasPrefix(text, "<presence") && strings.Contains(text, room+`/alice"`):
+			return []string{`<presence xmlns="jabber:client" from="` + room + `/alice" type="error"><error type="cancel"><conflict xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></presence>`}
+		case strings.HasPrefix(text, "<presence") && strings.Contains(text, room+`/alice2"`):
+			return []string{`<presence xmlns="jabber:client" from="` + room + `/alice2"><x xmlns="http://jabber.org/protocol/muc#user"><status code="110"/></x></presence>`}
+		}
+		return nil
+	}
+	log := &inbound_log{}
+	log.install(t)
+	thread := linked_thread(alice)
+	account := decoded(t)(api_account_link(thread, sl.NewBuiltin("test", nil), sl.Tuple{sl.String("xmpp")}, linked_kwargs("address", "alice@example.org", "password", "secret")))
+	id := account["id"].(string)
+	wait(t, "the connection", func() bool { connected, _ := linked_connected(alice.UID, id); return connected })
+	log.find(t, "room", func(e map[string]any) bool { return e["conversation"] == "xmpp:"+room })
+	c, err := linked_client(&linked{user: alice, id: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.lock.Lock()
+	nick := c.rooms[room]
+	c.lock.Unlock()
+	if nick != "alice2" {
+		t.Errorf("THE POINT: the bookmarked room joined under: %q", nick)
+	}
+}
+
 // TestXMPPLinkedRoomNickTaken: a linked account joins a room where someone
 // already goes by its name under its name with a number after it, and a room
 // that will not have it answers chat {refused}, asking no other name.

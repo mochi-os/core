@@ -388,9 +388,11 @@ type xmpp_message struct {
 	} `xml:"http://jabber.org/protocol/pubsub#event event"`
 
 	// What the account's OMEMO device read of an encrypted message: its
-	// body, or that it carried only keys (omemo.go).
+	// body, or that it carried only keys (omemo.go); and, for one not
+	// encrypted for the device, when the device was made.
 	opened    *string
 	transport bool
+	made      int64
 }
 
 // encrypted reports whether a message's content is encrypted: by OMEMO, its
@@ -1094,6 +1096,15 @@ func xmpp_events(m *xmpp_message, delay *xmpp_delay, from jid.JID, conversation 
 		return events
 	}
 	event := map[string]any{"kind": "message", "conversation": conversation, "room": m.Type == "groupchat", "from": sender, "name": name, "id": id, "archive": archive, "body": body, "created": created, "own": own, "encrypted": encrypted}
+	// One encrypted for other devices only can never be read by the
+	// account's: "before" where it was sent before the device was made,
+	// which the history of every account newly added has.
+	if encrypted && m.opened == nil && m.made > 0 {
+		event["unreadable"] = "excluded"
+		if created < m.made {
+			event["unreadable"] = "before"
+		}
+	}
 	if len(files) > 0 {
 		event["files"] = files
 	}
@@ -1430,7 +1441,8 @@ func (c *xmpp_client) rejoin(ctx context.Context) {
 		if entry := kept[room]; entry != nil {
 			since = as_int64(entry["seen"])
 		}
-		if err := c.join(ctx, room, nick, since); err != nil {
+		nick, err := c.seat(ctx, room, nick, since)
+		if err != nil {
 			debug("XMPP account %s: room %s not joined: %v", c.l.id, room, err)
 			continue
 		}
@@ -1618,18 +1630,26 @@ func (c *xmpp_client) room_join(ctx context.Context, address string) (string, st
 	if name == "" {
 		name = room.Localpart()
 	}
-	var nick string
-	for _, nick = range xmpp_nicks(c.address.Localpart()) {
-		if err = c.join(ctx, room.String(), nick, 0); !xmpp_taken(err) {
-			break
-		}
-	}
+	nick, err := c.seat(ctx, room.String(), c.address.Localpart(), 0)
 	if err != nil {
 		return "", "", err
 	}
 	c.keep(room.String(), nick, name)
 	c.bookmark(ctx, room.String(), name, nick)
 	return room.String(), name, nil
+}
+
+// seat joins a room under a nickname, or under it with a number after it
+// where someone there already goes by it (xmpp_nicks), and answers the one it
+// took.
+func (c *xmpp_client) seat(ctx context.Context, room string, nick string, since int64) (string, error) {
+	var err error
+	for _, candidate := range xmpp_nicks(nick) {
+		if err = c.join(ctx, room, candidate, since); !xmpp_taken(err) {
+			return candidate, err
+		}
+	}
+	return "", err
 }
 
 // room_create makes a room on the account's server for the people given:

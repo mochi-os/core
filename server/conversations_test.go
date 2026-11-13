@@ -454,6 +454,130 @@ func TestXMPPLinkedRejoinNickTaken(t *testing.T) {
 	}
 }
 
+// TestXMPPLinkedRejoinPassing: a linked account's room not joined at sign-in
+// for a reason that passes - its server not yet reached, as for a room on a
+// Mochi server that has just started - is tried again until it is joined;
+// one that refuses the account is not tried again.
+func TestXMPPLinkedRejoinPassing(t *testing.T) {
+	saved := xmpp_retries
+	xmpp_retries = []time.Duration{50 * time.Millisecond}
+	t.Cleanup(func() { xmpp_retries = saved })
+	alice := create_linked_test_env(t)
+	busy, closed := "busy@rooms.example.org", "closed@rooms.example.org"
+	var lock sync.Mutex
+	asked := map[string]int{}
+	count := func(room string) int {
+		lock.Lock()
+		defer lock.Unlock()
+		return asked[room]
+	}
+	fake := create_xmpp_fake(t, "secret")
+	fake.answer = func(text string) []string {
+		id := xml_attribute(text, "id")
+		switch {
+		case strings.HasPrefix(text, "<iq") && strings.Contains(text, "urn:xmpp:bookmarks:1") && strings.Contains(text, `type="get"`):
+			items := ""
+			for _, room := range []string{busy, closed} {
+				items += `<item id="` + room + `"><conference xmlns="urn:xmpp:bookmarks:1" autojoin="true"><nick>alice</nick></conference></item>`
+			}
+			return []string{`<iq xmlns="jabber:client" type="result" id="` + id + `"><pubsub xmlns="http://jabber.org/protocol/pubsub"><items node="urn:xmpp:bookmarks:1">` + items + `</items></pubsub></iq>`}
+		case strings.HasPrefix(text, "<iq"):
+			return []string{`<iq xmlns="jabber:client" type="result" id="` + id + `"/>`}
+		case strings.HasPrefix(text, "<presence") && strings.Contains(text, busy+`/alice"`):
+			lock.Lock()
+			asked[busy]++
+			n := asked[busy]
+			lock.Unlock()
+			if n == 1 {
+				return []string{`<presence xmlns="jabber:client" from="` + busy + `/alice" type="error"><error type="wait"><remote-server-timeout xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></presence>`}
+			}
+			return []string{`<presence xmlns="jabber:client" from="` + busy + `/alice"><x xmlns="http://jabber.org/protocol/muc#user"><status code="110"/></x></presence>`}
+		case strings.HasPrefix(text, "<presence") && strings.Contains(text, closed+`/alice"`):
+			lock.Lock()
+			asked[closed]++
+			lock.Unlock()
+			return []string{`<presence xmlns="jabber:client" from="` + closed + `/alice" type="error"><error type="auth"><forbidden xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></presence>`}
+		}
+		return nil
+	}
+	log := &inbound_log{}
+	log.install(t)
+	thread := linked_thread(alice)
+	account := decoded(t)(api_account_link(thread, sl.NewBuiltin("test", nil), sl.Tuple{sl.String("xmpp")}, linked_kwargs("address", "alice@example.org", "password", "secret")))
+	id := account["id"].(string)
+	wait(t, "the connection", func() bool { connected, _ := linked_connected(alice.UID, id); return connected })
+	log.find(t, "room", func(e map[string]any) bool { return e["conversation"] == "xmpp:"+busy })
+	if n := count(busy); n != 2 {
+		t.Errorf("THE POINT: the room the way to which failed was asked %d times before it was joined, want 2", n)
+	}
+	c, err := linked_client(&linked{user: alice, id: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.lock.Lock()
+	nick := c.rooms[busy]
+	c.lock.Unlock()
+	if nick != "alice" {
+		t.Errorf("THE POINT: the room the way to which failed joined as %q", nick)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := count(closed); n != 1 {
+		t.Errorf("THE POINT: the room that refused the account was asked %d times, want once", n)
+	}
+}
+
+// TestXMPPLinkedRejoinJoinedMeanwhile: a room waiting to be tried again that
+// the user joins meanwhile is not joined a second time when its turn comes.
+func TestXMPPLinkedRejoinJoinedMeanwhile(t *testing.T) {
+	saved := xmpp_retries
+	xmpp_retries = []time.Duration{400 * time.Millisecond}
+	t.Cleanup(func() { xmpp_retries = saved })
+	alice := create_linked_test_env(t)
+	busy := "busy@rooms.example.org"
+	var lock sync.Mutex
+	asked := 0
+	count := func() int {
+		lock.Lock()
+		defer lock.Unlock()
+		return asked
+	}
+	fake := create_xmpp_fake(t, "secret")
+	fake.answer = func(text string) []string {
+		id := xml_attribute(text, "id")
+		switch {
+		case strings.HasPrefix(text, "<iq") && strings.Contains(text, "urn:xmpp:bookmarks:1") && strings.Contains(text, `type="get"`):
+			return []string{`<iq xmlns="jabber:client" type="result" id="` + id + `"><pubsub xmlns="http://jabber.org/protocol/pubsub"><items node="urn:xmpp:bookmarks:1"><item id="` + busy + `"><conference xmlns="urn:xmpp:bookmarks:1" autojoin="true"><nick>alice</nick></conference></item></items></pubsub></iq>`}
+		case strings.HasPrefix(text, "<iq") && strings.Contains(text, "disco#info") && strings.Contains(text, busy):
+			return []string{`<iq xmlns="jabber:client" type="result" id="` + id + `" from="` + busy + `"><query xmlns="http://jabber.org/protocol/disco#info"><identity category="conference" type="text" name="Busy"/><feature var="http://jabber.org/protocol/muc"/></query></iq>`}
+		case strings.HasPrefix(text, "<iq"):
+			return []string{`<iq xmlns="jabber:client" type="result" id="` + id + `"/>`}
+		case strings.HasPrefix(text, "<presence") && strings.Contains(text, busy+`/alice"`) && strings.Contains(text, `xmlns="http://jabber.org/protocol/muc"`):
+			lock.Lock()
+			asked++
+			n := asked
+			lock.Unlock()
+			if n == 1 {
+				return []string{`<presence xmlns="jabber:client" from="` + busy + `/alice" type="error"><error type="wait"><remote-server-timeout xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></presence>`}
+			}
+			return []string{`<presence xmlns="jabber:client" from="` + busy + `/alice"><x xmlns="http://jabber.org/protocol/muc#user"><status code="110"/></x></presence>`}
+		}
+		return nil
+	}
+	thread := linked_thread(alice)
+	fn := sl.NewBuiltin("test", nil)
+	account := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("xmpp")}, linked_kwargs("address", "alice@example.org", "password", "secret")))
+	id := account["id"].(string)
+	wait(t, "the room asked at sign-in", func() bool { return count() == 1 })
+	decoded(t)(api_account_room_join(thread, fn, sl.Tuple{sl.String(id), sl.String(busy)}, nil))
+	if n := count(); n != 2 {
+		t.Fatalf("the user's join asked the room %d times in all, want 2", n)
+	}
+	time.Sleep(800 * time.Millisecond)
+	if n := count(); n != 2 {
+		t.Errorf("THE POINT: the room the user joined meanwhile was joined again when its turn came: asked %d times, want 2", n)
+	}
+}
+
 // TestXMPPLinkedRoomNickTaken: a linked account joins a room where someone
 // already goes by its name under its name with a number after it, and a room
 // that will not have it answers chat {refused}, asking no other name.

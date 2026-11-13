@@ -1415,9 +1415,26 @@ func (c *xmpp_client) seen(room string, created int64) {
 	c.l.store("rooms", rooms)
 }
 
-// rejoin joins every room the account keeps, its bookmarks marked to join and
-// the rooms joined from here, and tells the app of each.
+// rejoin joins the rooms the account keeps, and those it has bookmarked to
+// join, at sign-in, trying again those not joined for a passing reason - a
+// room on a server that has just started refuses whoever reaches it first -
+// for as long as the session runs.
 func (c *xmpp_client) rejoin(ctx context.Context) {
+	failed := c.enter(ctx, nil)
+	for n := 0; len(failed) > 0; n++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(xmpp_retry(n)):
+		}
+		failed = c.enter(ctx, failed)
+	}
+}
+
+// enter joins the rooms the account keeps or has bookmarked to join, or those
+// of them given and not joined since, answering those not joined for a
+// passing reason.
+func (c *xmpp_client) enter(ctx context.Context, only map[string]bool) map[string]bool {
 	kept := xmpp_rooms(c.l)
 	names := map[string]string{}
 	nicks := map[string]string{}
@@ -1433,7 +1450,16 @@ func (c *xmpp_client) rejoin(ctx context.Context) {
 			names[room], nicks[room] = name, nick
 		}
 	}
+	failed := map[string]bool{}
 	for room, nick := range nicks {
+		if only != nil {
+			c.lock.Lock()
+			_, joined := c.rooms[room]
+			c.lock.Unlock()
+			if !only[room] || joined {
+				continue
+			}
+		}
 		if nick == "" {
 			nick = c.address.Localpart()
 		}
@@ -1444,6 +1470,9 @@ func (c *xmpp_client) rejoin(ctx context.Context) {
 		nick, err := c.seat(ctx, room, nick, since)
 		if err != nil {
 			debug("XMPP account %s: room %s not joined: %v", c.l.id, room, err)
+			if xmpp_passing(err) && ctx.Err() == nil {
+				failed[room] = true
+			}
 			continue
 		}
 		name := names[room]
@@ -1453,6 +1482,7 @@ func (c *xmpp_client) rejoin(ctx context.Context) {
 		c.keep(room, nick, name)
 		c.emit([]map[string]any{{"kind": "room", "conversation": "xmpp:" + room, "room": true, "name": name}})
 	}
+	return failed
 }
 
 // keep records a room joined in the account's data.

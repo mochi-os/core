@@ -212,6 +212,76 @@ func TestXMPPHostedRejoinNickTaken(t *testing.T) {
 	alice.expect(t, "THE POINT: a bookmark joined under its name with a number after it", `from="`+den+`/bobby2"`)
 }
 
+// TestXMPPHostedRejoinPassing: a hosted account's room not joined at start
+// for a reason that passes - the way to the room failing, as it does for a
+// room on a server that has just started - is kept and tried again until it
+// is joined, and the apps are not told it was left, unless it is let go
+// meanwhile; one whose room refuses the account is let go, and not tried
+// again.
+func TestXMPPHostedRejoinPassing(t *testing.T) {
+	saved, history := xmpp_retries, xmpp_history_wait
+	xmpp_retries = []time.Duration{50 * time.Millisecond, 50 * time.Millisecond, 50 * time.Millisecond, 50 * time.Millisecond}
+	xmpp_history_wait = 100 * time.Millisecond
+	t.Cleanup(func() { xmpp_retries, xmpp_history_wait = saved, history })
+	env := create_xmpp_server_env(t)
+	env.apps(t)
+	remote := env.remote(t, "remote.test")
+	link, valid := remote.link(t, false)
+	if valid != "valid" {
+		t.Fatalf("the remote's link: %s", valid)
+	}
+	club, later, closed := "club@remote.test", "later@remote.test", "closed@remote.test"
+	db := db_user_brief(env.bob, "networks")
+	for i, room := range []string{club, later, closed} {
+		db.exec("insert into joined (account, address, room, nick, name, seen, created) values ('x2', 'bob@example.com', ?, 'bob', '', 0, ?)", room, now()+int64(i))
+	}
+	asked := func(room string) int {
+		return len(remote.heard(`to="`+room+`/bob"`, `xmlns="http://jabber.org/protocol/muc"`))
+	}
+	refuse := func(room string, condition string) {
+		link.write(`<presence xmlns="jabber:server" from="` + room + `/bob" to="bob@example.com/` + xmpp_mochi_resource + `" type="error"><error type="wait"><` + condition + ` xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></presence>`)
+	}
+	left := func(room string) bool {
+		env.log.lock.Lock()
+		defer env.log.lock.Unlock()
+		for _, e := range env.log.events {
+			if e["kind"] == "room" && e["conversation"] == "xmpp:"+room && e["left"] == true {
+				return true
+			}
+		}
+		return false
+	}
+
+	go xmpp_rooms_check(true)
+	wait(t, "the room asked at start", func() bool { return asked(club) == 1 })
+	refuse(club, "remote-server-timeout")
+	wait(t, "the second room asked at start", func() bool { return asked(later) == 1 })
+	refuse(later, "remote-server-timeout")
+	wait(t, "the third room asked at start", func() bool { return asked(closed) == 1 })
+	// The second is let go before it is tried again.
+	db.exec("delete from joined where account='x2' and room=?", later)
+	refuse(closed, "forbidden")
+	wait(t, "THE POINT: the room the way to which failed tried again", func() bool { return asked(club) == 2 })
+	link.write(`<presence xmlns="jabber:server" from="` + club + `/bob" to="bob@example.com/` + xmpp_mochi_resource + `"><x xmlns="http://jabber.org/protocol/muc#user"><item affiliation="member" role="participant"/><status code="110"/></x></presence>`)
+	wait(t, "the room left alone once joined", func() bool { return xmpp_joining_of(xmpp_account_of(mustjid("bob@example.com")), club) == nil })
+	time.Sleep(300 * time.Millisecond)
+	if n := asked(club); n != 2 {
+		t.Errorf("THE POINT: the room, joined, was asked %d times, want 2", n)
+	}
+	if xmpp_joined_of(xmpp_account_of(mustjid("bob@example.com")), club) == nil || left(club) {
+		t.Error("THE POINT: the room the way to which failed was let go")
+	}
+	if xmpp_joined_of(xmpp_account_of(mustjid("bob@example.com")), closed) != nil || !left(closed) {
+		t.Error("THE POINT: the room that refused the account is still kept, or the apps were not told")
+	}
+	if n := asked(closed); n != 1 {
+		t.Errorf("THE POINT: the room that refused the account was asked %d times, want once", n)
+	}
+	if n := asked(later); n != 1 {
+		t.Errorf("THE POINT: the room let go while it waited was asked %d times, want once", n)
+	}
+}
+
 // TestXMPPHostedRoomCreate: chat starting a conversation with several
 // people through a hosted account makes a room for members on the account's
 // domain's room service, the account its owner and each person a member

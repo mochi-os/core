@@ -179,6 +179,30 @@ func xmpp_nicks(name string) []string {
 	return nicks
 }
 
+// xmpp_passing says whether a join failed for a reason that passes, so it is
+// tried again: no answer, or the way to the room failing, as it does for a
+// room on a server that has just started, rather than the room refusing.
+func xmpp_passing(err error) bool {
+	var refused xmpp_denial
+	if !errors.As(err, &refused) {
+		return true
+	}
+	switch refused.condition {
+	case "remote-server-timeout", "remote-server-not-found", "service-unavailable", "internal-server-error", "resource-constraint", "recipient-unavailable":
+		return true
+	}
+	return false
+}
+
+// xmpp_retries are the waits before a room not joined for a passing reason
+// is tried again: soon at first, then less often, the last repeated.
+var xmpp_retries = []time.Duration{10 * time.Second, 30 * time.Second, time.Minute, 2 * time.Minute, 5 * time.Minute, 15 * time.Minute}
+
+// xmpp_retry is the wait before the try after the nth.
+func xmpp_retry(n int) time.Duration {
+	return xmpp_retries[min(n, len(xmpp_retries)-1)]
+}
+
 // xmpp_taken says whether a join was refused for its nickname alone.
 func xmpp_taken(err error) bool {
 	var refused xmpp_denial
@@ -606,17 +630,46 @@ func xmpp_room_heard(a *xmpp_account, s *xmpp_stanza, from jid.JID) bool {
 // xmpp_room_rejoin joins a room again, asking for what came since its latest
 // message, and tells the apps what it said meanwhile; a room that will not
 // have the account is left.
-func xmpp_room_rejoin(a *xmpp_account, j *xmpp_joined) {
+func xmpp_room_rejoin(a *xmpp_account, j *xmpp_joined) error {
 	room, err := jid.Parse(j.room)
 	if err != nil {
-		return
+		return nil
 	}
 	if _, err := xmpp_room_seat(a, room, j.nick, j.name, j.seen, false); err != nil {
 		debug("XMPP account %s: room %s not joined again: %v", a.address, j.room, err)
-		if strings.Contains(err.Error(), "refused") {
+		// Only a room's refusal puts the account out of it; a passing failure
+		// leaves it to be tried again.
+		if !xmpp_passing(err) {
 			db_user_brief(a.user, "networks").exec("delete from joined where account=? and room=?", a.id, j.room)
 			xmpp_tell(a, []map[string]any{{"kind": "room", "conversation": "xmpp:" + j.room, "left": true}})
 		}
+		return err
+	}
+	return nil
+}
+
+// xmpp_rooms_retry tries again the rooms not joined at start for a passing
+// reason, each still kept, until joined or refused, or until the quarter-hourly
+// check that follows takes them over.
+func xmpp_rooms_retry(pending []*xmpp_joined, accounts []*xmpp_account) {
+	for n := 0; len(pending) > 0 && n < len(xmpp_retries) && xmpp_retries[n] < xmpp_presence_ping; n++ {
+		time.Sleep(xmpp_retry(n))
+		if !network_enabled("xmpp") {
+			return
+		}
+		var still []*xmpp_joined
+		var waiting []*xmpp_account
+		for i, j := range pending {
+			a := xmpp_account_of(accounts[i].address)
+			if a == nil || xmpp_joined_of(a, j.room) == nil {
+				continue
+			}
+			if err := xmpp_room_rejoin(a, j); err != nil && xmpp_passing(err) {
+				still = append(still, j)
+				waiting = append(waiting, a)
+			}
+		}
+		pending, accounts = still, waiting
 	}
 }
 
@@ -639,12 +692,17 @@ func xmpp_rooms_check(start bool) {
 	if !network_enabled("xmpp") {
 		return
 	}
+	var pending []*xmpp_joined
+	var accounts []*xmpp_account
 	for _, a := range xmpp_hosted() {
 		rows, _ := db_user_brief(a.user, "networks").rows("select room, nick, name, seen from joined where account=? order by created", a.id)
 		for _, row := range rows {
 			j := &xmpp_joined{room: row_string(row, "room"), nick: row_string(row, "nick"), name: row_string(row, "name"), seen: row_int(row, "seen")}
 			if start {
-				xmpp_room_rejoin(a, j)
+				if err := xmpp_room_rejoin(a, j); err != nil && xmpp_passing(err) {
+					pending = append(pending, j)
+					accounts = append(accounts, a)
+				}
 				continue
 			}
 			full, err := jid.Parse(j.room + "/" + j.nick)
@@ -655,6 +713,9 @@ func xmpp_rooms_check(start bool) {
 				xmpp_room_rejoin(a, j)
 			}
 		}
+	}
+	if len(pending) > 0 {
+		go xmpp_rooms_retry(pending, accounts)
 	}
 }
 

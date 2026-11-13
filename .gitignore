@@ -51,3 +51,6 @@ pnpm-debug.log*
 # OS
 Thumbs.db
 __pycache__/
+
+# Review and baseline worktrees made beside the tree; never part of it.
+.review/

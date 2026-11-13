@@ -455,7 +455,8 @@ type xmpp_presence struct {
 		} `xml:"status"`
 	} `xml:"http://jabber.org/protocol/muc#user x"`
 	Error *struct {
-		Inner string `xml:",innerxml"`
+		Inner string     `xml:",innerxml"`
+		Names []xml.Name `xml:",any"`
 	} `xml:"error"`
 }
 
@@ -1146,7 +1147,12 @@ func (c *xmpp_client) presence(p *xmpp_presence) {
 		}
 		switch {
 		case p.Type == "error" && waiting != nil:
-			c.joined(bare, fmt.Errorf("the room refused the join"))
+			var names []xml.Name
+			if p.Error != nil {
+				names = p.Error.Names
+			}
+			condition, _ := xmpp_conditions(names)
+			c.joined(bare, xmpp_denial{condition})
 		case self && waiting != nil:
 			c.joined(bare, nil)
 		case !self && from.Resourcepart() != "" && p.Type != "error":
@@ -1592,11 +1598,11 @@ func (c *xmpp_client) service(ctx context.Context, kind string) (string, error) 
 func (c *xmpp_client) room_join(ctx context.Context, address string) (string, string, error) {
 	room, err := xmpp_address(address)
 	if err != nil {
-		return "", "", err
+		return "", "", xmpp_unknown{err.Error()}
 	}
 	identities, _, err := c.disco(ctx, room.String())
 	if err != nil {
-		return "", "", fmt.Errorf("the room could not be reached: %v", err)
+		return "", "", xmpp_unknown{"the room could not be reached: " + err.Error()}
 	}
 	name := ""
 	conference := false
@@ -1607,13 +1613,18 @@ func (c *xmpp_client) room_join(ctx context.Context, address string) (string, st
 		}
 	}
 	if !conference {
-		return "", "", fmt.Errorf("not a room")
+		return "", "", xmpp_unknown{"not a room"}
 	}
 	if name == "" {
 		name = room.Localpart()
 	}
-	nick := c.address.Localpart()
-	if err := c.join(ctx, room.String(), nick, 0); err != nil {
+	var nick string
+	for _, nick = range xmpp_nicks(c.address.Localpart()) {
+		if err = c.join(ctx, room.String(), nick, 0); !xmpp_taken(err) {
+			break
+		}
+	}
+	if err != nil {
 		return "", "", err
 	}
 	c.keep(room.String(), nick, name)

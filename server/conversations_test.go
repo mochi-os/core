@@ -414,6 +414,70 @@ func (f *matrix_room_fake) sent(method string, path string) (map[string]any, boo
 	return body, found
 }
 
+// TestXMPPLinkedRoomNickTaken: a linked account joins a room where someone
+// already goes by its name under its name with a number after it, and a room
+// that will not have it answers chat {refused}, asking no other name.
+func TestXMPPLinkedRoomNickTaken(t *testing.T) {
+	alice := create_linked_test_env(t)
+	taken := "taken@rooms.example.org"
+	closed := "closed@rooms.example.org"
+	fake := create_xmpp_fake(t, "secret")
+	fake.answer = func(text string) []string {
+		id := xml_attribute(text, "id")
+		switch {
+		case strings.HasPrefix(text, "<iq") && strings.Contains(text, "disco#info") && (strings.Contains(text, taken) || strings.Contains(text, closed)):
+			return []string{`<iq xmlns="jabber:client" type="result" id="` + id + `"><query xmlns="http://jabber.org/protocol/disco#info"><identity category="conference" type="text" name="Taken"/><feature var="http://jabber.org/protocol/muc"/></query></iq>`}
+		case strings.HasPrefix(text, "<iq"):
+			return []string{`<iq xmlns="jabber:client" type="result" id="` + id + `"/>`}
+		case strings.HasPrefix(text, "<presence") && strings.Contains(text, taken+`/alice"`):
+			return []string{`<presence xmlns="jabber:client" from="` + taken + `/alice" type="error"><error type="cancel"><conflict xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></presence>`}
+		case strings.HasPrefix(text, "<presence") && strings.Contains(text, taken+`/alice2"`):
+			return []string{`<presence xmlns="jabber:client" from="` + taken + `/alice2"><x xmlns="http://jabber.org/protocol/muc#user"><status code="110"/></x></presence>`}
+		case strings.HasPrefix(text, "<presence") && strings.Contains(text, closed+"/") && !strings.Contains(text, "unavailable"):
+			return []string{`<presence xmlns="jabber:client" from="` + closed + `/alice" type="error"><error type="auth"><registration-required xmlns="urn:ietf:params:xml:ns:xmpp-stanzas"/></error></presence>`}
+		}
+		return nil
+	}
+	log := &inbound_log{}
+	log.install(t)
+	thread := linked_thread(alice)
+	fn := sl.NewBuiltin("test", nil)
+	account := decoded(t)(api_account_link(thread, fn, sl.Tuple{sl.String("xmpp")}, linked_kwargs("address", "alice@example.org", "password", "secret")))
+	id := account["id"].(string)
+	wait(t, "the connection", func() bool { connected, _ := linked_connected(alice.UID, id); return connected })
+
+	joined := decoded(t)(api_account_room_join(thread, fn, sl.Tuple{sl.String(id), sl.String(taken)}, nil))
+	if joined["conversation"] != "xmpp:"+taken || joined["name"] != "Taken" {
+		t.Errorf("THE POINT: the join where the account's name is someone's there: %v", joined)
+	}
+	c, err := linked_client(&linked{user: alice, id: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.lock.Lock()
+	nick := c.rooms[taken]
+	c.lock.Unlock()
+	if nick != "alice2" {
+		t.Errorf("THE POINT: the name the account went by: %q", nick)
+	}
+
+	refused := decoded(t)(api_account_room_join(thread, fn, sl.Tuple{sl.String(id), sl.String(closed)}, nil))
+	if refused["refused"] == nil || refused["conversation"] != nil {
+		t.Errorf("THE POINT: a room that will not have the account: %v", refused)
+	}
+	fake.lock.Lock()
+	asked := 0
+	for _, stanza := range fake.received {
+		if strings.HasPrefix(stanza, "<presence") && strings.Contains(stanza, closed+"/") && !strings.Contains(stanza, "unavailable") {
+			asked++
+		}
+	}
+	fake.lock.Unlock()
+	if asked != 1 {
+		t.Errorf("a room that refused for another reason asked under %d names, want 1", asked)
+	}
+}
+
 // TestMatrixConversations: a linked Matrix account's sync is read as
 // conversation events - rooms with their names, encryption and one-to-one
 // marking, members, messages with replies (their quoted fallback taken off),

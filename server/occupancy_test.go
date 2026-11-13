@@ -134,6 +134,41 @@ func TestXMPPHostedRooms(t *testing.T) {
 	alice.expect(t, "THE POINT: a room that forgot the account joined again", `from="`+room+`/bob"`)
 }
 
+// TestXMPPHostedRoomNickTaken: a room where someone already goes by the
+// account's name lets it in under its name with a number after it; a room
+// that will not have the account answers chat {refused}; and an address
+// that is no room answers nothing, for chat to ask as a person's.
+func TestXMPPHostedRoomNickTaken(t *testing.T) {
+	env := create_xmpp_server_env(t)
+	env.apps(t)
+	alice := env.raw(t, "alice@example.com", env.mint(t, env.alice, "x1", "Phone"), "phone")
+	room := "club@rooms.example.com"
+	alice.send(`<presence xmlns="jabber:client" to="` + room + `/bob"><x xmlns="http://jabber.org/protocol/muc"/></presence>`)
+	alice.expect(t, "the room made, alice going by bob", `code="201"`)
+	xmpp_configure(t, alice, room, "c1", "muc#roomconfig_roomname", "Club", "muc#roomconfig_persistentroom", "1")
+
+	joined, _ := sl_decode(xmpp_call(t, env.bob, api_account_room_join, sl.Tuple{sl.String("x2"), sl.String(room)})).(map[string]any)
+	if joined["conversation"] != "xmpp:"+room || joined["name"] != "Club" {
+		t.Fatalf("THE POINT: the join where the account's name is someone's there: %v", joined)
+	}
+	alice.expect(t, "THE POINT: in under its name with a number after it", `from="`+room+`/bob2"`)
+	if j := xmpp_joined_of(xmpp_account_of(mustjid("bob@example.com")), room); j == nil || j.nick != "bob2" {
+		t.Errorf("the room kept with the name it took: %+v", j)
+	}
+
+	den := "den@rooms.example.com"
+	alice.send(`<presence xmlns="jabber:client" to="` + den + `/Alice"><x xmlns="http://jabber.org/protocol/muc"/></presence>`)
+	alice.expect(t, "a room for members", `from="`+den+`/Alice"`, `code="201"`)
+	xmpp_configure(t, alice, den, "c2", "muc#roomconfig_persistentroom", "1", "muc#roomconfig_membersonly", "1")
+	refused, _ := sl_decode(xmpp_call(t, env.bob, api_account_room_join, sl.Tuple{sl.String("x2"), sl.String(den)})).(map[string]any)
+	if refused["refused"] == nil || refused["conversation"] != nil {
+		t.Errorf("THE POINT: a room that will not have the account: %v", refused)
+	}
+	if person := xmpp_call(t, env.bob, api_account_room_join, sl.Tuple{sl.String("x2"), sl.String("alice@example.com")}); person != sl.None {
+		t.Errorf("THE POINT: a person's address taken for a room: %v", person)
+	}
+}
+
 // TestXMPPHostedRoomCreate: chat starting a conversation with several
 // people through a hosted account makes a room for members on the account's
 // domain's room service, the account its owner and each person a member

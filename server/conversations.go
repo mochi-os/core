@@ -47,6 +47,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -216,6 +217,19 @@ func conversing(t *sl.Thread, fn *sl.Builtin, account string, kinds ...string) (
 func xmpp_failed(x *xmpp_account, fn *sl.Builtin, err error) (sl.Value, error) {
 	info("Hosted XMPP account %s: %s: %v", x.id, fn.Name(), err)
 	return sl.None, nil
+}
+
+// xmpp_unjoined answers a join that failed: nothing for an address not known
+// to be a room, perhaps a person's, which chat asks next; {refused} for a room
+// that would not have the account, so chat says so rather than taking the
+// room for a person.
+func xmpp_unjoined(fn *sl.Builtin, account string, err error) (sl.Value, error) {
+	info("%s: %s: %v", account, fn.Name(), err)
+	var unknown xmpp_unknown
+	if errors.As(err, &unknown) {
+		return sl.None, nil
+	}
+	return sl_encode(map[string]any{"refused": err.Error()}), nil
 }
 
 // linked_client is the running XMPP session of an account.
@@ -531,7 +545,7 @@ func api_account_room_create(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs
 	return sl_encode(map[string]any{"conversation": conversation, "room": len(people) > 1, "people": people}), nil
 }
 
-// mochi.account.room.join(account, address, person="") -> dict: Join a room on a linked XMPP or Matrix account, or a hosted Matrix or XMPP account, by its address (#alias:host or !id:host on Matrix, name@rooms.host on XMPP), and return {conversation, name}. On Matrix it also accepts an invitation, and with person the room is marked in the account's data as the one-to-one conversation with them, as an invitation to one asks. A hosted account's apps are told of the room, who is in it and its recent past before the join returns, and a hosted XMPP account keeps the room in its bookmarks. An address that is not a room fails. Requires the account's permission
+// mochi.account.room.join(account, address, person="") -> dict: Join a room on a linked XMPP or Matrix account, or a hosted Matrix or XMPP account, by its address (#alias:host or !id:host on Matrix, name@rooms.host on XMPP), and return {conversation, name}, or {refused} for an XMPP room that would not have the account. On Matrix it also accepts an invitation, and with person the room is marked in the account's data as the one-to-one conversation with them, as an invitation to one asks. A hosted account's apps are told of the room, who is in it and its recent past before the join returns, and a hosted XMPP account keeps the room in its bookmarks. An address that is not a room fails. Requires the account's permission
 func api_account_room_join(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs []sl.Tuple) (sl.Value, error) {
 	var account, address, person string
 	if err := sl.UnpackArgs(fn.Name(), args, kwargs, "account", &account, "address", &address, "person?", &person); err != nil {
@@ -545,9 +559,7 @@ func api_account_room_join(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 	if c.x != nil {
 		room, name, err := xmpp_room_join(c.x, address)
 		if err != nil {
-			// An address that is not a room is a person's, which chat asks
-			// next.
-			return xmpp_failed(c.x, fn, err)
+			return xmpp_unjoined(fn, "Hosted XMPP account "+c.x.id, err)
 		}
 		return sl_encode(map[string]any{"conversation": room, "name": name}), nil
 	}
@@ -578,7 +590,7 @@ func api_account_room_join(t *sl.Thread, fn *sl.Builtin, args sl.Tuple, kwargs [
 		}
 		room, name, err := c.room_join(ctx, address)
 		if err != nil {
-			return linked_failed(l, fn, err)
+			return xmpp_unjoined(fn, "XMPP account "+l.id, err)
 		}
 		return sl_encode(map[string]any{"conversation": "xmpp:" + room, "name": name}), nil
 	default:

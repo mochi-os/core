@@ -22,6 +22,7 @@ package main
 
 import (
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -149,6 +150,39 @@ func xmpp_refusal(names []xml.Name) string {
 		return defined + " (" + specific + ")"
 	}
 	return defined
+}
+
+// An xmpp_denial is a room's refusal of a join, by the error's defined
+// condition: conflict where someone there already goes by the nickname asked
+// for.
+type xmpp_denial struct{ condition string }
+
+func (r xmpp_denial) Error() string {
+	return "the room refused the join: " + r.condition
+}
+
+// An xmpp_unknown is a join's failure on an address not known to be a room:
+// perhaps a person's, which chat asks next, where a room that will not have
+// the account is said to have refused it (mochi.account.room.join).
+type xmpp_unknown struct{ reason string }
+
+func (u xmpp_unknown) Error() string { return u.reason }
+
+// xmpp_nicks are the nicknames an account asks a room for, in turn: its name,
+// then its name with a number after it, since a room refuses one that someone
+// there already goes by and the joiner chooses another (XEP-0045 7.2.9).
+func xmpp_nicks(name string) []string {
+	nicks := []string{name}
+	for n := 2; n <= 9; n++ {
+		nicks = append(nicks, fmt.Sprintf("%s%d", name, n))
+	}
+	return nicks
+}
+
+// xmpp_taken says whether a join was refused for its nickname alone.
+func xmpp_taken(err error) bool {
+	var refused xmpp_denial
+	return errors.As(err, &refused) && refused.condition == "conflict"
 }
 
 // === What Mochi sent ===
@@ -334,7 +368,7 @@ func xmpp_room_name(a *xmpp_account, room jid.JID) (string, bool, error) {
 func xmpp_room_join(a *xmpp_account, address string) (string, string, error) {
 	room, err := xmpp_address(address)
 	if err != nil || room.Localpart() == "" {
-		return "", "", fmt.Errorf("invalid address")
+		return "", "", xmpp_unknown{"invalid address"}
 	}
 	room = room.Bare()
 	if j := xmpp_joined_of(a, room.String()); j != nil {
@@ -342,13 +376,18 @@ func xmpp_room_join(a *xmpp_account, address string) (string, string, error) {
 	}
 	name, conference, err := xmpp_room_name(a, room)
 	if err != nil {
-		return "", "", fmt.Errorf("the room could not be reached: %v", err)
+		return "", "", xmpp_unknown{"the room could not be reached: " + err.Error()}
 	}
 	if !conference {
-		return "", "", fmt.Errorf("not a room")
+		return "", "", xmpp_unknown{"not a room"}
 	}
-	nick := a.address.Localpart()
-	if err := xmpp_room_enter(a, room, nick, name, 0, true); err != nil {
+	var nick string
+	for _, nick = range xmpp_nicks(a.address.Localpart()) {
+		if err = xmpp_room_enter(a, room, nick, name, 0, true); !xmpp_taken(err) {
+			break
+		}
+	}
+	if err != nil {
 		return "", "", err
 	}
 	xmpp_bookmark_keep(a, room.String(), name, nick)
@@ -508,7 +547,7 @@ func xmpp_room_heard(a *xmpp_account, s *xmpp_stanza, from jid.JID) bool {
 	switch {
 	case p.Type == "error":
 		if joining != nil {
-			joining.finish(fmt.Errorf("the room refused the join: %s", xmpp_condition(s)))
+			joining.finish(xmpp_denial{xmpp_condition(s)})
 		}
 	case self && p.Type == "unavailable":
 		if joining != nil {

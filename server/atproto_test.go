@@ -765,6 +765,9 @@ func TestAtprotoNotify(t *testing.T) {
 	saved := bluesky_relay
 	bluesky_relay = relay.URL
 	t.Cleanup(func() { bluesky_relay = saved })
+	// Registered after the relay's restoring, so it runs before it: a crawl
+	// the test started still reads the relay's address.
+	t.Cleanup(atproto_crawls.Wait)
 	if err := atproto_account_create(ctx, alice, "b1"); err != nil {
 		t.Fatal(err)
 	}
@@ -1558,6 +1561,9 @@ func create_relay_fake(t *testing.T) *relay_fake {
 	saved := bluesky_relay
 	bluesky_relay = f.server.URL
 	t.Cleanup(func() { bluesky_relay = saved })
+	// Registered after the relay's restoring, so it runs before it: a crawl
+	// the test started still reads the relay's address.
+	t.Cleanup(atproto_crawls.Wait)
 	return f
 }
 

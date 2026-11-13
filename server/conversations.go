@@ -67,7 +67,7 @@ var linked_inbound = func(user *User, account string, network string, events []m
 	}
 	list := make([]any, 0, len(events))
 	for _, event := range events {
-		if !notices_heard(event) {
+		if !notices_heard(user, event) {
 			list = append(list, event)
 		}
 	}

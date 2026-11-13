@@ -99,7 +99,7 @@ type DB struct {
 }
 
 const (
-	schema_version = 24
+	schema_version = 25
 )
 
 // health_schema is the current shape of queue.db's health table, shared by
@@ -550,7 +550,7 @@ var db_user_steps = map[string][]func(*DB) error{
 
 // networks_steps are the per-user networks.db's, named apart for
 // user_upgrade_3, which opens that file.
-var networks_steps = []func(*DB) error{networks_upgrade_1, networks_upgrade_2}
+var networks_steps = []func(*DB) error{networks_upgrade_1, networks_upgrade_2, networks_upgrade_3}
 
 // user_upgrade_1 lays user.db as it was when it gained a version, and makes
 // once the changes it used to make on every open: the column additions, the
@@ -736,6 +736,34 @@ func networks_upgrade_2(db *DB) error {
 		return err
 	}
 	return db.exec_e("create index if not exists alerts_person on alerts (account, person, number)")
+}
+
+// networks_upgrade_3 lays what the Matrix client interface keeps of each of
+// the user's hosted accounts, by its address or id: its account data, push
+// rules, pushers and the notifications they made, its sync filters (sieves,
+// since Mastodon's are filters), the rooms it marks direct, the knocks and
+// leaves it has waiting, the transactions its clients sent, and the room its
+// notices come in. db_upgrade_25 moves them here from the server's
+// networks.db.
+func networks_upgrade_3(db *DB) error {
+	for _, statement := range []string{
+		"create table if not exists settings (position integer primary key autoincrement, user text not null, room text not null default '', type text not null, content text not null, unique (user, room, type))",
+		"create table if not exists rules (position integer primary key autoincrement, user text not null, kind text not null, id text not null, priority integer not null default 0, body text not null, enabled integer not null default 1, unique (user, kind, id))",
+		"create table if not exists pushers (user text not null, app text not null, key text not null, device text not null default '', kind text not null, body text not null, created integer not null, primary key (app, key, user))",
+		"create table if not exists notifications (id integer primary key autoincrement, user text not null, room text not null, event text not null, position integer not null, actions text not null, highlight integer not null default 0, read integer not null default 0, created integer not null, unique (user, event))",
+		"create index if not exists notifications_user on notifications(user, room, read)",
+		"create table if not exists sieves (id integer primary key autoincrement, user text not null, body text not null)",
+		"create table if not exists directs (user text not null, room text not null, person text not null, primary key (user, room))",
+		"create table if not exists pending (position integer primary key autoincrement, room text not null, user text not null, kind text not null, server text not null default '', state text not null default '', created integer not null, unique (room, user))",
+		"create table if not exists sent (account text not null, key text not null, event text not null, created integer not null, primary key (account, key))",
+		"create index if not exists sent_event on sent(event)",
+		"create table if not exists notices (account text not null primary key, room text not null, created integer not null)",
+	} {
+		if err := db.exec_e(statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // notifications_upgrade_1 lays the per-user notification-delivery dedup (email
@@ -1784,6 +1812,8 @@ func db_upgrade() {
 			db_upgrade_23()
 		case 24:
 			db_upgrade_24()
+		case 25:
+			db_upgrade_25()
 		default:
 			panic(fmt.Sprintf("No upgrade path for schema version %d", next))
 		}
@@ -3323,11 +3353,32 @@ func db_upgrade_18_federation(db *DB) {
 	db.exec("create table if not exists directs (user text not null, room text not null, person text not null, primary key (user, room))")
 	db.exec("create table if not exists sent (account text not null, key text not null, event text not null, created integer not null, primary key (account, key))")
 	keyring_tables(db)
-	clients_tables(db)
+	db_upgrade_18_clients(db)
 	signals_tables(db)
 	content_tables(db)
 	bridge_tables(db)
-	notices_tables(db)
+	db.exec("create table if not exists notices (user text not null, account text not null, room text not null, created integer not null, primary key (user, account))")
+}
+
+// db_upgrade_18_clients is clients_tables as it was before schema 25 moved the
+// client interface's per-account tables into each owner's networks.db, for
+// db_upgrade_18.
+func db_upgrade_18_clients(db *DB) {
+	db.exec("create table if not exists stream (position integer primary key autoincrement, room text not null, event text not null unique)")
+	db.exec("create index if not exists stream_room on stream(room, position)")
+	db.exec("create table if not exists receipts (position integer primary key autoincrement, room text not null, user text not null, type text not null, thread text not null default '', event text not null, ts integer not null, unique (room, user, type, thread))")
+	db.exec("create table if not exists presences (position integer primary key autoincrement, user text not null unique, presence text not null, message text not null default '', active integer not null default 0, updated integer not null)")
+	db.exec("create table if not exists settings (position integer primary key autoincrement, user text not null, room text not null default '', type text not null, content text not null, unique (user, room, type))")
+	db.exec("create table if not exists filters (id integer primary key autoincrement, user text not null, body text not null)")
+	db.exec("create table if not exists rules (position integer primary key autoincrement, user text not null, kind text not null, id text not null, priority integer not null default 0, body text not null, enabled integer not null default 1, unique (user, kind, id))")
+	db.exec("create table if not exists pushers (user text not null, app text not null, key text not null, device text not null default '', kind text not null, body text not null, created integer not null, primary key (app, key, user))")
+	db.exec("create table if not exists notifications (id integer primary key autoincrement, user text not null, room text not null, event text not null, position integer not null, actions text not null, highlight integer not null default 0, read integer not null default 0, created integer not null, unique (user, event))")
+	db.exec("create index if not exists notifications_user on notifications(user, room, read)")
+	db.exec("create index if not exists sent_event on sent(event)")
+	db.exec("create index if not exists events_member on events(key, type)")
+	db.exec("create table if not exists aliases (alias text not null primary key, room text not null, creator text not null, created integer not null)")
+	db.exec("create table if not exists published (room text not null primary key, created integer not null)")
+	db.exec("create table if not exists pending (position integer primary key autoincrement, room text not null, user text not null, kind text not null, server text not null default '', state text not null default '', created integer not null, unique (room, user))")
 }
 
 // db_upgrade_22 keeps with each Matrix state event the state event it
@@ -3491,6 +3542,241 @@ func db_upgrade_24() {
 	}
 	if added > 0 {
 		info("Schema 24: made %d linked account(s) a way to sign in", added)
+	}
+}
+
+// db_upgrade_25 moves what the Matrix client interface keeps of each hosted
+// account from the server's networks.db into its owner's (networks_upgrade_3):
+// account data, push rules, pushers, notifications, sync filters, rooms marked
+// direct, knocks and leaves waiting, the notices room, and the transactions
+// its clients sent. Only what is looked up across users stays: each pusher's
+// app and key, so a phone's token is taken from any other account, and the
+// to-device messages other servers' senders sent, and the chat bridge's, kept
+// once. An owner's positions in account data, push rules and invitations go on
+// from the server's, so no client's sync token goes back. The rows of an
+// account already gone are dropped.
+func db_upgrade_25() {
+	networks := db_open("db/networks.db")
+	found, err := networks.exists("select 1 from sqlite_master where type='table' and name='settings'")
+	if err != nil {
+		panic(fmt.Sprintf("Schema upgrade 25: settings table lookup: %v", err))
+	}
+	if !found {
+		return
+	}
+	users := db_open("db/users.db")
+	present := func(uid string) bool {
+		found, _ := users.exists("select 1 from users where uid=?", uid)
+		return found
+	}
+	type account struct{ user, id string }
+	// Every address of an account here, gone or not, so what a gone one sent
+	// is not taken for another server's.
+	local := map[string]bool{}
+	holders := map[string]account{}
+	actors, err := networks.rows("select id, user, domain, handle, deleted from actors where network='matrix'")
+	if err != nil {
+		panic(fmt.Sprintf("Schema upgrade 25: listing Matrix accounts: %v", err))
+	}
+	for _, actor := range actors {
+		address := "@" + row_string(actor, "handle") + ":" + row_string(actor, "domain")
+		local[address] = true
+		if row_int(actor, "deleted") == 0 && present(row_string(actor, "user")) {
+			holders[address] = account{row_string(actor, "user"), row_string(actor, "id")}
+		}
+	}
+	// Each user's hosted accounts as their own user.db has them, on the
+	// handles they hold: each start before this step dropped the actors of a
+	// user suspended or mid-restore, whose accounts are theirs still.
+	handles, err := users.rows("select domain, name, user from handles")
+	if err != nil {
+		panic(fmt.Sprintf("Schema upgrade 25: listing handles: %v", err))
+	}
+	names := map[string]map[string]bool{}
+	for _, h := range handles {
+		uid := row_string(h, "user")
+		if names[uid] == nil {
+			names[uid] = map[string]bool{}
+		}
+		names[uid][row_string(h, "name")+"\x00"+row_string(h, "domain")] = true
+	}
+	for uid, held := range names {
+		path := filepath.Join("users", uid, "user.db")
+		if !present(uid) || !file_exists(filepath.Join(data_dir, path)) {
+			continue
+		}
+		db, _, reused := db_open_work(path)
+		if db == nil {
+			continue
+		}
+		rows, _ := db.rows("select id, data from accounts where type='matrix'")
+		db_release(db, reused)
+		for _, row := range rows {
+			data := map[string]any{}
+			json.Unmarshal([]byte(row_string(row, "data")), &data)
+			hosted, _ := data["hosted"].(bool)
+			domain, _ := data["domain"].(string)
+			handle, _ := data["handle"].(string)
+			if !hosted || !held[handle+"\x00"+domain] {
+				continue
+			}
+			address := "@" + handle + ":" + domain
+			local[address] = true
+			holders[address] = account{uid, row_string(row, "id")}
+		}
+	}
+	owners := map[string][]string{}
+	for address, holder := range holders {
+		owners[holder.user] = append(owners[holder.user], address)
+	}
+	// The notices rooms are by user, whichever of their accounts they go to:
+	// a linked one is no account of this server's.
+	noticed, err := networks.rows("select distinct user from notices")
+	if err != nil {
+		panic(fmt.Sprintf("Schema upgrade 25: listing notices: %v", err))
+	}
+	for _, row := range noticed {
+		if uid := row_string(row, "user"); present(uid) {
+			if _, found := owners[uid]; !found {
+				owners[uid] = nil
+			}
+		}
+	}
+	sequences := map[string]int64{}
+	positions := false
+	for _, table := range []string{"settings", "rules", "pending", "filters", "notifications"} {
+		row, _ := networks.row("select seq from sqlite_sequence where name=?", table)
+		sequences[table] = row_int(row, "seq")
+		positions = positions || sequences[table] > 0
+	}
+	type copied struct {
+		table string
+		row   map[string]any
+	}
+	read := func(table string, where string, args ...any) []map[string]any {
+		rows, err := networks.rows("select * from "+table+" where "+where, args...)
+		if err != nil {
+			panic(fmt.Sprintf("Schema upgrade 25: reading %s: %v", table, err))
+		}
+		return rows
+	}
+	moved := 0
+	var keys []map[string]any
+	for uid, addresses := range owners {
+		var rows []copied
+		for _, address := range addresses {
+			for _, table := range []string{"settings", "rules", "pushers", "notifications", "directs", "pending"} {
+				for _, row := range read(table, "user=?", address) {
+					rows = append(rows, copied{table, row})
+					if table == "pushers" {
+						keys = append(keys, row)
+					}
+				}
+			}
+			for _, row := range read("filters", "user=?", address) {
+				rows = append(rows, copied{"sieves", row})
+			}
+			for _, row := range read("sent", "account=? or account=?", holders[address].id, address) {
+				rows = append(rows, copied{"sent", row})
+			}
+		}
+		for _, row := range read("notices", "user=?", uid) {
+			delete(row, "user")
+			rows = append(rows, copied{"notices", row})
+		}
+		// An owner whose clients may hold a sync token takes the server's
+		// positions, though nothing of theirs moves.
+		if len(rows) == 0 && (len(addresses) == 0 || !positions) {
+			continue
+		}
+		path := filepath.Join("users", uid, "networks.db")
+		refuse := func(err error) {
+			panic(fmt.Sprintf("Schema upgrade 25: %s cannot take its owner's Matrix client rows (%v). Repair the file or move it aside, then start the server again: nothing has been dropped, and the step runs again.", path, err))
+		}
+		func() {
+			db, _, reused := db_open_work(path)
+			if db == nil {
+				refuse(fmt.Errorf("it could not be opened"))
+			}
+			defer db_release(db, reused)
+			db_upgrade_file(db, path, networks_steps)
+			tx, err := db.internal.Begin()
+			if err != nil {
+				refuse(err)
+			}
+			defer tx.Rollback()
+			for _, c := range rows {
+				var names []string
+				var values []any
+				for name, value := range c.row {
+					names = append(names, name)
+					values = append(values, value)
+				}
+				if _, err := tx.Exec("insert or ignore into "+c.table+" ("+strings.Join(names, ", ")+") values ("+strings.TrimSuffix(strings.Repeat("?, ", len(names)), ", ")+")", values...); err != nil {
+					refuse(err)
+				}
+			}
+			// Each position goes on from the server's, whatever the owner had.
+			if len(addresses) > 0 {
+				for table, seq := range sequences {
+					name := table
+					if table == "filters" {
+						name = "sieves"
+					}
+					if _, err := tx.Exec("insert into sqlite_sequence (name, seq) select ?, 0 where not exists (select 1 from sqlite_sequence where name=?)", name, name); err != nil {
+						refuse(err)
+					}
+					if _, err := tx.Exec("update sqlite_sequence set seq=? where name=? and seq<?", seq, name, seq); err != nil {
+						refuse(err)
+					}
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				refuse(err)
+			}
+			moved += len(rows)
+		}()
+	}
+	// What stays of sent: the chat bridge's, by room, and the to-device
+	// messages heard from other servers' senders.
+	sent, err := networks.rows("select account, key from sent")
+	if err != nil {
+		panic(fmt.Sprintf("Schema upgrade 25: reading sent: %v", err))
+	}
+	// The server's tables go at once, so a start cut short here finds them
+	// all still there and the step runs again.
+	tx, err := networks.internal.Begin()
+	if err != nil {
+		panic(fmt.Sprintf("Schema upgrade 25: %v", err))
+	}
+	defer tx.Rollback()
+	step := func(query string, args ...any) {
+		if _, err := tx.Exec(query, args...); err != nil {
+			panic(fmt.Sprintf("Schema upgrade 25: %v", err))
+		}
+	}
+	for _, table := range []string{"settings", "rules", "notifications", "filters", "directs", "pending", "notices"} {
+		step("drop table if exists " + table)
+	}
+	step("drop table pushers")
+	step("create table pushers (app text not null, key text not null, user text not null, primary key (app, key, user))")
+	for _, key := range keys {
+		step("insert or ignore into pushers (app, key, user) values (?, ?, ?)", key["app"], key["key"], key["user"])
+	}
+	for _, row := range sent {
+		account := row_string(row, "account")
+		if strings.HasPrefix(account, "!") || (strings.HasPrefix(row_string(row, "key"), "todevice|") && !local[account]) {
+			continue
+		}
+		step("delete from sent where account=? and key=?", account, row_string(row, "key"))
+	}
+	step("drop index if exists sent_event")
+	if err := tx.Commit(); err != nil {
+		panic(fmt.Sprintf("Schema upgrade 25: %v", err))
+	}
+	networks.stmts_close()
+	if moved > 0 {
+		info("Schema 25: moved %d Matrix client row(s) into their owners' networks.db", moved)
 	}
 }
 

@@ -1125,6 +1125,19 @@ func TestActivityPubRebuild(t *testing.T) {
 	if actor_get("stale") != nil {
 		t.Error("a row for an account that is gone was kept")
 	}
+	// A user suspended or mid-restore keeps their accounts' rows, so their
+	// addresses are theirs still when they come back; a user gone does not.
+	db.exec("insert into actors (id, user, domain, handle, network, created) values ('gone', 'u-gone', 'example.com', 'gone', 'fediverse', 1)")
+	for _, status := range []string{"suspended", "pending-restore"} {
+		db_open("db/users.db").exec("update users set status=? where uid=?", status, alice.UID)
+		actors_rebuild()
+		if actor_get("f1") == nil || actor_get("b1") == nil {
+			t.Errorf("THE POINT: a %s user's accounts were dropped from the actors table", status)
+		}
+	}
+	if actor_get("gone") != nil {
+		t.Error("the account of a user who is gone was kept")
+	}
 }
 
 // TestActivityPubEngineOff: with the fediverse setting off the engine's paths

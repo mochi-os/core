@@ -42,10 +42,12 @@ import (
 var clients_api_scopes = []string{"urn:matrix:client:api:*", "urn:matrix:org.matrix.msc2967.client:api:*"}
 
 // clients_tables lays, as part of federation_create, what the client interface
-// keeps in networks.db beside the engine's rooms: the order events entered the
-// rooms' timelines, which sync's positions count in; read receipts; the
-// accounts' data, global and per room; filters; push rules, pushers and the
-// notifications they made; room aliases and the room directory.
+// keeps in the server's networks.db beside the engine's rooms, looked up across
+// users: the order events entered the rooms' timelines, which sync's positions
+// count in; read receipts; each user's presence; each pusher's app and key, so
+// a phone's token is taken from any other account; room aliases and the room
+// directory. What it keeps of one account is in its owner's networks.db
+// (networks_upgrade_3).
 func clients_tables(db *DB) {
 	db.exec("create table if not exists stream (position integer primary key autoincrement, room text not null, event text not null unique)")
 	db.exec("create index if not exists stream_room on stream(room, position)")
@@ -53,17 +55,10 @@ func clients_tables(db *DB) {
 	// The presence clients are shown of each user, local or not, at the
 	// position it last changed.
 	db.exec("create table if not exists presences (position integer primary key autoincrement, user text not null unique, presence text not null, message text not null default '', active integer not null default 0, updated integer not null)")
-	db.exec("create table if not exists settings (position integer primary key autoincrement, user text not null, room text not null default '', type text not null, content text not null, unique (user, room, type))")
-	db.exec("create table if not exists filters (id integer primary key autoincrement, user text not null, body text not null)")
-	db.exec("create table if not exists rules (position integer primary key autoincrement, user text not null, kind text not null, id text not null, priority integer not null default 0, body text not null, enabled integer not null default 1, unique (user, kind, id))")
-	db.exec("create table if not exists pushers (user text not null, app text not null, key text not null, device text not null default '', kind text not null, body text not null, created integer not null, primary key (app, key, user))")
-	db.exec("create table if not exists notifications (id integer primary key autoincrement, user text not null, room text not null, event text not null, position integer not null, actions text not null, highlight integer not null default 0, read integer not null default 0, created integer not null, unique (user, event))")
-	db.exec("create index if not exists notifications_user on notifications(user, room, read)")
-	db.exec("create index if not exists sent_event on sent(event)")
+	db.exec("create table if not exists pushers (app text not null, key text not null, user text not null, primary key (app, key, user))")
 	db.exec("create index if not exists events_member on events(key, type)")
 	db.exec("create table if not exists aliases (alias text not null primary key, room text not null, creator text not null, created integer not null)")
 	db.exec("create table if not exists published (room text not null primary key, created integer not null)")
-	db.exec("create table if not exists pending (position integer primary key autoincrement, room text not null, user text not null, kind text not null, server text not null default '', state text not null default '', created integer not null, unique (room, user))")
 }
 
 // clients_forget forgets what a hosted Matrix account kept as it goes, by its
@@ -82,12 +77,44 @@ func clients_forget(user *User, id string, address string) {
 	for _, row := range devices {
 		keyring_delete(address, row_string(row, "device"))
 	}
-	for _, table := range []string{"settings", "rules", "pushers", "notifications", "filters", "directs", "pending", "presences", "onetime", "fallbacks", "messages", "signing", "signatures", "backups", "sessions", "data"} {
+	for _, table := range []string{"pushers", "presences", "onetime", "fallbacks", "messages", "signing", "signatures", "backups", "sessions", "data"} {
 		db.exec("delete from "+table+" where user=?", address)
 	}
-	db.exec("delete from sent where account=? or account=?", id, address)
 	db.exec("delete from presence where account=?", id)
-	db.exec("delete from notices where user=? and account=?", user.UID, id)
+	own := db_user(user, "networks")
+	defer own.close()
+	for _, table := range []string{"settings", "rules", "pushers", "notifications", "sieves", "directs", "pending"} {
+		own.exec("delete from "+table+" where user=?", address)
+	}
+	own.exec("delete from sent where account=? or account=?", id, address)
+	own.exec("delete from notices where account=?", id)
+}
+
+// clients_database is the networks.db of the user who holds a hosted Matrix
+// address, where what the client interface keeps of that account is
+// (networks_upgrade_3), open until the caller closes it; nil for an address
+// no one here holds, or one whose holder's files a restore is replacing. A
+// holder suspended or closing keeps what is theirs as anyone does, so what
+// is taken from their account, or kept of it, is not lost when they return.
+func clients_database(address string) *DB {
+	id, err := spec.NewUserID(address, true)
+	if err != nil {
+		return nil
+	}
+	row, _ := networks_database().row("select user from actors where network='matrix' and domain=? and handle=? and deleted=0", strings.ToLower(string(id.Domain())), id.Local())
+	if row == nil {
+		return nil
+	}
+	var holder User
+	if !db_open("db/users.db").scan(&holder, "select uid, username, role, methods, disabled, status from users where uid=?", row_string(row, "user")) || user_pending(&holder) {
+		return nil
+	}
+	return db_user(&holder, "networks") // handle-ok: the caller closes it
+}
+
+// database is the networks.db of the session's user, for one call at once.
+func (s *clients_session) database() *DB {
+	return db_user_brief(s.user, "networks")
 }
 
 // clients_upload_maximum bounds a file a client uploads, as mochi.account.upload
@@ -1086,7 +1113,7 @@ func clients_device_delete(s *clients_session, device string) bool {
 	for _, row := range rows {
 		token_delete(row_string(row, "hash"))
 	}
-	networks_database().exec("delete from pushers where user=? and device=?", s.h.address, device)
+	pushers_device_forget(s, device)
 	keyring_delete(s.h.address, device)
 	clients_wake()
 	return true
@@ -1429,7 +1456,12 @@ func clients_data(c *gin.Context, s *clients_session, person string, room string
 
 // clients_setting is a piece of an account's data, or nil.
 func clients_setting(user string, room string, kind string) json.RawMessage {
-	row, _ := networks_database().row("select content from settings where user=? and room=? and type=?", user, room, kind)
+	db := clients_database(user)
+	if db == nil {
+		return nil
+	}
+	defer db.close()
+	row, _ := db.row("select content from settings where user=? and room=? and type=?", user, room, kind)
 	if row == nil {
 		return nil
 	}
@@ -1439,7 +1471,11 @@ func clients_setting(user string, room string, kind string) json.RawMessage {
 // clients_setting_set keeps a piece of an account's data at a new position,
 // so the account's syncs are given it.
 func clients_setting_set(user string, room string, kind string, content json.RawMessage) {
-	db := networks_database()
+	db := clients_database(user)
+	if db == nil {
+		return
+	}
+	defer db.close()
 	db.exec("delete from settings where user=? and room=? and type=?", user, room, kind)
 	db.exec("insert into settings (user, room, type, content) values (?, ?, ?, ?)", user, room, kind, string(content))
 	clients_wake(user)
@@ -1502,7 +1538,7 @@ func clients_filter_create(c *gin.Context, s *clients_session, person string) {
 		clients_error(c, http.StatusBadRequest, "M_NOT_JSON", "The filter is not JSON")
 		return
 	}
-	result, err := networks_database().internal.Exec("insert into filters (user, body) values (?, ?)", s.h.address, string(raw))
+	result, err := s.database().internal.Exec("insert into sieves (user, body) values (?, ?)", s.h.address, string(raw))
 	if err != nil {
 		clients_error(c, http.StatusInternalServerError, "M_UNKNOWN", "The filter could not be kept")
 		return
@@ -1513,7 +1549,7 @@ func clients_filter_create(c *gin.Context, s *clients_session, person string) {
 
 // clients_filter_get answers a filter the account kept.
 func clients_filter_get(c *gin.Context, s *clients_session, person string, id string) {
-	row, _ := networks_database().row("select body from filters where id=? and user=?", id, s.h.address)
+	row, _ := s.database().row("select body from sieves where id=? and user=?", id, s.h.address)
 	if row == nil || person != s.h.address {
 		clients_error(c, http.StatusNotFound, "M_NOT_FOUND", "No such filter")
 		return

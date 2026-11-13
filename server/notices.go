@@ -31,11 +31,6 @@ import (
 // notices_name is the notices account's name on Matrix.
 const notices_name = "Mochi"
 
-// notices_tables makes the table of each linked account's notices room.
-func notices_tables(db *DB) {
-	db.exec("create table if not exists notices (user text not null, account text not null, room text not null, created integer not null, primary key (user, account))")
-}
-
 // notices_sender is the notices account on a domain, made on first use.
 func notices_sender(domain string) string {
 	id := "@notices:" + domain
@@ -53,15 +48,22 @@ func notices_send(user *User, account string, address string, title string, body
 	sender := notices_sender(domain)
 	ctx, cancel := context.WithTimeout(context.Background(), federation_timeout)
 	defer cancel()
-	db := networks_database()
+	db := db_user(user, "networks")
+	defer db.close()
 	room := ""
-	if row, _ := db.row("select room from notices where user=? and account=?", user.UID, account); row != nil {
+	if row, _ := db.row("select room from notices where account=?", account); row != nil {
 		room = row_string(row, "room")
-		switch rooms_membership(room, address) {
-		case spec.Join, spec.Invite:
-		default:
-			// Left, or refused: nothing more is said there.
-			return false
+		if held, _ := networks_database().exists("select 1 from rooms where id=?", room); !held {
+			// Another server's, as an export restored here names: made
+			// again here.
+			room = ""
+		} else {
+			switch rooms_membership(room, address) {
+			case spec.Join, spec.Invite:
+			default:
+				// Left, or refused: nothing more is said there.
+				return false
+			}
 		}
 	}
 	if room == "" {
@@ -71,7 +73,7 @@ func notices_send(user *User, account string, address string, title string, body
 			return false
 		}
 		room = made
-		db.exec("insert into notices (user, account, room, created) values (?, ?, ?, ?) on conflict(user, account) do update set room=excluded.room, created=excluded.created", user.UID, account, room, now())
+		db.exec("insert into notices (account, room, created) values (?, ?, ?) on conflict(account) do update set room=excluded.room, created=excluded.created", account, room, now())
 	}
 	if _, err := rooms_message(ctx, "notices", sender, room, "m.room.message", map[string]any{"msgtype": "m.text", "body": notices_text(title, body, link)}, ""); err != nil {
 		info("Matrix notices to %s not sent: %v", address, err)
@@ -125,10 +127,10 @@ func notices_xmpp(user *User, address string, title string, body string, link st
 	return true
 }
 
-// notices_heard reports whether an event a linked session heard is this
-// server's own notices: from its notices account on Matrix or XMPP, or in a
-// notices room.
-func notices_heard(event map[string]any) bool {
+// notices_heard reports whether an event a user's linked session heard is this
+// server's own notices: from its notices account on Matrix or XMPP, or in the
+// notices room of one of the user's accounts here.
+func notices_heard(user *User, event map[string]any) bool {
 	from, _ := event["from"].(string)
 	conversation, _ := event["conversation"].(string)
 	for _, value := range []string{from, conversation} {
@@ -143,7 +145,7 @@ func notices_heard(event map[string]any) bool {
 		}
 	}
 	if strings.HasPrefix(conversation, "!") {
-		found, _ := networks_database().exists("select 1 from notices where room=?", conversation)
+		found, _ := db_user_brief(user, "networks").exists("select 1 from notices where room=?", conversation)
 		return found
 	}
 	return false

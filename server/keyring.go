@@ -866,12 +866,17 @@ func keyring_send(user string, device string, kind string, transaction string, b
 	if json.Unmarshal(body, &request) != nil {
 		return keyring_error(http.StatusBadRequest, "M_NOT_JSON", "Invalid messages")
 	}
-	db := networks_database()
-	key := "todevice|" + device + "|" + transaction
-	if taken, _ := db.exists("select 1 from sent where account=? and key=?", user, key); taken {
-		return keyring_ok(map[string]any{})
+	// Kept once in the sender's own networks.db, a week, as other servers'
+	// senders' are in the server's (keyring_prune).
+	if own := clients_database(user); own != nil {
+		defer own.close()
+		key := "todevice|" + device + "|" + transaction
+		if taken, _ := own.exists("select 1 from sent where account=? and key=?", user, key); taken {
+			return keyring_ok(map[string]any{})
+		}
+		own.exec("delete from sent where account=? and key like 'todevice|%' and created<?", user, now()-int64(7*24*time.Hour/time.Second))
+		own.exec("insert into sent (account, key, event, created) values (?, ?, '', ?)", user, key, now())
 	}
-	db.exec("insert into sent (account, key, event, created) values (?, ?, '', ?)", user, key, now())
 	remote := map[string]map[string]map[string]json.RawMessage{}
 	for person, devices := range request.Messages {
 		id, err := spec.NewUserID(person, true)
@@ -1417,5 +1422,6 @@ func keyring_prune() {
 	db := networks_database()
 	db.exec("delete from messages where created<?", now()-keyring_delivered)
 	db.exec("delete from changes where created<? and id<(select max(id) from changes)", now()-keyring_delivered)
+	// Those heard from other servers' senders; a sender here keeps its own.
 	db.exec("delete from sent where key like 'todevice|%' and created<?", now()-int64(7*24*time.Hour/time.Second))
 }

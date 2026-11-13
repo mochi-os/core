@@ -180,13 +180,20 @@ func actor_remove(user *User, id string) {
 
 // actors_rebuild makes the actors table agree with the handle registry and
 // the users' accounts, for a server whose accounts predate the table or whose
-// networks database was lost. Tombstones are left as they are.
+// networks database was lost. Tombstones are left as they are, and so are the
+// rows of a user suspended or mid-restore, whose accounts are not read: their
+// addresses are still theirs when they come back.
 func actors_rebuild() {
 	db := networks_database()
+	users := db_open("db/users.db")
 	seen := map[string]bool{}
+	kept := map[string]bool{}
 	for _, h := range handles_all() {
 		user := user_by_uid(h.User)
 		if user == nil || user_pending(user) {
+			if found, _ := users.exists("select 1 from users where uid=?", h.User); found {
+				kept[h.User] = true
+			}
 			continue
 		}
 		for _, row := range accounts_hosted(user, "") {
@@ -208,9 +215,9 @@ func actors_rebuild() {
 			}
 		}
 	}
-	rows, _ := db.rows("select id from actors where deleted=0")
+	rows, _ := db.rows("select id, user from actors where deleted=0")
 	for _, row := range rows {
-		if id := row_string(row, "id"); !seen[id] {
+		if id := row_string(row, "id"); !seen[id] && !kept[row_string(row, "user")] {
 			db.exec("delete from actors where id=?", id)
 		}
 	}

@@ -580,6 +580,9 @@ func restore_hosted(uid string) {
 			if did := atproto_did(row); network == "bluesky" && did != "" {
 				atproto_register(did, id, user)
 			}
+			if network == "matrix" {
+				pushers_restored(user, "@"+name+":"+domain)
+			}
 			continue
 		}
 		if network == "bluesky" && restore_bluesky(user, row, name) {

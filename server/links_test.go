@@ -304,9 +304,18 @@ func TestXMPPNotices(t *testing.T) {
 	}
 
 	for event, want := range map[string]bool{"xmpp:notices@example.com": true, "xmpp:notices@example.com/mochi": true, "xmpp:carol@remote.test": false, "xmpp:notices@remote.test": false} {
-		if notices_heard(map[string]any{"kind": "message", "from": event}) != want {
+		if notices_heard(env.alice, map[string]any{"kind": "message", "from": event}) != want {
 			t.Errorf("THE POINT: notices_heard(%s) != %v", event, want)
 		}
+	}
+	// In the notices room of one of the user's accounts, which their own
+	// networks.db keeps; another user's is no notices of theirs.
+	db_user_brief(env.alice, "networks").exec("insert into notices (account, room, created) values ('m1', '!notices:example.com', 1)")
+	if !notices_heard(env.alice, map[string]any{"kind": "message", "from": "@someone:example.com", "conversation": "!notices:example.com"}) {
+		t.Error("THE POINT: a message in the user's notices room was not taken for notices")
+	}
+	if notices_heard(env.alice, map[string]any{"kind": "message", "from": "@someone:example.com", "conversation": "!other:example.com"}) {
+		t.Error("a message in another room was taken for notices")
 	}
 	if _, _, reason := handle_available(env.alice, "example.com", "notices", "handle"); reason != "blocked" {
 		t.Errorf("THE POINT: the notices name was taken as a handle: %q", reason)

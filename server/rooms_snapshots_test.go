@@ -36,6 +36,31 @@ func snapshots_test_store(t *testing.T) {
 	t.Cleanup(func() { rooms_kept_forget("") })
 }
 
+// matrix_test_owners makes each address a hosted Matrix account of a user of
+// its own, as the client interface keeps an account's own in its owner's
+// networks.db and finds the owner by the address.
+func matrix_test_owners(t *testing.T, addresses ...string) {
+	t.Helper()
+	users := db_open("db/users.db")
+	users.exec("create table if not exists users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', disabled text not null default '', status text not null default 'active')")
+	users.exec("create table if not exists entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+	networks_create(networks_database())
+	for _, address := range addresses {
+		id, err := spec.NewUserID(address, true)
+		if err != nil {
+			t.Fatalf("%s: %v", address, err)
+		}
+		uid := "u-" + id.Local()
+		users.exec("insert or ignore into users (uid, username) values (?, ?)", uid, id.Local()+"@"+string(id.Domain()))
+		users.exec("insert or ignore into entities (id, fingerprint, user, class, name) values (?, ?, ?, 'person', ?)", "e-"+id.Local(), "fp-"+id.Local(), uid, id.Local())
+		user := user_by_uid(uid)
+		if user == nil {
+			t.Fatalf("%s's owner did not load", address)
+		}
+		actor_register(user, "m-"+id.Local(), "matrix", string(id.Domain()), id.Local())
+	}
+}
+
 // snapshots_test_state is a state of n keys.
 func snapshots_test_state(n int) rooms_state {
 	state := rooms_state{}
@@ -482,6 +507,7 @@ func TestClientsWakeOnlyThoseConcerned(t *testing.T) {
 	const amy, ben, cat, zed = "@amy:example.com", "@ben:example.com", "@cat:example.com", "@zed:example.org"
 	wake_test_room(t, "!shared:example.com", map[string]string{amy: spec.Join, ben: spec.Join, zed: spec.Join})
 	wake_test_room(t, "!apart:example.com", map[string]string{cat: spec.Join})
+	matrix_test_owners(t, amy, ben, cat)
 	networks_database().exec("insert into devices (user, device, created) values (?, 'AMY1', 1)", amy)
 	wake := wake_test_waiters(amy, ben, cat)
 	t.Cleanup(func() { typing_set("!shared:example.com", amy, false, 0) })

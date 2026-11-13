@@ -90,16 +90,20 @@ func sync_maximum() int64 {
 }
 
 // sync_latest is the latest position of each order but the key store's,
-// which a device's own sync moves on.
-func sync_latest() sync_position {
+// which a device's own sync moves on: the rooms', receipts' and presence's
+// the server's, and account data's, invitations' and push rules' the user's
+// own, kept in their networks.db.
+func sync_latest(user *User) sync_position {
 	db := networks_database()
+	own := db_user(user, "networks")
+	defer own.close()
 	return sync_position{
 		stream:   sync_maximum(),
 		receipts: sync_last(db, "receipts"),
-		settings: sync_last(db, "settings"),
+		settings: sync_last(own, "settings"),
 		typing:   typing_position(),
-		invites:  sync_last(db, "pending"),
-		rules:    sync_last(db, "rules"),
+		invites:  sync_last(own, "pending"),
+		rules:    sync_last(own, "rules"),
 		presence: sync_last(db, "presences"),
 	}
 }
@@ -177,7 +181,7 @@ func sync_filter_read(s *clients_session, value string) *sync_filter {
 	case strings.HasPrefix(value, "{"):
 		json.Unmarshal([]byte(value), filter)
 	default:
-		row, _ := networks_database().row("select body from filters where id=? and user=?", value, s.h.address)
+		row, _ := s.database().row("select body from sieves where id=? and user=?", value, s.h.address)
 		if row != nil {
 			json.Unmarshal([]byte(row_string(row, "body")), filter)
 		}
@@ -292,7 +296,7 @@ func sync_legacy(c *gin.Context, s *clients_session) {
 // nothing new.
 func sync_build(s *clients_session, from sync_position, initial bool, full bool, filter *sync_filter) (map[string]any, bool) {
 	address := s.h.address
-	next := sync_latest()
+	next := sync_latest(s.user)
 	deliveries, delivered := keyring_deliveries(address, s.device, from.delivered)
 	changed, gone, changes := keyring_changes(address, from.changes, initial)
 	next.delivered, next.changes = delivered, changes
@@ -398,7 +402,11 @@ func sync_data(user string, room string, since int64, initial bool) []map[string
 	if initial {
 		since = 0
 	}
-	rows, _ := networks_database().rows("select type, content from settings where user=? and room=? and position>? order by position", user, room, since)
+	var rows []map[string]any
+	if db := clients_database(user); db != nil {
+		rows, _ = db.rows("select type, content from settings where user=? and room=? and position>? order by position", user, room, since)
+		db.close()
+	}
 	events := []map[string]any{}
 	for _, row := range rows {
 		if strings.HasPrefix(row_string(row, "type"), "org.mochi.") {
@@ -591,9 +599,10 @@ func sync_summary(room string, user string) map[string]any {
 // sync_invited is an invitation's part of a sync where it is new: the
 // invitation and the state it shows of the room.
 func sync_invited(s *clients_session, room string, from sync_position, next sync_position, initial bool) map[string]any {
-	db := networks_database()
-	if row, _ := db.row("select i.body, i.state, coalesce(p.position, 0) as position from invites i left join pending p on p.room=i.room and p.user=i.user where i.room=? and i.user=?", room, s.h.address); row != nil {
-		if !initial && row_int(row, "position") <= from.invites {
+	if row, _ := networks_database().row("select body, state from invites where room=? and user=?", room, s.h.address); row != nil {
+		// Its position is the invitation's in the user's own order of them.
+		pending, _ := s.database().row("select position from pending where room=? and user=?", room, s.h.address)
+		if !initial && row_int(pending, "position") <= from.invites {
 			return nil
 		}
 		var stripped []any
@@ -628,7 +637,7 @@ func sync_invited(s *clients_session, room string, from sync_position, next sync
 // room's stripped state and the knock, from the room here, or as the server
 // knocked through answered it.
 func sync_knocked(s *clients_session, room string, from sync_position, initial bool) []any {
-	if row, _ := networks_database().row("select position, state from pending where room=? and user=? and kind='knock'", room, s.h.address); row != nil {
+	if row, _ := s.database().row("select position, state from pending where room=? and user=? and kind='knock'", room, s.h.address); row != nil {
 		if !initial && row_int(row, "position") <= from.invites {
 			return nil
 		}
@@ -652,7 +661,7 @@ func sync_knocked(s *clients_session, room string, from sync_position, initial b
 // sync_left is a room left since the position: its timeline up to the
 // leaving, or nothing but the leaving of a room this server is not in.
 func sync_left(s *clients_session, room string, from sync_position, next sync_position, limit int) map[string]any {
-	if row, _ := networks_database().row("select position, state from pending where room=? and user=? and kind='leave'", room, s.h.address); row != nil && rooms_membership(room, s.h.address) == "" {
+	if row, _ := s.database().row("select position, state from pending where room=? and user=? and kind='leave'", room, s.h.address); row != nil && rooms_membership(room, s.h.address) == "" {
 		if row_int(row, "position") <= from.invites {
 			return nil
 		}
@@ -1175,7 +1184,7 @@ func sliding_extend(s *clients_session, asked sliding_extensions, marks sync_pos
 	address := s.h.address
 	extensions := map[string]any{}
 	quiet := true
-	latest := sync_latest()
+	latest := sync_latest(s.user)
 	if asked.Device != nil && sliding_enabled(asked.Device.Enabled, false) {
 		since, _ := strconv.ParseInt(asked.Device.Since, 10, 64)
 		events, delivered := keyring_deliveries(address, s.device, since)

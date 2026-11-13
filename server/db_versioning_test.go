@@ -67,10 +67,19 @@ func TestFreshInstallLaysTheNetworkDatabases(t *testing.T) {
 	}
 	// The Matrix and XMPP engines' tables are networks.db's, and neither has
 	// a file of its own.
-	for _, name := range []string{"outbox", "rooms", "events", "devices", "messages", "changes", "stream", "settings", "presence", "media", "standins", "notices"} {
+	for _, name := range []string{"outbox", "rooms", "events", "devices", "messages", "changes", "stream", "presence", "media", "standins", "pushers", "sent"} {
 		if !versioning_has(networks, name) {
 			t.Errorf("THE POINT: a fresh networks.db has no Matrix %s", name)
 		}
+	}
+	// What the client interface keeps of one account is its owner's.
+	for _, name := range []string{"settings", "rules", "notifications", "filters", "directs", "pending", "notices"} {
+		if versioning_has(networks, name) {
+			t.Errorf("THE POINT: a fresh networks.db lays Matrix %s, which is each owner's own", name)
+		}
+	}
+	if versioning_column(networks, "pushers", "body") {
+		t.Error("THE POINT: a fresh networks.db keeps pushers' bodies, not only their apps and keys")
 	}
 	if !versioning_column(networks, "outbox", "origin") || !versioning_column(networks, "changes", "gone") {
 		t.Error("a fresh networks.db lacks outbox.origin or changes.gone")
@@ -122,6 +131,17 @@ func TestSchema18BringsAnInstallUp(t *testing.T) {
 	matrix.exec("insert into events (id, room, type, key, sender, depth, body, received) values ('$a', '!r', 'm.room.message', null, '@x:y', 1, '{}', 1)")
 	matrix.exec("create table data (user text not null, type text not null, content text not null, primary key (user, type))")
 	matrix.exec("insert into data (user, type, content) values ('@a:b', 'm.secret', '{}')")
+	// @a:b is u1's hosted account, whose data schema 25 moves into u1's own
+	// networks.db.
+	users := db_open("db/users.db")
+	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', disabled text not null default '', status text not null default 'active')")
+	users.exec("create table entities (id text not null primary key, private text not null default '', fingerprint text not null default '', user text not null, parent text not null default '', class text not null default '', name text not null default '', privacy text not null default 'public', data text not null default '', published integer not null default 0)")
+	users.exec("insert into users (uid, username) values ('u1', 'a@b')")
+	users.exec("insert into entities (id, fingerprint, user, class, name) values ('e-u1', 'fp-u1abc', 'u1', 'person', 'A')")
+	// The handle registry, as every install since step 12 has it.
+	db_upgrade_12()
+	networks.exec("create table actors (id text not null primary key, user text not null, domain text not null, handle text not null, network text not null, created integer not null, deleted integer not null default 0, key text not null default '')")
+	networks.exec("insert into actors (id, user, domain, handle, network, created) values ('m-a', 'u1', 'b', 'a', 'matrix', 1)")
 
 	app := filepath.Join(directory, "users", "u1", "feeds", "db")
 	if err := os.MkdirAll(app, 0755); err != nil {
@@ -168,8 +188,15 @@ func TestSchema18BringsAnInstallUp(t *testing.T) {
 	if matrix.integer("select count(*) from stream where event='$a'") != 1 {
 		t.Error("THE POINT: the rooms' timelines were not taken into the client order")
 	}
-	if matrix.integer("select count(*) from settings where user='@a:b' and type='m.secret'") != 1 {
-		t.Error("THE POINT: the key store's account data was not copied into settings")
+	owner := user_by_uid("u1")
+	if owner == nil {
+		t.Fatal("the account's owner did not load")
+	}
+	if db_user_brief(owner, "networks").integer("select count(*) from settings where user='@a:b' and type='m.secret'") != 1 {
+		t.Error("THE POINT: the key store's account data was not copied into settings, and on into its owner's networks.db")
+	}
+	if versioning_has(matrix, "settings") {
+		t.Error("THE POINT: the server-wide settings table outlived the move into the owners' networks.db")
 	}
 	if !versioning_has(networks, "conferences") || !versioning_has(db_open("db/world.db"), "worlds") {
 		t.Error("THE POINT: the XMPP tables and world.db were not laid")
@@ -179,6 +206,206 @@ func TestSchema18BringsAnInstallUp(t *testing.T) {
 	}
 	if !versioning_has(data, "posts") {
 		t.Error("the app's own table went with the commit-hook log")
+	}
+}
+
+// TestMatrixClientTablesMoveToTheirOwners: schema 25 moves what the Matrix
+// client interface kept of each hosted account in the server's networks.db
+// into its owner's - a suspended owner's too - with filters as sieves, and
+// each owner's positions going on from the server's so no client's token goes
+// back. The server keeps only pushers' apps and keys and what other servers'
+// senders and the chat bridge sent; the rows of an account gone, or of a user
+// gone, are dropped.
+func TestMatrixClientTablesMoveToTheirOwners(t *testing.T) {
+	test_bare_directory(t)
+	networks := networks_database()
+	networks_create(networks)
+	db_upgrade_18_federation(networks)
+	users := db_open("db/users.db")
+	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', disabled text not null default '', status text not null default 'active')")
+	users.exec("insert into users (uid, username, status) values ('u-alice', 'alice@example.com', 'active'), ('u-sus', 'sus@example.com', 'suspended'), ('u-bob', 'bob@example.com', 'active'), ('u-carol', 'carol@example.com', 'active'), ('u-dave', 'dave@example.com', 'active')")
+	db_upgrade_12()
+	// The suspended owner's actor went at a start before (actors_rebuild);
+	// their account and handle are theirs still. The taken address's actor
+	// still names alice, though its handle and account are now bob's.
+	for _, actor := range [][]any{{"m-alice", "u-alice", "alice", 0}, {"m-old", "u-alice", "old", 1}, {"m-ghost", "u-ghost", "ghost", 0}, {"m-stale", "u-alice", "taken", 0}} {
+		networks.exec("insert into actors (id, user, domain, handle, network, created, deleted) values (?, ?, 'example.com', ?, 'matrix', 1, ?)", actor...)
+	}
+	for _, owner := range [][]string{{"u-sus", "m-sus", "sus"}, {"u-bob", "m-taken", "taken"}, {"u-dave", "m-dave", "dave"}} {
+		users.exec("insert into handles (domain, name, user, created) values ('example.com', ?, ?, 1)", owner[2], owner[0])
+		own := db_open("users/" + owner[0] + "/user.db")
+		own.exec("create table if not exists accounts (id text not null primary key, type text not null, data text not null default '')")
+		own.exec("insert into accounts (id, type, data) values (?, 'matrix', ?)", owner[1], `{"hosted":true,"domain":"example.com","handle":"`+owner[2]+`"}`)
+	}
+	for _, address := range []string{"@alice:example.com", "@old:example.com", "@sus:example.com", "@ghost:example.com", "@taken:example.com"} {
+		networks.exec("insert into settings (user, type, content) values (?, 'm.direct', '{}')", address)
+		networks.exec("insert into rules (user, kind, id, body) values (?, 'override', 'mine', '{}')", address)
+		networks.exec("insert into pushers (user, app, key, kind, body, created) values (?, 'org.example', ?, 'http', '{}', 1)", address, "key"+address)
+	}
+	networks.exec("insert into notifications (user, room, event, position, actions, created) values ('@alice:example.com', '!r:example.com', '$e', 1, '[]', 1)")
+	networks.exec("insert into filters (id, user, body) values (7, '@alice:example.com', '{\"room\":{}}')")
+	networks.exec("insert into directs (user, room, person) values ('@alice:example.com', '!r:example.com', '@carol:remote.example')")
+	networks.exec("insert into pending (room, user, kind, created) values ('!k:remote.example', '@alice:example.com', 'knock', 1)")
+	networks.exec("insert into notices (user, account, room, created) values ('u-alice', 'm-alice', '!n:example.com', 1), ('u-alice', 'l-alice', '!ln:example.com', 1), ('u-bob', 'l-bob', '!lb:example.com', 1), ('u-carol', 'l-carol', '!lc:example.com', 1), ('u-ghost', 'l-ghost', '!lg:example.com', 1)")
+	for _, row := range [][]string{{"m-alice", "client|PHONE|t1"}, {"@alice:example.com", "todevice|PHONE|t2"}, {"@carol:remote.example", "todevice|remote.example|m1"}, {"!bridged:example.com", "bridge|k1"}, {"@old:example.com", "todevice|PHONE|t3"}} {
+		networks.exec("insert into sent (account, key, event, created) values (?, ?, '$s', 1)", row[0], row[1])
+	}
+	for _, table := range []string{"settings", "rules", "pending", "filters", "notifications"} {
+		networks.exec("update sqlite_sequence set seq=500 where name=?", table)
+	}
+
+	db_upgrade_25()
+
+	own := db_open("users/u-alice/networks.db")
+	for table, want := range map[string]int{"settings": 1, "rules": 1, "pushers": 1, "notifications": 1, "sieves": 1, "directs": 1, "pending": 1} {
+		if got := own.integer("select count(*) from " + table + " where user='@alice:example.com'"); got != want {
+			t.Errorf("THE POINT: alice's networks.db holds %d of her %s rows, want %d", got, table, want)
+		}
+		if got := own.integer("select count(*) from " + table + " where user='@old:example.com'"); got != 0 {
+			t.Errorf("THE POINT: %d %s rows of her account already gone were moved, not dropped", got, table)
+		}
+	}
+	if own.integer("select count(*) from sieves where id=7") != 1 {
+		t.Error("the filter's id, which her clients hold, did not survive the move")
+	}
+	if own.integer("select count(*) from notices where account='m-alice' and room='!n:example.com'") != 1 {
+		t.Error("THE POINT: her notices room did not move")
+	}
+	if own.integer("select count(*) from notices where account='l-alice' and room='!ln:example.com'") != 1 || db_open("users/u-bob/networks.db").integer("select count(*) from notices where account='l-bob'") != 1 {
+		t.Error("THE POINT: the notices rooms of linked accounts, which have no actor here, were dropped")
+	}
+	if db_open("users/u-carol/networks.db").integer("select count(*) from notices where account='l-carol'") != 1 {
+		t.Error("THE POINT: the notices room of a user with no Matrix account here was dropped")
+	}
+	if db_open("users/u-dave/networks.db").integer("select coalesce((select seq from sqlite_sequence where name='settings'), 0)") < 500 {
+		t.Error("THE POINT: an owner with nothing to move starts behind the server's positions, which their clients' tokens hold")
+	}
+	if own.integer("select count(*) from settings where user='@taken:example.com'") != 0 || db_open("users/u-bob/networks.db").integer("select count(*) from settings where user='@taken:example.com'") != 1 {
+		t.Error("THE POINT: an address went by a stale actor row, not to the user whose handle and account it is")
+	}
+	if own.integer("select count(*) from sent where account in ('m-alice', '@alice:example.com')") != 2 {
+		t.Error("THE POINT: what her clients sent, and the to-device messages she sent, did not move")
+	}
+	for _, table := range []string{"settings", "rules", "pending", "sieves", "notifications"} {
+		if seq := own.integer("select coalesce((select seq from sqlite_sequence where name=?), 0)", table); seq < 500 {
+			t.Errorf("THE POINT: her %s positions start at %d, behind the server's 500, so her clients' tokens go back", table, seq)
+		}
+	}
+	suspended := db_open("users/u-sus/networks.db")
+	if suspended.integer("select count(*) from settings where user='@sus:example.com'") != 1 {
+		t.Error("THE POINT: a suspended owner whose actor went at an earlier start lost their account data")
+	}
+	if suspended.integer("select coalesce((select seq from sqlite_sequence where name='settings'), 0)") < 500 {
+		t.Error("the suspended owner's positions start behind the server's")
+	}
+	for _, table := range []string{"settings", "rules", "notifications", "filters", "directs", "pending", "notices"} {
+		if versioning_has(networks, table) {
+			t.Errorf("THE POINT: the server's networks.db still has %s", table)
+		}
+	}
+	if versioning_column(networks, "pushers", "body") {
+		t.Error("THE POINT: the server's pushers keep more than their apps and keys")
+	}
+	if got := networks.integer("select count(*) from pushers"); got != 3 || networks.integer("select count(*) from pushers where user='@alice:example.com'") != 1 || networks.integer("select count(*) from pushers where user='@sus:example.com'") != 1 {
+		t.Errorf("the server keeps %d pushers' keys, want alice's, bob's and the suspended owner's", got)
+	}
+	if got := networks.integer("select count(*) from sent"); got != 2 || networks.integer("select count(*) from sent where account in ('@carol:remote.example', '!bridged:example.com')") != 2 {
+		t.Errorf("THE POINT: the server's sent holds %d rows, want only another server's sender's and the bridge's", got)
+	}
+}
+
+// matrix_move_test_server lays a server at schema 24 holding one hosted
+// Matrix account's client rows, alice's, in its networks.db.
+func matrix_move_test_server(t *testing.T) *DB {
+	t.Helper()
+	test_bare_directory(t)
+	networks := networks_database()
+	networks_create(networks)
+	db_upgrade_18_federation(networks)
+	users := db_open("db/users.db")
+	users.exec("create table users (uid text not null primary key, username text not null, role text not null default 'user', methods text not null default 'email', disabled text not null default '', status text not null default 'active')")
+	users.exec("insert into users (uid, username) values ('u-alice', 'alice@example.com')")
+	db_upgrade_12()
+	networks.exec("insert into actors (id, user, domain, handle, network, created) values ('m-alice', 'u-alice', 'example.com', 'alice', 'matrix', 1)")
+	networks.exec("insert into settings (user, type, content) values ('@alice:example.com', 'm.direct', '{}')")
+	networks.exec("insert into pushers (user, app, key, kind, body, created) values ('@alice:example.com', 'org.example', 'phone', 'http', '{}', 1)")
+	networks.exec("insert into sent (account, key, event, created) values ('@alice:example.com', 'todevice|PHONE|t1', '$s', 1)")
+	return networks
+}
+
+// TestMatrixClientTablesMoveSurvivesAStartCutShort: a start stopped part-way
+// through step 25 leaves the server's tables whole, so the next start runs
+// the step again and finishes it, moving nothing twice.
+func TestMatrixClientTablesMoveSurvivesAStartCutShort(t *testing.T) {
+	networks := matrix_move_test_server(t)
+	networks.exec("create trigger cut before delete on sent begin select raise(abort, 'cut short'); end")
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("the step finished through the cut")
+			}
+		}()
+		db_upgrade_25()
+	}()
+	for _, table := range []string{"settings", "rules", "notifications", "filters", "directs", "pending", "notices"} {
+		if !versioning_has(networks, table) {
+			t.Errorf("THE POINT: a start cut short dropped the server's %s, so the step is never run again", table)
+		}
+	}
+	if !versioning_column(networks, "pushers", "body") || networks.integer("select count(*) from pushers") != 1 {
+		t.Error("THE POINT: a start cut short left the server's pushers half rebuilt")
+	}
+	networks.exec("drop trigger cut")
+	db_upgrade_25()
+	own := db_open("users/u-alice/networks.db")
+	if own.integer("select count(*) from settings where user='@alice:example.com'") != 1 || own.integer("select count(*) from pushers") != 1 || own.integer("select count(*) from sent") != 1 {
+		t.Error("the step run again did not leave alice's rows once each")
+	}
+	if versioning_has(networks, "settings") || networks.integer("select count(*) from pushers where app='org.example' and key='phone'") != 1 || networks.integer("select count(*) from sent") != 0 {
+		t.Error("the step run again did not finish")
+	}
+}
+
+// TestMatrixClientTablesMoveRefusesADamagedFile: an owner's networks.db that
+// cannot take their rows stops the start, naming the file, with nothing
+// dropped, so nothing is lost while the file is seen to.
+func TestMatrixClientTablesMoveRefusesADamagedFile(t *testing.T) {
+	networks := matrix_move_test_server(t)
+	path := filepath.Join(data_dir, "users", "u-alice", "networks.db")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Repeat("not a database ", 512)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	refused := ""
+	func() {
+		defer func() { refused = fmt.Sprint(recover()) }()
+		db_upgrade_25()
+	}()
+	if !strings.Contains(refused, filepath.Join("users", "u-alice", "networks.db")) || !strings.Contains(refused, "nothing has been dropped") {
+		t.Errorf("THE POINT: the start was not stopped naming the damaged file: %q", refused)
+	}
+	if !versioning_has(networks, "settings") || networks.integer("select count(*) from settings where user='@alice:example.com'") != 1 || !versioning_column(networks, "pushers", "body") {
+		t.Error("THE POINT: alice's rows were dropped though her file could not take them")
+	}
+}
+
+// TestMatrixClientTablesMoveOpensOnlyWhatItMust: an owner with nothing to
+// move and no positions to carry on has no networks.db opened or made, so
+// a server whose tables are empty cannot be stopped by one.
+func TestMatrixClientTablesMoveOpensOnlyWhatItMust(t *testing.T) {
+	networks := matrix_move_test_server(t)
+	networks.exec("delete from settings")
+	networks.exec("delete from pushers")
+	networks.exec("delete from sent")
+	networks.exec("delete from sqlite_sequence")
+	db_upgrade_25()
+	if file_exists(filepath.Join(data_dir, "users", "u-alice", "networks.db")) {
+		t.Error("THE POINT: a networks.db was made for an owner with nothing to take")
+	}
+	if versioning_has(networks, "settings") {
+		t.Error("the step did not finish")
 	}
 }
 
@@ -593,6 +820,10 @@ func TestVersionedStepsKeepTheirSchema(t *testing.T) {
 	check("db_upgrade_22.networks", versioning_schema(db_open("db/networks.db")))
 	db_upgrade_23()
 	check("db_upgrade_23.queue", versioning_schema(queue))
+	// Step 25 reads the handle registry, which step 12 laid long before.
+	db_upgrade_12()
+	db_upgrade_25()
+	check("db_upgrade_25.networks", versioning_schema(db_open("db/networks.db")))
 
 	for name, steps := range map[string][]func(*DB) error{
 		"user":          db_user_steps["user"],

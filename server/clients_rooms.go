@@ -85,7 +85,7 @@ func clients_event(event gomatrixserverlib.PDU, viewer string, device string, ro
 		}
 	}
 	if sender == viewer && device != "" {
-		if transaction := clients_transaction(event.EventID(), device); transaction != "" {
+		if transaction := clients_transaction(viewer, event.EventID(), device); transaction != "" {
 			unsigned["transaction_id"] = transaction
 		}
 	}
@@ -135,9 +135,15 @@ func clients_redacts(redaction gomatrixserverlib.PDU) string {
 	return content.Redacts
 }
 
-// clients_transaction is the transaction a device sent an event by, or "".
-func clients_transaction(event string, device string) string {
-	row, _ := networks_database().row("select key from sent where event=? and key like ?", event, "client|"+device+"|%")
+// clients_transaction is the transaction an account's device sent an event
+// by, or "".
+func clients_transaction(account string, event string, device string) string {
+	db := clients_database(account)
+	if db == nil {
+		return ""
+	}
+	defer db.close()
+	row, _ := db.row("select key from sent where event=? and key like ?", event, "client|"+device+"|%")
 	return strings.TrimPrefix(row_string(row, "key"), "client|"+device+"|")
 }
 
@@ -162,7 +168,11 @@ func clients_memberships(user string) map[string]string {
 	}
 	// A knock through another server waits there; an invitation declined
 	// or a knock withdrawn there leaves the room left.
-	pending, _ := networks_database().rows("select room, kind from pending where user=? and kind in ('knock', 'leave')", user)
+	var pending []map[string]any
+	if db := clients_database(user); db != nil {
+		pending, _ = db.rows("select room, kind from pending where user=? and kind in ('knock', 'leave')", user)
+		db.close()
+	}
 	for _, row := range pending {
 		room := row_string(row, "room")
 		switch row_string(row, "kind") {
@@ -183,7 +193,12 @@ func clients_memberships(user string) map[string]string {
 // not in - invited to it, knocking on it, or having declined or withdrawn -
 // at a new position, so their syncs are told.
 func clients_pending(room string, user string, kind string, server string, state string) {
-	networks_database().exec("insert or replace into pending (room, user, kind, server, state, created) values (?, ?, ?, ?, ?, ?)", room, user, kind, server, state, now())
+	db := clients_database(user)
+	if db == nil {
+		return
+	}
+	defer db.close()
+	db.exec("insert or replace into pending (room, user, kind, server, state, created) values (?, ?, ?, ?, ?, ?)", room, user, kind, server, state, now())
 	clients_wake(user)
 }
 
@@ -1108,7 +1123,7 @@ func clients_send(c *gin.Context, s *clients_session, room string, kind string, 
 		return
 	}
 	key := "client|" + s.device + "|" + transaction
-	if row, _ := networks_database().row("select event from sent where account=? and key=?", s.h.id, key); row != nil {
+	if row, _ := s.database().row("select event from sent where account=? and key=?", s.h.id, key); row != nil {
 		c.JSON(http.StatusOK, map[string]any{"event_id": row_string(row, "event")})
 		return
 	}
@@ -1121,7 +1136,7 @@ func clients_send(c *gin.Context, s *clients_session, room string, kind string, 
 		clients_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
 		return
 	}
-	networks_database().exec("insert or ignore into sent (account, key, event, created) values (?, ?, ?, ?)", s.h.id, key, event.EventID(), now())
+	s.database().exec("insert or ignore into sent (account, key, event, created) values (?, ?, ?, ?)", s.h.id, key, event.EventID(), now())
 	clients_told(s, event)
 	c.JSON(http.StatusOK, map[string]any{"event_id": event.EventID()})
 }
@@ -1136,7 +1151,7 @@ func clients_redact(c *gin.Context, s *clients_session, room string, target stri
 		return
 	}
 	key := "client|" + s.device + "|" + transaction
-	if row, _ := networks_database().row("select event from sent where account=? and key=?", s.h.id, key); row != nil {
+	if row, _ := s.database().row("select event from sent where account=? and key=?", s.h.id, key); row != nil {
 		c.JSON(http.StatusOK, map[string]any{"event_id": row_string(row, "event")})
 		return
 	}
@@ -1149,7 +1164,7 @@ func clients_redact(c *gin.Context, s *clients_session, room string, target stri
 		clients_error(c, http.StatusForbidden, "M_FORBIDDEN", err.Error())
 		return
 	}
-	networks_database().exec("insert or ignore into sent (account, key, event, created) values (?, ?, ?, ?)", s.h.id, key, event.EventID(), now())
+	s.database().exec("insert or ignore into sent (account, key, event, created) values (?, ?, ?, ?)", s.h.id, key, event.EventID(), now())
 	clients_told(s, event)
 	c.JSON(http.StatusOK, map[string]any{"event_id": event.EventID()})
 }

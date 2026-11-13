@@ -98,7 +98,11 @@ func rules_defaults(user string) map[string][]rules_rule {
 // override defaults; the defaults with the user's changes to them.
 func rules_rules(user string) map[string][]rules_rule {
 	defaults := rules_defaults(user)
-	rows, _ := networks_database().rows("select kind, id, priority, body, enabled from rules where user=? order by kind, priority desc, position", user)
+	var rows []map[string]any
+	if db := clients_database(user); db != nil {
+		rows, _ = db.rows("select kind, id, priority, body, enabled from rules where user=? order by kind, priority desc, position", user)
+		db.close()
+	}
 	changed := map[string]map[string]any{}
 	own := map[string][]rules_rule{}
 	for _, row := range rows {
@@ -374,7 +378,10 @@ func notifications_tell(event gomatrixserverlib.PDU, state rooms_state, members 
 	// A user's joining counts as their receipt: what came before it, an
 	// invitation among it, is read.
 	if membership, _ := event.Membership(); event.Type() == spec.MRoomMember && membership == spec.Join && event.StateKey() != nil {
-		networks_database().exec("update notifications set read=1 where user=? and room=? and position<=? and read=0", *event.StateKey(), room, position)
+		if db := clients_database(*event.StateKey()); db != nil {
+			db.exec("update notifications set read=1 where user=? and room=? and position<=? and read=0", *event.StateKey(), room, position)
+			db.close()
+		}
 	}
 	for member := range recipients {
 		if member == sender || !domains.local(member) {
@@ -389,7 +396,7 @@ func notifications_tell(event gomatrixserverlib.PDU, state rooms_state, members 
 		if !notify {
 			continue
 		}
-		networks_database().exec("insert or ignore into notifications (user, room, event, position, actions, highlight, created) values (?, ?, ?, ?, ?, ?, ?)", member, room, event.EventID(), position, json_encode(actions), highlight, now())
+		db_user_brief(user, "networks").exec("insert or ignore into notifications (user, room, event, position, actions, highlight, created) values (?, ?, ?, ?, ?, ?, ?)", member, room, event.EventID(), position, json_encode(actions), highlight, now())
 		pushers_send(user, member, event, state, actions)
 	}
 }
@@ -404,7 +411,12 @@ func clients_signed(user *User, account string) bool {
 // notifications_counts is a room's unread notifications for a user, and
 // those that highlight.
 func notifications_counts(user string, room string) (int64, int64) {
-	row, _ := networks_database().row("select count(*) as n, coalesce(sum(highlight), 0) as h from notifications where user=? and room=? and read=0", user, room)
+	db := clients_database(user)
+	if db == nil {
+		return 0, 0
+	}
+	defer db.close()
+	row, _ := db.row("select count(*) as n, coalesce(sum(highlight), 0) as h from notifications where user=? and room=? and read=0", user, room)
 	return row_int(row, "n"), row_int(row, "h")
 }
 
@@ -414,7 +426,11 @@ func notifications_read(user string, room string, position int64) {
 	if position <= 0 {
 		return
 	}
-	db := networks_database()
+	db := clients_database(user)
+	if db == nil {
+		return
+	}
+	defer db.close()
 	db.exec("update notifications set read=1 where user=? and room=? and position<=? and read=0", user, room, position)
 	db.exec("delete from notifications where user=? and read=1 and created<?", user, now()-30*86400)
 	clients_wake(user)
@@ -483,7 +499,8 @@ func rules_route(c *gin.Context, s *clients_session, parts []string) {
 			found = &rules[kind][i]
 		}
 	}
-	db := networks_database()
+	db := db_user(s.user, "networks")
+	defer db.close()
 	attribute := ""
 	if len(parts) == 4 {
 		attribute = parts[3]
@@ -558,7 +575,7 @@ func rules_route(c *gin.Context, s *clients_session, parts []string) {
 			clients_error(c, http.StatusBadRequest, "M_INVALID_PARAM", "The rule is not complete")
 			return
 		}
-		priority := rules_priority(rules[kind], c.Query("before"), c.Query("after"))
+		priority := rules_priority(s.h.address, kind, rules[kind], c.Query("before"), c.Query("after"))
 		rules_keep(s.h.address, kind, id, priority, map[string]any{"actions": body.Actions, "conditions": body.Conditions, "pattern": body.Pattern}, true)
 		c.JSON(http.StatusOK, map[string]any{})
 	case method == "DELETE" && attribute == "":
@@ -578,12 +595,15 @@ func rules_route(c *gin.Context, s *clients_session, parts []string) {
 
 // rules_priority is where a new rule goes among the user's own of its kind:
 // before or after one named, else first.
-func rules_priority(rules []rules_rule, before string, after string) int64 {
-	db := networks_database()
+func rules_priority(user string, kind string, rules []rules_rule, before string, after string) int64 {
+	db := clients_database(user)
+	if db != nil {
+		defer db.close()
+	}
 	priority := func(id string) (int64, bool) {
 		for _, rule := range rules {
-			if rule.ID == id && !rule.Default {
-				row, _ := db.row("select priority from rules where id=?", id)
+			if rule.ID == id && !rule.Default && db != nil {
+				row, _ := db.row("select priority from rules where user=? and kind=? and id=?", user, kind, id)
 				return row_int(row, "priority"), true
 			}
 		}
@@ -605,7 +625,11 @@ func rules_priority(rules []rules_rule, before string, after string) int64 {
 // rules_keep keeps a rule of the user's, or their change to a default one, at
 // a new position, so their syncs are given their rules again.
 func rules_keep(user string, kind string, id string, priority int64, body map[string]any, enabled bool) {
-	db := networks_database()
+	db := clients_database(user)
+	if db == nil {
+		return
+	}
+	defer db.close()
 	row, _ := db.row("select priority from rules where user=? and kind=? and id=?", user, kind, id)
 	if row != nil && priority == 0 {
 		priority = row_int(row, "priority")
@@ -619,7 +643,7 @@ func rules_keep(user string, kind string, id string, priority int64, body map[st
 
 // pushers_list answers the account's pushers.
 func pushers_list(c *gin.Context, s *clients_session) {
-	rows, _ := networks_database().rows("select body from pushers where user=? order by created", s.h.address)
+	rows, _ := s.database().rows("select body from pushers where user=? order by created", s.h.address)
 	pushers := []any{}
 	for _, row := range rows {
 		var pusher map[string]any
@@ -644,9 +668,8 @@ func pushers_set(c *gin.Context, s *clients_session) {
 		clients_error(c, http.StatusBadRequest, "M_MISSING_PARAM", "pushkey and app_id are required")
 		return
 	}
-	db := networks_database()
 	if body["kind"] == nil {
-		db.exec("delete from pushers where app=? and key=? and user=?", app, key, s.h.address)
+		pushers_forget(s.h.address, app, key)
 		c.JSON(http.StatusOK, map[string]any{})
 		return
 	}
@@ -662,24 +685,65 @@ func pushers_set(c *gin.Context, s *clients_session) {
 		return
 	}
 	if append, _ := body["append"].(bool); !append {
-		db.exec("delete from pushers where app=? and key=? and user!=?", app, key, s.h.address)
+		others, _ := networks_database().rows("select user from pushers where app=? and key=? and user!=?", app, key, s.h.address)
+		for _, other := range others {
+			pushers_forget(row_string(other, "user"), app, key)
+		}
 	}
 	delete(body, "append")
-	db.exec("insert or replace into pushers (user, app, key, device, kind, body, created) values (?, ?, ?, ?, ?, ?, ?)", s.h.address, app, key, s.device, kind, json_encode(body), now())
+	s.database().exec("insert or replace into pushers (user, app, key, device, kind, body, created) values (?, ?, ?, ?, ?, ?, ?)", s.h.address, app, key, s.device, kind, json_encode(body), now())
+	networks_database().exec("insert or ignore into pushers (app, key, user) values (?, ?, ?)", app, key, s.h.address)
 	c.JSON(http.StatusOK, map[string]any{})
+}
+
+// pushers_forget removes an account's pusher: from its owner's networks.db,
+// and its app and key from the server's, which knows each key's accounts so a
+// phone's token is taken from any other.
+func pushers_forget(address string, app string, key string) {
+	if db := clients_database(address); db != nil {
+		db.exec("delete from pushers where user=? and app=? and key=?", address, app, key)
+		db.close()
+	}
+	networks_database().exec("delete from pushers where app=? and key=? and user=?", app, key, address)
+}
+
+// pushers_restored tells the server's key table of the pushers a restored
+// account's networks.db brings, so a phone's token among them is taken from
+// it, as from any account, when another here sets it.
+func pushers_restored(user *User, address string) {
+	db := db_user(user, "networks")
+	if db == nil {
+		return
+	}
+	defer db.close()
+	rows, _ := db.rows("select app, key from pushers where user=?", address)
+	for _, row := range rows {
+		networks_database().exec("insert or ignore into pushers (app, key, user) values (?, ?, ?)", row_string(row, "app"), row_string(row, "key"), address)
+	}
+}
+
+// pushers_device_forget removes the pushers a signed-out device of the
+// session's account set.
+func pushers_device_forget(s *clients_session, device string) {
+	rows, _ := s.database().rows("select app, key from pushers where user=? and device=?", s.h.address, device)
+	for _, row := range rows {
+		pushers_forget(s.h.address, row_string(row, "app"), row_string(row, "key"))
+	}
 }
 
 // pushers_send sends a notification to each of the account's pushers, away
 // from the room it came in; a gateway that refuses a key has that pusher
 // removed.
 func pushers_send(user *User, address string, event gomatrixserverlib.PDU, state rooms_state, actions []any) {
-	rows, _ := networks_database().rows("select app, key, body from pushers where user=?", address)
+	db := db_user(user, "networks")
+	defer db.close()
+	rows, _ := db.rows("select app, key, body from pushers where user=?", address)
 	if len(rows) == 0 {
 		return
 	}
 	room := event.RoomID().String()
 	unread := int64(0)
-	row, _ := networks_database().row("select count(*) as n from notifications where user=? and read=0", address)
+	row, _ := db.row("select count(*) as n from notifications where user=? and read=0", address)
 	unread = row_int(row, "n")
 	var tweaks map[string]any
 	for _, action := range actions {
@@ -760,7 +824,7 @@ func pushers_post(user *User, gateway string, address string, app string, key st
 		Rejected []string `json:"rejected"`
 	}
 	if json.Unmarshal(answer, &refused) == nil && slices.Contains(refused.Rejected, key) {
-		networks_database().exec("delete from pushers where user=? and app=? and key=?", address, app, key)
+		pushers_forget(address, app, key)
 	}
 }
 
@@ -777,7 +841,7 @@ func notifications_list(c *gin.Context, s *clients_session) {
 	if c.Query("only") == "highlight" {
 		only = " and highlight=1"
 	}
-	rows, _ := networks_database().rows("select id, room, event, actions, read, created from notifications where user=? and id<?"+only+" order by id desc limit ?", s.h.address, from, limit)
+	rows, _ := s.database().rows("select id, room, event, actions, read, created from notifications where user=? and id<?"+only+" order by id desc limit ?", s.h.address, from, limit)
 	notifications := []any{}
 	last := int64(0)
 	for _, row := range rows {

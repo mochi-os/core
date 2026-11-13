@@ -90,7 +90,6 @@ func federation_create(db *DB) {
 	signals_tables(db)
 	content_tables(db)
 	bridge_tables(db)
-	notices_tables(db)
 }
 
 // federation_engine is the engine's registration.

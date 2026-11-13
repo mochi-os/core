@@ -2395,6 +2395,102 @@ func TestClientsDevicesOnJoin(t *testing.T) {
 	}
 }
 
+// TestClientsPusherTakenFromOtherAccounts: a phone's push token set for one
+// account is taken from every other account here that had it, from its own
+// owner's networks.db, unless the client asks to add it beside them; the
+// server keeps only which accounts hold each token.
+func TestClientsPusherTakenFromOtherAccounts(t *testing.T) {
+	alice, root := create_clients_test_env(t)
+	a := clients_client(t, alice, "m1", "@alice:example.com", "ALICE")
+	r := clients_client(t, root, "m2", "@root:example.com", "ROOT")
+	set := func(client *mautrix.Client, append bool) {
+		t.Helper()
+		body := map[string]any{"kind": "http", "app_id": "org.example.app", "pushkey": "shared-phone", "append": append, "data": map[string]any{"url": "https://push.example/_matrix/push/v1/notify"}}
+		if status, answer := clients_request(t, client, "POST", "/_matrix/client/v3/pushers/set", body); status != 200 {
+			t.Fatalf("pushers/set = %d %v", status, answer)
+		}
+	}
+	held := func(user *User, address string) int64 {
+		return int64(db_user_brief(user, "networks").integer("select count(*) from pushers where user=? and app='org.example.app' and key='shared-phone'", address))
+	}
+	keys := func() int64 {
+		return int64(networks_database().integer("select count(*) from pushers where app='org.example.app' and key='shared-phone'"))
+	}
+	set(a, false)
+	if held(alice, "@alice:example.com") != 1 || keys() != 1 {
+		t.Fatalf("alice's pusher = %d, keys %d", held(alice, "@alice:example.com"), keys())
+	}
+	set(r, false)
+	if held(alice, "@alice:example.com") != 0 {
+		t.Error("THE POINT: the token root's phone now holds was left on alice's account, which would push her messages to it")
+	}
+	if held(root, "@root:example.com") != 1 || keys() != 1 {
+		t.Errorf("root's pusher = %d, keys %d, want 1 and 1", held(root, "@root:example.com"), keys())
+	}
+	set(a, true)
+	if held(root, "@root:example.com") != 1 || held(alice, "@alice:example.com") != 1 || keys() != 2 {
+		t.Errorf("THE POINT: added beside, root's = %d, alice's = %d, keys %d", held(root, "@root:example.com"), held(alice, "@alice:example.com"), keys())
+	}
+	// An owner suspended or closing loses the token as anyone does, so their
+	// own file keeps no phone another account now holds when they return.
+	users := db_open("db/users.db")
+	for _, status := range []string{"suspended", "closing"} {
+		users.exec("update users set status='active' where uid=?", alice.UID)
+		set(a, false)
+		users.exec("update users set status=? where uid=?", status, alice.UID)
+		set(r, false)
+		if held(alice, "@alice:example.com") != 0 {
+			t.Errorf("THE POINT: a %s owner kept the token root's phone now holds", status)
+		}
+	}
+	users.exec("update users set status='active' where uid=?", alice.UID)
+}
+
+// TestClientsRestoredPushersAreKnown: the pushers a restored Matrix account
+// brings are known to the server's key table, so another account's taking a
+// phone's token takes it from the restored account too.
+func TestClientsRestoredPushersAreKnown(t *testing.T) {
+	alice, root := create_clients_test_env(t)
+	r := clients_client(t, root, "m2", "@root:example.com", "ROOT")
+	// As a restore swaps in alice's networks.db: her pusher, of which the
+	// server knows nothing, on an account whose handle is hers again here.
+	db_user_brief(alice, "networks").exec("insert into pushers (user, app, key, device, kind, body, created) values ('@alice:example.com', 'org.example.app', 'restored-phone', 'ALICE', 'http', '{}', 1)")
+	db_open("db/users.db").exec("insert or ignore into handles (domain, name, user, created) values ('example.com', 'alice', ?, 1)", alice.UID)
+	restore_hosted(alice.UID)
+	if account_hosted_get(alice, "m1") == nil {
+		t.Fatal("alice's Matrix account did not carry over")
+	}
+	body := map[string]any{"kind": "http", "app_id": "org.example.app", "pushkey": "restored-phone", "data": map[string]any{"url": "https://push.example/_matrix/push/v1/notify"}}
+	if status, answer := clients_request(t, r, "POST", "/_matrix/client/v3/pushers/set", body); status != 200 {
+		t.Fatalf("pushers/set = %d %v", status, answer)
+	}
+	if db_user_brief(alice, "networks").integer("select count(*) from pushers where key='restored-phone'") != 0 {
+		t.Error("THE POINT: the restored account kept the token root's phone now holds")
+	}
+}
+
+// TestClientsClosingOwnerKeepsAccountData: a closing owner's clients still
+// sign in, and what they keep of the account is kept, not dropped.
+func TestClientsClosingOwnerKeepsAccountData(t *testing.T) {
+	alice, _ := create_clients_test_env(t)
+	a := clients_client(t, alice, "m1", "@alice:example.com", "ALICE")
+	db_open("db/users.db").exec("update users set status='closing' where uid=?", alice.UID)
+	t.Cleanup(func() { db_open("db/users.db").exec("update users set status='active' where uid=?", alice.UID) })
+	path := "/_matrix/client/v3/user/@alice:example.com/account_data/org.example.kept"
+	if status, answer := clients_request(t, a, "PUT", path, map[string]any{"kept": true}); status != 200 {
+		t.Fatalf("PUT = %d %v", status, answer)
+	}
+	if status, answer := clients_request(t, a, "GET", path, nil); status != 200 || answer["kept"] != true {
+		t.Errorf("THE POINT: a closing owner's account data was dropped: %d %v", status, answer)
+	}
+	// Mid-restore, the owner's files are being replaced: none is opened.
+	db_open("db/users.db").exec("update users set status='pending-restore' where uid=?", alice.UID)
+	if db := clients_database("@alice:example.com"); db != nil {
+		db.close()
+		t.Error("THE POINT: a restoring owner's networks.db, which the restore is replacing, was opened")
+	}
+}
+
 // TestClientsNotificationsKept: notifications are kept for an account only
 // once a Matrix client is signed in to it.
 func TestClientsNotificationsKept(t *testing.T) {
@@ -2409,7 +2505,7 @@ func TestClientsNotificationsKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	kept := func() int64 {
-		row, _ := networks_database().row("select count(*) as n from notifications where user='@root:example.com'")
+		row, _ := db_user_brief(root, "networks").row("select count(*) as n from notifications where user='@root:example.com'")
 		return row_int(row, "n")
 	}
 	if _, err := a.SendText(ctx, made.RoomID, "before"); err != nil {
@@ -2431,19 +2527,19 @@ func TestClientsNotificationsKept(t *testing.T) {
 // go - the invitations' when the invited user joins - so a client's token is
 // never ahead of the server's.
 func TestClientsPositions(t *testing.T) {
-	create_clients_test_env(t)
+	alice, _ := create_clients_test_env(t)
 	clients_pending("!a:example.com", "@alice:example.com", "invite", "", "")
 	clients_pending("!b:example.com", "@alice:example.com", "invite", "", "")
-	before := sync_latest().invites
+	before := sync_latest(alice).invites
 	if before < 2 {
 		t.Fatalf("invites position = %d after two invitations", before)
 	}
-	networks_database().exec("delete from pending")
-	if after := sync_latest().invites; after != before {
+	db_user_brief(alice, "networks").exec("delete from pending")
+	if after := sync_latest(alice).invites; after != before {
 		t.Errorf("invites position went from %d to %d when the rows went", before, after)
 	}
 	clients_pending("!c:example.com", "@alice:example.com", "invite", "", "")
-	if next := sync_latest().invites; next != before+1 {
+	if next := sync_latest(alice).invites; next != before+1 {
 		t.Errorf("the next invitation is at %d, want %d", next, before+1)
 	}
 }

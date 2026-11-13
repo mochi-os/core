@@ -72,7 +72,6 @@ func rooms_tables(db *DB) {
 	db.exec("create table if not exists snapshots (id integer primary key autoincrement, room text not null, state text not null, base integer not null default 0, depth integer not null default 0)")
 	db.exec("create table if not exists extremities (room text not null, event text not null, primary key (room, event))")
 	db.exec("create table if not exists invites (room text not null, user text not null, version text not null, sender text not null, body text not null, state text not null, created integer not null, primary key (room, user))")
-	db.exec("create table if not exists directs (user text not null, room text not null, person text not null, primary key (user, room))")
 	db.exec("create table if not exists sent (account text not null, key text not null, event text not null, created integer not null, primary key (account, key))")
 }
 
@@ -1455,20 +1454,52 @@ func rooms_gap(ctx context.Context, local spec.ServerName, origin spec.ServerNam
 
 // rooms_direct says whether a room is a user's one-to-one conversation.
 func rooms_direct(user string, room string) bool {
-	found, _ := networks_database().exists("select 1 from directs where user=? and room=?", user, room)
+	db := clients_database(user)
+	if db == nil {
+		return false
+	}
+	defer db.close()
+	found, _ := db.exists("select 1 from directs where user=? and room=?", user, room)
 	return found
 }
 
 // rooms_direct_add marks a room as a user's one-to-one conversation with a
 // person.
 func rooms_direct_add(user string, room string, person string) {
-	networks_database().exec("insert or ignore into directs (user, room, person) values (?, ?, ?)", user, room, person)
+	if db := clients_database(user); db != nil {
+		db.exec("insert or ignore into directs (user, room, person) values (?, ?, ?)", user, room, person)
+		db.close()
+	}
 }
 
 // rooms_direct_remove takes away a room's mark as a user's one-to-one
 // conversation.
 func rooms_direct_remove(user string, room string) {
-	networks_database().exec("delete from directs where user=? and room=?", user, room)
+	if db := clients_database(user); db != nil {
+		db.exec("delete from directs where user=? and room=?", user, room)
+		db.close()
+	}
+}
+
+// rooms_pending_forget forgets where a user stood with a room this server was
+// not in, now it is: their invitation, knock or leave there.
+func rooms_pending_forget(room string, user string) {
+	if db := clients_database(user); db != nil {
+		db.exec("delete from pending where room=? and user=?", room, user)
+		db.close()
+	}
+}
+
+// rooms_knock is a user's knock on a room this server is not in, through the
+// server they knocked by, or nil.
+func rooms_knock(room string, user string) map[string]any {
+	db := clients_database(user)
+	if db == nil {
+		return nil
+	}
+	defer db.close()
+	row, _ := db.row("select server from pending where room=? and user=? and kind='knock'", room, user)
+	return row
 }
 
 // rooms_matrix_event is an event as the sync reader reads one.
@@ -2065,7 +2096,7 @@ func rooms_join(ctx context.Context, user string, address string, via ...spec.Se
 				return "", err
 			}
 			networks_database().exec("delete from invites where room=? and user=?", room, user)
-			networks_database().exec("delete from pending where room=? and user=?", room, user)
+			rooms_pending_forget(room, user)
 			rooms_welcome(user, room, rooms_recent(user, room, event))
 			return room, nil
 		}
@@ -2118,7 +2149,7 @@ func rooms_join(ctx context.Context, user string, address string, via ...spec.Se
 			return "", err
 		}
 		networks_database().exec("delete from invites where room=? and user=?", room, user)
-		networks_database().exec("delete from pending where room=? and user=?", room, user)
+		rooms_pending_forget(room, user)
 		rooms_welcome(user, room, rooms_backfill(ctx, local, server, room, user, joined.JoinEvent))
 		return room, nil
 	}
@@ -2505,7 +2536,7 @@ func rooms_leave(ctx context.Context, user string, room string) error {
 			return err
 		}
 		server = inviter.Domain()
-	} else if row, _ := networks_database().row("select server from pending where room=? and user=? and kind='knock'", room, user); row != nil {
+	} else if row := rooms_knock(room, user); row != nil {
 		server = spec.ServerName(row_string(row, "server"))
 	} else {
 		return nil
@@ -2649,13 +2680,17 @@ func rooms_directory(ctx context.Context, h *matrix_hosted, query string) []map[
 // invitation to it later is read as before. The room is held by the caller.
 func rooms_forget(room string) bool {
 	state, _ := rooms_current(room)
+	// The accounts here that were in it, read before its events go.
+	var local []string
 	for member, membership := range rooms_members(state) {
-		if membership != spec.Join && membership != spec.Invite {
+		user, err := spec.NewUserID(member, true)
+		if err != nil || !federation_local(user.Domain()) {
 			continue
 		}
-		if user, err := spec.NewUserID(member, true); err == nil && federation_local(user.Domain()) {
+		if membership == spec.Join || membership == spec.Invite {
 			return false
 		}
+		local = append(local, member)
 	}
 	db := networks_database()
 	// Marked forgotten until an account here is in it again, before its
@@ -2668,13 +2703,23 @@ func rooms_forget(room string) bool {
 	db.exec("delete from snapshots where room=?", room)
 	rooms_kept_forget(room)
 	db.exec("delete from extremities where room=?", room)
-	db.exec("delete from directs where room=?", room)
+	// Each of those accounts' mark of the room as a one-to-one conversation,
+	// which its owner's networks.db keeps.
+	for _, member := range local {
+		rooms_direct_remove(member, room)
+	}
 	return true
 }
 
 // rooms_message sends a message event to a room as a user, once per key.
 func rooms_message(ctx context.Context, account string, user string, room string, kind string, content map[string]any, key string) (string, error) {
+	// What an account here sent is its owner's; the chat bridge's stand-ins
+	// are no one's, and theirs is the server's.
 	db := networks_database()
+	if own := clients_database(user); own != nil {
+		defer own.close()
+		db = own
+	}
 	if key != "" {
 		if row, _ := db.row("select event from sent where account=? and key=?", account, key); row != nil {
 			return row_string(row, "event"), nil
